@@ -1053,10 +1053,12 @@ class TestProductionSmokePackage(unittest.TestCase):
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         # The refusal names the per-title folder for user-supplied decrypted inputs.
-        self.assertIn("supply decrypted modules at", result.stderr)
+        self.assertIn("ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not "
+                      "decrypt games. Place a decrypted EBOOT.elf from your own copy in ",
+                      result.stderr)
         self.assertIn(str(Path("titles") / "ULUS99998" / "decrypted"), result.stderr)
         self.assertNotRegex(result.stderr, r"#[0-9]+")
-        self.assertIn("matching local key file", result.stderr)
+        self.assertNotIn("key file", result.stderr)
         self.assertNotIn("automatic decryption is in the works", result.stderr.lower())
         self.assertFalse((user_root / "cache").exists())
 
@@ -2857,8 +2859,8 @@ class TestSanitizedBringup(unittest.TestCase):
 
         self.assertEqual(status, 1)
         self.assertEqual(report["reached_stage"], "prepare_import")
-        # A still-encrypted "decrypted" copy is not a usable module: with no key
-        # file the module still needs the decryption boundary (#308).
+        # A still-encrypted "decrypted" copy is not a usable module, and
+        # Nakagawa does not decrypt games (#308).
         self.assertEqual(report["failure_class"], "GUEST_MODULE_DECRYPTION_REQUIRED")
         self.assertEqual(report["issue_numbers"], [308])
         nk_cli.validate_bringup_report(report)
@@ -3381,16 +3383,26 @@ class TestProductStatusCopy(unittest.TestCase):
     clean-room public PGF reader landed in #474, closing #349, so wizard,
     checklist and completion-manifest text that still described those as
     missing was a false product claim. Boundaries that really are unavailable
-    stay named with their tracking issue: PGD-protected data and no-keyfile
-    executable decryption (#308).
+    stay named with their tracking issue: PGD-protected data and encrypted
+    executables, which Nakagawa does not decrypt (#308).
     """
 
     def _source(self, relative: str) -> str:
         return (ROOT / relative).read_text(encoding="utf-8")
 
+    def test_about_screen_carries_the_licence_and_no_endorsement_notice(self):
+        ui = self._source("src/player/ui_renderer.c")
+        start = ui.index("static void render_prerequisite_about(")
+        about = ui[start:ui.index("\n}\n", start)]
+        self.assertIn("GPL-3.0-or-later; see LICENSE and NOTICE.md", about)
+        self.assertIn("Not affiliated with or endorsed by Sony Interactive Entertainment", about)
+
     def test_wizard_names_the_package_builder_and_the_open_boundaries(self):
         ui = self._source("src/player/ui_renderer.c")
-        self.assertIn("decrypts encrypted executables with a local key file. It builds runtime ", ui)
+        self.assertIn("Nakagawa does not decrypt games; it uses decrypted files from "
+                      "your own copy. ", ui)
+        self.assertIn("It builds runtime packages from the library.", ui)
+        self.assertNotIn("key file", ui)
         self.assertIn("packages from the library. Verify also lists font and audio status.", ui)
         self.assertNotIn("or create runtime packages", ui)
         self.assertNotIn("draw_issue_links", ui)

@@ -34,8 +34,7 @@ The target end-to-end execution pipeline from raw user disc to running game is:
 flowchart TD
     ISO[PSP Game ISO you own] --> UMD[ISO9660 / UMD Disc Parser]
     UMD --> DISC_DISC[Authentic Executable & Module Discovery]
-    DISC_DISC --> CRYPTO[KIRK Hardware Cryptography Engine]
-    CRYPTO --> DECRYPT[Decrypted Flat ELF & PRX Modules]
+    DISC_DISC --> DECRYPT[Decrypted ELF & PRX Modules from Your Own Copy]
     DECRYPT --> LOADER[Authentic PRX/ELF Loader & Dynamic Linker]
     LOADER --> RELOC[Relocations, Imports, Exports & NID Resolution]
     LOADER --> LIFECYCLE[Module Lifecycle: sceKernelStartModule & module_start]
@@ -50,7 +49,7 @@ Under this architecture, Nakagawa does not cherry-pick convenient portions of th
 
 ## 3. Subsystem Investigation: The True LLE Path
 
-### 3.1 Retail EBOOT and PRX Cryptography
+### 3.1 Retail EBOOT and PRX Containers
 
 #### Container Formats Encountered
 
@@ -58,18 +57,18 @@ PSP UMD disc images contain executables in two primary container formats:
 
 1. **`~PSP` Header (Encrypted / Compressed PRX):**
    - Standard PRX container beginning with magic `~PSP` (`0x7E 0x50 0x53 0x50`).
-   - Contains load segment metadata, BSS sizes (offset `0x38`), total memory footprint, and embedded Kirk cryptographic headers.
+   - Contains load segment metadata, BSS sizes (offset `0x38`), total memory footprint, and an encrypted payload.
 2. **`~SCE` Header (SCE Signed Executable Container):**
    - Wrapped container beginning with magic `~SCE` (`0x7E 0x53 0x43 0x45`).
-   - Contains ECDSA Curve-160 signature blocks, Kirk encryption tags (e.g., `0x08000000`, `0x08D40000`), AES-128-CBC initialization vectors, and encrypted payload extents.
+   - Wraps an encrypted inner container.
 
 #### Encrypted containers
 
-The player and CLI provide a built-in boundary for supported `~PSP`/`~SCE` executable and PRX
-containers using a key file supplied locally by the user ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The analyzer itself still
-requires plain ELF/PRX inputs; missing key entries and unsupported container forms fail closed.
-The repository ships no keys, and this boundary does not imply support for PGD-protected game
-data or every PSP encryption form.
+Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in
+decryption was removed (temporarily) ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The player and CLI
+refuse an encrypted `~PSP`/`~SCE` executable or PRX without a plain copy as `ENCRYPTED_EXECUTABLE`
+or `ENCRYPTED_MODULE`, and the analyzer requires plain ELF/PRX inputs. PGD-protected game data
+remains unsupported.
 
 ---
 
