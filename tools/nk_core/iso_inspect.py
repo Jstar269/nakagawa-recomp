@@ -17,7 +17,6 @@ from typing import Dict, Iterator, Optional, Sequence
 
 import psp_import_table
 import title_manifest
-from .decrypt_boundary import BoundaryOutcome, decrypt_bytes_to, key_file_path
 from .title_registry import TitleRegistry, get_default_registry
 from .types import IsoMetadata
 
@@ -1313,8 +1312,8 @@ def _elf32_mips_usable(stream, file_size: int, lba: int, size: int, module: bool
 
 # ---------------------------------------------------------------------------
 # Guest-module boundary (issue #308).  The disc's own PRX/ELF modules are
-# resolved through the same per-title folder and built-in decryption boundary
-# as the executable, one module at a time and fail closed per module.
+# resolved through the same per-title folder as the executable, one module at
+# a time and fail closed per module.  Nakagawa does not decrypt games.
 # ---------------------------------------------------------------------------
 
 MODULE_ROOTS = (
@@ -1495,14 +1494,14 @@ def _module_failure(result: dict, reason: str, detail: str) -> dict:
     return result
 
 
-def decrypt_needed_modules(
+def check_needed_modules(
     iso_path: Path | str,
     *,
     user_data_root: Path | str,
     disc_id: str,
     modules: Sequence[dict] | None = None,
 ) -> dict:
-    """Resolve every module the title needs through the built-in boundary.
+    """Check that every module the title needs is available as a plain module.
 
     Each ``modules`` entry declares the spellings it can be supplied under
     (``names``, disc file name first) and the ISO members holding its disc copy
@@ -1511,19 +1510,16 @@ def decrypt_needed_modules(
 
     * a valid user-supplied plain copy in the per-title decrypted folder wins
       and is never overwritten (skipped / user-supplied);
-    * an already plain disc copy needs no decryption (skipped / plain);
-    * an encrypted ``~PSP``/``~SCE`` container with no valid user copy is
-      decrypted through the same production boundary into the per-title folder
-      under its disc file name (decrypted);
-    * anything else fails closed for that module alone, naming the exact
-      missing key entry when the boundary reports one (failed).
+    * an already plain disc copy is used as it is (skipped / plain);
+    * an encrypted ``~PSP``/``~SCE`` container with no valid user copy fails
+      closed as ENCRYPTED_MODULE (failed / encrypted): Nakagawa does not decrypt
+      games and reads no key file;
+    * anything else fails closed for that module alone (failed).
 
-    Decrypted bytes land only in the private per-user data folder, staged and
-    renamed so an interrupted run never leaves a half-written module.
+    Nothing is written: this only reads the disc and the per-title folder.
     """
     root = Path(user_data_root).expanduser()
     module_dir = decrypted_module_dir(root, disc_id)
-    key_hint = key_file_path(root)
     if modules is None:
         needs = list_disc_module_candidates(iso_path)
     else:
@@ -1608,46 +1604,17 @@ def decrypt_needed_modules(
                 ))
                 continue
 
-            # 3. The same production boundary unwraps it under its disc name.
+            # 3. An encrypted container with no plain user copy fails closed.
+            #    Nakagawa does not decrypt games.
             if module_dir is None:
                 results.append(_module_failure(
                     result, "folder-unavailable",
                     "the per-title decrypted folder is unavailable",
                 ))
                 continue
-            if not key_hint.is_file():
-                results.append(_module_failure(
-                    result, "no-keyfile", f"no local key file at {key_hint}",
-                ))
-                continue
-            try:
-                blob = _read_iso_extent(stream, file_size, lba, extent_size, 0, extent_size)
-            except (OSError, IsoInspectionError) as exc:
-                results.append(_module_failure(result, "disc-read", str(exc)))
-                continue
-            destination = module_dir / disc_name
-            outcome = decrypt_bytes_to(blob, destination, user_data_root=root)
-            if outcome.status == "no-keyfile":
-                results.append(_module_failure(
-                    result, "no-keyfile",
-                    f"no local key file at {outcome.key_path or key_hint}",
-                ))
-                continue
-            if outcome.status != "ok":
-                results.append(_module_failure(
-                    result, "boundary",
-                    outcome.detail or "the container could not be decrypted",
-                ))
-                continue
-            if _classify_decrypted_elf_file(destination, module=True) != "PLAIN_MIPS_ELF32":
-                destination.unlink(missing_ok=True)
-                results.append(_module_failure(
-                    result, "boundary", "boundary output is not a usable MIPS ELF32",
-                ))
-                continue
-            result.update(status="decrypted", reason="", detail="")
-            ready += 1
-            results.append(result)
+            results.append(_module_failure(
+                result, "encrypted", encrypted_module_message(disc_name, module_dir),
+            ))
     return {
         "module_dir": str(module_dir) if module_dir is not None else None,
         "ready": ready,
@@ -1656,7 +1623,25 @@ def decrypt_needed_modules(
     }
 
 
-def _guest_modules_check(report: dict, key_hint: Path) -> dict:
+def encrypted_executable_message(folder: Path | str) -> str:
+    """The fail-closed text for an encrypted EBOOT.BIN without a user EBOOT.elf."""
+    return (
+        "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt "
+        f"games. Place a decrypted EBOOT.elf from your own copy in {folder}."
+    )
+
+
+def encrypted_module_message(name: str, folder: Path | str, *, label: str | None = None,
+                             alternative: str | None = None) -> str:
+    """The fail-closed text for an encrypted guest module without a plain copy."""
+    spelling = f"{name} (or {alternative})" if alternative else name
+    return (
+        f"ENCRYPTED_MODULE: {label or name} is encrypted. Nakagawa does not decrypt "
+        f"games. Place a decrypted {spelling} from your own copy in {folder}."
+    )
+
+
+def _guest_modules_check(report: dict) -> dict:
     """The compatibility check line for the module boundary (no tool names)."""
     discovery_error = report.get("error")
     if isinstance(discovery_error, str) and discovery_error:
@@ -1678,23 +1663,13 @@ def _guest_modules_check(report: dict, key_hint: Path) -> dict:
     first = failed[0]
     more = f" ({len(failed) - 1} more not ready)" if len(failed) > 1 else ""
     label = first["name"]
-    if first["reason"] == "no-keyfile":
+    if first["reason"] == "encrypted":
         return {
             "code": "GUEST_MODULES", "status": "MISSING",
             "message": (
-                f"Guest modules: {ready} of {total} ready; {label} is encrypted{more}. "
-                f"Supply decrypted modules at {module_dir}, or a local key file "
-                f"at {key_hint} to enable the built-in boundary."
-            ),
-            "issues": [308],
-        }
-    if first["reason"] == "boundary":
-        return {
-            "code": "GUEST_MODULES", "status": "UNSUPPORTED",
-            "message": (
-                f"Guest modules: {ready} of {total} ready; {label} could not be "
-                f"decrypted ({first['detail']}){more}. Supply decrypted modules at "
-                f"{module_dir}, or add the missing entry to your local key file."
+                f"Guest modules: {ready} of {total} ready; ENCRYPTED_MODULE: {label} "
+                f"is encrypted{more}. Nakagawa does not decrypt games. Place a "
+                f"decrypted {label} from your own copy in {module_dir}."
             ),
             "issues": [308],
         }
@@ -1918,39 +1893,8 @@ def inspect_compatibility_preflight(
     user_decryptable_kinds = {
         "PSP_ENCRYPTED_CONTAINER", "SCE_WRAPPER", "PBP",
     }
-    # Built-in decryption boundary (issue #308): when the user keeps a local
-    # key file in the private user data, unwrap the disc's encrypted
-    # executable through the production boundary and continue to the
-    # analyzer.  Nothing is ever written next to the ISO or the repository.
-    boundary_outcome: BoundaryOutcome | None = None
-    key_hint = key_file_path(root)
-    if (
-        directory_error is None
-        and eboot_kind in user_decryptable_kinds
-        and module_dir is not None
-        and decrypted_elf is None
-        and eboot_entry is not None
-        and key_hint.is_file()
-    ):
-        lba, extent_size = eboot_entry
-        try:
-            with path.open("rb") as stream:
-                blob = _read_iso_extent(stream, size_bytes, lba, extent_size, 0, extent_size)
-            boundary_outcome = decrypt_bytes_to(
-                blob, module_dir / "EBOOT.elf", user_data_root=root
-            )
-        except (OSError, IsoInspectionError) as exc:
-            boundary_outcome = BoundaryOutcome("failed", str(exc), str(key_hint))
-        if boundary_outcome.status == "ok":
-            decrypted_elf = module_dir / "EBOOT.elf"
-            decrypted_elf_kind = _classify_decrypted_elf_file(decrypted_elf)
-            if decrypted_elf_kind != "PLAIN_MIPS_ELF32":
-                boundary_outcome = BoundaryOutcome(
-                    "failed", "boundary output is not a usable MIPS ELF32",
-                    str(key_hint),
-                )
-                decrypted_elf = None
-                decrypted_elf_kind = "MISSING"
+    # Nakagawa does not decrypt games and reads no key file: an encrypted
+    # executable is analyzed only through a user-supplied EBOOT.elf.
     if (
         not cfw_loader_detected
         and
@@ -1960,15 +1904,15 @@ def inspect_compatibility_preflight(
         and decrypted_elf_kind == "PLAIN_MIPS_ELF32"
     ):
         selected = "EBOOT.elf"
-    # Guest-module boundary (issue #308): every module the disc carries is
-    # resolved through the same per-title folder and boundary as the
-    # executable, one module at a time and fail closed per module.
+    # Guest-module readiness (issue #308): every module the disc carries is
+    # resolved through the same per-title folder as the executable, one module
+    # at a time and fail closed per module.
     module_report: dict[str, object] = {
         "module_dir": None, "ready": 0, "total": 0, "results": [],
     }
     if directory_error is None:
         try:
-            module_report = decrypt_needed_modules(
+            module_report = check_needed_modules(
                 path, user_data_root=root, disc_id=metadata.disc_id,
             )
         except (OSError, IsoInspectionError, struct.error) as exc:
@@ -1977,7 +1921,7 @@ def inspect_compatibility_preflight(
                 "error": str(exc),
             }
     modules_check = (
-        _guest_modules_check(module_report, key_hint)
+        _guest_modules_check(module_report)
         if module_report["total"] or module_report.get("error")
         else None
     )
@@ -2029,21 +1973,11 @@ def inspect_compatibility_preflight(
             "issues": [],
         }
     elif selected == "EBOOT.elf" and decrypted_elf is not None:
-        if boundary_outcome is not None and boundary_outcome.status == "ok":
-            executable_check = {
-                "code": "EXECUTABLE", "status": "OK",
-                "message": (
-                    f"The built-in decryption boundary produced a usable MIPS ELF32 at "
-                    f"{decrypted_elf} and it is selected for analysis."
-                ),
-                "issues": [],
-            }
-        else:
-            executable_check = {
-                "code": "EXECUTABLE", "status": "OK",
-                "message": "User-supplied decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
-                "issues": [],
-            }
+        executable_check = {
+            "code": "EXECUTABLE", "status": "OK",
+            "message": "User-supplied decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
+            "issues": [],
+        }
     elif eboot_kind in user_decryptable_kinds and decrypted_elf is not None:
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
@@ -2053,29 +1987,10 @@ def inspect_compatibility_preflight(
             ),
             "issues": [],
         }
-    elif (
-        eboot_kind in user_decryptable_kinds
-        and boundary_outcome is not None
-        and boundary_outcome.status == "failed"
-    ):
-        executable_check = {
-            "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": (
-                f"Encrypted executable: the built-in decryption boundary failed "
-                f"({boundary_outcome.detail}); supply decrypted modules at {module_dir}. "
-                f"Check the local key file at {boundary_outcome.key_path}."
-            ),
-            "issues": [308],
-        }
     elif eboot_kind in user_decryptable_kinds and module_dir is not None:
         executable_check = {
             "code": "EXECUTABLE", "status": "UNSUPPORTED",
-            "message": (
-                f"Encrypted executable: supply decrypted modules at {module_dir}. "
-                f"A matching local key file at {key_hint} enables built-in decryption "
-                "for supported formats. The project ships no keys; broader ISO-to-Play "
-                "support is in the works."
-            ),
+            "message": encrypted_executable_message(module_dir),
             "issues": [308],
         }
     elif eboot_kind == "PSP_ENCRYPTED_CONTAINER":
@@ -2255,16 +2170,6 @@ def inspect_compatibility_preflight(
         ),
         "modified_dump_cfw_loader": cfw_loader_detected,
         "boot_fallback": fallback,
-        "key_file": str(key_hint),
-        "built_in_boundary": (
-            {
-                "status": boundary_outcome.status,
-                "detail": boundary_outcome.detail,
-                "key_file": boundary_outcome.key_path,
-            }
-            if boundary_outcome is not None
-            else None
-        ),
         "executables": executables,
         "checks": checks,
     }

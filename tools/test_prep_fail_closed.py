@@ -385,15 +385,13 @@ class NativeStagingRouteTests(PreparationFailClosedCase):
 
 
 class PrepPreflightSideEffectTests(PreparationFailClosedCase):
-    """Compatibility selection must keep decrypt output out of the ISO folder."""
+    """Compatibility selection must never write beside the ISO."""
 
     def test_prepare_without_destination_does_not_write_beside_iso(self) -> None:
         from test_iso_parity import (
-            build_plain_mips_elf,
             build_psp_container,
             create_test_iso_with_executables,
         )
-        from nk_core.decrypt_boundary import BoundaryOutcome
 
         source_dir = self.temp_dir / "source"
         source_dir.mkdir()
@@ -401,32 +399,22 @@ class PrepPreflightSideEffectTests(PreparationFailClosedCase):
         create_test_iso_with_executables(
             iso_file, build_psp_container(), disc_id=RAW_ISO
         )
+        # Nakagawa does not decrypt games: a key file beside the ISO and the old
+        # override pointing at it are both ignored, and nothing is written.
         synthetic_key = source_dir / "keys" / "psp-keyfile.json"
         synthetic_key.parent.mkdir()
         synthetic_key.write_text("synthetic test marker", encoding="utf-8")
         source_names = {path.name for path in source_dir.iterdir()}
-        decrypt_destinations: list[Path] = []
 
-        def synthetic_decrypt(_data, destination, *, user_data_root):
-            destination = Path(destination)
-            decrypt_destinations.append(destination)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(build_plain_mips_elf())
-            return BoundaryOutcome("ok", key_path=str(synthetic_key))
-
-        with mock.patch.dict(os.environ):
-            os.environ.pop("NAKAGAWA_PSP_KEY_FILE", None)
-            with mock.patch(
-                "nk_core.iso_inspect.decrypt_bytes_to", side_effect=synthetic_decrypt
-            ):
-                result = self._engine(claphanz=False).prepare_game(
-                    iso_file, destination_root=None
-                )
+        with mock.patch.dict(os.environ, {"NAKAGAWA_PSP_KEY_FILE": str(synthetic_key)}):
+            result = self._engine(claphanz=False).prepare_game(
+                iso_file, destination_root=None
+            )
 
         self.assertTrue(result.success, result.error_message)
-        self.assertEqual(decrypt_destinations, [])
         self.assertEqual({path.name for path in source_dir.iterdir()}, source_names)
         self.assertEqual(list(synthetic_key.parent.iterdir()), [synthetic_key])
+        self.assertEqual(synthetic_key.read_text(encoding="utf-8"), "synthetic test marker")
         manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["boot_executable"], "EBOOT.BIN")
 
