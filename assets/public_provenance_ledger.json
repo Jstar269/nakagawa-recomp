@@ -7938,7 +7938,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ada199d769411545fb3a67f468dac0d9e70c90946e99e7cece7d0f77fc923cc5"
+      "sha256": "55e005aa964765ea71ccf320d70711ddd73b0c3afc001376654edad83a470e48"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -10079,7 +10079,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "735d383b21611e19810eec653c75ab1096f3776df11805897cb622268e447a75"
+      "sha256": "fe9d106a49517e2e5c3e684c6139d3a81820df236b6f25ac32dfde597beff1c1"
     },
     {
       "path": "tools/test_package_notices.py",
