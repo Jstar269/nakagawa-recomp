@@ -5033,6 +5033,8 @@ static void test_unregistered_batch_refusals(void) {
            "sceAudiocodec 0x3dd7ee1a stays unregistered because no public name is confirmed");
 }
 
+extern void sr_hle_test_volatile_mem_reset(void);
+
 /* Enter the production Lock/TryLock NID mappings with an output span that crosses
  * the guest arena boundary. The regression protects the valid output from a partial
  * write and preserves the existing no-op behavior for NULL output pointers. */
@@ -5078,6 +5080,7 @@ static void test_volatile_mem_output_preflight(void) {
     expect(MEM_R32(paddr_out) == 0x08400000u && MEM_R32(size_out) == 0x00400000u,
            "volatile-memory Lock preserves the existing 4 MiB scratch-buffer route");
 
+    sr_hle_test_volatile_mem_reset();
     MEM_W32(paddr_out, sentinel);
     MEM_W32(size_out, sentinel);
     memset(&cpu, 0, sizeof(cpu));
@@ -5099,6 +5102,7 @@ static void test_volatile_mem_output_preflight(void) {
     expect(MEM_R32(size_out) == 0x00400000u,
            "volatile-memory Lock still writes the non-NULL size output");
 
+    sr_hle_test_volatile_mem_reset();
     MEM_W32(paddr_out, sentinel);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
@@ -27519,7 +27523,6 @@ static uint32_t psmf_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1)
 #define NID_VM_TRYLOCK 0xa14f40b2u
 #define VM_PTR_OUT     0x00250e00u
 #define VM_SIZE_OUT    0x00250e04u
-extern void sr_hle_test_volatile_mem_reset(void);
 
 static void test_volatile_mem_unlock_states(void) {
     CpuState cpu;
@@ -27548,6 +27551,22 @@ static void test_volatile_mem_unlock_states(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0u, "VolatileMemUnlock after TryLock returns 0");
 
+    /* TryLock while already held returns 0x802b0200 and writes neither output. */
+    sr_hle_test_volatile_mem_reset();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    MEM_W32(VM_PTR_OUT, 0xdeadbeefu); MEM_W32(VM_SIZE_OUT, 0xcafebabeu);
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock while unlocked returns 0");
+    MEM_W32(VM_PTR_OUT, 0x11111111u); MEM_W32(VM_SIZE_OUT, 0x22222222u);
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0x802b0200u, "VolatileMemTryLock while held returns 0x802b0200");
+    expect(MEM_R32(VM_PTR_OUT) == 0x11111111u && MEM_R32(VM_SIZE_OUT) == 0x22222222u,
+           "VolatileMemTryLock while held leaves outputs unchanged");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0u, "VolatileMemUnlock after held TryLock returns 0");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock succeeds again after Unlock");
     sr_hle_test_volatile_mem_reset();
 }
 
@@ -27727,8 +27746,12 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
 
 /* ---- scePowerUnregisterCallback: release a slot scePowerRegisterCallback filled ----
  *
- * The slot range checks mirror scePowerRegisterCallback. An empty slot is refused with
- * SCE_KERNEL_ERROR_NOTIMP, because its PSP error code has not been measured. */
+ * Measured on PSP-3000, firmware 6.6.1, 2026-10-22 (merged PR #1153):
+ *   - an empty slot (0..15, nothing registered) returns 0x80000025;
+ *   - an owned slot returns 0;
+ *   - slot 16 returns 0x80000023;
+ *   - slots 32, -1, -2 and 1000 return 0x80000102.
+ * The slot range checks mirror scePowerRegisterCallback. */
 #define NID_POWER_REGISTER_CALLBACK   0x04b7766eu
 #define NID_POWER_UNREGISTER_CALLBACK 0xdfa8baf8u
 
@@ -27754,8 +27777,8 @@ static void test_power_unregister_callback_slots(void) {
     expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0u,
            "power unregister: a registered slot releases with 0");
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u;
-    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80020002u,
-           "power unregister: an empty slot is refused with SCE_KERNEL_ERROR_NOTIMP");
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000025u,
+           "power unregister: an empty slot is refused with 0x80000025 (PSP-measured)");
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u; cpu.r[5] = cb;
     expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0u,
            "power unregister: a released slot registers the callback again");
@@ -27768,6 +27791,12 @@ static void test_power_unregister_callback_slots(void) {
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 20u;
     expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000023u,
            "power unregister: a slot in 16..31 mirrors the register range check");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 16u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000023u,
+           "power unregister: slot 16 returns 0x80000023 (PSP-measured)");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = (uint32_t)-1;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000102u,
+           "power unregister: slot -1 returns 0x80000102 (PSP-measured)");
 }
 
 static void test_psmf_rejected_stream_names_the_boundary(void) {

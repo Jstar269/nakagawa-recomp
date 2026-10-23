@@ -10,7 +10,6 @@
 #include "nk_font.h"
 #include "nk_json.h"
 #include "nk_platform.h"
-#include "nk_psp_container.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -1062,7 +1061,7 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         return NK_OK;
     }
 
-    /* Settings, decrypted-module, font and key paths all come from the
+    /* Settings, decrypted-module and font paths all come from the
      * per-user data directory, which is UTF-8 and may hold non-ASCII
      * characters; the narrow CRT would misread them on Windows. */
     FILE *f = nk_fopen_utf8(target, "rb");
@@ -2905,146 +2904,11 @@ static PlayerDecryptedEbootState player_find_decrypted_eboot(
         ? PLAYER_DECRYPTED_EBOOT_VALID : PLAYER_DECRYPTED_EBOOT_INVALID;
 }
 
-/* Issue #308: built-in decryption boundary.  The player holds no key
- * material: a local-only key file at <user data>/keys/psp-keyfile.json (or
- * $NAKAGAWA_PSP_KEY_FILE) unlocks the boundary, which unwraps the disc's
- * encrypted executable and encrypted PRX modules into the private per-title
- * folder only, staged to a temporary name and renamed into place. */
-typedef enum {
-    PLAYER_BOUNDARY_OK = 0,
-    PLAYER_BOUNDARY_NO_KEYFILE = 1,
-    PLAYER_BOUNDARY_FAILED = 2
-} PlayerBoundaryStatus;
-
-static PlayerBoundaryStatus player_try_builtin_decrypt_member(
-    const char *runtime_root, const char *iso_path, const char *disc_rel_path,
-    const char *decrypt_dir, const char *out_name, const char *out_path,
-    char *detail, size_t detail_size, bool module) {
-    char key_path[NK_MAX_PATH + 64];
-    char stage_dir[NK_MAX_PATH + 32];
-    char stage_in[NK_MAX_PATH + 320];
-    char stage_out[NK_MAX_PATH + 320];
-    const char *env_override = getenv("NAKAGAWA_PSP_KEY_FILE");
-    char keystore_error[256];
-    NkKeystore *ks;
-    NkPspCtx ctx;
-    u8 *input = NULL;
-    u8 *plain = NULL;
-    size_t plain_size = 0;
-    size_t input_size = 0;
-    long file_size;
-    FILE *file;
-    int rc;
-
-    if (env_override != NULL && env_override[0] != '\0') {
-        snprintf(key_path, sizeof(key_path), "%s", env_override);
-    } else {
-        snprintf(key_path, sizeof(key_path), "%s/keys/psp-keyfile.json",
-                 runtime_root);
-    }
-    file = nk_fopen_utf8(key_path, "rb");
-    if (!file) return PLAYER_BOUNDARY_NO_KEYFILE;
-    fclose(file);
-
-    snprintf(stage_dir, sizeof(stage_dir), "%s/cache/decrypted", runtime_root);
-    if (!nk_platform_dir_exists(stage_dir) && !nk_platform_mkdir_p(stage_dir)) {
-        snprintf(detail, detail_size, "the private user-data cache is unavailable");
-        return PLAYER_BOUNDARY_FAILED;
-    }
-    snprintf(stage_in, sizeof(stage_in), "%s/%s.in.stage", stage_dir, out_name);
-    snprintf(stage_out, sizeof(stage_out), "%s/%s.stage", stage_dir, out_name);
-    nk_remove_utf8(stage_in);
-    nk_remove_utf8(stage_out);
-
-    if (nk_iso_extract_file(iso_path, disc_rel_path, stage_in) != NK_OK) {
-        snprintf(detail, detail_size, "the disc copy could not be extracted");
-        nk_remove_utf8(stage_in);
-        return PLAYER_BOUNDARY_FAILED;
-    }
-    file = nk_fopen_utf8(stage_in, "rb");
-    if (file == NULL) {
-        snprintf(detail, detail_size, "the disc copy could not be read");
-        nk_remove_utf8(stage_in);
-        return PLAYER_BOUNDARY_FAILED;
-    }
-    if (fseek(file, 0, SEEK_END) != 0 || (file_size = ftell(file)) <= 0 ||
-        file_size > (long)(64u * 1024u * 1024u) || fseek(file, 0, SEEK_SET) != 0) {
-        fclose(file);
-        nk_remove_utf8(stage_in);
-        snprintf(detail, detail_size, "the disc copy has an implausible size");
-        return PLAYER_BOUNDARY_FAILED;
-    }
-    input_size = (size_t)file_size;
-    input = (u8 *)malloc(input_size);
-    if (input == NULL || fread(input, 1, input_size, file) != input_size) {
-        fclose(file);
-        free(input);
-        nk_remove_utf8(stage_in);
-        snprintf(detail, detail_size, "the disc copy could not be buffered");
-        return PLAYER_BOUNDARY_FAILED;
-    }
-    fclose(file);
-    nk_remove_utf8(stage_in);
-
-    ks = nk_keystore_create();
-    if (ks == NULL) {
-        free(input);
-        snprintf(detail, detail_size, "out of memory loading the key file");
-        return PLAYER_BOUNDARY_FAILED;
-    }
-    if (nk_keystore_load_file(ks, key_path, keystore_error,
-                              sizeof(keystore_error)) != NK_PSP_OK) {
-        snprintf(detail, detail_size, "the key file is invalid: %.180s",
-                 keystore_error);
-        nk_keystore_free(ks);
-        free(input);
-        return PLAYER_BOUNDARY_FAILED;
-    }
-    nk_psp_ctx_init(&ctx, ks);
-    rc = nk_container_decrypt(&ctx, input, input_size, &plain, &plain_size);
-    nk_keystore_free(ks);
-    free(input);
-    if (rc != NK_PSP_OK) {
-        snprintf(detail, detail_size, "%s",
-                 ctx.message[0] != '\0' ? ctx.message
-                                         : "the container could not be decrypted");
-        return PLAYER_BOUNDARY_FAILED;
-    }
-
-    if (!nk_platform_dir_exists(decrypt_dir) &&
-        !nk_platform_mkdir_p(decrypt_dir)) {
-        free(plain);
-        snprintf(detail, detail_size, "the per-title decrypted folder is unavailable");
-        return PLAYER_BOUNDARY_FAILED;
-    }
-    file = nk_fopen_utf8(stage_out, "wb");
-    if (file == NULL || fwrite(plain, 1, plain_size, file) != plain_size) {
-        if (file != NULL) fclose(file);
-        free(plain);
-        nk_remove_utf8(stage_out);
-        snprintf(detail, detail_size, "the decrypted image could not be written");
-        return PLAYER_BOUNDARY_FAILED;
-    }
-    fclose(file);
-    free(plain);
-    nk_remove_utf8(out_path);
-    if (nk_rename_utf8(stage_out, out_path) != 0) {
-        nk_remove_utf8(stage_out);
-        snprintf(detail, detail_size, "the decrypted image could not be moved into place");
-        return PLAYER_BOUNDARY_FAILED;
-    }
-    if (!player_is_usable_mips_elf32(out_path, module)) {
-        nk_remove_utf8(out_path);
-        snprintf(detail, detail_size, "the decrypted image is not a usable MIPS ELF32");
-        return PLAYER_BOUNDARY_FAILED;
-    }
-    return PLAYER_BOUNDARY_OK;
-}
-
-/* Issue #308 guest-module boundary: the disc's own PRX modules are resolved
-   through the same per-title folder and built-in boundary as the executable,
-   one module at a time and fail closed per module.  CFW patch-module exclusion
-   stays the intake route's named job; this reports decryption readiness. */
+/* Issue #308 guest-module readiness: the disc's own PRX modules are resolved
+   through the same per-title folder as the executable, one module at a time
+   and fail closed per module.  Nakagawa does not decrypt games: an encrypted
+   module is ready only when the user supplies a plain copy in that folder.
+   CFW patch-module exclusion stays the intake route's named job. */
 /* Disc surveys found 35+ PRXs in one folder; 256 covers that count with a
    fixed upper bound for malformed images. */
 #define PLAYER_MAX_GUEST_MODULES 256
@@ -3086,8 +2950,8 @@ static bool player_name_has_suffix_ignore_case(const char *name,
            player_name_equals_ignore_case(name + (name_len - suffix_len), suffix);
 }
 
-/* A disc directory entry names a file the boundary writes under the private
- * per-title folder, and a crafted image controls those bytes. Accept only the
+/* A disc directory entry names a file looked up under the private per-title
+ * folder, and a crafted image controls those bytes. Accept only the
  * rule the tooling applies (tools/title_manifest.py FILENAME_RE and
  * WINDOWS_RESERVED): an alphanumeric first character, then [A-Za-z0-9._-],
  * at most 128 characters, no trailing dot, no reserved Windows device name. So
@@ -3303,7 +3167,6 @@ static void player_check_guest_modules(PlayerApp *app,
     PlayerModuleCandidate *modules = NULL;
     char decrypted_dir[NK_MAX_PATH * 2];
     char decrypted_elf[NK_MAX_PATH * 2];
-    char key_path[NK_MAX_PATH + 64];
     char first_name[256];
     char first_detail[320];
     char message[2048];
@@ -3311,8 +3174,6 @@ static void player_check_guest_modules(PlayerApp *app,
     char more[40];
     size_t total = 0, ready = 0, not_ready = 0;
     bool first_encrypted = false;
-    bool first_boundary = false;
-    const char *env_override;
     PlayerModuleScanStatus scan_status;
     if (!app->inspecting_game.iso_path[0] || !app->inspecting_game.disc_id[0]) {
         return;
@@ -3350,13 +3211,6 @@ static void player_check_guest_modules(PlayerApp *app,
         free(modules);
         return;
     }
-    env_override = getenv("NAKAGAWA_PSP_KEY_FILE");
-    if (env_override != NULL && env_override[0] != '\0') {
-        snprintf(key_path, sizeof(key_path), "%s", env_override);
-    } else {
-        snprintf(key_path, sizeof(key_path), "%s/keys/psp-keyfile.json",
-                 runtime_root);
-    }
     first_name[0] = '\0';
     first_detail[0] = '\0';
     for (size_t i = 0; i < total; i++) {
@@ -3366,8 +3220,6 @@ static void player_check_guest_modules(PlayerApp *app,
                                decrypted_dir, nk_platform_path_separator(),
                                module->name);
         FILE *existing;
-        char detail[320];
-        PlayerBoundaryStatus status;
         if (written < 0 || (size_t)written >= sizeof(module_path)) {
             not_ready++;
             if (first_name[0] == '\0') {
@@ -3397,24 +3249,12 @@ static void player_check_guest_modules(PlayerApp *app,
             ready++;
             continue;
         }
-        detail[0] = '\0';
-        status = player_try_builtin_decrypt_member(
-            runtime_root, app->inspecting_game.iso_path, module->rel_path,
-            decrypted_dir, module->name, module_path, detail, sizeof(detail),
-            true);
-        if (status == PLAYER_BOUNDARY_OK) {
-            ready++;
-            continue;
-        }
+        /* Encrypted on the disc and no plain copy supplied: Nakagawa does not
+         * decrypt games, so this module stays not ready. */
         not_ready++;
         if (first_name[0] == '\0') {
             snprintf(first_name, sizeof(first_name), "%.200s", module->name);
-            if (status == PLAYER_BOUNDARY_NO_KEYFILE) {
-                first_encrypted = true;
-            } else {
-                first_boundary = true;
-                snprintf(first_detail, sizeof(first_detail), "%s", detail);
-            }
+            first_encrypted = true;
         }
     }
     if (not_ready == 0) {
@@ -3435,21 +3275,12 @@ static void player_check_guest_modules(PlayerApp *app,
         static const unsigned int issues[] = { 308 };
         if (first_encrypted) {
             snprintf(message, sizeof(message),
-                     "Guest modules: %u of %u ready; %.200s is encrypted%s. "
-                     "Supply decrypted modules at %.220s, or a local key "
-                     "file at %.170s to enable the built-in boundary.",
+                     "Guest modules: %u of %u ready; ENCRYPTED_MODULE: %.200s "
+                     "is encrypted%s. Nakagawa does not decrypt games. Place a "
+                     "decrypted %.200s from your own copy in %.900s.",
                      (unsigned)ready, (unsigned)total, first_name, more,
-                     decrypted_dir, key_path);
+                     first_name, decrypted_dir);
             player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_MISSING,
-                                 message, issues, 1);
-        } else if (first_boundary) {
-            snprintf(message, sizeof(message),
-                     "Guest modules: %u of %u ready; %.200s could not be "
-                     "decrypted (%.190s)%s. Supply decrypted modules at %.220s "
-                     "or add the missing entry to your local key file.",
-                     (unsigned)ready, (unsigned)total, first_name, first_detail,
-                     more, decrypted_dir);
-            player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
                                  message, issues, 1);
         } else {
             snprintf(message, sizeof(message),
@@ -3632,40 +3463,16 @@ void player_app_build_compatibility_preflight(
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                  message, NULL, 0);
         } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_MISSING) {
-            char boundary_detail[320] = "";
-            char key_path[NK_MAX_PATH + 64];
-            const char *env_override = getenv("NAKAGAWA_PSP_KEY_FILE");
-            PlayerBoundaryStatus boundary = player_try_builtin_decrypt_member(
-                runtime_root, app->inspecting_game.iso_path,
-                "PSP_GAME/SYSDIR/EBOOT.BIN", decrypted_dir, "EBOOT.elf",
-                decrypted_elf, boundary_detail, sizeof(boundary_detail), false);
-            if (env_override != NULL && env_override[0] != '\0') {
-                snprintf(key_path, sizeof(key_path), "%s", env_override);
-            } else {
-                snprintf(key_path, sizeof(key_path),
-                         "%s/keys/psp-keyfile.json", runtime_root);
-            }
-            if (boundary == PLAYER_BOUNDARY_OK) {
-                player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
-                    "The built-in decryption boundary produced a usable MIPS ELF32 and it is selected for analysis.",
-                    NULL, 0);
-            } else if (boundary == PLAYER_BOUNDARY_FAILED) {
-                char message[512];
-                snprintf(message, sizeof(message),
-                    "Encrypted executable: the built-in decryption boundary failed "
-                    "(%.190s); supply decrypted modules at %.190s.",
-                    boundary_detail, decrypted_dir);
-                player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
-                                     message, issues, 1);
-            } else {
-                char message[512];
-                snprintf(message, sizeof(message),
-                    "Encrypted executable: supply decrypted modules at %.220s, "
-                    "or a local key file at %.170s to enable the built-in boundary.",
-                    decrypted_dir, key_path);
-                player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
-                                     message, issues, 1);
-            }
+            /* Nakagawa does not decrypt games and reads no key file: an
+             * encrypted EBOOT.BIN needs a user-supplied decrypted EBOOT.elf. */
+            char message[512];
+            snprintf(message, sizeof(message),
+                "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not "
+                "decrypt games. Place a decrypted EBOOT.elf from your own copy in "
+                "%.300s.",
+                decrypted_dir);
+            player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
+                                 message, issues, 1);
         } else {
             static const unsigned int path_issues[] = { 308 };
             char message[512];

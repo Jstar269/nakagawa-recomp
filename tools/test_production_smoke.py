@@ -775,7 +775,7 @@ class TestProductionSmokePackage(unittest.TestCase):
     def test_package_builds_to_spaced_destination_via_nk_build_root(self):
         required = ("mingw32-make", "gcc", "pwsh")
         if not all(shutil.which(name) for name in required):
-            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+            self.skipTest("WINDOWS_ONLY: the production package route requires mingw32-make, gcc, and pwsh")
         self.skip_if_sdl3_toolchain_unavailable()
         safe_build_root = self.root / "safe_build_root"
         safe_build_root.mkdir(parents=True)
@@ -804,7 +804,7 @@ class TestProductionSmokePackage(unittest.TestCase):
     def test_package_builds_to_spaced_destination_via_short_path_provider(self):
         required = ("mingw32-make", "gcc", "pwsh")
         if not all(shutil.which(name) for name in required):
-            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+            self.skipTest("WINDOWS_ONLY: the production package route requires mingw32-make, gcc, and pwsh")
         self.skip_if_sdl3_toolchain_unavailable()
         safe_short_root = self.root / "SHORTP~1"
         safe_short_root.mkdir(parents=True)
@@ -836,7 +836,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         # Unmocked: the real 8.3 alias must survive (Path.resolve() would expand it back).
         required = ("mingw32-make", "gcc", "pwsh")
         if os.name != "nt" or not all(shutil.which(name) for name in required):
-            self.skipTest("real 8.3 short-path route needs Windows and the native toolchain")
+            self.skipTest("WINDOWS_ONLY: real 8.3 short-path route needs Windows and the native toolchain")
         self.skip_if_sdl3_toolchain_unavailable()
         spaced_parent = self.root / "Real Spaced Parent"
         spaced_parent.mkdir(parents=True)
@@ -896,7 +896,7 @@ class TestProductionSmokePackage(unittest.TestCase):
     def test_package_builds_from_inputs_under_a_path_with_spaces(self):
         required = ("mingw32-make", "gcc", "pwsh")
         if not all(shutil.which(name) for name in required):
-            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+            self.skipTest("WINDOWS_ONLY: the production package route requires mingw32-make, gcc, and pwsh")
         spaced = self.root / "User Name" / "Downloads"
         spaced.mkdir(parents=True)
         executable = spaced / "guest.prx"
@@ -917,7 +917,7 @@ class TestProductionSmokePackage(unittest.TestCase):
     def test_package_action_runs_production_smoke_and_emits_deterministic_contract(self):
         required = ("mingw32-make", "gcc", "pwsh")
         if not all(shutil.which(name) for name in required):
-            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+            self.skipTest("WINDOWS_ONLY: the production package route requires mingw32-make, gcc, and pwsh")
 
         env = os.environ.copy()
         selected_executable = self.root / "EBOOT.BIN"
@@ -1053,17 +1053,19 @@ class TestProductionSmokePackage(unittest.TestCase):
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         # The refusal names the per-title folder for user-supplied decrypted inputs.
-        self.assertIn("supply decrypted modules at", result.stderr)
+        self.assertIn("ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not "
+                      "decrypt games. Place a decrypted EBOOT.elf from your own copy in ",
+                      result.stderr)
         self.assertIn(str(Path("titles") / "ULUS99998" / "decrypted"), result.stderr)
         self.assertNotRegex(result.stderr, r"#[0-9]+")
-        self.assertIn("matching local key file", result.stderr)
+        self.assertNotIn("key file", result.stderr)
         self.assertNotIn("automatic decryption is in the works", result.stderr.lower())
         self.assertFalse((user_root / "cache").exists())
 
     def test_library_cli_extracts_plaintext_elf_before_named_build_boundary(self):
         required = ("mingw32-make", "gcc", "pwsh")
         if not all(shutil.which(name) for name in required):
-            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+            self.skipTest("WINDOWS_ONLY: the production package route requires mingw32-make, gcc, and pwsh")
         if os.name == "nt" and not Path("C:/msys64/ucrt64/bin/SDL3.dll").is_file():
             self.skipTest("the player package route requires the SDL3 runtime DLL")
 
@@ -1171,7 +1173,8 @@ class TestCodegenStageReuse(unittest.TestCase):
     def require_make(self):
         required = ("mingw32-make", "gcc", "pwsh") if os.name == "nt" else ("make", "gcc")
         if not all(shutil.which(name) for name in required):
-            self.skipTest("the package route requires " + ", ".join(required))
+            prefix = "WINDOWS_ONLY: " if "mingw32-make" in required else ""
+            self.skipTest(prefix + "the package route requires " + ", ".join(required))
 
     def build(self, output_dir: Path, sink=None, **options):
         stdout = sink if sink is not None else io.StringIO()
@@ -2856,8 +2859,8 @@ class TestSanitizedBringup(unittest.TestCase):
 
         self.assertEqual(status, 1)
         self.assertEqual(report["reached_stage"], "prepare_import")
-        # A still-encrypted "decrypted" copy is not a usable module: with no key
-        # file the module still needs the decryption boundary (#308).
+        # A still-encrypted "decrypted" copy is not a usable module, and
+        # Nakagawa does not decrypt games (#308).
         self.assertEqual(report["failure_class"], "GUEST_MODULE_DECRYPTION_REQUIRED")
         self.assertEqual(report["issue_numbers"], [308])
         nk_cli.validate_bringup_report(report)
@@ -3380,16 +3383,26 @@ class TestProductStatusCopy(unittest.TestCase):
     clean-room public PGF reader landed in #474, closing #349, so wizard,
     checklist and completion-manifest text that still described those as
     missing was a false product claim. Boundaries that really are unavailable
-    stay named with their tracking issue: PGD-protected data and no-keyfile
-    executable decryption (#308).
+    stay named with their tracking issue: PGD-protected data and encrypted
+    executables, which Nakagawa does not decrypt (#308).
     """
 
     def _source(self, relative: str) -> str:
         return (ROOT / relative).read_text(encoding="utf-8")
 
+    def test_about_screen_carries_the_licence_and_no_endorsement_notice(self):
+        ui = self._source("src/player/ui_renderer.c")
+        start = ui.index("static void render_prerequisite_about(")
+        about = ui[start:ui.index("\n}\n", start)]
+        self.assertIn("GPL-3.0-or-later; see LICENSE and NOTICE.md", about)
+        self.assertIn("Not affiliated with or endorsed by Sony Interactive Entertainment", about)
+
     def test_wizard_names_the_package_builder_and_the_open_boundaries(self):
         ui = self._source("src/player/ui_renderer.c")
-        self.assertIn("decrypts encrypted executables with a local key file. It builds runtime ", ui)
+        self.assertIn("Nakagawa does not decrypt games; it uses decrypted files from "
+                      "your own copy. ", ui)
+        self.assertIn("It builds runtime packages from the library.", ui)
+        self.assertNotIn("key file", ui)
         self.assertIn("packages from the library. Verify also lists font and audio status.", ui)
         self.assertNotIn("or create runtime packages", ui)
         self.assertNotIn("draw_issue_links", ui)

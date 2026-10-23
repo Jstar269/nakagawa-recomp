@@ -4,6 +4,7 @@
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
 // Derived from PPSSPP (https://github.com/hrydgard/ppsspp), GPL-2.0-or-later
+// Copyright (c) 2012- PPSSPP Project and contributors
 
 /* *
  * This is a faithful port of PPSSPP's sceMpeg control flow: PSMF header analysis, ring-buffer
@@ -14,7 +15,8 @@
  * frame and ends at the stream's last timestamp), so a game's movie-playback loop runs and
  * *completes* identically — the decoded video frame is left blank.
  *
- * Because the project links the recompiled game (GPLv2+ via this port), this binds to GPLv2+.
+ * This file is GPL-2.0-or-later because it is derived from PPSSPP; that licence covers this
+ * runtime source only and says nothing about the user's game.
  */
 
 #ifndef _CRT_SECURE_NO_WARNINGS

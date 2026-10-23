@@ -174,8 +174,8 @@ opencode.json
 # wherever SR_PGD_KEYS points). Never commit these.
 keys/
 pgd_keys.txt
-# Local-only KeyStore files dropped outside keys/ (the default
-# <user data>/keys/psp-keyfile.json can be relocated). These mirror the JSON,
+# Key files of any kind dropped outside keys/; Nakagawa reads none of them,
+# and none may be committed. These mirror the JSON,
 # text and .dat forms of KEY_FILE_NAME in tools/publish_audit.py; *.bin, *.key
 # and *.pem are ignored above, and publish_audit stays the complete,
 # case-insensitive authority for every other suffix.

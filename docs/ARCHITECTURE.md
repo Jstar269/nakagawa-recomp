@@ -9,7 +9,7 @@ overview and implementation disagree.
 ```mermaid
 flowchart LR
     INTAKE["ISO and EBOOT intake<br/>tools/nk_cli.py<br/>tools/nk_core/iso_inspect.py"]
-    DECRYPT["Decryption boundary<br/>tools/nk_core/decrypt_boundary.py<br/>src/core/nk_psp_container.c<br/>src/core/nk_psp_prx.c<br/>optional local user key file"]
+    REFUSE["Encrypted input refused by name<br/>ENCRYPTED_EXECUTABLE / ENCRYPTED_MODULE<br/>Nakagawa does not decrypt games"]
     LOAD["ISO / PRX loading and import mapping<br/>src/core/nk_iso.c<br/>src/player/iso_reader.c<br/>tools/prxload.py<br/>tools/imports.py"]
     ANALYZE["Function-boundary analysis<br/>tools/analyze.py"]
     CODEGEN["AOT code generation to C<br/>tools/codegen.py"]
@@ -26,9 +26,9 @@ flowchart LR
         AUDIO["Audio output<br/>src/rt/hle.c<br/>src/rt/audio_unavailable.c"]
     end
 
-    INTAKE -->|"encrypted input; matching local key when needed"| DECRYPT
-    INTAKE -->|"already decrypted EBOOT / PRX"| LOAD
-    DECRYPT --> LOAD --> ANALYZE --> CODEGEN --> BUILD --> PLAYER --> AOT
+    INTAKE -->|"encrypted input with no decrypted copy"| REFUSE
+    INTAKE -->|"plain or user-supplied decrypted EBOOT / PRX"| LOAD
+    LOAD --> ANALYZE --> CODEGEN --> BUILD --> PLAYER --> AOT
     AOT -->|"analyzer-owned AOT gap"| FLOOR
     AOT --> SCHED
     AOT --> HLE

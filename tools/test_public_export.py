@@ -29,6 +29,7 @@ from tools.build_public_export import (
     run_publish_audit,
     run_sbom_verification,
 )
+from tools.ci_test_shards import nightly_tier
 
 # The same tests run in the source checkout and in a materialized public-safe
 # candidate. Profile-excluded files are asserted by path/policy using synthetic
@@ -170,6 +171,7 @@ class TestPublicExport(unittest.TestCase):
         res = run_sbom_verification()
         self.assertTrue(res.passed, f"sbom_verification gate failed: {res.detail}")
 
+    @nightly_tier
     def test_run_all_publication_gates(self):
         results = run_all_publication_gates(public_safe_profile=True)
         self.assertEqual(len(results), 4)

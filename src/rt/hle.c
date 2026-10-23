@@ -4,6 +4,7 @@
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
 // See NOTICE.md for upstream lineage and modification provenance.
 // Derived from PPSSPP (https://github.com/hrydgard/ppsspp), GPL-2.0-or-later
+// Copyright (c) 2012- PPSSPP Project and contributors
 
 /* *
  * The PRX import table maps each .sceStub.text stub to a (library, NID); tools/imports.py
@@ -10381,6 +10382,12 @@ static uint32_t h_VolatileMemLock(CpuState *s) {
     if (A2) MEM_W32(A2, 0x00400000u);
     s_volatile_locked = 1;
     return 0;
+}
+/* Measured on PSP-3000 6.6.1 (2026-10-22, PR #1153): while the volatile-memory
+ * lock is already held, TryLock returns 0x802b0200 and writes neither output. */
+static uint32_t h_VolatileMemTryLock(CpuState *s) {
+    if (s_volatile_locked) return 0x802b0200u;
+    return h_VolatileMemLock(s);
 }
 /* The lock sceKernelVolatileMemLock and TryLock take and sceKernelVolatileMemUnlock releases.
  * Measured on PSP-3000 6.6.1 (2026-10-21, probe CASE=fake-success): Unlock with nothing locked
@@ -23445,7 +23452,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0xc1734599, "sceKernelReferLwMutexStatus", h_ReferLwMutexStatus);
     sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ReferLwMutexStatusByID);
     sr_hle_register(0x3e0271d3, "sceKernelVolatileMemLock", h_VolatileMemLock);
-    sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemLock);
+    sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemTryLock);
     sr_hle_register(0xa569e425, "sceKernelVolatileMemUnlock", h_VolatileMemUnlock);
     sr_hle_register(0x8ef08fce, "sceUmdWaitDriveStat", h_UmdWaitDriveStat);
     sr_hle_register(0x56202973, "sceUmdWaitDriveStatWithTimer", h_UmdWaitDriveStatWithTimer);

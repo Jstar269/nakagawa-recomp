@@ -4,6 +4,7 @@
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
 // See NOTICE.md for upstream lineage and modification provenance.
 // Derived from PPSSPP (https://github.com/hrydgard/ppsspp), GPL-2.0-or-later
+// Copyright (c) 2012- PPSSPP Project and contributors
 //
 /*
  * The codegen emits one C function per guest function with signature void f_<hexaddr>(CpuState*).

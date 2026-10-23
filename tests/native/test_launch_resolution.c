@@ -23,7 +23,6 @@
 
 #include "nk_font.h"
 #include "nk_launch.h"
-#include "nk_psp_keystore.h"
 #include "nk_platform.h"
 #include "nk_title_manifest.h"
 #include "nk_types.h"
@@ -1143,24 +1142,6 @@ static void test_non_ascii_user_data_root(const char *base, char sep) {
                                  sizeof(pgf_error)));
     assert(strstr(pgf_error, "cannot open the file") == NULL);
     assert(strstr(pgf_error, "truncated") != NULL);
-
-    /* The key file lives under the same per-user root. A malformed key file
-     * is enough to prove it was OPENED: "no key file at" is the verdict an
-     * unopenable path produces, and it must not appear for an existing file. */
-    {
-        char key_path[1300];
-        char key_error[256] = "";
-        snprintf(key_path, sizeof(key_path), "%s%ckeys.json", root, sep);
-        write_file_utf8(key_path, "{ this is not json");
-        NkKeystore *keystore = nk_keystore_create();
-        assert(keystore != NULL);
-        assert(nk_keystore_load_file(keystore, key_path, key_error,
-                                     sizeof(key_error)) != 0);
-        assert(strstr(key_error, "no key file at") == NULL);
-        assert(strlen(key_error) > 0);
-        nk_keystore_free(keystore);
-        nk_remove_utf8(key_path);
-    }
 
     nk_remove_utf8(staged_eboot);
     nk_remove_utf8(manifest);

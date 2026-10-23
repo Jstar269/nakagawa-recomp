@@ -431,7 +431,7 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
                    if not shutil.which(name)]
         if missing:
             raise unittest.SkipTest(
-                "the player package route requires " + ", ".join(missing) + " on PATH")
+                "WINDOWS_ONLY: the player package route requires " + ", ".join(missing) + " on PATH")
         make_name = "mingw32-make" if os.name == "nt" else "make"
         probe = subprocess.run([make_name, "--no-print-directory", "sdl3-check",
                                 f"BUILD_ROOT={cls.binary_dir.as_posix()}"],

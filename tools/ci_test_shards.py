@@ -44,10 +44,12 @@ import ast
 from dataclasses import dataclass
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sys
 from typing import Iterable, Mapping, Sequence
+import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +58,39 @@ DEFAULT_WEIGHTS = TOOLS_DIR / "ci_test_weights.json"
 DEFAULT_NUM_SHARDS = 4
 TEST_GLOB = "test_*.py"
 SELECTIONS = ("all", "makefile")
+SKIP_REASON_PREFIXES = ("NIGHTLY_TIER:", "WINDOWS_ONLY:", "PRIVATE_INPUT:")
+
+
+def nightly_tier(test_method):
+    """Run a slow, non-blocking test only when ``NK_TEST_TIER=full`` is set."""
+
+    return unittest.skipUnless(
+        os.environ.get("NK_TEST_TIER") == "full",
+        "NIGHTLY_TIER: set NK_TEST_TIER=full to run this slow case",
+    )(test_method)
+
+
+def skip_prefix_summary(unittest_output: str) -> str:
+    """Return one stable summary line with unittest skips counted by reason prefix."""
+
+    counts = dict.fromkeys(SKIP_REASON_PREFIXES, 0)
+    for line in unittest_output.splitlines():
+        marker = " ... skipped "
+        if marker not in line:
+            continue
+        rendered_reason = line.rsplit(marker, 1)[1].strip()
+        try:
+            reason = ast.literal_eval(rendered_reason)
+        except (SyntaxError, ValueError):
+            continue
+        if not isinstance(reason, str):
+            continue
+        for prefix in SKIP_REASON_PREFIXES:
+            if reason.startswith(prefix):
+                counts[prefix] += 1
+                break
+    fields = " ".join(f"{prefix[:-1]}={counts[prefix]}" for prefix in SKIP_REASON_PREFIXES)
+    return f"Python test skip prefixes: {fields}"
 
 
 class ShardDataError(ValueError):

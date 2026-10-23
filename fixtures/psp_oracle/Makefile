@@ -215,6 +215,8 @@ else ifeq ($(CASE),at3-decode)
 CASE_ID = 111
 else ifeq ($(CASE),fake-success)
 CASE_ID = 112
+else ifeq ($(CASE),font-userpgf)
+CASE_ID = 113
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -462,6 +464,14 @@ ifeq ($(CASE),font-list)
 OBJS += $(BUILD_DIR)/libfont_imports.o
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceLibFont=0x67F17ED7,0x574B6FBC,0x27F6E642,0xBC75D85B,0x5333322D --forbid-library sceReg
 endif
+# The font-userpgf case (#1055) opens project and console PGFs in the resident font library and
+# draws glyphs. libfont_imports.S gains its eight extra imports only under -DLIBFONT_USERPGF, so
+# the font-list pin above is unchanged; this case is pinned to exactly the thirteen NIDs it calls.
+ifeq ($(CASE),font-userpgf)
+OBJS += $(BUILD_DIR)/libfont_imports.o
+LIBFONT_ASFLAGS = -DLIBFONT_USERPGF
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceLibFont=0x67F17ED7,0x574B6FBC,0x27F6E642,0xBC75D85B,0x5333322D,0xA834319D,0x57FCB733,0xBB8E7FE6,0x3AEA8CB6,0x0DA7535E,0xDCC80C2F,0x980F4895,0xAA3DE7B5 --forbid-library sceReg
+endif
 ifeq ($(CASE),kernel-misc)
 OBJS += $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/display_user_imports.o
 LIBS += -lpspctrl
@@ -541,7 +551,7 @@ $(BUILD_DIR)/display_user_imports.o: display_user_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/libfont_imports.o: libfont_imports.S
-	$(CC) $(ASFLAGS) -c $< -o $@
+	$(CC) $(ASFLAGS) $(LIBFONT_ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_hle_measure.o: probe_hle_measure.c
 	$(CC) $(CFLAGS) -c $< -o $@

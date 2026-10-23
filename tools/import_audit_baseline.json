@@ -2137,7 +2137,7 @@
   },
   "0xa14f40b2": {
     "classification": "dedicated",
-    "handler": "h_VolatileMemLock",
+    "handler": "h_VolatileMemTryLock",
     "name": "sceKernelVolatileMemTryLock",
     "status": "unreviewed"
   },
