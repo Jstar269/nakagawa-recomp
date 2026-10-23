@@ -194,3 +194,12 @@ docs/images/brand/nakagawa-mark-dark.svg are the project-authored N1 Block & Bra
 mark, rendered in dark ink for light page themes and light ink for dark page themes.
 The artwork is distributed under GPL-3.0-or-later and listed with the SHA-256 of
 each file's exact bytes in assets/release_manifest.json.
+
+## Project UI fonts
+
+The fonts under assets/fonts/ui/ are Chakra Petch, Geist, Geist Mono, and Noto Sans JP,
+distributed under the SIL Open Font License 1.1. Each family's OFL text is beside its font
+files; only whitespace normalization was applied, with all license wording retained. Exact
+upstream revisions, file hashes, static weights, and license hashes are recorded in
+docs/provenance/FONT_ORIGINS.md and assets/fonts/ui/manifest.json. These are project UI
+assets, not game data.

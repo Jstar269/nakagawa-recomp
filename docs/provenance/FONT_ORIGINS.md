@@ -1,10 +1,11 @@
 # PGF replacement-font origins (engineering provenance)
 
 This is an engineering record, not legal advice. Every origin claim below carries a URL + commit/hash, or is marked
-UNKNOWN. No font payload, upstream source file, or retail-derived data is
+UNKNOWN. No PGF payload, upstream PGF source file, or retail-derived data is
 added by this record: the four payloads remain excluded by
 `assets/public_source_profile.json` (`font/*.pgf`). Public builds read fonts
-through the project-authored reader (`src/rt/pgf_public.c`, #349).
+through the project-authored reader (`src/rt/pgf_public.c`, #349). Section 8 records the separate project UI fonts (TTF, SIL Open Font
+License); they are not PGF replacements or game data.
 
 ## 1. Subject
 
@@ -334,3 +335,43 @@ payload is admitted to the public source tree.
 5. Sazanami Gothic-era (2013, JPCSP import `1429d02`) terms: superseded
    intermediate, recorded for completeness; JPCSP fonts were replaced in Oct
    2020 and no Sazanami bytes survive in the pinned blobs.
+
+## 8. Project UI fonts
+
+The UI font assets are pinned to one `google/fonts` revision:
+[`45e3d5269e4a17d823f6d84470bc084dc5ae46f6`](https://github.com/google/fonts/tree/45e3d5269e4a17d823f6d84470bc084dc5ae46f6).
+Each shipped TTF is static at its declared weight. The machine-readable record
+is [`assets/fonts/ui/manifest.json`](../../assets/fonts/ui/manifest.json).
+
+| Output file | Upstream path at pinned commit | Source SHA-256 | Output SHA-256 | Weight | License |
+| --- | --- | --- | --- | ---: | --- |
+| `assets/fonts/ui/chakra-petch/ChakraPetch-SemiBold.ttf` | `ofl/chakrapetch/ChakraPetch-SemiBold.ttf` | `45264de3204ddbd5fb3e14a2402acd5c630d16650ae5fc221d2c52da46a6734b` | `45264de3204ddbd5fb3e14a2402acd5c630d16650ae5fc221d2c52da46a6734b` | 600 | OFL-1.1 |
+| `assets/fonts/ui/chakra-petch/ChakraPetch-Bold.ttf` | `ofl/chakrapetch/ChakraPetch-Bold.ttf` | `65fbf76d95651697275e19db4d717c0e95a789ddd3476478b05292104db278a0` | `65fbf76d95651697275e19db4d717c0e95a789ddd3476478b05292104db278a0` | 700 | OFL-1.1 |
+| `assets/fonts/ui/geist/Geist-Regular.ttf` | `ofl/geist/Geist[wght].ttf`, instance `wght=400` | `73894e0448cae90a92b6c2f8732b7bb9acb7b94c418bff559dad4a18e1de9659` | `58a4bac9a7b901313822aada65bb1469b3c873874e11b3fc88ba75ed9576d98a` | 400 | OFL-1.1 |
+| `assets/fonts/ui/geist/Geist-Medium.ttf` | `ofl/geist/Geist[wght].ttf`, instance `wght=500` | `73894e0448cae90a92b6c2f8732b7bb9acb7b94c418bff559dad4a18e1de9659` | `35089cbe873bf2764d4ba9810b90f6b93eee45ea37efe4cd83997825b97ab0db` | 500 | OFL-1.1 |
+| `assets/fonts/ui/geist/Geist-SemiBold.ttf` | `ofl/geist/Geist[wght].ttf`, instance `wght=600` | `73894e0448cae90a92b6c2f8732b7bb9acb7b94c418bff559dad4a18e1de9659` | `c157d36cc1778633d43f5a0ff92b078bb6de26f5011a6a092b7b6f49fe022fc5` | 600 | OFL-1.1 |
+| `assets/fonts/ui/geist-mono/GeistMono-Regular.ttf` | `ofl/geistmono/GeistMono[wght].ttf`, instance `wght=400` | `d00e590b8eb3a59acc329b2d044fd143ae935090b7da33199ebee27cc7de8196` | `341cdaf235d2cdcfa85ff4eed9628381a89422bd3439710c80e45b725db70b2c` | 400 | OFL-1.1 |
+| `assets/fonts/ui/geist-mono/GeistMono-Medium.ttf` | `ofl/geistmono/GeistMono[wght].ttf`, instance `wght=500` | `d00e590b8eb3a59acc329b2d044fd143ae935090b7da33199ebee27cc7de8196` | `3fc64e39b238a4d4370a35b5226103ab34d04fe741d93bbd59929cab8bbe3500` | 500 | OFL-1.1 |
+| `assets/fonts/ui/noto-sans-jp/NotoSansJP-Regular.ttf` | `ofl/notosansjp/NotoSansJP[wght].ttf`, instance `wght=400` | `c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f` | `a66655d7b24ac6f793f73914c60ad44522b9fbd9e5f9b3706220b66c44fdaad2` | 400 | OFL-1.1 |
+
+Geist, Geist Mono, and Noto Sans JP are static instances of their variable
+sources, generated with fontTools 4.67.0 using
+`fontTools.varLib.instancer --static --update-name-table --no-recalc-timestamp`
+and the listed `wght` value. This keeps fixed weights available to SDL3_ttf
+without a font-generation build dependency.
+
+The full Noto Sans JP regular instance is 5,766,828 bytes. It is retained at
+full coverage so Japanese user title metadata is not narrowed to a test subset.
+The upstream metadata declares the Reserved Font Name `Source`; the shipped
+family name remains `Noto Sans JP`.
+
+Each family has its OFL text beside the TTF files. Text hygiene removed trailing
+whitespace and added a final newline where needed; copyright, license wording,
+and disclaimers are unchanged. Both upstream and local hashes are recorded:
+
+| License file | Upstream path at pinned commit | Source SHA-256 | Local SHA-256 | License |
+| --- | --- | --- | --- | --- |
+| `assets/fonts/ui/chakra-petch/OFL.txt` | `ofl/chakrapetch/OFL.txt` | `13831d02389d917d22fcfa6c79f98f8acbf61d230add0e73a4d4dc5f3bfb9e56` | `4a1d840eb0b2df8553804d844960a15773ca5af5d5c9803745307db8c617540b` | OFL-1.1 |
+| `assets/fonts/ui/geist/OFL.txt` | `ofl/geist/OFL.txt` | `1781d2806a07d91c4edf4740b88449fab7d0eadad53f7c351b94cd4d4eb8c00f` | `f12f59163d92084b0473315ae4566cde0c1233d940ae464f5225a69c347cc691` | OFL-1.1 |
+| `assets/fonts/ui/geist-mono/OFL.txt` | `ofl/geistmono/OFL.txt` | `1781d2806a07d91c4edf4740b88449fab7d0eadad53f7c351b94cd4d4eb8c00f` | `f12f59163d92084b0473315ae4566cde0c1233d940ae464f5225a69c347cc691` | OFL-1.1 |
+| `assets/fonts/ui/noto-sans-jp/OFL.txt` | `ofl/notosansjp/OFL.txt` | `1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9` | `babcfe66c8a098b2fa279bc724a3a342f8124f77ce18941fbcc1bbb39823cded` | OFL-1.1 |
