@@ -127,8 +127,10 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
-The Linux `native_tools` job builds SDL3 from its pinned 3.4.18 release commit and installs
-Vulkan development headers. The staged SDL3 install is cached under a key naming the pinned
+Most Linux jobs run on Ubuntu 26.04. The `native_tools` job stays on Ubuntu 24.04 because its
+translation gate installs `gcc-mipsel-linux-gnu`, which is absent from the Ubuntu 26.04 package
+archive ([Ubuntu 24.04 package](https://packages.ubuntu.com/noble/gcc-mipsel-linux-gnu)). The job
+builds SDL3 from its pinned 3.4.18 release commit and installs Vulkan development headers. The staged SDL3 install is cached under a key naming the pinned
 version and commit, the gcc and cmake versions, and the workflow file hash; a cache hit skips
 the build, and the pkg-config version check still runs. It configures and builds the CMake player with `BUILD_PLAYER=ON`,
 runs CTest, and requires the `nakagawa_player --help` usage marker. It also downloads the PSPDEV

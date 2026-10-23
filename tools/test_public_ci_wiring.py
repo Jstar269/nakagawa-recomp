@@ -150,6 +150,7 @@ class PublicCiWiringTests(unittest.TestCase):
     def test_ffmpeg_h264_media_selftest_is_wired_in_linux_ci(self) -> None:
         """The optional H.264 backend must build and execute its real media fixture in CI."""
         native_tools = _ci_job_blocks()["native_tools"]
+        self.assertIn("    runs-on: ubuntu-24.04", "\n".join(native_tools))
         dependencies = _ci_step(native_tools, "Install native test dependencies")
         ffmpeg_test = _ci_step(native_tools, "Build and run the opt-in FFmpeg H.264 media selftest")
         self.assertIsNotNone(dependencies)

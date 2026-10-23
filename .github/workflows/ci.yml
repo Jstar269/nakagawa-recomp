@@ -433,7 +433,9 @@ jobs:
 
   native_tools:
     name: Native and translation gates
-    runs-on: ubuntu-26.04
+    # Ubuntu 26.04 no longer publishes the gcc-mipsel-linux-gnu package that
+    # this translation gate installs; keep the cross-compiler job on 24.04.
+    runs-on: ubuntu-24.04
     # id-token: write exists only for the Codecov OIDC upload below; contents
     # stays read, as everywhere else in this workflow.
     permissions:
