@@ -3553,7 +3553,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9bb3bb704ce481689ba54ceba880db8e5a92b5995e3916b5b272fcc37a5d4e05"
+      "sha256": "df009cce2026c7a1029542277d0cfe753c0c973b80bb8f8186b27528f466781a"
     },
     {
       "path": "src/rt/archive_vfs.c",
