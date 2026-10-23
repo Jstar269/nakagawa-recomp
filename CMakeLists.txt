@@ -153,6 +153,118 @@ set_tests_properties(player_state_test PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     ENVIRONMENT "NK_TEST_SCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/build")
 
+# The nk_ui core and its C3a reserved stubs stay SDL and Vulkan free. Keep this
+# explicit source inventory in sync with mk/nk_ui.mk.
+set(NK_UI_CORE_SOURCES
+    src/ui/nk_ui.c
+    src/ui/nk_ui_clay.c
+    src/ui/nk_ui_theme.c
+    src/ui/nk_ui_draw.c
+    src/ui/nk_ui_text.c
+    src/ui/nk_ui_widgets.c
+    src/ui/nk_ui_waves.c
+    src/ui/nk_ui_dump.c
+    src/ui/nk_ui_focus.c
+    src/ui/nk_ui_input.c
+    src/ui/nk_ui_prompts.c
+)
+set(NK_UI_EDGE_SOURCES
+    src/ui/nk_ui_sdl_input.c
+    src/ui/nk_ui_ttf.c
+)
+set(NK_UI_BACKEND_SOURCES
+    src/ui/backend/nk_ui_sdlr.c
+    src/ui/backend/nk_ui_vk.c
+)
+set(NK_UI_RESERVED_STUB_SOURCES ${NK_UI_EDGE_SOURCES} ${NK_UI_BACKEND_SOURCES})
+set(NK_UI_PLAYER_SCREEN_SOURCES
+    src/player/ui/player_ui_nk.c
+    src/player/ui/ui_router.c
+    src/player/ui/scr_library.c
+    src/player/ui/scr_title.c
+    src/player/ui/scr_settings.c
+    src/player/ui/scr_first_run.c
+    src/player/ui/scr_dialogs.c
+)
+set(NK_UI_OVERLAY_SOURCES
+    src/rt/overlay/nk_overlay.c
+    src/rt/overlay/overlay_pause.c
+    src/rt/overlay/overlay_quick.c
+    src/rt/overlay/overlay_hud.c
+    src/rt/overlay/overlay_toast.c
+    src/rt/overlay/overlay_dialogs.c
+)
+set(NK_UI_TEST_SOURCES
+    tests/native/test_nk_ui_core.c
+    tests/native/test_nk_ui_focus.c
+    tests/native/test_nk_ui_sdlr.c
+    tests/native/test_nk_ui_vk.c
+    tests/native/test_player_screens.c
+    tests/native/test_overlay_screens.c
+)
+add_executable(test_nk_ui_core
+    tests/native/test_nk_ui_core.c
+    ${NK_UI_CORE_SOURCES}
+    ${NK_UI_RESERVED_STUB_SOURCES}
+)
+target_include_directories(test_nk_ui_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
+)
+if(NOT WIN32)
+    target_link_libraries(test_nk_ui_core PRIVATE m)
+endif()
+add_test(NAME nk_ui_core_test COMMAND test_nk_ui_core)
+set_tests_properties(nk_ui_core_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# The SDL_Renderer backend and SDL3_ttf text engine (lane C3b). With SDL3 and
+# SDL3_ttf headers found the test is built for real; without them it is the SKIP
+# variant, and ctest reports exit 77 as skipped. SDL3_ttf itself is loaded at run
+# time, so only its headers matter to the build.
+find_package(SDL3 CONFIG QUIET)
+find_package(SDL3_ttf CONFIG QUIET)
+add_executable(test_nk_ui_sdlr
+    tests/native/test_nk_ui_sdlr.c
+    ${NK_UI_CORE_SOURCES}
+    src/ui/nk_ui_ttf.c
+    src/ui/backend/nk_ui_sdlr.c
+)
+target_include_directories(test_nk_ui_sdlr PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
+)
+target_compile_definitions(test_nk_ui_sdlr PRIVATE
+    SR_SELFTEST_BUILD_ROOT="${CMAKE_CURRENT_BINARY_DIR}/build"
+)
+if(TARGET SDL3::SDL3 AND TARGET SDL3_ttf::SDL3_ttf)
+    target_compile_definitions(test_nk_ui_sdlr PRIVATE NK_UI_WITH_SDL NK_UI_WITH_SDL_TTF)
+    target_link_libraries(test_nk_ui_sdlr PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf)
+endif()
+if(NOT WIN32)
+    target_link_libraries(test_nk_ui_sdlr PRIVATE m)
+endif()
+add_test(NAME nk_ui_sdlr_test COMMAND test_nk_ui_sdlr)
+set_tests_properties(nk_ui_sdlr_test PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    SKIP_RETURN_CODE 77)
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/build")
+# Focus graph, input model and prompt glyphs: SDL-free. The SDL_Event translation leg is
+# registered after SDL3 is resolved below, and reports SKIP (exit 77) without it.
+add_executable(test_nk_ui_focus
+    tests/native/test_nk_ui_focus.c
+    ${NK_UI_CORE_SOURCES}
+    src/ui/nk_ui_sdl_input.c
+)
+target_include_directories(test_nk_ui_focus PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
+)
+if(NOT WIN32)
+    target_link_libraries(test_nk_ui_focus PRIVATE m)
+endif()
+add_test(NAME nk_ui_focus_test COMMAND test_nk_ui_focus)
+set_tests_properties(nk_ui_focus_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 add_executable(test_package_builder
     tests/native/test_package_builder.c
     tests/native/native_test_isolation.c
@@ -246,8 +358,10 @@ if(BUILD_PLAYER)
 
     if(TARGET SDL3::SDL3)
         target_link_libraries(nakagawa_player PRIVATE SDL3::SDL3)
+        set(NK_UI_SDL3_LINK SDL3::SDL3)
     elseif(TARGET SDL3::SDL3-shared)
         target_link_libraries(nakagawa_player PRIVATE SDL3::SDL3-shared)
+        set(NK_UI_SDL3_LINK SDL3::SDL3-shared)
     elseif(SDL3_LIBRARIES)
         target_link_libraries(nakagawa_player PRIVATE ${SDL3_LIBRARIES})
         if(SDL3_INCLUDE_DIRS)
@@ -278,3 +392,26 @@ if(BUILD_PLAYER)
         endif()
     endif()
 endif()
+
+# SDL_Event translation leg of the nk_ui input tests (exit 77 is a SKIP, never a pass).
+if(NK_UI_SDL3_LINK)
+    add_executable(test_nk_ui_focus_sdl
+        tests/native/test_nk_ui_focus.c
+        ${NK_UI_CORE_SOURCES}
+        src/ui/nk_ui_sdl_input.c
+    )
+    target_compile_definitions(test_nk_ui_focus_sdl PRIVATE NK_UI_WITH_SDL3)
+    target_include_directories(test_nk_ui_focus_sdl PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
+    )
+    target_link_libraries(test_nk_ui_focus_sdl PRIVATE ${NK_UI_SDL3_LINK})
+    if(NOT WIN32)
+        target_link_libraries(test_nk_ui_focus_sdl PRIVATE m)
+    endif()
+    add_test(NAME nk_ui_sdl_input_test COMMAND test_nk_ui_focus_sdl --sdl-input)
+else()
+    add_test(NAME nk_ui_sdl_input_test COMMAND test_nk_ui_focus --sdl-input)
+endif()
+set_tests_properties(nk_ui_sdl_input_test PROPERTIES SKIP_RETURN_CODE 77
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
