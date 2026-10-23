@@ -715,7 +715,8 @@ ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File too
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
 PLAYER_PLATFORM_LIBS :=
-PLAYER_EXTRA_LIBS   :=
+# The nk_ui draw and wave code calls libm (exp, sinf); glibc keeps it out of libc.
+PLAYER_EXTRA_LIBS   := -lm
 PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 PLAYER_VULKAN_INC   := $(VULKAN_INC_FLAGS)
 PLAYER_VULKAN_LIB   :=
