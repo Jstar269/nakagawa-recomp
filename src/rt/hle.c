@@ -23916,6 +23916,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
     sr_hle_register(0xfe707fdf, "sceKernelAllocMemoryBlock", h_AllocMemoryBlock);
     sr_hle_register(0x342061e5, "sceKernelSetCompiledSdkVersion370", h_SetCompiledSdkVersion);
+    sr_hle_register(0x315ad3a0u, "sceKernelSetCompiledSdkVersion380_390", h_SetCompiledSdkVersion);
     sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
     sr_hle_register(0x4c06e472, "sceGeContinue", h_GeContinue);
     sr_hle_register(0xb448ec0d, "sceGeBreak", h_GeBreak);
