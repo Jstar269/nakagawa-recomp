@@ -747,7 +747,7 @@
   },
   "0x34b9fa9e": {
     "classification": "dedicated",
-    "handler": "h_DcacheRangeMaintenance",
+    "handler": "h_DcacheWritebackInvalidateRange",
     "name": "sceKernelDcacheWritebackInvalidateRange",
     "status": "unreviewed"
   },

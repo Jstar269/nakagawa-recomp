@@ -5369,6 +5369,12 @@ static uint32_t h_DcacheRangeMaintenance(CpuState *s) {
     return h_cache_invalidate_range_common(s);
 }
 
+/* Unmeasured on PSP, so kept apart from the measured range handler above. */
+static uint32_t h_DcacheWritebackInvalidateRange(CpuState *s) {
+    dcache_range_notify_gpu(A0, A1);
+    return h_cache_invalidate_range_common(s);
+}
+
 static uint32_t h_CacheInvalidateRangeOther(CpuState *s) {
     return h_cache_invalidate_range_common(s);
 }
@@ -5386,7 +5392,7 @@ static void hle_register_dcache_handlers(void) {
      * libpsmfplayer invalidates its read buffer before sceDmacMemcpy), so they are
      * real successes on this coherent memory like the writebacks above. */
     sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_DcacheRangeMaintenance);
-    sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_DcacheRangeMaintenance);
+    sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_DcacheWritebackInvalidateRange);
 }
 
 void sr_stale_note_cache_op(uint32_t addr) {
