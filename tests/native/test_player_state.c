@@ -2001,6 +2001,33 @@ static void test_package_build_lifecycle(const char *self_executable) {
     printf("[PLAYER_STATE_TEST] incompatible package rebuild success and failed-build preservation PASS\n");
 }
 
+/* An archive disc stages a deep tree (thirteen levels for one retail layout). The
+ * discard walk used to keep 128 KiB of buffers on the stack per level and overflowed
+ * the 1 MiB thread stack on Windows (0xC00000FD) while discarding such a tree. */
+static void test_stage_discard_removes_a_deep_tree(void) {
+    char root[NK_MAX_PATH];
+    char path[NK_MAX_PATH * 4];
+    char file[NK_MAX_PATH * 4 + 16];
+    const char sep = nk_platform_path_separator();
+    int written = snprintf(root, sizeof(root), "%s%c.staging_DEEP00001",
+                           native_test_get_root(), sep);
+    assert(written > 0 && (size_t)written < sizeof(root));
+    snprintf(path, sizeof(path), "%s", root);
+    for (int depth = 0; depth < 32; depth++) {
+        size_t length = strlen(path);
+        assert(length + 4 < sizeof(path));
+        snprintf(path + length, sizeof(path) - length, "%cd%d", sep, depth % 10);
+        assert(nk_platform_mkdir_p(path));
+        written = snprintf(file, sizeof(file), "%s%cf.bin", path, sep);
+        assert(written > 0 && (size_t)written < sizeof(file));
+        write_text_file(file, "x");
+    }
+    assert(player_stage_discard(root));
+    assert(!nk_platform_file_exists(file));
+    assert(!nk_platform_dir_exists(root));
+    printf("PASS: staging discard removes a 32-level tree without exhausting the stack\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -2070,6 +2097,7 @@ int main(int argc, char **argv) {
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
 
+    test_stage_discard_removes_a_deep_tree();
     test_package_build_lifecycle(self_executable);
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
