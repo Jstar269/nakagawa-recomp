@@ -439,6 +439,29 @@ static void test_screen_actions(void) {
     action = activate_library_button(PLAYER_UI_ID_LIBRARY_EMPTY_ADD, &library);
     CHECK(action.kind == PLAYER_UI_ACTION_ADD_DISC,
           "empty Library action requests a PSP disc image");
+    action = activate_library_button(PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD, &library);
+    CHECK(action.kind == PLAYER_UI_ACTION_START_WIZARD,
+          "the empty Library's main action starts the setup wizard");
+    {
+        /* With nothing focused, START SETUP WIZARD is the one default. */
+        NkUiConfig config;
+        NkUi *ui;
+        memset(&config, 0, sizeof(config));
+        config.host = NK_UI_HOST_LAUNCHER;
+        ui = nk_ui_create(&config);
+        CHECK(ui != NULL, "create a UI for the empty Library's default focus");
+        if (ui != NULL) {
+            set_test_viewport(ui, 1280, 800);
+            for (int frame = 0; frame < 2; ++frame) {
+                nk_ui_begin(ui, 0.0);
+                (void)player_ui_screen_library(ui, &library);
+                (void)nk_ui_end(ui);
+            }
+            CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD,
+                  "the empty Library focuses START SETUP WIZARD by default");
+            nk_ui_destroy(ui);
+        }
+    }
     library.titles = k_titles;
     library.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
     action = activate_library_button(PLAYER_UI_ID_LIBRARY_ITEM(2u), &library);
