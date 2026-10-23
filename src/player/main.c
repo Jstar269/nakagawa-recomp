@@ -765,190 +765,240 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
     token[token_length] = '\0';
     memset(event, 0, sizeof(*event));
 
-    if (strcmp(token, "QUIT") == 0) {
-        event->type = SDL_EVENT_QUIT;
-        return 1;
-    }
-    if (strcmp(token, "CLOSE") == 0) {
-        event->type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
-        return 1;
-    }
-    if (strncmp(token, "WAIT_MS=", 8) == 0) {
-        uint64_t duration = 0;
-        if (!player_ui_test_parse_positive_u64(token + 8, &duration) ||
-            duration > UINT32_MAX) return -1;
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_MS;
-        event->user.windowID = (Uint32)duration;
-        return 1;
-    }
-    if (strncmp(token, "WAIT_VIEW=", 10) == 0) {
-        char *comma = strchr(token + 10, ',');
-        if (!comma) return -1;
-        *comma = '\0';
-        uint32_t target_mask = 0;
-        uint64_t timeout = 0;
-        if (!player_ui_test_parse_views(token + 10, &target_mask) ||
-            !player_ui_test_parse_positive_u64(comma + 1, &timeout) ||
-            timeout > UINT32_MAX) return -1;
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_VIEW;
-        event->user.windowID = target_mask;
-        event->user.timestamp = timeout;
-        return 1;
-    }
-    if (strncmp(token, "WAIT_ART_ATTEMPT=", 17) == 0) {
-        uint64_t attempt = 0;
-        if (!player_ui_test_parse_positive_u64(token + 17, &attempt) ||
-            attempt > UINT32_MAX) return -1;
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_ART_ATTEMPT;
-        event->user.windowID = (Uint32)attempt;
-        return 1;
-    }
-    if (strcmp(token, "WAIT_ART_DELAY_ACTIVE") == 0) {
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_ART_DELAY_ACTIVE;
-        return 1;
-    }
-    if (strncmp(token, "WAIT_PACKAGE_FAILURE=", 21) == 0) {
-        char *comma = strchr(token + 21, ',');
-        uint64_t target = 0;
-        if (!comma) return -1;
-        *comma = '\0';
-        if (!token[21] || strlen(token + 21) >= MAX_DISC_ID_LEN ||
-            !player_ui_test_parse_positive_u64(comma + 1, &target) ||
-            target > UINT_MAX) return -1;
-        snprintf(s_ui_test_wait_package_failure_disc,
-                 sizeof(s_ui_test_wait_package_failure_disc),
-                 "%s", token + 21);
-        s_ui_test_wait_package_failure_target = (unsigned)target;
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_FAILURE;
-        return 1;
-    }
-    if (strcmp(token, "INVALIDATE_PACKAGE_CACHE") == 0) {
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_INVALIDATE_PACKAGE_CACHE;
-        return 1;
-    }
-    if (strcmp(token, "MOUNT_ART_ISO") == 0) {
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_MOUNT_ART_ISO;
-        return 1;
-    }
-    if (strcmp(token, "SATURATE_ART_CACHE") == 0) {
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_SATURATE_ART_CACHE;
-        return 1;
-    }
-    if (strncmp(token, "START_SYNTHETIC_BUILD=", 22) == 0) {
-        uint64_t ordinal = 0;
-        if (!player_ui_test_parse_positive_u64(token + 22, &ordinal) ||
-            ordinal > MAX_LIBRARY_GAMES) return -1;
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_START_SYNTHETIC_BUILD;
-        /* The script is one-based so title zero remains expressible. */
-        event->user.windowID = (Uint32)(ordinal - 1);
-        return 1;
-    }
-    if (strncmp(token, "INVALIDATE_AND_START_SYNTHETIC_BUILD=", 37) == 0) {
-        uint64_t ordinal = 0;
-        if (!player_ui_test_parse_positive_u64(token + 37, &ordinal) ||
-            ordinal > MAX_LIBRARY_GAMES) return -1;
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_INVALIDATE_AND_START_SYNTHETIC_BUILD;
-        /* The script is one-based so title zero remains expressible. */
-        event->user.windowID = (Uint32)(ordinal - 1);
-        return 1;
-    }
-    if (strncmp(token, "ASSERT_VIEW=", 12) == 0) {
-        uint32_t target_mask = 0;
-        if (!player_ui_test_parse_views(token + 12, &target_mask) ||
-            (target_mask & (target_mask - 1)) != 0) return -1;
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_VIEW;
-        event->user.windowID = target_mask;
-        return 1;
-    }
-    if (strcmp(token, "ASSERT_GAME_RUNNING") == 0) {
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING;
-        return 1;
-    }
-    if (strncmp(token, "ASSERT_CONSENT=", 15) == 0) {
-        char *comma = strchr(token + 15, ',');
-        if (!comma) return -1;
-        *comma = '\0';
-        uint64_t item_count = 0;
-        uint64_t total_bytes = 0;
-        if (!player_ui_test_parse_positive_u64(token + 15, &item_count) ||
-            item_count > PACKAGE_BUILDER_MAX_PREREQUISITES ||
-            !player_ui_test_parse_positive_u64(comma + 1, &total_bytes)) return -1;
-        event->type = SDL_EVENT_USER;
-        event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_CONSENT;
-        event->user.windowID = (Uint32)item_count;
-        event->user.timestamp = total_bytes;
-        return 1;
-    }
-    if (strncmp(token, "DROP_FILE=", 10) == 0) {
-        event->type = SDL_EVENT_DROP_FILE;
-        event->drop.data = SDL_strdup(token + 10);
-        return event->drop.data ? 1 : -1;
-    }
-    if (strncmp(token, "MOUSE_MOVE=", 11) == 0) {
-        int x = 0;
-        int y = 0;
-        char trailing = '\0';
-        if (sscanf(token + 11, "%d,%d%c", &x, &y, &trailing) != 2) return -1;
-        event->type = SDL_EVENT_MOUSE_MOTION;
-        event->motion.x = (float)x;
-        event->motion.y = (float)y;
-        return 1;
-    }
-    if (strcmp(token, "MOUSE_DOWN") == 0 || strcmp(token, "MOUSE_UP") == 0) {
-        event->type = strcmp(token, "MOUSE_DOWN") == 0
-            ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
-        event->button.button = SDL_BUTTON_LEFT;
-        return 1;
-    }
-    if (strncmp(token, "KEY_", 4) == 0) {
-        static const struct { const char *name; SDL_Keycode key; } keys[] = {
-            { "ESCAPE", SDLK_ESCAPE }, { "RETURN", SDLK_RETURN },
-            { "TAB", SDLK_TAB }, { "SPACE", SDLK_SPACE }, { "LEFT", SDLK_LEFT },
-            { "RIGHT", SDLK_RIGHT }, { "UP", SDLK_UP }, { "DOWN", SDLK_DOWN },
-            { "HOME", SDLK_HOME }, { "END", SDLK_END },
-            { "PAGEUP", SDLK_PAGEUP }, { "PAGEDOWN", SDLK_PAGEDOWN },
-            { "S", SDLK_S }, { "O", SDLK_O }
-        };
-        for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
-            if (strcmp(token + 4, keys[i].name) == 0) {
-                event->type = SDL_EVENT_KEY_DOWN;
-                event->key.key = keys[i].key;
-                return 1;
-            }
+    switch (token[0]) {
+    case 'Q':
+        if (token_length == 4 && memcmp(token, "QUIT", 4) == 0) {
+            event->type = SDL_EVENT_QUIT;
+            return 1;
         }
-        return -1;
-    }
-    if (strncmp(token, "PAD_", 4) == 0) {
-        static const struct { const char *name; SDL_GamepadButton button; } buttons[] = {
-            { "SOUTH", SDL_GAMEPAD_BUTTON_SOUTH },
-            { "NORTH", SDL_GAMEPAD_BUTTON_NORTH },
-            { "EAST", SDL_GAMEPAD_BUTTON_EAST },
-            { "DPAD_LEFT", SDL_GAMEPAD_BUTTON_DPAD_LEFT },
-            { "DPAD_RIGHT", SDL_GAMEPAD_BUTTON_DPAD_RIGHT },
-            { "DPAD_UP", SDL_GAMEPAD_BUTTON_DPAD_UP },
-            { "DPAD_DOWN", SDL_GAMEPAD_BUTTON_DPAD_DOWN },
-            { "START", SDL_GAMEPAD_BUTTON_START }
-        };
-        for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
-            if (strcmp(token + 4, buttons[i].name) == 0) {
-                event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
-                event->gbutton.button = buttons[i].button;
-                return 1;
-            }
+        break;
+    case 'C':
+        if (token_length == 5 && memcmp(token, "CLOSE", 5) == 0) {
+            event->type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+            return 1;
         }
-        return -1;
+        break;
+    case 'W':
+        if (token_length >= 8 && memcmp(token, "WAIT_MS=", 8) == 0) {
+            uint64_t duration = 0;
+            if (!player_ui_test_parse_positive_u64(token + 8, &duration) ||
+                duration > UINT32_MAX) return -1;
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_WAIT_MS;
+            event->user.windowID = (Uint32)duration;
+            return 1;
+        }
+        if (token_length >= 10 && memcmp(token, "WAIT_VIEW=", 10) == 0) {
+            char *comma = strchr(token + 10, ',');
+            if (!comma) return -1;
+            *comma = '\0';
+            uint32_t target_mask = 0;
+            uint64_t timeout = 0;
+            if (!player_ui_test_parse_views(token + 10, &target_mask) ||
+                !player_ui_test_parse_positive_u64(comma + 1, &timeout) ||
+                timeout > UINT32_MAX) return -1;
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_WAIT_VIEW;
+            event->user.windowID = target_mask;
+            event->user.timestamp = timeout;
+            return 1;
+        }
+        if (token_length >= 17 && memcmp(token, "WAIT_ART_ATTEMPT=", 17) == 0) {
+            uint64_t attempt = 0;
+            if (!player_ui_test_parse_positive_u64(token + 17, &attempt) ||
+                attempt > UINT32_MAX) return -1;
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_WAIT_ART_ATTEMPT;
+            event->user.windowID = (Uint32)attempt;
+            return 1;
+        }
+        if (token_length == 21 && memcmp(token, "WAIT_ART_DELAY_ACTIVE", 21) == 0) {
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_WAIT_ART_DELAY_ACTIVE;
+            return 1;
+        }
+        if (token_length >= 21 && memcmp(token, "WAIT_PACKAGE_FAILURE=", 21) == 0) {
+            char *comma = strchr(token + 21, ',');
+            uint64_t target = 0;
+            if (!comma) return -1;
+            *comma = '\0';
+            if (!token[21] || strlen(token + 21) >= MAX_DISC_ID_LEN ||
+                !player_ui_test_parse_positive_u64(comma + 1, &target) ||
+                target > UINT_MAX) return -1;
+            snprintf(s_ui_test_wait_package_failure_disc,
+                     sizeof(s_ui_test_wait_package_failure_disc),
+                     "%s", token + 21);
+            s_ui_test_wait_package_failure_target = (unsigned)target;
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_FAILURE;
+            return 1;
+        }
+        break;
+    case 'I':
+        if (token_length == 24 && memcmp(token, "INVALIDATE_PACKAGE_CACHE", 24) == 0) {
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_INVALIDATE_PACKAGE_CACHE;
+            return 1;
+        }
+        if (token_length >= 37 && memcmp(token, "INVALIDATE_AND_START_SYNTHETIC_BUILD=", 37) == 0) {
+            uint64_t ordinal = 0;
+            if (!player_ui_test_parse_positive_u64(token + 37, &ordinal) ||
+                ordinal > MAX_LIBRARY_GAMES) return -1;
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_INVALIDATE_AND_START_SYNTHETIC_BUILD;
+            /* The script is one-based so title zero remains expressible. */
+            event->user.windowID = (Uint32)(ordinal - 1);
+            return 1;
+        }
+        break;
+    case 'M':
+        if (token_length == 13 && memcmp(token, "MOUNT_ART_ISO", 13) == 0) {
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_MOUNT_ART_ISO;
+            return 1;
+        }
+        if (token_length >= 11 && memcmp(token, "MOUSE_MOVE=", 11) == 0) {
+            int x = 0;
+            int y = 0;
+            char trailing = '\0';
+            if (sscanf(token + 11, "%d,%d%c", &x, &y, &trailing) != 2) return -1;
+            event->type = SDL_EVENT_MOUSE_MOTION;
+            event->motion.x = (float)x;
+            event->motion.y = (float)y;
+            return 1;
+        }
+        if (token_length == 10 && memcmp(token, "MOUSE_DOWN", 10) == 0) {
+            event->type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+            event->button.button = SDL_BUTTON_LEFT;
+            return 1;
+        }
+        if (token_length == 8 && memcmp(token, "MOUSE_UP", 8) == 0) {
+            event->type = SDL_EVENT_MOUSE_BUTTON_UP;
+            event->button.button = SDL_BUTTON_LEFT;
+            return 1;
+        }
+        break;
+    case 'S':
+        if (token_length == 18 && memcmp(token, "SATURATE_ART_CACHE", 18) == 0) {
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_SATURATE_ART_CACHE;
+            return 1;
+        }
+        if (token_length >= 22 && memcmp(token, "START_SYNTHETIC_BUILD=", 22) == 0) {
+            uint64_t ordinal = 0;
+            if (!player_ui_test_parse_positive_u64(token + 22, &ordinal) ||
+                ordinal > MAX_LIBRARY_GAMES) return -1;
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_START_SYNTHETIC_BUILD;
+            /* The script is one-based so title zero remains expressible. */
+            event->user.windowID = (Uint32)(ordinal - 1);
+            return 1;
+        }
+        break;
+    case 'A':
+        if (token_length >= 12 && memcmp(token, "ASSERT_VIEW=", 12) == 0) {
+            uint32_t target_mask = 0;
+            if (!player_ui_test_parse_views(token + 12, &target_mask) ||
+                (target_mask & (target_mask - 1)) != 0) return -1;
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_VIEW;
+            event->user.windowID = target_mask;
+            return 1;
+        }
+        if (token_length == 19 && memcmp(token, "ASSERT_GAME_RUNNING", 19) == 0) {
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_GAME_RUNNING;
+            return 1;
+        }
+        if (token_length >= 15 && memcmp(token, "ASSERT_CONSENT=", 15) == 0) {
+            char *comma = strchr(token + 15, ',');
+            if (!comma) return -1;
+            *comma = '\0';
+            uint64_t item_count = 0;
+            uint64_t total_bytes = 0;
+            if (!player_ui_test_parse_positive_u64(token + 15, &item_count) ||
+                item_count > PACKAGE_BUILDER_MAX_PREREQUISITES ||
+                !player_ui_test_parse_positive_u64(comma + 1, &total_bytes)) return -1;
+            event->type = SDL_EVENT_USER;
+            event->user.code = PLAYER_UI_TEST_ACTION_ASSERT_CONSENT;
+            event->user.windowID = (Uint32)item_count;
+            event->user.timestamp = total_bytes;
+            return 1;
+        }
+        break;
+    case 'D':
+        if (token_length >= 10 && memcmp(token, "DROP_FILE=", 10) == 0) {
+            event->type = SDL_EVENT_DROP_FILE;
+            event->drop.data = SDL_strdup(token + 10);
+            return event->drop.data ? 1 : -1;
+        }
+        break;
+    case 'K':
+        if (token_length > 4 && memcmp(token, "KEY_", 4) == 0) {
+            const char *key_name = token + 4;
+            size_t klen = token_length - 4;
+            switch (klen) {
+            case 1:
+                if (key_name[0] == 'S') { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_S; return 1; }
+                if (key_name[0] == 'O') { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_O; return 1; }
+                break;
+            case 2:
+                if (memcmp(key_name, "UP", 2) == 0) { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_UP; return 1; }
+                break;
+            case 3:
+                if (memcmp(key_name, "TAB", 3) == 0) { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_TAB; return 1; }
+                if (memcmp(key_name, "END", 3) == 0) { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_END; return 1; }
+                break;
+            case 4:
+                if (memcmp(key_name, "LEFT", 4) == 0) { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_LEFT; return 1; }
+                if (memcmp(key_name, "DOWN", 4) == 0) { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_DOWN; return 1; }
+                if (memcmp(key_name, "HOME", 4) == 0) { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_HOME; return 1; }
+                break;
+            case 5:
+                if (memcmp(key_name, "SPACE", 5) == 0) { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_SPACE; return 1; }
+                if (memcmp(key_name, "RIGHT", 5) == 0) { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_RIGHT; return 1; }
+                break;
+            case 6:
+                if (memcmp(key_name, "ESCAPE", 6) == 0) { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_ESCAPE; return 1; }
+                if (memcmp(key_name, "RETURN", 6) == 0) { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_RETURN; return 1; }
+                if (memcmp(key_name, "PAGEUP", 6) == 0) { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_PAGEUP; return 1; }
+                break;
+            case 8:
+                if (memcmp(key_name, "PAGEDOWN", 8) == 0) { event->type = SDL_EVENT_KEY_DOWN; event->key.key = SDLK_PAGEDOWN; return 1; }
+                break;
+            }
+            return -1;
+        }
+        break;
+    case 'P':
+        if (token_length > 4 && memcmp(token, "PAD_", 4) == 0) {
+            const char *pad_name = token + 4;
+            size_t plen = token_length - 4;
+            switch (plen) {
+            case 4:
+                if (memcmp(pad_name, "EAST", 4) == 0) { event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; event->gbutton.button = SDL_GAMEPAD_BUTTON_EAST; return 1; }
+                break;
+            case 5:
+                if (memcmp(pad_name, "SOUTH", 5) == 0) { event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; event->gbutton.button = SDL_GAMEPAD_BUTTON_SOUTH; return 1; }
+                if (memcmp(pad_name, "NORTH", 5) == 0) { event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; event->gbutton.button = SDL_GAMEPAD_BUTTON_NORTH; return 1; }
+                if (memcmp(pad_name, "START", 5) == 0) { event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; event->gbutton.button = SDL_GAMEPAD_BUTTON_START; return 1; }
+                break;
+            case 7:
+                if (memcmp(pad_name, "DPAD_UP", 7) == 0) { event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; event->gbutton.button = SDL_GAMEPAD_BUTTON_DPAD_UP; return 1; }
+                break;
+            case 9:
+                if (memcmp(pad_name, "DPAD_LEFT", 9) == 0) { event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; event->gbutton.button = SDL_GAMEPAD_BUTTON_DPAD_LEFT; return 1; }
+                if (memcmp(pad_name, "DPAD_DOWN", 9) == 0) { event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; event->gbutton.button = SDL_GAMEPAD_BUTTON_DPAD_DOWN; return 1; }
+                break;
+            case 10:
+                if (memcmp(pad_name, "DPAD_RIGHT", 10) == 0) { event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; event->gbutton.button = SDL_GAMEPAD_BUTTON_DPAD_RIGHT; return 1; }
+                break;
+            }
+            return -1;
+        }
+        break;
+    default:
+        break;
     }
     return -1;
 }
