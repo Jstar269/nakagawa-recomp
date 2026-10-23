@@ -42,7 +42,9 @@ typedef enum {
     PLAYER_UI_ACTION_PAGE_NEXT,
     PLAYER_UI_ACTION_BACK,
     PLAYER_UI_ACTION_PRIMARY,
-    PLAYER_UI_ACTION_OPEN_SAVE_FOLDER
+    PLAYER_UI_ACTION_OPEN_SAVE_FOLDER,
+    PLAYER_UI_ACTION_START_WIZARD,
+    PLAYER_UI_ACTION_OPEN_SETTINGS
 } PlayerUiActionKind;
 
 typedef struct {
@@ -96,6 +98,7 @@ enum {
     PLAYER_UI_ID_LIBRARY_ADD = 0x1002u,
     PLAYER_UI_ID_LIBRARY_PAGE_PREVIOUS = 0x1003u,
     PLAYER_UI_ID_LIBRARY_PAGE_NEXT = 0x1004u,
+    PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD = 0x1005u,
     PLAYER_UI_ID_LIBRARY_ITEM_BASE = 0x1100u,
     PLAYER_UI_ID_TITLE_BACK = 0x2001u,
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,
@@ -132,6 +135,9 @@ PlayerUiNk *player_ui_nk_create(struct SDL_Renderer *renderer,
                                 char *error, size_t error_size);
 void player_ui_nk_destroy(PlayerUiNk *player);
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app);
+/* True when the next UI shows the Library at the bottom of its stack (Esc
+   there asks to quit, as in the existing UI). */
+bool player_ui_nk_at_library_root(const PlayerUiNk *player);
 bool player_ui_nk_handle_event(PlayerUiNk *player,
                                const union SDL_Event *event);
 bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,

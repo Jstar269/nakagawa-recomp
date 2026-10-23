@@ -438,6 +438,16 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
              ((event->key.key == SDLK_RETURN || event->key.key == SDLK_KP_ENTER) &&
               (event->key.mod & SDL_KMOD_ALT)))) {
             player_app_toggle_launcher_fullscreen(app);
+        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_O &&
+                   !app->wizard.is_extracting) {
+            /* The library's shortcuts work the same in the next UI: O adds a
+               disc image, S opens Settings, Esc at the library asks to quit. */
+            trigger_file_picker(window, app);
+        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_S) {
+            player_app_set_view(app, VIEW_SETTINGS);
+        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_ESCAPE &&
+                   player_ui_nk_at_library_root(next_ui)) {
+            if (player_confirm_quit(window, app)) *running = false;
         } else if (use_next_ui) {
             return player_ui_nk_handle_event(next_ui, event);
         } else if (event->key.key == SDLK_ESCAPE) {
@@ -529,6 +539,10 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         }
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        if (use_next_ui && event->gbutton.button == SDL_GAMEPAD_BUTTON_START) {
+            player_app_set_view(app, VIEW_SETTINGS);
+            return true;
+        }
         if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings)) {
@@ -702,6 +716,14 @@ static void player_ui_nk_apply_action(PlayerApp *app,
         app->request_file_picker = true;
         return;
     }
+    if (action->kind == PLAYER_UI_ACTION_START_WIZARD) {
+        player_app_start_setup_wizard(app);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_OPEN_SETTINGS) {
+        player_app_set_view(app, VIEW_SETTINGS);
+        return;
+    }
     if (action->title_index >= (size_t)app->game_count) return;
     index = (int)action->title_index;
     app->selected_game_index = index;
@@ -728,14 +750,47 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     }
 }
 
+/* With the next UI on, the launcher switches presentation with the renderer
+   that draws the frame: nk_ui lays out at the window's real size, and the
+   screens still drawn by ui_renderer.c (setup wizard, settings, build progress,
+   dialogs) keep the 1280x720 letterbox they were designed for. */
+static bool s_switch_presentation = false;
+static int s_presentation = -1; /* 0 letterboxed, 1 native */
+
+static void player_use_presentation(PlayerApp *app, SDL_Renderer *renderer,
+                                    SDL_Window *window, bool native) {
+    int want = native ? 1 : 0;
+    if (!s_switch_presentation || s_presentation == want) return;
+    if (native) {
+        int w = 0;
+        int h = 0;
+        (void)SDL_SetRenderLogicalPresentation(renderer, 0, 0,
+                                               SDL_LOGICAL_PRESENTATION_DISABLED);
+        if (SDL_GetWindowSize(window, &w, &h) && w > 0 && h > 0) {
+            app->window_width = w;
+            app->window_height = h;
+        }
+        app->logical_ui = false;
+    } else if (SDL_SetRenderLogicalPresentation(renderer, PLAYER_UI_LOGICAL_WIDTH,
+                                                PLAYER_UI_LOGICAL_HEIGHT,
+                                                SDL_LOGICAL_PRESENTATION_LETTERBOX)) {
+        app->logical_ui = true;
+        app->window_width = PLAYER_UI_LOGICAL_WIDTH;
+        app->window_height = PLAYER_UI_LOGICAL_HEIGHT;
+    }
+    s_presentation = want;
+}
+
 static void player_render_active_ui(PlayerUiNk *next_ui, PlayerApp *app,
                                     SDL_Renderer *renderer, SDL_Window *window,
                                     UiInput *input) {
     PlayerUiAction action;
-    if (player_ui_nk_view_active(next_ui, app) &&
-        player_ui_nk_render(next_ui, app, renderer, window, &action)) {
+    bool next = player_ui_nk_view_active(next_ui, app);
+    player_use_presentation(app, renderer, window, next);
+    if (next && player_ui_nk_render(next_ui, app, renderer, window, &action)) {
         player_ui_nk_apply_action(app, &action);
     } else {
+        player_use_presentation(app, renderer, window, false);
         ui_render_frame(renderer, app, input);
     }
 }
@@ -3317,6 +3372,7 @@ int main(int argc, char *argv[]) {
         puts("[PLAYER_UI_TEST] UI_NEXT_ACTIVE");
     }
 #endif
+    s_switch_presentation = interactive_window && next_ui != NULL;
     bool logical_presentation_set = interactive_window && next_ui == NULL &&
         SDL_SetRenderLogicalPresentation(
             renderer, PLAYER_UI_LOGICAL_WIDTH, PLAYER_UI_LOGICAL_HEIGHT,
