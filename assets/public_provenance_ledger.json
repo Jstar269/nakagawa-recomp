@@ -1777,7 +1777,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d902c4fd580bc19f4504e3109a3e84bd1b8537796621a5d833ee363e87a04bbf"
+      "sha256": "224bdaea3ae4659829f418bf38111ce106029600abc26ad6fb7d2e7d4442a063"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -2279,7 +2279,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "21a6e28821583dacfdc24c4c3677e64177f5bfa9e3cf053fd0ab98520a9e6dbb"
+      "sha256": "a41711643dc630f7ec9a9ab2679497aa94818fef1289d037c14f44d46ec14f34"
     },
     {
       "path": "fixtures/psp_oracle/display_user_imports.S",
@@ -6587,7 +6587,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "300ec7d69eac45b7ce2cb5700a7451b06e84000d9a2b0eb8d000af203a21d268"
+      "sha256": "530cf6fde1b37fd1000aa44e6b487a84ebd72611da1719d6313d3007b4f740cc"
     },
     {
       "path": "tests/native/pgf_verdict_harness.c",
@@ -8079,7 +8079,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "62b8d73dc7276d0bb85b7dcb6532c31fcdd6efc9b8959a2a7916d59372b7c970"
+      "sha256": "8de545f452c75911ff2e2a33db285804351c2f69b7b8e1289c8ed2efe3a07dee"
     },
     {
       "path": "tools/pngcmp.py",
@@ -10052,7 +10052,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6a47951bde9df7d8a7bf991dfd4654ad58c8afff77ef8df4838808fb0fbee329"
+      "sha256": "fe3333b7bb970999694a2276537b49381bfd401cf7898a703c0f5e7d69a68ee9"
     },
     {
       "path": "tools/test_platform_ladder.py",
@@ -11326,7 +11326,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "224c3853212a40ab296cdcb5210391f40e0b82a33c9fbe9545e352d5725d82f0"
+      "sha256": "e3f5d3b5ab0d736a2bccdd59cfb3e0e46f15f8e213e80eeeace14aaea7923326"
     },
     {
       "path": "tools/validate_assets.py",
