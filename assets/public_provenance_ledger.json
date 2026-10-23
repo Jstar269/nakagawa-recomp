@@ -3395,7 +3395,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7cb9d927175da6e8ba442b798e7099d1a19eb55ebede021c8331ddd9c8cc9c55"
+      "sha256": "406239084e11eb6d1d2f191b2f88468772779d0e317bd156087ed33148516e30"
     },
     {
       "path": "src/player/package_builder.c",
@@ -3503,7 +3503,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "30f55c4c1237e2678360c2041e456a0815692959be2da430b8449e10f6d68053"
+      "sha256": "cacff9b1a06ca97e55e4d4f9c9b0cff5011b99cf521b5dfee69fdfc3694a19aa"
     },
     {
       "path": "src/player/ui/scr_title.c",
@@ -6890,7 +6890,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bc26cda677e487d5200995e9f74b0e954303fd457c241aa3851374ae7f56f910"
+      "sha256": "5f81b1aea8d9ee98fd9fc1803a9f8149d8ba8ce954e17ef58c443e9011fcdb9f"
     },
     {
       "path": "tests/native/test_player_state.c",
