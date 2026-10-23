@@ -186,7 +186,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "92f501bb8414033be2a94e01490da16afed79f1ca6a63792c43cf4cef0f83bd0"
+      "sha256": "93fe1a1eb3253b76cbbed89465b10ba910d6557451e5ad877cc3ac36f8f18fc1"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -222,7 +222,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4f00b35aa21b4f9cd07eaef333b7ebbe98a02226361f077f5e46fffd67a2f5f2"
+      "sha256": "a0a2efced18ab3577a422e640cd255d042eea389749ef771a95fe2d96a9f6906"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -282,7 +282,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "08e81aa3513c8acb8b8cd13206d08e3cb43fdb61523ab1bde1574b5596e49008"
+      "sha256": "4d71b339877d906a24749c4589cca2212a443cd3d0ba1687a3a4fd2098ec95fc"
     },
     {
       "path": ".gitignore",
