@@ -3455,7 +3455,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "39338b06fc550e0b8651abbeb3cce7ad3bdda5fe868afea5580f7500d646a6bc"
+      "sha256": "53871d2de067ebdd98c51306f30ca0d72f1761847b97c954882613a1d50cac01"
     },
     {
       "path": "src/player/setup_staging.h",
@@ -6902,7 +6902,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "83b73393f17c28f984bfcc63f3a42556656abea7d7fe661e9689ed011bc2eb76"
+      "sha256": "16c5101c2628b0cbae9ddaf9fe8ef9f03e66275e034189fe98f1e58988cf8d41"
     },
     {
       "path": "tests/native/test_player_ui.py",
