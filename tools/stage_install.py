@@ -23,7 +23,7 @@ starts the player with ``--ui=next`` by default, the way Explorer would start it
 
 Usage::
 
-    python tools/stage_install.py --dest "C:/Games/Nakagawa Recomp" --desktop-shortcut
+    python tools/stage_install.py --dest "<install folder>" --desktop-shortcut
 """
 
 from __future__ import annotations
