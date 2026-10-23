@@ -31,7 +31,9 @@ We aim to respond promptly and will remove material where appropriate.
   recompiler structures are translated or adapted through the sal063 lineage;
   the files that say so in their headers are `src/rt/hle.c`, `hle_power.c/.h`,
   `ge.c`, `mpeg.c`, `recomp.c/.h`, `savedata.c`, `vfpu_interp.c` and `evf.h`. PPSSPP-origin data is retained only where the profile records
-  its exact path, revision and notice.
+  its exact path, revision and notice. The per-file lineage, the pin status (the exact PPSSPP
+  revision of the inherited files is unknown) and the 34 GPL-2.0-or-later files under `src/` are
+  listed in [`src/rt/PROVENANCE.md`](src/rt/PROVENANCE.md).
 - **PSPSDK / PSPDEV** — permissive per-component declarations and BSD-family
   notices for public ABI definitions and source-owned fixtures. The applicable
   notices are in `THIRD_PARTY_LICENSES/PSPSDK.txt` and `assets/upstream/`.

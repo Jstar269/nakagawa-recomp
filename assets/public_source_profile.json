@@ -459,6 +459,7 @@
     "src/ref/interp.h",
     "src/ref/run_elf.cpp",
     "src/ref/selftest.cpp",
+    "src/rt/PROVENANCE.md",
     "src/rt/archive_vfs.c",
     "src/rt/archive_vfs.h",
     "src/rt/asset_index.h",
