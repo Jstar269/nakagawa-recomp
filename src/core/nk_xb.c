@@ -14,6 +14,8 @@
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
+#include <io.h>
+#include <fcntl.h>
 #endif
 
 #if defined(_MSC_VER)
@@ -1075,13 +1077,35 @@ NkResult nk_xb_open_memory(const void *data, size_t data_size,
 static FILE *xb_fopen(const char *path, const char *mode) {
 #if defined(_WIN32) || defined(_WIN64)
     WCHAR wpath[32768];
-    WCHAR wmode[32];
     if (!path || !mode ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0 ||
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1, wmode, (int)(sizeof(wmode) / sizeof(wmode[0]))) <= 0) {
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0) {
         return NULL;
     }
-    return _wfopen(wpath, wmode);
+    DWORD access = GENERIC_READ;
+    DWORD creation = OPEN_EXISTING;
+    if (strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, '+')) {
+        access |= GENERIC_WRITE;
+        if (strchr(mode, 'w')) creation = CREATE_ALWAYS;
+    }
+    HANDLE handle = CreateFileW(wpath, access,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                NULL, creation, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (handle == INVALID_HANDLE_VALUE) return NULL;
+    int flags = 0;
+    if (strchr(mode, 'b')) flags |= _O_BINARY;
+    if (access & GENERIC_WRITE) flags |= _O_RDWR;
+    else flags |= _O_RDONLY;
+    int fd = _open_osfhandle((intptr_t)handle, flags);
+    if (fd == -1) {
+        CloseHandle(handle);
+        return NULL;
+    }
+    FILE *file = _fdopen(fd, mode);
+    if (!file) {
+        _close(fd);
+        return NULL;
+    }
+    return file;
 #else
     return fopen(path, mode);
 #endif
