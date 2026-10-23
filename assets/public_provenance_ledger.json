@@ -8615,7 +8615,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "507fed72cd40e3202462a3c4e5696f8308ab705064ff0ecf272eb28cbf087b0e"
+      "sha256": "4e55892275b96d53f5c419f9b016051832f67298c2fa3b5435896c058dad2723"
     },
     {
       "path": "tools/stage_runtime_dlls.py",
@@ -11506,11 +11506,11 @@
   "admission": {
     "workflow": "admit-new-reviewed",
     "trusted_tree": "d52ff98956c449d45866ca2a2e0cbb8fead21f4a",
-    "candidate_tree": "7380ca670c79f691635f5d6f5e4604057215b90d",
+    "candidate_tree": "825b2723f4390b0a6cf8cca9a0835d626fc08abf",
     "admitted_paths": [
       "tools/stage_install.py",
       "tools/test_stage_install.py"
     ],
-    "authority_sha256": "92ca1e0a196d5f8cccd2d95e99b8bbe9aaddb9d65dd8af29c13c0ed49b569f47"
+    "authority_sha256": "9b1212e4c7f594729d6ab31eebb669580c593684d63a9eeea69d4816c9013335"
   }
 }
