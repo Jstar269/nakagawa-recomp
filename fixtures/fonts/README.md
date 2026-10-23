@@ -43,7 +43,12 @@ kanji), for 3,647 points total. Sawarabi Gothic was evaluated first but misses
 
 M PLUS 1p is also the project Latin build input. Its built-in text set contains
 348 points across ASCII, Latin-1 Supplement, Latin Extended-A, and common
-punctuation and symbols; the pinned TTF covers all 348.
+punctuation and symbols; the pinned TTF covers all 348. The Latin slot is
+built at 13 ppem with the converter's synthetic emboldening (6/8 px wider,
+4/8 px taller strokes, 3/8 px extra advance; converter specification section 3
+rule 10), so title text reads at the stroke weight and line length that system
+text of the same nominal size has. The Japanese and Korean slots keep 12 ppem
+without emboldening.
 
 Gowun Dodum is the project Korean build input. Its pin uses the immutable
 Google Fonts commit recorded in `gowundodum/PIN.json`, and the adjacent

@@ -1052,6 +1052,89 @@ def _joined(*parts: str) -> str:
     return "".join(parts)
 
 
+class EmboldenTests(CliRefusalMixin, unittest.TestCase):
+    """Specification section 3 rule 10: optional synthetic emboldening on the sub-sample grid."""
+
+    CODES = (0x48, 0x6F)  # 'H'..'o': stems, bowls, and a crossbar
+
+    def setUp(self) -> None:
+        self.data = FONT.read_bytes()
+        self.pin = load_pin(PIN, self.data)
+        self.tmp = Path(tempfile.mkdtemp(prefix="ttf2pgf-embolden-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.output = self.tmp / "out.pgf"
+
+    def _convert(self, **overrides: object):
+        arguments: dict = {
+            "input_path": str(FONT),
+            "output_path": "embolden.pgf",
+            "codes": self.CODES,
+            "ppem": PPEM_SHAPE,
+            "pin": self.pin,
+        }
+        arguments.update(overrides)
+        return convert(self.data, **arguments)
+
+    def test_zero_strength_is_byte_identical_to_the_plain_rasterizer(self) -> None:
+        plain = self._convert()
+        zero = self._convert(embolden_x=0, embolden_y=0, embolden_advance=0)
+        self.assertEqual(plain.image, zero.image)
+        self.assertEqual(
+            plain.manifest["parameters"]["embolden"],
+            {"unit": "sub-sample (1/8 pixel)", "x": 0, "y": 0, "advance": 0},
+        )
+
+    def test_strokes_thicken_rightwards_and_upwards_without_moving_the_baseline(self) -> None:
+        plain = _glyph_map(self._convert().glyphs)
+        bold = _glyph_map(self._convert(embolden_x=6, embolden_y=4, embolden_advance=3).glyphs)
+        for code in range(self.CODES[0], self.CODES[1] + 1):
+            before, after = plain[code], bold[code]
+            if before.width == 0:
+                continue
+            with self.subTest(code=f"U+{code:04X}"):
+                self.assertEqual(after.width, before.width + 1)
+                self.assertEqual(after.height, before.height + 1)
+                self.assertEqual(after.adjust_x, before.adjust_x, "the left edge stays put")
+                self.assertEqual(after.adjust_y, before.adjust_y + 1, "the box grows on the top")
+                self.assertEqual(after.y_base - after.dimension_height,
+                                 before.y_base - before.dimension_height, "the baseline stays put")
+                self.assertEqual(after.advance_x, before.advance_x + 3 * ttf2pgf.SUB_PIXEL)
+                self.assertGreater(sum(after.samples), sum(before.samples))
+        # The H stems: each run of the plain glyph's middle row is at least as wide when bold.
+        h_plain, h_bold = plain[0x48], bold[0x48]
+        row = h_plain.height // 4
+        runs_plain = _clusters(list(h_plain.samples), row, h_plain.width)
+        runs_bold = _clusters(list(h_bold.samples), row + 1, h_bold.width)
+        self.assertEqual(len(runs_plain), len(runs_bold), "emboldening must not merge the two stems")
+        for narrow, wide in zip(runs_plain, runs_bold, strict=True):
+            self.assertGreaterEqual(wide, narrow)
+
+    def test_manifest_records_the_strengths(self) -> None:
+        conversion = self._convert(embolden_x=6, embolden_y=4, embolden_advance=3)
+        self.assertEqual(
+            conversion.manifest["parameters"]["embolden"],
+            {"unit": "sub-sample (1/8 pixel)", "x": 6, "y": 4, "advance": 3},
+        )
+
+    def test_out_of_range_strengths_are_refused(self) -> None:
+        for field in ("embolden_x", "embolden_y", "embolden_advance"):
+            for value in (-1, ttf2pgf.MAX_EMBOLDEN + 1, True):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(TtfConvertError) as caught:
+                        self._convert(**{field: value})
+                    self.assertEqual(caught.exception.reason, "embolden-out-of-range")
+        self.assert_cli_refused("embolden-out-of-range", self.output, FONT, "--embolden-x", "9")
+
+    def test_cli_options_match_the_api(self) -> None:
+        result = _cli(self.output, FONT, "--codes", "0x48-0x6F", "--ppem", PPEM_SHAPE,
+                      "--embolden-x", "6", "--embolden-y", "4", "--embolden-advance", "3")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        api = self._convert(embolden_x=6, embolden_y=4, embolden_advance=3, pin=None,
+                            output_path=str(self.output))
+        self.assertEqual(self.output.read_bytes(), api.image)
+        self.assertIsNotNone(validate_pgf_data(api.image, "embolden.pgf"))
+
+
 class NameDenylistTests(unittest.TestCase):
     """Output names: vendor camouflage and reserved or trademark names are refused by name."""
 
