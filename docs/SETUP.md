@@ -344,7 +344,7 @@ Decrypted guest modules in `<user data>/titles/<DISC_ID>/decrypted/` may be name
 
 ### Encrypted executables
 
-Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed (temporarily), so the player and `nk_cli` never look for or read a key file.
+Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed, so the player and `nk_cli` never look for or read a key file.
 
 An encrypted `EBOOT.BIN` (`~PSP`, `~SCE` or PBP) without a valid `EBOOT.elf` in the per-title folder above stops with a named message:
 

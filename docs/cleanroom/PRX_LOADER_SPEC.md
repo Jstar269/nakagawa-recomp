@@ -18,7 +18,7 @@ reporting the module's identity, entry point, exported functions, and import stu
 the runtime can link and start it.
 
 **Out of scope.** This loader does not decrypt or decompress `~PSP` containers. Nakagawa
-does not decrypt games (built-in decryption was removed (temporarily), #295); the
+does not decrypt games (built-in decryption was removed, #295); the
 player and CLI refuse an encrypted container without a user-supplied plain copy. Choosing the base address (the title
 manifest's `modules[].load_address`, validated by `tools/title_manifest.py`),
 reserving guest memory (the allocator's exact-address reservation), running
