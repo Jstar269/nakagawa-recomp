@@ -27745,8 +27745,12 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
 
 /* ---- scePowerUnregisterCallback: release a slot scePowerRegisterCallback filled ----
  *
- * The slot range checks mirror scePowerRegisterCallback. An empty slot is refused with
- * SCE_KERNEL_ERROR_NOTIMP, because its PSP error code has not been measured. */
+ * Measured on PSP-3000, firmware 6.6.1, 2026-10-22 (merged PR #1153):
+ *   - an empty slot (0..15, nothing registered) returns 0x80000025;
+ *   - an owned slot returns 0;
+ *   - slot 16 returns 0x80000023;
+ *   - slots 32, -1, -2 and 1000 return 0x80000102.
+ * The slot range checks mirror scePowerRegisterCallback. */
 #define NID_POWER_REGISTER_CALLBACK   0x04b7766eu
 #define NID_POWER_UNREGISTER_CALLBACK 0xdfa8baf8u
 
@@ -27772,8 +27776,8 @@ static void test_power_unregister_callback_slots(void) {
     expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0u,
            "power unregister: a registered slot releases with 0");
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u;
-    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80020002u,
-           "power unregister: an empty slot is refused with SCE_KERNEL_ERROR_NOTIMP");
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000025u,
+           "power unregister: an empty slot is refused with 0x80000025 (PSP-measured)");
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u; cpu.r[5] = cb;
     expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0u,
            "power unregister: a released slot registers the callback again");
@@ -27786,6 +27790,12 @@ static void test_power_unregister_callback_slots(void) {
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 20u;
     expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000023u,
            "power unregister: a slot in 16..31 mirrors the register range check");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 16u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000023u,
+           "power unregister: slot 16 returns 0x80000023 (PSP-measured)");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = (uint32_t)-1;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000102u,
+           "power unregister: slot -1 returns 0x80000102 (PSP-measured)");
 }
 
 static void test_psmf_rejected_stream_names_the_boundary(void) {
