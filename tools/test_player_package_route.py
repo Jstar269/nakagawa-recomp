@@ -382,7 +382,7 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertNotIn("No second verified title.", readme)
         self.assertIn("consent once", readme.lower())
         self.assertNotIn("automatic decryption is in the works", readme.lower())
-        # Built-in decryption was removed (temporarily): the README says so and
+        # Built-in decryption was removed: the README says so and
         # never asks for a key file.
         self.assertIn("does not decrypt games", readme)
         self.assertNotIn("key file", readme.lower())

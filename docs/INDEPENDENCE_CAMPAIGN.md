@@ -215,7 +215,7 @@ replacement by an LLE path that makes the component unnecessary ·
   relocation application are public-format facts; NID/import-table
   resolution cites PSPSDK structures and the project's NID corpus
   (`tools/nid_corpus.json`, IND-1). Nakagawa does not decrypt games: built-in
-  decryption was removed (temporarily) (#295), and this campaign tracks loader
+  decryption was removed (#295), and this campaign tracks loader
   provenance and rewrite scope only.
 - **G4 PGF → (a) + (a).** Both the publishable reader (against `pgf_api.h`,
   from the PGF format and the font-origins metric targets) and the
