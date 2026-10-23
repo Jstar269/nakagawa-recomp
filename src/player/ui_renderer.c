@@ -126,11 +126,7 @@ static float ui_font_pt_for_scale(float scale, float density) {
 }
 
 static bool ui_font_file_exists(const char *path) {
-    if (!path || !*path) return false;
-    FILE *f = nk_fopen_utf8(path, "rb");
-    if (!f) return false;
-    fclose(f);
-    return true;
+    return nk_platform_file_exists(path);
 }
 
 /* System UI font candidates: narrow per-OS table (a platform backend, not
