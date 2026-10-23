@@ -139,6 +139,8 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 /* Runtime handlers that answered success unconditionally: sceKernelVolatileMemUnlock and
    sceUtilityOskUpdate. Non-blocking and dialog-free; see run_fake_success. */
 #define PSP_ORACLE_CASE_FAKE_SUCCESS 112
+/* #1055: project and console PGFs opened in the resident font library; see run_font_userpgf. */
+#define PSP_ORACLE_CASE_FONT_USERPGF 113
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -360,6 +362,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/at3_decode_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
 #define PROBE_HOST0_LOG "host0:/fake_success_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_USERPGF
+#define PROBE_HOST0_LOG "host0:/font_userpgf_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -8161,6 +8165,571 @@ static void run_font_list(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_USERPGF
+/* #1055: how the resident font library reads a project PGF (PSP-FONT-USERPGF-001).
+ *
+ * A title that runs its own sceLibFont renders every glyph of a project PGF as a one-pixel dash.
+ * This case asks the library itself. For each source it opens the font, records the raw font
+ * info, and for a handful of characters records the raw char info, the shadow char info for two
+ * of them, and the glyph image the library draws into a zeroed 96x96 8-bit buffer (the non-zero
+ * rows are recorded). The sources are, in order of risk: a console font (flash0:/font/ltn0.pgf,
+ * opened read-only, from memory and by file name), the project nkltn.pgf as the converter
+ * writes it (p0) and five variants (p1-p5, host0:/fup/), and finally sceFontOpen by index.
+ * The variants change one hypothesis each: p1 sets the glyph role flag bit, p2 adds the
+ * record's left/top, p3 changes the header resolution/size, p4 changes the header version,
+ * vertical advance and shadow-map width, p5 applies all of them.
+ *
+ * The first project open in an earlier attempt never returned, so every job runs in its own
+ * lower-priority thread under a progress watchdog: a job that makes no progress for
+ * FUP_STALL_US is recorded as a hang (thread state, wait object, run clocks, the last step and
+ * the library's allocation list), the first hang is held for FUP_HOLD_STEPS seconds so a person
+ * can read the thread with PSPLink (the hold ends when host0:/fup/release appears), and the
+ * hung thread is then terminated and the next job runs on a fresh library handle.
+ *
+ * The library must be resident (ldstart host0:/libfont.prx before the launch). Console font
+ * bytes and glyph images are console data: the raw log stays private; only structural numbers
+ * leave it. Nothing is written except the host0 log; flash0 is only opened PSP_O_RDONLY. */
+#define FUP_TEST_ID "PSP-FONT-USERPGF-001"
+#define FUP_SOURCES 7u
+#define FUP_FILE_CAP (96u * 1024u)
+#define FUP_ARENA_BYTES (2u * 1024u * 1024u)
+#define FUP_ARENA_ALIGN 64u
+#define FUP_ALLOC_RING 32u
+#define FUP_GLYPH_SIDE 96u
+#define FUP_BASE_X64 (16 * 64)
+#define FUP_BASE_Y64 (64 * 64)
+#define FUP_LINE_MAX 4096u
+#define FUP_INFO_BYTES 512u
+#define FUP_INFO_RECORD_BYTES 320u
+#define FUP_CHAR_BYTES 128u
+#define FUP_CHAR_RECORD_BYTES 80u
+#define FUP_HEADER_BYTES 392u
+#define FUP_PIXEL_FORMAT_8 2u
+#define FUP_OPEN_MODE 1u
+#define FUP_UNTOUCHED 0xa5a5a5a5u
+#define FUP_STALL_US (12u * 1000u * 1000u)
+#define FUP_JOB_MAX_US (180u * 1000u * 1000u)
+#define FUP_POLL_US (200u * 1000u)
+#define FUP_HOLD_STEPS 120
+#define FUP_WORKER_PRIORITY 0x30
+#define FUP_WORKER_STACK 0x10000
+#define FUP_ERROR_WAIT_TIMEOUT 0x800201a8u
+
+/* SceFontNewLibParams: eleven 32-bit words, as in font_list.h. */
+typedef struct FupLibParams {
+    void *userDataAddr;
+    uint32_t numFonts;
+    void *cacheDataAddr;
+    void *(*allocFuncAddr)(void *data, uint32_t size);
+    void (*freeFuncAddr)(void *data, void *block);
+    void *openFuncAddr;
+    void *closeFuncAddr;
+    void *readFuncAddr;
+    void *seekFuncAddr;
+    void *errorFuncAddr;
+    void *ioFinishFuncAddr;
+} FupLibParams;
+_Static_assert(sizeof(FupLibParams) == 11u * sizeof(void *), "SceFontNewLibParams is eleven slots");
+
+/* SceFontImageBuffer / glyph image: 24 bytes on the 32-bit PSP. */
+typedef struct FupGlyphImage {
+    uint32_t pixelFormat;
+    int32_t xPos64;
+    int32_t yPos64;
+    uint16_t bufWidth;
+    uint16_t bufHeight;
+    uint16_t bytesPerLine;
+    uint16_t pad;
+    uint8_t *buffer;
+} FupGlyphImage;
+_Static_assert(sizeof(FupGlyphImage) == 24u, "the glyph image keeps the 32-bit PSP layout");
+
+uint32_t sceFontNewLib(FupLibParams *params, uint32_t *errorCode);
+int sceFontDoneLib(uint32_t libHandle);
+void *sceFontOpen(uint32_t libHandle, int index, uint32_t mode, int32_t *errorCode);
+void *sceFontOpenUserFile(uint32_t libHandle, const char *fileName, uint32_t mode,
+                          int32_t *errorCode);
+void *sceFontOpenUserMemory(uint32_t libHandle, void *memory, uint32_t size, int32_t *errorCode);
+int sceFontClose(void *fontHandle);
+int sceFontGetFontInfo(void *fontHandle, void *fontInfo);
+int sceFontGetCharInfo(void *fontHandle, uint32_t charCode, void *charInfo);
+int sceFontGetCharGlyphImage(void *fontHandle, uint32_t charCode, FupGlyphImage *image);
+int sceFontGetShadowInfo(void *fontHandle, uint32_t charCode, void *charInfo);
+
+typedef struct FupSource {
+    const char *tag;
+    const char *path;
+    uint32_t size;
+    int32_t rc;
+} FupSource;
+
+enum { FUP_JOB_MEMORY = 0, FUP_JOB_FILE = 1, FUP_JOB_INDEX = 2 };
+
+typedef struct FupJob {
+    const char *tag;
+    int kind;
+    unsigned source;
+    const char *path;
+} FupJob;
+
+static FupSource s_fup_sources[FUP_SOURCES] = {
+    {"con", "flash0:/font/ltn0.pgf", 0, 0},
+    {"p0", "host0:/fup/p0.pgf", 0, 0},
+    {"p1", "host0:/fup/p1.pgf", 0, 0},
+    {"p2", "host0:/fup/p2.pgf", 0, 0},
+    {"p3", "host0:/fup/p3.pgf", 0, 0},
+    {"p4", "host0:/fup/p4.pgf", 0, 0},
+    {"p5", "host0:/fup/p5.pgf", 0, 0},
+};
+
+static const FupJob s_fup_jobs[] = {
+    {"con-mem", FUP_JOB_MEMORY, 0, NULL},
+    {"con-file", FUP_JOB_FILE, 0, "flash0:/font/ltn0.pgf"},
+    {"p0-mem", FUP_JOB_MEMORY, 1, NULL},
+    {"p1-mem", FUP_JOB_MEMORY, 2, NULL},
+    {"p2-mem", FUP_JOB_MEMORY, 3, NULL},
+    {"p3-mem", FUP_JOB_MEMORY, 4, NULL},
+    {"p4-mem", FUP_JOB_MEMORY, 5, NULL},
+    {"p5-mem", FUP_JOB_MEMORY, 6, NULL},
+    {"p0-file", FUP_JOB_FILE, 1, "host0:/fup/p0.pgf"},
+    {"con-idx", FUP_JOB_INDEX, 0, NULL},
+};
+
+static const uint32_t s_fup_codes[] = {0x41u, 0x67u, 0x2du, 0x31u, 0x20u, 0xe9u};
+#define FUP_CODES (sizeof(s_fup_codes) / sizeof(s_fup_codes[0]))
+
+typedef struct FupLibState {
+    uint32_t alloc_calls;
+    uint32_t alloc_refused;
+    uint32_t free_calls;
+    uint32_t top;
+    uint32_t ring_size[FUP_ALLOC_RING];
+    uint32_t ring_offset[FUP_ALLOC_RING];
+} FupLibState;
+
+static int s_fup_emulated;
+static uint32_t s_fup_console_index = 1u;
+static uint8_t s_fup_data[FUP_SOURCES][FUP_FILE_CAP] __attribute__((aligned(64)));
+static uint8_t s_fup_arena[FUP_ARENA_BYTES] __attribute__((aligned(64)));
+static uint8_t s_fup_info[FUP_INFO_BYTES] __attribute__((aligned(64)));
+static uint8_t s_fup_char[FUP_CHAR_BYTES] __attribute__((aligned(64)));
+static uint8_t s_fup_pixels[FUP_GLYPH_SIDE * FUP_GLYPH_SIDE] __attribute__((aligned(64)));
+static char s_fup_line[2][FUP_LINE_MAX];
+static char s_fup_step_name[96];
+static FupLibState s_fup_lib;
+static volatile uint32_t s_fup_progress;
+static volatile int s_fup_done;
+
+static void fup_record(unsigned which, const char *case_id, const char *status, uint32_t result,
+                       const uint32_t *out, size_t out_count, const uint8_t *raw,
+                       size_t raw_length) {
+    static const char digits[] = "0123456789abcdef";
+    char *line = s_fup_line[which];
+    int used = snprintf(line, FUP_LINE_MAX,
+                        "NAKAGAWA_PSP_TEST schema=1 test_id=" FUP_TEST_ID
+                        " case_id=%s status=%s result=0x%08x",
+                        case_id, status, (unsigned int)result);
+    if (used <= 0 || (size_t)used >= FUP_LINE_MAX) return;
+    for (size_t i = 0; i < out_count; i++) {
+        const int more = snprintf(line + used, FUP_LINE_MAX - (size_t)used, " out%u=0x%08x",
+                                  (unsigned int)i, (unsigned int)out[i]);
+        if (more <= 0 || (size_t)(used + more) >= FUP_LINE_MAX) return;
+        used += more;
+    }
+    if (raw && raw_length) {
+        const int more = snprintf(line + used, FUP_LINE_MAX - (size_t)used, " raw_hex=");
+        if (more <= 0 || (size_t)(used + more) + raw_length * 2u + 2u >= FUP_LINE_MAX) return;
+        used += more;
+        for (size_t i = 0; i < raw_length; i++) {
+            line[used++] = digits[raw[i] >> 4];
+            line[used++] = digits[raw[i] & 0xfu];
+        }
+    }
+    line[used++] = '\n';
+    line[used] = '\0';
+    s_fup_progress++;
+    probe_emit_durable(s_fup_emulated, line, (size_t)used);
+}
+
+static void fup_step(const char *name) {
+    size_t n = 0;
+    while (name[n] && n + 1u < sizeof(s_fup_step_name)) {
+        s_fup_step_name[n] = name[n];
+        n++;
+    }
+    s_fup_step_name[n] = '\0';
+    s_fup_progress++;
+    probe_step(s_fup_emulated, "font-userpgf", name);
+}
+
+static void *fup_alloc(void *data, uint32_t size) {
+    FupLibState *state = (FupLibState *)data;
+    const uint32_t want = size ? size : FUP_ARENA_ALIGN;
+    const uint32_t aligned = (want + FUP_ARENA_ALIGN - 1u) & ~(FUP_ARENA_ALIGN - 1u);
+    const uint32_t slot = state->alloc_calls;
+    state->alloc_calls++;
+    if (slot < FUP_ALLOC_RING) state->ring_size[slot] = size;
+    if (aligned < want || aligned > FUP_ARENA_BYTES - state->top) {
+        state->alloc_refused++;
+        return NULL;
+    }
+    void *block = s_fup_arena + state->top;
+    if (slot < FUP_ALLOC_RING) state->ring_offset[slot] = state->top;
+    state->top += aligned;
+    return block;
+}
+
+static void fup_free(void *data, void *block) {
+    (void)block;
+    ((FupLibState *)data)->free_calls++;
+}
+
+/* The library's allocation list as it stands: (size, offset) pairs, first 12 requests. */
+static void fup_record_allocs(unsigned which, const char *tag) {
+    char case_id[64];
+    uint32_t out[4 + 2 * 12];
+    uint32_t n = s_fup_lib.alloc_calls < 12u ? s_fup_lib.alloc_calls : 12u;
+    out[0] = s_fup_lib.alloc_calls;
+    out[1] = s_fup_lib.alloc_refused;
+    out[2] = s_fup_lib.free_calls;
+    out[3] = s_fup_lib.top;
+    for (uint32_t i = 0; i < n; i++) {
+        out[4 + 2 * i] = s_fup_lib.ring_size[i];
+        out[5 + 2 * i] = s_fup_lib.ring_offset[i];
+    }
+    snprintf(case_id, sizeof(case_id), "fup-allocs-%s", tag);
+    fup_record(which, case_id, "INFO", 0u, out, 4u + 2u * n, NULL, 0u);
+}
+
+static void fup_read_sources(void) {
+    char case_id[64];
+    for (unsigned i = 0; i < FUP_SOURCES; i++) {
+        FupSource *source = &s_fup_sources[i];
+        uint32_t out[3] = {0u, 0u, 0u};
+        const SceUID fd = sceIoOpen(source->path, PSP_O_RDONLY, 0);
+        if (fd < 0) {
+            source->rc = fd;
+            out[0] = (uint32_t)fd;
+        } else {
+            uint32_t total = 0;
+            for (;;) {
+                if (total >= FUP_FILE_CAP) {
+                    source->rc = -2;
+                    break;
+                }
+                const int got = sceIoRead(fd, s_fup_data[i] + total, FUP_FILE_CAP - total);
+                if (got < 0) {
+                    source->rc = got;
+                    break;
+                }
+                if (got == 0) break;
+                total += (uint32_t)got;
+            }
+            (void)sceIoClose(fd);
+            source->size = total;
+            out[0] = (uint32_t)source->rc;
+            out[1] = total;
+        }
+        snprintf(case_id, sizeof(case_id), "fup-file-%s", source->tag);
+        fup_record(1u, case_id, source->rc == 0 ? "PASS" : "SKIP", (uint32_t)source->rc, out, 2u,
+                   source->size >= FUP_HEADER_BYTES ? s_fup_data[i] : NULL,
+                   source->size >= FUP_HEADER_BYTES ? FUP_HEADER_BYTES : 0u);
+    }
+    {
+        uint8_t text[16] = {0};
+        const SceUID fd = sceIoOpen("host0:/fup/console_index.txt", PSP_O_RDONLY, 0);
+        if (fd >= 0) {
+            const int got = sceIoRead(fd, text, sizeof(text) - 1u);
+            (void)sceIoClose(fd);
+            if (got > 0 && text[0] >= '0' && text[0] <= '9') {
+                uint32_t value = 0;
+                for (int i = 0; i < got && text[i] >= '0' && text[i] <= '9'; i++) {
+                    value = value * 10u + (uint32_t)(text[i] - '0');
+                }
+                s_fup_console_index = value;
+            }
+        }
+        const uint32_t out[2] = {s_fup_console_index, (uint32_t)fd};
+        fup_record(1u, "fup-console-index", "INFO", 0u, out, 2u, NULL, 0u);
+    }
+}
+
+static void fup_query_glyph(const char *tag, uint32_t code, void *font) {
+    char case_id[96];
+    char step[64];
+    uint32_t out[8];
+
+    memset(s_fup_char, 0xa5, sizeof(s_fup_char));
+    snprintf(step, sizeof(step), "charinfo-%s-%04x", tag, (unsigned int)code);
+    fup_step(step);
+    int rc = sceFontGetCharInfo(font, code, s_fup_char);
+    snprintf(case_id, sizeof(case_id), "fup-char-%s-%04x", tag, (unsigned int)code);
+    fup_record(0u, case_id, "INFO", (uint32_t)rc, NULL, 0u, s_fup_char, FUP_CHAR_RECORD_BYTES);
+
+    FupGlyphImage image;
+    memset(&image, 0, sizeof(image));
+    memset(s_fup_pixels, 0, sizeof(s_fup_pixels));
+    image.pixelFormat = FUP_PIXEL_FORMAT_8;
+    image.xPos64 = FUP_BASE_X64;
+    image.yPos64 = FUP_BASE_Y64;
+    image.bufWidth = FUP_GLYPH_SIDE;
+    image.bufHeight = FUP_GLYPH_SIDE;
+    image.bytesPerLine = FUP_GLYPH_SIDE;
+    image.buffer = s_fup_pixels;
+    snprintf(step, sizeof(step), "glyph-%s-%04x", tag, (unsigned int)code);
+    fup_step(step);
+    rc = sceFontGetCharGlyphImage(font, code, &image);
+
+    uint32_t count = 0u, sum = 0u;
+    uint32_t min_x = FUP_GLYPH_SIDE, min_y = FUP_GLYPH_SIDE, max_x = 0u, max_y = 0u;
+    for (uint32_t y = 0; y < FUP_GLYPH_SIDE; y++) {
+        for (uint32_t x = 0; x < FUP_GLYPH_SIDE; x++) {
+            const uint8_t value = s_fup_pixels[y * FUP_GLYPH_SIDE + x];
+            if (!value) continue;
+            count++;
+            sum += value;
+            if (x < min_x) min_x = x;
+            if (y < min_y) min_y = y;
+            if (x > max_x) max_x = x;
+            if (y > max_y) max_y = y;
+        }
+    }
+    if (!count) min_x = min_y = max_x = max_y = 0u;
+    out[0] = count;
+    out[1] = min_x;
+    out[2] = min_y;
+    out[3] = max_x;
+    out[4] = max_y;
+    out[5] = sum;
+    snprintf(case_id, sizeof(case_id), "fup-glyph-%s-%04x", tag, (unsigned int)code);
+    fup_record(0u, case_id, "INFO", (uint32_t)rc, out, 6u, (const uint8_t *)&image, sizeof(image));
+    if (count) {
+        for (uint32_t y = min_y; y <= max_y; y++) {
+            out[0] = y;
+            out[1] = min_x;
+            out[2] = max_x - min_x + 1u;
+            snprintf(case_id, sizeof(case_id), "fup-row-%s-%04x-%02u", tag, (unsigned int)code,
+                     (unsigned int)y);
+            fup_record(0u, case_id, "INFO", 0u, out, 3u, s_fup_pixels + y * FUP_GLYPH_SIDE + min_x,
+                       max_x - min_x + 1u);
+        }
+    }
+    if (code == 0x41u || code == 0x2du) {
+        memset(s_fup_char, 0xa5, sizeof(s_fup_char));
+        snprintf(step, sizeof(step), "shadow-%s-%04x", tag, (unsigned int)code);
+        fup_step(step);
+        rc = sceFontGetShadowInfo(font, code, s_fup_char);
+        snprintf(case_id, sizeof(case_id), "fup-shadow-%s-%04x", tag, (unsigned int)code);
+        fup_record(0u, case_id, "INFO", (uint32_t)rc, NULL, 0u, s_fup_char, FUP_CHAR_RECORD_BYTES);
+    }
+}
+
+static void fup_job_body(const FupJob *job) {
+    char case_id[96];
+    char step[64];
+    uint32_t out[6];
+    FupLibParams params;
+
+    memset(&s_fup_lib, 0, sizeof(s_fup_lib));
+    memset(s_fup_arena, 0, sizeof(s_fup_arena));
+    memset(&params, 0, sizeof(params));
+    params.userDataAddr = &s_fup_lib;
+    params.numFonts = 2u;
+    params.allocFuncAddr = fup_alloc;
+    params.freeFuncAddr = fup_free;
+
+    fup_step("newlib");
+    uint32_t error = FUP_UNTOUCHED;
+    const uint32_t lib = sceFontNewLib(&params, &error);
+    out[0] = error;
+    out[1] = s_fup_lib.alloc_calls;
+    out[2] = s_fup_lib.top;
+    snprintf(case_id, sizeof(case_id), "fup-newlib-%s", job->tag);
+    fup_record(0u, case_id, lib ? "PASS" : "FAIL", lib, out, 3u, NULL, 0u);
+    if (!lib) return;
+
+    void *font = NULL;
+    int32_t open_error = (int32_t)FUP_UNTOUCHED;
+    uint32_t detail = 0u;
+    snprintf(step, sizeof(step), "open-%s", job->tag);
+    fup_step(step);
+    if (job->kind == FUP_JOB_MEMORY) {
+        detail = s_fup_sources[job->source].size;
+        if (s_fup_sources[job->source].rc == 0 && detail) {
+            font = sceFontOpenUserMemory(lib, s_fup_data[job->source], detail, &open_error);
+        } else {
+            open_error = 0;
+        }
+    } else if (job->kind == FUP_JOB_FILE) {
+        font = sceFontOpenUserFile(lib, job->path, FUP_OPEN_MODE, &open_error);
+    } else {
+        detail = s_fup_console_index;
+        font = sceFontOpen(lib, (int)s_fup_console_index, FUP_OPEN_MODE, &open_error);
+    }
+    out[0] = (uint32_t)open_error;
+    out[1] = detail;
+    out[2] = s_fup_lib.alloc_calls;
+    out[3] = s_fup_lib.top;
+    snprintf(case_id, sizeof(case_id), "fup-open-%s", job->tag);
+    fup_record(0u, case_id, font ? "PASS" : "FAIL", (uint32_t)(uintptr_t)font, out, 4u, NULL, 0u);
+
+    if (font) {
+        memset(s_fup_info, 0xa5, sizeof(s_fup_info));
+        snprintf(step, sizeof(step), "fontinfo-%s", job->tag);
+        fup_step(step);
+        const int info_rc = sceFontGetFontInfo(font, s_fup_info);
+        snprintf(case_id, sizeof(case_id), "fup-info-%s", job->tag);
+        fup_record(0u, case_id, "INFO", (uint32_t)info_rc, NULL, 0u, s_fup_info,
+                   FUP_INFO_RECORD_BYTES);
+        for (size_t i = 0; i < FUP_CODES; i++) fup_query_glyph(job->tag, s_fup_codes[i], font);
+        snprintf(step, sizeof(step), "close-%s", job->tag);
+        fup_step(step);
+        const int close_rc = sceFontClose(font);
+        out[0] = (uint32_t)close_rc;
+        snprintf(case_id, sizeof(case_id), "fup-close-%s", job->tag);
+        fup_record(0u, case_id, "INFO", (uint32_t)close_rc, out, 1u, NULL, 0u);
+    }
+    fup_record_allocs(0u, job->tag);
+    snprintf(step, sizeof(step), "donelib-%s", job->tag);
+    fup_step(step);
+    const int done_rc = sceFontDoneLib(lib);
+    out[0] = s_fup_lib.free_calls;
+    snprintf(case_id, sizeof(case_id), "fup-donelib-%s", job->tag);
+    fup_record(0u, case_id, "INFO", (uint32_t)done_rc, out, 1u, NULL, 0u);
+}
+
+static int fup_worker(SceSize args, void *argp) {
+    (void)args;
+    const FupJob *job = *(const FupJob *const *)argp;
+    fup_job_body(job);
+    s_fup_done = 1;
+    return 0;
+}
+
+static int fup_release_present(void) {
+    const SceUID fd = sceIoOpen("host0:/fup/release", PSP_O_RDONLY, 0);
+    if (fd < 0) return 0;
+    (void)sceIoClose(fd);
+    return 1;
+}
+
+/* Runs one job in its own thread. Returns 1 when the job hung. */
+static int fup_run_job(const FupJob *job, int hold_allowed) {
+    char case_id[96];
+    uint32_t out[12];
+    int hung = 0;
+
+    s_fup_done = 0;
+    s_fup_progress = 0u;
+    s_fup_step_name[0] = '\0';
+    const SceUID thread = sceKernelCreateThread("nk_fup_job", fup_worker, FUP_WORKER_PRIORITY,
+                                                FUP_WORKER_STACK,
+                                                PSP_THREAD_ATTR_USER | PSP_THREAD_ATTR_VFPU, NULL);
+    snprintf(case_id, sizeof(case_id), "fup-job-%s", job->tag);
+    out[0] = (uint32_t)thread;
+    out[1] = (uint32_t)job->kind;
+    fup_record(1u, case_id, thread >= 0 ? "START" : "FAIL", (uint32_t)thread, out, 2u, NULL, 0u);
+    if (thread < 0) return 0;
+    const FupJob *argument = job;
+    const int start_rc = sceKernelStartThread(thread, sizeof(argument), &argument);
+    if (start_rc < 0) {
+        out[0] = (uint32_t)start_rc;
+        snprintf(case_id, sizeof(case_id), "fup-start-%s", job->tag);
+        fup_record(1u, case_id, "FAIL", (uint32_t)start_rc, out, 1u, NULL, 0u);
+        (void)sceKernelDeleteThread(thread);
+        return 0;
+    }
+
+    const uint64_t begin = sceKernelGetSystemTimeWide();
+    uint64_t last_change = begin;
+    uint32_t last_progress = s_fup_progress;
+    int wait_rc = 0;
+    for (;;) {
+        SceUInt timeout = FUP_POLL_US;
+        wait_rc = sceKernelWaitThreadEnd(thread, &timeout);
+        if (wait_rc != (int)FUP_ERROR_WAIT_TIMEOUT) break;
+        const uint64_t now = sceKernelGetSystemTimeWide();
+        if (s_fup_progress != last_progress) {
+            last_progress = s_fup_progress;
+            last_change = now;
+        }
+        if (now - last_change > FUP_STALL_US || now - begin > FUP_JOB_MAX_US) {
+            hung = 1;
+            break;
+        }
+    }
+    const uint32_t elapsed_ms = (uint32_t)((sceKernelGetSystemTimeWide() - begin) / 1000u);
+
+    if (hung) {
+        SceKernelThreadInfo info;
+        memset(&info, 0, sizeof(info));
+        info.size = sizeof(info);
+        const int info_rc = sceKernelReferThreadStatus(thread, &info);
+        out[0] = (uint32_t)thread;
+        out[1] = (uint32_t)info.status;
+        out[2] = (uint32_t)info.waitType;
+        out[3] = (uint32_t)info.waitId;
+        out[4] = (uint32_t)info.runClocks.low;
+        out[5] = (uint32_t)info.runClocks.hi;
+        out[6] = (uint32_t)info.intrPreemptCount;
+        out[7] = (uint32_t)info.threadPreemptCount;
+        out[8] = (uint32_t)info.releaseCount;
+        out[9] = last_progress;
+        out[10] = (uint32_t)info_rc;
+        out[11] = elapsed_ms;
+        snprintf(case_id, sizeof(case_id), "fup-hang-%s", job->tag);
+        fup_record(1u, case_id, "HANG", (uint32_t)thread, out, 12u,
+                   (const uint8_t *)s_fup_step_name, strlen(s_fup_step_name));
+        fup_record_allocs(1u, job->tag);
+        if (hold_allowed) {
+            out[0] = (uint32_t)thread;
+            out[1] = FUP_HOLD_STEPS;
+            snprintf(case_id, sizeof(case_id), "fup-hold-begin-%s", job->tag);
+            fup_record(1u, case_id, "INFO", (uint32_t)thread, out, 2u, NULL, 0u);
+            for (int step = 0; step < FUP_HOLD_STEPS && !fup_release_present(); step++) {
+                sceKernelDelayThread(1000 * 1000);
+            }
+            snprintf(case_id, sizeof(case_id), "fup-hold-end-%s", job->tag);
+            fup_record(1u, case_id, "INFO", 0u, NULL, 0u, NULL, 0u);
+        }
+        const int terminate_rc = sceKernelTerminateDeleteThread(thread);
+        out[0] = (uint32_t)terminate_rc;
+        snprintf(case_id, sizeof(case_id), "fup-terminate-%s", job->tag);
+        fup_record(1u, case_id, "INFO", (uint32_t)terminate_rc, out, 1u, NULL, 0u);
+    } else {
+        out[0] = (uint32_t)wait_rc;
+        out[1] = elapsed_ms;
+        out[2] = s_fup_done;
+        snprintf(case_id, sizeof(case_id), "fup-job-done-%s", job->tag);
+        fup_record(1u, case_id, "DONE", (uint32_t)wait_rc, out, 3u, NULL, 0u);
+        (void)sceKernelDeleteThread(thread);
+    }
+    return hung;
+}
+
+static void run_font_userpgf(int emulated) {
+    uint32_t out[3];
+    uint32_t hangs = 0u;
+    int hold_used = 0;
+    const size_t jobs = sizeof(s_fup_jobs) / sizeof(s_fup_jobs[0]);
+
+    s_fup_emulated = emulated;
+    probe_step(emulated, "font-userpgf", "read-sources");
+    fup_read_sources();
+    for (size_t i = 0; i < jobs; i++) {
+        probe_step(emulated, "font-userpgf", s_fup_jobs[i].tag);
+        if (fup_run_job(&s_fup_jobs[i], !hold_used)) {
+            hangs++;
+            hold_used = 1;
+        }
+    }
+    out[0] = (uint32_t)jobs;
+    out[1] = hangs;
+    out[2] = (uint32_t)s_fup_console_index;
+    fup_record(1u, "font-userpgf-done", hangs ? "DONE" : "PASS", hangs, out, 3u, NULL, 0u);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
 static void emit_ge_control(int emulated, const char *case_id, const char *status,
                             uint32_t result, const uint32_t *out, size_t count) {
@@ -9089,6 +9658,8 @@ int main(int argc, char *argv[]) {
     run_at3_decode(emulated); /* ends in probe_teardown, which parks until modstop */
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
     run_fake_success(emulated); /* ends in probe_teardown, which parks until modstop */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_USERPGF
+    run_font_userpgf(emulated); /* probe_teardown below parks until modstop */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
