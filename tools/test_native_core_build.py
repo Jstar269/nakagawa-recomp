@@ -34,6 +34,8 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/domain_mode_selftest",
     "build/mygame/clay_layout_selftest",
     "build/test_nk_ui_core",
+    "build/test_nk_ui_focus",
+    "build/test_nk_ui_focus_sdl --sdl-input",
     "build/mygame/ge_texture_ref_selftest",
     "build/mygame/fbcap_selftest build/mygame/fbcap_selftest",
     "build/mygame/osk_text_entry_selftest",
@@ -106,7 +108,8 @@ def _fold_root(command: str) -> str:
 
 def _test_runs(commands: list[str]) -> list[str]:
     return [
-        command.replace(".exe", "")
+        # A run may carry a shell tail (the SDL leg maps exit 77 to SKIP); compare the binary part.
+        command.split(";")[0].replace(".exe", "")
         for command in commands
         if command.startswith("build/") and " -o " not in command
     ]
@@ -139,6 +142,22 @@ class NativeCoreTestsContractTests(unittest.TestCase):
         self.assertIn("tests/native/test_nk_ui_core.c", compile_commands[0])
         self.assertIn("src/ui/nk_ui_clay.c", compile_commands[0])
         self.assertIn("build/test_nk_ui_core", _test_runs(self.commands))
+
+    def test_nk_ui_focus_selftest_has_an_sdl_free_build_and_an_sdl_leg(self) -> None:
+        plain = [c for c in self.commands if c.startswith("gcc") and " -o build/test_nk_ui_focus" in c
+                 and "_sdl" not in c.split(" -o ", 1)[1]]
+        sdl = [c for c in self.commands if c.startswith("gcc") and " -o build/test_nk_ui_focus_sdl" in c]
+        self.assertEqual(len(plain), 1, "SDL-free focus test compile")
+        self.assertEqual(len(sdl), 1, "SDL translation leg compile")
+        self.assertNotIn("NK_UI_WITH_SDL3", plain[0])
+        for command in (plain[0], sdl[0]):
+            self.assertIn("tests/native/test_nk_ui_focus.c", command)
+            self.assertIn("src/ui/nk_ui_sdl_input.c", command)
+            self.assertIn("-DSR_SELFTEST_BUILD_ROOT=", command)
+        run = [c for c in self.commands if c.startswith("build/test_nk_ui_focus_sdl")]
+        self.assertEqual(len(run), 1)
+        self.assertIn("--sdl-input", run[0])
+        self.assertIn("77", run[0], "exit 77 must be reported as SKIP, not swallowed or failed")
 
     def test_core_sources_compile_once_per_flag_set(self) -> None:
         # Two shared object sets: the core flags, and the core flags plus -Isrc/player.
