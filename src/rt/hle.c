@@ -24312,6 +24312,36 @@ static int link_started_export(CpuState *s, uint32_t nid) {
     return 1;
 }
 
+/* An import with no handler stops the run (exit 7). Name that stop for the player the
+ * way the dispatcher names its own: one semantic-boundary line in SR_BOOT_EVENT_FILE,
+ * "unsupported-import-<name>" in the player's [a-z0-9-] alphabet, so its card says the
+ * game stopped early at that import instead of showing a bare child exit code (#308). */
+static void hle_record_unsupported_import_stop(uint32_t nid, const char *name) {
+    const char *path = getenv("SR_BOOT_EVENT_FILE");
+    if (!path || !path[0]) return;
+    char boundary[96];
+    int written = snprintf(boundary, sizeof(boundary), "unsupported-import-");
+    if (written <= 0) return;
+    size_t at = (size_t)written;
+    if (name && name[0]) {
+        for (const char *c = name; *c && at + 1u < sizeof(boundary); c++) {
+            char ch = *c;
+            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+            if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))) ch = '-';
+            boundary[at++] = ch;
+        }
+        boundary[at] = '\0';
+    } else {
+        snprintf(boundary + at, sizeof(boundary) - at, "0x%08x", nid);
+    }
+    FILE *events = fopen(path, "ab");
+    if (!events) return;
+    fprintf(events,
+            "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=%u\n",
+            boundary, 308u);
+    fclose(events);
+}
+
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_tail_assert_empty("tail-transfer-live-at-syscall");
     sr_hle_init();
@@ -24362,6 +24392,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
             fprintf(stderr, "HLE: unimplemented nid 0x%08x (%s) (thread uid 0x%x)\n"
                             "     -> add a handler in src/rt/hle.c: sr_hle_register(0x%08xu, \"%s\", h_...);\n",
                     nid, nm ? nm : "unknown", sched_current_uid(), nid, nm ? nm : "sceUnknown");
+            hle_record_unsupported_import_stop(nid, nm);
         }
         sr_hit_hle = 1;
         /* Under the fiber scheduler, longjmp across fibers is invalid; stop the process cleanly
