@@ -1616,6 +1616,58 @@ class TestRuntimeDllStaging(unittest.TestCase):
                 )
             self.assertIn("libfreetype-6.dll staging collision", str(ctx.exception))
 
+    def test_stage_runtime_dlls_refresh_replaces_changed_bytes(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            bin_dir = Path(tmp) / "toolchain-bin"
+            self.write_fake_dlls(bin_dir)
+            imports_of, is_system = self.fake_resolver()
+
+            (package_dir / "SDL3.dll").write_bytes(b"OLD-BYTES")
+
+            stage_runtime_dlls.stage_runtime_dlls(
+                package_dir,
+                roots=["SDL3.dll"],
+                search_dirs=[bin_dir],
+                env={},
+                imports_of=imports_of,
+                is_system=is_system,
+                notices=False,
+                refresh=True,
+            )
+            self.assertEqual(
+                (package_dir / "SDL3.dll").read_bytes(),
+                (bin_dir / "SDL3.dll").read_bytes(),
+            )
+
+    def test_stage_runtime_dlls_refresh_false_keeps_old_copy(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            bin_dir = Path(tmp) / "toolchain-bin"
+            self.write_fake_dlls(bin_dir)
+            imports_of, is_system = self.fake_resolver()
+
+            old = b"OLD-BYTES"
+            (package_dir / "SDL3.dll").write_bytes(old)
+
+            stage_runtime_dlls.stage_runtime_dlls(
+                package_dir,
+                roots=["SDL3.dll"],
+                search_dirs=[bin_dir],
+                env={},
+                imports_of=imports_of,
+                is_system=is_system,
+                notices=False,
+                refresh=False,
+            )
+            self.assertEqual((package_dir / "SDL3.dll").read_bytes(), old)
+
     def test_runtime_package_refuses_a_font_dll_collision_instead_of_warning(self) -> None:
         """A directory named SDL3_ttf.dll is a staging collision, not an absent optional
         font: the real package staging step refuses the build with a named error."""
