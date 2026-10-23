@@ -509,6 +509,12 @@ jobs:
           for attempt in 1 2 3; do
             if [ "$attempt" -gt 1 ]; then
               echo "apt install attempt $((attempt - 1)) failed; switching to the primary Ubuntu archive" >&2
+              # The hosted image's sources read mirror+file:/etc/apt/apt-mirrors.txt; put the primary
+              # archive first in that list (and in any plain URI), keeping Azure as a fallback.
+              if [ -f /etc/apt/apt-mirrors.txt ]; then
+                printf '%s\n' 'http://archive.ubuntu.com/ubuntu/' 'http://azure.archive.ubuntu.com/ubuntu/' \
+                  | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+              fi
               sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
                 /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
             fi
