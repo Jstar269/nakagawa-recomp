@@ -56,6 +56,8 @@ void nk_ui_sdlr_get_stats(const NkUiSdlr *renderer, NkUiSdlrStats *out) {
 
 #include <SDL3/SDL.h>
 
+#include "nk_ui_waves.h"
+
 #include <limits.h>
 #include <math.h>
 
@@ -64,6 +66,10 @@ void nk_ui_sdlr_get_stats(const NkUiSdlr *renderer, NkUiSdlrStats *out) {
 #define NK_UI_SDLR_PAD 1
 #define NK_UI_SDLR_CLIP_DEPTH 32
 #define NK_UI_SDLR_MAX_GLYPHS_PER_RUN 8192
+/* The waves are soft, so they render on the CPU at a third of the element's
+   size (at most 480 px wide) and are scaled up with a linear filter. */
+#define NK_UI_SDLR_WAVES_DIVISOR 3
+#define NK_UI_SDLR_WAVES_MAX_W 480
 
 typedef struct {
     int font;
@@ -114,6 +120,12 @@ struct NkUiSdlr {
     size_t quad_capacity;     /* glyphs the two arrays hold */
     uint32_t *upload;
     size_t upload_capacity;
+    SDL_Texture *waves_texture;
+    uint8_t *waves_pixels;
+    int waves_w;
+    int waves_h;
+    bool waves_valid;
+    NkUiWavesCommand waves_last;
     NkUiSdlrStats stats;
 };
 
@@ -480,6 +492,10 @@ static bool nk_ui_sdlr_draw_text(NkUiSdlr *r, const NkUiDrawCmd *cmd) {
     /* Centre the face's line box in the command's bounds (CSS half-leading),
        then snap: the baseline is a whole pixel row. */
     origin_x = cmd->bounds[0];
+    if (run->center) {
+        origin_x += nk_ui_sdlr_round(((float)(cmd->bounds[2] - cmd->bounds[0]) -
+                                      size.width) * 0.5f);
+    }
     baseline_y = cmd->bounds[1] +
                  nk_ui_sdlr_round(((float)(cmd->bounds[3] - cmd->bounds[1]) - size.height) * 0.5f) +
                  nk_ui_sdlr_round(size.baseline);
@@ -511,7 +527,8 @@ static bool nk_ui_sdlr_draw_text(NkUiSdlr *r, const NkUiDrawCmd *cmd) {
             pending_quads = 0;
         }
         pending_page = entry->page;
-        x0 = (float)(origin_x + nk_ui_sdlr_round(glyph->x) + entry->bearing_x);
+        x0 = (float)(origin_x + nk_ui_sdlr_round(glyph->x + run->letter_spacing * (float)i) +
+                     entry->bearing_x);
         y0 = (float)(baseline_y + nk_ui_sdlr_round(glyph->y) - entry->bearing_y);
         x1 = x0 + (float)entry->w;
         y1 = y0 + (float)entry->h;
@@ -576,6 +593,10 @@ void nk_ui_sdlr_destroy(NkUiSdlr *r) {
     free(r->quad_vertices);
     free(r->quad_indices);
     free(r->upload);
+    if (r->waves_texture != NULL) {
+        SDL_DestroyTexture(r->waves_texture);
+    }
+    free(r->waves_pixels);
     free(r);
 }
 
@@ -601,6 +622,65 @@ void nk_ui_sdlr_get_stats(const NkUiSdlr *r, NkUiSdlrStats *out) {
     *out = r->stats;
     out->atlas_pages = (uint32_t)r->page_count;
     out->atlas_glyphs = (uint32_t)r->entry_count;
+}
+
+/* Draws one waves command: the frame is re-rendered only when its phases, size
+   or palette changed, so a held-still frame costs one textured quad. */
+static bool nk_ui_sdlr_draw_waves(NkUiSdlr *r, const NkUiDrawCmd *cmd) {
+    const NkUiWavesCommand *command = (const NkUiWavesCommand *)cmd->custom;
+    int bw = cmd->bounds[2] - cmd->bounds[0];
+    int bh = cmd->bounds[3] - cmd->bounds[1];
+    int w;
+    int h;
+    SDL_FRect dst;
+    if (command == NULL || bw <= 0 || bh <= 0) {
+        return true;
+    }
+    w = (bw + NK_UI_SDLR_WAVES_DIVISOR - 1) / NK_UI_SDLR_WAVES_DIVISOR;
+    if (w > NK_UI_SDLR_WAVES_MAX_W) {
+        w = NK_UI_SDLR_WAVES_MAX_W;
+    }
+    h = (int)((long long)bh * w / bw);
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (r->waves_texture == NULL || r->waves_w != w || r->waves_h != h) {
+        uint8_t *pixels;
+        if (r->waves_texture != NULL) {
+            SDL_DestroyTexture(r->waves_texture);
+            r->waves_texture = NULL;
+        }
+        pixels = (uint8_t *)realloc(r->waves_pixels, (size_t)w * (size_t)h * 4u);
+        if (pixels == NULL) {
+            return false;
+        }
+        r->waves_pixels = pixels;
+        r->waves_texture = SDL_CreateTexture(r->renderer, SDL_PIXELFORMAT_RGBA32,
+                                             SDL_TEXTUREACCESS_STATIC, w, h);
+        if (r->waves_texture == NULL) {
+            return false;
+        }
+        SDL_SetTextureBlendMode(r->waves_texture, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
+        SDL_SetTextureScaleMode(r->waves_texture, SDL_SCALEMODE_LINEAR);
+        r->waves_w = w;
+        r->waves_h = h;
+        r->waves_valid = false;
+    }
+    if (!r->waves_valid || memcmp(&r->waves_last, command, sizeof(*command)) != 0) {
+        if (!nk_ui_waves_render_command(command, (uint32_t)w, (uint32_t)h, r->waves_pixels,
+                                        (size_t)w * 4u) ||
+            !SDL_UpdateTexture(r->waves_texture, NULL, r->waves_pixels, w * 4)) {
+            return false;
+        }
+        r->waves_last = *command;
+        r->waves_valid = true;
+        ++r->stats.waves_rendered;
+    }
+    dst.x = (float)cmd->bounds[0];
+    dst.y = (float)cmd->bounds[1];
+    dst.w = (float)bw;
+    dst.h = (float)bh;
+    ++r->stats.waves_drawn;
+    return SDL_RenderTexture(r->renderer, r->waves_texture, NULL, &dst);
 }
 
 static bool nk_ui_sdlr_list_valid(const NkUiDrawList *list) {
@@ -727,6 +807,14 @@ bool nk_ui_sdlr_render(NkUiSdlr *r, const NkUiDrawList *list) {
             }
             break;
         case NK_UI_DRAW_CUSTOM:
+            if (cmd->custom_kind == NK_UI_CUSTOM_WAVES) {
+                if (!clip.empty) {
+                    ok = nk_ui_sdlr_draw_waves(r, cmd);
+                }
+            } else {
+                ++r->stats.custom_skipped;
+            }
+            break;
         default:
             ++r->stats.custom_skipped;
             break;

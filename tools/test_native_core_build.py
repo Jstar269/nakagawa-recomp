@@ -34,6 +34,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/domain_mode_selftest",
     "build/mygame/clay_layout_selftest",
     "build/test_nk_ui_core",
+    "build/test_player_screens",
     "build/test_nk_ui_focus",
     "build/test_nk_ui_focus_sdl --sdl-input",
     "build/mygame/ge_texture_ref_selftest",

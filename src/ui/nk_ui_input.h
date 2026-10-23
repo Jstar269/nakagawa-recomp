@@ -62,6 +62,9 @@ typedef enum {
 /* The keyboard and mouse share this device id; pads use their own nonzero id. */
 #define NK_UI_DEVICE_KEYBOARD_MOUSE 0
 
+/* Pads the input layer tracks as connected, for the prompt-glyph choice. */
+#define NK_UI_INPUT_MAX_PADS 8
+
 /* Large enough for one call: a device change plus the action, or a stick that
    releases one direction and presses another. */
 #define NK_UI_INPUT_MAX_EVENTS 4
@@ -90,6 +93,9 @@ typedef struct {
     float pointer_x;
     float pointer_y;
     bool pointer_down;
+    int pad_ids[NK_UI_INPUT_MAX_PADS];       /* connected pads, oldest first */
+    NkUiPadFamily pad_families[NK_UI_INPUT_MAX_PADS];
+    size_t pad_count;
 } NkUiInput;
 
 void nk_ui_input_init(NkUiInput *input);
@@ -131,6 +137,18 @@ bool nk_ui_input_next_wake(const NkUiInput *input, double *at_s);
 
 NkUiPadFamily nk_ui_input_last_family(const NkUiInput *input);
 int nk_ui_input_last_device(const NkUiInput *input);
+
+/* The one glyph set the whole UI shows, from the active input device:
+   - the device last used (a key, a click, the wheel, a pad button or stick);
+     a pad that connects counts as used, so connecting one switches at once;
+   - with no device used yet, or after the last-used pad disconnects: the most
+     recently connected pad still present, else the keyboard and mouse.
+   Pointer motion alone never switches, so a nudged mouse does not override a
+   controller. Keyboard and mouse give NK_UI_PROMPT_KEYCAPS; a pad gives its
+   family's set (nk_ui_prompt_style_for_family). */
+NkUiPromptStyle nk_ui_input_prompt_style(const NkUiInput *input);
+/* True while at least one pad is connected. */
+bool nk_ui_input_pad_connected(const NkUiInput *input);
 
 /* Decodes one UTF-8 code point from *cursor (advancing it). Returns 0 at end of input;
    a malformed sequence yields U+FFFD and advances one byte. */

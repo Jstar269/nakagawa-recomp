@@ -13,7 +13,8 @@ the library and its whole dependency closure sat beside the executable.
 This module is the one mechanical staging step both packaging routes share:
 
 * ``tools/nk_cli.py build-package`` stages the closure into each built package;
-* the Makefile's ``player`` target stages it beside ``build/nakagawa_player.exe``.
+* the Makefile's ``player`` target stages it beside ``build/nakagawa_player.exe``
+  and copies the project's UI font assets beside the player.
 
 The closure is determined by walking each PE binary's import table
 (``objdump -p`` with a pure-Python PE fallback in ``tools/package_notices.py``),
@@ -196,6 +197,38 @@ def resolve_dll_closure(
     return ordered + [resolved[key] for key in sorted(resolved)]
 
 
+def stage_ui_font_assets(target_dir: Path, *, repo_root: Path = ROOT) -> list[str]:
+    """Copy the pinned UI font bundle beside an opt-in player build."""
+    source_root = repo_root / "assets" / "fonts" / "ui"
+    destination_root = target_dir / "assets" / "fonts" / "ui"
+    if not source_root.is_dir():
+        raise StageError(f"UI_FONT_ASSETS_MISSING: expected {source_root}")
+    if destination_root.exists() and not destination_root.is_dir():
+        raise StagingCollisionError(
+            f"UI font staging collision: {destination_root} is not a directory"
+        )
+    files = sorted(path for path in source_root.rglob("*") if path.is_file())
+    if not files:
+        raise StageError(f"UI_FONT_ASSETS_EMPTY: no files under {source_root}")
+    staged: list[str] = []
+    for source in files:
+        relative = source.relative_to(source_root)
+        destination = destination_root / relative
+        if destination.exists() and not destination.is_file():
+            raise StagingCollisionError(
+                f"UI font staging collision: {destination} is not a file"
+            )
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+        except OSError as exc:
+            raise StageError(
+                f"UI_FONT_STAGE_FAILED: could not copy {relative.as_posix()}: {exc}"
+            ) from exc
+        staged.append((Path("assets") / "fonts" / "ui" / relative).as_posix())
+    return staged
+
+
 def _files_equal(a: Path, b: Path) -> bool:
     try:
         if a.stat().st_size != b.stat().st_size:
@@ -223,6 +256,7 @@ def stage_runtime_dlls(
     notices: bool = True,
     repo_root: Path = ROOT,
     toolchain_root: Path | None = None,
+    include_ui_fonts: bool = False,
     refresh: bool = False,
 ) -> list[str]:
     """Stage the runtime DLL roots, their resolved closure, and (optionally)
@@ -231,7 +265,8 @@ def stage_runtime_dlls(
     ``roots`` defaults to :data:`RUNTIME_ROOTS`; ``env`` defaults to the process
     environment and supplies each root's override. A root already present in
     ``target_dir`` is kept (a package may pre-bundle it) but still contributes
-    its closure. Returns the sorted names of every file staged.
+    its closure. ``include_ui_fonts`` copies the project font bundle for the
+    standalone player target. Returns the sorted names of every file staged.
 
     With ``refresh=True``, a root or closure DLL already in ``target_dir`` is
     replaced by the resolved toolchain/override file when their bytes differ
@@ -285,6 +320,9 @@ def stage_runtime_dlls(
                 shutil.copyfile(source, destination)
             staged.add(source.name)
 
+    if include_ui_fonts:
+        staged.update(stage_ui_font_assets(target_dir, repo_root=repo_root))
+
     if notices:
         package_notices.generate_package_notices(
             target_dir, repo_root=repo_root, toolchain_root=toolchain_root
@@ -311,6 +349,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="copy only the DLLs; the caller generates THIRD_PARTY_NOTICES itself",
     )
     parser.add_argument(
+        "--include-ui-fonts",
+        action="store_true",
+        help="also stage the pinned UI font bundle beside the standalone player",
+    )
+    parser.add_argument(
         "--refresh",
         action="store_true",
         help="replace staged DLLs whose bytes differ from the resolved toolchain copy",
@@ -318,8 +361,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if os.name != "nt":
-        # POSIX hosts resolve shared libraries through the system loader; there
-        # is no staged-DLL layout to create. Nothing is silently skipped.
+        # POSIX hosts resolve shared libraries through the system loader. The
+        # opt-in player still needs its font assets beside the executable.
+        if args.include_ui_fonts:
+            try:
+                fonts = stage_ui_font_assets(args.target, repo_root=ROOT)
+            except StageError as exc:
+                print(f"stage_runtime_dlls: FAIL: {exc}", file=sys.stderr)
+                return 1
+            print(f"stage_runtime_dlls: staged {len(fonts)} UI font asset(s) into {args.target}")
+            return 0
         print(
             "stage_runtime_dlls: non-Windows host; shared libraries resolve "
             "through the system loader, nothing to stage"
@@ -327,14 +378,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     try:
-        staged = stage_runtime_dlls(args.target, notices=not args.no_notices, refresh=args.refresh)
+        staged = stage_runtime_dlls(
+            args.target,
+            notices=not args.no_notices,
+            include_ui_fonts=args.include_ui_fonts,
+            refresh=args.refresh,
+        )
     except (StageError, package_notices.PackageRouteError) as exc:
         print(f"stage_runtime_dlls: FAIL: {exc}", file=sys.stderr)
         return 1
+    font_assets = [name for name in staged if name.startswith("assets/fonts/ui/")]
+    dlls = [name for name in staged if name not in font_assets]
     print(
-        f"stage_runtime_dlls: staged {len(staged)} runtime DLL(s) into "
-        f"{args.target}: {', '.join(staged)}"
+        f"stage_runtime_dlls: staged {len(dlls)} runtime DLL(s) into "
+        f"{args.target}: {', '.join(dlls)}"
     )
+    if font_assets:
+        print(f"stage_runtime_dlls: staged {len(font_assets)} UI font asset(s) into {args.target}")
     return 0
 
 
