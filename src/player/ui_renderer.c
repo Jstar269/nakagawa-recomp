@@ -340,6 +340,7 @@ typedef enum {
 
 typedef struct {
     char iso_path[MAX_PATH_LEN];
+    uint32_t iso_hash;
     SDL_Texture *icon_tex;
     float icon_w;
     float icon_h;
@@ -586,28 +587,51 @@ static GameTextureCacheEntry *ui_game_texture_entry_for_job(UiArtJob *job) {
     return NULL;
 }
 
+static uint32_t ui_iso_path_hash(const char *path) {
+    uint32_t h = 2166136261u;
+    size_t len = 0;
+    for (const unsigned char *p = (const unsigned char *)path; *p && len < MAX_PATH_LEN - 1; p++, len++) {
+        h = (h ^ *p) * 16777619u;
+    }
+    return h;
+}
+
 static GameTextureCacheEntry *ui_get_game_texture_entry(const char *iso_path) {
     if (!iso_path || !*iso_path) return NULL;
+
+    uint32_t h = ui_iso_path_hash(iso_path);
+    uint32_t start = h & (GAME_TEXTURE_CACHE_SIZE - 1);
+    int first_empty = -1;
+
     for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
-        if (s_game_textures[i].iso_path[0] && strcmp(s_game_textures[i].iso_path, iso_path) == 0) {
-            return &s_game_textures[i];
+        int slot = (int)((start + (uint32_t)i) & (GAME_TEXTURE_CACHE_SIZE - 1));
+        if (!s_game_textures[slot].iso_path[0]) {
+            if (first_empty < 0) first_empty = slot;
+            break;
+        }
+        if (s_game_textures[slot].iso_hash == h &&
+            strcmp(s_game_textures[slot].iso_path, iso_path) == 0) {
+            return &s_game_textures[slot];
         }
     }
-    for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
-        if (!s_game_textures[i].iso_path[0]) {
-            strncpy(s_game_textures[i].iso_path, iso_path, sizeof(s_game_textures[i].iso_path) - 1);
-            s_game_textures[i].iso_path[sizeof(s_game_textures[i].iso_path) - 1] = '\0';
-            return &s_game_textures[i];
-        }
+
+    if (first_empty >= 0) {
+        int slot = first_empty;
+        s_game_textures[slot].iso_hash = h;
+        strncpy(s_game_textures[slot].iso_path, iso_path, sizeof(s_game_textures[slot].iso_path) - 1);
+        s_game_textures[slot].iso_path[sizeof(s_game_textures[slot].iso_path) - 1] = '\0';
+        return &s_game_textures[slot];
     }
+
     /* Every slot is claimed. Reuse the first one with no art job in flight:
        evicting a slot whose job is still running would drop the decoded art
        with no badge, log or user-visible boundary. If all slots have jobs in
        flight, return no slot; the card will retry on a later frame. */
     int reused = -1;
     for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
-        if (!s_game_textures[i].job) {
-            reused = i;
+        int slot = (int)((start + (uint32_t)i) & (GAME_TEXTURE_CACHE_SIZE - 1));
+        if (!s_game_textures[slot].job) {
+            reused = slot;
             break;
         }
     }
@@ -623,6 +647,7 @@ static GameTextureCacheEntry *ui_get_game_texture_entry(const char *iso_path) {
         s_game_textures[reused].pic1_tex = NULL;
     }
     memset(&s_game_textures[reused], 0, sizeof(s_game_textures[reused]));
+    s_game_textures[reused].iso_hash = h;
     strncpy(s_game_textures[reused].iso_path, iso_path, sizeof(s_game_textures[reused].iso_path) - 1);
     s_game_textures[reused].iso_path[sizeof(s_game_textures[reused].iso_path) - 1] = '\0';
     return &s_game_textures[reused];
@@ -639,6 +664,7 @@ static void ui_game_textures_shutdown(void) {
             s_game_textures[i].pic1_tex = NULL;
         }
         s_game_textures[i].iso_path[0] = '\0';
+        s_game_textures[i].iso_hash = 0;
         s_game_textures[i].icon_attempted = false;
         s_game_textures[i].icon_terminal = UI_ART_TERMINAL_PENDING;
         s_game_textures[i].pic1_attempted = false;
