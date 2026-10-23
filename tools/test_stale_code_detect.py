@@ -260,9 +260,9 @@ class TestStaleCodeWiring(unittest.TestCase):
     def test_dcache_handlers_preserve_success_results(self):
         registrations = (
             'sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_DcacheWritebackAll)',
-            'sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_CacheInvalidateAllOther)',
+            'sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_DcacheWritebackInvalidateAll)',
             'sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_DcacheRangeMaintenance)',
-            'sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_CacheInvalidateRangeOther)',
+            'sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_DcacheWritebackInvalidateRange)',
         )
         for registration in registrations:
             with self.subTest(registration=registration):
@@ -270,8 +270,10 @@ class TestStaleCodeWiring(unittest.TestCase):
 
         for handler, helper in (
             ("h_DcacheWritebackAll", "h_cache_invalidate_all_common"),
+            ("h_DcacheWritebackInvalidateAll", "h_cache_invalidate_all_common"),
             ("h_CacheInvalidateAllOther", "h_cache_invalidate_all_common"),
             ("h_DcacheRangeMaintenance", "h_cache_invalidate_range_common"),
+            ("h_DcacheWritebackInvalidateRange", "h_cache_invalidate_range_common"),
             ("h_CacheInvalidateRangeOther", "h_cache_invalidate_range_common"),
         ):
             body = HLE_C.split(f"static uint32_t {handler}(CpuState *s) {{", 1)[1].split("\n}\n", 1)[0]
@@ -287,7 +289,7 @@ class TestStaleCodeWiring(unittest.TestCase):
         between = HLE_C[gate:first_reg]
         self.assertNotIn("\n    }", between, "the opt-in gate must still be open")
         self.assertIn("void sr_hle_init(void)", HLE_C[:gate])
-        self.assertIn("sceKernelDcacheWritebackRange", HLE_C[gate - 2000:gate])
+        self.assertIn("hle_register_dcache_handlers();", HLE_C[gate - 2000:gate])
         for nid, name in ((0x920F104A, "sceKernelIcacheInvalidateAll"),
                           (0xD8779AC6, "sceKernelIcacheClearAll"),
                           (0xC2DF770E, "sceKernelIcacheInvalidateRange")):
@@ -298,13 +300,18 @@ class TestStaleCodeWiring(unittest.TestCase):
             self.assertNotIn(f"0x{nid:08x}", low[:gate],
                              f"{name} NID must not appear before the opt-in gate")
         # Data-cache range maintenance is routine around DMA (guest middleware calls it),
-        # so it registers unconditionally, once, ahead of the Icache gate.
+        # so it registers unconditionally, once, through the shared helper that both the
+        # production registry (ahead of the Icache gate) and the executable harness call.
+        helper = HLE_C.split("static void hle_register_dcache_handlers(void) {", 1)[1]
+        helper = helper.split("\n}\n", 1)[0].lower()
         for nid, name in ((0xBFA98062, "sceKernelDcacheInvalidateRange"),
                           (0x34B9FA9E, "sceKernelDcacheWritebackInvalidateRange")):
             self.assertEqual(low.count(f"0x{nid:08x}"), 1,
                              f"{name} NID must appear exactly once (no duplicate registration)")
-            self.assertIn(f"0x{nid:08x}", low[gate - 2000:gate],
-                          f"{name} must register unconditionally before the Icache gate")
+            self.assertIn(f"0x{nid:08x}", helper,
+                          f"{name} must register in the shared Dcache helper")
+        self.assertEqual(HLE_C.count("    hle_register_dcache_handlers();"), 2,
+                         "the production registry and the harness both call the Dcache helper")
 
     def test_lookup_stays_structural_with_pointer_to_detector(self):
         self.assertIn('#include "stale_code.h"', RECOMP_H)
