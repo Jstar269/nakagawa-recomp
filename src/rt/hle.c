@@ -10308,23 +10308,25 @@ static uint32_t h_OskGetStatus(CpuState *s) {
     else if (s_osk_status == OSK_FINISHED) { s_osk_status = OSK_NONE; s_osk_param = 0; }
     return (uint32_t)ret;                                  /* QUIT stands until ShutdownStart */
 }
-/* sceUtilityOskShutdownStart from INIT is refused and leaves the keyboard in INIT. Measured on
- * PSP-3000 6.6.1 (2026-10-21, probe CASE=fake-success): 0x80110001 (SCE_ERROR_UTILITY_INVALID_STATUS). */
+/* PSP-3000 measurements (#363): no keyboard returns WRONG_TYPE (0x80110005);
+ * INIT, VISIBLE and NONE after use refuse shutdown with INVALID_STATUS (0x80110001).
+ * QUIT accepts shutdown; GetStatus keeps the existing wind-down to NONE. */
 static uint32_t h_OskShutdown(CpuState *s) {
     (void)s;
-    if (s_osk_status == OSK_INIT) return 0x80110001u;
-    osk_abandon_request();                                 /* shut down before it was answered */
+    if (!s_osk_current) return 0x80110005u;
+    if (s_osk_status == OSK_NONE || s_osk_status == OSK_INIT || s_osk_status == OSK_VISIBLE)
+        return 0x80110001u;
+    osk_abandon_request();
     if (s_osk_status) s_osk_status = OSK_FINISHED;         /* then NONE on the next poll */
     return 0;
 }
-/* sceUtilityOskUpdate refreshes the keyboard on screen. Measured on PSP-3000 6.6.1 (2026-10-21, probe
- * CASE=fake-success): with no keyboard it returns 0x80110005 (SCE_ERROR_UTILITY_WRONG_TYPE), and in INIT
- * it returns 0x80110001 (SCE_ERROR_UTILITY_INVALID_STATUS). The VISIBLE and after-use states are not
- * measured yet, so they keep the refresh success they had before. */
+/* PSP-3000 measurements (#363): Update succeeds in VISIBLE (speed 0 and 1),
+ * returns WRONG_TYPE before a keyboard starts, and INVALID_STATUS in INIT, QUIT and NONE after use. */
 static uint32_t h_OskUpdate(CpuState *s) {
     (void)s;
     if (!s_osk_current) return 0x80110005u;
-    if (s_osk_status == OSK_INIT) return 0x80110001u;
+    if (s_osk_status == OSK_NONE || s_osk_status == OSK_INIT || s_osk_status == OSK_QUIT)
+        return 0x80110001u;
     return 0;
 }
 /* Test-only: forget the keyboard slot, abandoning any answer still pending. */
