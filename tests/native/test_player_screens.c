@@ -194,6 +194,25 @@ static bool build_library_golden(char *out, size_t cap, size_t *used) {
     }
     CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(1u),
           "right navigation moves focus to the adjacent title card");
+    {
+        /* Each later press moves on from where focus is now: right, right
+           again, then left back. */
+        static const NkUiNavDir dirs[3] = {NK_UI_DIR_RIGHT, NK_UI_DIR_LEFT, NK_UI_DIR_LEFT};
+        static const size_t expect[3] = {2u, 1u, 0u};
+        for (size_t step = 0u; step < 3u; ++step) {
+            NkUiEvent move;
+            memset(&move, 0, sizeof(move));
+            move.type = NK_UI_EV_NAV;
+            move.dir = dirs[step];
+            nk_ui_push_event(ui, &move);
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_library(ui, &model);
+            (void)nk_ui_end(ui);
+            CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(expect[step]),
+                  "repeated navigation keeps moving from the current card");
+        }
+        nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(1u));
+    }
     /* The prompt bar in each input mode: keyboard and mouse, then a pad. */
     {
         NkUiPrefs prefs;

@@ -519,6 +519,31 @@ def compute_effective_timeout(
 
 
 class NativePlayerUiTests(unittest.TestCase):
+    # The next UI is the default. These tests pin behaviour of the existing
+    # renderer, which stays for one release as the --ui=legacy fallback: its
+    # library layout and hit boxes, its disc-art workers and its package-status
+    # badges. They run with --ui=legacy unless they name a mode themselves.
+    LEGACY_RENDERER_TESTS = frozenset((
+        "test_completed_retry_clears_failure_when_cache_generation_changes",
+        "test_corrupt_art_is_failed_after_bounded_retries",
+        "test_decoder_rejection_is_failed_after_bounded_retries",
+        "test_exit_path_joins_iso_art_workers_and_tears_down_textures",
+        "test_failed_post_build_worker_start_survives_cache_invalidation_and_retries",
+        "test_iso_art_failures_reach_a_terminal_state_after_bounded_retries",
+        "test_iso_art_retry_rereads_only_the_image_that_is_still_missing",
+        "test_late_mounted_iso_art_retries_after_cooldown",
+        "test_library_keyboard_gamepad_navigation_and_picker",
+        "test_lost_worker_events_are_reclaimed_instead_of_stalling_the_card",
+        "test_mouse_click_adds_disc_through_sdl_event_loop",
+        "test_one_title_offline_art_and_stale_package_stay_off_frame_path",
+        "test_package_status_thread_creation_failure_is_unresolved_and_retryable",
+        "test_per_title_controller_mapping_choice",
+        "test_readable_art_without_png_decoder_is_unsupported",
+        "test_repeated_post_build_failures_keep_prior_title_retryable",
+        "test_staged_card_exposes_runtime_required_status",
+        "test_worker_start_failure_does_not_block_other_title_builds",
+    ))
+
     def run_player(
         self,
         view: str,
@@ -706,6 +731,8 @@ class NativePlayerUiTests(unittest.TestCase):
                 env.update(env_extra)
 
             args = [str(PLAYER_EXE), f"--view={'build-ready' if build_ready_test else view}"]
+            if ui_mode is None and self._testMethodName in self.LEGACY_RENDERER_TESTS:
+                ui_mode = "legacy"
             if ui_mode is not None:
                 args.append(f"--ui={ui_mode}")
             event_script = list(events)
@@ -842,13 +869,36 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(font_frames[1]["wizard_step"], "ready_launch")
         self.assertEqual(font_frames[1]["font_confirmed"], "1")
 
-    def test_next_ui_is_opt_in_by_flag_and_environment(self) -> None:
+    def test_next_ui_is_the_default_with_a_legacy_fallback(self) -> None:
+        marker = "[PLAYER_UI_TEST] UI_NEXT_ACTIVE"
         default_ui = self.run_player("empty")
         flag_ui = self.run_player("empty", ui_mode="next")
-        env_ui = self.run_player("empty", env_extra={"NK_UI": "next"})
-        self.assertNotIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", default_ui["stdout"])
-        self.assertIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", flag_ui["stdout"])
-        self.assertIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", env_ui["stdout"])
+        legacy_flag = self.run_player("empty", ui_mode="legacy")
+        legacy_env = self.run_player("empty", env_extra={"NK_UI": "legacy"})
+        flag_wins = self.run_player("empty", ui_mode="next", env_extra={"NK_UI": "legacy"})
+        self.assertNotIn(marker, legacy_flag["stdout"])
+        self.assertNotIn(marker, legacy_env["stdout"])
+        if marker not in flag_ui["stdout"]:
+            # Without its fonts the next UI cannot start and the player keeps
+            # the existing renderer, whatever was asked for.
+            self.assertIn("The next UI could not start", flag_ui["stderr"])
+            self.assertNotIn(marker, default_ui["stdout"])
+            return
+        self.assertIn(marker, default_ui["stdout"])
+        self.assertIn(marker, flag_wins["stdout"], "the command line wins over NK_UI")
+
+    def test_next_ui_mouse_and_keyboard_reach_the_add_card(self) -> None:
+        click = self.run_player("library", ("MOUSE_MOVE=794,257", "MOUSE_DOWN", "MOUSE_UP"))
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in click["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = click["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["picker"], "1", "a click on the add card opens the picker")
+        # The focus graph needs one laid-out frame before arrows can move.
+        keys = self.run_player("library", ("WAIT_MS=100", "KEY_RIGHT", "KEY_RIGHT", "KEY_RETURN"))
+        frames = keys["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["picker"], "1", "arrow keys reach the add card")
 
     def test_library_keyboard_gamepad_navigation_and_picker(self) -> None:
         run = self.run_player("library", ("KEY_RIGHT", "PAD_DPAD_RIGHT", "KEY_TAB", "KEY_RETURN"))
@@ -1884,6 +1934,8 @@ class NativePlayerUiTests(unittest.TestCase):
 
     def test_library_shortcuts_reach_settings_picker_and_quit(self) -> None:
         settings = self.run_player("library", ("KEY_S",), ui_mode="next")
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in settings["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
         frames = settings["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["view"], "settings")
