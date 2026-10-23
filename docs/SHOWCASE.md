@@ -63,6 +63,17 @@ Breakout smoke also checks the savedata file created under its temporary
 memory-stick root. These are synthetic host-runtime results, not PSP hardware
 evidence or commercial-title acceptance.
 
+The smoke also drives the scheduler pause path with `SR_PAUSE_SCRIPT`. Breakout pauses at
+VCOUNT 120 while Cross is scheduled for 121; the log checks frozen VCOUNT/VBLANK and guest
+time, no controller latch or GE window during the pause, and entry latency within two display
+periods. The scene schedules Cross at VCOUNT 12 and arms its pause at VCOUNT 18, after the guest
+has a scheduler turn to read the pad and submit the longer synthetic tone. The log checks that
+the tone is held with fade telemetry and no added underrun.
+Breakout pauses while savedata is active, verifies that Quit would be blocked, resumes, and
+lets the guest finish the save. A turbo offscreen run pauses before the capture window and still
+requires every presented capture, while a user-sourced request in headless mode must be refused.
+The timeout is extended only for runs with a scripted pause.
+
 The smoke's budget is counted on the guest display clock. Each frame run exits
 cleanly at vblank 180 (`SR_EXIT_AT_VBLANK`), three of the runtime's 60-vblank GE
 statistics windows, inside a 15-second host timeout. The Breakout savedata run

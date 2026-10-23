@@ -328,8 +328,9 @@ class SoakAuditTests(unittest.TestCase):
         host_fmt = self._format_for(per_ch, "AUDIOSTAT_HOST: state=%s driver=%s pushed=%llu")
         self.assertIn("queued=%d", host_fmt)
         self.assertIn("lead_ms=%ld", host_fmt)
+        self.assertIn("pause_enters=%llu", host_fmt)
         host_line = self._as_python_format(host_fmt) % ("active", "wasapi", 1000, 0, 0, 3,
-                                                        1024, 4410, 100)
+                                                        2, 480, 0, 1024, 4410, 100)
         self.assertRegex(host_line, soak_audit.AUDIOSTAT_HOST)
         self.assertEqual(soak_audit.lead_series(host_line), [100])
 

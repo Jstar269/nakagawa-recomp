@@ -1173,6 +1173,43 @@ uint32_t gui_headless_acceptance_presented_frames(void);
  * gui_headless_acceptance_complete for an acceptance launch; NULL (the default) never stops. */
 extern int (*sr_sched_stop_requested)(void);
 
+/* Player pause is a scheduler-context host stall. C9a owns the audio callbacks;
+ * the presenter, input claim and busy-reason callback are supplied by C9b. */
+typedef enum {
+    SR_PAUSE_FRAME_CONTINUE = 0,
+    SR_PAUSE_FRAME_RESUME = 1
+} SrPauseFrame;
+typedef enum {
+    SR_PAUSE_ACCEPTED = 0,
+    SR_PAUSE_ALREADY,
+    SR_PAUSE_REFUSED_NO_PRESENTER,
+    SR_PAUSE_REFUSED_AUTOMATION,
+    SR_PAUSE_REFUSED_KEYBOARD,
+    SR_PAUSE_REFUSED_STOPPING
+} SrPauseVerdict;
+typedef enum {
+    SR_PAUSE_SRC_USER = 1,
+    SR_PAUSE_SRC_PAD_LOST,
+    SR_PAUSE_SRC_SCRIPT
+} SrPauseSource;
+typedef struct SrPauseHost {
+    void (*audio_enter)(void);
+    void (*audio_leave)(void);
+    /* Test-script seam: nonzero once its pending audio stimulus is queued. */
+    int (*script_ready)(void);
+    /* Returns 0 or a refusal verdict (keyboard/stopping); reserved for C9b. */
+    int (*busy_reason)(void);
+    void (*enter)(void);
+    SrPauseFrame (*frame)(void);
+    void (*leave)(void);
+} SrPauseHost;
+extern const SrPauseHost *sr_sched_pause_host;
+SrPauseVerdict sched_pause_request(SrPauseSource source);
+int      sched_pause_active(void);
+int      sched_pause_pending(void);
+uint64_t sched_pause_total_ns(void);
+uint32_t sr_display_vcount(void);
+
 typedef uint32_t (*HleFn)(CpuState *s);
 void     sr_hle_register(uint32_t nid, const char *name, HleFn fn);
 void     sr_hle_init(void);     /* registers all built-in handlers (idempotent) */

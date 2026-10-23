@@ -30,6 +30,15 @@
 #endif
 
 void sr_register_all(void);
+extern void sr_audio_pause_enter(void);
+extern void sr_audio_pause_leave(void);
+extern int sr_audio_pause_script_ready(void);
+
+static const SrPauseHost s_driver_pause_host = {
+    .audio_enter = sr_audio_pause_enter,
+    .audio_leave = sr_audio_pause_leave,
+    .script_ready = sr_audio_pause_script_ready,
+};
 
 /* An opt-in file side channel for a parent launcher that cannot reliably own a
  * spawned child's stderr on every host backend. The normal runtime only writes
@@ -585,6 +594,7 @@ have_image:;
     /* An acceptance launch ends the scheduler once its requested frames were presented. */
     if (gui_headless_acceptance_requested())
         sr_sched_stop_requested = gui_headless_acceptance_complete;
+    sr_sched_pause_host = &s_driver_pause_host;
 
     if (use_sched) {
         /* Run with the cooperative scheduler so the game's threads interleave (the boot busy-
