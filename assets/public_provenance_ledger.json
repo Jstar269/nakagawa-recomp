@@ -186,7 +186,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0ec0bfb3de3a3bdab2f5aed762128826927581b8f17294a7193f8590ef9575c7"
+      "sha256": "0c9a732d36ccd7dbe68004dab9b241ba1a34a0e53285c67a3e46634061ce64bb"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
