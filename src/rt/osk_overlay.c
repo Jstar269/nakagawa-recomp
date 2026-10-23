@@ -11,7 +11,6 @@
  */
 #include "osk_overlay.h"
 
-#include <stdlib.h>
 #include <string.h>
 
 #define GRID_ROWS      6            /* the ten-key rows */
@@ -190,7 +189,8 @@ static int move_vertical(OskOverlay *o, int dir) {
             if (!cell_enabled(o, j)) continue;
             int jr, js, jspan;
             cell_geom(j, &jr, &js, &jspan);
-            int gap = abs(2 * js + jspan - centre);
+            int diff = 2 * js + jspan - centre;
+            int gap = diff < 0 ? -diff : diff;
             if (gap < best_gap) {
                 best_gap = gap;
                 best = j;
