@@ -1777,7 +1777,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "224bdaea3ae4659829f418bf38111ce106029600abc26ad6fb7d2e7d4442a063"
+      "sha256": "c51fd632e59805c094835a7505c5a9fa5f6c92e18bc808bb7f0a31467c6f63dc"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -2279,7 +2279,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "a41711643dc630f7ec9a9ab2679497aa94818fef1289d037c14f44d46ec14f34"
+      "sha256": "9861d62a92026eed3d89af970d334cd31cc8a9841b82e73ca629cd4efd5e9262"
     },
     {
       "path": "fixtures/psp_oracle/display_user_imports.S",
