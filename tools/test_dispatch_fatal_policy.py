@@ -106,6 +106,24 @@ class TestDispatchFatalPolicySource(unittest.TestCase):
         self.assertIn("longjmp(g_hle_jmp", fn_body)
         self.assertIn("HLE: unimplemented nid", fn_body)
 
+    def test_unregistered_nid_stop_is_named_for_the_player(self):
+        """The unregistered-NID stop writes the player's semantic-boundary line first."""
+        hle_src = HLE_C.read_text(encoding="utf-8")
+        fn_body = function_body(hle_src, "uint32_t sr_syscall(CpuState *s, uint32_t nid)")
+        record = fn_body.index("hle_record_unsupported_import_stop(nid, nm);")
+        self.assertLess(record, fn_body.index("_Exit(7)"))
+        helper = function_body(
+            hle_src,
+            "static void hle_record_unsupported_import_stop(uint32_t nid, const char *name)")
+        self.assertIn('getenv("SR_BOOT_EVENT_FILE")', helper)
+        self.assertIn('"unsupported-import-"', helper)
+        self.assertIn(
+            r'"BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=%u\n"', helper)
+        # Only the player's [a-z0-9-] alphabet reaches the line (player_read_semantic_stop).
+        self.assertIn("if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');", helper)
+        self.assertIn("if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))) ch = '-';",
+                      helper)
+
     def test_recomp_dispatch_miss_terminates(self):
         """dispatch() wrapper must terminate via exit(1) on dispatch rejection."""
         recomp_src = RECOMP_C.read_text(encoding="utf-8")
