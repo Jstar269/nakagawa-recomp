@@ -10471,6 +10471,32 @@ static uint32_t h_UmdGetErrorStat(CpuState *s) {
     return drive_stat == 0x32u ? 0u : 0x80010086u;
 }
 
+/* sceUmdReplaceProhibit() / sceUmdReplacePermit(): whether the user may swap the disc.
+ * The runtime serves one ISO and never replaces it, so either call only records the
+ * permission and returns 0, changed or not. Public behaviour reference: PPSSPP
+ * Core/HLE/sceUmd.cpp. Firmware error cases (for example before sceUmdActivate) are
+ * UNMEASURED; a PSP oracle case is listed for the maintainer. */
+static uint32_t s_umd_replace_permitted = 0u;
+static uint32_t h_UmdReplaceProhibit(CpuState *s) { (void)s; s_umd_replace_permitted = 0u; return 0; }
+static uint32_t h_UmdReplacePermit(CpuState *s) { (void)s; s_umd_replace_permitted = 1u; return 0; }
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_umd_replace_permitted(void) { return s_umd_replace_permitted; }
+#endif
+
+/* sceUmdGetDiscInfo(SceUmdDiscInfo *info): info->size (u32) must be 8, then info->type
+ * (u32) receives PSP_UMD_TYPE_GAME (0x10), the only medium this runtime serves.
+ * A size other than 8 or an unusable pointer returns SCE_ERROR_ERRNO_EINVAL
+ * (0x80010016). Public behaviour reference: PSPSDK pspumd.h (SceUmdDiscInfo,
+ * PSP_UMD_TYPE_GAME) and PPSSPP Core/HLE/sceUmd.cpp; UNMEASURED on hardware. */
+static uint32_t h_UmdGetDiscInfo(CpuState *s) {
+    (void)s;
+    uint32_t info = A0;
+    if (!info || !sr_guest_span_writable(info, 8u)) return 0x80010016u;
+    if (sr_r32(info) != 8u) return 0x80010016u;
+    sr_w32(info + 4u, 0x10u);
+    return 0;
+}
+
 
 /* Signal that the UMD drive is ready. Wake only threads waiting on the UMD object and
  * notify the registered callback if one exists. */
@@ -10568,6 +10594,9 @@ static void hle_register_umd_callback_handlers(void) {
     sr_hle_register(0xc6183d47u, "sceUmdActivate", h_UmdActivate);
     sr_hle_register(0xaee7404du, "sceUmdRegisterUMDCallBack", h_UmdRegisterUMDCallBack);
     sr_hle_register(0xbd2bde07u, "sceUmdUnRegisterUMDCallBack", h_UmdUnRegisterUMDCallBack);
+    sr_hle_register(0x87533940u, "sceUmdReplaceProhibit", h_UmdReplaceProhibit);
+    sr_hle_register(0xcbe9f02au, "sceUmdReplacePermit", h_UmdReplacePermit);
+    sr_hle_register(0x340b7686u, "sceUmdGetDiscInfo", h_UmdGetDiscInfo);
 }
 
 /* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
@@ -23887,6 +23916,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
     sr_hle_register(0xfe707fdf, "sceKernelAllocMemoryBlock", h_AllocMemoryBlock);
     sr_hle_register(0x342061e5, "sceKernelSetCompiledSdkVersion370", h_SetCompiledSdkVersion);
+    sr_hle_register(0x315ad3a0u, "sceKernelSetCompiledSdkVersion380_390", h_SetCompiledSdkVersion);
     sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
     sr_hle_register(0x4c06e472, "sceGeContinue", h_GeContinue);
     sr_hle_register(0xb448ec0d, "sceGeBreak", h_GeBreak);
@@ -24312,6 +24342,36 @@ static int link_started_export(CpuState *s, uint32_t nid) {
     return 1;
 }
 
+/* An import with no handler stops the run (exit 7). Name that stop for the player the
+ * way the dispatcher names its own: one semantic-boundary line in SR_BOOT_EVENT_FILE,
+ * "unsupported-import-<name>" in the player's [a-z0-9-] alphabet, so its card says the
+ * game stopped early at that import instead of showing a bare child exit code (#308). */
+static void hle_record_unsupported_import_stop(uint32_t nid, const char *name) {
+    const char *path = getenv("SR_BOOT_EVENT_FILE");
+    if (!path || !path[0]) return;
+    char boundary[96];
+    int written = snprintf(boundary, sizeof(boundary), "unsupported-import-");
+    if (written <= 0) return;
+    size_t at = (size_t)written;
+    if (name && name[0]) {
+        for (const char *c = name; *c && at + 1u < sizeof(boundary); c++) {
+            char ch = *c;
+            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+            if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))) ch = '-';
+            boundary[at++] = ch;
+        }
+        boundary[at] = '\0';
+    } else {
+        snprintf(boundary + at, sizeof(boundary) - at, "0x%08x", nid);
+    }
+    FILE *events = fopen(path, "ab");
+    if (!events) return;
+    fprintf(events,
+            "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=%u\n",
+            boundary, 308u);
+    fclose(events);
+}
+
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_tail_assert_empty("tail-transfer-live-at-syscall");
     sr_hle_init();
@@ -24362,6 +24422,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
             fprintf(stderr, "HLE: unimplemented nid 0x%08x (%s) (thread uid 0x%x)\n"
                             "     -> add a handler in src/rt/hle.c: sr_hle_register(0x%08xu, \"%s\", h_...);\n",
                     nid, nm ? nm : "unknown", sched_current_uid(), nid, nm ? nm : "sceUnknown");
+            hle_record_unsupported_import_stop(nid, nm);
         }
         sr_hit_hle = 1;
         /* Under the fiber scheduler, longjmp across fibers is invalid; stop the process cleanly

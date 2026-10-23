@@ -224,6 +224,12 @@ MM-DD-YYYY; without either the line reads `(dev build)`. No tag or release is im
 
 ### First run (C7)
 
+Built now: the setup wizard's five steps (Welcome, Game, Verify, Fonts, Ready) on the existing wizard state, in the
+dialog card the build and error screens use. A strip of step chips sits at the top (current: accent fill; done:
+`ready` edge and a check); each step has one primary action first, then Back and Cancel. Every control returns
+`PLAYER_UI_ACTION_WIZARD` with an op that `main.c` runs through the handlers the existing wizard calls. The Welcome
+step says the privacy promise once. The left rail below is the target layout for a later pass:
+
 - Left rail 260 px (32/24 px padding, `line` edge on the right) listing the steps: Welcome, Disc image, System
   fonts, Build, Play. There is no key-file step. Each step is 44 px with a 26 px numbered circle (`line_strong`
   edge); current: accent fill and ink number, name in SemiBold; done: `ready` edge and number; failed: `error`.

@@ -29,6 +29,8 @@
 #define LIBRARY_ID_EMPTY_TITLE 0x10000004u
 #define LIBRARY_ID_EMPTY_TEXT 0x10000006u
 #define LIBRARY_ID_EMPTY_WRAP 0x10000061u
+#define LIBRARY_ID_EMPTY_ACTIONS 0x10000062u
+#define LIBRARY_ID_EMPTY_NOTE 0x10000063u
 
 static NkUiSizing sizing_grow(void) {
     NkUiSizing sizing = {NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
@@ -154,16 +156,35 @@ static PlayerUiAction library_empty(NkUi *ui) {
             nk_ui_shapes(ui, LIBRARY_ID_EMPTY_ICON + 0x100u, sizing_grow(), sizing_grow(), &disc_art);
             nk_ui_end_container(ui);
         }
-        nk_ui_text_role(ui, LIBRARY_ID_EMPTY_TITLE, "Your library is empty",
+        nk_ui_text_role(ui, LIBRARY_ID_EMPTY_TITLE, "Add a game you own",
                         NK_UI_TYPE_TITLE, theme->paper);
         nk_ui_text_role(ui, LIBRARY_ID_EMPTY_TEXT,
-                        "Select a PSP ISO you own to add a game to your library. "
-                        "No game data comes with the player, and nothing is downloaded.",
+                        "The setup wizard takes a decrypted disc image (.iso) of a PSP game you "
+                        "own, checks it, and gets it ready to play on this PC. No game data comes "
+                        "with the player.",
                         NK_UI_TYPE_BODY, theme->muted);
-        if (nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_EMPTY_ADD, "Add a PSP disc image",
-                         NK_UI_BUTTON_PRIMARY)) {
-            result = action(PLAYER_UI_ACTION_ADD_DISC, 0u);
+        {
+            NkUiLayout actions = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                             NK_UI_SPACE_3);
+            actions.align_y = NK_UI_ALIGN_CENTER;
+            actions.padding_top = NK_UI_SPACE_2;
+            if (nk_ui_begin_container(ui, LIBRARY_ID_EMPTY_ACTIONS, &actions, NULL)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD, "Start setup wizard",
+                                 NK_UI_BUTTON_PRIMARY | NK_UI_BUTTON_LARGE)) {
+                    result = action(PLAYER_UI_ACTION_START_WIZARD, 0u);
+                }
+                /* Not a default: START SETUP WIZARD is the one default action. */
+                if (nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_EMPTY_ADD, "Choose a disc image",
+                                 NK_UI_BUTTON_LARGE | NK_UI_BUTTON_NOT_DEFAULT)) {
+                    result = action(PLAYER_UI_ACTION_ADD_DISC, 0u);
+                }
+                nk_ui_end_container(ui);
+            }
         }
+        nk_ui_text_role(ui, LIBRARY_ID_EMPTY_NOTE,
+                        "Or drop an .iso onto this window. Nothing is downloaded until you agree "
+                        "to fetch the build tools.",
+                        NK_UI_TYPE_CAPTION, theme->dim);
         nk_ui_end_container(ui);
     }
     nk_ui_end_container(ui);

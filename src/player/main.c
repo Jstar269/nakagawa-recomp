@@ -438,7 +438,19 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
              ((event->key.key == SDLK_RETURN || event->key.key == SDLK_KP_ENTER) &&
               (event->key.mod & SDL_KMOD_ALT)))) {
             player_app_toggle_launcher_fullscreen(app);
-        } else if (use_next_ui) {
+        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_O &&
+                   !app->wizard.is_extracting) {
+            /* The library's shortcuts work the same in the next UI: O adds a
+               disc image, S opens Settings, Esc at the library asks to quit. */
+            app->request_file_picker = true;
+        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_S) {
+            player_app_set_view(app, VIEW_SETTINGS);
+        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_ESCAPE &&
+                   player_view_is_library(app->active_view) &&
+                   player_ui_nk_at_library_root(next_ui)) {
+            if (player_confirm_quit(window, app)) *running = false;
+        } else if (use_next_ui && !(event->key.key == SDLK_ESCAPE &&
+                                    !player_view_is_library(app->active_view))) {
             return player_ui_nk_handle_event(next_ui, event);
         } else if (event->key.key == SDLK_ESCAPE) {
             if (app->active_view == VIEW_SETUP_WIZARD) {
@@ -529,7 +541,15 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         }
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
+        if (use_next_ui && event->gbutton.button == SDL_GAMEPAD_BUTTON_START &&
+            player_view_is_library(app->active_view)) {
+            player_app_set_view(app, VIEW_SETTINGS);
+            return true;
+        }
+        if (use_next_ui && !(event->gbutton.button == SDL_GAMEPAD_BUTTON_EAST &&
+                             !player_view_is_library(app->active_view))) {
+            return player_ui_nk_handle_event(next_ui, event);
+        }
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings)) {
             NkBindingSource src;
@@ -694,12 +714,128 @@ static void player_ui_open_save_folder(PlayerApp *app, size_t title_index) {
 #endif
 }
 
+/* Saves the inspected title to the library and selects it, as the existing
+   wizard's Ready step does. Returns the title's index, or -1. */
+static int player_ui_wizard_save_title(PlayerApp *app) {
+    int idx;
+    if (app->inspecting_game.disc_id[0] == '\0') return -1;
+    player_app_add_game(app, &app->inspecting_game);
+    idx = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
+    if (idx >= 0) app->selected_game_index = idx;
+    return idx;
+}
+
+/* The setup wizard's controls: the same handlers the existing renderer's
+   wizard buttons call (render_setup_wizard in ui_renderer.c). */
+static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
+    switch (op) {
+        case PLAYER_UI_WIZARD_NEXT:
+            player_app_wizard_next(app);
+            break;
+        case PLAYER_UI_WIZARD_BACK:
+            player_app_wizard_back(app);
+            break;
+        case PLAYER_UI_WIZARD_CANCEL:
+            player_app_wizard_cancel(app);
+            break;
+        case PLAYER_UI_WIZARD_CHOOSE_ISO:
+            app->request_file_picker = true;
+            break;
+        case PLAYER_UI_WIZARD_CHOOSE_DIFFERENT:
+            app->wizard.step = WIZARD_STEP_SELECT_GAME;
+            app->request_file_picker = true;
+            break;
+        case PLAYER_UI_WIZARD_ADD_EXPERIMENTAL:
+            if (player_app_add_game(app, &app->inspecting_game)) {
+                player_app_set_view(app, VIEW_LIBRARY);
+            } else {
+                player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                     "The experimental title could not be stored. The library "
+                                     "may be full, or the user data directory is not writable.",
+                                     "Return to Library", VIEW_LIBRARY);
+            }
+            break;
+        case PLAYER_UI_WIZARD_ACCEPT_FONTS:
+            app->wizard.font_confirmed = true;
+            player_app_wizard_next(app);
+            break;
+        case PLAYER_UI_WIZARD_CYCLE_RESOLUTION:
+            player_app_cycle_resolution_scale(app, 1);
+            break;
+        case PLAYER_UI_WIZARD_IMPORT_FONTS:
+            app->request_font_folder_picker = true;
+            break;
+        case PLAYER_UI_WIZARD_REMOVE_FONTS:
+            player_app_fonts_remove_imports(app);
+            break;
+        case PLAYER_UI_WIZARD_FINISH: {
+            bool runtime_ready = app->inspecting_game.is_prepared;
+            int idx = player_ui_wizard_save_title(app);
+            if (idx >= 0 && runtime_ready) (void)player_app_launch_game(app, idx);
+            player_app_set_view(app, VIEW_LIBRARY);
+            break;
+        }
+        case PLAYER_UI_WIZARD_GO_TO_LIBRARY:
+            (void)player_ui_wizard_save_title(app);
+            player_app_wizard_cancel(app);
+            break;
+        case PLAYER_UI_WIZARD_NONE:
+        default:
+            break;
+    }
+}
+
 static void player_ui_nk_apply_action(PlayerApp *app,
                                      const PlayerUiAction *action) {
     int index;
     if (app == NULL || action == NULL) return;
+    if (action->kind == PLAYER_UI_ACTION_WIZARD) {
+        player_ui_wizard_apply(app, (PlayerUiWizardOp)action->primary);
+        return;
+    }
     if (action->kind == PLAYER_UI_ACTION_ADD_DISC) {
         app->request_file_picker = true;
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_START_WIZARD) {
+        player_app_start_setup_wizard(app);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_OPEN_SETTINGS) {
+        player_app_set_view(app, VIEW_SETTINGS);
+        return;
+    }
+    /* The build, build tool download and error screens: the same handlers
+       the existing renderer's buttons call. */
+    if (action->kind == PLAYER_UI_ACTION_CANCEL_BUILD) {
+        player_app_cancel_package_build(app);
+        player_app_set_view(app, VIEW_LIBRARY);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_LEAVE_BUILD) {
+        player_app_set_view(app, VIEW_LIBRARY);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_PREREQ_ACCEPT) {
+        player_app_prereq_accept(app, app->prerequisites.bootstrap_python);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_PREREQ_CANCEL) {
+        player_app_prereq_cancel(app);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER) {
+        if (app->last_error.return_view == VIEW_PREREQ_CONSENT &&
+            app->prerequisites.phase == PLAYER_PREREQ_FAILED) {
+            player_app_prereq_retry(app);
+        } else {
+            player_app_set_view(app, app->last_error.return_view);
+            if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
+                strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0 ||
+                strncmp(app->last_error.error_code, "PBP_", 4) == 0) {
+                app->request_file_picker = true;
+            }
+        }
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_OPEN_NOTICES) {
@@ -733,14 +869,54 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     }
 }
 
+/* With the next UI on, the launcher switches presentation with the renderer
+   that draws the frame: nk_ui lays out at the window's real size, and the
+   screens still drawn by ui_renderer.c (setup wizard, settings, build progress,
+   dialogs) keep the 1280x720 letterbox they were designed for. */
+static bool s_switch_presentation = false;
+static int s_presentation = -1; /* 0 letterboxed, 1 native */
+
+static void player_use_presentation(PlayerApp *app, SDL_Renderer *renderer,
+                                    SDL_Window *window, bool native) {
+    int want = native ? 1 : 0;
+    if (!s_switch_presentation || s_presentation == want) return;
+    /* The app's sizes change only when SDL took the new presentation; a failed
+       switch keeps the old one, and the next frame tries again. */
+    if (native) {
+        int w = 0;
+        int h = 0;
+        if (!SDL_SetRenderLogicalPresentation(renderer, 0, 0,
+                                              SDL_LOGICAL_PRESENTATION_DISABLED)) {
+            return;
+        }
+        if (SDL_GetWindowSize(window, &w, &h) && w > 0 && h > 0) {
+            app->window_width = w;
+            app->window_height = h;
+        }
+        app->logical_ui = false;
+    } else {
+        if (!SDL_SetRenderLogicalPresentation(renderer, PLAYER_UI_LOGICAL_WIDTH,
+                                              PLAYER_UI_LOGICAL_HEIGHT,
+                                              SDL_LOGICAL_PRESENTATION_LETTERBOX)) {
+            return;
+        }
+        app->logical_ui = true;
+        app->window_width = PLAYER_UI_LOGICAL_WIDTH;
+        app->window_height = PLAYER_UI_LOGICAL_HEIGHT;
+    }
+    s_presentation = want;
+}
+
 static void player_render_active_ui(PlayerUiNk *next_ui, PlayerApp *app,
                                     SDL_Renderer *renderer, SDL_Window *window,
                                     UiInput *input) {
     PlayerUiAction action;
-    if (player_ui_nk_view_active(next_ui, app) &&
-        player_ui_nk_render(next_ui, app, renderer, window, &action)) {
+    bool next = player_ui_nk_view_active(next_ui, app);
+    player_use_presentation(app, renderer, window, next);
+    if (next && player_ui_nk_render(next_ui, app, renderer, window, &action)) {
         player_ui_nk_apply_action(app, &action);
     } else {
+        player_use_presentation(app, renderer, window, false);
         ui_render_frame(renderer, app, input);
     }
 }
@@ -1068,6 +1244,7 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
             if (strcmp(token + 4, keys[i].name) == 0) {
                 event->type = SDL_EVENT_KEY_DOWN;
                 event->key.key = keys[i].key;
+                event->key.down = true;
                 return 1;
             }
         }
@@ -1088,6 +1265,7 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
             if (strcmp(token + 4, buttons[i].name) == 0) {
                 event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
                 event->gbutton.button = buttons[i].button;
+                event->gbutton.down = true;
                 return 1;
             }
         }
@@ -3322,6 +3500,7 @@ int main(int argc, char *argv[]) {
         puts("[PLAYER_UI_TEST] UI_NEXT_ACTIVE");
     }
 #endif
+    s_switch_presentation = interactive_window && next_ui != NULL;
     bool logical_presentation_set = interactive_window && next_ui == NULL &&
         SDL_SetRenderLogicalPresentation(
             renderer, PLAYER_UI_LOGICAL_WIDTH, PLAYER_UI_LOGICAL_HEIGHT,
@@ -3694,6 +3873,26 @@ int main(int argc, char *argv[]) {
                         fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL event.\n");
                     } else if (scripted_event.type == SDL_EVENT_QUIT) {
                         ui_test_quit_queued = true;
+                    } else if (scripted_event.type == SDL_EVENT_KEY_DOWN ||
+                               scripted_event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                        /* A scripted press is a whole tap: the release follows in
+                           the same frame, as a person's key or button does. The
+                           next UI's input model ignores a second press of a key it
+                           still holds. */
+                        SDL_Event release = scripted_event;
+                        if (release.type == SDL_EVENT_KEY_DOWN) {
+                            release.type = SDL_EVENT_KEY_UP;
+                            release.key.down = false;
+                        } else {
+                            release.type = SDL_EVENT_GAMEPAD_BUTTON_UP;
+                            release.gbutton.down = false;
+                        }
+                        if (!SDL_PushEvent(&release)) {
+                            ui_test_failed = true;
+                            running = false;
+                            fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL "
+                                            "release event.\n");
+                        }
                     }
                 }
             } else if (next_event == 0) {
