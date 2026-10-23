@@ -1612,7 +1612,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "48a34f4b196955b11fe3a97c1428948de9bb9af37fd4345bc49706f61d9a0d97"
+      "sha256": "2aa0a0474aeae4de74f9205538dde86ed69a7e7241bb04176e6663b33ca80776"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -2114,7 +2114,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "31d2832e1f075c03e92518210f407ecdb6c34218e7941bb121a41cf0a353001f"
+      "sha256": "3b8fcfc6b0629e1d442a6d8b0ca7880dcbe03262bc443f3e693d07a55302a924"
     },
     {
       "path": "fixtures/psp_oracle/display_user_imports.S",
@@ -6684,7 +6684,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eaafafd432bff4f030f5afb4df88c0b52377748c8ad0d97df2f9dd1d7c877eb3"
+      "sha256": "300ec7d69eac45b7ce2cb5700a7451b06e84000d9a2b0eb8d000af203a21d268"
     },
     {
       "path": "tests/native/pgf_verdict_harness.c",
@@ -8188,7 +8188,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9c60df31a85d62cfc0d0a6754621bc4e47b78c40ef4c9b8a800a7f6247af9cae"
+      "sha256": "62b8d73dc7276d0bb85b7dcb6532c31fcdd6efc9b8959a2a7916d59372b7c970"
     },
     {
       "path": "tools/pngcmp.py",
@@ -10161,7 +10161,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "30a3505f388912dba681d8beb2fa5e26deb6f0bcd83c81ad5f233e85d40413e9"
+      "sha256": "6a47951bde9df7d8a7bf991dfd4654ad58c8afff77ef8df4838808fb0fbee329"
     },
     {
       "path": "tools/test_platform_ladder.py",
