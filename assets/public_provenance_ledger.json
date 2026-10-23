@@ -7272,7 +7272,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a6d5b62b3fe8338b1f0239f7914fbbcf466ca39e175823fe8513f7886e86cd6a"
+      "sha256": "7d9ecf67c2b7c53c9eded6f985337b05d0a51e714722babe5b37a5cd65a9efd8"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -8998,7 +8998,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "81e66b6766c35d98b2fd0a335f11ebe81a4e6a37bfbaa2abdd6e50a9db000986"
+      "sha256": "5c8eca4abdeb8434cc29877067a2a767e0b83cab74b58769edf7f27aaa779df7"
     },
     {
       "path": "tools/test_codegen_madd_msub.py",
