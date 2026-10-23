@@ -58,7 +58,7 @@ static void set_test_viewport(NkUi *ui, int width, int height) {
 static const PlayerUiTitle k_titles[] = {
     {"Synthetic Showcase Scene", "TEST00007", "Ready", "",
      "Partially works", "Showcase profile-zero acceptance remains open.", "",
-     "PLAY NOW", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Partially works", "Showcase profile-zero acceptance remains open.", "",
@@ -77,7 +77,7 @@ static const PlayerUiTitle k_titles[] = {
      "Works", "Source-owned runtime fixture.", "", "BUILD PACKAGE",
      "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true, 0u, NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
-     "Works", "Source-owned runtime fixture.", "", "PLAY NOW",
+     "Works", "Source-owned runtime fixture.", "", "PLAY",
      "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true, 0u, NULL}
 };
 
@@ -190,6 +190,25 @@ static bool build_library_golden(char *out, size_t cap, size_t *used) {
     }
     CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(1u),
           "right navigation moves focus to the adjacent title card");
+    /* The prompt bar in each input mode: keyboard and mouse, then a pad. */
+    {
+        NkUiPrefs prefs;
+        memset(&prefs, 0, sizeof(prefs));
+        prefs.prompt_style = NK_UI_PROMPT_KEYCAPS;
+        nk_ui_set_prefs(ui, &prefs);
+        if (!append_case(out, cap, used, "library-prompts-keyboard", ui, &model, NULL)) {
+            nk_ui_destroy(ui);
+            return false;
+        }
+        prefs.prompt_style = NK_UI_PROMPT_LETTERS_A_SOUTH;
+        nk_ui_set_prefs(ui, &prefs);
+        if (!append_case(out, cap, used, "library-prompts-controller", ui, &model, NULL)) {
+            nk_ui_destroy(ui);
+            return false;
+        }
+        prefs.prompt_style = NK_UI_PROMPT_NEUTRAL;
+        nk_ui_set_prefs(ui, &prefs);
+    }
     nk_ui_destroy(ui);
     return true;
 }
@@ -718,6 +737,10 @@ static int capture_screens(const char *directory) {
     if (!capture_one(&rig, "title", NULL, &title)) goto done;
     nk_ui_focus(ui, PLAYER_UI_ID_TITLE_SAVE_FOLDER);
     if (!capture_one(&rig, "title-save-folder-focused", NULL, &title)) goto done;
+    capture_prefs(ui, NK_UI_PROMPT_LETTERS_A_SOUTH, false);
+    nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
+    if (!capture_one(&rig, "title-controller", NULL, &title)) goto done;
+    capture_prefs(ui, NK_UI_PROMPT_KEYCAPS, false);
     title.title = &setup_fixture;
     title.title_index = 4u;
     setup_fixture.library_status_detail =
