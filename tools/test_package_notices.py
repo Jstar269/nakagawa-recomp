@@ -100,6 +100,20 @@ class TestPackageNotices(unittest.TestCase):
         self.assertIn(required_notice, str(ctx.exception))
         self.assertIn("FFmpeg ATRAC3+ subset", str(ctx.exception))
 
+    def test_malformed_copyright_notices_fail_closed(self) -> None:
+        """A copyright_notices value that is not a list of strings is a named failure, not garbled notices."""
+        (self.pkg_dir / "mygame.exe").write_bytes(b"MZ\0\0exe")
+        real = package_notices.load_component_inventory()
+        for bad in ("Copyright (c) PPSSPP Project", {"line": "x"}, ["ok", 3]):
+            inventory = json.loads(json.dumps(real))
+            linked = next(c for c in inventory["native"]["linked_components"] if c.get("copyright_notices"))
+            linked["copyright_notices"] = bad
+            with self.subTest(bad=bad), \
+                    mock.patch.object(package_notices, "load_component_inventory", return_value=inventory):
+                with self.assertRaises(PackageRouteError) as ctx:
+                    package_notices.generate_package_notices(self.pkg_dir, repo_root=ROOT)
+                self.assertIn("LICENSE_RECORD_MALFORMED", str(ctx.exception))
+
     def test_notices_bundle_generation_with_in_tree_license_texts(self) -> None:
         """Bundle generation reads the checked-in texts, not a host toolchain."""
         # Synthetic package contents

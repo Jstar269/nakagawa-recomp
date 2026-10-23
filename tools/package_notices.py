@@ -558,8 +558,17 @@ def generate_package_notices(
             component["version"] = linked["upstream_revision"]
         if linked.get("relink_doc"):
             component["relink_doc"] = linked["relink_doc"]
-        if linked.get("copyright_notices"):
-            component["copyright_notices"] = list(linked["copyright_notices"])
+        notices = linked.get("copyright_notices")
+        if notices is not None:
+            # A string would iterate as characters and a dict as keys: refuse anything but a list of lines.
+            if not isinstance(notices, list) or not all(isinstance(line, str) for line in notices):
+                raise PackageRouteError(
+                    "PACKAGE_LICENSE_RECORD_MISSING",
+                    f"LICENSE_RECORD_MALFORMED: linked component {linked.get('id', linked['name'])!r} "
+                    f"copyright_notices must be a list of strings in {COMPONENTS_IDENTITY}",
+                )
+            if notices:
+                component["copyright_notices"] = list(notices)
         components.append(component)
         license_files_to_copy.append((slug, sources[0][0], linked["name"]))
         for extra_src, extra_display in sources[1:]:

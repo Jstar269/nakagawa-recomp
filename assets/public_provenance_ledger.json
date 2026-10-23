@@ -994,7 +994,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b2d08fd7718a2ad55a4b1414b780f91c484914a72be8a61b576560232389b13f"
+      "sha256": "f237a231a418ec3df82f68c673bb1f9a8c08ccbb2e105fe7940dc889a995d6c0"
     },
     {
       "path": "assets/title_manifest.schema.json",
@@ -8043,7 +8043,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7d421aaf0f3ffda016208c12a5ee4201710f20839c3c695e0cdf727cceda58d9"
+      "sha256": "7136afba58d8604ce9b0eba225511d7140a33a55c71199385215b66c20ddfb14"
     },
     {
       "path": "tools/padscript_from_log.py",
@@ -9992,7 +9992,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ad63ef8e22a5f66b02d90749323e8830710c851274bdea0b0d1bad04fb38e421"
+      "sha256": "7987ee1df6f194ab31963e2ee5c8726df46ccf171f30909bbe7e1456db40d341"
     },
     {
       "path": "tools/test_padscript_from_log.py",
