@@ -396,6 +396,9 @@ static void test_screen_actions(void) {
     action = activate_library_button(PLAYER_UI_ID_LIBRARY_EMPTY_ADD, &library);
     CHECK(action.kind == PLAYER_UI_ACTION_ADD_DISC,
           "empty Library action requests a PSP disc image");
+    action = activate_library_button(PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD, &library);
+    CHECK(action.kind == PLAYER_UI_ACTION_START_WIZARD,
+          "the empty Library's main action starts the setup wizard");
     library.titles = k_titles;
     library.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
     action = activate_library_button(PLAYER_UI_ID_LIBRARY_ITEM(2u), &library);

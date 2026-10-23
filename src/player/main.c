@@ -442,7 +442,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                    !app->wizard.is_extracting) {
             /* The library's shortcuts work the same in the next UI: O adds a
                disc image, S opens Settings, Esc at the library asks to quit. */
-            trigger_file_picker(window, app);
+            app->request_file_picker = true;
         } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_S) {
             player_app_set_view(app, VIEW_SETTINGS);
         } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_ESCAPE &&
@@ -1118,6 +1118,7 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
             if (strcmp(token + 4, keys[i].name) == 0) {
                 event->type = SDL_EVENT_KEY_DOWN;
                 event->key.key = keys[i].key;
+                event->key.down = true;
                 return 1;
             }
         }
@@ -1138,6 +1139,7 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
             if (strcmp(token + 4, buttons[i].name) == 0) {
                 event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
                 event->gbutton.button = buttons[i].button;
+                event->gbutton.down = true;
                 return 1;
             }
         }
@@ -3745,6 +3747,21 @@ int main(int argc, char *argv[]) {
                         fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL event.\n");
                     } else if (scripted_event.type == SDL_EVENT_QUIT) {
                         ui_test_quit_queued = true;
+                    } else if (scripted_event.type == SDL_EVENT_KEY_DOWN ||
+                               scripted_event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                        /* A scripted press is a whole tap: the release follows in
+                           the same frame, as a person's key or button does. The
+                           next UI's input model ignores a second press of a key it
+                           still holds. */
+                        SDL_Event release = scripted_event;
+                        if (release.type == SDL_EVENT_KEY_DOWN) {
+                            release.type = SDL_EVENT_KEY_UP;
+                            release.key.down = false;
+                        } else {
+                            release.type = SDL_EVENT_GAMEPAD_BUTTON_UP;
+                            release.gbutton.down = false;
+                        }
+                        (void)SDL_PushEvent(&release);
                     }
                 }
             } else if (next_event == 0) {
