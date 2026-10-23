@@ -78,6 +78,143 @@ static void write_dir_record(uint8_t *sec, size_t offset, const char *name,
     memcpy(sec + offset + 33, name, name_len);
 }
 
+
+static void test_nk_json_validate_utf8_edge_cases(void) {
+    printf("[HOSTILE_TEST] Testing nk_json_validate_utf8 boundary and edge cases...\n"); fflush(stdout);
+
+    /* 1. Empty string & valid ASCII */
+    assert(nk_json_validate_utf8((const uint8_t *)"", 0) == true);
+    assert(nk_json_validate_utf8((const uint8_t *)"hello world", 11) == true);
+    {
+        uint8_t ascii_all[128];
+        for (int i = 0; i <= 0x7F; i++) ascii_all[i] = (uint8_t)i;
+        assert(nk_json_validate_utf8(ascii_all, sizeof(ascii_all)) == true);
+    }
+
+    /* 2. Valid multi-byte sequences */
+    /* 2-byte: U+0080 to U+07FF (e.g. 0xC2 0x80, 0xDF 0xBF) */
+    {
+        static const uint8_t valid_2byte[] = { 0xC2, 0x80, 0xDF, 0xBF };
+        assert(nk_json_validate_utf8(valid_2byte, sizeof(valid_2byte)) == true);
+    }
+    /* 3-byte: U+0800 to U+FFFF except surrogates */
+    {
+        static const uint8_t valid_3byte[] = {
+            0xE0, 0xA0, 0x80,  /* U+0800 min 3-byte */
+            0xED, 0x9F, 0xBF,  /* U+D7FF max before surrogates */
+            0xEE, 0x80, 0x80,  /* U+E000 min after surrogates */
+            0xEF, 0xBF, 0xBF   /* U+FFFF max 3-byte */
+        };
+        assert(nk_json_validate_utf8(valid_3byte, sizeof(valid_3byte)) == true);
+    }
+    /* 4-byte: U+10000 to U+10FFFF */
+    {
+        static const uint8_t valid_4byte[] = {
+            0xF0, 0x90, 0x80, 0x80,  /* U+10000 min 4-byte */
+            0xF4, 0x8F, 0xBF, 0xBF   /* U+10FFFF max valid Unicode */
+        };
+        assert(nk_json_validate_utf8(valid_4byte, sizeof(valid_4byte)) == true);
+    }
+
+    /* 3. Overlong sequences (must be rejected) */
+    /* 2-byte overlong: lead bytes 0xC0, 0xC1 encoding U+0000..U+007F */
+    {
+        static const uint8_t overlong_c0[] = { 0xC0, 0xAF };
+        static const uint8_t overlong_c1[] = { 0xC1, 0xBF };
+        assert(nk_json_validate_utf8(overlong_c0, sizeof(overlong_c0)) == false);
+        assert(nk_json_validate_utf8(overlong_c1, sizeof(overlong_c1)) == false);
+    }
+    /* 3-byte overlong: 0xE0 with c1 < 0xA0 */
+    {
+        static const uint8_t overlong_e0[] = { 0xE0, 0x80, 0x80 };
+        static const uint8_t overlong_e0_2[] = { 0xE0, 0x9F, 0xBF };
+        assert(nk_json_validate_utf8(overlong_e0, sizeof(overlong_e0)) == false);
+        assert(nk_json_validate_utf8(overlong_e0_2, sizeof(overlong_e0_2)) == false);
+    }
+    /* 4-byte overlong: 0xF0 with c1 < 0x90 */
+    {
+        static const uint8_t overlong_f0[] = { 0xF0, 0x80, 0x80, 0x80 };
+        static const uint8_t overlong_f0_2[] = { 0xF0, 0x8F, 0xBF, 0xBF };
+        assert(nk_json_validate_utf8(overlong_f0, sizeof(overlong_f0)) == false);
+        assert(nk_json_validate_utf8(overlong_f0_2, sizeof(overlong_f0_2)) == false);
+    }
+
+    /* 4. UTF-16 Surrogate halves U+D800..U+DFFF (0xED 0xA0 0x80 .. 0xED 0xBF 0xBF) */
+    {
+        static const uint8_t surrogate_min[] = { 0xED, 0xA0, 0x80 }; /* U+D800 */
+        static const uint8_t surrogate_max[] = { 0xED, 0xBF, 0xBF }; /* U+DFFF */
+        assert(nk_json_validate_utf8(surrogate_min, sizeof(surrogate_min)) == false);
+        assert(nk_json_validate_utf8(surrogate_max, sizeof(surrogate_max)) == false);
+    }
+
+    /* 5. Values out of Unicode range (> U+10FFFF) */
+    /* Lead byte 0xF4 with continuation > 0x8F */
+    {
+        static const uint8_t above_10ffff_f4[] = { 0xF4, 0x90, 0x80, 0x80 };
+        assert(nk_json_validate_utf8(above_10ffff_f4, sizeof(above_10ffff_f4)) == false);
+    }
+    /* Lead bytes 0xF5..0xF7 (4-byte encodings > U+10FFFF) */
+    {
+        static const uint8_t lead_f5[] = { 0xF5, 0x80, 0x80, 0x80 };
+        static const uint8_t lead_f6[] = { 0xF6, 0x80, 0x80, 0x80 };
+        static const uint8_t lead_f7[] = { 0xF7, 0x80, 0x80, 0x80 };
+        assert(nk_json_validate_utf8(lead_f5, sizeof(lead_f5)) == false);
+        assert(nk_json_validate_utf8(lead_f6, sizeof(lead_f6)) == false);
+        assert(nk_json_validate_utf8(lead_f7, sizeof(lead_f7)) == false);
+    }
+    /* Invalid lead bytes 0xF8..0xFF */
+    {
+        for (int c = 0xF8; c <= 0xFF; c++) {
+            uint8_t bad_lead = (uint8_t)c;
+            assert(nk_json_validate_utf8(&bad_lead, 1) == false);
+        }
+    }
+
+    /* 6. Truncated sequences at end of input */
+    {
+        static const uint8_t trunc_2[] = { 0xC2 };
+        static const uint8_t trunc_3_1[] = { 0xE0 };
+        static const uint8_t trunc_3_2[] = { 0xE0, 0xA0 };
+        static const uint8_t trunc_4_1[] = { 0xF0 };
+        static const uint8_t trunc_4_2[] = { 0xF0, 0x90 };
+        static const uint8_t trunc_4_3[] = { 0xF0, 0x90, 0x80 };
+
+        assert(nk_json_validate_utf8(trunc_2, sizeof(trunc_2)) == false);
+        assert(nk_json_validate_utf8(trunc_3_1, sizeof(trunc_3_1)) == false);
+        assert(nk_json_validate_utf8(trunc_3_2, sizeof(trunc_3_2)) == false);
+        assert(nk_json_validate_utf8(trunc_4_1, sizeof(trunc_4_1)) == false);
+        assert(nk_json_validate_utf8(trunc_4_2, sizeof(trunc_4_2)) == false);
+        assert(nk_json_validate_utf8(trunc_4_3, sizeof(trunc_4_3)) == false);
+    }
+
+    /* 7. Invalid continuation bytes (not 0x80..0xBF) */
+    {
+        static const uint8_t bad_cont_2[] = { 0xC2, 0x41 };
+        static const uint8_t bad_cont_3_1[] = { 0xE0, 0xA0, 0x20 };
+        static const uint8_t bad_cont_3_2[] = { 0xE1, 0x20, 0x80 };
+        static const uint8_t bad_cont_4_1[] = { 0xF0, 0x90, 0x80, 0xC0 };
+        static const uint8_t bad_cont_4_2[] = { 0xF0, 0x90, 0xC0, 0x80 };
+        static const uint8_t bad_cont_4_3[] = { 0xF0, 0xC0, 0x80, 0x80 };
+
+        assert(nk_json_validate_utf8(bad_cont_2, sizeof(bad_cont_2)) == false);
+        assert(nk_json_validate_utf8(bad_cont_3_1, sizeof(bad_cont_3_1)) == false);
+        assert(nk_json_validate_utf8(bad_cont_3_2, sizeof(bad_cont_3_2)) == false);
+        assert(nk_json_validate_utf8(bad_cont_4_1, sizeof(bad_cont_4_1)) == false);
+        assert(nk_json_validate_utf8(bad_cont_4_2, sizeof(bad_cont_4_2)) == false);
+        assert(nk_json_validate_utf8(bad_cont_4_3, sizeof(bad_cont_4_3)) == false);
+    }
+
+    /* 8. Stray continuation bytes (0x80..0xBF as lead byte) */
+    {
+        for (int c = 0x80; c <= 0xBF; c++) {
+            uint8_t stray = (uint8_t)c;
+            assert(nk_json_validate_utf8(&stray, 1) == false);
+        }
+    }
+
+    printf("[HOSTILE_TEST] nk_json_validate_utf8 edge cases PASSED!\n"); fflush(stdout);
+}
+
 static void test_hostile_library_json(const char *test_dir) {
     char fpath[512];
     NkLibrary lib;
@@ -228,6 +365,57 @@ static void test_hostile_library_json(const char *test_dir) {
     NkLibrary double_corrupt_lib;
     assert(nk_library_load(&double_corrupt_lib, double_corrupt_path) == NK_ERROR_GENERIC);
     assert(nk_library_count(&double_corrupt_lib) == 0);
+
+    /* 11. Zero-byte library file */
+    printf("[HOSTILE_TEST] Subtest 11: zero-byte library file\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%czero_byte_lib.json", test_dir, nk_platform_path_separator());
+    write_test_file(fpath, "", 0);
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_IO);
+
+    /* 12. Oversized library file (>4MB) */
+    printf("[HOSTILE_TEST] Subtest 12: oversized library file\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%coversized_lib.json", test_dir, nk_platform_path_separator());
+    size_t big_sz = 4 * 1024 * 1024 + 16;
+    char *big_buf = (char *)malloc(big_sz);
+    assert(big_buf != NULL);
+    memset(big_buf, ' ', big_sz);
+    write_test_file(fpath, big_buf, big_sz);
+    free(big_buf);
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_IO);
+
+    /* 13. Overlong boot_executable path */
+    printf("[HOSTILE_TEST] Subtest 13: overlong boot_executable path\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%coverlong_boot_exec.json", test_dir, nk_platform_path_separator());
+    char overlong_exec[300];
+    memset(overlong_exec, 'E', 256);
+    overlong_exec[256] = '\0';
+    char overlong_json[2048];
+    snprintf(overlong_json, sizeof(overlong_json),
+        "{\n  \"schema_version\": 1,\n  \"games\": [\n    {\n      \"disc_id\": \"TEST00001\",\n      \"boot_executable\": \"%s\"\n    }\n  ]\n}",
+        overlong_exec);
+    write_test_file(fpath, overlong_json, strlen(overlong_json));
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_INVALID_EXECUTABLE);
+
+    /* 14. Out-of-bounds enum values */
+    printf("[HOSTILE_TEST] Subtest 14: out-of-bounds enum values\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%coob_enum.json", test_dir, nk_platform_path_separator());
+    const char json_oob_kind[] =
+        "{\n  \"schema_version\": 1,\n  \"games\": [\n    {\n      \"disc_id\": \"TEST00001\",\n      \"executable_eboot_kind\": 999\n    }\n  ]\n}";
+    write_test_file(fpath, json_oob_kind, strlen(json_oob_kind));
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_GENERIC);
+
+    /* 15. Missing closing brackets at EOF */
+    printf("[HOSTILE_TEST] Subtest 15: missing closing array bracket ]\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%cmissing_closing_array.json", test_dir, nk_platform_path_separator());
+    const char json_no_closing_array[] = "{\n  \"schema_version\": 1,\n  \"games\": [\n    {\n      \"disc_id\": \"TEST00001\"\n    }\n}";
+    write_test_file(fpath, json_no_closing_array, strlen(json_no_closing_array));
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_GENERIC);
+
+    printf("[HOSTILE_TEST] Subtest 16: missing closing root object bracket }\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%cmissing_closing_obj.json", test_dir, nk_platform_path_separator());
+    const char json_no_closing_obj[] = "{\n  \"schema_version\": 1,\n  \"games\": [\n    {\n      \"disc_id\": \"TEST00001\"\n    }\n  ]";
+    write_test_file(fpath, json_no_closing_obj, strlen(json_no_closing_obj));
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_GENERIC);
 
     printf("[HOSTILE_TEST] Library JSON tests PASSED!\n");
     fflush(stdout);
@@ -1924,7 +2112,131 @@ static void test_iso_stage_collisions_by_content(const char *test_dir) {
     printf("[HOSTILE_TEST] ISO staging keeps ';' names and resolves host name collisions by content.\n");
 }
 
+static void test_nk_json_utf8_encode(void) {
+    printf("[HOSTILE_TEST] Testing nk_json_utf8_encode edge cases and boundaries...\n");
+    fflush(stdout);
+
+    char out[4];
+    size_t len;
+
+    /* 1. 1-byte ASCII range (0x00 .. 0x7F) */
+    /* U+0000 NUL */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x00, out);
+    assert(len == 1);
+    assert(out[0] == 0x00);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+0041 'A' */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x41, out);
+    assert(len == 1);
+    assert(out[0] == 'A');
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+007F DEL (max 1-byte) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x7F, out);
+    assert(len == 1);
+    assert(out[0] == 0x7F);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* 2. 2-byte range (0x80 .. 0x7FF) */
+    /* U+0080 (min 2-byte) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x80, out);
+    assert(len == 2);
+    assert((uint8_t)out[0] == 0xC2 && (uint8_t)out[1] == 0x80);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+00A9 '©' */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x00A9, out);
+    assert(len == 2);
+    assert((uint8_t)out[0] == 0xC2 && (uint8_t)out[1] == 0xA9);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+03B1 'α' */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x03B1, out);
+    assert(len == 2);
+    assert((uint8_t)out[0] == 0xCE && (uint8_t)out[1] == 0xB1);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+07FF (max 2-byte) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x07FF, out);
+    assert(len == 2);
+    assert((uint8_t)out[0] == 0xDF && (uint8_t)out[1] == 0xBF);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* 3. 3-byte range (0x800 .. 0xFFFF) */
+    /* U+0800 (min 3-byte) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x0800, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xE0 && (uint8_t)out[1] == 0xA0 && (uint8_t)out[2] == 0x80);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+20AC '€' */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x20AC, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xE2 && (uint8_t)out[1] == 0x82 && (uint8_t)out[2] == 0xAC);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+65E5 '日' */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x65E5, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xE6 && (uint8_t)out[1] == 0x97 && (uint8_t)out[2] == 0xA5);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+D7FF (last scalar before surrogate area) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xD7FF, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0x9F && (uint8_t)out[2] == 0xBF);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+FFFF (max 3-byte) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xFFFF, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xEF && (uint8_t)out[1] == 0xBF && (uint8_t)out[2] == 0xBF);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* 4. 4-byte range (0x10000 .. 0x10FFFF) */
+    /* U+10000 (min 4-byte) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x10000, out);
+    assert(len == 4);
+    assert((uint8_t)out[0] == 0xF0 && (uint8_t)out[1] == 0x90 &&
+           (uint8_t)out[2] == 0x80 && (uint8_t)out[3] == 0x80);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+1F600 '😀' */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x1F600, out);
+    assert(len == 4);
+    assert((uint8_t)out[0] == 0xF0 && (uint8_t)out[1] == 0x9F &&
+           (uint8_t)out[2] == 0x98 && (uint8_t)out[3] == 0x80);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+10FFFF (max Unicode scalar value) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x10FFFF, out);
+    assert(len == 4);
+    assert((uint8_t)out[0] == 0xF4 && (uint8_t)out[1] == 0x8F &&
+           (uint8_t)out[2] == 0xBF && (uint8_t)out[3] == 0xBF);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    printf("[HOSTILE_TEST] nk_json_utf8_encode tests PASSED!\n");
+    fflush(stdout);
+}
+
 int main(void) {
+    test_nk_json_utf8_encode();
     native_test_create_root("parsers-hostile");
     native_test_isolate_user_data_roots();
     native_test_assert_cache_root_isolated();
@@ -1936,6 +2248,7 @@ int main(void) {
     snprintf(hostile_dir, sizeof(hostile_dir), "%s%chostile_tests", test_dir, nk_platform_path_separator());
     assert(nk_platform_mkdir_p(hostile_dir));
 
+    test_nk_json_validate_utf8_edge_cases();
     test_hostile_library_json(hostile_dir);
     test_library_json_string_escapes(hostile_dir);
     test_hostile_iso_parser(hostile_dir);

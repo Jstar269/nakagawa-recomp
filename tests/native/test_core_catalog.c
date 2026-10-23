@@ -28,6 +28,7 @@
 #include "nk_types.h"
 #include "nk_iso.h"
 #include "nk_library.h"
+#include "nk_font.h"
 #include "nk_launch.h"
 #include "nk_platform.h"
 #include "generated/nk_title_catalog.h"
@@ -222,6 +223,54 @@ static void test_nk_library_save_load_escaping_and_samples(void) {
     assert(nk_library_find_by_disc_id(&loaded, "TEST00002") == NULL);
 }
 
+static void test_nk_library_null_path_default_routing(void) {
+    printf("[NATIVE_TEST] Testing nk_library load/save default path routing (file_path == NULL)...\n");
+
+    char expected_default_dir[NK_MAX_PATH];
+    assert(nk_platform_get_path(NK_PATH_DATA, expected_default_dir, sizeof(expected_default_dir)));
+
+    char expected_default_file[NK_MAX_PATH];
+    int written = snprintf(expected_default_file, sizeof(expected_default_file), "%s%clibrary.json",
+                           expected_default_dir, nk_platform_path_separator());
+    assert(written > 0 && (size_t)written < sizeof(expected_default_file));
+
+    /* Ensure initial clean state in isolated data root */
+    remove(expected_default_file);
+    char bak_file[NK_MAX_PATH + 8];
+    snprintf(bak_file, sizeof(bak_file), "%s.bak", expected_default_file);
+    remove(bak_file);
+
+    NkLibrary lib;
+    nk_library_init(&lib);
+
+    /* 1. Loading with file_path == NULL on non-existent file returns NK_OK with empty library */
+    assert(nk_library_load(&lib, NULL) == NK_OK);
+    assert(nk_library_count(&lib) == 0);
+    assert(strcmp(lib.library_path, expected_default_file) == 0);
+
+    /* 2. Add an entry and save with file_path == NULL (uses lib.library_path) */
+    NkGameEntry entry;
+    seed_game_entry(&entry, "DEFAULT001", "Default Path Game");
+    assert(nk_library_add_or_update(&lib, &entry) == NK_OK);
+    assert(nk_library_save(&lib, NULL) == NK_OK);
+    assert(nk_platform_file_exists(expected_default_file));
+
+    /* 3. Re-load with file_path == NULL and verify entry */
+    NkLibrary reloaded;
+    nk_library_init(&reloaded);
+    assert(nk_library_load(&reloaded, NULL) == NK_OK);
+    assert(nk_library_count(&reloaded) == 1);
+    assert(strcmp(reloaded.library_path, expected_default_file) == 0);
+
+    const NkGameEntry *found = nk_library_find_by_disc_id(&reloaded, "DEFAULT001");
+    assert(found != NULL);
+    assert(strcmp(found->title_name, "Default Path Game") == 0);
+
+    /* Clean up */
+    remove(expected_default_file);
+    remove(bak_file);
+}
+
 static void test_nk_library_corrupt_load_and_backup_recovery(void) {
     printf("[NATIVE_TEST] Testing nk_library corrupt load handling and backup recovery...\n");
 
@@ -290,6 +339,75 @@ static void test_nk_library_corrupt_load_and_backup_recovery(void) {
     assert(nk_library_count(&loaded) == 1);
 }
 
+static void test_nk_font_classify_verdict(void) {
+    printf("[NATIVE_TEST] Testing nk_font_classify_verdict...\n");
+    char reason[128];
+    PgfVerdict verdict;
+
+    /* 1. NULL verdict pointer */
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(NULL, reason, sizeof(reason)) == -1);
+    assert(strcmp(reason, "the reader refused the file") == 0);
+
+    /* 2. Non-zero refusal status */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_MAGIC;
+    verdict.has_latin = 1;
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(&verdict, reason, sizeof(reason)) == -1);
+    assert(strcmp(reason, "the reader refused the file") == 0);
+
+    /* 3. Ambiguous verdict with both has_hangul and has_kana */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_NONE;
+    verdict.has_hangul = 1;
+    verdict.has_kana = 1;
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(&verdict, reason, sizeof(reason)) == -1);
+    assert(strcmp(reason, "covers both Hangul and kana, so it names no slot") == 0);
+
+    /* 4. Korean slot classification (has_hangul = 1) */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_NONE;
+    verdict.has_hangul = 1;
+    verdict.has_latin = 1;
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(&verdict, reason, sizeof(reason)) == NK_FONT_SLOT_KOREAN);
+
+    /* 5. Japanese slot classification (has_kana = 1) */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_NONE;
+    verdict.has_kana = 1;
+    verdict.has_latin = 1;
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(&verdict, reason, sizeof(reason)) == NK_FONT_SLOT_JAPANESE);
+
+    /* 6. Latin slot classification (has_latin = 1) */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_NONE;
+    verdict.has_latin = 1;
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(&verdict, reason, sizeof(reason)) == NK_FONT_SLOT_LATIN);
+
+    /* 7. No probe flags set */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_NONE;
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(&verdict, reason, sizeof(reason)) == -1);
+    assert(strcmp(reason, "covers none of the slot probe characters") == 0);
+
+    /* 8. Null / zero-length reason buffer edge cases */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_NONE;
+    assert(nk_font_classify_verdict(&verdict, NULL, 0) == -1);
+    assert(nk_font_classify_verdict(&verdict, reason, 0) == -1);
+
+    /* 9. Truncated reason buffer */
+    char small_buf[5];
+    assert(nk_font_classify_verdict(&verdict, small_buf, sizeof(small_buf)) == -1);
+    assert(strcmp(small_buf, "cove") == 0);
+}
+
 int main(void) {
     native_test_create_root("core-catalog");
     native_test_isolate_user_data_roots();
@@ -299,7 +417,9 @@ int main(void) {
     test_nk_library_init_and_null_guards();
     test_nk_library_add_update_remove_bounds();
     test_nk_library_save_load_escaping_and_samples();
+    test_nk_library_null_path_default_routing();
     test_nk_library_corrupt_load_and_backup_recovery();
+    test_nk_font_classify_verdict();
 
     /* Catalog SIZE is deliberately not asserted here. It is a literal that every
        new public title has to come back and edit, and it never caught anything:
