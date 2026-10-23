@@ -673,6 +673,12 @@
     "name": "_sceKernelLockLwMutexCB",
     "status": "unreviewed"
   },
+  "0x315ad3a0": {
+    "classification": "dedicated",
+    "handler": "h_SetCompiledSdkVersion",
+    "name": "sceKernelSetCompiledSdkVersion380_390",
+    "status": "complete"
+  },
   "0x31668baa": {
     "classification": "dedicated",
     "handler": "h_AtracGetChannel",
