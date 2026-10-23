@@ -189,12 +189,12 @@ static atomic_uint s_hle_devctl_refusal_log_count;
 #endif
 
 /* Success-result exceptions named in the end-of-run summary. sceKernelVolatileMemUnlock is absent:
- * it returns the PSP-measured states now. sceUtilityOskUpdate stays listed because only its VISIBLE
- * and after-use states still return the unmeasured 0 (its INIT and no-keyboard states are measured). */
+ * it returns the PSP-measured states now. sceUtilityOskUpdate stays listed for VISIBLE's measured 0
+ * (#363 comment 6331070692, attended); after-use now returns the measured 0x80110001. */
 static const char *hle_success_exception_issue(uint32_t nid) {
     switch (nid) {
     case 0xb3b5d042u: return "#363, #286"; /* sceAtracGetOutputChannel */
-    case 0x4b85c861u: return "#363";       /* sceUtilityOskUpdate: VISIBLE and after-use only */
+    case 0x4b85c861u: return "#363";       /* sceUtilityOskUpdate: measured VISIBLE success */
     default: return NULL;
     }
 }
