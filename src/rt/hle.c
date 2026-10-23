@@ -5309,11 +5309,41 @@ static uint32_t h_cache_invalidate_all_common(CpuState *s) {
     return 0;
 }
 
+/* Data-cache maintenance is where the guest makes RAM it wrote with the CPU the bytes the
+ * GE reads next: the GE reads memory, not the CPU's data cache. Guest stores to RAM carry
+ * no per-store renderer notification (only VRAM stores do, through the store helpers), so
+ * a renderer that caches textures decoded from RAM learns of CPU-written texels here. A
+ * title that draws glyphs into a RAM glyph-cache texture with its own libfont and then
+ * writes the cache back depends on it; without it the renderer kept a texture whose
+ * sampled content hash missed the new glyphs, and those glyphs were never drawn.
+ * PPSSPP's sceKernelDcache* handlers invalidate its texture cache the same way (behaviour
+ * reference only). A VRAM range is left alone: its stores were already reported one by
+ * one, and a second post-write notice would merge stale CPU bytes over newer GPU pixels
+ * of a render target. Return values are unchanged (unmeasured on PSP). */
+#define SR_DCACHE_RAM_BYTES 0x04000000u   /* main RAM, 0x08000000-0x0bffffff */
+
+static void dcache_range_notify_gpu(uint32_t addr, uint32_t size) {
+    if (addr == 0u || size == 0u || size > 0x7fffffffu || size - 1u > 0xffffffffu - addr)
+        return;
+    if (sr_vram_cpu_span_touches(addr, size)) return;
+    sr_gpu_vram_dirty(addr, size);
+}
+
+static void dcache_all_notify_gpu(void) {
+    sr_gpu_vram_dirty(SR_RAM_BASE, SR_DCACHE_RAM_BYTES);
+}
+
 /* Keep the HLE ownership boundary aligned with the hardware cells. These
  * wrappers currently share the same coherent-memory implementation; the
  * writeback-invalidate and I-cache NIDs remain unreviewed until their own
  * cells are measured. */
 static uint32_t h_DcacheWritebackAll(CpuState *s) {
+    dcache_all_notify_gpu();
+    return h_cache_invalidate_all_common(s);
+}
+
+static uint32_t h_DcacheWritebackInvalidateAll(CpuState *s) {
+    dcache_all_notify_gpu();
     return h_cache_invalidate_all_common(s);
 }
 
@@ -5335,11 +5365,34 @@ static uint32_t h_cache_invalidate_range_common(CpuState *s) {
 }
 
 static uint32_t h_DcacheRangeMaintenance(CpuState *s) {
+    dcache_range_notify_gpu(A0, A1);
+    return h_cache_invalidate_range_common(s);
+}
+
+/* Unmeasured on PSP, so kept apart from the measured range handler above. */
+static uint32_t h_DcacheWritebackInvalidateRange(CpuState *s) {
+    dcache_range_notify_gpu(A0, A1);
     return h_cache_invalidate_range_common(s);
 }
 
 static uint32_t h_CacheInvalidateRangeOther(CpuState *s) {
     return h_cache_invalidate_range_common(s);
+}
+
+/* cache / misc UtilsForUser: no host cache work, but Dcache maintenance tells the
+ * renderer which RAM the guest rewrote (dcache_range_notify_gpu above). Both the
+ * production registry and the executable harness register through this helper. */
+static void hle_register_dcache_handlers(void) {
+    sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_DcacheWritebackAll);
+    /* Guest and host share one coherent byte array; beyond the renderer notice, cache
+     * maintenance has no host-side work, but the syscall and success result are real. */
+    sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_DcacheWritebackInvalidateAll);
+    sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_DcacheRangeMaintenance);
+    /* Range invalidates are routine data-cache maintenance around DMA (the guest
+     * libpsmfplayer invalidates its read buffer before sceDmacMemcpy), so they are
+     * real successes on this coherent memory like the writebacks above. */
+    sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_DcacheRangeMaintenance);
+    sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_DcacheWritebackInvalidateRange);
 }
 
 void sr_stale_note_cache_op(uint32_t addr) {
@@ -10418,6 +10471,32 @@ static uint32_t h_UmdGetErrorStat(CpuState *s) {
     return drive_stat == 0x32u ? 0u : 0x80010086u;
 }
 
+/* sceUmdReplaceProhibit() / sceUmdReplacePermit(): whether the user may swap the disc.
+ * The runtime serves one ISO and never replaces it, so either call only records the
+ * permission and returns 0, changed or not. Public behaviour reference: PPSSPP
+ * Core/HLE/sceUmd.cpp. Firmware error cases (for example before sceUmdActivate) are
+ * UNMEASURED; a PSP oracle case is listed for the maintainer. */
+static uint32_t s_umd_replace_permitted = 0u;
+static uint32_t h_UmdReplaceProhibit(CpuState *s) { (void)s; s_umd_replace_permitted = 0u; return 0; }
+static uint32_t h_UmdReplacePermit(CpuState *s) { (void)s; s_umd_replace_permitted = 1u; return 0; }
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_umd_replace_permitted(void) { return s_umd_replace_permitted; }
+#endif
+
+/* sceUmdGetDiscInfo(SceUmdDiscInfo *info): info->size (u32) must be 8, then info->type
+ * (u32) receives PSP_UMD_TYPE_GAME (0x10), the only medium this runtime serves.
+ * A size other than 8 or an unusable pointer returns SCE_ERROR_ERRNO_EINVAL
+ * (0x80010016). Public behaviour reference: PSPSDK pspumd.h (SceUmdDiscInfo,
+ * PSP_UMD_TYPE_GAME) and PPSSPP Core/HLE/sceUmd.cpp; UNMEASURED on hardware. */
+static uint32_t h_UmdGetDiscInfo(CpuState *s) {
+    (void)s;
+    uint32_t info = A0;
+    if (!info || !sr_guest_span_writable(info, 8u)) return 0x80010016u;
+    if (sr_r32(info) != 8u) return 0x80010016u;
+    sr_w32(info + 4u, 0x10u);
+    return 0;
+}
+
 
 /* Signal that the UMD drive is ready. Wake only threads waiting on the UMD object and
  * notify the registered callback if one exists. */
@@ -10515,6 +10594,9 @@ static void hle_register_umd_callback_handlers(void) {
     sr_hle_register(0xc6183d47u, "sceUmdActivate", h_UmdActivate);
     sr_hle_register(0xaee7404du, "sceUmdRegisterUMDCallBack", h_UmdRegisterUMDCallBack);
     sr_hle_register(0xbd2bde07u, "sceUmdUnRegisterUMDCallBack", h_UmdUnRegisterUMDCallBack);
+    sr_hle_register(0x87533940u, "sceUmdReplaceProhibit", h_UmdReplaceProhibit);
+    sr_hle_register(0xcbe9f02au, "sceUmdReplacePermit", h_UmdReplacePermit);
+    sr_hle_register(0x340b7686u, "sceUmdGetDiscInfo", h_UmdGetDiscInfo);
 }
 
 /* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
@@ -23834,6 +23916,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
     sr_hle_register(0xfe707fdf, "sceKernelAllocMemoryBlock", h_AllocMemoryBlock);
     sr_hle_register(0x342061e5, "sceKernelSetCompiledSdkVersion370", h_SetCompiledSdkVersion);
+    sr_hle_register(0x315ad3a0u, "sceKernelSetCompiledSdkVersion380_390", h_SetCompiledSdkVersion);
     sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
     sr_hle_register(0x4c06e472, "sceGeContinue", h_GeContinue);
     sr_hle_register(0xb448ec0d, "sceGeBreak", h_GeBreak);
@@ -24038,6 +24121,7 @@ void sr_hle_init(void) {
     hle_register_partition_savedata_handlers();
     hle_register_impose_handlers();
     hle_register_osk_handlers();
+    hle_register_dcache_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
      * definition, called by both branches, so the selftest cannot drift from the
@@ -24178,17 +24262,9 @@ void sr_hle_init(void) {
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
     hle_register_devkit_version_handler();
 
-    /* cache / misc UtilsForUser: no-ops are fine without a real cache. */
-    sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_DcacheWritebackAll);
-    /* Guest and host share one coherent byte array; cache maintenance has no
-     * additional host-side work, but the syscall and success result are real. */
-    sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_CacheInvalidateAllOther);
-    sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_DcacheRangeMaintenance);
-    /* Range invalidates are routine data-cache maintenance around DMA (the guest
-     * libpsmfplayer invalidates its read buffer before sceDmacMemcpy), so they are
-     * real no-op successes on this coherent memory like the writebacks above. */
-    sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_DcacheRangeMaintenance);
-    sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_CacheInvalidateRangeOther);
+    /* Data-cache maintenance: one registration helper shared with the executable
+     * harness, ahead of the opt-in Icache gate below. */
+    hle_register_dcache_handlers();
     /* TD-27 stale-code detector: the Icache NIDs (a code-modification signal)
      * stay UNREGISTERED (fail-closed, as before) unless SR_STALE_DETECT opts
      * in, so default dispatch behavior is unchanged. When enabled they run
@@ -24266,6 +24342,36 @@ static int link_started_export(CpuState *s, uint32_t nid) {
     return 1;
 }
 
+/* An import with no handler stops the run (exit 7). Name that stop for the player the
+ * way the dispatcher names its own: one semantic-boundary line in SR_BOOT_EVENT_FILE,
+ * "unsupported-import-<name>" in the player's [a-z0-9-] alphabet, so its card says the
+ * game stopped early at that import instead of showing a bare child exit code (#308). */
+static void hle_record_unsupported_import_stop(uint32_t nid, const char *name) {
+    const char *path = getenv("SR_BOOT_EVENT_FILE");
+    if (!path || !path[0]) return;
+    char boundary[96];
+    int written = snprintf(boundary, sizeof(boundary), "unsupported-import-");
+    if (written <= 0) return;
+    size_t at = (size_t)written;
+    if (name && name[0]) {
+        for (const char *c = name; *c && at + 1u < sizeof(boundary); c++) {
+            char ch = *c;
+            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+            if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))) ch = '-';
+            boundary[at++] = ch;
+        }
+        boundary[at] = '\0';
+    } else {
+        snprintf(boundary + at, sizeof(boundary) - at, "0x%08x", nid);
+    }
+    FILE *events = fopen(path, "ab");
+    if (!events) return;
+    fprintf(events,
+            "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=%u\n",
+            boundary, 308u);
+    fclose(events);
+}
+
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_tail_assert_empty("tail-transfer-live-at-syscall");
     sr_hle_init();
@@ -24316,6 +24422,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
             fprintf(stderr, "HLE: unimplemented nid 0x%08x (%s) (thread uid 0x%x)\n"
                             "     -> add a handler in src/rt/hle.c: sr_hle_register(0x%08xu, \"%s\", h_...);\n",
                     nid, nm ? nm : "unknown", sched_current_uid(), nid, nm ? nm : "sceUnknown");
+            hle_record_unsupported_import_stop(nid, nm);
         }
         sr_hit_hle = 1;
         /* Under the fiber scheduler, longjmp across fibers is invalid; stop the process cleanly

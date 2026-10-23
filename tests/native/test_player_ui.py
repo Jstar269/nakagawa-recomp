@@ -1869,6 +1869,104 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["view"], "library")
         self.assertEqual(frames[-1]["running"], "0")
 
+    # The next UI (--ui=next) reaches every flow the existing library reaches:
+    # the setup wizard from an empty library, Settings, the file picker and quit.
+    # The screens it hands over to keep drawing in the existing renderer.
+
+    def test_empty_library_starts_the_setup_wizard(self) -> None:
+        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN"), ui_mode="next")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "library")
+        self.assertEqual(frames[1]["view"], "wizard")
+        self.assertEqual(frames[1]["wizard_step"], "welcome")
+        self.assertEqual(frames[2]["wizard_step"], "select_game")
+
+    def test_library_shortcuts_reach_settings_picker_and_quit(self) -> None:
+        settings = self.run_player("library", ("KEY_S",), ui_mode="next")
+        frames = settings["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["view"], "settings")
+        picker = self.run_player("library", ("KEY_O",), ui_mode="next")
+        frames = picker["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["picker"], "1")
+        quit_run = self.run_player("library", ("KEY_ESCAPE",), ui_mode="next")
+        frames = quit_run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["running"], "0")
+
+    # The next UI draws the setup wizard too, with the existing wizard's handlers.
+    def test_next_ui_wizard_runs_the_first_run_path(self) -> None:
+        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN"),
+                              ui_mode="next")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[1]["view"], "wizard")
+        self.assertEqual(frames[1]["wizard_step"], "welcome")
+        self.assertEqual(frames[2]["wizard_step"], "select_game")
+        self.assertEqual(frames[3]["picker"], "1",
+                         "Choose a disc image is the focused action on Select game")
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" in run["stdout"]:
+            # Without its fonts the next UI falls back to the existing renderer.
+            legacy = self.run_player("empty", ("KEY_RETURN",))
+            legacy_frames = legacy["frames"]
+            assert isinstance(legacy_frames, list)
+            self.assertNotEqual(frames[1]["pixels"], legacy_frames[1]["pixels"],
+                                "the next UI, not the existing renderer, draws the wizard")
+
+        fonts = self.run_player("wizard4", ("KEY_RETURN",), ui_mode="next")
+        font_frames = fonts["frames"]
+        assert isinstance(font_frames, list)
+        self.assertEqual(font_frames[1]["wizard_step"], "ready_launch")
+        self.assertEqual(font_frames[1]["font_confirmed"], "1")
+
+        for key in ("KEY_ESCAPE", "KEY_RETURN"):
+            staging = self.run_player("wizard-staging", (key,), ui_mode="next")
+            stage_frames = staging["frames"]
+            assert isinstance(stage_frames, list)
+            self.assertEqual(stage_frames[0]["extracting"], "1")
+            self.assertEqual(stage_frames[1]["extraction_cancel"], "1", key)
+
+    # The next UI draws the build, build tool download and error screens itself and
+    # keeps every action and Back meaning the existing renderer had.
+    def test_next_ui_build_screen_cancels_and_returns(self) -> None:
+        building = self.run_player("building", ("KEY_ESCAPE",), ui_mode="next")
+        frames = building["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "building_package")
+        self.assertEqual(frames[0]["package_building"], "1")
+        self.assertEqual(frames[1]["package_cancelled"], "1")
+        self.assertEqual(frames[1]["view"], "library")
+        cancel = self.run_player("building", ("KEY_RETURN",), ui_mode="next")
+        frames = cancel["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[1]["package_cancelled"], "1",
+                         "CANCEL BUILD is the focused action while the build runs")
+        built = self.run_player("build-ready", ("KEY_RETURN",), ui_mode="next")
+        frames = built["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "building_package")
+        self.assertEqual(frames[1]["view"], "library", "BACK TO LIBRARY once the package is built")
+        self.assertEqual(frames[1]["package_cancelled"], "0")
+
+    def test_next_ui_error_card_recovers_like_the_existing_card(self) -> None:
+        missing_source = self.run_player("error", ("KEY_RETURN",), ui_mode="next")
+        frames = missing_source["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["error"], "SOURCE_NOT_FOUND")
+        self.assertEqual(frames[1]["picker"], "1")
+        for code in ("PACKAGE_BUILD_FAILED", "RUNTIME_PACKAGE_NOT_READY", "PYTHON_NOT_FOUND"):
+            with self.subTest(code=code):
+                recovered = self.run_player("library", ("KEY_RETURN",), error_code=code,
+                                            ui_mode="next")
+                frames = recovered["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[0]["view"], "error")
+                self.assertEqual(frames[0]["error"], code)
+                self.assertEqual(frames[1]["view"], "library")
+                self.assertEqual(frames[1]["picker"], "0")
+
     def test_failed_close_confirmation_needs_a_second_explicit_close(self) -> None:
         run = self.run_player(
             "library",

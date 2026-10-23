@@ -1343,6 +1343,32 @@ def _current_package_cache_key(
     )
 
 
+# Windows refuses to rename a folder while any file inside it is open, and an
+# antivirus scan of the package executable that was just copied holds such a
+# handle for a moment (#308 sweep: "[WinError 5] Access is denied" on the final
+# rename of an otherwise valid package). The rename is retried for about ten
+# seconds before the build stops with a named boundary; no other error retries.
+PACKAGE_PROMOTION_RETRY_DELAYS_S = (0.1, 0.25, 0.5, 1.0, 2.0, 2.0, 2.0, 2.0)
+
+
+def _replace_package_folder(source: Path, target: Path, *, sleeper=time.sleep,
+                            delays=None) -> None:
+    if delays is None:
+        delays = PACKAGE_PROMOTION_RETRY_DELAYS_S if os.name == "nt" else ()
+    for delay in (*delays, None):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as exc:
+            if delay is None:
+                raise PackageBuildError(
+                    "PACKAGE_FOLDER_LOCKED: Windows kept the new package folder in use, so it "
+                    "could not be moved into place (an antivirus scan of the new files can do "
+                    f"this). Wait a moment, then build again. Detail: {exc}"
+                ) from exc
+            sleeper(delay)
+
+
 def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
                          cache_key: dict, user_root: Path, disc_id: str) -> None:
     """Copy a validated cache entry into place, re-validating the copy before promotion."""
@@ -1365,10 +1391,10 @@ def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
             raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
         backup = cache_dir / f"previous-{time.time_ns()}" if target_dir.exists() else None
         if backup is not None:
-            os.replace(target_dir, backup)
+            _replace_package_folder(target_dir, backup)
         try:
-            os.replace(staging, target_dir)
-        except OSError:
+            _replace_package_folder(staging, target_dir)
+        except (OSError, PackageBuildError):
             if backup is not None and not target_dir.exists():
                 os.replace(backup, target_dir)
             raise

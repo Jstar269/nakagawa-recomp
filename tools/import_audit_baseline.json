@@ -673,6 +673,12 @@
     "name": "_sceKernelLockLwMutexCB",
     "status": "unreviewed"
   },
+  "0x315ad3a0": {
+    "classification": "dedicated",
+    "handler": "h_SetCompiledSdkVersion",
+    "name": "sceKernelSetCompiledSdkVersion380_390",
+    "status": "complete"
+  },
   "0x31668baa": {
     "classification": "dedicated",
     "handler": "h_AtracGetChannel",
@@ -721,6 +727,12 @@
     "name": "__sceSasRevType",
     "status": "unreviewed"
   },
+  "0x340b7686": {
+    "classification": "dedicated",
+    "handler": "h_UmdGetDiscInfo",
+    "name": "sceUmdGetDiscInfo",
+    "status": "unreviewed"
+  },
   "0x342061e5": {
     "classification": "dedicated",
     "handler": "h_SetCompiledSdkVersion",
@@ -747,7 +759,7 @@
   },
   "0x34b9fa9e": {
     "classification": "dedicated",
-    "handler": "h_CacheInvalidateRangeOther",
+    "handler": "h_DcacheWritebackInvalidateRange",
     "name": "sceKernelDcacheWritebackInvalidateRange",
     "status": "unreviewed"
   },
@@ -1828,6 +1840,12 @@
     "name": "sceMpegFinish",
     "status": "unreviewed"
   },
+  "0x87533940": {
+    "classification": "dedicated",
+    "handler": "h_UmdReplaceProhibit",
+    "name": "sceUmdReplaceProhibit",
+    "status": "unreviewed"
+  },
   "0x876dbfad": {
     "classification": "dedicated",
     "handler": "h_SendMsgPipe",
@@ -2342,7 +2360,7 @@
   },
   "0xb435dec5": {
     "classification": "dedicated",
-    "handler": "h_CacheInvalidateAllOther",
+    "handler": "h_DcacheWritebackInvalidateAll",
     "name": "sceKernelDcacheWritebackInvalidateAll",
     "status": "unreviewed"
   },
@@ -2615,6 +2633,12 @@
     "classification": "dedicated",
     "handler": "h_SasSetSimpleADSR",
     "name": "__sceSasSetSimpleADSR",
+    "status": "unreviewed"
+  },
+  "0xcbe9f02a": {
+    "classification": "dedicated",
+    "handler": "h_UmdReplacePermit",
+    "name": "sceUmdReplacePermit",
     "status": "unreviewed"
   },
   "0xcd203292": {
