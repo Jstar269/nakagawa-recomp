@@ -555,8 +555,8 @@ void nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t coun
         NkUiStyle fill = nk_ui_fill(theme->surface_raised, theme->line, 15.0f);
         nk_ui_pad(&chip, 0.0f, NK_UI_SPACE_3, 0.0f, NK_UI_SPACE_3);
         if (nk_ui_begin_container(ui, nk_ui_child_id(id, 5u), &chip, &fill)) {
-            NkUiLayout dot = nk_ui_row(nk_ui_fixed(7.0f), nk_ui_fixed(7.0f), 0.0f);
-            NkUiStyle dot_fill = nk_ui_fill(input_active ? theme->ready : theme->dim, 0u, 3.5f);
+            NkUiLayout dot = nk_ui_row(nk_ui_fixed(8.0f), nk_ui_fixed(8.0f), 0.0f);
+            NkUiStyle dot_fill = nk_ui_fill(input_active ? theme->ready : theme->dim, 0u, 4.0f);
             if (nk_ui_begin_container(ui, nk_ui_child_id(id, 6u), &dot, &dot_fill)) {
                 nk_ui_end_container(ui);
             }

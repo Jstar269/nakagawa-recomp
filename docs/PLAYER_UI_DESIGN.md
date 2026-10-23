@@ -154,8 +154,17 @@ frame until the command changes; the Vulkan backend will use the shader.
 | Prompt bar | `nk_ui_prompt_bar` | `surface_raised`; hint in `CAPTION` `muted` on the left; glyph (24 px, current prompt style) + `LABEL` per action on the right, 18 px apart |
 | Vector art | `nk_ui_shapes` | rects, circles and convex polygons in a view box, fitted and centred; used for the N1 mark, the showcase demos' pictures and icons |
 
-Prompt glyphs come from `nk_ui_prompt_glyph`: neutral position dots, letters (A south or A east), or keycaps, as
-the last input device reports. Only actions the screen handles appear in its prompt bar.
+Prompt glyphs come from `nk_ui_prompt_glyph`, and the whole bar shows one set chosen from the active device
+(`nk_ui_input_prompt_style`), never a mix:
+
+- **Keyboard and mouse** (no pad connected, or a key or click was the last input): keycaps (ENTER, ESC), the four
+  arrow keys as an inverted T for MOVE, and the top bar's chip says KEYBOARD AND MOUSE.
+- **Controller** (a pad connected or was the last used): a D-pad for MOVE, and face buttons as neutral position
+  dots or letters (A south or A east) from the pad's reported layout; the chip names the set.
+- A pad that connects switches the set at once; when it disconnects the set falls back to another connected pad or
+  to the keyboard. Pointer motion alone never switches.
+
+Only actions the screen handles appear in its prompt bar.
 
 ## Screens
 
@@ -171,8 +180,8 @@ ADD A PSP DISC IMAGE button.
 
 Aside: the hero, then a PACKAGE card (eyebrow, status pill, the status detail in `BODY_S` `muted`, and any input
 note in an inset `info` box). Main column: eyebrow LIBRARY › TITLE, the name in `TITLE_XL`, the disc ID in
-`DATA`, the status pill and tag, the large primary action with OPEN SAVE FOLDER beside it (both 52 px), BACK TO
-LIBRARY below, and the COMPATIBILITY card (eyebrow, the word as a pill coloured by the word: Works `ready`,
+`DATA`, the status pill and tag, one action row on the column's left edge with every button 52 px (the primary
+action, PLAY when the package is ready, then OPEN SAVE FOLDER and BACK), and the COMPATIBILITY card (eyebrow, the word as a pill coloured by the word: Works `ready`,
 Partially works and Experimental `info`, Boots to a named boundary `warning`, others `muted`; the detail; a
 `FOOTNOTE` naming `docs/COMPATIBILITY.md`). Prompt bar: MOVE, SELECT, BACK.
 

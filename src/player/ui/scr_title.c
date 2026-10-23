@@ -30,7 +30,6 @@
 #define TITLE_ID_CHIP_STATUS 0x20000028u
 #define TITLE_ID_CHIP_BADGE 0x20000029u
 #define TITLE_ID_ACTIONS 0x2000002Au
-#define TITLE_ID_ACTIONS_2 0x2000002Bu
 #define TITLE_ID_COMPAT 0x20000005u
 #define TITLE_ID_COMPAT_HEAD 0x2000002Cu
 #define TITLE_ID_COMPAT_EYEBROW 0x20000006u
@@ -201,10 +200,12 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                                                       ? "Showcase demo" : "Your disc"));
                 nk_ui_end_container(ui);
             }
+            /* One action row on the column's left edge, every button the same
+               52 px height; the focus ring may spill into the column gap. */
             row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
             row.align_y = NK_UI_ALIGN_CENTER;
             row.padding_top = NK_UI_SPACE_2;
-            row.padding_left = NK_UI_FOCUS_RING_GAP + NK_UI_FOCUS_RING_WIDTH;
+            row.padding_bottom = NK_UI_SPACE_2;
             if (nk_ui_begin_container(ui, TITLE_ID_ACTIONS, &row, NULL)) {
                 if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_PRIMARY,
                                  safe_text(title->primary_action_label, "Unavailable"),
@@ -220,13 +221,7 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                     result = action(PLAYER_UI_ACTION_OPEN_SAVE_FOLDER,
                                     model->title_index, PLAYER_UI_PRIMARY_NONE);
                 }
-                nk_ui_end_container(ui);
-            }
-            row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
-            row.padding_left = NK_UI_FOCUS_RING_GAP + NK_UI_FOCUS_RING_WIDTH;
-            row.padding_bottom = NK_UI_SPACE_1;
-            if (nk_ui_begin_container(ui, TITLE_ID_ACTIONS_2, &row, NULL)) {
-                if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_BACK, "Back to library", 0u)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_BACK, "Back", NK_UI_BUTTON_LARGE)) {
                     result = action(PLAYER_UI_ACTION_BACK, model->title_index,
                                     PLAYER_UI_PRIMARY_NONE);
                 }

@@ -296,12 +296,15 @@ size_t nk_ui_input_pointer(NkUiInput *input, float x, float y, bool down,
         input->pointer_down == down) {
         return 0u;
     }
+    /* A click makes the mouse the active device; motion alone does not. */
+    if (down != input->pointer_down) {
+        used = nk_ui_input_note_device(input, NK_UI_DEVICE_KEYBOARD_MOUSE, NK_UI_PAD_KEYBOARD,
+                                       out, cap, used);
+    }
     input->have_pointer = true;
     input->pointer_x = x;
     input->pointer_y = y;
     input->pointer_down = down;
-    used = nk_ui_input_note_device(input, NK_UI_DEVICE_KEYBOARD_MOUSE, NK_UI_PAD_KEYBOARD,
-                                   out, cap, used);
     event = nk_ui_input_make_event(NK_UI_EV_POINTER, NK_UI_DEVICE_KEYBOARD_MOUSE,
                                    NK_UI_PAD_KEYBOARD);
     event.x = x;
@@ -345,6 +348,36 @@ size_t nk_ui_input_device_change(NkUiInput *input, int device, NkUiPadFamily fam
     NkUiEvent event;
     if (input == NULL) {
         return 0u;
+    }
+    {
+        size_t i;
+        size_t found = input->pad_count;
+        for (i = 0; i < input->pad_count; ++i) {
+            if (input->pad_ids[i] == device) {
+                found = i;
+                break;
+            }
+        }
+        if (found < input->pad_count) {
+            /* Drop the old entry; a reconnect moves the pad to the end. */
+            memmove(&input->pad_ids[found], &input->pad_ids[found + 1u],
+                    (input->pad_count - found - 1u) * sizeof(input->pad_ids[0]));
+            memmove(&input->pad_families[found], &input->pad_families[found + 1u],
+                    (input->pad_count - found - 1u) * sizeof(input->pad_families[0]));
+            --input->pad_count;
+        }
+        if (connected && device != NK_UI_DEVICE_KEYBOARD_MOUSE) {
+            if (input->pad_count == NK_UI_INPUT_MAX_PADS) {
+                memmove(&input->pad_ids[0], &input->pad_ids[1],
+                        (input->pad_count - 1u) * sizeof(input->pad_ids[0]));
+                memmove(&input->pad_families[0], &input->pad_families[1],
+                        (input->pad_count - 1u) * sizeof(input->pad_families[0]));
+                --input->pad_count;
+            }
+            input->pad_ids[input->pad_count] = device;
+            input->pad_families[input->pad_count] = family;
+            ++input->pad_count;
+        }
     }
     if (connected) {
         input->have_device = true;
@@ -392,6 +425,23 @@ bool nk_ui_input_next_wake(const NkUiInput *input, double *at_s) {
         *at_s = input->next_repeat_s;
     }
     return true;
+}
+
+NkUiPromptStyle nk_ui_input_prompt_style(const NkUiInput *input) {
+    if (input == NULL) {
+        return NK_UI_PROMPT_KEYCAPS;
+    }
+    if (input->have_device) {
+        return nk_ui_prompt_style_for_family(input->last_family);
+    }
+    if (input->pad_count > 0u) {
+        return nk_ui_prompt_style_for_family(input->pad_families[input->pad_count - 1u]);
+    }
+    return NK_UI_PROMPT_KEYCAPS;
+}
+
+bool nk_ui_input_pad_connected(const NkUiInput *input) {
+    return input != NULL && input->pad_count > 0u;
 }
 
 NkUiPadFamily nk_ui_input_last_family(const NkUiInput *input) {

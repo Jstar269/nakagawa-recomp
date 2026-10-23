@@ -445,6 +445,44 @@ static int test_stick_hysteresis(void) {
     return 1;
 }
 
+/* One glyph set from the active device: keyboard and mouse until a pad connects
+   or is used, the pad's set while it is the active device, and back to the
+   keyboard when it disconnects. Pointer motion alone never switches. */
+static int test_prompt_style_follows_device(void) {
+    NkUiInput in;
+    NkUiEvent ev[NK_UI_INPUT_MAX_EVENTS];
+    nk_ui_input_init(&in);
+    CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_KEYCAPS && !nk_ui_input_pad_connected(&in),
+          "no pad: keyboard and mouse glyphs");
+    (void)nk_ui_input_device_change(&in, 7, NK_UI_PAD_LETTERS_A_SOUTH, true, ev, 4);
+    CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_LETTERS_A_SOUTH && nk_ui_input_pad_connected(&in),
+          "a pad that connects switches the glyphs at once");
+    (void)nk_ui_input_pointer(&in, 10.0f, 10.0f, false, ev, 4);
+    (void)nk_ui_input_pointer(&in, 20.0f, 30.0f, false, ev, 4);
+    CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_LETTERS_A_SOUTH,
+          "pointer motion alone keeps the controller glyphs");
+    (void)nk_ui_input_button(&in, NK_UI_BTN_CONFIRM, true, NK_UI_DEVICE_KEYBOARD_MOUSE,
+                             NK_UI_PAD_KEYBOARD, 1.0, ev, 4);
+    (void)nk_ui_input_button(&in, NK_UI_BTN_CONFIRM, false, NK_UI_DEVICE_KEYBOARD_MOUSE,
+                             NK_UI_PAD_KEYBOARD, 1.1, ev, 4);
+    CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_KEYCAPS,
+          "a key press makes the keyboard the active device");
+    (void)nk_ui_input_button(&in, NK_UI_BTN_BACK, true, 7, NK_UI_PAD_LETTERS_A_SOUTH, 2.0, ev, 4);
+    CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_LETTERS_A_SOUTH,
+          "a pad button switches back to the pad's glyphs");
+    (void)nk_ui_input_pointer(&in, 20.0f, 30.0f, true, ev, 4);
+    CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_KEYCAPS, "a click is mouse activity");
+    (void)nk_ui_input_device_change(&in, 9, NK_UI_PAD_NEUTRAL, true, ev, 4);
+    CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_NEUTRAL, "a second pad takes over when it connects");
+    (void)nk_ui_input_device_change(&in, 9, NK_UI_PAD_NEUTRAL, false, ev, 4);
+    CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_LETTERS_A_SOUTH,
+          "when the active pad leaves, the pad still connected is used");
+    (void)nk_ui_input_device_change(&in, 7, NK_UI_PAD_LETTERS_A_SOUTH, false, ev, 4);
+    CHECK(nk_ui_input_prompt_style(&in) == NK_UI_PROMPT_KEYCAPS && !nk_ui_input_pad_connected(&in),
+          "with every pad gone the keyboard and mouse glyphs return");
+    return 1;
+}
+
 static int test_event_construction(void) {
     NkUiInput in;
     NkUiEvent ev[NK_UI_INPUT_MAX_EVENTS];
@@ -488,15 +526,16 @@ static int test_event_construction(void) {
     CHECK(nk_ui_input_button(&in, NK_UI_BTN_BACK, true, 4, NK_UI_PAD_NEUTRAL, 4.0, ev, 0) == 0u,
           "a zero-capacity output writes nothing");
 
-    /* Pointer: the mouse takes over Match input; hover is a position change only. */
+    /* Pointer: a click takes over Match input; hover is a position change only,
+       so a nudged mouse never overrides a controller's glyphs. */
     nk_ui_input_init(&in);
     n = nk_ui_input_pointer(&in, 10.0f, 20.0f, false, ev, 4);
-    CHECK(n == 2 && ev[0].type == NK_UI_EV_DEVICE && ev[0].pad_family == NK_UI_PAD_KEYBOARD &&
-          ev[1].type == NK_UI_EV_POINTER && ev[1].x == 10.0f && ev[1].y == 20.0f && !ev[1].down,
-          "pointer motion announces the keyboard/mouse device");
+    CHECK(n == 1 && ev[0].type == NK_UI_EV_POINTER && ev[0].x == 10.0f && ev[0].y == 20.0f &&
+          !ev[0].down, "pointer motion is a position change only");
     CHECK(nk_ui_input_pointer(&in, 10.0f, 20.0f, false, ev, 4) == 0u, "an unchanged pointer is silent");
     n = nk_ui_input_pointer(&in, 10.0f, 20.0f, true, ev, 4);
-    CHECK(n == 1 && ev[0].down, "a button change is reported");
+    CHECK(n == 2 && ev[0].type == NK_UI_EV_DEVICE && ev[0].pad_family == NK_UI_PAD_KEYBOARD &&
+          ev[1].down, "a click announces the keyboard/mouse device and is reported");
     n = nk_ui_input_wheel(&in, 10.0f, 20.0f, NK_UI_DIR_DOWN, ev, 4);
     CHECK(n == 1 && ev[0].type == NK_UI_EV_WHEEL && ev[0].dir == NK_UI_DIR_DOWN &&
           ev[0].x == 10.0f && ev[0].y == 20.0f, "wheel notch at the pointer");
@@ -698,6 +737,8 @@ static const GlyphCase g_glyph_cases[] = {
     {NK_UI_PROMPT_LETTERS_A_SOUTH, NK_UI_PROMPT_ACT_BACK, 24.0f, 1.5f},
     {NK_UI_PROMPT_LETTERS_A_EAST, NK_UI_PROMPT_ACT_CONFIRM, 24.0f, 1.0f},
     {NK_UI_PROMPT_LETTERS_A_EAST, NK_UI_PROMPT_ACT_BACK, 24.0f, 1.5f},
+    {NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_MOVE, 24.0f, 1.0f},
+    {NK_UI_PROMPT_LETTERS_A_SOUTH, NK_UI_PROMPT_ACT_MOVE, 24.0f, 1.0f},
     {NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_CONFIRM, 24.0f, 1.0f},
     {NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_BACK, 24.0f, 2.0f},
     {NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_TAB_NEXT, 24.0f, 1.0f}
@@ -708,26 +749,36 @@ static const GlyphCase g_glyph_cases[] = {
    Colors are the N1 tokens: paper F5F7FA, muted 9AA4B2, surface-high 18202B. */
 static const char g_glyph_golden[] =
     "# neutral confirm h=24 density=1.00\n"
+    "000000C4 RECT 10 4 34 28 9AA4B2FF \"\"\n"
+    "000000C4 RECT 11 5 33 27 18202BFF \"\"\n"
     "000000C4 RECT 19 6 25 12 9AA4B2FF \"\"\n"
     "000000C4 RECT 26 13 32 19 9AA4B2FF \"\"\n"
     "000000C4 RECT 19 20 25 26 F5F7FAFF \"\"\n"
     "000000C4 RECT 12 13 18 19 9AA4B2FF \"\"\n"
     "# neutral back h=24 density=1.00\n"
+    "000000C4 RECT 10 4 34 28 9AA4B2FF \"\"\n"
+    "000000C4 RECT 11 5 33 27 18202BFF \"\"\n"
     "000000C4 RECT 19 6 25 12 9AA4B2FF \"\"\n"
     "000000C4 RECT 26 13 32 19 F5F7FAFF \"\"\n"
     "000000C4 RECT 19 20 25 26 9AA4B2FF \"\"\n"
     "000000C4 RECT 12 13 18 19 9AA4B2FF \"\"\n"
     "# neutral options h=24 density=1.00\n"
+    "000000C4 RECT 10 4 34 28 9AA4B2FF \"\"\n"
+    "000000C4 RECT 11 5 33 27 18202BFF \"\"\n"
     "000000C4 RECT 19 6 25 12 9AA4B2FF \"\"\n"
     "000000C4 RECT 26 13 32 19 9AA4B2FF \"\"\n"
     "000000C4 RECT 19 20 25 26 9AA4B2FF \"\"\n"
     "000000C4 RECT 12 13 18 19 F5F7FAFF \"\"\n"
     "# neutral details h=24 density=1.00\n"
+    "000000C4 RECT 10 4 34 28 9AA4B2FF \"\"\n"
+    "000000C4 RECT 11 5 33 27 18202BFF \"\"\n"
     "000000C4 RECT 19 6 25 12 F5F7FAFF \"\"\n"
     "000000C4 RECT 26 13 32 19 9AA4B2FF \"\"\n"
     "000000C4 RECT 19 20 25 26 9AA4B2FF \"\"\n"
     "000000C4 RECT 12 13 18 19 9AA4B2FF \"\"\n"
     "# neutral confirm h=24 density=2.00\n"
+    "000000C4 RECT 20 8 68 56 9AA4B2FF \"\"\n"
+    "000000C4 RECT 21 9 67 55 18202BFF \"\"\n"
     "000000C4 RECT 37 11 51 25 9AA4B2FF \"\"\n"
     "000000C4 RECT 51 25 65 39 9AA4B2FF \"\"\n"
     "000000C4 RECT 37 39 51 53 F5F7FAFF \"\"\n"
@@ -741,8 +792,14 @@ static const char g_glyph_golden[] =
     "000000C4 RECT 16 15 28 17 F5F7FAFF \"\"\n"
     "000000C4 RECT 16 19 28 21 F5F7FAFF \"\"\n"
     "# neutral move h=24 density=1.00\n"
-    "000000C4 RECT 12 13 32 19 F5F7FAFF \"\"\n"
-    "000000C4 RECT 19 6 25 26 F5F7FAFF \"\"\n"
+    "000000C4 RECT 10 12 34 20 9AA4B2FF \"\"\n"
+    "000000C4 RECT 18 4 26 28 9AA4B2FF \"\"\n"
+    "000000C4 RECT 11 13 33 19 18202BFF \"\"\n"
+    "000000C4 RECT 19 5 25 27 18202BFF \"\"\n"
+    "000000C4 RECT 19 4 24 8 F5F7FAFF \"\"\n"
+    "000000C4 RECT 29 13 33 18 F5F7FAFF \"\"\n"
+    "000000C4 RECT 19 23 24 27 F5F7FAFF \"\"\n"
+    "000000C4 RECT 10 13 14 18 F5F7FAFF \"\"\n"
     "# letters-a-south confirm h=24 density=1.00\n"
     "000000C4 RECT 12 6 32 26 18202BFF \"\"\n"
     "000000C4 TEXT 12 6 32 26 F5F7FAFF \"A\"\n"
@@ -755,6 +812,28 @@ static const char g_glyph_golden[] =
     "# letters-a-east back h=24 density=1.50\n"
     "000000C4 RECT 17 8 49 40 18202BFF \"\"\n"
     "000000C4 TEXT 17 8 49 40 F5F7FAFF \"A\"\n"
+    "# keycaps move h=24 density=1.00\n"
+    "000000C4 RECT 23 5 33 15 9AA4B2FF \"\"\n"
+    "000000C4 RECT 23 5 33 14 18202BFF \"\"\n"
+    "000000C4 RECT 26 7 30 10 F5F7FAFF \"\"\n"
+    "000000C4 RECT 11 17 21 27 9AA4B2FF \"\"\n"
+    "000000C4 RECT 11 17 21 26 18202BFF \"\"\n"
+    "000000C4 RECT 14 19 17 23 F5F7FAFF \"\"\n"
+    "000000C4 RECT 23 17 33 27 9AA4B2FF \"\"\n"
+    "000000C4 RECT 23 17 33 26 18202BFF \"\"\n"
+    "000000C4 RECT 26 20 30 23 F5F7FAFF \"\"\n"
+    "000000C4 RECT 35 17 45 27 9AA4B2FF \"\"\n"
+    "000000C4 RECT 35 17 45 26 18202BFF \"\"\n"
+    "000000C4 RECT 38 19 42 23 F5F7FAFF \"\"\n"
+    "# letters-a-south move h=24 density=1.00\n"
+    "000000C4 RECT 10 12 34 20 9AA4B2FF \"\"\n"
+    "000000C4 RECT 18 4 26 28 9AA4B2FF \"\"\n"
+    "000000C4 RECT 11 13 33 19 18202BFF \"\"\n"
+    "000000C4 RECT 19 5 25 27 18202BFF \"\"\n"
+    "000000C4 RECT 19 4 24 8 F5F7FAFF \"\"\n"
+    "000000C4 RECT 29 13 33 18 F5F7FAFF \"\"\n"
+    "000000C4 RECT 19 23 24 27 F5F7FAFF \"\"\n"
+    "000000C4 RECT 10 13 14 18 F5F7FAFF \"\"\n"
     "# keycaps confirm h=24 density=1.00\n"
     "000000C4 RECT 10 4 56 28 9AA4B2FF \"\"\n"
     "000000C4 RECT 10 4 56 25 18202BFF \"\"\n"
@@ -965,6 +1044,27 @@ static int test_sdl_translation(void) {
     e.gaxis.value = 30000;
     CHECK(tr(&s, &e, 7.2) == 0u, "triggers are ignored");
 
+    /* Hot-plug through SDL's own events: a pad that connects switches the whole
+       prompt bar to controller glyphs, and its removal switches back. */
+    {
+        NkUiSdlInput plug;
+        nk_ui_sdl_input_init(&plug);
+        CHECK(nk_ui_input_prompt_style(&plug.input) == NK_UI_PROMPT_KEYCAPS,
+              "no pad at start: keyboard and mouse glyphs");
+        memset(&e, 0, sizeof(e));
+        e.type = SDL_EVENT_GAMEPAD_ADDED;
+        e.gdevice.which = 31;
+        (void)tr(&plug, &e, 7.5);
+        CHECK(nk_ui_input_prompt_style(&plug.input) != NK_UI_PROMPT_KEYCAPS &&
+              nk_ui_input_pad_connected(&plug.input),
+              "SDL_EVENT_GAMEPAD_ADDED switches to controller glyphs");
+        e.type = SDL_EVENT_GAMEPAD_REMOVED;
+        (void)tr(&plug, &e, 7.6);
+        CHECK(nk_ui_input_prompt_style(&plug.input) == NK_UI_PROMPT_KEYCAPS &&
+              !nk_ui_input_pad_connected(&plug.input),
+              "SDL_EVENT_GAMEPAD_REMOVED switches back to keyboard and mouse");
+    }
+
     /* Mouse and wheel, scaled into logical pixels. */
     nk_ui_sdl_input_set_event_scale(&s, 0.5f);
     memset(&e, 0, sizeof(e));
@@ -972,9 +1072,8 @@ static int test_sdl_translation(void) {
     e.motion.x = 200.0f;
     e.motion.y = 100.0f;
     n = tr(&s, &e, 8.0);
-    CHECK(n == 2 && g_out[0].type == NK_UI_EV_DEVICE && g_out[0].pad_family == NK_UI_PAD_KEYBOARD &&
-          g_out[1].type == NK_UI_EV_POINTER && g_out[1].x == 100.0f && g_out[1].y == 50.0f &&
-          !g_out[1].down, "mouse motion in logical pixels");
+    CHECK(n == 1 && g_out[0].type == NK_UI_EV_POINTER && g_out[0].x == 100.0f &&
+          g_out[0].y == 50.0f && !g_out[0].down, "mouse motion in logical pixels");
     memset(&e, 0, sizeof(e));
     e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
     e.button.button = SDL_BUTTON_LEFT;
@@ -982,7 +1081,9 @@ static int test_sdl_translation(void) {
     e.button.x = 200.0f;
     e.button.y = 100.0f;
     n = tr(&s, &e, 8.1);
-    CHECK(n == 1 && g_out[0].type == NK_UI_EV_POINTER && g_out[0].down, "left button press");
+    CHECK(n == 2 && g_out[0].type == NK_UI_EV_DEVICE && g_out[0].pad_family == NK_UI_PAD_KEYBOARD &&
+          g_out[1].type == NK_UI_EV_POINTER && g_out[1].down,
+          "a left click announces the keyboard and mouse, then presses");
     e.button.button = SDL_BUTTON_RIGHT;
     CHECK(tr(&s, &e, 8.2) == 0u, "other buttons are ignored");
     memset(&e, 0, sizeof(e));
@@ -1062,6 +1163,7 @@ int main(int argc, char **argv) {
     if (!test_grid() || !test_ragged_row() || !test_scroll_into_view() ||
         !test_dialog_trap_and_scope_memory() || !test_tab_cycle_and_repair() ||
         !test_repeat_timing() || !test_stick_hysteresis() || !test_event_construction() ||
+        !test_prompt_style_follows_device() ||
         !test_utf8() || !test_label_table() || !test_prompt_bounds() ||
         !test_glyph_goldens()) {
         return 1;
