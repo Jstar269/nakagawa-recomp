@@ -20,10 +20,17 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 GPU_DIR = ROOT / "src" / "rt" / "gpu_sdl3vk"
 MANIFEST = GPU_DIR / "shader_manifest.json"
+UI_DIR = ROOT / "src" / "ui"
+UI_MANIFEST = ROOT / Path("src/ui/shaders/shader_manifest.json")
 TARGET_ENV = "vulkan1.1"
 SHADERS = (
     ("vert", Path("shaders/psp.vert"), Path("psp_vert.inc")),
     ("frag", Path("shaders/psp.frag"), Path("psp_frag.inc")),
+)
+UI_SHADERS = (
+    ("vert", Path("shaders/ui.vert"), Path("shaders/ui_vert.inc")),
+    ("frag", Path("shaders/ui.frag"), Path("shaders/ui_frag.inc")),
+    ("frag", Path("shaders/waves.frag"), Path("shaders/waves_frag.inc")),
 )
 WORD_RE = re.compile(r"0x([0-9a-fA-F]{8})")
 
@@ -67,15 +74,18 @@ def compile_shader(glslc: str, source: Path, output: Path, gpu_dir: Path) -> byt
     return output.read_bytes()
 
 
-def regenerate(gpu_dir: Path, manifest_path: Path, glslc: str) -> None:
+def regenerate(
+    gpu_dir: Path, manifest_path: Path, glslc: str,
+    shaders: tuple[tuple[str, Path, Path], ...] = SHADERS,
+) -> None:
     compiler_version = glslc_version(glslc)
     entries = []
     staged: list[tuple[Path, bytes]] = []
     with tempfile.TemporaryDirectory(prefix="nakagawa-shaders-") as temp_name:
         temp = Path(temp_name)
-        for stage, source_rel, embedded_rel in SHADERS:
+        for stage, source_rel, embedded_rel in shaders:
             source = gpu_dir / source_rel
-            spirv = compile_shader(glslc, source, temp / f"psp.{stage}.spv", gpu_dir)
+            spirv = compile_shader(glslc, source, temp / f"{source.stem}.{stage}.spv", gpu_dir)
             embedded = format_embedding(spirv).encode("ascii")
             entries.append(
                 {
@@ -117,14 +127,17 @@ def load_manifest(path: Path) -> dict:
     return manifest
 
 
-def verify(gpu_dir: Path, manifest_path: Path, glslc: str | None = None) -> list[str]:
+def verify(
+    gpu_dir: Path, manifest_path: Path, glslc: str | None = None,
+    shaders: tuple[tuple[str, Path, Path], ...] = SHADERS,
+) -> list[str]:
     errors: list[str] = []
     try:
         manifest = load_manifest(manifest_path)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return [f"manifest: {exc}"]
 
-    expected = {(stage, source.as_posix(), embedded.as_posix()) for stage, source, embedded in SHADERS}
+    expected = {(stage, source.as_posix(), embedded.as_posix()) for stage, source, embedded in shaders}
     actual = {
         (entry.get("stage"), entry.get("source"), entry.get("embedded"))
         for entry in manifest["shaders"]
@@ -132,7 +145,7 @@ def verify(gpu_dir: Path, manifest_path: Path, glslc: str | None = None) -> list
     if actual != expected:
         errors.append("shader manifest file set does not match the build contract")
 
-    embedded_spirv: dict[str, bytes] = {}
+    embedded_spirv: dict[tuple[str, str], bytes] = {}
     for entry in manifest["shaders"]:
         source = gpu_dir / entry.get("source", "")
         embedded = gpu_dir / entry.get("embedded", "")
@@ -154,20 +167,22 @@ def verify(gpu_dir: Path, manifest_path: Path, glslc: str | None = None) -> list
                 errors.append(
                     f"{entry.get('stage', '?')}: {label} mismatch ({observed} != {recorded})"
                 )
-        embedded_spirv[entry.get("stage", "")] = spirv
+        embedded_spirv[(entry.get("stage", ""), entry.get("source", ""))] = spirv
 
     if glslc and not errors:
         with tempfile.TemporaryDirectory(prefix="nakagawa-shader-verify-") as temp_name:
             temp = Path(temp_name)
-            for stage, source_rel, _ in SHADERS:
+            for stage, source_rel, _ in shaders:
                 try:
                     rebuilt = compile_shader(
-                        glslc, gpu_dir / source_rel, temp / f"psp.{stage}.spv", gpu_dir
+                        glslc, gpu_dir / source_rel,
+                        temp / f"{source_rel.stem}.{stage}.spv", gpu_dir
                     )
                 except (OSError, subprocess.SubprocessError) as exc:
                     errors.append(f"{stage}: reproducibility compile failed: {exc}")
                     continue
-                if rebuilt != embedded_spirv.get(stage):
+                key = (stage, source_rel.as_posix())
+                if rebuilt != embedded_spirv.get(key):
                     errors.append(f"{stage}: current glslc output differs from embedded SPIR-V")
     return errors
 
@@ -175,8 +190,9 @@ def verify(gpu_dir: Path, manifest_path: Path, glslc: str | None = None) -> list
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("regenerate", "verify"))
-    parser.add_argument("--gpu-dir", type=Path, default=GPU_DIR)
-    parser.add_argument("--manifest", type=Path, default=MANIFEST)
+    parser.add_argument("--shader-set", choices=("psp", "ui"), default="psp")
+    parser.add_argument("--gpu-dir", type=Path)
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--glslc")
     parser.add_argument("--recompile", action="store_true")
     return parser.parse_args()
@@ -185,17 +201,20 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     glslc = args.glslc or shutil.which("glslc")
+    gpu_dir = args.gpu_dir or (UI_DIR if args.shader_set == "ui" else GPU_DIR)
+    manifest = args.manifest or (UI_MANIFEST if args.shader_set == "ui" else MANIFEST)
+    shaders = UI_SHADERS if args.shader_set == "ui" else SHADERS
     if args.action == "regenerate":
         if not glslc:
             print("glslc is required to regenerate shader embeddings", file=sys.stderr)
             return 2
-        regenerate(args.gpu_dir, args.manifest, glslc)
+        regenerate(gpu_dir, manifest, glslc, shaders)
         print(f"shader embeddings regenerated with {glslc} ({TARGET_ENV})")
         return 0
     if args.recompile and not glslc:
         print("glslc is required for byte-for-byte shader reproduction", file=sys.stderr)
         return 2
-    errors = verify(args.gpu_dir, args.manifest, glslc if args.recompile else None)
+    errors = verify(gpu_dir, manifest, glslc if args.recompile else None, shaders)
     if errors:
         for error in errors:
             print(f"shader verification failed: {error}", file=sys.stderr)

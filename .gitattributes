@@ -42,3 +42,31 @@
 *.spv             binary
 *.o               binary
 *.obj             binary
+*.gif             binary
+*.ico             binary
+*.bmp             binary
+*.wav             binary
+*.ttf             binary
+*.otf             binary
+*.woff            binary
+*.woff2           binary
+*.zip             binary
+*.7z              binary
+*.gz              binary
+*.pdf             binary
+*.a               binary
+*.lib             binary
+*.pdb             binary
+
+# GitHub language statistics and diff display (Linguist). Headers are C, not
+# C++ or Objective-C; generated output and vendored upstream code are labelled
+# so pull request diffs collapse them and the language bar counts project code.
+*.h                                   linguist-language=C
+*.inc                                 linguist-language=C
+src/core/generated/**                 linguist-generated
+src/rt/nid_names.h                    linguist-generated
+src/rt/gpu_sdl3vk/*.inc               linguist-generated
+src/ui/shaders/*.inc                  linguist-generated
+assets/public_provenance_ledger.json  linguist-generated
+PUBLIC_EXPORT.json                    linguist-generated
+third_party/**                        linguist-vendored
