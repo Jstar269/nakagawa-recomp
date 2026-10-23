@@ -43,7 +43,7 @@ def parse_policy_spec(spec: str) -> list[tuple[str, tuple[int, ...]]]:
 
     Example:
         '>=4.9.0 (rolling-msys2)' -> [('>=', (4, 9, 0))]
-        '>=3.14,<3.15' -> [('>=', (3, 14)), ('<', (3, 15))]
+        '>=3.15,<3.16' -> [('>=', (3, 15)), ('<', (3, 16))]
     """
     if not isinstance(spec, str):
         raise ValueError("specification must be a string")

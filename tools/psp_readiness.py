@@ -119,7 +119,7 @@ def _psplink_wsl_device() -> tuple[bool, str]:
     """
 
     # Tests and supported callers may model Windows while running on a
-    # non-Windows host.  Python 3.14's shutil.which consults _winapi for that
+    # non-Windows host.  CPython's shutil.which may consult _winapi for that
     # modeled platform, which is absent outside Windows; a detector failure is
     # equivalent to an unavailable WSL fallback, not a readiness error.
     try:

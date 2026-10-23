@@ -2008,7 +2008,7 @@ int main(int argc, char **argv) {
     if (argc == 3 && strcmp(argv[1], "-c") == 0) {
         static const char python_probe[] =
             "import sys; sys.exit(sys.implementation.name != 'cpython' or "
-            "sys.version_info[:2] != (3, 14))";
+            "sys.version_info[:2] != (3, 15))";
         return strcmp(argv[2], python_probe) == 0 ? 0 : 94;
     }
     if (argc >= 3 && strcmp(argv[2], "build-package") == 0) {
@@ -5631,7 +5631,7 @@ int main(int argc, char **argv) {
         assert(capp->active_view == VIEW_PREREQ_CONSENT);
         assert(capp->prerequisites.phase == PLAYER_PREREQ_CONSENT);
         assert(capp->prerequisites.item_count == 35);
-        assert(capp->prerequisites.total_bytes == UINT64_C(100732586));
+        assert(capp->prerequisites.total_bytes == UINT64_C(101853260));
         assert(capp->build_session.is_building == false);
         /* Consent cancellation has no side effects. */
         player_app_prereq_cancel(capp);
@@ -5654,7 +5654,7 @@ int main(int argc, char **argv) {
         assert(capp->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP);
         assert(capp->active_view == VIEW_PREREQ_PROGRESS);
         player_app_prereq_update_progress(capp, "cpython-embed-amd64", 64, 128,
-                                          64, UINT64_C(100732586));
+                                          64, UINT64_C(101853260));
         assert(strcmp(capp->prerequisites.current_item, "cpython-embed-amd64") == 0);
         assert(capp->prerequisites.item_received_bytes == 64);
         assert(capp->prerequisites.total_received_bytes == 64);

@@ -4,7 +4,7 @@
 [project]
 name = "nakagawa-recomp-tools"
 version = "0.1.0"
-requires-python = ">=3.14,<3.15"
+requires-python = ">=3.15,<3.16"
 # Dev tooling: generated Clang compilation database for IDE/clangd (see nk_manager.ps1).
 # Version-bounded for reproducible developer environments (0.10.x is the current line).
 dependencies = [
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [tool.ruff]
-# The target version comes from requires-python above.
+target-version = "py315"
 line-length = 120
 # First-party import root for import-aware rules.
 src = ["tools"]
@@ -45,7 +45,7 @@ omit = [
 ]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.15"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true

@@ -691,16 +691,16 @@ first on `PATH` (#294). The contract is explicit:
 
 | Job / environment | Python running `tools/*` and the fixture generators |
 | --- | --- |
-| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14.9 |
-| `windows_runtime` (MSYS2 UCRT64 shell) | MSYS2 UCRT64 CPython (`mingw-w64-ucrt-x86_64-python`), selected by the `msys2 {0}` shell's PATH order and asserted by the "Pin the Windows Python toolchain" step |
-| Local Windows runs | Windows CPython from the python.org installer (not the MSYS2 build); the suite stays green under both Windows CPython and MSYS2 CPython (#504) |
+| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.15.1 |
+| `windows_runtime` (MSYS2 UCRT64 shell) | Windows CPython 3.15.1 from `actions/setup-python`, passed through `PYTHON`; MSYS2's UCRT64 Python 3.14.8 is not used for repository tools |
+| Local Windows runs | Windows CPython 3.15.x from the python.org installer; set `PYTHON` explicitly when MSYS2 comes first on `PATH` |
 
 Stages that invoke the repository's PowerShell 7.4 asset-copy script opt into
 the runner's Windows `PATH` explicitly with `MSYS2_PATH_TYPE: inherit` and assert
 `command -v pwsh` themselves. Under `inherit` the MSYS2 UCRT64 directories still
-precede the inherited Windows `PATH`, so `python` remains the UCRT64 CPython and
-only `pwsh` resolves from the runner image. No hosted step relies on undeclared
-PATH order.
+precede the inherited Windows `PATH`; `windows_runtime` passes Windows CPython's
+absolute path through `PYTHON` and converts it to an MSYS path only for direct
+shell invocations. No hosted step relies on undeclared `PATH` order.
 
 That same MSYS2 shell has no `git` on `PATH`, so the Makefile cannot resolve a
 revision there. `windows_runtime` therefore sets `SR_SOURCE_COMMIT` to

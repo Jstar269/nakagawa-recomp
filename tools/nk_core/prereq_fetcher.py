@@ -262,7 +262,7 @@ def _extract_tar(item: dict, archive: Path, target: Path, notices_root: Path,
         package = tarfile.open(archive, mode="r:*")
     except (tarfile.TarError, OSError, ImportError) as exc:
         raise PrerequisiteFetchError(
-            f"ARCHIVE_UNSUPPORTED: Python 3.14 with zstd support is required for {item['id']}."
+            f"ARCHIVE_UNSUPPORTED: Python 3.15 with zstd support is required for {item['id']}."
         ) from exc
     with package:
         members = package.getmembers()

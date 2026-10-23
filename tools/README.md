@@ -1,6 +1,6 @@
 # `tools/` — Host-side recompiler scripts
 
-These scripts require Python 3.14.x. PowerShell entrypoints require PowerShell 7.4+ (`pwsh`); they
+These scripts require Python 3.15.x. PowerShell entrypoints require PowerShell 7.4+ (`pwsh`); they
 run on the development host and are never executed by `hst.exe` at runtime. For HST, use the canonical `nk_manager.ps1` with `-GameName hst` and `-TitleManifest`; it supplies the required zero base/entry values and drives the Makefile's two-phase build.
 
 ## Pipeline (in order)

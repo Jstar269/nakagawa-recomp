@@ -230,14 +230,14 @@ def check_platform(report: Report) -> None:
             detail=platform.machine(),
             remediation="Use a supported Windows x64 environment.",
         )
-    if (3, 14) <= sys.version_info[:2] < (3, 15):
+    if (3, 15) <= sys.version_info[:2] < (3, 16):
         report.pass_("PYTHON_VERSION", "Python version is supported", detail=sys.version.split()[0])
     else:
         report.fail(
             "PYTHON_VERSION",
-            "Python 3.14.x is required",
+            "Python 3.15.x is required",
             detail=sys.version.split()[0],
-            remediation="Install CPython 3.14.x and make `python` resolve to it.",
+            remediation="Install CPython 3.15.x and make `python` resolve to it.",
         )
     check_powershell(report)
 

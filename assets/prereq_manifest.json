@@ -2,24 +2,24 @@
   "SPDX-License-Identifier: GPL-3.0-or-later": true,
   "Copyright (C) 2026 the Nakagawa Recomp authors": true,
   "schema_version": 1,
-  "source_snapshot_date": "2026-10-21",
+  "source_snapshot_date": "2026-10-23",
   "platform": "Windows x64, UCRT64",
-  "total_download_bytes": 100732586,
+  "total_download_bytes": 101853260,
   "artifacts": [
     {
       "id": "cpython-embed-amd64",
       "name": "CPython Windows embeddable runtime",
-      "version": "3.14.9",
-      "url": "https://www.python.org/ftp/python/3.14.9/python-3.14.9-embed-amd64.zip",
+      "version": "3.15.1",
+      "url": "https://www.python.org/ftp/python/3.15.1/python-3.15.1-embed-amd64.zip",
       "allowed_hosts": [
         "www.python.org"
       ],
-      "filename": "python-3.14.9-embed-amd64.zip",
-      "size_bytes": 12609248,
-      "sha256": "3c01d7cfc666f746a6f064f60fb2156ab0ec464d3d738ab796371a46a9bb24a2",
+      "filename": "python-3.15.1-embed-amd64.zip",
+      "size_bytes": 13729922,
+      "sha256": "352e232f25b5120508f11a6dfc1bd9076d3e70c30977d552a63338838c2ae8fb",
       "sha256_source": {
-        "url": "https://www.python.org/downloads/release/python-3149/",
-        "method": "publisher release page checksum"
+        "url": "https://www.python.org/api/v2/downloads/release_file/5844/",
+        "method": "python.org release_file API sha256_sum"
       },
       "license": "PSF-2.0",
       "archive_format": "zip",
@@ -845,7 +845,7 @@
     }
   ],
   "python_runtime": {
-    "required_version": "3.14.x",
+    "required_version": "3.15.x",
     "additional_packages_required_by_build_package": [],
     "locked_developer_tools_not_required_by_consumer_build": {
       "compiledb": "0.10.7",

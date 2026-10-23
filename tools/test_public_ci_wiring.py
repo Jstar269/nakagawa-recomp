@@ -444,16 +444,17 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run portable FPU/VFPU conversion selftest": "CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest",
     "Build and run strbuf checked-append formatting selftest": "CC=gcc VULKAN_SDK=/ucrt64 strbuf-selftest",
     "Build and run HLE thread selftest": "CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest",
-    "Build and run flash0 font device selftest": "PYTHONPATH=tools python -m unittest -v test_flash0_font",
+    "Build and run flash0 font device selftest": 'PYTHONPATH=tools "$py" -m unittest -v test_flash0_font',
     "Build and run synthetic VFPU fuzzer (shard 0 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Build and run synthetic VFPU fuzzer (shard 1 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
-    "Prove the fuzz shards cover every case exactly once": "NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe python -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests",
+    "Prove the fuzz shards cover every case exactly once": 'NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests',
 }
 # Steps every part repeats: the toolchain setup and the runtime-object compile gate.
 _WINDOWS_EVERY_PART = (
     "Check out repository",
+    "Set up Windows CPython 3.15.1",
     "Set up MSYS2 UCRT64",
-    "Pin the Windows Python toolchain (MSYS2 UCRT64 CPython)",
+    "Pin the Windows Python toolchain (CPython 3.15.1)",
     "Verify default and override compiler resolution",
     "Compile Windows runtime objects through the default compiler path",
 )
@@ -485,6 +486,16 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         match = re.fullmatch(r"if: matrix\.part == '([A-Za-z0-9_-]+)'", conditions[0])
         self.assertIsNotNone(match, f"{name}: a part condition must name exactly one part")
         return match.group(1)
+
+    def test_windows_runtime_pins_windows_cpython_315_for_tools_and_make(self) -> None:
+        setup = "\n".join(self.steps["Set up Windows CPython 3.15.1"])
+        self.assertIn('python-version: "3.15.1"', setup)
+        pin = "\n".join(self.steps["Pin the Windows Python toolchain (CPython 3.15.1)"])
+        self.assertIn("shell: pwsh", pin)
+        self.assertIn("steps.windows-cpython.outputs.python-path", pin)
+        self.assertIn('"PYTHON=$pythonPath`n"', pin)
+        self.assertIn("MSYS2 still ships Python 3.14.8", "\n".join(self.block))
+        self.assertIn('cygpath -u "$PYTHON"', "\n".join(self.block))
 
     def test_every_serial_gate_runs_in_exactly_one_declared_part_with_its_command(self) -> None:
         self.assertEqual(len(self.parts), len(set(self.parts)))
@@ -547,7 +558,8 @@ class WindowsPlayerStageSmokeTests(unittest.TestCase):
         self.assertNotIn("mingw32-make", self.text)
 
     def test_step_stages_a_test00007_disc_through_the_stage_only_route(self) -> None:
-        self.assertIn("python fixtures/showcase/showcase.py stage-iso --out-dir", self.text)
+        self.assertIn('"$py" fixtures/showcase/showcase.py stage-iso --out-dir', self.text)
+        self.assertIn('py="$(cygpath -u "$PYTHON")"', self.text)
         self.assertIn('"--iso=$smoke/disc/TEST00007.iso" --stage-only)', self.text)
         self.assertIn('grep -Fq "STAGING_RESULT status=PASS"', self.text)
         self.assertIn("timeout 60s", self.text)
@@ -757,15 +769,27 @@ class PublicExportJobTests(unittest.TestCase):
         text = "\n".join(step or [])
         self.assertIn('--require-hashes', text)
         self.assertIn('pre-commit-requirements.txt', text)
-        match = re.search(r"<<'LOCK'\n(?P<lock>.*?)\n\s*LOCK", text, re.DOTALL)
-        self.assertIsNotNone(match)
-        lock = match.group("lock") if match is not None else ""
-        requirements = [line.strip().rstrip("\\").strip()
-                        for line in lock.splitlines() if "==" in line]
-        package_versions = {
-            line.split("==", 1)[0].lower(): line.split("==", 1)[1]
-            for line in requirements
-        }
+        locks = re.findall(r"<<'LOCK'\n(.*?)\n\s*LOCK", text, re.DOTALL)
+        self.assertEqual(len(locks), 2, "build tools and pre-commit must each have a hash lock")
+
+        def versions(lock: str) -> dict[str, str]:
+            requirements = [line.strip().rstrip("\\").strip()
+                            for line in lock.splitlines() if "==" in line]
+            return {
+                line.split("==", 1)[0].lower(): line.split("==", 1)[1]
+                for line in requirements
+            }
+
+        build_lock, lock = locks
+        build_versions = versions(build_lock)
+        package_versions = versions(lock)
+        self.assertEqual(build_versions, {
+            "cython": "3.3.0",
+            "setuptools": "84.2.1",
+            "packaging": "26.3",
+            "wheel": "0.48.0",
+        })
+        self.assertEqual(build_lock.count("--hash=sha256:"), len(build_versions))
         self.assertEqual(package_versions, {
             "cfgv": "3.5.0",
             "distlib": "0.4.4",
@@ -803,7 +827,7 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertIn("PROVENANCE_UNVERIFIED", export)
         job = "\n".join(self.blocks["public_export"])
         self.assertIn("fetch-depth: 0", job)
-        self.assertIn('python-version: "3.14.9"', job)
+        self.assertIn('python-version: "3.15.1"', job)
 
     def test_public_export_job_is_ungated_by_path(self) -> None:
         block = self.blocks["public_export"]

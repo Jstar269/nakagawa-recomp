@@ -221,7 +221,7 @@ class BuildTruthTests(unittest.TestCase):
                 BUILD := build
                 PROFILE_RUN := -c "{profile_run}"
                 include {COMMON_MK.name}
-                PROFILE_HASH := $(shell $(PYTHON) $(PROFILE_RUN) hash --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)")
+                PROFILE_HASH := $(shell "$(PYTHON)" $(PROFILE_RUN) hash --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)")
                 PROFILE_STAMP := $(BUILD)/.profile-$(PROFILE_HASH)
                 PROFILE_MANIFEST := $(BUILD)/profile.json
                 OBJS := $(BUILD)/dependent.o $(BUILD)/unrelated.o
@@ -230,7 +230,7 @@ class BuildTruthTests(unittest.TestCase):
                 all: $(OBJS)
 
                 $(PROFILE_STAMP):
-                \t$(PYTHON) $(PROFILE_RUN) record --output $(PROFILE_MANIFEST) --section runtime --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)" --stamp "$@" --stale-glob ".profile-*" $(foreach obj,$(OBJS),--invalidate "$(obj)")
+                \t"$(PYTHON)" $(PROFILE_RUN) record --output $(PROFILE_MANIFEST) --section runtime --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)" --stamp "$@" --stale-glob ".profile-*" $(foreach obj,$(OBJS),--invalidate "$(obj)")
 
                 $(BUILD)/%.o: %.c $(PROFILE_STAMP)
                 \t@echo COMPILE $<
@@ -1421,9 +1421,9 @@ class GuestInputTransportTests(unittest.TestCase):
 
         mutant = self._mutate_makefile(
             ("$(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_INPUT_PREREQ) tools/prxload.py\n"
-             "\t$(PYTHON) tools/prxload.py --env-elf $(GAME_BASE)",
+             "\t\"$(PYTHON)\" tools/prxload.py --env-elf $(GAME_BASE)",
              "$(BUILD_DIR)/$(GAME_NAME)_image.bin: tools/prxload.py\n"
-             "\t$(PYTHON) tools/prxload.py $(GAME_ELF) $(GAME_BASE)"),
+             "\t\"$(PYTHON)\" tools/prxload.py $(GAME_ELF) $(GAME_BASE)"),
         )
         blob = self._blob(self._make("test_gi_m1", elf.as_posix(), makefile=mutant))
         self.assertTrue(
@@ -1616,7 +1616,7 @@ class GuestInputTransportTests(unittest.TestCase):
         """
         if (ROOT / "eboot.elf").exists():
             self.skipTest("the fixed default exists on disk and is exported by design")
-        probe = ("--eval=probe-guest-env: ; @$(PYTHON) -c "
+        probe = ('--eval=probe-guest-env: ; @"$(PYTHON)" -c '
                  "\"import os; print('GAME_ELF_IN_ENV=' + str(os.environ.get('GAME_ELF')))\"")
         proc = subprocess.run(
             [self.make, "--no-print-directory", f"BUILD_ROOT={self.build_root.as_posix()}",

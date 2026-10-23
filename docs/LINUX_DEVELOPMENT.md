@@ -29,7 +29,7 @@ Install with `sudo apt update && sudo apt install`:
 
 - `build-essential`, `pkg-config`, `cmake`, `ninja-build`, `git`, `curl`
 - `gcc-mipsel-linux-gnu` (AOT test targets that emit MIPS objects)
-- `python3.14`, `python3.14-venv`, `python3.14-dev`. CPython 3.14.x is
+- `python3.15`, `python3.15-venv`, `python3.15-dev`. CPython 3.15.x is
   required, and Ubuntu 24.04's own archive does not carry it: enable the
   deadsnakes PPA first (`sudo add-apt-repository ppa:deadsnakes/ppa`). Create a
   project environment (for example `~/.venvs/nakagawa`), and keep `ruff`,
@@ -58,6 +58,9 @@ Install PSPDEV v20260601 at `/usr/local/pspdev` (the official
 `assets/upstream/pspdev.lock.json`.
 
 ## What works today
+
+The verification environment below is a recorded snapshot from before the current
+CPython 3.15.x host requirement; it is not a Python 3.15 verification result.
 
 Verified on Ubuntu 24.04 with gcc 13.3.0, SDL3 3.4.18, Vulkan 1.3.275, CMake
 3.28, Ninja, glslc, and Python 3.14.6.

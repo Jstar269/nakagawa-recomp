@@ -105,7 +105,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14.9"
+          python-version: "3.15.1"
           cache: pip
           cache-dependency-path: |
             .pre-commit-config.yaml
@@ -114,8 +114,21 @@ jobs:
       - name: Install pre-commit
         shell: bash
         run: |
-          # Exact CPython 3.14 / Ubuntu 24.04 x86_64 bootstrap closure. The
-          # platform-specific PyYAML wheel hash fails closed if this runner changes.
+          # Exact CPython 3.15.1 / Ubuntu 26.04 x86_64 bootstrap closure. PyYAML
+          # As of 2026-10-23, PyYAML 6.0.3 has no cp315 wheel, so build its
+          # hashed sdist with pinned tools.
+          cat > "$RUNNER_TEMP/pre-commit-build-requirements.txt" <<'LOCK'
+          Cython==3.3.0 \
+              --hash=sha256:9b24b5c8cd536946b62086fcafee6d5509d3f549f72d553d2336af87ffbe0da1
+          setuptools==84.2.1 \
+              --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2
+          packaging==26.3 \
+              --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+          wheel==0.48.0 \
+              --hash=sha256:3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab
+          LOCK
+          python -m pip install --disable-pip-version-check --require-hashes \
+            -r "$RUNNER_TEMP/pre-commit-build-requirements.txt"
           cat > "$RUNNER_TEMP/pre-commit-requirements.txt" <<'LOCK'
           cfgv==3.5.0 \
               --hash=sha256:a8dc6b26ad22ff227d2634a65cb388215ce6cc96bbcc5cfde7641ae87e8dacc0
@@ -134,14 +147,13 @@ jobs:
           pre-commit==4.6.2 \
               --hash=sha256:e2dde9a75d3bce11bd3831c26d134df00a2803c1d818be6a0383c3dcda25dc4e
           PyYAML==6.0.3 \
-              --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5
+              --hash=sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f
           python-discovery==1.6.4 \
               --hash=sha256:530179cc51a1816d512b15635b3dc931295ae12efb183783ad31190a5d425d2b
           virtualenv==21.14.11 \
               --hash=sha256:b319f8590a84e5de5f8f2c803ecd2237e9bc0ffa7c1e875e3169c107cecb7454
           LOCK
-          python -m pip install --disable-pip-version-check --require-hashes \
-            -r "$RUNNER_TEMP/pre-commit-requirements.txt"
+          python -m pip install --disable-pip-version-check --no-build-isolation --no-binary=PyYAML --require-hashes -r "$RUNNER_TEMP/pre-commit-requirements.txt"
 
       - name: Run shared all-files checks
         run: pre-commit run --all-files --show-diff-on-failure
@@ -211,7 +223,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14.9"
+          python-version: "3.15.1"
 
       # #293/#294: represent the release-export candidate path in hosted CI.
       # One invocation runs the publication gates, generates the public-safe
@@ -375,7 +387,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14.9"
+          python-version: "3.15.1"
           cache: pip
           cache-dependency-path: |
             pyproject.toml
@@ -472,7 +484,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14.9"
+          python-version: "3.15.1"
 
       - name: Install native test dependencies
         run: |
@@ -1069,6 +1081,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Windows CPython 3.15.1
+        id: windows-cpython
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.15.1"
+          architecture: x64
+
       - name: Set up MSYS2 UCRT64
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
@@ -1086,26 +1105,21 @@ jobs:
             mingw-w64-ucrt-x86_64-vulkan-headers
             mingw-w64-ucrt-x86_64-vulkan-loader
 
-      # Windows toolchain contract (docs/CI.md): repository tools run under the
-      # MSYS2 UCRT64 CPython installed above, selected by the msys2 shell's PATH
-      # order -- never the runner's Windows CPython. Stages that need `pwsh` opt
-      # into the inherited Windows PATH explicitly (MSYS2_PATH_TYPE: inherit) and
-      # assert `command -v pwsh` themselves. This step makes both facts explicit
-      # instead of leaving them to PATH order.
-      - name: Pin the Windows Python toolchain (MSYS2 UCRT64 CPython)
-        shell: msys2 {0}
+      # MSYS2 still ships Python 3.14.8. Repository tools and Make recipes use
+      # the separately installed Windows CPython 3.15.1 through PYTHON; the
+      # UCRT64 compiler and libraries remain first on PATH.
+      - name: Pin the Windows Python toolchain (CPython 3.15.1)
+        shell: pwsh
+        env:
+          PYTHON_EXE: ${{ steps.windows-cpython.outputs.python-path }}
         run: |
-          set -euo pipefail
-          # Compare against MSYS2's own UCRT64 prefix wherever the runner installed
-          # MSYS2 (for example under the runner temp directory), never a fixed drive.
-          prefix="$(cygpath -m /ucrt64)"
-          py="$(python -c 'import sys; print(sys.executable.replace(chr(92), chr(47)))')"
-          echo "python -> $py (expected under $prefix)"
-          case "$py" in
-            /ucrt64/*|"$prefix"/*) ;;
-            *) echo "expected the MSYS2 UCRT64 python under $prefix, got $py" >&2; exit 1 ;;
-          esac
-          python --version
+          $version = & $env:PYTHON_EXE -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"
+          if ($LASTEXITCODE -ne 0 -or $version -ne "3.15.1") {
+            throw "Expected Windows CPython 3.15.1, got '$version'"
+          }
+          $pythonPath = $env:PYTHON_EXE.Replace('\', '/')
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "PYTHON=$pythonPath`n", $utf8NoBom)
 
       - name: Verify default and override compiler resolution
         shell: msys2 {0}
@@ -1219,7 +1233,8 @@ jobs:
           set -euo pipefail
           smoke="$(cygpath -m "$RUNNER_TEMP")/windows-stage-smoke"
           mkdir -p "$smoke/disc" "$smoke/localappdata" "$smoke/appdata" "$smoke/userprofile"
-          python fixtures/showcase/showcase.py stage-iso --out-dir "$smoke/disc"
+          py="$(cygpath -u "$PYTHON")"
+          "$py" fixtures/showcase/showcase.py stage-iso --out-dir "$smoke/disc"
           stage_output=$(LOCALAPPDATA="$smoke/localappdata" APPDATA="$smoke/appdata" \
             USERPROFILE="$smoke/userprofile" SDL_VIDEODRIVER=offscreen timeout 60s \
             build/nakagawa_player.exe "--iso=$smoke/disc/TEST00007.iso" --stage-only)
@@ -1370,7 +1385,8 @@ jobs:
         if: matrix.part == 'selftests'
         shell: msys2 {0}
         run: >-
-          PYTHONPATH=tools python -m unittest -v test_flash0_font
+          py="$(cygpath -u "$PYTHON")"
+          PYTHONPATH=tools "$py" -m unittest -v test_flash0_font
 
       # The synthetic VFPU fuzzer's cases run as two shards: shard k admits the cases with
       # index % 2 == k (src/rt/vfpu_fuzz.c). Together they admit every case exactly once,
@@ -1382,7 +1398,8 @@ jobs:
         env:
           FUZZ_CASE_SHARD: "0/2"
         run: |
-          python tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
+          py="$(cygpath -u "$PYTHON")"
+          "$py" tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
           printf 'void f_00304290(void *s) { (void)s; }\n' > build/windows-runtime/ci_recomp.c
           touch build/windows-runtime/ci_recomp_funcs.h
           touch build/windows-runtime/.recomp-trace-0
@@ -1395,7 +1412,8 @@ jobs:
         env:
           FUZZ_CASE_SHARD: "1/2"
         run: |
-          python tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
+          py="$(cygpath -u "$PYTHON")"
+          "$py" tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
           printf 'void f_00304290(void *s) { (void)s; }\n' > build/windows-runtime/ci_recomp.c
           touch build/windows-runtime/ci_recomp_funcs.h
           touch build/windows-runtime/.recomp-trace-0
@@ -1410,7 +1428,8 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          PYTHONPATH=tools NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe python -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests
+          py="$(cygpath -u "$PYTHON")"
+          PYTHONPATH=tools NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests
 
   main_smoke:
     name: Main integration smoke
@@ -1430,7 +1449,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14.9"
+          python-version: "3.15.1"
 
       - name: Run compact import/publication smoke
         # Publication audit is part of the always-present hygiene job; this

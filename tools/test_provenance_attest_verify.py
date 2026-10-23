@@ -139,7 +139,7 @@ class Repository:
         self._git("init", "--quiet", "--initial-branch=main")
         self._git("config", "commit.gpgsign", "false")
         # Keep Git from starting background maintenance while TemporaryDirectory
-        # is removing this throwaway repository on hosted Python 3.14 runners.
+        # is removing this throwaway repository on hosted Python 3.15 runners.
         self._git("config", "gc.auto", "0")
         self._git("config", "maintenance.auto", "false")
 

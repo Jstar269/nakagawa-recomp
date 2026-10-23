@@ -652,7 +652,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
         bad_unknown = {
             "compiler": ">=4.9.0 (rolling-msys2)",
             "make": ">=3.81 (rolling-msys2)",
-            "python": ">=3.14,<3.15",
+            "python": ">=3.15,<3.16",
             "sdl3": ">=3.0.0 (rolling-msys2)",
             "vulkan_sdk": ">=1.1.0",
             "clang": ">=15.0.0",
@@ -667,7 +667,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
         # 2. Missing required component fails
         bad_missing = {
             "make": ">=3.81 (rolling-msys2)",
-            "python": ">=3.14,<3.15",
+            "python": ">=3.15,<3.16",
             "sdl3": ">=3.0.0 (rolling-msys2)",
             "vulkan_sdk": ">=1.1.0",
         }
@@ -682,7 +682,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
         bad_syntax = {
             "compiler": "invalid-syntax",
             "make": ">=3.81 (rolling-msys2)",
-            "python": ">=3.14,<3.15",
+            "python": ">=3.15,<3.16",
             "sdl3": ">=3.0.0 (rolling-msys2)",
             "vulkan_sdk": ">=1.1.0",
         }
@@ -733,7 +733,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
         valid_observed = {
             "compiler": "16.1.0",
             "make": "4.4.1",
-            "python": "3.14.7",
+            "python": "3.15.1",
             "sdl3": "3.4.12",
             "vulkan_sdk": "1.4.363.0",
         }
@@ -762,18 +762,18 @@ class TestToolchainPolicyVerification(unittest.TestCase):
             str(errors),
         )
 
-        # Mutation 4: Python outside policy (< 3.14 or >= 3.15)
-        mutated_py_old = dict(valid_observed, python="3.13.9")
+        # Mutation 4: Python outside policy (< 3.15 or >= 3.16)
+        mutated_py_old = dict(valid_observed, python="3.14.9")
         errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=mutated_py_old)
         self.assertTrue(
-            any("observed toolchain component 'python' version '3.13.9' does not satisfy policy" in e for e in errors),
+            any("observed toolchain component 'python' version '3.14.9' does not satisfy policy" in e for e in errors),
             str(errors),
         )
 
-        mutated_py_new = dict(valid_observed, python="3.15.0")
+        mutated_py_new = dict(valid_observed, python="3.16.0")
         errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=mutated_py_new)
         self.assertTrue(
-            any("observed toolchain component 'python' version '3.15.0' does not satisfy policy" in e for e in errors),
+            any("observed toolchain component 'python' version '3.16.0' does not satisfy policy" in e for e in errors),
             str(errors),
         )
 
@@ -781,7 +781,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
         valid_observed = {
             "compiler": "16.1.0",
             "make": "4.4.1",
-            "python": "3.14.7",
+            "python": "3.15.1",
             "sdl3": "3.4.12",
             "vulkan_sdk": "1.4.363.0",
         }
@@ -799,7 +799,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
     def test_observed_toolchain_missing_component_fails(self):
         incomplete = {
             "make": "4.4.1",
-            "python": "3.14.7",
+            "python": "3.15.1",
             "sdl3": "3.4.12",
             "vulkan_sdk": "1.4.363.0",
         }
@@ -824,7 +824,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
             json.dump({
                 "compiler": "16.1.0",
                 "make": "4.4.1",
-                "python": "3.14.7",
+                "python": "3.15.1",
                 "sdl3": "3.4.12",
                 "vulkan_sdk": "1.4.363.0",
             }, tmp)
