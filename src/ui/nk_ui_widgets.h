@@ -125,6 +125,15 @@ void nk_ui_prompt_bar(NkUi *ui, NkUiId id, const char *hint,
 /* The input chip text for the current prompt style. */
 const char *nk_ui_input_label(NkUiPromptStyle style);
 
+/* ---- Dialogs and progress ---------------------------------------------------------- */
+/* A dialog card: raised surface, strong edge, dialog radius, 26/28/22 px
+   padding, 14 px between blocks. Close it with nk_ui_end_container. */
+bool nk_ui_dialog_begin(NkUi *ui, NkUiId id, float width);
+/* A 6 px progress track `width` px wide: fraction 0..1 fills it in accent; a
+   negative fraction is indeterminate, a sweeping segment driven by phase_s
+   (pass 0 under reduced motion to hold it still). */
+void nk_ui_progress_bar(NkUi *ui, NkUiId id, float width, float fraction, double phase_s);
+
 /* ---- Game card ------------------------------------------------------------------- */
 typedef struct {
     const char *title;

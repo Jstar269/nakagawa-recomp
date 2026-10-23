@@ -20,6 +20,7 @@
 #define PLAYER_UI_WARNING 0xDBB024FFu
 #define PLAYER_UI_INFO 0x6CB6FFFFu
 #define PLAYER_UI_TITLE_CAP MAX_LIBRARY_GAMES
+#define PLAYER_UI_PREREQ_CAP PACKAGE_BUILDER_MAX_PREREQUISITES
 
 typedef struct {
     const char *key;
@@ -55,6 +56,8 @@ struct PlayerUiNk {
     PlayerUiTitle titles[PLAYER_UI_TITLE_CAP];
     char status_text[PLAYER_UI_TITLE_CAP][256];
     char library_page_label[64];
+    char flow_title[NK_MAX_TITLE_LEN + NK_MAX_DISC_ID_LEN + 16];
+    PlayerUiPrereqItem prereq_items[PLAYER_UI_PREREQ_CAP];
     bool ready;
 };
 
@@ -201,10 +204,118 @@ void player_ui_nk_destroy(PlayerUiNk *player) {
     free(player);
 }
 
+/* The views the next UI draws: the library (router screens), and the build,
+   build tool download and error screens a first run passes through. The rest
+   (setup wizard, settings, inspector, game found) stay with ui_renderer.c. */
+static bool player_ui_nk_flow_view(PlayerView view) {
+    return view == VIEW_BUILDING_PACKAGE || view == VIEW_PREREQ_CONSENT ||
+           view == VIEW_PREREQ_PROGRESS || view == VIEW_ERROR;
+}
+
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
     return player != NULL && player->ready && app != NULL &&
            (app->active_view == VIEW_LIBRARY ||
-            app->active_view == PLAYER_VIEW_READY_LIBRARY);
+            app->active_view == PLAYER_VIEW_READY_LIBRARY ||
+            player_ui_nk_flow_view(app->active_view));
+}
+
+/* The error card's badge, as the existing renderer words it. */
+static const char *player_ui_error_badge(const ErrorState *error) {
+    if (strcmp(error->error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0) return "Game stopped";
+    if (strcmp(error->error_code, "TITLE_DATA_MISSING") == 0) return "Game data needed";
+    if (strcmp(error->error_code, "RUNTIME_PACKAGE_NOT_READY") == 0) return "Game not ready";
+    if (strcmp(error->error_code, "TITLE_PROFILE_INVALID") == 0) return "Title settings needed";
+    return error->error_code;
+}
+
+static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
+                                            NkUiScale scale, double now_s) {
+    PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    if (app->active_view == VIEW_BUILDING_PACKAGE) {
+        const PackageBuildSession *build = &app->build_session;
+        PlayerUiBuildModel model;
+        int count = build->output_line_count;
+        int first = count > 4 ? count - 4 : 0;
+        memset(&model, 0, sizeof(model));
+        if (build->title_name[0] != '\0') {
+            snprintf(player->flow_title, sizeof(player->flow_title), "%s (%s)",
+                     build->title_name, build->disc_id);
+        } else {
+            snprintf(player->flow_title, sizeof(player->flow_title), "Package build (%s)",
+                     build->disc_id);
+        }
+        model.title_line = player->flow_title;
+        model.built = build->is_complete && !build->is_failed;
+        switch (build->current_stage) {
+            case PACKAGE_BUILD_STAGE_EXTRACT: model.stage = 1; break;
+            case PACKAGE_BUILD_STAGE_COMPILE: model.stage = 2; break;
+            case PACKAGE_BUILD_STAGE_PACKAGE: model.stage = 3; break;
+            case PACKAGE_BUILD_STAGE_COMPLETE: model.stage = 4; break;
+            case PACKAGE_BUILD_STAGE_PREFLIGHT:
+            default: model.stage = 0; break;
+        }
+        model.message = build->current_message;
+        model.elapsed_ms = build->elapsed_ms;
+        for (int i = first; i < count && model.line_count < 4u; ++i) {
+            model.lines[model.line_count++] = package_builder_get_output_line(build, i);
+        }
+        model.now_s = app->settings.reduce_motion ? 0.0 : now_s;
+        model.logical_width = scale.logical_w;
+        model.logical_height = scale.logical_h;
+        return player_ui_screen_build(player->ui, &model);
+    }
+    if (app->active_view == VIEW_PREREQ_CONSENT || app->active_view == VIEW_PREREQ_PROGRESS) {
+        const PlayerPrerequisiteState *pre = &app->prerequisites;
+        PlayerUiPrereqModel model;
+        size_t count = pre->items.count < PLAYER_UI_PREREQ_CAP ? pre->items.count
+                                                                : PLAYER_UI_PREREQ_CAP;
+        memset(&model, 0, sizeof(model));
+        for (size_t i = 0u; i < count; ++i) {
+            const PackagePrerequisite *item = &pre->items.items[i];
+            player->prereq_items[i].name = item->name;
+            player->prereq_items[i].version = item->version;
+            player->prereq_items[i].host = item->host;
+            player->prereq_items[i].license = item->license;
+            player->prereq_items[i].bytes = (unsigned long long)item->size_bytes;
+        }
+        model.in_progress = app->active_view == VIEW_PREREQ_PROGRESS;
+        model.items = player->prereq_items;
+        model.item_count = count;
+        model.total_bytes = (unsigned long long)pre->total_bytes;
+        model.current_item = pre->current_item[0] != '\0' ? pre->current_item
+            : (pre->phase == PLAYER_PREREQ_BOOTSTRAP ? "cpython-embed-amd64" : NULL);
+        model.item_received_bytes = (unsigned long long)pre->item_received_bytes;
+        model.item_total_bytes = (unsigned long long)pre->item_total_bytes;
+        model.total_received_bytes = (unsigned long long)pre->total_received_bytes;
+        model.logical_width = scale.logical_w;
+        model.logical_height = scale.logical_h;
+        return player_ui_screen_prereq(player->ui, &model);
+    }
+    if (app->active_view == VIEW_ERROR) {
+        const ErrorState *error = &app->last_error;
+        bool launch_readiness =
+            strcmp(error->error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0 ||
+            strcmp(error->error_code, "TITLE_DATA_MISSING") == 0 ||
+            strcmp(error->error_code, "TITLE_PROFILE_INVALID") == 0 ||
+            strcmp(error->error_code, "RUNTIME_PACKAGE_NOT_READY") == 0;
+        PlayerUiErrorModel model;
+        memset(&model, 0, sizeof(model));
+        model.badge = player_ui_error_badge(error);
+        model.title = error->title;
+        model.failed_stage = error->failed_stage;
+        /* As the existing card: launch-readiness errors lead with the plain
+           sentence and show the technical boundary as details. */
+        model.message = launch_readiness ? error->message
+            : (error->boundary_text[0] != '\0' ? error->boundary_text : error->message);
+        model.details = error->details[0] != '\0' ? error->details
+            : (launch_readiness ? error->boundary_text : "");
+        model.log_path = error->log_file_path;
+        model.recovery_label = error->recovery_action_label;
+        model.logical_width = scale.logical_w;
+        model.logical_height = scale.logical_h;
+        return player_ui_screen_error(player->ui, &model);
+    }
+    return none;
 }
 
 bool player_ui_nk_at_library_root(const PlayerUiNk *player) {
@@ -473,7 +584,12 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         if (restore != 0u) nk_ui_focus(player->ui, restore);
     }
     route = nk_ui_router_current(player->router);
-    if (route == PLAYER_UI_ROUTE_LIBRARY) {
+    if (player_ui_nk_flow_view(app->active_view)) {
+        action = player_ui_render_flow(player, app, scale, now_s);
+        if (action.kind != PLAYER_UI_ACTION_NONE && out_action != NULL) {
+            *out_action = action;
+        }
+    } else if (route == PLAYER_UI_ROUTE_LIBRARY) {
         size_t count = app->game_count > 0 ? (size_t)app->game_count : 0u;
         size_t columns = 1u;
         size_t page_size = player_ui_library_page_size(scale.logical_w,

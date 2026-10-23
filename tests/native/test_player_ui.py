@@ -1896,6 +1896,45 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["running"], "0")
 
+    # The next UI draws the build, build tool download and error screens itself and
+    # keeps every action and Back meaning the existing renderer had.
+    def test_next_ui_build_screen_cancels_and_returns(self) -> None:
+        building = self.run_player("building", ("KEY_ESCAPE",), ui_mode="next")
+        frames = building["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "building_package")
+        self.assertEqual(frames[0]["package_building"], "1")
+        self.assertEqual(frames[1]["package_cancelled"], "1")
+        self.assertEqual(frames[1]["view"], "library")
+        cancel = self.run_player("building", ("KEY_RETURN",), ui_mode="next")
+        frames = cancel["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[1]["package_cancelled"], "1",
+                         "CANCEL BUILD is the focused action while the build runs")
+        built = self.run_player("build-ready", ("KEY_RETURN",), ui_mode="next")
+        frames = built["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "building_package")
+        self.assertEqual(frames[1]["view"], "library", "BACK TO LIBRARY once the package is built")
+        self.assertEqual(frames[1]["package_cancelled"], "0")
+
+    def test_next_ui_error_card_recovers_like_the_existing_card(self) -> None:
+        missing_source = self.run_player("error", ("KEY_RETURN",), ui_mode="next")
+        frames = missing_source["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["error"], "SOURCE_NOT_FOUND")
+        self.assertEqual(frames[1]["picker"], "1")
+        for code in ("PACKAGE_BUILD_FAILED", "RUNTIME_PACKAGE_NOT_READY", "PYTHON_NOT_FOUND"):
+            with self.subTest(code=code):
+                recovered = self.run_player("library", ("KEY_RETURN",), error_code=code,
+                                            ui_mode="next")
+                frames = recovered["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[0]["view"], "error")
+                self.assertEqual(frames[0]["error"], code)
+                self.assertEqual(frames[1]["view"], "library")
+                self.assertEqual(frames[1]["picker"], "0")
+
     def test_failed_close_confirmation_needs_a_second_explicit_close(self) -> None:
         run = self.run_player(
             "library",

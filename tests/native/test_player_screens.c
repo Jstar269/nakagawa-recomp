@@ -90,6 +90,67 @@ static const char *const k_compatibility_words[] = {
     "Untested"
 };
 
+/* Synthetic flow states: a build, the build tool download, an error. */
+static const PlayerUiPrereqItem k_prereqs[] = {
+    {"synthetic-compiler", "1.0", "example.invalid", "MIT", 52428800ull},
+    {"synthetic-runtime", "2.1", "example.invalid", "BSD-3-Clause", 1048576ull},
+    {"synthetic-headers", "0.9", "example.invalid", "NOASSERTION", 4096ull}
+};
+
+typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_CONSENT, FLOW_PROGRESS,
+               FLOW_ERROR } FlowCase;
+static FlowCase g_flow_case;
+
+static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
+    PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    if (which == FLOW_BUILD || which == FLOW_BUILT) {
+        PlayerUiBuildModel build;
+        memset(&build, 0, sizeof(build));
+        build.title_line = "Synthetic Showcase Scene (TEST00007)";
+        build.stage = which == FLOW_BUILT ? 4 : 2;
+        build.built = which == FLOW_BUILT;
+        build.message = "Compiling the translated game for this PC.";
+        build.elapsed_ms = 83400u;
+        build.lines[0] = "[compile] 1204 of 3311 functions";
+        build.lines[1] = "[compile] chunk 12 of 31";
+        build.lines[2] = "[compile] chunk 13 of 31";
+        build.line_count = 3u;
+        build.logical_width = 1280.0f;
+        build.logical_height = 800.0f;
+        return player_ui_screen_build(ui, &build);
+    }
+    if (which == FLOW_CONSENT || which == FLOW_PROGRESS) {
+        PlayerUiPrereqModel pre;
+        memset(&pre, 0, sizeof(pre));
+        pre.in_progress = which == FLOW_PROGRESS;
+        pre.items = k_prereqs;
+        pre.item_count = sizeof(k_prereqs) / sizeof(k_prereqs[0]);
+        pre.total_bytes = 53481472ull;
+        pre.current_item = "synthetic-compiler";
+        pre.item_received_bytes = 20971520ull;
+        pre.item_total_bytes = 52428800ull;
+        pre.total_received_bytes = 20971520ull;
+        pre.logical_width = 1280.0f;
+        pre.logical_height = 800.0f;
+        return player_ui_screen_prereq(ui, &pre);
+    }
+    if (which == FLOW_ERROR) {
+        PlayerUiErrorModel error;
+        memset(&error, 0, sizeof(error));
+        error.badge = "PACKAGE_BUILD_FAILED";
+        error.title = "The package could not be built";
+        error.failed_stage = "Compile";
+        error.message = "The compiler stopped before the package was written.";
+        error.details = "Synthetic details: a source-owned fixture error, shown as data.";
+        error.log_path = "C:/synthetic/logs/build.log";
+        error.recovery_label = "BACK TO LIBRARY";
+        error.logical_width = 1280.0f;
+        error.logical_height = 800.0f;
+        return player_ui_screen_error(ui, &error);
+    }
+    return none;
+}
+
 static bool append_text(char *out, size_t cap, size_t *used,
                         const char *text, size_t length) {
     if (out == NULL || used == NULL || text == NULL ||
@@ -114,7 +175,9 @@ static bool append_case(char *out, size_t cap, size_t *used,
         return false;
     }
     nk_ui_begin(ui, 0.0);
-    if (library != NULL) {
+    if (g_flow_case != FLOW_NONE) {
+        (void)draw_flow_case(ui, g_flow_case);
+    } else if (library != NULL) {
         (void)player_ui_screen_library(ui, library);
     } else {
         (void)player_ui_screen_title(ui, title);
@@ -248,6 +311,22 @@ static bool build_title_golden(char *out, size_t cap, size_t *used) {
     }
     CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_SAVE_FOLDER,
           "the save-folder action can keep focus");
+    {
+        static const struct { FlowCase which; const char *name; } flows[] = {
+            {FLOW_BUILD, "flow-build-running"}, {FLOW_BUILT, "flow-build-written"},
+            {FLOW_CONSENT, "flow-prereq-consent"}, {FLOW_PROGRESS, "flow-prereq-progress"},
+            {FLOW_ERROR, "flow-error"}
+        };
+        for (size_t i = 0u; i < sizeof(flows) / sizeof(flows[0]); ++i) {
+            g_flow_case = flows[i].which;
+            if (!append_case(out, cap, used, flows[i].name, ui, NULL, &model)) {
+                g_flow_case = FLOW_NONE;
+                nk_ui_destroy(ui);
+                return false;
+            }
+        }
+        g_flow_case = FLOW_NONE;
+    }
     nk_ui_destroy(ui);
     return true;
 }
@@ -546,6 +625,7 @@ static bool capture_one(CaptureRig *rig, const char *name,
                         const PlayerUiTitleModel *title) {
     const NkUiDrawList *draw = NULL;
     char path[4096];
+    FlowCase flow = g_flow_case;
     const char separator =
 #if defined(_WIN32) || defined(_WIN64)
         '\\';
@@ -556,7 +636,9 @@ static bool capture_one(CaptureRig *rig, const char *name,
     if (written <= 0 || (size_t)written >= sizeof(path)) return false;
     for (int frame = 0; frame < 2; ++frame) {
         nk_ui_begin(rig->ui, 37.0);
-        if (library != NULL) {
+        if (flow != FLOW_NONE) {
+            (void)draw_flow_case(rig->ui, flow);
+        } else if (library != NULL) {
             (void)player_ui_screen_library(rig->ui, library);
         } else {
             (void)player_ui_screen_title(rig->ui, title);
@@ -752,6 +834,24 @@ static int capture_screens(const char *directory) {
         "Nakagawa does not decrypt games; it uses decrypted files from your own copy.";
     nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
     if (!capture_one(&rig, "title-needs-setup", NULL, &title)) goto done;
+    {
+        static const struct { FlowCase which; const char *name; NkUiId focus; } flows[] = {
+            {FLOW_BUILD, "flow-build-running", PLAYER_UI_ID_BUILD_ACTION},
+            {FLOW_BUILT, "flow-build-written", PLAYER_UI_ID_BUILD_ACTION},
+            {FLOW_CONSENT, "flow-prereq-consent", PLAYER_UI_ID_PREREQ_ACCEPT},
+            {FLOW_PROGRESS, "flow-prereq-progress", PLAYER_UI_ID_PREREQ_CANCEL},
+            {FLOW_ERROR, "flow-error", PLAYER_UI_ID_ERROR_RECOVER}
+        };
+        for (size_t i = 0u; i < sizeof(flows) / sizeof(flows[0]); ++i) {
+            g_flow_case = flows[i].which;
+            nk_ui_focus(ui, flows[i].focus);
+            if (!capture_one(&rig, flows[i].name, NULL, &title)) {
+                g_flow_case = FLOW_NONE;
+                goto done;
+            }
+        }
+        g_flow_case = FLOW_NONE;
+    }
     /* The same layouts at 150% on a 1920x1200 display, and in a small window. */
     if (!capture_scaled(directory, &text, "library-1920x1200-150pct", 1920, 1200, 1.5f,
                         k_titles, sizeof(k_titles) / sizeof(k_titles[0]), NULL,

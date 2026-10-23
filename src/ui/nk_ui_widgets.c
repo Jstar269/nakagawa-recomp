@@ -610,3 +610,45 @@ void nk_ui_prompt_bar(NkUi *ui, NkUiId id, const char *hint,
     }
     nk_ui_end_container(ui);
 }
+
+/* ---- Dialogs and progress ------------------------------------------------------ */
+
+bool nk_ui_dialog_begin(NkUi *ui, NkUiId id, float width) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    NkUiLayout layout = nk_ui_column(nk_ui_fixed(width), nk_ui_fit(), 14.0f);
+    NkUiStyle style = nk_ui_fill(theme->surface_raised, theme->line_strong, NK_UI_RADIUS_DIALOG);
+    nk_ui_pad(&layout, 26.0f, 28.0f, 22.0f, 28.0f);
+    return nk_ui_begin_container(ui, id, &layout, &style);
+}
+
+void nk_ui_progress_bar(NkUi *ui, NkUiId id, float width, float fraction, double phase_s) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    NkUiLayout track = nk_ui_row(nk_ui_fixed(width), nk_ui_fixed(6.0f), 0.0f);
+    NkUiStyle rest = nk_ui_fill(theme->line_strong, 0u, 3.0f);
+    float start = 0.0f;
+    float span;
+    track.align_y = NK_UI_ALIGN_START;
+    if (!nk_ui_begin_container(ui, id, &track, &rest)) {
+        return;
+    }
+    if (fraction >= 0.0f) {
+        span = width * (fraction > 1.0f ? 1.0f : fraction);
+    } else {
+        /* Indeterminate: a third of the track sweeps across every 1.6 s; a
+           phase of 0 (reduced motion) holds it at the start. */
+        double cycle = phase_s / 1.6;
+        span = width * 0.32f;
+        start = (float)(cycle - (double)(long long)cycle) * (width - span);
+    }
+    if (start > 0.0f) {
+        nk_ui_spacer(ui, nk_ui_child_id(id, 1u), nk_ui_fixed(start), nk_ui_fixed(6.0f));
+    }
+    if (span > 0.0f) {
+        NkUiLayout fill = nk_ui_row(nk_ui_fixed(span), nk_ui_fixed(6.0f), 0.0f);
+        NkUiStyle accent = nk_ui_fill(theme->accent_dark, 0u, 3.0f);
+        if (nk_ui_begin_container(ui, nk_ui_child_id(id, 2u), &fill, &accent)) {
+            nk_ui_end_container(ui);
+        }
+    }
+    nk_ui_end_container(ui);
+}

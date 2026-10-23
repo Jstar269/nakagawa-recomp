@@ -446,9 +446,11 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_S) {
             player_app_set_view(app, VIEW_SETTINGS);
         } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_ESCAPE &&
+                   player_view_is_library(app->active_view) &&
                    player_ui_nk_at_library_root(next_ui)) {
             if (player_confirm_quit(window, app)) *running = false;
-        } else if (use_next_ui) {
+        } else if (use_next_ui && !(event->key.key == SDLK_ESCAPE &&
+                                    !player_view_is_library(app->active_view))) {
             return player_ui_nk_handle_event(next_ui, event);
         } else if (event->key.key == SDLK_ESCAPE) {
             if (app->active_view == VIEW_SETUP_WIZARD) {
@@ -539,11 +541,15 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         }
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-        if (use_next_ui && event->gbutton.button == SDL_GAMEPAD_BUTTON_START) {
+        if (use_next_ui && event->gbutton.button == SDL_GAMEPAD_BUTTON_START &&
+            player_view_is_library(app->active_view)) {
             player_app_set_view(app, VIEW_SETTINGS);
             return true;
         }
-        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
+        if (use_next_ui && !(event->gbutton.button == SDL_GAMEPAD_BUTTON_EAST &&
+                             !player_view_is_library(app->active_view))) {
+            return player_ui_nk_handle_event(next_ui, event);
+        }
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings)) {
             NkBindingSource src;
@@ -722,6 +728,39 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     }
     if (action->kind == PLAYER_UI_ACTION_OPEN_SETTINGS) {
         player_app_set_view(app, VIEW_SETTINGS);
+        return;
+    }
+    /* The build, build tool download and error screens: the same handlers
+       the existing renderer's buttons call. */
+    if (action->kind == PLAYER_UI_ACTION_CANCEL_BUILD) {
+        player_app_cancel_package_build(app);
+        player_app_set_view(app, VIEW_LIBRARY);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_LEAVE_BUILD) {
+        player_app_set_view(app, VIEW_LIBRARY);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_PREREQ_ACCEPT) {
+        player_app_prereq_accept(app, app->prerequisites.bootstrap_python);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_PREREQ_CANCEL) {
+        player_app_prereq_cancel(app);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER) {
+        if (app->last_error.return_view == VIEW_PREREQ_CONSENT &&
+            app->prerequisites.phase == PLAYER_PREREQ_FAILED) {
+            player_app_prereq_retry(app);
+        } else {
+            player_app_set_view(app, app->last_error.return_view);
+            if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
+                strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0 ||
+                strncmp(app->last_error.error_code, "PBP_", 4) == 0) {
+                app->request_file_picker = true;
+            }
+        }
         return;
     }
     if (action->title_index >= (size_t)app->game_count) return;

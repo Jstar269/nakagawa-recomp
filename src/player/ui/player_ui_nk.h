@@ -44,7 +44,12 @@ typedef enum {
     PLAYER_UI_ACTION_PRIMARY,
     PLAYER_UI_ACTION_OPEN_SAVE_FOLDER,
     PLAYER_UI_ACTION_START_WIZARD,
-    PLAYER_UI_ACTION_OPEN_SETTINGS
+    PLAYER_UI_ACTION_OPEN_SETTINGS,
+    PLAYER_UI_ACTION_CANCEL_BUILD,     /* stop the running build, back to the library */
+    PLAYER_UI_ACTION_LEAVE_BUILD,      /* the package is written: back to the library */
+    PLAYER_UI_ACTION_PREREQ_ACCEPT,    /* download the listed build tools */
+    PLAYER_UI_ACTION_PREREQ_CANCEL,
+    PLAYER_UI_ACTION_ERROR_RECOVER     /* the error card's one recovery action */
 } PlayerUiActionKind;
 
 typedef struct {
@@ -86,6 +91,57 @@ typedef struct {
     float logical_height;   /* 0 selects 800 */
 } PlayerUiLibraryModel;
 
+/* Package build progress (VIEW_BUILDING_PACKAGE). stage is 0-3 for Preflight,
+   Extract, Compile and Package, 4 when every stage is done. */
+typedef struct {
+    const char *title_line;        /* "Game name (DISC-ID)" */
+    int stage;
+    bool built;                    /* written; being checked before PLAY */
+    const char *message;
+    unsigned elapsed_ms;
+    const char *lines[4];          /* the last output lines, oldest first */
+    size_t line_count;
+    double now_s;                  /* drives the running bar (0 holds it still) */
+    float logical_width;
+    float logical_height;
+} PlayerUiBuildModel;
+
+typedef struct {
+    const char *name;
+    const char *version;
+    const char *host;
+    const char *license;
+    unsigned long long bytes;
+} PlayerUiPrereqItem;
+
+/* The one-time build tool download: consent (VIEW_PREREQ_CONSENT) or progress
+   (VIEW_PREREQ_PROGRESS). */
+typedef struct {
+    bool in_progress;
+    const PlayerUiPrereqItem *items;
+    size_t item_count;
+    unsigned long long total_bytes;
+    const char *current_item;
+    unsigned long long item_received_bytes;
+    unsigned long long item_total_bytes;
+    unsigned long long total_received_bytes;
+    float logical_width;
+    float logical_height;
+} PlayerUiPrereqModel;
+
+/* The error card (VIEW_ERROR); the words come from player_state's error. */
+typedef struct {
+    const char *badge;
+    const char *title;
+    const char *failed_stage;
+    const char *message;
+    const char *details;
+    const char *log_path;
+    const char *recovery_label;
+    float logical_width;
+    float logical_height;
+} PlayerUiErrorModel;
+
 typedef struct {
     const PlayerUiTitle *title;
     size_t title_index;
@@ -99,6 +155,10 @@ enum {
     PLAYER_UI_ID_LIBRARY_PAGE_PREVIOUS = 0x1003u,
     PLAYER_UI_ID_LIBRARY_PAGE_NEXT = 0x1004u,
     PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD = 0x1005u,
+    PLAYER_UI_ID_BUILD_ACTION = 0x4001u,
+    PLAYER_UI_ID_PREREQ_ACCEPT = 0x4101u,
+    PLAYER_UI_ID_PREREQ_CANCEL = 0x4102u,
+    PLAYER_UI_ID_ERROR_RECOVER = 0x4201u,
     PLAYER_UI_ID_LIBRARY_ITEM_BASE = 0x1100u,
     PLAYER_UI_ID_TITLE_BACK = 0x2001u,
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,
@@ -129,6 +189,9 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                                         const PlayerUiLibraryModel *model);
 PlayerUiAction player_ui_screen_title(NkUi *ui,
                                       const PlayerUiTitleModel *model);
+PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model);
+PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *model);
+PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model);
 
 PlayerUiNk *player_ui_nk_create(struct SDL_Renderer *renderer,
                                 struct SDL_Window *window,
