@@ -246,7 +246,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d9e658ed670fb8fdeb4be9e1ab57ef11cb338d03e7aa703e949ca0bb15efe5a9"
+      "sha256": "09a74b8a204a48db95aa019d93017c740720cd116191b25ba53add337b5fecf2"
     },
     {
       "path": ".github/workflows/provenance-attestation-merge-group.yml",
@@ -351,7 +351,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e6a977031bf5e9ef6673f087029e4e5f8912b956d91a1900e9ec0d3399f1f219"
+      "sha256": "d3e7942d7ccb74ac89ef4c1d65cdc315faeae5a84f13b0974900c0fe8ff61cb7"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -409,7 +409,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ed7186c11bc521f3980689ad1e79172f2911e7e1e9f3ba06f3f2fc3a649a17d5"
+      "sha256": "795d8bd07ff6209743026e6d59b3e21c0c80daa1b9837411cebb6e86b24d83db"
     },
     {
       "path": "NOTICE.md",
@@ -784,7 +784,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a9a6363bbc7be43c8d6ba1e56b8583deff0ec20b28514dec76e9f5868ef1ba58"
+      "sha256": "14287bd4e4925e672aef03743ce1ca8fcecfe34a0aadf409a176c9fc21c544a9"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1997,6 +1997,15 @@
       "sha256": "9ff4c56ec6ec753127e03d43f3520d1eacf41069e03fe07e199ca332d31bbce4"
     },
     {
+      "path": "fixtures/nk_ui/core_synthetic.golden",
+      "classification": "synthetic_fixture",
+      "evidence": {
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
+      },
+      "sha256": "112d3e3272f7a3bd3c90296a4f2a80e29f1f0ea3aa140585e2a669ac10be49c0"
+    },
+    {
       "path": "fixtures/platform_ladder/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
@@ -2802,6 +2811,18 @@
         "upstream_attribution": null
       },
       "sha256": "1c148d9c4ca6b335acc0160c23dc0567bd3f330ada5c5525b06dcc8b01519618"
+    },
+    {
+      "path": "mk/nk_ui.mk",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "01d6c26db3a6b57fd9458b6c729275a96681fb4109fbd7e2e2a15fec613de27a"
     },
     {
       "path": "nk.ps1",
@@ -6222,6 +6243,390 @@
       "sha256": "5a1c56c01ca0c2a6ec5a35f541176386c6a9c3cd414d962ed414d8dad7ef6fc6"
     },
     {
+      "path": "src/ui/backend/nk_ui_sdlr.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "61e6bbc105240cdb658196db22bd1734fa177a2ce0caf4709e9eec241860c546"
+    },
+    {
+      "path": "src/ui/backend/nk_ui_sdlr.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "b1e4aa1657bd4ff0bd2e5e34be1b5c6fd94e51a8eafdd4c132ba7070eaddcf07"
+    },
+    {
+      "path": "src/ui/backend/nk_ui_vk.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "48567412fe24925346256f6cb699e6c193023477b602b6e77ad846c60d044df1"
+    },
+    {
+      "path": "src/ui/backend/nk_ui_vk.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "c7b2a549ac09c711efafe64865ee2b4a21b3180165499233f5e2a72835289815"
+    },
+    {
+      "path": "src/ui/nk_ui.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "b90b64e4ed22b3ffc5dbe75b5dda603162d532a72faa102fc34bd5caa17777ec"
+    },
+    {
+      "path": "src/ui/nk_ui.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "ac579c2415f8d92a51f101f41c2d8d20dd7a16138a13420d03b84d2c14b05b5c"
+    },
+    {
+      "path": "src/ui/nk_ui_clay.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "ac8127bf949e1c34123303d1175a85687ac31bc479dcc970520333f4f519119e"
+    },
+    {
+      "path": "src/ui/nk_ui_draw.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "9b294d5aa2bbfcd293e0523e61fc212e9a8f5abcacc989342156e14071b3f41f"
+    },
+    {
+      "path": "src/ui/nk_ui_draw.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "ee680fbcf261051186bd68396b12500e35f7651738987b4cc5f45a23c32b7d0d"
+    },
+    {
+      "path": "src/ui/nk_ui_dump.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "773fc05d7ffe0f7c313c44a4a604033ceb7c445aeee62d6e6c43eb8542244c3f"
+    },
+    {
+      "path": "src/ui/nk_ui_focus.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "895837ae555a572f4362edb2c25c09c5f140326c6445de70dca6baae42196963"
+    },
+    {
+      "path": "src/ui/nk_ui_focus.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "0dd2e14906402a13cf8428d04986f20b0d476b2127100c4604c62c9027f63e2e"
+    },
+    {
+      "path": "src/ui/nk_ui_input.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "da23472db8731fc247f0ea305325e8f6f83d80f201c07d039443dc73e74c6c74"
+    },
+    {
+      "path": "src/ui/nk_ui_input.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "9ffa419cea2927a82c8293159d466914a3aa56f3e03391addd65b10f18b88ef5"
+    },
+    {
+      "path": "src/ui/nk_ui_prompts.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "3483d14b20cff30c9b78f62083acf2bce3ba31a55bfd2440a3be56ec9eaf24c0"
+    },
+    {
+      "path": "src/ui/nk_ui_sdl_input.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "7b22263ef2bd3db5604808558503eb70c16fa9ff3774181ad14a142f234fe528"
+    },
+    {
+      "path": "src/ui/nk_ui_text.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "3faefef8ef3789a028e1721c3ebd256d74794697eb480ab4b01d3b1109fb77c4"
+    },
+    {
+      "path": "src/ui/nk_ui_text.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "7bb0336ab2adb08c0246d30d9468983227f7475099c83218ba045c5fbb79325e"
+    },
+    {
+      "path": "src/ui/nk_ui_theme.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "cc7a6114f09412008e9dd6e7765e4594d3b2cf4836bb00fbcf0649b0f152c66a"
+    },
+    {
+      "path": "src/ui/nk_ui_theme.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "262c4745b12b5152431828da64dc980a05bf31715dbe9735f0c92a330ed896de"
+    },
+    {
+      "path": "src/ui/nk_ui_ttf.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "9cacaae266480c073adac628fc0b8ffe7d13a5e464daacf9ca963e2d50bcbda7"
+    },
+    {
+      "path": "src/ui/nk_ui_waves.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "11750b8d063efdf03ba3d003918b61f1ef5b232e873746c5a8579ed232f763a3"
+    },
+    {
+      "path": "src/ui/nk_ui_waves.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "d1945b1f270d730f36c119024f30d1aae5214d4e844dc6a7941dc185142711c1"
+    },
+    {
+      "path": "src/ui/nk_ui_widgets.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "11ac61bd914a81d263f009094aa66c566abd0669bb3b1f415fe39eece7d36e6e"
+    },
+    {
+      "path": "src/ui/nk_ui_widgets.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "5a7c7605600f009ebdb0ad8de51db93c1cfb04d2e16cc754dbbea9b0f3d80f65"
+    },
+    {
+      "path": "src/ui/shaders/shader_manifest.json",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_generated_shaders_20261022",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      },
+      "sha256": "dd49698ff120e2cbc4fddcaf94924208804fc8860b8ed1b48e63e8ab27667bc0"
+    },
+    {
+      "path": "src/ui/shaders/ui.frag",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "dcd97029bb5fb978e2e00fd9019dfff2aa0e8a5ac7574bd568ae2bf395ce37bd"
+    },
+    {
+      "path": "src/ui/shaders/ui.vert",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "735a8199f2afbea7ef48fb44c23d1f4d6d2ac778f921521ffe8ecc41ca1e59fc"
+    },
+    {
+      "path": "src/ui/shaders/ui_frag.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_generated_shaders_20261022",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      },
+      "sha256": "f8430d6d65cf08330301c87a39ddc49117949b87896daaf56940e305b5c8dc08"
+    },
+    {
+      "path": "src/ui/shaders/ui_vert.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_generated_shaders_20261022",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      },
+      "sha256": "221d02ef8bdd3cb4e74b596598fb8b57f102f3989a9e0b89bb1ded8e37f72bab"
+    },
+    {
+      "path": "src/ui/shaders/waves.frag",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "99b1d63a63128ce19d3cd5ef1337f173ced7c3677fb858d7fd460cc8ba1d181c"
+    },
+    {
+      "path": "src/ui/shaders/waves_frag.inc",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_generated_shaders_20261022",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      },
+      "sha256": "8ecf4b6999cae07322542e103f9f378ac690b8d7fc0559e74a940fb5db76fef8"
+    },
+    {
       "path": "tests/fuzzers/test_nk_json_fuzzer.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -6376,6 +6781,54 @@
         "upstream_attribution": null
       },
       "sha256": "ef5c24c6fa1483f0185cfc3b89798190c769496d48b70c2c42bbe3772828eb88"
+    },
+    {
+      "path": "tests/native/test_nk_ui_core.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "8adfe2c458b461be9556d326a5606b9289c1b557235f4f43c6c20043447aecea"
+    },
+    {
+      "path": "tests/native/test_nk_ui_focus.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "b0a1630a36203373ee806e6ff3a10da24bb638bef8a2d52d4e0d8f3b4efc6cda"
+    },
+    {
+      "path": "tests/native/test_nk_ui_sdlr.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "3073f72df9eba602685841f1fc8b3bf282aa4092fa97874a3fb866bb7e4620eb"
+    },
+    {
+      "path": "tests/native/test_nk_ui_vk.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "nk_ui_core_c3a_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "276801ac6544df1e9c8471c9088b1cad0f93937d4c83b60e918351d62f6613e4"
     },
     {
       "path": "tests/native/test_package_builder.c",
@@ -8266,7 +8719,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "722aff94572e84d9dc139d61176577c58fc5a6fda570e39943f68a7ba3eb24a7"
+      "sha256": "fa3517c05ec3c17d53b91f07f165cfa7582991302957dbe32777a376e8fae65b"
     },
     {
       "path": "tools/soak_audit.py",
@@ -9516,7 +9969,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "313c0d5466a4f79aa2e7b5a45c8031d7bfab64567aaa89202931ade12da79a8d"
+      "sha256": "944dc647dac15347f4aa7e5df4827f7512b86801bb613b2b6afbe502812004ca"
     },
     {
       "path": "tools/test_native_driver_hardening.py",
@@ -10357,7 +10810,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d6374e6871b8eec1c471c45c8de711c54b97cd5f2869ac7e2028210d523fb521"
+      "sha256": "cbc1a7f8dabe344666e2d8cc9d15096975f6bc70c0b01205428541c7affafc86"
     },
     {
       "path": "tools/test_showcase.py",

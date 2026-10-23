@@ -49,6 +49,56 @@ class ShaderEmbedTests(unittest.TestCase):
         data = bytes.fromhex("0302230700000100")
         self.assertEqual(shader_embed.parse_embedding(shader_embed.format_embedding(data)), data)
 
+    def test_ui_shader_sources_and_embeddings_match_manifest(self) -> None:
+        self.assertEqual(
+            shader_embed.verify(
+                shader_embed.UI_DIR, shader_embed.UI_MANIFEST,
+                shaders=shader_embed.UI_SHADERS,
+            ),
+            [],
+        )
+        manifest = json.loads(shader_embed.UI_MANIFEST.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["compiler"]["target_environment"], "vulkan1.1")
+        self.assertTrue(manifest["compiler"]["version"])
+
+    def test_ui_shader_embeddings_recompile_with_pinned_tool(self) -> None:
+        glslc = shutil.which("glslc")
+        if not glslc:
+            self.skipTest("glslc is unavailable")
+        self.assertEqual(
+            shader_embed.verify(
+                shader_embed.UI_DIR, shader_embed.UI_MANIFEST, glslc,
+                shader_embed.UI_SHADERS,
+            ),
+            [],
+        )
+
+    def test_ui_shader_set_rejects_stale_source_or_embedding(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="nakagawa-ui-shader-test-") as temp_name:
+            shader_dir = Path(temp_name)
+            (shader_dir / "shaders").mkdir()
+            shutil.copy2(shader_embed.UI_MANIFEST, shader_dir / "shaders" / "shader_manifest.json")
+            for _, source, embedded in shader_embed.UI_SHADERS:
+                shutil.copy2(shader_embed.UI_DIR / source, shader_dir / source)
+                shutil.copy2(shader_embed.UI_DIR / embedded, shader_dir / embedded)
+
+            source = shader_dir / "shaders" / "waves.frag"
+            source.write_text(source.read_text(encoding="utf-8") + "\n// stale test\n", encoding="utf-8")
+            errors = shader_embed.verify(
+                shader_dir, shader_dir / "shaders" / "shader_manifest.json",
+                shaders=shader_embed.UI_SHADERS,
+            )
+            self.assertTrue(any("source SHA-256 mismatch" in error for error in errors), errors)
+
+            shutil.copy2(shader_embed.UI_DIR / "shaders" / "waves.frag", source)
+            embedded = shader_dir / "shaders" / "ui_vert.inc"
+            embedded.write_text(embedded.read_text(encoding="ascii").replace("0x", "0X", 1), encoding="ascii")
+            errors = shader_embed.verify(
+                shader_dir, shader_dir / "shaders" / "shader_manifest.json",
+                shaders=shader_embed.UI_SHADERS,
+            )
+            self.assertTrue(errors)
+
 
 if __name__ == "__main__":
     unittest.main()
