@@ -176,7 +176,7 @@ crashes.
   package carries. Only the package's own `PARAM.SFO` entry is read to form that
   sentence; no other package section is opened, installed, or executed.
 - **Encrypted executable:** Nakagawa does not decrypt games (built-in decryption
-  was removed (temporarily), [#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+  was removed, [#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
   The checklist reports `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` and names the
   per-title folder; if an unencrypted `BOOT.BIN` is present on disc or a valid
   user-supplied `EBOOT.elf` is found in that folder, it is selected automatically.
@@ -212,7 +212,7 @@ subsystem breakdown with tracking issues.
 
 | Area | Today | Tracking |
 | --- | --- | --- |
-| Encrypted executables and PRX modules | Built-in decryption was removed (temporarily). Plain `BOOT.BIN`, or `EBOOT.elf` and decrypted modules from your own copy, are used. PGD/amctrl is unsupported. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
+| Encrypted executables and PRX modules | Built-in decryption was removed. Plain `BOOT.BIN`, or `EBOOT.elf` and decrypted modules from your own copy, are used. PGD/amctrl is unsupported. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 | Commercial-game packages in public builds | Packages build with the public runtime, and public builds render imported PGF fonts through the project-authored reader for supported inputs (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the supported revision and shadow-map variants render too ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521)); a revision-3 font's compressed character-map subtables and any other shadow-map width are still refused by name. | [PGF_SPEC.md §4](cleanroom/PGF_SPEC.md#4-non-requirements-and-named-boundaries) |
 | Title font libraries | A title's own font library may draw project fonts as dashes; see [What you need](#what-you-need). | [#1055](https://github.com/Jstar269/nakagawa-recomp/issues/1055) |
 | Games other than the maintainer-tested titles | Other games import with the **EXPERIMENTAL** badge and stay Untested unless someone has seen them boot; bring-up of further titles is ongoing. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |

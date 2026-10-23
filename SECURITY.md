@@ -98,8 +98,7 @@ you are authorized to use.
 
 ## Encrypted PSP files
 
-Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed
-(temporarily), so the project carries no PSP cryptography and never reads a key file. An encrypted executable or module
+Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed, so the project carries no PSP cryptography and never reads a key file. An encrypted executable or module
 is refused by name. Every file is treated as untrusted input by the bounds-checked, fuzzed parsers listed in
 [`docs/PARSER_SAFETY_INVENTORY.json`](docs/PARSER_SAFETY_INVENTORY.json).
 
