@@ -95,6 +95,7 @@ scaling.
 | `empty-codepoint-set` | A `--codepoints` file lists no code point. |
 | `japanese-codec-unavailable` / `japanese-mapping-invalid` | A built-in ASCII/EUC-JP codec or its pinned Japanese mapping is unavailable or has changed. |
 | `ppem-out-of-range` | Size outside 1..128. |
+| `embolden-out-of-range` | `--embolden-x`, `--embolden-y`, or `--embolden-advance` outside 0..8 sub-samples. |
 | `glyph-too-large` | A raster exceeds the writer's 7-bit record fields (127 px). |
 | `composite-too-deep` / `composite-too-many-components` | Composite expansion bounds. |
 | `metric-targets-invalid` / `metric-target-unreachable` | Policy document is malformed / no size satisfies it. |
@@ -169,13 +170,23 @@ manifest in memory first and writes only after every stage succeeds.
    so shared contour vertices can never double-count a sample.
 6. **Coverage rounding.** `floor((count * 15 + 32) / 64)` with `count` in
    0..64, mapping to the writer's 4-bit samples.
-7. **Advances.** `hmtx` advance scaled by rule 1; `advance_y` is 0.
+7. **Advances.** `hmtx` advance scaled by rule 1, plus `--embolden-advance * 8`
+   26.6 units; `advance_y` is 0.
 8. **Iteration order.** Codes ascend; the writer sorts glyphs, metric tables,
    and map entries itself; manifest JSON uses sorted keys, 2-space indent,
    ASCII, and a trailing newline.
 9. **No ambient input.** No clock, timestamp, locale, environment variable,
    hash-order iteration, or random source is read. The only dates anywhere
    are static provenance fields inside the pin (section 7).
+10. **Synthetic emboldening** (optional, default off). `--embolden-x N` and
+    `--embolden-y M` (each 0..8, in sub-samples, so eighths of a pixel) thicken
+    strokes on the supersample grid after the fill rule and before the coverage
+    count: every covered sub-column also covers the next `N` sub-columns to its
+    right, then every sub-scanline also takes the coverage of the `M`
+    sub-scanlines below it, so ink grows rightwards and upwards and the baseline
+    and left edge stay put. The box first grows by `ceil(N / 8)` columns on the
+    right and `ceil(M / 8)` rows on the top so the extra ink is never clipped.
+    With both at 0 the output is byte-identical to the plain rasterizer.
 
 Same pinned input plus same parameters plus same converter version therefore
 produce byte-identical `.pgf` and manifest output on every supported host,
@@ -286,7 +297,7 @@ Generated PGFs are fixtures, never an authenticity claim.
 | `code_points` | For `--codepoints`: the file's leaf name, count, and SHA-256; `null` for a range. |
 | `glyphs` | Count, zero-area codes, maximum pixel dimensions. |
 | `metric_targets` | The policy, the chosen ppem, and achieved 26.6 values - or `null`. |
-| `parameters` | ppem, nominal em size (26.6), supersample, coverage bits, rounding formulas, hinting mode. |
+| `parameters` | ppem, nominal em size (26.6), supersample, coverage bits, rounding formulas, hinting mode, and the `embolden` strengths (x, y, advance, in sub-samples). |
 | `license` | SPDX id, copyright line, reserved font names, the **full licence text**, its digest, and the source pin's provenance record - or `null` without a pin. |
 
 ## 8. Independence and provenance record
