@@ -106,12 +106,15 @@ void nk_ui_badge(NkUi *ui, NkUiId id, const char *text);
 typedef struct {
     const char *label;
     bool active;
+    NkUiId id;      /* nonzero: the tab is focusable and can be activated */
 } NkUiSection;
 
 /* Top bar: brand mark and wordmark, section tabs with an accent underline on the
-   active one, and the input chip on the right. */
-void nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t count,
-                   const char *input_label, bool input_active);
+   active one, and the input chip on the right. Returns the index of the section
+   the user chose this frame (a focused tab activated, or L / R from the active
+   one), or -1. */
+int nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t count,
+                  const char *input_label, bool input_active);
 
 typedef struct {
     NkUiPromptAction action;

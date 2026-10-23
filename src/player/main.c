@@ -763,6 +763,11 @@ static void player_ui_nk_apply_action(PlayerApp *app,
         }
         return;
     }
+    if (action->kind == PLAYER_UI_ACTION_OPEN_NOTICES) {
+        /* The third-party notices are the existing licences screen. */
+        player_app_set_view(app, VIEW_PREREQ_ABOUT);
+        return;
+    }
     if (action->title_index >= (size_t)app->game_count) return;
     index = (int)action->title_index;
     app->selected_game_index = index;

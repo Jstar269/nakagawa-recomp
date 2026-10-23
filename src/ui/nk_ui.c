@@ -433,6 +433,25 @@ bool nk_ui_take_activation(NkUi *ui, NkUiId id) {
     return false;
 }
 
+bool nk_ui_take_event(NkUi *ui, NkUiEventType type, NkUiNavDir *dir) {
+    size_t i;
+    if (ui == NULL) {
+        return false;
+    }
+    for (i = 0; i < ui->event_count; ++i) {
+        NkUiEvent *event = &ui->events[i];
+        if (event->type == type && event->down && !event->repeat) {
+            if (dir != NULL) {
+                *dir = event->dir;
+            }
+            memmove(event, event + 1, (ui->event_count - i - 1u) * sizeof(*event));
+            --ui->event_count;
+            return true;
+        }
+    }
+    return false;
+}
+
 void nk_ui_label(NkUi *ui, NkUiId id, const char *text, int font, int size_px) {
     size_t length;
     if (ui == NULL || !ui->frame_open || text == NULL || size_px <= 0) {
@@ -867,13 +886,16 @@ void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
     entry.flags = (flags & NK_UI_BUTTON_DISABLED) != 0u
         ? NK_UI_FOCUS_DISABLED : 0u;
     if (entry.flags == 0u && ui->focus_entry_count == 0u &&
-        ui->focused == 0u) {
+        ui->focused == 0u && (flags & NK_UI_BUTTON_NOT_DEFAULT) == 0u) {
         entry.flags |= NK_UI_FOCUS_DEFAULT;
     }
     entry.scope = NK_UI_SCOPE_ROOT;
     entry.scroller = 0u;
     (void)nk_ui_focus_register(ui->focus_graph, &entry);
-    ++ui->focus_entry_count;
+    /* Controls that may not take default focus do not use up the default. */
+    if ((flags & NK_UI_BUTTON_NOT_DEFAULT) == 0u) {
+        ++ui->focus_entry_count;
+    }
 }
 
 bool nk_ui_button_focused(const NkUi *ui, NkUiId id) {

@@ -252,7 +252,8 @@ enum {
     NK_UI_BUTTON_DANGER = 1u << 2,
     NK_UI_BUTTON_LARGE = 1u << 3,   /* 52 px, the one main action on a screen */
     NK_UI_BUTTON_SMALL = 1u << 4,   /* 34 px, inline and pager actions */
-    NK_UI_BUTTON_GROW = 1u << 5     /* fill the row instead of fitting the label */
+    NK_UI_BUTTON_GROW = 1u << 5,    /* fill the row instead of fitting the label */
+    NK_UI_BUTTON_NOT_DEFAULT = 1u << 6 /* never the screen's default focus (top-bar tabs) */
 };
 
 /* Device scale and edge rounding are shared helpers for hosts and tests. */
@@ -303,6 +304,11 @@ void nk_ui_spacer(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height);
    the ring radius following the element's own corner radius. The widgets call it
    for their focused control; a screen calls it for custom focusable containers. */
 void nk_ui_focus_ring(NkUi *ui, NkUiId id, float corner_radius);
+/* Consumes the first queued press of `type` (for example NK_UI_EV_TAB from the
+   shoulder buttons or Q/E, NK_UI_EV_MENU, NK_UI_EV_OPTIONS) and returns true;
+   dir, when not NULL, receives its direction. Screens call it for the actions
+   their prompt bar names that are not a focused control's activation. */
+bool nk_ui_take_event(NkUi *ui, NkUiEventType type, NkUiNavDir *dir);
 /* Theme the frame was created with (a copy owned by ui). */
 const NkUiTheme *nk_ui_theme(const NkUi *ui);
 /* The prompt-glyph style in the current preferences. */
