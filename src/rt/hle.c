@@ -582,33 +582,33 @@ static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
  * 0x09ef0000, below the runtime's VBLANK stack and nested-frame region, i.e. inside the
  * PSP user-RAM span this partition also covers. On a PSP, thread stacks come out of the
  * same user partition, so memory a game is told is free never contains a live stack.
- * The partition therefore ends at the lowest live stack (and never above the arena
- * ceiling): sceKernelMaxFreeMemSize / TotalFreeMemSize and every allocation see the
- * same top. Before this, a game that took the reported free memory (21 MB and more)
- * received a block over its own main-thread stack, zeroed it, and returned through a
- * clobbered $ra (AOT_RETURN_TARGET_MISMATCH). sched_guest_stack_floor() is in sched.c. */
-extern uint32_t sched_guest_stack_floor(void);
+ * Here the contiguous free space above the bump pointer therefore ends at the first live
+ * stack above the partition base (and never above the arena ceiling). Before this, a
+ * game that took the reported
+ * free memory (21 MB and more) received a block over its own main-thread stack, zeroed
+ * it, and returned through a clobbered $ra (AOT_RETURN_TARGET_MISMATCH). */
+#define USER_PARTITION_RESERVED_FLOOR 0x09ef0000u   /* sched.c SR_STACK_ARENA_CEIL */
+extern uint32_t sched_guest_stack_floor_above(uint32_t addr);
+static uint32_t user_partition_ceiling(void) {
+    return s_part_top < USER_PARTITION_RESERVED_FLOOR ? s_part_top : USER_PARTITION_RESERVED_FLOOR;
+}
 static uint32_t user_partition_top(void) {
-    uint32_t floor = sched_guest_stack_floor();
-    return (floor > s_heap_base && floor < s_part_top) ? floor : s_part_top;
+    uint32_t ceiling = user_partition_ceiling();
+    uint32_t floor = sched_guest_stack_floor_above(s_heap_base);
+    return floor < ceiling ? floor : ceiling;
 }
 
 static int s_nblocks = 0;
 
-/* The highest guest address any live partition block (or the bump pointer) reaches;
- * the scheduler refuses a new stack that would overlap [base, high). 0 before the
- * partition exists. */
-int sr_user_partition_span(uint32_t *base_out, uint32_t *high_out) {
-    if (!s_heap) return 0;
-    uint32_t high = s_heap;
-    for (int i = 0; i < s_nblocks; i++) {
-        if (s_blocks[i].uid == 0u || s_blocks[i].addr == 0u) continue;
-        uint64_t end = (uint64_t)s_blocks[i].addr + (uint64_t)s_blocks[i].slot_size;
-        if (end > high) high = end > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)end;
-    }
-    if (base_out) *base_out = s_heap_base;
-    if (high_out) *high_out = high;
-    return 1;
+/* 1 when [base, end) touches the bump region the partition has handed out (below the
+ * current bump pointer, its free-list holes included). The scheduler refuses a new stack
+ * there. Fixed-address reservations (sr_alloc_block_at: a title profile's module bases,
+ * PSP_SMEM_Addr requests) keep their previous bounds and are not checked against stacks:
+ * a reviewed profile's late PRX base can share the stack arena's address range on this
+ * runtime. 0 before the partition exists. */
+int sr_user_partition_overlaps(uint32_t base, uint32_t end) {
+    if (!s_heap || end <= base) return 0;
+    return base < s_heap && end > s_heap_base;
 }
 
 typedef struct { uint32_t uid, backing_uid; } HleMemoryBlock;
@@ -837,7 +837,7 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     uint64_t end64 = (uint64_t)addr + (uint64_t)eff;
     if (end64 > (uint64_t)0xFFFFFFFFu) return 0xFFFFFFFFu;
     uint32_t end = (uint32_t)end64;
-    if (addr < s_heap_base || end > user_partition_top()) return 0xFFFFFFFFu;
+    if (addr < s_heap_base || end > s_part_top) return 0xFFFFFFFFu;
 
     /* Live occupancy is the slot span [b.addr, b.addr+b.slot_size): Low blocks
      * own their 256-byte rounding slack, fixed blocks own their exact range. */
@@ -974,11 +974,11 @@ uint32_t sr_hle_test_partition_heap_ptr(void) {
 }
 uint32_t sr_hle_test_partition_top(void) {
     user_partition_init();
-    return user_partition_top();   /* the top every allocation and free-size query uses */
-}
-uint32_t sr_hle_test_partition_ceiling(void) {
-    user_partition_init();
     return s_part_top;
+}
+uint32_t sr_hle_test_partition_bump_top(void) {
+    user_partition_init();
+    return user_partition_top();   /* where bump allocations and the free sizes stop */
 }
 #endif
 

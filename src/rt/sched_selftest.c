@@ -103,11 +103,8 @@ uint32_t sr_get_ge_status(void) { return 0; }
 /* The user-partition span hle.c reports to the stack allocator; a test sets it. */
 static int g_test_partition_live;
 static uint32_t g_test_partition_base, g_test_partition_high;
-int sr_user_partition_span(uint32_t *base_out, uint32_t *high_out) {
-    if (!g_test_partition_live) return 0;
-    if (base_out) *base_out = g_test_partition_base;
-    if (high_out) *high_out = g_test_partition_high;
-    return 1;
+int sr_user_partition_overlaps(uint32_t base, uint32_t end) {
+    return g_test_partition_live && base < g_test_partition_high && end > g_test_partition_base;
 }
 uint32_t g_frame_prims = 0;
 

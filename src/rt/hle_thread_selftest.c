@@ -21913,7 +21913,7 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     extern void sr_hle_test_partition_reset(void);
     extern uint32_t sr_hle_test_partition_heap_ptr(void);
     extern uint32_t sr_hle_test_partition_top(void);
-    extern uint32_t sr_hle_test_partition_ceiling(void);
+    extern uint32_t sr_hle_test_partition_bump_top(void);
     const uint32_t NID_ALLOC_PART = 0x237dbd4fu;
     const uint32_t NID_GET_HEAD   = 0x9d9a5ba1u;
     const uint32_t NID_MAX_FREE   = 0xa291f107u;
@@ -21923,14 +21923,14 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     sr_hle_test_partition_reset();
     sr_hle_init();
     uint32_t base0 = sr_hle_test_partition_heap_ptr();
-    expect(sr_hle_test_partition_top() <= SR_STACK_ARENA_CEIL,
+    expect(sr_hle_test_partition_bump_top() <= SR_STACK_ARENA_CEIL,
            "the partition never reaches the runtime's VBLANK/nested-frame reservation");
     uint32_t uid = sched_create_thread(0x2000u, 32, 0x40000u);
     expect(uid != 0u, "a main thread with a 256 KiB stack is created");
     uint32_t floor = sched_guest_stack_floor();
-    expect(sr_hle_test_partition_top() == floor,
+    expect(sr_hle_test_partition_bump_top() == floor,
            "the partition top is the lowest live stack reservation");
-    expect(sr_hle_test_partition_ceiling() > floor, "the configured ceiling lies above the stack");
+    expect(sr_hle_test_partition_top() > floor, "the configured ceiling lies above the stack");
 
     memset(&cpu, 0, sizeof(cpu));
     uint32_t max_free = sr_syscall(&cpu, NID_MAX_FREE);
@@ -21946,6 +21946,23 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = big;
     uint32_t head = sr_syscall(&cpu, NID_GET_HEAD);
     expect(head + (max_free & ~0xFFu) <= floor, "the block taken ends at or below the stack");
+
+    /* A fixed reservation keeps its previous bounds: a title profile's late module base
+     * may lie above the lowest live stack, as one reviewed profile's does. */
+    extern uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name);
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    uint32_t upper = sched_create_thread(0x2000u, 32, 0x8000u);
+    uint32_t upper_floor = sched_guest_stack_floor();
+    uint32_t lower = sched_create_thread(0x2004u, 32, 0x8000u);
+    expect(upper != 0u && lower != 0u && sched_guest_stack_floor() < upper_floor,
+           "two stacked threads are created");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = upper;
+    expect(sr_syscall(&cpu, 0x9fa03cd3u) == 0u, "the dormant upper thread is deleted");
+    uint32_t between = sr_alloc_block_at(upper_floor, 0x1000u, "between-stacks");
+    expect(between != FAIL && between != 0u,
+           "a fixed reservation above the lowest live stack succeeds");
 }
 
 static void test_alloc_block_at_fixed_address(void) {
