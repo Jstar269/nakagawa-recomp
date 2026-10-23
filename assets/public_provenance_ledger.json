@@ -8445,7 +8445,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "48427901fe4dc58f1915fa3fd1056ae0dabb84130356522472edd24ba16c6738"
+      "sha256": "689c73180b45e7bca991ed55837b1735508c446d6b8cbe29368c57f1a5ac4ab0"
     },
     {
       "path": "tools/stage_runtime_dlls.py",
@@ -10536,7 +10536,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7abd7541237757696ddceb7f66441bcaec29925b4e0adb001a4a8d083e3c892e"
+      "sha256": "ffd97d643141c275a6154cc89ba2230a17b819a7697e618bbd7033e26819b6bc"
     },
     {
       "path": "tools/test_stale_code_detect.py",
