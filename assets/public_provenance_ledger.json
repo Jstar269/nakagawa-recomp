@@ -949,7 +949,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "81e9e79357b41ae56a77414283c76ca9284bddbfd9b02b387360732dc23bd977"
+      "sha256": "6e58f8a8789e92ca9bac3273d54ae8c9534ec33267d4fd61b6f7f45f841b207f"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1489,6 +1489,15 @@
       "sha256": "7fa3312f876cefa64296a528a1b47fb4a07d3b5a0b839360de75aea7114ceea0"
     },
     {
+      "path": "docs/ONLINE_FEATURES.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "1d29db363f273a2eab8ce59211c8243ad3c9ebaee757370f7a26a8591cb36c17"
+    },
+    {
       "path": "docs/PARSER_SAFETY_INVENTORY.json",
       "classification": "project_authored_attested",
       "evidence": {
@@ -1609,7 +1618,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1bd17edc412c0f55cfea3292c276bb8556270f0c71e5a0025059f1b795204fa2"
+      "sha256": "96ddd36a52ec87521558af554f44058c3f13b86edc5a846c8a54f26d16c862a4"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
