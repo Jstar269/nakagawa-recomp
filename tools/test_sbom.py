@@ -265,11 +265,11 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
             "schema_version": 1,
             "retrieved_utc": "2026-09-25",
             "sources": [{
-                "url": "https://pypi.org/pypi/ruff/0.16.9/json",
+                "url": "https://pypi.org/pypi/ruff/0.17.1/json",
                 "name": "ruff",
-                "version": "0.16.9",
+                "version": "0.17.1",
                 "retrieved_utc": "2026-09-24",
-                "artifacts": [{"filename": "ruff-0.16.9.tar.gz", "sha256": "0" * 64}],
+                "artifacts": [{"filename": "ruff-0.17.1.tar.gz", "sha256": "0" * 64}],
             }],
         }
         with self.assertRaisesRegex(generate_sbom.LockfileParseError, "predates"):
@@ -286,7 +286,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         metadata = self._metadata()
         self.assertEqual(metadata["retrieved_utc"], "2026-09-25")
         ruff_source = next(s for s in metadata["sources"] if s["name"] == "ruff")
-        self.assertEqual(ruff_source["retrieved_utc"], "2026-09-30")
+        self.assertEqual(ruff_source["retrieved_utc"], "2026-10-23")
         # A source added after the document snapshot records its own retrieval date.
         coverage_source = next(s for s in metadata["sources"] if s["name"] == "coverage")
         self.assertEqual(coverage_source["retrieved_utc"], "2026-10-21")
@@ -297,7 +297,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
                 "https://pypi.org/pypi/click/8.5.0/json",
                 "https://pypi.org/pypi/compiledb/0.10.7/json",
                 "https://pypi.org/pypi/coverage/7.16.2/json",
-                "https://pypi.org/pypi/ruff/0.16.9/json",
+                "https://pypi.org/pypi/ruff/0.17.1/json",
             ],
         )
         # PyPI's canonical names differ in case from the lock's (Jinja2, MarkupSafe,
@@ -347,7 +347,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertIn("malformed SHA-256 hash", str(ctx.exception))
 
     def test_old_sequential_ruff_hash_fails_as_unmatched(self):
-        text = f"ruff==0.16.9 --hash=sha256:{self.OLD_RUFF_HASH}\n"
+        text = f"ruff==0.17.1 --hash=sha256:{self.OLD_RUFF_HASH}\n"
         with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
             self._parse(text)
         self.assertIn("matches no trusted artifact", str(ctx.exception))

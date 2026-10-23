@@ -312,7 +312,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4330c3c2ca39aeea6a9b5bc517dbd370d63a496c8c9b76daeb151c7cdc71c66f"
+      "sha256": "88b7e02e50113a6db5802eec1f2d4518323c9391d42530bd3cc8686521c7c312"
     },
     {
       "path": ".recomp.json",
@@ -767,7 +767,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "76537392347534e6048b7a3389fc608ef8752a9aed21ad9057de5608329d5e56"
+      "sha256": "fadb7d975af7d57c341a3ab35f6b513fc31d73240af918354bafc7ddfbb96870"
     },
     {
       "path": "assets/public_provenance_ledger.json",
@@ -796,7 +796,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "646d752ea598bd73347ff93032f0384dce441f5c5bd2f1a862bf1a5fc000d0d3"
+      "sha256": "6be5962f252c95a9ec61b76eaeed9174a96854a3ea4276d9c9ed9632af6e346e"
     },
     {
       "path": "assets/release_manifest.json",
@@ -817,7 +817,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "19ebe663bd0111c8a55533a6aa314a8e4adb3b36f6a2c958dc22c7859f5fa48e"
+      "sha256": "4e4c7bd6cf1818a7d936b9a26e92839fdfb4e06016b0c1f70219648ad774aacb"
     },
     {
       "path": "assets/third_party_components.schema.json",
@@ -8683,7 +8683,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "90087d82f78173de0ee1f650ef71e4d6b74d39093655ec897bb0fcffd3f407d6"
+      "sha256": "8ab4d09fc831572390cac6c99c346104c5e3cab3024eaf7fcac4e2bef3fbf207"
     },
     {
       "path": "tools/run_perf_benchmarks.py",
@@ -10714,7 +10714,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "31a6f916dfcd9b240b6a8faf3ffc8290d150fb50f8f7fa6ee3884cdc14e4491d"
+      "sha256": "5bf191694c239a7f4641f6afa3ca6810b9d83ee039baba256fc402e4eb5d676a"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -10738,7 +10738,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5ec86ac3255e71d012faa91fdb575779d9d08221ec172658d557b1011caa5814"
+      "sha256": "4a725e29b3d1852d68e1067fa8a5f51ffbac1440b4e577317d3716b5a8553416"
     },
     {
       "path": "tools/test_sched_invariants.py",
