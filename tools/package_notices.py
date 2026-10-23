@@ -558,6 +558,8 @@ def generate_package_notices(
             component["version"] = linked["upstream_revision"]
         if linked.get("relink_doc"):
             component["relink_doc"] = linked["relink_doc"]
+        if linked.get("copyright_notices"):
+            component["copyright_notices"] = list(linked["copyright_notices"])
         components.append(component)
         license_files_to_copy.append((slug, sources[0][0], linked["name"]))
         for extra_src, extra_display in sources[1:]:
@@ -729,6 +731,8 @@ def generate_package_notices(
             combined_lines.append(f"Version: {comp['version']}")
         if "relink_doc" in comp:
             combined_lines.append(f"Relink Guide: {comp['relink_doc']}")
+        for notice_line in comp.get("copyright_notices", []):
+            combined_lines.append(f"Copyright: {notice_line}")
         combined_lines.extend([
             "--------------------------------------------------------------------------------",
             "",

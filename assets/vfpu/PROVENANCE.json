@@ -2,6 +2,7 @@
   "schema_version": 1,
   "source_repository": "https://github.com/hrydgard/ppsspp",
   "source_commit": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+  "license": "GPL-2.0-or-later",
   "verified_at": "2026-07-18",
   "files": [
     {

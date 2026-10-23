@@ -177,6 +177,12 @@ class TestPackageNotices(unittest.TestCase):
         self.assertIn("GNU LESSER GENERAL PUBLIC LICENSE", combined_text)
         self.assertIn("MIPS Technologies, Inc.", combined_text)
         self.assertIn("mingw-w64 project", combined_text)
+        # The PPSSPP lineage records (N10) are named, with their copyright lines.
+        self.assertIn("Component: sal063 / PPSSPP lineage runtime code", combined_text)
+        self.assertIn("Component: PPSSPP VFPU lookup tables", combined_text)
+        self.assertIn("Copyright: Copyright (c) 2012- PPSSPP Project and contributors", combined_text)
+        self.assertIn("GNU GENERAL PUBLIC LICENSE", combined_text)
+        self.assertIn("Credits and Third-Party Attribution", combined_text)
 
     def test_toolchain_licenses_are_the_fallback_when_in_tree_text_is_absent(self) -> None:
         """A host whose toolchain is newer than the checked-in text still resolves one."""
