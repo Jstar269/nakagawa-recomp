@@ -20,6 +20,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "fixtures" / "showcase"))
 
 import ci_required  # noqa: E402
+import ci_paths  # noqa: E402
+import ci_test_shards  # noqa: E402
 import showcase as showcase_cli  # noqa: E402
 
 
@@ -693,8 +695,28 @@ class CodeqlWakeWiringTests(unittest.TestCase):
 
     def test_docs_describe_the_wake_trigger(self) -> None:
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
-        self.assertIn("`.github/workflows/codeql-wake.yml`", docs)
-        self.assertNotIn("a `workflow_run` after `CI` completes", docs)
+        blocks = _markdown_blocks(docs)
+        self.assertTrue(
+            any(
+                ".github/workflows/codeql-wake.yml" in block
+                for block in blocks
+            ),
+            "docs/CI.md must name the maintained CodeQL wake workflow path",
+        )
+        self.assertTrue(
+            any(
+                all(term in block.lower() for term in ("workflow_run", "codeql wake", "default branch"))
+                for block in blocks
+            ),
+            "docs/CI.md must state that the trusted workflow runs from the default branch",
+        )
+        self.assertTrue(
+            any(
+                all(term in block.lower() for term in ("ci itself is not a trigger", "does not wait"))
+                for block in blocks
+            ),
+            "docs/CI.md must state that CodeQL does not wait for CI to finish",
+        )
 
 
 class PublicExportJobTests(unittest.TestCase):
@@ -1008,15 +1030,42 @@ class CoverageWiringTests(unittest.TestCase):
 
     def test_docs_describe_what_is_measured_and_that_it_is_informational(self) -> None:
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
-        self.assertIn("## Coverage", docs)
-        for fragment in ("coverage-python.xml", "codecov.yml", "informational",
-                         "native-core-tests"):
-            with self.subTest(fragment=fragment):
-                self.assertIn(fragment, docs)
+        coverage = _markdown_section(docs, "## Coverage")
+        blocks = _markdown_blocks(coverage)
+        for terms in (
+            ("python_tools", "coverage-python.xml", "unittest"),
+            ("codecov.yml", "informational"),
+            ("native_tools", "native-core-tests"),
+        ):
+            with self.subTest(terms=terms):
+                self.assertTrue(
+                    any(all(term.lower() in block.lower() for term in terms) for block in blocks),
+                    f"docs/CI.md coverage guidance must state the required terms together: {terms}",
+                )
 
 
 def _workflow_text(name: str) -> str:
     return (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+
+
+def _markdown_blocks(text: str) -> list[str]:
+    return [
+        " ".join(line.strip() for line in block.splitlines() if line.strip())
+        for block in re.split(r"\n\s*\n", text)
+        if block.strip()
+    ]
+
+
+def _markdown_section(text: str, heading: str) -> str:
+    lines = text.splitlines()
+    start = next((index for index, line in enumerate(lines) if line.strip() == heading), None)
+    if start is None:
+        raise AssertionError(f"Markdown section is missing: {heading}")
+    end = next(
+        (index for index in range(start + 1, len(lines)) if re.match(r"^## ", lines[index])),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
 
 
 def _on_block(text: str) -> list[str]:
@@ -1039,7 +1088,7 @@ class MergeQueueTriggerWiringTests(unittest.TestCase):
     def setUp(self) -> None:
         self.ci = _workflow_text("ci.yml")
 
-    def test_ci_on_block_adds_merge_group_beside_unchanged_triggers(self) -> None:
+    def test_ci_on_block_adds_schedule_and_merge_group_beside_existing_triggers(self) -> None:
         self.assertEqual(
             _on_block(self.ci),
             [
@@ -1047,24 +1096,53 @@ class MergeQueueTriggerWiringTests(unittest.TestCase):
                 "    types: [opened, synchronize, reopened]",
                 "  push:",
                 "    branches: [main]",
+                "  schedule:",
+                '    - cron: "17 3 * * *"',
                 "  workflow_dispatch:",
                 "  merge_group:",
                 "    types: [checks_requested]",
             ],
         )
 
-    def test_only_the_public_export_step_filters_on_the_event_name(self) -> None:
-        # Every required job must run on a merge group. The one event filter left in
-        # ci.yml is the export candidate step, which the classifier forces true for a
-        # merge group anyway (security_publication), so it still runs there.
-        occurrences = [line for line in self.ci.splitlines() if "github.event_name" in line]
-        self.assertEqual(len(occurrences), 1, occurrences)
-        self.assertIn("workflow_dispatch", occurrences[0])
+    def test_event_conditions_only_select_the_export_and_python_tier(self) -> None:
         blocks = _ci_job_blocks()
-        for job in ("classify", "hygiene", "markdown", "python_tools", "native_tools",
-                    "windows_runtime", "main_smoke", "ci_required"):
+        export = "\n".join(blocks["public_export"])
+        python_tools = "\n".join(blocks["python_tools"])
+        self.assertIn("github.event_name == 'workflow_dispatch'", export)
+        self.assertIn("NK_TEST_TIER:", python_tools)
+        self.assertIn("github.event_name == 'schedule'", python_tools)
+        self.assertIn("github.event_name == 'workflow_dispatch'", python_tools)
+        for job in ("classify", "hygiene", "markdown", "native_tools", "windows_runtime",
+                    "main_smoke", "ci_required"):
             with self.subTest(job=job):
                 self.assertNotIn("github.event_name", "\n".join(blocks[job]))
+
+    def test_scheduled_and_manual_events_force_full_matrix_and_full_python_tier(self) -> None:
+        for event_name in ("schedule", "workflow_dispatch"):
+            with self.subTest(event=event_name):
+                result = ci_paths.classify(["docs/CI.md"], event_name=event_name)
+                for key in (
+                    "python_tools", "run_python", "run_native", "run_windows",
+                    "run_markdown", "run_main_smoke", "allow_substantive",
+                ):
+                    self.assertEqual(result[key], "true", key)
+                self.assertEqual(result["python_scope"], "all")
+                self.assertEqual(result["python_num_shards"], "4")
+
+    def test_python_tools_skip_summary_counts_only_known_prefixes(self) -> None:
+        output = "\n".join(
+            (
+                "test_a ... skipped 'NIGHTLY_TIER: slow case'",
+                "test_b ... skipped 'WINDOWS_ONLY: mingw32-make unavailable'",
+                "test_c ... skipped 'PRIVATE_INPUT: HST manifest absent'",
+                "test_d ... skipped 'an unrelated optional compiler is missing'",
+                "test_e ... skipped 'PRIVATE_INPUT: EBOOT absent'",
+            )
+        )
+        self.assertEqual(
+            ci_test_shards.skip_prefix_summary(output),
+            "Python test skip prefixes: NIGHTLY_TIER=1 WINDOWS_ONLY=1 PRIVATE_INPUT=2",
+        )
 
     def test_ci_stays_read_only_and_publishes_nothing_on_any_event(self) -> None:
         self.assertIn("permissions:\n  contents: read\n", self.ci)
@@ -1307,18 +1385,36 @@ class MainRulesetClaimsTests(unittest.TestCase):
         self.strict = MAIN_RULESET_SNAPSHOT["strict_required_status_checks_policy"]
 
     def test_ci_doc_names_exactly_the_snapshot_required_checks(self) -> None:
-        doc = _prose((ROOT / "docs" / "CI.md").read_text(encoding="utf-8"))
-        match = re.search(r"The `main` ruleset requires (.+?) on exact pull-request heads\.", doc)
-        self.assertIsNotNone(match, "docs/CI.md no longer states which checks main requires")
-        assert match is not None
-        self.assertEqual(_backticked(match.group(1)), self.required)
+        doc = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
+        candidates = [
+            block for block in _markdown_blocks(doc)
+            if all(term in block.lower() for term in ("`main`", "ruleset", "requir", "exact pull-request heads"))
+        ]
+        self.assertTrue(candidates, "docs/CI.md must state required checks for exact main pull-request heads")
+        block = candidates[0]
+        start = block.lower().find("requir")
+        end = block.lower().find("exact pull-request heads", start)
+        self.assertGreaterEqual(start, 0)
+        self.assertGreater(end, start)
+        self.assertEqual(_backticked(block[start:end]), self.required)
 
     def test_provenance_gate_doc_names_exactly_the_snapshot_required_checks(self) -> None:
-        doc = _prose((ROOT / "docs" / "PROVENANCE_MERGE_GATE.md").read_text(encoding="utf-8"))
-        match = re.search(r"ruleset requires [a-z]+ checks \(([^)]*)\)", doc)
-        self.assertIsNotNone(match, "docs/PROVENANCE_MERGE_GATE.md no longer states which checks main requires")
-        assert match is not None
-        self.assertEqual(_backticked(match.group(1)), self.required)
+        doc = (ROOT / "docs" / "PROVENANCE_MERGE_GATE.md").read_text(encoding="utf-8")
+        candidates = [
+            block for block in _markdown_blocks(doc)
+            if all(term in block.lower() for term in ("main-minimal", "ruleset", "five checks"))
+        ]
+        self.assertTrue(
+            candidates,
+            "docs/PROVENANCE_MERGE_GATE.md must state the required main ruleset checks",
+        )
+        block = candidates[0]
+        start = block.lower().find("five checks")
+        left = block.find("(", start)
+        right = block.find(")", left + 1)
+        self.assertGreaterEqual(left, start)
+        self.assertGreater(right, left)
+        self.assertEqual(_backticked(block[left + 1:right]), self.required)
 
     def test_provenance_workflow_comment_names_exactly_the_snapshot_required_checks(self) -> None:
         comment = _prose(re.sub(r"(?m)^\s*#", "", _workflow_text("provenance-attestation.yml")))

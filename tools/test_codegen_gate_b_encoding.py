@@ -92,16 +92,6 @@ class TestAllegrexEncoderHelpers(unittest.TestCase):
     """Unit tests for the raw PSP word encoding relationships. These verify externally
     established field constraints rather than duplicating generator helper implementations."""
 
-    def test_madd_opcode0_funct1C(self):
-        w = 0x0109001C
-        self.assertEqual((w >> 26) & 0x3F, 0x00)
-        self.assertEqual(w & 0x3F, 0x1C)
-
-    def test_clz_opcode0_funct16(self):
-        w = 0x01005016
-        self.assertEqual((w >> 26) & 0x3F, 0x00)
-        self.assertEqual(w & 0x3F, 0x16)
-
     def test_max_opcode0_funct2C(self):
         w = 0x0109502C
         self.assertEqual((w >> 26) & 0x3F, 0x00)

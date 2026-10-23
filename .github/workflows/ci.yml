@@ -19,11 +19,14 @@ on:
   # request the full validation needed to prove the new CI itself.
   push:
     branches: [main]
-  # A manual run always executes the complete matrix, including main_smoke:
-  # tools/ci_paths.py forces full validation for workflow_dispatch regardless of
+  # Keep a nightly full-tier run alongside the PR tier. The case selection is
+  # controlled by NK_TEST_TIER in python_tools; the rest of CI remains unchanged.
+  schedule:
+    - cron: "17 3 * * *"
+  # Manual and scheduled runs execute the complete matrix, including main_smoke:
+  # tools/ci_paths.py forces full validation for both event types regardless of
   # changed paths, and ci_required treats every emitted gate as required. There
-  # is deliberately no input to narrow it -- a knob that cannot actually reduce
-  # the run would be misleading.
+  # is deliberately no input to narrow a manual run.
   workflow_dispatch:
   # Merge-queue groups. GitHub builds a group commit (the trunk plus the queued
   # pull requests ahead of this one, plus this one) and asks for checks on that
@@ -323,7 +326,9 @@ jobs:
 
   python_tools:
     name: Python tooling gates
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
+    env:
+      NK_TEST_TIER: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'pr' }}
     # id-token: write lets the coverage upload authenticate to Codecov with the
     # job's OIDC identity (use_oidc: true) instead of a stored repository token.
     # It is not a publication permission: contents stays read.
@@ -413,8 +418,17 @@ jobs:
             exit 1
           fi
           echo "shard $SHARD: ${#mods[@]} test files"
+          test_log="$RUNNER_TEMP/python-tools-shard-$SHARD.log"
+          set +e
           PYTHONPATH=tools python -m coverage run --parallel-mode --source=tools \
-            -m unittest -v "${mods[@]}"
+            -m unittest -v "${mods[@]}" 2>&1 | tee "$test_log"
+          test_status=$?
+          set -e
+          skip_summary="$(PYTHONPATH=tools python -c 'from pathlib import Path; import sys; from ci_test_shards import skip_prefix_summary; print(skip_prefix_summary(Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")))' "$test_log")"
+          printf '%s\n' "$skip_summary" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$test_status" -ne 0 ]; then
+            exit "$test_status"
+          fi
           python -m coverage combine
           python -m coverage xml -o coverage-python.xml
 

@@ -8,25 +8,63 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 
 
-class TestDCOPolicy(unittest.TestCase):
+class RuleStatementAssertions(unittest.TestCase):
+    def assertRuleStated(self, blocks, terms, rule):
+        matches = [block for block in blocks if all(term.lower() in block.lower() for term in terms)]
+        self.assertTrue(matches, f"the documentation no longer states {rule}: no block has all of {terms}")
+
+
+class TestDCOPolicy(RuleStatementAssertions):
     def test_dco_policy_document_exists(self):
         doc_file = ROOT / "docs" / "DCO_POLICY.md"
         self.assertTrue(doc_file.is_file(), "docs/DCO_POLICY.md file missing")
 
         content = doc_file.read_text(encoding="utf-8")
-        self.assertIn("Developer Certificate of Origin", content)
-        self.assertIn("Version 1.1", content)
+        self.assertRuleStated(
+            _blocks(_section(content, 1)),
+            ("DCO 1.1", "Signed-off-by:"),
+            "the DCO 1.1 commit-attestation requirement",
+        )
+        self.assertRuleStated(
+            _blocks(_section(content, 2)),
+            ("Developer Certificate of Origin", "Version 1.1"),
+            "the DCO 1.1 legal text",
+        )
         self.assertIn("Signed-off-by:", content)
-        self.assertIn("git commit -s", content)
-        self.assertIn("Automated Bots", content)
-        self.assertIn("Correction Workflow", content)
+        self.assertRuleStated(
+            _blocks(_section(content, 3)),
+            ("Signed-off-by:", "every commit"),
+            "the commit sign-off procedure",
+        )
+        self.assertRuleStated(
+            _blocks(_section(content, 3)),
+            ("automatically add", "-s", "--signoff"),
+            "the command-line option for adding a sign-off trailer",
+        )
+        self.assertRegex(_section(content, 3), r"git commit -s\b")
+        self.assertRuleStated(
+            _blocks(_section(content, 4)),
+            ("Correction Workflow", "missing Sign-Offs"),
+            "the correction workflow for missing sign-offs",
+        )
+        self.assertRuleStated(
+            _blocks(_section(content, 5)),
+            ("Automated Bots", "Dependency Updates"),
+            "the bot and dependency-update policy section",
+        )
 
     def test_contributing_dco_reference(self):
         contrib_file = ROOT / "CONTRIBUTING.md"
         self.assertTrue(contrib_file.is_file(), "CONTRIBUTING.md file missing")
 
         content = contrib_file.read_text(encoding="utf-8")
-        self.assertIn("docs/DCO_POLICY.md", content)
+        self.assertRegex(content, r"\[[^\]]+\]\(docs/DCO_POLICY\.md\)")
+        blocks = _blocks(content)
+        self.assertRuleStated(
+            blocks,
+            ("DCO 1.1", "every commit", "sign-off line"),
+            "the contribution sign-off requirement",
+        )
         self.assertIn("Signed-off-by:", content)
 
     def test_pr_template_dco_checkbox(self):
@@ -34,80 +72,140 @@ class TestDCOPolicy(unittest.TestCase):
         self.assertTrue(pr_tmpl.is_file(), "PULL_REQUEST_TEMPLATE.md file missing")
 
         content = pr_tmpl.read_text(encoding="utf-8")
-        self.assertIn("Developer Certificate of Origin (DCO 1.1)", content)
-        self.assertIn("docs/DCO_POLICY.md", content)
+        # These are legal attestations: preserve the human sign-off, waiver,
+        # third-party-source and AI-assistance statements verbatim.
+        for legal_line in (
+            "- [ ] Every commit has a `Signed-off-by:` line from the human author, added with `git commit -s`. See [Developer Certificate of Origin (DCO 1.1)](../docs/DCO_POLICY.md).",
+            "- [ ] Or: these are maintainer commits covered by the standing waiver in [docs/DCO_POLICY.md §5.1](../docs/DCO_POLICY.md). Outside contributions always need the first box.",
+            "- [ ] Or: new third-party material is identified below, with its exact source, revision and license, and its notices are kept.",
+            "- [ ] Or: material AI assistance is disclosed below, with the source needed for review.",
+        ):
+            with self.subTest(legal_line=legal_line):
+                self.assertIn(legal_line, content)
 
     def test_maintainer_waiver_is_standing_and_survives_public_launch(self):
         # The waiver's whole purpose is that it does NOT lapse at public launch.
         # An edit that re-scopes it to "prior to public launch" would silently
         # reintroduce a merge blocker on a single-maintainer public repository.
         content = (ROOT / "docs" / "DCO_POLICY.md").read_text(encoding="utf-8")
+        blocks = _blocks(_section(content, 5))
         self.assertIn("Maintainer Standing Waiver", content)
-        self.assertRegex(
-            content,
-            r"until the maintainer explicitly revokes it",
-            "waiver must be revocation-scoped, not time- or launch-scoped",
+        self.assertRuleStated(
+            blocks,
+            ("waiver", "until", "explicitly revokes"),
+            "a revocation-scoped maintainer waiver",
         )
-        self.assertRegex(
-            content,
-            r"does \*\*not\*\* expire on public launch",
-            "waiver must state explicitly that public launch does not end it",
+        self.assertRuleStated(
+            blocks,
+            ("public launch", "not time-limited", "commit-range-limited", "repository-visibility-limited"),
+            "a waiver that continues after public launch",
         )
-        self.assertNotRegex(
-            content,
-            r"Commits created prior to public launch operate under",
+        self.assertTrue(
+            any(re.search(r"does \*\*not\*\* expire", block) for block in blocks),
+            "the waiver must state that public launch does not end it",
+        )
+        self.assertFalse(
+            any("prior to public launch" in block.lower() for block in blocks),
             "the superseded launch-scoped waiver wording must not return",
         )
 
     def test_waived_missing_signoff_is_not_a_merge_blocker(self):
         content = (ROOT / "docs" / "DCO_POLICY.md").read_text(encoding="utf-8")
-        self.assertRegex(content, r"is \*\*not\*\* a merge blocker")
-        # No retroactive rewrite may be required to satisfy a checker.
-        self.assertIn("history is not rewritten to satisfy a sign-off checker", content)
+        blocks = _blocks(_section(content, 5))
+        self.assertRuleStated(
+            blocks,
+            ("missing `Signed-off-by:` trailer", "not** a merge blocker", "not a defect"),
+            "the waived sign-off's non-blocking status",
+        )
+        self.assertRuleStated(
+            blocks,
+            ("history", "not rewritten", "sign-off checker"),
+            "the ban on retroactively rewriting history for sign-offs",
+        )
 
     def test_dco_not_required_status_check_while_waiver_active(self):
         content = (ROOT / "docs" / "DCO_POLICY.md").read_text(encoding="utf-8")
-        self.assertIn(
-            "DCO must not be configured as a required status check on the public repository",
-            content,
+        blocks = _blocks(_section(content, 6))
+        self.assertRuleStated(
+            blocks,
+            ("DCO", "must not", "required status check", "public repository", "waiver is in force"),
+            "the DCO status-check ban while the waiver is active",
         )
-        self.assertIn("advisory (non-blocking) mode", content)
-        # The superseded promise to activate an enforcing check at launch must
-        # not reappear; promotion is gated on explicit revocation instead.
-        self.assertNotIn(
-            "An automated DCO check workflow will be activated on the public repository upon public launch",
-            content,
+        self.assertRuleStated(
+            blocks,
+            ("automated DCO check", "advisory", "non-blocking"),
+            "the non-blocking DCO status-check mode",
         )
-        self.assertIn("only after the standing waiver is explicitly revoked", content)
+        self.assertRuleStated(
+            _blocks(_section(content, 5)),
+            ("only after", "explicit revocation", "required status check"),
+            "status-check promotion only after waiver revocation",
+        )
+        self.assertFalse(
+            any(
+                all(term in block.lower() for term in ("dco check workflow", "upon public launch"))
+                for block in _blocks(content)
+            ),
+            "the superseded launch-triggered DCO check must not return",
+        )
 
     def test_agents_may_never_fabricate_a_signoff(self):
         # The waiver must not read as agent authority to sign on someone's
         # behalf. This rule is stated in three places; all must hold.
         policy = (ROOT / "docs" / "DCO_POLICY.md").read_text(encoding="utf-8")
-        self.assertIn("grants an agent **no** authority to add a sign-off", policy)
+        self.assertRuleStated(
+            _blocks(_section(policy, 5)),
+            ("agent", "no", "authority", "sign-off"),
+            "the ban on agents fabricating sign-offs",
+        )
         for rel in ("AGENTS.md", "docs/AI_USAGE.md"):
             text = (ROOT / rel).read_text(encoding="utf-8")
-            self.assertRegex(
-                text,
-                r"must n(ever|ot) invent",
-                f"{rel} must keep the no-fabricated-sign-off rule",
-            )
+            if rel == "AGENTS.md":
+                self.assertRuleStated(
+                    _blocks(_section(text, 3)),
+                    ("contributor identity", "Signed-off-by:", "DCO", "source lineage"),
+                    f"{rel}'s ban on fabricated sign-off identities",
+                )
+            else:
+                blocks = _blocks(text)
+                self.assertRuleStated(
+                    blocks,
+                    ("must not invent", "identity", "DCO sign-off"),
+                    f"{rel}'s ban on invented sign-off identities",
+                )
+                self.assertRuleStated(
+                    blocks,
+                    ("must not add", "sign-off", "maintainer's behalf"),
+                    f"{rel}'s ban on adding sign-offs for the maintainer",
+                )
 
     def test_outside_contributor_requirements_are_not_weakened(self):
         # The waiver is personal to the maintainer. Outside contributors keep
         # DCO 1.1 plus third-party and AI disclosure.
         policy = (ROOT / "docs" / "DCO_POLICY.md").read_text(encoding="utf-8")
-        self.assertIn("Not extended to outside contributors", policy)
-        self.assertIn("Third-Party Source & Asset Disclosure", policy)
-        self.assertIn("AI-Assisted Work Disclosure", policy)
+        self.assertRuleStated(
+            _blocks(_section(policy, 5)),
+            ("outside contributors", "DCO 1.1", "third-party source", "AI-assisted work disclosure"),
+            "outside contributors' DCO, third-party and AI disclosure requirements",
+        )
 
         contrib = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
-        self.assertIn("Outside contributions to Nakagawa Recomp require", contrib)
+        self.assertRuleStated(
+            _blocks(contrib),
+            ("outside contributions", "DCO 1.1", "every commit"),
+            "outside contributors' per-commit DCO requirement",
+        )
 
         pr_tmpl = (ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
-        # Disclosure checkboxes survive the waiver.
-        self.assertIn("new third-party material is identified below", pr_tmpl)
-        self.assertIn("material AI assistance is disclosed below", pr_tmpl)
+        # These disclosure lines are legal attestations and remain verbatim.
+        self.assertIn(
+            "- [ ] Or: new third-party material is identified below, with its exact source, revision and license, and its notices are kept.",
+            pr_tmpl,
+        )
+        self.assertIn(
+            "- [ ] Or: material AI assistance is disclosed below, with the source needed for review.",
+            pr_tmpl,
+        )
 
     def test_dco_signoff_regex(self):
         pattern = re.compile(r"^Signed-off-by:\s+([^<]+)\s+<([^>]+)>$", re.MULTILINE)
@@ -119,7 +217,7 @@ class TestDCOPolicy(unittest.TestCase):
 
 
 def _section(content: str, number: int) -> str:
-    """Return AGENTS.md section ``number`` (heading to the next ``## `` heading)."""
+    """Return numbered section ``number`` (heading to the next ``## `` heading)."""
     start = re.search(rf"(?m)^## {number}\.\s", content)
     if start is None:
         raise AssertionError(f"AGENTS.md has no section {number}")
@@ -145,17 +243,13 @@ def _blocks(section: str) -> list[str]:
     return [block for block in blocks if block]
 
 
-class TestGovernanceSurfaces(unittest.TestCase):
+class TestGovernanceSurfaces(RuleStatementAssertions):
     """Small fail-closed checks for the public agent/configuration contract.
 
     These pin the rules AGENTS.md must state, as the key terms each rule needs,
     not its sentences: a maintainer can reword or reflow the contract, and the
     test fails only when a rule loses a term that carries its meaning.
     """
-
-    def assertRuleStated(self, blocks, terms, rule):
-        matches = [block for block in blocks if all(term.lower() in block.lower() for term in terms)]
-        self.assertTrue(matches, f"AGENTS.md no longer states {rule}: no bullet or paragraph has all of {terms}")
 
     def test_agents_contract_pins_required_content(self):
         content = (ROOT / "AGENTS.md").read_text(encoding="utf-8")

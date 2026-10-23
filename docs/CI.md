@@ -31,7 +31,8 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Mixed documentation/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the applicable product gates |
 | Ordinary push to `main` after a validated merge | classification, hygiene/security, Markdown when needed, compact main smoke, CI required | expensive platform matrix; the merged PR carried it |
 | Workflow push to `main` | the full applicable validation above plus main smoke | none of the substantive public gates |
-| Manual `workflow_dispatch` | the full matrix, regardless of paths | none |
+| Manual `workflow_dispatch` | the full matrix and full Python tier, regardless of paths | none |
+| Nightly schedule (`17 3 * * *` UTC) | the full matrix and full Python tier | none |
 | Merge-queue group (`merge_group`, `checks_requested`) | the full matrix, as for a manual dispatch, regardless of paths; every required check reports on the group commit | none |
 
 ### Draft pull requests
@@ -412,6 +413,33 @@ and record its wall-clock seconds; `python tools/ci_test_shards.py --check` reje
 weights for modules that no longer exist, and `--plan` prints the resulting
 partition with per-shard estimates.
 
+### Python test tiers
+
+When the classifier routes the Python suite, every PR runs all discovered modules
+in the PR tier. Only cases marked `NIGHTLY_TIER:` are deferred: the composite
+public-export gate report, the profile-zero package/runtime route, the slow
+make-built platform-ladder runtime checks, the full-history report generation,
+and the matrix inventory report. Their constituent legal-blocker, publication,
+fail-closed NID/dispatch, cosimulation, provenance, import-audit, and security
+gates remain in their normal PR jobs and tests. `python_tools` includes a
+one-line summary of skips by `NIGHTLY_TIER`, `WINDOWS_ONLY`, and `PRIVATE_INPUT`.
+
+The nightly `schedule` and manual `workflow_dispatch` both force the full CI
+matrix and set `NK_TEST_TIER=full`, so every nightly case runs. The normal local
+command uses the PR tier; set the environment variable to run the full tier:
+
+```bash
+NK_TEST_TIER=full python -m unittest discover -s tools -p "test_*.py"
+```
+
+PowerShell:
+
+```powershell
+$env:NK_TEST_TIER = "full"
+python -m unittest discover -s tools -p "test_*.py"
+Remove-Item Env:NK_TEST_TIER
+```
+
 ## Coverage
 
 Python coverage is reported as XML and C coverage is collected from raw gcov data
@@ -477,8 +505,8 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
 - **An empty or unobtainable file list forces the full matrix**, so a shallow
   clone or an unusual event payload cannot quietly narrow the run.
 - **A merge-queue group is never path-gated.** `FULL_MATRIX_EVENTS` in
-  `tools/ci_paths.py` (`workflow_dispatch` and `merge_group`) forces the complete
-  matrix, including the main smoke, and allows substantive work. A group's change
+  `tools/ci_paths.py` (`workflow_dispatch`, `merge_group`, and `schedule`) forces
+  the complete matrix, including the main smoke, and allows substantive work. A group's change
   set is its payload range (`merge_group.base_sha` to `head_sha`), and a payload
   without that range fails closed to the full matrix. The classifier output for a
   group is identical to a manual dispatch for the same paths, which

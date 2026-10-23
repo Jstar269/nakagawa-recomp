@@ -7809,6 +7809,34 @@ class Record20261015Tests(unittest.TestCase):
         end = self.doc.index("\n- **", start + 1)
         return self.doc[start:end]
 
+    @staticmethod
+    def _paragraph_blocks(text: str) -> list[str]:
+        return [
+            " ".join(line.strip() for line in block.splitlines() if line.strip())
+            for block in re.split(r"\n\s*\n", text)
+            if block.strip()
+        ]
+
+    @staticmethod
+    def _table_rows(text: str) -> list[tuple[str, ...]]:
+        rows = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("|") or not stripped.endswith("|"):
+                continue
+            cells = tuple(cell.strip().replace("`", "") for cell in stripped.strip("|").split("|"))
+            if all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+                continue
+            rows.append(cells)
+        return rows
+
+    def assertRuleStated(self, text: str, terms: tuple[str, ...], rule: str) -> None:
+        matches = [
+            block for block in self._paragraph_blocks(text)
+            if all(term.lower() in block.lower() for term in terms)
+        ]
+        self.assertTrue(matches, f"the oracle docs no longer state {rule}: no block has all of {terms}")
+
     def test_the_three_new_rows_cite_a_section_that_names_every_cell(self) -> None:
         for test_id in ("PSP-VFPU-TRANSCENDENTAL-001", "PSP-HLE-TIMER-ORDER-001",
                         "PSP-HLE-AUDIO-SRC-001"):
@@ -7824,23 +7852,55 @@ class Record20261015Tests(unittest.TestCase):
         row = self.rows["PSP-HLE-AUDIO-SRC-001"]
         note = row["measurement_note"]
         self.assertIn("7fc1641e", note)
-        self.assertIn("acceptance-eligible with 0 blockers", note)
-        self.assertIn("not acceptance-eligible and is not cited", note)
+        self.assertRuleStated(
+            note,
+            ("acceptance-eligible", "0 blockers"),
+            "the rerun's acceptance eligibility and blocker count",
+        )
+        self.assertRuleStated(
+            note,
+            ("not acceptance-eligible", "not cited"),
+            "the first run's non-eligible and uncited status",
+        )
         for word in ("0x80260008", "0x80268002", "0x400", "0x80000104", "0x80000003"):
             self.assertIn(word, note)
             self.assertIn(word, self.doc)
-        self.assertIn("16 records PASS and 2 SKIP", self.doc)
-        self.assertIn("`src-final-cleanup` and `out2-final-cleanup`", self.doc)
+        self.assertRuleStated(
+            self.doc,
+            ("16 records", "PASS", "2 SKIP"),
+            "the captured-only run's record and skip counts",
+        )
+        for case_id in ("src-final-cleanup", "out2-final-cleanup"):
+            with self.subTest(case_id=case_id):
+                self.assertIn(f"`{case_id}`", self.doc)
 
     def test_the_timer_order_row_claims_no_tie_break_and_no_absolute_delay(self) -> None:
         row = self.rows["PSP-HLE-TIMER-ORDER-001"]
         note = row["measurement_note"]
-        for word in ("17,125", "53,561", "13,579", "0x8002019F",
-                     "do not measure a tie-break at equal due time", "No absolute delay is cited"):
+        for word in ("17,125", "53,561", "13,579", "0x8002019F"):
             self.assertIn(word, note)
-        self.assertIn("do not show how two alarms with the same due time are ordered", self.doc)
-        for text in (note, self.doc):
-            self.assertNotIn("alarms with equal due times run in set order", text)
+        self.assertRuleStated(
+            note,
+            ("tie-break", "equal due time", "not"),
+            "the absence of an equal-due-time tie-break measurement",
+        )
+        self.assertRuleStated(
+            note,
+            ("no absolute delay", "cited"),
+            "the absence of an absolute-delay claim",
+        )
+        self.assertRuleStated(
+            self.doc,
+            ("two alarms", "same due time", "not", "ordered"),
+            "the equal-due-time limitation in the published interpretation",
+        )
+        self.assertFalse(
+            any(
+                "equal due times" in block.lower() and "run in set order" in block.lower()
+                for block in self._paragraph_blocks(self.doc)
+            ),
+            "the documentation must not turn the measured sequence into a tie-break rule",
+        )
 
     def test_the_ge_nan_words_are_published_without_a_raster_rule(self) -> None:
         row = self.rows["PSP-GE-001"]
@@ -7848,36 +7908,49 @@ class Record20261015Tests(unittest.TestCase):
         self.assertIn("f2d6c91a", row["measurement_note"])
         self.assertIn("do not establish a rasterization rule", row["measurement_note"])
         entry = self._entry("- **PSP-3000 requalification of the 32-case campaign queue")
-        for line in (
-            "| `0x7FC00000` (qNaN) | `0x7F800001` | `0x7F800001` |",
-            "| `0x7F800000` (+Inf) | `0x7F800000` | `0x7F800000` |",
-            "| `0xFF800000` (-Inf) | `0xFF800000` | `0xFF800000` |",
-            "| `0x80000000` (-0) | `0x00000000` | `0x80000000` |",
-            "| `0x00000001` (minimum positive denormal) | `0x00000000` | `0x00000000` |",
-            "| `0x7FC00000` (qNaN) | `0x2B6647A7` | `0x9DBEB5C5` | `0x9DBEB5C5` |",
-            "| `0xFF800000` (-Inf) | `0xA1F002BD` | `0x9DBEB5C5` | `0x9DBEB5C5` |",
-            "| `0x80000000` (-0) | `0xA929B835` | `0x9DBEB5C5` | `0x9DBEB5C5` |",
-        ):
-            self.assertIn(line, entry)
-        self.assertIn("A hash is a function of the whole scanned frame", entry)
-        self.assertIn("that verdict stays NOT_MEASURED", entry)
-        # The stale "no run yet" / NOT_RUN text of the 2026-10-10 probe description is gone.
-        self.assertNotIn("This probe is `NOT_RUN` pending the physical", self.doc)
-        self.assertNotIn("(issue #69; no run\n  yet)", self.doc)
+        expected_rows = {
+            ("0x7FC00000 (qNaN)", "0x7F800001", "0x7F800001"),
+            ("0x7F800000 (+Inf)", "0x7F800000", "0x7F800000"),
+            ("0xFF800000 (-Inf)", "0xFF800000", "0xFF800000"),
+            ("0x80000000 (-0)", "0x00000000", "0x80000000"),
+            ("0x00000001 (minimum positive denormal)", "0x00000000", "0x00000000"),
+            ("0x7FC00000 (qNaN)", "0x2B6647A7", "0x9DBEB5C5", "0x9DBEB5C5"),
+            ("0xFF800000 (-Inf)", "0xA1F002BD", "0x9DBEB5C5", "0x9DBEB5C5"),
+            ("0x80000000 (-0)", "0xA929B835", "0x9DBEB5C5", "0x9DBEB5C5"),
+        }
+        self.assertTrue(expected_rows.issubset(set(self._table_rows(entry))))
+        self.assertRuleStated(
+            entry,
+            ("hash", "whole scanned frame", "nothing about which pixels differ"),
+            "the limitation on what the framebuffer hash establishes",
+        )
+        self.assertRuleStated(
+            entry,
+            ("no rasterization rule", "NOT_MEASURED"),
+            "the unmeasured rasterization verdict",
+        )
 
     def test_the_requalification_run_is_a_newer_citation_for_every_eligible_case(self) -> None:
         entry = self._entry("- **PSP-3000 requalification of the 32-case campaign queue")
-        self.assertIn("26 case envelopes are acceptance-eligible", entry)
+        self.assertRuleStated(
+            entry,
+            ("26 case envelopes", "acceptance-eligible"),
+            "the number of acceptance-eligible campaign envelopes",
+        )
+        table_rows = self._table_rows(entry)
+        eligible_rows = {
+            (row[0], row[1]) for row in table_rows if len(row) >= 3 and row[0] != "Campaign case"
+        }
         for case, test_id in self.REQUALIFIED.items():
             with self.subTest(case=case):
-                self.assertIn(f"| `{case}` | `{test_id}` |", entry)
+                self.assertIn((case, test_id), eligible_rows)
                 row = self.rows[test_id]
                 self.assertEqual(row["hardware_evidence"], "MEASURED")
                 self.assertIn("f2d6c91a", row["measurement_note"])
         for case in self.NOT_ELIGIBLE:
             with self.subTest(case=case):
-                self.assertIn(f"`{case}`", entry)
-                self.assertNotIn(f"| `{case}` |", entry)
+                self.assertIn(case, entry)
+                self.assertNotIn(case, {row[0] for row in table_rows if row})
         # Captured-only rows stay captured: the requalification run adds no measured cell.
         self.assertEqual(self.rows["PSP-TEARDOWN-001"]["hardware_evidence"], "CAPTURED")
         self.assertIn("f2d6c91a", self.rows["PSP-TEARDOWN-001"]["evidence_note"])
@@ -7885,18 +7958,34 @@ class Record20261015Tests(unittest.TestCase):
         self.assertEqual(len(self.REQUALIFIED) + len(self.NOT_ELIGIBLE), 32)
 
     def test_readme_and_index_agree_on_the_status_of_the_new_probes(self) -> None:
-        self.assertIn("`MEASURED` on 2026-10-15 (`7fc1641e`)", self.readme)
-        self.assertEqual(self.readme.count("`MEASURED` on 2026-10-15 (`22b027f6`)"), 2)
-        self.assertNotIn("## Bounded follow-up probes (hardware NOT_RUN)", self.readme)
-        self.assertNotIn("are single-launch NOT_RUN probes", self.readme)
+        rows = self._table_rows(self.readme)
+        by_case = {row[0]: row for row in rows if len(row) >= 3}
+        audio = by_case["hle-audio-src"]
+        self.assertEqual(audio[1], "PSP-HLE-AUDIO-SRC-001")
+        self.assertTrue(all(term in audio[2] for term in ("MEASURED", "2026-10-15", "7fc1641e")))
+        for case, evidence_id, commit in (
+            ("hle-timer-order", "PSP-HLE-TIMER-ORDER-001", "22b027f6"),
+            ("vfpu-transcendental-corpus", "PSP-VFPU-TRANSCENDENTAL-001", "22b027f6"),
+        ):
+            with self.subTest(case=case):
+                row = by_case[case]
+                self.assertEqual(row[1], evidence_id)
+                self.assertTrue(all(term in row[2] for term in ("MEASURED", "2026-10-15", commit)))
 
     def test_the_audio_src_and_timer_comparisons_are_recorded_and_pinned(self) -> None:
-        for phrase in ("`test_audio_src_matches_the_measured_contract`",
-                       "`test_alarm_delivery_order_matches_the_timer_order_probe`",
-                       "The runtime had no SRC handlers before this entry",
-                       "The VTimer handler cells do not match"):
-            # Collapse whitespace so a reflowed paragraph keeps passing.
-            self.assertIn(phrase, " ".join(self.doc.split()))
+        for name in ("test_audio_src_matches_the_measured_contract",
+                     "test_alarm_delivery_order_matches_the_timer_order_probe"):
+            self.assertIn(f"`{name}`", self.doc)
+        self.assertRuleStated(
+            self.doc,
+            ("runtime", "no SRC handlers", "before this entry"),
+            "the SRC handler introduction point",
+        )
+        self.assertRuleStated(
+            self.doc,
+            ("VTimer handler cells", "do not match"),
+            "the VTimer comparison's current mismatch status",
+        )
         selftest = (self.root / "src" / "rt" / "hle_thread_selftest.c").read_text(
             encoding="utf-8")
         for name in ("test_audio_src_matches_the_measured_contract",
@@ -7909,9 +7998,26 @@ class Record20261015Tests(unittest.TestCase):
             self.assertIn(f'sr_hle_register(0x{nid:08x}, "{name}", h_', hle)
 
     def test_the_transcendental_comparison_is_recorded_and_vrexp2_is_pinned(self) -> None:
-        for phrase in ("ten operations matched on all 63 inputs", "`vrexp2.s` matched on none",
-                       "Both paths now compute `exp2(-x)`", "are unmeasured"):
-            self.assertIn(phrase, self.doc)
+        self.assertRuleStated(
+            self.doc,
+            ("ten operations", "matched", "all 63 inputs"),
+            "the number of matching transcendental operations and inputs",
+        )
+        self.assertRuleStated(
+            self.doc,
+            ("vrexp2.s", "none"),
+            "the measured vrexp2 mismatch",
+        )
+        self.assertRuleStated(
+            self.doc,
+            ("both paths", "exp2(-x)"),
+            "the runtime correction applied to both execution paths",
+        )
+        self.assertRuleStated(
+            self.doc,
+            ("five more negated forms", "unmeasured"),
+            "the unmeasured negated forms",
+        )
         selftest = (self.root / "src" / "rt" / "vfpu_interp_selftest.c").read_text(
             encoding="utf-8")
         start = selftest.index("static int check_vrexp2_measured_words(void)")
