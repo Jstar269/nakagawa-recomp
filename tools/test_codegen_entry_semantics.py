@@ -836,6 +836,18 @@ class ElfRebaseRoutingTests(unittest.TestCase):
         self.assertIsNotNone(elf.reloc)
         self.assertEqual(elf.reloc.lo, 0x08800000)
 
+    def test_fixed_exec_at_its_own_load_address_not_rebased_again(self):
+        # A retail fixed-address ET_EXEC keeps empty .rel.* sections, and the
+        # generic profile names its lowest PT_LOAD address as the base. Its
+        # addresses already are guest addresses (prxload._image_address_bias).
+        lowest = min(_fixture_words())
+        elf = self._load(
+            e_type=analyze.ET_EXEC, reloc_section=analyze.SHT_PSP_RELA, base=lowest
+        )
+        self.assertIsNone(elf.reloc)
+        self.assertEqual(elf.entry, OWNER)
+        self.assertEqual(elf.read_at_vaddr(OWNER, 4), struct.pack("<I", 0x27BDFF90))
+
     def test_et_rel_with_psp_relocs_nonzero_base_routed(self):
         elf = self._load(e_type=analyze.ET_REL, reloc_section=analyze.SHT_REL, base=0x08800000)
         self.assertIsNotNone(elf.reloc)
