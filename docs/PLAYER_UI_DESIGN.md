@@ -185,6 +185,23 @@ action, PLAY when the package is ready, then OPEN SAVE FOLDER and BACK), and the
 Partially works and Experimental `info`, Boots to a named boundary `warning`, others `muted`; the detail; a
 `FOOTNOTE` naming `docs/COMPATIBILITY.md`). Prompt bar: MOVE, SELECT, BACK.
 
+### About (built)
+
+Reached from the top bar's ABOUT tab (L / R or Q / E switch tabs; Back returns to the Library). A centred
+880 px column:
+
+- the N1 mark at 72 px beside `NAKAGAWA RECOMP` in `DISPLAY_XL`, with the version line under it in `LABEL_L`
+  accent, exactly `v0.0.1 (MM-DD-YYYY)`;
+- a `BODY_L` `muted` line saying what it is: a PSP static recompiler, your own game recompiled to run natively,
+  nothing downloaded, no game data included;
+- a LICENCE card (GPL-3.0-or-later, and a THIRD-PARTY NOTICES button that opens the existing licences screen) beside
+  a CREDITS card (the upstream lineage in three lines, pointing at `CREDITS.md` and `NOTICE.md`);
+- the non-affiliation notice, the project link in `DATA`, and the short source commit as a `FOOTNOTE`.
+
+The version is written once, `NK_PLAYER_VERSION` in `src/player/ui/player_ui_nk.h`. The date is the build's
+`SOURCE_DATE_EPOCH` when set, else the source commit's time (Makefile and CMake both), formatted in UTC as
+MM-DD-YYYY; without either the line reads `(dev build)`. No tag or release is implied by it.
+
 ### Settings (C6)
 
 - Top bar with SETTINGS active; `SETTINGS` in `DISPLAY`; a tab row (`LABEL`, 10/12 px padding, 3 px accent rule

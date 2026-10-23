@@ -111,12 +111,6 @@ static const char *safe_text(const char *text, const char *fallback) {
     return text != NULL && text[0] != '\0' ? text : fallback;
 }
 
-static void library_top_bar(NkUi *ui) {
-    static const NkUiSection sections[] = {{"Library", true}};
-    nk_ui_top_bar(ui, LIBRARY_ID_TOP, sections, 1u,
-                  nk_ui_input_label(nk_ui_prompt_style(ui)),
-                  nk_ui_prompt_style(ui) != NK_UI_PROMPT_KEYCAPS);
-}
 
 static void library_prompts(NkUi *ui, bool has_titles) {
     static const NkUiPromptItem with_titles[] = {
@@ -219,7 +213,10 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
     if (!nk_ui_begin_container(ui, LIBRARY_ID_ROOT, &layout, NULL)) {
         return result;
     }
-    library_top_bar(ui);
+    {
+        PlayerUiActionKind tab = player_ui_top_bar(ui, LIBRARY_ID_TOP, PLAYER_UI_ROUTE_LIBRARY);
+        if (tab != PLAYER_UI_ACTION_NONE) result = action(tab, 0u);
+    }
 
     layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_grow(), NK_UI_SPACE_4);
     layout.padding_top = NK_UI_BODY_PAD_TOP;
