@@ -531,7 +531,7 @@ int nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t count
             memset(&label_style, 0, sizeof(label_style));
             label_style.corner_radius = NK_UI_RADIUS_CONTROL;
             if (sections[i].id != 0u) {
-                nk_ui_register_button(ui, label_id, 0u);
+                nk_ui_register_button(ui, label_id, NK_UI_BUTTON_NOT_DEFAULT);
                 focused = nk_ui_button_focused(ui, label_id);
                 if (focused) label_style.fill_rgba = theme->surface_high;
             }
