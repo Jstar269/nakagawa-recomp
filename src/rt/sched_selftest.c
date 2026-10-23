@@ -103,7 +103,7 @@ uint32_t sr_get_ge_status(void) { return 0; }
 /* The user-partition span hle.c reports to the stack allocator; a test sets it. */
 static int g_test_partition_live;
 static uint32_t g_test_partition_base, g_test_partition_high;
-int sr_user_partition_overlaps(uint32_t base, uint32_t end) {
+static int test_partition_overlaps(uint32_t base, uint32_t end) {
     return g_test_partition_live && base < g_test_partition_high && end > g_test_partition_base;
 }
 uint32_t g_frame_prims = 0;
@@ -1387,6 +1387,7 @@ static void test_stack_exhaustion_fails_create(void) {
 static void test_stack_floor_and_partition_overlap(void) {
     reset_sched();
     g_test_partition_live = 0;
+    sched_set_stack_range_refusal(test_partition_overlaps);
     expect(sched_guest_stack_floor() == SR_STACK_ARENA_CEIL,
            "with no thread the stack floor is the arena ceiling");
     uint32_t first = sched_create_thread(0x2000u, 32, 0x4000u);
@@ -1414,6 +1415,7 @@ static void test_stack_floor_and_partition_overlap(void) {
     expect(fits != 0, "a stack that clears the partition is still created");
     expect(sched_guest_stack_floor() < floor1, "the floor follows the lowest live stack");
     g_test_partition_live = 0;
+    sched_set_stack_range_refusal(NULL);
 }
 
 /* ---- sr_coro primitive tests ------------------------------------------------------- */

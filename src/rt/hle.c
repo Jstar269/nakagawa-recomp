@@ -535,6 +535,7 @@ static uint32_t sr_last_alloc_addr = 0;     /* last heap allocation rounded addr
  * tools/prxload.py preserves the original ~PSP header's segment-memory sizes when a
  * stripped ELF has lost them. An explicit override may move the base higher, but may
  * never overlap the loaded module. */
+static int sr_user_partition_overlaps(uint32_t base, uint32_t end);
 static void user_partition_init(void) {
     if (s_heap) return;
     const char *eb = getenv("SR_HEAP_BASE");
@@ -557,6 +558,10 @@ static void user_partition_init(void) {
     }
     s_heap = base;
     s_heap_base = base;
+    {
+        extern void sched_set_stack_range_refusal(int (*refusal)(uint32_t, uint32_t));
+        sched_set_stack_range_refusal(sr_user_partition_overlaps);
+    }
     s_part_top = et ? (uint32_t)strtoul(et, NULL, 16) : 0x0A000000u;
     if (s_part_top <= s_heap) {
         fprintf(stderr,
@@ -606,7 +611,7 @@ static int s_nblocks = 0;
  * PSP_SMEM_Addr requests) keep their previous bounds and are not checked against stacks:
  * a reviewed profile's late PRX base can share the stack arena's address range on this
  * runtime. 0 before the partition exists. */
-int sr_user_partition_overlaps(uint32_t base, uint32_t end) {
+static int sr_user_partition_overlaps(uint32_t base, uint32_t end) {
     if (!s_heap || end <= base) return 0;
     return base < s_heap && end > s_heap_base;
 }

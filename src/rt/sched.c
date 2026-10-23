@@ -585,7 +585,12 @@ uint32_t sched_guest_stack_floor_above(uint32_t addr) {
 
 uint32_t sched_guest_stack_floor(void) { return sched_guest_stack_floor_above(0u); }
 
-extern int sr_user_partition_overlaps(uint32_t base, uint32_t end);
+/* The HLE user partition (hle.c) installs a check that refuses a stack range it has
+ * handed out. A callback rather than a link-time reference: several fixtures link
+ * sched.c without hle.c, and with no check installed every range is accepted. */
+typedef int (*SchedStackRangeRefusal)(uint32_t base, uint32_t end);
+static SchedStackRangeRefusal s_stack_range_refusal;
+void sched_set_stack_range_refusal(SchedStackRangeRefusal refusal) { s_stack_range_refusal = refusal; }
 
 static int stack_range_alloc(uint32_t size, uint32_t *base_out) {
     if (!s_stack_allocator_ready) stack_ranges_reset();
@@ -2456,7 +2461,8 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     uint32_t reservation = user_sz + tls_size;
     uint32_t user_base = 0;
     int stack_ok = stack_range_alloc(reservation, &user_base);
-    if (stack_ok && sr_user_partition_overlaps(user_base, user_base + reservation)) {
+    if (stack_ok && s_stack_range_refusal &&
+        s_stack_range_refusal(user_base, user_base + reservation)) {
         /* The descending arena reached memory the user partition has handed out. A PSP
          * allocates thread stacks from that partition, so the create fails for lack of
          * memory instead of placing a stack over a live block. */
