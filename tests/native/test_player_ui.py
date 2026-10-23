@@ -1869,6 +1869,33 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["view"], "library")
         self.assertEqual(frames[-1]["running"], "0")
 
+    # The next UI (--ui=next) reaches every flow the existing library reaches:
+    # the setup wizard from an empty library, Settings, the file picker and quit.
+    # The screens it hands over to keep drawing in the existing renderer.
+
+    def test_empty_library_starts_the_setup_wizard(self) -> None:
+        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN"), ui_mode="next")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "library")
+        self.assertEqual(frames[1]["view"], "wizard")
+        self.assertEqual(frames[1]["wizard_step"], "welcome")
+        self.assertEqual(frames[2]["wizard_step"], "select_game")
+
+    def test_library_shortcuts_reach_settings_picker_and_quit(self) -> None:
+        settings = self.run_player("library", ("KEY_S",), ui_mode="next")
+        frames = settings["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["view"], "settings")
+        picker = self.run_player("library", ("KEY_O",), ui_mode="next")
+        frames = picker["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["picker"], "1")
+        quit_run = self.run_player("library", ("KEY_ESCAPE",), ui_mode="next")
+        frames = quit_run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["running"], "0")
+
     def test_failed_close_confirmation_needs_a_second_explicit_close(self) -> None:
         run = self.run_player(
             "library",

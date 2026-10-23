@@ -6922,6 +6922,49 @@ static void test_kernel_usec_sysclock_conversions(void) {
            "sceKernelUSec2SysClock rejects an unwritable clock span");
 }
 
+uint32_t sr_hle_test_umd_replace_permitted(void);
+
+/* sceUmdReplaceProhibit/Permit record the swap permission and return 0 whether or not
+ * it changes; sceUmdGetDiscInfo checks size == 8 and reports PSP_UMD_TYPE_GAME. */
+static void test_umd_replace_permission_and_disc_info(void) {
+    enum {
+        NID_UMD_REPLACE_PROHIBIT = 0x87533940u,
+        NID_UMD_REPLACE_PERMIT = 0xcbe9f02au,
+        NID_UMD_GET_DISC_INFO = 0x340b7686u,
+        INFO = ORACLE_CALLBACK_NAME + 0x200u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_hle_test_is_registered(NID_UMD_REPLACE_PROHIBIT) &&
+               sr_hle_test_is_registered(NID_UMD_REPLACE_PERMIT) &&
+               sr_hle_test_is_registered(NID_UMD_GET_DISC_INFO),
+           "sceUmdReplaceProhibit, sceUmdReplacePermit and sceUmdGetDiscInfo are registered");
+    expect(sr_syscall(&cpu, NID_UMD_REPLACE_PERMIT) == 0u && sr_hle_test_umd_replace_permitted() == 1u,
+           "sceUmdReplacePermit returns 0 and permits a disc swap");
+    expect(sr_syscall(&cpu, NID_UMD_REPLACE_PERMIT) == 0u && sr_hle_test_umd_replace_permitted() == 1u,
+           "a second sceUmdReplacePermit still returns 0");
+    expect(sr_syscall(&cpu, NID_UMD_REPLACE_PROHIBIT) == 0u && sr_hle_test_umd_replace_permitted() == 0u,
+           "sceUmdReplaceProhibit returns 0 and prohibits a disc swap");
+    expect(sr_syscall(&cpu, NID_UMD_REPLACE_PROHIBIT) == 0u && sr_hle_test_umd_replace_permitted() == 0u,
+           "a second sceUmdReplaceProhibit still returns 0");
+
+    sr_w32(INFO, 8u);
+    sr_w32(INFO + 4u, 0xffffffffu);
+    cpu.r[4] = INFO;
+    expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0u && sr_r32(INFO + 4u) == 0x10u,
+           "sceUmdGetDiscInfo reports PSP_UMD_TYPE_GAME for a size-8 record");
+    sr_w32(INFO, 12u);
+    sr_w32(INFO + 4u, 0xffffffffu);
+    cpu.r[4] = INFO;
+    expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0x80010016u && sr_r32(INFO + 4u) == 0xffffffffu,
+           "sceUmdGetDiscInfo refuses a record whose size is not 8 and writes nothing");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0x80010016u,
+           "sceUmdGetDiscInfo refuses a null record");
+}
+
 static void test_umd_unregister_callback(void) {
     enum {
         NID_CREATE_CALLBACK = 0xe81caf8fu,
@@ -30729,6 +30772,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_unregistered_batch_sysclock_wide();
     test_kernel_usec_sysclock_conversions();
     test_umd_unregister_callback();
+    test_umd_replace_permission_and_disc_info();
     test_unregistered_batch_ctrl_sampling_getter();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();

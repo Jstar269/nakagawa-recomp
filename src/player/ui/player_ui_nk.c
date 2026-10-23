@@ -219,6 +219,12 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
             app->active_view == PLAYER_VIEW_READY_LIBRARY);
 }
 
+bool player_ui_nk_at_library_root(const PlayerUiNk *player) {
+    return player != NULL && player->ready &&
+           nk_ui_router_current(player->router) == PLAYER_UI_ROUTE_LIBRARY &&
+           nk_ui_router_depth(player->router) == 1u;
+}
+
 bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
     NkUiEvent translated[8];
     size_t count;
