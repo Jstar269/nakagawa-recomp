@@ -274,6 +274,9 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/audio_query_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CACHE_ALIAS
 #define PROBE_HOST0_LOG "host0:/cache_alias_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
+/* The three concurrency records are durable too, so a PSPLink session needs no stdout capture. */
+#define PROBE_HOST0_LOG "host0:/dmac_concurrency_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_SIZE_MATRIX_CELL
 #define PROBE_HOST0_LOG "host0:/dmac_size_matrix_cell_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_INVALID_TAIL_S0
