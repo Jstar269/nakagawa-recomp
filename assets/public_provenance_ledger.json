@@ -409,7 +409,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "caee81a5201c2147b04d65c226f9c28bbb22a233e129736ab6884ae2322d6d0c"
+      "sha256": "5916741cf06bf5217fe60e23df9f43100d23c6c984cf34c0c719c6fc341fc860"
     },
     {
       "path": "NOTICE.md",
@@ -1777,7 +1777,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2aa0a0474aeae4de74f9205538dde86ed69a7e7241bb04176e6663b33ca80776"
+      "sha256": "c51fd632e59805c094835a7505c5a9fa5f6c92e18bc808bb7f0a31467c6f63dc"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -2279,7 +2279,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "3b8fcfc6b0629e1d442a6d8b0ca7880dcbe03262bc443f3e693d07a55302a924"
+      "sha256": "9861d62a92026eed3d89af970d334cd31cc8a9841b82e73ca629cd4efd5e9262"
     },
     {
       "path": "fixtures/psp_oracle/display_user_imports.S",
@@ -6587,7 +6587,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "300ec7d69eac45b7ce2cb5700a7451b06e84000d9a2b0eb8d000af203a21d268"
+      "sha256": "530cf6fde1b37fd1000aa44e6b487a84ebd72611da1719d6313d3007b4f740cc"
     },
     {
       "path": "tests/native/pgf_verdict_harness.c",
@@ -8079,7 +8079,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "62b8d73dc7276d0bb85b7dcb6532c31fcdd6efc9b8959a2a7916d59372b7c970"
+      "sha256": "8de545f452c75911ff2e2a33db285804351c2f69b7b8e1289c8ed2efe3a07dee"
     },
     {
       "path": "tools/pngcmp.py",
@@ -8634,7 +8634,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "995a79ff6d0dd86e65aa6d6213d275dc4a7141c1d3d12dd878900cc596e5f5c6"
+      "sha256": "90ed46bd726764427fc6583c1bdeb69145e10c6dc8562999114482b7455442e0"
     },
     {
       "path": "tools/sync_drift_check.py",
@@ -10052,7 +10052,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6a47951bde9df7d8a7bf991dfd4654ad58c8afff77ef8df4838808fb0fbee329"
+      "sha256": "fe3333b7bb970999694a2276537b49381bfd401cf7898a703c0f5e7d69a68ee9"
     },
     {
       "path": "tools/test_platform_ladder.py",
@@ -10088,7 +10088,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "64a5dcf21da00354b93640865d498b00d4fe051ec4e396345b7f9b58ee9448b7"
+      "sha256": "30529ba65ce6c09ff4364207ec0890dc2e9860ba06048a199460da0b7d3f3c4d"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -11326,7 +11326,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "224c3853212a40ab296cdcb5210391f40e0b82a33c9fbe9545e352d5725d82f0"
+      "sha256": "e3f5d3b5ab0d736a2bccdd59cfb3e0e46f15f8e213e80eeeace14aaea7923326"
     },
     {
       "path": "tools/validate_assets.py",

@@ -50,6 +50,15 @@ SOURCE_BITS_PER_PIXEL = 4
 #: division-by-zero trap inside sceFontOpenUserMemory/sceFontOpenUserFile); every console font
 #: carries 4, which is also the whole-word rounding this writer applies (PGF_SPEC.md 3.1, 3.3).
 SECTION_ROUNDING_BYTES = 4
+#: Header u16 at 0x100: the byte factor applied to a character-pointer value to reach its glyph
+#: record (the "factor 4" of PGF_SPEC.md 3.4). The console library reads it from the header: with
+#: 0 every glyph resolves to the start of glyph data and draws nothing (PSP-3000 / 6.61, #1055).
+POINTER_UNIT_BYTES = 4
+#: Bytes in a glyph record before its bitmap (8-byte prefix + four table indexes) and the largest
+#: record length the 14-bit first field can hold. The console library allocates that field less 8
+#: for each glyph lookup, so a 0 there makes it request 0xfffffff8 bytes and fail (#1055).
+RECORD_HEADER_BYTES = 12
+MAX_RECORD_BYTES = (1 << 14) - 1
 DEFAULT_RESOLUTION = 1920
 DEFAULT_FONT_NAME = "Nakagawa Synthetic"
 DEFAULT_FONT_TYPE = "SYNTHETIC-FIXTURE"
@@ -400,15 +409,21 @@ def _build_metric_tables(plans: list[_Planned]) -> tuple[list[bytes], list[list[
 
 def _record_bytes(plan: _Planned, indexes: list[int]) -> bytes:
     """Build one glyph metric record: the fixed 8-byte prefix plus four table indexes."""
+    record_bytes = RECORD_HEADER_BYTES + len(plan.bitmap)
+    if record_bytes > MAX_RECORD_BYTES:
+        raise _refuse(
+            "glyph-record-too-large",
+            f"U+{plan.code:04X} needs a {record_bytes}-byte record; the 14-bit length field holds {MAX_RECORD_BYTES}",
+        )
     prefix = _pack_fields(
         [
-            (0, 14),  # shadow record offset: this writer emits no shadow record
+            (record_bytes, 14),  # the record's own length; no shadow record follows (PGF_SPEC.md 3.5)
             (plan.width, 7),
             (plan.height, 7),
             (plan.adjust_x & 0x7F, 7),
             (plan.adjust_y & 0x7F, 7),
             (plan.row_order, 2),
-            (0, 1),  # role bit: reachability, not layout (PGF_SPEC.md section 3.5)
+            (1, 1),  # role bit: 1 = character record; the console library reads 0 as a shadow layout
             (0b111, 3),  # all three metric groups are indexed
             (0, 7),  # unassigned bits
             (0, 9),  # shadow identifier: none
@@ -535,6 +550,7 @@ def build_pgf(
     struct.pack_into("<i", header, 0xF8, extrema["max_height"])
     struct.pack_into("<H", header, 0xFC, extrema["glyph_width"])
     struct.pack_into("<H", header, 0xFE, extrema["glyph_height"])
+    struct.pack_into("<H", header, 0x100, POINTER_UNIT_BYTES)
     for table in range(TABLE_COUNT):
         header[0x102 + table] = len(tables[table]) // 8
     struct.pack_into("<I", header, 0x16C, 0)  # empty shadow character map

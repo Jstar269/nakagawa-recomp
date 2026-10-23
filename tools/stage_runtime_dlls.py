@@ -37,6 +37,7 @@ any staged binary has no licence record in ``assets/third_party_components.json`
 from __future__ import annotations
 
 import argparse
+import hashlib
 from collections import deque
 import os
 import shutil
@@ -228,6 +229,22 @@ def stage_ui_font_assets(target_dir: Path, *, repo_root: Path = ROOT) -> list[st
     return staged
 
 
+def _files_equal(a: Path, b: Path) -> bool:
+    try:
+        if a.stat().st_size != b.stat().st_size:
+            return False
+    except OSError:
+        return False
+    ha = hashlib.sha256()
+    hb = hashlib.sha256()
+    with a.open("rb") as fa, b.open("rb") as fb:
+        for chunk in iter(lambda: fa.read(65536), b""):
+            ha.update(chunk)
+        for chunk in iter(lambda: fb.read(65536), b""):
+            hb.update(chunk)
+    return ha.digest() == hb.digest()
+
+
 def stage_runtime_dlls(
     target_dir: Path,
     *,
@@ -240,6 +257,7 @@ def stage_runtime_dlls(
     repo_root: Path = ROOT,
     toolchain_root: Path | None = None,
     include_ui_fonts: bool = False,
+    refresh: bool = False,
 ) -> list[str]:
     """Stage the runtime DLL roots, their resolved closure, and (optionally)
     the generated licence notices into ``target_dir``.
@@ -249,6 +267,13 @@ def stage_runtime_dlls(
     ``target_dir`` is kept (a package may pre-bundle it) but still contributes
     its closure. ``include_ui_fonts`` copies the project font bundle for the
     standalone player target. Returns the sorted names of every file staged.
+
+    With ``refresh=True``, a root or closure DLL already in ``target_dir`` is
+    replaced by the resolved toolchain/override file when their bytes differ
+    (compared by size then SHA-256, never by modification time, because MSYS2
+    package files keep upstream timestamps). Identical files are left alone.
+    With ``refresh=False`` (the default) pre-bundled package DLLs are kept,
+    preserving the existing package-staging behaviour.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
     names = list(roots) if roots is not None else [name for name, _ in RUNTIME_ROOTS]
@@ -260,7 +285,15 @@ def stage_runtime_dlls(
     for name in names:
         existing = target_dir / name
         if existing.is_file():
-            root_dll = existing
+            if refresh:
+                root_dll = resolve_root_dll(
+                    name,
+                    environ.get(overrides.get(name, ""), ""),
+                    dirs,
+                    override_env=overrides.get(name),
+                )
+            else:
+                root_dll = existing
         elif existing.exists() and not existing.is_file():
             raise StagingCollisionError(
                 f"{name} staging collision: {existing.name} is a directory; "
@@ -283,7 +316,7 @@ def stage_runtime_dlls(
                     f"{source.name} staging collision: {destination.name} is a directory; "
                     f"remove or move the directory to stage the runtime DLL"
                 )
-            if not destination.is_file():
+            if not destination.is_file() or (refresh and not _files_equal(source, destination)):
                 shutil.copyfile(source, destination)
             staged.add(source.name)
 
@@ -320,6 +353,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="also stage the pinned UI font bundle beside the standalone player",
     )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="replace staged DLLs whose bytes differ from the resolved toolchain copy",
+    )
     args = parser.parse_args(argv)
 
     if os.name != "nt":
@@ -344,6 +382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.target,
             notices=not args.no_notices,
             include_ui_fonts=args.include_ui_fonts,
+            refresh=args.refresh,
         )
     except (StageError, package_notices.PackageRouteError) as exc:
         print(f"stage_runtime_dlls: FAIL: {exc}", file=sys.stderr)
