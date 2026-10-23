@@ -28,6 +28,7 @@
 #include "nk_types.h"
 #include "nk_iso.h"
 #include "nk_library.h"
+#include "nk_font.h"
 #include "nk_launch.h"
 #include "nk_platform.h"
 #include "generated/nk_title_catalog.h"
@@ -290,6 +291,75 @@ static void test_nk_library_corrupt_load_and_backup_recovery(void) {
     assert(nk_library_count(&loaded) == 1);
 }
 
+static void test_nk_font_classify_verdict(void) {
+    printf("[NATIVE_TEST] Testing nk_font_classify_verdict...\n");
+    char reason[128];
+    PgfVerdict verdict;
+
+    /* 1. NULL verdict pointer */
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(NULL, reason, sizeof(reason)) == -1);
+    assert(strcmp(reason, "the reader refused the file") == 0);
+
+    /* 2. Non-zero refusal status */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_MAGIC;
+    verdict.has_latin = 1;
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(&verdict, reason, sizeof(reason)) == -1);
+    assert(strcmp(reason, "the reader refused the file") == 0);
+
+    /* 3. Ambiguous verdict with both has_hangul and has_kana */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_NONE;
+    verdict.has_hangul = 1;
+    verdict.has_kana = 1;
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(&verdict, reason, sizeof(reason)) == -1);
+    assert(strcmp(reason, "covers both Hangul and kana, so it names no slot") == 0);
+
+    /* 4. Korean slot classification (has_hangul = 1) */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_NONE;
+    verdict.has_hangul = 1;
+    verdict.has_latin = 1;
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(&verdict, reason, sizeof(reason)) == NK_FONT_SLOT_KOREAN);
+
+    /* 5. Japanese slot classification (has_kana = 1) */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_NONE;
+    verdict.has_kana = 1;
+    verdict.has_latin = 1;
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(&verdict, reason, sizeof(reason)) == NK_FONT_SLOT_JAPANESE);
+
+    /* 6. Latin slot classification (has_latin = 1) */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_NONE;
+    verdict.has_latin = 1;
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(&verdict, reason, sizeof(reason)) == NK_FONT_SLOT_LATIN);
+
+    /* 7. No probe flags set */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_NONE;
+    memset(reason, 0, sizeof(reason));
+    assert(nk_font_classify_verdict(&verdict, reason, sizeof(reason)) == -1);
+    assert(strcmp(reason, "covers none of the slot probe characters") == 0);
+
+    /* 8. Null / zero-length reason buffer edge cases */
+    memset(&verdict, 0, sizeof(verdict));
+    verdict.refusal = PGF_REFUSE_NONE;
+    assert(nk_font_classify_verdict(&verdict, NULL, 0) == -1);
+    assert(nk_font_classify_verdict(&verdict, reason, 0) == -1);
+
+    /* 9. Truncated reason buffer */
+    char small_buf[5];
+    assert(nk_font_classify_verdict(&verdict, small_buf, sizeof(small_buf)) == -1);
+    assert(strcmp(small_buf, "cove") == 0);
+}
+
 int main(void) {
     native_test_create_root("core-catalog");
     native_test_isolate_user_data_roots();
@@ -300,6 +370,7 @@ int main(void) {
     test_nk_library_add_update_remove_bounds();
     test_nk_library_save_load_escaping_and_samples();
     test_nk_library_corrupt_load_and_backup_recovery();
+    test_nk_font_classify_verdict();
 
     /* Catalog SIZE is deliberately not asserted here. It is a literal that every
        new public title has to come back and edit, and it never caught anything:
