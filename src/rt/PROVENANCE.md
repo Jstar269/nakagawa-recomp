@@ -171,7 +171,7 @@ The sal063 derivation line is the only upstream declaration. PPSSPP is mentioned
 | `rt/gui.c` | sal063 `da17b0e` | inherited (sal063) | none declared; unknown (inherited via sal063 `da17b0e`) | vs sal063 base blob `cd51f0785c0a`: +638/-181 lines (316 -> 773). No PPSSPP text. | SPDX GPL-2.0-or-later; psp-recomp authors copyright; sal063 derivation line; Nakagawa modification line 2026-08-10 | 19 |
 | `rt/h264_mf.c` | sal063 `da17b0e` | inherited (sal063) | none declared; unknown (inherited via sal063 `da17b0e`) | vs sal063 base blob `d24342a2ee7d`: +308/-129 lines (409 -> 588). Media Foundation H.264 path. No PPSSPP text. | SPDX GPL-2.0-or-later; psp-recomp authors copyright; sal063 derivation line; Nakagawa modification line 2026-08-10 | 5 |
 | `rt/iso.h` | sal063 `da17b0e` | inherited (sal063) | none declared; unknown (inherited via sal063 `da17b0e`) | vs sal063 base blob `9dad400fabe2`: +20/-1 lines (13 -> 32). No PPSSPP text. | SPDX GPL-2.0-or-later; psp-recomp authors copyright; sal063 derivation line; Nakagawa modification line 2026-08-10 | 1 |
-| `rt/osk_win.c` | sal063 `da17b0e` | inherited (sal063) | none declared; unknown (inherited via sal063 `da17b0e`) | vs sal063 base blob `4f72351ad3d9`: +31/-2 lines (93 -> 122). No PPSSPP text. A Win32 guard and comment were added after sal063, but the file has no Nakagawa modification line (see Known gaps). | SPDX GPL-2.0-or-later; psp-recomp authors copyright; sal063 derivation line | 2 |
+| `rt/osk_win.c` | sal063 `da17b0e` | inherited (sal063) | none declared; unknown (inherited via sal063 `da17b0e`) | vs sal063 base blob `4f72351ad3d9`: +31/-2 lines (93 -> 122). No PPSSPP text. A Win32 guard and comment were added after sal063, and the Nakagawa modification line was added with this manifest. | SPDX GPL-2.0-or-later; psp-recomp authors copyright; sal063 derivation line | 2 |
 | `rt/sched.c` | sal063 `da17b0e` | inherited (sal063) | none declared; unknown (inherited via sal063 `da17b0e`) | vs sal063 base blob `be7d3785341e`: +4158/-195 lines (631 -> 4594). One comment cites a measurement against PPSSPP. | SPDX GPL-2.0-or-later; psp-recomp authors copyright; sal063 derivation line; Nakagawa modification line 2026-08-11 | 41 |
 | `rt/vfpu_fuzz.c` | sal063 `da17b0e` | inherited (sal063) | none declared; unknown (inherited via sal063 `da17b0e`) | vs sal063 base blob `9f7f33d4bd45`: +280/-10 lines (138 -> 408). No PPSSPP text. | SPDX GPL-2.0-or-later; psp-recomp authors copyright; sal063 derivation line; Nakagawa modification line 2026-08-10 | 5 |
 
@@ -212,10 +212,9 @@ Created in this repository. The code moved out of a sal063-lineage file, so the 
    repository or from the sal063 tree.
 2. `rt/evf.h`: the header says PPSSPP-derived while the ledger says
    project-authored. Reconciling them needs the maintainer's trusted record.
-3. `rt/osk_win.c` has a changed body (a Win32 guard and comment) but no
-   "Modified by Nakagawa Recomp contributors" line. The `AGENTS.md` section 4
-   modification-note rule is not met for that file. This manifest does not edit
-   source files; the header needs a separate change.
+3. `rt/osk_win.c` has a changed body (a Win32 guard and comment). It lacked the
+   "Modified by Nakagawa Recomp contributors" line the `AGENTS.md` section 4
+   modification-note rule asks for; this change adds it (resolved).
 4. `rt/gpu_sdl3vk/README.md` is prose with no SPDX header; it is in the manifest
    because it states the renderer's GPL-2.0-or-later status.
 5. No file-by-file measurement of how much of each file is translated from PPSSPP
