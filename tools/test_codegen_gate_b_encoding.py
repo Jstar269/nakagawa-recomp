@@ -282,6 +282,18 @@ class TestGateBForgedBranchEncoding(unittest.TestCase):
             codegen.effect(0x08900000, forged_blez)
 
 
+class TestReversedInsField(unittest.TestCase):
+    def test_ins_with_msb_below_lsb_is_unsupported_not_a_crash(self):
+        # ins rt=2, rs=3, msb=3, lsb=8: msb < lsb is UNPREDICTABLE in MIPS32 Release 2.
+        word = (0x1F << 26) | (3 << 21) | (2 << 16) | (3 << 11) | (8 << 6) | 0x04
+        with self.assertRaisesRegex(codegen.Unsupported, "INS with msb 3 below lsb 8"):
+            codegen.effect(0x08900000, word)
+        # The single-bit form (msb == lsb) still translates.
+        single = (0x1F << 26) | (3 << 21) | (2 << 16) | (8 << 11) | (8 << 6) | 0x04
+        stmt, _, _ = codegen.effect(0x08900000, single)
+        self.assertIn("0x100u", stmt)
+
+
 class TestAllegrexSemantics(unittest.TestCase):
     """Semantic verification of generated Allegrex instruction C code via host GCC."""
 
