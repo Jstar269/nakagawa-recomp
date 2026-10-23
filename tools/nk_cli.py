@@ -3781,8 +3781,12 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             env["SR_MODULE_DIR"] = str(package_dir / "modules")
         # The same order the launcher resolves SR_DATAROOT in: the staged
         # copy of the disc first, then the source tree.
+        # A manifest without a data root (the generic profile) names none, as the
+        # player's launcher leaves SR_DATAROOT unset for it.
         declared_data_root = manifest["filesystem"]["data_root"]
-        if (staged_root is not None and declared_data_root and
+        if not declared_data_root:
+            data_root = None
+        elif (staged_root is not None and
                 (staged_root / declared_data_root).is_dir()):
             data_root = (staged_root / declared_data_root).resolve()
         else:
@@ -3813,10 +3817,11 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             # this policy.
             "SR_VIDEO": "offscreen",
             "PSP_ISO": str(iso_path),
-            "SR_DATAROOT": str(data_root),
             "SR_LOOSE_CONTENT_ROOTS": loose_roots,
             "SR_BOOT_PATH": boot_path,
         })
+        if data_root is not None:
+            env["SR_DATAROOT"] = str(data_root)
         flight_output: Path | None = None
         try:
             flight_fd, flight_name = tempfile.mkstemp(
