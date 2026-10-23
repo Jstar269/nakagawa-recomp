@@ -1160,6 +1160,37 @@ class PackageCacheTests(unittest.TestCase):
                 [p.name for p in target_dir.parent.iterdir()], ["ABCD12345"]
             )
 
+    def test_locked_package_folder_rename_is_retried_then_named(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "staging"
+            source.mkdir()
+            target = Path(tmp) / "ABCD12345"
+            real_replace = os.replace
+            failures = [PermissionError(13, "Access is denied")] * 2
+
+            def flaky_replace(src, dst):
+                if failures:
+                    raise failures.pop()
+                real_replace(src, dst)
+
+            waits = []
+            with mock.patch.object(nk_cli.os, "replace", side_effect=flaky_replace):
+                nk_cli._replace_package_folder(source, target, sleeper=waits.append,
+                                               delays=(0.1, 0.2, 0.3))
+            self.assertTrue(target.is_dir())
+            self.assertEqual(waits, [0.1, 0.2])
+
+            other = Path(tmp) / "other"
+            other.mkdir()
+            waits.clear()
+            with mock.patch.object(nk_cli.os, "replace",
+                                   side_effect=PermissionError(13, "Access is denied")):
+                with self.assertRaisesRegex(nk_cli.PackageBuildError, "PACKAGE_FOLDER_LOCKED"):
+                    nk_cli._replace_package_folder(other, Path(tmp) / "dest",
+                                                   sleeper=waits.append, delays=(0.1,))
+            self.assertEqual(waits, [0.1])
+            self.assertTrue(other.is_dir(), "the staged folder is left for cleanup, not lost")
+
     def test_cache_cleanup_is_bounded_and_preserves_protected_entry(self) -> None:
         cache_root = package_cache.cache_root(self.root / "user-data", "TEST00001")
         entries_root = cache_root / "entries"

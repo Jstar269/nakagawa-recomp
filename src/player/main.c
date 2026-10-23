@@ -880,19 +880,26 @@ static void player_use_presentation(PlayerApp *app, SDL_Renderer *renderer,
                                     SDL_Window *window, bool native) {
     int want = native ? 1 : 0;
     if (!s_switch_presentation || s_presentation == want) return;
+    /* The app's sizes change only when SDL took the new presentation; a failed
+       switch keeps the old one, and the next frame tries again. */
     if (native) {
         int w = 0;
         int h = 0;
-        (void)SDL_SetRenderLogicalPresentation(renderer, 0, 0,
-                                               SDL_LOGICAL_PRESENTATION_DISABLED);
+        if (!SDL_SetRenderLogicalPresentation(renderer, 0, 0,
+                                              SDL_LOGICAL_PRESENTATION_DISABLED)) {
+            return;
+        }
         if (SDL_GetWindowSize(window, &w, &h) && w > 0 && h > 0) {
             app->window_width = w;
             app->window_height = h;
         }
         app->logical_ui = false;
-    } else if (SDL_SetRenderLogicalPresentation(renderer, PLAYER_UI_LOGICAL_WIDTH,
-                                                PLAYER_UI_LOGICAL_HEIGHT,
-                                                SDL_LOGICAL_PRESENTATION_LETTERBOX)) {
+    } else {
+        if (!SDL_SetRenderLogicalPresentation(renderer, PLAYER_UI_LOGICAL_WIDTH,
+                                              PLAYER_UI_LOGICAL_HEIGHT,
+                                              SDL_LOGICAL_PRESENTATION_LETTERBOX)) {
+            return;
+        }
         app->logical_ui = true;
         app->window_width = PLAYER_UI_LOGICAL_WIDTH;
         app->window_height = PLAYER_UI_LOGICAL_HEIGHT;
@@ -3880,7 +3887,12 @@ int main(int argc, char *argv[]) {
                             release.type = SDL_EVENT_GAMEPAD_BUTTON_UP;
                             release.gbutton.down = false;
                         }
-                        (void)SDL_PushEvent(&release);
+                        if (!SDL_PushEvent(&release)) {
+                            ui_test_failed = true;
+                            running = false;
+                            fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL "
+                                            "release event.\n");
+                        }
                     }
                 }
             } else if (next_event == 0) {

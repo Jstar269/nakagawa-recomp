@@ -1034,6 +1034,11 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
         if fn == 0x04:  # ins
             pos, msb = sa(w), (w >> 11) & 0x1F
             size = msb - pos + 1
+            if size <= 0:
+                # msb < lsb is UNPREDICTABLE (MIPS32 Release 2). Such a word is usually
+                # data the analyzer reached as code; the function becomes a fail-closed
+                # stub instead of the whole build stopping on a Python error.
+                raise Unsupported(f"INS with msb {msb} below lsb {pos} at 0x{addr:08x}")
             mask = ((0xFFFFFFFF if size >= 32 else ((1 << size) - 1)) << pos) & 0xFFFFFFFF
             return wr(rt(w), f"(({R(rt(w))} & ~0x{mask:x}u) | (({R(rs(w))} << {pos}) & 0x{mask:x}u))"), None, 0
         if fn == 0x20:

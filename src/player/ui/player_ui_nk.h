@@ -56,7 +56,7 @@ typedef enum {
     PLAYER_UI_ACTION_PREREQ_ACCEPT,    /* download the listed build tools */
     PLAYER_UI_ACTION_PREREQ_CANCEL,
     PLAYER_UI_ACTION_ERROR_RECOVER,    /* the error card's one recovery action */
-    PLAYER_UI_ACTION_WIZARD            /* a setup wizard control; .primary carries the op */,
+    PLAYER_UI_ACTION_WIZARD,           /* a setup wizard control; .primary carries the op */
     PLAYER_UI_ACTION_OPEN_LIBRARY,
     PLAYER_UI_ACTION_OPEN_ABOUT,
     PLAYER_UI_ACTION_OPEN_NOTICES
