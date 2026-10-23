@@ -524,6 +524,7 @@ override CFLAGS += -DSR_PUBLIC_SAFE
 endif
 
 include mk/build_common.mk
+include mk/nk_ui.mk
 
 BUILD_PROFILE_TOOL := tools/build_profile.py
 CPU_STATE_ABI_HEADER := src/rt/recomp.h
@@ -945,6 +946,9 @@ PUBLIC_TARGETS := \
 	profiler-selftest \
 	gui-present-selftest \
 	clay-layout-selftest \
+	nk-ui-core-selftest \
+	nk-ui-sdlr-selftest \
+	nk-ui-focus-selftest \
 	coro-selftest \
 	hle-thread-selftest \
 	aot-return-boundary-thread-selftest \
@@ -1073,6 +1077,9 @@ HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_clay-layout-selftest := build and run the vendored Clay layout selftest
+HELP_DESCRIPTION_nk-ui-core-selftest := build and run the nk_ui core selftest (synthetic layout, focus and scale)
+HELP_DESCRIPTION_nk-ui-sdlr-selftest := build and run the nk_ui SDL_Renderer and SDL3_ttf selftest (software snapshots; SKIPs without SDL3_ttf)
+HELP_DESCRIPTION_nk-ui-focus-selftest := build and run the nk_ui focus graph, input model and prompt glyph selftest (SDL translation leg SKIPs without SDL3)
 HELP_DESCRIPTION_coro-selftest := run the coroutine selftest
 HELP_DESCRIPTION_hle-thread-selftest := build and run the HLE thread selftest
 HELP_DESCRIPTION_aot-return-boundary-thread-selftest := run the real recomp/scheduler thread-boundary regression
@@ -2962,7 +2969,61 @@ clay-layout-selftest:
 		-o $(BUILD_DIR)/clay_layout_selftest$(EXE_EXT) tests/native/test_clay_layout.c
 	$(BUILD_DIR)/clay_layout_selftest$(EXE_EXT)
 
-native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player clay-layout-selftest
+.PHONY: nk-ui-core-selftest
+nk-ui-core-selftest:
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Ithird_party/clay \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(NK_UI_NATIVE_CORE_SRCS) tests/native/test_nk_ui_core.c -lm \
+		-o $(BUILD_ROOT)/test_nk_ui_core$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_nk_ui_core$(EXE_EXT)
+
+# nk-ui-sdlr-selftest - the nk_ui SDL_Renderer backend and SDL3_ttf text engine (lane C3b) drawing a
+# synthetic screen into a software-rendered surface at 1x, 1.25x and 2x, with Japanese shaping and
+# kerning checks. SDL3_ttf is loaded at run time, so only its headers are needed to build. A host
+# without the SDL3 or SDL3_ttf headers builds the SKIP variant, and a host that cannot load the
+# library skips at run time. Both exit 77; this recipe then prints "SKIP nk-ui-sdlr-selftest" and
+# succeeds, so a skip is visible in the log but does not fail native-core-tests.
+.PHONY: nk-ui-sdlr-selftest
+nk-ui-sdlr-selftest:
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@sdl_defs=""; sdl_libs=""; \
+	if printf '%s\n' '#include <SDL3/SDL.h>' '#include <SDL3_ttf/SDL_ttf.h>' '#include <SDL3_ttf/SDL_textengine.h>' | $(CC) -E -x c $(SDL3_INC_FLAGS) - >/dev/null 2>&1; then \
+		sdl_defs="-DNK_UI_WITH_SDL -DNK_UI_WITH_SDL_TTF"; sdl_libs="$(LDFLAGS) -lSDL3"; \
+	else \
+		echo "nk-ui-sdlr-selftest: SDL3 or SDL3_ttf headers not found; building the SKIP variant"; \
+	fi; \
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Ithird_party/clay $(SDL3_INC_FLAGS) $$sdl_defs \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(NK_UI_CORE_SRCS) src/ui/nk_ui_ttf.c src/ui/backend/nk_ui_sdlr.c tests/native/test_nk_ui_sdlr.c \
+		$$sdl_libs -lm -o $(BUILD_ROOT)/test_nk_ui_sdlr$(EXE_EXT) || exit 1; \
+	rc=0; $(BUILD_ROOT_RUN)/test_nk_ui_sdlr$(EXE_EXT) || rc=$$?; \
+	if [ $$rc -eq 77 ]; then echo "SKIP nk-ui-sdlr-selftest (exit 77; the reason is printed above)"; \
+	elif [ $$rc -ne 0 ]; then echo "FAIL nk-ui-sdlr-selftest (exit $$rc)"; exit $$rc; fi
+
+.PHONY: nk-ui-focus-selftest
+# The focus, input and glyph checks are SDL-free. The SDL_Event translation leg is built from
+# the same sources: with SDL3 (as found by build discovery) it translates real SDL events;
+# without, it compiles without SDL and exits 77, which this recipe reports as SKIP.
+NK_UI_FOCUS_SDL_READY := $(and $(filter-out none,$(SDL3_PROVIDER)),$(if $(strip $(SDL3_ERROR)),,yes))
+NK_UI_FOCUS_SDL_CFLAGS := $(if $(NK_UI_FOCUS_SDL_READY),-DNK_UI_WITH_SDL3 $(SDL3_INC_FLAGS),)
+NK_UI_FOCUS_SDL_LIBS := $(if $(NK_UI_FOCUS_SDL_READY),$(SDL3_LDFLAGS) -lSDL3,)
+nk-ui-focus-selftest:
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Ithird_party/clay \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(NK_UI_CORE_SRCS) src/ui/nk_ui_sdl_input.c tests/native/test_nk_ui_focus.c -lm \
+		-o $(BUILD_ROOT)/test_nk_ui_focus$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_nk_ui_focus$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Ithird_party/clay $(NK_UI_FOCUS_SDL_CFLAGS) \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(NK_UI_CORE_SRCS) src/ui/nk_ui_sdl_input.c tests/native/test_nk_ui_focus.c -lm \
+		$(NK_UI_FOCUS_SDL_LIBS) -o $(BUILD_ROOT)/test_nk_ui_focus_sdl$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_nk_ui_focus_sdl$(EXE_EXT) --sdl-input; rc=$$?; \
+		if [ "$$rc" = 77 ]; then echo "SKIP nk-ui-focus-selftest SDL translation leg (exit 77): SDL3 not found by build discovery"; \
+		elif [ "$$rc" != 0 ]; then exit "$$rc"; fi
+
+native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player clay-layout-selftest nk-ui-core-selftest nk-ui-sdlr-selftest nk-ui-focus-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" src/rt/pgf_public.c \
 		tests/native/test_pgf_public.c -o $(BUILD_ROOT)/test_pgf_public$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_pgf_public$(EXE_EXT)
