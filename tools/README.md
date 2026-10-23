@@ -217,6 +217,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `title_runtime_config.py` | Emit the build-local runtime title configuration consumed by the runtime. |
 | `enhancement_package.py` | Validate and verify enhancement package declarations. |
 | `stage_runtime_dlls.py` | Stage the host runtime library closure beside a built player or title package. |
+| `stage_install.py` | Stage a runnable player install (bin/, source/, icon) outside the build tree and write its desktop shortcut. |
 | `build_profile.py` | Hash and record the build identities the native build depends on. |
 | `build_graph_snapshot.py` | Read-only snapshot of the current Make build graph. |
 | `record_toolchain.py` | Record observed live toolchain identities using the doctor's detection functions. |
@@ -418,6 +419,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_package_cache.py` | Cache tiering, cache-key separation, in-checkout write refusal, bounded external JSON. |
 | `test_player_package_determinism.py` | Determinism and public-export exclusion of the player package route. |
 | `test_player_package_route.py` | The player package route on a source-owned fixture. |
+| `test_stage_install.py` | The staged player install layout, its ownership guard, icon and shortcut. |
 | `test_prep_fail_closed.py` | Fail-closed preparation regressions. |
 | `test_prereq_fetcher.py` | No-network tests for the pinned prerequisite download and install path. |
 | `test_profile_zero_e2e.py` | Manifest-driven production-route checks for the two profile-zero fixtures. |
