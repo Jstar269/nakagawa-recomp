@@ -497,6 +497,15 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         self.assertIn("MSYS2 still ships Python 3.14.8", "\n".join(self.block))
         self.assertIn('cygpath -u "$PYTHON"', "\n".join(self.block))
 
+    def test_flash0_python_path_assignment_is_separate_from_invocation(self) -> None:
+        step = "\n".join(self.steps["Build and run flash0 font device selftest"])
+        self.assertRegex(step, r"(?m)^\s+run: \|$")
+        self.assertIn(
+            'py="$(cygpath -u "$PYTHON")"\n'
+            '          PYTHONPATH=tools "$py" -m unittest -v test_flash0_font',
+            step,
+        )
+
     def test_every_serial_gate_runs_in_exactly_one_declared_part_with_its_command(self) -> None:
         self.assertEqual(len(self.parts), len(set(self.parts)))
         for name, command in _WINDOWS_SERIAL_GATES.items():

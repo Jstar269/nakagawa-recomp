@@ -1384,7 +1384,7 @@ jobs:
       - name: Build and run flash0 font device selftest
         if: matrix.part == 'selftests'
         shell: msys2 {0}
-        run: >-
+        run: |
           py="$(cygpath -u "$PYTHON")"
           PYTHONPATH=tools "$py" -m unittest -v test_flash0_font
 
