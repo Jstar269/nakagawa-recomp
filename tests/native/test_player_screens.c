@@ -101,6 +101,8 @@ static bool append_text(char *out, size_t cap, size_t *used,
     return true;
 }
 
+static const PlayerUiAboutModel *g_about_case;
+
 static bool append_case(char *out, size_t cap, size_t *used,
                         const char *name, NkUi *ui,
                         const PlayerUiLibraryModel *library,
@@ -116,8 +118,10 @@ static bool append_case(char *out, size_t cap, size_t *used,
     nk_ui_begin(ui, 0.0);
     if (library != NULL) {
         (void)player_ui_screen_library(ui, library);
-    } else {
+    } else if (title != NULL) {
         (void)player_ui_screen_title(ui, title);
+    } else {
+        (void)player_ui_screen_about(ui, g_about_case);
     }
     draw = nk_ui_end(ui);
     if (draw == NULL) return false;
@@ -229,8 +233,47 @@ static bool build_title_golden(char *out, size_t cap, size_t *used) {
     }
     CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_SAVE_FOLDER,
           "the save-folder action can keep focus");
+    {
+        /* The About page, with a fixed build date (SOURCE_DATE_EPOCH-style). */
+        char line[64];
+        PlayerUiAboutModel about;
+        player_ui_version_line(NK_PLAYER_VERSION, 1792713600LL, line, sizeof(line));
+        memset(&about, 0, sizeof(about));
+        about.version_line = line;
+        about.build_commit = "0123abc";
+        about.logical_width = 1280.0f;
+        about.logical_height = 800.0f;
+        g_about_case = &about;
+        nk_ui_focus(ui, PLAYER_UI_ID_ABOUT_NOTICES);
+        if (!append_case(out, cap, used, "about", ui, NULL, NULL)) {
+            nk_ui_destroy(ui);
+            return false;
+        }
+        CHECK(strstr(out, "\"v0.0.1 (10-23-2026)\"") != NULL,
+              "the About page draws the version line exactly");
+        g_about_case = NULL;
+    }
     nk_ui_destroy(ui);
     return true;
+}
+
+/* The version line: one version, the build date as MM-DD-YYYY in UTC from the
+   build epoch (SOURCE_DATE_EPOCH or the commit time), "dev build" without one. */
+static void test_version_line(void) {
+    char out[64];
+    player_ui_version_line(NK_PLAYER_VERSION, 1792713600LL, out, sizeof(out));
+    CHECK(strcmp(out, "v0.0.1 (10-23-2026)") == 0, "the owner's example line");
+    player_ui_version_line(NK_PLAYER_VERSION, 1792713600LL + 86399LL, out, sizeof(out));
+    CHECK(strcmp(out, "v0.0.1 (10-23-2026)") == 0, "the last second of the day is the same date");
+    player_ui_version_line(NK_PLAYER_VERSION, 1792713600LL + 86400LL, out, sizeof(out));
+    CHECK(strcmp(out, "v0.0.1 (10-24-2026)") == 0, "midnight UTC starts the next date");
+    player_ui_version_line(NK_PLAYER_VERSION, 951782400LL, out, sizeof(out));
+    CHECK(strcmp(out, "v0.0.1 (02-29-2000)") == 0, "a leap day");
+    player_ui_version_line(NK_PLAYER_VERSION, 0LL, out, sizeof(out));
+    CHECK(strcmp(out, "v0.0.1 (01-01-1970)") == 0, "the epoch itself");
+    player_ui_version_line(NK_PLAYER_VERSION, -1LL, out, sizeof(out));
+    CHECK(strcmp(out, "v0.0.1 (dev build)") == 0, "no build epoch says dev build");
+    CHECK(!player_ui_build_date(1792713600LL, out, 8u), "a short buffer is refused");
 }
 
 static bool write_golden(const char *path, const char *contents, size_t size) {
@@ -536,8 +579,10 @@ static bool capture_one(CaptureRig *rig, const char *name,
         nk_ui_begin(rig->ui, 37.0);
         if (library != NULL) {
             (void)player_ui_screen_library(rig->ui, library);
-        } else {
+        } else if (title != NULL) {
             (void)player_ui_screen_title(rig->ui, title);
+        } else {
+            (void)player_ui_screen_about(rig->ui, g_about_case);
         }
         draw = nk_ui_end(rig->ui);
     }
@@ -726,6 +771,24 @@ static int capture_screens(const char *directory) {
         "Nakagawa does not decrypt games; it uses decrypted files from your own copy.";
     nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
     if (!capture_one(&rig, "title-needs-setup", NULL, &title)) goto done;
+    {
+        char line[64];
+        PlayerUiAboutModel about;
+        player_ui_version_line(NK_PLAYER_VERSION, 1792713600LL, line, sizeof(line));
+        memset(&about, 0, sizeof(about));
+        about.version_line = line;
+        about.build_commit = "0123abc";
+        about.logical_width = 1280.0f;
+        about.logical_height = 800.0f;
+        g_about_case = &about;
+        nk_ui_focus(ui, PLAYER_UI_ID_TAB_ABOUT);
+        if (!capture_one(&rig, "about", NULL, NULL)) goto done;
+        capture_prefs(ui, NK_UI_PROMPT_LETTERS_A_SOUTH, false);
+        nk_ui_focus(ui, PLAYER_UI_ID_ABOUT_NOTICES);
+        if (!capture_one(&rig, "about-controller", NULL, NULL)) goto done;
+        capture_prefs(ui, NK_UI_PROMPT_KEYCAPS, false);
+        g_about_case = NULL;
+    }
     /* The same layouts at 150% on a 1920x1200 display, and in a small window. */
     if (!capture_scaled(directory, &text, "library-1920x1200-150pct", 1920, 1200, 1.5f,
                         k_titles, sizeof(k_titles) / sizeof(k_titles[0]), NULL,
@@ -778,6 +841,7 @@ int main(int argc, char **argv) {
     title[0] = '\0';
     test_router();
     test_screen_actions();
+    test_version_line();
     test_design_system_layout();
     CHECK(build_library_golden(library, sizeof(library), &library_size),
           "build Library screen dumps");

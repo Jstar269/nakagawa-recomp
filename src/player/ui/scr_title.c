@@ -8,6 +8,7 @@
 #include "player_ui_nk.h"
 #include "nk_ui_widgets.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #define TITLE_ID_ROOT 0x20000001u
@@ -118,10 +119,10 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
         return result;
     }
     {
-        static const NkUiSection sections[] = {{"Library", true}};
-        nk_ui_top_bar(ui, TITLE_ID_TOP, sections, 1u,
-                      nk_ui_input_label(nk_ui_prompt_style(ui)),
-                      nk_ui_prompt_style(ui) != NK_UI_PROMPT_KEYCAPS);
+        PlayerUiActionKind tab = player_ui_top_bar(ui, TITLE_ID_TOP, PLAYER_UI_ROUTE_TITLE);
+        if (tab != PLAYER_UI_ACTION_NONE) {
+            result = action(tab, model->title_index, PLAYER_UI_PRIMARY_NONE);
+        }
     }
 
     layout = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_grow(), NK_UI_DETAIL_GAP);
@@ -266,6 +267,151 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
         };
         nk_ui_prompt_bar(ui, TITLE_ID_PROMPTS,
                          "Your disc stays on this PC. Nothing is copied out or uploaded.",
+                         prompts, sizeof(prompts) / sizeof(prompts[0]));
+    }
+    nk_ui_end_container(ui);
+    return result;
+}
+
+/* ---- About -------------------------------------------------------------------
+   The page a viewer can read in one look and explain in one sentence: what the
+   program is, which build this is, its licence and the notices, the credits,
+   and that the project is independent. */
+
+#define ABOUT_ID_ROOT 0x50000001u
+#define ABOUT_ID_TOP 0x50000010u
+#define ABOUT_ID_BODY 0x50000020u
+#define ABOUT_ID_COLUMN 0x50000021u
+#define ABOUT_ID_HEAD 0x50000022u
+#define ABOUT_ID_MARK 0x50000023u
+#define ABOUT_ID_NAMES 0x50000024u
+#define ABOUT_ID_NAME 0x50000025u
+#define ABOUT_ID_VERSION 0x50000026u
+#define ABOUT_ID_LEAD 0x50000027u
+#define ABOUT_ID_CARDS 0x50000028u
+#define ABOUT_ID_LICENSE 0x50000029u
+#define ABOUT_ID_CREDITS 0x5000002Au
+#define ABOUT_ID_NOTICE 0x5000002Bu
+#define ABOUT_ID_LINK 0x5000002Cu
+#define ABOUT_ID_BUILD 0x5000002Du
+#define ABOUT_ID_PROMPTS 0x50000040u
+#define ABOUT_ID_WAVES 0x50000050u
+
+static void about_lines(NkUi *ui, NkUiId base, const char *const *lines, size_t count,
+                        NkUiTypeRole role, uint32_t rgba) {
+    for (size_t i = 0u; i < count; ++i) {
+        nk_ui_text_role(ui, (NkUiId)(base + (NkUiId)i), lines[i], role, rgba);
+    }
+}
+
+PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model) {
+    static const char *const credits[] = {
+        "Began as a fork of sal063's PSP Recompilation Project (GPL-2.0-or-later).",
+        "Carries PPSSPP lineage, FFmpeg's ATRAC3 decoders and the Clay layout library.",
+        "Drawn with SDL and SDL_ttf, and set in Chakra Petch, Geist and Noto Sans JP."
+    };
+    const NkUiTheme *theme;
+    NkUiLayout layout;
+    PlayerUiAction result = action(PLAYER_UI_ACTION_NONE, 0u, PLAYER_UI_PRIMARY_NONE);
+    float width;
+    float height;
+    if (ui == NULL || model == NULL) return result;
+    theme = nk_ui_theme(ui);
+    width = model->logical_width > 80.0f ? model->logical_width : 1280.0f;
+    height = model->logical_height > 80.0f ? model->logical_height : 800.0f;
+
+    (void)nk_ui_waves_element(ui, ABOUT_ID_WAVES, (NkUiRect){0.0f, 0.0f, width, height}, 0u);
+    layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_grow(), 0.0f);
+    if (!nk_ui_begin_container(ui, ABOUT_ID_ROOT, &layout, NULL)) {
+        return result;
+    }
+    {
+        PlayerUiActionKind tab = player_ui_top_bar(ui, ABOUT_ID_TOP, PLAYER_UI_ROUTE_ABOUT);
+        if (tab != PLAYER_UI_ACTION_NONE) result = action(tab, 0u, PLAYER_UI_PRIMARY_NONE);
+    }
+    layout = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_grow(), 0.0f);
+    layout.align_x = NK_UI_ALIGN_CENTER;
+    layout.padding_top = NK_UI_SPACE_8;
+    layout.padding_left = layout.padding_right = NK_UI_GUTTER;
+    if (nk_ui_begin_container(ui, ABOUT_ID_BODY, &layout, NULL)) {
+        float column = width - 2.0f * NK_UI_GUTTER;
+        if (column > 880.0f) column = 880.0f;
+        layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_fixed(column), sizing_fit(),
+                             NK_UI_SPACE_6);
+        if (nk_ui_begin_container(ui, ABOUT_ID_COLUMN, &layout, NULL)) {
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
+                                         NK_UI_SPACE_6);
+            row.align_y = NK_UI_ALIGN_CENTER;
+            if (nk_ui_begin_container(ui, ABOUT_ID_HEAD, &row, NULL)) {
+                NkUiLayout names = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(),
+                                               sizing_fit(), NK_UI_SPACE_2);
+                nk_ui_shapes(ui, ABOUT_ID_MARK, sizing_fixed(72.0f), sizing_fixed(72.0f),
+                             nk_ui_art_n1_mark());
+                if (nk_ui_begin_container(ui, ABOUT_ID_NAMES, &names, NULL)) {
+                    nk_ui_text_role(ui, ABOUT_ID_NAME, "NAKAGAWA RECOMP", NK_UI_TYPE_DISPLAY_XL,
+                                    theme->paper);
+                    nk_ui_text_role(ui, ABOUT_ID_VERSION,
+                                    safe_text(model->version_line, "v" NK_PLAYER_VERSION),
+                                    NK_UI_TYPE_LABEL_L, theme->accent_dark);
+                    nk_ui_end_container(ui);
+                }
+                nk_ui_end_container(ui);
+            }
+            nk_ui_text_role(ui, ABOUT_ID_LEAD,
+                            "A PSP static recompiler: your own game, recompiled to run natively "
+                            "on your PC. Nothing is downloaded, and no game data is included.",
+                            NK_UI_TYPE_BODY_L, theme->muted);
+            row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_4);
+            if (nk_ui_begin_container(ui, ABOUT_ID_CARDS, &row, NULL)) {
+                if (nk_ui_card_begin(ui, ABOUT_ID_LICENSE, sizing_fixed(300.0f), sizing_grow(),
+                                     NK_UI_SPACE_3)) {
+                    nk_ui_eyebrow(ui, 0x50000200u, "Licence");
+                    nk_ui_text_role(ui, 0x50000201u, "GPL-3.0-or-later",
+                                    NK_UI_TYPE_HEADING, theme->paper);
+                    nk_ui_text_role(ui, 0x50000202u,
+                                    "Free software. Third-party parts keep their own licences.",
+                                    NK_UI_TYPE_CAPTION, theme->muted);
+                    if (nk_ui_button(ui, PLAYER_UI_ID_ABOUT_NOTICES, "Third-party notices", 0u)) {
+                        result = action(PLAYER_UI_ACTION_OPEN_NOTICES, 0u, PLAYER_UI_PRIMARY_NONE);
+                    }
+                    nk_ui_end_container(ui);
+                }
+                if (nk_ui_card_begin(ui, ABOUT_ID_CREDITS, sizing_grow(), sizing_grow(),
+                                     NK_UI_SPACE_2)) {
+                    nk_ui_eyebrow(ui, 0x50000300u, "Credits");
+                    about_lines(ui, 0x50000310u, credits,
+                                sizeof(credits) / sizeof(credits[0]), NK_UI_TYPE_BODY_S,
+                                theme->paper);
+                    nk_ui_text_role(ui, 0x500003F0u,
+                                    "The full list is in CREDITS.md and NOTICE.md.",
+                                    NK_UI_TYPE_FOOTNOTE, theme->dim);
+                    nk_ui_end_container(ui);
+                }
+                nk_ui_end_container(ui);
+            }
+            nk_ui_text_role(ui, ABOUT_ID_NOTICE,
+                            "Not affiliated with or endorsed by Sony Interactive Entertainment. "
+                            "PSP is a trademark of its owner.",
+                            NK_UI_TYPE_CAPTION, theme->muted);
+            nk_ui_text_role(ui, ABOUT_ID_LINK, "github.com/Jstar269/nakagawa-recomp",
+                            NK_UI_TYPE_DATA, theme->paper);
+            if (model->build_commit != NULL && model->build_commit[0] != '\0') {
+                char build[64];
+                (void)snprintf(build, sizeof(build), "Source commit %s", model->build_commit);
+                nk_ui_text_role(ui, ABOUT_ID_BUILD, build, NK_UI_TYPE_FOOTNOTE, theme->dim);
+            }
+            nk_ui_end_container(ui);
+        }
+        nk_ui_end_container(ui);
+    }
+    {
+        static const NkUiPromptItem prompts[] = {
+            {NK_UI_PROMPT_ACT_MOVE, "Move"},
+            {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
+            {NK_UI_PROMPT_ACT_BACK, "Back"}
+        };
+        nk_ui_prompt_bar(ui, ABOUT_ID_PROMPTS,
+                         "Nakagawa Recomp is free software under the GNU GPL.",
                          prompts, sizeof(prompts) / sizeof(prompts[0]));
     }
     nk_ui_end_container(ui);
