@@ -6,6 +6,8 @@
 #include "player_state.h"
 #include "nk_platform.h"
 #include "nk_ui_input.h"
+#include "nk_ui_theme.h"
+#include "nk_ui_widgets.h"
 #include "backend/nk_ui_sdlr.h"
 
 #include <SDL3/SDL.h>
@@ -102,28 +104,26 @@ static bool player_ui_add_font(NkUiTtf *ttf, int font, const char *base_path,
     return false;
 }
 
+/* The design system's eight font slots (nk_ui_theme.h). Every face falls back
+   to Geist for Latin it lacks and to Noto Sans JP for Japanese titles. */
 static bool player_ui_register_fonts(NkUiTtf *ttf, const char *base_path,
                                      char *error, size_t error_size) {
-    if (!player_ui_add_font(ttf, 0, base_path,
-                            "assets/fonts/ui/geist/Geist-Regular.ttf") ||
-        !player_ui_add_font(ttf, 1, base_path,
-                            "assets/fonts/ui/chakra-petch/ChakraPetch-SemiBold.ttf") ||
-        !player_ui_add_font(ttf, 2, base_path,
-                            "assets/fonts/ui/geist-mono/GeistMono-Regular.ttf") ||
-        !player_ui_add_font(ttf, 3, base_path,
-                            "assets/fonts/ui/noto-sans-jp/NotoSansJP-Regular.ttf")) {
-        player_ui_set_error(error, error_size,
-                            "The next UI could not load the bundled UI fonts.");
-        return false;
+    for (int font = 0; font < NK_UI_FONT_COUNT; ++font) {
+        if (!player_ui_add_font(ttf, font, base_path, nk_ui_font_path(font))) {
+            player_ui_set_error(error, error_size,
+                                "The next UI could not load the bundled UI fonts.");
+            return false;
+        }
     }
-    if (!nk_ui_ttf_set_fallback(ttf, 0, 3) ||
-        !nk_ui_ttf_set_fallback(ttf, 1, 0) ||
-        !nk_ui_ttf_set_fallback(ttf, 1, 3) ||
-        !nk_ui_ttf_set_fallback(ttf, 2, 0) ||
-        !nk_ui_ttf_set_fallback(ttf, 2, 3)) {
-        player_ui_set_error(error, error_size,
-                            "The next UI could not configure the font fallback chain.");
-        return false;
+    for (int font = 0; font < NK_UI_FONT_COUNT; ++font) {
+        if (font == NK_UI_FONT_CJK) continue;
+        if ((font != NK_UI_FONT_BODY &&
+             !nk_ui_ttf_set_fallback(ttf, font, NK_UI_FONT_BODY)) ||
+            !nk_ui_ttf_set_fallback(ttf, font, NK_UI_FONT_CJK)) {
+            player_ui_set_error(error, error_size,
+                                "The next UI could not configure the font fallback chain.");
+            return false;
+        }
     }
     return true;
 }
@@ -276,12 +276,21 @@ static const char *player_ui_library_status_word(const GameRecord *game,
     return "Needs setup";
 }
 
+/* Status colours follow the design system: Ready teal, experimental and
+   untested info blue (with their own shapes), needs setup warning gold. */
 static uint32_t player_ui_library_status_color(const GameRecord *game,
                                               bool package_ready) {
     if (package_ready) return PLAYER_UI_READY;
-    if (game != NULL && game->is_experimental &&
-        !player_ui_has_seen_boot(game)) return PLAYER_UI_INFO;
+    if (game != NULL && game->is_experimental) return PLAYER_UI_INFO;
     return PLAYER_UI_WARNING;
+}
+
+/* The project's own showcase demos carry project-drawn pictures. */
+static unsigned player_ui_art_kind(const GameRecord *game) {
+    if (game == NULL) return NK_UI_ART_NONE;
+    if (strcmp(game->title_id, "showcase-scene-v1") == 0) return NK_UI_ART_SHOWCASE_SCENE;
+    if (strcmp(game->title_id, "showcase-breakout-v1") == 0) return NK_UI_ART_SHOWCASE_BREAKOUT;
+    return NK_UI_ART_NONE;
 }
 
 static const char *player_ui_library_status_marker(const GameRecord *game,
@@ -333,6 +342,8 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
             : "";
     out->status_rgba = player_ui_library_status_color(game, package_ready);
     out->status_marker = player_ui_library_status_marker(game, package_ready);
+    out->art_kind = player_ui_art_kind(game);
+    out->badge = out->art_kind != NK_UI_ART_NONE ? "Showcase demo" : "Your disc";
     out->save_folder_enabled = game->disc_id[0] != '\0';
     out->primary_action_enabled = false;
     out->primary_action = PLAYER_UI_PRIMARY_NONE;
@@ -376,17 +387,6 @@ static void player_ui_fill_titles(PlayerUiNk *player, const PlayerApp *app,
     }
 }
 
-static size_t player_ui_page_size(float width, float height, size_t *columns_out) {
-    size_t columns = 1u;
-    size_t rows = 1u;
-    if (width >= 1050.0f) columns = 4u;
-    else if (width >= 760.0f) columns = 3u;
-    else if (width >= 500.0f) columns = 2u;
-    if (height >= 760.0f) rows = 3u;
-    else if (height >= 560.0f) rows = 2u;
-    if (columns_out != NULL) *columns_out = columns;
-    return columns * rows;
-}
 
 static size_t player_ui_focused_title_index(NkUiId focused, size_t count) {
     uint32_t value = focused;
@@ -433,6 +433,14 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     player->viewport.ui_scale_pct = 0;
     player->viewport.text_size_pct = 100;
     scale = nk_ui_scale_for_viewport(&player->viewport);
+    {
+        /* Prompts follow the last input device ("Match input"). */
+        NkUiPrefs prefs;
+        memset(&prefs, 0, sizeof(prefs));
+        prefs.prompt_style = nk_ui_prompt_style_for_family(
+            nk_ui_input_last_family(&player->input.input));
+        nk_ui_set_prefs(player->ui, &prefs);
+    }
     point_to_pixel = window_w > 0 ? (float)pixel_w / (float)window_w
                                   : display_scale;
     nk_ui_sdl_input_set_event_scale(&player->input,
@@ -454,9 +462,12 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     if (route == PLAYER_UI_ROUTE_LIBRARY) {
         size_t count = app->game_count > 0 ? (size_t)app->game_count : 0u;
         size_t columns = 1u;
-        size_t page_size = player_ui_page_size(scale.logical_w,
-                                               scale.logical_h, &columns);
+        size_t page_size = player_ui_library_page_size(scale.logical_w,
+                                                       scale.logical_h, &columns);
+        size_t slots;
         if (count > PLAYER_UI_TITLE_CAP) count = PLAYER_UI_TITLE_CAP;
+        /* The grid ends with the add card, so it has one slot more than titles. */
+        slots = count > 0u ? count + 1u : 0u;
         player_ui_fill_titles(player, app, count);
         {
             size_t focused_index = player_ui_focused_title_index(
@@ -466,11 +477,15 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 player->library_page = focused_index / page_size;
             }
         }
-        if (count == 0u) player->library_page = 0u;
-        else if (player->library_page > (count - 1u) / page_size) {
-            player->library_page = (count - 1u) / page_size;
+        if (nk_ui_focused(player->ui) == PLAYER_UI_ID_LIBRARY_ADD && slots > 0u) {
+            player->library_page = (slots - 1u) / page_size;
+        }
+        if (slots == 0u) player->library_page = 0u;
+        else if (player->library_page > (slots - 1u) / page_size) {
+            player->library_page = (slots - 1u) / page_size;
         }
         PlayerUiLibraryModel model;
+        memset(&model, 0, sizeof(model));
         model.titles = player->titles;
         model.title_count = count;
         model.page_index = player->library_page;
@@ -479,8 +494,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         model.selected_index = app->selected_game_index >= 0
             ? (size_t)app->selected_game_index : 0u;
         model.logical_width = scale.logical_w;
-        if (count > page_size) {
-            size_t page_count = (count + page_size - 1u) / page_size;
+        model.logical_height = scale.logical_h;
+        if (slots > page_size) {
+            size_t page_count = (slots + page_size - 1u) / page_size;
             snprintf(player->library_page_label,
                      sizeof(player->library_page_label), "Page %zu of %zu",
                      player->library_page + 1u, page_count);
@@ -499,7 +515,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             if (player->library_page > 0u) --player->library_page;
             action.kind = PLAYER_UI_ACTION_NONE;
         } else if (action.kind == PLAYER_UI_ACTION_PAGE_NEXT) {
-            if ((player->library_page + 1u) * page_size < count) {
+            if ((player->library_page + 1u) * page_size < slots) {
                 ++player->library_page;
             }
             action.kind = PLAYER_UI_ACTION_NONE;
@@ -514,8 +530,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             player_ui_fill_titles(player, app, (size_t)app->game_count >
                                   PLAYER_UI_TITLE_CAP ? PLAYER_UI_TITLE_CAP :
                                   (size_t)app->game_count);
+            memset(&model, 0, sizeof(model));
             model.title = &player->titles[index];
             model.title_index = (size_t)index;
+            model.logical_width = scale.logical_w;
+            model.logical_height = scale.logical_h;
             action = player_ui_screen_title(player->ui, &model);
             if (action.kind == PLAYER_UI_ACTION_BACK) {
                 nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));

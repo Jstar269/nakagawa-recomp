@@ -331,8 +331,10 @@ static int probe_frame(Target *target, const NkUiDrawList *list, uint32_t page, 
     (void)label;
     for (i = 0; i < list->ncmd; ++i) {
         const NkUiDrawCmd *cmd = &list->cmd[i];
-        if (cmd->kind == NK_UI_DRAW_BORDER && cmd->rgba_pm == theme->accent_dark) {
-            /* The focus-style border is opaque accent along its straight strips. */
+        if (cmd->kind == NK_UI_DRAW_BORDER && cmd->rgba_pm == theme->accent_dark &&
+            cmd->bounds[2] - cmd->bounds[0] != cmd->bounds[3] - cmd->bounds[1]) {
+            /* The focus-style border is opaque accent along its straight strips
+               (the square commands are its antialiased corner arcs). */
             int cx = (cmd->bounds[0] + cmd->bounds[2]) / 2;
             int cy = (cmd->bounds[1] + cmd->bounds[3]) / 2;
             CHECK(color_close(target_pixel(target, cx, cy), theme->accent_dark, 1),
@@ -543,8 +545,10 @@ static int test_scissor_and_custom(void) {
           "unclipped blue rect");
     CHECK(nk_ui_draw_add_text(&buffer, (NkUiPixelRect){0, 0, 20, 20}, "A", 1, 0, 16, 0xFFFFFFFFu, 4u),
           "text with a backend that cannot draw it");
-    CHECK(nk_ui_draw_add_custom(&buffer, NK_UI_CUSTOM_WAVES, &waves, (NkUiPixelRect){0, 0, 8, 8}, 5u),
+    CHECK(nk_ui_draw_add_custom(&buffer, NK_UI_CUSTOM_WAVES, &waves, (NkUiPixelRect){48, 0, 64, 16}, 5u),
           "waves custom command");
+    CHECK(nk_ui_draw_add_custom(&buffer, NK_UI_CUSTOM_NONE + 7u, &waves, (NkUiPixelRect){0, 0, 4, 4}, 6u),
+          "unknown custom command");
     target_clear(&target, black);
     CHECK(nk_ui_sdlr_render(backend, &buffer.list), "render the scissor list");
     CHECK(target_pixel(&target, 20, 20) == red, "inside the scissor is drawn");
@@ -554,7 +558,9 @@ static int test_scissor_and_custom(void) {
     CHECK(target_pixel(&target, 45, 45) == blue, "drawing after the scissor ends is unclipped");
     CHECK(target_pixel(&target, 2, 2) == black, "no text without a text backend");
     nk_ui_sdlr_get_stats(backend, &stats);
-    CHECK(stats.custom_skipped == 1u, "the waves command is skipped and counted");
+    CHECK(stats.custom_skipped == 1u, "an unknown custom command is skipped and counted");
+    CHECK(stats.waves_drawn == 1u && stats.waves_rendered == 1u,
+          "the waves command is drawn through the CPU reference");
     CHECK(!SDL_RenderClipEnabled(target.renderer), "the renderer's clip state is restored");
     CHECK(!nk_ui_sdlr_render(backend, NULL) && !nk_ui_sdlr_render(NULL, &buffer.list),
           "NULL arguments are refused");
@@ -597,6 +603,59 @@ static int test_rounded_corner_fringe(void) {
     return 1;
 }
 
+static int test_rounded_border_and_waves(void) {
+    Target target;
+    NkUiSdlr *backend;
+    NkUiSdlrStats stats;
+    NkUiDrawBuffer buffer;
+    NkUiWavesCommand waves;
+    NkUiWavePalette palette;
+    const float radii[4] = {12.0f, 12.0f, 12.0f, 12.0f};
+    uint32_t brightest = 0u;
+    int y;
+    memset(&buffer, 0, sizeof(buffer));
+    CHECK(target_open(&target, 64, 64), "open a render target");
+    backend = nk_ui_sdlr_create(target.renderer, NULL);
+    CHECK(backend != NULL, "create the backend");
+    /* A rounded 3 px border: straight runs between the corners, a quarter ring
+       at each corner, and the inside left alone. */
+    CHECK(nk_ui_draw_add_border_corners(&buffer, (NkUiRect){8.0f, 8.0f, 48.0f, 48.0f}, 1.0f,
+                                        3.0f, radii, 0xFFFFFFFFu, 1u),
+          "rounded white border");
+    target_clear(&target, 0x000000FFu);
+    CHECK(nk_ui_sdlr_render(backend, &buffer.list), "render the rounded border");
+    CHECK(target_pixel(&target, 32, 9) == 0xFFFFFFFFu, "the top run is solid");
+    CHECK(target_pixel(&target, 9, 32) == 0xFFFFFFFFu, "the left run is solid");
+    CHECK(target_pixel(&target, 32, 32) == 0x000000FFu, "the inside stays clear");
+    CHECK(target_pixel(&target, 8, 8) == 0x000000FFu, "the cut corner stays background");
+    CHECK(target_pixel(&target, 12, 12) != 0x000000FFu, "the corner ring is drawn");
+    nk_ui_draw_buffer_reset(&buffer);
+
+    /* The waves: drawn through the CPU reference, brightest in the lower part,
+       capped, and not re-rendered for an unchanged command. */
+    CHECK(nk_ui_waves_palette(0u, &palette), "base wave palette");
+    nk_ui_waves_command(37.0, 64.0f, 64.0f, &palette, &waves);
+    CHECK(nk_ui_draw_add_custom(&buffer, NK_UI_CUSTOM_WAVES, &waves,
+                                (NkUiPixelRect){0, 0, 64, 64}, 2u), "waves command");
+    target_clear(&target, 0x000000FFu);
+    CHECK(nk_ui_sdlr_render(backend, &buffer.list), "render the waves");
+    CHECK(nk_ui_sdlr_render(backend, &buffer.list), "render the same waves again");
+    for (y = 0; y < 64; ++y) {
+        uint32_t pixel = target_pixel(&target, 32, y);
+        if ((pixel >> 16 & 0xFFu) > (brightest >> 16 & 0xFFu)) brightest = pixel;
+    }
+    CHECK(((brightest >> 16) & 0xFFu) > 0u, "the waves add light over the background");
+    CHECK(((brightest >> 16) & 0xFFu) < 0x60u, "the waves stay dim (alpha cap)");
+    CHECK(target_pixel(&target, 32, 1) == 0x000000FFu, "the top of the window stays clear");
+    nk_ui_sdlr_get_stats(backend, &stats);
+    CHECK(stats.waves_drawn == 2u && stats.waves_rendered == 1u,
+          "an unchanged waves command reuses its texture");
+    nk_ui_draw_buffer_destroy(&buffer);
+    nk_ui_sdlr_destroy(backend);
+    target_close(&target);
+    return 1;
+}
+
 static int test_availability(void) {
     CHECK(nk_ui_sdlr_available() && nk_ui_ttf_available(), "this build includes both halves");
     CHECK(nk_ui_sdlr_create(NULL, NULL) == NULL, "no renderer, no backend");
@@ -620,7 +679,10 @@ int main(void) {
         printf("SKIP nk_ui_sdlr: SDL3_ttf is not usable here: %s\n", nk_ui_ttf_last_error());
         return EXIT_SKIP;
     }
+    /* Slot 6 is the design system's label face (button labels); the fixture
+       Latin face stands in for it here. */
     if (!nk_ui_ttf_add_font(g_ttf, 0, GUDEA_PATH) || !nk_ui_ttf_add_font(g_ttf, 1, MPLUS_PATH) ||
+        !nk_ui_ttf_add_font(g_ttf, NK_UI_FONT_MONO_MEDIUM, GUDEA_PATH) ||
         !nk_ui_ttf_set_fallback(g_ttf, 0, 1)) {
         printf("FAIL registering fixture fonts: %s\n", nk_ui_ttf_last_error());
         nk_ui_ttf_destroy(g_ttf);
@@ -639,6 +701,7 @@ int main(void) {
     RUN(test_ttf_japanese_shaping);
     RUN(test_scissor_and_custom);
     RUN(test_rounded_corner_fringe);
+    RUN(test_rounded_border_and_waves);
     RUN(test_snapshots_and_atlas);
     RUN(test_atlas_rebuild_on_scale_change);
     RUN(test_atlas_page_overflow);

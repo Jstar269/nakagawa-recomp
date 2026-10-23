@@ -65,6 +65,11 @@ typedef struct {
     PlayerUiPrimaryAction primary_action;
     bool primary_action_enabled;
     bool save_folder_enabled;
+    /* Presentation only (zero is fine): the project-drawn picture for the
+       project's own showcase demos (an NkUiArtKind), and the badge over the art
+       (NULL: "Your disc"). */
+    unsigned art_kind;
+    const char *badge;
 } PlayerUiTitle;
 
 typedef struct {
@@ -76,11 +81,14 @@ typedef struct {
     size_t selected_index;
     float logical_width;
     const char *page_label;
+    float logical_height;   /* 0 selects 800 */
 } PlayerUiLibraryModel;
 
 typedef struct {
     const PlayerUiTitle *title;
     size_t title_index;
+    float logical_width;    /* 0 selects 1280 */
+    float logical_height;   /* 0 selects 800 */
 } PlayerUiTitleModel;
 
 enum {
@@ -107,6 +115,12 @@ PlayerUiRoute nk_ui_router_current(const NkUiRouter *router);
 size_t nk_ui_router_depth(const NkUiRouter *router);
 void nk_ui_router_set_focus(NkUiRouter *router, NkUiId id);
 NkUiId nk_ui_router_take_focus_restore(NkUiRouter *router);
+
+/* Library grid for a logical window size: the number of columns that fit at the
+   minimum tile width, and the number of grid slots (titles plus the add card)
+   one page shows. */
+size_t player_ui_library_page_size(float logical_width, float logical_height,
+                                   size_t *columns_out);
 
 PlayerUiAction player_ui_screen_library(NkUi *ui,
                                         const PlayerUiLibraryModel *model);

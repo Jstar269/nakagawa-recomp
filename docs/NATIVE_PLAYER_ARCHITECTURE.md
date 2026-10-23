@@ -99,9 +99,9 @@ The owner decided on 2026-10-21 that the native player's UI is written in C on S
 
 Not done yet:
 
-- **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** The native layout selftest is the only current build target that compiles it; no player UI call sites exist yet.
-- **No UI implementation has started.** Implementation begins only after the owner reviews the interface design.
-- The launcher, overlay and settings UI described above is a target. The current native slice does not use Clay.
+- **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** `src/ui/` (nk_ui) wraps it with the theme, text, focus, input and SDL_Renderer layers.
+- **Only Library and Title detail are built on it**, behind the opt-in `--ui=next` flag (or `NK_UI=next`), drawn with the design system in section 8. The default UI is still `src/player/ui_renderer.c` until the cut-over lane.
+- Settings, first run, error dialogs and the in-game overlay on nk_ui are targets, specified in section 8.
 
 ---
 
@@ -280,6 +280,9 @@ Selecting the right open-source fonts for nakagawa-recomp depends on whether you
 
 ### Launcher, Overlay & Settings UI (Clay on SDL3, planned)
 
+The player ships Chakra Petch, Geist, Geist Mono and Noto Sans JP (`assets/fonts/ui/`, section 8); the faces below
+were the initial survey.
+
 - [Inter](https://fonts.google.com/specimen/Inter) (SIL OFL): Optimized for screen interfaces and high pixel density. Remains sharp at small sizes (10px–14px) in configuration dialogs, graphics toggles, and controller binding menus.
 - [Roboto Flex](https://fonts.google.com/specimen/Roboto+Flex) (SIL OFL): Flexible variable font that allows granular control over weight, width, and optical size across windowed or full-screen modes.
 
@@ -292,3 +295,251 @@ Selecting the right open-source fonts for nakagawa-recomp depends on whether you
 
 - [Kosugi Maru](https://fonts.google.com/specimen/Kosugi+Maru) (Apache 2.0): A rounded Japanese gothic typeface designed for interface readability, matching original PSP system fonts.
 - [Zen Maru Gothic](https://fonts.google.com/specimen/Zen+Maru+Gothic) (SIL OFL): A smooth rounded Japanese font that scales well for translated dialogue boxes and Japanese audio/text toggles.
+
+## 8. Player UI design system
+
+> This section is the design spec the player UI lanes build against. It is meant to move to its own
+> page, `docs/PLAYER_UI_DESIGN.md`, once that path is admitted; until then this is its home.
+
+The visual spec for the native player's launcher UI (`--ui=next`, lanes C5-C10). It is the reference every
+screen lane builds against: Library and Title detail (C5, built), Settings (C6), first run (C7) and error dialogs
+(C8). The tokens and components it names live in code:
+
+| Layer | File | Holds |
+| --- | --- | --- |
+| Tokens | `src/ui/nk_ui_theme.h`, `src/ui/nk_ui_theme.c` | colours, spacing, radii, borders, control sizes, layout grid, motion, font slots, type scale |
+| Components | `src/ui/nk_ui_widgets.h`, `src/ui/nk_ui_widgets.c` | button, game card, add card, hero, status pill, tag, badge, eyebrow, card, divider, top bar, prompt bar, vector art |
+| Core | `src/ui/nk_ui.h`, `src/ui/nk_ui.c` | layout (Clay), text runs, the focus ring, frame text storage, custom elements |
+| Screens | `src/player/ui/scr_*.c` | compose components; never pick raw colours or sizes |
+
+It follows the owner's interactive prototype (version 8) and the "Player" boards of the design canvas, both private.
+Where this page and the code disagree, the code is current and this page is updated in the same change.
+
+### Principles
+
+- **One dark theme.** Ground `#0B0F14`; every surface steps up in colour, not with shadows.
+- **Controller first.** Every action is reachable with a D-pad and two buttons, focus is always visible, and the
+  prompt bar names the buttons that work on this screen. Nothing needs a pointer or hover.
+- **Status is a word and a shape, then a colour:** `●` Ready, `▲` needs setup, `◆` experimental, `?` untested,
+  `✕` unsupported. Colour never carries meaning alone.
+- **Honest copy.** Words describe what the build does today. Compatibility words come from data
+  (`docs/COMPATIBILITY.md`), never from layout code.
+- **Bring your own game.** No game data, art, music or fonts ship with the player; placeholders say where the
+  user's own disc art will appear. Nothing is downloaded or uploaded.
+- **No console trade dress.** No PSP system icons, sounds or names, no XMB-style horizontal category bar. The
+  waves, the palette and the seasonal arc are the project's own.
+- **No key-file UI anywhere.** The player does not decrypt games (#1187). No screen, step, setting, dialog or path
+  row asks for, finds or names a key file. A disc whose program is encrypted gets the plain explanation the host
+  already supplies ("Nakagawa does not decrypt games; it uses decrypted files from your own copy").
+
+### Tokens
+
+#### Colour
+
+| Token (`NkUiTheme`) | Value | Use |
+| --- | --- | --- |
+| `surface` | `#0B0F14` | window ground, add card |
+| `surface_raised` | `#121821` | cards, panels, prompt bar |
+| `surface_high` | `#18202B` | chips, focused secondary button, focused row |
+| `line` | `#1C232D` | hairlines, card edges |
+| `line_strong` | `#2E3846` | control and chip borders, focused card edge |
+| `paper` | `#F5F7FA` | primary text |
+| `muted` | `#9AA4B2` | secondary text (7.6:1 on the ground) |
+| `dim` | `#6B7684` | disabled text and footnotes only (4.2:1, not for body text) |
+| `accent_dark` | `#D7F24A` | focus ring, primary button, active tab rule, toggles, sliders, progress |
+| `ink` | `#10151C` | text on an accent fill (14.6:1) |
+| `accent_pressed` | `#B4D134` | pressed primary button |
+| `pressed` / `pressed_danger` | `#222C39` / `#2A1A1C` | pressed secondary / danger button |
+| `ready` | `#2DD4BF` | Ready; never the accent |
+| `warning` | `#DBB024` | needs setup |
+| `info` | `#6CB6FF` | experimental, untested, informational notes |
+| `error` | `#FF7B72` | unsupported, failed, remove |
+| `scrim` | ground at 78% | behind dialogs and the in-game overlay |
+| `art_scrim` | ground at 72% | under a badge on title art |
+| `art_label` | `#C9D6E3` | captions over title art |
+| `placeholder` | `#3A4552` | art placeholder outline, inactive glyph dots |
+| `capture` | `#1F2613` | a row waiting for a button press (C6 controls) |
+| `accent_light` | `#6E9600` | accent on a light surface (reserved; the UI has none) |
+
+#### Spacing, radii, borders
+
+- Spacing is a 4 px scale: `NK_UI_SPACE_1` 4, `_2` 8, `_3` 12, `_4` 16, `_5` 20, `_6` 24, `_7` 32, `_8` 48, `_9` 64.
+- Radii: chip 4 (pills, badges), control 8 (buttons, rows), tile 12 (cards, panels, hero), dialog 16, pill (full).
+- Borders are 1 px hairlines (`NK_UI_BORDER_HAIRLINE`). Rounded borders draw straight runs plus antialiased quarter
+  rings; every edge rounds to whole device pixels at every UI scale.
+- Elevation is a colour step plus an edge: 0 page; 1 card (`surface_raised` + `line`); 2 control or focused row
+  (`surface_high` + `line_strong`); 3 dialog (`surface_raised` + `line_strong` over the scrim).
+
+#### Type
+
+Fonts are SIL OFL 1.1 files in `assets/fonts/ui/`, registered in eight slots (`NK_UI_FONT_*`); every face falls
+back to Geist and then Noto Sans JP. Sizes are logical px; tracking is CSS letter-spacing (it follows every
+character).
+
+| Role (`NK_UI_TYPE_*`) | Face | Size / line | Tracking | Use |
+| --- | --- | --- | --- | --- |
+| `DISPLAY_XL` | Chakra Petch Bold, caps | 40 / 44 | 0.04em | first-run headline |
+| `DISPLAY` | Chakra Petch Bold, caps | 30 / 32 | 0.04em | screen names (LIBRARY, SETTINGS) |
+| `WORDMARK` | Chakra Petch Bold, caps | 18 / 20 | 0.06em | NAKAGAWA RECOMP in the top bar |
+| `TITLE_XL` | Geist SemiBold | 30 / 34 | 0 | a game's name on its page |
+| `TITLE` | Geist SemiBold | 22 / 28 | 0 | dialog and panel titles |
+| `HEADING` | Geist SemiBold | 17 / 24 | 0 | card headings |
+| `TILE_TITLE` | Geist SemiBold | 15 / 20 | 0 | game card names (two lines, then an ellipsis) |
+| `BODY_L` | Geist | 17 / 26 | 0 | lead paragraphs |
+| `BODY` | Geist | 15 / 22 | 0 | running text |
+| `BODY_S` | Geist | 14 / 21 | 0 | card paragraphs |
+| `CAPTION` | Geist | 13 / 19 | 0 | hints, counts, notes |
+| `FOOTNOTE` | Geist, `dim` | 12 / 16 | 0 | sources and fine print |
+| `LABEL` | Geist Mono Medium, caps | 12 / 16 | 0.08em | buttons, prompts, tabs |
+| `LABEL_L` | Geist Mono Medium, caps | 14 / 18 | 0.12em | the large primary button |
+| `LABEL_S` | Geist Mono Medium, caps | 11 / 14 | 0.06em | chips, card meta rows |
+| `EYEBROW` | Geist Mono Medium, caps, `muted` | 11 / 14 | 0.12em | section headers |
+| `MICRO` | Geist Mono Medium, caps | 10 / 12 | 0.08em | badges over art |
+| `DATA` | Geist Mono | 12 / 16 | 0 | disc IDs, figures, paths |
+
+Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sentence case in data.
+
+#### Focus
+
+- The ring is drawn by the core outside the focused element, so nothing moves when focus moves: 3 px
+  `accent_dark`, 3 px gap, radius = the element's radius + 6.
+- High-contrast focus (`NkUiPrefs.high_contrast_focus`): a 4 px white ring between 2 px black keylines.
+- A focusable control calls `nk_ui_register_button` and, when focused, `nk_ui_focus_ring(ui, id, radius)`. A focused
+  secondary button also fills with `surface_high`; a focused card's edge becomes `line_strong`.
+
+#### Layout grid
+
+| Measure | Value |
+| --- | --- |
+| Top bar / prompt bar | 64 / 56 px, separated from the body by a `line` hairline |
+| Page gutter | 32 px; 16 px below 900 px wide (`NK_UI_GUTTER`, `NK_UI_GUTTER_NARROW`) |
+| Body padding | 24 px top, 16 px bottom; 16 px between blocks |
+| Library grid | columns = how many 236 px cards fit with 20 px gaps (1 to 6); rows = how many fit; 16 px row gap |
+| Game card | art panel 0.53 x width, body 90 px |
+| Title detail | 520 px aside (at most 45% of the body) and a growing column, 32 px apart; hero at 480:272 |
+| Minimum target | 44 px high (`NK_UI_CONTROL_HEIGHT`); large 52, small 34 |
+| Safe area | nothing closer than 16 px to a window edge |
+
+Layout is logical px; the UI scale (Auto follows the display, or 100/125/150/200%) times the text size gives the
+device density, and the logical width decides the columns. Clay clips at most ten containers per layout: shorten
+long text with `nk_ui_text_clamp` instead of clipping it.
+
+#### Motion
+
+Tokens are in seconds (`NK_UI_MOTION_*`): fast 0.12 (focus, press), base 0.20 (toast, tab rule), slow 0.50 (art
+crossfade); art appears after a 0.6 s rest, preview music after 1.1 s, fading in over 1.0 s and out over 0.45 s.
+The waves step at 30 Hz. Reduce motion (the setting or the system's) makes every duration a cut and holds the
+waves on one frame. Nothing ever needs motion to be understood.
+
+#### Background waves
+
+Four project-authored ribbons drift behind every launcher screen (`nk_ui_waves_element`, drawn first and outside
+the layout), never in game. Their combined alpha is capped so every text colour keeps WCAG AA over the brightest
+point. The SDL_Renderer backend draws them through the CPU reference at a third of the window size and keeps the
+frame until the command changes; the Vulkan backend will use the shader.
+
+### Components
+
+| Component | Call | Spec |
+| --- | --- | --- |
+| Button | `nk_ui_button(ui, id, label, flags)` | label centred, `LABEL` caps; 44 px (`_LARGE` 52 with `LABEL_L`, `_SMALL` 34 with `LABEL_S`); fits its label (`_GROW` fills); primary = accent fill, ink text; secondary = clear fill, `line_strong` edge, paper text; danger = `error` text; disabled = `dim` text, `line` edge (primary keeps a `surface_high` fill) |
+| Game card | `nk_ui_tile(ui, id, &spec)` | `surface_raised`, `line` edge, radius 12; art panel flush with the top (tint per title, badge top-left, picture or "ART FROM YOUR DISC" placeholder); name in `TILE_TITLE` (two lines); meta row: marker + status word in the status colour, disc ID right in `dim` |
+| Add card | `nk_ui_add_tile` | ground fill, `line_strong` edge; 44 px outlined plus in accent, centred name and one-line note |
+| Hero | `nk_ui_hero` | the title's art panel at 480:272 with a badge caption and the size note |
+| Status pill | `nk_ui_status_pill` | 26 px, `surface_high`, `line_strong`, radius 4, `LABEL_S` in the status colour, marker first |
+| Tag | `nk_ui_tag` | as the pill, `muted` text (YOUR DISC, SHOWCASE DEMO) |
+| Badge | `nk_ui_badge` | 20 px on `art_scrim`, radius 4, `MICRO` |
+| Eyebrow | `nk_ui_eyebrow` | `EYEBROW`; names a section or a card |
+| Card | `nk_ui_card_begin` | `surface_raised`, `line`, radius 12, 16/20 px padding |
+| Top bar | `nk_ui_top_bar` | N1 mark (28 px) and wordmark; section tabs in `LABEL` with a 3 px accent rule under the active one; input chip on the right (dot in `ready` for a controller) |
+| Prompt bar | `nk_ui_prompt_bar` | `surface_raised`; hint in `CAPTION` `muted` on the left; glyph (24 px, current prompt style) + `LABEL` per action on the right, 18 px apart |
+| Vector art | `nk_ui_shapes` | rects, circles and convex polygons in a view box, fitted and centred; used for the N1 mark, the showcase demos' pictures and icons |
+
+Prompt glyphs come from `nk_ui_prompt_glyph`: neutral position dots, letters (A south or A east), or keycaps, as
+the last input device reports. Only actions the screen handles appear in its prompt bar.
+
+### Screens
+
+#### Library (C5, built)
+
+Top bar; `LIBRARY` in `DISPLAY` with the count in `CAPTION` beside it ("7 titles · 2 showcase demos"); a pager
+(small PREVIOUS and NEXT buttons around "PAGE 1 OF 2") on the right of that row when the grid spans pages; the card
+grid, ending with the add card; prompt bar "Bring your own game. Nothing is downloaded." with MOVE and OPEN. Empty
+library: one centred 640 px card with a disc icon, `TITLE` "Your library is empty", a `BODY` line and the primary
+ADD A PSP DISC IMAGE button.
+
+#### Title detail (C5, built)
+
+Aside: the hero, then a PACKAGE card (eyebrow, status pill, the status detail in `BODY_S` `muted`, and any input
+note in an inset `info` box). Main column: eyebrow LIBRARY › TITLE, the name in `TITLE_XL`, the disc ID in
+`DATA`, the status pill and tag, the large primary action with OPEN SAVE FOLDER beside it (both 52 px), BACK TO
+LIBRARY below, and the COMPATIBILITY card (eyebrow, the word as a pill coloured by the word: Works `ready`,
+Partially works and Experimental `info`, Boots to a named boundary `warning`, others `muted`; the detail; a
+`FOOTNOTE` naming `docs/COMPATIBILITY.md`). Prompt bar: MOVE, SELECT, BACK.
+
+#### Settings (C6)
+
+- Top bar with SETTINGS active; `SETTINGS` in `DISPLAY`; a tab row (`LABEL`, 10/12 px padding, 3 px accent rule
+  under the active tab, `line` underneath): DISPLAY, AUDIO, CONTROLS, PATHS AND STORAGE, ACCESSIBILITY, ABOUT.
+  L and R (Q and E) switch tabs.
+- Body: a column of rows and, from 1100 px wide, a 340 px help panel (`card`, a 20 px Geist SemiBold heading,
+  `BODY_S` `muted` text) that explains the focused row and names its `settings.json` key.
+- Row: at least 56 px, 8/16 px padding, radius 8; label in Geist Medium 15 with a 12 px `muted` description; the
+  control on the right. A focused row fills with `surface_high` and the ring surrounds the row.
+- Segmented control: 3 px padding in a ground-filled, `line_strong`, radius 9 track; options 30 px, 13 px `muted`;
+  the selected one `surface_high` with paper text, and a 2 px inset accent edge while its row has focus.
+  Left and right change it.
+- Toggle: 46 x 26 track (off `line_strong`, on accent) with a 20 px knob (off `muted`, on ink) and ON / OFF in
+  `LABEL_S` before it.
+- Slider: 280 px track 6 px high (accent fill, `line_strong` rest), 18 px paper thumb, the value in mono 13 right.
+- Paths rows: name, the path in `DATA` (middle-truncated), status line, small actions (OPEN, REMOVE). No key-file
+  row.
+- Controls tab: a 30 px mapping header in `EYEBROW` and 38 px mapping rows; a row waiting for a press fills with
+  `capture` and the prompt bar shows only CANCEL.
+
+#### First run (C7)
+
+- Left rail 260 px (32/24 px padding, `line` edge on the right) listing the steps: Welcome, Disc image, System
+  fonts, Build, Play. There is no key-file step. Each step is 44 px with a 26 px numbered circle (`line_strong`
+  edge); current: accent fill and ink number, name in SemiBold; done: `ready` edge and number; failed: `error`.
+  Below 900 px the rail hides and the step shows as an eyebrow.
+- Content: 36/56 px padding; `DISPLAY_XL` headline; `BODY_L` `muted` lead, at most 720 px wide; choice cards
+  (`card`, 18 px padding, tag chip, `HEADING`, `BODY_S`); check rows (38 px, `line` underneath: name 170 px,
+  code in `DATA` 140 px, status word 120 px in its colour, detail `CAPTION`).
+- Build: stage rows 50 px with a 26 px circle (running: accent fill), name 170 px, and a 6 px progress bar (accent
+  on `line_strong`); a log box (`#080B0F`, `line`, radius 10, mono 12/1.6 `muted`).
+- One primary action per step at the bottom left (CONTINUE, BUILD, PLAY), secondary actions after it.
+
+#### Error dialogs (C8)
+
+- Over the scrim, centred, 16 px from the edges; at most 660 px wide (760 for comparisons); `surface_raised`,
+  `line_strong` edge, radius 16, 26/28/22 px padding, 14 px gap.
+- Order: a status eyebrow in its colour with marker ("▲ CONTROLLER DISCONNECTED · GAME PAUSED"), a `TITLE` that says
+  what happened in plain words, a `BODY` `muted` paragraph that says what to do, an optional detail box (ground
+  fill, `line`, radius 10, `DATA` lines for paths or codes), then the button row: the recommended action first as
+  primary, the way out last ("NOT NOW", "CANCEL"); a destructive action is a danger button and is never the
+  default focus.
+- Focus is trapped in the dialog and starts on the first button; BACK closes it with the safe choice.
+- Cases to cover: unreadable or unsupported disc image (a store package is not a disc image), a different release of
+  a known game (add as Experimental), build failure (stage named, log path shown), controller disconnected, quit to
+  library. A disc whose program is encrypted gets the "does not decrypt games" explanation, never a request for a
+  key file.
+
+### Accessibility
+
+- Text contrast is at least 4.5:1 for everything except `dim`, which is reserved for disabled controls and
+  footnotes; over the brightest wave point muted and error text stay at 4.6:1.
+- Focus ring 15.3:1 on the ground and at least 9.2:1 over the waves; high-contrast focus for any background.
+- Targets are at least 44 px high; text size (90 to 150%) scales the whole layout through the density.
+- Reduce motion holds the waves and makes transitions cuts.
+
+### Building and checking a screen
+
+1. Compose the screen from the components above; give every element a stable id (sub-parts use
+   `nk_ui_child_id`).
+2. `mingw32-make nk-ui-player-screens-selftest` compares the draw-list dumps in `fixtures/nk_ui/*.golden` and runs
+   the layout checks (ring outside the focused card, centred labels, grid gaps). After an intended change, run
+   `build/test_player_screens --write-goldens` and say in the pull request why each golden changed.
+3. `mingw32-make nk-ui-player-screens-capture NK_UI_CAPTURE_DIR=<dir>` saves offscreen captures of each state at
+   1280 x 800, 1920 x 1200 at 150% and 960 x 600, from synthetic fixture titles only. Compare them with the
+   design boards before review.

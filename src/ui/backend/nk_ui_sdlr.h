@@ -45,10 +45,10 @@ void nk_ui_sdlr_set_scale(NkUiSdlr *renderer, float density);
    drawn, and false for a NULL argument or a malformed list (nothing is then
    guaranteed about partial output). Clip, blend and draw-colour state of the
    renderer are restored before returning.
-   Custom commands the backend cannot draw are skipped and counted in
-   NkUiSdlrStats.custom_skipped; today that is every NK_UI_CUSTOM_WAVES
-   command, because nk_ui_waves_render_rgba() takes a palette and a clock rather
-   than the NkUiWavesCommand carried by the list. */
+   NK_UI_CUSTOM_WAVES commands are drawn through the CPU reference
+   (nk_ui_waves_render_command) into a texture at a third of their size and
+   scaled up; the frame is re-rendered only when the command changes. Other
+   custom commands are skipped and counted in NkUiSdlrStats.custom_skipped. */
 bool nk_ui_sdlr_render(NkUiSdlr *renderer, const NkUiDrawList *list);
 
 typedef struct {
@@ -59,6 +59,8 @@ typedef struct {
     uint32_t glyphs_drawn;    /* glyph quads submitted, ever */
     uint32_t text_runs_drawn; /* text commands drawn, ever */
     uint32_t custom_skipped;  /* custom commands skipped, ever */
+    uint32_t waves_drawn;     /* waves commands drawn, ever */
+    uint32_t waves_rendered;  /* waves frames rendered on the CPU, ever */
 } NkUiSdlrStats;
 
 void nk_ui_sdlr_get_stats(const NkUiSdlr *renderer, NkUiSdlrStats *out);

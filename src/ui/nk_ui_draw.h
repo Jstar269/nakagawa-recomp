@@ -57,6 +57,8 @@ typedef struct {
     size_t length;
     int font;
     int size_px;
+    float letter_spacing; /* extra device px after each glyph (CSS letter-spacing) */
+    bool center;          /* centre the run across its bounds (glyph labels) */
 } NkUiTextRun;
 
 typedef struct {
@@ -72,6 +74,11 @@ typedef struct {
     uint32_t text_run_capacity;
 } NkUiDrawBuffer;
 
+/* Paints one Clay custom element into the draw list at its laid-out rect
+   (logical px). data is the element's custom payload. */
+typedef bool (*NkUiClayPaint)(void *user, void *data, NkUiRect rect, float density,
+                              uint32_t element_id);
+
 void nk_ui_draw_buffer_reset(NkUiDrawBuffer *buffer);
 void nk_ui_draw_buffer_destroy(NkUiDrawBuffer *buffer);
 bool nk_ui_draw_add_rect(NkUiDrawBuffer *buffer, NkUiRect rect, float density,
@@ -81,6 +88,26 @@ bool nk_ui_draw_add_border(NkUiDrawBuffer *buffer, NkUiRect rect, float density,
 bool nk_ui_draw_add_text(NkUiDrawBuffer *buffer, NkUiPixelRect bounds,
                          const char *text, size_t length, int font,
                          int size_px, uint32_t rgba, uint32_t element_id);
+/* Per-corner variants. radius[] is TL, TR, BR, BL in logical px; a rounded
+   border draws straight strips plus one quarter ring per rounded corner. */
+bool nk_ui_draw_add_rect_corners(NkUiDrawBuffer *buffer, NkUiRect rect, float density,
+                                 const float radius[4], uint32_t rgba,
+                                 uint32_t element_id);
+bool nk_ui_draw_add_border_corners(NkUiDrawBuffer *buffer, NkUiRect rect, float density,
+                                   float width, const float radius[4], uint32_t rgba,
+                                   uint32_t element_id);
+/* A filled convex polygon, xy in device pixels (x0, y0, x1, y1, ...), 3 to 256
+   points in either winding, with a one-pixel transparent edge fringe. */
+bool nk_ui_draw_add_convex(NkUiDrawBuffer *buffer, const float *xy, uint32_t count,
+                           uint32_t rgba, uint32_t element_id);
+bool nk_ui_draw_add_text_spaced(NkUiDrawBuffer *buffer, NkUiPixelRect bounds,
+                                const char *text, size_t length, int font,
+                                int size_px, float letter_spacing_px, uint32_t rgba,
+                                uint32_t element_id);
+/* As nk_ui_draw_add_text_spaced, with the run centred across its bounds. */
+bool nk_ui_draw_add_text_centered(NkUiDrawBuffer *buffer, NkUiPixelRect bounds,
+                                  const char *text, size_t length, int font,
+                                  int size_px, uint32_t rgba, uint32_t element_id);
 bool nk_ui_draw_add_custom(NkUiDrawBuffer *buffer, uint32_t custom_kind,
                            const void *custom, NkUiPixelRect bounds,
                            uint32_t element_id);
