@@ -715,7 +715,8 @@ ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File too
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
 PLAYER_PLATFORM_LIBS :=
-PLAYER_EXTRA_LIBS   :=
+# The nk_ui draw and wave code calls libm (exp, sinf); glibc keeps it out of libc.
+PLAYER_EXTRA_LIBS   := -lm
 PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 PLAYER_VULKAN_INC   := $(VULKAN_INC_FLAGS)
 PLAYER_VULKAN_LIB   :=
@@ -948,6 +949,8 @@ PUBLIC_TARGETS := \
 	gui-present-selftest \
 	clay-layout-selftest \
 	nk-ui-core-selftest \
+	nk-ui-player-screens-selftest \
+	nk-ui-player-screens-capture \
 	nk-ui-sdlr-selftest \
 	nk-ui-focus-selftest \
 	coro-selftest \
@@ -1078,6 +1081,8 @@ HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_clay-layout-selftest := build and run the vendored Clay layout selftest
+HELP_DESCRIPTION_nk-ui-player-screens-selftest := build and run nk_ui Library, Title detail and router snapshots
+HELP_DESCRIPTION_nk-ui-player-screens-capture := save offscreen synthetic Library and Title detail captures (set NK_UI_CAPTURE_DIR)
 HELP_DESCRIPTION_nk-ui-core-selftest := build and run the nk_ui core selftest (synthetic layout, focus and scale)
 HELP_DESCRIPTION_nk-ui-sdlr-selftest := build and run the nk_ui SDL_Renderer and SDL3_ttf selftest (software snapshots; SKIPs without SDL3_ttf)
 HELP_DESCRIPTION_nk-ui-focus-selftest := build and run the nk_ui focus graph, input model and prompt glyph selftest (SDL translation leg SKIPs without SDL3)
@@ -1868,27 +1873,29 @@ PLAYER_EXE ?= $(BUILD_ROOT)/nakagawa_player$(EXE_EXT)
 PLAYER_UI_TEST_EXE ?= $(BUILD_ROOT)/nakagawa_player_ui_test$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
-PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c $(PLAYER_CORE_SRCS)
-PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated -Isrc/rt $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
+PLAYER_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c $(NK_UI_PLAYER_C5_SRCS)
+PLAYER_NK_UI_DEFS = -DNK_UI_WITH_SDL -DNK_UI_WITH_SDL3 $(if $(filter yes,$(SDL3_TTF_AVAILABLE)),-DNK_UI_WITH_SDL_TTF,)
+PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c $(PLAYER_NK_UI_SRCS) $(PLAYER_CORE_SRCS)
+PLAYER_INCLUDES := -Isrc/player -Isrc/player/ui -Isrc/ui -Ithird_party/clay -Isrc/core -Isrc/core/generated -Isrc/rt $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 # Stage the SDL3/SDL3_ttf runtime DLL closure and its licence notices beside
 # the player (#421) so launches from Explorer or a plain cmd.exe (no MSYS2 on
 # PATH) use the readable TTF font instead of the bitmap fallback.
 .PHONY: player
 player: $(PLAYER_EXE)
-	"$(PYTHON)" tools/stage_runtime_dlls.py --target $(patsubst %/,%,$(dir $(PLAYER_EXE))) --refresh
+	"$(PYTHON)" tools/stage_runtime_dlls.py --target $(patsubst %/,%,$(dir $(PLAYER_EXE))) --include-ui-fonts --refresh
 
 $(PLAYER_UI_TEST_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+$(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 .PHONY: player-ui-regressions
 # Target-specific export exports NAKAGAWA_PLAYER_UI_TEST_EXE into the recipe's
@@ -2952,11 +2959,35 @@ endif
 # Player UI tests link SDL3 (software renderer, no window), so they run where the
 # player itself builds rather than in the SDL-free native-core-tests set. The
 # optional UI font selftest reports a named skip when SDL3_ttf is unavailable.
-player-ui-tests: osk-overlay-paint-selftest ui-font-selftest
+player-ui-tests: osk-overlay-paint-selftest ui-font-selftest nk-ui-player-screens-selftest
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_ui_clip.c -lSDL3 \
 		-o $(BUILD_ROOT)/test_ui_clip$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_ui_clip$(EXE_EXT)
+
+.PHONY: nk-ui-player-screens-capture
+ifeq ($(SDL3_TTF_AVAILABLE),yes)
+ifeq ($(strip $(NK_UI_CAPTURE_DIR)),)
+nk-ui-player-screens-capture:
+	@echo "ERROR: set NK_UI_CAPTURE_DIR to a directory for synthetic screen captures"; exit 2
+else
+nk-ui-player-screens-capture: export SDL_VIDEODRIVER := dummy
+nk-ui-player-screens-capture: export SDL_RENDER_DRIVER := software
+nk-ui-player-screens-capture:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -DNK_UI_WITH_SDL -DNK_UI_WITH_SDL_TTF -DNK_UI_SCREEN_CAPTURE \
+		-Isrc/ui -Isrc/player/ui -Ithird_party/clay $(SDL3_TTF_CFLAGS) \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(NK_UI_CORE_SRCS) src/ui/nk_ui_ttf.c src/ui/backend/nk_ui_sdlr.c \
+		src/player/ui/ui_router.c src/player/ui/scr_library.c src/player/ui/scr_title.c \
+		tests/native/test_player_screens.c $(SDL3_TTF_LIBS) -lm \
+		-o $(BUILD_ROOT)/test_player_screens_capture$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_player_screens_capture$(EXE_EXT) --capture-dir="$(NK_UI_CAPTURE_DIR)"
+endif
+else
+nk-ui-player-screens-capture:
+	@echo "SKIP: offscreen screen captures require the SDL3_ttf development package"
+endif
 
 input-settings-test-bin: native-core-objects-player
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
@@ -2981,6 +3012,15 @@ nk-ui-core-selftest:
 		$(NK_UI_NATIVE_CORE_SRCS) tests/native/test_nk_ui_core.c -lm \
 		-o $(BUILD_ROOT)/test_nk_ui_core$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_nk_ui_core$(EXE_EXT)
+
+.PHONY: nk-ui-player-screens-selftest
+nk-ui-player-screens-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Isrc/player/ui -Ithird_party/clay \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(NK_UI_CORE_SRCS) $(filter-out src/player/ui/player_ui_nk.c,$(NK_UI_PLAYER_C5_SRCS)) \
+		tests/native/test_player_screens.c -lm -o $(BUILD_ROOT)/test_player_screens$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_player_screens$(EXE_EXT)
 
 # nk-ui-sdlr-selftest - the nk_ui SDL_Renderer backend and SDL3_ttf text engine (lane C3b) drawing a
 # synthetic screen into a software-rendered surface at 1x, 1.25x and 2x, with Japanese shaping and
@@ -3027,7 +3067,7 @@ nk-ui-focus-selftest:
 		if [ "$$rc" = 77 ]; then echo "SKIP nk-ui-focus-selftest SDL translation leg (exit 77): SDL3 not found by build discovery"; \
 		elif [ "$$rc" != 0 ]; then exit "$$rc"; fi
 
-native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player clay-layout-selftest nk-ui-core-selftest nk-ui-sdlr-selftest nk-ui-focus-selftest
+native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player clay-layout-selftest nk-ui-core-selftest nk-ui-player-screens-selftest nk-ui-sdlr-selftest nk-ui-focus-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" src/rt/pgf_public.c \
 		tests/native/test_pgf_public.c -o $(BUILD_ROOT)/test_pgf_public$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_pgf_public$(EXE_EXT)

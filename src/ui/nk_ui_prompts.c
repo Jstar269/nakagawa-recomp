@@ -22,7 +22,7 @@ static const char *const g_neutral[NK_UI_PROMPT_ACT_MENU + 1] = {
     NULL, NULL, NULL, NULL, "L", "R", NULL
 };
 static const char *const g_keycaps[NK_UI_PROMPT_ACT_MENU + 1] = {
-    "Enter", "Esc", "Space", "D", "Q", "E", "F1"
+    "ENTER", "ESC", "SPACE", "D", "Q", "E", "F1"
 };
 
 NkUiPadFamily nk_ui_pad_family_for_south_label(NkUiButtonLabel label) {
@@ -77,7 +77,7 @@ float nk_ui_prompt_width(NkUiPromptStyle style, NkUiPromptAction action, float h
         size_t n;
         text = nk_ui_prompt_text(style, action);
         n = text != NULL ? strlen(text) : 1u;
-        return n <= 1u ? height : height * (0.5f + 0.4f * (float)n);
+        return n <= 1u ? height : height * (0.5f + 0.28f * (float)n);
     }
     if (nk_ui_prompt_is_shoulder(action)) {
         return height * 1.6f;
@@ -127,8 +127,8 @@ static bool nk_ui_prompt_text_in(const NkUiPromptPx *p, const char *text, int x0
     if (size_px < 1) {
         size_px = 1;
     }
-    return nk_ui_draw_add_text(p->buffer, bounds, text, strlen(text), p->spec->font,
-                               size_px, p->spec->fg_rgba, p->id);
+    return nk_ui_draw_add_text_centered(p->buffer, bounds, text, strlen(text), p->spec->font,
+                                        size_px, p->spec->fg_rgba, p->id);
 }
 
 static int nk_ui_prompt_even(int v) {

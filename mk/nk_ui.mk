@@ -31,6 +31,12 @@ NK_UI_PLAYER_SCREEN_SRCS := \
 	src/player/ui/scr_first_run.c \
 	src/player/ui/scr_dialogs.c
 
+NK_UI_PLAYER_C5_SRCS := \
+	src/player/ui/player_ui_nk.c \
+	src/player/ui/ui_router.c \
+	src/player/ui/scr_library.c \
+	src/player/ui/scr_title.c
+
 NK_UI_OVERLAY_SRCS := \
 	src/rt/overlay/nk_overlay.c \
 	src/rt/overlay/overlay_pause.c \

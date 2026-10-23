@@ -540,6 +540,7 @@ class NativePlayerUiTests(unittest.TestCase):
         profile_refusal: bool = False,
         legacy_data: bool = False,
         env_extra: dict[str, str] | None = None,
+        ui_mode: str | None = None,
         width: int = 1280,
         height: int = 720,
         timeout: float | None = None,
@@ -705,6 +706,8 @@ class NativePlayerUiTests(unittest.TestCase):
                 env.update(env_extra)
 
             args = [str(PLAYER_EXE), f"--view={'build-ready' if build_ready_test else view}"]
+            if ui_mode is not None:
+                args.append(f"--ui={ui_mode}")
             event_script = list(events)
             if drop_invalid_iso:
                 invalid_iso = scratch / "source-owned-invalid.iso"
@@ -838,6 +841,14 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(font_frames, list)
         self.assertEqual(font_frames[1]["wizard_step"], "ready_launch")
         self.assertEqual(font_frames[1]["font_confirmed"], "1")
+
+    def test_next_ui_is_opt_in_by_flag_and_environment(self) -> None:
+        default_ui = self.run_player("empty")
+        flag_ui = self.run_player("empty", ui_mode="next")
+        env_ui = self.run_player("empty", env_extra={"NK_UI": "next"})
+        self.assertNotIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", default_ui["stdout"])
+        self.assertIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", flag_ui["stdout"])
+        self.assertIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", env_ui["stdout"])
 
     def test_library_keyboard_gamepad_navigation_and_picker(self) -> None:
         run = self.run_player("library", ("KEY_RIGHT", "PAD_DPAD_RIGHT", "KEY_TAB", "KEY_RETURN"))

@@ -34,5 +34,9 @@ void nk_ui_waves_command(double now_s, float width_px, float height_px,
 bool nk_ui_waves_render_rgba(const NkUiWavePalette *palette, double now_s,
                              uint32_t width, uint32_t height, uint8_t *pixels,
                              size_t stride);
+/* Renders the frame a draw-list command describes into premultiplied RGBA8, at
+   any target size (the CPU reference the SDL_Renderer backend uses). */
+bool nk_ui_waves_render_command(const NkUiWavesCommand *command, uint32_t width,
+                                uint32_t height, uint8_t *pixels, size_t stride);
 
 #endif /* NK_UI_WAVES_H */

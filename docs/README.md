@@ -223,6 +223,7 @@ Every substantial document carries one status.
 | `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
 | `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build; carries the proposed preview copy |
 | `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists and the player does not decrypt games, while retail-disc hash validation and one-click play without the developer toolchain remain unbuilt and are marked inline |
+| `PLAYER_UI_DESIGN.md` | CURRENT | Player UI design system for the `--ui=next` launcher: tokens, components, and the screen specs C6-C8 build against |
 | `AOT_PRODUCTIZATION_ARCHITECTURE.md` | CURRENT | Maintained evaluation of end-user recompilation routes A-G; the zero-toolchain recommended routes remain unimplemented |
 | `RUNTIME_PACKAGING_ARCHITECTURE.md` | CURRENT | Maintained process-isolation decision record; installers and one-click end-user preparation remain unbuilt |
 | `ISO_ONLY_GAP_ANALYSIS.md` | CURRENT | Maintained LLE gap analysis; existing bounded ISO helpers and the remaining retail-preparation stages are distinguished inline |

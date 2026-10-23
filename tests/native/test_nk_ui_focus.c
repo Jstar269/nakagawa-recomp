@@ -569,9 +569,9 @@ static int test_label_table(void) {
     CHECK(nk_ui_prompt_text(NK_UI_PROMPT_NEUTRAL, NK_UI_PROMPT_ACT_CONFIRM) == NULL &&
           nk_ui_prompt_text(NK_UI_PROMPT_NEUTRAL, NK_UI_PROMPT_ACT_MOVE) == NULL,
           "the neutral set is pure geometry");
-    CHECK(strcmp(nk_ui_prompt_text(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_CONFIRM), "Enter") == 0 &&
-          strcmp(nk_ui_prompt_text(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_BACK), "Esc") == 0 &&
-          strcmp(nk_ui_prompt_text(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_OPTIONS), "Space") == 0 &&
+    CHECK(strcmp(nk_ui_prompt_text(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_CONFIRM), "ENTER") == 0 &&
+          strcmp(nk_ui_prompt_text(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_BACK), "ESC") == 0 &&
+          strcmp(nk_ui_prompt_text(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_OPTIONS), "SPACE") == 0 &&
           strcmp(nk_ui_prompt_text(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_TAB_PREV), "Q") == 0 &&
           strcmp(nk_ui_prompt_text(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_TAB_NEXT), "E") == 0,
           "keycaps");
@@ -756,13 +756,13 @@ static const char g_glyph_golden[] =
     "000000C4 RECT 17 8 49 40 18202BFF \"\"\n"
     "000000C4 TEXT 17 8 49 40 F5F7FAFF \"A\"\n"
     "# keycaps confirm h=24 density=1.00\n"
-    "000000C4 RECT 10 4 70 28 9AA4B2FF \"\"\n"
-    "000000C4 RECT 10 4 70 25 18202BFF \"\"\n"
-    "000000C4 TEXT 10 4 70 25 F5F7FAFF \"Enter\"\n"
+    "000000C4 RECT 10 4 56 28 9AA4B2FF \"\"\n"
+    "000000C4 RECT 10 4 56 25 18202BFF \"\"\n"
+    "000000C4 TEXT 10 4 56 25 F5F7FAFF \"ENTER\"\n"
     "# keycaps back h=24 density=2.00\n"
-    "000000C4 RECT 20 8 102 56 9AA4B2FF \"\"\n"
-    "000000C4 RECT 20 8 102 50 18202BFF \"\"\n"
-    "000000C4 TEXT 20 8 102 50 F5F7FAFF \"Esc\"\n"
+    "000000C4 RECT 20 8 84 56 9AA4B2FF \"\"\n"
+    "000000C4 RECT 20 8 84 50 18202BFF \"\"\n"
+    "000000C4 TEXT 20 8 84 50 F5F7FAFF \"ESC\"\n"
     "# keycaps tab-next h=24 density=1.00\n"
     "000000C4 RECT 10 4 34 28 9AA4B2FF \"\"\n"
     "000000C4 RECT 10 4 34 25 18202BFF \"\"\n"

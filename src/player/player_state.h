@@ -268,7 +268,7 @@ typedef struct {
     char font_message[NK_FONT_TEXT_MAX];
 } SetupWizardState;
 
-typedef struct {
+typedef struct PlayerApp {
     PlayerView active_view;
     GameRecord games[MAX_LIBRARY_GAMES];
     PlayerRuntimePackageCacheEntry runtime_package_cache[MAX_LIBRARY_GAMES];

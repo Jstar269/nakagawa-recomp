@@ -268,13 +268,15 @@ static int test_backend_declarations(void) {
     return 1;
 }
 
+/* Rect edges land on whole pixels; the quarter rings of rounded borders put
+   their edges on pixel centres, so a vertex is on a whole or a half pixel. */
 static int rect_vertices_are_integral(const NkUiDrawList *list) {
     uint32_t i;
     if (list == NULL) return 0;
     for (i = 0; i < list->nv; ++i) {
         if (!isfinite(list->v[i].x) || !isfinite(list->v[i].y) ||
-            floorf(list->v[i].x) != list->v[i].x ||
-            floorf(list->v[i].y) != list->v[i].y) {
+            floorf(list->v[i].x * 2.0f) != list->v[i].x * 2.0f ||
+            floorf(list->v[i].y * 2.0f) != list->v[i].y * 2.0f) {
             return 0;
         }
     }
@@ -316,6 +318,8 @@ static int dump_synthetic_frame(const char *scale_name, int pixel_w, int pixel_h
     nk_ui_set_viewport(ui, &viewport);
     nk_ui_begin(ui, 37.0);
 
+    memset(&root_layout, 0, sizeof(root_layout));
+    memset(&root_style, 0, sizeof(root_style));
     root_layout.width = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
     root_layout.height = (NkUiSizing){NK_UI_SIZE_GROW, 0.0f, 0.0f, 0.0f};
     root_layout.direction = NK_UI_LAYOUT_COLUMN;

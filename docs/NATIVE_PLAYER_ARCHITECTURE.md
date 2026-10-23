@@ -99,9 +99,9 @@ The owner decided on 2026-10-21 that the native player's UI is written in C on S
 
 Not done yet:
 
-- **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** The native layout selftest is the only current build target that compiles it; no player UI call sites exist yet.
-- **No UI implementation has started.** Implementation begins only after the owner reviews the interface design.
-- The launcher, overlay and settings UI described above is a target. The current native slice does not use Clay.
+- **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** `src/ui/` (nk_ui) wraps it with the theme, text, focus, input and SDL_Renderer layers.
+- **Only Library and Title detail are built on it**, behind the opt-in `--ui=next` flag (or `NK_UI=next`), drawn with the design system in section 8. The default UI is still `src/player/ui_renderer.c` until the cut-over lane.
+- Settings, first run, error dialogs and the in-game overlay on nk_ui are targets, specified in section 8.
 
 ---
 
@@ -280,6 +280,9 @@ Selecting the right open-source fonts for nakagawa-recomp depends on whether you
 
 ### Launcher, Overlay & Settings UI (Clay on SDL3, planned)
 
+The player ships Chakra Petch, Geist, Geist Mono and Noto Sans JP (`assets/fonts/ui/`, section 8); the faces below
+were the initial survey.
+
 - [Inter](https://fonts.google.com/specimen/Inter) (SIL OFL): Optimized for screen interfaces and high pixel density. Remains sharp at small sizes (10px–14px) in configuration dialogs, graphics toggles, and controller binding menus.
 - [Roboto Flex](https://fonts.google.com/specimen/Roboto+Flex) (SIL OFL): Flexible variable font that allows granular control over weight, width, and optical size across windowed or full-screen modes.
 
@@ -292,3 +295,8 @@ Selecting the right open-source fonts for nakagawa-recomp depends on whether you
 
 - [Kosugi Maru](https://fonts.google.com/specimen/Kosugi+Maru) (Apache 2.0): A rounded Japanese gothic typeface designed for interface readability, matching original PSP system fonts.
 - [Zen Maru Gothic](https://fonts.google.com/specimen/Zen+Maru+Gothic) (SIL OFL): A smooth rounded Japanese font that scales well for translated dialogue boxes and Japanese audio/text toggles.
+
+## 8. Player UI design system
+
+The visual spec the player UI lanes (C5-C10) build against, with its tokens, components and the screen specs for
+Settings, first run and error dialogs, is [`PLAYER_UI_DESIGN.md`](PLAYER_UI_DESIGN.md).
