@@ -10471,6 +10471,32 @@ static uint32_t h_UmdGetErrorStat(CpuState *s) {
     return drive_stat == 0x32u ? 0u : 0x80010086u;
 }
 
+/* sceUmdReplaceProhibit() / sceUmdReplacePermit(): whether the user may swap the disc.
+ * The runtime serves one ISO and never replaces it, so either call only records the
+ * permission and returns 0, changed or not. Public behaviour reference: PPSSPP
+ * Core/HLE/sceUmd.cpp. Firmware error cases (for example before sceUmdActivate) are
+ * UNMEASURED; a PSP oracle case is listed for the maintainer. */
+static uint32_t s_umd_replace_permitted = 0u;
+static uint32_t h_UmdReplaceProhibit(CpuState *s) { (void)s; s_umd_replace_permitted = 0u; return 0; }
+static uint32_t h_UmdReplacePermit(CpuState *s) { (void)s; s_umd_replace_permitted = 1u; return 0; }
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_umd_replace_permitted(void) { return s_umd_replace_permitted; }
+#endif
+
+/* sceUmdGetDiscInfo(SceUmdDiscInfo *info): info->size (u32) must be 8, then info->type
+ * (u32) receives PSP_UMD_TYPE_GAME (0x10), the only medium this runtime serves.
+ * A size other than 8 or an unusable pointer returns SCE_ERROR_ERRNO_EINVAL
+ * (0x80010016). Public behaviour reference: PSPSDK pspumd.h (SceUmdDiscInfo,
+ * PSP_UMD_TYPE_GAME) and PPSSPP Core/HLE/sceUmd.cpp; UNMEASURED on hardware. */
+static uint32_t h_UmdGetDiscInfo(CpuState *s) {
+    (void)s;
+    uint32_t info = A0;
+    if (!info || !sr_guest_span_writable(info, 8u)) return 0x80010016u;
+    if (sr_r32(info) != 8u) return 0x80010016u;
+    sr_w32(info + 4u, 0x10u);
+    return 0;
+}
+
 
 /* Signal that the UMD drive is ready. Wake only threads waiting on the UMD object and
  * notify the registered callback if one exists. */
@@ -10568,6 +10594,9 @@ static void hle_register_umd_callback_handlers(void) {
     sr_hle_register(0xc6183d47u, "sceUmdActivate", h_UmdActivate);
     sr_hle_register(0xaee7404du, "sceUmdRegisterUMDCallBack", h_UmdRegisterUMDCallBack);
     sr_hle_register(0xbd2bde07u, "sceUmdUnRegisterUMDCallBack", h_UmdUnRegisterUMDCallBack);
+    sr_hle_register(0x87533940u, "sceUmdReplaceProhibit", h_UmdReplaceProhibit);
+    sr_hle_register(0xcbe9f02au, "sceUmdReplacePermit", h_UmdReplacePermit);
+    sr_hle_register(0x340b7686u, "sceUmdGetDiscInfo", h_UmdGetDiscInfo);
 }
 
 /* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler

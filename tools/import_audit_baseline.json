@@ -727,6 +727,12 @@
     "name": "__sceSasRevType",
     "status": "unreviewed"
   },
+  "0x340b7686": {
+    "classification": "dedicated",
+    "handler": "h_UmdGetDiscInfo",
+    "name": "sceUmdGetDiscInfo",
+    "status": "unreviewed"
+  },
   "0x342061e5": {
     "classification": "dedicated",
     "handler": "h_SetCompiledSdkVersion",
@@ -1834,6 +1840,12 @@
     "name": "sceMpegFinish",
     "status": "unreviewed"
   },
+  "0x87533940": {
+    "classification": "dedicated",
+    "handler": "h_UmdReplaceProhibit",
+    "name": "sceUmdReplaceProhibit",
+    "status": "unreviewed"
+  },
   "0x876dbfad": {
     "classification": "dedicated",
     "handler": "h_SendMsgPipe",
@@ -2621,6 +2633,12 @@
     "classification": "dedicated",
     "handler": "h_SasSetSimpleADSR",
     "name": "__sceSasSetSimpleADSR",
+    "status": "unreviewed"
+  },
+  "0xcbe9f02a": {
+    "classification": "dedicated",
+    "handler": "h_UmdReplacePermit",
+    "name": "sceUmdReplacePermit",
     "status": "unreviewed"
   },
   "0xcd203292": {
