@@ -98,11 +98,94 @@ static const PlayerUiPrereqItem k_prereqs[] = {
 };
 
 typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_CONSENT, FLOW_PROGRESS,
-               FLOW_ERROR } FlowCase;
+               FLOW_ERROR, FLOW_WIZ_WELCOME, FLOW_WIZ_CHOOSE, FLOW_WIZ_CHOSEN,
+               FLOW_WIZ_COPYING, FLOW_WIZ_VERIFY, FLOW_WIZ_EXPERIMENTAL, FLOW_WIZ_FONTS,
+               FLOW_WIZ_READY, FLOW_WIZ_STAGED } FlowCase;
+
+static const char *const k_font_lines[] = {
+    "Japanese: synthetic fallback", "Latin 1: synthetic fallback",
+    "Latin 2: synthetic fallback", "Latin 3: synthetic fallback",
+    "Latin 4: synthetic fallback", "Latin 5: synthetic fallback",
+    "Latin 6: synthetic fallback", "Latin 7: synthetic fallback",
+    "Latin 8: synthetic fallback", "Latin 9: synthetic fallback",
+    "Latin 10: synthetic fallback", "Latin 11: synthetic fallback",
+    "Latin 12: synthetic fallback", "Latin 13: synthetic fallback",
+    "Latin 14: synthetic fallback", "Latin 15: synthetic fallback",
+    "Latin 16: synthetic fallback", "Korean: synthetic fallback"
+};
+
+/* The setup wizard's steps on synthetic state. */
+static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
+    PlayerUiWizardModel wizard;
+    memset(&wizard, 0, sizeof(wizard));
+    wizard.logical_width = 1280.0f;
+    wizard.logical_height = 800.0f;
+    wizard.disc_id = "TEST00007";
+    wizard.title_name = "Synthetic Showcase Scene";
+    switch (which) {
+        case FLOW_WIZ_CHOOSE:
+            wizard.step = 1;
+            break;
+        case FLOW_WIZ_CHOSEN:
+            wizard.step = 1;
+            wizard.has_iso = true;
+            wizard.iso_selected = true;
+            wizard.iso_path = "C:/synthetic/discs/synthetic-showcase.iso";
+            wizard.iso_detail = "Size: 12.00 MB \xC2\xB7 Disc ID: TEST00007";
+            wizard.status_message = "Disc identified: Synthetic Showcase Scene.";
+            break;
+        case FLOW_WIZ_COPYING:
+            wizard.step = 2;
+            wizard.supported = true;
+            wizard.extracting = true;
+            wizard.files_extracted = 41;
+            wizard.total_files = 96;
+            wizard.extraction_percent = 42;
+            wizard.current_file = "PSP_GAME/USRDIR/synthetic.bin";
+            break;
+        case FLOW_WIZ_VERIFY:
+        case FLOW_WIZ_EXPERIMENTAL:
+            wizard.step = 2;
+            wizard.supported = which == FLOW_WIZ_VERIFY;
+            wizard.experimental = which == FLOW_WIZ_EXPERIMENTAL;
+            wizard.extraction_complete = which == FLOW_WIZ_VERIFY;
+            wizard.checks[0] = (PlayerUiCheckRow){"OK", "DISC_IDENTITY",
+                                                  "The disc ID matches a catalog entry.",
+                                                  0x2DD4BFFFu};
+            wizard.checks[1] = (PlayerUiCheckRow){"OK", "ASSETS_STAGED",
+                                                  "96 files staged locally.", 0x2DD4BFFFu};
+            wizard.checks[2] = (PlayerUiCheckRow){"Missing", "RUNTIME_PACKAGE",
+                                                  "Build the package from the library.",
+                                                  0xDBB024FFu};
+            wizard.check_count = 3u;
+            break;
+        case FLOW_WIZ_FONTS:
+            wizard.step = 3;
+            wizard.resolution_line = "Internal resolution: 2x (960x544)";
+            wizard.controller_line = "Controller: keyboard and mouse";
+            for (size_t i = 0u; i < sizeof(k_font_lines) / sizeof(k_font_lines[0]); ++i) {
+                wizard.font_lines[wizard.font_line_count++] = k_font_lines[i];
+            }
+            break;
+        case FLOW_WIZ_READY:
+        case FLOW_WIZ_STAGED:
+            wizard.step = 4;
+            wizard.runtime_ready = which == FLOW_WIZ_READY;
+            wizard.summary_line = "Resolution 2x (960x544) \xC2\xB7 Windowed \xC2\xB7 "
+                                  "Sound 80% \xC2\xB7 Package ready";
+            break;
+        case FLOW_WIZ_WELCOME:
+        default:
+            wizard.step = 0;
+            break;
+    }
+    return player_ui_screen_wizard(ui, &wizard);
+}
 static FlowCase g_flow_case;
 
 static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
     PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    if (which >= FLOW_WIZ_WELCOME) return draw_wizard_case(ui, which);
     if (which == FLOW_BUILD || which == FLOW_BUILT) {
         PlayerUiBuildModel build;
         memset(&build, 0, sizeof(build));
@@ -319,7 +402,13 @@ static bool build_title_golden(char *out, size_t cap, size_t *used) {
         static const struct { FlowCase which; const char *name; } flows[] = {
             {FLOW_BUILD, "flow-build-running"}, {FLOW_BUILT, "flow-build-written"},
             {FLOW_CONSENT, "flow-prereq-consent"}, {FLOW_PROGRESS, "flow-prereq-progress"},
-            {FLOW_ERROR, "flow-error"}
+            {FLOW_ERROR, "flow-error"},
+            {FLOW_WIZ_WELCOME, "wizard-welcome"}, {FLOW_WIZ_CHOOSE, "wizard-choose"},
+            {FLOW_WIZ_CHOSEN, "wizard-chosen"}, {FLOW_WIZ_COPYING, "wizard-copying"},
+            {FLOW_WIZ_VERIFY, "wizard-verify"},
+            {FLOW_WIZ_EXPERIMENTAL, "wizard-experimental"},
+            {FLOW_WIZ_FONTS, "wizard-fonts"}, {FLOW_WIZ_READY, "wizard-ready"},
+            {FLOW_WIZ_STAGED, "wizard-staged"}
         };
         for (size_t i = 0u; i < sizeof(flows) / sizeof(flows[0]); ++i) {
             g_flow_case = flows[i].which;
@@ -504,6 +593,74 @@ static PlayerUiAction activate_title_button(NkUiId id,
     (void)nk_ui_end(ui);
     nk_ui_destroy(ui);
     return result;
+}
+
+static PlayerUiAction activate_flow_button(NkUiId id, FlowCase which) {
+    NkUiConfig config;
+    NkUiEvent activate;
+    NkUi *ui;
+    PlayerUiAction result = {PLAYER_UI_ACTION_NONE,
+                             PLAYER_UI_PRIMARY_NONE, 0u};
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    ui = nk_ui_create(&config);
+    if (ui == NULL) return result;
+    set_test_viewport(ui, 1280, 800);
+    nk_ui_focus(ui, id);
+    memset(&activate, 0, sizeof(activate));
+    activate.type = NK_UI_EV_ACTIVATE;
+    activate.down = true;
+    nk_ui_push_event(ui, &activate);
+    nk_ui_begin(ui, 0.0);
+    result = draw_flow_case(ui, which);
+    (void)nk_ui_end(ui);
+    nk_ui_destroy(ui);
+    return result;
+}
+
+static bool wizard_op_is(PlayerUiAction action, PlayerUiWizardOp op) {
+    return action.kind == PLAYER_UI_ACTION_WIZARD && (PlayerUiWizardOp)action.primary == op;
+}
+
+/* Every wizard control returns the op main.c runs with the existing handlers. */
+static void test_wizard_actions(void) {
+    static const struct { FlowCase which; NkUiId id; PlayerUiWizardOp op; const char *what; }
+        cases[] = {
+        {FLOW_WIZ_WELCOME, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_NEXT,
+         "Get started moves to the next step"},
+        {FLOW_WIZ_WELCOME, PLAYER_UI_ID_WIZARD_CANCEL, PLAYER_UI_WIZARD_CANCEL,
+         "Skip to library leaves the wizard"},
+        {FLOW_WIZ_CHOOSE, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_CHOOSE_ISO,
+         "Choose a disc image opens the file picker"},
+        {FLOW_WIZ_CHOOSE, PLAYER_UI_ID_WIZARD_BACK, PLAYER_UI_WIZARD_BACK,
+         "Back on Select game goes back"},
+        {FLOW_WIZ_CHOSEN, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_NEXT,
+         "Verify this disc moves on"},
+        {FLOW_WIZ_CHOSEN, PLAYER_UI_ID_WIZARD_SECOND, PLAYER_UI_WIZARD_CHOOSE_DIFFERENT,
+         "a chosen disc can be swapped"},
+        {FLOW_WIZ_COPYING, PLAYER_UI_ID_WIZARD_CANCEL, PLAYER_UI_WIZARD_CANCEL,
+         "Cancel copying cancels the staging"},
+        {FLOW_WIZ_VERIFY, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_NEXT,
+         "Continue after staging moves on"},
+        {FLOW_WIZ_EXPERIMENTAL, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_ADD_EXPERIMENTAL,
+         "an experimental disc is added to the library"},
+        {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_ACCEPT_FONTS,
+         "Accept and continue confirms the fonts step"},
+        {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_SECOND, PLAYER_UI_WIZARD_CYCLE_RESOLUTION,
+         "Change resolution cycles the scale"},
+        {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_IMPORT_FONTS, PLAYER_UI_WIZARD_IMPORT_FONTS,
+         "Import fonts folder opens the folder picker"},
+        {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_REMOVE_FONTS, PLAYER_UI_WIZARD_REMOVE_FONTS,
+         "Remove imported fonts removes them"},
+        {FLOW_WIZ_READY, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_FINISH,
+         "Play now finishes the wizard"},
+        {FLOW_WIZ_STAGED, PLAYER_UI_ID_WIZARD_SECOND, PLAYER_UI_WIZARD_GO_TO_LIBRARY,
+         "Go to library saves and leaves"}
+    };
+    for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        CHECK(wizard_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
+              cases[i].what);
+    }
 }
 
 static void test_screen_actions(void) {
@@ -885,7 +1042,13 @@ static int capture_screens(const char *directory) {
             {FLOW_BUILT, "flow-build-written", PLAYER_UI_ID_BUILD_ACTION},
             {FLOW_CONSENT, "flow-prereq-consent", PLAYER_UI_ID_PREREQ_ACCEPT},
             {FLOW_PROGRESS, "flow-prereq-progress", PLAYER_UI_ID_PREREQ_CANCEL},
-            {FLOW_ERROR, "flow-error", PLAYER_UI_ID_ERROR_RECOVER}
+            {FLOW_ERROR, "flow-error", PLAYER_UI_ID_ERROR_RECOVER},
+            {FLOW_WIZ_WELCOME, "wizard-welcome", PLAYER_UI_ID_WIZARD_PRIMARY},
+            {FLOW_WIZ_CHOSEN, "wizard-chosen", PLAYER_UI_ID_WIZARD_PRIMARY},
+            {FLOW_WIZ_COPYING, "wizard-copying", PLAYER_UI_ID_WIZARD_CANCEL},
+            {FLOW_WIZ_VERIFY, "wizard-verify", PLAYER_UI_ID_WIZARD_PRIMARY},
+            {FLOW_WIZ_FONTS, "wizard-fonts", PLAYER_UI_ID_WIZARD_PRIMARY},
+            {FLOW_WIZ_READY, "wizard-ready", PLAYER_UI_ID_WIZARD_PRIMARY}
         };
         for (size_t i = 0u; i < sizeof(flows) / sizeof(flows[0]); ++i) {
             g_flow_case = flows[i].which;
@@ -967,6 +1130,7 @@ int main(int argc, char **argv) {
     title[0] = '\0';
     test_router();
     test_screen_actions();
+    test_wizard_actions();
     test_version_line();
     test_design_system_layout();
     CHECK(build_library_golden(library, sizeof(library), &library_size),

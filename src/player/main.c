@@ -714,10 +714,85 @@ static void player_ui_open_save_folder(PlayerApp *app, size_t title_index) {
 #endif
 }
 
+/* Saves the inspected title to the library and selects it, as the existing
+   wizard's Ready step does. Returns the title's index, or -1. */
+static int player_ui_wizard_save_title(PlayerApp *app) {
+    int idx;
+    if (app->inspecting_game.disc_id[0] == '\0') return -1;
+    player_app_add_game(app, &app->inspecting_game);
+    idx = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
+    if (idx >= 0) app->selected_game_index = idx;
+    return idx;
+}
+
+/* The setup wizard's controls: the same handlers the existing renderer's
+   wizard buttons call (render_setup_wizard in ui_renderer.c). */
+static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
+    switch (op) {
+        case PLAYER_UI_WIZARD_NEXT:
+            player_app_wizard_next(app);
+            break;
+        case PLAYER_UI_WIZARD_BACK:
+            player_app_wizard_back(app);
+            break;
+        case PLAYER_UI_WIZARD_CANCEL:
+            player_app_wizard_cancel(app);
+            break;
+        case PLAYER_UI_WIZARD_CHOOSE_ISO:
+            app->request_file_picker = true;
+            break;
+        case PLAYER_UI_WIZARD_CHOOSE_DIFFERENT:
+            app->wizard.step = WIZARD_STEP_SELECT_GAME;
+            app->request_file_picker = true;
+            break;
+        case PLAYER_UI_WIZARD_ADD_EXPERIMENTAL:
+            if (player_app_add_game(app, &app->inspecting_game)) {
+                player_app_set_view(app, VIEW_LIBRARY);
+            } else {
+                player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                     "The experimental title could not be stored. The library "
+                                     "may be full, or the user data directory is not writable.",
+                                     "Return to Library", VIEW_LIBRARY);
+            }
+            break;
+        case PLAYER_UI_WIZARD_ACCEPT_FONTS:
+            app->wizard.font_confirmed = true;
+            player_app_wizard_next(app);
+            break;
+        case PLAYER_UI_WIZARD_CYCLE_RESOLUTION:
+            player_app_cycle_resolution_scale(app, 1);
+            break;
+        case PLAYER_UI_WIZARD_IMPORT_FONTS:
+            app->request_font_folder_picker = true;
+            break;
+        case PLAYER_UI_WIZARD_REMOVE_FONTS:
+            player_app_fonts_remove_imports(app);
+            break;
+        case PLAYER_UI_WIZARD_FINISH: {
+            bool runtime_ready = app->inspecting_game.is_prepared;
+            int idx = player_ui_wizard_save_title(app);
+            if (idx >= 0 && runtime_ready) (void)player_app_launch_game(app, idx);
+            player_app_set_view(app, VIEW_LIBRARY);
+            break;
+        }
+        case PLAYER_UI_WIZARD_GO_TO_LIBRARY:
+            (void)player_ui_wizard_save_title(app);
+            player_app_wizard_cancel(app);
+            break;
+        case PLAYER_UI_WIZARD_NONE:
+        default:
+            break;
+    }
+}
+
 static void player_ui_nk_apply_action(PlayerApp *app,
                                      const PlayerUiAction *action) {
     int index;
     if (app == NULL || action == NULL) return;
+    if (action->kind == PLAYER_UI_ACTION_WIZARD) {
+        player_ui_wizard_apply(app, (PlayerUiWizardOp)action->primary);
+        return;
+    }
     if (action->kind == PLAYER_UI_ACTION_ADD_DISC) {
         app->request_file_picker = true;
         return;

@@ -55,7 +55,8 @@ typedef enum {
     PLAYER_UI_ACTION_LEAVE_BUILD,      /* the package is written: back to the library */
     PLAYER_UI_ACTION_PREREQ_ACCEPT,    /* download the listed build tools */
     PLAYER_UI_ACTION_PREREQ_CANCEL,
-    PLAYER_UI_ACTION_ERROR_RECOVER     /* the error card's one recovery action */,
+    PLAYER_UI_ACTION_ERROR_RECOVER,    /* the error card's one recovery action */
+    PLAYER_UI_ACTION_WIZARD            /* a setup wizard control; .primary carries the op */,
     PLAYER_UI_ACTION_OPEN_LIBRARY,
     PLAYER_UI_ACTION_OPEN_ABOUT,
     PLAYER_UI_ACTION_OPEN_NOTICES
@@ -99,6 +100,72 @@ typedef struct {
     const char *page_label;
     float logical_height;   /* 0 selects 800 */
 } PlayerUiLibraryModel;
+
+/* What a setup wizard control asks for (PLAYER_UI_ACTION_WIZARD; the op rides
+   in PlayerUiAction.primary). main.c runs the same handlers the existing
+   renderer's wizard buttons call. */
+typedef enum {
+    PLAYER_UI_WIZARD_NONE = 0,
+    PLAYER_UI_WIZARD_NEXT,
+    PLAYER_UI_WIZARD_BACK,
+    PLAYER_UI_WIZARD_CANCEL,             /* leave the wizard (skip to library, cancel) */
+    PLAYER_UI_WIZARD_CHOOSE_ISO,         /* open the file picker */
+    PLAYER_UI_WIZARD_CHOOSE_DIFFERENT,   /* back to Select Game and open the picker */
+    PLAYER_UI_WIZARD_ADD_EXPERIMENTAL,   /* add the inspected experimental title */
+    PLAYER_UI_WIZARD_ACCEPT_FONTS,       /* confirm the fonts step and continue */
+    PLAYER_UI_WIZARD_CYCLE_RESOLUTION,
+    PLAYER_UI_WIZARD_IMPORT_FONTS,       /* open the font folder picker */
+    PLAYER_UI_WIZARD_REMOVE_FONTS,
+    PLAYER_UI_WIZARD_FINISH,             /* save to the library, and launch when ready */
+    PLAYER_UI_WIZARD_GO_TO_LIBRARY
+} PlayerUiWizardOp;
+
+typedef struct {
+    const char *status;   /* OK, MISSING, ... */
+    const char *code;
+    const char *message;
+    uint32_t rgba;        /* the status word's colour */
+} PlayerUiCheckRow;
+
+#define PLAYER_UI_WIZARD_FONT_LINES 24u
+#define PLAYER_UI_WIZARD_CHECKS 10u
+
+/* The setup wizard (VIEW_SETUP_WIZARD). step is 0-4: Welcome, Select game,
+   Verify, Fonts and system, Ready. */
+typedef struct {
+    int step;
+    /* Select game */
+    bool has_iso;
+    bool iso_selected;
+    const char *iso_path;
+    const char *iso_detail;         /* "Size: ... · Disc ID: ..." */
+    const char *status_message;
+    /* Verify */
+    bool extracting;
+    bool extraction_complete;
+    bool extraction_failed;
+    bool experimental;
+    bool supported;
+    const char *disc_id;
+    const char *title_name;
+    PlayerUiCheckRow checks[PLAYER_UI_WIZARD_CHECKS];
+    size_t check_count;
+    int files_extracted;
+    int total_files;
+    int extraction_percent;
+    const char *current_file;
+    /* Fonts and system */
+    const char *resolution_line;
+    const char *controller_line;
+    const char *font_lines[PLAYER_UI_WIZARD_FONT_LINES];
+    size_t font_line_count;
+    const char *font_message;
+    /* Ready */
+    bool runtime_ready;
+    const char *summary_line;
+    float logical_width;
+    float logical_height;
+} PlayerUiWizardModel;
 
 /* Package build progress (VIEW_BUILDING_PACKAGE). stage is 0-3 for Preflight,
    Extract, Compile and Package, 4 when every stage is done. */
@@ -175,6 +242,12 @@ enum {
     PLAYER_UI_ID_PREREQ_ACCEPT = 0x4101u,
     PLAYER_UI_ID_PREREQ_CANCEL = 0x4102u,
     PLAYER_UI_ID_ERROR_RECOVER = 0x4201u,
+    PLAYER_UI_ID_WIZARD_PRIMARY = 0x4301u,
+    PLAYER_UI_ID_WIZARD_SECOND = 0x4302u,
+    PLAYER_UI_ID_WIZARD_BACK = 0x4303u,
+    PLAYER_UI_ID_WIZARD_CANCEL = 0x4304u,
+    PLAYER_UI_ID_WIZARD_IMPORT_FONTS = 0x4305u,
+    PLAYER_UI_ID_WIZARD_REMOVE_FONTS = 0x4306u,
     PLAYER_UI_ID_LIBRARY_ITEM_BASE = 0x1100u,
     PLAYER_UI_ID_TITLE_BACK = 0x2001u,
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,
@@ -211,6 +284,7 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
 PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model);
 PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *model);
 PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model);
+PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *model);
 PlayerUiAction player_ui_screen_about(NkUi *ui,
                                       const PlayerUiAboutModel *model);
 

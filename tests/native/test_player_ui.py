@@ -1896,6 +1896,38 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["running"], "0")
 
+    # The next UI draws the setup wizard too, with the existing wizard's handlers.
+    def test_next_ui_wizard_runs_the_first_run_path(self) -> None:
+        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN"),
+                              ui_mode="next")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[1]["view"], "wizard")
+        self.assertEqual(frames[1]["wizard_step"], "welcome")
+        self.assertEqual(frames[2]["wizard_step"], "select_game")
+        self.assertEqual(frames[3]["picker"], "1",
+                         "Choose a disc image is the focused action on Select game")
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" in run["stdout"]:
+            # Without its fonts the next UI falls back to the existing renderer.
+            legacy = self.run_player("empty", ("KEY_RETURN",))
+            legacy_frames = legacy["frames"]
+            assert isinstance(legacy_frames, list)
+            self.assertNotEqual(frames[1]["pixels"], legacy_frames[1]["pixels"],
+                                "the next UI, not the existing renderer, draws the wizard")
+
+        fonts = self.run_player("wizard4", ("KEY_RETURN",), ui_mode="next")
+        font_frames = fonts["frames"]
+        assert isinstance(font_frames, list)
+        self.assertEqual(font_frames[1]["wizard_step"], "ready_launch")
+        self.assertEqual(font_frames[1]["font_confirmed"], "1")
+
+        for key in ("KEY_ESCAPE", "KEY_RETURN"):
+            staging = self.run_player("wizard-staging", (key,), ui_mode="next")
+            stage_frames = staging["frames"]
+            assert isinstance(stage_frames, list)
+            self.assertEqual(stage_frames[0]["extracting"], "1")
+            self.assertEqual(stage_frames[1]["extraction_cancel"], "1", key)
+
     # The next UI draws the build, build tool download and error screens itself and
     # keeps every action and Back meaning the existing renderer had.
     def test_next_ui_build_screen_cancels_and_returns(self) -> None:

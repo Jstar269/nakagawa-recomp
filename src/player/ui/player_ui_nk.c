@@ -68,6 +68,12 @@ struct PlayerUiNk {
     char flow_title[NK_MAX_TITLE_LEN + NK_MAX_DISC_ID_LEN + 16];
     PlayerUiPrereqItem prereq_items[PLAYER_UI_PREREQ_CAP];
     char version_line[64];
+    char wizard_detail[160];
+    char wizard_resolution[96];
+    char wizard_controller[160];
+    char wizard_summary[224];
+    unsigned flow_screen;   /* which flow screen drew last; 0 outside them */
+    NkUiId pre_flow_focus;  /* the library focus to give back on leaving */
     bool ready;
 };
 
@@ -216,11 +222,12 @@ void player_ui_nk_destroy(PlayerUiNk *player) {
     free(player);
 }
 
-/* The views the next UI draws: the library (router screens), and the build,
-   build tool download and error screens a first run passes through. The rest
-   (setup wizard, settings, inspector, game found) stay with ui_renderer.c. */
+/* The views the next UI draws: the library (router screens), and the setup
+   wizard, build, build tool download and error screens a first run passes
+   through. The rest (settings, inspector, game found) stay with ui_renderer.c. */
 static bool player_ui_nk_flow_view(PlayerView view) {
-    return view == VIEW_BUILDING_PACKAGE || view == VIEW_PREREQ_CONSENT ||
+    return view == VIEW_SETUP_WIZARD || view == VIEW_BUILDING_PACKAGE ||
+           view == VIEW_PREREQ_CONSENT ||
            view == VIEW_PREREQ_PROGRESS || view == VIEW_ERROR;
 }
 
@@ -240,9 +247,148 @@ static const char *player_ui_error_badge(const ErrorState *error) {
     return error->error_code;
 }
 
+static void player_ui_format_size(char *out, size_t out_size, uint64_t bytes) {
+    if (bytes >= 1024ULL * 1024ULL * 1024ULL) {
+        snprintf(out, out_size, "%.2f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
+    } else if (bytes >= 1024ULL * 1024ULL) {
+        snprintf(out, out_size, "%.2f MB", (double)bytes / (1024.0 * 1024.0));
+    } else {
+        snprintf(out, out_size, "%llu bytes", (unsigned long long)bytes);
+    }
+}
+
+static const char *player_ui_resolution_word(int scale) {
+    switch (scale) {
+        case 1: return "1x native (480x272)";
+        case 2: return "2x (960x544)";
+        case 3: return "3x (1440x816)";
+        case 4: return "4x";
+        case 8: return "8x (3840x2176)";
+        default: return "Custom";
+    }
+}
+
+/* The setup wizard's model, from the same wizard state the existing renderer
+   reads. */
+static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app,
+                                              NkUiScale scale) {
+    const NkUiTheme *theme = nk_ui_theme(player->ui);
+    const GameRecord *game = &app->inspecting_game;
+    PlayerUiWizardModel model;
+    char size[48];
+    memset(&model, 0, sizeof(model));
+    model.step = (int)app->wizard.step;
+    model.logical_width = scale.logical_w;
+    model.logical_height = scale.logical_h;
+    model.disc_id = game->disc_id;
+    model.title_name = game->title_name;
+    switch (app->wizard.step) {
+        case WIZARD_STEP_SELECT_GAME:
+            model.has_iso = game->iso_path[0] != '\0';
+            model.iso_selected = app->wizard.iso_selected;
+            model.iso_path = game->iso_path;
+            player_ui_format_size(size, sizeof(size), game->iso_size_bytes);
+            snprintf(player->wizard_detail, sizeof(player->wizard_detail),
+                     "Size: %s \xC2\xB7 Disc ID: %s", size,
+                     game->disc_id[0] != '\0' ? game->disc_id : "Inspected");
+            model.iso_detail = player->wizard_detail;
+            model.status_message = app->wizard.status_message;
+            break;
+        case WIZARD_STEP_INSPECT_VERIFY:
+            model.extracting = app->wizard.is_extracting;
+            model.extraction_complete = app->wizard.extraction_complete;
+            model.extraction_failed = app->wizard.extraction_failed;
+            model.experimental = game->is_experimental;
+            model.supported = !game->is_experimental &&
+                              (app->wizard.extraction_complete ||
+                               game->status == NK_STATUS_VERIFIED);
+            model.files_extracted = app->wizard.files_extracted;
+            model.total_files = app->wizard.total_files;
+            model.extraction_percent = app->wizard.extraction_percent;
+            model.current_file = app->wizard.extraction_current_file;
+            for (size_t i = 0u; i < app->wizard.preflight.count && i < PLAYER_UI_WIZARD_CHECKS;
+                 ++i) {
+                const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
+                PlayerUiCheckRow *row = &model.checks[model.check_count++];
+                row->code = check->code;
+                row->message = check->message;
+                row->status = "Unknown";
+                row->rgba = theme->dim;
+                switch (check->status) {
+                    case PREFLIGHT_OK:
+                        row->status = "OK";
+                        row->rgba = theme->ready;
+                        break;
+                    case PREFLIGHT_MISSING:
+                        row->status = "Missing";
+                        row->rgba = theme->warning;
+                        break;
+                    case PREFLIGHT_INCOMPATIBLE:
+                        row->status = "Incompatible";
+                        row->rgba = theme->error;
+                        break;
+                    case PREFLIGHT_STALE:
+                        row->status = "Stale";
+                        row->rgba = theme->warning;
+                        break;
+                    case PREFLIGHT_UNSUPPORTED:
+                        row->status = "Unsupported";
+                        row->rgba = theme->error;
+                        break;
+                    case PREFLIGHT_IN_PROGRESS:
+                        row->status = "In progress";
+                        row->rgba = theme->warning;
+                        break;
+                    case PREFLIGHT_INVALID:
+                        row->status = "Invalid";
+                        row->rgba = theme->error;
+                        break;
+                }
+            }
+            break;
+        case WIZARD_STEP_SYSTEM_FONTS:
+            if (app->wizard.font_slot_detail[0][0] == '\0') player_app_refresh_font_status(app);
+            snprintf(player->wizard_resolution, sizeof(player->wizard_resolution),
+                     "Internal resolution: %s",
+                     player_ui_resolution_word(app->settings.resolution_scale));
+            snprintf(player->wizard_controller, sizeof(player->wizard_controller),
+                     "Controller: %s",
+                     app->settings.controller_connected ? app->settings.controller_name
+                                                        : "keyboard and mouse");
+            model.resolution_line = player->wizard_resolution;
+            model.controller_line = player->wizard_controller;
+            for (int item = 0; item < NK_FONT_LATIN_INDEX_COUNT + 2 &&
+                               (size_t)item < PLAYER_UI_WIZARD_FONT_LINES; ++item) {
+                model.font_lines[model.font_line_count++] = item == 0
+                    ? app->wizard.font_slot_detail[NK_FONT_SLOT_JAPANESE]
+                    : item == NK_FONT_LATIN_INDEX_COUNT + 1
+                        ? app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN]
+                        : app->wizard.font_latin_index_detail[item - 1];
+            }
+            model.font_message = app->wizard.font_message;
+            break;
+        case WIZARD_STEP_READY_LAUNCH:
+            model.runtime_ready = game->is_prepared;
+            snprintf(player->wizard_summary, sizeof(player->wizard_summary),
+                     "Resolution %s \xC2\xB7 %s \xC2\xB7 Sound %d%% \xC2\xB7 Package %s",
+                     player_ui_resolution_word(app->settings.resolution_scale),
+                     app->settings.fullscreen ? "Fullscreen" : "Windowed",
+                     app->settings.master_volume, game->is_prepared ? "ready" : "not built yet");
+            model.summary_line = player->wizard_summary;
+            break;
+        case WIZARD_STEP_WELCOME:
+        default:
+            break;
+    }
+    return player_ui_screen_wizard(player->ui, &model);
+}
+
 static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
                                             NkUiScale scale, double now_s) {
     PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    if (app->active_view == VIEW_SETUP_WIZARD) {
+        return player_ui_render_wizard(player, app, scale);
+    }
     if (app->active_view == VIEW_BUILDING_PACKAGE) {
         const PackageBuildSession *build = &app->build_session;
         PlayerUiBuildModel model;
@@ -328,6 +474,41 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
         return player_ui_screen_error(player->ui, &model);
     }
     return none;
+}
+
+/* The flow screens open with focus on their main action. The view changes after
+   the frame that asked for it, so without this the first frame of a new screen
+   would still focus the control that opened it, and a press on that frame would
+   be lost. Leaving the flow gives the library back the focus it had. */
+static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
+    unsigned screen = 0u;
+    NkUiId focus = 0u;
+    if (player_ui_nk_flow_view(app->active_view)) {
+        screen = (unsigned)app->active_view * 64u + 1u;
+        switch (app->active_view) {
+            case VIEW_SETUP_WIZARD:
+                screen += (unsigned)app->wizard.step * 2u + (app->wizard.is_extracting ? 1u : 0u);
+                focus = app->wizard.step == WIZARD_STEP_INSPECT_VERIFY &&
+                        app->wizard.is_extracting
+                    ? PLAYER_UI_ID_WIZARD_CANCEL : PLAYER_UI_ID_WIZARD_PRIMARY;
+                break;
+            case VIEW_BUILDING_PACKAGE: focus = PLAYER_UI_ID_BUILD_ACTION; break;
+            case VIEW_PREREQ_CONSENT: focus = PLAYER_UI_ID_PREREQ_ACCEPT; break;
+            case VIEW_PREREQ_PROGRESS: focus = PLAYER_UI_ID_PREREQ_CANCEL; break;
+            case VIEW_ERROR: focus = PLAYER_UI_ID_ERROR_RECOVER; break;
+            default: break;
+        }
+    }
+    if (screen == player->flow_screen) return;
+    if (player->flow_screen == 0u) {
+        player->pre_flow_focus = nk_ui_focused(player->ui);
+    }
+    if (screen != 0u) {
+        nk_ui_focus(player->ui, focus);
+    } else if (player->pre_flow_focus != 0u) {
+        nk_ui_focus(player->ui, player->pre_flow_focus);
+    }
+    player->flow_screen = screen;
 }
 
 bool player_ui_nk_at_library_root(const PlayerUiNk *player) {
@@ -601,6 +782,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         if (restore != 0u) nk_ui_focus(player->ui, restore);
     }
     route = nk_ui_router_current(player->router);
+    player_ui_flow_focus(player, app);
     if (player_ui_nk_flow_view(app->active_view)) {
         action = player_ui_render_flow(player, app, scale, now_s);
         if (action.kind != PLAYER_UI_ACTION_NONE && out_action != NULL) {
