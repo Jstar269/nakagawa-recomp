@@ -361,6 +361,8 @@ high nibbles [C3]. The fixed prefix is:
 | 48–54 | 7 | Unassigned bits; ignored. |
 | 55–63 | 9 | Shadow identifier interpreted by §3.3. |
 
+**Console library use of bits 0–13 (measured, #1055).** In a console font file every glyph record's bits 0–13 equal the record's own length (12 bytes for a glyph without a bitmap), i.e. the distance to the next record in pointer order, rounded to 4 bytes (340 of 340 consecutive records checked in a console-derived font file). The console library sizes a per-glyph allocation as this field minus 8 for revision 2 and later; a font whose field was 0 made `sceFontGetCharInfo` and `sceFontGetCharGlyphImage` request `0xfffffff8` bytes and fail with `0x80460001` on a PSP-3000 / 6.61, while the same font opened (with header bytes `0x20`/`0x21` = 4). A writer that emits no shadow record should therefore write the primary record's own length here; whether the library then draws the font has not been run.
+
 Bits 64 onward contain exactly three metric groups in dimension, X-adjustment,
 Y-adjustment order, followed by one 8-bit advance-table index. Each of the
 first three groups is either an 8-bit index into its corresponding two-column
