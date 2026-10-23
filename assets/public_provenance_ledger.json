@@ -378,7 +378,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4cd48faa423fa1b79e0e7010febc910da350e87b9fbe1c1d1409d1990c4bbbb2"
+      "sha256": "2043579e768a73d63acc8e4fd94cb28bbf8dd2ec3d186244c974183f16a46464"
     },
     {
       "path": "ISSUES.md",
@@ -409,7 +409,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5067fb02162ac98bb36a837de33e6ba0841eb9b5f28c314811fd90038bec833b"
+      "sha256": "deddb2e62fed86f3f0e2240e50ded792cc9907bdb53660db878daa8afa7763d4"
     },
     {
       "path": "NOTICE.md",
@@ -418,7 +418,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6a748912cba20a6e6cfe4dfbfbcc7f6561b23383fc45851ef03e5cfbe8ed5235"
+      "sha256": "9e9960acccf8f487fca05648cb229fec2487193357b36a250779cd844ade4704"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -701,6 +701,171 @@
       "sha256": "d87208bc3fcebc01c10d05b59c25e05107f74270b632de8c4c8b898f98e72138"
     },
     {
+      "path": "assets/fonts/ui/chakra-petch/ChakraPetch-Bold.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_google_fonts_ui_20261022",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "OFL-1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "65fbf76d95651697275e19db4d717c0e95a789ddd3476478b05292104db278a0"
+    },
+    {
+      "path": "assets/fonts/ui/chakra-petch/ChakraPetch-SemiBold.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_google_fonts_ui_20261022",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "OFL-1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "45264de3204ddbd5fb3e14a2402acd5c630d16650ae5fc221d2c52da46a6734b"
+    },
+    {
+      "path": "assets/fonts/ui/chakra-petch/OFL.txt",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_google_fonts_ui_20261022",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "OFL-1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "4a1d840eb0b2df8553804d844960a15773ca5af5d5c9803745307db8c617540b"
+    },
+    {
+      "path": "assets/fonts/ui/geist-mono/GeistMono-Medium.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_google_fonts_ui_20261022",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "OFL-1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "3fc64e39b238a4d4370a35b5226103ab34d04fe741d93bbd59929cab8bbe3500"
+    },
+    {
+      "path": "assets/fonts/ui/geist-mono/GeistMono-Regular.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_google_fonts_ui_20261022",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "OFL-1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "341cdaf235d2cdcfa85ff4eed9628381a89422bd3439710c80e45b725db70b2c"
+    },
+    {
+      "path": "assets/fonts/ui/geist-mono/OFL.txt",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_google_fonts_ui_20261022",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "OFL-1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f12f59163d92084b0473315ae4566cde0c1233d940ae464f5225a69c347cc691"
+    },
+    {
+      "path": "assets/fonts/ui/geist/Geist-Medium.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_google_fonts_ui_20261022",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "OFL-1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "35089cbe873bf2764d4ba9810b90f6b93eee45ea37efe4cd83997825b97ab0db"
+    },
+    {
+      "path": "assets/fonts/ui/geist/Geist-Regular.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_google_fonts_ui_20261022",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "OFL-1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "58a4bac9a7b901313822aada65bb1469b3c873874e11b3fc88ba75ed9576d98a"
+    },
+    {
+      "path": "assets/fonts/ui/geist/Geist-SemiBold.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_google_fonts_ui_20261022",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "OFL-1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "c157d36cc1778633d43f5a0ff92b078bb6de26f5011a6a092b7b6f49fe022fc5"
+    },
+    {
+      "path": "assets/fonts/ui/geist/OFL.txt",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_google_fonts_ui_20261022",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "OFL-1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f12f59163d92084b0473315ae4566cde0c1233d940ae464f5225a69c347cc691"
+    },
+    {
+      "path": "assets/fonts/ui/manifest.json",
+      "classification": "reviewed_configuration",
+      "evidence": {
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
+      },
+      "sha256": "93f08a1965eaad90224a11c3b1a8baaba19a27b9a743d08ba905baaf31c9f77a"
+    },
+    {
+      "path": "assets/fonts/ui/noto-sans-jp/NotoSansJP-Regular.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_google_fonts_ui_20261022",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "OFL-1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a66655d7b24ac6f793f73914c60ad44522b9fbd9e5f9b3706220b66c44fdaad2"
+    },
+    {
+      "path": "assets/fonts/ui/noto-sans-jp/OFL.txt",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_google_fonts_ui_20261022",
+        "evidence_tier": "N",
+        "upstream": "documented upstream family",
+        "license": "OFL-1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "babcfe66c8a098b2fa279bc724a3a342f8124f77ce18941fbcc1bbb39823cded"
+    },
+    {
       "path": "assets/ge_corpus.schema.json",
       "classification": "reviewed_configuration",
       "evidence": {
@@ -784,7 +949,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "de299c23f48059502be115d67f5cb00bbb796efd13ab386d63cb1e45d47f99b3"
+      "sha256": "9684461a0897de73b15762fe1f4d806e11db50a20cfa1ca5da04bac0204ef595"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -805,7 +970,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "63a784f411c5c3b3db50deb62b0495d9d2027fb4b8207d3779fd7dda009a18b1"
+      "sha256": "96182e74805b13d0cff9f06fdfadc86cbbfea33ef1758d9657510af0f6d49aad"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1711,7 +1876,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "97decf20cf7353a8050b38330fca32c9a1c3a3ca580b5cdfa6d82d2507b4d411"
+      "sha256": "392eec4399cabd9fa355a7de1f3c724ac2429656d000c64d240755e1e94a23e0"
     },
     {
       "path": "docs/provenance/GUEST_INTERP_ATTESTATION.md",
@@ -6665,6 +6830,18 @@
       "sha256": "f1de9fa241cc2d8bbad83515fecde0dba2b34059061a571274df374a482bdfe0"
     },
     {
+      "path": "tests/native/test_ui_font_assets.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_ui_font_tests_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "80aaaead8ec78425500befe645e67fa51458ff576b3baaaa9a977b0958663cef"
+    },
+    {
       "path": "tests/native/test_win32_process.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -6801,7 +6978,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "24f35c5b491eaa046cda1a7aec6228ae03ca0cdeaa5eeb8d9057fdd675fdfeb8"
+      "sha256": "5d6885f35b5826858844dd8ef5713d82bc9104224403d90db8e3f4ce4689105b"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -10777,6 +10954,18 @@
         "upstream_attribution": null
       },
       "sha256": "92ec2e8a7e1e42ce24192ec1de9d05675763d4657017e18efaf9bdb26f43ac74"
+    },
+    {
+      "path": "tools/test_ui_font_assets.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "c2a_ui_font_tests_20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "dbfa3d8060c380c04151f0faa8cfcc5d8ef41ca6d5fcf0eb6651a2e6c674bf66"
     },
     {
       "path": "tools/test_validate_assets.py",

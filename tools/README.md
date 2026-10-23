@@ -476,6 +476,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_pgf_writer.py` | PGF writer determinism and public-reader round trip over generated glyph sets. |
 | `test_pgf_validate_parity.py` | Field-by-field parity of the native PGF validator and its Python mirror on seeded images and mutations. |
 | `test_ttf2pgf.py` | Converter determinism, manifest/pin binding, named refusals, and public-reader round trip over the pinned font fixture. |
+| `test_ui_font_assets.py` | Pins the bundled player UI fonts (exact hashes, static weights) and each family's OFL text. |
 | `test_ppmdiff_coverage.py` | Fail-closed coverage tests for the framebuffer diff. |
 | `test_frame_capture_check.py` | Frame-capture accounting plus the emitted-format contract that pins the FBSNAP/WATCHDOG patterns to the current runtime strings. |
 | `test_progress_evidence.py` | Evidence-integrity regressions for the progress tracker. |
