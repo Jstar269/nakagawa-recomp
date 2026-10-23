@@ -714,7 +714,7 @@ static uint32_t alloc_block(uint32_t size) {
     if (size == 0 || size > max_req) {
         if (guard) {
             fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) heap=0x%08x top=0x%08x max=0x%08x\n",
-                    size, size, s_heap, s_part_top, max_req);
+                    size, size, s_heap, user_partition_top(), max_req);
             fflush(stderr);
         }
         return 0xFFFFFFFFu;
@@ -754,7 +754,7 @@ static uint32_t alloc_block(uint32_t size) {
         int overflow = (aligned + size < aligned) || (aligned + size > top);
         if (overflow && guard) {
             fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) heap=0x%08x top=0x%08x max=0x%08x\n",
-                    size, size, s_heap, s_part_top, max_req);
+                    size, size, s_heap, user_partition_top(), max_req);
             fflush(stderr);
             return 0xFFFFFFFFu;  /* PSP alloc-failure sentinel */
         }
