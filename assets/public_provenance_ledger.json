@@ -409,7 +409,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5916741cf06bf5217fe60e23df9f43100d23c6c984cf34c0c719c6fc341fc860"
+      "sha256": "cc2251cfc0917318d519b37b991bd903877424ff43bbb490213339c2f6e9d4ad"
     },
     {
       "path": "NOTICE.md",
@@ -1768,7 +1768,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d7c935b8ee933e0b3a777c3248901862b44b8754a0f4a10314ad3e690caf2e6a"
+      "sha256": "621665664948e23d575e95f0c4ac964c40257107f9c23e89f5bb52c369d45829"
     },
     {
       "path": "docs/cleanroom/PGF_SPEC.md",
@@ -2032,7 +2032,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "ed97e9d13d94574c20ed1600273770be509f69b54f04039e3ea2514fe1db5b76"
+      "sha256": "33aaf8fee26571c52b8f0aa5a8b4585cb056df3ce48e5325c90e8a6319161968"
     },
     {
       "path": "fixtures/fonts/gowundodum/GowunDodum-Regular.ttf",
@@ -10965,7 +10965,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "92ec2e8a7e1e42ce24192ec1de9d05675763d4657017e18efaf9bdb26f43ac74"
+      "sha256": "38396ea87ac0646a32e05105c96f9f8ede3d17869458a19d35e97a11b3a41033"
     },
     {
       "path": "tools/test_ui_font_assets.py",
@@ -11338,7 +11338,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e3f5d3b5ab0d736a2bccdd59cfb3e0e46f15f8e213e80eeeace14aaea7923326"
+      "sha256": "6173f4810816dcff10f916d8082f9a242e0c2626c97efe439badf1a59272672c"
     },
     {
       "path": "tools/validate_assets.py",
