@@ -222,6 +222,54 @@ static void test_nk_library_save_load_escaping_and_samples(void) {
     assert(nk_library_find_by_disc_id(&loaded, "TEST00002") == NULL);
 }
 
+static void test_nk_library_null_path_default_routing(void) {
+    printf("[NATIVE_TEST] Testing nk_library load/save default path routing (file_path == NULL)...\n");
+
+    char expected_default_dir[NK_MAX_PATH];
+    assert(nk_platform_get_path(NK_PATH_DATA, expected_default_dir, sizeof(expected_default_dir)));
+
+    char expected_default_file[NK_MAX_PATH];
+    int written = snprintf(expected_default_file, sizeof(expected_default_file), "%s%clibrary.json",
+                           expected_default_dir, nk_platform_path_separator());
+    assert(written > 0 && (size_t)written < sizeof(expected_default_file));
+
+    /* Ensure initial clean state in isolated data root */
+    remove(expected_default_file);
+    char bak_file[NK_MAX_PATH + 8];
+    snprintf(bak_file, sizeof(bak_file), "%s.bak", expected_default_file);
+    remove(bak_file);
+
+    NkLibrary lib;
+    nk_library_init(&lib);
+
+    /* 1. Loading with file_path == NULL on non-existent file returns NK_OK with empty library */
+    assert(nk_library_load(&lib, NULL) == NK_OK);
+    assert(nk_library_count(&lib) == 0);
+    assert(strcmp(lib.library_path, expected_default_file) == 0);
+
+    /* 2. Add an entry and save with file_path == NULL (uses lib.library_path) */
+    NkGameEntry entry;
+    seed_game_entry(&entry, "DEFAULT001", "Default Path Game");
+    assert(nk_library_add_or_update(&lib, &entry) == NK_OK);
+    assert(nk_library_save(&lib, NULL) == NK_OK);
+    assert(nk_platform_file_exists(expected_default_file));
+
+    /* 3. Re-load with file_path == NULL and verify entry */
+    NkLibrary reloaded;
+    nk_library_init(&reloaded);
+    assert(nk_library_load(&reloaded, NULL) == NK_OK);
+    assert(nk_library_count(&reloaded) == 1);
+    assert(strcmp(reloaded.library_path, expected_default_file) == 0);
+
+    const NkGameEntry *found = nk_library_find_by_disc_id(&reloaded, "DEFAULT001");
+    assert(found != NULL);
+    assert(strcmp(found->title_name, "Default Path Game") == 0);
+
+    /* Clean up */
+    remove(expected_default_file);
+    remove(bak_file);
+}
+
 static void test_nk_library_corrupt_load_and_backup_recovery(void) {
     printf("[NATIVE_TEST] Testing nk_library corrupt load handling and backup recovery...\n");
 
@@ -299,6 +347,7 @@ int main(void) {
     test_nk_library_init_and_null_guards();
     test_nk_library_add_update_remove_bounds();
     test_nk_library_save_load_escaping_and_samples();
+    test_nk_library_null_path_default_routing();
     test_nk_library_corrupt_load_and_backup_recovery();
 
     /* Catalog SIZE is deliberately not asserted here. It is a literal that every

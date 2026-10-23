@@ -229,6 +229,57 @@ static void test_hostile_library_json(const char *test_dir) {
     assert(nk_library_load(&double_corrupt_lib, double_corrupt_path) == NK_ERROR_GENERIC);
     assert(nk_library_count(&double_corrupt_lib) == 0);
 
+    /* 11. Zero-byte library file */
+    printf("[HOSTILE_TEST] Subtest 11: zero-byte library file\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%czero_byte_lib.json", test_dir, nk_platform_path_separator());
+    write_test_file(fpath, "", 0);
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_IO);
+
+    /* 12. Oversized library file (>4MB) */
+    printf("[HOSTILE_TEST] Subtest 12: oversized library file\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%coversized_lib.json", test_dir, nk_platform_path_separator());
+    size_t big_sz = 4 * 1024 * 1024 + 16;
+    char *big_buf = (char *)malloc(big_sz);
+    assert(big_buf != NULL);
+    memset(big_buf, ' ', big_sz);
+    write_test_file(fpath, big_buf, big_sz);
+    free(big_buf);
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_IO);
+
+    /* 13. Overlong boot_executable path */
+    printf("[HOSTILE_TEST] Subtest 13: overlong boot_executable path\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%coverlong_boot_exec.json", test_dir, nk_platform_path_separator());
+    char overlong_exec[300];
+    memset(overlong_exec, 'E', 256);
+    overlong_exec[256] = '\0';
+    char overlong_json[2048];
+    snprintf(overlong_json, sizeof(overlong_json),
+        "{\n  \"schema_version\": 1,\n  \"games\": [\n    {\n      \"disc_id\": \"TEST00001\",\n      \"boot_executable\": \"%s\"\n    }\n  ]\n}",
+        overlong_exec);
+    write_test_file(fpath, overlong_json, strlen(overlong_json));
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_INVALID_EXECUTABLE);
+
+    /* 14. Out-of-bounds enum values */
+    printf("[HOSTILE_TEST] Subtest 14: out-of-bounds enum values\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%coob_enum.json", test_dir, nk_platform_path_separator());
+    const char json_oob_kind[] =
+        "{\n  \"schema_version\": 1,\n  \"games\": [\n    {\n      \"disc_id\": \"TEST00001\",\n      \"executable_eboot_kind\": 999\n    }\n  ]\n}";
+    write_test_file(fpath, json_oob_kind, strlen(json_oob_kind));
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_GENERIC);
+
+    /* 15. Missing closing brackets at EOF */
+    printf("[HOSTILE_TEST] Subtest 15: missing closing array bracket ]\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%cmissing_closing_array.json", test_dir, nk_platform_path_separator());
+    const char json_no_closing_array[] = "{\n  \"schema_version\": 1,\n  \"games\": [\n    {\n      \"disc_id\": \"TEST00001\"\n    }\n}";
+    write_test_file(fpath, json_no_closing_array, strlen(json_no_closing_array));
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_GENERIC);
+
+    printf("[HOSTILE_TEST] Subtest 16: missing closing root object bracket }\n"); fflush(stdout);
+    snprintf(fpath, sizeof(fpath), "%s%cmissing_closing_obj.json", test_dir, nk_platform_path_separator());
+    const char json_no_closing_obj[] = "{\n  \"schema_version\": 1,\n  \"games\": [\n    {\n      \"disc_id\": \"TEST00001\"\n    }\n  ]";
+    write_test_file(fpath, json_no_closing_obj, strlen(json_no_closing_obj));
+    assert(nk_library_load(&lib, fpath) == NK_ERROR_GENERIC);
+
     printf("[HOSTILE_TEST] Library JSON tests PASSED!\n");
     fflush(stdout);
 }

@@ -6458,7 +6458,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "35c767f4d4ea3648a8c497312ae7ad0f3284b7090365c6df4f916bfd2043ae0e"
+      "sha256": "e6453b8e17b8609ebe232229b008604abadc62cfab716fc7246f1be45322c90e"
     },
     {
       "path": "tests/native/test_fuzz_parsers.c",
@@ -6590,7 +6590,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "17edf6b0d59ccea7bbe52c1c63efd33eef65752dbcc9782bbcba1a842d4e392e"
+      "sha256": "d9c949fd567b50f8958e1b6e7b989886e292ba5c65f0a9f59670d84d4e4bb2a4"
     },
     {
       "path": "tests/native/test_pgf_public.c",
