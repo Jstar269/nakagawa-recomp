@@ -246,7 +246,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d9e658ed670fb8fdeb4be9e1ab57ef11cb338d03e7aa703e949ca0bb15efe5a9"
+      "sha256": "09a74b8a204a48db95aa019d93017c740720cd116191b25ba53add337b5fecf2"
     },
     {
       "path": ".github/workflows/provenance-attestation-merge-group.yml",
