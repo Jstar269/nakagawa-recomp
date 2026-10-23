@@ -4,6 +4,7 @@
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
 // Derived from PPSSPP (https://github.com/hrydgard/ppsspp), GPL-2.0-or-later
+// Copyright (c) 2012- PPSSPP Project and contributors
 
 /* *
  * Save operations write real files under memstick/PSP/SAVEDATA/<gameName><saveName>/ next to
