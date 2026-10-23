@@ -263,7 +263,7 @@ def stage_install(dest: Path, player: Path, *, repo: Path = ROOT,
 
 
 def desktop_folder() -> Path:
-    """The signed-in user's Desktop, including a OneDrive-redirected one."""
+    """The signed-in user's Desktop folder, wherever Windows has redirected it."""
     result = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command",
          "[Environment]::GetFolderPath('Desktop')"],
