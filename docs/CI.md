@@ -213,12 +213,12 @@ either trusted input. A changed publication profile also requires both
 `PROVENANCE_TRUSTED_CANDIDATE_POLICY` and
 `PROVENANCE_POLICY_DELTA_AUTHORITY`, each naming an external reviewed input.
 
-Run the strict aggregate first, then the full Python suite. Treat any failure as
-blocking:
+Run the strict aggregate, then the Python modules for the files you changed. Treat any
+failure as blocking. Hosted CI runs the full Python suite; run it locally only when
+hosted CI cannot run for the change ([what hosted CI does not run](#what-hosted-ci-does-not-run)):
 
 ```bash
 NK_TRUSTED_LEDGER=<external detailed ledger> make readiness
-python -m unittest discover -s tools -p "test_*.py"
 ```
 
 `make readiness` runs the publication/policy checks in cheapest-first order and stops
@@ -320,8 +320,9 @@ Adding a tracked file, or changing one, makes three generated files stale:
 `assets/public_source_profile.json` (classification),
 `assets/public_provenance_ledger.json` (content hashes) and `PUBLIC_EXPORT.json`
 (policy digest and included-content digest). Regenerating them in the working
-tree is not enough — they have to be **staged and committed**, or the commit
-ships a source change without the evidence for its own contents and fails with
+tree is not enough — they have to be **staged and committed** with the change they
+describe (a refresh after merging `main` is its own commit; see `REVIEW.md`), or the
+commit ships a source change without the evidence for its own contents and fails with
 `POLICY_UNCLASSIFIED`, `UNRESOLVED_PUBLIC`, `POLICY_EXPORT_STALE` and
 `PROVENANCE_CONTENT_MISMATCH` together.
 
@@ -439,6 +440,24 @@ $env:NK_TEST_TIER = "full"
 python -m unittest discover -s tools -p "test_*.py"
 Remove-Item Env:NK_TEST_TIER
 ```
+
+### What hosted CI does not run
+
+Hosted CI runs the Python suite on Linux (`python_tools`) when `tools/ci_paths.py` routes
+Python: the full suite for `python_scope` `all`, and only the Makefile-coupled modules when
+a recipe-only `Makefile` change is the only Python-routing change (`python_scope`
+`makefile`). An exact head whose required hosted CI is green, including `python_tools` when
+the change routes Python, needs no local full run; a change that routes no Python needs none
+either.
+
+No hosted job runs the Windows-only cases in `tools/test_asset_index_c.py`,
+`tools/test_scratch_dir.py`, `tools/test_player_package_route.py`,
+`tools/test_manager_safety.py`, `tools/test_visual_oracle.py`, `tools/test_library_sweep.py`
+and `tools/test_stage_install.py`. A change under `tools/`, `src/core/`, `src/player/`, the
+`Makefile` or any `.ps1` file (including the root `nk_manager.ps1`) runs those modules locally
+on Windows. The full local suite builds the native fixtures and takes over an hour on
+Windows. Make-based tests need a POSIX `sh` on `PATH` (MSYS2 `usr/bin` or Git for Windows
+`bin`).
 
 ## Coverage
 
