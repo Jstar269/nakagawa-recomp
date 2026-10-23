@@ -21906,6 +21906,48 @@ static void test_td28_partition_free_reuse(void) {
 /* Fixed-address reservation (sr_alloc_block_at + AllocPartitionMemory type 2).
  * heap_selftest.c covers recomp.c's newlib heap, a different allocator, so the
  * user-partition tests live here next to test_td28_partition_free_reuse. */
+/* A live thread stack is not free partition memory: the reported free sizes and every
+ * allocation end at the lowest live stack, so a game that takes the reported free
+ * memory never receives a block over its own stack. */
+static void test_partition_ends_at_lowest_live_stack(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern uint32_t sr_hle_test_partition_heap_ptr(void);
+    extern uint32_t sr_hle_test_partition_top(void);
+    extern uint32_t sr_hle_test_partition_ceiling(void);
+    const uint32_t NID_ALLOC_PART = 0x237dbd4fu;
+    const uint32_t NID_GET_HEAD   = 0x9d9a5ba1u;
+    const uint32_t NID_MAX_FREE   = 0xa291f107u;
+    const uint32_t FAIL = 0xFFFFFFFFu;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    uint32_t base0 = sr_hle_test_partition_heap_ptr();
+    expect(sr_hle_test_partition_top() <= SR_STACK_ARENA_CEIL,
+           "the partition never reaches the runtime's VBLANK/nested-frame reservation");
+    uint32_t uid = sched_create_thread(0x2000u, 32, 0x40000u);
+    expect(uid != 0u, "a main thread with a 256 KiB stack is created");
+    uint32_t floor = sched_guest_stack_floor();
+    expect(sr_hle_test_partition_top() == floor,
+           "the partition top is the lowest live stack reservation");
+    expect(sr_hle_test_partition_ceiling() > floor, "the configured ceiling lies above the stack");
+
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t max_free = sr_syscall(&cpu, NID_MAX_FREE);
+    expect(max_free == floor - base0, "sceKernelMaxFreeMemSize stops at the stack");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = (floor - base0) + 0x10000u;
+    expect(sr_syscall(&cpu, NID_ALLOC_PART) == FAIL,
+           "an allocation that would cover the live stack fails");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = max_free & ~0xFFu;
+    uint32_t big = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(big != FAIL && big != 0u, "taking the reported free memory succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = big;
+    uint32_t head = sr_syscall(&cpu, NID_GET_HEAD);
+    expect(head + (max_free & ~0xFFu) <= floor, "the block taken ends at or below the stack");
+}
+
 static void test_alloc_block_at_fixed_address(void) {
     extern void sr_hle_test_partition_reset(void);
     extern uint32_t sr_hle_test_partition_heap_ptr(void);
@@ -30757,6 +30799,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_import_sweep_memory_blocks_and_sdk_alias();
     test_td28_partition_free_reuse();
     test_alloc_block_at_fixed_address();
+    test_partition_ends_at_lowest_live_stack();
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();

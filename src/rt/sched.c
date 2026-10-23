@@ -571,6 +571,20 @@ static void stack_ranges_reset(void) {
     stack_ranges_update_top();
 }
 
+/* Lowest guest address a live thread stack reservation uses, or the arena ceiling when
+ * there is none. The user partition ends here (user_partition_top() in hle.c). */
+uint32_t sched_guest_stack_floor(void) {
+    uint32_t floor = SR_STACK_ARENA_CEIL;
+    for (int i = 0; i < s_ntcb; i++) {
+        const TCB *t = &s_tcb[i];
+        if (t->stack_reservation == 0u || t->stack_released) continue;
+        if (t->stack_base < floor) floor = t->stack_base;
+    }
+    return floor;
+}
+
+extern int sr_user_partition_span(uint32_t *base_out, uint32_t *high_out);
+
 static int stack_range_alloc(uint32_t size, uint32_t *base_out) {
     if (!s_stack_allocator_ready) stack_ranges_reset();
     if (!base_out || size == 0u) return 0;
@@ -2439,7 +2453,20 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     }
     uint32_t reservation = user_sz + tls_size;
     uint32_t user_base = 0;
-    if (!stack_range_alloc(reservation, &user_base)) {
+    int stack_ok = stack_range_alloc(reservation, &user_base);
+    uint32_t part_base = 0u, part_high = 0u;
+    if (stack_ok && sr_user_partition_span(&part_base, &part_high) &&
+        user_base < part_high && user_base + reservation > part_base) {
+        /* The descending arena reached memory the user partition has handed out. A PSP
+         * allocates thread stacks from that partition, so the create fails for lack of
+         * memory instead of placing a stack over a live block. */
+        fprintf(stderr, "sched_create_thread: stack [0x%08x,0x%08x) would overlap user-partition "
+                "memory [0x%08x,0x%08x) -- failing create (maps to SCE_KERNEL_ERROR_NO_MEMORY)\n",
+                user_base, user_base + reservation, part_base, part_high);
+        stack_range_release(user_base, reservation);
+        stack_ok = 0;
+    }
+    if (!stack_ok) {
         fprintf(stderr, "sched_create_thread: stack_size=0x%08x exceeds available "
                 "free guest stack ranges below s_stack_top=0x%08x (entry=0x%08x) -- failing create "
                 "(maps to SCE_KERNEL_ERROR_NO_MEMORY)\n",

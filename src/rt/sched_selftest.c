@@ -100,6 +100,15 @@ void sr_heap_note_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t 
 }
 void sr_oor(uint32_t a, uint32_t v, int store) { (void)a; (void)v; (void)store; }
 uint32_t sr_get_ge_status(void) { return 0; }
+/* The user-partition span hle.c reports to the stack allocator; a test sets it. */
+static int g_test_partition_live;
+static uint32_t g_test_partition_base, g_test_partition_high;
+int sr_user_partition_span(uint32_t *base_out, uint32_t *high_out) {
+    if (!g_test_partition_live) return 0;
+    if (base_out) *base_out = g_test_partition_base;
+    if (high_out) *high_out = g_test_partition_high;
+    return 1;
+}
 uint32_t g_frame_prims = 0;
 
 /* This scheduler-only harness does not link recomp.c or execute generated
@@ -1373,6 +1382,41 @@ static void test_stack_exhaustion_fails_create(void) {
     uint32_t ok = sched_create_thread(0x2000u, 32, 0x4000u);
     expect(ok != 0, "a fitting request still succeeds after a failed one");
     expect(s_stack_top < top0, "successful create consumes arena");
+}
+
+/* Thread stacks and the user partition share PSP user RAM. The partition ends at the
+ * lowest live stack (sched_guest_stack_floor), and a stack the arena would place over
+ * live partition memory fails the create instead of overlapping it. */
+static void test_stack_floor_and_partition_overlap(void) {
+    reset_sched();
+    g_test_partition_live = 0;
+    expect(sched_guest_stack_floor() == SR_STACK_ARENA_CEIL,
+           "with no thread the stack floor is the arena ceiling");
+    uint32_t first = sched_create_thread(0x2000u, 32, 0x4000u);
+    expect(first != 0, "a first thread gets a stack");
+    uint32_t floor1 = sched_guest_stack_floor();
+    expect(floor1 < SR_STACK_ARENA_CEIL && floor1 + 0x4000u + 0x800u == SR_STACK_ARENA_CEIL,
+           "the stack floor is the new thread's reservation base");
+
+    /* The partition reaches just below the current floor: the next stack would land on it. */
+    g_test_partition_live = 1;
+    g_test_partition_base = 0x08804000u;
+    g_test_partition_high = floor1 - 0x1000u;
+    int n0 = s_ntcb;
+    uint32_t top0 = s_stack_top;
+    fprintf(stderr, "(expected: one 'would overlap user-partition memory' line follows)\n");
+    uint32_t blocked = sched_create_thread(0x2004u, 32, 0x4000u);
+    expect(blocked == 0, "a stack over live partition memory fails the create");
+    expect(s_ntcb == n0 && s_stack_top == top0,
+           "the refused create leaks no TCB slot and returns its stack range");
+    expect(sched_guest_stack_floor() == floor1, "the refused create leaves the floor unchanged");
+
+    /* Room above the partition: the same request fits. */
+    g_test_partition_high = floor1 - 0x10000u;
+    uint32_t fits = sched_create_thread(0x2008u, 32, 0x4000u);
+    expect(fits != 0, "a stack that clears the partition is still created");
+    expect(sched_guest_stack_floor() < floor1, "the floor follows the lowest live stack");
+    g_test_partition_live = 0;
 }
 
 /* ---- sr_coro primitive tests ------------------------------------------------------- */
@@ -4371,6 +4415,7 @@ int main(int argc, char **argv) {
     test_root_capture_without_a_historical_default();
     test_uid_zero_is_never_a_role();
     test_stack_exhaustion_fails_create();
+    test_stack_floor_and_partition_overlap();
     test_libc_thread_relocation();
     test_coro_self_switch_and_park();
     test_callback_abi_packing();

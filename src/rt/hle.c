@@ -577,7 +577,39 @@ static void user_partition_init(void) {
 typedef struct { uint32_t uid, addr, size, slot_size, prev, next; } Block;
 #define HLE_MAX_PARTITION_BLOCKS 256
 static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
+
+/* Guest thread stacks are carved by the scheduler from a descending arena that ends at
+ * 0x09ef0000, below the runtime's VBLANK stack and nested-frame region, i.e. inside the
+ * PSP user-RAM span this partition also covers. On a PSP, thread stacks come out of the
+ * same user partition, so memory a game is told is free never contains a live stack.
+ * The partition therefore ends at the lowest live stack (and never above the arena
+ * ceiling): sceKernelMaxFreeMemSize / TotalFreeMemSize and every allocation see the
+ * same top. Before this, a game that took the reported free memory (21 MB and more)
+ * received a block over its own main-thread stack, zeroed it, and returned through a
+ * clobbered $ra (AOT_RETURN_TARGET_MISMATCH). sched_guest_stack_floor() is in sched.c. */
+extern uint32_t sched_guest_stack_floor(void);
+static uint32_t user_partition_top(void) {
+    uint32_t floor = sched_guest_stack_floor();
+    return (floor > s_heap_base && floor < s_part_top) ? floor : s_part_top;
+}
+
 static int s_nblocks = 0;
+
+/* The highest guest address any live partition block (or the bump pointer) reaches;
+ * the scheduler refuses a new stack that would overlap [base, high). 0 before the
+ * partition exists. */
+int sr_user_partition_span(uint32_t *base_out, uint32_t *high_out) {
+    if (!s_heap) return 0;
+    uint32_t high = s_heap;
+    for (int i = 0; i < s_nblocks; i++) {
+        if (s_blocks[i].uid == 0u || s_blocks[i].addr == 0u) continue;
+        uint64_t end = (uint64_t)s_blocks[i].addr + (uint64_t)s_blocks[i].slot_size;
+        if (end > high) high = end > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)end;
+    }
+    if (base_out) *base_out = s_heap_base;
+    if (high_out) *high_out = high;
+    return 1;
+}
 
 typedef struct { uint32_t uid, backing_uid; } HleMemoryBlock;
 #define HLE_MAX_MEMORY_BLOCKS 256
@@ -718,7 +750,8 @@ static uint32_t alloc_block(uint32_t size) {
     } else {
         /* Bump allocation from s_heap. */
         uint32_t aligned = (s_heap + 0xFFu) & ~0xFFu;
-        int overflow = (aligned + size < aligned) || (aligned + size > s_part_top);
+        uint32_t top = user_partition_top();
+        int overflow = (aligned + size < aligned) || (aligned + size > top);
         if (overflow && guard) {
             fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) heap=0x%08x top=0x%08x max=0x%08x\n",
                     size, size, s_heap, s_part_top, max_req);
@@ -804,7 +837,7 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     uint64_t end64 = (uint64_t)addr + (uint64_t)eff;
     if (end64 > (uint64_t)0xFFFFFFFFu) return 0xFFFFFFFFu;
     uint32_t end = (uint32_t)end64;
-    if (addr < s_heap_base || end > s_part_top) return 0xFFFFFFFFu;
+    if (addr < s_heap_base || end > user_partition_top()) return 0xFFFFFFFFu;
 
     /* Live occupancy is the slot span [b.addr, b.addr+b.slot_size): Low blocks
      * own their 256-byte rounding slack, fixed blocks own their exact range. */
@@ -940,6 +973,10 @@ uint32_t sr_hle_test_partition_heap_ptr(void) {
     return s_heap;
 }
 uint32_t sr_hle_test_partition_top(void) {
+    user_partition_init();
+    return user_partition_top();   /* the top every allocation and free-size query uses */
+}
+uint32_t sr_hle_test_partition_ceiling(void) {
     user_partition_init();
     return s_part_top;
 }
@@ -2935,7 +2972,8 @@ static uint32_t h_FreeMemoryBlock(CpuState *s) {
 
 static uint32_t partition_free(void) {
     user_partition_init();
-    uint32_t f = s_heap < s_part_top ? s_part_top - s_heap : 0u;
+    uint32_t top = user_partition_top();
+    uint32_t f = s_heap < top ? top - s_heap : 0u;
     for (int i = 0; i < s_nfree_blocks; i++) {
         f += s_free_blocks[i].size;
     }
@@ -2953,7 +2991,8 @@ static uint32_t h_TotalFreeMemSize(CpuState *s) {
 static uint32_t h_MaxFreeMemSize(CpuState *s) {
     (void)s;
     user_partition_init();
-    uint32_t max_free = s_heap < s_part_top ? s_part_top - s_heap : 0u;
+    uint32_t top = user_partition_top();
+    uint32_t max_free = s_heap < top ? top - s_heap : 0u;
     for (int i = 0; i < s_nfree_blocks; i++) {
         if (s_free_blocks[i].size > max_free) {
             max_free = s_free_blocks[i].size;
