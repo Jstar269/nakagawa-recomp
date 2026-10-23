@@ -646,6 +646,8 @@ PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model)
         }
     }
     flow_end(ui, "", prompts, 2u);
+    return result;
+}
 
 /* ---- About -------------------------------------------------------------------
    The page a viewer can read in one look and explain in one sentence: what the
