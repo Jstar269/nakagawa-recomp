@@ -14,8 +14,11 @@ The rules it links to decide whether a change can land, so read them once.
    it). Issues labelled `needs-psp-hardware` need a physical PSP run, and `needs-owner-decision` waits on a
    maintainer. Search existing issues before you open a new one.
 3. **Agree the approach.** For anything bigger than a small fix, comment on the issue first.
-4. **Make one focused change.** Fork the repository, create a branch, and change one thing. Leave
-   **Allow edits by maintainers** enabled on the pull request.
+4. **Make one focused change.** Fork the repository to your personal account, create a branch, and change
+   one thing. Leave **Allow edits by maintainers** enabled on the pull request. Maintainers bring your branch
+   up to date with `main` before merging. GitHub doesn't let them push to a fork owned by an organisation,
+   so a pull request from one is carried in a new pull request. That pull request keeps your commits
+   unchanged and credits you as co-author.
 5. **Check it.** Run `make contrib-check` (Linux) or `mingw32-make contrib-check` (Windows, MSYS2 UCRT64 on
    `PATH`). It runs the gates that apply to the files you changed. Add a test for any behaviour you changed,
    and paste the exact commands and results into the pull request.
