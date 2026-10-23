@@ -3131,7 +3131,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "93e3dfd0ad37b526c29a4ad4af6a9d1e1213d83ff475fc81f595d5dc5fffa3fb"
+      "sha256": "911536ccea579bb12e3db94349ee25bad1c5712178cc2207908bce7cbe48f253"
     },
     {
       "path": "src/core/nk_xb.h",
@@ -3143,7 +3143,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c012147e659abc3c4408a4f2e724ad3143e4da73c17351e622c0676c755022eb"
+      "sha256": "179eced5d75e42800af3e9b2ba6571b98912fc8adfafe2c0d55878b5a74ae4b9"
     },
     {
       "path": "src/player/input_settings.c",
@@ -6686,7 +6686,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bb0034d9e2e053a45977bcabf92bd17bb5a074b2b2e78e73d33aeb69711db9da"
+      "sha256": "b64406463c3c639d5ca96e89a8cded783721c838bbf31efe663536539af0955e"
     },
     {
       "path": "third_party/clay/LICENSE.md",

@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,6 +65,7 @@ typedef struct {
     bool owns_data;
     bool file_backed;
     char *file_path;
+    FILE *file_handle;
     uint64_t source_size;
     NkXbEntry *entries;
     size_t entry_count;

@@ -48,6 +48,17 @@ typedef struct {
 } XbHuffmanSymbol;
 
 static FILE *xb_fopen(const char *path, const char *mode);
+static FILE *xb_get_file_handle(const NkXbArchive *archive) {
+    if (!archive || !archive->file_backed) return NULL;
+    if (archive->file_handle) return archive->file_handle;
+    if (!archive->file_path) return NULL;
+    FILE *file = xb_fopen(archive->file_path, "rb");
+    if (file) {
+        ((NkXbArchive *)archive)->file_handle = file;
+    }
+    return file;
+}
+
 
 static void xb_error(char *message, size_t message_size, const char *format, ...) {
     if (!message || message_size == 0) return;
@@ -627,7 +638,7 @@ static NkResult xb_file_read_entry(const NkXbArchive *archive,
         entry->span_size > archive->source_size - entry->offset) {
         return NK_ERROR_INVALID_XB;
     }
-    FILE *file = xb_fopen(archive->file_path, "rb");
+    FILE *file = xb_get_file_handle(archive);
     if (!file) return NK_ERROR_IO;
     NkResult result = NK_OK;
     if (entry->compression == NK_XB_COMPRESSION_NONE) {
@@ -651,7 +662,6 @@ static NkResult xb_file_read_entry(const NkXbArchive *archive,
         }
         free(payload);
     }
-    if (fclose(file) != 0 && result == NK_OK) result = NK_ERROR_IO;
     return result;
 }
 
@@ -1026,6 +1036,7 @@ void nk_xb_close(NkXbArchive *archive) {
     if (!archive) return;
     free(archive->entries);
     if (archive->owns_data) free((void *)archive->data);
+    if (archive->file_handle) fclose(archive->file_handle);
     free(archive->file_path);
     memset(archive, 0, sizeof(*archive));
 }
@@ -1212,19 +1223,18 @@ NkResult nk_xb_open_file_lazy(const char *path, bool big_endian,
     out_archive->owns_data = true;
     out_archive->file_backed = true;
     out_archive->file_path = xb_strdup(path);
+    out_archive->file_handle = file;
     out_archive->source_size = size;
     out_archive->limits = effective;
     out_archive->big_endian = big_endian;
     snprintf(out_archive->source_name, sizeof(out_archive->source_name), "%s", path);
     if (!out_archive->file_path || !xb_file_load_metadata(file, out_archive)) {
-        fclose(file);
         nk_xb_close(out_archive);
         return xb_fail(error_message, error_message_size,
                        "XB archive metadata could not be read");
     }
-    int close_failed = fclose(file) != 0;
     int64_t size_after = nk_platform_get_file_size(path);
-    if (close_failed || size_after != file_size) {
+    if (size_after != file_size) {
         nk_xb_close(out_archive);
         return xb_fail(error_message, error_message_size,
                        "XB archive changed or could not be read");
@@ -1272,7 +1282,7 @@ NkResult nk_xb_read_entry_range(const NkXbArchive *archive, size_t entry_index,
             return xb_fail(error_message, error_message_size,
                            "XB archive changed or could not be read");
         }
-        FILE *file = xb_fopen(archive->file_path, "rb");
+        FILE *file = xb_get_file_handle(archive);
         if (!file) return xb_fail(error_message, error_message_size,
                                   "cannot open XB archive member");
         if (entry->compression == NK_XB_COMPRESSION_NONE) {
@@ -1300,10 +1310,6 @@ NkResult nk_xb_read_entry_range(const NkXbArchive *archive, size_t entry_index,
             }
             free(payload);
             free(decoded);
-        }
-        if (fclose(file) != 0 && result == NK_OK) {
-            result = xb_fail(error_message, error_message_size,
-                             "XB archive member close failed");
         }
     } else {
         if (!archive->data) {
