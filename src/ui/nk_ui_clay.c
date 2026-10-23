@@ -354,6 +354,31 @@ bool nk_ui_clay_text(void *opaque_clay, NkUiId id, const char *text, size_t leng
     return true;
 }
 
+bool nk_ui_clay_element_rect(void *opaque_clay, NkUiId id, NkUiRect *out) {
+    NkUiClay *clay = (NkUiClay *)opaque_clay;
+    Clay_Context *restore;
+    Clay_ElementData data;
+    if (clay == NULL || clay->context == NULL || out == NULL || id == 0u) {
+        return false;
+    }
+    restore = Clay_GetCurrentContext();
+    Clay_SetCurrentContext(clay->context);
+    data = Clay_GetElementData(Clay_GetElementIdWithIndex(
+        CLAY_STRING("nk_ui.container"), id));
+    Clay_SetCurrentContext(restore);
+    if (!data.found || !isfinite(data.boundingBox.x) ||
+        !isfinite(data.boundingBox.y) || !isfinite(data.boundingBox.width) ||
+        !isfinite(data.boundingBox.height) || data.boundingBox.width < 0.0f ||
+        data.boundingBox.height < 0.0f) {
+        return false;
+    }
+    out->x = data.boundingBox.x;
+    out->y = data.boundingBox.y;
+    out->w = data.boundingBox.width;
+    out->h = data.boundingBox.height;
+    return true;
+}
+
 bool nk_ui_clay_end(void *opaque_clay, NkUiDrawBuffer *draw, float density) {
     NkUiClay *clay = (NkUiClay *)opaque_clay;
     Clay_RenderCommandArray commands;

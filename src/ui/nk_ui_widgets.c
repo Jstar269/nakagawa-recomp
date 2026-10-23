@@ -15,7 +15,12 @@ bool nk_ui_button(NkUi *ui, NkUiId id, const char *label, uint32_t flags) {
     if (ui == NULL || label == NULL) {
         return false;
     }
+    nk_ui_register_button(ui, id, flags);
     nk_ui_button_configuration(ui, flags, &layout, &style);
+    if (nk_ui_button_focused(ui, id)) {
+        style.border_rgba = 0xD7F24AFF;
+        style.border_width = 3.0f;
+    }
     opened = nk_ui_begin_container(ui, id, &layout, &style);
     if (!opened) {
         return false;

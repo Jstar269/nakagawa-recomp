@@ -5,6 +5,7 @@
 #include "package_builder.h"
 #include "iso_reader.h"
 #include "ui_renderer.h"
+#include "ui/player_ui_nk.h"
 #include "nk_title_manifest.h"
 
 #include <SDL3/SDL.h>
@@ -371,9 +372,11 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
  * regression drive the same SDL event path. Worker and device-lifecycle events
  * remain owned by the loop because they carry live handles. */
 static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
+                                     PlayerUiNk *next_ui,
                                      SDL_Window *window, bool *running,
                                      bool *close_request_handled_in_batch,
                                      const SDL_Event *event) {
+    bool use_next_ui = player_ui_nk_view_active(next_ui, app);
     if (!app || !input || !running || !event) return false;
 
     switch (event->type) {
@@ -414,16 +417,19 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
         return true;
     case SDL_EVENT_MOUSE_MOTION:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         input->mouse_x = (int)event->motion.x;
         input->mouse_y = (int)event->motion.y;
         return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         if (event->button.button == SDL_BUTTON_LEFT) {
             input->mouse_down = true;
             input->mouse_clicked = true;
         }
         return true;
     case SDL_EVENT_MOUSE_BUTTON_UP:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         if (event->button.button == SDL_BUTTON_LEFT) input->mouse_down = false;
         return true;
     case SDL_EVENT_KEY_DOWN:
@@ -432,6 +438,8 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
              ((event->key.key == SDLK_RETURN || event->key.key == SDLK_KP_ENTER) &&
               (event->key.mod & SDL_KMOD_ALT)))) {
             player_app_toggle_launcher_fullscreen(app);
+        } else if (use_next_ui) {
+            return player_ui_nk_handle_event(next_ui, event);
         } else if (event->key.key == SDLK_ESCAPE) {
             if (app->active_view == VIEW_SETUP_WIZARD) {
                 player_app_wizard_back(app);
@@ -498,12 +506,17 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             player_app_move_focus(app, 1, ui_focus_count(app));
         }
         return true;
+    case SDL_EVENT_KEY_UP:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
+        return false;
     case SDL_EVENT_MOUSE_WHEEL:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         if (player_view_is_library(app->active_view) && event->wheel.y != 0.0f) {
             player_app_move_selection(app, event->wheel.y > 0.0f ? -1 : 1);
         }
         return true;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings) &&
             (event->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
@@ -516,6 +529,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         }
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings)) {
             NkBindingSource src;
@@ -591,6 +605,17 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             }
         }
         return true;
+    case SDL_EVENT_GAMEPAD_BUTTON_UP:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
+        return false;
+    case SDL_EVENT_FINGER_MOTION:
+    case SDL_EVENT_FINGER_DOWN:
+    case SDL_EVENT_FINGER_UP:
+    case SDL_EVENT_PEN_MOTION:
+    case SDL_EVENT_PEN_DOWN:
+    case SDL_EVENT_PEN_UP:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
+        return false;
     case SDL_EVENT_DROP_FILE:
         if (event->drop.data) {
             const char *files[2] = { event->drop.data, NULL };
@@ -599,6 +624,119 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         return true;
     default:
         return false;
+    }
+}
+
+static bool player_ui_save_folder_path(const GameRecord *game,
+                                      char *out, size_t out_size) {
+    char saves_root[NK_MAX_PATH];
+    const char *slot;
+    int written;
+    if (game == NULL || out == NULL || out_size == 0u ||
+        !nk_platform_get_path(NK_PATH_SAVES, saves_root, sizeof(saves_root))) {
+        return false;
+    }
+    slot = game->disc_id[0] != '\0' ? game->disc_id
+         : (game->title_id[0] != '\0' ? game->title_id : "unidentified");
+    written = snprintf(out, out_size, "%s%c%s", saves_root,
+                       nk_platform_path_separator(), slot);
+    if (written <= 0 || (size_t)written >= out_size) return false;
+    return nk_platform_mkdir_p(out);
+}
+
+#if !defined(_WIN32) && !defined(_WIN64)
+static bool player_ui_file_url(const char *path, char *out, size_t out_size) {
+    static const char prefix[] = "file://";
+    size_t used = sizeof(prefix) - 1u;
+    if (path == NULL || path[0] != '/' || out == NULL ||
+        out_size <= used) {
+        return false;
+    }
+    memcpy(out, prefix, used);
+    for (const unsigned char *p = (const unsigned char *)path; *p; ++p) {
+        unsigned char c = *p;
+        bool safe = isalnum(c) || c == '/' || c == '-' || c == '_' ||
+                    c == '.' || c == '~' || c == ':';
+        if (safe) {
+            if (used + 1u >= out_size) return false;
+            out[used++] = (char)c;
+        } else {
+            if (used + 3u >= out_size) return false;
+            static const char hex[] = "0123456789ABCDEF";
+            out[used++] = '%';
+            out[used++] = hex[c >> 4];
+            out[used++] = hex[c & 15u];
+        }
+    }
+    out[used] = '\0';
+    return true;
+}
+#endif
+
+static void player_ui_open_save_folder(PlayerApp *app, size_t title_index) {
+    char path[NK_MAX_PATH];
+    if (app == NULL || title_index >= (size_t)app->game_count ||
+        !player_ui_save_folder_path(&app->games[title_index],
+                                    path, sizeof(path))) {
+        fprintf(stderr, "[PLAYER] The save folder could not be opened.\n");
+        return;
+    }
+#if defined(_WIN32) || defined(_WIN64)
+    (void)ShellExecuteA(NULL, "open", path, NULL, NULL, SW_SHOWNORMAL);
+#else
+    {
+        char url[NK_MAX_PATH * 3u];
+        if (!player_ui_file_url(path, url, sizeof(url)) || !SDL_OpenURL(url)) {
+            fprintf(stderr, "[PLAYER] The save folder could not be opened: %s\n",
+                    SDL_GetError());
+        }
+    }
+#endif
+}
+
+static void player_ui_nk_apply_action(PlayerApp *app,
+                                     const PlayerUiAction *action) {
+    int index;
+    if (app == NULL || action == NULL) return;
+    if (action->kind == PLAYER_UI_ACTION_ADD_DISC) {
+        app->request_file_picker = true;
+        return;
+    }
+    if (action->title_index >= (size_t)app->game_count) return;
+    index = (int)action->title_index;
+    app->selected_game_index = index;
+    if (action->kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER) {
+        player_ui_open_save_folder(app, action->title_index);
+    } else if (action->kind == PLAYER_UI_ACTION_PRIMARY) {
+        switch (action->primary) {
+            case PLAYER_UI_PRIMARY_PLAY:
+                (void)player_app_launch_game(app, index);
+                break;
+            case PLAYER_UI_PRIMARY_BUILD:
+                (void)player_app_start_package_build(app, index);
+                break;
+            case PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK:
+                app->request_package_status_retry = true;
+                break;
+            case PLAYER_UI_PRIMARY_STOP_GAME:
+                player_app_stop_game(app);
+                break;
+            case PLAYER_UI_PRIMARY_NONE:
+            default:
+                break;
+        }
+    }
+}
+
+static void player_render_active_ui(PlayerUiNk *next_ui, PlayerApp *app,
+                                    SDL_Renderer *renderer, SDL_Window *window,
+                                    UiInput *input) {
+    PlayerUiAction action;
+    if (player_ui_nk_view_active(next_ui, app) &&
+        player_ui_nk_render(next_ui, app, renderer, window, &action)) {
+        player_ui_nk_apply_action(app, &action);
+    } else {
+        ui_render_frame(renderer, app, input);
     }
 }
 
@@ -2413,16 +2551,29 @@ int main(int argc, char *argv[]) {
        file, instead of the documented empty-library prompt. */
     bool populate_sample = false;
     bool force_empty = false;
+    bool ui_next_requested = false;
+    const char *ui_environment = getenv("NK_UI");
+    if (ui_environment != NULL && strcmp(ui_environment, "next") == 0) {
+        ui_next_requested = true;
+    }
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nakagawa_player [--user-data-root=<folder>] "
+                   "[--ui=next] "
                    "[--iso=<path> [--stage|--stage-only|--launch-now]] "
                    "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>] "
                    "[--launch-index=N] [--headless-launch] "
                    "[--headless-accept-presented-frames=N] "
                    "[--headless-timeout-ms=N]\n");
             return 0;
+        } else if (strcmp(argv[i], "--ui=next") == 0) {
+            ui_next_requested = true;
+        } else if (strcmp(argv[i], "--ui=legacy") == 0) {
+            ui_next_requested = false;
+        } else if (strncmp(argv[i], "--ui=", 5u) == 0) {
+            fprintf(stderr, "[PLAYER] Unknown UI mode. Use --ui=next or --ui=legacy.\n");
+            return 2;
         } else if (strncmp(argv[i], "--screenshot=", 13) == 0) {
             screenshot_path = argv[i] + 13;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -3149,7 +3300,24 @@ int main(int argc, char *argv[]) {
         SDL_Quit();
         return 1;
     }
-    bool logical_presentation_set = interactive_window &&
+    PlayerUiNk *next_ui = NULL;
+    if (ui_next_requested) {
+        char ui_error[256] = "";
+        next_ui = player_ui_nk_create(renderer, window,
+                                      ui_error, sizeof(ui_error));
+        if (next_ui == NULL) {
+            fprintf(stderr,
+                    "[PLAYER] The requested next UI could not start: %s. Keeping the existing player UI.\n",
+                    ui_error[0] != '\0' ? ui_error : "initialization failed");
+            ui_next_requested = false;
+        }
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (next_ui != NULL && ui_test_mode) {
+        puts("[PLAYER_UI_TEST] UI_NEXT_ACTIVE");
+    }
+#endif
+    bool logical_presentation_set = interactive_window && next_ui == NULL &&
         SDL_SetRenderLogicalPresentation(
             renderer, PLAYER_UI_LOGICAL_WIDTH, PLAYER_UI_LOGICAL_HEIGHT,
             SDL_LOGICAL_PRESENTATION_LETTERBOX);
@@ -3181,6 +3349,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "[PLAYER_UI_TEST] Could not create SDL render target: %s\n",
                     SDL_GetError());
             if (ui_test_target) SDL_DestroyTexture(ui_test_target);
+            player_ui_nk_destroy(next_ui);
             ui_font_shutdown();
             SDL_DestroyRenderer(renderer);
             SDL_DestroyWindow(window);
@@ -3196,7 +3365,7 @@ int main(int argc, char *argv[]) {
         if (target) {
             SDL_SetRenderTarget(renderer, target);
         }
-        ui_render_frame(renderer, &app, &input);
+        player_render_active_ui(next_ui, &app, renderer, window, &input);
         if (ui_capture_screenshot(renderer, screenshot_path)) {
             printf("[PLAYER] Screenshot saved to %s (%dx%d)\n", screenshot_path, app.window_width, app.window_height);
         } else {
@@ -3220,6 +3389,7 @@ int main(int argc, char *argv[]) {
             app.is_game_running = false;
         }
 
+        player_ui_nk_destroy(next_ui);
         ui_font_shutdown();
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
@@ -3281,7 +3451,7 @@ int main(int argc, char *argv[]) {
     uint64_t first_frame_validation_count = ui_test_mode
         ? player_app_ui_test_validation_calls() : 0;
 #endif
-    ui_render_frame(renderer, &app, &input);
+    player_render_active_ui(next_ui, &app, renderer, window, &input);
     if (interactive_window && have_usable_bounds && !window_frame_measured) {
         window_frame_measured = player_refit_to_actual_frame(
             window, requested_window, usable_bounds,
@@ -3568,7 +3738,7 @@ int main(int argc, char *argv[]) {
                      event.type == SDL_EVENT_PEN_UP)) {
                     SDL_ConvertEventToRenderCoordinates(renderer, &event);
                 }
-                if (!player_dispatch_ui_event(&app, &input, window, &running,
+                if (!player_dispatch_ui_event(&app, &input, next_ui, window, &running,
                                               &close_request_handled_in_batch,
                                               &event)) {
                     switch (event.type) {
@@ -3899,7 +4069,7 @@ int main(int argc, char *argv[]) {
         uint64_t frame_validation_count = ui_test_mode
             ? player_app_ui_test_validation_calls() : 0;
 #endif
-        ui_render_frame(renderer, &app, &input);
+        player_render_active_ui(next_ui, &app, renderer, window, &input);
         /* Consume renderer requests in the same frame that created them. A
            later event batch may change the selected title before the next
            loop iteration, which must not redirect this retry. */
@@ -3991,6 +4161,7 @@ int main(int argc, char *argv[]) {
         SDL_DestroyTexture(ui_test_target);
     }
 #endif
+    player_ui_nk_destroy(next_ui);
     ui_font_shutdown();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);

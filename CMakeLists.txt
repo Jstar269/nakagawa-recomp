@@ -176,6 +176,12 @@ set(NK_UI_PLAYER_SCREEN_SOURCES
     src/player/ui/scr_first_run.c
     src/player/ui/scr_dialogs.c
 )
+set(NK_UI_PLAYER_C5_SOURCES
+    src/player/ui/player_ui_nk.c
+    src/player/ui/ui_router.c
+    src/player/ui/scr_library.c
+    src/player/ui/scr_title.c
+)
 set(NK_UI_OVERLAY_SOURCES
     src/rt/overlay/nk_overlay.c
     src/rt/overlay/overlay_pause.c
@@ -206,6 +212,30 @@ if(NOT WIN32)
 endif()
 add_test(NAME nk_ui_core_test COMMAND test_nk_ui_core)
 set_tests_properties(nk_ui_core_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# C5 Library, Title detail and router snapshots use only the SDL-free nk_ui
+# core. Hosted Linux can run them without SDL3 headers or a graphics driver.
+add_executable(test_player_screens
+    tests/native/test_player_screens.c
+    ${NK_UI_CORE_SOURCES}
+    src/player/ui/ui_router.c
+    src/player/ui/scr_library.c
+    src/player/ui/scr_title.c
+)
+target_include_directories(test_player_screens PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/player/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
+)
+target_compile_definitions(test_player_screens PRIVATE
+    SR_SELFTEST_BUILD_ROOT="${CMAKE_CURRENT_BINARY_DIR}/build"
+)
+if(NOT WIN32)
+    target_link_libraries(test_player_screens PRIVATE m)
+endif()
+add_test(NAME player_screens_test COMMAND test_player_screens)
+set_tests_properties(player_screens_test PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # The SDL_Renderer backend and SDL3_ttf text engine (lane C3b). With SDL3 and
 # SDL3_ttf headers found the test is built for real; without them it is the SKIP
@@ -335,13 +365,28 @@ if(BUILD_PLAYER)
         src/player/setup_staging.c
         src/player/ui_renderer.c
         src/player/package_builder.c
+        ${NK_UI_CORE_SOURCES}
+        ${NK_UI_EDGE_SOURCES}
+        src/ui/backend/nk_ui_sdlr.c
+        ${NK_UI_PLAYER_C5_SOURCES}
     )
 
     add_executable(nakagawa_player ${PLAYER_SOURCES})
     target_include_directories(nakagawa_player PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/player
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/player/ui
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
     )
+    target_compile_definitions(nakagawa_player PRIVATE NK_UI_WITH_SDL NK_UI_WITH_SDL3)
     target_link_libraries(nakagawa_player PRIVATE nakagawa_core)
+    add_custom_command(TARGET nakagawa_player POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/ui"
+            "$<TARGET_FILE_DIR:nakagawa_player>/assets/fonts/ui"
+        COMMENT "Staging the bundled UI font assets beside nakagawa_player"
+        VERBATIM
+    )
     if(WIN32)
         target_link_libraries(nakagawa_player PRIVATE winhttp bcrypt)
     endif()
@@ -363,6 +408,11 @@ if(BUILD_PLAYER)
         else()
             message(FATAL_ERROR "SDL3 dependency is missing. Install with: sudo apt install libsdl3-dev (or enable -DNK_BOOTSTRAP_SDL3=ON)")
         endif()
+    endif()
+
+    if(TARGET SDL3_ttf::SDL3_ttf)
+        target_compile_definitions(nakagawa_player PRIVATE NK_UI_WITH_SDL_TTF)
+        target_link_libraries(nakagawa_player PRIVATE SDL3_ttf::SDL3_ttf)
     endif()
 
     if(WIN32)

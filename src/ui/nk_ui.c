@@ -4,6 +4,7 @@
 #include "nk_ui.h"
 
 #include "nk_ui_draw.h"
+#include "nk_ui_focus.h"
 #include "nk_ui_text.h"
 #include "nk_ui_theme.h"
 #include "nk_ui_waves.h"
@@ -29,9 +30,13 @@ struct NkUi {
     NkUiPrefs prefs;
     NkUiDrawBuffer draw;
     void *clay;
+    NkUiFocusGraph *focus_graph;
     NkUiEvent events[64];
     size_t event_count;
+    size_t focus_entry_count;
     NkUiId focused;
+    NkUiId focus_request;
+    bool focus_pending;
     double now_s;
     unsigned container_depth;
     uint32_t text_color_stack[64];
@@ -51,8 +56,62 @@ bool nk_ui_clay_open_container(void *clay, NkUiId id,
 void nk_ui_clay_close_container(void *clay);
 bool nk_ui_clay_text(void *clay, NkUiId id, const char *text, size_t length,
                      int font, int size_px, uint32_t rgba);
+bool nk_ui_clay_element_rect(void *clay, NkUiId id, NkUiRect *out);
 bool nk_ui_clay_end(void *clay, NkUiDrawBuffer *draw, float density);
 size_t nk_ui_dump_draw_list(const NkUiDrawList *list, char *out, size_t cap);
+
+static void nk_ui_consume_event(NkUi *ui, size_t index) {
+    if (ui == NULL || index >= ui->event_count) {
+        return;
+    }
+    memmove(&ui->events[index], &ui->events[index + 1u],
+            (ui->event_count - index - 1u) * sizeof(ui->events[0]));
+    --ui->event_count;
+}
+
+static void nk_ui_update_focus_from_events(NkUi *ui) {
+    size_t i = 0;
+    while (ui != NULL && i < ui->event_count) {
+        NkUiEvent *event = &ui->events[i];
+        NkUiId focused = 0;
+        if (event->type == NK_UI_EV_NAV) {
+            focused = nk_ui_focus_move(ui->focus_graph, event->dir);
+            if (focused != 0u) {
+                ui->focused = focused;
+            }
+            nk_ui_consume_event(ui, i);
+        } else if (event->type == NK_UI_EV_CYCLE) {
+            focused = nk_ui_focus_cycle(ui->focus_graph,
+                                        event->dir == NK_UI_DIR_LEFT);
+            if (focused != 0u) {
+                ui->focused = focused;
+            }
+            nk_ui_consume_event(ui, i);
+        } else if (event->type == NK_UI_EV_POINTER) {
+            if (event->down) {
+                focused = nk_ui_focus_hit_test(ui->focus_graph,
+                                               event->x, event->y);
+                if (focused != 0u &&
+                    nk_ui_focus_set(ui->focus_graph, focused)) {
+                    ui->focused = focused;
+                    event->type = NK_UI_EV_ACTIVATE;
+                    event->repeat = false;
+                    ++i;
+                } else {
+                    nk_ui_consume_event(ui, i);
+                }
+            } else {
+                /* Hover remains separate from focus and activation. */
+                nk_ui_consume_event(ui, i);
+            }
+        } else if (event->type == NK_UI_EV_WHEEL) {
+            /* Screens with an actual scroller consume wheel events themselves. */
+            ++i;
+        } else {
+            ++i;
+        }
+    }
+}
 
 static int nk_ui_clamp_edge(double value) {
     if (value <= (double)INT_MIN + 2.0) {
@@ -139,8 +198,14 @@ NkUi *nk_ui_create(const NkUiConfig *config) {
     if (ui == NULL) {
         return NULL;
     }
+    ui->focus_graph = nk_ui_focus_graph_create();
+    if (ui->focus_graph == NULL) {
+        free(ui);
+        return NULL;
+    }
     ui->host = config != NULL ? config->host : NK_UI_HOST_LAUNCHER;
     if (ui->host != NK_UI_HOST_LAUNCHER && ui->host != NK_UI_HOST_OVERLAY) {
+        nk_ui_focus_graph_destroy(ui->focus_graph);
         free(ui);
         return NULL;
     }
@@ -164,6 +229,7 @@ NkUi *nk_ui_create(const NkUiConfig *config) {
                                  ui->scale.logical_h, &ui->text);
     if (ui->clay == NULL) {
         nk_ui_draw_buffer_destroy(&ui->draw);
+        nk_ui_focus_graph_destroy(ui->focus_graph);
         free(ui);
         return NULL;
     }
@@ -175,6 +241,7 @@ void nk_ui_destroy(NkUi *ui) {
         return;
     }
     nk_ui_clay_destroy(ui->clay);
+    nk_ui_focus_graph_destroy(ui->focus_graph);
     nk_ui_draw_buffer_destroy(&ui->draw);
     free(ui);
 }
@@ -218,6 +285,9 @@ void nk_ui_begin(NkUi *ui, double now_s) {
     if (ui == NULL) {
         return;
     }
+    nk_ui_update_focus_from_events(ui);
+    nk_ui_focus_begin_frame(ui->focus_graph);
+    ui->focus_entry_count = 0u;
     nk_ui_draw_buffer_reset(&ui->draw);
     ui->now_s = isfinite(now_s) ? now_s : 37.0;
     ui->container_depth = 0;
@@ -353,6 +423,17 @@ const NkUiDrawList *nk_ui_end(NkUi *ui) {
     if (!nk_ui_clay_end(ui->clay, &ui->draw, ui->scale.density)) {
         ui->frame_ok = false;
     }
+    if (ui->focus_pending) {
+        if (ui->focus_request == 0u) {
+            ui->focused = 0u;
+        } else if (nk_ui_focus_set(ui->focus_graph, ui->focus_request)) {
+            ui->focused = ui->focus_request;
+        }
+        ui->focus_pending = false;
+        ui->focus_request = 0u;
+    }
+    nk_ui_focus_end_frame(ui->focus_graph);
+    ui->focused = nk_ui_focus_current(ui->focus_graph);
     ui->frame_open = false;
     ui->event_count = 0;
     return ui->frame_ok ? &ui->draw.list : NULL;
@@ -383,7 +464,38 @@ NkUiId nk_ui_focused(const NkUi *ui) {
 void nk_ui_focus(NkUi *ui, NkUiId id) {
     if (ui != NULL) {
         ui->focused = id;
+        ui->focus_request = id;
+        ui->focus_pending = id != 0u;
+        if (id != 0u && nk_ui_focus_set(ui->focus_graph, id)) {
+            ui->focus_pending = false;
+            ui->focus_request = 0u;
+        }
     }
+}
+
+void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
+    NkUiFocusEntry entry;
+    NkUiRect rect = {0.0f, 0.0f, 0.0f, 0.0f};
+    if (ui == NULL || id == 0u || ui->focus_graph == NULL) {
+        return;
+    }
+    (void)nk_ui_clay_element_rect(ui->clay, id, &rect);
+    entry.id = id;
+    entry.rect = rect;
+    entry.flags = (flags & NK_UI_BUTTON_DISABLED) != 0u
+        ? NK_UI_FOCUS_DISABLED : 0u;
+    if (entry.flags == 0u && ui->focus_entry_count == 0u &&
+        ui->focused == 0u) {
+        entry.flags |= NK_UI_FOCUS_DEFAULT;
+    }
+    entry.scope = NK_UI_SCOPE_ROOT;
+    entry.scroller = 0u;
+    (void)nk_ui_focus_register(ui->focus_graph, &entry);
+    ++ui->focus_entry_count;
+}
+
+bool nk_ui_button_focused(const NkUi *ui, NkUiId id) {
+    return ui != NULL && ui->focused == id;
 }
 
 size_t nk_ui_dump(const NkUi *ui, char *out, size_t cap) {

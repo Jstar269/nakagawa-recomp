@@ -91,17 +91,19 @@ The native player uses the existing SDL3 and Vulkan runtime to render its in-win
 
 ### Layout library and language decision (2026-10-21)
 
-The owner decided on 2026-10-21 that the native player's UI is written in C on SDL3 and Vulkan, and that its layout uses **Clay**, a single-header C layout library ([github.com/nicbarker/clay](https://github.com/nicbarker/clay)). Upstream v0.14's `LICENSE.md` identifies the license as zlib/libpng (`Zlib`); the pinned header, license, and provenance are recorded under `third_party/clay/`. The decision has three parts:
+The owner decided on 2026-10-21 that the native player's UI is written in C on SDL3 and uses **Clay**, a single-header C layout library ([github.com/nicbarker/clay](https://github.com/nicbarker/clay)). The launcher renders through SDL_Renderer; the future runtime overlay will render through Vulkan. Upstream v0.14's `LICENSE.md` identifies the license as zlib/libpng (`Zlib`); the pinned header, license, and provenance are recorded under `third_party/clay/`. The decision has three parts:
 
 1. **One UI system (target)**: the launcher, the in-game overlay and the settings screens are planned to share one UI system. It is drawn at the window's real pixel size (the UI half of [#1129](https://github.com/Jstar269/nakagawa-recomp/issues/1129)) and is controller-first.
 2. **Rust is not adopted for the UI**: Rust may be used later, behind a C ABI, only for isolated parsers of untrusted input (ISO, SFO, PGF), and only if fuzzing justifies it.
 3. **Reasons**: one interface serves both the overlay and the launcher; SDL3 already supports Android, a platform the roadmap names; and a Rust UI framework would add hundreds of crates to track under the project's provenance rules, while Clay is one C header.
 
-Not done yet:
-
-- **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** The native layout selftest is the only current build target that compiles it; no player UI call sites exist yet.
-- **No UI implementation has started.** Implementation begins only after the owner reviews the interface design.
-- The launcher, overlay and settings UI described above is a target. The current native slice does not use Clay.
+The new Library and Title detail screens use `nk_ui` with the SDL_Renderer backend.
+They are opt-in with `nakagawa_player --ui=next` or `NK_UI=next`; the existing
+launcher remains the default until C10. Library badges use the current player state
+for Ready, Needs setup, Experimental, and Untested. Title detail uses the documented
+compatibility word and the existing Play/Build actions. The `player` target
+stages the pinned UI font bundle beside the executable. The Vulkan backend and
+in-game overlay are still unimplemented.
 
 ---
 
@@ -110,8 +112,8 @@ Not done yet:
 The diagram below is the target separation. The implemented public slice currently reaches
 title lookup, bounded ISO inspection and ISO/XB staging, library package build and
 validation, launch-session validation, and child-process lifecycle. Nakagawa does not
-decrypt games (built-in decryption was removed (temporarily), #295); retail-disc hash
-validation and overlay parity remain unbuilt.
+decrypt games; it uses decrypted files from your own copy. Built-in PSP decryption was
+removed in #1187. Retail-disc hash validation and overlay parity remain unbuilt.
 
 ```text
 ┌────────────────────────────────────────────────────────┐
