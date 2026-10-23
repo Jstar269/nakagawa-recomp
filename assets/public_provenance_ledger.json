@@ -1240,7 +1240,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c6b6f0e13775928e85d6c1c05124374a138ec45b3c4ab9d2dc0c020b7cd72d85"
+      "sha256": "28b70a2f25a36573696d8e24603eeb8fa6313643a0692d2ecc10658015298150"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1612,7 +1612,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "48a34f4b196955b11fe3a97c1428948de9bb9af37fd4345bc49706f61d9a0d97"
+      "sha256": "2aa0a0474aeae4de74f9205538dde86ed69a7e7241bb04176e6663b33ca80776"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -2105,7 +2105,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "49baab625c604431b3dec3c45319dcaef01dbb51f29781a7eaba50cca819cb10"
+      "sha256": "3be95235f19739f69be2d3db05a0b0eafc38ea7fda82e5c4f7a31932030accab"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -2114,7 +2114,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "9e9fb26d855cc9dadaa1f7151012446f1d5a3e0f1af8cd4545687f8743e4d1ef"
+      "sha256": "3b8fcfc6b0629e1d442a6d8b0ca7880dcbe03262bc443f3e693d07a55302a924"
     },
     {
       "path": "fixtures/psp_oracle/display_user_imports.S",
@@ -2243,7 +2243,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3e739a542e42150007e97cbb02447a4ac27fc29b96e920d9dc208f2db44a7fea"
+      "sha256": "75faad2846b7a90c44b5b2d8bd565ffb80c1309e069f5ee2f65eef0214d7575b"
     },
     {
       "path": "fixtures/psp_oracle/mutex_imports.S",
@@ -2264,7 +2264,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dc2e9059ff3d36f156e00c7f2caa80b11cbf57cb1037dd0fe6c684c3122cf5be"
+      "sha256": "b60a65d31583e28a825d266c4d20edc34984c2d9b456ede1ea3dc90b84f7ee99"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -6422,7 +6422,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eaafafd432bff4f030f5afb4df88c0b52377748c8ad0d97df2f9dd1d7c877eb3"
+      "sha256": "300ec7d69eac45b7ce2cb5700a7451b06e84000d9a2b0eb8d000af203a21d268"
     },
     {
       "path": "tests/native/pgf_verdict_harness.c",
@@ -7902,7 +7902,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9c60df31a85d62cfc0d0a6754621bc4e47b78c40ef4c9b8a800a7f6247af9cae"
+      "sha256": "62b8d73dc7276d0bb85b7dcb6532c31fcdd6efc9b8959a2a7916d59372b7c970"
     },
     {
       "path": "tools/pngcmp.py",
@@ -8109,7 +8109,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2ad28eb0efac8ae700d42f032da7e7d16f0dfb78e55d635731c9577d5654dae5"
+      "sha256": "58a307dea321d8756a24767672633d80b97ac8caf4450dd98bdc4efa838ae79c"
     },
     {
       "path": "tools/psp_oracle/parse_golden.py",
@@ -9875,7 +9875,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "30a3505f388912dba681d8beb2fa5e26deb6f0bcd83c81ad5f233e85d40413e9"
+      "sha256": "6a47951bde9df7d8a7bf991dfd4654ad58c8afff77ef8df4838808fb0fbee329"
     },
     {
       "path": "tools/test_platform_ladder.py",
@@ -10163,7 +10163,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "efd62af54927b10ad346ec7230310cf6c36731ff23d369f10634a73e5ea8098d"
+      "sha256": "0ce9d4201f060c4e657ea31adcd6ddcae4ded952e48e9904022751909fe97cb8"
     },
     {
       "path": "tools/test_psp_parsers.py",
