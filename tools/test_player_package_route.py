@@ -1467,6 +1467,34 @@ class TestRuntimeDllStaging(unittest.TestCase):
             for licence in ("SDL3_ttf", "FreeType", "libpng", "zlib"):
                 self.assertIn(licence, notice_text)
 
+    def test_player_staging_copies_ui_fonts_and_adjacent_licences(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            player_dir = Path(tmp) / "player"
+            staged = stage_runtime_dlls.stage_runtime_dlls(
+                player_dir,
+                roots=[],
+                search_dirs=[],
+                env={},
+                notices=False,
+                repo_root=ROOT,
+                include_ui_fonts=True,
+            )
+            source_root = ROOT / "assets" / "fonts" / "ui"
+            expected = {
+                (Path("assets") / "fonts" / "ui" / path.relative_to(source_root)).as_posix()
+                for path in source_root.rglob("*") if path.is_file()
+            }
+            self.assertEqual(set(staged), expected)
+            for relative in expected:
+                source = ROOT / Path(relative)
+                destination = player_dir / Path(relative)
+                self.assertTrue(destination.is_file(), relative)
+                self.assertEqual(destination.read_bytes(), source.read_bytes(), relative)
+            self.assertTrue((player_dir / "assets/fonts/ui/manifest.json").is_file())
+            self.assertTrue((player_dir / "assets/fonts/ui/geist/OFL.txt").is_file())
+
     def test_missing_sdl3_ttf_fails_the_stage_closed(self) -> None:
         import stage_runtime_dlls
 
