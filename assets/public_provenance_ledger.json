@@ -5415,7 +5415,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2fd925cabe5786212fbd5d10ce04970381c9e503540d68009f0a9ed0507f76a6"
+      "sha256": "4e2306bd453d318005cb27369e18a6a4889095c578cdf162b35aef21fa23d62b"
     },
     {
       "path": "src/rt/hle_power.c",
