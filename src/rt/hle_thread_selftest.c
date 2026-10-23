@@ -5033,12 +5033,13 @@ static void test_unregistered_batch_refusals(void) {
            "sceAudiocodec 0x3dd7ee1a stays unregistered because no public name is confirmed");
 }
 
+extern void sr_hle_test_volatile_mem_reset(void);
+
 /* Enter the production Lock/TryLock NID mappings with an output span that crosses
  * the guest arena boundary. The regression protects the valid output from a partial
  * write and preserves the existing no-op behavior for NULL output pointers. */
 static void test_volatile_mem_output_preflight(void) {
     const uint32_t paddr_out = 0x08a10000u;
-    extern void sr_hle_test_volatile_mem_reset(void);
     const uint32_t size_out = 0x08a10004u;
     const uint32_t sentinel = 0xa5c35a3cu;
     CpuState cpu;
@@ -27521,7 +27522,6 @@ static uint32_t psmf_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1)
 #define NID_VM_TRYLOCK 0xa14f40b2u
 #define VM_PTR_OUT     0x00250e00u
 #define VM_SIZE_OUT    0x00250e04u
-extern void sr_hle_test_volatile_mem_reset(void);
 
 static void test_volatile_mem_unlock_states(void) {
     CpuState cpu;
