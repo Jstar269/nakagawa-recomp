@@ -1858,21 +1858,18 @@ hardware truth would produce something that looks like tier-1 evidence and is no
 
 ## 6. Physical setup
 
-Requires a CFW-capable PSP (1000/2000/3000 use **mini-USB Type B**; the Go uses a proprietary
-connector), a **Memory Stick PRO Duo**, a data-capable cable, and mains power.
+Requires a PSP that can run PSPLink homebrew (1000/2000/3000 use **mini-USB Type B**; the Go uses a
+proprietary connector), a **Memory Stick PRO Duo**, a data-capable cable, and mains power.
 
-1. **Firmware** — official 6.60 or 6.61 is a prerequisite for the ARK CFW.
-2. **CFW** — install ARK (`ARK_01234` → `PSP/SAVEDATA/`, `ARK_Loader` → `PSP/GAME/`), then make
-   it permanent with Infinity so a reboot cannot silently drop the device out of CFW mid-session.
-   **This workspace's qualified route is ARK-5.1.0**, which is what every measured cell above was
-   taken on; "ARK-4" elsewhere in this document is the upstream project name, not the version to
-   install. Do not cite a measurement against a route you did not run it on.
-3. **PSPLink** — extract the psplinkusb release to `ms0:/PSP/GAME`.
-4. **Windows driver** — with PSPLink running and USB connected, use Zadig: *Options → List All
+1. **Device** — the measured cells above were taken on a PSP running the ARK custom firmware
+   (version 5.1.0; "ARK-4" elsewhere in this document is the upstream project name). Do not cite a
+   measurement against a setup you did not run it on.
+2. **PSPLink** — extract the psplinkusb release to `ms0:/PSP/GAME`.
+3. **Windows driver** — with PSPLink running and USB connected, use Zadig: *Options → List All
    Devices*, select **`"PSP" type B`**, install the **`libusb-win32`** driver.
-5. **Connect** — run `usbhostfs_pc` and `pspsh` in two terminals, **both opened in the build
+4. **Connect** — run `usbhostfs_pc` and `pspsh` in two terminals, **both opened in the build
    directory**. `pspsh` gives a `host0:/>` prompt.
-6. **Toolchain** — PSPSDK on the host; build homebrew as an unencrypted `.prx` with `BUILD_PRX=1`.
+5. **Toolchain** — PSPSDK on the host; build homebrew as an unencrypted `.prx` with `BUILD_PRX=1`.
    Keep PSPSDK out of the native build, like the other optional tools in [SETUP.md](SETUP.md).
 
 **Vita transport (if used):** Adrenaline exposes `ux0:/pspemu/` as the ePSP's virtual memory stick,
@@ -2080,8 +2077,5 @@ long as probes are homebrew rather than instrumentation of the shipped title.
   [pspdev/psplinkusb](https://github.com/pspdev/psplinkusb) ·
   [PSPSDK](https://github.com/pspdev/pspsdk)
 - [ARK-4](https://github.com/PSP-Archive/ARK-4) ·
-  [Installing ARK-4](https://consolemods.org/wiki/PSP:Installing_ARK-4_CFW) ·
-  [ARK-4 Infinity](https://github.com/PSP-Archive/ARK-4/wiki/Infinity)
-- [Adrenaline](https://github.com/TheOfficialFloW/Adrenaline) ·
-  [Adrenaline (ConsoleMods)](https://consolemods.org/wiki/Vita:Adrenaline) ·
-  [VitaShell FTP](https://consolemods.org/wiki/Vita:Transferring_Files_with_FTP)
+  [Adrenaline](https://github.com/TheOfficialFloW/Adrenaline) ·
+  [VitaShell](https://github.com/TheOfficialFloW/VitaShell)

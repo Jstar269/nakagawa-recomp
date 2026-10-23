@@ -133,75 +133,6 @@
       }
     },
     {
-      "boundary": "~PSP/~SCE/PBP classification, KIRK, keystore, and decrypt boundary",
-      "entry": "src/core/nk_psp_container.c:nk_container_probe; src/core/nk_psp_container.c:nk_container_decrypt; src/core/nk_psp_prx.c; src/core/nk_psp_kirk.c; src/core/nk_psp_kle.c; src/core/nk_psp_inflate.c; src/core/nk_psp_keystore.c",
-      "max_input": "ISO executable classification is capped at 512 MiB. Direct nk_container_probe/decrypt has no separate raw-byte cap; wrappers are limited to depth 8, decompression output to 64 MiB, and keystore files to 64 KiB/512 entries. PBP is classification-only.",
-      "tables_nesting": "At most 8 nested ~SCE wrappers; ~PSP segments are 1..4; keystore JSON counts are capped at 512 entries.",
-      "arithmetic": {
-        "safe": "SAFE",
-        "evidence": [
-          "src/core/nk_psp_container.c:view_unwrap",
-          "src/core/nk_psp_container.c:validate_psp",
-          "src/core/nk_psp_keystore.c:nk_keystore_load_json",
-          "src/core/nk_psp_kirk.c:cmd1_bounds"
-        ]
-      },
-      "allocation_time": "Decompression output is capped at 64 MiB; container working allocation follows the validated payload extent but there is no independent raw-input cap on these direct APIs. Key JSON reads at most 64 KiB.",
-      "failure_atomicity": "nk_container_decrypt clears output pointers before work and publishes the decoded ELF only on success; scratch is freed on error. The runtime PRX loader entry still accepts plaintext ELF/PRX images, not an integrated encrypted-container route.",
-      "harness": "tests/native/test_fuzz_parsers.c:test_fuzz_prx; tests/native/test_parsers_hostile.c",
-      "gap": "The decrypt boundary has synthetic tests and bounded decompression but no direct raw-input cap. PBP is classification-only; the PRX runtime load path is not wired to consume encrypted containers.",
-      "status": "PARTIAL",
-      "id": "encrypted-psp-kirk",
-      "source_paths": [
-        "src/core/nk_psp_container.c",
-        "src/core/nk_psp_prx.c",
-        "src/core/nk_psp_kirk.c",
-        "src/core/nk_psp_kle.c",
-        "src/core/nk_psp_inflate.c",
-        "src/core/nk_psp_keystore.c"
-      ],
-      "test_paths": [
-        "tests/native/test_fuzz_parsers.c",
-        "tests/native/test_parsers_hostile.c"
-      ],
-      "malformed_input_coverage": [
-        "truncated/invalid container and segment headers",
-        "unsupported wrapper/container shapes",
-        "KIRK command-header mutations",
-        "KL decode and inflate mutations",
-        "synthetic keystore JSON mutations"
-      ],
-      "resource_gaps": [
-        "Direct probe/decrypt APIs do not impose a raw input-byte cap; callers must bound supplied extents. PBP is only classified, not decoded. Private keyed-title acceptance is not established by synthetic coverage."
-      ],
-      "campaigns": {
-        "deterministic_regression": {
-          "status": "IN_CI",
-          "tests": [
-            "tests/native/test_fuzz_parsers.c",
-            "tests/native/test_parsers_hostile.c"
-          ],
-          "runner": "make CC=gcc native-core-tests"
-        },
-        "seeded_mutations": {
-          "status": "IN_CI",
-          "tests": [
-            "tests/native/test_fuzz_parsers.c",
-            "tests/native/test_parsers_hostile.c"
-          ],
-          "campaign": "100 seeded iterations via native-core-tests; family limits/clamps apply."
-        },
-        "sanitizer": {
-          "status": "AVAILABLE_NOT_CI",
-          "target": "make CC=gcc fuzz-parsers",
-          "instrumentation": "AddressSanitizer and UndefinedBehaviorSanitizer on non-Windows.",
-          "ci": false
-        },
-        "coverage_guided_fuzzer": "NOT_CONFIGURED",
-        "overflow_oob_mutation_kill": "NOT_RUN"
-      }
-    },
-    {
       "boundary": "ELF32/MIPS executable preflight classifier",
       "entry": "src/core/nk_iso.c:nk_iso_elf32_mips_layout_violation; src/core/nk_iso.c:nk_elf32_mips_layout_violation; src/core/nk_iso.c:nk_iso_classify_executables",
       "max_input": "512 MiB executable extent.",
@@ -1049,12 +980,11 @@
       }
     },
     {
-      "boundary": "Python ISO9660/SFO inspector and executable preflight, which imports the local-only key and decryption boundary from tools/nk_core/decrypt_boundary.py (that module resolves the private key path and stages decrypted bytes; it parses nothing)",
+      "boundary": "Python ISO9660/SFO inspector and executable preflight",
       "id": "python-iso-sfo-inspector",
       "entry": "tools/nk_core/iso_inspect.py:inspect_iso; _read_iso_directory_entries; parse_param_sfo; _classify_iso_executable",
       "source_paths": [
-        "tools/nk_core/iso_inspect.py",
-        "tools/nk_core/decrypt_boundary.py"
+        "tools/nk_core/iso_inspect.py"
       ],
       "test_paths": [
         "tools/test_nk_core.py",
@@ -1495,9 +1425,9 @@
       "allocation_time": "One node per value; AST size is proportional to the caller's byte budget, so a caller that hands in a large buffer gets a proportionally large tree.",
       "failure_atomicity": "A failed parse returns NULL and frees its partial tree; callers must not publish a NULL AST. Depth rejection happens before any member of the too-deep subtree is allocated.",
       "harness": "tests/native/test_manifest_parser.c; tests/native/test_fuzz_parsers.c:test_fuzz_manifest; tests/native/test_input_profile.c exercises selected invalid byte sequences through the shared parser",
-      "gap": "Depth and escape rejection are shared by every consumer, but nk_json has no standalone mutation campaign of its own; it is only reached through consumer manifests, keystores, font caches, input profiles, and player JSON. The shared validator still accepts invalid four-byte lead bytes 0xF5-0xF7.",
+      "gap": "Depth and escape rejection are shared by every consumer, but nk_json has no standalone mutation campaign of its own; it is only reached through consumer manifests, font caches, input profiles, and player JSON. The shared validator still accepts invalid four-byte lead bytes 0xF5-0xF7.",
       "malformed_input_coverage": [
-        "over-deep nesting and malformed member/array syntax via consumer manifest and keystore cases",
+        "over-deep nesting and malformed member/array syntax via consumer manifest cases",
         "invalid UTF-8 escapes and control characters in strings",
         "The #600 input-profile corpus rejects selected invalid UTF-8 bytes in values and keys; it does not cover the 0xF5-0xF7 four-byte lead range still accepted by nk_json_validate_utf8."
       ],
@@ -1520,7 +1450,7 @@
           "tests": [
             "tests/native/test_fuzz_parsers.c"
           ],
-          "campaign": "100 seeded manifest/keystore mutation iterations of tests/native/test_fuzz_parsers.c via native-core-tests; nk_json is reached through those consumers, not directly."
+          "campaign": "100 seeded manifest mutation iterations of tests/native/test_fuzz_parsers.c via native-core-tests; nk_json is reached through those consumers, not directly."
         },
         "sanitizer": {
           "status": "NOT_COVERED",

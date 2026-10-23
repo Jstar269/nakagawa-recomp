@@ -458,17 +458,16 @@ class TestPrerequisiteFetcher(unittest.TestCase):
             {name.lower() for name in closure},
         )
 
-    def test_sony_font_hook_is_fail_closed_and_never_downloaded_by_tests(self) -> None:
+    def test_manifest_has_no_firmware_or_font_download_hook(self) -> None:
+        # The player never fetches PSP system software, firmware or system fonts:
+        # those come only from the user's own device. The prerequisite manifest
+        # therefore carries no font-source hook and names no firmware download.
         manifest_path = Path(__file__).resolve().parents[1] / "assets" / "prereq_manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        hooks = manifest["font_source_hooks"]
-        self.assertEqual(len(hooks), 1)
-        self.assertEqual(hooks[0]["type"], "sony-psp-system-software-update")
-        self.assertIsNone(hooks[0]["url"])
-        self.assertIsNone(hooks[0]["sha256"])
-        self.assertFalse(hooks[0]["download_in_tests"])
-        self.assertIn("decryption and your key file", hooks[0]["failure_message"])
-        self.assertNotRegex(hooks[0]["failure_message"], r"#[0-9]+")
+        text = manifest_path.read_text(encoding="utf-8")
+        manifest = json.loads(text)
+        self.assertNotIn("font_source_hooks", manifest)
+        self.assertNotIn("system-software-update", text.lower())
+        self.assertNotIn("firmware", text.lower())
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

@@ -23,8 +23,6 @@ import sys
 import time
 
 from nk_core import inspect_iso, package_cache
-from nk_core.decrypt_boundary import key_file_path
-from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root
 import title_manifest
 
 
@@ -494,18 +492,10 @@ def _wait_for_machine_idle(
 
 
 def _route_environment() -> dict[str, str]:
+    # Nakagawa does not decrypt games: the route uses only the decrypted files
+    # the user placed in each title's folder, so no key file is located here.
     environment = os.environ.copy()
     environment["MAKEFLAGS"] = "-j4"
-    if environment.get("NAKAGAWA_PSP_KEY_FILE"):
-        return environment
-    try:
-        key_path = key_file_path(default_data_root())
-    except PrerequisiteFetchError:
-        return environment
-    if key_path.is_file():
-        # The key is consumed in place by the existing private boundary;
-        # it is never read or copied by this tool.
-        environment["NAKAGAWA_PSP_KEY_FILE"] = str(key_path)
     return environment
 
 

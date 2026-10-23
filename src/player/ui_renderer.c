@@ -2009,7 +2009,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
             game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "Encrypted executable: supply a local key file or decrypted EBOOT.elf. Build the runtime package from the library.");
+                     "ENCRYPTED_EXECUTABLE: Nakagawa does not decrypt games. Add a decrypted EBOOT.elf from your own copy. Build the runtime package from the library.");
         } else if (game->selected_executable[0]) {
             snprintf(experimental_reason, sizeof(experimental_reason),
                      "%s selected. Build the runtime package from the library.",
@@ -3923,6 +3923,12 @@ static void render_prerequisite_about(SDL_Renderer *ren, PlayerApp *app,
                   1.0f, COLOR_TEXT_MUTED);
     }
     float buttons_y = card_y + card_h - 62.0f;
+    /* The project's own licence and the no-endorsement notice (NOTICE.md). */
+    draw_text_wrapped(ren, card_x + 30.0f, buttons_y - 58.0f, card_w - 60.0f,
+                      "Nakagawa Recomp is free software (GPL-3.0-or-later; see LICENSE and NOTICE.md). "
+                      "Not affiliated with or endorsed by Sony Interactive Entertainment; "
+                      "PlayStation and PSP are its trademarks.",
+                      0.78f, COLOR_TEXT_DIM, 3);
     bool open_focused = app->focus_index == 0;
     if (shown > 0 && draw_button_focused(ren, card_x + 30.0f, buttons_y,
             230.0f, 42.0f, "OPEN LICENSE TEXTS", false, in, open_focused)) {
@@ -4191,8 +4197,8 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                               " • A PSP game ISO you own\n"
                               " • Windows PC with a supported graphics driver\n"
                               " • Keyboard and mouse; a gamepad is optional\n\n"
-                              "This build decrypts encrypted executables with a local key file. It builds runtime "
-                              "packages from the library. Verify also lists font and audio status.",
+                              "Nakagawa does not decrypt games; it uses decrypted files from your own copy. "
+                              "It builds runtime packages from the library. Verify also lists font and audio status.",
                               1.1f, COLOR_TEXT_MUTED, 8);
 
             bool get_started_foc = (app->focus_index == focus++);
