@@ -247,6 +247,58 @@ authority, and `--require-reviewed-blobs` remains available for high-assurance
 legacy runs. See [`docs/PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md) for
 the authority boundaries and what each class needs.
 
+### Regenerating every generated file at once
+
+Several committed files are generator output, and a test or gate fails when the
+committed copy differs from a fresh generation. Run one command instead of the
+generator each failure names:
+
+```bash
+python tools/regen_all.py            # rewrite and stage the stale files
+python tools/regen_all.py --check    # exit 1 if any is stale; write nothing
+python tools/regen_all.py --list     # the steps, their outputs and what is skipped
+```
+
+Every staleness check prints `python tools/regen_all.py` as its fix. The steps
+run in a fixed order:
+
+| Step | Generator | Committed output |
+| --- | --- | --- |
+| recomp helper inventory | `tools/recomp_helper_inventory.py` | `docs/RECOMP_HELPER_INVENTORY.md` |
+| NID name table | `tools/gen_nidnames.py` | `src/rt/nid_names.h` |
+| HLE baseline and census block | `tools/hle_manifest.py` | `tools/import_audit_baseline.json`, the generated block in `docs/HLE_AND_WORKAROUND_INVENTORY.md` |
+| waits census | `tools/waits_census.py` | `docs/PSP_INTR_WAITS_CENSUS.md` |
+| public title catalog | `tools/title_catalog_codegen.py` | `src/core/generated/nk_title_catalog.{h,c}` |
+| PGF golden vectors | `tools/test_pgf_validate_parity.py --regenerate` | `tests/native/pgf_golden_vectors.h` |
+| provenance controls (last) | `tools/contrib_refresh.py` | `assets/public_provenance_ledger.json`, `PUBLIC_EXPORT.json` |
+
+The provenance refresh runs last because the ledger hashes the staged tree, so
+the tool stages the files it regenerated before it runs. Stage your own changes
+first (`git add`); with unstaged edits the refresh refuses with
+`CANDIDATE_INDEX_STALE`. It also refuses a new or removed public path and a
+changed publication profile. Those need maintainer authority, so the tool
+reports them as `SKIP` and points at
+[`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path).
+
+The tool never refreshes `tools/import_audit_baseline.json` over a coverage
+downgrade (a dedicated or controlled-unsupported NID becoming fake-success or
+missing). It fails and names the NIDs; fix the handler, or review the downgrade
+and run `python tools/hle_manifest.py --write-baseline` yourself.
+
+Some generators are listed but not run, and `--list` says why:
+
+- embedded shaders (`make shaders GLSLC=...`): regenerating needs `glslc`, whose
+  version the manifest records; `make shader-verify` checks the committed files;
+- profile-zero prebuilt digests: rebuilding needs the pinned PSPDEV toolchain;
+  CI checks `SHA256SUMS`;
+- the import-stub census and the benchmark report: both need private inputs
+  (decrypted title images, the local telemetry database), and neither output is
+  committed.
+
+The hand-kept lists the tests pin, such as the fake-success exceptions in
+`tools/test_hle_manifest.py`, are review decisions, not generator output, so the
+tool does not touch them.
+
 ### The generated control files must be in the commit
 
 Adding a tracked file, or changing one, makes three generated files stale:

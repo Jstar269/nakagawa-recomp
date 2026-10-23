@@ -1,0 +1,40 @@
+{
+  "compiler": {
+    "name": "glslc.exe",
+    "options": [
+      "--target-env=vulkan1.1"
+    ],
+    "target_environment": "vulkan1.1",
+    "version": "shaderc v2026.3 v2026.3\nspirv-tools v2026.3 v2022.4-1283-gb707790a\nglslang 11.1.0-1493-g168d452a\n\nTarget: SPIR-V 1.0"
+  },
+  "schema_version": 1,
+  "shaders": [
+    {
+      "embedded": "shaders/ui_vert.inc",
+      "embedded_sha256": "221d02ef8bdd3cb4e74b596598fb8b57f102f3989a9e0b89bb1ded8e37f72bab",
+      "source": "shaders/ui.vert",
+      "source_sha256": "735a8199f2afbea7ef48fb44c23d1f4d6d2ac778f921521ffe8ecc41ca1e59fc",
+      "spirv_bytes": 1644,
+      "spirv_sha256": "44de676bc7d6eac7b931c8ab117ac5d43051b121353db3c11554f75590e2aa1f",
+      "stage": "vert"
+    },
+    {
+      "embedded": "shaders/ui_frag.inc",
+      "embedded_sha256": "f8430d6d65cf08330301c87a39ddc49117949b87896daaf56940e305b5c8dc08",
+      "source": "shaders/ui.frag",
+      "source_sha256": "dcd97029bb5fb978e2e00fd9019dfff2aa0e8a5ac7574bd568ae2bf395ce37bd",
+      "spirv_bytes": 740,
+      "spirv_sha256": "45031b3022572e79a1b457ad8419bf279eb056e4f398bd052e6c0a5db8fa9be2",
+      "stage": "frag"
+    },
+    {
+      "embedded": "shaders/waves_frag.inc",
+      "embedded_sha256": "8ecf4b6999cae07322542e103f9f378ac690b8d7fc0559e74a940fb5db76fef8",
+      "source": "shaders/waves.frag",
+      "source_sha256": "99b1d63a63128ce19d3cd5ef1337f173ced7c3677fb858d7fd460cc8ba1d181c",
+      "spirv_bytes": 408,
+      "spirv_sha256": "de828b5681cb216406cd01a3a6274937b2ba30f0522883c61d0bcd6b5ba3ef73",
+      "stage": "frag"
+    }
+  ]
+}

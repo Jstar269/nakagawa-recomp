@@ -22,12 +22,6 @@
 # Source-owned profile-zero fixture (#557): only fixtures/profile_zero/prebuilt/SHA256SUMS
 # is committed. The PSPDEV build output itself is generated (by CI's profile_zero_fixture
 # job or a local PSPDEV rebuild) and stays ignored by the *.prx / *.pbp rules above (#1100).
-# Firmware font payloads: the runtime loads sceFont glyphs from SR_FONTDIR or from the
-# executable's sibling `font` directory, and tools/copy_build_assets.ps1 stages this directory next to
-# the binary on every build, so font/ is the operator's drop point. The payloads are never
-# redistributed with the public source (see font/README.md), so they must never be committed.
-/font/*.pgf
-/font/*.pgd
 *.[cC][sS][oO]
 *.[zZ][sS][oO]
 *.[cC][hH][dD]
@@ -40,6 +34,13 @@
 *.[gG][iI][mM]
 *.[pP][sS][aA][rR]
 *.[eE][dD][aA][tT]
+
+# Firmware font payloads: the runtime loads sceFont glyphs from SR_FONTDIR or from the
+# executable's sibling `font` directory, and tools/copy_build_assets.ps1 stages this directory next to
+# the binary on every build, so font/ is the operator's drop point. The payloads are never
+# redistributed with the public source (see font/README.md), so they must never be committed.
+/font/*.pgf
+/font/*.pgd
 /original_game/
 /place_game_here/
 /.hst/
@@ -72,8 +73,10 @@ EBOOT.BIN.dec*
 # truth for release packaging (assets/third_party_components.json records each
 # one's digest and where it was copied from), so they must travel with the source.
 # Git does not descend into a directory it has already excluded, so the exclusion
-# is narrowed to /third_party/* and the licenses directory is re-included here.
+# is narrowed to /third_party/* and reviewed public dependencies are re-included
+# here. Clay's pinned source and provenance must travel with the source export.
 !/third_party/licenses/
+!/third_party/clay/
 
 # Runtime state, logs, captures, and reports
 /logs/
@@ -91,17 +94,10 @@ tex_*.pgm
 # syscall sequence for a retail title, so it is a runtime capture like the rest
 # of this section -- never commit it.
 nidseq_mine.txt
-# tools/capture_native_screenshots.py defaults to writing into docs/ui-baseline,
-# a documentation output directory with no tracked assets (the dated inventory
-# lives at docs/archive/ui-baseline/README.md), and it photographs whatever
-# library the developer actually has. On a maintainer's machine that is the real
-# library, so the captures show retail disc ids and title names. They are
-# runtime captures of private input, not documentation assets;
-# docs/archive/ui-baseline/README.md records that they are retained internally
-# and never published. They must not be
-# stageable by an ordinary `git add -A`, which is a documented step of the
-# provenance refresh. publish_audit does reject them as POLICY_UNCLASSIFIED if
-# they are ever staged, but that is the last line of defence, not the first.
+# tools/capture_native_screenshots.py writes into docs/ui-baseline by default and
+# photographs the developer's real library (retail disc ids and titles): runtime
+# captures of private input, never documentation. Keep them unstageable by
+# `git add -A`; publish_audit's POLICY_UNCLASSIFIED is only the last line of defence.
 /docs/ui-baseline/*.png
 /docs/ui-baseline/*.bmp
 *.psess

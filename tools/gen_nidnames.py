@@ -211,7 +211,7 @@ def main(argv: list[str]) -> int:
         current = args.out.read_text(encoding="utf-8") if args.out.exists() else ""
         if current != text:
             print(
-                f"gen_nidnames: {args.out} is stale; rerun tools/gen_nidnames.py",
+                f"gen_nidnames: {args.out} is stale; run python tools/regen_all.py",
                 file=sys.stderr,
             )
             return 1

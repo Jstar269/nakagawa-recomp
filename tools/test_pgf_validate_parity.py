@@ -449,11 +449,11 @@ def golden_header_text() -> str:
 class GoldenVectorTests(unittest.TestCase):
     def test_golden_header_matches_the_writer(self) -> None:
         """tests/native/pgf_golden_vectors.h is the writer's output; regenerate it when the writer changes."""
-        self.assertTrue(GOLDEN_HEADER.is_file(), "run: python tools/test_pgf_validate_parity.py --regenerate")
+        self.assertTrue(GOLDEN_HEADER.is_file(), "run: python tools/regen_all.py")
         self.assertEqual(
             GOLDEN_HEADER.read_text(encoding="utf-8").replace("\r\n", "\n"),
             golden_header_text(),
-            "pgf_golden_vectors.h is stale; run: python tools/test_pgf_validate_parity.py --regenerate",
+            "pgf_golden_vectors.h is stale; run: python tools/regen_all.py",
         )
 
     def test_golden_vectors_are_accepted_and_classified(self) -> None:

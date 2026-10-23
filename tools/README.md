@@ -175,6 +175,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `evidence_model.py` | Fail-closed evidence grading and revision identity primitives. |
 | `waits_census.py` | Regenerate the interrupt/dispatch waits-matrix registration census. |
 | `recomp_helper_inventory.py` | Regenerate and drift-check the `recomp.c`/`recomp.h` helper inventory (reach and provenance class per helper; #346). |
+| `regen_all.py` | Run every committed-output generator in a fixed order, provenance refresh last; `--check` fails on any stale file and prints the one fix command (docs/CI.md). |
 | `vblank_ledger.py` | Judge one run's VBLANK delivery against the display source that owed it. |
 | `boot_gate.py` | Summarize machine-readable native boot milestones from a runtime log. |
 | `soak_audit.py` | Judge one soak run from the telemetry the runtime already writes. |
@@ -490,6 +491,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_visual_oracle.py` | Visual-oracle runner guarantees. |
 | `test_waits_census.py` | Tests for the waits-matrix census generator. |
 | `test_recomp_helper_inventory.py` | Tests for the recomp helper inventory generator and its drift check. |
+| `test_regen_all.py` | Tests for the all-generator refresh: step inventory, committed outputs current, the downgrade refusal and `--check` failure. |
 | `test_xb_probe.py` | Synthetic, retail-free coverage for the direct archive probe. |
 
 ### Regression tests: publication, provenance and supply chain

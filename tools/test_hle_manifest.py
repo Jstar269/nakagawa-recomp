@@ -891,7 +891,11 @@ citations (PSP-B1-01, no-colon forms) need their own check.
 
     def test_committed_baseline_is_current_and_reproducible(self) -> None:
         baseline = json.loads(DEFAULT_BASELINE.read_text(encoding="ascii"))
-        self.assertEqual(baseline, manifest_to_baseline(self.manifest))
+        self.assertEqual(
+            baseline,
+            manifest_to_baseline(self.manifest),
+            "tools/import_audit_baseline.json is stale; run python tools/regen_all.py",
+        )
 
     def test_manifest_build_is_deterministic(self) -> None:
         a = json.dumps(build_manifest(), sort_keys=True)
@@ -1829,7 +1833,7 @@ class CensusTests(unittest.TestCase):
         self.assertEqual(
             actual,
             expected,
-            "HLE inventory census is stale; regenerate it from tools/hle_manifest.py",
+            "HLE inventory census is stale; run python tools/regen_all.py",
         )
 
     def test_partial_with_evidence_still_needs_a_limitation(self) -> None:

@@ -388,11 +388,11 @@ class RepositoryInventoryTests(unittest.TestCase):
         cls.text = rhi.render_markdown(cls.inv)
 
     def test_committed_inventory_is_current(self) -> None:
-        self.assertTrue(rhi.OUT_MD.is_file(), "run python tools/recomp_helper_inventory.py")
+        self.assertTrue(rhi.OUT_MD.is_file(), "run python tools/regen_all.py")
         self.assertEqual(
             rhi.OUT_MD.read_text(encoding="utf-8"),
             self.text,
-            "docs/RECOMP_HELPER_INVENTORY.md is stale; run python tools/recomp_helper_inventory.py",
+            "docs/RECOMP_HELPER_INVENTORY.md is stale; run python tools/regen_all.py",
         )
 
     def test_committed_inventory_has_no_volatile_facts(self) -> None:

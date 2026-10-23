@@ -594,11 +594,11 @@ def main(argv: list[str] | None = None) -> int:
     text = render_markdown(inv)
     if args.check:
         if not args.out.is_file():
-            print(f"recomp_helper_inventory: missing {args.out}; run tools/recomp_helper_inventory.py", file=sys.stderr)
+            print(f"recomp_helper_inventory: missing {args.out}; run python tools/regen_all.py", file=sys.stderr)
             return 1
         if args.out.read_text(encoding="utf-8") != text:
             print(
-                f"recomp_helper_inventory: {args.out} is stale; run python tools/recomp_helper_inventory.py",
+                f"recomp_helper_inventory: {args.out} is stale; run python tools/regen_all.py",
                 file=sys.stderr,
             )
             return 1
