@@ -493,15 +493,17 @@ const char *nk_ui_input_label(NkUiPromptStyle style) {
     }
 }
 
-void nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t count,
-                   const char *input_label, bool input_active) {
+int nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t count,
+                  const char *input_label, bool input_active) {
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiLayout layout = nk_ui_row(nk_ui_grow(), nk_ui_fixed(NK_UI_TOP_BAR_HEIGHT - 1.0f),
                                   NK_UI_SPACE_6);
     size_t i;
+    int chosen = -1;
+    int active = -1;
     nk_ui_pad(&layout, 0.0f, NK_UI_GUTTER, 0.0f, NK_UI_GUTTER);
     if (!nk_ui_begin_container(ui, id, &layout, NULL)) {
-        return;
+        return -1;
     }
     /* Brand: the N1 mark and the wordmark. */
     layout = nk_ui_row(nk_ui_fit(), nk_ui_fit(), NK_UI_SPACE_3);
@@ -519,18 +521,39 @@ void nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t coun
         for (i = 0; sections != NULL && i < count; ++i) {
             NkUiLayout tab = nk_ui_column(nk_ui_fit(), nk_ui_grow(), 0.0f);
             NkUiId tab_id = nk_ui_child_id(id, 16u + (uint32_t)i * 4u);
+            /* A focusable tab takes focus on its label pill, so the ring stays
+               inside the bar instead of running off the window's top edge. */
+            NkUiId label_id = sections[i].id != 0u ? sections[i].id : nk_ui_child_id(tab_id, 2u);
+            NkUiStyle label_style;
+            bool focused = false;
             tab.align_x = NK_UI_ALIGN_CENTER;
+            if (sections[i].active) active = (int)i;
+            memset(&label_style, 0, sizeof(label_style));
+            label_style.corner_radius = NK_UI_RADIUS_CONTROL;
+            if (sections[i].id != 0u) {
+                nk_ui_register_button(ui, label_id, 0u);
+                focused = nk_ui_button_focused(ui, label_id);
+                if (focused) label_style.fill_rgba = theme->surface_high;
+            }
             if (!nk_ui_begin_container(ui, tab_id, &tab, NULL)) {
                 continue;
             }
             nk_ui_spacer(ui, nk_ui_child_id(tab_id, 1u), nk_ui_fixed(1.0f), nk_ui_grow());
             {
-                NkUiLayout label = nk_ui_row(nk_ui_fit(), nk_ui_fit(), 0.0f);
+                NkUiLayout label = nk_ui_row(nk_ui_fit(), nk_ui_fixed(34.0f), 0.0f);
                 NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_LABEL,
-                                                sections[i].active ? theme->paper : theme->muted);
+                                                sections[i].active || focused ? theme->paper
+                                                                              : theme->muted);
                 nk_ui_pad(&label, 0.0f, NK_UI_SPACE_3, 0.0f, NK_UI_SPACE_3);
+                label.align_y = NK_UI_ALIGN_CENTER;
                 text.letter_spacing = 1.2f;
-                if (nk_ui_begin_container(ui, nk_ui_child_id(tab_id, 2u), &label, NULL)) {
+                if (nk_ui_begin_container(ui, label_id, &label, &label_style)) {
+                    if (focused) {
+                        nk_ui_focus_ring(ui, label_id, NK_UI_RADIUS_CONTROL);
+                    }
+                    if (sections[i].id != 0u && nk_ui_take_activation(ui, label_id)) {
+                        chosen = (int)i;
+                    }
                     nk_ui_text(ui, nk_ui_child_id(tab_id, 3u),
                                nk_ui_caps(ui, sections[i].label), &text);
                     nk_ui_end_container(ui);
@@ -567,6 +590,17 @@ void nk_ui_top_bar(NkUi *ui, NkUiId id, const NkUiSection *sections, size_t coun
     }
     nk_ui_end_container(ui);
     nk_ui_divider(ui, nk_ui_child_id(id, 8u), true);
+    /* L / R (Q / E) step through the focusable sections from the active one. */
+    {
+        NkUiNavDir dir = NK_UI_DIR_NONE;
+        if (chosen < 0 && active >= 0 && nk_ui_take_event(ui, NK_UI_EV_TAB, &dir)) {
+            int step = dir == NK_UI_DIR_LEFT ? -1 : 1;
+            int next = active + step;
+            while (next >= 0 && next < (int)count && sections[next].id == 0u) next += step;
+            if (next >= 0 && next < (int)count) chosen = next;
+        }
+    }
+    return chosen;
 }
 
 void nk_ui_prompt_bar(NkUi *ui, NkUiId id, const char *hint,

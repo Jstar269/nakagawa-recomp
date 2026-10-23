@@ -2178,3 +2178,35 @@ class FirstRunRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlayerVersionIdentityTests(unittest.TestCase):
+    """The About page's build date comes from SOURCE_DATE_EPOCH when it is set.
+
+    A dry run of the player link shows the define the build passes; nothing is
+    compiled. The date itself (MM-DD-YYYY from the epoch) is checked by
+    tests/native/test_player_screens.c.
+    """
+
+    def _player_defines(self, env_extra: dict[str, str]) -> list[str]:
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        if make is None:
+            self.skipTest("make is not on PATH")
+        env = dict(os.environ)
+        env.update(env_extra)
+        with tempfile.TemporaryDirectory(prefix="nk-player-identity-") as scratch:
+            build_root = Path(scratch).as_posix()
+            exe = f"{build_root}/nakagawa_player{'.exe' if os.name == 'nt' else ''}"
+            run = subprocess.run(
+                [make, "--no-print-directory", "-n", "-B", f"BUILD_ROOT={build_root}", exe],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=600,
+            )
+        if run.returncode != 0:
+            self.skipTest(f"the player dry run needs its build dependencies: {run.stderr[-400:]}")
+        return re.findall(r"-DNK_PLAYER_BUILD_[A-Z]+=\S+", run.stdout)
+
+    def test_source_date_epoch_fixes_the_build_date(self) -> None:
+        defines = self._player_defines({"SOURCE_DATE_EPOCH": "1792713600"})
+        self.assertIn("-DNK_PLAYER_BUILD_EPOCH=1792713600LL", defines)
+        again = self._player_defines({"SOURCE_DATE_EPOCH": "1792713600"})
+        self.assertEqual(defines, again, "the same epoch gives the same defines")

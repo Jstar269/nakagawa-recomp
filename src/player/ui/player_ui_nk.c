@@ -21,6 +21,15 @@
 #define PLAYER_UI_INFO 0x6CB6FFFFu
 #define PLAYER_UI_TITLE_CAP MAX_LIBRARY_GAMES
 
+/* Build identity for the About page, injected by the Makefile and CMake:
+   SOURCE_DATE_EPOCH when the build sets it, else the source commit's time. */
+#ifndef NK_PLAYER_BUILD_EPOCH
+#define NK_PLAYER_BUILD_EPOCH (-1LL)
+#endif
+#ifndef NK_PLAYER_BUILD_COMMIT
+#define NK_PLAYER_BUILD_COMMIT ""
+#endif
+
 typedef struct {
     const char *key;
     const char *word;
@@ -55,6 +64,7 @@ struct PlayerUiNk {
     PlayerUiTitle titles[PLAYER_UI_TITLE_CAP];
     char status_text[PLAYER_UI_TITLE_CAP][256];
     char library_page_label[64];
+    char version_line[64];
     bool ready;
 };
 
@@ -187,6 +197,8 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window,
         return NULL;
     }
     nk_ui_sdl_input_init(&player->input);
+    player_ui_version_line(NK_PLAYER_VERSION, (long long)NK_PLAYER_BUILD_EPOCH,
+                           player->version_line, sizeof(player->version_line));
     player->ready = true;
     if (error != NULL && error_size > 0u) error[0] = '\0';
     return player;
@@ -217,7 +229,12 @@ bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
                                      translated,
                                      sizeof(translated) / sizeof(translated[0]));
     for (size_t i = 0u; i < count; ++i) {
-        if (translated[i].type == NK_UI_EV_BACK) {
+        if (translated[i].type == NK_UI_EV_BACK &&
+            nk_ui_router_current(player->router) == PLAYER_UI_ROUTE_ABOUT) {
+            /* About is a top-level section: Back returns to the Library. */
+            (void)nk_ui_router_replace(player->router, PLAYER_UI_ROUTE_LIBRARY);
+            nk_ui_router_set_focus(player->router, PLAYER_UI_ID_TAB_ABOUT);
+        } else if (translated[i].type == NK_UI_EV_BACK) {
             nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
             (void)nk_ui_router_handle_event(player->router, &translated[i]);
         } else {
@@ -553,6 +570,24 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 if (out_action != NULL) *out_action = action;
             }
         }
+    } else if (route == PLAYER_UI_ROUTE_ABOUT) {
+        PlayerUiAboutModel model;
+        memset(&model, 0, sizeof(model));
+        model.version_line = player->version_line;
+        model.build_commit = NK_PLAYER_BUILD_COMMIT;
+        model.logical_width = scale.logical_w;
+        model.logical_height = scale.logical_h;
+        action = player_ui_screen_about(player->ui, &model);
+    }
+    /* The top-bar sections switch the root screen. */
+    if (action.kind == PLAYER_UI_ACTION_OPEN_ABOUT) {
+        (void)nk_ui_router_replace(player->router, PLAYER_UI_ROUTE_ABOUT);
+        nk_ui_focus(player->ui, PLAYER_UI_ID_TAB_ABOUT);
+        action.kind = PLAYER_UI_ACTION_NONE;
+    } else if (action.kind == PLAYER_UI_ACTION_OPEN_LIBRARY) {
+        (void)nk_ui_router_replace(player->router, PLAYER_UI_ROUTE_LIBRARY);
+        nk_ui_focus(player->ui, PLAYER_UI_ID_TAB_LIBRARY);
+        action.kind = PLAYER_UI_ACTION_NONE;
     }
     nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
     draw_list = nk_ui_end(player->ui);
