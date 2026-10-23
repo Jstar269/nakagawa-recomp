@@ -24,7 +24,11 @@ Where this page and the code disagree, the code is current and this page is upda
 - **Honest copy.** Words describe what the build does today. Compatibility words come from data
   (`docs/COMPATIBILITY.md`), never from layout code.
 - **Bring your own game.** No game data, art, music or fonts ship with the player; placeholders say where the
-  user's own disc art will appear. Nothing is downloaded or uploaded.
+  user's own disc art will appear.
+- **Say it once, where the user decides.** The privacy promise ("Your games stay on this PC. Nakagawa never
+  uploads anything, and downloads only the build tools you approve.") appears on the setup wizard's Welcome step
+  and on About, and nowhere else: not in prompt-bar corners, not on the Add card, not in page footers. A screen
+  that asks for consent (the build-tool download) says exactly what it fetches, from where, and how big it is.
 - **No console trade dress.** No PSP system icons, sounds or names, no XMB-style horizontal category bar. The
   waves, the palette and the seasonal arc are the project's own.
 - **No key-file UI anywhere.** The player does not decrypt games (#1187). No screen, step, setting, dialog or path
@@ -151,7 +155,7 @@ frame until the command changes; the Vulkan backend will use the shader.
 | Eyebrow | `nk_ui_eyebrow` | `EYEBROW`; names a section or a card |
 | Card | `nk_ui_card_begin` | `surface_raised`, `line`, radius 12, 16/20 px padding |
 | Top bar | `nk_ui_top_bar` | N1 mark (28 px) and wordmark; section tabs in `LABEL` with a 3 px accent rule under the active one; input chip on the right (dot in `ready` for a controller) |
-| Prompt bar | `nk_ui_prompt_bar` | `surface_raised`; hint in `CAPTION` `muted` on the left; glyph (24 px, current prompt style) + `LABEL` per action on the right, 18 px apart |
+| Prompt bar | `nk_ui_prompt_bar` | `surface_raised`; an optional hint in `CAPTION` `muted` on the left, used only for a screen-specific tip (never a standing disclaimer); glyph (24 px, current prompt style) + `LABEL` per action on the right, 18 px apart |
 | Vector art | `nk_ui_shapes` | rects, circles and convex polygons in a view box, fitted and centred; used for the N1 mark, the showcase demos' pictures and icons |
 
 Prompt glyphs come from `nk_ui_prompt_glyph`, and the whole bar shows one set chosen from the active device
@@ -172,9 +176,10 @@ Only actions the screen handles appear in its prompt bar.
 
 Top bar; `LIBRARY` in `DISPLAY` with the count in `CAPTION` beside it ("7 titles · 2 showcase demos"); a pager
 (small PREVIOUS and NEXT buttons around "PAGE 1 OF 2") on the right of that row when the grid spans pages; the card
-grid, ending with the add card; prompt bar "Bring your own game. Nothing is downloaded." with MOVE and OPEN. Empty
-library: one centred 640 px card with a disc icon, `TITLE` "Your library is empty", a `BODY` line and the primary
-ADD A PSP DISC IMAGE button.
+grid, ending with the add card ("Add a disc image you own", "Choose an .iso file"); prompt bar with MOVE and OPEN
+and no corner text. Empty library: one centred 640 px card with a disc icon, `TITLE` "Add your first game", a `BODY`
+line, the primary START SETUP WIZARD button (the default focus), CHOOSE A DISC IMAGE, and a caption about dropping an
+.iso onto the window.
 
 ### Title detail (C5, built)
 
@@ -192,11 +197,12 @@ Reached from the top bar's ABOUT tab (L / R or Q / E switch tabs; Back returns t
 
 - the N1 mark at 72 px beside `NAKAGAWA RECOMP` in `DISPLAY_XL`, with the version line under it in `LABEL_L`
   accent, exactly `v0.0.1 (MM-DD-YYYY)`;
-- a `BODY_L` `muted` line saying what it is: a PSP static recompiler, your own game recompiled to run natively,
-  nothing downloaded, no game data included;
+- a `BODY_L` `muted` line saying what it is (a PSP static recompiler: your own game, recompiled to run natively),
+  followed by the privacy promise;
 - a LICENCE card (GPL-3.0-or-later, and a THIRD-PARTY NOTICES button that opens the existing licences screen) beside
   a CREDITS card (the upstream lineage in three lines, pointing at `CREDITS.md` and `NOTICE.md`);
-- the non-affiliation notice, the project link in `DATA`, and the short source commit as a `FOOTNOTE`.
+- the non-affiliation notice ending "No game data is included.", the project link in `DATA`, and the short source
+  commit as a `FOOTNOTE`.
 
 The version is written once, `NK_PLAYER_VERSION` in `src/player/ui/player_ui_nk.h`. The date is the build's
 `SOURCE_DATE_EPOCH` when set, else the source commit's time (Makefile and CMake both), formatted in UTC as
