@@ -1924,7 +1924,131 @@ static void test_iso_stage_collisions_by_content(const char *test_dir) {
     printf("[HOSTILE_TEST] ISO staging keeps ';' names and resolves host name collisions by content.\n");
 }
 
+static void test_nk_json_utf8_encode(void) {
+    printf("[HOSTILE_TEST] Testing nk_json_utf8_encode edge cases and boundaries...\n");
+    fflush(stdout);
+
+    char out[4];
+    size_t len;
+
+    /* 1. 1-byte ASCII range (0x00 .. 0x7F) */
+    /* U+0000 NUL */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x00, out);
+    assert(len == 1);
+    assert(out[0] == 0x00);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+0041 'A' */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x41, out);
+    assert(len == 1);
+    assert(out[0] == 'A');
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+007F DEL (max 1-byte) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x7F, out);
+    assert(len == 1);
+    assert(out[0] == 0x7F);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* 2. 2-byte range (0x80 .. 0x7FF) */
+    /* U+0080 (min 2-byte) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x80, out);
+    assert(len == 2);
+    assert((uint8_t)out[0] == 0xC2 && (uint8_t)out[1] == 0x80);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+00A9 '©' */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x00A9, out);
+    assert(len == 2);
+    assert((uint8_t)out[0] == 0xC2 && (uint8_t)out[1] == 0xA9);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+03B1 'α' */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x03B1, out);
+    assert(len == 2);
+    assert((uint8_t)out[0] == 0xCE && (uint8_t)out[1] == 0xB1);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+07FF (max 2-byte) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x07FF, out);
+    assert(len == 2);
+    assert((uint8_t)out[0] == 0xDF && (uint8_t)out[1] == 0xBF);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* 3. 3-byte range (0x800 .. 0xFFFF) */
+    /* U+0800 (min 3-byte) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x0800, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xE0 && (uint8_t)out[1] == 0xA0 && (uint8_t)out[2] == 0x80);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+20AC '€' */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x20AC, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xE2 && (uint8_t)out[1] == 0x82 && (uint8_t)out[2] == 0xAC);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+65E5 '日' */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x65E5, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xE6 && (uint8_t)out[1] == 0x97 && (uint8_t)out[2] == 0xA5);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+D7FF (last scalar before surrogate area) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xD7FF, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0x9F && (uint8_t)out[2] == 0xBF);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+FFFF (max 3-byte) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xFFFF, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xEF && (uint8_t)out[1] == 0xBF && (uint8_t)out[2] == 0xBF);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* 4. 4-byte range (0x10000 .. 0x10FFFF) */
+    /* U+10000 (min 4-byte) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x10000, out);
+    assert(len == 4);
+    assert((uint8_t)out[0] == 0xF0 && (uint8_t)out[1] == 0x90 &&
+           (uint8_t)out[2] == 0x80 && (uint8_t)out[3] == 0x80);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+1F600 '😀' */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x1F600, out);
+    assert(len == 4);
+    assert((uint8_t)out[0] == 0xF0 && (uint8_t)out[1] == 0x9F &&
+           (uint8_t)out[2] == 0x98 && (uint8_t)out[3] == 0x80);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+10FFFF (max Unicode scalar value) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x10FFFF, out);
+    assert(len == 4);
+    assert((uint8_t)out[0] == 0xF4 && (uint8_t)out[1] == 0x8F &&
+           (uint8_t)out[2] == 0xBF && (uint8_t)out[3] == 0xBF);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    printf("[HOSTILE_TEST] nk_json_utf8_encode tests PASSED!\n");
+    fflush(stdout);
+}
+
 int main(void) {
+    test_nk_json_utf8_encode();
     native_test_create_root("parsers-hostile");
     native_test_isolate_user_data_roots();
     native_test_assert_cache_root_isolated();
