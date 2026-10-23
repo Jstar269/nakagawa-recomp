@@ -115,7 +115,7 @@ class PublicCiWiringTests(unittest.TestCase):
         lock = json.loads((ROOT / "assets" / "upstream" / "pspdev.lock.json").read_text())
         evidence = json.loads((ROOT / "assets" / "upstream" / "pspdev.evidence.json").read_text())
         self.assertIn("Build pinned SDL3 for headless Linux runtime", ci)
-        self.assertIn("fa2c02bb6e21974a89ea9824bc53c9932abe5f9c", ci)
+        self.assertIn("829a65d769d935c4852f8159e964312c0957260a", ci)
         self.assertIn("libvulkan-dev", ci)
         self.assertIn("SDL_UNIX_CONSOLE_BUILD=ON", ci)
         self.assertIn("pspdev.lock.json", ci)
@@ -152,6 +152,7 @@ class PublicCiWiringTests(unittest.TestCase):
     def test_ffmpeg_h264_media_selftest_is_wired_in_linux_ci(self) -> None:
         """The optional H.264 backend must build and execute its real media fixture in CI."""
         native_tools = _ci_job_blocks()["native_tools"]
+        self.assertIn("    runs-on: ubuntu-24.04", "\n".join(native_tools))
         dependencies = _ci_step(native_tools, "Install native test dependencies")
         ffmpeg_test = _ci_step(native_tools, "Build and run the opt-in FFmpeg H.264 media selftest")
         self.assertIsNotNone(dependencies)
@@ -228,8 +229,8 @@ class PublicCiWiringTests(unittest.TestCase):
             'XDG_STATE_HOME="$RUNNER_TEMP/player-smoke-state"',
         ):
             self.assertIn(assignment, invocation)
-        self.assertIn("SDL3_VERSION=3.4.16", native_tools)
-        self.assertIn("SDL3_COMMIT=fa2c02bb6e21974a89ea9824bc53c9932abe5f9c", native_tools)
+        self.assertIn("SDL3_VERSION=3.4.18", native_tools)
+        self.assertIn("SDL3_COMMIT=829a65d769d935c4852f8159e964312c0957260a", native_tools)
 
         required_start = ci.index("  ci_required:\n")
         required_job = ci[required_start:]
@@ -443,16 +444,17 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run portable FPU/VFPU conversion selftest": "CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest",
     "Build and run strbuf checked-append formatting selftest": "CC=gcc VULKAN_SDK=/ucrt64 strbuf-selftest",
     "Build and run HLE thread selftest": "CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest",
-    "Build and run flash0 font device selftest": "PYTHONPATH=tools python -m unittest -v test_flash0_font",
+    "Build and run flash0 font device selftest": 'PYTHONPATH=tools "$py" -m unittest -v test_flash0_font',
     "Build and run synthetic VFPU fuzzer (shard 0 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Build and run synthetic VFPU fuzzer (shard 1 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
-    "Prove the fuzz shards cover every case exactly once": "NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe python -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests",
+    "Prove the fuzz shards cover every case exactly once": 'NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests',
 }
 # Steps every part repeats: the toolchain setup and the runtime-object compile gate.
 _WINDOWS_EVERY_PART = (
     "Check out repository",
+    "Set up Windows CPython 3.15.1",
     "Set up MSYS2 UCRT64",
-    "Pin the Windows Python toolchain (MSYS2 UCRT64 CPython)",
+    "Pin the Windows Python toolchain (CPython 3.15.1)",
     "Verify default and override compiler resolution",
     "Compile Windows runtime objects through the default compiler path",
 )
@@ -484,6 +486,25 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         match = re.fullmatch(r"if: matrix\.part == '([A-Za-z0-9_-]+)'", conditions[0])
         self.assertIsNotNone(match, f"{name}: a part condition must name exactly one part")
         return match.group(1)
+
+    def test_windows_runtime_pins_windows_cpython_315_for_tools_and_make(self) -> None:
+        setup = "\n".join(self.steps["Set up Windows CPython 3.15.1"])
+        self.assertIn('python-version: "3.15.1"', setup)
+        pin = "\n".join(self.steps["Pin the Windows Python toolchain (CPython 3.15.1)"])
+        self.assertIn("shell: pwsh", pin)
+        self.assertIn("steps.windows-cpython.outputs.python-path", pin)
+        self.assertIn('"PYTHON=$pythonPath`n"', pin)
+        self.assertIn("MSYS2 still ships Python 3.14.8", "\n".join(self.block))
+        self.assertIn('cygpath -u "$PYTHON"', "\n".join(self.block))
+
+    def test_flash0_python_path_assignment_is_separate_from_invocation(self) -> None:
+        step = "\n".join(self.steps["Build and run flash0 font device selftest"])
+        self.assertRegex(step, r"(?m)^\s+run: \|$")
+        self.assertIn(
+            'py="$(cygpath -u "$PYTHON")"\n'
+            '          PYTHONPATH=tools "$py" -m unittest -v test_flash0_font',
+            step,
+        )
 
     def test_every_serial_gate_runs_in_exactly_one_declared_part_with_its_command(self) -> None:
         self.assertEqual(len(self.parts), len(set(self.parts)))
@@ -546,7 +567,8 @@ class WindowsPlayerStageSmokeTests(unittest.TestCase):
         self.assertNotIn("mingw32-make", self.text)
 
     def test_step_stages_a_test00007_disc_through_the_stage_only_route(self) -> None:
-        self.assertIn("python fixtures/showcase/showcase.py stage-iso --out-dir", self.text)
+        self.assertIn('"$py" fixtures/showcase/showcase.py stage-iso --out-dir', self.text)
+        self.assertIn('py="$(cygpath -u "$PYTHON")"', self.text)
         self.assertIn('"--iso=$smoke/disc/TEST00007.iso" --stage-only)', self.text)
         self.assertIn('grep -Fq "STAGING_RESULT status=PASS"', self.text)
         self.assertIn("timeout 60s", self.text)
@@ -756,15 +778,27 @@ class PublicExportJobTests(unittest.TestCase):
         text = "\n".join(step or [])
         self.assertIn('--require-hashes', text)
         self.assertIn('pre-commit-requirements.txt', text)
-        match = re.search(r"<<'LOCK'\n(?P<lock>.*?)\n\s*LOCK", text, re.DOTALL)
-        self.assertIsNotNone(match)
-        lock = match.group("lock") if match is not None else ""
-        requirements = [line.strip().rstrip("\\").strip()
-                        for line in lock.splitlines() if "==" in line]
-        package_versions = {
-            line.split("==", 1)[0].lower(): line.split("==", 1)[1]
-            for line in requirements
-        }
+        locks = re.findall(r"<<'LOCK'\n(.*?)\n\s*LOCK", text, re.DOTALL)
+        self.assertEqual(len(locks), 2, "build tools and pre-commit must each have a hash lock")
+
+        def versions(lock: str) -> dict[str, str]:
+            requirements = [line.strip().rstrip("\\").strip()
+                            for line in lock.splitlines() if "==" in line]
+            return {
+                line.split("==", 1)[0].lower(): line.split("==", 1)[1]
+                for line in requirements
+            }
+
+        build_lock, lock = locks
+        build_versions = versions(build_lock)
+        package_versions = versions(lock)
+        self.assertEqual(build_versions, {
+            "cython": "3.3.0",
+            "setuptools": "84.2.1",
+            "packaging": "26.3",
+            "wheel": "0.48.0",
+        })
+        self.assertEqual(build_lock.count("--hash=sha256:"), len(build_versions))
         self.assertEqual(package_versions, {
             "cfgv": "3.5.0",
             "distlib": "0.4.4",
@@ -802,7 +836,7 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertIn("PROVENANCE_UNVERIFIED", export)
         job = "\n".join(self.blocks["public_export"])
         self.assertIn("fetch-depth: 0", job)
-        self.assertIn('python-version: "3.14"', job)
+        self.assertIn('python-version: "3.15.1"', job)
 
     def test_public_export_job_is_ungated_by_path(self) -> None:
         block = self.blocks["public_export"]
@@ -1176,7 +1210,7 @@ class MergeQueueDependencyReviewWiringTests(unittest.TestCase):
         self.assertIn("with:\n          base-ref:", step)
 
     def test_required_job_name_action_pin_and_permissions_are_unchanged(self) -> None:
-        self.assertIn("  dependency-review:\n    runs-on: ubuntu-latest", self.text)
+        self.assertIn("  dependency-review:\n    runs-on: ubuntu-26.04", self.text)
         self.assertIn(
             "uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0",
             self.text,

@@ -802,7 +802,7 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
 
     def test_live_makefile_recipe_edit_narrows_and_flag_edit_does_not(self) -> None:
         makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
-        recipe = '\t$(PYTHON) -m unittest discover -s tests/native -p "test_player_ui.py" -v\n'
+        recipe = '\t"$(PYTHON)" -m unittest discover -s tests/native -p "test_player_ui.py" -v\n'
         self.assertIn(recipe, makefile)
         self.assertEqual(
             self.analyse(makefile, makefile.replace(recipe, recipe.replace(" -v", " -v -f"), 1)),

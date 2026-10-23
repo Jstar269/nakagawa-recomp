@@ -150,7 +150,7 @@ Signed-off-by: Real Name <email@example.com>
 ## Development setup
 
 Follow the [authoritative development baseline in docs/SETUP.md](docs/SETUP.md). The core toolchain
-is Windows 11 x64, PowerShell 7.4+ (`pwsh`), CPython 3.14.x, current MSYS2 UCRT64, and a current
+is Windows 11 x64, PowerShell 7.4+ (`pwsh`), CPython 3.15.x, current MSYS2 UCRT64, and a current
 auto-detected Vulkan SDK/loader. The native player is the repository's only user interface.
 
 ## Make a focused change

@@ -204,7 +204,7 @@ them FAIL because no summary is written. `cosim-selftest` builds with `TRACE=1`,
 different instrumentation. So the cost of the counters on a workload with substantial guest work is not
 measured here.
 
-Environment. Host: AMD Ryzen 9 5900X (12 cores, 24 threads), Windows 11 Home 10.0.26300, shared with
+Historical environment for the recorded base commit `788465b2`. Host: AMD Ryzen 9 5900X (12 cores, 24 threads), Windows 11 Home 10.0.26300, shared with
 other agent sessions and MCP servers, so not idle. Total CPU over the smoke series had a median of 24%
 across run windows (window means 16% to 39%), and no run window averaged above 50%. Toolchain: gcc 16.1.0 (MSYS2 UCRT64),
 GNU Make 4.4.1, Python 3.14.7. Flags are the Makefile defaults: `RUNTIME_OPT=-O0`,

@@ -17,8 +17,9 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
    supported for that.
 3. **MSYS2 UCRT64** with the packages in [section 1](#1-install-the-core-toolchain): GCC, GNU Make,
    SDL3, SDL3_ttf, and the Vulkan headers and loader.
-4. **CPython 3.14.x** on `PATH`. Read [PATH order](#path-order) before you install the Python tooling.
+4. **CPython 3.15.x** on `PATH`. Read [PATH order](#path-order) before you install the Python tooling.
 5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
+   LunarG Vulkan SDK 1.4.363.0 is recommended for Windows development.
 6. **Git for Windows**, to clone the repository and fetch optional third-party source.
 7. **Your own copy of the game** as an `.iso`. If its executable is encrypted, you also need the
    decrypted files from your own copy; see [Encrypted executables](#encrypted-executables).
@@ -88,9 +89,9 @@ player and your own game.
 ## Linux headless showcase
 
 Linux can build and run the two source-owned showcase packages through the runtime.
-The route needs GCC, GNU Make, Python 3.14, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.16,
+The route needs GCC, GNU Make, Python 3.15, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.18,
 and PSPDEV v20260601 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
-3.4.16 release commit and verifies the PSPDEV archive against
+3.4.18 release commit and verifies the PSPDEV archive against
 [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
 
 Run the showcase from the repository root:
@@ -110,10 +111,10 @@ The supported and tested core development environment is:
 
 - Windows 11 x64. Older or unsupported Windows versions may work, but receive no compatibility guarantee.
 - PowerShell 7.4+ (`pwsh`) as the shell you type into. Windows PowerShell 5.1 is not supported for that.
-- CPython 3.14.x (`>=3.14,<3.15`), with `python` resolving to that feature line.
+- CPython 3.15.x (`>=3.15,<3.16`), with `python` resolving to that feature line.
 - Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages. The release
   manifest's `toolchain_policy` records only the floors the code actually needs: a C11 compiler
-  (GCC 4.9+), GNU Make 4.0+ (the title link uses `$(file ...)`), SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.14. The rolling
+  (GCC 4.9+), GNU Make 4.0+ (the title link uses `$(file ...)`), SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.15. The rolling
   MSYS2 packages are not pinned; `tools/record_toolchain.py` records the versions a release
   candidate was really built with (#367).
 - A current Vulkan SDK and Vulkan-capable GPU.
@@ -148,7 +149,7 @@ pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make mingw-w6
 
 Also install:
 
-- CPython 3.14.x on `PATH`.
+- CPython 3.15.x on `PATH`.
 - The [Vulkan SDK](https://vulkan.lunarg.com/sdk/home). The manager follows the discovery order above; pass `-VulkanSdk "C:\path\to\sdk"` or set `VULKAN_SDK` when an explicit location is needed.
 - Git, to fetch optional third-party source.
 
@@ -167,11 +168,12 @@ line to `PATH`; see [PATH order](#path-order).
 
 Some folders hold a second copy of a tool that the build also calls, so the order of `PATH` matters.
 
-- **MSYS2's Python.** `C:\msys64\ucrt64\bin` contains a `python.exe` that MSYS2 installs as a GLib
-  dependency. It has no pip, so `python -m pip install .` fails with `No module named pip` when that
-  folder comes before your CPython. Run the pip step from a PowerShell window that has not yet added the
-  MSYS2 line, and check that `python -c "import sys; print(sys.executable)"` prints your CPython. A UCRT64
-  terminal puts MSYS2 first, so do not run the pip step there.
+- **MSYS2's Python.** `C:\msys64\ucrt64\bin` may contain Python 3.14.8, which does not meet the
+  project's CPython 3.15.x host requirement. Run Python tooling with the Windows CPython installed
+  from python.org. Before building from a UCRT64 shell, set `PYTHON` to that interpreter's full path
+  (for example, `C:/path/to/Python315/python.exe`); Make recipes and the player package builder use
+  that explicit path even when MSYS2 is first on `PATH`. Run direct tooling commands through the
+  same `PYTHON` path. Install the declared Python tooling dependencies before adding MSYS2 to `PATH`.
 - **POSIX shell.** If a Make recipe needs `sh`, put Git for Windows' `usr\bin` (`%ProgramFiles%\Git\usr\bin`)
   ahead of MSYS2's `usr\bin` (`C:\msys64\usr\bin`), as the [Windows host pitfalls](#windows-host-pitfalls)
   table describes.
@@ -642,11 +644,11 @@ automatically. Named error cards explain offline, redirect, size, hash, and disk
 errors and offer a retry.
 
 The pinned candidate download set is recorded in
-[`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.14.7
+[`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.15.1
 and 34 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3 and `SDL3_ttf` with the
 readable-font runtime closure — FreeType, HarfBuzz, Graphite2, libpng, bzip2,
 Brotli, GLib, and PCRE2 — Vulkan headers/loader, and their runtime dependencies),
-totaling 100,665,604 bytes. Package hashes and
+totaling 100,732,586 bytes. Package hashes and
 sizes come from the signed MSYS2 repository database; the Python hash is from
 python.org's release page. The manifest's `source_snapshot_date` dates the MSYS2
 package pins only; the locked developer-tool pins carry their own retrieval

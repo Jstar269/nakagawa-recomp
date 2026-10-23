@@ -128,22 +128,26 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
-The Linux `native_tools` job builds SDL3 from its pinned 3.4.16 release commit with X11 and
-Vulkan enabled. It also builds SDL3_ttf 3.2.2 from upstream commit
+Most Linux jobs run on Ubuntu 26.04. The `native_tools` job stays on Ubuntu 24.04 because its
+translation gate installs `gcc-mipsel-linux-gnu`, which is absent from the Ubuntu 26.04 package
+archive ([Ubuntu 24.04 package](https://packages.ubuntu.com/noble/gcc-mipsel-linux-gnu)). The job
+archive ([Ubuntu 24.04 package](https://packages.ubuntu.com/noble/gcc-mipsel-linux-gnu)). It builds
+SDL3 from its pinned 3.4.18 release commit with X11 and Vulkan enabled, and SDL3_ttf 3.2.2 from upstream commit
 `a1ce3670aec736ecbf0936c43f2f0cc53aa61e5b`, with vendored FreeType and HarfBuzz enabled.
-Each staged install is cached under a key naming its pinned source version and commit, the SDL3
-pin where applicable, the gcc and cmake versions, and the workflow file hash. A cache hit skips
-the build while the pkg-config and runtime feature checks still run. The SDL3_ttf build asserts
-that CMake selected vendored FreeType and HarfBuzz; a runtime probe prints their versions and
-fails if either backend is unavailable. The job installs Mesa's Vulkan drivers, Vulkan tools,
+The SDL3 and SDL3_ttf staged installs are cached under keys naming their pinned source versions
+and commits, the SDL3 pin where applicable, the gcc and cmake versions, and the workflow file
+hash. A cache hit skips the build while the pkg-config and runtime feature checks still run. The
+SDL3_ttf build asserts that CMake selected vendored FreeType and HarfBuzz; a runtime probe prints
+their versions and fails if either backend is unavailable. The job installs Mesa's Vulkan drivers, Vulkan tools,
 the Khronos validation layer, Xvfb, and the X11/XTest development libraries needed by the pinned
 SDL3 build. `vulkaninfo --summary` selects the lavapipe ICD and must list llvmpipe. The
 `gpu-capture-selftest` runs through Xvfb with SDL's X11 driver and the validation layer. Its
 terminal present-fault cases each get a fresh process, because the renderer must not reuse a
-device after a terminal failure; an exit 77 skip fails the gate. The Linux job also runs `make CC=gcc player-ui-tests` with SDL's
-dummy video and software render drivers. It configures and builds the CMake player with
-`BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player --help` usage marker. It also
-downloads the PSPDEV archive identified by [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its
+device after a terminal failure; an exit 77 skip fails the gate. The job also runs
+`make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
+builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
+--help` usage marker. It downloads the PSPDEV archive identified by
+[`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its
 SHA-256 before use. The job runs `make CC=gcc showcase-linux` to build and boot the two
 source-owned showcase packages with dummy SDL video and audio drivers. A failed smoke uploads its
 `runtime.log` files and frame captures as the `showcase-smoke-linux-attempt-<n>` artifact. After a
@@ -687,16 +691,16 @@ first on `PATH` (#294). The contract is explicit:
 
 | Job / environment | Python running `tools/*` and the fixture generators |
 | --- | --- |
-| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14 |
-| `windows_runtime` (MSYS2 UCRT64 shell) | MSYS2 UCRT64 CPython (`mingw-w64-ucrt-x86_64-python`), selected by the `msys2 {0}` shell's PATH order and asserted by the "Pin the Windows Python toolchain" step |
-| Local Windows runs | Windows CPython from the python.org installer (not the MSYS2 build); the suite stays green under both Windows CPython and MSYS2 CPython (#504) |
+| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.15.1 |
+| `windows_runtime` (MSYS2 UCRT64 shell) | Windows CPython 3.15.1 from `actions/setup-python`, passed through `PYTHON`; MSYS2's UCRT64 Python 3.14.8 is not used for repository tools |
+| Local Windows runs | Windows CPython 3.15.x from the python.org installer; set `PYTHON` explicitly when MSYS2 comes first on `PATH` |
 
 Stages that invoke the repository's PowerShell 7.4 asset-copy script opt into
 the runner's Windows `PATH` explicitly with `MSYS2_PATH_TYPE: inherit` and assert
 `command -v pwsh` themselves. Under `inherit` the MSYS2 UCRT64 directories still
-precede the inherited Windows `PATH`, so `python` remains the UCRT64 CPython and
-only `pwsh` resolves from the runner image. No hosted step relies on undeclared
-PATH order.
+precede the inherited Windows `PATH`; `windows_runtime` passes Windows CPython's
+absolute path through `PYTHON` and converts it to an MSYS path only for direct
+shell invocations. No hosted step relies on undeclared `PATH` order.
 
 That same MSYS2 shell has no `git` on `PATH`, so the Makefile cannot resolve a
 revision there. `windows_runtime` therefore sets `SR_SOURCE_COMMIT` to

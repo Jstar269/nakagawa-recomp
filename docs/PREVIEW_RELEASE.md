@@ -54,7 +54,7 @@ The verified native host contract is the Windows contract in [`SETUP.md`](SETUP.
 
 - Windows 11 x64.
 - PowerShell 7.4 or newer; Windows PowerShell 5.1 is not supported.
-- CPython 3.14.x.
+- CPython 3.15.x.
 - MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages.
 - Explicit SDL3 dependency discovery ([#331](https://github.com/Jstar269/nakagawa-recomp/issues/331)).
 - A current Vulkan SDK and Vulkan-capable GPU.

@@ -52,7 +52,7 @@ HST build independent from PSPDEV.
 
 Required software for the first local verification:
 
-- Python 3.14.x;
+- Python 3.15.x;
 - Git;
 - a PSPDEV installation or a clean PSPSDK checkout;
 - optionally Docker/Podman or a downloaded PSPDEV release archive for artifact

@@ -221,7 +221,7 @@ class BuildTruthTests(unittest.TestCase):
                 BUILD := build
                 PROFILE_RUN := -c "{profile_run}"
                 include {COMMON_MK.name}
-                PROFILE_HASH := $(shell $(PYTHON) $(PROFILE_RUN) hash --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)")
+                PROFILE_HASH := $(shell "$(PYTHON)" $(PROFILE_RUN) hash --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)")
                 PROFILE_STAMP := $(BUILD)/.profile-$(PROFILE_HASH)
                 PROFILE_MANIFEST := $(BUILD)/profile.json
                 OBJS := $(BUILD)/dependent.o $(BUILD)/unrelated.o
@@ -230,7 +230,7 @@ class BuildTruthTests(unittest.TestCase):
                 all: $(OBJS)
 
                 $(PROFILE_STAMP):
-                \t$(PYTHON) $(PROFILE_RUN) record --output $(PROFILE_MANIFEST) --section runtime --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)" --stamp "$@" --stale-glob ".profile-*" $(foreach obj,$(OBJS),--invalidate "$(obj)")
+                \t"$(PYTHON)" $(PROFILE_RUN) record --output $(PROFILE_MANIFEST) --section runtime --compiler "$(CC)" --entry "PROFILE_FLAGS=$(PROFILE_FLAGS)" --stamp "$@" --stale-glob ".profile-*" $(foreach obj,$(OBJS),--invalidate "$(obj)")
 
                 $(BUILD)/%.o: %.c $(PROFILE_STAMP)
                 \t@echo COMPILE $<
@@ -1421,9 +1421,9 @@ class GuestInputTransportTests(unittest.TestCase):
 
         mutant = self._mutate_makefile(
             ("$(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_INPUT_PREREQ) tools/prxload.py\n"
-             "\t$(PYTHON) tools/prxload.py --env-elf $(GAME_BASE)",
+             "\t\"$(PYTHON)\" tools/prxload.py --env-elf $(GAME_BASE)",
              "$(BUILD_DIR)/$(GAME_NAME)_image.bin: tools/prxload.py\n"
-             "\t$(PYTHON) tools/prxload.py $(GAME_ELF) $(GAME_BASE)"),
+             "\t\"$(PYTHON)\" tools/prxload.py $(GAME_ELF) $(GAME_BASE)"),
         )
         blob = self._blob(self._make("test_gi_m1", elf.as_posix(), makefile=mutant))
         self.assertTrue(
@@ -1616,7 +1616,7 @@ class GuestInputTransportTests(unittest.TestCase):
         """
         if (ROOT / "eboot.elf").exists():
             self.skipTest("the fixed default exists on disk and is exported by design")
-        probe = ("--eval=probe-guest-env: ; @$(PYTHON) -c "
+        probe = ('--eval=probe-guest-env: ; @"$(PYTHON)" -c '
                  "\"import os; print('GAME_ELF_IN_ENV=' + str(os.environ.get('GAME_ELF')))\"")
         proc = subprocess.run(
             [self.make, "--no-print-directory", f"BUILD_ROOT={self.build_root.as_posix()}",
@@ -2563,7 +2563,7 @@ class MachinePortabilityTests(unittest.TestCase):
             fake_pe = b"MZ" + b"\x00" * 58 + struct.pack("<I", 64) + b"PE\0\0" + struct.pack("<H", 0x8664)
             (msys / "bin" / "SDL3.dll").write_bytes(fake_pe)
 
-            vulkan = tmproot / "VulkanSDK" / "1.4.357.0"
+            vulkan = tmproot / "VulkanSDK" / "1.4.363.0"
             (vulkan / "Include" / "SDL3").mkdir(parents=True)
             (vulkan / "Include" / "SDL3" / "SDL.h").write_text("#define SDL_MAJOR_VERSION 3\n", encoding="utf-8")
             (vulkan / "Lib").mkdir(parents=True)
@@ -2709,12 +2709,12 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
         from unittest import mock
 
         provider = self._provider("system", "/usr/include", "/usr/lib/libSDL3.so")
-        sdk = Path("C:/VulkanSDK/1.4.357.0")
+        sdk = Path("C:/VulkanSDK/1.4.363.0")
         with mock.patch.object(ndc, "discover_vulkan_sdk", return_value=sdk) as discover_vulkan:
             with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider):
                 text = ndc.build_discovery_make_fragment(compiler="gcc")
         values = dict(line.removeprefix("override ").split(" := ", 1) for line in text.splitlines())
-        self.assertEqual(values["VULKAN_SDK"], "C:/VulkanSDK/1.4.357.0")
+        self.assertEqual(values["VULKAN_SDK"], "C:/VulkanSDK/1.4.363.0")
         self.assertEqual(values["SDL3_PROVIDER"], "system")
         self.assertEqual(values["SDL3_VERSION"], "3.4.0")
         discover_vulkan.assert_called_once_with()
@@ -2736,12 +2736,12 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
         from unittest import mock
 
         failure = ndc.Sdl3ProviderError("SDL3 dependency is unavailable")
-        sdk = Path("C:/VulkanSDK/1.4.357.0")
+        sdk = Path("C:/VulkanSDK/1.4.363.0")
         with mock.patch.object(ndc, "discover_vulkan_sdk", return_value=sdk):
             with mock.patch.object(ndc, "discover_sdl3_provider", side_effect=failure):
                 expected_sdl = ndc.sdl3_make_fragment(compiler="gcc")
                 combined = ndc.build_discovery_make_fragment(compiler="gcc")
-        self.assertEqual(combined, "override VULKAN_SDK := C:/VulkanSDK/1.4.357.0\n" + expected_sdl)
+        self.assertEqual(combined, "override VULKAN_SDK := C:/VulkanSDK/1.4.363.0\n" + expected_sdl)
         values = dict(line.removeprefix("override ").split(" := ", 1) for line in combined.splitlines())
         self.assertEqual(values["SDL3_ERROR"], str(failure))
 
@@ -2753,10 +2753,10 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
         with mock.patch.object(ndc, "discover_vulkan_sdk") as discover_vulkan:
             with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider):
                 text = ndc.build_discovery_make_fragment(
-                    compiler="gcc", explicit_vulkan=r"C:\VulkanSDK\1.4.357.0"
+                    compiler="gcc", explicit_vulkan=r"C:\VulkanSDK\1.4.363.0"
                 )
         values = dict(line.removeprefix("override ").split(" := ", 1) for line in text.splitlines())
-        self.assertEqual(values["VULKAN_SDK"], "C:/VulkanSDK/1.4.357.0")
+        self.assertEqual(values["VULKAN_SDK"], "C:/VulkanSDK/1.4.363.0")
         discover_vulkan.assert_not_called()
 
     def test_empty_vulkan_value_preserves_legacy_discovery(self) -> None:
@@ -2764,14 +2764,14 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
         from unittest import mock
 
         provider = self._provider("system", "/usr/include", "/usr/lib/libSDL3.so")
-        sdk = Path("C:/VulkanSDK/1.4.357.0")
+        sdk = Path("C:/VulkanSDK/1.4.363.0")
         with mock.patch.object(ndc, "discover_vulkan_sdk", return_value=sdk) as discover_vulkan:
             with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider):
                 text = ndc.build_discovery_make_fragment(
                     compiler="gcc", explicit_vulkan="", discover_vulkan=True
                 )
         values = dict(line.removeprefix("override ").split(" := ", 1) for line in text.splitlines())
-        self.assertEqual(values["VULKAN_SDK"], "C:/VulkanSDK/1.4.357.0")
+        self.assertEqual(values["VULKAN_SDK"], "C:/VulkanSDK/1.4.363.0")
         discover_vulkan.assert_called_once_with()
 
     def test_empty_make_override_uses_discovered_vulkan_sdk(self) -> None:
@@ -2782,7 +2782,7 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
         if not make:
             self.skipTest("GNU Make is required")
         provider = self._provider("system", "/usr/include", "/usr/lib/libSDL3.so")
-        sdk = Path("C:/VulkanSDK/1.4.357.0")
+        sdk = Path("C:/VulkanSDK/1.4.363.0")
         with mock.patch.object(ndc, "discover_vulkan_sdk", return_value=sdk):
             with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider):
                 fragment = ndc.build_discovery_make_fragment(compiler="gcc")
@@ -2804,7 +2804,7 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
             cwd=build_root, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("VULKAN_SDK=C:/VulkanSDK/1.4.357.0", result.stdout)
+        self.assertIn("VULKAN_SDK=C:/VulkanSDK/1.4.363.0", result.stdout)
 
     def test_make_discovery_import_skips_doctor_only_dependencies(self) -> None:
         code = (

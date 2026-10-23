@@ -412,9 +412,9 @@
         "recorded_from": "installed dist-info compiledb-0.10.7.dist-info/METADATA (License: GPL-3.0-or-later; Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)); License-File: LICENSE"
       },
       "ruff": {
-        "version": "0.16.9",
+        "version": "0.17.2",
         "spdx_id": "MIT",
-        "recorded_from": "PyPI release metadata https://pypi.org/pypi/ruff/0.16.9/json (license_expression: MIT; license_files: LICENSE)"
+        "recorded_from": "PyPI release metadata https://pypi.org/pypi/ruff/0.17.2/json (license_expression: MIT; license_files: LICENSE)"
       },
       "click": {
         "version": "8.5.0",
@@ -427,9 +427,9 @@
         "recorded_from": "installed dist-info bashlex-0.18.dist-info/METADATA (License: GPLv3+; Classifier: License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)); License-File: LICENSE"
       },
       "coverage": {
-        "version": "7.16.2",
+        "version": "7.17.0",
         "spdx_id": "Apache-2.0",
-        "recorded_from": "installed dist-info coverage-7.16.2.dist-info/METADATA (License: Apache-2.0); License-Files: LICENSE.txt, NOTICE.txt"
+        "recorded_from": "PyPI release metadata https://pypi.org/pypi/coverage/7.17.0/json (license: Apache-2.0; license_files: LICENSE.txt, NOTICE.txt)"
       }
     }
   }

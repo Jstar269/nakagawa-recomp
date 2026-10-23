@@ -96,7 +96,7 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         body = _PayloadHandler.payload if payload is None else payload
         return {
             "id": "python-test",
-            "version": "3.14-test",
+            "version": "3.15-test",
             "url": f"http://127.0.0.1:{self.server.server_port}{path}",
             "allowed_hosts": ["127.0.0.1"],
             "filename": "payload.zip",
@@ -195,7 +195,7 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         _PayloadHandler.payload = stream.getvalue()
         item = self.item(payload=_PayloadHandler.payload)
         item["id"] = "cpython-embed-amd64"
-        item["filename"] = "python-3.14-embed-amd64.zip"
+        item["filename"] = "python-3.15-embed-amd64.zip"
         python_root = self.root / "prerequisites" / "python"
         python_root.mkdir(parents=True)
         running_python = python_root / "python.exe"
