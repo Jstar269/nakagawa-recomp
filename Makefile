@@ -2938,7 +2938,7 @@ endif
 ifeq ($(SDL3_TTF_AVAILABLE),yes)
 ui-font-selftest:
 	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) -std=c11 -Wall -Wextra -Werror $(SDL3_TTF_CFLAGS) tests/native/test_ui_font_assets.c \
+	$(CC) -std=c11 -Wall -Wextra -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(SDL3_TTF_CFLAGS) tests/native/test_ui_font_assets.c \
 		-o $(BUILD_ROOT)/test_ui_font_assets$(EXE_EXT) $(SDL3_TTF_LIBS)
 	$(BUILD_ROOT_RUN)/test_ui_font_assets$(EXE_EXT) \
 		assets/fonts/ui/noto-sans-jp/NotoSansJP-Regular.ttf \
