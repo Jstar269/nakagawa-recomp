@@ -204,18 +204,6 @@ class NkCoreTests(unittest.TestCase):
                         f"{path.relative_to(repo_root)}:{line}: {literal!r}"
                     )
 
-        prerequisite_manifest = json.loads(
-            (repo_root / "assets" / "prereq_manifest.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        for hook in prerequisite_manifest.get("font_source_hooks", []):
-            if not isinstance(hook, dict):
-                continue
-            message = hook.get("failure_message")
-            if isinstance(message, str) and _ISSUE_REFERENCE_RE.search(message):
-                failures.append(f"assets/prereq_manifest.json: {message!r}")
-
         renderer = (repo_root / "src" / "player" / "ui_renderer.c").read_text(
             encoding="utf-8"
         )

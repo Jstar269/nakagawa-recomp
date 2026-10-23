@@ -860,19 +860,5 @@
       "status": "not_required_for_build_package",
       "reason": "Only used by the opt-in shader regeneration and shader reproducibility targets; ordinary package builds verify checked-in shader data."
     }
-  ],
-  "font_source_hooks": [
-    {
-      "type": "sony-psp-system-software-update",
-      "status": "BLOCKED_MAINTAINER_URL_AND_HASH_VERIFICATION",
-      "url": null,
-      "size_bytes": null,
-      "sha256": null,
-      "license": "NOASSERTION",
-      "tracking_issue": 300,
-      "decryption_issue": 295,
-      "download_in_tests": false,
-      "failure_message": "Font extraction needs the built-in decryption and your key file."
-    }
   ]
 }

@@ -1,2 +1,5 @@
 blank_issues_enabled: false
-contact_links: []
+contact_links:
+  - name: Rights-holder or legal concern
+    url: https://github.com/Jstar269/nakagawa-recomp/security/advisories/new
+    about: Contact the maintainer privately about any file in this repository.

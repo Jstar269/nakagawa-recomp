@@ -448,7 +448,6 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_mem_debug.py` | Unit tests for the interactive memory and CPU-state tool. |
 | `test_portability_inventory.py` | Tests for the public portability inventory. |
 | `test_production_smoke.py` | Regressions for the source-owned full-production smoke guest. |
-| `test_psp_decrypt.py` | Source-owned end-to-end and known-answer coverage for the decryption boundary. |
 | `test_shader_embed.py` | Tests for deterministic checked-in Vulkan shader provenance. |
 | `test_soak_audit.py` | Contract tests for the soak run auditor. |
 | `test_vblank_ledger.py` | Contract tests for the whole-run VBLANK ledger audit. |
