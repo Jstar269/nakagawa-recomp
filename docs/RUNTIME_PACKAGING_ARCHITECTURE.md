@@ -5,7 +5,7 @@
 > validate → launch route are implemented ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)).
 > `tools/nk_cli.py build-package <disc_id>` resolves the executable from a library disc
 > image, or from a decrypted `EBOOT.elf` you supply for an encrypted disc (Nakagawa does not
-> decrypt games; built-in decryption was removed (temporarily), #295), and the
+> decrypt games; built-in decryption was removed, #295), and the
 > player consumes the resulting package. Retail-disc hash validation, installers, and
 > one-click end-user preparation without the developer toolchain (#308) are not built.
 

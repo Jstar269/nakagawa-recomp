@@ -6,7 +6,7 @@
 > it appears in a resolution column. The current player performs bounded ISO/PARAM.SFO
 > inspection, staged XB extraction, and package build/launch for supported inputs. It
 > accepts user-supplied decrypted executables and modules; it does not decrypt games
-> (built-in decryption was removed (temporarily), #295).
+> (built-in decryption was removed, #295).
 > The runtime now also serves guest reads from the
 > read-only archive-backed VFS (#298) when `SR_DATAROOT` holds `.xb` archives.
 
@@ -33,8 +33,8 @@ Guest middleware and title acceptance remain partial or open.
 
 | Preparation Surface | Current Manual Requirement | Technical Root Cause | True Low-Level (LLE) Resolution Path | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Main Executable** | A user-supplied decrypted MIPS ELF (`EBOOT.elf`) or the automatically selected plain `BOOT.BIN` fallback | The analyzer consumes MIPS ELF32 only; an encrypted executable without a decrypted copy fails closed as `ENCRYPTED_EXECUTABLE` | Built-in decryption was removed (temporarily) ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); plain and user-decrypted inputs are accepted | **USER-SUPPLIED DECRYPTED INPUT; TITLE EXECUTION AND ACCEPTANCE REMAIN TITLE-SPECIFIC** |
-| **Encrypted PRXs** | User-decrypted copies of the modules selected by the player or required by the title manifest | An encrypted module without a plain copy fails closed as `ENCRYPTED_MODULE`; guest translation/startup and middleware support remain separate boundaries | Built-in decryption was removed (temporarily) ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); genuine guest middleware execution remains incomplete | **USER-SUPPLIED DECRYPTED INPUT; GUEST MIDDLEWARE EXECUTION PARTIAL** |
+| **Main Executable** | A user-supplied decrypted MIPS ELF (`EBOOT.elf`) or the automatically selected plain `BOOT.BIN` fallback | The analyzer consumes MIPS ELF32 only; an encrypted executable without a decrypted copy fails closed as `ENCRYPTED_EXECUTABLE` | Built-in decryption was removed ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); plain and user-decrypted inputs are accepted | **USER-SUPPLIED DECRYPTED INPUT; TITLE EXECUTION AND ACCEPTANCE REMAIN TITLE-SPECIFIC** |
+| **Encrypted PRXs** | User-decrypted copies of the modules selected by the player or required by the title manifest | An encrypted module without a plain copy fails closed as `ENCRYPTED_MODULE`; guest translation/startup and middleware support remain separate boundaries | Built-in decryption was removed ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); genuine guest middleware execution remains incomplete | **USER-SUPPLIED DECRYPTED INPUT; GUEST MIDDLEWARE EXECUTION PARTIAL** |
 | **PSP System Fonts** | Dumped firmware PGFs (`jpn0.pgf`, `ltn0.pgf`) from `flash0:/font/` | Sony PGF format has proprietary metrics; fonts reside in firmware, not on UMD | Honest prerequisite: require user firmware dump for authentic rendering; optional synthetic font provider for developer convenience | **HONEST_PREREQUISITE_REQUIRED** |
 | **Video Middleware** | Host-HLE `scePsmfPlayer*` driving it over a bounded PSMF producer (see `docs/LLE_FIDELITY_ARCHITECTURE.md` §3.4) | The host-HLE player works, but the genuine `psmf.prx` / `libpsmfplayer.prx` middleware is not executing yet | Execute original guest `psmf.prx` & `libpsmfplayer.prx`; bridge only the lowest hardware codec boundary (`sceMpeg`) to host decoders | **PARTIAL — CODEC BRIDGE AND PRODUCER LANDED; GUEST MIDDLEWARE EXECUTION OPEN** |
 | **Game Assets** | Loose `xbdata_extracted/` (~56k files) or the `.xb` archives | Host filesystem previously expected flat directories | Transparent in-engine block VFS reading `.xb` archive sectors directly, preserving all PSP I/O semantics | **LANDED — READ-ONLY ARCHIVE-BACKED VFS (#298); LOOSE LAYOUT STILL ACCEPTED** |
@@ -50,7 +50,7 @@ are not evidence that the paths have landed in the current player.
 ### 3.1 Retail EBOOT and PRX Cryptography
 
 * **Input boundary:** `tools/codegen.py` consumes supported MIPS ELF inputs and fails closed on encrypted headers. The player and CLI refuse an encrypted executable or module by name and accept decrypted files from your own copy ([`docs/SETUP.md`](SETUP.md#encrypted-executables)).
-* **Status:** Nakagawa does not decrypt games; built-in decryption was removed (temporarily) ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). PGD-protected game data, guest middleware startup, and any specific title's compatibility remain separate boundaries.
+* **Status:** Nakagawa does not decrypt games; built-in decryption was removed ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). PGD-protected game data, guest middleware startup, and any specific title's compatibility remain separate boundaries.
 
 ---
 

@@ -110,7 +110,7 @@ Not done yet:
 The diagram below is the target separation. The implemented public slice currently reaches
 title lookup, bounded ISO inspection and ISO/XB staging, library package build and
 validation, launch-session validation, and child-process lifecycle. Nakagawa does not
-decrypt games (built-in decryption was removed (temporarily), #295); retail-disc hash
+decrypt games (built-in decryption was removed, #295); retail-disc hash
 validation and overlay parity remain unbuilt.
 
 ```text

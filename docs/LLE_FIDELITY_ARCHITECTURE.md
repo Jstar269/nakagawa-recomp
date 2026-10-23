@@ -65,7 +65,7 @@ PSP UMD disc images contain executables in two primary container formats:
 #### Encrypted containers
 
 Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in
-decryption was removed (temporarily) ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The player and CLI
+decryption was removed ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The player and CLI
 refuse an encrypted `~PSP`/`~SCE` executable or PRX without a plain copy as `ENCRYPTED_EXECUTABLE`
 or `ENCRYPTED_MODULE`, and the analyzer requires plain ELF/PRX inputs. PGD-protected game data
 remains unsupported.
