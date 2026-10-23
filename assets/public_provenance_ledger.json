@@ -3515,7 +3515,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ded3be60f7d93fe724dd91608e491205cddc56abc7f43d7be3f5330c4250ed58"
+      "sha256": "dbf9fe00afc5a97c90143eabf2640b8d5a75e9ecf9d143451ccb3cb4da4b4ec4"
     },
     {
       "path": "src/rt/atrac3p/libavcodec/atrac3data.h",

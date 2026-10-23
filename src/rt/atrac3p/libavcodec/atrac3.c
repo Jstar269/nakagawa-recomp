@@ -273,7 +273,7 @@ static int decode_spectrum(GetBitContext *gb, float *output)
 {
     int num_subbands, coding_mode, i, j, first, last, subband_size;
     int subband_vlc_index[32], sf_index[32];
-    int mantissas[128];
+    int mantissas[SAMPLES_PER_FRAME];
     float scale_factor;
 
     num_subbands = get_bits(gb, 5);  // number of coded subbands
@@ -290,26 +290,36 @@ static int decode_spectrum(GetBitContext *gb, float *output)
     }
 
     for (i = 0; i <= num_subbands; i++) {
-        first = subband_tab[i    ];
-        last  = subband_tab[i + 1];
-
-        subband_size = last - first;
-
         if (subband_vlc_index[i] != 0) {
-            /* decode spectral coefficients for this subband */
-            /* TODO: This can be done faster is several blocks share the
-             * same VLC selector (subband_vlc_index) */
-            read_quant_spectral_coeffs(gb, subband_vlc_index[i], coding_mode,
+            int selector = subband_vlc_index[i];
+            int group_start = i;
+            while (i < num_subbands && subband_vlc_index[i + 1] == selector)
+                i++;
+            int group_end = i;
+
+            first = subband_tab[group_start];
+            last  = subband_tab[group_end + 1];
+            subband_size = last - first;
+
+            /* decode spectral coefficients for all subbands in this group */
+            read_quant_spectral_coeffs(gb, selector, coding_mode,
                                        mantissas, subband_size);
 
-            /* decode the scale factor for this subband */
-            scale_factor = ff_atrac_sf_table[sf_index[i]] *
-                           inv_max_quant[subband_vlc_index[i]];
+            /* inverse quantize coefficients per subband using each subband's scale factor */
+            int mant_idx = 0;
+            for (j = group_start; j <= group_end; j++) {
+                int band_first = subband_tab[j];
+                int band_last  = subband_tab[j + 1];
+                scale_factor = ff_atrac_sf_table[sf_index[j]] *
+                               inv_max_quant[selector];
 
-            /* inverse quantize the coefficients */
-            for (j = 0; first < last; first++, j++)
-                output[first] = mantissas[j] * scale_factor;
+                for (; band_first < band_last; band_first++, mant_idx++)
+                    output[band_first] = mantissas[mant_idx] * scale_factor;
+            }
         } else {
+            first = subband_tab[i    ];
+            last  = subband_tab[i + 1];
+            subband_size = last - first;
             /* this subband was not coded, so zero the entire subband */
             memset(output + first, 0, subband_size * sizeof(*output));
         }
