@@ -48,7 +48,7 @@ permissions:
 jobs:
   classify:
     name: Classify change
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.paths.outputs.docs_only }}
@@ -86,7 +86,7 @@ jobs:
 
   hygiene:
     name: Hygiene and security
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: classify
     if: ${{ always() && needs.classify.result == 'success' }}
     timeout-minutes: 15
@@ -100,9 +100,9 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.14.9"
           cache: pip
           cache-dependency-path: |
             .pre-commit-config.yaml
@@ -169,7 +169,7 @@ jobs:
 
   markdown:
     name: Markdown validation
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: classify
     if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.run_markdown == 'true' }}
     timeout-minutes: 10
@@ -182,7 +182,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24.21.0"
+          node-version: "26.12.1"
 
       - name: Lint repository Markdown
         run: npx --yes markdownlint-cli2@0.23.3
@@ -194,7 +194,7 @@ jobs:
   # integrity must never be path-dependent (tools/test_ci_paths.py).
   public_export:
     name: Public export candidate audit
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: classify
     if: ${{ always() && needs.classify.result == 'success' }}
     timeout-minutes: 15
@@ -206,9 +206,9 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.14.9"
 
       # #293/#294: represent the release-export candidate path in hosted CI.
       # One invocation runs the publication gates, generates the public-safe
@@ -244,7 +244,7 @@ jobs:
 
   profile_zero_fixture:
     name: Profile-zero fixture build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The profile-zero guest (fixtures/profile_zero/main.c) is built here from source with
     # the PSPDEV distribution pinned by assets/upstream/pspdev.lock.json and checked
     # byte-for-byte against the committed fixtures/profile_zero/prebuilt/SHA256SUMS, so the
@@ -323,7 +323,7 @@ jobs:
 
   python_tools:
     name: Python tooling gates
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # id-token: write lets the coverage upload authenticate to Codecov with the
     # job's OIDC identity (use_oidc: true) instead of a stored repository token.
     # It is not a publication permission: contents stays read.
@@ -368,9 +368,9 @@ jobs:
           path: fixtures/profile_zero/prebuilt
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.14.9"
           cache: pip
           cache-dependency-path: |
             pyproject.toml
@@ -433,7 +433,7 @@ jobs:
 
   native_tools:
     name: Native and translation gates
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # id-token: write exists only for the Codecov OIDC upload below; contents
     # stays read, as everywhere else in this workflow.
     permissions:
@@ -454,9 +454,9 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.14.9"
 
       - name: Install native test dependencies
         run: |
@@ -1287,7 +1287,7 @@ jobs:
 
   main_smoke:
     name: Main integration smoke
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: [classify, hygiene, public_export]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
@@ -1301,9 +1301,9 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.14.9"
 
       - name: Run compact import/publication smoke
         # Publication audit is part of the always-present hygiene job; this
@@ -1316,7 +1316,7 @@ jobs:
 
   ci_required:
     name: CI required
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: [classify, hygiene, public_export, markdown, python_tools, native_tools, windows_runtime, main_smoke]
     if: ${{ always() }}
     timeout-minutes: 5

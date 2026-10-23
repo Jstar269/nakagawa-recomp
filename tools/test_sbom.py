@@ -66,8 +66,8 @@ class TestSBOMTooling(unittest.TestCase):
         by_name = {package["name"]: package for package in packages}
         # The coverage measurement pins its own closure the same way the other tools
         # do: every published wheel and the sdist, for the exact release.
-        self.assertEqual(by_name["coverage"]["version"], "7.16.2")
-        self.assertEqual(len(by_name["coverage"]["declared_sha256"]), 121)
+        self.assertEqual(by_name["coverage"]["version"], "7.17.0")
+        self.assertEqual(len(by_name["coverage"]["declared_sha256"]), 119)
         # License resolution reads installed dist metadata for the exact pins
         # (generate_sbom._resolve_python_package_license).  CI installs
         # tools/requirements-lock.txt into the test interpreter; a different
@@ -286,18 +286,18 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         metadata = self._metadata()
         self.assertEqual(metadata["retrieved_utc"], "2026-09-25")
         ruff_source = next(s for s in metadata["sources"] if s["name"] == "ruff")
-        self.assertEqual(ruff_source["retrieved_utc"], "2026-09-30")
+        self.assertEqual(ruff_source["retrieved_utc"], "2026-10-23")
         # A source added after the document snapshot records its own retrieval date.
         coverage_source = next(s for s in metadata["sources"] if s["name"] == "coverage")
-        self.assertEqual(coverage_source["retrieved_utc"], "2026-10-21")
+        self.assertEqual(coverage_source["retrieved_utc"], "2026-10-23")
         self.assertEqual(
             [source["url"] for source in metadata["sources"]],
             [
                 "https://pypi.org/pypi/bashlex/0.18/json",
                 "https://pypi.org/pypi/click/8.5.0/json",
                 "https://pypi.org/pypi/compiledb/0.10.7/json",
-                "https://pypi.org/pypi/coverage/7.16.2/json",
-                "https://pypi.org/pypi/ruff/0.16.9/json",
+                "https://pypi.org/pypi/coverage/7.17.0/json",
+                "https://pypi.org/pypi/ruff/0.17.2/json",
             ],
         )
         # PyPI's canonical names differ in case from the lock's (Jinja2, MarkupSafe,
@@ -306,7 +306,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
             generate_sbom._normalize_python_name(source["name"]): source
             for source in metadata["sources"]
         }
-        self.assertEqual(sum(len(source["artifacts"]) for source in sources.values()), 145)
+        self.assertEqual(sum(len(source["artifacts"]) for source in sources.values()), 143)
         self.assertEqual(
             [package["name"] for package in packages],
             [
@@ -347,7 +347,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertIn("malformed SHA-256 hash", str(ctx.exception))
 
     def test_old_sequential_ruff_hash_fails_as_unmatched(self):
-        text = f"ruff==0.16.9 --hash=sha256:{self.OLD_RUFF_HASH}\n"
+        text = f"ruff==0.17.2 --hash=sha256:{self.OLD_RUFF_HASH}\n"
         with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
             self._parse(text)
         self.assertIn("matches no trusted artifact", str(ctx.exception))

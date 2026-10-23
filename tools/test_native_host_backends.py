@@ -57,12 +57,12 @@ def _compile_object(
     owner: type[unittest.TestCase],
     source: str,
     object_name: str,
-    extra_includes: tuple[str, ...] = (),
+    extra_flags: tuple[str, ...] = (),
 ) -> Path:
     out = owner._object_dir / object_name
     compile_cmd = [
         "gcc", "-std=c99", "-Wall", "-Wextra", "-Werror",
-        "-Isrc/core", "-Isrc/core/generated", "-Isrc/rt", *extra_includes,
+        "-Isrc/core", "-Isrc/core/generated", "-Isrc/rt", *extra_flags,
         "-c", source, "-o", str(out),
     ]
     build = subprocess.run(compile_cmd, cwd=ROOT, capture_output=True, text=True)
@@ -184,7 +184,10 @@ class NativeHostBackendTests(unittest.TestCase):
             cls, "src/player/iso_reader.c", "iso_reader.o", ("-Isrc/player",)
         )
         cls._objects["src/player/package_builder.c"] = _compile_object(
-            cls, "src/player/package_builder.c", "package_builder.o", ("-Isrc/player",)
+            cls,
+            "src/player/package_builder.c",
+            "package_builder.o",
+            ("-Isrc/player", "-DNK_PLAYER_UI_REGRESSION_TEST"),
         )
         cls._objects["src/player/setup_staging.c"] = _compile_object(
             cls, "src/player/setup_staging.c", "setup_staging.o", ("-Isrc/player",)

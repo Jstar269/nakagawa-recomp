@@ -780,7 +780,7 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertIn("PROVENANCE_UNVERIFIED", export)
         job = "\n".join(self.blocks["public_export"])
         self.assertIn("fetch-depth: 0", job)
-        self.assertIn('python-version: "3.14"', job)
+        self.assertIn('python-version: "3.14.9"', job)
 
     def test_public_export_job_is_ungated_by_path(self) -> None:
         block = self.blocks["public_export"]
@@ -1098,7 +1098,7 @@ class MergeQueueDependencyReviewWiringTests(unittest.TestCase):
         self.assertIn("with:\n          base-ref:", step)
 
     def test_required_job_name_action_pin_and_permissions_are_unchanged(self) -> None:
-        self.assertIn("  dependency-review:\n    runs-on: ubuntu-latest", self.text)
+        self.assertIn("  dependency-review:\n    runs-on: ubuntu-26.04", self.text)
         self.assertIn(
             "uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0",
             self.text,
