@@ -27,6 +27,8 @@ EXPECTED_PROVENANCE_FAMILIES = frozenset({
     "sdl3",
     "vulkan",
     "vfpu",
+    "stb-image",
+    "kenney-ui-assets",
 })
 
 EXPECTED_TOOLCHAIN_COMPONENTS = frozenset({

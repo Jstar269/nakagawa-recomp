@@ -147,9 +147,9 @@ frame until the command changes; the Vulkan backend will use the shader.
 | Component | Call | Spec |
 | --- | --- | --- |
 | Button | `nk_ui_button(ui, id, label, flags)` | label centred, `LABEL` caps; 44 px (`_LARGE` 52 with `LABEL_L`, `_SMALL` 34 with `LABEL_S`); fits its label (`_GROW` fills); primary = accent fill, ink text; secondary = clear fill, `line_strong` edge, paper text; danger = `error` text; disabled = `dim` text, `line` edge (primary keeps a `surface_high` fill) |
-| Game card | `nk_ui_tile(ui, id, &spec)` | `surface_raised`, `line` edge, radius 12; art panel flush with the top (tint per title, badge top-left, picture or "ART FROM YOUR DISC" placeholder); name in `TILE_TITLE` (two lines); meta row: marker + status word in the status colour, disc ID right in `dim` |
+| Game card | `nk_ui_tile(ui, id, &spec)` | `surface_raised`, `line` edge, radius 12; art panel flush with the top (tint per title, badge top-left; the disc's own `ICON0.PNG` once read, a showcase demo's picture, or the "ART FROM YOUR DISC" placeholder); name in `TILE_TITLE` (two lines); meta row: marker + status word in the status colour, disc ID right in `dim` |
 | Add card | `nk_ui_add_tile` | ground fill, `line_strong` edge; 44 px outlined plus in accent, centred name and one-line note |
-| Hero | `nk_ui_hero` | the title's art panel at 480:272 with a badge caption and the size note |
+| Hero | `nk_ui_hero` | the title's art panel at 480:272 with a badge caption and the size note; the disc's `PIC1.PNG` fills it, else its `ICON0.PNG` sits centred, else the placeholder |
 | Status pill | `nk_ui_status_pill` | 26 px, `surface_high`, `line_strong`, radius 4, `LABEL_S` in the status colour, marker first |
 | Tag | `nk_ui_tag` | as the pill, `muted` text (YOUR DISC, SHOWCASE DEMO) |
 | Badge | `nk_ui_badge` | 20 px on `art_scrim`, radius 4, `MICRO` |
@@ -160,14 +160,28 @@ frame until the command changes; the Vulkan backend will use the shader.
 | Vector art | `nk_ui_shapes` | rects, circles and convex polygons in a view box, fitted and centred; used for the N1 mark, the showcase demos' pictures and icons |
 
 Prompt glyphs come from `nk_ui_prompt_glyph`, and the whole bar shows one set chosen from the active device
-(`nk_ui_input_prompt_style`), never a mix:
+(`nk_ui_input_prompt_style`), never a mix. The player draws Kenney's CC0 "Input Prompts" glyphs
+(`third_party/kenney/`, embedded by `tools/gen_ui_assets.py`), tinted `paper`; any glyph that is missing or fails to
+decode falls back to the project-drawn geometric form, which tests and SDL-free builds also use:
 
-- **Keyboard and mouse** (no pad connected, or a key or click was the last input): keycaps (ENTER, ESC), the four
-  arrow keys as an inverted T for MOVE, and the top bar's chip says KEYBOARD AND MOUSE.
-- **Controller** (a pad connected or was the last used): a D-pad for MOVE, and face buttons as neutral position
-  dots or letters (A south or A east) from the pad's reported layout; the chip names the set.
+- **Keyboard and mouse** (no pad connected, or a key or click was the last input): ENTER, ESC and the other keys as
+  keycaps, the arrow keys for MOVE, and the top bar's chip says KEYBOARD AND MOUSE.
+- **Controller** (a pad connected or was the last used): its D-pad for MOVE and its own face buttons, picked from the
+  label SDL reports on the south button, never from the pad's name: A south gives the Xbox-style set, B south (A
+  east) the Switch-style set, a cross the PlayStation-style set, and anything else the neutral position dots.
+  Confirm and back follow position (south confirms), so a pad with A east shows B for confirm. The chip names the
+  set.
 - A pad that connects switches the set at once; when it disconnects the set falls back to another connected pad or
   to the keyboard. Pointer motion alone never switches.
+
+Disc art is read on a background thread from the user's own disc image, one disc at a time, and decoded with
+stb_image (`third_party/stb/`) inside fixed limits (512 x 512 for `ICON0.PNG`, 1024 x 1024 for `PIC1.PNG`, 1 MiB
+encoded). It lives in memory only: nothing is written to disk or kept in the repository, and a disc without art, or
+art that fails the checks, keeps the placeholder.
+
+Optional launcher sounds (Kenney's CC0 "Interface Sounds": a tick when focus moves, a chime on confirm, a click on
+back) are off by default; **UI sounds** in Settings (`ui_sounds` in `settings.json`) turns them on. While they are off
+no audio device is opened, and they never play while a game runs.
 
 Only actions the screen handles appear in its prompt bar.
 
@@ -275,6 +289,7 @@ step says the privacy promise once. The left rail below is the target layout for
 - Focus ring 15.3:1 on the ground and at least 9.2:1 over the waves; high-contrast focus for any background.
 - Targets are at least 44 px high; text size (90 to 150%) scales the whole layout through the density.
 - Reduce motion holds the waves and makes transitions cuts.
+- Launcher sounds are off by default and never replace a visual cue.
 
 ## Building and checking a screen
 
