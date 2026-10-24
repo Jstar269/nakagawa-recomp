@@ -102,7 +102,6 @@ The exact package command and its fail-closed scan are in [`PREVIEW_RELEASE.md`]
 - **ATRAC3 sound effects**: A private replay still reports ATRAC3 decode failures for some sound effects, and the decode contract is not yet matched to PSP hardware ([#1096](https://github.com/Jstar269/nakagawa-recomp/issues/1096)).
 - **Video cutscene timing**: The decoded-picture count and the audio offset are not yet fully accounted for ([#279](https://github.com/Jstar269/nakagawa-recomp/issues/279)).
 - **Console window**: The player is a console-subsystem app, so opening it by double-clicking also opens a console window beside it ([#1146](https://github.com/Jstar269/nakagawa-recomp/issues/1146)).
-- **PACKAGE INCOMPATIBLE has no rebuild action**: A package that the player marks PACKAGE INCOMPATIBLE offers no rebuild button, so the package folder `<user data>/packages/<DISC_ID>/` must be deleted by hand before the title can be built again ([#1147](https://github.com/Jstar269/nakagawa-recomp/issues/1147)).
 - **Resolved: one-frame skinned-character corruption**: The corruption at the title-to-main-menu transition was traced to a VFPU3 compare-decode error, fixed in [#822](https://github.com/Jstar269/nakagawa-recomp/pull/822). The maintainer confirmed on 2026-10-19 that it no longer appears on the GPU presenter, and [#69](https://github.com/Jstar269/nakagawa-recomp/issues/69) closed on 2026-10-20. Reopen #69 if it returns.
 
 ## How to report
