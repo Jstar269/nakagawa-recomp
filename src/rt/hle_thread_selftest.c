@@ -3977,8 +3977,9 @@ static void test_npdrm_licensee_key(void) {
                sr_hle_test_npdrm_licensee_key(key) == 1u && key[0] == 0xa0u,
            "an unreadable licensee key is refused and the recorded key is kept");
     cpu.r[4] = 0u;
-    expect(sr_syscall(&cpu, NID_NPDRM_SET_LICENSEE_KEY) == 0x80550902u,
-           "a null licensee key is refused");
+    expect(sr_syscall(&cpu, NID_NPDRM_SET_LICENSEE_KEY) == 0x80550902u &&
+               sr_hle_test_npdrm_licensee_key(key) == 1u && key[0] == 0xa0u && key[15] == 0xafu,
+           "a null licensee key is refused and the recorded key is kept");
     expect(sr_syscall(&cpu, NID_NPDRM_CLEAR_LICENSEE_KEY) == 0u &&
                sr_hle_test_npdrm_licensee_key(key) == 0u && key[0] == 0u && key[15] == 0u,
            "sceNpDrmClearLicenseeKey returns 0 and forgets the key");
