@@ -2569,7 +2569,7 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     t->saved.r[28] = s_cpu && s_cpu->r[28] ? s_cpu->r[28] : s_gp;
     t->gp_init = t->saved.r[28];
     t->saved.pc = entry;                         /* BUG1 fix: must seed pc=entry; otherwise dispatch target=entry sees s->pc=0 */
-    t->saved.vfpuCtrl[0] = 0xe4; t->saved.vfpuCtrl[1] = 0xe4; t->saved.vfpuCtrl[2] = 0;
+    sr_vfpu_thread_ctrl_init(&t->saved);
 
     /* Seed the thread's TLS region (k0 + 4) to point to its own private reentrancy
      * structure space (allocated within the k0 region at k0 + 0x10) to prevent cross-thread
@@ -2628,7 +2628,7 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
         t->saved.r[26] = t->k0_init;
         t->saved.r[29] = t->sp_init;
         t->saved.r[28] = t->gp_init;
-        t->saved.vfpuCtrl[0] = 0xe4; t->saved.vfpuCtrl[1] = 0xe4; t->saved.vfpuCtrl[2] = 0;
+        sr_vfpu_thread_ctrl_init(&t->saved);
         t->saved.pc = t->entry;
     }
     /* sceKernelStartThread copies the caller-supplied argument block onto the new

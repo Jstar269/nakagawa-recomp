@@ -931,6 +931,128 @@ static int check_vfpu_compare_measured_words(void) {
     return bad;
 }
 
+/* One vsgn/vbfy/vt4444 cell: the instruction word, the S prefix in force, the source
+ * lanes and the expected destination lanes. `lanes` counts the destination lanes the
+ * form writes; `measured` is 1 when every expected word is a PSP-3000 reading. */
+struct vfpu9_cell {
+    const char *name;
+    uint32_t w, sprefix, src[4], want[4];
+    int lanes, measured;
+};
+
+static int check_psp_measured_vfpu9(void) {
+    /* PSP-3000, 2026-10-24 (issue #326): vsgn.s, vbfy1.p/.q, vbfy2.q and vt4444.q
+     * measured from a fresh thread, 159 cells under no prefix, negate-all (vpfxs
+     * 0xdc0f00e4) and wzyx with lanes 0/2 negated (0xdc05001b). Rows with measured=1
+     * are words the PSP returned. Rows with measured=0 follow the rules those cells fix
+     * (an off-tree replay of the production interpreter matches all 159 cells); they pin
+     * shapes such as vbfy2 that no measured row below covers on its own. */
+    static const struct vfpu9_cell cells[] = {
+        /* vsgn: the raw sign bit decides for NaN and Inf; +-0 and denormals give +0. */
+        {"vsgn.s +denormal", 0xd04a0405u, 0xe4u, {0x00000001u}, {0x00000000u}, 1, 1},
+        {"vsgn.s +qNaN", 0xd04a0405u, 0xe4u, {0x7fc00000u}, {0x3f800000u}, 1, 1},
+        {"vsgn.s -qNaN", 0xd04a0405u, 0xe4u, {0xffc00000u}, {0xbf800000u}, 1, 1},
+        {"vsgn.s sNaN", 0xd04a0405u, 0xe4u, {0x7f800001u}, {0x3f800000u}, 1, 1},
+        {"vsgn.s -0", 0xd04a0405u, 0xe4u, {0x80000000u}, {0x00000000u}, 1, 1},
+        {"vsgn.s -denormal", 0xd04a0020u, 0xe4u, {0x80000001u}, {0x00000000u}, 1, 0},
+        {"vsgn.s -Inf", 0xd04a0020u, 0xe4u, {0xff800000u}, {0xbf800000u}, 1, 0},
+        /* vbfy1.q: inf - inf and NaN operands give the canonical 0x7f800001. */
+        {"vbfy1.q specials", 0xd0428080u, 0xe4u,
+         {0x7f800000u, 0xff800000u, 0x7fc00000u, 0x00000000u},
+         {0x7f800001u, 0x7f800000u, 0x7f800001u, 0x7f800001u}, 4, 1},
+        /* Forced negate OR-ed into the user S prefix: negate-all on (1,2,3,4) is
+         * (+1,-1,+1,-1), not the butterfly of (-1,-2,-3,-4). */
+        {"vbfy1.q 1234 negate-all", 0xd0428080u, 0xf00e4u,
+         {0x3f800000u, 0x40000000u, 0x40400000u, 0x40800000u},
+         {0x3f800000u, 0xbf800000u, 0x3f800000u, 0xbf800000u}, 4, 1},
+        /* Denormal operands flush to a zero of their own sign: lane 3 is
+         * -(0x00000001) + -0 = -0 (measured); lane 2 is -0 + 0 = +0. */
+        {"vbfy1.q denormal flush", 0xd0428183u, 0xe4u,
+         {0x3f800000u, 0x40000000u, 0x80000000u, 0x00000001u},
+         {0x40400000u, 0xbf800000u, 0x00000000u, 0x80000000u}, 4, 0},
+        /* A user S swizzle reaching outside the pair writes +0 to that lane. */
+        {"vbfy1.p 12 wzyx", 0xd0420183u, 0x5001bu,
+         {0x3f800000u, 0x40000000u}, {0x00000000u, 0x00000000u}, 2, 1},
+        {"vbfy1.p 12", 0xd0420183u, 0xe4u,
+         {0x3f800000u, 0x40000000u}, {0x40400000u, 0xbf800000u}, 2, 0},
+        {"vbfy2.q 1234", 0xd0438183u, 0xe4u,
+         {0x3f800000u, 0x40000000u, 0x40400000u, 0x40800000u},
+         {0x40800000u, 0x40c00000u, 0xc0000000u, 0xc0000000u}, 4, 0},
+        /* vt4444.q packs a quad into a pair; the S prefix acts on raw words. */
+        {"vt4444.q listed", 0xd0599090u, 0xe4u,
+         {0x00000000u, 0xffffffffu, 0x12345678u, 0x80ff00f0u},
+         {0xffff0000u, 0x8f0f1357u}, 2, 1},
+        {"vt4444.q listed negate-all", 0xd0599090u, 0xf00e4u,
+         {0x00000000u, 0xffffffffu, 0x12345678u, 0x80ff00f0u},
+         {0x7fff8000u, 0x0f0f9357u}, 2, 1},
+    };
+    int bad = 0;
+    for (unsigned c = 0; c < sizeof(cells) / sizeof(cells[0]); c++) {
+        const struct vfpu9_cell *k = &cells[c];
+        const int n = vsize(k->w);
+        uint8_t si[4], di[4];
+        CpuState s;
+        setup_identity_compute(&s);
+        for (int i = 0; i < 128; i++) s.vi[i] = 0x3f800000u | ((uint32_t)i << 16);
+        s.vfpuCtrl[0] = k->sprefix;
+        s.vfpuCtrl[3] = 0x15u;
+        vreg_idx((int)((k->w >> 8) & 0x7fu), n, si);
+        for (int i = 0; i < n; i++) s.vi[si[i]] = k->src[i];
+        CpuState before = s;
+        vreg_idx((int)(k->w & 0x7fu), k->lanes, di);
+        const int kind = sr_vfpu_interp(&s, k->w);
+        int ok = kind == SR_VFPU_COMPUTE && s.vfpuCtrl[3] == 0x15u && s.vfpuCtrl[0] == 0xe4u;
+        for (int i = 0; i < k->lanes; i++) {
+            ok &= s.vi[di[i]] == k->want[i];
+            before.vi[di[i]] = s.vi[di[i]];
+        }
+        /* Only the destination lanes change; the prefix is consumed, CC is untouched. */
+        before.vfpuCtrl[0] = 0xe4u;
+        ok &= memcmp(s.vi, before.vi, sizeof(s.vi)) == 0;
+        ok &= memcmp(s.vfpuCtrl, before.vfpuCtrl, sizeof(s.vfpuCtrl)) == 0;
+        g_checks++;
+        if (!ok) {
+            g_failures++;
+            bad = 1;
+            fprintf(stderr, "FAIL: PSP-3000 VFPU9 %s (%s) kind=%d got", k->name,
+                    k->measured ? "measured" : "rule", kind);
+            for (int i = 0; i < k->lanes; i++) fprintf(stderr, " %08x", s.vi[di[i]]);
+            fprintf(stderr, "\n");
+        }
+    }
+    /* Sizes the measurement does not support stay fail-closed with no state change. */
+    static const uint32_t rejected[] = {
+        0xd0420000u,  /* vbfy1.s */
+        0xd0428000u,  /* vbfy1.t */
+        0xd0430080u,  /* vbfy2.p */
+        0xd0590080u,  /* vt4444.p */
+        0xd0598000u,  /* vt4444.t */
+    };
+    for (unsigned r = 0; r < sizeof(rejected) / sizeof(rejected[0]); r++) {
+        CpuState s;
+        setup_state(&s);
+        const CpuState before = s;
+        const int kind = sr_vfpu_interp(&s, rejected[r]);
+        CHECKB(bad, kind == SR_VFPU_OTHER && memcmp(&s, &before, sizeof(s)) == 0,
+               "unmeasured vbfy/vt4444 width fails closed without consuming prefixes");
+    }
+    /* RCX0-7 at thread entry, read back through mfvc controls 136..143. */
+    {
+        static const uint32_t rcx[8] = {0x3f800001u, 0x3f800002u, 0x3f800004u, 0x3f800008u,
+                                        0x3f800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u};
+        CpuState s;
+        memset(&s, 0, sizeof(s));
+        sr_vfpu_thread_ctrl_init(&s);
+        int ok = s.vfpuCtrl[0] == 0xe4u && s.vfpuCtrl[1] == 0xe4u && s.vfpuCtrl[2] == 0u;
+        for (int i = 0; i < 8; i++) {
+            ok &= sr_vfpu_interp(&s, cop2_transfer(3, 9, 136 + i)) == SR_VFPU_COMPUTE;
+            ok &= s.r[9] == rcx[i];
+        }
+        CHECKB(bad, ok, "thread-entry RCX0-7 read back the PSP-3000 measured words");
+    }
+    return bad;
+}
+
 static int check_vrexp2_measured_words(void) {
     /* PSP-VFPU-TRANSCENDENTAL-001: the 63 words a PSP-3000 (6.61, 2026-10-15, probe build
      * 22b027f6) returned for vrexp2.s S002, S000, as {input, result} pairs: 20 special
@@ -994,6 +1116,7 @@ static int check_vrexp2_measured_words(void) {
 
 int main(void) {
     int bad = 0;
+    bad |= check_psp_measured_vfpu9();
     bad |= check_cop2_control_transfers();
     bad |= check_quad_memops();
     bad |= check_vcrs_widths();

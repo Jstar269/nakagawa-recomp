@@ -549,9 +549,7 @@ have_image:;
 
     CpuState s;
     memset(&s, 0, sizeof(s));
-    s.vfpuCtrl[0] = 0xe4;  /* SPREFIX = identity */
-    s.vfpuCtrl[1] = 0xe4;  /* TPREFIX = identity */
-    s.vfpuCtrl[2] = 0;     /* DPREFIX = none */
+    sr_vfpu_thread_ctrl_init(&s);  /* identity S/T, no D prefix, measured RCX0-7 */
     seed_from_init(ref_trace, &s);
     if (s.r[29] == 0) s.r[29] = 0x09F00000;   /* default stack: top of user RAM (0x08000000..0x0BFFFFFF); was 0x00400000 (kernel driver region — wrong) */
     s.pc = entry;
@@ -655,9 +653,7 @@ have_image:;
                 return 2;
             }
             memset(&s, 0, sizeof(s));
-            s.vfpuCtrl[0] = 0xe4;
-            s.vfpuCtrl[1] = 0xe4;
-            s.vfpuCtrl[2] = 0;
+            sr_vfpu_thread_ctrl_init(&s);
             if (!sr_driver_seed_loadexec_arguments(&s, &request, next_entry, next_gp)) {
                 sr_hle_loadexec_release(&request);
                 return 2;
