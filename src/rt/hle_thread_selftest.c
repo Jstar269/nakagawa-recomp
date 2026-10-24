@@ -3949,6 +3949,42 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
     }
 }
 
+uint32_t sr_hle_test_npdrm_licensee_key(uint8_t out[16]);
+
+/* sceNpDrmSetLicenseeKey records the 16 key bytes and returns 0; sceNpDrmClearLicenseeKey forgets
+ * them; an unreadable key is refused with 0x80550902 and leaves the recorded key alone. */
+static void test_npdrm_licensee_key(void) {
+    enum {
+        NID_NPDRM_SET_LICENSEE_KEY = 0xa1336091u,
+        NID_NPDRM_CLEAR_LICENSEE_KEY = 0x9b745542u,
+        KEY = ORACLE_CALLBACK_NAME + 0x200u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    uint8_t key[16];
+    expect(sr_hle_test_is_registered(NID_NPDRM_SET_LICENSEE_KEY) &&
+               sr_hle_test_is_registered(NID_NPDRM_CLEAR_LICENSEE_KEY),
+           "sceNpDrmSetLicenseeKey and sceNpDrmClearLicenseeKey are registered");
+    for (uint32_t i = 0; i < 16u; i++) sr_w8(KEY + i, (uint8_t)(0xa0u + i));
+    cpu.r[4] = KEY;
+    expect(sr_syscall(&cpu, NID_NPDRM_SET_LICENSEE_KEY) == 0u, "sceNpDrmSetLicenseeKey returns 0");
+    expect(sr_hle_test_npdrm_licensee_key(key) == 1u && key[0] == 0xa0u && key[15] == 0xafu,
+           "sceNpDrmSetLicenseeKey records all 16 key bytes");
+    cpu.r[4] = 0x0bfffff8u;
+    expect(sr_syscall(&cpu, NID_NPDRM_SET_LICENSEE_KEY) == 0x80550902u &&
+               sr_hle_test_npdrm_licensee_key(key) == 1u && key[0] == 0xa0u,
+           "an unreadable licensee key is refused and the recorded key is kept");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_NPDRM_SET_LICENSEE_KEY) == 0x80550902u &&
+               sr_hle_test_npdrm_licensee_key(key) == 1u && key[0] == 0xa0u && key[15] == 0xafu,
+           "a null licensee key is refused and the recorded key is kept");
+    expect(sr_syscall(&cpu, NID_NPDRM_CLEAR_LICENSEE_KEY) == 0u &&
+               sr_hle_test_npdrm_licensee_key(key) == 0u && key[0] == 0u && key[15] == 0u,
+           "sceNpDrmClearLicenseeKey returns 0 and forgets the key");
+}
+
 /* sceReg virtual system registry (src/rt/hle.c): guest scratch lives in the arena at 0x08b00000,
  * and the per-user overlay is redirected for the whole run to a build-scoped file (main sets
  * SR_SYSTEM_REGISTRY), so no test reads or writes the developer's own registry overlay. */
@@ -31081,6 +31117,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
+    test_npdrm_licensee_key();
     test_sysreg_virtual_registry();
     test_sysreg_write_model();
     test_sysparam_nickname_string();
