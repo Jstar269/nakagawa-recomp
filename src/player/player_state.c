@@ -2926,6 +2926,79 @@ void player_app_set_build_error(
     }
 }
 
+void player_app_set_package_revalidation_error(PlayerApp *app, const char *reason,
+                                               const char *log_file_path) {
+    if (!app) return;
+    const char *detail = reason && reason[0]
+        ? reason : "The new package could not be checked.";
+    char msg[512];
+    snprintf(msg, sizeof(msg),
+             "The package was built, but the check that follows the build did not pass: %.380s "
+             "Build the package again from the Library.", detail);
+    player_app_set_error(app, "PACKAGE_REVALIDATION_FAILED", "Package Check Failed",
+                         msg, "Return to Library", VIEW_LIBRARY);
+    player_dev_log_add(app, "build", "PACKAGE_REVALIDATION_FAILED: %s", detail);
+    if (log_file_path) {
+        snprintf(app->last_error.log_file_path, sizeof(app->last_error.log_file_path),
+                 "%s", log_file_path);
+    }
+}
+
+bool player_app_apply_build_outcome(PlayerApp *app) {
+    if (!app) return false;
+    const PackageBuildSession *session = &app->build_session;
+    if (!session->is_failed && !session->is_cancelled) return false;
+    if (session->session_generation == 0 ||
+        session->session_generation == app->build_outcome_handled_generation) {
+        return false;
+    }
+    app->build_outcome_handled_generation = session->session_generation;
+    /* The prerequisite fetcher reuses the session; its own card already
+       reported the outcome. */
+    if (session->session_generation == app->prerequisite_session_generation) {
+        return false;
+    }
+    if (session->is_failed) {
+        player_app_set_build_error(
+            app,
+            session->current_stage_name[0] ? session->current_stage_name : "build",
+            session->failure_boundary[0] ? session->failure_boundary
+                                         : "Package build failed.",
+            session->log_file_path);
+    } else {
+        player_app_set_view(app, VIEW_LIBRARY);
+    }
+    return true;
+}
+
+bool player_app_adopt_profile_executable(PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    GameRecord *game = &app->games[game_index];
+    if (!game->is_experimental || game->selected_executable[0] || game->is_sample) {
+        return false;
+    }
+    char root[NK_MAX_PATH];
+    const char *package_root = player_package_root(app, game);
+    if (package_root) {
+        snprintf(root, sizeof(root), "%s", package_root);
+    } else if (!nk_platform_get_app_data_dir(root, sizeof(root))) {
+        return false;
+    }
+    char leaf[sizeof(game->selected_executable)];
+    if (!nk_title_manifest_experimental_profile_executable(
+            root, game->disc_id, game->title_id, leaf, sizeof(leaf))) {
+        return false;
+    }
+    snprintf(game->selected_executable, sizeof(game->selected_executable), "%s", leaf);
+    player_dev_log_add(app, "library", "%s: selected executable %s taken from its profile",
+                       game->disc_id, leaf);
+    if (nk_library_add_or_update(&app->library, game) == NK_OK &&
+        app->library.library_path[0]) {
+        (void)nk_library_save(&app->library, app->library.library_path);
+    }
+    return true;
+}
+
 void player_app_start_setup_wizard(PlayerApp *app) {
     if (!app) return;
     memset(&app->wizard, 0, sizeof(app->wizard));

@@ -4678,6 +4678,53 @@ bool nk_title_manifest_read_experimental_profile(
     return valid;
 }
 
+bool nk_title_manifest_experimental_profile_executable(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    char *out_leaf,
+    size_t out_leaf_size
+) {
+    if (out_leaf && out_leaf_size) out_leaf[0] = '\0';
+    if (!user_data_root || !*user_data_root || !out_leaf || out_leaf_size == 0) return false;
+    char normalized[10];
+    if (!nk_manifest_normalize_disc_id(disc_id, normalized)) return false;
+
+    char relative[NK_MAX_DISC_ID_LEN + 32];
+    char profile_path[NK_MAX_PATH * 2];
+    snprintf(relative, sizeof(relative), "experimental%c%s%cprofile.json",
+             nk_platform_path_separator(), normalized, nk_platform_path_separator());
+    if (!package_join_path(profile_path, sizeof(profile_path), user_data_root, relative)) {
+        return false;
+    }
+    char error[320] = "";
+    char *profile_text = NULL;
+    size_t profile_length = 0;
+    if (!package_read_json(profile_path, NK_MANIFEST_MAX_BYTES, NULL, &profile_text,
+                           &profile_length, error, sizeof(error))) return false;
+    JsonNode *profile = json_parse(profile_text, profile_length, error, sizeof(error));
+    free(profile_text);
+    if (!profile) return false;
+    const char *profile_executable = NULL;
+    const char *leaf = NULL;
+    if (package_string(obj_get(obj_get(profile, "input_identity"), "selected_executable"),
+                       &profile_executable)) {
+        if (strcmp(profile_executable, "PSP_GAME/SYSDIR/EBOOT.BIN") == 0) leaf = "EBOOT.BIN";
+        else if (strcmp(profile_executable, "PSP_GAME/SYSDIR/BOOT.BIN") == 0) leaf = "BOOT.BIN";
+    }
+    json_free(profile);
+    if (!leaf || strlen(leaf) >= out_leaf_size) return false;
+
+    /* Adopt the leaf only when the full profile check accepts it, so the
+       library never records an executable that launch would refuse. */
+    char profile_hash[65];
+    if (!nk_title_manifest_read_experimental_profile(
+            user_data_root, normalized, title_id, leaf, NULL, profile_hash,
+            error, sizeof(error))) return false;
+    snprintf(out_leaf, out_leaf_size, "%s", leaf);
+    return true;
+}
+
 static bool package_catalog_identity_matches(const char *disc_id,
                                             const char *title_id,
                                             uint64_t *catalog_epoch) {

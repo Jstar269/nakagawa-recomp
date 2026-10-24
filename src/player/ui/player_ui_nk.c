@@ -284,6 +284,7 @@ static const char *player_ui_error_badge(const ErrorState *error) {
     if (strcmp(error->error_code, "TITLE_DATA_MISSING") == 0) return "Game data needed";
     if (strcmp(error->error_code, "RUNTIME_PACKAGE_NOT_READY") == 0) return "Game not ready";
     if (strcmp(error->error_code, "TITLE_PROFILE_INVALID") == 0) return "Title settings needed";
+    if (strcmp(error->error_code, "PACKAGE_REVALIDATION_FAILED") == 0) return "Package check";
     return error->error_code;
 }
 

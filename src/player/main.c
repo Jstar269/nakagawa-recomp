@@ -2080,20 +2080,21 @@ static void player_package_status_finish(PlayerApp *app,
             }
             player_app_set_view(app, PLAYER_VIEW_READY_LIBRARY);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+            /* runtime= is what makes the title's card offer PLAY. */
             printf("[PLAYER_UI_TEST] post_build_transition view=ready_library "
-                   "disc=%s found=%d prepared=%d status=%d\n",
+                   "disc=%s found=%d prepared=%d status=%d runtime=%d\n",
                    job->game.disc_id, current_index >= 0,
                    current_index >= 0
                        ? app->games[current_index].is_prepared : 0,
                    current_index >= 0
-                       ? (int)app->games[current_index].status : -1);
+                       ? (int)app->games[current_index].status : -1,
+                   current_index >= 0
+                       ? (int)player_app_cached_game_has_runtime(
+                             app, &app->games[current_index]) : 0);
 #endif
         } else {
-            player_app_set_build_error(
-                app, "package",
-                job->reason[0] ? job->reason
-                               : "Package re-validation failed after build completed.",
-                app->build_session.log_file_path);
+            player_app_set_package_revalidation_error(
+                app, job->reason, app->build_session.log_file_path);
         }
     }
     free(job);
@@ -2679,6 +2680,7 @@ static void player_start_prerequisite_operation(PlayerApp *app) {
             "The app-data log folder could not be created. Free disk space or check permissions, then retry.");
         return;
     }
+    app->prerequisite_session_generation = app->build_session.session_generation;
     NkResult result = package_builder_start_prerequisite_fetch(
         &app->build_session, python_path, cli_path, data_root, log_dir,
         app->prerequisite_bootstrap_ready);
@@ -3098,6 +3100,11 @@ int main(int argc, char *argv[]) {
             if (report[0]) fprintf(stderr, "[PLAYER] Title manifests not loaded:\n%s", report);
         }
     }
+    /* An experimental entry saved with no selected executable recovers the
+       one its profile binds, without a hand edit of library.json (#1276). */
+    for (int i = 0; i < app.game_count; i++) {
+        (void)player_app_adopt_profile_executable(&app, i);
+    }
 
     /* Load external manifest overlay if requested */
     if (manifest_overlay_path) {
@@ -3273,6 +3280,29 @@ int main(int argc, char *argv[]) {
             app.game_count = 1;
             app.selected_game_index = 0;
             player_app_set_view(&app, VIEW_LIBRARY);
+        } else if (strcmp(test_view, "build-ready-experimental") == 0) {
+            /* #1276: an experimental entry imported while its EBOOT.BIN was
+               encrypted has no selected executable; its build has just bound
+               EBOOT.BIN in the profile and passed. In memory only. */
+            app.game_count = 0;
+            app.selected_game_index = -1;
+            GameRecord experimental;
+            memset(&experimental, 0, sizeof(experimental));
+            snprintf(experimental.disc_id, sizeof(experimental.disc_id), "TEST00009");
+            snprintf(experimental.title_name, sizeof(experimental.title_name),
+                     "Nakagawa Synthetic Experimental Fixture");
+            snprintf(experimental.disc_version, sizeof(experimental.disc_version), "1.00");
+            snprintf(experimental.title_id, sizeof(experimental.title_id),
+                     "experimental-test00009");
+            experimental.status = NK_STATUS_IDENTIFIED;
+            experimental.is_experimental = true;
+            app.games[0] = experimental;
+            app.game_count = 1;
+            app.selected_game_index = 0;
+            player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
+            package_builder_init_session(&app.build_session, experimental.disc_id,
+                                         experimental.title_name);
+            app.build_session.is_complete = true;
         } else if (strcmp(test_view, "ready-library") == 0 ||
                    strcmp(test_view, "ready") == 0 ||
                    strcmp(test_view, "build-ready") == 0) {
@@ -3403,6 +3433,18 @@ int main(int argc, char *argv[]) {
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "UCUS98701");
             snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Hot Shots Tennis: Get a Grip");
             app.wizard.step = WIZARD_STEP_READY_LAUNCH;
+        } else if (strcmp(test_view, "build-failed") == 0) {
+            /* A build session that has ended in failure (#1277). */
+            player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
+            package_builder_init_session(&app.build_session, "TEST80001",
+                                         "Synthetic Package Fixture");
+            app.build_session.is_failed = true;
+            app.build_session.current_stage = PACKAGE_BUILD_STAGE_FAILED;
+            snprintf(app.build_session.current_stage_name,
+                     sizeof(app.build_session.current_stage_name), "compile");
+            snprintf(app.build_session.failure_boundary,
+                     sizeof(app.build_session.failure_boundary),
+                     "Synthetic compile failure.");
         } else if (strcmp(test_view, "building") == 0 || strcmp(test_view, "building_package") == 0) {
             player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
             const char *disc = (app.selected_game_index >= 0 && app.selected_game_index < app.game_count)
@@ -4319,6 +4361,9 @@ int main(int argc, char *argv[]) {
             int build_game_index = player_app_find_game_by_disc_id(
                 &app, app.build_session.disc_id);
             if (build_game_index >= 0 && build_game_index < app.game_count) {
+                /* The build may have bound the executable this entry was
+                   saved without; the check validates against that one. */
+                (void)player_app_adopt_profile_executable(&app, build_game_index);
                 snprintf(build_check_disc_id, sizeof(build_check_disc_id),
                          "%s", app.build_session.disc_id);
                 build_check_session_generation =
@@ -4341,13 +4386,9 @@ int main(int argc, char *argv[]) {
                     "Package completed without its library title.",
                     app.build_session.log_file_path);
             }
-        } else if (app.build_session.is_failed) {
-            player_app_set_build_error(&app,
-                                       app.build_session.current_stage_name[0] ? app.build_session.current_stage_name : "build",
-                                       app.build_session.failure_boundary[0] ? app.build_session.failure_boundary : "Package build failed.",
-                                       app.build_session.log_file_path);
-        } else if (app.build_session.is_cancelled) {
-            player_app_set_view(&app, VIEW_LIBRARY);
+        } else {
+            /* Once per session, like the completion branch above (#1277). */
+            (void)player_app_apply_build_outcome(&app);
         }
 
         (void)player_package_status_start_next(

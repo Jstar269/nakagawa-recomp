@@ -4387,7 +4387,9 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
             : (strcmp(app->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0
                 ? "GAME NOT READY"
                 : (strcmp(app->last_error.error_code, "TITLE_PROFILE_INVALID") == 0
-                    ? "TITLE SETTINGS NEEDED" : app->last_error.error_code)));
+                    ? "TITLE SETTINGS NEEDED"
+                    : (strcmp(app->last_error.error_code, "PACKAGE_REVALIDATION_FAILED") == 0
+                        ? "PACKAGE CHECK" : app->last_error.error_code))));
     draw_badge(ren, card_x + 32.0f, card_y + 28.0f, badge, COLOR_RED);
     draw_text_ellipsized(ren, card_x + 32.0f, card_y + 66.0f, app->last_error.title,
                          2.0f, card_w - 64.0f, COLOR_TEXT_WHITE);

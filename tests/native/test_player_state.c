@@ -1807,6 +1807,54 @@ static void poll_player_package_build_to_terminal(PlayerApp *app) {
     assert(!app->build_session.is_building);
 }
 
+/* #1277: the main loop asks for the build outcome every frame. A failure card
+   and a cancel's return to the Library are shown once per build session, so
+   the card can be dismissed and the Library left. */
+static void test_build_outcome_is_shown_once_per_session(void) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+
+    package_builder_init_session(&app->build_session, "ULUS99998", "Outcome fixture");
+    app->build_session.is_failed = true;
+    snprintf(app->build_session.current_stage_name,
+             sizeof(app->build_session.current_stage_name), "compile");
+    snprintf(app->build_session.failure_boundary,
+             sizeof(app->build_session.failure_boundary), "Synthetic compile failure.");
+    player_app_set_view(app, VIEW_BUILDING_PACKAGE);
+    assert(player_app_apply_build_outcome(app));
+    assert(app->active_view == VIEW_ERROR);
+    assert(strcmp(app->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
+    assert(strcmp(app->last_error.failed_stage, "compile") == 0);
+    player_app_set_view(app, app->last_error.return_view);
+    for (int frame = 0; frame < 3; frame++) {
+        assert(!player_app_apply_build_outcome(app));
+        assert(app->active_view == VIEW_LIBRARY);
+    }
+
+    package_builder_init_session(&app->build_session, "ULUS99998", "Outcome fixture");
+    app->build_session.is_cancelled = true;
+    player_app_set_view(app, VIEW_BUILDING_PACKAGE);
+    assert(player_app_apply_build_outcome(app));
+    assert(app->active_view == VIEW_LIBRARY);
+    player_app_set_view(app, VIEW_SETTINGS);
+    for (int frame = 0; frame < 3; frame++) {
+        assert(!player_app_apply_build_outcome(app));
+        assert(app->active_view == VIEW_SETTINGS);
+    }
+
+    /* The prerequisite fetcher runs in a build session of its own; its card,
+       not the package build card, reports how it ended. */
+    package_builder_init_session(&app->build_session, "ULUS99998", "Outcome fixture");
+    app->prerequisite_session_generation = app->build_session.session_generation;
+    app->build_session.is_failed = true;
+    player_app_prereq_fail(app, "PREREQUISITE_INSTALL_FAILED", "Synthetic download failure.");
+    assert(!player_app_apply_build_outcome(app));
+    assert(strcmp(app->last_error.error_code, "PREREQUISITE_INSTALL_FAILED") == 0);
+
+    free(app);
+    printf("[PLAYER_STATE_TEST] build failure and cancel are shown once per session PASS\n");
+}
+
 static void test_package_build_lifecycle(const char *self_executable) {
     assert(self_executable && self_executable[0]);
     char sep = nk_platform_path_separator();
@@ -1985,6 +2033,78 @@ static void test_package_build_lifecycle(const char *self_executable) {
                incompatible_reason, sizeof(incompatible_reason)) ==
            NK_RUNTIME_PACKAGE_INCOMPATIBLE);
 
+    /* #1276: a disc imported while its EBOOT.BIN was encrypted was saved with
+       no selected executable. The build (with a user-supplied EBOOT.elf)
+       binds EBOOT.BIN in the profile and passes, so the check after it must
+       pass too and the title must end READY, not on a failure card. */
+    char library_path[NATIVE_TEST_PATH_MAX + 192];
+    snprintf(library_path, sizeof(library_path), "%s%clibrary.json", user_root, sep);
+    nk_library_init(&rebuild_app->library);
+    assert(strlen(library_path) < sizeof(rebuild_app->library.library_path));
+    memcpy(rebuild_app->library.library_path, library_path, strlen(library_path) + 1);
+    rebuild_app->games[0].selected_executable[0] = '\0';
+    assert(nk_library_add_or_update(&rebuild_app->library, &rebuild_app->games[0]) == NK_OK);
+    assert(nk_library_save(&rebuild_app->library, library_path) == NK_OK);
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "success");
+    assert(player_app_start_package_build(rebuild_app, 0));
+    poll_player_package_build_to_terminal(rebuild_app);
+    assert(rebuild_app->build_session.is_complete);
+    assert(!player_app_apply_build_outcome(rebuild_app));
+    assert(rebuild_app->active_view == VIEW_BUILDING_PACKAGE);
+    player_app_runtime_package_cache_invalidate(rebuild_app);
+    /* The empty selection is what the check used to run with: it refused the
+       package it had just built. */
+    assert(player_app_validate_runtime_package(
+               rebuild_app, &rebuild_app->games[0], NULL,
+               incompatible_reason, sizeof(incompatible_reason)) ==
+           NK_RUNTIME_PACKAGE_STALE);
+    assert(player_app_game_data_root_status(
+               rebuild_app, &rebuild_app->games[0], NULL, 0, NULL, 0) ==
+           NK_LAUNCH_DATA_ROOT_INVALID);
+    assert(player_app_adopt_profile_executable(rebuild_app, 0));
+    assert(strcmp(rebuild_app->games[0].selected_executable, "EBOOT.BIN") == 0);
+    assert(!player_app_adopt_profile_executable(rebuild_app, 0));
+    assert(player_app_validate_runtime_package(
+               rebuild_app, &rebuild_app->games[0], NULL,
+               incompatible_reason, sizeof(incompatible_reason)) ==
+           NK_RUNTIME_PACKAGE_OK);
+    assert(player_app_game_data_root_status(
+               rebuild_app, &rebuild_app->games[0], NULL, 0, NULL, 0) !=
+           NK_LAUNCH_DATA_ROOT_INVALID);
+    NkLibrary *reloaded = (NkLibrary *)calloc(1, sizeof(NkLibrary));
+    assert(reloaded != NULL);
+    nk_library_init(reloaded);
+    assert(nk_library_load(reloaded, library_path) == NK_OK);
+    assert(reloaded->count == 1);
+    assert(strcmp(reloaded->entries[0].selected_executable, "EBOOT.BIN") == 0);
+    free(reloaded);
+    /* A profile that binds no executable gives the entry nothing to adopt. */
+    write_experimental_profile_fixture(
+        user_root, rebuild_app->games[0].disc_id,
+        rebuild_app->games[0].title_id, "", FIXTURE_SHA256);
+    rebuild_app->games[0].selected_executable[0] = '\0';
+    assert(!player_app_adopt_profile_executable(rebuild_app, 0));
+    assert(rebuild_app->games[0].selected_executable[0] == '\0');
+
+    /* A check that fails after a passing build is named as such, with its
+       internal code in the developer log, not as a failed build. */
+    player_app_set_package_revalidation_error(
+        rebuild_app, "Synthetic stale package.", rebuild_app->build_session.log_file_path);
+    assert(rebuild_app->active_view == VIEW_ERROR);
+    assert(strcmp(rebuild_app->last_error.error_code, "PACKAGE_REVALIDATION_FAILED") == 0);
+    assert(strcmp(rebuild_app->last_error.title, "Package Build Failed") != 0);
+    assert(rebuild_app->last_error.failed_stage[0] == '\0');
+    assert(strstr(rebuild_app->last_error.message, "Synthetic stale package.") != NULL);
+    bool logged_code = false;
+    for (size_t i = 0; i < player_dev_log_count(rebuild_app); i++) {
+        const char *line = player_dev_log_line(rebuild_app, i);
+        if (line && strstr(line, "PACKAGE_REVALIDATION_FAILED: Synthetic stale package.")) {
+            logged_code = true;
+        }
+    }
+    assert(logged_code);
+    printf("[PLAYER_STATE_TEST] experimental build adopts its profile executable PASS\n");
+
     free(rebuild_app);
     assert(test_remove_tree(rebuild_root));
     restore_environment_value("PYTHON", saved_python, had_python);
@@ -2100,6 +2220,7 @@ int main(int argc, char **argv) {
 
     test_stage_discard_removes_a_deep_tree();
     test_package_build_lifecycle(self_executable);
+    test_build_outcome_is_shown_once_per_session();
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
     test_library_card_status_text();
