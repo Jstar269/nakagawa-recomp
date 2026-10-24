@@ -330,7 +330,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "61bf3d3d78f028c32fa470fdcc57694913403ab233c4877140e4460e15d45fe0"
+      "sha256": "b509933bc0b7b1dc8ccf5479dbf15f7ecc80d0c2e4a879c67f35a8baceb857e2"
     },
     {
       "path": "CLAUDE.md",
@@ -444,7 +444,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3bacddcce632fd6e96f50991c5388c3e64340ab6abf237554754ba445d7d095a"
+      "sha256": "1618ed899b135ad149a4ccfaa9707c4e3f40a0dc823a467d2a054d495695113a"
     },
     {
       "path": "SECURITY.md",
@@ -1348,7 +1348,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "27df3d736e0e40ce76bc30b6b40c75650dfd599a68fe1743d57de62efd3af965"
+      "sha256": "06fcb21344cd1877ad815a0245dd8d28303dc557c0ece3bd7d4cf9b05db9d0c4"
     },
     {
       "path": "docs/COMPATIBILITY.md",
