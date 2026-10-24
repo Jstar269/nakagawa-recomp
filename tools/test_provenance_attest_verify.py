@@ -2214,6 +2214,16 @@ class LiveRepositoryTests(unittest.TestCase):
             "github.event.pull_request.base.ref == github.event.repository.default_branch", raw,
         )
 
+    def test_candidate_binary_job_is_main_only_and_sha_bound(self) -> None:
+        raw = (ROOT / TRUSTED_WORKFLOW).read_text(encoding="utf-8")
+        self.assertIn("candidate_binary_l2:", raw)
+        self.assertIn(
+            "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'", raw,
+        )
+        self.assertIn("$env:CANDIDATE_SHA -ne $env:GITHUB_SHA", raw)
+        self.assertIn("$checkedOutSha -ne $env:GITHUB_SHA", raw)
+        self.assertNotIn("ref: ${{ github.sha }}", raw)
+
     def test_the_trusted_workflow_never_interpolates_untrusted_event_text(self) -> None:
         """Titles, bodies and branch names must not reach the job at all."""
         raw = (ROOT / TRUSTED_WORKFLOW).read_text(encoding="utf-8")
