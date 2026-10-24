@@ -3503,14 +3503,8 @@ def main(argv):
 
         if hst_profile and a in (0x00011090, 0x000110dc):
             text = f"""void f_{a:08x}(CpuState *s) {{  /* custom stub: memcpy native */
-    uint32_t dest = s->r[4], src = s->r[5], size = s->r[6];
-    if (size > 0 && size < 0x04000000u &&
-        sr_guest_span_writable(dest, size) && sr_guest_span_readable(src, size)) {{
-            if (g_sr_heap_watch) sr_heap_note_bulk_write(dest, size, 0x{a:08x}u);
-            memmove(SR_HOST(dest), SR_HOST(src), size);
-    }} else if (size) {{
-        sr_oor(dest, 0u, 1); sr_oor(src, 0u, 0);
-    }}
+    uint32_t dest = s->r[4];
+    sr_native_memmove(dest, s->r[5], s->r[6], 0x{a:08x}u);
     s->r[2] = dest;
     s->pc = s->r[31];
 }}"""
@@ -3518,14 +3512,8 @@ def main(argv):
 
         if hst_profile and a in (0x000114c0, 0x000114a8):
             text = f"""void f_{a:08x}(CpuState *s) {{  /* custom stub: sceKernelMemset native */
-    uint32_t dest = s->r[4], size = s->r[6];
-    uint8_t val = (uint8_t)(s->r[5] & 0xFF);
-    if (size > 0 && size < 0x04000000u && sr_guest_span_writable(dest, size)) {{
-            if (g_sr_heap_watch) sr_heap_note_bulk_write(dest, size, 0x{a:08x}u);
-            memset(SR_HOST(dest), val, size);
-    }} else if (size) {{
-        sr_oor(dest, val, 1);
-    }}
+    uint32_t dest = s->r[4];
+    sr_native_memset(dest, (uint8_t)(s->r[5] & 0xFF), s->r[6], 0x{a:08x}u);
     s->r[2] = dest;
     s->pc = s->r[31];
 }}"""
