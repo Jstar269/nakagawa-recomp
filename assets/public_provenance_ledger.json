@@ -1468,7 +1468,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f5718013477db4f38bed8832640cd3fe4f2771670dc7f015279855b893d94141"
+      "sha256": "9b8c25dfa526409b68a11bda0472e69e46694dee7f6c7b89956ad9c3530f0977"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -1525,7 +1525,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "85e8014941682970457650adc5b1ed37f06d8ed6dacc5cb6721a41bfc8b6b5ed"
+      "sha256": "cf87742f4551e3ab467b29637d6cccab35356584ee1783548b16a09531ef054b"
     },
     {
       "path": "docs/PORTING.md",
@@ -1618,7 +1618,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "96ddd36a52ec87521558af554f44058c3f13b86edc5a846c8a54f26d16c862a4"
+      "sha256": "84aa890f1b828f39abcb0f914ae12b17f8e9362ae01cd0a9a40f6a2ba9b876d5"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
@@ -3404,7 +3404,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4dfb2c8c9ce927bde02a8f29c9241e2703e74dbb4bdb22b1d9e72cbf1f9638ef"
+      "sha256": "11840657110800c77f3564ada56434166fc90c1604fe0266f8d4c17de131dcfa"
     },
     {
       "path": "src/player/package_builder.c",
@@ -6899,7 +6899,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e2e542bc30257956c6c19b00c8ee687ff694dfc6858ac5ad58a35d29aff0a5c4"
+      "sha256": "7c2b1cae25c246d74d2fe56b6ece3ca75d8df122f265c2bc86a91cf709b4e18a"
     },
     {
       "path": "tests/native/test_player_state.c",
@@ -6923,7 +6923,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f25602d8614556f166c69d41733125d2e270713d332da279f7685f58c07c6e8c"
+      "sha256": "84f90e88257f3b9a237afcf1973865e8e2eacc5e0402d0d1e88087065881bd20"
     },
     {
       "path": "tests/native/test_posix_process.c",
