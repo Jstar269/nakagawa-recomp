@@ -535,11 +535,14 @@ def _primary_region(
     windows: Sequence[ImportWindow],
     section_stub: tuple[int, int] | None,
     section_nid: tuple[int, int] | None,
+    own_run_nids: Sequence[tuple[int, int]] = (),
 ) -> _PairingRegion:
     """The psp-fixup-imports pairing region and the windows in it.
 
     Prefer the named sections; fall back to the union of the windows' runs for a
-    section the input does not name.
+    section the input does not name. own_run_nids are the NID runs of windows
+    split off by _split_offset_outliers; the finding names the section words they
+    reference instead of calling them unreferenced.
     """
     window = _window_region(windows)
     stub_base, stub_end = section_stub or (window.stub_base, window.stub_end)
@@ -579,10 +582,22 @@ def _primary_region(
             parts.append(f"head of {_byte_count(nid_head, 4, 'NID word')}")
         if nid_tail:
             parts.append(f"tail of {_byte_count(nid_tail, 4, 'NID word')}")
+        outside = [(nid_base, window.nid_base), (window.nid_end, nid_end)]
+        owned = sum(
+            max(0, min(hi, run_hi) - max(lo, run_lo))
+            for lo, hi in outside for run_lo, run_hi in own_run_nids
+        )
         finding = (
             f".rodata.sceNid has an unreferenced {' and a '.join(parts)}; using the "
             f"window-paired run ({(window.stub_end - window.stub_base) // 8} slots)"
         )
+        if owned:
+            finding = (
+                f".rodata.sceNid has a {' and a '.join(parts)} outside the window-paired "
+                f"run ({(window.stub_end - window.stub_base) // 8} slots); "
+                f"{_byte_count(owned, 4, 'NID word')} of it belong to windows paired by "
+                "their own stub runs"
+            )
         stub_base, stub_end = window.stub_base, window.stub_end
         nid_base, nid_end = window.nid_base, window.nid_end
     return _PairingRegion(
@@ -607,6 +622,48 @@ def _pairing_groups(windows: Sequence[ImportWindow]) -> list[list[ImportWindow]]
     for w in windows:
         groups.setdefault(w.first_sym - 2 * w.nid_data, []).append(w)
     return list(groups.values())
+
+
+def _split_offset_outliers(
+    windows: Sequence[ImportWindow],
+    section_stub: tuple[int, int] | None,
+) -> tuple[list[ImportWindow], list[ImportWindow]]:
+    """Split windows whose own stub run the linker placed apart from the region.
+
+    A game-supplied library's stubs can land away from the system-library stub
+    block while its NIDs stay contiguous with theirs in .rodata.sceNid; the
+    union of all windows then cannot pair 1:1. The loader patches each window's
+    slots from its own NIDs (slot firstSym + 8*i takes nidData[i]), so such a
+    window is a run paired by its own slots. A window moves out only when its
+    pairing offset differs from the offset most windows share (a tie moves
+    nothing), and its stub run is disjoint from the named stub section and from
+    the majority's stub and NID spans; anything else stays and is judged by the
+    1:1 rule. Returns (kept, moved).
+    """
+    groups = _pairing_groups(windows)
+    if len(groups) < 2:
+        return list(windows), []
+    sizes = sorted((len(g) for g in groups), reverse=True)
+    if sizes[0] == sizes[1]:
+        return list(windows), []
+    majority = max(groups, key=len)
+    stub_span = (min(w.first_sym for w in majority),
+                 max(w.first_sym + w.count * 8 for w in majority))
+    nid_span = (min(w.nid_data for w in majority),
+                max(w.nid_data + w.count * 4 for w in majority))
+    kept: list[ImportWindow] = []
+    moved: list[ImportWindow] = []
+    for w in windows:
+        stub_run = (w.first_sym, w.first_sym + w.count * 8)
+        nid_run = (w.nid_data, w.nid_data + w.count * 4)
+        outlier = (
+            w not in majority
+            and not _spans_overlap(stub_run, section_stub)
+            and not (stub_run[0] <= stub_span[1] and stub_span[0] <= stub_run[1])
+            and not _spans_overlap(nid_run, nid_span)
+        )
+        (moved if outlier else kept).append(w)
+    return kept, moved
 
 
 def _contiguous_runs(windows: Sequence[ImportWindow]) -> list[list[ImportWindow]]:
@@ -743,7 +800,11 @@ def layout_import_windows(
             raise ImportTableError(
                 "no import window lies in the named import sections", code=CODE_TABLE_INVALID)
 
-    regions = [_primary_region(primary, section_stub, section_nid)]
+    primary, own_runs = _split_offset_outliers(primary, section_stub)
+    detached.extend(own_runs)
+    regions = [_primary_region(
+        primary, section_stub, section_nid,
+        own_run_nids=[(w.nid_data, w.nid_data + w.count * 4) for w in own_runs])]
     for group in _pairing_groups(detached):
         for run in _contiguous_runs(group):
             regions.append(_window_region(run))
