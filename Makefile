@@ -749,6 +749,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/ge_capture.c \
               src/rt/vfpu_interp.c \
               src/rt/hle.c src/rt/audio_resample.c src/rt/flash0_font.c \
+              src/rt/mp3_bridge.c \
               src/core/nk_xb.c \
               src/rt/hle_power.c \
               src/rt/prx_loader.c \
@@ -1825,7 +1826,7 @@ $(PORTABLE_CORE_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h
 
 $(BUILD_DIR)/hle_power.o: src/rt/hle_power.c src/rt/hle_power.h
 
-$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/audio_resample.h src/rt/osk_overlay.h src/rt/osk_text_entry.h src/rt/flash0_font.h src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h src/rt/scripted_input.h
+$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/audio_resample.h src/rt/osk_overlay.h src/rt/osk_text_entry.h src/rt/flash0_font.h src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/mp3_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h src/rt/scripted_input.h
 	$(CC) $(CFLAGS) $(HLE_INCLUDES) $(DEPFLAGS) -c $< -o $@
 $(BUILD_DIR)/pgf.o: src/rt/pgf.c src/rt/pgf_api.h src/rt/pgf.h
 $(BUILD_DIR)/pgf_public.o: src/rt/pgf_public.c src/rt/pgf_api.h src/rt/recomp.h src/rt/ge_shared.h
@@ -1880,7 +1881,7 @@ PLAYER_EXE ?= $(BUILD_ROOT)/nakagawa_player$(EXE_EXT)
 PLAYER_UI_TEST_EXE ?= $(BUILD_ROOT)/nakagawa_player_ui_test$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
-PLAYER_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c $(NK_UI_PLAYER_C5_SRCS)
+PLAYER_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c $(NK_UI_PLAYER_C5_SRCS) $(NK_UI_PLAYER_HOST_SRCS)
 # The player's About page shows "v<version> (MM-DD-YYYY)" (the version itself is
 # NK_PLAYER_VERSION in src/player/ui/player_ui_nk.h). The date is
 # SOURCE_DATE_EPOCH when the build sets it, else the source commit's time, so
@@ -2254,12 +2255,13 @@ atrac3p-selftest:
 # validation, NULL/contract-violation rejection, the deterministic terminator
 # and MONO transform-path canaries through the production bridge entry point,
 # determinism across instances/reset/recreate, destroy(NULL). No game inputs,
-# no fixtures required.
+# no fixtures required. With NK_PCM_WAV_DIR=<dir> it also writes the decoded canary
+# PCM there as WAV files (tests/native/pcm_wav_dump.c), to listen to while debugging.
 atrac3p-bridge-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
-		-Isrc/rt/atrac3p/libavutil $(LDFLAGS) \
+		-Isrc/rt/atrac3p/libavutil -Itests/native $(LDFLAGS) \
 		-o $(BUILD_DIR)/atrac3p_bridge_selftest.exe \
-		src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c \
+		src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c tests/native/pcm_wav_dump.c \
 		$(ATRAC3P_SRCS) src/rt/vfpu_tables.c -lm
 	$(BUILD_DIR)/atrac3p_bridge_selftest.exe
 
@@ -2469,7 +2471,7 @@ hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nest
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
 		$(HLE_THREAD_SELFTEST_SOURCE) src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
-		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 
@@ -2508,7 +2510,7 @@ hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py 
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
-		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 	$(HLE_TITLE_SELFTEST_EXE) --title-config
@@ -2548,7 +2550,7 @@ $(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(
 		-I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
-		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
+		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
 		"$(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c" "$(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c" $(LIBS)
@@ -2979,6 +2981,10 @@ player-ui-tests: osk-overlay-paint-selftest ui-font-selftest nk-ui-player-screen
 	$(CC) -std=c99 -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_ui_clip.c -lSDL3 \
 		-o $(BUILD_ROOT)/test_ui_clip$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_ui_clip$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_player_ui_art.c \
+		$(NK_UI_PLAYER_HOST_SRCS) src/ui/nk_ui_image.c src/ui/nk_ui_assets.c -lSDL3 \
+		-o $(BUILD_ROOT)/test_player_ui_art$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_player_ui_art$(EXE_EXT)
 
 .PHONY: nk-ui-player-screens-capture
 ifeq ($(SDL3_TTF_AVAILABLE),yes)
@@ -3123,6 +3129,12 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c src/rt/archive_vfs.c \
 		tests/native/native_test_isolation.c tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_xb_parser$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_xb_parser$(EXE_EXT)
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" tests/native/test_safe_math.c \
+		-o $(BUILD_ROOT)/test_safe_math$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_safe_math$(EXE_EXT)
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Itests/native -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		tests/native/pcm_wav_dump.c tests/native/test_pcm_wav_dump.c -o $(BUILD_ROOT)/test_pcm_wav_dump$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_pcm_wav_dump$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
 		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)

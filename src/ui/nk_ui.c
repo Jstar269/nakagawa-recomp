@@ -27,13 +27,15 @@ typedef struct {
    layout so it keeps its place in draw order. */
 typedef enum {
     NK_UI_CUSTOM_SLOT_PROMPT = 1,
-    NK_UI_CUSTOM_SLOT_SHAPES = 2
+    NK_UI_CUSTOM_SLOT_SHAPES = 2,
+    NK_UI_CUSTOM_SLOT_IMAGE = 3
 } NkUiCustomSlotKind;
 
 typedef struct {
     NkUiCustomSlotKind kind;
     NkUiPromptSpec prompt;
     NkUiShapeArt art;
+    NkUiImageArt image;
 } NkUiCustomSlot;
 
 #define NK_UI_CUSTOM_SLOTS 96u
@@ -68,6 +70,7 @@ struct NkUi {
     size_t frame_text_used;
     NkUiId ring_id;
     float ring_radius;
+    const NkUiPromptImages *prompt_images;
 };
 
 void *nk_ui_clay_create(size_t arena_bytes, float width, float height,
@@ -606,14 +609,36 @@ static NkUiCustomSlot *nk_ui_custom_slot(NkUi *ui) {
     return &ui->custom[ui->custom_count++];
 }
 
+void nk_ui_set_prompt_images(NkUi *ui, const NkUiPromptImages *images) {
+    if (ui != NULL) {
+        ui->prompt_images = images;
+    }
+}
+
+/* The glyph image for the current style, or NULL to draw the geometry. */
+static const NkUiImage *nk_ui_prompt_image_for(const NkUi *ui, NkUiPromptAction action) {
+    const NkUiImage *image;
+    unsigned style = (unsigned)ui->prefs.prompt_style;
+    if (ui->prompt_images == NULL || style >= (unsigned)NK_UI_PROMPT_STYLE_COUNT ||
+        (unsigned)action >= (unsigned)NK_UI_PROMPT_ACT_COUNT) {
+        return NULL;
+    }
+    image = &ui->prompt_images->image[style][action];
+    return image->rgba_pm != NULL && image->width > 0u && image->height > 0u ? image : NULL;
+}
+
 bool nk_ui_prompt_glyph(NkUi *ui, NkUiId id, NkUiPromptAction action, float height) {
     NkUiCustomSlot *slot;
     NkUiLayout layout;
+    const NkUiImage *image;
     float width;
     if (ui == NULL || !isfinite(height) || height <= 0.0f) {
         return false;
     }
-    width = nk_ui_prompt_width(ui->prefs.prompt_style, action, height);
+    image = nk_ui_prompt_image_for(ui, action);
+    width = image != NULL
+        ? (float)(int)(height * (float)image->width / (float)image->height + 0.5f)
+        : nk_ui_prompt_width(ui->prefs.prompt_style, action, height);
     slot = nk_ui_custom_slot(ui);
     if (slot == NULL) {
         return false;
@@ -625,6 +650,7 @@ bool nk_ui_prompt_glyph(NkUi *ui, NkUiId id, NkUiPromptAction action, float heig
     slot->prompt.dim_rgba = ui->theme.placeholder;
     slot->prompt.face_rgba = ui->theme.surface_high;
     slot->prompt.font = NK_UI_FONT_MONO_MEDIUM;
+    slot->prompt.image = image;
     memset(&layout, 0, sizeof(layout));
     layout.width = (NkUiSizing){NK_UI_SIZE_FIXED, width, 0.0f, 0.0f};
     layout.height = (NkUiSizing){NK_UI_SIZE_FIXED, height, 0.0f, 0.0f};
@@ -658,6 +684,85 @@ bool nk_ui_shapes(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height,
         return false;
     }
     nk_ui_clay_close_container(ui->clay);
+    return true;
+}
+
+bool nk_ui_image_art(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height,
+                     const NkUiImageArt *art) {
+    NkUiCustomSlot *slot;
+    NkUiLayout layout;
+    if (ui == NULL || art == NULL || (art->cover == NULL && art->contain == NULL)) {
+        return false;
+    }
+    slot = nk_ui_custom_slot(ui);
+    if (slot == NULL) {
+        return false;
+    }
+    slot->kind = NK_UI_CUSTOM_SLOT_IMAGE;
+    slot->image = *art;
+    memset(&layout, 0, sizeof(layout));
+    layout.width = width;
+    layout.height = height;
+    if (!nk_ui_clay_open_element(ui->clay, id, &layout, NULL, slot)) {
+        ui->frame_ok = false;
+        return false;
+    }
+    nk_ui_clay_close_container(ui->clay);
+    return true;
+}
+
+static bool nk_ui_image_usable(const NkUiImage *image) {
+    return image != NULL && image->rgba_pm != NULL && image->width > 0u && image->height > 0u;
+}
+
+/* The image scaled to fill (cover) or fit inside (contain) a w x h box,
+   centred on (cx, cy); device pixels, rounded to whole pixels. */
+static NkUiPixelRect nk_ui_image_fit(const NkUiImage *image, float cx, float cy, float w,
+                                     float h, bool cover) {
+    NkUiPixelRect px;
+    float sx = w / (float)image->width;
+    float sy = h / (float)image->height;
+    float s = cover ? (sx > sy ? sx : sy) : (sx < sy ? sx : sy);
+    float dw = (float)image->width * s;
+    float dh = (float)image->height * s;
+    px.x0 = (int)floorf(cx - dw * 0.5f + 0.5f);
+    px.y0 = (int)floorf(cy - dh * 0.5f + 0.5f);
+    px.x1 = px.x0 + (int)floorf(dw + 0.5f);
+    px.y1 = px.y0 + (int)floorf(dh + 0.5f);
+    return px;
+}
+
+/* Cover: the picture fills the element, cropped by a scissor. Contain: the
+   icon fits inside contain_scale of the element, centred. */
+static bool nk_ui_paint_image(NkUiDrawBuffer *draw, const NkUiImageArt *art, NkUiRect rect,
+                              float density, uint32_t id) {
+    NkUiPixelRect box = nk_ui_round_rect(rect, density);
+    float cx = (float)(box.x0 + box.x1) * 0.5f;
+    float cy = (float)(box.y0 + box.y1) * 0.5f;
+    float bw = (float)(box.x1 - box.x0);
+    float bh = (float)(box.y1 - box.y0);
+    if (bw <= 0.0f || bh <= 0.0f) {
+        return true;
+    }
+    if (nk_ui_image_usable(art->cover)) {
+        if (!nk_ui_draw_add_scissor(draw, true, box, id) ||
+            !nk_ui_draw_add_image(draw, art->cover,
+                                  nk_ui_image_fit(art->cover, cx, cy, bw, bh, true),
+                                  0xFFFFFFFFu, id) ||
+            !nk_ui_draw_add_scissor(draw, false, box, id)) {
+            return false;
+        }
+    }
+    if (nk_ui_image_usable(art->contain)) {
+        float scale = art->contain_scale > 0.0f && art->contain_scale <= 1.0f
+            ? art->contain_scale : 1.0f;
+        if (!nk_ui_draw_add_image(draw, art->contain,
+                                  nk_ui_image_fit(art->contain, cx, cy, bw * scale,
+                                                  bh * scale, false),
+                                  0xFFFFFFFFu, id)) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -727,6 +832,9 @@ static bool nk_ui_paint_custom(void *user, void *data, NkUiRect rect, float dens
     }
     if (slot->kind == NK_UI_CUSTOM_SLOT_SHAPES) {
         return nk_ui_paint_shapes(&ui->draw, &slot->art, rect, density, element_id);
+    }
+    if (slot->kind == NK_UI_CUSTOM_SLOT_IMAGE) {
+        return nk_ui_paint_image(&ui->draw, &slot->image, rect, density, element_id);
     }
     return true;
 }

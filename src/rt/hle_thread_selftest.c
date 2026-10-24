@@ -31068,6 +31068,452 @@ static void test_aot_return_boundary_thread_isolation(void) {
 #undef AOT_THREAD_TEST_CHECKED_CALL
 #endif /* SR_HLE_AOT_BOUNDARY_TEST */
 
+/* ---- sceMp3 -------------------------------------------------------------------------------
+ * Production-dispatch regressions for the sceMp3 library. Every call enters the NID registry
+ * through sr_syscall, the way a generated import stub does. The stream is the source-authored
+ * tone fixture (fixtures/mp3_tone/generate.py: MPEG-1 Layer III frames written straight from
+ * the bitstream syntax, no encoder and no recorded audio), fed the way a game feeds it:
+ * sceMp3GetInfoToAddStreamData says where and how much, the test copies that much of the file
+ * into guest memory and calls sceMp3NotifyAddStreamData. HOST_TESTED, not PSP_HARDWARE evidence. */
+#include "../../fixtures/mp3_tone/mp3_tone.h"
+
+extern void sr_hle_test_mp3_reset(void);
+extern void sr_hle_test_set_compiled_sdk_version(uint32_t version);
+
+#define NID_MP3_INIT_RESOURCE 0x35750070u
+#define NID_MP3_TERM_RESOURCE 0x3c2fa058u
+#define NID_MP3_RESERVE 0x07ec321au
+#define NID_MP3_RELEASE 0xf5478233u
+#define NID_MP3_INIT 0x44e07129u
+#define NID_MP3_DECODE 0xd021c0fbu
+#define NID_MP3_CHECK_NEEDED 0xd0a56296u
+#define NID_MP3_GET_INFO_TO_ADD 0xa703fe0fu
+#define NID_MP3_NOTIFY_ADD 0x0db149f4u
+#define NID_MP3_RESET_POS 0x2a368661u
+#define NID_MP3_RESET_POS_BY_FRAME 0x0840e808u
+#define NID_MP3_GET_SUM_DECODED 0x354d27eau
+#define NID_MP3_GET_LOOP_NUM 0xd8f54a51u
+#define NID_MP3_SET_LOOP_NUM 0x3cef484fu
+#define NID_MP3_GET_MAX_OUTPUT 0x87c263d1u
+#define NID_MP3_GET_CHANNELS 0x7f696782u
+#define NID_MP3_GET_BITRATE 0x87677e40u
+#define NID_MP3_GET_SAMPLE_RATE 0x8f450998u
+#define NID_MP3_GET_FRAME_NUM 0x3548aec8u
+#define NID_MP3_GET_MPEG_VERSION 0xae6d2027u
+#define NID_MP3_LOW_LEVEL_INIT 0x1b839b83u
+#define NID_MP3_LOW_LEVEL_DECODE 0xe3ee2c81u
+
+#define MP3_ERR_INVALID_HANDLE 0x80671001u
+#define MP3_ERR_BAD_ADDR 0x80671002u
+#define MP3_ERR_BAD_SIZE 0x80671003u
+#define MP3_ERR_UNRESERVED 0x80671102u
+#define MP3_ERR_NOT_YET_INIT 0x80671103u
+#define MP3_ERR_NO_RESOURCE 0x80671201u
+#define MP3_ERR_BAD_SAMPLE_RATE 0x80671302u
+#define MP3_ERR_BAD_RESET_FRAME 0x80671501u
+#define MP3_ERR_INVALID_DATA 0x807f00fdu
+
+#define MP3T_ARG 0x08b00000u
+#define MP3T_AUBUF 0x08b10000u
+#define MP3T_AUBUF_SIZE 8192u
+#define MP3T_PCMBUF 0x08b20000u
+#define MP3T_PCMBUF_SIZE 9216u
+#define MP3T_OUT_DST 0x08b30000u
+#define MP3T_OUT_SIZE 0x08b30004u
+#define MP3T_OUT_POS 0x08b30008u
+#define MP3T_OUT_PCM 0x08b3000cu
+#define MP3T_HALF (MP3T_PCMBUF_SIZE / 2u)
+#define MP3T_STREAM_AREA (MP3T_AUBUF + 0x5c0u)
+#define MP3T_STREAM_HALF ((MP3T_AUBUF_SIZE - 0x5c0u) / 2u) /* 3360 */
+#define MP3T_FRAMES 100u
+#define MP3T_FILE_MAX (sizeof(k_mp3_tone_id3_prefix) + MP3T_FRAMES * MP3_TONE_FRAME_BYTES)
+
+static uint8_t s_mp3t_file[MP3T_FILE_MAX];
+static int16_t s_mp3t_pcm[2u * MP3_TONE_FRAME_SAMPLES * MP3T_FRAMES];
+
+static uint32_t mp3t_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = a0;
+    cpu.r[5] = a1;
+    cpu.r[6] = a2;
+    cpu.r[7] = a3;
+    return sr_syscall(&cpu, nid);
+}
+
+/* The test's "file": an optional ID3 tag, then `frames` copies of one fixture frame. */
+static uint32_t mp3t_build_file(int mono, int with_id3, uint32_t frames) {
+    uint32_t len = 0;
+    if (with_id3) {
+        memcpy(s_mp3t_file, k_mp3_tone_id3_prefix, sizeof(k_mp3_tone_id3_prefix));
+        len = sizeof(k_mp3_tone_id3_prefix);
+    }
+    for (uint32_t i = 0; i < frames; i++, len += MP3_TONE_FRAME_BYTES)
+        memcpy(s_mp3t_file + len, mono ? k_mp3_tone_mono_frame : k_mp3_tone_stereo_frame,
+               MP3_TONE_FRAME_BYTES);
+    return len;
+}
+
+static void mp3t_write_arg(uint64_t start, uint64_t end, uint32_t aubuf, uint32_t aubuf_size,
+                           uint32_t pcmbuf, uint32_t pcmbuf_size) {
+    MEM_W32(MP3T_ARG + 0u, (uint32_t)start);
+    MEM_W32(MP3T_ARG + 4u, (uint32_t)(start >> 32));
+    MEM_W32(MP3T_ARG + 8u, (uint32_t)end);
+    MEM_W32(MP3T_ARG + 12u, (uint32_t)(end >> 32));
+    MEM_W32(MP3T_ARG + 16u, aubuf);
+    MEM_W32(MP3T_ARG + 20u, aubuf_size);
+    MEM_W32(MP3T_ARG + 24u, pcmbuf);
+    MEM_W32(MP3T_ARG + 28u, pcmbuf_size);
+}
+
+static uint32_t mp3t_reserve(uint32_t file_len) {
+    mp3t_write_arg(0u, file_len, MP3T_AUBUF, MP3T_AUBUF_SIZE, MP3T_PCMBUF, MP3T_PCMBUF_SIZE);
+    return mp3t_call(NID_MP3_RESERVE, MP3T_ARG, 0, 0, 0);
+}
+
+/* One game-style refill: ask where and how much, copy that much of the file, notify. */
+static uint32_t mp3t_feed(uint32_t h, uint32_t file_len) {
+    MEM_W32(MP3T_OUT_DST, 0xdeadbeefu);
+    MEM_W32(MP3T_OUT_SIZE, 0xdeadbeefu);
+    MEM_W32(MP3T_OUT_POS, 0xdeadbeefu);
+    if (mp3t_call(NID_MP3_GET_INFO_TO_ADD, h, MP3T_OUT_DST, MP3T_OUT_SIZE, MP3T_OUT_POS) != 0u)
+        return 0u;
+    uint32_t dst = MEM_R32(MP3T_OUT_DST), want = MEM_R32(MP3T_OUT_SIZE), pos = MEM_R32(MP3T_OUT_POS);
+    if (!want || pos > file_len) return 0u;
+    uint32_t n = file_len - pos < want ? file_len - pos : want;
+    for (uint32_t i = 0; i < n; i++) MEM_W8(dst + i, s_mp3t_file[pos + i]);
+    mp3t_call(NID_MP3_NOTIFY_ADD, h, n, 0, 0);
+    return n;
+}
+
+typedef struct Mp3tRun {
+    uint32_t frames;        /* sceMp3Decode calls that returned a frame */
+    uint32_t bad_size;      /* calls that returned neither 0 nor a full frame */
+    uint32_t bad_half;      /* calls whose *pcm was not the expected half */
+    uint32_t bad_sum;       /* calls after which the decoded-sample sum was off */
+    uint32_t rewinds;       /* calls after which the sum read back 0 (a loop rewind) */
+    uint32_t end_ret;       /* the result that stopped the run */
+} Mp3tRun;
+
+/* Feed and decode until sceMp3Decode reports the end (0), keeping up to MP3T_FRAMES frames of
+ * PCM in s_mp3t_pcm. `expect_sum` tracks the decoded-sample sum across loop rewinds. */
+static Mp3tRun mp3t_play(uint32_t h, uint32_t file_len, uint32_t max_calls) {
+    Mp3tRun run;
+    memset(&run, 0, sizeof(run));
+    uint32_t sum = 0;
+    for (uint32_t call = 0; call < max_calls; call++) {
+        if (mp3t_call(NID_MP3_CHECK_NEEDED, h, 0, 0, 0) == 1u) (void)mp3t_feed(h, file_len);
+        uint32_t expected_half = MP3T_PCMBUF + (call & 1u) * MP3T_HALF;
+        MEM_W32(MP3T_OUT_PCM, 0u);
+        uint32_t ret = mp3t_call(NID_MP3_DECODE, h, MP3T_OUT_PCM, 0, 0);
+        if (ret == 0u || ret & 0x80000000u) { run.end_ret = ret; break; }
+        if (ret != MP3_TONE_FRAME_SAMPLES * 4u) run.bad_size++;
+        if (MEM_R32(MP3T_OUT_PCM) != expected_half) run.bad_half++;
+        if (run.frames < MP3T_FRAMES)
+            for (uint32_t i = 0; i < 2u * MP3_TONE_FRAME_SAMPLES; i++)
+                s_mp3t_pcm[run.frames * 2u * MP3_TONE_FRAME_SAMPLES + i] =
+                    (int16_t)MEM_R16(expected_half + i * 2u);
+        run.frames++;
+        sum += MP3_TONE_FRAME_SAMPLES;
+        uint32_t got = mp3t_call(NID_MP3_GET_SUM_DECODED, h, 0, 0, 0);
+        if (got == 0u) { run.rewinds++; sum = 0; }
+        else if (got != sum) run.bad_sum++;
+    }
+    return run;
+}
+
+/* Magnitude of one frequency in one channel of interleaved stereo (Goertzel). */
+static double mp3t_tone(const int16_t *pcm, uint32_t first, uint32_t count, int ch, double hz) {
+    double w = 2.0 * 3.14159265358979323846 * hz / MP3_TONE_SAMPLE_RATE, k = 2.0 * cos(w);
+    double s1 = 0.0, s2 = 0.0;
+    for (uint32_t i = first; i < first + count; i++) {
+        double s0 = pcm[i * 2u + (uint32_t)ch] + k * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    return sqrt(s1 * s1 + s2 * s2 - k * s1 * s2) / count;
+}
+
+static double mp3t_rms(const int16_t *pcm, uint32_t first, uint32_t count, int ch) {
+    double e = 0.0;
+    for (uint32_t i = first; i < first + count; i++) e += (double)pcm[i * 2u + (uint32_t)ch] * pcm[i * 2u + (uint32_t)ch];
+    return sqrt(e / count);
+}
+
+static void test_mp3_stream_lifecycle(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_mp3_reset();
+    sr_hle_test_set_compiled_sdk_version(0u);
+    uint32_t len = mp3t_build_file(0, 1, MP3T_FRAMES);
+
+    expect(mp3t_reserve(len) == MP3_ERR_NO_RESOURCE,
+           "sceMp3ReserveMp3Handle refuses before sceMp3InitResource");
+    expect(mp3t_call(NID_MP3_INIT_RESOURCE, 0, 0, 0, 0) == 0u, "sceMp3InitResource succeeds");
+    uint32_t h = mp3t_reserve(len);
+    expect(h == 0u, "sceMp3ReserveMp3Handle hands out the lowest free handle");
+
+    expect(mp3t_call(NID_MP3_DECODE, h, MP3T_OUT_PCM, 0, 0) == MP3_ERR_NOT_YET_INIT,
+           "sceMp3Decode before sceMp3Init is NOT_YET_INIT");
+    expect(mp3t_call(NID_MP3_GET_CHANNELS, h, 0, 0, 0) == MP3_ERR_NOT_YET_INIT,
+           "sceMp3GetMp3ChannelNum before sceMp3Init is NOT_YET_INIT");
+    expect(mp3t_call(NID_MP3_GET_MPEG_VERSION, h, 0, 0, 0) == MP3_ERR_UNRESERVED,
+           "sceMp3GetMPEGVersion before sceMp3Init keeps its UNRESERVED code");
+    expect(mp3t_call(NID_MP3_GET_LOOP_NUM, h, 0, 0, 0) == 0xffffffffu,
+           "a new handle loops forever (-1) until sceMp3SetLoopNum");
+
+    expect(mp3t_call(NID_MP3_CHECK_NEEDED, h, 0, 0, 0) == 1u,
+           "an empty stream buffer needs data");
+    expect(mp3t_call(NID_MP3_GET_INFO_TO_ADD, h, MP3T_OUT_DST, MP3T_OUT_SIZE, MP3T_OUT_POS) == 0u &&
+               MEM_R32(MP3T_OUT_DST) == MP3T_STREAM_AREA &&
+               MEM_R32(MP3T_OUT_SIZE) == 2u * MP3T_STREAM_HALF && MEM_R32(MP3T_OUT_POS) == 0u,
+           "the first refill is both halves past the 0x5c0-byte work area, from file offset 0");
+    expect(mp3t_feed(h, len) == 2u * MP3T_STREAM_HALF, "the first refill copies both halves");
+    expect(mp3t_call(NID_MP3_CHECK_NEEDED, h, 0, 0, 0) == 0u,
+           "a full stream buffer needs nothing more");
+
+    expect(mp3t_call(NID_MP3_INIT, h, 0, 0, 0) == 0u, "sceMp3Init finds the frame behind the ID3 tag");
+    expect(mp3t_call(NID_MP3_GET_CHANNELS, h, 0, 0, 0) == 2u, "sceMp3GetMp3ChannelNum reports stereo");
+    expect(mp3t_call(NID_MP3_GET_SAMPLE_RATE, h, 0, 0, 0) == MP3_TONE_SAMPLE_RATE,
+           "sceMp3GetSamplingRate reports the header rate");
+    expect(mp3t_call(NID_MP3_GET_BITRATE, h, 0, 0, 0) == MP3_TONE_BITRATE_KBPS,
+           "sceMp3GetBitRate reports the header rate in kbps");
+    expect(mp3t_call(NID_MP3_GET_MAX_OUTPUT, h, 0, 0, 0) == MP3_TONE_FRAME_SAMPLES,
+           "sceMp3GetMaxOutputSample is 1152 for MPEG-1 Layer III");
+    expect(mp3t_call(NID_MP3_GET_MPEG_VERSION, h, 0, 0, 0) == 3u,
+           "sceMp3GetMPEGVersion reports the MPEG-1 version bits (3)");
+    /* 10410 bytes at the nominal 104.49 bytes per frame: the PSP's estimate, not the 100 frames
+     * actually present (the fixture's frames are unpadded). */
+    expect(mp3t_call(NID_MP3_GET_FRAME_NUM, h, 0, 0, 0) == 99u,
+           "sceMp3GetFrameNum is the nominal-frame-size estimate");
+    expect(mp3t_call(NID_MP3_SET_LOOP_NUM, h, 0, 0, 0) == 0u &&
+               mp3t_call(NID_MP3_GET_LOOP_NUM, h, 0, 0, 0) == 0u,
+           "sceMp3SetLoopNum(0) plays the stream once");
+
+    Mp3tRun run = mp3t_play(h, len, 400u);
+    expect(run.frames == MP3T_FRAMES, "every fixture frame decodes once, across the ring wrap");
+    expect(run.end_ret == 0u, "sceMp3Decode reports the end of the stream with 0");
+    expect(run.bad_size == 0u, "each sceMp3Decode returns one 1152-sample stereo frame (4608 bytes)");
+    expect(run.bad_half == 0u, "sceMp3Decode alternates between the two PCM halves");
+    expect(run.bad_sum == 0u && run.rewinds == 0u,
+           "sceMp3GetSumDecodedSample counts 1152 samples per frame without rewinding");
+    expect(mp3t_call(NID_MP3_GET_SUM_DECODED, h, 0, 0, 0) == MP3T_FRAMES * MP3_TONE_FRAME_SAMPLES,
+           "the decoded-sample sum covers the whole file (115200 samples)");
+
+    /* Channel layout and content: interleaved L/R, the left tone at line 26 and the right at
+     * line 52 (fixture frequencies 995.3 Hz and 1990.6 Hz), measured past the first frame. */
+    const double left_hz = MP3_TONE_LEFT_LINE * (double)MP3_TONE_SAMPLE_RATE / 1152.0;
+    const double right_hz = MP3_TONE_RIGHT_LINE * (double)MP3_TONE_SAMPLE_RATE / 1152.0;
+    const uint32_t first = MP3_TONE_FRAME_SAMPLES, count = 64u * MP3_TONE_FRAME_SAMPLES;
+    double l_own = mp3t_tone(s_mp3t_pcm, first, count, 0, left_hz);
+    double l_other = mp3t_tone(s_mp3t_pcm, first, count, 0, right_hz);
+    double r_own = mp3t_tone(s_mp3t_pcm, first, count, 1, right_hz);
+    double r_other = mp3t_tone(s_mp3t_pcm, first, count, 1, left_hz);
+    expect(l_own > 50.0 * l_other, "the left channel carries the 995 Hz tone and not the 1991 Hz one");
+    expect(r_own > 50.0 * r_other, "the right channel carries the 1991 Hz tone and not the 995 Hz one");
+    double l_rms = mp3t_rms(s_mp3t_pcm, first, count, 0);
+    double r_rms = mp3t_rms(s_mp3t_pcm, first, count, 1);
+    expect(fabs(l_rms - 4096.0 / sqrt(2.0)) < 0.03 * 4096.0 / sqrt(2.0),
+           "the left tone has the fixture's amplitude (peak 4096)");
+    expect(fabs(r_rms - 2048.0 / sqrt(2.0)) < 0.03 * 2048.0 / sqrt(2.0),
+           "the right tone has the fixture's amplitude (peak 2048)");
+    /* Selected samples, pinned from the vendored decoder at its upstream revision (regression
+     * pins, +/-2 LSB for SIMD/scalar rounding): the start of frame 2. */
+    static const int16_t pinned[8] = {3546, -844, 3221, -348, 2831, 174, 2385, 681};
+    int pins_ok = 1;
+    for (uint32_t i = 0; i < 8u; i++) {
+        int d = s_mp3t_pcm[2u * MP3_TONE_FRAME_SAMPLES * 2u + i] - pinned[i];
+        if (d < -2 || d > 2) pins_ok = 0;
+    }
+    expect(pins_ok, "selected samples at the start of frame 2 match the pinned decode");
+
+    MEM_W32(MP3T_OUT_PCM, 0u);
+    expect(mp3t_call(NID_MP3_DECODE, h, MP3T_OUT_PCM, 0, 0) == 0u,
+           "sceMp3Decode keeps reporting the end after it");
+    uint32_t end_half = MEM_R32(MP3T_OUT_PCM), nonzero = 0;
+    for (uint32_t i = 0; i < MP3T_HALF; i += 2u) nonzero |= MEM_R16(end_half + i);
+    expect(end_half >= MP3T_PCMBUF && nonzero == 0u, "the half handed back at the end is silence");
+
+    /* Rewind to the start: the stream asks for the file again from offset 0. */
+    expect(mp3t_call(NID_MP3_RESET_POS, h, 0, 0, 0) == 0u, "sceMp3ResetPlayPosition succeeds");
+    expect(mp3t_call(NID_MP3_GET_SUM_DECODED, h, 0, 0, 0) == 0u,
+           "sceMp3ResetPlayPosition clears the decoded-sample sum");
+    expect(mp3t_call(NID_MP3_CHECK_NEEDED, h, 0, 0, 0) == 1u &&
+               mp3t_feed(h, len) == 2u * MP3T_STREAM_HALF && MEM_R32(MP3T_OUT_POS) == 0u,
+           "after the rewind the refill starts at file offset 0 again");
+    expect(mp3t_call(NID_MP3_DECODE, h, MP3T_OUT_PCM, 0, 0) == MP3_TONE_FRAME_SAMPLES * 4u &&
+               mp3t_call(NID_MP3_GET_SUM_DECODED, h, 0, 0, 0) == MP3_TONE_FRAME_SAMPLES,
+           "the rewound stream decodes its first frame");
+
+    /* Seek by frame: nominal offset 50 * 104.49 = 5224, one byte early (5223); the decoder
+     * resyncs on the next frame header. */
+    expect(mp3t_call(NID_MP3_RESET_POS_BY_FRAME, h, 99u, 0, 0) == MP3_ERR_BAD_RESET_FRAME,
+           "sceMp3ResetPlayPositionByFrame refuses a frame at or past the frame count");
+    expect(mp3t_call(NID_MP3_RESET_POS_BY_FRAME, h, 50u, 0, 0) == 0u,
+           "sceMp3ResetPlayPositionByFrame accepts frame 50");
+    expect(mp3t_call(NID_MP3_GET_SUM_DECODED, h, 0, 0, 0) == 50u * MP3_TONE_FRAME_SAMPLES,
+           "the seek sets the decoded-sample sum to the frame's first sample");
+    expect(mp3t_feed(h, len) == len - 5223u && MEM_R32(MP3T_OUT_POS) == 5223u &&
+               MEM_R32(MP3T_OUT_DST) == MP3T_STREAM_AREA,
+           "the refill after the seek starts one byte before the frame's nominal offset, at the "
+           "start of the stream area, and runs to the end of the file");
+    expect(mp3t_call(NID_MP3_DECODE, h, MP3T_OUT_PCM, 0, 0) == MP3_TONE_FRAME_SAMPLES * 4u &&
+               mp3t_call(NID_MP3_GET_SUM_DECODED, h, 0, 0, 0) == 51u * MP3_TONE_FRAME_SAMPLES,
+           "the stream decodes from the next whole frame after the seek");
+
+    expect(mp3t_call(NID_MP3_RELEASE, h, 0, 0, 0) == 0u, "sceMp3ReleaseMp3Handle releases the handle");
+    expect(mp3t_call(NID_MP3_CHECK_NEEDED, h, 0, 0, 0) == MP3_ERR_UNRESERVED,
+           "a released handle is UNRESERVED");
+    expect(mp3t_call(NID_MP3_TERM_RESOURCE, 0, 0, 0, 0) == 0u, "sceMp3TermResource succeeds");
+}
+
+/* sceMp3SetLoopNum(1): the stream plays twice; the hardware rewinds in the call that decodes the
+ * last frame, so the sum reads back 0 right after it. */
+static void test_mp3_loop_and_mono(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_mp3_reset();
+    sr_hle_test_set_compiled_sdk_version(0u);
+    expect(mp3t_call(NID_MP3_INIT_RESOURCE, 0, 0, 0, 0) == 0u, "loop: sceMp3InitResource succeeds");
+
+    uint32_t len = mp3t_build_file(0, 0, 40u);
+    uint32_t h = mp3t_reserve(len);
+    (void)mp3t_feed(h, len);
+    expect(mp3t_call(NID_MP3_INIT, h, 0, 0, 0) == 0u, "loop: sceMp3Init succeeds without an ID3 tag");
+    expect(mp3t_call(NID_MP3_SET_LOOP_NUM, h, 1u, 0, 0) == 0u, "loop: sceMp3SetLoopNum(1)");
+    Mp3tRun run = mp3t_play(h, len, 400u);
+    expect(run.frames == 80u && run.end_ret == 0u, "loop: the 40-frame stream plays exactly twice");
+    expect(run.rewinds == 1u && run.bad_sum == 0u,
+           "loop: the sum restarts once, in the call that decodes the last frame of the first pass");
+    expect(mp3t_call(NID_MP3_GET_LOOP_NUM, h, 0, 0, 0) == 0u, "loop: the loop count is used up");
+    expect(mp3t_call(NID_MP3_SET_LOOP_NUM, h, (uint32_t)-5, 0, 0) == 0u &&
+               mp3t_call(NID_MP3_GET_LOOP_NUM, h, 0, 0, 0) == 0xffffffffu,
+           "loop: any negative loop count is stored as -1 (forever)");
+    expect(mp3t_call(NID_MP3_RELEASE, h, 0, 0, 0) == 0u, "loop: release");
+
+    /* Mono: the channel count says 1 and the PCM is still two interleaved channels, the frame
+     * on both. */
+    len = mp3t_build_file(1, 0, 20u);
+    h = mp3t_reserve(len);
+    (void)mp3t_feed(h, len);
+    expect(mp3t_call(NID_MP3_INIT, h, 0, 0, 0) == 0u, "mono: sceMp3Init succeeds");
+    expect(mp3t_call(NID_MP3_GET_CHANNELS, h, 0, 0, 0) == 1u, "mono: sceMp3GetMp3ChannelNum reports 1");
+    expect(mp3t_call(NID_MP3_SET_LOOP_NUM, h, 0, 0, 0) == 0u, "mono: play once");
+    run = mp3t_play(h, len, 100u);
+    expect(run.frames == 20u && run.bad_size == 0u, "mono: every frame decodes to 4608 stereo bytes");
+    int same = 1;
+    for (uint32_t i = 0; i < 20u * MP3_TONE_FRAME_SAMPLES; i++)
+        if (s_mp3t_pcm[2u * i] != s_mp3t_pcm[2u * i + 1u]) same = 0;
+    double own = mp3t_tone(s_mp3t_pcm, MP3_TONE_FRAME_SAMPLES, 16u * MP3_TONE_FRAME_SAMPLES, 0,
+                           MP3_TONE_LEFT_LINE * (double)MP3_TONE_SAMPLE_RATE / 1152.0);
+    expect(same && own > 1000.0, "mono: the tone is written identically to both channels");
+    expect(mp3t_call(NID_MP3_TERM_RESOURCE, 0, 0, 0, 0) == 0u, "mono: sceMp3TermResource frees the handle");
+    expect(mp3t_call(NID_MP3_CHECK_NEEDED, h, 0, 0, 0) == MP3_ERR_UNRESERVED,
+           "mono: sceMp3TermResource released the open handle");
+}
+
+static void test_mp3_error_paths(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_mp3_reset();
+    sr_hle_test_set_compiled_sdk_version(0u);
+    expect(mp3t_call(NID_MP3_INIT_RESOURCE, 0, 0, 0, 0) == 0u, "errors: sceMp3InitResource");
+    uint32_t len = mp3t_build_file(0, 0, 40u);
+
+    /* Handle precedence: out of range is INVALID_HANDLE whatever the call; an unused handle gets
+     * the call's own code. */
+    expect(mp3t_call(NID_MP3_DECODE, 2u, MP3T_OUT_PCM, 0, 0) == MP3_ERR_INVALID_HANDLE &&
+               mp3t_call(NID_MP3_CHECK_NEEDED, 2u, 0, 0, 0) == MP3_ERR_INVALID_HANDLE &&
+               mp3t_call(NID_MP3_RELEASE, 2u, 0, 0, 0) == MP3_ERR_INVALID_HANDLE,
+           "errors: an out-of-range handle is INVALID_HANDLE");
+    expect(mp3t_call(NID_MP3_DECODE, 1u, MP3T_OUT_PCM, 0, 0) == MP3_ERR_NOT_YET_INIT &&
+               mp3t_call(NID_MP3_CHECK_NEEDED, 1u, 0, 0, 0) == MP3_ERR_UNRESERVED &&
+               mp3t_call(NID_MP3_INIT, 1u, 0, 0, 0) == MP3_ERR_UNRESERVED &&
+               mp3t_call(NID_MP3_GET_FRAME_NUM, 1u, 0, 0, 0) == MP3_ERR_NOT_YET_INIT,
+           "errors: an unused handle gets each call's own code");
+    expect(mp3t_call(NID_MP3_RELEASE, 1u, 0, 0, 0) == 0u,
+           "errors: releasing an unused handle number is not an error");
+
+    /* Reserve argument checks, each leaving no handle behind. */
+    mp3t_write_arg(len, len, MP3T_AUBUF, MP3T_AUBUF_SIZE, MP3T_PCMBUF, MP3T_PCMBUF_SIZE);
+    expect(mp3t_call(NID_MP3_RESERVE, MP3T_ARG, 0, 0, 0) == MP3_ERR_BAD_SIZE,
+           "errors: a stream that ends where it starts is BAD_SIZE");
+    mp3t_write_arg(0, len, 0u, MP3T_AUBUF_SIZE, MP3T_PCMBUF, MP3T_PCMBUF_SIZE);
+    expect(mp3t_call(NID_MP3_RESERVE, MP3T_ARG, 0, 0, 0) == MP3_ERR_BAD_ADDR,
+           "errors: a NULL stream buffer is BAD_ADDR");
+    mp3t_write_arg(0, len, MP3T_AUBUF, 4096u, MP3T_PCMBUF, MP3T_PCMBUF_SIZE);
+    expect(mp3t_call(NID_MP3_RESERVE, MP3T_ARG, 0, 0, 0) == MP3_ERR_BAD_SIZE,
+           "errors: a stream buffer under 8192 bytes is BAD_SIZE");
+    mp3t_write_arg(0, len, MP3T_AUBUF, MP3T_AUBUF_SIZE, MP3T_PCMBUF, 4608u);
+    expect(mp3t_call(NID_MP3_RESERVE, MP3T_ARG, 0, 0, 0) == MP3_ERR_BAD_SIZE,
+           "errors: a PCM buffer under 9216 bytes is BAD_SIZE");
+    mp3t_write_arg(0, len, 0x0bfff000u, MP3T_AUBUF_SIZE, MP3T_PCMBUF, MP3T_PCMBUF_SIZE);
+    expect(mp3t_call(NID_MP3_RESERVE, MP3T_ARG, 0, 0, 0) == MP3_ERR_BAD_ADDR,
+           "errors: a stream buffer running past guest memory is BAD_ADDR");
+    expect(mp3t_call(NID_MP3_RESERVE, 0x0bfffff0u, 0, 0, 0) == 0x80000103u,
+           "errors: an argument block running past guest memory is refused");
+
+    /* Two handles at most; the lowest free one is reused. */
+    uint32_t h0 = mp3t_reserve(len), h1 = mp3t_reserve(len);
+    expect(h0 == 0u && h1 == 1u, "errors: two handles can be reserved");
+    expect(mp3t_reserve(len) == MP3_ERR_NO_RESOURCE, "errors: a third handle is NO_RESOURCE_AVAIL");
+    expect(mp3t_call(NID_MP3_RELEASE, h0, 0, 0, 0) == 0u && mp3t_reserve(len) == 0u,
+           "errors: a released low handle is handed out again");
+    expect(mp3t_call(NID_MP3_RELEASE, h1, 0, 0, 0) == 0u, "errors: release handle 1");
+
+    /* A handle reserved without an argument block has no stream. */
+    uint32_t bare = mp3t_call(NID_MP3_RESERVE, 0u, 0, 0, 0);
+    expect(bare == 1u, "errors: a NULL argument still reserves a handle");
+    expect(mp3t_call(NID_MP3_CHECK_NEEDED, bare, 0, 0, 0) == MP3_ERR_UNRESERVED &&
+               mp3t_call(NID_MP3_INIT, bare, 0, 0, 0) == MP3_ERR_UNRESERVED,
+           "errors: stream calls on an argument-less handle are UNRESERVED");
+    expect(mp3t_call(NID_MP3_RELEASE, bare, 0, 0, 0) == 0u, "errors: release the bare handle");
+
+    /* sceMp3Init with nothing that looks like a frame header. */
+    uint32_t h = 0u;
+    expect(mp3t_call(NID_MP3_INIT, h, 0, 0, 0) == MP3_ERR_INVALID_DATA,
+           "errors: sceMp3Init with no frame sync is AVCODEC INVALID_DATA");
+    expect(mp3t_call(NID_MP3_GET_CHANNELS, h, 0, 0, 0) == MP3_ERR_NOT_YET_INIT,
+           "errors: a failed sceMp3Init leaves the handle uninitialised");
+
+    /* Sample-rate rule: 48 kHz is refused for a game compiled before SDK 3.09.05. */
+    (void)mp3t_feed(h, len);
+    MEM_W8(MP3T_STREAM_AREA + 2u, (uint8_t)(MEM_R8(MP3T_STREAM_AREA + 2u) | 0x04u)); /* rate index 1 */
+    expect(mp3t_call(NID_MP3_INIT, h, 0, 0, 0) == MP3_ERR_BAD_SAMPLE_RATE,
+           "errors: 48 kHz without a compiled SDK version is BAD_SAMPLE_RATE");
+    sr_hle_test_set_compiled_sdk_version(0x03090500u);
+    expect(mp3t_call(NID_MP3_INIT, h, 0, 0, 0) == 0u &&
+               mp3t_call(NID_MP3_GET_SAMPLE_RATE, h, 0, 0, 0) == 48000u,
+           "errors: 48 kHz is accepted from a game compiled with SDK 3.09.05");
+    expect(mp3t_call(NID_MP3_RELEASE, h, 0, 0, 0) == 0u, "errors: release after the rate check");
+
+    /* SDK 6+: sceMp3Init needs 156 bytes added first. */
+    sr_hle_test_set_compiled_sdk_version(0x06000000u);
+    h = mp3t_reserve(len);
+    for (uint32_t i = 0; i < MP3_TONE_FRAME_BYTES; i++) MEM_W8(MP3T_STREAM_AREA + i, s_mp3t_file[i]);
+    mp3t_call(NID_MP3_NOTIFY_ADD, h, MP3_TONE_FRAME_BYTES, 0, 0);
+    expect(mp3t_call(NID_MP3_INIT, h, 0, 0, 0) == 0x800001feu,
+           "errors: an SDK 6 game must add 156 bytes before sceMp3Init");
+    sr_hle_test_set_compiled_sdk_version(0u);
+
+    /* An unmapped PCM out-pointer is refused before anything is decoded. */
+    (void)mp3t_feed(h, len);
+    expect(mp3t_call(NID_MP3_INIT, h, 0, 0, 0) == 0u, "errors: sceMp3Init after the full refill");
+    expect(mp3t_call(NID_MP3_DECODE, h, 0x0bfffffeu, 0, 0) == MP3_ERR_BAD_ADDR &&
+               mp3t_call(NID_MP3_GET_SUM_DECODED, h, 0, 0, 0) == 0u,
+           "errors: sceMp3Decode refuses an unmapped out-pointer without decoding");
+    expect(mp3t_call(NID_MP3_DECODE, h, 0u, 0, 0) == MP3_TONE_FRAME_SAMPLES * 4u,
+           "errors: sceMp3Decode accepts a NULL out-pointer");
+
+    /* The low-level pair is not modelled: a named refusal, not success. */
+    expect(mp3t_call(NID_MP3_LOW_LEVEL_INIT, 0, 0, 0, 0) == 0x80010086u &&
+               mp3t_call(NID_MP3_LOW_LEVEL_DECODE, 0, 0, 0, 0) == 0x80010086u,
+           "errors: sceMp3LowLevelInit/Decode are refused by name");
+    expect(mp3t_call(NID_MP3_TERM_RESOURCE, 0, 0, 0, 0) == 0u, "errors: sceMp3TermResource");
+    expect(mp3t_call(NID_MP3_TERM_RESOURCE, 0, 0, 0, 0) == 0u,
+           "errors: a second sceMp3TermResource is harmless");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && (strcmp(argv[1], "--psp-oracle") == 0 ||
                      strcmp(argv[1], "--exit-game-poisoned") == 0))
@@ -31363,6 +31809,9 @@ static int hle_selftest_main(int argc, char **argv) {
     test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();
     test_td24c_atrac_info_batch();
+    test_mp3_stream_lifecycle();
+    test_mp3_loop_and_mono();
+    test_mp3_error_paths();
     test_at3_synthetic_decode_bookkeeping();
     test_td24d_hle_batch();
     test_impose_language_mode_pair();

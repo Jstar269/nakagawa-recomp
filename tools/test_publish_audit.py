@@ -761,6 +761,16 @@ class TestPublishAudit(unittest.TestCase):
         self.assertTrue(publish_audit._spdx_required("src/rt/recomp.c"))
         self.assertTrue(publish_audit._spdx_required("tools/codegen.py"))
 
+    def test_spdx_required_skips_only_the_byte_exact_minimp3_header(self):
+        # minimp3 is vendored byte-identical (src/rt/minimp3/PROVENANCE.md) and keeps its own
+        # CC0 notice instead of an SPDX line. The exemption is that one file: the project's
+        # wrapper and anything else added beside the header still need SPDX.
+        self.assertFalse(publish_audit._spdx_required("src/rt/minimp3/minimp3.h"))
+        self.assertTrue(publish_audit._spdx_required("src/rt/minimp3/minimp3_ex.h"))
+        self.assertTrue(publish_audit._spdx_required("src/rt/minimp3/wrapper.c"))
+        self.assertTrue(publish_audit._spdx_required("src/rt/mp3_bridge.c"))
+        self.assertTrue(publish_audit._spdx_required("src/rt/mp3_bridge.h"))
+
     def _spdx_provenance_findings(self, source_path, source_bytes, classification, license_id=None):
         with tempfile.TemporaryDirectory() as tmp_dir_raw:
             repo = Path(tmp_dir_raw).resolve()
@@ -852,6 +862,11 @@ class TestPublishAudit(unittest.TestCase):
             "third_party/clay/clay.h", upstream_header, "upstream_derived", "Zlib"
         )
         self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
+
+        stb_findings = self._spdx_provenance_findings(
+            "third_party/stb/stb_image.h", upstream_header, "upstream_derived", "Unlicense"
+        )
+        self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in stb_findings), stb_findings)
 
         sibling_findings = self._spdx_provenance_findings(
             "third_party/clay/other.h", upstream_header, "upstream_derived", "Zlib"
@@ -2282,6 +2297,22 @@ class TestPrivateRootDetection(unittest.TestCase):
         """Finding 11 (O-11): all current debt surfaces meet non-increasing budgets."""
         findings = publish_audit._debt_budget_findings(publish_audit.ROOT)
         self.assertEqual(findings, [], f"Debt budget findings on current repo: {findings}")
+
+    def test_debt_markers_skip_only_the_byte_exact_minimp3_header(self):
+        # Upstream's own markers in the vendored header are not project debt; a marker in the
+        # project's wrapper beside it still counts.
+        marker = "TO" + "DO"
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw)
+            (repo / "src/rt/minimp3").mkdir(parents=True)
+            line = f"/* {marker} */" + chr(10)
+            (repo / "src/rt/minimp3/minimp3.h").write_text(line * 50, encoding="utf-8")
+            (repo / "src/rt/mp3_bridge.c").write_text(line * 50, encoding="utf-8")
+            only_header = publish_audit._debt_budget_findings(repo, paths=["src/rt/minimp3/minimp3.h"])
+            self.assertFalse([f for f in only_header if "debt marker" in f.detail])
+            with_wrapper = publish_audit._debt_budget_findings(
+                repo, paths=["src/rt/minimp3/minimp3.h", "src/rt/mp3_bridge.c"])
+            self.assertTrue([f for f in with_wrapper if "debt marker" in f.detail])
 
     def test_debt_budgets_fail_on_ruff_increase(self):
         """Finding 11 (O-11): Ruff rule-family growth fails the debt gate."""

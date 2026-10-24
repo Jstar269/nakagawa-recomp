@@ -157,6 +157,8 @@ set(NK_UI_CORE_SOURCES
     src/ui/nk_ui_focus.c
     src/ui/nk_ui_input.c
     src/ui/nk_ui_prompts.c
+    src/ui/nk_ui_image.c
+    src/ui/nk_ui_assets.c
 )
 set(NK_UI_EDGE_SOURCES
     src/ui/nk_ui_sdl_input.c
@@ -181,6 +183,11 @@ set(NK_UI_PLAYER_C5_SOURCES
     src/player/ui/ui_router.c
     src/player/ui/scr_library.c
     src/player/ui/scr_title.c
+)
+# The next UI's SDL host pieces: disc art on a worker thread, launcher sounds.
+set(NK_UI_PLAYER_HOST_SOURCES
+    src/player/ui/player_ui_art.c
+    src/player/ui/player_ui_sound.c
 )
 set(NK_UI_OVERLAY_SOURCES
     src/rt/overlay/nk_overlay.c
@@ -369,6 +376,7 @@ if(BUILD_PLAYER)
         ${NK_UI_EDGE_SOURCES}
         src/ui/backend/nk_ui_sdlr.c
         ${NK_UI_PLAYER_C5_SOURCES}
+        ${NK_UI_PLAYER_HOST_SOURCES}
     )
 
     add_executable(nakagawa_player ${PLAYER_SOURCES})

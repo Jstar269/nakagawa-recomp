@@ -24,10 +24,14 @@ EXPECTED_PROVENANCE_FAMILIES = frozenset({
     "pspsdk",
     "ffmpeg-atrac3p",
     "clay-layout",
+    "portable-snippets-safe-math",
+    "dr-libs-dr-wav",
     "monocypher-ed25519",
     "sdl3",
     "vulkan",
     "vfpu",
+    "stb-image",
+    "kenney-ui-assets",
 })
 
 EXPECTED_TOOLCHAIN_COMPONENTS = frozenset({

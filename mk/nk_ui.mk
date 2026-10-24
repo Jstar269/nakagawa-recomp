@@ -12,7 +12,9 @@ NK_UI_CORE_SRCS := \
 	src/ui/nk_ui_dump.c \
 	src/ui/nk_ui_focus.c \
 	src/ui/nk_ui_input.c \
-	src/ui/nk_ui_prompts.c
+	src/ui/nk_ui_prompts.c \
+	src/ui/nk_ui_image.c \
+	src/ui/nk_ui_assets.c
 
 NK_UI_EDGE_SRCS := \
 	src/ui/nk_ui_sdl_input.c \
@@ -36,6 +38,11 @@ NK_UI_PLAYER_C5_SRCS := \
 	src/player/ui/ui_router.c \
 	src/player/ui/scr_library.c \
 	src/player/ui/scr_title.c
+
+# The next UI's SDL host pieces: disc art on a worker thread, launcher sounds.
+NK_UI_PLAYER_HOST_SRCS := \
+	src/player/ui/player_ui_art.c \
+	src/player/ui/player_ui_sound.c
 
 NK_UI_OVERLAY_SRCS := \
 	src/rt/overlay/nk_overlay.c \

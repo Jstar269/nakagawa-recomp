@@ -337,6 +337,7 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                             tile.badge = title->art_kind != NK_UI_ART_NONE && title->badge == NULL
                                 ? "Showcase demo" : title->badge;
                             tile.art = (NkUiArtKind)title->art_kind;
+                            tile.icon = title->icon;
                             tile.width = tile_width;
                             if (nk_ui_tile(ui, PLAYER_UI_ID_LIBRARY_ITEM(index), &tile)) {
                                 result = action(PLAYER_UI_ACTION_OPEN_TITLE, index);

@@ -47,7 +47,10 @@ void nk_ui_sdlr_set_scale(NkUiSdlr *renderer, float density);
    renderer are restored before returning.
    NK_UI_CUSTOM_WAVES commands are drawn through the CPU reference
    (nk_ui_waves_render_command) into a texture at a third of their size and
-   scaled up; the frame is re-rendered only when the command changes. Other
+   scaled up; the frame is re-rendered only when the command changes.
+   NK_UI_CUSTOM_IMAGE commands draw the image's texture, uploaded on first use
+   and cached by NkUiImage.serial (least recently drawn goes first); an image
+   whose texture cannot be made is left out and counted, not an error. Other
    custom commands are skipped and counted in NkUiSdlrStats.custom_skipped. */
 bool nk_ui_sdlr_render(NkUiSdlr *renderer, const NkUiDrawList *list);
 
@@ -61,6 +64,9 @@ typedef struct {
     uint32_t custom_skipped;  /* custom commands skipped, ever */
     uint32_t waves_drawn;     /* waves commands drawn, ever */
     uint32_t waves_rendered;  /* waves frames rendered on the CPU, ever */
+    uint32_t images_drawn;    /* image commands drawn, ever */
+    uint32_t image_uploads;   /* image textures created, ever */
+    uint32_t images_failed;   /* image commands left out for want of a texture, ever */
 } NkUiSdlrStats;
 
 void nk_ui_sdlr_get_stats(const NkUiSdlr *renderer, NkUiSdlrStats *out);

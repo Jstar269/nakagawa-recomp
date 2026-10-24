@@ -12,12 +12,19 @@ Nakagawa has since substantially extended and modified that codebase. This repos
 ## Other upstreams
 
 - **FFmpeg n4.4 — the FFmpeg developers** — LGPL-2.1-or-later. The ATRAC3 and ATRAC3+ decoder subsets in [`src/rt/atrac3p/`](src/rt/atrac3p/); two imported files also carry a MIPS Technologies, Inc. BSD-3-Clause notice.
+- **minimp3 — lieff (Lion) and contributors** — CC0-1.0 public-domain dedication. The MPEG audio decoder header in [`src/rt/minimp3/`](src/rt/minimp3/), pinned to upstream commit `ea99364f61c14656440e8d77e9c233ccf3124633` and kept byte-identical; it backs the `sceMp3` library.
 - **Clay — Nic Barker** — zlib. The layout library in [`third_party/clay/`](third_party/clay/).
+- **Portable Snippets — Evan Nemerson** — CC0-1.0 (public domain). The overflow-checked arithmetic header in [`third_party/portable-snippets/`](third_party/portable-snippets/).
+- **dr_libs (dr_wav) — David Reid** — public domain (Unlicense), elected from its Unlicense or MIT-0 choice. The WAV writer selftests use, in [`third_party/dr_libs/`](third_party/dr_libs/).
 - **Monocypher 4.0.3 — Loup Vaillant, Michael Savage, Fabio Scotoni and contributors** — dual BSD-2-Clause or
   CC0-1.0; the project uses it under CC0-1.0. The Ed25519 signature check in
   [`third_party/monocypher/`](third_party/monocypher/).
 - **PSPSDK / PSPDEV contributors** — BSD-family notices for public ABI definitions and source-owned fixtures ([`THIRD_PARTY_LICENSES/PSPSDK.txt`](THIRD_PARTY_LICENSES/PSPSDK.txt)).
 - **SDL, SDL_ttf and their dependencies** — staged beside the player with their licence texts (listed in [`NOTICE.md`](NOTICE.md)).
+- **stb_image 2.30 — Sean Barrett** — public domain (Unlicense), the alternative to MIT that upstream offers. The PNG
+  decoder in [`third_party/stb/`](third_party/stb/), for the player's prompt glyphs and the disc art read from your own disc.
+- **Kenney "Input Prompts" and "Interface Sounds" — Kenney Vleugels ([kenney.nl](https://kenney.nl))** — CC0-1.0. The
+  next UI's button prompt glyphs and its optional launcher sounds, in [`third_party/kenney/`](third_party/kenney/).
 - **Font fixtures** — Gudea (Agustina Mingote), Gowun Dodum (The Gowun Dodum Project Authors) and M+ 1p (The M+ Project Authors), all SIL Open Font License 1.1, used only by tests ([`fixtures/fonts/`](fixtures/fonts/)).
 
 The authoritative, component-by-component provenance records are [`NOTICE.md`](NOTICE.md) and the
