@@ -861,6 +861,21 @@ class TestPublishAudit(unittest.TestCase):
             sibling_findings,
         )
 
+    def test_provenance_audit_preserves_monocypher_byte_identity(self):
+        header = b"// Monocypher version __git__\n//\n" + b"//\n" * 7 + b"// SPDX-License-Identifier: BSD-2-Clause OR CC0-1.0\n"
+        findings = self._spdx_provenance_findings(
+            "third_party/monocypher/monocypher.c", header, "upstream_derived", "BSD-2-Clause OR CC0-1.0"
+        )
+        self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
+
+        sibling_findings = self._spdx_provenance_findings(
+            "third_party/monocypher/other.c", header, "upstream_derived", "BSD-2-Clause OR CC0-1.0"
+        )
+        self.assertTrue(
+            any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in sibling_findings),
+            sibling_findings,
+        )
+
     def _lineage_provenance_findings(
         self,
         source_path: str,

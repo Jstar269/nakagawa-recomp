@@ -77,6 +77,7 @@ EBOOT.BIN.dec*
 # here. Clay's pinned source and provenance must travel with the source export.
 !/third_party/licenses/
 !/third_party/clay/
+!/third_party/monocypher/
 
 # Runtime state, logs, captures, and reports
 /logs/
