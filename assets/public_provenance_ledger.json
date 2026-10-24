@@ -7098,7 +7098,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "27b70393f468103673d20f5f608091124e30319ea157efcc206854edec7295bf"
+      "sha256": "e3a8e7a19e820bec7bf74bf940febb0775f2b80b0aed27083caedebf42666015"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -8754,7 +8754,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4e55892275b96d53f5c419f9b016051832f67298c2fa3b5435896c058dad2723"
+      "sha256": "688dcb950564f98ba128733e56400f3f97ad31641fdd13a2267da98d10bd345a"
     },
     {
       "path": "tools/stage_runtime_dlls.py",
@@ -10857,7 +10857,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "965056b7d5889f6f67544feda2db2ae84236949d69898b88755659111fe246e6"
+      "sha256": "f254e63ad2981ed712a90e9a7661d6f7a65739dc2adf288790b99d394d047271"
     },
     {
       "path": "tools/test_stale_code_detect.py",
