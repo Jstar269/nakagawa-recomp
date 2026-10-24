@@ -1525,7 +1525,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5a162250f0ac0e43aa962d441db8e00d1e33c082d07163cb98cb315623e38fd7"
+      "sha256": "85e8014941682970457650adc5b1ed37f06d8ed6dacc5cb6721a41bfc8b6b5ed"
     },
     {
       "path": "docs/PORTING.md",
@@ -2195,7 +2195,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8a92836cc3638e23d76490ba8c3ee299755a49dad9197565f99c26bcc816bd37"
+      "sha256": "dc9d90a53a3d7e6b65531b4cd415e303939ded93dd98867b966ef42cb984bac0"
     },
     {
       "path": "fixtures/nk_ui/title.golden",
@@ -2204,7 +2204,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "507b9c082501f5f0a72041f3c1c9884570e6add8129872583ec1bc8016ab9926"
+      "sha256": "3d3cd34116cf789aa12e5ee3c201e2e7c567a9d52e5cada07835281db72328d6"
     },
     {
       "path": "fixtures/platform_ladder/README.md",
@@ -3512,7 +3512,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cacff9b1a06ca97e55e4d4f9c9b0cff5011b99cf521b5dfee69fdfc3694a19aa"
+      "sha256": "e72f3f32558545ec13bc629be05c204b1c587e4eb8ee8fe00bf5d930326d34bf"
     },
     {
       "path": "src/player/ui/scr_title.c",
@@ -3524,7 +3524,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b50adad8f38879c7c2e60754391cfd38832a3e1600f93f5ff95c8501e8457224"
+      "sha256": "982df8bc6990c439da98eaf8eaa5e4f7526b8cd0ad818d00fb7db1817554341d"
     },
     {
       "path": "src/player/ui/ui_router.c",

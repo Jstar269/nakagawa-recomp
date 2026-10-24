@@ -260,9 +260,8 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
             {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
             {NK_UI_PROMPT_ACT_BACK, "Back"}
         };
-        nk_ui_prompt_bar(ui, TITLE_ID_PROMPTS,
-                         "Your disc stays on this PC. Nothing is copied out or uploaded.",
-                         prompts, sizeof(prompts) / sizeof(prompts[0]));
+        nk_ui_prompt_bar(ui, TITLE_ID_PROMPTS, "", prompts,
+                         sizeof(prompts) / sizeof(prompts[0]));
     }
     nk_ui_end_container(ui);
     return result;
@@ -734,8 +733,9 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
                 nk_ui_end_container(ui);
             }
             nk_ui_text_role(ui, ABOUT_ID_LEAD,
-                            "A PSP static recompiler: your own game, recompiled to run natively "
-                            "on your PC. Nothing is downloaded, and no game data is included.",
+                            "A PSP static recompiler: your own game, recompiled to run natively. "
+                            "Your games stay on this PC. Nakagawa never uploads "
+                            "anything, and downloads only the build tools you approve.",
                             NK_UI_TYPE_BODY_L, theme->muted);
             row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_4);
             if (nk_ui_begin_container(ui, ABOUT_ID_CARDS, &row, NULL)) {
@@ -767,7 +767,7 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
             }
             nk_ui_text_role(ui, ABOUT_ID_NOTICE,
                             "Not affiliated with or endorsed by Sony Interactive Entertainment. "
-                            "PSP is a trademark of its owner.",
+                            "PSP is a trademark of its owner. No game data is included.",
                             NK_UI_TYPE_CAPTION, theme->muted);
             nk_ui_text_role(ui, ABOUT_ID_LINK, "github.com/Jstar269/nakagawa-recomp",
                             NK_UI_TYPE_DATA, theme->paper);
@@ -786,9 +786,8 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
             {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
             {NK_UI_PROMPT_ACT_BACK, "Back"}
         };
-        nk_ui_prompt_bar(ui, ABOUT_ID_PROMPTS,
-                         "Nakagawa Recomp is free software under the GNU GPL.",
-                         prompts, sizeof(prompts) / sizeof(prompts[0]));
+        nk_ui_prompt_bar(ui, ABOUT_ID_PROMPTS, "", prompts,
+                         sizeof(prompts) / sizeof(prompts[0]));
     }
     nk_ui_end_container(ui);
     return result;
