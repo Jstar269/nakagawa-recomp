@@ -1605,6 +1605,28 @@ bool player_window_fit_to_display(PlayerWindowRect requested,
     return true;
 }
 
+bool player_ui_canvas_fit(int pixel_width, int pixel_height,
+                          PlayerUiCanvas *out) {
+    if (!out || pixel_width <= 0 || pixel_height <= 0) return false;
+    double fit_x = (double)pixel_width / PLAYER_UI_DESIGN_WIDTH;
+    double fit_y = (double)pixel_height / PLAYER_UI_DESIGN_HEIGHT;
+    double scale = fit_x < fit_y ? fit_x : fit_y;
+    if (scale < PLAYER_UI_MIN_SCALE) scale = PLAYER_UI_MIN_SCALE;
+    if (scale > PLAYER_UI_MAX_SCALE) scale = PLAYER_UI_MAX_SCALE;
+    /* Round down so the canvas never extends past the output; the slack
+       absorbs division error, so 800 px at 800/720 is 720 units, not 719.
+       What is left at the right and bottom edges is under one unit wide and
+       shows the cleared background. */
+    int width = (int)((double)pixel_width / scale + 1e-6);
+    int height = (int)((double)pixel_height / scale + 1e-6);
+    if (width < 1) width = 1;
+    if (height < 1) height = 1;
+    out->width = width;
+    out->height = height;
+    out->scale = (float)scale;
+    return true;
+}
+
 void player_app_toggle_vsync(PlayerApp *app) {
     if (!app) return;
     app->settings.vsync = !app->settings.vsync;
