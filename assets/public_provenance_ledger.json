@@ -1432,7 +1432,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cffe296c47be4fece4ab3bfbe306bbe19d41858b9e65bd114e537bd96405e1c2"
+      "sha256": "e425644a17e55ad59e26e07c2c8f94c30151d87a2bbc81cde8d5533b52df8ae4"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
