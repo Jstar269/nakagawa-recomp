@@ -9,7 +9,7 @@ overview and implementation disagree.
 ```mermaid
 flowchart LR
     INTAKE["ISO and EBOOT intake<br/>tools/nk_cli.py<br/>tools/nk_core/iso_inspect.py"]
-    DECRYPT["Decryption boundary<br/>tools/nk_core/decrypt_boundary.py<br/>src/core/nk_psp_container.c<br/>src/core/nk_psp_prx.c<br/>optional local user key file"]
+    REFUSE["Encrypted input refused by name<br/>ENCRYPTED_EXECUTABLE / ENCRYPTED_MODULE<br/>Nakagawa does not decrypt games"]
     LOAD["ISO / PRX loading and import mapping<br/>src/core/nk_iso.c<br/>src/player/iso_reader.c<br/>tools/prxload.py<br/>tools/imports.py"]
     ANALYZE["Function-boundary analysis<br/>tools/analyze.py"]
     CODEGEN["AOT code generation to C<br/>tools/codegen.py"]
@@ -26,9 +26,9 @@ flowchart LR
         AUDIO["Audio output<br/>src/rt/hle.c<br/>src/rt/audio_unavailable.c"]
     end
 
-    INTAKE -->|"encrypted input; matching local key when needed"| DECRYPT
-    INTAKE -->|"already decrypted EBOOT / PRX"| LOAD
-    DECRYPT --> LOAD --> ANALYZE --> CODEGEN --> BUILD --> PLAYER --> AOT
+    INTAKE -->|"encrypted input with no decrypted copy"| REFUSE
+    INTAKE -->|"plain or user-supplied decrypted EBOOT / PRX"| LOAD
+    LOAD --> ANALYZE --> CODEGEN --> BUILD --> PLAYER --> AOT
     AOT -->|"analyzer-owned AOT gap"| FLOOR
     AOT --> SCHED
     AOT --> HLE
@@ -591,6 +591,22 @@ preempt, and composite terminate/delete completes before replacement execution. 
 families remain on their existing APIs pending focused migration and semantic tests. This pilot
 does not establish speculative callback timeout policy or Message Pipe argument-five semantics.
 
+### Package-local program replacement (`sceKernelLoadExec`)
+
+`sceKernelLoadExec` accepts only a `ms0:/` guest path that exactly matches a required,
+runtime-placed guest program in the running package's validated module manifest. The package's
+module directory supplies the corresponding project-built image; the loader does not resolve an
+arbitrary host path. The parameter block's argument bytes are copied before the current guest
+thread exits. The driver then resets guest RAM, executable-span ownership, scheduler threads and
+waits, module/export records, callback and kernel-object tables, partition allocations, file
+descriptors, utility-dialog state, and guest audio/SAS/media-player state. Package configuration,
+registry and savedata files, and host presentation services persist across the replacement. The
+new module starts at its `module_start` with its own `$gp` and the copied `arglen`/`argp` on the
+new root stack.
+
+This is a synthetic program-replacement contract. Unsupported target classes and arguments fail
+closed with a named refusal; no network route participates in loading or validation.
+
 ### Clocks
 
 `sched.c` owns one authoritative monotonic microsecond timeline (`s_vtime_us`). Every guest-visible
@@ -665,6 +681,15 @@ Clock ownership:
 
   Controller sample timestamps and audio pacing use the same vblank counter,
   matching the PSP's vblank-unit pad timestamps.
+- **Player pause** — a host-only stall at the scheduler boundary after the stop hook and before
+  the next guest thread is selected. No guest fiber runs, so guest clocks, waits, alarms,
+  VBLANK delivery, display counters, controller sampling, and guest-driven utility state stay
+  fixed. On resume, the scheduler shifts `s_clock_epoch_ns`, `s_vbl_next_ns`,
+  `s_last_vblank_ns`, and `s_vbl_latch_ns` by the measured pause interval; this keeps guest
+  time continuous and preserves the VBLANK phase. The RTC epoch is not re-anchored, so guest
+  wall time lags host wall time by the accumulated pauses for the rest of the session. A pause
+  is not PSP suspend and raises no power callback. Losing focus or minimizing the window does
+  not pause the guest in v0.0.1.
 - **libc time/gettimeofday** — seconds/usec since the standard Unix epoch, converted from the RTC
   tick. The PSP timezone is a console setting (`s_psp_timezone_minutes`), not the host process
   timezone. The retained, settable system-profile owner for timezone/daylight does not exist yet:
@@ -678,12 +703,19 @@ Clock ownership:
   last known time instead of being invented before the first timestamp arrives.
 
 Host behavior: in paced mode (default) `s_vtime_us` tracks SDL's monotonic clock at scheduler
-boundaries — a host stall or sleep advances guest time by the stall, and slow frames are caught up by
-skipping missed vblank slots while preserving the rational phase carry. The update is forward-only
-(`t > s_vtime_us`), so host wall-clock corrections/rollback cannot move guest time backward or jump
-it. In turbo mode (`SR_NOVBPACE=1`) time advances deterministically at scheduler boundaries and is
-never host-dependent. SDL monotonic time is used for pacing/profiling only; the one host wall-clock
-read is the RTC epoch init.
+boundaries — a host stall or sleep advances guest time by the stall, except for the player pause
+above. Slow frames are caught up by skipping missed vblank slots while preserving the rational
+phase carry. The update is forward-only (`t > s_vtime_us`), so host wall-clock corrections/rollback
+cannot move guest time backward or jump it. In turbo mode (`SR_NOVBPACE=1`) time advances
+deterministically at scheduler boundaries and is never host-dependent. SDL monotonic time is used
+for pacing/profiling only; the one host wall-clock read is the RTC epoch init.
+
+**Runtime host-thread audit.** The runtime creates one native host thread: the Windows OSK
+text-entry worker in `src/rt/osk_text_entry.c`. It publishes an answer for the guest to poll and
+does not write guest memory. SDL's audio thread consumes stream data and also does not touch guest
+state. All other scheduler and HLE work runs on the runtime thread. The source guard in
+`tools/test_sched_invariants.py` fails when another native thread creator appears outside the
+OSK file; a new worker must document how its guest-state access is quiesced before it is added.
 
 ## Environment Variables
 
@@ -694,6 +726,7 @@ the maintained references for exact behavior.
 | Variable | Values | Purpose |
 | --- | --- | --- |
 | `SR_NOVBPACE` | unset, empty, `0` / `1` | Vblank pacing mode: unset, empty, or `0` = paced (default); `1` = turbo. Other values fail closed |
+| `SR_PAUSE_SCRIPT` | `<vcount>:<host_ms>[,...]` | Test-only scheduler pause source for showcase checks. Append `:user` to exercise an interactive refusal; malformed values fail closed |
 | `SR_GPU_GE` | `0` / `1` | Software vs Vulkan GE path |
 | `SR_GPU_LOG` | present/unset | GPU diagnostics where implemented |
 | `SR_VIDEO` | e.g. `gdi` | Select host fallback video path |

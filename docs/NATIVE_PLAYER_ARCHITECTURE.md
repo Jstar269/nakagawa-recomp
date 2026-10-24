@@ -99,9 +99,9 @@ The owner decided on 2026-10-21 that the native player's UI is written in C on S
 
 Not done yet:
 
-- **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** The native layout selftest is the only current build target that compiles it; no player UI call sites exist yet.
-- **No UI implementation has started.** Implementation begins only after the owner reviews the interface design.
-- The launcher, overlay and settings UI described above is a target. The current native slice does not use Clay.
+- **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** `src/ui/` (nk_ui) wraps it with the theme, text, focus, input and SDL_Renderer layers.
+- **The nk_ui launcher is the default.** It draws the Library, Title detail, About, the setup wizard, package build progress, the build-tool download and the error card with the design system in section 8. Settings, the game-found view and the controller screens are still drawn by `src/player/ui_renderer.c`, letterboxed inside it. `--ui=legacy` (or `NK_UI=legacy`) keeps the existing renderer for one release; the player also falls back to it when the UI fonts cannot load.
+- Settings, first run, error dialogs and the in-game overlay on nk_ui are targets, specified in section 8.
 
 ---
 
@@ -109,9 +109,9 @@ Not done yet:
 
 The diagram below is the target separation. The implemented public slice currently reaches
 title lookup, bounded ISO inspection and ISO/XB staging, library package build and
-validation, launch-session validation, and child-process lifecycle. Supported executable
-and PRX container decryption is available through the local-key boundary (#295); retail-disc
-hash validation and overlay parity remain unbuilt.
+validation, launch-session validation, and child-process lifecycle. Nakagawa does not
+decrypt games (built-in decryption was removed, #295); retail-disc hash
+validation and overlay parity remain unbuilt.
 
 ```text
 ┌────────────────────────────────────────────────────────┐
@@ -153,8 +153,8 @@ capability layers rather than being reimplemented in the launcher.
 The flow below is the complete productization target, not a description of the current
 executable. Today the player opens a native SDL file picker, inspects a selected ISO, runs
 bounded ISO/XB staging for supported inputs, builds a runtime package from the library with
-live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). The player and CLI decrypt supported
-executable and PRX containers with a user-supplied local key file ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); retail-disc hash validation
+live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). The player and CLI use decrypted
+files from your own copy and do not decrypt games ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); retail-disc hash validation
 and one-click play from an arbitrary ISO without the developer toolchain remain unbuilt
 ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
@@ -185,12 +185,12 @@ and one-click play from an arbitrary ISO without the developer toolchain remain 
      under those roots (for example `xbdata`) must be present, or the disc is
      refused with `[STAGE_DATA_FOLDER_MISSING]` before anything is promoted.
    - Native project-authored XB parsing validates FST spans, names, bounds, and nested LZS/Huffman payloads before writing members under the runtime-compatible `<archive>.xb.d/` directories.
-   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`. This staging step does not decrypt files; the player's separate compatibility preflight can decrypt supported executable and selected PRX containers with the user's local key file ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`. This staging step does not decrypt files, and neither does any other part of the player ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
    - Atomic directory promotion occurs only after the worker completes; failed/cancelled staging is discarded.
    - The promoted root is registered with a persistent asset census and becomes
      the launch session's preferred `SR_DATAROOT`/`SR_MEMSTICK` source.
-   - Supported `~PSP`/`~SCE` executables can use the built-in local-key boundary
-     ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). Without a supported plain or decrypted
+   - An encrypted `~PSP`/`~SCE` executable without a user-supplied `EBOOT.elf` stops as
+     `ENCRYPTED_EXECUTABLE` ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). Without a supported plain or decrypted
      executable, a missing recompiled child is reported instead of fabricated.
 6. **One-Click Play**: The hero card exposes *"PLAY NOW"* when a validating
    package is present or, for a non-experimental catalog title, when the
@@ -263,7 +263,7 @@ The native player provides a dedicated Controller Settings screen (`VIEW_CONTROL
   2. *Extremes state*: interactive live sampling where the user presses each trigger fully and rotates analog sticks in circles to capture maximum physical excursions.
   3. *Review & Accept*: visual summary of captured resting and extreme values with Accept or Cancel actions.
   Values are stored in the unified `input_profile.json` (schema 2, schema 1 files still load) and applied during analog and trigger transform evaluations. Keyboard Escape or gamepad East button safely cancels at any point.
-- **In the Works**: In-game pause overlay controller configuration remains in the works (pause menu requires guest-clock semantics; out of scope for this milestone).
+- **In the Works**: In-game pause overlay controller configuration remains in the works. Its guest-clock contract is tracked by [issue #1171](https://github.com/Jstar269/nakagawa-recomp/issues/1171) and the [Clocks section](ARCHITECTURE.md#clocks); the scheduler/audio half lands before the presenter and input-claim half. Focus loss and window minimization do not auto-pause in v0.0.1.
 
 ---
 
@@ -271,14 +271,17 @@ The native player provides a dedicated Controller Settings screen (`VIEW_CONTROL
 
 Selecting the right open-source fonts for nakagawa-recomp depends on whether you are styling the in-game arcade HUD, the native launcher/config menus, debug overlays, or Japanese text.
 
-### In-Game UI & Arcade HUD (Clap Hanz / Sports Aesthetic)
+### In-Game UI & Arcade HUD (Rounded Sports Style)
 
-- [M PLUS Rounded 1c](https://fonts.google.com/specimen/M+PLUS+Rounded+1c) (SIL OFL): The closest stylistic match to the Hot Shots Tennis / Minna no Tennis aesthetic. Features rounded terminals, 7 weights, and full Japanese (Kanji/Kana) and Latin character sets.
+- [M PLUS Rounded 1c](https://fonts.google.com/specimen/M+PLUS+Rounded+1c) (SIL OFL): A rounded, friendly sports-style face for the project's own UI. Features rounded terminals, 7 weights, and full Japanese (Kanji/Kana) and Latin character sets.
 - [Rubik](https://fonts.google.com/specimen/Rubik) (SIL OFL): A stout, slightly rounded sans-serif with subtle geometric corners. Great for match results, power gauges, and character selection cards.
 - [Nunito](https://fonts.google.com/specimen/Nunito) (SIL OFL): A clean, rounded display sans that provides high legibility on lower rendering resolutions and handheld screens.
 - [Teko](https://fonts.google.com/specimen/Teko) or [Bebas Neue](https://fonts.google.com/specimen/Bebas+Neue) (SIL OFL): Condensed, high-impact athletic display fonts suited for scoreboards, serve speed readouts, and game-point banners.
 
 ### Launcher, Overlay & Settings UI (Clay on SDL3, planned)
+
+The player ships Chakra Petch, Geist, Geist Mono and Noto Sans JP (`assets/fonts/ui/`, section 8); the faces below
+were the initial survey.
 
 - [Inter](https://fonts.google.com/specimen/Inter) (SIL OFL): Optimized for screen interfaces and high pixel density. Remains sharp at small sizes (10px–14px) in configuration dialogs, graphics toggles, and controller binding menus.
 - [Roboto Flex](https://fonts.google.com/specimen/Roboto+Flex) (SIL OFL): Flexible variable font that allows granular control over weight, width, and optical size across windowed or full-screen modes.
@@ -292,3 +295,31 @@ Selecting the right open-source fonts for nakagawa-recomp depends on whether you
 
 - [Kosugi Maru](https://fonts.google.com/specimen/Kosugi+Maru) (Apache 2.0): A rounded Japanese gothic typeface designed for interface readability, matching original PSP system fonts.
 - [Zen Maru Gothic](https://fonts.google.com/specimen/Zen+Maru+Gothic) (SIL OFL): A smooth rounded Japanese font that scales well for translated dialogue boxes and Japanese audio/text toggles.
+
+## 8. Player UI design system
+
+The visual spec the player UI lanes (C5-C10) build against, with its tokens, components and the screen specs for
+Settings, first run and error dialogs, is [`PLAYER_UI_DESIGN.md`](PLAYER_UI_DESIGN.md).
+
+## 9. System check (planned)
+
+Maintainer decision of 2026-10-23: a **System check** page verifies that this PC can run every part of Nakagawa. It
+is a button in Settings, and the setup wizard's last step offers it ("Check this PC, about 2 minutes", skippable). Each
+row shows a pass or a named failure with the fix, in plain words:
+
+| Check | How |
+| --- | --- |
+| Graphics | Vulkan starts and the GPU and driver are named; the software fallback is reported when Vulkan does not start |
+| Display and fonts | The UI fonts load and text draws at the display's scaling |
+| Audio | The output device opens and a short tone plays, which the user confirms |
+| Input | A controller is detected, and a "press each button" test fills in a picture |
+| Storage | The data folders are writable and there is room for a typical package |
+| Build tools | Python, the compiler and make are found with their versions, or the consented download is offered |
+| Full pipeline | The project's own showcase demo is analysed, recompiled, built and launched for a few frames, proving the whole route works on this PC without any game |
+| Online | Only with online mode on: the host answers and the update notice's signature verifies |
+| Nakagawa Link | Later, only when the user has it: the PSP is found over USB |
+
+It never claims that a particular game works: game compatibility stays on each title's card. It reuses the
+prerequisite preflight, the showcase fixtures (project-made, no game data), the developer log from developer mode
+([`ONLINE_FEATURES.md`](ONLINE_FEATURES.md#developer-mode)), and, once online mode exists, the report flow with its
+preview ("Send this result").

@@ -19,11 +19,14 @@ on:
   # request the full validation needed to prove the new CI itself.
   push:
     branches: [main]
-  # A manual run always executes the complete matrix, including main_smoke:
-  # tools/ci_paths.py forces full validation for workflow_dispatch regardless of
+  # Keep a nightly full-tier run alongside the PR tier. The case selection is
+  # controlled by NK_TEST_TIER in python_tools; the rest of CI remains unchanged.
+  schedule:
+    - cron: "17 3 * * *"
+  # Manual and scheduled runs execute the complete matrix, including main_smoke:
+  # tools/ci_paths.py forces full validation for both event types regardless of
   # changed paths, and ci_required treats every emitted gate as required. There
-  # is deliberately no input to narrow it -- a knob that cannot actually reduce
-  # the run would be misleading.
+  # is deliberately no input to narrow a manual run.
   workflow_dispatch:
   # Merge-queue groups. GitHub builds a group commit (the trunk plus the queued
   # pull requests ahead of this one, plus this one) and asks for checks on that
@@ -48,7 +51,7 @@ permissions:
 jobs:
   classify:
     name: Classify change
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.paths.outputs.docs_only }}
@@ -86,7 +89,7 @@ jobs:
 
   hygiene:
     name: Hygiene and security
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: classify
     if: ${{ always() && needs.classify.result == 'success' }}
     timeout-minutes: 15
@@ -100,9 +103,9 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.15.1"
           cache: pip
           cache-dependency-path: |
             .pre-commit-config.yaml
@@ -111,8 +114,21 @@ jobs:
       - name: Install pre-commit
         shell: bash
         run: |
-          # Exact CPython 3.14 / Ubuntu 24.04 x86_64 bootstrap closure. The
-          # platform-specific PyYAML wheel hash fails closed if this runner changes.
+          # Exact CPython 3.15.1 / Ubuntu 26.04 x86_64 bootstrap closure. PyYAML
+          # As of 2026-10-23, PyYAML 6.0.3 has no cp315 wheel, so build its
+          # hashed sdist with pinned tools.
+          cat > "$RUNNER_TEMP/pre-commit-build-requirements.txt" <<'LOCK'
+          Cython==3.3.0 \
+              --hash=sha256:9b24b5c8cd536946b62086fcafee6d5509d3f549f72d553d2336af87ffbe0da1
+          setuptools==84.2.1 \
+              --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2
+          packaging==26.3 \
+              --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+          wheel==0.48.0 \
+              --hash=sha256:3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab
+          LOCK
+          python -m pip install --disable-pip-version-check --require-hashes \
+            -r "$RUNNER_TEMP/pre-commit-build-requirements.txt"
           cat > "$RUNNER_TEMP/pre-commit-requirements.txt" <<'LOCK'
           cfgv==3.5.0 \
               --hash=sha256:a8dc6b26ad22ff227d2634a65cb388215ce6cc96bbcc5cfde7641ae87e8dacc0
@@ -131,14 +147,13 @@ jobs:
           pre-commit==4.6.2 \
               --hash=sha256:e2dde9a75d3bce11bd3831c26d134df00a2803c1d818be6a0383c3dcda25dc4e
           PyYAML==6.0.3 \
-              --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5
+              --hash=sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f
           python-discovery==1.6.4 \
               --hash=sha256:530179cc51a1816d512b15635b3dc931295ae12efb183783ad31190a5d425d2b
           virtualenv==21.14.11 \
               --hash=sha256:b319f8590a84e5de5f8f2c803ecd2237e9bc0ffa7c1e875e3169c107cecb7454
           LOCK
-          python -m pip install --disable-pip-version-check --require-hashes \
-            -r "$RUNNER_TEMP/pre-commit-requirements.txt"
+          python -m pip install --disable-pip-version-check --no-build-isolation --no-binary=PyYAML --require-hashes -r "$RUNNER_TEMP/pre-commit-requirements.txt"
 
       - name: Run shared all-files checks
         run: pre-commit run --all-files --show-diff-on-failure
@@ -169,7 +184,7 @@ jobs:
 
   markdown:
     name: Markdown validation
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: classify
     if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.run_markdown == 'true' }}
     timeout-minutes: 10
@@ -180,9 +195,9 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24.21.0"
+          node-version: "26.12.1"
 
       - name: Lint repository Markdown
         run: npx --yes markdownlint-cli2@0.23.3
@@ -194,7 +209,7 @@ jobs:
   # integrity must never be path-dependent (tools/test_ci_paths.py).
   public_export:
     name: Public export candidate audit
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: classify
     if: ${{ always() && needs.classify.result == 'success' }}
     timeout-minutes: 15
@@ -206,9 +221,9 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.15.1"
 
       # #293/#294: represent the release-export candidate path in hosted CI.
       # One invocation runs the publication gates, generates the public-safe
@@ -244,7 +259,7 @@ jobs:
 
   profile_zero_fixture:
     name: Profile-zero fixture build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The profile-zero guest (fixtures/profile_zero/main.c) is built here from source with
     # the PSPDEV distribution pinned by assets/upstream/pspdev.lock.json and checked
     # byte-for-byte against the committed fixtures/profile_zero/prebuilt/SHA256SUMS, so the
@@ -312,7 +327,7 @@ jobs:
           (cd fixtures/profile_zero/prebuilt && sha256sum --check --strict SHA256SUMS)
 
       - name: Upload the verified fixture
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: profile-zero-fixture
           path: |
@@ -324,6 +339,8 @@ jobs:
   python_tools:
     name: Python tooling gates
     runs-on: ubuntu-24.04
+    env:
+      NK_TEST_TIER: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'full' || 'pr' }}
     # id-token: write lets the coverage upload authenticate to Codecov with the
     # job's OIDC identity (use_oidc: true) instead of a stored repository token.
     # It is not a publication permission: contents stays read.
@@ -368,9 +385,9 @@ jobs:
           path: fixtures/profile_zero/prebuilt
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.15.1"
           cache: pip
           cache-dependency-path: |
             pyproject.toml
@@ -413,8 +430,17 @@ jobs:
             exit 1
           fi
           echo "shard $SHARD: ${#mods[@]} test files"
+          test_log="$RUNNER_TEMP/python-tools-shard-$SHARD.log"
+          set +e
           PYTHONPATH=tools python -m coverage run --parallel-mode --source=tools \
-            -m unittest -v "${mods[@]}"
+            -m unittest -v "${mods[@]}" 2>&1 | tee "$test_log"
+          test_status=$?
+          set -e
+          skip_summary="$(PYTHONPATH=tools python -c 'from pathlib import Path; import sys; from ci_test_shards import skip_prefix_summary; print(skip_prefix_summary(Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")))' "$test_log")"
+          printf '%s\n' "$skip_summary" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$test_status" -ne 0 ]; then
+            exit "$test_status"
+          fi
           python -m coverage combine
           python -m coverage xml -o coverage-python.xml
 
@@ -433,6 +459,8 @@ jobs:
 
   native_tools:
     name: Native and translation gates
+    # Ubuntu 26.04 no longer publishes the gcc-mipsel-linux-gnu package that
+    # this translation gate installs; keep the cross-compiler job on 24.04.
     runs-on: ubuntu-24.04
     # id-token: write exists only for the Codecov OIDC upload below; contents
     # stays read, as everywhere else in this workflow.
@@ -454,15 +482,58 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.15.1"
+
+      # The runner's Ubuntu mirror is sometimes very slow rather than stalled (2026-10-23: 43.6 kB/s,
+      # 39 minutes for 103 MB; then one package per ~7 minutes), so timeouts alone do not help. The
+      # downloaded .deb files are cached between runs (packages only, never repository objects), and
+      # a failed or slow attempt moves to the primary Ubuntu archive before retrying.
+      - name: Restore the native apt package cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-native-ubuntu-24.04-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            apt-native-ubuntu-24.04-
 
       - name: Install native test dependencies
+        timeout-minutes: 30
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
-            git libavcodec-dev libavutil-dev libc6-dev-i386 libvulkan-dev ninja-build pkg-config
+          archives="$RUNNER_TEMP/apt-archives"
+          mkdir -p "$archives/partial"
+          printf '%s\n' 'Acquire::Retries "5";' 'Acquire::http::Timeout "30";' \
+            'Acquire::https::Timeout "30";' "Dir::Cache::Archives \"$archives\";" \
+            'APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/80-ci-network >/dev/null
+          for attempt in 1 2 3; do
+            if [ "$attempt" -gt 1 ]; then
+              echo "apt install attempt $((attempt - 1)) failed; switching to the primary Ubuntu archive" >&2
+              # The hosted image's sources read mirror+file:/etc/apt/apt-mirrors.txt; put the primary
+              # archive first in that list (and in any plain URI), keeping Azure as a fallback.
+              if [ -f /etc/apt/apt-mirrors.txt ]; then
+                printf '%s\n' 'http://archive.ubuntu.com/ubuntu/' 'http://azure.archive.ubuntu.com/ubuntu/' \
+                  | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+              fi
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+                /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+            fi
+            # Both halves are capped per attempt so a slow mirror cannot spend the whole step budget
+            # before the fallback runs: 3 minutes for the index update, 8 for the install.
+            if sudo timeout 180 apt-get update && sudo timeout 480 apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
+                git libavcodec-dev libavutil-dev libc6-dev-i386 libvulkan-dev \
+                libxcursor-dev libxext-dev libxfixes-dev libxi-dev libxinerama-dev \
+                libxkbcommon-dev libx11-dev libxrandr-dev libxss-dev libxtst-dev \
+                mesa-vulkan-drivers ninja-build pkg-config vulkan-tools \
+                vulkan-validationlayers xauth xvfb; then
+              # The cache action runs as the runner user; make the root-owned .deb files readable.
+              sudo rm -rf "$archives/partial" "$archives/lock"
+              sudo chmod -R a+rX "$archives"
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
 
       # The pinned SDL3 install is cached under an exact key: the pinned version and
       # commit, the gcc and cmake that build it, and this workflow file (which holds
@@ -472,8 +543,8 @@ jobs:
       - name: Key the pinned SDL3 install
         id: sdl3-key
         run: |
-          SDL3_VERSION=3.4.16
-          SDL3_COMMIT=fa2c02bb6e21974a89ea9824bc53c9932abe5f9c
+          SDL3_VERSION=3.4.18
+          SDL3_COMMIT=829a65d769d935c4852f8159e964312c0957260a
           {
             echo "SDL3_VERSION=$SDL3_VERSION"
             echo "SDL3_COMMIT=$SDL3_COMMIT"
@@ -503,7 +574,8 @@ jobs:
           cmake -S "$RUNNER_TEMP/SDL" -B "$RUNNER_TEMP/SDL/build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
             -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
-            -DSDL_INSTALL_TESTS=OFF -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_VULKAN=ON
+            -DSDL_INSTALL_TESTS=OFF -DSDL_UNIX_CONSOLE_BUILD=ON \
+            -DSDL_VULKAN=ON -DSDL_X11=ON
           cmake --build "$RUNNER_TEMP/SDL/build" --parallel 2
           rm -rf "$RUNNER_TEMP/sdl3-stage"
           DESTDIR="$RUNNER_TEMP/sdl3-stage" cmake --install "$RUNNER_TEMP/SDL/build"
@@ -518,6 +590,95 @@ jobs:
           sudo ldconfig
           # A mistyped but valid commit must fail here, not leave the docs claiming the pin.
           test "$(pkg-config --modversion sdl3)" = "$SDL3_VERSION"
+
+      # SDL3_ttf has its own staged install cache. The exact SDL3_ttf and SDL3
+      # commits, toolchain versions, and workflow hash key the cache; only the
+      # installed files are cached, and the version and shaping backend are
+      # checked after installation on both cache paths.
+      - name: Key the pinned SDL3_ttf install
+        id: sdl3-ttf-key
+        run: |
+          SDL3_TTF_VERSION=3.2.2
+          SDL3_TTF_COMMIT=a1ce3670aec736ecbf0936c43f2f0cc53aa61e5b
+          {
+            echo "SDL3_TTF_VERSION=$SDL3_TTF_VERSION"
+            echo "SDL3_TTF_COMMIT=$SDL3_TTF_COMMIT"
+          } >> "$GITHUB_ENV"
+          workflow_hash="$(sha256sum .github/workflows/ci.yml | cut -c1-16)"
+          gcc_version="$(gcc -dumpfullversion)"
+          cmake_version="$(cmake --version | sed -n 1p | awk '{print $3}')"
+          echo "key=sdl3-ttf-$SDL3_TTF_VERSION-$SDL3_TTF_COMMIT-sdl3-$SDL3_VERSION-$SDL3_COMMIT-gcc$gcc_version-cmake$cmake_version-$workflow_hash" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the pinned SDL3_ttf install
+        id: sdl3-ttf-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sdl3-ttf-stage
+          key: ${{ steps.sdl3-ttf-key.outputs.key }}
+
+      - name: Build pinned SDL3_ttf with vendored FreeType and HarfBuzz
+        if: steps.sdl3-ttf-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/SDL_ttf"
+          git -C "$RUNNER_TEMP/SDL_ttf" remote add origin https://github.com/libsdl-org/SDL_ttf.git
+          git -C "$RUNNER_TEMP/SDL_ttf" fetch --depth 1 origin "$SDL3_TTF_COMMIT"
+          git -C "$RUNNER_TEMP/SDL_ttf" checkout --detach FETCH_HEAD
+          git -C "$RUNNER_TEMP/SDL_ttf" submodule update --init --depth 1
+          cmake -S "$RUNNER_TEMP/SDL_ttf" -B "$RUNNER_TEMP/SDL_ttf/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DCMAKE_PREFIX_PATH=/usr/local -DBUILD_SHARED_LIBS=ON \
+            -DSDLTTF_INSTALL=ON -DSDLTTF_SAMPLES=OFF -DSDLTTF_STRICT=ON \
+            -DSDLTTF_VENDORED=ON -DSDLTTF_HARFBUZZ=ON \
+            2>&1 | tee "$RUNNER_TEMP/sdl3-ttf-configure.log"
+          grep -Fq 'Using vendored freetype library' "$RUNNER_TEMP/sdl3-ttf-configure.log"
+          grep -Fq 'Using vendored harfbuzz library' "$RUNNER_TEMP/sdl3-ttf-configure.log"
+          cmake --build "$RUNNER_TEMP/SDL_ttf/build" --parallel 2
+          rm -rf "$RUNNER_TEMP/sdl3-ttf-stage"
+          DESTDIR="$RUNNER_TEMP/sdl3-ttf-stage" cmake --install "$RUNNER_TEMP/SDL_ttf/build"
+
+      - name: Install and verify pinned SDL3_ttf and shaping libraries
+        run: |
+          set -euo pipefail
+          test -d "$RUNNER_TEMP/sdl3-ttf-stage/usr/local" || {
+            echo "pinned SDL3_ttf install is missing from ${RUNNER_TEMP}/sdl3-ttf-stage" >&2
+            exit 1
+          }
+          sudo cp -a "$RUNNER_TEMP/sdl3-ttf-stage/usr/local/." /usr/local/
+          sudo ldconfig
+          ttf_version="$(pkg-config --modversion sdl3-ttf)"
+          test "$ttf_version" = "$SDL3_TTF_VERSION"
+          cat > "$RUNNER_TEMP/sdl3-ttf-features.c" <<'EOF'
+          #include <SDL3/SDL.h>
+          #include <SDL3_ttf/SDL_ttf.h>
+          #include <stdio.h>
+
+          int main(void)
+          {
+              int ft_major = 0, ft_minor = 0, ft_patch = 0;
+              int hb_major = 0, hb_minor = 0, hb_patch = 0;
+              if (!SDL_Init(0)) {
+                  fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+                  return 2;
+              }
+              if (!TTF_Init()) {
+                  fprintf(stderr, "TTF_Init failed: %s\n", SDL_GetError());
+                  SDL_Quit();
+                  return 2;
+              }
+              TTF_GetFreeTypeVersion(&ft_major, &ft_minor, &ft_patch);
+              TTF_GetHarfBuzzVersion(&hb_major, &hb_minor, &hb_patch);
+              printf("FreeType %d.%d.%d; HarfBuzz %d.%d.%d (enabled)\n",
+                     ft_major, ft_minor, ft_patch, hb_major, hb_minor, hb_patch);
+              TTF_Quit();
+              SDL_Quit();
+              return ft_major > 0 && hb_major > 0 ? 0 : 1;
+          }
+          EOF
+          cc $(pkg-config --cflags sdl3-ttf) "$RUNNER_TEMP/sdl3-ttf-features.c" \
+            -o "$RUNNER_TEMP/sdl3-ttf-features" $(pkg-config --libs sdl3-ttf)
+          printf 'SDL3_ttf %s; ' "$ttf_version"
+          "$RUNNER_TEMP/sdl3-ttf-features"
 
       - name: Build and run the opt-in FFmpeg H.264 media selftest
         # Exercise the real libavcodec route, including guest-VRAM coherence, explicit backend
@@ -666,6 +827,23 @@ jobs:
       - name: Run native player UI regressions headlessly
         run: make CC=gcc player-ui-regressions
 
+      - name: Run Linux native player UI tests headlessly
+        run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make CC=gcc player-ui-tests
+
+      - name: Verify lavapipe and run GPU capture selftest
+        run: |
+          set -euo pipefail
+          lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$lvp_icd" || {
+            echo "mesa-vulkan-drivers did not install a lavapipe ICD" >&2
+            exit 1
+          }
+          export VK_ICD_FILENAMES="$lvp_icd"
+          vulkaninfo --summary | tee "$RUNNER_TEMP/vulkan-summary.txt"
+          grep -qi llvmpipe "$RUNNER_TEMP/vulkan-summary.txt"
+          xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11 \
+            make CC=gcc gpu-capture-selftest
+
       - name: Configure, build, and test CMake Linux player
         run: |
           player_build="$RUNNER_TEMP/nakagawa-cmake-player"
@@ -689,7 +867,7 @@ jobs:
       # failure can be diagnosed from the run instead of reproduced.
       - name: Upload the Linux showcase smoke evidence on failure
         if: failure() && steps.showcase.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: showcase-smoke-linux-attempt-${{ github.run_attempt }}
           path: |
@@ -714,6 +892,38 @@ jobs:
             XDG_STATE_HOME="$RUNNER_TEMP/player-smoke-state" \
             SDL_VIDEODRIVER=offscreen timeout 60s \
             "$player_build/nakagawa_player" "--iso=$iso" --stage-only)
+          printf '%s\n' "$stage_output"
+          grep -Fq "STAGING_RESULT status=PASS" <<<"$stage_output"
+
+      - name: Stage the installed Linux player and smoke the installed binary
+        run: |
+          set -euo pipefail
+          player_build="$RUNNER_TEMP/nakagawa-cmake-player"
+          install_dir="$RUNNER_TEMP/nk-install"
+          iso="$RUNNER_TEMP/showcase-build/showcase-scene-v1/TEST00007.iso"
+          test -f "$iso"
+          # Redirect all four XDG roots, so the .desktop entry and icon land under
+          # RUNNER_TEMP and never under the runner's HOME.
+          xdg_root="$RUNNER_TEMP/nk-install-xdg"
+          mkdir -p "$xdg_root/data" "$xdg_root/config" "$xdg_root/cache" "$xdg_root/state"
+          export XDG_DATA_HOME="$xdg_root/data" XDG_CONFIG_HOME="$xdg_root/config" \
+            XDG_CACHE_HOME="$xdg_root/cache" XDG_STATE_HOME="$xdg_root/state"
+          python tools/stage_install.py --dest "$install_dir" \
+            --player "$player_build/nakagawa_player" --desktop-shortcut
+          test -x "$install_dir/bin/nakagawa_player"
+          test -f "$install_dir/source/tools/nk_cli.py"
+          test -f "$XDG_DATA_HOME/applications/nakagawa-recomp.desktop"
+          test -f "$XDG_DATA_HOME/icons/hicolor/256x256/apps/nakagawa-recomp.png"
+          help_output=$(SDL_VIDEODRIVER=offscreen "$install_dir/bin/nakagawa_player" --help)
+          printf '%s\n' "$help_output"
+          grep -Fq "Usage: nakagawa_player" <<<"$help_output"
+          # Run the installed binary from outside the checkout, so nothing resolves
+          # against the source tree's working directory.
+          smoke_cwd="$RUNNER_TEMP/nk-install-cwd"
+          mkdir -p "$smoke_cwd"
+          cd "$smoke_cwd"
+          stage_output=$(SDL_VIDEODRIVER=offscreen timeout 60s \
+            "$install_dir/bin/nakagawa_player" "--iso=$iso" --stage-only)
           printf '%s\n' "$stage_output"
           grep -Fq "STAGING_RESULT status=PASS" <<<"$stage_output"
 
@@ -942,6 +1152,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Windows CPython 3.15.1
+        id: windows-cpython
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.15.1"
+          architecture: x64
+
       - name: Set up MSYS2 UCRT64
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
@@ -959,26 +1176,21 @@ jobs:
             mingw-w64-ucrt-x86_64-vulkan-headers
             mingw-w64-ucrt-x86_64-vulkan-loader
 
-      # Windows toolchain contract (docs/CI.md): repository tools run under the
-      # MSYS2 UCRT64 CPython installed above, selected by the msys2 shell's PATH
-      # order -- never the runner's Windows CPython. Stages that need `pwsh` opt
-      # into the inherited Windows PATH explicitly (MSYS2_PATH_TYPE: inherit) and
-      # assert `command -v pwsh` themselves. This step makes both facts explicit
-      # instead of leaving them to PATH order.
-      - name: Pin the Windows Python toolchain (MSYS2 UCRT64 CPython)
-        shell: msys2 {0}
+      # MSYS2 still ships Python 3.14.8. Repository tools and Make recipes use
+      # the separately installed Windows CPython 3.15.1 through PYTHON; the
+      # UCRT64 compiler and libraries remain first on PATH.
+      - name: Pin the Windows Python toolchain (CPython 3.15.1)
+        shell: pwsh
+        env:
+          PYTHON_EXE: ${{ steps.windows-cpython.outputs.python-path }}
         run: |
-          set -euo pipefail
-          # Compare against MSYS2's own UCRT64 prefix wherever the runner installed
-          # MSYS2 (for example under the runner temp directory), never a fixed drive.
-          prefix="$(cygpath -m /ucrt64)"
-          py="$(python -c 'import sys; print(sys.executable.replace(chr(92), chr(47)))')"
-          echo "python -> $py (expected under $prefix)"
-          case "$py" in
-            /ucrt64/*|"$prefix"/*) ;;
-            *) echo "expected the MSYS2 UCRT64 python under $prefix, got $py" >&2; exit 1 ;;
-          esac
-          python --version
+          $version = & $env:PYTHON_EXE -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"
+          if ($LASTEXITCODE -ne 0 -or $version -ne "3.15.1") {
+            throw "Expected Windows CPython 3.15.1, got '$version'"
+          }
+          $pythonPath = $env:PYTHON_EXE.Replace('\', '/')
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "PYTHON=$pythonPath`n", $utf8NoBom)
 
       - name: Verify default and override compiler resolution
         shell: msys2 {0}
@@ -1092,7 +1304,8 @@ jobs:
           set -euo pipefail
           smoke="$(cygpath -m "$RUNNER_TEMP")/windows-stage-smoke"
           mkdir -p "$smoke/disc" "$smoke/localappdata" "$smoke/appdata" "$smoke/userprofile"
-          python fixtures/showcase/showcase.py stage-iso --out-dir "$smoke/disc"
+          py="$(cygpath -u "$PYTHON")"
+          "$py" fixtures/showcase/showcase.py stage-iso --out-dir "$smoke/disc"
           stage_output=$(LOCALAPPDATA="$smoke/localappdata" APPDATA="$smoke/appdata" \
             USERPROFILE="$smoke/userprofile" SDL_VIDEODRIVER=offscreen timeout 60s \
             build/nakagawa_player.exe "--iso=$smoke/disc/TEST00007.iso" --stage-only)
@@ -1242,8 +1455,9 @@ jobs:
       - name: Build and run flash0 font device selftest
         if: matrix.part == 'selftests'
         shell: msys2 {0}
-        run: >-
-          PYTHONPATH=tools python -m unittest -v test_flash0_font
+        run: |
+          py="$(cygpath -u "$PYTHON")"
+          PYTHONPATH=tools "$py" -m unittest -v test_flash0_font
 
       # The synthetic VFPU fuzzer's cases run as two shards: shard k admits the cases with
       # index % 2 == k (src/rt/vfpu_fuzz.c). Together they admit every case exactly once,
@@ -1255,7 +1469,8 @@ jobs:
         env:
           FUZZ_CASE_SHARD: "0/2"
         run: |
-          python tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
+          py="$(cygpath -u "$PYTHON")"
+          "$py" tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
           printf 'void f_00304290(void *s) { (void)s; }\n' > build/windows-runtime/ci_recomp.c
           touch build/windows-runtime/ci_recomp_funcs.h
           touch build/windows-runtime/.recomp-trace-0
@@ -1268,7 +1483,8 @@ jobs:
         env:
           FUZZ_CASE_SHARD: "1/2"
         run: |
-          python tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
+          py="$(cygpath -u "$PYTHON")"
+          "$py" tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
           printf 'void f_00304290(void *s) { (void)s; }\n' > build/windows-runtime/ci_recomp.c
           touch build/windows-runtime/ci_recomp_funcs.h
           touch build/windows-runtime/.recomp-trace-0
@@ -1283,11 +1499,12 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          PYTHONPATH=tools NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe python -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests
+          py="$(cygpath -u "$PYTHON")"
+          PYTHONPATH=tools NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests
 
   main_smoke:
     name: Main integration smoke
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: [classify, hygiene, public_export]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
@@ -1301,9 +1518,9 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.15.1"
 
       - name: Run compact import/publication smoke
         # Publication audit is part of the always-present hygiene job; this
@@ -1316,7 +1533,7 @@ jobs:
 
   ci_required:
     name: CI required
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: [classify, hygiene, public_export, markdown, python_tools, native_tools, windows_runtime, main_smoke]
     if: ${{ always() }}
     timeout-minutes: 5

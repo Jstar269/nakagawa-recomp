@@ -6,17 +6,67 @@
 #include <pspgu.h>
 #include <pspgum.h>
 #include <pspctrl.h>
+#include <pspdebug.h>
+#include <psploadexec.h>
 #include <string.h>
 
+/* Keep the synthetic note queued across the host scheduler boundary exercised
+ * by the real-pause showcase check. The title-neutral runtime still consumes
+ * exactly the number of frames the guest submits. */
+#define SHOWCASE_AUDIO_FRAMES 8192
 #include "../common/tone.h"
 
+#if defined(NK_LOAD_EXEC_A)
+PSP_MODULE_INFO("NAKAGAWA_LOADEXEC_A", PSP_MODULE_USER, 1, 0);
+#elif defined(NK_LOAD_EXEC_B)
+PSP_MODULE_INFO("NAKAGAWA_LOADEXEC_B", PSP_MODULE_USER, 1, 0);
+#else
 PSP_MODULE_INFO("NAKAGAWA_SHOWCASE_3D", PSP_MODULE_USER, 1, 0);
+#endif
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
 
 #define SCREEN_WIDTH 480
 #define SCREEN_HEIGHT 272
 #define FRAME_WIDTH 512
 
+#if defined(NK_LOAD_EXEC_A)
+int main(void) {
+    static char args[] = "loadexec-argv=project-built";
+    struct SceKernelLoadExecParam param;
+    *(volatile unsigned int *)0x09800000u = 0x0a11ce01u;
+    memset(&param, 0, sizeof(param));
+    param.size = sizeof(param);
+    param.args = sizeof(args);
+    param.argp = args;
+    sceKernelPrintf("LOAD_EXEC_A: requesting package program B\n");
+    sceKernelLoadExec("ms0:/PSP/GAME/NAKAGAWA/LOADEXEC_B.PRX", &param);
+    sceKernelPrintf("LOAD_EXEC_A_RETURNED: LoadExec did not replace the program\n");
+    sceKernelExitThread(1);
+    return 1;
+}
+#elif defined(NK_LOAD_EXEC_B)
+static int loadexec_b_args_match(const char *argp) {
+    static const char expected[] = "loadexec-argv=project-built";
+    if (!argp) return 0;
+    for (unsigned int i = 0; i < sizeof(expected); i++)
+        if (argp[i] != expected[i]) return 0;
+    return 1;
+}
+
+int module_start(SceSize args, void *argp) {
+    const char *text = (const char *)argp;
+    int matched = loadexec_b_args_match(text);
+    int guest_ram_reset = *(volatile unsigned int *)0x09800000u == 0u;
+    sceKernelPrintf("LOAD_EXEC_B_ARGV: len=%u text=%s\n", (unsigned int)args,
+                    text ? text : "<null>");
+    sceKernelPrintf("LOAD_EXEC_B_RESET: guest_ram_reset=%d\n", guest_ram_reset);
+    *(volatile unsigned int *)0x09900000u = matched && guest_ram_reset
+                                               ? 0x4c454d42u : 0xbad00002u;
+    sceKernelExitThread(0);
+    return 0;
+}
+
+#else
 typedef struct {
     float u, v;
     float nx, ny, nz;
@@ -147,3 +197,4 @@ int main(void) {
     sceKernelExitGame();
     return 0;
 }
+#endif

@@ -28,6 +28,7 @@ import prxload  # noqa: E402
 import scratch_dir  # noqa: E402
 import vulkan_sdk  # noqa: E402
 from test_build_truth import _scratch_build_root  # noqa: E402
+from ci_test_shards import nightly_tier  # noqa: E402
 
 
 MANIFEST_PATHS = (
@@ -398,7 +399,8 @@ def _verify_backend_matches_authority(backend: tuple[str, str | None]) -> None:
 def _runtime_build_environment(test: unittest.TestCase) -> tuple[dict[str, str], str]:
     make = shutil.which("mingw32-make") or shutil.which("make")
     if not make:
-        raise unittest.SkipTest("SKIP: GNU Make is unavailable for the package contract")
+        prefix = "WINDOWS_ONLY: " if os.name == "nt" else ""
+        raise unittest.SkipTest(f"{prefix}GNU Make is unavailable for the package contract")
     environment = os.environ.copy()
     ucrt = Path("C:/msys64/ucrt64/bin")
     if os.name == "nt" and ucrt.is_dir():
@@ -742,6 +744,7 @@ class ProfileZeroManifestTests(unittest.TestCase):
         self.assertIn(authority["release"], readme)
         self.assertIn(authority["asset"], readme)
 
+    @nightly_tier
     def test_package_and_runtime_route_assert_all_profile_zero_cases(self) -> None:
         backend = _pspdev_backend()
         if backend is None:

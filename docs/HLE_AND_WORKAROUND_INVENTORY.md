@@ -37,16 +37,16 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **539** (dedicated **490**, fake_success **4**, controlled_unsupported **45**).
-Semantic handler census: **456** handlers across **23** API families, covering **496** handler-associated NID registrations.
+Registered NIDs: **548** (dedicated **501**, fake_success **4**, controlled_unsupported **43**).
+Semantic handler census: **469** handlers across **23** API families, covering **507** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
-| `complete` | 13 | 21 |
-| `partial` | 159 | 161 |
+| `complete` | 13 | 22 |
+| `partial` | 164 | 166 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 281 | 307 |
+| `unreviewed` | 289 | 312 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -62,18 +62,18 @@ Semantic handler census: **456** handlers across **23** API families, covering *
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
-| `sceKernel` | 3 | 77 | 0 | 0 | 92 | 172 | 193 |
+| `sceKernel` | 3 | 77 | 0 | 0 | 97 | 177 | 196 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
-| `scePower` | 0 | 3 | 0 | 0 | 12 | 15 | 17 |
+| `scePower` | 0 | 6 | 0 | 0 | 12 | 18 | 20 |
 | `scePsmf` | 0 | 2 | 0 | 0 | 12 | 14 | 14 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
-| `sceRtc` | 4 | 4 | 0 | 0 | 0 | 8 | 8 |
+| `sceRtc` | 4 | 5 | 0 | 0 | 0 | 9 | 9 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
-| `sceUmd` | 0 | 1 | 1 | 0 | 7 | 9 | 9 |
+| `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **159** | **1** | **2** | **281** | **456** | **496** |
+| **Total** | **13** | **164** | **1** | **2** | **289** | **469** | **507** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -107,7 +107,7 @@ Semantic handler census: **456** handlers across **23** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_sysclib_memory_imports
   - Evidence: src/rt/hle.c:h_Memset
   - Evidence: public C library contract (memset)
-- **`h_SetCompiledSdkVersion`** (`sceKernel`): `sceKernelSetCompiledSdkVersion603_605` (0x1b4217bc), `sceKernelSetCompiledSdkVersion370` (0x342061e5), `sceKernelSetCompiledSdkVersion600_602` (0x35669d4c), `sceKernelSetCompiledSdkVersion606` (0x358ca1bb), `sceKernelSetCompiledSdkVersion` (0x7591c7db), `sceKernelSetCompiledSdkVersion500_505` (0x91de343c), `sceKernelSetCompiledSdkVersion395` (0xebd5c3e6), `sceKernelSetCompilerVersion` (0xf77d77cb)
+- **`h_SetCompiledSdkVersion`** (`sceKernel`): `sceKernelSetCompiledSdkVersion603_605` (0x1b4217bc), `sceKernelSetCompiledSdkVersion380_390` (0x315ad3a0), `sceKernelSetCompiledSdkVersion370` (0x342061e5), `sceKernelSetCompiledSdkVersion600_602` (0x35669d4c), `sceKernelSetCompiledSdkVersion606` (0x358ca1bb), `sceKernelSetCompiledSdkVersion` (0x7591c7db), `sceKernelSetCompiledSdkVersion500_505` (0x91de343c), `sceKernelSetCompiledSdkVersion395` (0xebd5c3e6), `sceKernelSetCompilerVersion` (0xf77d77cb)
   - Evidence: src/rt/sdkver_selftest.c
   - Evidence: tools/test_sdkver_c.py
   - Evidence: public ABI (PSPSDK sdkver.h: sceKernelSetCompiledSdkVersion)
@@ -550,6 +550,14 @@ Semantic handler census: **456** handlers across **23** API families, covering *
   - Limitation: decode mode is validated and retained; skip mode fails closed because its queue/timestamp effect is not measured (#302)
 - **`h_MpegQueryPcmEsSize`** (`sceMpeg`): `sceMpegQueryPcmEsSize` (0xc02cf6b5)
   - Limitation: the public 320-byte LPCM ES/output sizes are retained, but no PCM stream is exposed by this runtime (#302)
+- **`h_PowerGetBatteryChargingStatus`** (`scePower`): `scePowerGetBatteryChargingStatus` (0xb4432bc8)
+  - Limitation: reports the modeled charging state, measured 0 on AC with a full battery and on battery; the status of a charging battery is not measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_power_battery_20261024
+  - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 (0 on AC with a full battery and on battery)
+- **`h_PowerGetBatteryLifeTime`** (`scePower`): `scePowerGetBatteryLifeTime` (0x8efb3fa2)
+  - Limitation: reports the two measured samples for the modeled power source (external power by default); no discharge model
+  - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_power_battery_20261024
+  - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 (0 on AC; 376 minutes on battery)
 - **`h_PowerGetBusClockFrequencyFloat`** (`scePower`): `scePowerGetBusClockFrequencyFloat` (0x9badb3eb)
   - Limitation: returns the float of the retained bus clock in $f0: the 111.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001, PSP-HLE-POWER-002), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured; $v0 is 0, a runtime choice: PSP-HLE-POWER-002 read a different word in $v0 after each call, neither 0 nor the clock, which is not modelled
   - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
@@ -565,6 +573,10 @@ Semantic handler census: **456** handlers across **23** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
   - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-001 case pll-clock-float (0x435E0000 = 222.0)
   - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-002 case pll-clock-float-v0 ($f0 0x435E0000; $v0 not modelled)
+- **`h_PowerSetCpuClockFrequency`** (`scePower`): `scePowerSetCpuClockFrequency` (0x843fbf43)
+  - Limitation: accepts 1..retained PLL and refuses the rest with 0x800001fe, measured only at PLL 222; the clock the getters report after an accepted request is the retained request, not measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_cpu_clock_user_mode_20261024
+  - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 user mode at PLL 222 (1 and 222 accepted; 0, 333, 334 and 223 refused with 0x800001fe)
 - **`h_PsmfGetAudio`** (`scePsmf`): `scePsmfPlayerGetAudioData` (0xb9848a74)
   - Limitation: host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)
 - **`h_PsmfGetVideo`** (`scePsmf`): `scePsmfPlayerGetVideoData` (0x46f61f8b)
@@ -605,15 +617,23 @@ Semantic handler census: **456** handlers across **23** API families, covering *
   - Limitation: runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)
 - **`h_RtcGetCurrentClockLocal`** (`sceRtc`): `sceRtcGetCurrentClockLocalTime` (0xe7c27d1b)
   - Limitation: timezone/daylight comes from the fixed UTC constant until #77 adds the settable system profile, so LocalTime matches only a UTC-configured PSP (#77, #80, #341)
+- **`h_RtcGetTime64_t`** (`sceRtc`): `sceRtcGetTime64_t` (0xe1c93e47)
+  - Limitation: out-of-range fields normalise by calendar carry, whose exact seconds are this arithmetic rather than measured; year 0, month 0 and day 0 are refused with 0x800001fe and a refusal leaves the output unwritten, both unmeasured; a NULL or unreadable date and an unwritable non-NULL output take the HLE guest-fault stop
+  - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_rtc_time64_20261024
+  - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 (valid dates convert; year 1 and pre-1970 dates return 0x800001fe; month 13, day 32, Feb 30 and hour 24 return 0 and normalise; NULL output returns 0; NULL date faults inside the module)
 - **`h_RtcGetWin32FileTime`** (`sceRtc`): `sceRtcGetWin32FileTime` (0xcf561893)
   - Limitation: cold-first-call error reporting may differ from firmware (PSPAutotests convert.c notes errors report properly only after a prior error and that the rules are hard to determine); component bounds beyond the measured year/epoch/day-carry cases stay fail-closed rather than measured (#341)
+- **`h_UmdDeactivate`** (`sceUmd`): `sceUmdDeactivate` (0xe83742ba)
+  - Limitation: moves the modeled drive to the measured deactivated state 0x12; its own return value (0) and argument checks are not hardware measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024
+  - Evidence: hardware measurement 2026-10-24, PSP-3000 6.61 (drive state 0x32 at entry, 0x12 after sceUmdDeactivate)
 - **`h_UmdUnRegisterUMDCallBack`** (`sceUmd`): `sceUmdUnRegisterUMDCallBack` (0xbd2bde07)
   - Limitation: clears the single modeled UMD callback registration; unknown IDs return 0x800201a1 (the kernel callback UNKNOWN_UID code), a project choice because PSPSDK documents only a negative error and the exact code is not hardware measured
 
 #### Compatibility Handlers (Named Limitations)
 
 - **`h_UmdGetErrorStat`** (`sceUmd`): `sceUmdGetErrorStat` (0x20628e6f)
-  - Limitation: returns no error under virtual ISO drive; other drive-error states unmodeled (#341)
+  - Limitation: returns no error while the virtual ISO disc is present, activated or not; the deactivated drive's error stat and other drive-error states are unmodeled (#341)
 
 #### Controlled Unsupported Dedicated Handlers
 

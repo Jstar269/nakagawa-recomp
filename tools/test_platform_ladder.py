@@ -40,6 +40,7 @@ if SPEC is None or SPEC.loader is None:
 generator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(generator)
 from test_build_truth import _make_safe_temp_dir  # noqa: E402
+from ci_test_shards import nightly_tier  # noqa: E402
 
 
 EXPECTED_PRX_SHA256 = {
@@ -51,14 +52,14 @@ EXPECTED_PRX_SHA256 = {
     "ladder-fs": "08c03b1b17693e943554be1e3d3a611ce139d87f07bfa734783de1ef95d1e76e",
     "ladder-title2": "5b993d88991246de5b814469cceb61d83bd5175b16fbafea5916919e3301447e",
     "ladder-title2-negative": "a35dffbda426acf3e2faa0a366be98bb181cca57c94521d9512ebec73054b219",
-    "ladder-overlay": "556434c3a909bd9eda4a286eb4c1c63b82133c78dad371ee94489fb61af78641",
+    "ladder-overlay": "51f9d8b4f2ce761f59900046a8d7523f2a39f85acc4cd64240a4854fca2a5c79",
 }
 
 # The three runtime-placed overlay modules ladder-overlay loads (#704).
 EXPECTED_OVERLAY_SHA256 = {
-    "overlay_a.prx": "f8169034c774d12ef6312675809d996da61b39b6035ce9cd170318cf2f88938c",
-    "overlay_b.prx": "329b6bb4f8b2e574580ce68bdad20ef9ab874009f73befc9ba15d1410be10164",
-    "overlay_c.prx": "419187a3475d7a1c28f08f3f4045487722b176cf45ffb07a30438bf25970effe",
+    "overlay_a.prx": "d992b86dacceb709f32d20798f0e7885936fa8e2ee8ac1e28ef08462db040866",
+    "overlay_b.prx": "8429a327cccfcb63db300bee63c73735b4067de4281dabbe9475442ca36beb36",
+    "overlay_c.prx": "257987793655f2c941a9121fc4aa1b492c0cedc31dbdf86c98552a6cb1a57626",
 }
 
 # Cross-platform differential: prxload output for ladder-zero is byte-identical
@@ -133,7 +134,8 @@ def _ensure_workload(
 
     make = _find_make()
     if not make:
-        test.skipTest(f"cannot build {target}: GNU Make (mingw32-make or make) is not installed")
+        prefix = "WINDOWS_ONLY: " if sys.platform == "win32" else ""
+        test.skipTest(f"{prefix}cannot build {target}: GNU Make (mingw32-make or make) is not installed")
     cc = _find_cc()
     if not cc:
         test.skipTest(f"cannot build {target}: C compiler (gcc, cc, or clang) is not installed")
@@ -343,6 +345,7 @@ class HostileEnvironmentTests(unittest.TestCase):
             env.update(extra)
         return env
 
+    @nightly_tier
     def test_zero_runs_with_empty_dataroot_and_wrong_cwd(self):
         workloads_dir = WORKLOADS / "ladder-zero"
         exe = workloads_dir / "pl_zero.exe"
@@ -367,6 +370,7 @@ class HostileEnvironmentTests(unittest.TestCase):
         for forbidden in ("xbdata", "place_game_here", "hst_image", "UNKNOWN NID"):
             self.assertNotIn(forbidden, combined)
 
+    @nightly_tier
     def test_generator_ignores_ambient_runtime_output_controls(self):
         workloads_dir = WORKLOADS / "ladder-zero"
         exe = workloads_dir / "pl_zero.exe"
@@ -560,6 +564,7 @@ class MutationKillTests(unittest.TestCase):
     def _exe_ready(self, name: str) -> bool:
         return (self.workloads / name / f"{name.split('/')[-1]}.exe").is_file()
 
+    @nightly_tier
     def test_m9_flipping_expected_result_kills_fpu_word_gate(self):
         """M9-adjacent: ignoring guest RM would change words 2/6/7; prove the
         gate detects ANY single-word drift by flipping one expectation."""
@@ -590,6 +595,7 @@ class MutationKillTests(unittest.TestCase):
         # swapped table cannot satisfy the pin.
         self.assertEqual(len(set(nids)), len(nids))
 
+    @nightly_tier
     def test_m3_generic_workload_does_not_require_dataroot(self):
         """M3/M2: unset SR_DATAROOT entirely; ladder-zero still passes."""
         exe = self.workloads / "ladder-zero" / "pl_zero.exe"
@@ -845,7 +851,11 @@ class LadderOverlayTests(unittest.TestCase):
         stop_words = words[stop:generator.OVERLAY_QUERY_OFF // 4]
         self.assertIn(0x24020000, words[:stop])                 # addiu v0, zero, 0
         self.assertIn(0x00001021, stop_words)                   # addu v0, zero, zero
-        self.assertIn(0xACA20000, stop_words)                   # sw v0, 0(a1)
+        self.assertIn(0x8CA80000, stop_words)                   # lw t0, 0(a1): report pointer
+        self.assertIn(0xAD020000, stop_words)                   # sw v0, 0(t0)
+        # module_stop runs in its own thread, which receives a copy of the argument
+        # block: a store into a1 itself would be lost, so none may remain.
+        self.assertNotIn(0xACA20000, stop_words)                # sw v0, 0(a1)
 
 
 if __name__ == "__main__":

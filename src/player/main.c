@@ -5,6 +5,7 @@
 #include "package_builder.h"
 #include "iso_reader.h"
 #include "ui_renderer.h"
+#include "ui/player_ui_nk.h"
 #include "nk_title_manifest.h"
 
 #include <SDL3/SDL.h>
@@ -22,6 +23,7 @@
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #include <shellapi.h>
+#include <io.h>
 #endif
 
 static bool player_view_is_library(PlayerView view) {
@@ -370,10 +372,15 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
 /* Keep the user-input mapping in one place so the native loop and the headless
  * regression drive the same SDL event path. Worker and device-lifecycle events
  * remain owned by the loop because they carry live handles. */
+/* Select is held: with R it toggles the developer log panel. */
+static bool s_pad_select_held;
+
 static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
+                                     PlayerUiNk *next_ui,
                                      SDL_Window *window, bool *running,
                                      bool *close_request_handled_in_batch,
                                      const SDL_Event *event) {
+    bool use_next_ui = player_ui_nk_view_active(next_ui, app);
     if (!app || !input || !running || !event) return false;
 
     switch (event->type) {
@@ -414,24 +421,51 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
         return true;
     case SDL_EVENT_MOUSE_MOTION:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         input->mouse_x = (int)event->motion.x;
         input->mouse_y = (int)event->motion.y;
         return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         if (event->button.button == SDL_BUTTON_LEFT) {
             input->mouse_down = true;
             input->mouse_clicked = true;
         }
         return true;
     case SDL_EVENT_MOUSE_BUTTON_UP:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         if (event->button.button == SDL_BUTTON_LEFT) input->mouse_down = false;
         return true;
     case SDL_EVENT_KEY_DOWN:
+        if (!event->key.repeat && event->key.key == SDLK_F12 &&
+            app->settings.developer_mode) {
+            /* The developer log panel, from any launcher view. */
+            if (app->active_view == VIEW_DEVELOPER_LOG) {
+                player_app_close_developer_log(app);
+            } else {
+                (void)player_app_open_developer_log(app);
+            }
+            return true;
+        }
         if (!event->key.repeat &&
             (event->key.key == SDLK_F11 ||
              ((event->key.key == SDLK_RETURN || event->key.key == SDLK_KP_ENTER) &&
               (event->key.mod & SDL_KMOD_ALT)))) {
             player_app_toggle_launcher_fullscreen(app);
+        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_O &&
+                   !app->wizard.is_extracting) {
+            /* The library's shortcuts work the same in the next UI: O adds a
+               disc image, S opens Settings, Esc at the library asks to quit. */
+            app->request_file_picker = true;
+        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_S) {
+            player_app_set_view(app, VIEW_SETTINGS);
+        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_ESCAPE &&
+                   player_view_is_library(app->active_view) &&
+                   player_ui_nk_at_library_root(next_ui)) {
+            if (player_confirm_quit(window, app)) *running = false;
+        } else if (use_next_ui && !(event->key.key == SDLK_ESCAPE &&
+                                    !player_view_is_library(app->active_view))) {
+            return player_ui_nk_handle_event(next_ui, event);
         } else if (event->key.key == SDLK_ESCAPE) {
             if (app->active_view == VIEW_SETUP_WIZARD) {
                 player_app_wizard_back(app);
@@ -447,8 +481,11 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_PREREQ_PROGRESS) {
                 player_app_prereq_cancel(app);
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
-                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS) {
+                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS ||
+                       app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
+            } else if (app->active_view == VIEW_DEVELOPER_LOG) {
+                player_app_close_developer_log(app);
             } else if (app->active_view == VIEW_BUILDING_PACKAGE) {
                 player_app_cancel_package_build(app);
                 player_app_set_view(app, VIEW_LIBRARY);
@@ -498,12 +535,17 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             player_app_move_focus(app, 1, ui_focus_count(app));
         }
         return true;
+    case SDL_EVENT_KEY_UP:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
+        return false;
     case SDL_EVENT_MOUSE_WHEEL:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         if (player_view_is_library(app->active_view) && event->wheel.y != 0.0f) {
             player_app_move_selection(app, event->wheel.y > 0.0f ? -1 : 1);
         }
         return true;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings) &&
             (event->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
@@ -516,6 +558,27 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         }
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        if (event->gbutton.button == SDL_GAMEPAD_BUTTON_BACK) {
+            s_pad_select_held = true;
+        } else if (event->gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER &&
+                   s_pad_select_held && app->settings.developer_mode) {
+            /* Select + R: the developer log panel. */
+            if (app->active_view == VIEW_DEVELOPER_LOG) {
+                player_app_close_developer_log(app);
+            } else {
+                (void)player_app_open_developer_log(app);
+            }
+            return true;
+        }
+        if (use_next_ui && event->gbutton.button == SDL_GAMEPAD_BUTTON_START &&
+            player_view_is_library(app->active_view)) {
+            player_app_set_view(app, VIEW_SETTINGS);
+            return true;
+        }
+        if (use_next_ui && !(event->gbutton.button == SDL_GAMEPAD_BUTTON_EAST &&
+                             !player_view_is_library(app->active_view))) {
+            return player_ui_nk_handle_event(next_ui, event);
+        }
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings)) {
             NkBindingSource src;
@@ -566,8 +629,11 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_PREREQ_PROGRESS) {
                 player_app_prereq_cancel(app);
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
-                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS) {
+                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS ||
+                       app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
+            } else if (app->active_view == VIEW_DEVELOPER_LOG) {
+                player_app_close_developer_log(app);
             } else if (app->active_view == VIEW_BUILDING_PACKAGE) {
                 player_app_cancel_package_build(app);
                 player_app_set_view(app, VIEW_LIBRARY);
@@ -591,6 +657,18 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             }
         }
         return true;
+    case SDL_EVENT_GAMEPAD_BUTTON_UP:
+        if (event->gbutton.button == SDL_GAMEPAD_BUTTON_BACK) s_pad_select_held = false;
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
+        return false;
+    case SDL_EVENT_FINGER_MOTION:
+    case SDL_EVENT_FINGER_DOWN:
+    case SDL_EVENT_FINGER_UP:
+    case SDL_EVENT_PEN_MOTION:
+    case SDL_EVENT_PEN_DOWN:
+    case SDL_EVENT_PEN_UP:
+        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
+        return false;
     case SDL_EVENT_DROP_FILE:
         if (event->drop.data) {
             const char *files[2] = { event->drop.data, NULL };
@@ -599,6 +677,289 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         return true;
     default:
         return false;
+    }
+}
+
+static bool player_ui_save_folder_path(const GameRecord *game,
+                                      char *out, size_t out_size) {
+    char saves_root[NK_MAX_PATH];
+    const char *slot;
+    int written;
+    if (game == NULL || out == NULL || out_size == 0u ||
+        !nk_platform_get_path(NK_PATH_SAVES, saves_root, sizeof(saves_root))) {
+        return false;
+    }
+    slot = game->disc_id[0] != '\0' ? game->disc_id
+         : (game->title_id[0] != '\0' ? game->title_id : "unidentified");
+    written = snprintf(out, out_size, "%s%c%s", saves_root,
+                       nk_platform_path_separator(), slot);
+    if (written <= 0 || (size_t)written >= out_size) return false;
+    return nk_platform_mkdir_p(out);
+}
+
+#if !defined(_WIN32) && !defined(_WIN64)
+static bool player_ui_file_url(const char *path, char *out, size_t out_size) {
+    static const char prefix[] = "file://";
+    size_t used = sizeof(prefix) - 1u;
+    if (path == NULL || path[0] != '/' || out == NULL ||
+        out_size <= used) {
+        return false;
+    }
+    memcpy(out, prefix, used);
+    for (const unsigned char *p = (const unsigned char *)path; *p; ++p) {
+        unsigned char c = *p;
+        bool safe = isalnum(c) || c == '/' || c == '-' || c == '_' ||
+                    c == '.' || c == '~' || c == ':';
+        if (safe) {
+            if (used + 1u >= out_size) return false;
+            out[used++] = (char)c;
+        } else {
+            if (used + 3u >= out_size) return false;
+            static const char hex[] = "0123456789ABCDEF";
+            out[used++] = '%';
+            out[used++] = hex[c >> 4];
+            out[used++] = hex[c & 15u];
+        }
+    }
+    out[used] = '\0';
+    return true;
+}
+#endif
+
+static void player_ui_open_save_folder(PlayerApp *app, size_t title_index) {
+    char path[NK_MAX_PATH];
+    if (app == NULL || title_index >= (size_t)app->game_count ||
+        !player_ui_save_folder_path(&app->games[title_index],
+                                    path, sizeof(path))) {
+        fprintf(stderr, "[PLAYER] The save folder could not be opened.\n");
+        return;
+    }
+#if defined(_WIN32) || defined(_WIN64)
+    (void)ShellExecuteA(NULL, "open", path, NULL, NULL, SW_SHOWNORMAL);
+#else
+    {
+        char url[NK_MAX_PATH * 3u];
+        if (!player_ui_file_url(path, url, sizeof(url)) || !SDL_OpenURL(url)) {
+            fprintf(stderr, "[PLAYER] The save folder could not be opened: %s\n",
+                    SDL_GetError());
+        }
+    }
+#endif
+}
+
+/* Saves the inspected title to the library and selects it, as the existing
+   wizard's Ready step does. Returns the title's index, or -1. */
+static int player_ui_wizard_save_title(PlayerApp *app) {
+    int idx;
+    if (app->inspecting_game.disc_id[0] == '\0') return -1;
+    player_app_add_game(app, &app->inspecting_game);
+    idx = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
+    if (idx >= 0) app->selected_game_index = idx;
+    return idx;
+}
+
+/* The setup wizard's controls: the same handlers the existing renderer's
+   wizard buttons call (render_setup_wizard in ui_renderer.c). */
+static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
+    switch (op) {
+        case PLAYER_UI_WIZARD_NEXT:
+            player_app_wizard_next(app);
+            break;
+        case PLAYER_UI_WIZARD_BACK:
+            player_app_wizard_back(app);
+            break;
+        case PLAYER_UI_WIZARD_CANCEL:
+            player_app_wizard_cancel(app);
+            break;
+        case PLAYER_UI_WIZARD_CHOOSE_ISO:
+            app->request_file_picker = true;
+            break;
+        case PLAYER_UI_WIZARD_CHOOSE_DIFFERENT:
+            app->wizard.step = WIZARD_STEP_SELECT_GAME;
+            app->request_file_picker = true;
+            break;
+        case PLAYER_UI_WIZARD_ADD_EXPERIMENTAL:
+            if (player_app_add_game(app, &app->inspecting_game)) {
+                player_app_set_view(app, VIEW_LIBRARY);
+            } else {
+                player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                     "The experimental title could not be stored. The library "
+                                     "may be full, or the user data directory is not writable.",
+                                     "Return to Library", VIEW_LIBRARY);
+            }
+            break;
+        case PLAYER_UI_WIZARD_ACCEPT_FONTS:
+            app->wizard.font_confirmed = true;
+            player_app_wizard_next(app);
+            break;
+        case PLAYER_UI_WIZARD_CYCLE_RESOLUTION:
+            player_app_cycle_resolution_scale(app, 1);
+            break;
+        case PLAYER_UI_WIZARD_IMPORT_FONTS:
+            app->request_font_folder_picker = true;
+            break;
+        case PLAYER_UI_WIZARD_REMOVE_FONTS:
+            player_app_fonts_remove_imports(app);
+            break;
+        case PLAYER_UI_WIZARD_FINISH: {
+            bool runtime_ready = app->inspecting_game.is_prepared;
+            int idx = player_ui_wizard_save_title(app);
+            if (idx >= 0 && runtime_ready) (void)player_app_launch_game(app, idx);
+            player_app_set_view(app, VIEW_LIBRARY);
+            break;
+        }
+        case PLAYER_UI_WIZARD_GO_TO_LIBRARY:
+            (void)player_ui_wizard_save_title(app);
+            player_app_wizard_cancel(app);
+            break;
+        case PLAYER_UI_WIZARD_TOGGLE_ONLINE:
+            player_app_set_online_mode(app, !app->settings.online_mode);
+            break;
+        case PLAYER_UI_WIZARD_TOGGLE_DEVELOPER:
+            player_app_set_developer_mode(app, !app->settings.developer_mode);
+            break;
+        case PLAYER_UI_WIZARD_SKIP_OPTIONS:
+            player_app_wizard_skip_options(app);
+            break;
+        case PLAYER_UI_WIZARD_NONE:
+        default:
+            break;
+    }
+}
+
+static void player_ui_nk_apply_action(PlayerApp *app,
+                                     const PlayerUiAction *action) {
+    int index;
+    if (app == NULL || action == NULL) return;
+    if (action->kind == PLAYER_UI_ACTION_WIZARD) {
+        player_ui_wizard_apply(app, (PlayerUiWizardOp)action->primary);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_ADD_DISC) {
+        app->request_file_picker = true;
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_START_WIZARD) {
+        player_app_start_setup_wizard(app);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_OPEN_SETTINGS) {
+        player_app_set_view(app, VIEW_SETTINGS);
+        return;
+    }
+    /* The build, build tool download and error screens: the same handlers
+       the existing renderer's buttons call. */
+    if (action->kind == PLAYER_UI_ACTION_CANCEL_BUILD) {
+        player_app_cancel_package_build(app);
+        player_app_set_view(app, VIEW_LIBRARY);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_LEAVE_BUILD) {
+        player_app_set_view(app, VIEW_LIBRARY);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_PREREQ_ACCEPT) {
+        player_app_prereq_accept(app, app->prerequisites.bootstrap_python);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_PREREQ_CANCEL) {
+        player_app_prereq_cancel(app);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER) {
+        if (app->last_error.return_view == VIEW_PREREQ_CONSENT &&
+            app->prerequisites.phase == PLAYER_PREREQ_FAILED) {
+            player_app_prereq_retry(app);
+        } else {
+            player_app_set_view(app, app->last_error.return_view);
+            if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
+                strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0 ||
+                strncmp(app->last_error.error_code, "PBP_", 4) == 0) {
+                app->request_file_picker = true;
+            }
+        }
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_OPEN_NOTICES) {
+        /* The third-party notices are the existing licences screen. */
+        player_app_set_view(app, VIEW_PREREQ_ABOUT);
+        return;
+    }
+    if (action->title_index >= (size_t)app->game_count) return;
+    index = (int)action->title_index;
+    app->selected_game_index = index;
+    if (action->kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER) {
+        player_ui_open_save_folder(app, action->title_index);
+    } else if (action->kind == PLAYER_UI_ACTION_PRIMARY) {
+        switch (action->primary) {
+            case PLAYER_UI_PRIMARY_PLAY:
+                (void)player_app_launch_game(app, index);
+                break;
+            case PLAYER_UI_PRIMARY_BUILD:
+                (void)player_app_start_package_build(app, index);
+                break;
+            case PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK:
+                app->request_package_status_retry = true;
+                break;
+            case PLAYER_UI_PRIMARY_STOP_GAME:
+                player_app_stop_game(app);
+                break;
+            case PLAYER_UI_PRIMARY_NONE:
+            default:
+                break;
+        }
+    }
+}
+
+/* With the next UI on, the launcher switches presentation with the renderer
+   that draws the frame: nk_ui lays out at the window's real size, and the
+   screens still drawn by ui_renderer.c (setup wizard, settings, build progress,
+   dialogs) keep the 1280x720 letterbox they were designed for. */
+static bool s_switch_presentation = false;
+static int s_presentation = -1; /* 0 letterboxed, 1 native */
+
+static void player_use_presentation(PlayerApp *app, SDL_Renderer *renderer,
+                                    SDL_Window *window, bool native) {
+    int want = native ? 1 : 0;
+    if (!s_switch_presentation || s_presentation == want) return;
+    /* The app's sizes change only when SDL took the new presentation; a failed
+       switch keeps the old one, and the next frame tries again. */
+    if (native) {
+        int w = 0;
+        int h = 0;
+        if (!SDL_SetRenderLogicalPresentation(renderer, 0, 0,
+                                              SDL_LOGICAL_PRESENTATION_DISABLED)) {
+            return;
+        }
+        if (SDL_GetWindowSize(window, &w, &h) && w > 0 && h > 0) {
+            app->window_width = w;
+            app->window_height = h;
+        }
+        app->logical_ui = false;
+    } else {
+        if (!SDL_SetRenderLogicalPresentation(renderer, PLAYER_UI_LOGICAL_WIDTH,
+                                              PLAYER_UI_LOGICAL_HEIGHT,
+                                              SDL_LOGICAL_PRESENTATION_LETTERBOX)) {
+            return;
+        }
+        app->logical_ui = true;
+        app->window_width = PLAYER_UI_LOGICAL_WIDTH;
+        app->window_height = PLAYER_UI_LOGICAL_HEIGHT;
+    }
+    s_presentation = want;
+}
+
+static void player_render_active_ui(PlayerUiNk *next_ui, PlayerApp *app,
+                                    SDL_Renderer *renderer, SDL_Window *window,
+                                    UiInput *input) {
+    PlayerUiAction action;
+    bool next = player_ui_nk_view_active(next_ui, app);
+    player_use_presentation(app, renderer, window, next);
+    if (next && player_ui_nk_render(next_ui, app, renderer, window, &action)) {
+        player_ui_nk_apply_action(app, &action);
+    } else {
+        player_use_presentation(app, renderer, window, false);
+        ui_render_frame(renderer, app, input);
     }
 }
 
@@ -748,6 +1109,10 @@ static int player_ui_test_fail_title_index(const char *disc_id) {
     }
     return -1;
 }
+
+/* The scripted pointer position, so a scripted click lands where it moved. */
+static float s_ui_test_mouse_x;
+static float s_ui_test_mouse_y;
 
 static int player_ui_test_next_event(const char *script, size_t *cursor,
                                     SDL_Event *event) {
@@ -904,12 +1269,19 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         event->type = SDL_EVENT_MOUSE_MOTION;
         event->motion.x = (float)x;
         event->motion.y = (float)y;
+        s_ui_test_mouse_x = (float)x;
+        s_ui_test_mouse_y = (float)y;
         return 1;
     }
     if (strcmp(token, "MOUSE_DOWN") == 0 || strcmp(token, "MOUSE_UP") == 0) {
+        /* As SDL reports a real click: at the pointer, with its button state. */
         event->type = strcmp(token, "MOUSE_DOWN") == 0
             ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
         event->button.button = SDL_BUTTON_LEFT;
+        event->button.down = event->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+        event->button.clicks = 1u;
+        event->button.x = s_ui_test_mouse_x;
+        event->button.y = s_ui_test_mouse_y;
         return 1;
     }
     if (strncmp(token, "KEY_", 4) == 0) {
@@ -919,12 +1291,13 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
             { "RIGHT", SDLK_RIGHT }, { "UP", SDLK_UP }, { "DOWN", SDLK_DOWN },
             { "HOME", SDLK_HOME }, { "END", SDLK_END },
             { "PAGEUP", SDLK_PAGEUP }, { "PAGEDOWN", SDLK_PAGEDOWN },
-            { "S", SDLK_S }, { "O", SDLK_O }
+            { "S", SDLK_S }, { "O", SDLK_O }, { "F12", SDLK_F12 }
         };
         for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             if (strcmp(token + 4, keys[i].name) == 0) {
                 event->type = SDL_EVENT_KEY_DOWN;
                 event->key.key = keys[i].key;
+                event->key.down = true;
                 return 1;
             }
         }
@@ -945,6 +1318,7 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
             if (strcmp(token + 4, buttons[i].name) == 0) {
                 event->type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
                 event->gbutton.button = buttons[i].button;
+                event->gbutton.down = true;
                 return 1;
             }
         }
@@ -1006,6 +1380,8 @@ static const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_PREREQ_PROGRESS: return "prereq_progress";
     case VIEW_PREREQ_ABOUT: return "prereq_about";
     case VIEW_CONFIRM_REMOVE_TOOLS: return "confirm_remove_tools";
+    case VIEW_ONLINE_SETTINGS: return "online_settings";
+    case VIEW_DEVELOPER_LOG: return "developer_log";
     default: return "unknown";
     }
 }
@@ -1016,6 +1392,7 @@ static const char *player_ui_test_wizard_step_name(WizardStep step) {
     case WIZARD_STEP_SELECT_GAME: return "select_game";
     case WIZARD_STEP_INSPECT_VERIFY: return "inspect_verify";
     case WIZARD_STEP_SYSTEM_FONTS: return "system_fonts";
+    case WIZARD_STEP_ONLINE_OPTIONS: return "online_options";
     case WIZARD_STEP_READY_LAUNCH: return "ready_launch";
     default: return "unknown";
     }
@@ -1105,7 +1482,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "prereq_items=%zu prereq_bytes=%llu game_running=%d build_stage=%d "
            "font=%s font_reason=%s bitmap_text_draws=%u build_badge=%s "
            "badge=%d,%d,%d,%d running=%d pixels=%016llx "
-           "render_ns=%llu package_validations=%llu\n",
+           "render_ns=%llu package_validations=%llu online_mode=%d developer_mode=%d "
+           "dev_log_lines=%zu\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -1159,7 +1537,9 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            running ? 1 : 0,
            (unsigned long long)player_ui_test_frame_hash(renderer),
            (unsigned long long)render_elapsed_ns,
-           (unsigned long long)validation_calls);
+           (unsigned long long)validation_calls,
+           app->settings.online_mode ? 1 : 0, app->settings.developer_mode ? 1 : 0,
+           player_dev_log_count(app));
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {
@@ -2347,6 +2727,40 @@ static void player_update_prerequisite_operation(PlayerApp *app) {
     }
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+/* The Windows player is a GUI-subsystem program (-mwindows, CMake WIN32_EXECUTABLE), so a
+ * double-click starts with no console window. A process that already has standard handles, one
+ * started from cmd, PowerShell or Git Bash, keeps them. Without handles, the streams go to the
+ * parent terminal's console when there is one, and otherwise to player-output.txt in the logs
+ * folder under the player's data folder. Call after the data root is applied. */
+static void player_setup_standard_streams(void) {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != NULL && out != INVALID_HANDLE_VALUE) return;
+
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        SetConsoleOutputCP(CP_UTF8);
+        (void)freopen("CONOUT$", "w", stdout);
+        (void)freopen("CONOUT$", "w", stderr);
+        return;
+    }
+
+    char dir[NK_MAX_PATH];
+    char path[NK_MAX_PATH];
+    if (!nk_platform_get_path(NK_PATH_LOGS, dir, sizeof(dir)) || !nk_platform_mkdir_p(dir) ||
+        snprintf(path, sizeof(path), "%s%cplayer-output.txt", dir,
+                 nk_platform_path_separator()) >= (int)sizeof(path)) {
+        return;
+    }
+    FILE *log = nk_fopen_utf8(path, "wb");
+    if (!log) return;
+    /* _dup2 gives fds 1 and 2 their own copies of the log handle, so closing `log` is safe. */
+    _dup2(_fileno(log), 1);
+    _dup2(1, 2);
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    fclose(log);
+}
+#endif
+
 int main(int argc, char *argv[]) {
 #if defined(_WIN32) || defined(_WIN64)
     SetConsoleOutputCP(CP_UTF8);
@@ -2363,6 +2777,9 @@ int main(int argc, char *argv[]) {
 #endif
 
     if (!player_apply_user_data_root(argc, argv)) return 2;
+#if defined(_WIN32) || defined(_WIN64)
+    player_setup_standard_streams();
+#endif
     player_report_legacy_data_root();
 
     PlayerApp app;
@@ -2413,16 +2830,32 @@ int main(int argc, char *argv[]) {
        file, instead of the documented empty-library prompt. */
     bool populate_sample = false;
     bool force_empty = false;
+    /* The next UI is the default. --ui=legacy (or NK_UI=legacy) keeps the
+       existing renderer for one release as the documented fallback; the
+       command line wins over the environment. */
+    bool ui_next_requested = true;
+    const char *ui_environment = getenv("NK_UI");
+    if (ui_environment != NULL && strcmp(ui_environment, "legacy") == 0) {
+        ui_next_requested = false;
+    }
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nakagawa_player [--user-data-root=<folder>] "
+                   "[--ui=next|--ui=legacy] "
                    "[--iso=<path> [--stage|--stage-only|--launch-now]] "
                    "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>] "
                    "[--launch-index=N] [--headless-launch] "
                    "[--headless-accept-presented-frames=N] "
                    "[--headless-timeout-ms=N]\n");
             return 0;
+        } else if (strcmp(argv[i], "--ui=next") == 0) {
+            ui_next_requested = true;
+        } else if (strcmp(argv[i], "--ui=legacy") == 0) {
+            ui_next_requested = false;
+        } else if (strncmp(argv[i], "--ui=", 5u) == 0) {
+            fprintf(stderr, "[PLAYER] Unknown UI mode. Use --ui=next or --ui=legacy.\n");
+            return 2;
         } else if (strncmp(argv[i], "--screenshot=", 13) == 0) {
             screenshot_path = argv[i] + 13;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -2894,6 +3327,15 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(test_view, "wizard4") == 0) {
             player_app_start_setup_wizard(&app);
             app.wizard.step = WIZARD_STEP_SYSTEM_FONTS;
+        } else if (strcmp(test_view, "wizard-options") == 0) {
+            player_app_start_setup_wizard(&app);
+            app.wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
+        } else if (strcmp(test_view, "online-settings") == 0) {
+            player_app_set_view(&app, VIEW_ONLINE_SETTINGS);
+        } else if (strcmp(test_view, "developer-log") == 0) {
+            app.settings.developer_mode = true;
+            player_dev_log_add(&app, "test", "synthetic developer log line");
+            (void)player_app_open_developer_log(&app);
         } else if (strcmp(test_view, "wizard5") == 0) {
             player_app_start_setup_wizard(&app);
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "UCUS98701");
@@ -3149,7 +3591,25 @@ int main(int argc, char *argv[]) {
         SDL_Quit();
         return 1;
     }
-    bool logical_presentation_set = interactive_window &&
+    PlayerUiNk *next_ui = NULL;
+    if (ui_next_requested) {
+        char ui_error[256] = "";
+        next_ui = player_ui_nk_create(renderer, window,
+                                      ui_error, sizeof(ui_error));
+        if (next_ui == NULL) {
+            fprintf(stderr,
+                    "[PLAYER] The next UI could not start: %s. Using the existing player UI.\n",
+                    ui_error[0] != '\0' ? ui_error : "initialization failed");
+            ui_next_requested = false;
+        }
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (next_ui != NULL && ui_test_mode) {
+        puts("[PLAYER_UI_TEST] UI_NEXT_ACTIVE");
+    }
+#endif
+    s_switch_presentation = interactive_window && next_ui != NULL;
+    bool logical_presentation_set = interactive_window && next_ui == NULL &&
         SDL_SetRenderLogicalPresentation(
             renderer, PLAYER_UI_LOGICAL_WIDTH, PLAYER_UI_LOGICAL_HEIGHT,
             SDL_LOGICAL_PRESENTATION_LETTERBOX);
@@ -3181,6 +3641,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "[PLAYER_UI_TEST] Could not create SDL render target: %s\n",
                     SDL_GetError());
             if (ui_test_target) SDL_DestroyTexture(ui_test_target);
+            player_ui_nk_destroy(next_ui);
             ui_font_shutdown();
             SDL_DestroyRenderer(renderer);
             SDL_DestroyWindow(window);
@@ -3196,7 +3657,7 @@ int main(int argc, char *argv[]) {
         if (target) {
             SDL_SetRenderTarget(renderer, target);
         }
-        ui_render_frame(renderer, &app, &input);
+        player_render_active_ui(next_ui, &app, renderer, window, &input);
         if (ui_capture_screenshot(renderer, screenshot_path)) {
             printf("[PLAYER] Screenshot saved to %s (%dx%d)\n", screenshot_path, app.window_width, app.window_height);
         } else {
@@ -3220,6 +3681,7 @@ int main(int argc, char *argv[]) {
             app.is_game_running = false;
         }
 
+        player_ui_nk_destroy(next_ui);
         ui_font_shutdown();
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
@@ -3246,6 +3708,8 @@ int main(int argc, char *argv[]) {
                 snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
                          "%s", pad_name ? pad_name : "Controller");
                 app.settings.controller_connected = true;
+                /* A pad present at start switches the prompt glyphs to it. */
+                player_ui_nk_note_gamepad(next_ui, ids[0], true);
             }
         }
         SDL_free(ids);
@@ -3281,7 +3745,7 @@ int main(int argc, char *argv[]) {
     uint64_t first_frame_validation_count = ui_test_mode
         ? player_app_ui_test_validation_calls() : 0;
 #endif
-    ui_render_frame(renderer, &app, &input);
+    player_render_active_ui(next_ui, &app, renderer, window, &input);
     if (interactive_window && have_usable_bounds && !window_frame_measured) {
         window_frame_measured = player_refit_to_actual_frame(
             window, requested_window, usable_bounds,
@@ -3517,6 +3981,26 @@ int main(int argc, char *argv[]) {
                         fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL event.\n");
                     } else if (scripted_event.type == SDL_EVENT_QUIT) {
                         ui_test_quit_queued = true;
+                    } else if (scripted_event.type == SDL_EVENT_KEY_DOWN ||
+                               scripted_event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                        /* A scripted press is a whole tap: the release follows in
+                           the same frame, as a person's key or button does. The
+                           next UI's input model ignores a second press of a key it
+                           still holds. */
+                        SDL_Event release = scripted_event;
+                        if (release.type == SDL_EVENT_KEY_DOWN) {
+                            release.type = SDL_EVENT_KEY_UP;
+                            release.key.down = false;
+                        } else {
+                            release.type = SDL_EVENT_GAMEPAD_BUTTON_UP;
+                            release.gbutton.down = false;
+                        }
+                        if (!SDL_PushEvent(&release)) {
+                            ui_test_failed = true;
+                            running = false;
+                            fprintf(stderr, "[PLAYER_UI_TEST] Could not queue synthetic SDL "
+                                            "release event.\n");
+                        }
                     }
                 }
             } else if (next_event == 0) {
@@ -3568,7 +4052,7 @@ int main(int argc, char *argv[]) {
                      event.type == SDL_EVENT_PEN_UP)) {
                     SDL_ConvertEventToRenderCoordinates(renderer, &event);
                 }
-                if (!player_dispatch_ui_event(&app, &input, window, &running,
+                if (!player_dispatch_ui_event(&app, &input, next_ui, window, &running,
                                               &close_request_handled_in_batch,
                                               &event)) {
                     switch (event.type) {
@@ -3583,8 +4067,12 @@ int main(int argc, char *argv[]) {
                                 printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
                             }
                         }
+                        if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                            player_ui_nk_note_gamepad(next_ui, event.gdevice.which, true);
+                        }
                         break;
                     case SDL_EVENT_GAMEPAD_REMOVED:
+                        player_ui_nk_note_gamepad(next_ui, event.gdevice.which, false);
                         if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
                             SDL_CloseGamepad(gamepad);
                             gamepad = NULL;
@@ -3899,7 +4387,7 @@ int main(int argc, char *argv[]) {
         uint64_t frame_validation_count = ui_test_mode
             ? player_app_ui_test_validation_calls() : 0;
 #endif
-        ui_render_frame(renderer, &app, &input);
+        player_render_active_ui(next_ui, &app, renderer, window, &input);
         /* Consume renderer requests in the same frame that created them. A
            later event batch may change the selected title before the next
            loop iteration, which must not redirect this retry. */
@@ -3991,6 +4479,7 @@ int main(int argc, char *argv[]) {
         SDL_DestroyTexture(ui_test_target);
     }
 #endif
+    player_ui_nk_destroy(next_ui);
     ui_font_shutdown();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);

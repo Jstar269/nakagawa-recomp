@@ -31,7 +31,8 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Mixed documentation/native changes | classification, hygiene/security, Python tooling, native/translation, Windows, CI required | none of the applicable product gates |
 | Ordinary push to `main` after a validated merge | classification, hygiene/security, Markdown when needed, compact main smoke, CI required | expensive platform matrix; the merged PR carried it |
 | Workflow push to `main` | the full applicable validation above plus main smoke | none of the substantive public gates |
-| Manual `workflow_dispatch` | the full matrix, regardless of paths | none |
+| Manual `workflow_dispatch` | the full matrix and full Python tier, regardless of paths | none |
+| Nightly schedule (`17 3 * * *` UTC) | the full matrix and full Python tier | none |
 | Merge-queue group (`merge_group`, `checks_requested`) | the full matrix, as for a manual dispatch, regardless of paths; every required check reports on the group commit | none |
 
 ### Draft pull requests
@@ -127,12 +128,26 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
-The Linux `native_tools` job builds SDL3 from its pinned 3.4.16 release commit and installs
-Vulkan development headers. The staged SDL3 install is cached under a key naming the pinned
-version and commit, the gcc and cmake versions, and the workflow file hash; a cache hit skips
-the build, and the pkg-config version check still runs. It configures and builds the CMake player with `BUILD_PLAYER=ON`,
-runs CTest, and requires the `nakagawa_player --help` usage marker. It also downloads the PSPDEV
-archive identified by [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its
+Most Linux jobs run on Ubuntu 26.04. The `native_tools` job stays on Ubuntu 24.04 because its
+translation gate installs `gcc-mipsel-linux-gnu`, which is absent from the Ubuntu 26.04 package
+archive ([Ubuntu 24.04 package](https://packages.ubuntu.com/noble/gcc-mipsel-linux-gnu)). The job
+archive ([Ubuntu 24.04 package](https://packages.ubuntu.com/noble/gcc-mipsel-linux-gnu)). It builds
+SDL3 from its pinned 3.4.18 release commit with X11 and Vulkan enabled, and SDL3_ttf 3.2.2 from upstream commit
+`a1ce3670aec736ecbf0936c43f2f0cc53aa61e5b`, with vendored FreeType and HarfBuzz enabled.
+The SDL3 and SDL3_ttf staged installs are cached under keys naming their pinned source versions
+and commits, the SDL3 pin where applicable, the gcc and cmake versions, and the workflow file
+hash. A cache hit skips the build while the pkg-config and runtime feature checks still run. The
+SDL3_ttf build asserts that CMake selected vendored FreeType and HarfBuzz; a runtime probe prints
+their versions and fails if either backend is unavailable. The job installs Mesa's Vulkan drivers, Vulkan tools,
+the Khronos validation layer, Xvfb, and the X11/XTest development libraries needed by the pinned
+SDL3 build. `vulkaninfo --summary` selects the lavapipe ICD and must list llvmpipe. The
+`gpu-capture-selftest` runs through Xvfb with SDL's X11 driver and the validation layer. Its
+terminal present-fault cases each get a fresh process, because the renderer must not reuse a
+device after a terminal failure; an exit 77 skip fails the gate. The job also runs
+`make CC=gcc player-ui-tests` with SDL's dummy video and software render drivers, configures and
+builds the CMake player with `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player
+--help` usage marker. It downloads the PSPDEV archive identified by
+[`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its
 SHA-256 before use. The job runs `make CC=gcc showcase-linux` to build and boot the two
 source-owned showcase packages with dummy SDL video and audio drivers. A failed smoke uploads its
 `runtime.log` files and frame captures as the `showcase-smoke-linux-attempt-<n>` artifact. After a
@@ -198,12 +213,12 @@ either trusted input. A changed publication profile also requires both
 `PROVENANCE_TRUSTED_CANDIDATE_POLICY` and
 `PROVENANCE_POLICY_DELTA_AUTHORITY`, each naming an external reviewed input.
 
-Run the strict aggregate first, then the full Python suite. Treat any failure as
-blocking:
+Run the strict aggregate, then the Python modules for the files you changed. Treat any
+failure as blocking. Hosted CI runs the full Python suite; run it locally only when
+hosted CI cannot run for the change ([what hosted CI does not run](#what-hosted-ci-does-not-run)):
 
 ```bash
 NK_TRUSTED_LEDGER=<external detailed ledger> make readiness
-python -m unittest discover -s tools -p "test_*.py"
 ```
 
 `make readiness` runs the publication/policy checks in cheapest-first order and stops
@@ -305,8 +320,9 @@ Adding a tracked file, or changing one, makes three generated files stale:
 `assets/public_source_profile.json` (classification),
 `assets/public_provenance_ledger.json` (content hashes) and `PUBLIC_EXPORT.json`
 (policy digest and included-content digest). Regenerating them in the working
-tree is not enough — they have to be **staged and committed**, or the commit
-ships a source change without the evidence for its own contents and fails with
+tree is not enough — they have to be **staged and committed** with the change they
+describe (a refresh after merging `main` is its own commit; see `REVIEW.md`), or the
+commit ships a source change without the evidence for its own contents and fails with
 `POLICY_UNCLASSIFIED`, `UNRESOLVED_PUBLIC`, `POLICY_EXPORT_STALE` and
 `PROVENANCE_CONTENT_MISMATCH` together.
 
@@ -398,6 +414,51 @@ and record its wall-clock seconds; `python tools/ci_test_shards.py --check` reje
 weights for modules that no longer exist, and `--plan` prints the resulting
 partition with per-shard estimates.
 
+### Python test tiers
+
+When the classifier routes the Python suite, every PR runs all discovered modules
+in the PR tier. Only cases marked `NIGHTLY_TIER:` are deferred: the composite
+public-export gate report, the profile-zero package/runtime route, the slow
+make-built platform-ladder runtime checks, the full-history report generation,
+and the matrix inventory report. Their constituent legal-blocker, publication,
+fail-closed NID/dispatch, cosimulation, provenance, import-audit, and security
+gates remain in their normal PR jobs and tests. `python_tools` includes a
+one-line summary of skips by `NIGHTLY_TIER`, `WINDOWS_ONLY`, and `PRIVATE_INPUT`.
+
+The nightly `schedule` and manual `workflow_dispatch` both force the full CI
+matrix and set `NK_TEST_TIER=full`, so every nightly case runs. The normal local
+command uses the PR tier; set the environment variable to run the full tier:
+
+```bash
+NK_TEST_TIER=full python -m unittest discover -s tools -p "test_*.py"
+```
+
+PowerShell:
+
+```powershell
+$env:NK_TEST_TIER = "full"
+python -m unittest discover -s tools -p "test_*.py"
+Remove-Item Env:NK_TEST_TIER
+```
+
+### What hosted CI does not run
+
+Hosted CI runs the Python suite on Linux (`python_tools`) when `tools/ci_paths.py` routes
+Python: the full suite for `python_scope` `all`, and only the Makefile-coupled modules when
+a recipe-only `Makefile` change is the only Python-routing change (`python_scope`
+`makefile`). An exact head whose required hosted CI is green, including `python_tools` when
+the change routes Python, needs no local full run; a change that routes no Python needs none
+either.
+
+No hosted job runs the Windows-only cases in `tools/test_asset_index_c.py`,
+`tools/test_scratch_dir.py`, `tools/test_player_package_route.py`,
+`tools/test_manager_safety.py`, `tools/test_visual_oracle.py`, `tools/test_library_sweep.py`
+and `tools/test_stage_install.py`. A change under `tools/`, `src/core/`, `src/player/`, the
+`Makefile` or any `.ps1` file (including the root `nk_manager.ps1`) runs those modules locally
+on Windows. The full local suite builds the native fixtures and takes over an hour on
+Windows. Make-based tests need a POSIX `sh` on `PATH` (MSYS2 `usr/bin` or Git for Windows
+`bin`).
+
 ## Coverage
 
 Python coverage is reported as XML and C coverage is collected from raw gcov data
@@ -463,8 +524,8 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
 - **An empty or unobtainable file list forces the full matrix**, so a shallow
   clone or an unusual event payload cannot quietly narrow the run.
 - **A merge-queue group is never path-gated.** `FULL_MATRIX_EVENTS` in
-  `tools/ci_paths.py` (`workflow_dispatch` and `merge_group`) forces the complete
-  matrix, including the main smoke, and allows substantive work. A group's change
+  `tools/ci_paths.py` (`workflow_dispatch`, `merge_group`, and `schedule`) forces
+  the complete matrix, including the main smoke, and allows substantive work. A group's change
   set is its payload range (`merge_group.base_sha` to `head_sha`), and a payload
   without that range fails closed to the full matrix. The classifier output for a
   group is identical to a manual dispatch for the same paths, which
@@ -649,16 +710,16 @@ first on `PATH` (#294). The contract is explicit:
 
 | Job / environment | Python running `tools/*` and the fixture generators |
 | --- | --- |
-| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14 |
-| `windows_runtime` (MSYS2 UCRT64 shell) | MSYS2 UCRT64 CPython (`mingw-w64-ucrt-x86_64-python`), selected by the `msys2 {0}` shell's PATH order and asserted by the "Pin the Windows Python toolchain" step |
-| Local Windows runs | Windows CPython from the python.org installer (not the MSYS2 build); the suite stays green under both Windows CPython and MSYS2 CPython (#504) |
+| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.15.1 |
+| `windows_runtime` (MSYS2 UCRT64 shell) | Windows CPython 3.15.1 from `actions/setup-python`, passed through `PYTHON`; MSYS2's UCRT64 Python 3.14.8 is not used for repository tools |
+| Local Windows runs | Windows CPython 3.15.x from the python.org installer; set `PYTHON` explicitly when MSYS2 comes first on `PATH` |
 
 Stages that invoke the repository's PowerShell 7.4 asset-copy script opt into
 the runner's Windows `PATH` explicitly with `MSYS2_PATH_TYPE: inherit` and assert
 `command -v pwsh` themselves. Under `inherit` the MSYS2 UCRT64 directories still
-precede the inherited Windows `PATH`, so `python` remains the UCRT64 CPython and
-only `pwsh` resolves from the runner image. No hosted step relies on undeclared
-PATH order.
+precede the inherited Windows `PATH`; `windows_runtime` passes Windows CPython's
+absolute path through `PYTHON` and converts it to an MSYS path only for direct
+shell invocations. No hosted step relies on undeclared `PATH` order.
 
 That same MSYS2 shell has no `git` on `PATH`, so the Makefile cannot resolve a
 revision there. `windows_runtime` therefore sets `SR_SOURCE_COMMIT` to

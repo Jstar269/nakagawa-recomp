@@ -32,9 +32,24 @@
 #endif
 #endif
 
+#include <SDL3/SDL.h>
+static uint64_t g_test_host_ns;
+static uint64_t test_host_ns(void);
+static void sched_selftest_delay_precise(uint64_t ns);
+#define SDL_DelayPrecise sched_selftest_delay_precise
 #include "sched.c"   /* white-box: statics (s_tcb, s_ntcb, s_last_pick, ...) visible */
+#undef SDL_DelayPrecise
 
 #include <stdlib.h>
+
+static void sched_selftest_delay_precise(uint64_t ns) {
+    if (s_host_ns_fn == test_host_ns) {
+        g_test_host_ns = ns > UINT64_MAX - g_test_host_ns
+            ? UINT64_MAX : g_test_host_ns + ns;
+    } else {
+        SDL_DelayPrecise(ns);
+    }
+}
 
 /* ---- stubs for runtime symbols sched.c references ---------------------------------- */
 
@@ -85,6 +100,12 @@ void sr_heap_note_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t 
 }
 void sr_oor(uint32_t a, uint32_t v, int store) { (void)a; (void)v; (void)store; }
 uint32_t sr_get_ge_status(void) { return 0; }
+/* The user-partition span hle.c reports to the stack allocator; a test sets it. */
+static int g_test_partition_live;
+static uint32_t g_test_partition_base, g_test_partition_high;
+static int test_partition_overlaps(uint32_t base, uint32_t end) {
+    return g_test_partition_live && base < g_test_partition_high && end > g_test_partition_base;
+}
 uint32_t g_frame_prims = 0;
 
 /* This scheduler-only harness does not link recomp.c or execute generated
@@ -131,6 +152,10 @@ void sr_vblank_tick(void) { g_test_vblank_delivered++; }
  * the harness counts it to observe what a display wait does to VCOUNT. */
 static uint64_t g_test_vcount;
 void sr_display_advance_vcount(uint32_t elapsed_periods) { g_test_vcount += elapsed_periods; }
+uint32_t sr_display_vcount(void) { return (uint32_t)g_test_vcount; }
+int sr_pause_script_input_pending(uint32_t target_vcount) { (void)target_vcount; return 0; }
+static int g_test_savedata_busy;
+int sr_savedata_pause_busy(void) { return g_test_savedata_busy; }
 void sr_callback_unregister_owner(uint32_t thread_uid) { (void)thread_uid; }
 void sr_hle_release_thread_resources(uint32_t thread_uid) { (void)thread_uid; }
 
@@ -249,6 +274,7 @@ static void reset_sched(void) {
     s_interrupts_enabled = 1;
     s_pending_interrupts = 0;
     s_servicing_interrupts = 0;
+    s_guest_reset_requested = 0;
     s_pending_vblanks = 0;          /* owed VBLANK episodes, since the count change */
     s_vblank_masked_pending = 0;
     s_vbl_event_period_rem = 0;
@@ -262,8 +288,10 @@ static void reset_sched(void) {
     s_vblank_resume_anchor_pending = 0;
     s_vblank_q_us = -1;
     s_last_vblank_ns = 0;
+    s_vbl_latch_ns = 0;
     g_test_vblank_delivered = 0;
     g_test_vcount = 0;
+    g_test_savedata_busy = 0;
     g_test_vblank_handler = 0;
     g_test_handler_calls = 0;
     g_test_handler_raise_ge = 0;
@@ -276,6 +304,33 @@ static void reset_sched(void) {
     s_cpu = &g_cpu_store;
     s_pace_on = 0;   /* turbo: no host-clock sleeps if a vblank path ever fires */
     s_host_ns_fn = NULL;
+    sr_sched_stop_requested = NULL;
+    sr_sched_pause_host = NULL;
+    s_pause_requested = 0;
+    s_pause_active = 0;
+    s_pause_source = SR_PAUSE_SRC_USER;
+    s_pause_request_ns = 0;
+    s_pause_requested_duration_ms = 0;
+    s_pause_total_ns = 0;
+    s_pause_count = 0;
+    s_pause_exit_reason = SR_PAUSE_EXIT_NONE;
+    memset(s_pause_refusal_reported, 0, sizeof(s_pause_refusal_reported));
+    s_pause_clock_regression_reported = 0;
+    free(s_pause_script_steps);
+    s_pause_script_steps = NULL;
+    s_pause_script_count = 0;
+    s_pause_script_index = 0;
+    s_pause_script_loaded = 0;
+    s_pause_script_deferred = 0;
+    s_pause_script_deferred_source = SR_PAUSE_SRC_SCRIPT;
+    s_pause_script_deferred_vcount = 0;
+    s_pause_script_deferred_target_vcount = 0;
+    s_pause_script_deferred_ns = 0;
+    s_pause_script_deferred_duration_ms = 0;
+    s_pause_script_deferred_audio_required = 0;
+    s_pause_script_audio_wait_started = 0;
+    s_pause_script_audio_wait_ns = 0;
+    s_pause_switch_from_yield = 0;
     s_clock_epoch_ns = 0;
     s_vbl_next_ns = 0;
     s_vbl_period_rem = 0;
@@ -290,7 +345,6 @@ static void reset_sched(void) {
  * paced timing contract against the real clock would be a race. sched.c routes every
  * host-time read through its host_now_ns() seam; these tests install a source they
  * move explicitly, so nothing but the test advances host time. */
-static uint64_t g_test_host_ns;
 static uint64_t test_host_ns(void) { return g_test_host_ns; }
 static void set_host_us(uint64_t us) { g_test_host_ns = us * 1000ull; }
 
@@ -311,6 +365,101 @@ static void begin_clock_fixture(int paced, uint64_t host_us_now) {
     s_pending_interrupts = 0;
     s_vblank_q_us = 16000;
     s_last_vblank_ns = g_test_host_ns;
+}
+
+static unsigned g_pause_test_frame_calls;
+static unsigned g_pause_test_resume_after;
+static unsigned g_pause_test_stop_after_frame;
+static uint64_t g_pause_test_frame_advance_ns;
+static uint64_t g_pause_test_audio_enter_ns;
+static uint64_t g_pause_test_audio_leave_ns;
+static unsigned g_pause_test_audio_enters;
+static unsigned g_pause_test_audio_leaves;
+static unsigned g_pause_test_enters;
+static unsigned g_pause_test_leaves;
+static int g_pause_test_busy_reason;
+static int g_pause_test_stop;
+static unsigned g_pause_test_alarm_calls;
+
+static void pause_test_audio_enter(void) {
+    g_pause_test_audio_enters++;
+    g_test_host_ns += g_pause_test_audio_enter_ns;
+}
+
+static void pause_test_audio_leave(void) {
+    g_pause_test_audio_leaves++;
+    g_test_host_ns += g_pause_test_audio_leave_ns;
+}
+
+static int pause_test_busy_reason(void) { return g_pause_test_busy_reason; }
+
+static void pause_test_enter(void) { g_pause_test_enters++; }
+static void pause_test_leave(void) { g_pause_test_leaves++; }
+
+static SrPauseFrame pause_test_frame(void) {
+    g_pause_test_frame_calls++;
+    g_test_host_ns += g_pause_test_frame_advance_ns;
+    if (g_pause_test_stop_after_frame &&
+        g_pause_test_frame_calls >= g_pause_test_stop_after_frame)
+        g_pause_test_stop = 1;
+    return g_pause_test_frame_calls >= g_pause_test_resume_after
+        ? SR_PAUSE_FRAME_RESUME : SR_PAUSE_FRAME_CONTINUE;
+}
+
+static SrPauseFrame pause_test_forbidden_time_frame(void) {
+    vtime_refresh();
+    return SR_PAUSE_FRAME_RESUME;
+}
+
+static const SrPauseHost s_pause_test_host = {
+    .audio_enter = pause_test_audio_enter,
+    .audio_leave = pause_test_audio_leave,
+    .busy_reason = pause_test_busy_reason,
+    .enter = pause_test_enter,
+    .frame = pause_test_frame,
+    .leave = pause_test_leave,
+};
+
+static const SrPauseHost s_pause_test_forbidden_time_host = {
+    .frame = pause_test_forbidden_time_frame,
+};
+
+static int pause_test_stop_requested(void) { return g_pause_test_stop; }
+
+static void pause_test_reset(int paced, uint64_t host_us_now) {
+    reset_sched();
+    begin_clock_fixture(paced, host_us_now);
+    sr_sched_pause_host = &s_pause_test_host;
+    sr_sched_stop_requested = NULL;
+    g_pause_test_frame_calls = 0;
+    g_pause_test_resume_after = 1;
+    g_pause_test_stop_after_frame = 0;
+    g_pause_test_frame_advance_ns = 0;
+    g_pause_test_audio_enter_ns = 0;
+    g_pause_test_audio_leave_ns = 0;
+    g_pause_test_audio_enters = 0;
+    g_pause_test_audio_leaves = 0;
+    g_pause_test_enters = 0;
+    g_pause_test_leaves = 0;
+    g_pause_test_busy_reason = 0;
+    g_pause_test_stop = 0;
+    g_pause_test_alarm_calls = 0;
+}
+
+static void pause_test_set_env(const char *name, const char *value) {
+#if defined(_WIN32) || defined(_WIN64)
+    char assignment[160];
+    snprintf(assignment, sizeof(assignment), "%s=%s", name, value ? value : "");
+    _putenv(assignment);
+#else
+    if (value && value[0]) setenv(name, value, 1);
+    else unsetenv(name);
+#endif
+}
+
+static void pause_test_alarm_body(CpuState *s) {
+    g_pause_test_alarm_calls++;
+    s->r[2] = 0;
 }
 
 /* Silence both VBLANK paths so a timing test can isolate one contract. */
@@ -1231,6 +1380,43 @@ static void test_stack_exhaustion_fails_create(void) {
     uint32_t ok = sched_create_thread(0x2000u, 32, 0x4000u);
     expect(ok != 0, "a fitting request still succeeds after a failed one");
     expect(s_stack_top < top0, "successful create consumes arena");
+}
+
+/* Thread stacks and the user partition share PSP user RAM. The partition ends at the
+ * lowest live stack (sched_guest_stack_floor), and a stack the arena would place over
+ * live partition memory fails the create instead of overlapping it. */
+static void test_stack_floor_and_partition_overlap(void) {
+    reset_sched();
+    g_test_partition_live = 0;
+    sched_set_stack_range_refusal(test_partition_overlaps);
+    expect(sched_guest_stack_floor() == SR_STACK_ARENA_CEIL,
+           "with no thread the stack floor is the arena ceiling");
+    uint32_t first = sched_create_thread(0x2000u, 32, 0x4000u);
+    expect(first != 0, "a first thread gets a stack");
+    uint32_t floor1 = sched_guest_stack_floor();
+    expect(floor1 < SR_STACK_ARENA_CEIL && floor1 + 0x4000u + 0x800u == SR_STACK_ARENA_CEIL,
+           "the stack floor is the new thread's reservation base");
+
+    /* The partition reaches just below the current floor: the next stack would land on it. */
+    g_test_partition_live = 1;
+    g_test_partition_base = 0x08804000u;
+    g_test_partition_high = floor1 - 0x1000u;
+    int n0 = s_ntcb;
+    uint32_t top0 = s_stack_top;
+    fprintf(stderr, "(expected: one 'would overlap user-partition memory' line follows)\n");
+    uint32_t blocked = sched_create_thread(0x2004u, 32, 0x4000u);
+    expect(blocked == 0, "a stack over live partition memory fails the create");
+    expect(s_ntcb == n0 && s_stack_top == top0,
+           "the refused create leaks no TCB slot and returns its stack range");
+    expect(sched_guest_stack_floor() == floor1, "the refused create leaves the floor unchanged");
+
+    /* Room above the partition: the same request fits. */
+    g_test_partition_high = floor1 - 0x10000u;
+    uint32_t fits = sched_create_thread(0x2008u, 32, 0x4000u);
+    expect(fits != 0, "a stack that clears the partition is still created");
+    expect(sched_guest_stack_floor() < floor1, "the floor follows the lowest live stack");
+    g_test_partition_live = 0;
+    sched_set_stack_range_refusal(NULL);
 }
 
 /* ---- sr_coro primitive tests ------------------------------------------------------- */
@@ -3804,6 +3990,410 @@ static void test_llsc_callback_breaks_the_window(void) {
     expect(cpu.llbit == 0u, "callback return clears the interrupted link");
 }
 
+static void test_pause_s1_frozen_system_time(void) {
+    pause_test_reset(1, 1000u);
+    s_clock_epoch_ns = 0u; /* zero is a valid pace_setup origin, not an uninitialized anchor */
+    s_vbl_next_ns = 0u;
+    s_vbl_latch_ns = 0u;
+    s_vbl_next_us = UINT64_MAX;
+    s_vtime_us = 1000u;
+    g_pause_test_frame_advance_ns = 10000000000ull;
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_ACCEPTED,
+           "S1 accepts the scripted test pause");
+    expect(sched_pause_run() == SR_PAUSE_EXIT_RESUME, "S1 script resumes normally");
+    expect(s_vtime_us == 1000u && host_us() == 1000u,
+           "S1 guest system time and a zero-origin host_us are bit-identical on resume");
+    g_test_host_ns += 1000000u;
+    sr_yield(&g_cpu_store);
+    expect(s_vtime_us == 2000u, "S1 the next paced sample advances only outside-pause time");
+}
+
+static void test_pause_s2_frozen_vblank_without_catchup(void) {
+    pause_test_reset(1, 2000u);
+    s_clock_epoch_ns = 1000000u;
+    s_vbl_next_ns = 18000000u;
+    s_vbl_latch_ns = 2000000u;
+    s_vtime_us = 1000u;
+    s_vbl_next_us = s_vtime_us + 16683u;
+    s_vbl_event_period_rem = 0;
+    s_vblank_q_us = 0x7fffffff;
+    int waiter = mk(0x1172u, TH_WAIT_OBJ, 20);
+    s_tcb[waiter].wait_obj = VBLANK_WAIT_OBJ;
+    s_tcb[waiter].wake = SCHED_WAIT_FOREVER;
+    g_pause_test_frame_advance_ns = 10000000000ull;
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_ACCEPTED,
+           "S2 test request is accepted");
+    (void)sched_pause_run();
+    expect(g_test_vblank_delivered == 0 && s_vbl_count == 0 && g_test_vcount == 0,
+           "S2 no VBLANK delivery or VCOUNT change occurs during the pause");
+    expect(s_pending_vblanks == 0 && s_tcb[waiter].state == TH_WAIT_OBJ,
+           "S2 no VBLANK episode or waiter wake is created during the pause");
+    g_test_host_ns += 16683333u;
+    scheduler_progress_time();
+    scheduler_service_pending();
+    expect(g_test_vblank_delivered == 1 && s_vbl_count == 1 && g_test_vcount == 1,
+           "S2 one post-resume display period produces exactly one serviced edge");
+    expect(s_tcb[waiter].state == TH_READY,
+           "S2 the original VBLANK waiter wakes on the first post-resume edge");
+}
+
+static void test_pause_s3_vblank_phase_kept(void) {
+    pause_test_reset(1, 2000u);
+    s_clock_epoch_ns = 1000000u;
+    s_vbl_next_ns = 10000000u;
+    s_vbl_latch_ns = 2000000u;
+    s_vbl_next_us = UINT64_MAX;
+    const uint64_t phase = s_vbl_next_ns - s_clock_epoch_ns;
+    const uint64_t expected_sleep = s_vbl_next_ns - g_test_host_ns;
+    g_pause_test_frame_advance_ns = 100000000u;
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_ACCEPTED,
+           "S3 test request is accepted");
+    (void)sched_pause_run();
+    expect(s_vbl_next_ns - s_clock_epoch_ns == phase,
+           "S3 s_vbl_next_ns minus s_clock_epoch_ns is unchanged");
+    const uint64_t before = g_test_host_ns;
+    vblank_pace();
+    expect(g_test_host_ns - before == expected_sleep,
+           "S3 the next idle vblank sleep lands on the same host phase");
+}
+
+static void test_pause_s4_turbo_quantum_is_shifted(void) {
+    pause_test_reset(0, 2000u);
+    s_clock_epoch_ns = 1000000u;
+    s_vbl_next_ns = 18000000u;
+    s_vbl_latch_ns = 2000000u;
+    s_vbl_next_us = UINT64_MAX;
+    s_vtime_us = 0;
+    s_vblank_q_us = 16000;
+    const unsigned delivered = g_test_vblank_delivered;
+    g_pause_test_frame_advance_ns = 10000000000ull;
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_ACCEPTED,
+           "S4 turbo pause request is accepted");
+    (void)sched_pause_run();
+    int running = mk(0x1174u, TH_RUNNING, 20);
+    s_cur = running;
+    sr_yield(&g_cpu_store);
+    expect(s_vtime_us == 10000u,
+           "S4 turbo advances only its deterministic scheduler quantum after resume");
+    expect(g_test_vblank_delivered == delivered &&
+           !(s_pending_interrupts & SCHED_INTR_VBLANK) && s_pending_vblanks == 0,
+           "S4 shifting s_last_vblank_ns prevents an out-of-band VBLANK");
+    s_cur = -1;
+}
+
+static void test_pause_s5_waits_and_alarms_keep_remaining_time(void) {
+    pause_test_reset(1, 2000u);
+    s_clock_epoch_ns = 1000000u;
+    s_vbl_next_ns = 18000000u;
+    s_vbl_latch_ns = 2000000u;
+    s_vtime_us = 1000u;
+    s_vbl_next_us = UINT64_MAX;
+    s_vblank_q_us = 0x7fffffff;
+    int sleeper = mk(0x1175u, TH_WAIT_DELAY, 20);
+    s_tcb[sleeper].wake = s_vtime_us + 5000u;
+    s_alarms[0].uid = 0x77u;
+    s_alarms[0].handler = 0x6600u;
+    s_alarms[0].deadline = s_vtime_us + 8000u;
+    s_alarms[0].seq = 1u;
+    s_alarm_live = 1;
+    s_alarm_seq = 1u;
+    g_test_body = pause_test_alarm_body;
+    g_pause_test_frame_advance_ns = 10000000000ull;
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_ACCEPTED,
+           "S5 test request is accepted");
+    (void)sched_pause_run();
+    expect(s_tcb[sleeper].state == TH_WAIT_DELAY && g_pause_test_alarm_calls == 0,
+           "S5 neither the delay nor the alarm expires during the host stall");
+    g_test_host_ns += 5000000u;
+    vtime_refresh();
+    sched_promote_expired_waits();
+    scheduler_service_pending();
+    expect(s_tcb[sleeper].state == TH_READY && g_pause_test_alarm_calls == 0,
+           "S5 the sleeper wakes after exactly its five millisecond remainder");
+    g_test_host_ns += 3000000u;
+    vtime_refresh();
+    scheduler_service_pending();
+    expect(g_pause_test_alarm_calls == 1,
+           "S5 the alarm handler runs once at its original eight millisecond remainder");
+}
+
+static void test_pause_s6_entry_and_exit_work_are_excluded(void) {
+    pause_test_reset(1, 2000u);
+    s_clock_epoch_ns = 1000000u;
+    s_vbl_next_ns = 18000000u;
+    s_vbl_latch_ns = 2000000u;
+    s_vbl_next_us = UINT64_MAX;
+    s_vtime_us = 1000u;
+    g_pause_test_audio_enter_ns = 20000000u;
+    g_pause_test_audio_leave_ns = 20000000u;
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_ACCEPTED,
+           "S6 test request is accepted");
+    (void)sched_pause_run();
+    expect(s_vtime_us == 1000u && host_us() == 1000u,
+           "S6 the 40 milliseconds spent in audio entry and exit work are excluded");
+}
+
+static void pause_force_switch_body(CpuState *s) {
+    s->r[16] = 0x11770016u;
+    (void)sched_pause_request(SR_PAUSE_SRC_SCRIPT);
+    sr_yield(s);
+}
+
+static void test_pause_s7_forces_lone_busy_thread_switch(void) {
+    pause_test_reset(0, 2000u);
+    disable_vblank_sources();
+    g_test_body = pause_force_switch_body;
+    int spinner = mk(0x1177u, TH_DORMANT, 20);
+    sched_start_thread(s_tcb[spinner].uid, 0, 0);
+    run_one_slice(spinner);
+    expect(s_pause_requested && s_tcb[spinner].state == TH_READY,
+           "S7 the pending pause forces the lone busy guest back to the scheduler");
+    expect(s_tcb[spinner].saved.r[16] == 0x11770016u,
+           "S7 the forced switch preserves the spinner register file");
+    const int selected = pick_next();
+    expect(selected == spinner, "S7 resume selection is the same lone spinner");
+    sched_load_thread_context(&s_tcb[spinner]);
+    expect(g_cpu_store.r[16] == 0x11770016u,
+           "S7 the scheduler restores the preserved spinner register file");
+    sched_destroy_thread_coro(&s_tcb[spinner]);
+    s_tcb[spinner].coro = NULL;
+}
+
+static int g_pause_defer_kind;
+static int g_pause_defer_seen;
+static void pause_defer_body(CpuState *s) {
+    (void)sched_pause_request(SR_PAUSE_SRC_SCRIPT);
+    if (g_pause_defer_kind == 0) {
+        sr_yield(s);
+        g_pause_defer_seen = s_pause_requested && !s_interrupts_enabled;
+        s_interrupts_enabled = 1;
+    } else if (g_pause_defer_kind == 1) {
+        sr_yield(s);
+        g_pause_defer_seen = s_pause_requested && !s_dispatch_enabled;
+        s_dispatch_enabled = 1;
+    } else {
+        const int running = s_cur;
+        s_cur = -1;
+        sr_yield(s);
+        s_cur = running;
+        g_pause_defer_seen = s_pause_requested;
+    }
+    sr_yield(s);
+}
+
+static void test_pause_s8_defers_illegal_switch_windows(void) {
+    for (int kind = 0; kind < 3; kind++) {
+        pause_test_reset(0, 2000u);
+        disable_vblank_sources();
+        g_pause_defer_kind = kind;
+        g_pause_defer_seen = 0;
+        g_test_body = pause_defer_body;
+        if (kind == 0) s_interrupts_enabled = 0;
+        if (kind == 1) s_dispatch_enabled = 0;
+        int thread = mk(0x1180u + (uint32_t)kind, TH_DORMANT, 20);
+        sched_start_thread(s_tcb[thread].uid, 0, 0);
+        run_one_slice(thread);
+        expect(g_pause_defer_seen && s_pause_requested && s_tcb[thread].state == TH_READY,
+               kind == 0 ? "S8 masked interrupts defer the request until ResumeIntr" :
+               kind == 1 ? "S8 suspended dispatch defers the request until resumed" :
+                           "S8 interrupt-handler context defers the request until return");
+        sched_destroy_thread_coro(&s_tcb[thread]);
+        s_tcb[thread].coro = NULL;
+    }
+}
+
+static void test_pause_s9_loop_does_no_guest_work(void) {
+    pause_test_reset(1, 2000u);
+    s_clock_epoch_ns = 1000000u;
+    s_vbl_next_ns = 18000000u;
+    s_vbl_latch_ns = 2000000u;
+    s_vtime_us = 1000u;
+    s_vbl_next_us = UINT64_MAX;
+    int waiter = mk(0x1179u, TH_WAIT_OBJ, 20);
+    s_tcb[waiter].wait_obj = VBLANK_WAIT_OBJ;
+    s_tcb[waiter].wake = SCHED_WAIT_FOREVER;
+    s_alarms[0].uid = 0x79u;
+    s_alarms[0].handler = 0x6679u;
+    s_alarms[0].deadline = s_vtime_us;
+    s_alarm_live = 1;
+    s_alarm_seq = 1;
+    g_test_body = pause_test_alarm_body;
+    s_pending_vblanks = 1;
+    s_pending_interrupts |= SCHED_INTR_VBLANK;
+    g_pause_test_resume_after = 100;
+    g_pause_test_frame_advance_ns = 1000000u;
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_ACCEPTED,
+           "S9 test request is accepted");
+    (void)sched_pause_run();
+    expect(g_pause_test_frame_calls == 100 && s_vtime_us == 1000u,
+           "S9 one hundred host frames run without advancing guest time");
+    expect(g_test_vblank_delivered == 0 && s_vbl_count == 0 && g_test_vcount == 0 &&
+           s_pending_vblanks == 1 && s_pending_interrupts == SCHED_INTR_VBLANK,
+           "S9 pending VBLANK and guest counters are untouched");
+    expect(s_tcb[waiter].state == TH_WAIT_OBJ && g_pause_test_alarm_calls == 0 && s_cur == -1,
+           "S9 no waiter wake, alarm handler or coroutine switch runs in the pause loop");
+}
+
+static void test_pause_s10_stop_hook_wins(void) {
+    pause_test_reset(1, 2000u);
+    s_clock_epoch_ns = 1000000u;
+    s_vbl_next_ns = 18000000u;
+    s_vbl_latch_ns = 2000000u;
+    s_vbl_next_us = UINT64_MAX;
+    g_pause_test_resume_after = 100;
+    g_pause_test_stop_after_frame = 3;
+    g_pause_test_frame_advance_ns = 1000000u;
+    sr_sched_stop_requested = pause_test_stop_requested;
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_ACCEPTED,
+           "S10 test request is accepted before stop");
+    expect(sched_pause_run() == SR_PAUSE_EXIT_STOP,
+           "S10 stop is checked and wins inside the pause loop");
+    expect(g_pause_test_frame_calls == 3 && g_pause_test_enters == 1 &&
+           g_pause_test_leaves == 1 && g_pause_test_audio_enters == 1 &&
+           g_pause_test_audio_leaves == 1 && !s_pause_active && !s_pause_requested,
+           "S10 stop still performs presenter/audio cleanup and time-base restoration");
+}
+
+static void test_pause_s11_refusal_verdicts(void) {
+    static const char *const automation[] = {
+        "SR_PADSCRIPT", "SR_EXIT_AT_VBLANK", "SR_HEADLESS_ACCEPT_PRESENTED_FRAMES",
+        "SR_PAUSE_SCRIPT"
+    };
+    pause_test_reset(1, 2000u);
+    const uint64_t host_before = g_test_host_ns;
+    s_vtime_us = 1234u;
+    const uint64_t time_before = s_vtime_us;
+    for (size_t i = 0; i < sizeof(automation) / sizeof(automation[0]); i++) {
+        pause_test_set_env(automation[i], NULL);
+    }
+    SrPauseHost with_frame = s_pause_test_host;
+    sr_sched_pause_host = &with_frame;
+    for (size_t i = 0; i < sizeof(automation) / sizeof(automation[0]); i++) {
+        pause_test_set_env(automation[i], "1");
+        expect(sched_pause_request(SR_PAUSE_SRC_USER) == SR_PAUSE_REFUSED_AUTOMATION,
+               "S11 each automation selector refuses a user request");
+        pause_test_set_env(automation[i], NULL);
+    }
+    expect(sched_pause_request(SR_PAUSE_SRC_USER) == SR_PAUSE_REFUSED_NO_PRESENTER,
+           "S11 a user request without a presenter is refused");
+    g_pause_test_busy_reason = SR_PAUSE_REFUSED_KEYBOARD;
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_REFUSED_KEYBOARD,
+           "S11 the OSK busy reason refuses even a scripted request");
+    g_pause_test_busy_reason = 0;
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_ACCEPTED,
+           "S11 scripted tests are allowed without a presenter");
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_ALREADY,
+           "S11 a second pending request is ignored");
+    s_pause_requested = 0;
+    g_pause_test_stop = 1;
+    sr_sched_stop_requested = pause_test_stop_requested;
+    expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_REFUSED_STOPPING,
+           "S11 a stopping runtime refuses the request");
+    expect(s_vtime_us == time_before && g_test_host_ns == host_before &&
+           g_pause_test_audio_enters == 0 && g_pause_test_audio_leaves == 0,
+           "S11 refusal paths do not change guest time, host time or audio state");
+}
+
+static void pause_collect_turbo_sequence(int include_pause, uint64_t times[50], uint64_t vblanks[50]) {
+    pause_test_reset(0, 2000u);
+    s_clock_epoch_ns = 1000000u;
+    s_vbl_next_ns = 18000000u;
+    s_vbl_latch_ns = 2000000u;
+    s_vbl_next_us = 0;
+    s_vbl_event_period_rem = 0;
+    s_vblank_q_us = 16000;
+    for (unsigned i = 0; i < 50; i++) {
+        if (include_pause && i == 20) {
+            g_pause_test_frame_advance_ns = 10000000000ull;
+            (void)sched_pause_request(SR_PAUSE_SRC_SCRIPT);
+            (void)sched_pause_run();
+        }
+        scheduler_progress_time();
+        scheduler_service_pending();
+        times[i] = s_vtime_us;
+        vblanks[i] = s_vbl_count;
+    }
+}
+
+static void test_pause_s12_turbo_sequence_is_unchanged(void) {
+    uint64_t baseline_time[50], paused_time[50];
+    uint64_t baseline_vbl[50], paused_vbl[50];
+    pause_collect_turbo_sequence(0, baseline_time, baseline_vbl);
+    pause_collect_turbo_sequence(1, paused_time, paused_vbl);
+    expect(memcmp(baseline_time, paused_time, sizeof(baseline_time)) == 0,
+           "S12 a turbo pause adds no quantum to guest time");
+    expect(memcmp(baseline_vbl, paused_vbl, sizeof(baseline_vbl)) == 0,
+           "S12 the turbo VBLANK sequence is identical with and without a pause");
+}
+
+static void test_pause_s13_repeated_pauses_accumulate(void) {
+    static const uint64_t pauses_ns[] = { 1000000000ull, 0u, 3000000000ull };
+    pause_test_reset(1, 2000u);
+    s_clock_epoch_ns = 1000000u;
+    s_vbl_next_ns = 18000000u;
+    s_vbl_latch_ns = 2000000u;
+    s_vtime_us = 1000u;
+    s_vbl_next_us = UINT64_MAX;
+    for (size_t i = 0; i < sizeof(pauses_ns) / sizeof(pauses_ns[0]); i++) {
+        g_pause_test_frame_advance_ns = pauses_ns[i];
+        g_pause_test_frame_calls = 0;
+        expect(sched_pause_request(SR_PAUSE_SRC_SCRIPT) == SR_PAUSE_ACCEPTED,
+               "S13 every repeated pause request is accepted");
+        expect(sched_pause_run() == SR_PAUSE_EXIT_RESUME,
+               "S13 every repeated pause resumes normally");
+    }
+    expect(sched_pause_total_ns() == 4000000000ull && s_pause_count == 3u,
+           "S13 repeated pause durations accumulate exactly");
+    expect(host_us() == 1000u && s_vtime_us == 1000u,
+           "S13 the host clock continues from its initial value after cumulative shifts");
+}
+
+#define LOAD_EXEC_RESET_PARENT_ENTRY 0x08ffde00u
+#define LOAD_EXEC_RESET_CHILD_ENTRY 0x08ffde10u
+#define LOAD_EXEC_RESET_NEXT_ENTRY 0x08ffde20u
+static uint32_t s_loadexec_reset_child_uid;
+static uint32_t s_loadexec_reset_next_gp;
+
+static void loadexec_reset_parent_body(CpuState *s) {
+    (void)s;
+    s_loadexec_reset_child_uid = sched_create_thread(LOAD_EXEC_RESET_CHILD_ENTRY, 127, 0u);
+    expect(s_loadexec_reset_child_uid != 0u &&
+           sched_start_thread(s_loadexec_reset_child_uid, 0u, 0u) == 0u,
+           "LoadExec fixture leaves a ready sibling for process teardown");
+    sched_request_guest_reset();
+    sched_exit_current_delete(0);
+}
+
+static void loadexec_reset_next_body(CpuState *s) {
+    s_loadexec_reset_next_gp = s->r[28];
+    sched_exit_current_delete(0);
+}
+
+static void test_loadexec_retires_scheduler_world(void) {
+    reset_sched();
+    g_test_body = loadexec_reset_parent_body;
+    sched_run(LOAD_EXEC_RESET_PARENT_ENTRY, 0u, 0u);
+    expect(s_guest_reset_requested && !sched_guest_thread_running(),
+           "LoadExec request returns to the host scheduler before program state is reset");
+    expect(sched_reset_for_loadexec(),
+           "LoadExec scheduler reset is accepted from the host scheduler coroutine");
+    expect(s_ntcb == 0 && s_cur == -1 && !sched_guest_thread_running(),
+           "LoadExec reset destroys old TCBs and leaves no current guest thread");
+    expect(tcb_by_uid(s_loadexec_reset_child_uid) == NULL &&
+           g_root_uid == SR_ROLE_UID_NONE && g_worker_uid == SR_ROLE_UID_NONE &&
+           g_launcher_uid == SR_ROLE_UID_NONE && g_master_reent == 0u,
+           "LoadExec reset retires sibling threads and per-program role/libc state");
+
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    g_cpu_store.r[28] = 0x1234abc0u;
+    sched_set_guest_process_gp(g_cpu_store.r[28]);
+    s_loadexec_reset_next_gp = 0u;
+    g_test_body = loadexec_reset_next_body;
+    sched_run(LOAD_EXEC_RESET_NEXT_ENTRY, 0u, 0u);
+    expect(s_loadexec_reset_next_gp == 0x1234abc0u,
+           "replacement root starts with its own module $gp");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--test-pace-setup") == 0) {
         s_pace_on = -1;
@@ -3826,6 +4416,15 @@ int main(int argc, char **argv) {
      * ERROR_ALREADY_FIBER path (Windows) / repeat adoption (POSIX) must succeed. */
     sched_init(&g_cpu_store);
     expect(s_sched_coro != NULL, "repeat sr_coro_main adoption (ERROR_ALREADY_FIBER path)");
+
+    if (argc > 1 && strcmp(argv[1], "--pause-forbidden-vtime") == 0) {
+        pause_test_reset(1, 2000u);
+        sr_sched_pause_host = &s_pause_test_forbidden_time_host;
+        (void)sched_pause_request(SR_PAUSE_SRC_SCRIPT);
+        (void)sched_pause_run();
+        fprintf(stderr, "sched_selftest: forbidden vtime mutation unexpectedly survived pause\n");
+        return 3;
+    }
 
     test_single_ready();
     test_priority_wins_and_never_inverts();
@@ -3862,6 +4461,7 @@ int main(int argc, char **argv) {
     test_root_capture_without_a_historical_default();
     test_uid_zero_is_never_a_role();
     test_stack_exhaustion_fails_create();
+    test_stack_floor_and_partition_overlap();
     test_libc_thread_relocation();
     test_coro_self_switch_and_park();
     test_callback_abi_packing();
@@ -3921,6 +4521,22 @@ int main(int argc, char **argv) {
     test_alarm_waits_for_enabled_interrupts_and_follows_vblank();
     test_alarm_is_a_wake_source_for_the_idle_scheduler();
     test_alarm_table_capacity_and_reset();
+
+    /* Player pause: each case maps to the mutation in the reviewed contract. */
+    test_pause_s1_frozen_system_time();
+    test_pause_s2_frozen_vblank_without_catchup();
+    test_pause_s3_vblank_phase_kept();
+    test_pause_s4_turbo_quantum_is_shifted();
+    test_pause_s5_waits_and_alarms_keep_remaining_time();
+    test_pause_s6_entry_and_exit_work_are_excluded();
+    test_pause_s7_forces_lone_busy_thread_switch();
+    test_pause_s8_defers_illegal_switch_windows();
+    test_pause_s9_loop_does_no_guest_work();
+    test_pause_s10_stop_hook_wins();
+    test_pause_s11_refusal_verdicts();
+    test_pause_s12_turbo_sequence_is_unchanged();
+    test_pause_s13_repeated_pauses_accumulate();
+    test_loadexec_retires_scheduler_world();
 
     fprintf(stderr, "sched_selftest: title config \"%s\" (valid=0x%x)\n",
             sr_title_config()->source_id, sr_title_config()->valid);

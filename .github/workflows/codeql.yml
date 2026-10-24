@@ -36,7 +36,7 @@ jobs:
   prepare:
     name: Prepare trusted CodeQL source
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'merge_group' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -58,9 +58,9 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: "3.15.1"
 
       - name: Resolve exact PR or default-branch target
         id: target
@@ -283,7 +283,7 @@ jobs:
           PY
 
       - name: Retain source data for isolated CodeQL jobs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codeql-source-${{ github.run_id }}-${{ github.run_attempt }}
           path: codeql-source
@@ -296,7 +296,7 @@ jobs:
     name: Analyze (${{ matrix.language }})
     needs: prepare
     if: ${{ needs.prepare.result == 'success' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     permissions:
       actions: read
@@ -322,7 +322,7 @@ jobs:
           path: codeql-source
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.language }}
           build-mode: none
@@ -337,7 +337,7 @@ jobs:
             disable-default-queries: false
 
       - name: Analyze source data without uploading partial results
-        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           output: ${{ runner.temp }}/codeql-sarif
           upload: never
@@ -376,7 +376,7 @@ jobs:
           PY
 
       - name: Retain this language result for one atomic upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codeql-sarif-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.language }}
           path: codeql-sarif/${{ matrix.language }}.sarif
@@ -388,7 +388,7 @@ jobs:
     name: Upload complete CodeQL analysis
     needs: [prepare, analyze]
     if: ${{ needs.prepare.result == 'success' && needs.analyze.result == 'success' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       actions: read

@@ -1430,7 +1430,7 @@ static bool scan_path_for_names(const char *const *names, size_t name_count,
 static bool python_candidate_runs_required_version(const char *executable_path) {
     static const char *probe =
         "import sys; sys.exit(sys.implementation.name != 'cpython' or "
-        "sys.version_info[:2] != (3, 14))";
+        "sys.version_info[:2] != (3, 15))";
     NkProcessHandle process;
     const char *argv[] = { executable_path, "-c", probe, NULL };
     if (!executable_path || !executable_path[0] ||
@@ -1708,7 +1708,7 @@ bool package_builder_toolchain_missing(
     const char *fix = NULL;
     if (!have_python) {
         tool = "python";
-        fix = "Install CPython 3.14 (see docs/SETUP.md) or set the PYTHON environment "
+        fix = "Install CPython 3.15 (see docs/SETUP.md) or set the PYTHON environment "
               "variable to the interpreter.";
     } else if (!have_gcc) {
         tool = "gcc";

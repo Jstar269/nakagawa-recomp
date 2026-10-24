@@ -385,8 +385,10 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertNotIn("No second verified title.", readme)
         self.assertIn("consent once", readme.lower())
         self.assertNotIn("automatic decryption is in the works", readme.lower())
-        self.assertIn("#548", readme)
-        self.assertIn("#550", readme)
+        # Built-in decryption was removed: the README says so and
+        # never asks for a key file.
+        self.assertIn("does not decrypt games", readme)
+        self.assertNotIn("key file", readme.lower())
         self.assertIn("#308", release_notes)
         self.assertNotIn("#285", release_notes)
         self.assertIn("PGD-protected content is unsupported", release_notes)
@@ -577,7 +579,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
         missing = [name for name in required if not shutil.which(name)]
         if missing:
             self.skipTest(
-                "the player package route requires " + ", ".join(missing) + " on PATH"
+                "WINDOWS_ONLY: the player package route requires " + ", ".join(missing) + " on PATH"
             )
         # The package route links SDL3; a host without the supported toolchain
         # is a SKIP carrying the Makefile's own remedy, not a failed route.
@@ -640,7 +642,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
 
     def run_launch(
         self, perf_csv: Path, *, accept_presented_frames: int | None = None,
-        headless_timeout_ms: int | None = None,
+        headless_timeout_ms: int | None = None, user_data_root: Path | None = None,
     ) -> subprocess.CompletedProcess:
         environment = os.environ.copy()
         environment["LOCALAPPDATA"] = str(self.local_appdata)
@@ -660,8 +662,10 @@ class TestPlayerPackageRoute(unittest.TestCase):
             environment["PATH"] = str(ucrt_bin) + os.pathsep + environment.get("PATH", "")
         arguments = [
             str(self.player), "--empty", "--launch-index=0", "--headless-launch",
-            f"--runtime-root={self.user_root}",
+            f"--runtime-root={user_data_root or self.user_root}",
         ]
+        if user_data_root is not None:
+            arguments.append(f"--user-data-root={user_data_root}")
         if accept_presented_frames is not None:
             arguments.append(
                 f"--headless-accept-presented-frames={accept_presented_frames}"
@@ -772,6 +776,9 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertEqual(manifest["executable"], expected_profile["manifest"]["executable"])
         self.assertEqual(manifest["modules"], [])
         self.assertNotIn("runtime_bindings", manifest)
+        # The disc is read through PSP_ISO; a declared data root would make the
+        # player refuse PLAY for a folder nothing creates.
+        self.assertEqual(manifest["filesystem"]["data_root"], "")
 
         identity = package_cache.read_local_title_input_identity(user_root, DISC_ID)
         self.assertIsNotNone(identity)
@@ -795,6 +802,18 @@ class TestPlayerPackageRoute(unittest.TestCase):
         )
         self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
         self.assertIn("PACKAGE_STATUS=OK", validated.stdout)
+
+        # PLAY, headless, through the player's own launch session, with the
+        # library in this user root. Nothing in a real import creates a data
+        # folder, so the one stage_library made for the native profile goes.
+        shutil.rmtree(user_root / "data", ignore_errors=True)
+        launched = self.run_launch(self.sandbox / "generic-perf.csv", user_data_root=user_root,
+                                   accept_presented_frames=FRAMES)
+        output = launched.stdout + launched.stderr
+        self.assertNotIn("needs its data folder", output)
+        self.assertIn("[PLAYER] Launch index 0: PLAY NOW available", launched.stdout, output[-4000:])
+        self.assertEqual(launched.returncode, 0, output[-4000:])
+        self.assertIn("HEADLESS_ACCEPTANCE status=PASS", launched.stdout)
         self.assertEqual(tracked_status(), before)
 
     def test_fixed_address_exec_outside_ram_has_named_builder_boundary(self):
@@ -1311,9 +1330,10 @@ class TestPlayerPackageRoute(unittest.TestCase):
         encrypted = self.run_build_action(encrypted_root)
         self.assertNotEqual(encrypted.returncode, 0)
         self.assertIn("PACKAGE_BUILD_ROUTE status=FAIL", encrypted.stdout)
-        self.assertIn("[preflight] FAIL: Encrypted executable", encrypted.stdout)
-        self.assertIn("supply decrypted modules at", encrypted.stdout)
-        self.assertIn("local key file", encrypted.stdout)
+        self.assertIn("[preflight] FAIL: ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. "
+                      "Nakagawa does not decrypt games. Place a decrypted EBOOT.elf from "
+                      "your own copy in ", encrypted.stdout)
+        self.assertNotIn("key file", encrypted.stdout)
         self.assertNotRegex(encrypted.stdout, r"#[0-9]+")
         self.assertNotIn("automatic decryption is in the works", encrypted.stdout.lower())
         self.assertFalse((encrypted_root / "packages" / DISC_ID).exists())
@@ -1469,6 +1489,34 @@ class TestRuntimeDllStaging(unittest.TestCase):
             for licence in ("SDL3_ttf", "FreeType", "libpng", "zlib"):
                 self.assertIn(licence, notice_text)
 
+    def test_player_staging_copies_ui_fonts_and_adjacent_licences(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            player_dir = Path(tmp) / "player"
+            staged = stage_runtime_dlls.stage_runtime_dlls(
+                player_dir,
+                roots=[],
+                search_dirs=[],
+                env={},
+                notices=False,
+                repo_root=ROOT,
+                include_ui_fonts=True,
+            )
+            source_root = ROOT / "assets" / "fonts" / "ui"
+            expected = {
+                (Path("assets") / "fonts" / "ui" / path.relative_to(source_root)).as_posix()
+                for path in source_root.rglob("*") if path.is_file()
+            }
+            self.assertEqual(set(staged), expected)
+            for relative in expected:
+                source = ROOT / Path(relative)
+                destination = player_dir / Path(relative)
+                self.assertTrue(destination.is_file(), relative)
+                self.assertEqual(destination.read_bytes(), source.read_bytes(), relative)
+            self.assertTrue((player_dir / "assets/fonts/ui/manifest.json").is_file())
+            self.assertTrue((player_dir / "assets/fonts/ui/geist/OFL.txt").is_file())
+
     def test_missing_sdl3_ttf_fails_the_stage_closed(self) -> None:
         import stage_runtime_dlls
 
@@ -1617,6 +1665,58 @@ class TestRuntimeDllStaging(unittest.TestCase):
                     notices=False,
                 )
             self.assertIn("libfreetype-6.dll staging collision", str(ctx.exception))
+
+    def test_stage_runtime_dlls_refresh_replaces_changed_bytes(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            bin_dir = Path(tmp) / "toolchain-bin"
+            self.write_fake_dlls(bin_dir)
+            imports_of, is_system = self.fake_resolver()
+
+            (package_dir / "SDL3.dll").write_bytes(b"OLD-BYTES")
+
+            stage_runtime_dlls.stage_runtime_dlls(
+                package_dir,
+                roots=["SDL3.dll"],
+                search_dirs=[bin_dir],
+                env={},
+                imports_of=imports_of,
+                is_system=is_system,
+                notices=False,
+                refresh=True,
+            )
+            self.assertEqual(
+                (package_dir / "SDL3.dll").read_bytes(),
+                (bin_dir / "SDL3.dll").read_bytes(),
+            )
+
+    def test_stage_runtime_dlls_refresh_false_keeps_old_copy(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            bin_dir = Path(tmp) / "toolchain-bin"
+            self.write_fake_dlls(bin_dir)
+            imports_of, is_system = self.fake_resolver()
+
+            old = b"OLD-BYTES"
+            (package_dir / "SDL3.dll").write_bytes(old)
+
+            stage_runtime_dlls.stage_runtime_dlls(
+                package_dir,
+                roots=["SDL3.dll"],
+                search_dirs=[bin_dir],
+                env={},
+                imports_of=imports_of,
+                is_system=is_system,
+                notices=False,
+                refresh=False,
+            )
+            self.assertEqual((package_dir / "SDL3.dll").read_bytes(), old)
 
     def test_runtime_package_refuses_a_font_dll_collision_instead_of_warning(self) -> None:
         """A directory named SDL3_ttf.dll is a staging collision, not an absent optional

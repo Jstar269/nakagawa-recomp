@@ -130,7 +130,7 @@ two additional record tables; revisions 0, 1, and 2 use the base header [C3],
 | `0x0014` | 4 | Character-pointer entry count. |
 | `0x0018` | 4 | Character-map bits per entry. |
 | `0x001C` | 4 | Character-pointer bits per entry. |
-| `0x0020` | 2 | Reserved bytes. |
+| `0x0020` | 1 each | Rounding units, in bytes, of the packed character-map section (`0x20`) and the packed character-pointer section (`0x21`); 4 on every console font. A writer must not leave them zero (see below). |
 | `0x0022` | 1 | Reported source bits per pixel. |
 | `0x0023` | 1 | Reserved byte. |
 | `0x0024` | 4 each | Horizontal size, vertical size, horizontal resolution, and vertical resolution, in that order. |
@@ -145,6 +145,7 @@ two additional record tables; revisions 0, 1, and 2 use the base header [C3],
 | `0x00F4` | 4 each | Maximum horizontal and vertical sizes, in that order. |
 | `0x00FC` | 2 each | Maximum glyph width and height, in that order. |
 | `0x00FE` | 2 | Reserved bytes. |
+| `0x0100` | 2 | Not in the public description. The console library multiplies a character-pointer value by this field to reach the glyph record: 4 on console fonts (the factor in §3.4). **Measured (#1055, PSP-3000 / 6.61):** 0 makes every glyph resolve to the start of glyph data and nothing draws; 4 draws. A writer must emit 4. |
 | `0x0102` | 1 each | Counts of dimension, X-adjustment, Y-adjustment, and advance metric records, in that order. |
 | `0x0106` | 102 | Reserved bytes. |
 | `0x016C` | 4 | Shadow character-map entry count. |
@@ -192,10 +193,17 @@ A packed section containing *n* entries of *b* bits occupies the checked
 number of whole 32-bit words needed for those entries: `4 × ceil(n × b ÷ 32)`
 bytes. A metric section contains exactly 8 bytes per entry, and each revision-3
 table contains exactly 4 bytes per entry [C3]. Rounding packed sections to a
-whole 32-bit word rather than merely a whole byte is a project decision: the
-public description's size expression is ambiguous at this boundary, observed
-16-bit shadow entries expose the odd-count case, and O-5 keeps a hardware probe
-open. The next section begins immediately after the rounded bytes; no extra
+whole 32-bit word rather than merely a whole byte matches the console library
+(measured on a PSP-3000 / 6.61, issue #1055): it computes `ceil(n × b ÷ 8)` and
+rounds that up to a multiple of header byte `0x20` for the character map and
+byte `0x21` for the character-pointer table, and every console font carries 4 in
+both. A zero in either byte is a division by zero: the library executes
+`break 7` inside `sceFontOpenUserMemory`/`sceFontOpenUserFile` and the font
+never opens, while 4 in both opens it (hardware, the same files). Both bytes
+were previously listed as reserved; a writer must emit 4 in both. The
+shadow-map rounding unit (the low byte at `0x0174`) is 4 on console fonts; a
+font with a zero there opened on the same hardware run, so it is not required.
+The next section begins immediately after the rounded bytes; no extra
 inter-section alignment is applied. All count products and derived end offsets
 are checked before an offset is formed.
 
@@ -346,12 +354,14 @@ high nibbles [C3]. The fixed prefix is:
 | 28–34 | 7 | Signed 7-bit horizontal bitmap adjustment, range −64 through 63. |
 | 35–41 | 7 | Signed 7-bit vertical bitmap adjustment, range −64 through 63. |
 | 42–43 | 2 | Bitmap row order: 1 horizontal rows, 2 vertical rows, 3 three-character composite payload, 0 unsupported/unknown. |
-| 44 | 1 | Metric-role bit retained by the format but not used to select the primary record layout; see open question O-4. |
+| 44 | 1 | Role bit: 1 for a character record, 0 for a shadow record. This reader does not use it to select the primary record layout (open question O-4), but the console library does (see the measured note below); a writer sets it to 1. |
 | 45 | 1 | When 1, the dimension group is an 8-bit table index; when 0, it is an inline 64-bit pair. |
 | 46 | 1 | When 1, the X-adjustment group is an 8-bit table index; when 0, it is an inline 64-bit pair. |
 | 47 | 1 | When 1, the Y-adjustment group is an 8-bit table index; when 0, it is an inline 64-bit pair. |
 | 48–54 | 7 | Unassigned bits; ignored. |
 | 55–63 | 9 | Shadow identifier interpreted by §3.3. |
+
+**Console library use of bits 0–13 and bit 44 (measured, #1055).** In a console font file every glyph record's bits 0–13 equal the record's own length (12 bytes for a glyph without a bitmap), i.e. the distance to the next record in pointer order, rounded to 4 bytes (340 of 340 consecutive records checked in a console-derived font file). The console library sizes a per-glyph allocation as this field minus 8 for revision 2 and later; a font whose field was 0 made `sceFontGetCharInfo` and `sceFontGetCharGlyphImage` request `0xfffffff8` bytes and fail with `0x80460001` on a PSP-3000 / 6.61, and the same font with the field set to `12 + bitmap bytes` (and header `0x100` = 4) returned char info and drew. A writer that emits no shadow record writes the primary record's own length here. Bit 44 is not layout-neutral for this library (sixth boot, PSP-3000 / 6.61): with bit 44 clear and bits 45–47 set the char info metrics came back as raw table bytes and the bitmaps were scrambled; the same file with bit 44 set returned the project's own metrics and clean glyph bitmaps. The record-left/top fields (bits 28–41) are not needed to decode or draw: zeroing them left the metrics and bitmaps byte-identical and changed only the char info `bitmapLeft`/`bitmapTop`, which the library passes through (the console uses the rows above the baseline for the top). Header size, resolution, version, vertical advance, shadow-map width and byte `0x174` changed nothing in the drawn result (the header vertical advance reaches only the font info). A writer should therefore set bit 44 and fill left/top from the raster.
 
 Bits 64 onward contain exactly three metric groups in dimension, X-adjustment,
 Y-adjustment order, followed by one 8-bit advance-table index. Each of the
@@ -964,7 +974,11 @@ evidence and what remains open:
    documented 16; every other width is still refused by name. The section's
    whole-32-bit-word rounding after an odd count remains an unproven project
    decision, because the description gives that map a plain two-bytes-per-entry
-   size with no padding rule and no font may be read to settle it.
+   size with no padding rule and no font may be read to settle it. **Measured
+   2026-10-23 (#1055):** the console library's rounding unit for the character
+   map and character-pointer sections is header bytes `0x20`/`0x21` (4 on console
+   fonts), so whole-word rounding is the console unit for those two sections; the
+   shadow-map case (empty in project fonts) is still not settled.
 6. **O-6 — invalid metric indices.** Must a missing table entry reject open,
    or may firmware render a zero/default metric? **Project decision, unmeasured
    on PSP:** accept the maximum one-byte index/count pair and return a zero pair

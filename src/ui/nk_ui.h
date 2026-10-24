@@ -50,6 +50,17 @@ typedef enum {
     NK_UI_LAYOUT_COLUMN
 } NkUiLayoutDirection;
 
+/* Where a container places its children on one axis. Zero is the start (left or
+   top); any value other than CENTER or END is read as START. */
+typedef enum {
+    NK_UI_ALIGN_START = 0,
+    NK_UI_ALIGN_CENTER,
+    NK_UI_ALIGN_END
+} NkUiAlign;
+
+/* Zero-initialise layouts and styles (memset or "= {0}") before setting fields:
+   the fields after padding_bottom and corner_radius were added later and default
+   to zero (start alignment, no clipping, every corner rounded). */
 typedef struct {
     NkUiSizing width;
     NkUiSizing height;
@@ -59,14 +70,40 @@ typedef struct {
     float padding_top;
     float padding_right;
     float padding_bottom;
+    NkUiAlign align_x;
+    NkUiAlign align_y;
+    bool clip;          /* clip children to this container's bounds */
 } NkUiLayout;
+
+/* Corners that stay square even when corner_radius is set, for an art panel
+   flush with the top of a rounded card. */
+enum {
+    NK_UI_CORNER_SQUARE_TL = 1u << 0,
+    NK_UI_CORNER_SQUARE_TR = 1u << 1,
+    NK_UI_CORNER_SQUARE_BR = 1u << 2,
+    NK_UI_CORNER_SQUARE_BL = 1u << 3
+};
 
 typedef struct {
     uint32_t fill_rgba;
     uint32_t border_rgba;
     float border_width;
     float corner_radius;
+    uint32_t square_corners; /* NK_UI_CORNER_SQUARE_* bits */
 } NkUiStyle;
+
+/* One run of text. rgba 0 inherits the container's text colour (paper, or ink on
+   an accent fill). letter_spacing is extra logical px after every character (CSS
+   letter-spacing); line_height 0 means one font size; wrap false keeps the run on
+   one line. */
+typedef struct {
+    int font;
+    int size_px;
+    uint32_t rgba;
+    float letter_spacing;
+    float line_height;
+    bool wrap;
+} NkUiTextStyle;
 
 typedef struct {
     float width;
@@ -212,7 +249,11 @@ typedef struct {
 enum {
     NK_UI_BUTTON_DISABLED = 1u << 0,
     NK_UI_BUTTON_PRIMARY = 1u << 1,
-    NK_UI_BUTTON_DANGER = 1u << 2
+    NK_UI_BUTTON_DANGER = 1u << 2,
+    NK_UI_BUTTON_LARGE = 1u << 3,   /* 52 px, the one main action on a screen */
+    NK_UI_BUTTON_SMALL = 1u << 4,   /* 34 px, inline and pager actions */
+    NK_UI_BUTTON_GROW = 1u << 5,    /* fill the row instead of fitting the label */
+    NK_UI_BUTTON_NOT_DEFAULT = 1u << 6 /* never the screen's default focus (top-bar tabs) */
 };
 
 /* Device scale and edge rounding are shared helpers for hosts and tests. */
@@ -245,6 +286,33 @@ void nk_ui_end_container(NkUi *ui);
    when the button could not be added. */
 bool nk_ui_button(NkUi *ui, NkUiId id, const char *label, uint32_t flags);
 void nk_ui_label(NkUi *ui, NkUiId id, const char *text, int font, int size_px);
+/* A text run with an explicit style. The text is copied into the frame, so a
+   temporary buffer is fine. */
+void nk_ui_text(NkUi *ui, NkUiId id, const char *text, const NkUiTextStyle *style);
+/* Copies text into storage that lives until the next nk_ui_begin. Returns ""
+   when the frame arena is full or no frame is open. */
+const char *nk_ui_frame_text(NkUi *ui, const char *text);
+/* Word-wraps text in `style` at max_width logical px and keeps at most
+   max_lines lines, ending the last kept line with an ellipsis when text was cut.
+   Returns frame storage (or text itself when it already fits). Clay clips at
+   most ten containers per layout, so long names are shortened, not clipped. */
+const char *nk_ui_text_clamp(NkUi *ui, const char *text, const NkUiTextStyle *style,
+                             float max_width, int max_lines);
+/* An empty element that takes space (a spacer or a fixed gap). */
+void nk_ui_spacer(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height);
+/* Draws the focus ring around element `id` this frame, outside its bounds, with
+   the ring radius following the element's own corner radius. The widgets call it
+   for their focused control; a screen calls it for custom focusable containers. */
+void nk_ui_focus_ring(NkUi *ui, NkUiId id, float corner_radius);
+/* Consumes the first queued press of `type` (for example NK_UI_EV_TAB from the
+   shoulder buttons or Q/E, NK_UI_EV_MENU, NK_UI_EV_OPTIONS) and returns true;
+   dir, when not NULL, receives its direction. Screens call it for the actions
+   their prompt bar names that are not a focused control's activation. */
+bool nk_ui_take_event(NkUi *ui, NkUiEventType type, NkUiNavDir *dir);
+/* Theme the frame was created with (a copy owned by ui). */
+const NkUiTheme *nk_ui_theme(const NkUi *ui);
+/* The prompt-glyph style in the current preferences. */
+NkUiPromptStyle nk_ui_prompt_style(const NkUi *ui);
 
 /* Launcher-only custom element. Returns true when the waves were queued for the
    frame. Returns false, and draws nothing, on an overlay host (rejected by

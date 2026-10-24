@@ -193,6 +193,10 @@ static void write_binary_file(const char *path, const unsigned char *bytes, size
     assert(fclose(file) == 0);
 }
 
+/* The old key-file override, left set to an existing file for the whole run
+ * so the preflight checks can prove it is ignored. */
+static char g_decoy_key_path[NATIVE_TEST_PATH_MAX + 32];
+
 static void write_text_file(const char *path, const char *text) {
     FILE *file = fopen(path, "wb");
     assert(file != NULL);
@@ -1997,6 +2001,33 @@ static void test_package_build_lifecycle(const char *self_executable) {
     printf("[PLAYER_STATE_TEST] incompatible package rebuild success and failed-build preservation PASS\n");
 }
 
+/* An archive disc stages a deep tree (thirteen levels for one retail layout). The
+ * discard walk used to keep 128 KiB of buffers on the stack per level and overflowed
+ * the 1 MiB thread stack on Windows (0xC00000FD) while discarding such a tree. */
+static void test_stage_discard_removes_a_deep_tree(void) {
+    char root[NK_MAX_PATH];
+    char path[NK_MAX_PATH * 4];
+    char file[NK_MAX_PATH * 4 + 16];
+    const char sep = nk_platform_path_separator();
+    int written = snprintf(root, sizeof(root), "%s%c.staging_DEEP00001",
+                           native_test_get_root(), sep);
+    assert(written > 0 && (size_t)written < sizeof(root));
+    snprintf(path, sizeof(path), "%s", root);
+    for (int depth = 0; depth < 32; depth++) {
+        size_t length = strlen(path);
+        assert(length + 4 < sizeof(path));
+        snprintf(path + length, sizeof(path) - length, "%cd%d", sep, depth % 10);
+        assert(nk_platform_mkdir_p(path));
+        written = snprintf(file, sizeof(file), "%s%cf.bin", path, sep);
+        assert(written > 0 && (size_t)written < sizeof(file));
+        write_text_file(file, "x");
+    }
+    assert(player_stage_discard(root));
+    assert(!nk_platform_file_exists(file));
+    assert(!nk_platform_dir_exists(root));
+    printf("PASS: staging discard removes a 32-level tree without exhausting the stack\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -2004,7 +2035,7 @@ int main(int argc, char **argv) {
     if (argc == 3 && strcmp(argv[1], "-c") == 0) {
         static const char python_probe[] =
             "import sys; sys.exit(sys.implementation.name != 'cpython' or "
-            "sys.version_info[:2] != (3, 14))";
+            "sys.version_info[:2] != (3, 15))";
         return strcmp(argv[2], python_probe) == 0 ? 0 : 94;
     }
     if (argc >= 3 && strcmp(argv[2], "build-package") == 0) {
@@ -2047,25 +2078,26 @@ int main(int argc, char **argv) {
         snprintf(self_executable, sizeof(self_executable), "%s", argv[0]);
     }
     {
-        /* A developer machine may point NAKAGAWA_PSP_KEY_FILE at the real key
-         * file. Plant a decoy override that names an existing file: unless the
-         * isolation clears it, the no-key-file preflight check below consults
-         * the decoy instead of the isolated user-data root and fails. */
-        char decoy_key[NATIVE_TEST_PATH_MAX + 32];
-        int written = snprintf(decoy_key, sizeof(decoy_key), "%s%cdeveloper-keyfile.json",
+        /* Nakagawa does not decrypt games and reads no key file. Leave the old
+         * key-file override pointing at an existing file for the whole run:
+         * the encrypted-executable and encrypted-module checks below must
+         * ignore it, decrypt nothing and never name it. */
+        int written = snprintf(g_decoy_key_path, sizeof(g_decoy_key_path),
+                               "%s%cdeveloper-keyfile.json",
                                native_test_get_root(), nk_platform_path_separator());
-        assert(written > 0 && (size_t)written < sizeof(decoy_key));
-        write_text_file(decoy_key, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
-        native_test_set_env("NAKAGAWA_PSP_KEY_FILE", decoy_key);
+        assert(written > 0 && (size_t)written < sizeof(g_decoy_key_path));
+        write_text_file(g_decoy_key_path, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
+        native_test_set_env("NAKAGAWA_PSP_KEY_FILE", g_decoy_key_path);
     }
     native_test_isolate_user_data_roots();
     {
         const char *key_override = getenv("NAKAGAWA_PSP_KEY_FILE");
-        assert(key_override == NULL || key_override[0] == '\0');
+        assert(key_override != NULL && strcmp(key_override, g_decoy_key_path) == 0);
     }
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
 
+    test_stage_discard_removes_a_deep_tree();
     test_package_build_lifecycle(self_executable);
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
@@ -2641,7 +2673,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 16); /* two pacing modes; scaling; launcher fullscreen */
+        assert(player_app_focus_count(stops) == 17); /* two pacing modes; scaling; launcher fullscreen; online options */
         stops->active_view = VIEW_PREREQ_CONSENT;
         assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_PREREQ_PROGRESS;
@@ -2683,6 +2715,8 @@ int main(int argc, char **argv) {
         assert(player_app_focus_count(stops) == 3);
         stops->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
         assert(player_app_focus_count(stops) == 6); /* accept, cycle, back, cancel, import, remove */
+        stops->wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
+        assert(player_app_focus_count(stops) == 5); /* online, developer, continue, skip, back */
         stops->wizard.step = WIZARD_STEP_READY_LAUNCH;
         assert(player_app_focus_count(stops) == 3);
         free(stops);
@@ -2701,6 +2735,8 @@ int main(int argc, char **argv) {
         assert(wiz->wizard.step == WIZARD_STEP_WELCOME);
         assert(wiz->focus_index == 0);
 
+        player_app_wizard_next(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
         player_app_wizard_next(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_SELECT_GAME);
 
@@ -2774,6 +2810,8 @@ int main(int argc, char **argv) {
         assert(wiz->wizard.step == WIZARD_STEP_INSPECT_VERIFY);
         player_app_wizard_back(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_SELECT_GAME);
+        player_app_wizard_back(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
         player_app_wizard_back(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_WELCOME);
         player_app_wizard_back(wiz);
@@ -3013,12 +3051,38 @@ int main(int argc, char **argv) {
             decrypted_dir, nk_platform_path_separator());
         assert(elf_written > 0 && (size_t)elf_written < sizeof(decrypted_elf));
         remove(decrypted_elf);
+        /* A key file at the old default location is ignored as well. */
+        char old_key_dir[700], old_key_file[760], staging_dir[700];
+        int key_written = snprintf(old_key_dir, sizeof(old_key_dir), "%s%ckeys",
+                                   preflight_root, nk_platform_path_separator());
+        assert(key_written > 0 && (size_t)key_written < sizeof(old_key_dir));
+        assert(nk_platform_mkdir_p(old_key_dir));
+        key_written = snprintf(old_key_file, sizeof(old_key_file), "%s%cpsp-keyfile.json",
+                               old_key_dir, nk_platform_path_separator());
+        assert(key_written > 0 && (size_t)key_written < sizeof(old_key_file));
+        write_text_file(old_key_file, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
+        key_written = snprintf(staging_dir, sizeof(staging_dir), "%s%ccache%cdecrypted",
+                               preflight_root, nk_platform_path_separator(),
+                               nk_platform_path_separator());
+        assert(key_written > 0 && (size_t)key_written < sizeof(staging_dir));
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
         assert(check && check->status == PREFLIGHT_UNSUPPORTED);
-        assert(strstr(check->message, "Encrypted executable: supply decrypted modules at ") != NULL);
+        assert(strstr(check->message, "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. "
+                                      "Nakagawa does not decrypt games. Place a decrypted "
+                                      "EBOOT.elf from your own copy in ") != NULL);
         assert(strstr(check->message, decrypted_dir) != NULL);
+        assert(strstr(check->message, "key file") == NULL && strstr(check->message, "keyfile") == NULL);
+        assert(strstr(check->message, g_decoy_key_path) == NULL);
         assert(check->issue_count == 1 && check->issue_numbers[0] == 308);
+        /* Nothing was decrypted or staged. */
+        {
+            FILE *produced = fopen(decrypted_elf, "rb");
+            assert(produced == NULL);
+        }
+        assert(!nk_platform_dir_exists(staging_dir));
+        assert(remove(old_key_file) == 0);
+        assert(test_rmdir(old_key_dir) == 0);
 
         write_synthetic_mips_elf(decrypted_elf);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
@@ -3107,6 +3171,46 @@ int main(int argc, char **argv) {
                 module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
                 assert(module_check && module_check->status == PREFLIGHT_OK);
                 assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+                write_guest_module_iso(module_iso_path, "libfont.prx", prx_bytes,
+                                       sizeof(prx_bytes));
+            }
+
+            /* An encrypted disc module with no plain copy is not ready: Nakagawa
+               does not decrypt games and ignores the key-file override, so the
+               check names the module and the folder, and writes nothing. */
+            {
+                unsigned char encrypted_prx[0x100];
+                memset(encrypted_prx, 0, sizeof(encrypted_prx));
+                memcpy(encrypted_prx, "~PSP", 4);
+                encrypted_prx[0x27] = 1;    /* one segment */
+                encrypted_prx[0x55] = 0x10; /* segment size 0x1000 */
+                write_guest_module_iso(module_iso_path, "libfont.prx", encrypted_prx,
+                                       sizeof(encrypted_prx));
+                remove(module_copy);
+                player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+                module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+                assert(module_check && module_check->status == PREFLIGHT_MISSING);
+                assert(strstr(module_check->message, "Guest modules: 0 of 1 ready; "
+                                                     "ENCRYPTED_MODULE: libfont.prx is "
+                                                     "encrypted. Nakagawa does not decrypt "
+                                                     "games. Place a decrypted libfont.prx "
+                                                     "from your own copy in ") != NULL);
+                assert(strstr(module_check->message, module_dir) != NULL);
+                assert(strstr(module_check->message, "key file") == NULL &&
+                       strstr(module_check->message, "keyfile") == NULL);
+                assert(strstr(module_check->message, g_decoy_key_path) == NULL);
+                {
+                    FILE *produced = fopen(module_copy, "rb");
+                    assert(produced == NULL);
+                }
+
+                /* The user's plain copy makes the encrypted disc module ready. */
+                write_synthetic_guest_prx(module_copy, sizeof(prx_bytes));
+                player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+                module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+                assert(module_check && module_check->status == PREFLIGHT_OK);
+                assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+                assert(remove(module_copy) == 0);
                 write_guest_module_iso(module_iso_path, "libfont.prx", prx_bytes,
                                        sizeof(prx_bytes));
             }
@@ -4305,9 +4409,109 @@ int main(int argc, char **argv) {
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
 
+        /* Online and developer options: both off by default, the online parts on
+           once online mode is; all five round-trip, a non-boolean keeps the
+           default, and none of them moves network_mode off offline. */
+        player_app_init(s_app2);
+        assert(!s_app2->settings.online_mode && !s_app2->settings.developer_mode);
+        assert(s_app2->settings.online_updates && s_app2->settings.online_news &&
+               s_app2->settings.online_reports);
+        s_app2->settings.online_mode = true;
+        s_app2->settings.online_news = false;
+        s_app2->settings.developer_mode = true;
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.online_mode && s_app2->settings.developer_mode);
+        assert(s_app2->settings.online_updates && !s_app2->settings.online_news &&
+               s_app2->settings.online_reports);
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"network_mode\": \"online\", "
+                        "\"online_mode\": \"yes\", \"developer_mode\": 1}");
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(!s_app2->settings.online_mode && !s_app2->settings.developer_mode);
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+
         remove(test_settings_path);
         free(s_app);
         free(s_app2);
+    }
+
+    /* 15b. Developer log: redaction, the ring, the panel and the wizard step. */
+    {
+        char out[256];
+        PlayerApp *dev = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        printf("[PLAYER_STATE_TEST] Subtest 15b: developer log and options step\n");
+        fflush(stdout);
+        assert(dev != NULL);
+#if defined(_WIN32) || defined(_WIN64)
+        assert(player_dev_log_redact("open D:\\Profiles\\Synth\\AppData\\x.log",
+                                     "D:\\Profiles\\Synth", "Synth", out, sizeof(out)));
+        assert(strcmp(out, "open %USERPROFILE%\\AppData\\x.log") == 0);
+        /* The other slash style and another case match too. */
+        assert(player_dev_log_redact("d:/profiles/synth/saves", "D:\\Profiles\\Synth\\", "Synth",
+                                     out, sizeof(out)));
+        assert(strcmp(out, "%USERPROFILE%/saves") == 0);
+#else
+        assert(player_dev_log_redact("open /srv/profiles/synth/.local/x.log", "/srv/profiles/synth/", "synth",
+                                     out, sizeof(out)));
+        assert(strcmp(out, "open %USERPROFILE%/.local/x.log") == 0);
+#endif
+        /* The user name is replaced as a whole word only. */
+        assert(player_dev_log_redact("by synth, not synthetic", NULL, "synth", out, sizeof(out)));
+        assert(strcmp(out, "by <user>, not synthetic") == 0);
+        /* Short names are left alone rather than blanking common letters. */
+        assert(player_dev_log_redact("ab cd", NULL, "ab", out, sizeof(out)));
+        assert(strcmp(out, "ab cd") == 0);
+        assert(!player_dev_log_redact("abcdef", NULL, NULL, out, 4u));
+        assert(strcmp(out, "abc") == 0);
+
+        player_app_init(dev);
+        for (int i = 0; i < PLAYER_DEV_LOG_LINES + 5; ++i) {
+            player_dev_log_add(dev, "test", "line %d\nsplit", i);
+        }
+        assert(player_dev_log_count(dev) == PLAYER_DEV_LOG_LINES);
+        assert(strcmp(player_dev_log_line(dev, 0), "[test] line 5 split") == 0);
+        snprintf(out, sizeof(out), "[test] line %d split", PLAYER_DEV_LOG_LINES + 4);
+        assert(strcmp(player_dev_log_line(dev, PLAYER_DEV_LOG_LINES - 1u), out) == 0);
+        player_app_set_error(dev, "SYNTHETIC_ERROR", "Synthetic", "m", "Back", VIEW_LIBRARY);
+        assert(strstr(player_dev_log_line(dev, PLAYER_DEV_LOG_LINES - 1u),
+                      "SYNTHETIC_ERROR: Synthetic") != NULL);
+
+        /* The panel opens only with developer mode, and closes to where it was. */
+        dev->active_view = VIEW_SETTINGS;
+        assert(!player_app_open_developer_log(dev));
+        assert(dev->active_view == VIEW_SETTINGS);
+        dev->settings.developer_mode = true;
+        assert(player_app_open_developer_log(dev));
+        assert(dev->active_view == VIEW_DEVELOPER_LOG);
+        assert(player_app_focus_count(dev) == 3);
+        player_app_close_developer_log(dev);
+        assert(dev->active_view == VIEW_SETTINGS);
+        dev->active_view = VIEW_ONLINE_SETTINGS;
+        assert(player_app_focus_count(dev) == 4); /* online, developer, open log, back */
+        dev->settings.online_mode = true;
+        assert(player_app_focus_count(dev) == 7);
+
+        /* The wizard step: Welcome -> Options -> Select game, and skipping
+           turns both off. Every first run passes through it: it needs no game. */
+        dev->active_view = VIEW_SETUP_WIZARD;
+        dev->wizard.step = WIZARD_STEP_WELCOME;
+        player_app_wizard_next(dev);
+        assert(dev->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
+        player_app_wizard_skip_options(dev);
+        assert(dev->wizard.step == WIZARD_STEP_SELECT_GAME);
+        assert(!dev->settings.online_mode && !dev->settings.developer_mode);
+        player_app_wizard_back(dev);
+        assert(dev->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
+        player_app_set_online_mode(dev, true);
+        player_app_wizard_next(dev);
+        assert(dev->wizard.step == WIZARD_STEP_SELECT_GAME);
+        assert(dev->settings.online_mode);
+        assert(dev->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+        free(dev);
     }
 
     /* 16. Icon and PNG image validation / fallback logic.
@@ -4404,12 +4608,12 @@ int main(int argc, char **argv) {
 
         /* Set build error with stage, boundary text, and log path */
         player_app_set_build_error(bapp, "preflight",
-                                   "Encrypted executable: supply decrypted modules.",
+                                   "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.",
                                    "C:/logs/build_TEST80001.log");
         assert(bapp->active_view == VIEW_ERROR);
         assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
         assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
-        assert(strstr(bapp->last_error.boundary_text, "supply decrypted modules") != NULL);
+        assert(strstr(bapp->last_error.boundary_text, "ENCRYPTED_EXECUTABLE") != NULL);
         assert(strcmp(bapp->last_error.log_file_path, "C:/logs/build_TEST80001.log") == 0);
 
         /* Cancellation transitions session */
@@ -5561,7 +5765,7 @@ int main(int argc, char **argv) {
         assert(capp->active_view == VIEW_PREREQ_CONSENT);
         assert(capp->prerequisites.phase == PLAYER_PREREQ_CONSENT);
         assert(capp->prerequisites.item_count == 35);
-        assert(capp->prerequisites.total_bytes == UINT64_C(100665604));
+        assert(capp->prerequisites.total_bytes == UINT64_C(101853260));
         assert(capp->build_session.is_building == false);
         /* Consent cancellation has no side effects. */
         player_app_prereq_cancel(capp);
@@ -5584,7 +5788,7 @@ int main(int argc, char **argv) {
         assert(capp->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP);
         assert(capp->active_view == VIEW_PREREQ_PROGRESS);
         player_app_prereq_update_progress(capp, "cpython-embed-amd64", 64, 128,
-                                          64, UINT64_C(100665604));
+                                          64, UINT64_C(101853260));
         assert(strcmp(capp->prerequisites.current_item, "cpython-embed-amd64") == 0);
         assert(capp->prerequisites.item_received_bytes == 64);
         assert(capp->prerequisites.total_received_bytes == 64);

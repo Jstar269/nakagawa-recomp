@@ -4,6 +4,7 @@
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
 // See NOTICE.md for upstream lineage and modification provenance.
 // Derived from PPSSPP (https://github.com/hrydgard/ppsspp), GPL-2.0-or-later
+// Copyright (c) 2012- PPSSPP Project and contributors
 
 /* *
  * The PRX import table maps each .sceStub.text stub to a (library, NID); tools/imports.py
@@ -188,12 +189,12 @@ static atomic_uint s_hle_devctl_refusal_log_count;
 #endif
 
 /* Success-result exceptions named in the end-of-run summary. sceKernelVolatileMemUnlock is absent:
- * it returns the PSP-measured states now. sceUtilityOskUpdate stays listed because only its VISIBLE
- * and after-use states still return the unmeasured 0 (its INIT and no-keyboard states are measured). */
+ * it returns the PSP-measured states now. sceUtilityOskUpdate stays listed for VISIBLE's measured 0
+ * (#363 comment 6331070692, attended); after-use now returns the measured 0x80110001. */
 static const char *hle_success_exception_issue(uint32_t nid) {
     switch (nid) {
     case 0xb3b5d042u: return "#363, #286"; /* sceAtracGetOutputChannel */
-    case 0x4b85c861u: return "#363";       /* sceUtilityOskUpdate: VISIBLE and after-use only */
+    case 0x4b85c861u: return "#363";       /* sceUtilityOskUpdate: measured VISIBLE success */
     default: return NULL;
     }
 }
@@ -534,6 +535,7 @@ static uint32_t sr_last_alloc_addr = 0;     /* last heap allocation rounded addr
  * tools/prxload.py preserves the original ~PSP header's segment-memory sizes when a
  * stripped ELF has lost them. An explicit override may move the base higher, but may
  * never overlap the loaded module. */
+static int sr_user_partition_overlaps(uint32_t base, uint32_t end);
 static void user_partition_init(void) {
     if (s_heap) return;
     const char *eb = getenv("SR_HEAP_BASE");
@@ -556,6 +558,10 @@ static void user_partition_init(void) {
     }
     s_heap = base;
     s_heap_base = base;
+    {
+        extern void sched_set_stack_range_refusal(int (*refusal)(uint32_t, uint32_t));
+        sched_set_stack_range_refusal(sr_user_partition_overlaps);
+    }
     s_part_top = et ? (uint32_t)strtoul(et, NULL, 16) : 0x0A000000u;
     if (s_part_top <= s_heap) {
         fprintf(stderr,
@@ -576,7 +582,39 @@ static void user_partition_init(void) {
 typedef struct { uint32_t uid, addr, size, slot_size, prev, next; } Block;
 #define HLE_MAX_PARTITION_BLOCKS 256
 static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
+
+/* Guest thread stacks are carved by the scheduler from a descending arena that ends at
+ * 0x09ef0000, below the runtime's VBLANK stack and nested-frame region, i.e. inside the
+ * PSP user-RAM span this partition also covers. On a PSP, thread stacks come out of the
+ * same user partition, so memory a game is told is free never contains a live stack.
+ * Here the contiguous free space above the bump pointer therefore ends at the first live
+ * stack above the partition base (and never above the arena ceiling). Before this, a
+ * game that took the reported
+ * free memory (21 MB and more) received a block over its own main-thread stack, zeroed
+ * it, and returned through a clobbered $ra (AOT_RETURN_TARGET_MISMATCH). */
+#define USER_PARTITION_RESERVED_FLOOR 0x09ef0000u   /* sched.c SR_STACK_ARENA_CEIL */
+extern uint32_t sched_guest_stack_floor_above(uint32_t addr);
+static uint32_t user_partition_ceiling(void) {
+    return s_part_top < USER_PARTITION_RESERVED_FLOOR ? s_part_top : USER_PARTITION_RESERVED_FLOOR;
+}
+static uint32_t user_partition_top(void) {
+    uint32_t ceiling = user_partition_ceiling();
+    uint32_t floor = sched_guest_stack_floor_above(s_heap_base);
+    return floor < ceiling ? floor : ceiling;
+}
+
 static int s_nblocks = 0;
+
+/* 1 when [base, end) touches the bump region the partition has handed out (below the
+ * current bump pointer, its free-list holes included). The scheduler refuses a new stack
+ * there. Fixed-address reservations (sr_alloc_block_at: a title profile's module bases,
+ * PSP_SMEM_Addr requests) keep their previous bounds and are not checked against stacks:
+ * a reviewed profile's late PRX base can share the stack arena's address range on this
+ * runtime. 0 before the partition exists. */
+static int sr_user_partition_overlaps(uint32_t base, uint32_t end) {
+    if (!s_heap || end <= base) return 0;
+    return base < s_heap && end > s_heap_base;
+}
 
 typedef struct { uint32_t uid, backing_uid; } HleMemoryBlock;
 #define HLE_MAX_MEMORY_BLOCKS 256
@@ -681,7 +719,7 @@ static uint32_t alloc_block(uint32_t size) {
     if (size == 0 || size > max_req) {
         if (guard) {
             fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) heap=0x%08x top=0x%08x max=0x%08x\n",
-                    size, size, s_heap, s_part_top, max_req);
+                    size, size, s_heap, user_partition_top(), max_req);
             fflush(stderr);
         }
         return 0xFFFFFFFFu;
@@ -717,10 +755,11 @@ static uint32_t alloc_block(uint32_t size) {
     } else {
         /* Bump allocation from s_heap. */
         uint32_t aligned = (s_heap + 0xFFu) & ~0xFFu;
-        int overflow = (aligned + size < aligned) || (aligned + size > s_part_top);
+        uint32_t top = user_partition_top();
+        int overflow = (aligned + size < aligned) || (aligned + size > top);
         if (overflow && guard) {
             fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) heap=0x%08x top=0x%08x max=0x%08x\n",
-                    size, size, s_heap, s_part_top, max_req);
+                    size, size, s_heap, user_partition_top(), max_req);
             fflush(stderr);
             return 0xFFFFFFFFu;  /* PSP alloc-failure sentinel */
         }
@@ -941,6 +980,10 @@ uint32_t sr_hle_test_partition_heap_ptr(void) {
 uint32_t sr_hle_test_partition_top(void) {
     user_partition_init();
     return s_part_top;
+}
+uint32_t sr_hle_test_partition_bump_top(void) {
+    user_partition_init();
+    return user_partition_top();   /* where bump allocations and the free sizes stop */
 }
 #endif
 
@@ -2934,7 +2977,8 @@ static uint32_t h_FreeMemoryBlock(CpuState *s) {
 
 static uint32_t partition_free(void) {
     user_partition_init();
-    uint32_t f = s_heap < s_part_top ? s_part_top - s_heap : 0u;
+    uint32_t top = user_partition_top();
+    uint32_t f = s_heap < top ? top - s_heap : 0u;
     for (int i = 0; i < s_nfree_blocks; i++) {
         f += s_free_blocks[i].size;
     }
@@ -2952,7 +2996,8 @@ static uint32_t h_TotalFreeMemSize(CpuState *s) {
 static uint32_t h_MaxFreeMemSize(CpuState *s) {
     (void)s;
     user_partition_init();
-    uint32_t max_free = s_heap < s_part_top ? s_part_top - s_heap : 0u;
+    uint32_t top = user_partition_top();
+    uint32_t max_free = s_heap < top ? top - s_heap : 0u;
     for (int i = 0; i < s_nfree_blocks; i++) {
         if (s_free_blocks[i].size > max_free) {
             max_free = s_free_blocks[i].size;
@@ -4412,6 +4457,7 @@ typedef struct {
     uint32_t module_start;
     uint32_t module_stop;
     uint32_t image_base;
+    uint32_t image_end;
     int start_entry_ran;
     LoadedModuleState state;
     int in_use;
@@ -4432,6 +4478,15 @@ typedef struct {
 #define HLE_MAX_LOADED_MODULES SR_MODULE_CODE_MAX_BOUND
 static LoadedModule s_loaded_modules[HLE_MAX_LOADED_MODULES];
 static int s_nloaded_modules = 0;
+static uint32_t s_deferred_self_stop_uid;
+static uint32_t s_deferred_self_stop_thread_uid;
+static void hle_module_thread_exit(uint32_t uid);
+static int hle_loadexec_dialog_busy(void);
+
+#define SR_LOAD_EXEC_MAX_ARGS (64u * 1024u)
+static SrLoadExecRequest s_loadexec_request;
+static int s_loadexec_pending;
+static uint32_t s_loadexec_boot_uid;
 
 /* Run a module entry (module_start/module_stop) as a nested guest call with the entry
  * ABI (args length, args pointer). A guest-placed module's entries run with its own
@@ -4441,6 +4496,52 @@ static uint32_t module_entry_call(CpuState *s, const LoadedModule *mod, uint32_t
     if (mod->runtime_placed && mod->code)
         return ge_call_guest_gp_rv(s, entry, mod->gp, arglen, argp, 0);
     return ge_call_guest_rv(s, entry, arglen, argp, 0);
+}
+
+/* module_stop is a module-manager entry, so execute it in its own guest thread.
+ * Thread creation uses the runtime's existing synthetic defaults (priority 32,
+ * default stack); callers that need a physical PSP's module-thread option rules
+ * remain behind this explicitly labelled boundary. The scheduler copies argp to
+ * the stop thread's stack before starting it, then this caller joins and deletes
+ * the temporary thread. */
+static uint32_t module_stop_thread_invoke(CpuState *caller, const LoadedModule *mod,
+                                          uint32_t arglen, uint32_t argp,
+                                          uint32_t *status_out) {
+    if (!caller || !mod || !mod->module_stop || sched_current_uid() == 0u) {
+        fprintf(stderr, "PRX_MODULE_STOP_THREAD_UNAVAILABLE_SYNTHETIC: no running guest "
+                        "thread or stop entry; refusing inline execution\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (arglen != 0u && (!argp || !sr_guest_span_readable(argp, arglen)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    uint32_t thread_uid = sched_create_thread_ex(mod->module_stop, 32, 0u, 0u,
+                                                 "module_stop");
+    if (!thread_uid) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+    uint32_t gp = mod->runtime_placed ? mod->gp : caller->r[28];
+    if (sched_thread_set_gp(thread_uid, gp) != 0) {
+        (void)sched_delete_thread(thread_uid);
+        fprintf(stderr, "PRX_MODULE_STOP_THREAD_GP_SYNTHETIC: failed to seed $gp; refusing\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    uint32_t rc = sched_start_thread(thread_uid, arglen, argp);
+    if (rc != 0u) {
+        (void)sched_delete_thread(thread_uid);
+        return rc;
+    }
+
+    caller->r[4] = thread_uid;
+    caller->r[5] = 0u;
+    uint32_t module_status = h_WaitThreadEnd_impl(caller, 0);
+    uint32_t delete_rc = sched_delete_thread(thread_uid);
+    if (delete_rc != 0u) {
+        fprintf(stderr, "PRX_MODULE_STOP_THREAD_JOIN_SYNTHETIC: stop thread uid=0x%x "
+                        "did not become deletable (0x%08x); refusing module transition\n",
+                thread_uid, delete_rc);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (status_out) *status_out = module_status;
+    return 0u;
 }
 
 static LoadedModule *find_loaded_module(uint32_t uid) {
@@ -4733,6 +4834,16 @@ static void unload_prx_image(uint32_t base) {
     }
 }
 
+static int prx_image_bounds(uint32_t base, uint32_t *start_out, uint32_t *end_out) {
+    for (unsigned i = 0; i < s_prx_image_count; i++) {
+        if (s_prx_images[i].base != base) continue;
+        if (start_out) *start_out = s_prx_images[i].base;
+        if (end_out) *end_out = s_prx_images[i].end;
+        return 1;
+    }
+    return 0;
+}
+
 static int load_prx_image(const char *host_path, uint32_t base, const char *name) {
     for (unsigned i = 0; i < s_prx_image_count; i++) {
         if (s_prx_images[i].base != base) continue;
@@ -4889,6 +5000,22 @@ static unsigned char *read_guest_module_file(const char *path, size_t *size_out,
     fclose(f);
     *size_out = (size_t)length;
     return bytes;
+}
+
+static int loadexec_module_file_matches_translation(const char *file) {
+    if (!file || !file[0]) return 0;
+    const SrModuleCode *code = sr_module_code_find(file);
+    if (!code || code->unsupported_reason) return 0;
+    char path[1024];
+    int written = snprintf(path, sizeof(path), "%s/%s", guest_module_root(), file);
+    if (written <= 0 || (size_t)written >= sizeof(path)) return 0;
+    size_t size = 0u;
+    int unreadable = 0;
+    unsigned char *bytes = read_guest_module_file(path, &size, &unreadable);
+    if (!bytes) return 0;
+    uint64_t digest = sr_module_code_fnv1a64(bytes, size);
+    free(bytes);
+    return size == code->file_size && digest == code->file_fnv1a64;
 }
 
 /* Lay a guest-placed module out and bind its translation. On success `mod` holds the
@@ -5080,6 +5207,7 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
         mod->module_start = 0;
     mod->module_stop = module_stop;
     mod->image_base = image;
+    mod->image_end = image + span;
     sr_flight_prx_load(image, 0u, mod->module_start, img.nimp, exported);
     sr_prx_image_free(&img);
     return 0;
@@ -5116,6 +5244,7 @@ static uint32_t load_module_by_guest_path(const char *path, uint32_t option) {
         mod->module_start = s_last_prx_entry;
         mod->module_stop = s_last_prx_stop;
         mod->image_base = s_last_prx_base;
+        (void)prx_image_bounds(mod->image_base, NULL, &mod->image_end);
     }
     uint32_t uid = sr_alloc_uid();
     fprintf(stderr, "sceKernelLoadModule(\"%s\") -> uid=0x%x\n", path, uid);
@@ -5308,11 +5437,41 @@ static uint32_t h_cache_invalidate_all_common(CpuState *s) {
     return 0;
 }
 
+/* Data-cache maintenance is where the guest makes RAM it wrote with the CPU the bytes the
+ * GE reads next: the GE reads memory, not the CPU's data cache. Guest stores to RAM carry
+ * no per-store renderer notification (only VRAM stores do, through the store helpers), so
+ * a renderer that caches textures decoded from RAM learns of CPU-written texels here. A
+ * title that draws glyphs into a RAM glyph-cache texture with its own libfont and then
+ * writes the cache back depends on it; without it the renderer kept a texture whose
+ * sampled content hash missed the new glyphs, and those glyphs were never drawn.
+ * PPSSPP's sceKernelDcache* handlers invalidate its texture cache the same way (behaviour
+ * reference only). A VRAM range is left alone: its stores were already reported one by
+ * one, and a second post-write notice would merge stale CPU bytes over newer GPU pixels
+ * of a render target. Return values are unchanged (unmeasured on PSP). */
+#define SR_DCACHE_RAM_BYTES 0x04000000u   /* main RAM, 0x08000000-0x0bffffff */
+
+static void dcache_range_notify_gpu(uint32_t addr, uint32_t size) {
+    if (addr == 0u || size == 0u || size > 0x7fffffffu || size - 1u > 0xffffffffu - addr)
+        return;
+    if (sr_vram_cpu_span_touches(addr, size)) return;
+    sr_gpu_vram_dirty(addr, size);
+}
+
+static void dcache_all_notify_gpu(void) {
+    sr_gpu_vram_dirty(SR_RAM_BASE, SR_DCACHE_RAM_BYTES);
+}
+
 /* Keep the HLE ownership boundary aligned with the hardware cells. These
  * wrappers currently share the same coherent-memory implementation; the
  * writeback-invalidate and I-cache NIDs remain unreviewed until their own
  * cells are measured. */
 static uint32_t h_DcacheWritebackAll(CpuState *s) {
+    dcache_all_notify_gpu();
+    return h_cache_invalidate_all_common(s);
+}
+
+static uint32_t h_DcacheWritebackInvalidateAll(CpuState *s) {
+    dcache_all_notify_gpu();
     return h_cache_invalidate_all_common(s);
 }
 
@@ -5334,11 +5493,34 @@ static uint32_t h_cache_invalidate_range_common(CpuState *s) {
 }
 
 static uint32_t h_DcacheRangeMaintenance(CpuState *s) {
+    dcache_range_notify_gpu(A0, A1);
+    return h_cache_invalidate_range_common(s);
+}
+
+/* Unmeasured on PSP, so kept apart from the measured range handler above. */
+static uint32_t h_DcacheWritebackInvalidateRange(CpuState *s) {
+    dcache_range_notify_gpu(A0, A1);
     return h_cache_invalidate_range_common(s);
 }
 
 static uint32_t h_CacheInvalidateRangeOther(CpuState *s) {
     return h_cache_invalidate_range_common(s);
+}
+
+/* cache / misc UtilsForUser: no host cache work, but Dcache maintenance tells the
+ * renderer which RAM the guest rewrote (dcache_range_notify_gpu above). Both the
+ * production registry and the executable harness register through this helper. */
+static void hle_register_dcache_handlers(void) {
+    sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_DcacheWritebackAll);
+    /* Guest and host share one coherent byte array; beyond the renderer notice, cache
+     * maintenance has no host-side work, but the syscall and success result are real. */
+    sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_DcacheWritebackInvalidateAll);
+    sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_DcacheRangeMaintenance);
+    /* Range invalidates are routine data-cache maintenance around DMA (the guest
+     * libpsmfplayer invalidates its read buffer before sceDmacMemcpy), so they are
+     * real successes on this coherent memory like the writebacks above. */
+    sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_DcacheRangeMaintenance);
+    sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_DcacheWritebackInvalidateRange);
 }
 
 void sr_stale_note_cache_op(uint32_t addr) {
@@ -6325,6 +6507,12 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
         return SCE_ERROR_MODULE_BAD_ID;
     }
 
+    if (stack_arg(s, 0) != 0u) {
+        fprintf(stderr, "PRX_MODULE_STOP_OPTION_SYNTHETIC: nonzero SceKernelSMOption is "
+                        "unmeasured; refusing instead of guessing thread parameters\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+
     if (!mod->start_entry_ran) {
         fprintf(stderr, "PRX_MODULE_HOST_SKIPPED_STOP: sceKernelStopModule uid=0x%x "
                         "start entry was host-skipped; stop entry not called (#280)\n",
@@ -6349,9 +6537,15 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
         return SCE_KERNEL_ERROR_CAN_NOT_STOP;
     }
     mod->state = MODULE_STATE_STOPPING;
-    fprintf(stderr, "sceKernelStopModule(uid=0x%x, path='%s', stop=0x%08x): executing module_stop\n",
-            modid, mod->path, mod->module_stop);
-    uint32_t rv = module_entry_call(s, mod, mod->module_stop, arglen, argp);
+    fprintf(stderr, "PRX_MODULE_STOP_THREAD_SYNTHETIC: uid=0x%x stop=0x%08x "
+                    "uses scheduler default priority/stack; module option rules remain unmeasured\n",
+            modid, mod->module_stop);
+    uint32_t rv = 0u;
+    uint32_t call_rc = module_stop_thread_invoke(s, mod, arglen, argp, &rv);
+    if (call_rc != 0u) {
+        mod->state = MODULE_STATE_STARTED;
+        return call_rc;
+    }
     if (status_ptr && sr_guest_span_writable(status_ptr, 4u)) {
         MEM_W32(status_ptr, rv);
     }
@@ -6407,6 +6601,14 @@ static uint32_t h_UnloadModule_Trace(CpuState *s) {
     default:
         return SCE_ERROR_MODULE_BAD_ID;
     }
+    if (mod->image_base && mod->image_end > mod->image_base &&
+        sched_module_range_busy(mod->image_base, mod->image_end, 0u)) {
+        fprintf(stderr, "PRX_MODULE_UNLOAD_ACTIVE_THREAD_SYNTHETIC: uid=0x%x image="
+                        "[0x%08x,0x%08x) has a ready/running continuation; refusing "
+                        "with NOT_IMPLEMENTED (active-thread unload result unmeasured)\n",
+                modid, mod->image_base, mod->image_end);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
     mod->state = MODULE_STATE_UNLOADED;
     if (mod->code) {
         fprintf(stderr, "GUEST_MODULE_UNLOADED: %s uid=0x%x image=[0x%08x,0x%08x)\n",
@@ -6422,6 +6624,222 @@ static uint32_t h_UnloadModule_Trace(CpuState *s) {
     }
     retire_loaded_module(mod);
     return 0;
+}
+
+static LoadedModule *module_for_guest_pc(const CpuState *s) {
+    if (!s) return NULL;
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        LoadedModule *mod = &s_loaded_modules[i];
+        if (!mod->in_use || mod->state == MODULE_STATE_UNLOADED ||
+            mod->image_end <= mod->image_base) continue;
+        if ((s->pc >= mod->image_base && s->pc < mod->image_end) ||
+            (s->r[31] >= mod->image_base && s->r[31] < mod->image_end))
+            return mod;
+    }
+    return NULL;
+}
+
+static void hle_module_thread_exit(uint32_t uid) {
+    if (!s_deferred_self_stop_uid || uid != s_deferred_self_stop_thread_uid) return;
+    LoadedModule *mod = find_loaded_module(s_deferred_self_stop_uid);
+    uint32_t modid = s_deferred_self_stop_uid;
+    s_deferred_self_stop_uid = 0u;
+    s_deferred_self_stop_thread_uid = 0u;
+    if (!mod || mod->state != MODULE_STATE_STOPPED) return;
+    if (mod->image_base && mod->image_end > mod->image_base &&
+        sched_module_range_busy(mod->image_base, mod->image_end, 0u)) {
+        fprintf(stderr, "PRX_SELFSTOP_UNLOAD_DEFERRED_SYNTHETIC: uid=0x%x still has a "
+                        "ready/running image continuation; preserving image and exports\n",
+                modid);
+        return;
+    }
+    mod->state = MODULE_STATE_UNLOADED;
+    if (mod->image_base && !another_record_references_image(mod))
+        unload_prx_image(mod->image_base);
+    retire_loaded_module(mod);
+    fprintf(stderr, "PRX_SELFSTOP_UNLOADED_SYNTHETIC: uid=0x%x caller thread exited; "
+                    "retired the stopped module\n", modid);
+}
+
+/* PSPSDK declares the first argument unnamed. The successful homebrew path is
+ * deliberately synthetic and accepts only zero there; other values stay behind
+ * a named refusal until their meaning is measured. */
+static uint32_t h_SelfStopUnloadModule(CpuState *s) {
+    uint32_t unknown = A0;
+    uint32_t arglen = A1;
+    uint32_t argp = A2;
+    LoadedModule *mod = module_for_guest_pc(s);
+    uint32_t current_uid = sched_current_uid();
+    if (unknown != 0u || !mod || current_uid == 0u || !mod->start_entry_ran ||
+        mod->state != MODULE_STATE_STARTED) {
+        fprintf(stderr, "PRX_SELFSTOP_UNAVAILABLE_SYNTHETIC: unknown=0x%x module=%s "
+                        "thread=0x%x; refusing unsupported caller state\n",
+                unknown, mod ? mod->path : "none", current_uid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (arglen != 0u && (!argp || !sr_guest_span_readable(argp, arglen)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (mod->image_end > mod->image_base &&
+        sched_module_range_busy(mod->image_base, mod->image_end, current_uid)) {
+        fprintf(stderr, "PRX_SELFSTOP_SIBLING_THREAD_SYNTHETIC: uid=0x%x has another "
+                        "ready/running continuation; refusing module-wide teardown\n",
+                mod->uid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+
+    uint32_t stop_status = 0u;
+    if (mod->module_stop != 0u) {
+        if (sr_lookup(mod->module_stop) == NULL)
+            return SCE_KERNEL_ERROR_CAN_NOT_STOP;
+        mod->state = MODULE_STATE_STOPPING;
+        uint32_t rc = module_stop_thread_invoke(s, mod, arglen, argp, &stop_status);
+        if (rc != 0u) {
+            mod->state = MODULE_STATE_STARTED;
+            return rc;
+        }
+    } else {
+        fprintf(stderr, "PRX_SELFSTOP_NO_ENTRY_SYNTHETIC: uid=0x%x has no module_stop; "
+                        "treating stop as a no-op\n", mod->uid);
+    }
+    mod->state = MODULE_STATE_STOPPED;
+    s_deferred_self_stop_uid = mod->uid;
+    s_deferred_self_stop_thread_uid = current_uid;
+    /* The caller is executing from the image being retired. Delete its thread;
+     * the scheduler exit hook releases the image only after this guest frame is
+     * no longer runnable. The terminal result uses the module_stop result. */
+    sched_exit_current_delete((int32_t)stop_status);
+    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+}
+
+static int loadexec_ms0_path(const char *path) {
+    static const char prefix[] = "ms0:/";
+    if (!path) return 0;
+    for (size_t i = 0; i < sizeof(prefix) - 1u; i++) {
+        char c = path[i];
+        if (!c) return 0;
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != prefix[i]) return 0;
+    }
+    return 1;
+}
+
+static int loadexec_manifest_file_safe(const char *file) {
+    if (!file || !file[0] || file[0] == '/' || file[0] == '\\' || strchr(file, ':'))
+        return 0;
+    const char *part = file;
+    for (const char *p = file;; p++) {
+        if (*p != '/' && *p != '\\' && *p != '\0') continue;
+        size_t n = (size_t)(p - part);
+        if (n == 0u || (n == 1u && part[0] == '.') ||
+            (n == 2u && part[0] == '.' && part[1] == '.')) return 0;
+        if (*p == '\0') break;
+        part = p + 1;
+    }
+    return 1;
+}
+
+static uint32_t h_LoadExec(CpuState *s) {
+    char guest_path[sizeof(s_loadexec_request.guest_path)];
+    if (!A0 || !guest_cstr(A0, guest_path, sizeof(guest_path)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    const char *file = NULL;
+    int required = 0;
+    SrGuestModulePlacement placement = SR_GUEST_MODULE_FIXED;
+    if (!loadexec_ms0_path(guest_path) ||
+        !sr_title_config_guest_module(guest_path, &file, NULL, &required, &placement) ||
+        !required || placement != SR_GUEST_MODULE_RUNTIME ||
+        !loadexec_manifest_file_safe(file)) {
+        fprintf(stderr, "LOAD_EXEC_PACKAGE_PATH_REFUSED: sceKernelLoadExec path is not a "
+                        "required runtime program in this package's declared ms0 namespace\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (!loadexec_module_file_matches_translation(file)) {
+        fprintf(stderr, "LOAD_EXEC_PROGRAM_SOURCE_REFUSED: package module is missing, "
+                        "untranslated, or differs from the built module identity\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (hle_loadexec_dialog_busy()) {
+        fprintf(stderr, "LOAD_EXEC_DIALOG_ACTIVE_SYNTHETIC: refusing program replacement "
+                        "while a utility dialog is active\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (!sched_guest_thread_running()) {
+        fprintf(stderr, "LOAD_EXEC_SCHEDULER_UNAVAILABLE: sceKernelLoadExec requires the "
+                        "cooperative guest scheduler\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (s_loadexec_pending) return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+
+    uint32_t arglen = 0u;
+    uint32_t argp = 0u;
+    if (A1 != 0u) {
+        if (!sr_guest_span_readable(A1, 12u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+        uint32_t params_size = MEM_R32(A1);
+        if (params_size < 12u) {
+            fprintf(stderr, "LOAD_EXEC_PARAMETER_SIZE_SYNTHETIC: parameter block is "
+                            "smaller than the documented arg fields; refusing\n");
+            return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        }
+        arglen = MEM_R32(A1 + 4u);
+        argp = MEM_R32(A1 + 8u);
+        if (arglen > SR_LOAD_EXEC_MAX_ARGS) {
+            fprintf(stderr, "LOAD_EXEC_ARGUMENT_LIMIT_SYNTHETIC: %u bytes exceeds the "
+                            "bounded 64 KiB argument block\n", arglen);
+            return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        }
+        if (arglen != 0u && (!argp || !sr_guest_span_readable(argp, arglen)))
+            return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    }
+
+    /* A late program that is itself a loaded module gets its stop entry before
+     * replacement. The primary package program has no late-module record; its
+     * current thread is terminated below and the driver resets the process. */
+    LoadedModule *current_module = module_for_guest_pc(s);
+    if (current_module) {
+        if (current_module->state != MODULE_STATE_STARTED) {
+            fprintf(stderr, "LOAD_EXEC_CURRENT_MODULE_STATE_SYNTHETIC: module uid=0x%x "
+                            "is not in a stable started state; refusing replacement\n",
+                    current_module->uid);
+            return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        }
+        if (current_module->module_stop != 0u) {
+            if (sr_lookup(current_module->module_stop) == NULL)
+                return SCE_KERNEL_ERROR_CAN_NOT_STOP;
+            uint32_t stop_status = 0u;
+            current_module->state = MODULE_STATE_STOPPING;
+            uint32_t stop_rc = module_stop_thread_invoke(s, current_module, 0u, 0u,
+                                                         &stop_status);
+            if (stop_rc != 0u) {
+                current_module->state = MODULE_STATE_STARTED;
+                return stop_rc;
+            }
+            current_module->state = MODULE_STATE_STOPPED;
+        } else {
+            fprintf(stderr, "LOAD_EXEC_CURRENT_MODULE_NO_STOP_SYNTHETIC: uid=0x%x "
+                            "has no module_stop entry; continuing replacement\n",
+                    current_module->uid);
+            current_module->state = MODULE_STATE_STOPPED;
+        }
+    }
+
+    uint8_t *args = NULL;
+    if (arglen != 0u) {
+        args = (uint8_t *)malloc(arglen);
+        if (!args) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+        for (uint32_t i = 0; i < arglen; i++) args[i] = MEM_R8(argp + i);
+    }
+    memset(&s_loadexec_request, 0, sizeof(s_loadexec_request));
+    snprintf(s_loadexec_request.guest_path, sizeof(s_loadexec_request.guest_path), "%s",
+             guest_path);
+    s_loadexec_request.arglen = arglen;
+    s_loadexec_request.args = args;
+    s_loadexec_pending = 1;
+    fprintf(stderr, "LOAD_EXEC_REQUEST: package program path accepted, arglen=%u; "
+                    "stopping guest state before restart\n", arglen);
+    sched_request_guest_reset();
+    sched_exit_current_delete(0);
+    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
 }
 
 static uint32_t h_CreateCallback(CpuState *s) {
@@ -9905,6 +10323,12 @@ static void dialog_unlock(void) {
 static int s_dlg_status = 0, s_dlg_tick = 0;
 static uint32_t s_dlg_param = 0, s_dlg_result = 0, s_dlg_generation = 0;
 static unsigned s_dlg_work_started, s_dlg_work_done;
+int sr_savedata_pause_busy(void) {
+    dialog_lock();
+    const int busy = s_dlg_status >= 1 && s_dlg_status <= 3;
+    dialog_unlock();
+    return busy;
+}
 static int s_osk_current_clear(void);   /* fwd: savedata/msg dialogs take the slot from the OSK */
 static uint32_t h_SavedataInitStart(CpuState *s) {
     if (!A0 || !sr_guest_span_readable(A0, 0x600u) || !sr_guest_span_writable(A0, 0x600u)) return 0x80110004u;
@@ -10119,6 +10543,12 @@ static int s_osk_request_open = 0;    /* a person's answer to that field is pend
  * rather than SCE_ERROR_UTILITY_WRONG_TYPE (0x80110005) once one has run: a game spinning
  * "while (sceUtilityOskGetStatus() != 0)" after name entry waits on 0 forever otherwise. */
 static int s_osk_current = 0;
+static int hle_loadexec_dialog_busy(void) {
+    dialog_lock();
+    int busy = s_dlg_status != 0;
+    dialog_unlock();
+    return busy || s_osk_status != OSK_NONE || s_osk_current != 0;
+}
 static void osk_abandon_request(void);  /* fwd: defined with the keyboard's field collection */
 /* Another utility dialog takes the slot: the keyboard is no longer polled, so a person's
  * pending answer is dropped and its box closed rather than left open with no poller. */
@@ -10301,23 +10731,25 @@ static uint32_t h_OskGetStatus(CpuState *s) {
     else if (s_osk_status == OSK_FINISHED) { s_osk_status = OSK_NONE; s_osk_param = 0; }
     return (uint32_t)ret;                                  /* QUIT stands until ShutdownStart */
 }
-/* sceUtilityOskShutdownStart from INIT is refused and leaves the keyboard in INIT. Measured on
- * PSP-3000 6.6.1 (2026-10-21, probe CASE=fake-success): 0x80110001 (SCE_ERROR_UTILITY_INVALID_STATUS). */
+/* PSP-3000 measurements (#363): no keyboard returns WRONG_TYPE (0x80110005);
+ * INIT, VISIBLE and NONE after use refuse shutdown with INVALID_STATUS (0x80110001).
+ * QUIT accepts shutdown; GetStatus keeps the existing wind-down to NONE. */
 static uint32_t h_OskShutdown(CpuState *s) {
     (void)s;
-    if (s_osk_status == OSK_INIT) return 0x80110001u;
-    osk_abandon_request();                                 /* shut down before it was answered */
+    if (!s_osk_current) return 0x80110005u;
+    if (s_osk_status == OSK_NONE || s_osk_status == OSK_INIT || s_osk_status == OSK_VISIBLE)
+        return 0x80110001u;
+    osk_abandon_request();
     if (s_osk_status) s_osk_status = OSK_FINISHED;         /* then NONE on the next poll */
     return 0;
 }
-/* sceUtilityOskUpdate refreshes the keyboard on screen. Measured on PSP-3000 6.6.1 (2026-10-21, probe
- * CASE=fake-success): with no keyboard it returns 0x80110005 (SCE_ERROR_UTILITY_WRONG_TYPE), and in INIT
- * it returns 0x80110001 (SCE_ERROR_UTILITY_INVALID_STATUS). The VISIBLE and after-use states are not
- * measured yet, so they keep the refresh success they had before. */
+/* PSP-3000 measurements (#363): Update succeeds in VISIBLE (speed 0 and 1),
+ * returns WRONG_TYPE before a keyboard starts, and INVALID_STATUS in INIT, QUIT and NONE after use. */
 static uint32_t h_OskUpdate(CpuState *s) {
     (void)s;
     if (!s_osk_current) return 0x80110005u;
-    if (s_osk_status == OSK_INIT) return 0x80110001u;
+    if (s_osk_status == OSK_NONE || s_osk_status == OSK_INIT || s_osk_status == OSK_QUIT)
+        return 0x80110001u;
     return 0;
 }
 /* Test-only: forget the keyboard slot, abandoning any answer still pending. */
@@ -10376,6 +10808,12 @@ static uint32_t h_VolatileMemLock(CpuState *s) {
     s_volatile_locked = 1;
     return 0;
 }
+/* Measured on PSP-3000 6.6.1 (2026-10-22, PR #1153): while the volatile-memory
+ * lock is already held, TryLock returns 0x802b0200 and writes neither output. */
+static uint32_t h_VolatileMemTryLock(CpuState *s) {
+    if (s_volatile_locked) return 0x802b0200u;
+    return h_VolatileMemLock(s);
+}
 /* The lock sceKernelVolatileMemLock and TryLock take and sceKernelVolatileMemUnlock releases.
  * Measured on PSP-3000 6.6.1 (2026-10-21, probe CASE=fake-success): Unlock with nothing locked
  * returns 0x800201ae (the raw value; the PSPSDK names it SCE_KERNEL_ERROR_SEMA_OVF); Unlock while
@@ -10393,14 +10831,55 @@ void sr_hle_test_volatile_mem_reset(void) { s_volatile_locked = 0; }
  * on the launcher (0x111) to unstick it from sceKernelSleepThread. */
 static uint32_t s_umd_cb_uid = 0;
 
-static uint32_t h_UmdDriveStat(CpuState *s) { (void)s; return 0x32; }     /* PRESENT|READY|READABLE (matches PPSSPP reference) */
+/* Drive state sceUmdGetDriveStat reports. Measured on a PSP-3000, firmware 6.61, 2026-10-24,
+ * with a game disc inserted: 0x32 at program entry (PSPSDK pspumd.h: PRESENT 0x02 | INITED 0x10 |
+ * READY 0x20); sceUmdActivate, sceUmdWaitDriveStat for READY, sceUmdReplaceProhibit and
+ * sceUmdReplacePermit each return 0; after sceUmdDeactivate the state is 0x12 (READY cleared).
+ * The waits below read this state, so a wait for READY after a deactivate blocks until
+ * sceUmdActivate signals the drive ready again. */
+enum { UMD_STAT_PRESENT = 0x02u, UMD_STAT_ACTIVE = 0x32u, UMD_STAT_DEACTIVATED = 0x12u };
+static uint32_t s_umd_drive_stat = UMD_STAT_ACTIVE;
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_hle_test_umd_reset(void) { s_umd_drive_stat = UMD_STAT_ACTIVE; }
+#endif
 
-/* The virtual ISO-backed drive currently exposes only PRESENT|READY|READABLE.
- * In that modeled state sceUmdGetErrorStat reports no drive error. Other drive
- * error states remain outside this compatibility contract. */
+static uint32_t h_UmdDriveStat(CpuState *s) { (void)s; return s_umd_drive_stat; }
+
+/* The virtual ISO-backed drive serves one disc that never fails, so sceUmdGetErrorStat
+ * reports no drive error while that disc is present, activated or not. The error stat of a
+ * deactivated drive is UNMEASURED; other drive error states remain outside this
+ * compatibility contract. */
 static uint32_t h_UmdGetErrorStat(CpuState *s) {
     uint32_t drive_stat = h_UmdDriveStat(s);
-    return drive_stat == 0x32u ? 0u : 0x80010086u;
+    return (drive_stat & UMD_STAT_PRESENT) ? 0u : 0x80010086u;
+}
+
+/* sceUmdReplaceProhibit() / sceUmdReplacePermit(): whether the user may swap the disc.
+ * The runtime serves one ISO and never replaces it, so either call only records the
+ * permission and returns 0, changed or not. Public behaviour reference: PPSSPP
+ * Core/HLE/sceUmd.cpp. Firmware error cases (for example before sceUmdActivate) are
+ * UNMEASURED; a PSP oracle case is listed for the maintainer. */
+static uint32_t s_umd_replace_permitted = 0u;
+static uint32_t h_UmdReplaceProhibit(CpuState *s) { (void)s; s_umd_replace_permitted = 0u; return 0; }
+static uint32_t h_UmdReplacePermit(CpuState *s) { (void)s; s_umd_replace_permitted = 1u; return 0; }
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_umd_replace_permitted(void) { return s_umd_replace_permitted; }
+#endif
+
+/* sceUmdGetDiscInfo(SceUmdDiscInfo *info): info->size (u32) must be 8, then info->type
+ * (u32) receives PSP_UMD_TYPE_GAME (0x10), the only medium this runtime serves.
+ * A size other than 8 or an unusable pointer returns SCE_ERROR_ERRNO_EINVAL
+ * (0x80010016). Public behaviour reference: PSPSDK pspumd.h (SceUmdDiscInfo,
+ * PSP_UMD_TYPE_GAME) and PPSSPP Core/HLE/sceUmd.cpp. Measured on a PSP-3000, firmware 6.61,
+ * 2026-10-24, with a game disc: size 8 returns 0 and type 0x10; size 0 and size 12 return
+ * 0x80010016. */
+static uint32_t h_UmdGetDiscInfo(CpuState *s) {
+    (void)s;
+    uint32_t info = A0;
+    if (!info || !sr_guest_span_writable(info, 8u)) return 0x80010016u;
+    if (sr_r32(info) != 8u) return 0x80010016u;
+    sr_w32(info + 4u, 0x10u);
+    return 0;
 }
 
 
@@ -10408,23 +10887,21 @@ static uint32_t h_UmdGetErrorStat(CpuState *s) {
  * notify the registered callback if one exists. */
 static void sr_umd_signal_ready(void) {
     extern void sched_wake(uint32_t);
+    s_umd_drive_stat = UMD_STAT_ACTIVE;
     sched_wake(0x554D44u);
     if (s_umd_cb_uid)
-        (void)sr_callback_notify(s_umd_cb_uid, 0x32u);
+        (void)sr_callback_notify(s_umd_cb_uid, s_umd_drive_stat);
 }
 
-/* Shared body for sceUmdWaitDriveStat / ...WithTimer. The emulated drive is a
- * constant present|ready|readable (0x32; see h_UmdDriveStat), so a request whose
- * bits all fall inside that mask is satisfied immediately; anything else can never
- * be satisfied and waits out the timeout. The post-wait re-read is against the same
- * drive model, so it stays unsatisfiable and reports SCE_KERNEL_ERROR_WAIT_TIMEOUT
- * -- kept (rather than returning the error unconditionally) so the shape still
- * matches a real drive whose state could change across the wait. */
+/* Shared body for sceUmdWaitDriveStat / ...WithTimer. A request whose bits all
+ * fall inside the current drive state (see s_umd_drive_stat) is satisfied
+ * immediately; otherwise the caller waits on the UMD object until sceUmdActivate
+ * signals the drive ready or the timeout passes, and the state is read again:
+ * still unsatisfied reports SCE_KERNEL_ERROR_WAIT_TIMEOUT. */
 static uint32_t umd_wait_drive_stat(uint32_t want, uint32_t timeout_us) {
-    const uint32_t drive = 0x32u;
-    if ((drive & want) == want) return 0;
+    if ((s_umd_drive_stat & want) == want) return 0;
     (void)sched_block_on_timeout(0x554D44u, timeout_us);
-    return (drive & want) == want ? 0u : 0x800201A8u;
+    return (s_umd_drive_stat & want) == want ? 0u : 0x800201A8u;
 }
 
 static uint32_t h_UmdWaitDriveStat(CpuState *s) {
@@ -10445,7 +10922,7 @@ static uint32_t h_UmdWaitDriveStatCB(CpuState *s) {
     if (sr_thread_has_pending_callbacks(self))
         sr_thread_dispatch_callbacks();
 
-    if ((0x32u & A0) == A0) return 0;
+    if ((s_umd_drive_stat & A0) == A0) return 0;
 
     uint32_t timeout = A1 ? A1 : 8000u;
     /* PSP hardware rounds very small UMD wait timeouts upward. */
@@ -10474,6 +10951,15 @@ static uint32_t h_UmdActivate(CpuState *s) {
     return 0;
 }
 
+/* sceUmdDeactivate(unit, drive): stop the drive. The measured state afterwards is 0x12 (see
+ * s_umd_drive_stat); the return value of a deactivate is UNMEASURED and reported as 0, like
+ * sceUmdActivate. The arguments are not checked, as sceUmdActivate does not check them. */
+static uint32_t h_UmdDeactivate(CpuState *s) {
+    (void)s;
+    s_umd_drive_stat = UMD_STAT_DEACTIVATED;
+    return 0;
+}
+
 /* sceUmdRegisterUMDCallBack: register a callback that fires when UMD drive state changes.
  * Registration only records the callback; it does not signal an event or alter any
  * thread's pending wakeup count. */
@@ -10498,8 +10984,13 @@ static uint32_t h_UmdUnRegisterUMDCallBack(CpuState *s) {
 
 static void hle_register_umd_callback_handlers(void) {
     sr_hle_register(0xc6183d47u, "sceUmdActivate", h_UmdActivate);
+    sr_hle_register(0xe83742bau, "sceUmdDeactivate", h_UmdDeactivate);
+    sr_hle_register(0x6b4a146cu, "sceUmdGetDriveStat", h_UmdDriveStat);
     sr_hle_register(0xaee7404du, "sceUmdRegisterUMDCallBack", h_UmdRegisterUMDCallBack);
     sr_hle_register(0xbd2bde07u, "sceUmdUnRegisterUMDCallBack", h_UmdUnRegisterUMDCallBack);
+    sr_hle_register(0x87533940u, "sceUmdReplaceProhibit", h_UmdReplaceProhibit);
+    sr_hle_register(0xcbe9f02au, "sceUmdReplacePermit", h_UmdReplacePermit);
+    sr_hle_register(0x340b7686u, "sceUmdGetDiscInfo", h_UmdGetDiscInfo);
 }
 
 /* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
@@ -11396,6 +11887,80 @@ static uint32_t h_RtcGetWin32FileTime(CpuState *s) {
     }
     return rtc_write_u64(A1, delta * 10u) ? 0u : RTC_INVALID_VALUE;
 }
+/* A guest access an HLE handler makes where its PSP counterpart has no pointer check and
+ * takes a bus error inside the system module. A user program cannot recover from that on the
+ * PSP, so the runtime does not turn it into an error code the program could read: the access
+ * is recorded as out of range (sr_oor), the fault goes to the flight recorder as a fault
+ * exception (MIPS ExcCode 7, data bus error, with the faulting guest address), and the run
+ * stops the way an unregistered import stops it, with its own exit status. The executable
+ * harness counts the fault and returns instead, so a test can assert it. */
+#define HLE_GUEST_FAULT_EXIT 10
+#define HLE_GUEST_FAULT_EXC_DBE 7u
+#ifdef SR_HLE_THREAD_SELFTEST
+static uint32_t s_hle_guest_fault_count, s_hle_guest_fault_addr;
+uint32_t sr_hle_test_guest_fault_count(void) { return s_hle_guest_fault_count; }
+uint32_t sr_hle_test_guest_fault_addr(void) { return s_hle_guest_fault_addr; }
+void sr_hle_test_guest_fault_reset(void) { s_hle_guest_fault_count = 0u; s_hle_guest_fault_addr = 0u; }
+#endif
+static void hle_guest_fault(CpuState *s, const char *name, uint32_t addr, int store) {
+    sr_oor(addr, 0u, store);
+    fprintf(stderr, "HLE: guest fault: %s %s guest 0x%08x; the PSP faults inside the module here, "
+                    "so the run stops\n", name, store ? "wrote" : "read", addr);
+    sr_flight_fault(SR_FLIGHT_KIND_FAULT_EXCEPTION, s->pc, HLE_GUEST_FAULT_EXC_DBE, addr);
+#ifdef SR_HLE_THREAD_SELFTEST
+    s_hle_guest_fault_count++;
+    s_hle_guest_fault_addr = addr;
+#else
+    if (sr_sched_on) {
+        sr_trace_close();
+        sr_perf_shutdown();
+        fflush(stderr);
+        _Exit(HLE_GUEST_FAULT_EXIT);
+    }
+    longjmp(g_hle_jmp, 1);
+#endif
+}
+
+/* sceRtcGetTime64_t(const pspTime *date, u64 *time): the date as seconds since
+ * 1970-01-01 00:00:00. Measured on a PSP-3000, firmware 6.61, 2026-10-24:
+ *   - valid dates convert and return 0;
+ *   - year 1 and any date before 1970 return 0x800001FE;
+ *   - month 13, day 32, February 30 and hour 24 are not rejected: they return 0 and
+ *     normalise, carrying into the next year, month or day;
+ *   - a NULL output pointer returns 0 without a fault;
+ *   - a NULL date pointer faults inside the module (it has no check), so it takes the
+ *     guest-fault stop above, as does any date span that is not readable.
+ * Carrying is modelled as calendar arithmetic: months past 12 move into the following
+ * years, and the day, hour, minute, second and microsecond fields add linearly through
+ * rtc_datetime_to_tick(). The measurement records the return codes and that these
+ * dates normalise; the exact seconds for them are this arithmetic. Year 0, month 0 and
+ * day 0 are UNMEASURED and refused with 0x800001FE rather than converted. On a refusal
+ * the output is not written (also UNMEASURED); a non-NULL output span that is not
+ * writable takes the guest-fault stop, as the module would store through it. */
+static uint32_t h_RtcGetTime64_t(CpuState *s) {
+    /* NULL is tested on its own: the guest arena backs low physical addresses, so the span
+     * check alone would read a date from address 0 where the PSP faults. */
+    if (!A0 || !sr_guest_span_readable(A0, 16u)) {
+        hle_guest_fault(s, "sceRtcGetTime64_t", A0, 0);
+        return 0u;
+    }
+    RtcDateTime value;
+    value.year = MEM_R16(A0 + 0u); value.month = MEM_R16(A0 + 2u);
+    value.day = MEM_R16(A0 + 4u); value.hour = MEM_R16(A0 + 6u);
+    value.minute = MEM_R16(A0 + 8u); value.second = MEM_R16(A0 + 10u);
+    value.microsecond = MEM_R32(A0 + 12u);
+    if (value.year < 1u || value.month < 1u || value.day < 1u) return RTC_INVALID_VALUE;
+    value.year += (value.month - 1u) / 12u;
+    value.month = (value.month - 1u) % 12u + 1u;
+    uint64_t tick = rtc_datetime_to_tick(&value);
+    if (tick < RTC_UNIX_EPOCH_TICK) return RTC_INVALID_VALUE;
+    if (!A1) return 0u;
+    if (!sr_guest_span_writable(A1, 8u)) {
+        hle_guest_fault(s, "sceRtcGetTime64_t", A1, 1);
+        return 0u;
+    }
+    return rtc_write_u64(A1, (tick - RTC_UNIX_EPOCH_TICK) / 1000000u) ? 0u : RTC_ILLEGAL_ADDR;
+}
 static uint32_t h_LibcTime(CpuState *s) {
     (void)s;
     if (A0 && !sr_guest_span_writable(A0, 4u)) return RTC_ILLEGAL_ADDR;
@@ -11685,8 +12250,39 @@ static uint32_t h_StartModule(CpuState *s) {
 uint32_t sr_hle_test_load_module(CpuState *s) { return h_LoadModule(s); }
 uint32_t sr_hle_test_load_module_by_id(CpuState *s) { return h_LoadModuleByID(s); }
 uint32_t sr_hle_test_start_module(CpuState *s) { return h_StartModule(s); }
-uint32_t sr_hle_test_stop_module(CpuState *s) { return h_StopModule_Trace(s); }
+uint32_t sr_hle_test_stop_module(CpuState *s) { return sr_syscall(s, 0xd1ff982au); }
 uint32_t sr_hle_test_unload_module(CpuState *s) { return h_UnloadModule_Trace(s); }
+
+#define HLE_TEST_SCHED_CALL_ENTRY 0x08ffdf00u
+static uint32_t s_hle_test_scheduled_nid;
+static uint32_t s_hle_test_scheduled_args[5];
+static uint32_t s_hle_test_scheduled_gp;
+static uint32_t s_hle_test_scheduled_result;
+static uint32_t s_hle_test_scheduled_call_uid;
+extern void sr_test_register_guest_fn(uint32_t addr, RecompFn fn);
+
+uint32_t sr_hle_test_scheduled_call_uid(void) {
+    return s_hle_test_scheduled_call_uid;
+}
+
+static void hle_test_scheduled_call_body(CpuState *s) {
+    for (unsigned i = 0; i < 5u; i++) s->r[4u + i] = s_hle_test_scheduled_args[i];
+    s->r[28] = s_hle_test_scheduled_gp;
+    s_hle_test_scheduled_call_uid = sched_current_uid();
+    s_hle_test_scheduled_result = sr_syscall(s, s_hle_test_scheduled_nid);
+    s->r[2] = s_hle_test_scheduled_result;
+}
+
+static uint32_t hle_test_run_on_guest_thread(CpuState *s, uint32_t nid) {
+    s_hle_test_scheduled_nid = nid;
+    for (unsigned i = 0; i < 5u; i++) s_hle_test_scheduled_args[i] = s->r[4u + i];
+    s_hle_test_scheduled_gp = s->r[28];
+    s_hle_test_scheduled_result = HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    s_hle_test_scheduled_call_uid = 0u;
+    sr_test_register_guest_fn(HLE_TEST_SCHED_CALL_ENTRY, hle_test_scheduled_call_body);
+    sched_run(HLE_TEST_SCHED_CALL_ENTRY, 0u, 0u);
+    return s_hle_test_scheduled_result;
+}
 
 uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, uint32_t module_stop) {
     LoadedModule *mod = alloc_loaded_module_slot();
@@ -11697,11 +12293,24 @@ uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, ui
     mod->module_start = module_start;
     mod->module_stop = module_stop;
     mod->image_base = 0;
+    mod->image_end = 0;
     mod->state = MODULE_STATE_LOADED;
     return uid;
 }
 
+int sr_hle_test_set_module_image(uint32_t uid, uint32_t base, uint32_t end, uint32_t gp) {
+    LoadedModule *mod = find_loaded_module(uid);
+    if (!mod || base >= end) return 0;
+    mod->image_base = base;
+    mod->image_end = end;
+    mod->gp = gp;
+    mod->runtime_placed = 1;
+    return 1;
+}
+
 void sr_hle_test_module_reset(void) {
+    s_deferred_self_stop_uid = 0u;
+    s_deferred_self_stop_thread_uid = 0u;
     s_nloaded_modules = 0;
     memset(s_loaded_modules, 0, sizeof(s_loaded_modules));
     s_prx_image_count = 0;
@@ -11750,6 +12359,7 @@ uint32_t sr_hle_test_load_prx_image(const char *host_path, uint32_t base,
     mod->module_start = base + 0x70;   /* module_start address the fixture declares */
     mod->module_stop = base + 0x78;    /* module_stop address the fixture declares */
     mod->image_base = s_last_prx_base;
+    (void)prx_image_bounds(mod->image_base, NULL, &mod->image_end);
     mod->state = MODULE_STATE_LOADED;
     return uid;
 }
@@ -16145,11 +16755,7 @@ static void audio_note_buf(uint32_t ch, uint32_t buf) {
     if (g_audio_nbufs[ch] < 4) g_audio_bufs[ch][g_audio_nbufs[ch]++] = buf;
 }
 
-#ifdef SR_HLE_THREAD_SELFTEST
-/* Read-only regular-audio state for production-dispatch contract regressions.
- * The reset is test-build-only because sr_hle_init() is process-global while the
- * executable harness deliberately runs many isolated synthetic fixtures. */
-void sr_hle_test_audio_reset(void) {
+static void hle_audio_guest_reset(void) {
     memset(s_audio_ch, 0, sizeof(s_audio_ch));
     memset(s_audio_fmt, 0, sizeof(s_audio_fmt));
     memset(s_audio_len, 0, sizeof(s_audio_len));
@@ -16161,7 +16767,16 @@ void sr_hle_test_audio_reset(void) {
     memset(s_audio_delay_carry, 0, sizeof(s_audio_delay_carry));
     memset(g_audio_bufs, 0, sizeof(g_audio_bufs));
     memset(g_audio_nbufs, 0, sizeof(g_audio_nbufs));
+    s_lead_last_vbl = 0u;
+    s_lead_outputs = s_lead_noqueue = 0u;
+    s_lead_peak = 0;
+    s_lead_peak_ch = 0u;
+    s_lead_last_ms = -1L;
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Read-only regular-audio state for production-dispatch contract regressions. */
+void sr_hle_test_audio_reset(void) { hle_audio_guest_reset(); }
 
 int sr_hle_test_audio_state(uint32_t ch, int *reserved, uint32_t *frames, int *format) {
     if (ch >= 8u) return 0;
@@ -17857,7 +18472,17 @@ static uint32_t h_CtrlButtons(void) {
  * positive mask there makes the game see almost every button held and run wild (it jumped through
  * an uninitialised menu handler). */
 /* Latch one controller sample per frame into the ring (called from sr_vblank_tick). */
+int sr_pause_script_input_pending(uint32_t target_vcount) {
+    if (!s_input.current || s_input.seg.mask == 0u ||
+        s_input.seg.not_before > target_vcount || sr_input_was_read(&s_input)) return 0;
+    return (s_input.seg.mask & 0x4000u) ? 2 : 1;
+}
+
 void sr_ctrl_sample(void) {
+    /* The pause request is already a scheduler rendezvous. Do not commit a pad
+     * sample at the request boundary; the first post-resume sample owns that
+     * guest-time input transition. */
+    if (sched_pause_pending()) return;
     uint8_t lx = 128, ly = 128;
     if (gui_on()) gui_analog(&lx, &ly);
     uint32_t buttons = h_CtrlButtons();
@@ -19156,6 +19781,7 @@ void sr_display_advance_vcount(uint32_t elapsed_periods) {
     s_vcount += elapsed_periods;
     s_vcount_fwd = s_vcount;
 }
+uint32_t sr_display_vcount(void) { return s_vcount; }
 void sr_vblank_tick(void) {
     if (s_display_latched_pending) {
         s_display_active = s_display_latched;
@@ -20248,16 +20874,18 @@ static SasVoice s_sasv[SAS_VOICES];
 static SasCoreState s_sas_core;
 static int s_sas_max_voices = SAS_VOICES;
 
+static void hle_sas_guest_reset(void) {
+    memset(&s_sas_core, 0, sizeof(s_sas_core));
+    memset(s_sasv, 0, sizeof(s_sasv));
+    s_sas_max_voices = SAS_VOICES;
+}
+
 #ifdef SR_HLE_THREAD_SELFTEST
 /* The selftest creates several independent synthetic cores in one process.  A
  * real guest would keep one initialized core until teardown; this explicit
  * fixture hook resets only the host-side model and never enters production
  * registration or dispatch paths. */
-void sr_hle_test_sas_reset(void) {
-    memset(&s_sas_core, 0, sizeof(s_sas_core));
-    memset(s_sasv, 0, sizeof(s_sasv));
-    s_sas_max_voices = SAS_VOICES;
-}
+void sr_hle_test_sas_reset(void) { hle_sas_guest_reset(); }
 #endif
 
 /* SR_SASLOG: decay-gated trace of KeyOn events and SAS mixer active-voice counts, to determine
@@ -22794,8 +23422,7 @@ void sr_mutex_release_thread(uint32_t thread_uid) {
     }
 }
 
-#ifdef SR_HLE_THREAD_SELFTEST
-void sr_hle_test_mutex_reset(void) {
+static void mutex_reset_all(void) {
     if (!s_mutexes) return;
     for (size_t i = 0; i < s_mutex_len; i++) {
         if (s_mutexes[i]) {
@@ -22808,6 +23435,8 @@ void sr_hle_test_mutex_reset(void) {
     s_mutex_len = 0;
     s_mutex_cap = 0;
 }
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_hle_test_mutex_reset(void) { mutex_reset_all(); }
 #endif
 
 static uint32_t h_CreateMutex(CpuState *s) {
@@ -23428,7 +24057,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0xc1734599, "sceKernelReferLwMutexStatus", h_ReferLwMutexStatus);
     sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ReferLwMutexStatusByID);
     sr_hle_register(0x3e0271d3, "sceKernelVolatileMemLock", h_VolatileMemLock);
-    sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemLock);
+    sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemTryLock);
     sr_hle_register(0xa569e425, "sceKernelVolatileMemUnlock", h_VolatileMemUnlock);
     sr_hle_register(0x8ef08fce, "sceUmdWaitDriveStat", h_UmdWaitDriveStat);
     sr_hle_register(0x56202973, "sceUmdWaitDriveStatWithTimer", h_UmdWaitDriveStatWithTimer);
@@ -23489,6 +24118,7 @@ static void hle_register_time_handlers(void) {
     sr_hle_register(0x6ff40acc, "sceRtcGetTick", h_RtcGetTick);
     sr_hle_register(0x7ed29e40, "sceRtcSetTick", h_RtcSetTick);
     sr_hle_register(0xcf561893, "sceRtcGetWin32FileTime", h_RtcGetWin32FileTime);
+    sr_hle_register(0xe1c93e47, "sceRtcGetTime64_t", h_RtcGetTime64_t);
     sr_hle_register(0x4cfa57b0, "sceRtcGetCurrentClock", h_RtcGetCurrentClock);
     sr_hle_register(0xe7c27d1b, "sceRtcGetCurrentClockLocalTime", h_RtcGetCurrentClockLocal);
     sr_hle_register(0x3f7ad767, "sceRtcGetCurrentTick", h_RtcGetCurrentTick);
@@ -23660,6 +24290,7 @@ static void hle_register_kernel_module_handlers(void) {
     sr_hle_register(0xd1ff982a, "sceKernelStopModule", h_StopModule_Trace);
     sr_hle_register(0x2e0911aa, "sceKernelUnloadModule", h_UnloadModule_Trace);
     sr_hle_register(0x8f2df740, "sceKernelStopUnloadSelfModuleWithStatus", h_StopUnloadSelfModuleWithStatus);
+    sr_hle_register(0xd675ebb8, "sceKernelSelfStopUnloadModule", h_SelfStopUnloadModule);
 }
 
 static void hle_register_bulk_memory_handlers(void) {
@@ -23808,6 +24439,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
     sr_hle_register(0xfe707fdf, "sceKernelAllocMemoryBlock", h_AllocMemoryBlock);
     sr_hle_register(0x342061e5, "sceKernelSetCompiledSdkVersion370", h_SetCompiledSdkVersion);
+    sr_hle_register(0x315ad3a0u, "sceKernelSetCompiledSdkVersion380_390", h_SetCompiledSdkVersion);
     sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
     sr_hle_register(0x4c06e472, "sceGeContinue", h_GeContinue);
     sr_hle_register(0xb448ec0d, "sceGeBreak", h_GeBreak);
@@ -23820,8 +24452,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
      * controlled-refusal code and write nothing to the guest buffer. */
     sr_hle_register_unsupported(0x438a385au, "sceGeSaveContext", 0x80020002u);
     sr_hle_register_unsupported(0x0bf608fbu, "sceGeRestoreContext", 0x80020002u);
-    sr_hle_register_unsupported(0xbd2f1094, "sceKernelLoadExec", 0x80020002u);
-    sr_hle_register_unsupported(0xd675ebb8, "sceKernelSelfStopUnloadModule", 0x80020002u);
+    sr_hle_register(0xbd2f1094, "sceKernelLoadExec", h_LoadExec);
     sr_hle_register(0x40f1469c, "sceDisplayWaitVblankStartMulti", h_DisplayWaitVblankStartMulti);
 }
 
@@ -23964,6 +24595,7 @@ void sr_hle_init(void) {
         while (atomic_load_explicit(&s_hle_init_state, memory_order_acquire) != 2) { }
         return;
     }
+    sched_set_thread_exit_hook(hle_module_thread_exit);
 #ifdef SR_MPEG_MEDIA_SELFTEST
     hle_register_mpeg_ycbcr_handlers();
     /* The media fixture drives the production scePsmfPlayer handlers through sr_syscall,
@@ -24001,6 +24633,7 @@ void sr_hle_init(void) {
     hle_register_ge_handlers();
     sr_hle_power_register_clock();
     sr_hle_power_register_callback();
+    sr_hle_power_register_battery();
     hle_register_devkit_version_handler();
     /* TD-24 batch 4 families: shared with production through the helpers, so
      * the executable harness dispatches the exact production mapping. */
@@ -24012,6 +24645,7 @@ void sr_hle_init(void) {
     hle_register_partition_savedata_handlers();
     hle_register_impose_handlers();
     hle_register_osk_handlers();
+    hle_register_dcache_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
      * definition, called by both branches, so the selftest cannot drift from the
@@ -24127,7 +24761,6 @@ void sr_hle_init(void) {
     sr_hle_register(0x3aea8cb6, "sceFontClose", h_FontClose);
     sr_hle_register(0xbb8e7fe6, "sceFontOpenUserMemory", h_FontOpenUserMemory);
     sr_hle_register_unsupported(0x6af9b50a, "sceUmdCancelWaitDriveStat", 0x80010086u); /* SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED */
-    sr_hle_register(0x6b4a146c, "sceUmdGetDriveStat", h_UmdDriveStat);
     sr_hle_register(0x20628e6f, "sceUmdGetErrorStat", h_UmdGetErrorStat);
     /* Callback-aware UMD wait consumes callbacks while preserving the drive wait. */
     hle_register_kernel_module_handlers();
@@ -24152,17 +24785,9 @@ void sr_hle_init(void) {
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
     hle_register_devkit_version_handler();
 
-    /* cache / misc UtilsForUser: no-ops are fine without a real cache. */
-    sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_DcacheWritebackAll);
-    /* Guest and host share one coherent byte array; cache maintenance has no
-     * additional host-side work, but the syscall and success result are real. */
-    sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_CacheInvalidateAllOther);
-    sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_DcacheRangeMaintenance);
-    /* Range invalidates are routine data-cache maintenance around DMA (the guest
-     * libpsmfplayer invalidates its read buffer before sceDmacMemcpy), so they are
-     * real no-op successes on this coherent memory like the writebacks above. */
-    sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_DcacheRangeMaintenance);
-    sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_CacheInvalidateRangeOther);
+    /* Data-cache maintenance: one registration helper shared with the executable
+     * harness, ahead of the opt-in Icache gate below. */
+    hle_register_dcache_handlers();
     /* TD-27 stale-code detector: the Icache NIDs (a code-modification signal)
      * stay UNREGISTERED (fail-closed, as before) unless SR_STALE_DETECT opts
      * in, so default dispatch behavior is unchanged. When enabled they run
@@ -24240,9 +24865,46 @@ static int link_started_export(CpuState *s, uint32_t nid) {
     return 1;
 }
 
+/* An import with no handler stops the run (exit 7). Name that stop for the player the
+ * way the dispatcher names its own: one semantic-boundary line in SR_BOOT_EVENT_FILE,
+ * "unsupported-import-<name>" in the player's [a-z0-9-] alphabet, so its card says the
+ * game stopped early at that import instead of showing a bare child exit code (#308). */
+static void hle_record_unsupported_import_stop(uint32_t nid, const char *name) {
+    const char *path = getenv("SR_BOOT_EVENT_FILE");
+    if (!path || !path[0]) return;
+    char boundary[96];
+    int written = snprintf(boundary, sizeof(boundary), "unsupported-import-");
+    if (written <= 0) return;
+    size_t at = (size_t)written;
+    if (name && name[0]) {
+        for (const char *c = name; *c && at + 1u < sizeof(boundary); c++) {
+            char ch = *c;
+            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+            if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))) ch = '-';
+            boundary[at++] = ch;
+        }
+        boundary[at] = '\0';
+    } else {
+        snprintf(boundary + at, sizeof(boundary) - at, "0x%08x", nid);
+    }
+    FILE *events = fopen(path, "ab");
+    if (!events) return;
+    fprintf(events,
+            "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=%u\n",
+            boundary, 308u);
+    fclose(events);
+}
+
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_tail_assert_empty("tail-transfer-live-at-syscall");
     sr_hle_init();
+#ifdef SR_HLE_THREAD_SELFTEST
+    /* Direct white-box calls have no current TCB. Route module stop/self-stop
+     * through the production handlers inside the real scheduler; nested calls
+     * from that guest thread take the ordinary dispatch path below. */
+    if ((nid == 0xd1ff982au || nid == 0xd675ebb8u) && !sched_guest_thread_running())
+        return hle_test_run_on_guest_thread(s, nid);
+#endif
     io_async_dispatch_tick();
     /* A syscall is where a guest thread can stop making scheduler progress, so the
      * attribution of a late display period has to be able to name it. */
@@ -24290,6 +24952,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
             fprintf(stderr, "HLE: unimplemented nid 0x%08x (%s) (thread uid 0x%x)\n"
                             "     -> add a handler in src/rt/hle.c: sr_hle_register(0x%08xu, \"%s\", h_...);\n",
                     nid, nm ? nm : "unknown", sched_current_uid(), nid, nm ? nm : "sceUnknown");
+            hle_record_unsupported_import_stop(nid, nm);
         }
         sr_hit_hle = 1;
         /* Under the fiber scheduler, longjmp across fibers is invalid; stop the process cleanly
@@ -24337,4 +25000,172 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     }
     sr_rt_phase = rt_phase_saved;
     return ret;
+}
+
+int sr_hle_loadexec_take(SrLoadExecRequest *out) {
+    if (!out || !s_loadexec_pending) return 0;
+    *out = s_loadexec_request;
+    memset(&s_loadexec_request, 0, sizeof(s_loadexec_request));
+    s_loadexec_pending = 0;
+    return 1;
+}
+
+void sr_hle_loadexec_release(SrLoadExecRequest *request) {
+    if (!request) return;
+    free(request->args);
+    memset(request, 0, sizeof(*request));
+}
+
+static void loadexec_reset_user_partition(void) {
+    s_heap = 0;
+    s_heap_base = 0;
+    s_part_top = 0;
+    s_heap_last_bump = 0;
+    s_nblocks = 0;
+    memset(s_blocks, 0, sizeof(s_blocks));
+    memset(s_memory_blocks, 0, sizeof(s_memory_blocks));
+    s_nfree_blocks = 0;
+    memset(s_free_blocks, 0, sizeof(s_free_blocks));
+}
+
+void sr_hle_loadexec_reset_guest_state(void) {
+    if (s_loadexec_request.args) free(s_loadexec_request.args);
+    memset(&s_loadexec_request, 0, sizeof(s_loadexec_request));
+    s_loadexec_pending = 0;
+    /* Retire module code/export authority before resetting the allocator and RAM. */
+    while (s_prx_image_count != 0u)
+        unload_prx_image(s_prx_images[0].base);
+    memset(s_loaded_modules, 0, sizeof(s_loaded_modules));
+    s_nloaded_modules = 0;
+    s_deferred_self_stop_uid = 0u;
+    s_deferred_self_stop_thread_uid = 0u;
+    s_last_prx_base = s_last_prx_entry = s_last_prx_stop = 0u;
+    s_prx_stage_base = s_prx_stage_len = 0u;
+    s_prx_staging = 0;
+    atomic_store_explicit(&s_prx_started_count, 0, memory_order_release);
+    loadexec_reset_user_partition();
+
+    for (unsigned i = 0; i < FPL_MAX; i++) {
+        free(s_fpls[i].free_blocks);
+        free(s_fpls[i].allocated);
+    }
+    memset(s_fpls, 0, sizeof(s_fpls));
+    memset(s_sync, 0, sizeof(s_sync));
+    memset(s_mbx, 0, sizeof(s_mbx));
+    mutex_reset_all();
+
+    if (s_callbacks) free(s_callbacks);
+    s_callbacks = NULL;
+    s_callbacks_len = 0u;
+    s_callbacks_cap = 0u;
+    s_exit_cb_uid = 0u;
+    s_utility_av_loaded = 0u;
+    s_volatile_locked = 0;
+    g_sdk_version = 0u;
+    s_loadexec_boot_uid = 0u;
+    sr_hle_power_loadexec_reset();
+
+    hle_fd_init();
+    memset(s_io_cwds, 0, sizeof(s_io_cwds));
+
+    /* Media-player state owns host decoder/producer objects as well as guest
+     * pointers. Close those objects before the next program reuses guest RAM. */
+    for (size_t i = 0; i < sizeof(s_psmf_players) / sizeof(s_psmf_players[0]); i++) {
+        SrPsmfPlayer *p = &s_psmf_players[i];
+        psmf_flush(p);
+        if (p->producer) {
+            sr_psmf_producer_close(p->producer);
+            p->producer = NULL;
+        }
+        psmf_media_reset(p);
+        memset(p, 0, sizeof(*p));
+        p->h264 = -1;
+    }
+    for (unsigned i = 0; i < sizeof(s_atrac) / sizeof(s_atrac[0]); i++) {
+        atrac_release_decoder(&s_atrac[i]);
+        atrac_stream_window_free(&s_atrac[i]);
+        memset(&s_atrac[i], 0, sizeof(s_atrac[i]));
+    }
+    hle_audio_guest_reset();
+    hle_sas_guest_reset();
+
+    if (s_osk_current) (void)s_osk_current_clear();
+    s_osk_status = OSK_NONE;
+    s_osk_param = 0u;
+    s_osk_field = 0;
+    s_osk_request_open = 0;
+    s_osk_current = 0;
+    s_osk_answer_count = 0;
+    s_osk_repeat = NULL;
+    s_osk_script_read = 0;
+    memset(s_osk_answers, 0, sizeof(s_osk_answers));
+    dialog_lock();
+    s_dlg_status = 0;
+    s_dlg_tick = 0;
+    s_dlg_param = 0u;
+    s_dlg_result = 0u;
+    s_dlg_work_started = s_dlg_work_done = 0u;
+    s_dlg_generation++;
+    dialog_unlock();
+
+    s_uid = 0x110u;
+    fprintf(stderr, "LOAD_EXEC_GUEST_RESET_SYNTHETIC: memory, scheduler objects, callbacks, "
+                    "module records and file descriptors will be rebuilt for the next program\n");
+}
+
+int sr_hle_loadexec_boot_module(const char *guest_path, uint32_t *entry_out,
+                                uint32_t *gp_out) {
+    const char *file = NULL;
+    int required = 0;
+    SrGuestModulePlacement placement = SR_GUEST_MODULE_FIXED;
+    if (!guest_path || !entry_out || !gp_out || !loadexec_ms0_path(guest_path) ||
+        !sr_title_config_guest_module(guest_path, &file, NULL, &required, &placement) ||
+        !required || placement != SR_GUEST_MODULE_RUNTIME ||
+        !loadexec_manifest_file_safe(file) ||
+        !loadexec_module_file_matches_translation(file)) {
+        fprintf(stderr, "LOAD_EXEC_PACKAGE_PATH_REFUSED: program is absent from the "
+                        "required runtime-module list\n");
+        return 0;
+    }
+
+    uint32_t uid = load_module_by_guest_path(guest_path, 0u);
+    if (uid == 0u || (uid & 0x80000000u)) {
+        fprintf(stderr, "LOAD_EXEC_PROGRAM_LOAD_FAILED: declared package program refused "
+                        "by its runtime module loader\n");
+        return 0;
+    }
+    LoadedModule *mod = find_loaded_module(uid);
+    if (!mod || !mod->runtime_placed || !mod->code || mod->module_start == 0u ||
+        sr_lookup(mod->module_start) == NULL) {
+        fprintf(stderr, "LOAD_EXEC_PROGRAM_ENTRY_UNAVAILABLE: declared package program "
+                        "has no translated module_start; refusing\n");
+        if (mod) {
+            mod->state = MODULE_STATE_STOPPED;
+            unload_prx_image(mod->image_base);
+            retire_loaded_module(mod);
+        }
+        return 0;
+    }
+    /* This image becomes the new root program rather than a guest LoadModule
+     * handle. Mark it as the active program before entering its module_start so
+     * a subsequent LoadExec can stop it on a guest stop thread. */
+    mod->state = MODULE_STATE_STARTED;
+    mod->start_entry_ran = 1;
+    mark_module_started(mod->module_start);
+    s_loadexec_boot_uid = uid;
+    *entry_out = mod->module_start;
+    *gp_out = mod->gp;
+    return 1;
+}
+
+void sr_hle_loadexec_finish(void) {
+    if (!s_loadexec_boot_uid) return;
+    LoadedModule *mod = find_loaded_module(s_loadexec_boot_uid);
+    uint32_t uid = s_loadexec_boot_uid;
+    s_loadexec_boot_uid = 0u;
+    if (!mod || mod->state != MODULE_STATE_STARTED) return;
+    mark_module_started(mod->module_start);
+    mod->start_entry_ran = 1;
+    fprintf(stderr, "LOAD_EXEC_PROGRAM_STARTED: uid=0x%x entry=0x%08x\n",
+            uid, mod->module_start);
 }

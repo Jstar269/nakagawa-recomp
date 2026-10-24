@@ -20,6 +20,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "fixtures" / "showcase"))
 
 import ci_required  # noqa: E402
+import ci_paths  # noqa: E402
+import ci_test_shards  # noqa: E402
 import showcase as showcase_cli  # noqa: E402
 
 
@@ -113,7 +115,7 @@ class PublicCiWiringTests(unittest.TestCase):
         lock = json.loads((ROOT / "assets" / "upstream" / "pspdev.lock.json").read_text())
         evidence = json.loads((ROOT / "assets" / "upstream" / "pspdev.evidence.json").read_text())
         self.assertIn("Build pinned SDL3 for headless Linux runtime", ci)
-        self.assertIn("fa2c02bb6e21974a89ea9824bc53c9932abe5f9c", ci)
+        self.assertIn("829a65d769d935c4852f8159e964312c0957260a", ci)
         self.assertIn("libvulkan-dev", ci)
         self.assertIn("SDL_UNIX_CONSOLE_BUILD=ON", ci)
         self.assertIn("pspdev.lock.json", ci)
@@ -150,6 +152,7 @@ class PublicCiWiringTests(unittest.TestCase):
     def test_ffmpeg_h264_media_selftest_is_wired_in_linux_ci(self) -> None:
         """The optional H.264 backend must build and execute its real media fixture in CI."""
         native_tools = _ci_job_blocks()["native_tools"]
+        self.assertIn("    runs-on: ubuntu-24.04", "\n".join(native_tools))
         dependencies = _ci_step(native_tools, "Install native test dependencies")
         ffmpeg_test = _ci_step(native_tools, "Build and run the opt-in FFmpeg H.264 media selftest")
         self.assertIsNotNone(dependencies)
@@ -226,8 +229,8 @@ class PublicCiWiringTests(unittest.TestCase):
             'XDG_STATE_HOME="$RUNNER_TEMP/player-smoke-state"',
         ):
             self.assertIn(assignment, invocation)
-        self.assertIn("SDL3_VERSION=3.4.16", native_tools)
-        self.assertIn("SDL3_COMMIT=fa2c02bb6e21974a89ea9824bc53c9932abe5f9c", native_tools)
+        self.assertIn("SDL3_VERSION=3.4.18", native_tools)
+        self.assertIn("SDL3_COMMIT=829a65d769d935c4852f8159e964312c0957260a", native_tools)
 
         required_start = ci.index("  ci_required:\n")
         required_job = ci[required_start:]
@@ -441,16 +444,17 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run portable FPU/VFPU conversion selftest": "CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest",
     "Build and run strbuf checked-append formatting selftest": "CC=gcc VULKAN_SDK=/ucrt64 strbuf-selftest",
     "Build and run HLE thread selftest": "CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest",
-    "Build and run flash0 font device selftest": "PYTHONPATH=tools python -m unittest -v test_flash0_font",
+    "Build and run flash0 font device selftest": 'PYTHONPATH=tools "$py" -m unittest -v test_flash0_font',
     "Build and run synthetic VFPU fuzzer (shard 0 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Build and run synthetic VFPU fuzzer (shard 1 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
-    "Prove the fuzz shards cover every case exactly once": "NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe python -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests",
+    "Prove the fuzz shards cover every case exactly once": 'NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests',
 }
 # Steps every part repeats: the toolchain setup and the runtime-object compile gate.
 _WINDOWS_EVERY_PART = (
     "Check out repository",
+    "Set up Windows CPython 3.15.1",
     "Set up MSYS2 UCRT64",
-    "Pin the Windows Python toolchain (MSYS2 UCRT64 CPython)",
+    "Pin the Windows Python toolchain (CPython 3.15.1)",
     "Verify default and override compiler resolution",
     "Compile Windows runtime objects through the default compiler path",
 )
@@ -482,6 +486,25 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         match = re.fullmatch(r"if: matrix\.part == '([A-Za-z0-9_-]+)'", conditions[0])
         self.assertIsNotNone(match, f"{name}: a part condition must name exactly one part")
         return match.group(1)
+
+    def test_windows_runtime_pins_windows_cpython_315_for_tools_and_make(self) -> None:
+        setup = "\n".join(self.steps["Set up Windows CPython 3.15.1"])
+        self.assertIn('python-version: "3.15.1"', setup)
+        pin = "\n".join(self.steps["Pin the Windows Python toolchain (CPython 3.15.1)"])
+        self.assertIn("shell: pwsh", pin)
+        self.assertIn("steps.windows-cpython.outputs.python-path", pin)
+        self.assertIn('"PYTHON=$pythonPath`n"', pin)
+        self.assertIn("MSYS2 still ships Python 3.14.8", "\n".join(self.block))
+        self.assertIn('cygpath -u "$PYTHON"', "\n".join(self.block))
+
+    def test_flash0_python_path_assignment_is_separate_from_invocation(self) -> None:
+        step = "\n".join(self.steps["Build and run flash0 font device selftest"])
+        self.assertRegex(step, r"(?m)^\s+run: \|$")
+        self.assertIn(
+            'py="$(cygpath -u "$PYTHON")"\n'
+            '          PYTHONPATH=tools "$py" -m unittest -v test_flash0_font',
+            step,
+        )
 
     def test_every_serial_gate_runs_in_exactly_one_declared_part_with_its_command(self) -> None:
         self.assertEqual(len(self.parts), len(set(self.parts)))
@@ -544,7 +567,8 @@ class WindowsPlayerStageSmokeTests(unittest.TestCase):
         self.assertNotIn("mingw32-make", self.text)
 
     def test_step_stages_a_test00007_disc_through_the_stage_only_route(self) -> None:
-        self.assertIn("python fixtures/showcase/showcase.py stage-iso --out-dir", self.text)
+        self.assertIn('"$py" fixtures/showcase/showcase.py stage-iso --out-dir', self.text)
+        self.assertIn('py="$(cygpath -u "$PYTHON")"', self.text)
         self.assertIn('"--iso=$smoke/disc/TEST00007.iso" --stage-only)', self.text)
         self.assertIn('grep -Fq "STAGING_RESULT status=PASS"', self.text)
         self.assertIn("timeout 60s", self.text)
@@ -566,8 +590,9 @@ class WindowsPlayerStageSmokeTests(unittest.TestCase):
 
     def test_disc_writer_action_is_the_one_the_step_calls(self) -> None:
         showcase = (ROOT / "fixtures" / "showcase" / "showcase.py").read_text(encoding="utf-8")
-        self.assertIn('choices=("build", "smoke", "stage-iso")', showcase)
+        self.assertIn('choices=("build", "smoke", "stage-iso", "loadexec-smoke")', showcase)
         self.assertIn("def stage_iso(out_dir: Path) -> Path:", showcase)
+        self.assertIn("def loadexec_smoke() -> None:", showcase)
 
 
 class VfpuFuzzShardTests(unittest.TestCase):
@@ -692,8 +717,28 @@ class CodeqlWakeWiringTests(unittest.TestCase):
 
     def test_docs_describe_the_wake_trigger(self) -> None:
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
-        self.assertIn("`.github/workflows/codeql-wake.yml`", docs)
-        self.assertNotIn("a `workflow_run` after `CI` completes", docs)
+        blocks = _markdown_blocks(docs)
+        self.assertTrue(
+            any(
+                ".github/workflows/codeql-wake.yml" in block
+                for block in blocks
+            ),
+            "docs/CI.md must name the maintained CodeQL wake workflow path",
+        )
+        self.assertTrue(
+            any(
+                all(term in block.lower() for term in ("workflow_run", "codeql wake", "default branch"))
+                for block in blocks
+            ),
+            "docs/CI.md must state that the trusted workflow runs from the default branch",
+        )
+        self.assertTrue(
+            any(
+                all(term in block.lower() for term in ("ci itself is not a trigger", "does not wait"))
+                for block in blocks
+            ),
+            "docs/CI.md must state that CodeQL does not wait for CI to finish",
+        )
 
 
 class PublicExportJobTests(unittest.TestCase):
@@ -734,15 +779,27 @@ class PublicExportJobTests(unittest.TestCase):
         text = "\n".join(step or [])
         self.assertIn('--require-hashes', text)
         self.assertIn('pre-commit-requirements.txt', text)
-        match = re.search(r"<<'LOCK'\n(?P<lock>.*?)\n\s*LOCK", text, re.DOTALL)
-        self.assertIsNotNone(match)
-        lock = match.group("lock") if match is not None else ""
-        requirements = [line.strip().rstrip("\\").strip()
-                        for line in lock.splitlines() if "==" in line]
-        package_versions = {
-            line.split("==", 1)[0].lower(): line.split("==", 1)[1]
-            for line in requirements
-        }
+        locks = re.findall(r"<<'LOCK'\n(.*?)\n\s*LOCK", text, re.DOTALL)
+        self.assertEqual(len(locks), 2, "build tools and pre-commit must each have a hash lock")
+
+        def versions(lock: str) -> dict[str, str]:
+            requirements = [line.strip().rstrip("\\").strip()
+                            for line in lock.splitlines() if "==" in line]
+            return {
+                line.split("==", 1)[0].lower(): line.split("==", 1)[1]
+                for line in requirements
+            }
+
+        build_lock, lock = locks
+        build_versions = versions(build_lock)
+        package_versions = versions(lock)
+        self.assertEqual(build_versions, {
+            "cython": "3.3.0",
+            "setuptools": "84.2.1",
+            "packaging": "26.3",
+            "wheel": "0.48.0",
+        })
+        self.assertEqual(build_lock.count("--hash=sha256:"), len(build_versions))
         self.assertEqual(package_versions, {
             "cfgv": "3.5.0",
             "distlib": "0.4.4",
@@ -780,7 +837,7 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertIn("PROVENANCE_UNVERIFIED", export)
         job = "\n".join(self.blocks["public_export"])
         self.assertIn("fetch-depth: 0", job)
-        self.assertIn('python-version: "3.14"', job)
+        self.assertIn('python-version: "3.15.1"', job)
 
     def test_public_export_job_is_ungated_by_path(self) -> None:
         block = self.blocks["public_export"]
@@ -1007,15 +1064,42 @@ class CoverageWiringTests(unittest.TestCase):
 
     def test_docs_describe_what_is_measured_and_that_it_is_informational(self) -> None:
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
-        self.assertIn("## Coverage", docs)
-        for fragment in ("coverage-python.xml", "codecov.yml", "informational",
-                         "native-core-tests"):
-            with self.subTest(fragment=fragment):
-                self.assertIn(fragment, docs)
+        coverage = _markdown_section(docs, "## Coverage")
+        blocks = _markdown_blocks(coverage)
+        for terms in (
+            ("python_tools", "coverage-python.xml", "unittest"),
+            ("codecov.yml", "informational"),
+            ("native_tools", "native-core-tests"),
+        ):
+            with self.subTest(terms=terms):
+                self.assertTrue(
+                    any(all(term.lower() in block.lower() for term in terms) for block in blocks),
+                    f"docs/CI.md coverage guidance must state the required terms together: {terms}",
+                )
 
 
 def _workflow_text(name: str) -> str:
     return (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+
+
+def _markdown_blocks(text: str) -> list[str]:
+    return [
+        " ".join(line.strip() for line in block.splitlines() if line.strip())
+        for block in re.split(r"\n\s*\n", text)
+        if block.strip()
+    ]
+
+
+def _markdown_section(text: str, heading: str) -> str:
+    lines = text.splitlines()
+    start = next((index for index, line in enumerate(lines) if line.strip() == heading), None)
+    if start is None:
+        raise AssertionError(f"Markdown section is missing: {heading}")
+    end = next(
+        (index for index in range(start + 1, len(lines)) if re.match(r"^## ", lines[index])),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
 
 
 def _on_block(text: str) -> list[str]:
@@ -1038,7 +1122,7 @@ class MergeQueueTriggerWiringTests(unittest.TestCase):
     def setUp(self) -> None:
         self.ci = _workflow_text("ci.yml")
 
-    def test_ci_on_block_adds_merge_group_beside_unchanged_triggers(self) -> None:
+    def test_ci_on_block_adds_schedule_and_merge_group_beside_existing_triggers(self) -> None:
         self.assertEqual(
             _on_block(self.ci),
             [
@@ -1046,24 +1130,53 @@ class MergeQueueTriggerWiringTests(unittest.TestCase):
                 "    types: [opened, synchronize, reopened]",
                 "  push:",
                 "    branches: [main]",
+                "  schedule:",
+                '    - cron: "17 3 * * *"',
                 "  workflow_dispatch:",
                 "  merge_group:",
                 "    types: [checks_requested]",
             ],
         )
 
-    def test_only_the_public_export_step_filters_on_the_event_name(self) -> None:
-        # Every required job must run on a merge group. The one event filter left in
-        # ci.yml is the export candidate step, which the classifier forces true for a
-        # merge group anyway (security_publication), so it still runs there.
-        occurrences = [line for line in self.ci.splitlines() if "github.event_name" in line]
-        self.assertEqual(len(occurrences), 1, occurrences)
-        self.assertIn("workflow_dispatch", occurrences[0])
+    def test_event_conditions_only_select_the_export_and_python_tier(self) -> None:
         blocks = _ci_job_blocks()
-        for job in ("classify", "hygiene", "markdown", "python_tools", "native_tools",
-                    "windows_runtime", "main_smoke", "ci_required"):
+        export = "\n".join(blocks["public_export"])
+        python_tools = "\n".join(blocks["python_tools"])
+        self.assertIn("github.event_name == 'workflow_dispatch'", export)
+        self.assertIn("NK_TEST_TIER:", python_tools)
+        self.assertIn("github.event_name == 'schedule'", python_tools)
+        self.assertIn("github.event_name == 'workflow_dispatch'", python_tools)
+        for job in ("classify", "hygiene", "markdown", "native_tools", "windows_runtime",
+                    "main_smoke", "ci_required"):
             with self.subTest(job=job):
                 self.assertNotIn("github.event_name", "\n".join(blocks[job]))
+
+    def test_scheduled_and_manual_events_force_full_matrix_and_full_python_tier(self) -> None:
+        for event_name in ("schedule", "workflow_dispatch"):
+            with self.subTest(event=event_name):
+                result = ci_paths.classify(["docs/CI.md"], event_name=event_name)
+                for key in (
+                    "python_tools", "run_python", "run_native", "run_windows",
+                    "run_markdown", "run_main_smoke", "allow_substantive",
+                ):
+                    self.assertEqual(result[key], "true", key)
+                self.assertEqual(result["python_scope"], "all")
+                self.assertEqual(result["python_num_shards"], "4")
+
+    def test_python_tools_skip_summary_counts_only_known_prefixes(self) -> None:
+        output = "\n".join(
+            (
+                "test_a ... skipped 'NIGHTLY_TIER: slow case'",
+                "test_b ... skipped 'WINDOWS_ONLY: mingw32-make unavailable'",
+                "test_c ... skipped 'PRIVATE_INPUT: HST manifest absent'",
+                "test_d ... skipped 'an unrelated optional compiler is missing'",
+                "test_e ... skipped 'PRIVATE_INPUT: EBOOT absent'",
+            )
+        )
+        self.assertEqual(
+            ci_test_shards.skip_prefix_summary(output),
+            "Python test skip prefixes: NIGHTLY_TIER=1 WINDOWS_ONLY=1 PRIVATE_INPUT=2",
+        )
 
     def test_ci_stays_read_only_and_publishes_nothing_on_any_event(self) -> None:
         self.assertIn("permissions:\n  contents: read\n", self.ci)
@@ -1098,7 +1211,7 @@ class MergeQueueDependencyReviewWiringTests(unittest.TestCase):
         self.assertIn("with:\n          base-ref:", step)
 
     def test_required_job_name_action_pin_and_permissions_are_unchanged(self) -> None:
-        self.assertIn("  dependency-review:\n    runs-on: ubuntu-latest", self.text)
+        self.assertIn("  dependency-review:\n    runs-on: ubuntu-26.04", self.text)
         self.assertIn(
             "uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0",
             self.text,
@@ -1306,18 +1419,36 @@ class MainRulesetClaimsTests(unittest.TestCase):
         self.strict = MAIN_RULESET_SNAPSHOT["strict_required_status_checks_policy"]
 
     def test_ci_doc_names_exactly_the_snapshot_required_checks(self) -> None:
-        doc = _prose((ROOT / "docs" / "CI.md").read_text(encoding="utf-8"))
-        match = re.search(r"The `main` ruleset requires (.+?) on exact pull-request heads\.", doc)
-        self.assertIsNotNone(match, "docs/CI.md no longer states which checks main requires")
-        assert match is not None
-        self.assertEqual(_backticked(match.group(1)), self.required)
+        doc = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
+        candidates = [
+            block for block in _markdown_blocks(doc)
+            if all(term in block.lower() for term in ("`main`", "ruleset", "requir", "exact pull-request heads"))
+        ]
+        self.assertTrue(candidates, "docs/CI.md must state required checks for exact main pull-request heads")
+        block = candidates[0]
+        start = block.lower().find("requir")
+        end = block.lower().find("exact pull-request heads", start)
+        self.assertGreaterEqual(start, 0)
+        self.assertGreater(end, start)
+        self.assertEqual(_backticked(block[start:end]), self.required)
 
     def test_provenance_gate_doc_names_exactly_the_snapshot_required_checks(self) -> None:
-        doc = _prose((ROOT / "docs" / "PROVENANCE_MERGE_GATE.md").read_text(encoding="utf-8"))
-        match = re.search(r"ruleset requires [a-z]+ checks \(([^)]*)\)", doc)
-        self.assertIsNotNone(match, "docs/PROVENANCE_MERGE_GATE.md no longer states which checks main requires")
-        assert match is not None
-        self.assertEqual(_backticked(match.group(1)), self.required)
+        doc = (ROOT / "docs" / "PROVENANCE_MERGE_GATE.md").read_text(encoding="utf-8")
+        candidates = [
+            block for block in _markdown_blocks(doc)
+            if all(term in block.lower() for term in ("main-minimal", "ruleset", "five checks"))
+        ]
+        self.assertTrue(
+            candidates,
+            "docs/PROVENANCE_MERGE_GATE.md must state the required main ruleset checks",
+        )
+        block = candidates[0]
+        start = block.lower().find("five checks")
+        left = block.find("(", start)
+        right = block.find(")", left + 1)
+        self.assertGreaterEqual(left, start)
+        self.assertGreater(right, left)
+        self.assertEqual(_backticked(block[left + 1:right]), self.required)
 
     def test_provenance_workflow_comment_names_exactly_the_snapshot_required_checks(self) -> None:
         comment = _prose(re.sub(r"(?m)^\s*#", "", _workflow_text("provenance-attestation.yml")))

@@ -2,7 +2,7 @@ TARGET = showcase_scene_app
 OBJS = main.o
 
 INCDIR =
-CFLAGS = -O2 -G0 -Wall -Wextra
+CFLAGS = -O2 -G0 -Wall -Wextra $(SHOWCASE_DEFINES)
 CXXFLAGS = $(CFLAGS) -fno-exceptions -fno-rtti
 ASFLAGS = $(CFLAGS)
 
@@ -17,3 +17,4 @@ PSPSDK = $(shell psp-config --pspsdk-path)
 include $(PSPSDK)/lib/build.mak
 
 LIBS += $(SHOWCASE_LIBS)
+LDFLAGS += $(SHOWCASE_LDFLAGS)

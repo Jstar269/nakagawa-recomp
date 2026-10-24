@@ -4,6 +4,7 @@
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
 // Derived from PPSSPP (https://github.com/hrydgard/ppsspp), GPL-2.0-or-later
+// Copyright (c) 2012- PPSSPP Project and contributors
 
 
 #include <stdio.h>
@@ -243,6 +244,18 @@ void sr_mem_init(void) {
 static uint32_t g_loaded_end = 0;   /* highest guest address written by the loader */
 
 uint32_t sr_loaded_end(void) { return g_loaded_end; }
+
+void sr_loaded_end_set(uint32_t end) {
+    g_loaded_end = end;
+}
+
+void sr_mem_reset(void) {
+    sr_mem_init();
+    /* g_mem points at guest RAM 0x08000000 inside the full physical arena. */
+    memset(g_mem - 0x08000000u, 0, 0x0c000000u);
+    g_loaded_end = 0u;
+    sr_exec_span_reset();
+}
 
 void sr_load_segment(uint32_t vaddr, const void *data, uint32_t len) {
     sr_mem_init();
@@ -1606,23 +1619,6 @@ void sr_stack_census_report(void) {
     }
 }
 #endif
-
-/* Recover the guest address of the call instruction that reached dispatch().
- *
- * s->pc is NOT it.  Generated code only assigns s->pc inside SR_YIELD, and SR_YIELD
- * only stores when the timeslice actually expires (recomp.h), so s->pc is the last
- * *preemption point*, which can be an arbitrary distance from the live instruction
- * and typically names some enclosing/earlier function.  Reading it as the faulting
- * site sends an investigation to the wrong function entirely.
- *
- * $ra is live and exact: MIPS jal/jalr set it to (call address + 8), and codegen
- * assigns it immediately before the dispatch, so the call site is $ra - 8.  Only
- * valid for the call forms that write $ra -- a `jr` tail-call carries the caller's
- * return address instead, so this is reported as approximate. */
-__attribute__((unused))  /* documented diagnostic helper; no caller yet */
-static uint32_t sr_dispatch_call_site(const CpuState *s) {
-    return s->r[31] >= 8u ? s->r[31] - 8u : 0u;
-}
 
 #define MISS_HASH_SIZE 128
 typedef struct { uint32_t target; uint32_t pc; uint32_t ra; } DispatchMissEntry;

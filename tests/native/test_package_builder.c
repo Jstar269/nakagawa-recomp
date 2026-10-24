@@ -208,13 +208,13 @@ static void test_state_machine_transitions(void) {
     /* Test failure transition */
     PackageBuildSession fail_session;
     package_builder_init_session(&fail_session, "TEST80002", "Encrypted Title");
-    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable. Supply a matching local key or decrypted modules.\"}";
+    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.\"}";
     assert(package_builder_parse_progress_line(l_err, strlen(l_err), &ev));
     package_builder_apply_event(&fail_session, &ev);
     assert(fail_session.current_stage == PACKAGE_BUILD_STAGE_FAILED);
     assert(fail_session.is_failed);
     assert(!fail_session.is_complete);
-    assert(strcmp(fail_session.failure_boundary, "Encrypted executable. Supply a matching local key or decrypted modules.") == 0);
+    assert(strcmp(fail_session.failure_boundary, "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.") == 0);
 }
 
 static void test_output_line_circular_buffer(void) {
@@ -265,7 +265,7 @@ static void test_python_and_cli_discovery(void) {
         printf("   Found compatible Python at: %s\n", python_path);
     } else {
         assert(python_path[0] == '\0');
-        printf("   No runnable CPython 3.14.x found on this host.\n");
+        printf("   No runnable CPython 3.15.x found on this host.\n");
     }
 
     char cli_path[NK_MAX_PATH];
@@ -468,7 +468,7 @@ static void assert_python_probe_case(const char *case_name, const char *stub_mod
 }
 
 static void test_python_candidate_validation(void) {
-    printf("[PACKAGE_BUILDER_TEST] Subtest: Python candidates must run CPython 3.14\n");
+    printf("[PACKAGE_BUILDER_TEST] Subtest: Python candidates must run CPython 3.15\n");
     char *saved_path = copy_env_value("PATH");
     char *saved_python = copy_env_value("PYTHON");
     char *saved_isolation = copy_env_value("NAKAGAWA_PLAYER_UI_TEST_NO_HOST_PYTHON");
@@ -476,7 +476,7 @@ static void test_python_candidate_validation(void) {
 
     assert_python_probe_case("python-probe-store-stub", "store-stub", false);
     assert_python_probe_case("python-probe-wrong-version", "wrong-version", false);
-    assert_python_probe_case("python-probe-cpython-314", "cpython-314", true);
+    assert_python_probe_case("python-probe-cpython-315", "cpython-315", true);
     assert_python_probe_case("python-probe-timeout", "timeout", false);
 
     restore_env_value("PATH", saved_path);
@@ -492,7 +492,7 @@ static void test_python_candidate_validation(void) {
 static int run_python_probe_stub(int argc, char *argv[]) {
     static const char *probe =
         "import sys; sys.exit(sys.implementation.name != 'cpython' or "
-        "sys.version_info[:2] != (3, 14))";
+        "sys.version_info[:2] != (3, 15))";
     if (argc != 3 || strcmp(argv[1], "-c") != 0 || strcmp(argv[2], probe) != 0) {
         return 97;
     }
@@ -500,7 +500,7 @@ static int run_python_probe_stub(int argc, char *argv[]) {
     if (!mode) return 98;
     if (strcmp(mode, "store-stub") == 0) return 9009;
     if (strcmp(mode, "wrong-version") == 0) return 1;
-    if (strcmp(mode, "cpython-314") == 0) return 0;
+    if (strcmp(mode, "cpython-315") == 0) return 0;
     if (strcmp(mode, "timeout") == 0) {
         for (;;) {
 #if defined(_WIN32) || defined(_WIN64)
@@ -664,13 +664,13 @@ static void test_pinned_prerequisite_manifest(void) {
     assert(package_builder_find_cli(NULL, cli_path, sizeof(cli_path)));
     assert(package_builder_load_prerequisites(cli_path, &list, error, sizeof(error)));
     assert(list.count == 35);
-    assert(list.total_bytes == UINT64_C(100665604));
+    assert(list.total_bytes == UINT64_C(101853260));
     assert(strcmp(list.items[0].id, "cpython-embed-amd64") == 0);
     assert(strcmp(list.items[0].host, "www.python.org") == 0);
-    assert(strcmp(list.items[0].version, "3.14.7") == 0);
+    assert(strcmp(list.items[0].version, "3.15.1") == 0);
     assert(strcmp(list.items[0].license, "PSF-2.0") == 0);
     assert(strcmp(list.items[0].sha256,
-                  "d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15") == 0);
+                  "352e232f25b5120508f11a6dfc1bd9076d3e70c30977d552a63338838c2ae8fb") == 0);
 }
 
 #if defined(_WIN32) || defined(_WIN64)

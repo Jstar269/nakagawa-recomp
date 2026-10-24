@@ -34,8 +34,7 @@ The target end-to-end execution pipeline from raw user disc to running game is:
 flowchart TD
     ISO[PSP Game ISO you own] --> UMD[ISO9660 / UMD Disc Parser]
     UMD --> DISC_DISC[Authentic Executable & Module Discovery]
-    DISC_DISC --> CRYPTO[KIRK Hardware Cryptography Engine]
-    CRYPTO --> DECRYPT[Decrypted Flat ELF & PRX Modules]
+    DISC_DISC --> DECRYPT[Decrypted ELF & PRX Modules from Your Own Copy]
     DECRYPT --> LOADER[Authentic PRX/ELF Loader & Dynamic Linker]
     LOADER --> RELOC[Relocations, Imports, Exports & NID Resolution]
     LOADER --> LIFECYCLE[Module Lifecycle: sceKernelStartModule & module_start]
@@ -50,7 +49,7 @@ Under this architecture, Nakagawa does not cherry-pick convenient portions of th
 
 ## 3. Subsystem Investigation: The True LLE Path
 
-### 3.1 Retail EBOOT and PRX Cryptography
+### 3.1 Retail EBOOT and PRX Containers
 
 #### Container Formats Encountered
 
@@ -58,18 +57,18 @@ PSP UMD disc images contain executables in two primary container formats:
 
 1. **`~PSP` Header (Encrypted / Compressed PRX):**
    - Standard PRX container beginning with magic `~PSP` (`0x7E 0x50 0x53 0x50`).
-   - Contains load segment metadata, BSS sizes (offset `0x38`), total memory footprint, and embedded Kirk cryptographic headers.
+   - Contains load segment metadata, BSS sizes (offset `0x38`), total memory footprint, and an encrypted payload.
 2. **`~SCE` Header (SCE Signed Executable Container):**
    - Wrapped container beginning with magic `~SCE` (`0x7E 0x53 0x43 0x45`).
-   - Contains ECDSA Curve-160 signature blocks, Kirk encryption tags (e.g., `0x08000000`, `0x08D40000`), AES-128-CBC initialization vectors, and encrypted payload extents.
+   - Wraps an encrypted inner container.
 
 #### Encrypted containers
 
-The player and CLI provide a built-in boundary for supported `~PSP`/`~SCE` executable and PRX
-containers using a key file supplied locally by the user ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The analyzer itself still
-requires plain ELF/PRX inputs; missing key entries and unsupported container forms fail closed.
-The repository ships no keys, and this boundary does not imply support for PGD-protected game
-data or every PSP encryption form.
+Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in
+decryption was removed ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). The player and CLI
+refuse an encrypted `~PSP`/`~SCE` executable or PRX without a plain copy as `ENCRYPTED_EXECUTABLE`
+or `ENCRYPTED_MODULE`, and the analyzer requires plain ELF/PRX inputs. PGD-protected game data
+remains unsupported.
 
 ---
 
@@ -111,9 +110,16 @@ ahead of time without a load address and laid out only when the game loads it
   BSS, binds the translation at that base and registers the module's exports. The
   bound image is the only dispatch and fetch authority for its range.
 - **Lifecycle.** `module_start` and `module_stop` run with the module's own `$gp`;
-  `sceKernelUnloadModule` unbinds the translation (dispatch, fetch authority and
-  stale-code records), unlinks the exports and frees the memory, so a module later
-  placed at the same addresses never meets this one's code.
+  `module_start` still runs as a nested call, while `module_stop` runs on a
+  scheduler-managed guest thread with copied `arglen`/`argp`. The stop thread uses
+  the synthetic scheduler defaults; nonzero stop options fail closed. Stop keeps the
+  image and export authority loaded. Unload unbinds dispatch/fetch authority and stale
+  code, unlinks exports and imports, and frees the image. PSP-3000 measurement #1106
+  shows module-owned waiters and kernel objects can survive unload, so they remain
+  intact; a ready/running continuation into the image is refused with a named
+  synthetic `NOT_IMPLEMENTED` result. `sceKernelSelfStopUnloadModule` runs the same
+  stop path and retires its caller's image only after the caller thread exits; its
+  accepted argument form is synthetic pending hardware measurement.
 - **Memory policy.** Nothing is reserved for modules at build time and modules need
   not fit together; a main image must lie inside user memory, and a load the
   partition cannot hold fails at run time with `SCE_KERNEL_ERROR_NO_MEMORY`.
@@ -124,13 +130,14 @@ ahead of time without a load address and laid out only when the game loads it
   `SCE_KERNEL_ERROR_NOTIMP` and a `GUEST_MODULE_BOUNDARY` line.
 
 Remaining work on this path: `module_start` runs as a nested call on the caller's
-thread rather than in its own thread, start/stop statuses other than 0 are not
-acted on, one translation binds one live image, `PSP_SMEM_High` and fixed
-`PSP_SMEM_Addr` module placement are not modelled, and the runtime's thread stacks
-and nested-call frames occupy a fixed region near the top of user memory instead
-of partition blocks, so the allocator neither counts nor avoids them. The same
-machinery is the groundwork for late PRX user-memory bases and for
-`sceKernelLoadExec`.
+thread rather than in its own thread, module entry return values have no broader
+start-state policy beyond the stop status output, one translation binds one live
+image, `PSP_SMEM_High` and fixed `PSP_SMEM_Addr` module placement are not modelled,
+and the runtime's thread stacks and nested-call frames occupy a fixed region near
+the top of user memory instead of partition blocks, so the allocator neither
+counts nor avoids them. Package-local `sceKernelLoadExec` is limited to required,
+runtime-placed programs declared by the active title manifest; VSH and other launch
+variants remain outside that path.
 
 #### Why Guest PRXs Previously Failed
 

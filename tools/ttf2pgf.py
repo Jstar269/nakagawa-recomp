@@ -49,7 +49,7 @@ except ImportError:  # direct script execution: tools/ is the script directory
     import pgf_writer  # type: ignore[no-redef]
 
 CONVERTER_NAME = "ttf2pgf"
-CONVERTER_VERSION = "0.1.0"
+CONVERTER_VERSION = "0.2.0"
 SPEC_PATH = "docs/cleanroom/PGF_CONVERTER_SPEC.md"
 PIN_SCHEMA = "font-pin/v1"
 
@@ -66,6 +66,9 @@ MAX_COMPOSITE_COMPONENTS = 64
 
 MIN_PPEM = 1
 MAX_PPEM = 128
+#: Synthetic emboldening strengths are whole sub-samples (eighths of a pixel), at most
+#: one pixel per axis; the advance allowance uses the same unit.
+MAX_EMBOLDEN = SUPERSAMPLE
 DEFAULT_PPEM = 12
 DEFAULT_CODES = "0x20-0x7E"
 DEFAULT_FONT_NAME = "Nakagawa Open Latin"
@@ -970,12 +973,17 @@ def _plan_raster(contours: list[list[tuple]], ppem: int, units_per_em: int) -> _
 # ---------------------------------------------------------------------------
 
 
-def _rasterize(raster: _Raster) -> tuple[int, int, tuple[int, ...]]:
+def _rasterize(raster: _Raster, embolden_x: int = 0, embolden_y: int = 0) -> tuple[int, int, tuple[int, ...]]:
     """Rasterize one planned glyph into row-major 4-bit alpha samples.
 
     Returns ``(width, height, samples)``; a degenerate box or edge-free outline
     yields a zero-area glyph (empty samples), which the public reader reports
     as present-but-unmapped exactly like a space.
+
+    ``embolden_x``/``embolden_y`` (whole sub-samples) widen every covered run
+    rightwards and every covered sub-scanline upwards on the 8x8 grid before the
+    coverage count; the caller has already grown the box to hold the extra ink
+    (specification section 3, rule 10). Zero leaves the output unchanged.
     """
     width, height = raster.width, raster.height
     if width <= 0 or height <= 0 or not raster.edges:
@@ -983,7 +991,7 @@ def _rasterize(raster: _Raster) -> tuple[int, int, tuple[int, ...]]:
     left26 = raster.left * 64
     top26 = raster.top * 64
     sub_columns = width * SUPERSAMPLE
-    counts = [0] * (width * height)
+    sub_rows: list[int] = []
     for row in range(height):
         for step in range(SUPERSAMPLE):
             # Sub-scanline centre, mirrored from the y-up outline into the
@@ -991,6 +999,7 @@ def _rasterize(raster: _Raster) -> tuple[int, int, tuple[int, ...]]:
             # SUPERSAMPLE-th slice.
             y = top26 - (row * SUPERSAMPLE + step) * SUB_PIXEL - SUB_PIXEL // 2
             crossings: list[tuple[Fraction, int]] = []
+            sub_rows.append(0)
             for x0, y0, x1, y1 in raster.edges:
                 if y0 == y1:
                     continue
@@ -1025,10 +1034,31 @@ def _rasterize(raster: _Raster) -> tuple[int, int, tuple[int, ...]]:
                 j_max = min(j_max, sub_columns - 1)
                 if j_max >= j_min:
                     bits |= ((1 << (j_max - j_min + 1)) - 1) << j_min
-            for column in range(width):
-                active = (bits >> (column * SUPERSAMPLE)) & 0xFF
-                if active:
-                    counts[row * width + column] += active.bit_count()
+            sub_rows[-1] = bits
+    if embolden_x:
+        mask = (1 << sub_columns) - 1
+        widened = []
+        for bits in sub_rows:
+            grown = bits
+            for shift in range(1, embolden_x + 1):
+                grown |= bits << shift
+            widened.append(grown & mask)
+        sub_rows = widened
+    if embolden_y:
+        raised = []
+        for index in range(len(sub_rows)):
+            grown = 0
+            for below in sub_rows[index : index + embolden_y + 1]:
+                grown |= below
+            raised.append(grown)
+        sub_rows = raised
+    counts = [0] * (width * height)
+    for index, bits in enumerate(sub_rows):
+        row = index // SUPERSAMPLE
+        for column in range(width):
+            active = (bits >> (column * SUPERSAMPLE)) & 0xFF
+            if active:
+                counts[row * width + column] += active.bit_count()
     scale = SUPERSAMPLE * SUPERSAMPLE
     samples = tuple((count * 15 + 32) // scale for count in counts)
     return width, height, samples
@@ -1468,6 +1498,9 @@ def convert(
     font_name: str = DEFAULT_FONT_NAME,
     font_type: str = DEFAULT_FONT_TYPE,
     pin: SourcePin | None = None,
+    embolden_x: int = 0,
+    embolden_y: int = 0,
+    embolden_advance: int = 0,
 ) -> Conversion:
     """Convert one pinned TrueType font into a PGF image plus its manifest.
 
@@ -1495,6 +1528,16 @@ def convert(
         ppem = DEFAULT_PPEM
     if ppem is not None and not MIN_PPEM <= ppem <= MAX_PPEM:
         raise _refuse("ppem-out-of-range", f"ppem {ppem} is outside {MIN_PPEM}..{MAX_PPEM}")
+    for label, strength in (
+        ("--embolden-x", embolden_x),
+        ("--embolden-y", embolden_y),
+        ("--embolden-advance", embolden_advance),
+    ):
+        if isinstance(strength, bool) or not isinstance(strength, int) or not 0 <= strength <= MAX_EMBOLDEN:
+            raise _refuse(
+                "embolden-out-of-range",
+                f"{label} {strength!r} is outside 0..{MAX_EMBOLDEN} sub-samples",
+            )
 
     validate_output_name(font_name, pin)
 
@@ -1518,8 +1561,18 @@ def convert(
     glyphs: list[pgf_writer.Glyph] = []
     zero_area: list[int] = []
     max_width = max_height = 0
+    grow_right = -(-embolden_x // SUPERSAMPLE)
+    grow_top = -(-embolden_y // SUPERSAMPLE)
     for code in planner.codes:
         raster = planner.raster_at(code, ppem)
+        if raster.width > 0 and raster.height > 0 and (grow_right or grow_top):
+            raster = _Raster(
+                edges=raster.edges,
+                left=raster.left,
+                bottom=raster.bottom,
+                right=raster.right + grow_right,
+                top=raster.top + grow_top,
+            )
         if raster.width > pgf_writer.MAX_EDGE or raster.height > pgf_writer.MAX_EDGE:
             raise _refuse(
                 "glyph-too-large",
@@ -1527,11 +1580,12 @@ def convert(
                 f"the record field holds at most {pgf_writer.MAX_EDGE}",
             )
         advance_x = _to26_6(font.advance_units(planner.gids[code]), ppem, font.units_per_em)
+        advance_x += embolden_advance * SUB_PIXEL
         if raster.width <= 0 or raster.height <= 0:
             zero_area.append(code)
             glyphs.append(pgf_writer.Glyph(code=code, width=0, height=0, samples=(), advance_x=advance_x))
             continue
-        width, height, samples = _rasterize(raster)
+        width, height, samples = _rasterize(raster, embolden_x, embolden_y)
         max_width = max(max_width, width)
         max_height = max(max_height, height)
         glyphs.append(
@@ -1540,8 +1594,8 @@ def convert(
                 width=width,
                 height=height,
                 samples=samples,
-                adjust_x=0,
-                adjust_y=0,
+                adjust_x=raster.left,
+                adjust_y=raster.top,
                 advance_x=advance_x,
                 advance_y=0,
                 dimension_width=width * pgf_writer.POINTS,
@@ -1581,6 +1635,7 @@ def convert(
         output_path=output_path,
         pin=pin,
         metric_targets=chosen_targets,
+        embolden=(embolden_x, embolden_y, embolden_advance),
     )
     return Conversion(
         image=image,
@@ -1626,6 +1681,7 @@ def _build_manifest(
     output_path: str,
     pin: SourcePin | None,
     metric_targets: dict | None,
+    embolden: tuple[int, int, int] = (0, 0, 0),
 ) -> dict:
     first, last = codes
     header = _read_header_fields(image)
@@ -1694,6 +1750,12 @@ def _build_manifest(
             "rounding": "scale: floor(x * ppem * 64 / upem + 1/2); coverage: floor((n * 15 + 32) / 64)",
             "hinting": "none",
             "advance_rounding": "26.6, half-up from font units",
+            "embolden": {
+                "unit": "sub-sample (1/8 pixel)",
+                "x": embolden[0],
+                "y": embolden[1],
+                "advance": embolden[2],
+            },
         },
     }
 
@@ -1752,6 +1814,24 @@ def _main(argv: list[str]) -> int:
     size.add_argument("--metric-targets", type=Path, help="metric-target policy JSON; selects the ppem")
     parser.add_argument("--font-name", default=DEFAULT_FONT_NAME, help="honest PGF fontName")
     parser.add_argument("--font-type", default=DEFAULT_FONT_TYPE, help="PGF fontType (style)")
+    parser.add_argument(
+        "--embolden-x",
+        type=int,
+        default=0,
+        help=f"synthetic emboldening: widen strokes rightwards by N/8 px (0..{MAX_EMBOLDEN}, default 0)",
+    )
+    parser.add_argument(
+        "--embolden-y",
+        type=int,
+        default=0,
+        help=f"synthetic emboldening: thicken strokes upwards by N/8 px (0..{MAX_EMBOLDEN}, default 0)",
+    )
+    parser.add_argument(
+        "--embolden-advance",
+        type=int,
+        default=0,
+        help=f"add N/8 px to every advance to make room for bolder strokes (0..{MAX_EMBOLDEN}, default 0)",
+    )
     args = parser.parse_args(argv)
 
     if args.manifest is not None and args.pin is None:
@@ -1783,6 +1863,9 @@ def _main(argv: list[str]) -> int:
             font_name=args.font_name,
             font_type=args.font_type,
             pin=pin,
+            embolden_x=args.embolden_x,
+            embolden_y=args.embolden_y,
+            embolden_advance=args.embolden_advance,
         )
         manifest = manifest_bytes(conversion.manifest)
     except TtfConvertError as exc:

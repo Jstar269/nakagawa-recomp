@@ -1,6 +1,6 @@
 # `tools/` — Host-side recompiler scripts
 
-These scripts require Python 3.14.x. PowerShell entrypoints require PowerShell 7.4+ (`pwsh`); they
+These scripts require Python 3.15.x. PowerShell entrypoints require PowerShell 7.4+ (`pwsh`); they
 run on the development host and are never executed by `hst.exe` at runtime. For HST, use the canonical `nk_manager.ps1` with `-GameName hst` and `-TitleManifest`; it supplies the required zero base/entry values and drives the Makefile's two-phase build.
 
 ## Pipeline (in order)
@@ -217,6 +217,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `title_runtime_config.py` | Emit the build-local runtime title configuration consumed by the runtime. |
 | `enhancement_package.py` | Validate and verify enhancement package declarations. |
 | `stage_runtime_dlls.py` | Stage the host runtime library closure beside a built player or title package. |
+| `stage_install.py` | Stage a runnable player install (bin/, source/, icon) outside the build tree and write its desktop shortcut: a Windows `.lnk`, or on Linux a per-user `.desktop` entry and icon under `$XDG_DATA_HOME`. |
 | `build_profile.py` | Hash and record the build identities the native build depends on. |
 | `build_graph_snapshot.py` | Read-only snapshot of the current Make build graph. |
 | `record_toolchain.py` | Record observed live toolchain identities using the doctor's detection functions. |
@@ -418,6 +419,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_package_cache.py` | Cache tiering, cache-key separation, in-checkout write refusal, bounded external JSON. |
 | `test_player_package_determinism.py` | Determinism and public-export exclusion of the player package route. |
 | `test_player_package_route.py` | The player package route on a source-owned fixture. |
+| `test_stage_install.py` | The staged player install layout, its ownership guard, icon and shortcut. |
 | `test_prep_fail_closed.py` | Fail-closed preparation regressions. |
 | `test_prereq_fetcher.py` | No-network tests for the pinned prerequisite download and install path. |
 | `test_profile_zero_e2e.py` | Manifest-driven production-route checks for the two profile-zero fixtures. |
@@ -448,7 +450,6 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_mem_debug.py` | Unit tests for the interactive memory and CPU-state tool. |
 | `test_portability_inventory.py` | Tests for the public portability inventory. |
 | `test_production_smoke.py` | Regressions for the source-owned full-production smoke guest. |
-| `test_psp_decrypt.py` | Source-owned end-to-end and known-answer coverage for the decryption boundary. |
 | `test_shader_embed.py` | Tests for deterministic checked-in Vulkan shader provenance. |
 | `test_soak_audit.py` | Contract tests for the soak run auditor. |
 | `test_vblank_ledger.py` | Contract tests for the whole-run VBLANK ledger audit. |
@@ -477,6 +478,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_pgf_writer.py` | PGF writer determinism and public-reader round trip over generated glyph sets. |
 | `test_pgf_validate_parity.py` | Field-by-field parity of the native PGF validator and its Python mirror on seeded images and mutations. |
 | `test_ttf2pgf.py` | Converter determinism, manifest/pin binding, named refusals, and public-reader round trip over the pinned font fixture. |
+| `test_ui_font_assets.py` | Pins the bundled player UI fonts (exact hashes, static weights) and each family's OFL text. |
 | `test_ppmdiff_coverage.py` | Fail-closed coverage tests for the framebuffer diff. |
 | `test_frame_capture_check.py` | Frame-capture accounting plus the emitted-format contract that pins the FBSNAP/WATCHDOG patterns to the current runtime strings. |
 | `test_progress_evidence.py` | Evidence-integrity regressions for the progress tracker. |

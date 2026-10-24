@@ -75,13 +75,13 @@ moved or deleted by the player.
 
 **Expected result:** Pass if the player transitions through `VIEW_INSPECTING`, parses `PSP_GAME/PARAM.SFO` directly in C without external tools, extracts the Title and Disc ID, and displays the corresponding game card.
 
-### Step 7: Built-in decryption uses only the user's own key
+### Step 7: Encrypted executables are refused by name
 
-1. Use a source-owned synthetic encrypted fixture and its test key if one is available. Do not use a retail ISO or retail key for this public smoke test.
-2. Verify supported executable and module files decrypt to `%LOCALAPPDATA%\Nakagawa\data\titles\<DISC_ID>\decrypted` only when that local key is supplied.
-3. If the source-owned showcase fixture is the only available image, record this step as **NOT RUN** for decryption: its plaintext executable does not exercise the encrypted path.
+1. Use a source-owned synthetic encrypted fixture if one is available. Do not use a retail ISO for this public smoke test.
+2. Verify the game card and checklist report `ENCRYPTED_EXECUTABLE` (or `ENCRYPTED_MODULE`) and name `%LOCALAPPDATA%\Nakagawa\data\titles\<DISC_ID>\decrypted`, and that nothing is written to that folder.
+3. If the source-owned showcase fixture is the only available image, record this step as **NOT RUN**: its plaintext executable does not exercise the encrypted path.
 
-**Expected result:** Pass only for the source-owned encrypted fixture when the local key decrypts supported files and missing module key entries fail closed by name ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550)). No key is bundled. A plaintext showcase ISO is not evidence for retail decryption.
+**Expected result:** Pass when the encrypted fixture fails closed with the named message. Nakagawa does not decrypt games; built-in decryption was removed ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550)).
 
 ### Step 8: BUILD PACKAGE and prerequisite consent
 

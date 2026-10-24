@@ -673,6 +673,12 @@
     "name": "_sceKernelLockLwMutexCB",
     "status": "unreviewed"
   },
+  "0x315ad3a0": {
+    "classification": "dedicated",
+    "handler": "h_SetCompiledSdkVersion",
+    "name": "sceKernelSetCompiledSdkVersion380_390",
+    "status": "complete"
+  },
   "0x31668baa": {
     "classification": "dedicated",
     "handler": "h_AtracGetChannel",
@@ -721,6 +727,12 @@
     "name": "__sceSasRevType",
     "status": "unreviewed"
   },
+  "0x340b7686": {
+    "classification": "dedicated",
+    "handler": "h_UmdGetDiscInfo",
+    "name": "sceUmdGetDiscInfo",
+    "status": "unreviewed"
+  },
   "0x342061e5": {
     "classification": "dedicated",
     "handler": "h_SetCompiledSdkVersion",
@@ -747,7 +759,7 @@
   },
   "0x34b9fa9e": {
     "classification": "dedicated",
-    "handler": "h_CacheInvalidateRangeOther",
+    "handler": "h_DcacheWritebackInvalidateRange",
     "name": "sceKernelDcacheWritebackInvalidateRange",
     "status": "unreviewed"
   },
@@ -1804,6 +1816,12 @@
     "name": "sceKernelWaitThreadEndCB",
     "status": "unreviewed"
   },
+  "0x843fbf43": {
+    "classification": "dedicated",
+    "handler": "h_PowerSetCpuClockFrequency",
+    "name": "scePowerSetCpuClockFrequency",
+    "status": "partial"
+  },
   "0x86255ada": {
     "classification": "dedicated",
     "handler": "h_DeleteMbx",
@@ -1826,6 +1844,12 @@
     "classification": "dedicated",
     "handler": "h_MpegFinish",
     "name": "sceMpegFinish",
+    "status": "unreviewed"
+  },
+  "0x87533940": {
+    "classification": "dedicated",
+    "handler": "h_UmdReplaceProhibit",
+    "name": "sceUmdReplaceProhibit",
     "status": "unreviewed"
   },
   "0x876dbfad": {
@@ -1906,6 +1930,12 @@
     "handler": "h_UmdWaitDriveStat",
     "name": "sceUmdWaitDriveStat",
     "status": "unreviewed"
+  },
+  "0x8efb3fa2": {
+    "classification": "dedicated",
+    "handler": "h_PowerGetBatteryLifeTime",
+    "name": "scePowerGetBatteryLifeTime",
+    "status": "partial"
   },
   "0x8f2df740": {
     "classification": "dedicated",
@@ -2137,7 +2167,7 @@
   },
   "0xa14f40b2": {
     "classification": "dedicated",
-    "handler": "h_VolatileMemLock",
+    "handler": "h_VolatileMemTryLock",
     "name": "sceKernelVolatileMemTryLock",
     "status": "unreviewed"
   },
@@ -2342,9 +2372,15 @@
   },
   "0xb435dec5": {
     "classification": "dedicated",
-    "handler": "h_CacheInvalidateAllOther",
+    "handler": "h_DcacheWritebackInvalidateAll",
     "name": "sceKernelDcacheWritebackInvalidateAll",
     "status": "unreviewed"
+  },
+  "0xb4432bc8": {
+    "classification": "dedicated",
+    "handler": "h_PowerGetBatteryChargingStatus",
+    "name": "scePowerGetBatteryChargingStatus",
+    "status": "partial"
   },
   "0xb448ec0d": {
     "classification": "dedicated",
@@ -2467,11 +2503,10 @@
     "status": "partial"
   },
   "0xbd2f1094": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_LoadExec",
     "name": "sceKernelLoadExec",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "unreviewed"
   },
   "0xbd681969": {
     "classification": "dedicated",
@@ -2617,6 +2652,12 @@
     "name": "__sceSasSetSimpleADSR",
     "status": "unreviewed"
   },
+  "0xcbe9f02a": {
+    "classification": "dedicated",
+    "handler": "h_UmdReplacePermit",
+    "name": "sceUmdReplacePermit",
+    "status": "unreviewed"
+  },
   "0xcd203292": {
     "classification": "dedicated",
     "handler": "h_CancelEventFlag",
@@ -2729,11 +2770,10 @@
     "status": "unreviewed"
   },
   "0xd675ebb8": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_SelfStopUnloadModule",
     "name": "sceKernelSelfStopUnloadModule",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "unreviewed"
   },
   "0xd6a5f2f7": {
     "classification": "dedicated",
@@ -2886,6 +2926,12 @@
     "name": "__sceSasGetOutputmode",
     "status": "unreviewed"
   },
+  "0xe1c93e47": {
+    "classification": "dedicated",
+    "handler": "h_RtcGetTime64_t",
+    "name": "sceRtcGetTime64_t",
+    "status": "partial"
+  },
   "0xe1cd9561": {
     "classification": "dedicated",
     "handler": "h_SasSetVoicePCM",
@@ -2957,6 +3003,12 @@
     "handler": "h_CreateCallback",
     "name": "sceKernelCreateCallback",
     "status": "unreviewed"
+  },
+  "0xe83742ba": {
+    "classification": "dedicated",
+    "handler": "h_UmdDeactivate",
+    "name": "sceUmdDeactivate",
+    "status": "partial"
   },
   "0xe855bf76": {
     "classification": "dedicated",

@@ -66,8 +66,8 @@ class TestSBOMTooling(unittest.TestCase):
         by_name = {package["name"]: package for package in packages}
         # The coverage measurement pins its own closure the same way the other tools
         # do: every published wheel and the sdist, for the exact release.
-        self.assertEqual(by_name["coverage"]["version"], "7.16.2")
-        self.assertEqual(len(by_name["coverage"]["declared_sha256"]), 121)
+        self.assertEqual(by_name["coverage"]["version"], "7.17.0")
+        self.assertEqual(len(by_name["coverage"]["declared_sha256"]), 119)
         # License resolution reads installed dist metadata for the exact pins
         # (generate_sbom._resolve_python_package_license).  CI installs
         # tools/requirements-lock.txt into the test interpreter; a different
@@ -286,18 +286,18 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         metadata = self._metadata()
         self.assertEqual(metadata["retrieved_utc"], "2026-09-25")
         ruff_source = next(s for s in metadata["sources"] if s["name"] == "ruff")
-        self.assertEqual(ruff_source["retrieved_utc"], "2026-09-30")
+        self.assertEqual(ruff_source["retrieved_utc"], "2026-10-23")
         # A source added after the document snapshot records its own retrieval date.
         coverage_source = next(s for s in metadata["sources"] if s["name"] == "coverage")
-        self.assertEqual(coverage_source["retrieved_utc"], "2026-10-21")
+        self.assertEqual(coverage_source["retrieved_utc"], "2026-10-23")
         self.assertEqual(
             [source["url"] for source in metadata["sources"]],
             [
                 "https://pypi.org/pypi/bashlex/0.18/json",
                 "https://pypi.org/pypi/click/8.5.0/json",
                 "https://pypi.org/pypi/compiledb/0.10.7/json",
-                "https://pypi.org/pypi/coverage/7.16.2/json",
-                "https://pypi.org/pypi/ruff/0.16.9/json",
+                "https://pypi.org/pypi/coverage/7.17.0/json",
+                "https://pypi.org/pypi/ruff/0.17.2/json",
             ],
         )
         # PyPI's canonical names differ in case from the lock's (Jinja2, MarkupSafe,
@@ -306,7 +306,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
             generate_sbom._normalize_python_name(source["name"]): source
             for source in metadata["sources"]
         }
-        self.assertEqual(sum(len(source["artifacts"]) for source in sources.values()), 145)
+        self.assertEqual(sum(len(source["artifacts"]) for source in sources.values()), 143)
         self.assertEqual(
             [package["name"] for package in packages],
             [
@@ -347,7 +347,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertIn("malformed SHA-256 hash", str(ctx.exception))
 
     def test_old_sequential_ruff_hash_fails_as_unmatched(self):
-        text = f"ruff==0.16.9 --hash=sha256:{self.OLD_RUFF_HASH}\n"
+        text = f"ruff==0.17.2 --hash=sha256:{self.OLD_RUFF_HASH}\n"
         with self.assertRaises(generate_sbom.LockfileParseError) as ctx:
             self._parse(text)
         self.assertIn("matches no trusted artifact", str(ctx.exception))
@@ -652,7 +652,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
         bad_unknown = {
             "compiler": ">=4.9.0 (rolling-msys2)",
             "make": ">=3.81 (rolling-msys2)",
-            "python": ">=3.14,<3.15",
+            "python": ">=3.15,<3.16",
             "sdl3": ">=3.0.0 (rolling-msys2)",
             "vulkan_sdk": ">=1.1.0",
             "clang": ">=15.0.0",
@@ -667,7 +667,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
         # 2. Missing required component fails
         bad_missing = {
             "make": ">=3.81 (rolling-msys2)",
-            "python": ">=3.14,<3.15",
+            "python": ">=3.15,<3.16",
             "sdl3": ">=3.0.0 (rolling-msys2)",
             "vulkan_sdk": ">=1.1.0",
         }
@@ -682,7 +682,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
         bad_syntax = {
             "compiler": "invalid-syntax",
             "make": ">=3.81 (rolling-msys2)",
-            "python": ">=3.14,<3.15",
+            "python": ">=3.15,<3.16",
             "sdl3": ">=3.0.0 (rolling-msys2)",
             "vulkan_sdk": ">=1.1.0",
         }
@@ -733,9 +733,9 @@ class TestToolchainPolicyVerification(unittest.TestCase):
         valid_observed = {
             "compiler": "16.1.0",
             "make": "4.4.1",
-            "python": "3.14.7",
+            "python": "3.15.1",
             "sdl3": "3.4.12",
-            "vulkan_sdk": "1.4.357.0",
+            "vulkan_sdk": "1.4.363.0",
         }
 
         # Mutation 1: Compiler outside policy (< 13.0.0)
@@ -762,18 +762,18 @@ class TestToolchainPolicyVerification(unittest.TestCase):
             str(errors),
         )
 
-        # Mutation 4: Python outside policy (< 3.14 or >= 3.15)
-        mutated_py_old = dict(valid_observed, python="3.13.9")
+        # Mutation 4: Python outside policy (< 3.15 or >= 3.16)
+        mutated_py_old = dict(valid_observed, python="3.14.9")
         errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=mutated_py_old)
         self.assertTrue(
-            any("observed toolchain component 'python' version '3.13.9' does not satisfy policy" in e for e in errors),
+            any("observed toolchain component 'python' version '3.14.9' does not satisfy policy" in e for e in errors),
             str(errors),
         )
 
-        mutated_py_new = dict(valid_observed, python="3.15.0")
+        mutated_py_new = dict(valid_observed, python="3.16.0")
         errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=mutated_py_new)
         self.assertTrue(
-            any("observed toolchain component 'python' version '3.15.0' does not satisfy policy" in e for e in errors),
+            any("observed toolchain component 'python' version '3.16.0' does not satisfy policy" in e for e in errors),
             str(errors),
         )
 
@@ -781,9 +781,9 @@ class TestToolchainPolicyVerification(unittest.TestCase):
         valid_observed = {
             "compiler": "16.1.0",
             "make": "4.4.1",
-            "python": "3.14.7",
+            "python": "3.15.1",
             "sdl3": "3.4.12",
-            "vulkan_sdk": "1.4.357.0",
+            "vulkan_sdk": "1.4.363.0",
         }
         errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=valid_observed)
         self.assertEqual(errors, [])
@@ -799,9 +799,9 @@ class TestToolchainPolicyVerification(unittest.TestCase):
     def test_observed_toolchain_missing_component_fails(self):
         incomplete = {
             "make": "4.4.1",
-            "python": "3.14.7",
+            "python": "3.15.1",
             "sdl3": "3.4.12",
-            "vulkan_sdk": "1.4.357.0",
+            "vulkan_sdk": "1.4.363.0",
         }
         errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=incomplete)
         self.assertTrue(
@@ -824,9 +824,9 @@ class TestToolchainPolicyVerification(unittest.TestCase):
             json.dump({
                 "compiler": "16.1.0",
                 "make": "4.4.1",
-                "python": "3.14.7",
+                "python": "3.15.1",
                 "sdl3": "3.4.12",
-                "vulkan_sdk": "1.4.357.0",
+                "vulkan_sdk": "1.4.363.0",
             }, tmp)
             obs_path = Path(tmp.name)
         try:

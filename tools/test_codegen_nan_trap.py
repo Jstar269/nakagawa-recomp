@@ -651,6 +651,16 @@ class TrapHarness:
         reports = [line for line in result.stderr.splitlines() if line.startswith("NAN_TRAP pc=")]
         return result, reports
 
+    def _assert_finite_result_is_silent(self):
+        executable, env, expected_stdout, forbidden_stdout = self._finite_result_case()
+        label = f"{self._finite_result_emitter} {self._finite_result_op}"
+        result, reports = self.run_exe(executable, env)
+        self.assertEqual(reports, [], f"{label} emitted a NAN_TRAP: {result.stderr}")
+        if expected_stdout is not None:
+            self.assertEqual(result.stdout.strip(), expected_stdout, label)
+        if forbidden_stdout is not None:
+            self.assertNotIn(forbidden_stdout, result.stdout, label)
+
 
 class TestScalarFpuTrap(TrapHarness, unittest.TestCase):
     """A real codegen emission, compiled against the real reporter."""
@@ -689,10 +699,8 @@ int main(void) {
         _result, reports = self.run_exe(self.exe, {"NUM": "3f800000", "DEN": "00000000"})
         self.assertEqual(reports, ["NAN_TRAP pc=0x00001234 op=div.s dst=f7 vbl=4711 in=[1,0] out=[inf]"])
 
-    def test_finite_result_is_silent(self):
-        result, reports = self.run_exe(self.exe, {"NUM": "3f800000", "DEN": "40000000"})
-        self.assertEqual(result.stdout.strip(), "RESULT=0x3f000000")
-        self.assertEqual(reports, [])
+    def _finite_result_case(self):
+        return self.exe, {"NUM": "3f800000", "DEN": "40000000"}, "RESULT=0x3f000000", None
 
     def test_propagating_an_existing_nan_is_not_reported(self):
         # The trap names the ORIGIN. A sequence that only echoes an existing NaN
@@ -819,10 +827,8 @@ int main(void) {{
         self.assertEqual(reports[0],
                          "NAN_TRAP pc=0x0000abcd op=vdiv.s dst=v3 vbl=4711 in=[0,0] out=[nan]")
 
-    def test_finite_result_is_silent(self):
-        result, reports = self.run_exe(self.exe, {"NUM": "3f800000", "DEN": "40000000"})
-        self.assertEqual(result.stdout.strip(), "RESULT=0x3f000000")
-        self.assertEqual(reports, [])
+    def _finite_result_case(self):
+        return self.exe, {"NUM": "3f800000", "DEN": "40000000"}, "RESULT=0x3f000000", None
 
     def test_propagating_an_existing_nan_is_not_reported(self):
         _result, reports = self.run_exe(self.exe, {"NUM": "7fc00000", "DEN": "3f800000"})
@@ -1034,10 +1040,8 @@ int main(void) {{
         self.assertEqual(result.stdout.strip(), "RC=1 RESULT=0xffc00000")
         self.assertEqual(reports, [f"NAN_TRAP pc=0x{self.PC:08x} op=vdiv.s dst=v3 vbl=4711 in=[0,0] out=[nan]"])
 
-    def test_finite_result_is_silent(self):
-        result, reports = self.run_exe(self.exe, {"NUM": "3f800000", "DEN": "40000000"})
-        self.assertEqual(result.stdout.strip(), "RC=1 RESULT=0x3f000000")
-        self.assertEqual(reports, [])
+    def _finite_result_case(self):
+        return self.exe, {"NUM": "3f800000", "DEN": "40000000"}, "RC=1 RESULT=0x3f000000", None
 
     def test_propagating_an_existing_nan_is_not_reported(self):
         _result, reports = self.run_exe(self.exe, {"NUM": "7fc00000", "DEN": "3f800000"})
@@ -1077,9 +1081,8 @@ int main(void) {{
                         reports[0])
         self.assertTrue(reports[0].endswith("out=[nan]"), reports[0])
 
-    def test_finite_result_is_silent(self):
-        _result, reports = self.run_exe(self.exe, {"ARG": "40800000"})  # sqrt(4)
-        self.assertEqual(reports, [])
+    def _finite_result_case(self):
+        return self.exe, {"ARG": "40800000"}, None, None  # sqrt(4)
 
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
@@ -1161,11 +1164,8 @@ int main(void) {{
         self.assertEqual(reports, [], result.stderr)
         self.assertIn("nonfinite=1", result.stdout, "the result is still NaN")
 
-    def test_finite_result_is_silent(self):
-        result, reports = self.run_exe(self.generated,
-                                       all_ones_env(self.matrix, self.vector))
-        self.assertEqual(reports, [], result.stderr)
-        self.assertNotIn("nonfinite=1", result.stdout)
+    def _finite_result_case(self):
+        return self.generated, all_ones_env(self.matrix, self.vector), None, "nonfinite=1"
 
     def test_the_interpreter_reports_the_same_operands_for_the_same_word(self):
         # Both tiers must gather the same operand list, or a report would depend
@@ -1276,6 +1276,31 @@ class Vfpu3CompareDecodeTests(unittest.TestCase):
         # vcmovt.s S000, S010, CC0: VFPU4 jump 0x15, tf=0, imm3=0, vs=1, vd=0
         body = self._effect(0xD2A00000 | (1 << 8))
         self.assertIn("vfpuCtrl[3]", body, "a conditional move reads the condition code")
+
+
+FINITE_RESULT_CASES = (
+    ("codegen", "div.s", TestScalarFpuTrap),
+    ("codegen", "vdiv.s", TestVfpuLaneTrap),
+    ("interpreter", "vdiv.s", TestInterpreterTrap),
+    ("interpreter", "vtrig.s", TestInterpreterOneSourceTrap),
+    ("codegen", "vtfm", TestVtfmTrap),
+)
+
+
+@unittest.skipUnless(CC, "no C compiler on PATH")
+class TestFiniteResultIsSilent(unittest.TestCase):
+    def test_finite_result_is_silent_for_each_emitter_and_operation(self):
+        for emitter, op, harness in FINITE_RESULT_CASES:
+            with self.subTest(emitter=emitter, op=op, harness=harness.__name__):
+                result = unittest.TestResult()
+                case = harness("_assert_finite_result_is_silent")
+                case._finite_result_emitter = emitter
+                case._finite_result_op = op
+                case.run(result)
+                self.assertEqual(result.testsRun, 1)
+                self.assertFalse(result.skipped, result.skipped)
+                self.assertFalse(result.errors, result.errors)
+                self.assertFalse(result.failures, result.failures)
 
 
 if __name__ == "__main__":

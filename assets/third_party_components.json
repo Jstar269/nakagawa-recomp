@@ -364,6 +364,52 @@
             "sha256": "7f8e4bf527a9c2f387485429f0bf1cf7982dfb70c7d3e87cc53086dd5ebf202c"
           }
         ]
+      },
+      {
+        "id": "sal063-ppsspp-lineage",
+        "name": "sal063 / PPSSPP lineage runtime code",
+        "spdx_id": "GPL-2.0-or-later",
+        "upstream_origin": "https://github.com/sal063/PSP-recompilation-project (derived in part from https://github.com/hrydgard/ppsspp)",
+        "upstream_revision": "sal063 da17b0e1db209206a407d097d132201e516e3855; PPSSPP revision unknown (partial pin 4e109dd6ae34cbcb39751bb7647d345569700161 for Core/HLE/sceMpeg.cpp), see src/rt/PROVENANCE.md",
+        "disposition": "statically_linked_subset",
+        "notice_file": "sal063-PPSSPP-lineage.txt",
+        "copyright_notices": [
+          "Copyright (C) 2025-2026 the psp-recomp authors (sal063 / psp-recomp)",
+          "Copyright (c) 2012- PPSSPP Project and contributors"
+        ],
+        "note": "Source files under src/rt/ and src/ref/ that carry GPL-2.0-or-later and derive from the sal063 PSP Recompilation Project and, for the files listed in src/rt/PROVENANCE.md, from PPSSPP. They are compiled into the runtime itself, so no separate relink step applies. The runtime is conveyed under GPL-3.0-or-later, which GPL-2.0-or-later permits. No disposition in this inventory names statically compiled GPL source of this kind; statically_linked_subset is the closest documented value.",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/GPL-2.0.txt",
+            "copied_from": "GNU General Public License version 2 text inherited with the sal063 lineage (THIRD_PARTY_LICENSES/GPL-2.0.txt)",
+            "sha256": "7ec0306399fd391c17165cac57361c54da002ebe1b85cbfc49ea83b92867df24"
+          },
+          {
+            "file": "THIRD_PARTY_LICENSES/SAL063_CREDITS.txt",
+            "copied_from": "sal063 CREDITS.md at da17b0e1db209206a407d097d132201e516e3855 with Nakagawa corrections (THIRD_PARTY_LICENSES/SAL063_CREDITS.txt)",
+            "sha256": "98454ee97dec8ccf25f93766b42cabf40d29517f28db11c8c3ec66b65d1b9825"
+          }
+        ]
+      },
+      {
+        "id": "ppsspp-vfpu-tables",
+        "name": "PPSSPP VFPU lookup tables",
+        "spdx_id": "GPL-2.0-or-later",
+        "upstream_origin": "https://github.com/hrydgard/ppsspp",
+        "upstream_revision": "f0baf3ade7bcb6c86f0835962b36eb4e51559d8f",
+        "disposition": "statically_linked_subset",
+        "notice_file": "PPSSPP-VFPU-tables.txt",
+        "copyright_notices": [
+          "Copyright (c) 2012- PPSSPP Project and contributors"
+        ],
+        "note": "The 15 byte-verified assets/vfpu/*.dat files recorded in assets/vfpu/PROVENANCE.json (licence field GPL-2.0-or-later). They are read by src/rt/vfpu_tables.c as data rather than compiled in; statically_linked_subset is the closest documented disposition for upstream GPL data that ships with the runtime.",
+        "license_texts": [
+          {
+            "file": "THIRD_PARTY_LICENSES/GPL-2.0.txt",
+            "copied_from": "GNU General Public License version 2 text inherited with the sal063 lineage (THIRD_PARTY_LICENSES/GPL-2.0.txt)",
+            "sha256": "7ec0306399fd391c17165cac57361c54da002ebe1b85cbfc49ea83b92867df24"
+          }
+        ]
       }
     ],
     "project_output": {
@@ -412,9 +458,9 @@
         "recorded_from": "installed dist-info compiledb-0.10.7.dist-info/METADATA (License: GPL-3.0-or-later; Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)); License-File: LICENSE"
       },
       "ruff": {
-        "version": "0.16.9",
+        "version": "0.17.2",
         "spdx_id": "MIT",
-        "recorded_from": "PyPI release metadata https://pypi.org/pypi/ruff/0.16.9/json (license_expression: MIT; license_files: LICENSE)"
+        "recorded_from": "PyPI release metadata https://pypi.org/pypi/ruff/0.17.2/json (license_expression: MIT; license_files: LICENSE)"
       },
       "click": {
         "version": "8.5.0",
@@ -427,9 +473,9 @@
         "recorded_from": "installed dist-info bashlex-0.18.dist-info/METADATA (License: GPLv3+; Classifier: License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)); License-File: LICENSE"
       },
       "coverage": {
-        "version": "7.16.2",
+        "version": "7.17.0",
         "spdx_id": "Apache-2.0",
-        "recorded_from": "installed dist-info coverage-7.16.2.dist-info/METADATA (License: Apache-2.0); License-Files: LICENSE.txt, NOTICE.txt"
+        "recorded_from": "PyPI release metadata https://pypi.org/pypi/coverage/7.17.0/json (license: Apache-2.0; license_files: LICENSE.txt, NOTICE.txt)"
       }
     }
   }

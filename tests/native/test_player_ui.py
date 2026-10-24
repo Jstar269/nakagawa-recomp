@@ -519,6 +519,36 @@ def compute_effective_timeout(
 
 
 class NativePlayerUiTests(unittest.TestCase):
+    # The next UI is the default. These tests pin behaviour of the existing
+    # renderer, which stays for one release as the --ui=legacy fallback: its
+    # library layout and hit boxes, its disc-art workers, its package-status
+    # badges and its build and error-card text metrics (the next UI's cards are
+    # covered by tests/native/test_player_screens.c). They run with --ui=legacy
+    # unless they name a mode themselves.
+    LEGACY_RENDERER_TESTS = frozenset((
+        "test_build_screen_follows_the_build_state",
+        "test_cli_not_found_error_text_fits_at_minimum_window",
+        "test_long_error_text_fits_at_minimum_window",
+        "test_completed_retry_clears_failure_when_cache_generation_changes",
+        "test_corrupt_art_is_failed_after_bounded_retries",
+        "test_decoder_rejection_is_failed_after_bounded_retries",
+        "test_exit_path_joins_iso_art_workers_and_tears_down_textures",
+        "test_failed_post_build_worker_start_survives_cache_invalidation_and_retries",
+        "test_iso_art_failures_reach_a_terminal_state_after_bounded_retries",
+        "test_iso_art_retry_rereads_only_the_image_that_is_still_missing",
+        "test_late_mounted_iso_art_retries_after_cooldown",
+        "test_library_keyboard_gamepad_navigation_and_picker",
+        "test_lost_worker_events_are_reclaimed_instead_of_stalling_the_card",
+        "test_mouse_click_adds_disc_through_sdl_event_loop",
+        "test_one_title_offline_art_and_stale_package_stay_off_frame_path",
+        "test_package_status_thread_creation_failure_is_unresolved_and_retryable",
+        "test_per_title_controller_mapping_choice",
+        "test_readable_art_without_png_decoder_is_unsupported",
+        "test_repeated_post_build_failures_keep_prior_title_retryable",
+        "test_staged_card_exposes_runtime_required_status",
+        "test_worker_start_failure_does_not_block_other_title_builds",
+    ))
+
     def run_player(
         self,
         view: str,
@@ -540,6 +570,7 @@ class NativePlayerUiTests(unittest.TestCase):
         profile_refusal: bool = False,
         legacy_data: bool = False,
         env_extra: dict[str, str] | None = None,
+        ui_mode: str | None = None,
         width: int = 1280,
         height: int = 720,
         timeout: float | None = None,
@@ -705,6 +736,10 @@ class NativePlayerUiTests(unittest.TestCase):
                 env.update(env_extra)
 
             args = [str(PLAYER_EXE), f"--view={'build-ready' if build_ready_test else view}"]
+            if ui_mode is None and self._testMethodName in self.LEGACY_RENDERER_TESTS:
+                ui_mode = "legacy"
+            if ui_mode is not None:
+                args.append(f"--ui={ui_mode}")
             event_script = list(events)
             if drop_invalid_iso:
                 invalid_iso = scratch / "source-owned-invalid.iso"
@@ -823,14 +858,16 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertTrue(run["legacy_root_exists"])
 
     def test_empty_library_wizard_picker_and_font_confirmation(self) -> None:
-        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN"))
+        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN", "KEY_RETURN"))
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[0]["view"], "library")
         self.assertEqual(frames[1]["view"], "wizard")
         self.assertEqual(frames[1]["wizard_step"], "welcome")
-        self.assertEqual(frames[2]["wizard_step"], "select_game")
-        self.assertEqual(frames[3]["picker"], "1")
+        self.assertEqual(frames[2]["wizard_step"], "online_options")
+        self.assertEqual(frames[3]["wizard_step"], "select_game")
+        self.assertEqual(frames[3]["online_mode"], "0", "CONTINUE moves on with both off")
+        self.assertEqual(frames[4]["picker"], "1")
         self.assertNotEqual(frames[0]["pixels"], frames[1]["pixels"])
 
         fonts = self.run_player("wizard4", ("KEY_RETURN",))
@@ -838,6 +875,90 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(font_frames, list)
         self.assertEqual(font_frames[1]["wizard_step"], "ready_launch")
         self.assertEqual(font_frames[1]["font_confirmed"], "1")
+
+    def test_wizard_options_step_sets_the_switches_and_skip_clears_them(self) -> None:
+        # Focus order on the step: CONTINUE, SKIP, BACK, then the two switches.
+        run = self.run_player(
+            "wizard-options",
+            ("KEY_TAB", "KEY_TAB", "KEY_TAB", "KEY_RETURN", "KEY_TAB", "KEY_RETURN"),
+            ui_mode="legacy",
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["wizard_step"], "online_options")
+        self.assertEqual(frames[4]["online_mode"], "1")
+        self.assertEqual(frames[6]["developer_mode"], "1")
+        skipped = self.run_player(
+            "wizard-options",
+            ("KEY_TAB", "KEY_TAB", "KEY_TAB", "KEY_RETURN", "KEY_UP", "KEY_UP", "KEY_RETURN"),
+            ui_mode="legacy",
+        )
+        frames = skipped["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[4]["online_mode"], "1")
+        self.assertEqual(frames[-1]["wizard_step"], "select_game")
+        self.assertEqual(frames[-1]["online_mode"], "0", "SKIP turns online mode back off")
+        self.assertEqual(frames[-1]["developer_mode"], "0")
+
+    def test_developer_log_panel_needs_developer_mode(self) -> None:
+        # The panel is drawn by the existing renderer in both launchers.
+        for ui_mode in ("next", "legacy"):
+            with self.subTest(ui_mode=ui_mode):
+                panel = self.run_player("developer-log", ("KEY_F12",), ui_mode=ui_mode)
+                frames = panel["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[0]["view"], "developer_log")
+                self.assertNotEqual(frames[0]["dev_log_lines"], "0")
+                self.assertEqual(frames[1]["view"], "library", "F12 closes the panel")
+                closed = self.run_player("developer-log", ("KEY_ESCAPE",), ui_mode=ui_mode)
+                frames = closed["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[1]["view"], "library", "Esc closes the panel")
+                off = self.run_player("library", ("KEY_F12",), ui_mode=ui_mode)
+                frames = off["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[-1]["view"], "library",
+                                 "without developer mode F12 does nothing")
+
+    def test_online_settings_open_from_settings_and_back(self) -> None:
+        for ui_mode in ("next", "legacy"):
+            with self.subTest(ui_mode=ui_mode):
+                run = self.run_player("online-settings", ("KEY_ESCAPE",), ui_mode=ui_mode)
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[0]["view"], "online_settings")
+                self.assertEqual(frames[1]["view"], "settings")
+
+    def test_next_ui_is_the_default_with_a_legacy_fallback(self) -> None:
+        marker = "[PLAYER_UI_TEST] UI_NEXT_ACTIVE"
+        default_ui = self.run_player("empty")
+        flag_ui = self.run_player("empty", ui_mode="next")
+        legacy_flag = self.run_player("empty", ui_mode="legacy")
+        legacy_env = self.run_player("empty", env_extra={"NK_UI": "legacy"})
+        flag_wins = self.run_player("empty", ui_mode="next", env_extra={"NK_UI": "legacy"})
+        self.assertNotIn(marker, legacy_flag["stdout"])
+        self.assertNotIn(marker, legacy_env["stdout"])
+        if marker not in flag_ui["stdout"]:
+            # Without its fonts the next UI cannot start and the player keeps
+            # the existing renderer, whatever was asked for.
+            self.assertIn("The next UI could not start", flag_ui["stderr"])
+            self.assertNotIn(marker, default_ui["stdout"])
+            return
+        self.assertIn(marker, default_ui["stdout"])
+        self.assertIn(marker, flag_wins["stdout"], "the command line wins over NK_UI")
+
+    def test_next_ui_mouse_and_keyboard_reach_the_add_card(self) -> None:
+        click = self.run_player("library", ("MOUSE_MOVE=794,257", "MOUSE_DOWN", "MOUSE_UP"))
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in click["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = click["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["picker"], "1", "a click on the add card opens the picker")
+        # The focus graph needs one laid-out frame before arrows can move.
+        keys = self.run_player("library", ("WAIT_MS=100", "KEY_RIGHT", "KEY_RIGHT", "KEY_RETURN"))
+        frames = keys["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["picker"], "1", "arrow keys reach the add card")
 
     def test_library_keyboard_gamepad_navigation_and_picker(self) -> None:
         run = self.run_player("library", ("KEY_RIGHT", "PAD_DPAD_RIGHT", "KEY_TAB", "KEY_RETURN"))
@@ -862,7 +983,7 @@ class NativePlayerUiTests(unittest.TestCase):
         run = self.run_player("settings", events)
         frames = run["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[0]["focus_count"], "16")
+        self.assertEqual(frames[0]["focus_count"], "17")
         self.assertEqual(frames[4]["focus"], "4")
         self.assertEqual(frames[5]["focus"], "4")
         self.assertNotEqual(frames[4]["pixels"], frames[5]["pixels"])
@@ -898,7 +1019,7 @@ class NativePlayerUiTests(unittest.TestCase):
         run = self.run_player("settings", ("KEY_TAB",) * 13 + ("KEY_RETURN",))
         frames = run["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[0]["focus_count"], "16")
+        self.assertEqual(frames[0]["focus_count"], "17")
         self.assertEqual(frames[13]["focus"], "13")
         self.assertEqual(frames[-1]["view"], "prereq_about")
 
@@ -1765,18 +1886,27 @@ class NativePlayerUiTests(unittest.TestCase):
             "RUNTIME_PREMATURE_EXIT",
             "RUNTIME_ERROR_EXIT",
         )
-        for code in recovery_codes:
-            with self.subTest(code=code):
-                recovered = self.run_player("library", ("KEY_RETURN",), error_code=code)
-                frames = recovered["frames"]
-                assert isinstance(frames, list)
-                self.assertEqual(frames[0]["view"], "error")
-                self.assertEqual(frames[0]["error"], code)
-                self.assertEqual(frames[1]["view"], "library")
-                self.assertNotEqual(frames[0]["pixels"], frames[1]["pixels"])
-                # Only a missing or corrupt source reopens the file picker.
-                expected_picker = "1" if code in ("ISO_CORRUPT", "SOURCE_NOT_FOUND") else "0"
-                self.assertEqual(frames[1]["picker"], expected_picker)
+        # Both launchers: the next UI applies a control's action after the frame
+        # that drew it, so the frame of the press still shows the card and the
+        # library is drawn from the next frame; compare a frame after the wait.
+        for ui_mode in ("next", "legacy"):
+            for code in recovery_codes:
+                with self.subTest(code=code, ui_mode=ui_mode):
+                    recovered = self.run_player(
+                        "library", ("KEY_RETURN", "WAIT_MS=100"), error_code=code,
+                        ui_mode=ui_mode,
+                    )
+                    frames = recovered["frames"]
+                    assert isinstance(frames, list)
+                    self.assertEqual(frames[0]["view"], "error")
+                    self.assertEqual(frames[0]["error"], code)
+                    self.assertEqual(frames[1]["view"], "library")
+                    self.assertEqual(frames[-1]["view"], "library")
+                    self.assertNotEqual(frames[0]["pixels"], frames[-1]["pixels"],
+                                        "the library replaces the error card on screen")
+                    # Only a missing or corrupt source reopens the file picker.
+                    expected_picker = "1" if code in ("ISO_CORRUPT", "SOURCE_NOT_FOUND") else "0"
+                    self.assertEqual(frames[1]["picker"], expected_picker)
 
     def test_pbp_package_error_card_names_the_package_boundary(self) -> None:
         """A store package dropped as an ISO is named as a package, not a broken disc.
@@ -1857,6 +1987,138 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["view"], "library")
         self.assertEqual(frames[-1]["running"], "0")
+
+    # The next UI (--ui=next) reaches every flow the existing library reaches:
+    # the setup wizard from an empty library, Settings, the file picker and quit.
+    # The screens it hands over to keep drawing in the existing renderer.
+
+    def test_empty_library_starts_the_setup_wizard(self) -> None:
+        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN"), ui_mode="next")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "library")
+        self.assertEqual(frames[1]["view"], "wizard")
+        self.assertEqual(frames[1]["wizard_step"], "welcome")
+        self.assertEqual(frames[2]["wizard_step"], "online_options")
+        self.assertEqual(frames[3]["wizard_step"], "select_game")
+
+    def test_library_shortcuts_reach_settings_picker_and_quit(self) -> None:
+        settings = self.run_player("library", ("KEY_S",), ui_mode="next")
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in settings["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = settings["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["view"], "settings")
+        picker = self.run_player("library", ("KEY_O",), ui_mode="next")
+        frames = picker["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["picker"], "1")
+        quit_run = self.run_player("library", ("KEY_ESCAPE",), ui_mode="next")
+        frames = quit_run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["running"], "0")
+
+    # The next UI draws the setup wizard too, with the existing wizard's handlers.
+    def test_next_ui_wizard_options_step_switches_and_skip(self) -> None:
+        # The switches sit above the buttons: Up from Continue reaches Developer
+        # mode, Up again Online mode.
+        run = self.run_player(
+            "wizard-options",
+            ("WAIT_MS=100", "KEY_UP", "KEY_UP", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN"),
+            ui_mode="next",
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["online_mode"], "1")
+        self.assertEqual(frames[-1]["developer_mode"], "1")
+        self.assertEqual(frames[-1]["wizard_step"], "online_options")
+        skipped = self.run_player(
+            "wizard-options",
+            # Down twice lands on the button row; Left twice reaches Continue
+            # whichever button it lands on, and Right is Skip.
+            ("WAIT_MS=100", "KEY_UP", "KEY_UP", "KEY_RETURN", "KEY_DOWN", "KEY_DOWN",
+             "KEY_LEFT", "KEY_LEFT", "KEY_RIGHT", "KEY_RETURN"),
+            ui_mode="next",
+        )
+        frames = skipped["frames"]
+        assert isinstance(frames, list)
+        self.assertIn("1", [frame["online_mode"] for frame in frames])
+        self.assertEqual(frames[-1]["wizard_step"], "select_game")
+        self.assertEqual(frames[-1]["online_mode"], "0", "Skip turns online mode back off")
+
+    def test_next_ui_wizard_runs_the_first_run_path(self) -> None:
+        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN", "KEY_RETURN"),
+                              ui_mode="next")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[1]["view"], "wizard")
+        self.assertEqual(frames[1]["wizard_step"], "welcome")
+        self.assertEqual(frames[2]["wizard_step"], "online_options")
+        self.assertEqual(frames[3]["wizard_step"], "select_game")
+        self.assertEqual(frames[3]["online_mode"], "0", "Continue is the options step's focus")
+        self.assertEqual(frames[4]["picker"], "1",
+                         "Choose a disc image is the focused action on Select game")
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" in run["stdout"]:
+            # Without its fonts the next UI falls back to the existing renderer.
+            legacy = self.run_player("empty", ("KEY_RETURN",), ui_mode="legacy")
+            legacy_frames = legacy["frames"]
+            assert isinstance(legacy_frames, list)
+            self.assertNotEqual(frames[1]["pixels"], legacy_frames[1]["pixels"],
+                                "the next UI, not the existing renderer, draws the wizard")
+
+        fonts = self.run_player("wizard4", ("KEY_RETURN",), ui_mode="next")
+        font_frames = fonts["frames"]
+        assert isinstance(font_frames, list)
+        self.assertEqual(font_frames[1]["wizard_step"], "ready_launch")
+        self.assertEqual(font_frames[1]["font_confirmed"], "1")
+
+        for key in ("KEY_ESCAPE", "KEY_RETURN"):
+            staging = self.run_player("wizard-staging", (key,), ui_mode="next")
+            stage_frames = staging["frames"]
+            assert isinstance(stage_frames, list)
+            self.assertEqual(stage_frames[0]["extracting"], "1")
+            self.assertEqual(stage_frames[1]["extraction_cancel"], "1", key)
+
+    # The next UI draws the build, build tool download and error screens itself and
+    # keeps every action and Back meaning the existing renderer had.
+    def test_next_ui_build_screen_cancels_and_returns(self) -> None:
+        building = self.run_player("building", ("KEY_ESCAPE",), ui_mode="next")
+        frames = building["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "building_package")
+        self.assertEqual(frames[0]["package_building"], "1")
+        self.assertEqual(frames[1]["package_cancelled"], "1")
+        self.assertEqual(frames[1]["view"], "library")
+        cancel = self.run_player("building", ("KEY_RETURN",), ui_mode="next")
+        frames = cancel["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[1]["package_cancelled"], "1",
+                         "CANCEL BUILD is the focused action while the build runs")
+        built = self.run_player("build-ready", ("KEY_RETURN",), ui_mode="next")
+        frames = built["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "building_package")
+        self.assertEqual(frames[1]["view"], "library", "BACK TO LIBRARY once the package is built")
+        self.assertEqual(frames[1]["package_cancelled"], "0")
+
+    def test_next_ui_error_card_recovers_like_the_existing_card(self) -> None:
+        missing_source = self.run_player("error", ("KEY_RETURN",), ui_mode="next")
+        frames = missing_source["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["error"], "SOURCE_NOT_FOUND")
+        self.assertEqual(frames[1]["picker"], "1")
+        for code in ("PACKAGE_BUILD_FAILED", "RUNTIME_PACKAGE_NOT_READY", "PYTHON_NOT_FOUND"):
+            with self.subTest(code=code):
+                recovered = self.run_player("library", ("KEY_RETURN",), error_code=code,
+                                            ui_mode="next")
+                frames = recovered["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[0]["view"], "error")
+                self.assertEqual(frames[0]["error"], code)
+                self.assertEqual(frames[1]["view"], "library")
+                self.assertEqual(frames[1]["picker"], "0")
 
     def test_failed_close_confirmation_needs_a_second_explicit_close(self) -> None:
         run = self.run_player(
@@ -2167,3 +2429,35 @@ class FirstRunRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlayerVersionIdentityTests(unittest.TestCase):
+    """The About page's build date comes from SOURCE_DATE_EPOCH when it is set.
+
+    A dry run of the player link shows the define the build passes; nothing is
+    compiled. The date itself (MM-DD-YYYY from the epoch) is checked by
+    tests/native/test_player_screens.c.
+    """
+
+    def _player_defines(self, env_extra: dict[str, str]) -> list[str]:
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        if make is None:
+            self.skipTest("make is not on PATH")
+        env = dict(os.environ)
+        env.update(env_extra)
+        with tempfile.TemporaryDirectory(prefix="nk-player-identity-") as scratch:
+            build_root = Path(scratch).as_posix()
+            exe = f"{build_root}/nakagawa_player{'.exe' if os.name == 'nt' else ''}"
+            run = subprocess.run(
+                [make, "--no-print-directory", "-n", "-B", f"BUILD_ROOT={build_root}", exe],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=600,
+            )
+        if run.returncode != 0:
+            self.skipTest(f"the player dry run needs its build dependencies: {run.stderr[-400:]}")
+        return re.findall(r"-DNK_PLAYER_BUILD_[A-Z]+=\S+", run.stdout)
+
+    def test_source_date_epoch_fixes_the_build_date(self) -> None:
+        defines = self._player_defines({"SOURCE_DATE_EPOCH": "1792713600"})
+        self.assertIn("-DNK_PLAYER_BUILD_EPOCH=1792713600LL", defines)
+        again = self._player_defines({"SOURCE_DATE_EPOCH": "1792713600"})
+        self.assertEqual(defines, again, "the same epoch gives the same defines")

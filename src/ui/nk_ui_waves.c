@@ -195,10 +195,22 @@ bool nk_ui_waves_render_rgba(const NkUiWavePalette *palette, double now_s,
                              uint32_t width, uint32_t height, uint8_t *pixels,
                              size_t stride) {
     NkUiWavesCommand command;
+    if (palette == NULL) {
+        return false;
+    }
+    nk_ui_waves_command(now_s, (float)width, (float)height, palette, &command);
+    return nk_ui_waves_render_command(&command, width, height, pixels, stride);
+}
+
+/* Shapes are measured in target heights, so a smaller target draws the same
+   picture at lower resolution; the backend scales it up with a linear filter. */
+bool nk_ui_waves_render_command(const NkUiWavesCommand *source, uint32_t width,
+                                uint32_t height, uint8_t *pixels, size_t stride) {
+    NkUiWavesCommand command;
     float colors[NK_UI_WAVES_RIBBON_COUNT][4];
     uint32_t x;
     uint32_t y;
-    if (palette == NULL || pixels == NULL || width == 0u || height == 0u ||
+    if (source == NULL || pixels == NULL || width == 0u || height == 0u ||
 #if SIZE_MAX < UINT64_MAX
         (size_t)width > SIZE_MAX / 4u ||
 #endif
@@ -206,7 +218,7 @@ bool nk_ui_waves_render_rgba(const NkUiWavePalette *palette, double now_s,
         (size_t)height > SIZE_MAX / stride) {
         return false;
     }
-    nk_ui_waves_command(now_s, (float)width, (float)height, palette, &command);
+    command = *source;
     memcpy(colors, command.color_rgba, sizeof(colors));
     for (x = 0; x < width; ++x) {
         double horizontal = (double)x / (double)height;
@@ -220,12 +232,12 @@ bool nk_ui_waves_render_rgba(const NkUiWavePalette *palette, double now_s,
             unsigned j;
             for (j = 0; j < 3u; ++j) {
                 wave += g_wave_amplitude[j] *
-                        sin(2.0 * g_tau * g_wave_frequency[j] * horizontal +
+                        sin(g_tau * g_wave_frequency[j] * horizontal +
                             command.phase[i][j]);
             }
             centers[i] = g_ribbon_base[i] + depth_scale * wave;
             width_breath = 1.0 + 0.25 *
-                sin(2.0 * g_tau * 0.23 * horizontal + command.width_phase[i]);
+                sin(g_tau * 0.23 * horizontal + command.width_phase[i]);
             half_widths[i] = g_ribbon_width[i] * width_breath;
         }
         for (y = 0; y < height; ++y) {

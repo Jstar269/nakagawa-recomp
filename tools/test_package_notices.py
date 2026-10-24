@@ -100,6 +100,20 @@ class TestPackageNotices(unittest.TestCase):
         self.assertIn(required_notice, str(ctx.exception))
         self.assertIn("FFmpeg ATRAC3+ subset", str(ctx.exception))
 
+    def test_malformed_copyright_notices_fail_closed(self) -> None:
+        """A copyright_notices value that is not a list of strings is a named failure, not garbled notices."""
+        (self.pkg_dir / "mygame.exe").write_bytes(b"MZ\0\0exe")
+        real = package_notices.load_component_inventory()
+        for bad in ("Copyright (c) PPSSPP Project", {"line": "x"}, ["ok", 3]):
+            inventory = json.loads(json.dumps(real))
+            linked = next(c for c in inventory["native"]["linked_components"] if c.get("copyright_notices"))
+            linked["copyright_notices"] = bad
+            with self.subTest(bad=bad), \
+                    mock.patch.object(package_notices, "load_component_inventory", return_value=inventory):
+                with self.assertRaises(PackageRouteError) as ctx:
+                    package_notices.generate_package_notices(self.pkg_dir, repo_root=ROOT)
+                self.assertIn("LICENSE_RECORD_MALFORMED", str(ctx.exception))
+
     def test_notices_bundle_generation_with_in_tree_license_texts(self) -> None:
         """Bundle generation reads the checked-in texts, not a host toolchain."""
         # Synthetic package contents
@@ -177,6 +191,12 @@ class TestPackageNotices(unittest.TestCase):
         self.assertIn("GNU LESSER GENERAL PUBLIC LICENSE", combined_text)
         self.assertIn("MIPS Technologies, Inc.", combined_text)
         self.assertIn("mingw-w64 project", combined_text)
+        # The PPSSPP lineage records (N10) are named, with their copyright lines.
+        self.assertIn("Component: sal063 / PPSSPP lineage runtime code", combined_text)
+        self.assertIn("Component: PPSSPP VFPU lookup tables", combined_text)
+        self.assertIn("Copyright: Copyright (c) 2012- PPSSPP Project and contributors", combined_text)
+        self.assertIn("GNU GENERAL PUBLIC LICENSE", combined_text)
+        self.assertIn("Credits and Third-Party Attribution", combined_text)
 
     def test_toolchain_licenses_are_the_fallback_when_in_tree_text_is_absent(self) -> None:
         """A host whose toolchain is newer than the checked-in text still resolves one."""

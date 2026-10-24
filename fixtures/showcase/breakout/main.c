@@ -125,6 +125,10 @@ static void savedata_request(PspUtilitySavedataMode mode, int *record) {
             shutdown_started = 1;
         }
         sceUtilitySavedataUpdate(1);
+        /* Savedata utility updates are frame-driven on PSP. Waiting for the
+         * next edge keeps the synthetic busy window observable to scheduler
+         * checks such as issue #1171's pause smoke. */
+        sceDisplayWaitVblankStart();
     }
 }
 

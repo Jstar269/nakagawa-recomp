@@ -34,7 +34,7 @@ ELF = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 
 @unittest.skipUnless(
     os.environ.get("NK_PRIVATE_TITLE_TESTS") == "1" and os.path.isfile(ELF),
-    "set NK_PRIVATE_TITLE_TESTS=1 and provide decrypted EBOOT.elf",
+    "PRIVATE_INPUT: set NK_PRIVATE_TITLE_TESTS=1 and provide decrypted EBOOT.elf",
 )
 class TestNoShadowStubs(unittest.TestCase):
     @classmethod

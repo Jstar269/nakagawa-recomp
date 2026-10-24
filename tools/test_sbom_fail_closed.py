@@ -47,9 +47,9 @@ class TestPythonLockfileHostileInputs(unittest.TestCase):
         packages = generate_sbom.parse_python_lockfile(path)
         self.assertEqual(
             [(p["name"], p["version"], len(p["declared_sha256"])) for p in packages],
-            [("compiledb", "0.10.7", 2), ("ruff", "0.16.9", 18),
+            [("compiledb", "0.10.7", 2), ("ruff", "0.17.2", 18),
              ("click", "8.5.0", 2), ("bashlex", "0.18", 2),
-             ("coverage", "7.16.2", 121)],
+             ("coverage", "7.17.0", 119)],
         )
 
     def test_valid_intentionally_empty_lockfile_parses_to_empty_inventory(self):

@@ -52,7 +52,6 @@ from nk_core.library import (  # noqa: E402
     MAX_LIBRARY_JSON_MEMBERS,
     MAX_LIBRARY_JSON_NODES,
 )
-from nk_core.decrypt_boundary import decrypt_bytes_to, decrypt_file_inplace, key_file_path  # noqa: E402
 from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root  # noqa: E402
 from nk_core.iso_inspect import (  # noqa: E402
     MAX_EXECUTABLE_BYTES,
@@ -66,6 +65,7 @@ from nk_core.iso_inspect import (  # noqa: E402
     _classify_decrypted_elf_file,
     _has_cfw_or_kernel_only_imports,
     decrypted_module_dir,
+    encrypted_executable_message,
     inspect_compatibility_preflight,
     plan_guest_module_layout,
     walk_disc_module_entries,
@@ -901,14 +901,14 @@ def _disc_psp_header(iso_path: Path, manifest: dict, executable: str,
 
 def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                            module_dir_arg: Path | None,
-                           default_module_dir: Path | None = None,
-                           user_data_root: Path | None = None) -> Path | None:
-    key_hint = (
-        f" A local key file at {key_file_path(user_data_root)} enables the built-in "
-        "decryption boundary."
-        if user_data_root is not None
-        else ""
-    )
+                           default_module_dir: Path | None = None) -> Path | None:
+    """Copy every required guest PRX into the package cache as a plain module.
+
+    A plain copy in the per-title decrypted folder wins; otherwise the disc copy
+    is used when it is already plain. Nakagawa does not decrypt games and reads
+    no key file: an encrypted module without a plain copy fails closed as
+    ENCRYPTED_MODULE, naming both spellings the folder accepts.
+    """
     modules = [module for module in manifest.get("modules", [])
                if module.get("role") == "guest-prx" and module.get("required", False)]
     if not modules:
@@ -943,28 +943,19 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                 )
             try:
                 with source_path.open("rb") as module_stream:
-                    is_elf = module_stream.read(4) == b"\x7fELF"
+                    magic = module_stream.read(4)
             except OSError as exc:
                 raise PackageBuildError(f"Could not read required guest PRX {name}: {exc}") from exc
-            copied_by_boundary = False
-            boundary_detail = ""
-            if not is_elf and user_data_root is not None:
-                outcome = decrypt_bytes_to(
-                    source_path.read_bytes(), destination, user_data_root=user_data_root
-                )
-                boundary_detail = outcome.detail
-                if outcome.status == "ok":
-                    copied_by_boundary = True
-                    is_elf = True
-            if not is_elf:
+            if magic != b"\x7fELF":
                 suggested = module_dir_arg or default_module_dir
+                token = "ENCRYPTED_MODULE: " if magic in (b"~PSP", b"~SCE") else ""
                 raise PackageBuildError(
-                    f"Required guest PRX {_module_label(name, disc_name)} is not a decrypted ELF; "
-                    f"supply decrypted modules at {suggested}. "
-                    f"{boundary_detail or 'A plain module is required here.'}{key_hint}"
+                    f"{token}Required guest PRX {_module_label(name, disc_name)} at "
+                    f"{source_path} is not a decrypted ELF. Nakagawa does not decrypt "
+                    f"games. Place a decrypted {_module_spellings(name, disc_name)} "
+                    f"from your own copy in {suggested}."
                 )
-            if not copied_by_boundary:
-                _write_private_file(destination, source_path.read_bytes())
+            _write_private_file(destination, source_path.read_bytes())
             _require_plain_guest_module(destination, name, disc_name)
             continue
         extracted = False
@@ -1015,51 +1006,23 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                             output_stream.write(block)
                             offset += count
                     with temporary.open("rb") as module_stream:
-                        is_elf = module_stream.read(4) == b"\x7fELF"
-                    boundary_detail = ""
-                    if not is_elf and user_data_root is not None:
-                        # The same built-in boundary decrypts the disc's own
-                        # container into the per-title decrypted folder under
-                        # its disc file name; the package cache keeps its own
-                        # private copy under the manifest module name.
-                        title_folder = default_module_dir
-                        if title_folder is not None:
-                            title_target = title_folder / (disc_name or name)
-                            outcome = decrypt_bytes_to(
-                                temporary.read_bytes(), title_target,
-                                user_data_root=user_data_root,
-                            )
-                            boundary_detail = outcome.detail
-                            if outcome.status == "ok":
-                                with title_target.open("rb") as check_stream:
-                                    is_elf = check_stream.read(4) == b"\x7fELF"
-                                if not is_elf:
-                                    title_target.unlink(missing_ok=True)
-                                    boundary_detail = "the decrypted module is not a plain ELF"
-                                    is_elf = False
-                                else:
-                                    temporary.unlink(missing_ok=True)
-                                    _write_private_file(
-                                        destination, title_target.read_bytes()
-                                    )
-                                    _require_plain_guest_module(destination, name, disc_name)
-                                    extracted = True
-                                    break
-                        else:
-                            outcome = decrypt_file_inplace(
-                                temporary, user_data_root=user_data_root
-                            )
-                            boundary_detail = outcome.detail
-                            if outcome.status == "ok":
-                                with temporary.open("rb") as check_stream:
-                                    is_elf = check_stream.read(4) == b"\x7fELF"
-                    if not is_elf:
+                        magic = module_stream.read(4)
+                    if magic != b"\x7fELF":
                         temporary.unlink(missing_ok=True)
                         suggested = module_dir_arg or default_module_dir
+                        if magic in (b"~PSP", b"~SCE"):
+                            raise PackageBuildError(
+                                f"ENCRYPTED_MODULE: Required guest PRX "
+                                f"{_module_label(name, disc_name)} is encrypted. Nakagawa "
+                                "does not decrypt games. Place a decrypted "
+                                f"{_module_spellings(name, disc_name)} from your own copy "
+                                f"in {suggested}."
+                            )
                         raise PackageBuildError(
-                            f"Required guest PRX {_module_label(name, disc_name)} is encrypted or not a "
-                            f"plain ELF; supply decrypted modules at {suggested}. "
-                            f"{boundary_detail or 'The disc copy is not a plain ELF.'}{key_hint}"
+                            f"Required guest PRX {_module_label(name, disc_name)} is not a "
+                            f"plain ELF on the disc. Place a decrypted "
+                            f"{_module_spellings(name, disc_name)} from your own copy in "
+                            f"{suggested}."
                         )
                     _require_plain_guest_module(temporary, name, disc_name)
                     os.replace(temporary, destination)
@@ -1070,8 +1033,9 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
         if not extracted and source_path is None:
             suggested = module_dir_arg or default_module_dir
             raise PackageBuildError(
-                f"Required guest PRX {_module_label(name, disc_name)} is unavailable; supply "
-                f"decrypted modules at {suggested}."
+                f"Required guest PRX {_module_label(name, disc_name)} is unavailable. Place a "
+                f"decrypted {_module_spellings(name, disc_name)} from your own copy in "
+                f"{suggested}."
             )
     return output
 
@@ -1089,6 +1053,13 @@ def _module_label(name: str, disc_name: str | None) -> str:
     """Name a module for the user: its disc file first, since that is what they can find."""
     if disc_name and disc_name.lower() != name.lower():
         return f"{disc_name} ({name})"
+    return name
+
+
+def _module_spellings(name: str, disc_name: str | None) -> str:
+    """Both file names the per-title folder accepts for a module, disc name first."""
+    if disc_name and disc_name.lower() != name.lower():
+        return f"{disc_name} (or {name})"
     return name
 
 
@@ -1372,6 +1343,32 @@ def _current_package_cache_key(
     )
 
 
+# Windows refuses to rename a folder while any file inside it is open, and an
+# antivirus scan of the package executable that was just copied holds such a
+# handle for a moment (#308 sweep: "[WinError 5] Access is denied" on the final
+# rename of an otherwise valid package). The rename is retried for about ten
+# seconds before the build stops with a named boundary; no other error retries.
+PACKAGE_PROMOTION_RETRY_DELAYS_S = (0.1, 0.25, 0.5, 1.0, 2.0, 2.0, 2.0, 2.0)
+
+
+def _replace_package_folder(source: Path, target: Path, *, sleeper=time.sleep,
+                            delays=None) -> None:
+    if delays is None:
+        delays = PACKAGE_PROMOTION_RETRY_DELAYS_S if os.name == "nt" else ()
+    for delay in (*delays, None):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as exc:
+            if delay is None:
+                raise PackageBuildError(
+                    "PACKAGE_FOLDER_LOCKED: Windows kept the new package folder in use, so it "
+                    "could not be moved into place (an antivirus scan of the new files can do "
+                    f"this). Wait a moment, then build again. Detail: {exc}"
+                ) from exc
+            sleeper(delay)
+
+
 def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
                          cache_key: dict, user_root: Path, disc_id: str) -> None:
     """Copy a validated cache entry into place, re-validating the copy before promotion."""
@@ -1394,10 +1391,10 @@ def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
             raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
         backup = cache_dir / f"previous-{time.time_ns()}" if target_dir.exists() else None
         if backup is not None:
-            os.replace(target_dir, backup)
+            _replace_package_folder(target_dir, backup)
         try:
-            os.replace(staging, target_dir)
-        except OSError:
+            _replace_package_folder(staging, target_dir)
+        except (OSError, PackageBuildError):
             if backup is not None and not target_dir.exists():
                 os.replace(backup, target_dir)
             raise
@@ -1595,12 +1592,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
         if selected_value is None or (uses_decrypted_eboot and not decrypted_eboot):
             module_dir = decrypted_module_dir(user_root, disc_id)
             folder = str(module_dir) if module_dir is not None else "the per-title decrypted-module folder"
-            raise PackageBuildError(
-                f"Encrypted executable: supply decrypted modules at {folder}, or "
-                f"a matching local key file at {key_file_path(user_root)} to enable the "
-                "built-in boundary for supported formats. The project ships no keys; "
-                "broader ISO-to-Play support is in the works."
-            )
+            raise PackageBuildError(encrypted_executable_message(folder))
         selected = str(selected_value).upper()
         selected_from_library = entry.get("selected_executable", "")
         library_selected = (
@@ -1748,7 +1740,6 @@ def _build_package(args: argparse.Namespace, stage_observer,
             cache_dir,
             args.module_dir.expanduser().resolve() if args.module_dir else None,
             decrypted_module_dir(user_root, disc_id),
-            user_data_root=user_root,
         )
         reporter.report("extract", "PASS", "Executable and modules prepared")
 
@@ -2869,7 +2860,11 @@ def _bringup_human_summary(report: dict) -> str:
             "that is not supported yet)"
         )
     elif report["failure_class"] == "GUEST_MODULE_DECRYPTION_REQUIRED":
-        detail = " (a guest module is encrypted and requires decryption)"
+        detail = (
+            " (ENCRYPTED_MODULE: a guest module is encrypted. Nakagawa does not "
+            "decrypt games; place a decrypted copy from your own copy in the "
+            "title's decrypted folder)"
+        )
     elif report["failure_class"] == "RUNTIME_HLE_REGISTRY_UNAVAILABLE":
         detail = (
             " (the runtime's list of built-in system functions could not be read; "
@@ -3464,9 +3459,9 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             # Every candidate must resolve to a plain module. A plain copy on
             # disc is staged from the image; an encrypted container (or any
             # candidate the intake cannot classify) is satisfied by a valid
-            # plain copy in the per-title decrypted folder -- user-supplied or
-            # produced there by the built-in boundary. A user-supplied plain
-            # module always wins, and CFW patch modules stay excluded.
+            # plain copy the user supplied in the per-title decrypted folder
+            # (Nakagawa does not decrypt games). A user-supplied plain module
+            # always wins, and CFW patch modules stay excluded.
             title_folder = decrypted_module_dir(user_root, metadata.disc_id)
             module_sources: list[tuple[dict, str, Path | None]] = []
             unready: list[dict] = []
@@ -3613,7 +3608,6 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 iso_path, manifest,
                 user_root / "cache" / "bringup" / metadata.disc_id.upper(), None,
                 decrypted_module_dir(user_root, metadata.disc_id),
-                user_data_root=user_root,
             )
         library_executable = "EBOOT.BIN" if selected == "EBOOT.elf" else str(selected).upper()
         _write_bringup_library(
@@ -3813,8 +3807,12 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             env["SR_MODULE_DIR"] = str(package_dir / "modules")
         # The same order the launcher resolves SR_DATAROOT in: the staged
         # copy of the disc first, then the source tree.
+        # A manifest without a data root (the generic profile) names none, as the
+        # player's launcher leaves SR_DATAROOT unset for it.
         declared_data_root = manifest["filesystem"]["data_root"]
-        if (staged_root is not None and declared_data_root and
+        if not declared_data_root:
+            data_root = None
+        elif (staged_root is not None and
                 (staged_root / declared_data_root).is_dir()):
             data_root = (staged_root / declared_data_root).resolve()
         else:
@@ -3845,10 +3843,11 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             # this policy.
             "SR_VIDEO": "offscreen",
             "PSP_ISO": str(iso_path),
-            "SR_DATAROOT": str(data_root),
             "SR_LOOSE_CONTENT_ROOTS": loose_roots,
             "SR_BOOT_PATH": boot_path,
         })
+        if data_root is not None:
+            env["SR_DATAROOT"] = str(data_root)
         flight_output: Path | None = None
         try:
             flight_fd, flight_name = tempfile.mkstemp(

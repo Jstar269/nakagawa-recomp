@@ -2009,7 +2009,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
             game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "Encrypted executable: supply a local key file or decrypted EBOOT.elf. Build the runtime package from the library.");
+                     "ENCRYPTED_EXECUTABLE: Nakagawa does not decrypt games. Add a decrypted EBOOT.elf from your own copy. Build the runtime package from the library.");
         } else if (game->selected_executable[0]) {
             snprintf(experimental_reason, sizeof(experimental_reason),
                      "%s selected. Build the runtime package from the library.",
@@ -2921,6 +2921,12 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             player_app_set_view(app, VIEW_LIBRARY);
         }
         focus++;
+        bool online_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, card_x + 248.0f, close_y, 260.0f, 46.0f,
+                                "ONLINE & DEVELOPER", false, in, online_focused)) {
+            player_app_set_view(app, VIEW_ONLINE_SETTINGS);
+        }
+        focus++;
         (void)focus;
         render_footer_hints(ren, app);
         return;
@@ -3101,6 +3107,20 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         player_app_set_view(app, VIEW_LIBRARY);
     }
     focus++;
+    {
+        /* Online and developer options close the management row; the card is at
+           least 980 px wide here, which leaves 154 px after REMOVE. */
+        float online_x = card_x + 794.0f;
+        float online_w = card_x + card_w - 32.0f - online_x;
+        if (online_w > 240.0f) online_w = 240.0f;
+        bool online_focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, online_x, manage_y, online_w, 46.0f,
+                                online_w >= 220.0f ? "ONLINE & DEVELOPER" : "ONLINE & DEV",
+                                false, in, online_focused)) {
+            player_app_set_view(app, VIEW_ONLINE_SETTINGS);
+        }
+        focus++;
+    }
     (void)focus;
     render_footer_hints(ren, app);
 }
@@ -3923,6 +3943,12 @@ static void render_prerequisite_about(SDL_Renderer *ren, PlayerApp *app,
                   1.0f, COLOR_TEXT_MUTED);
     }
     float buttons_y = card_y + card_h - 62.0f;
+    /* The project's own licence and the no-endorsement notice (NOTICE.md). */
+    draw_text_wrapped(ren, card_x + 30.0f, buttons_y - 58.0f, card_w - 60.0f,
+                      "Nakagawa Recomp is free software (GPL-3.0-or-later; see LICENSE and NOTICE.md). "
+                      "Not affiliated with or endorsed by Sony Interactive Entertainment; "
+                      "PlayStation and PSP are its trademarks.",
+                      0.78f, COLOR_TEXT_DIM, 3);
     bool open_focused = app->focus_index == 0;
     if (shown > 0 && draw_button_focused(ren, card_x + 30.0f, buttons_y,
             230.0f, 42.0f, "OPEN LICENSE TEXTS", false, in, open_focused)) {
@@ -3972,6 +3998,161 @@ static void render_confirm_remove_tools(SDL_Renderer *ren, PlayerApp *app,
         player_app_set_view(app, VIEW_SETTINGS);
     }
     render_footer_hints(ren, app);
+}
+
+/* --- Views: Online and developer options, Developer log --- */
+
+/* The one sentence each switch carries (docs/ONLINE_FEATURES.md), and the plain
+   fact that this build has no online feature yet. */
+static const char k_online_sentence[] =
+    "Check nakagawa.jaycast.net for updates and news, and let you send reports. "
+    "Nothing is sent without you.";
+static const char k_developer_sentence[] =
+    "Show a developer log on screen to help track down problems. Stays on this PC.";
+static const char k_online_not_yet[] =
+    "This version has no online features yet and makes no connection. Your choice is "
+    "kept for when they arrive.";
+
+/* Draws the two option switches and their sentences from y; returns the y below
+   them. focus is advanced past each switch drawn. */
+static float render_option_switches(SDL_Renderer *ren, PlayerApp *app, const UiInput *in,
+                                    float x, float y, float width, int *focus,
+                                    bool with_parts) {
+    char label[64];
+    bool focused;
+    snprintf(label, sizeof(label), "Online mode: %s", app->settings.online_mode ? "ON" : "OFF");
+    focused = app->focus_index == (*focus)++;
+    if (draw_button_focused(ren, x, y, 240.0f, 36.0f, label, app->settings.online_mode, in,
+                            focused)) {
+        player_app_set_online_mode(app, !app->settings.online_mode);
+    }
+    y = draw_text_wrapped(ren, x, y + 44.0f, width, k_online_sentence, 0.95f, COLOR_TEXT_MUTED, 2);
+    if (with_parts && app->settings.online_mode) {
+        static const char *const names[3] = {"Update check", "News", "Reports"};
+        const bool values[3] = {app->settings.online_updates, app->settings.online_news,
+                                app->settings.online_reports};
+        float bx = x;
+        for (int i = 0; i < 3; ++i) {
+            snprintf(label, sizeof(label), "%s: %s", names[i], values[i] ? "ON" : "OFF");
+            focused = app->focus_index == (*focus)++;
+            if (draw_button_focused(ren, bx, y + 8.0f, 180.0f, 34.0f, label, values[i], in,
+                                    focused)) {
+                player_app_toggle_online_feature(app, i);
+            }
+            bx += 190.0f;
+        }
+        y += 50.0f;
+    }
+    y += 14.0f;
+    snprintf(label, sizeof(label), "Developer mode: %s", app->settings.developer_mode ? "ON" : "OFF");
+    focused = app->focus_index == (*focus)++;
+    if (draw_button_focused(ren, x, y, 240.0f, 36.0f, label, app->settings.developer_mode, in,
+                            focused)) {
+        player_app_set_developer_mode(app, !app->settings.developer_mode);
+    }
+    y = draw_text_wrapped(ren, x, y + 44.0f, width, k_developer_sentence, 0.95f, COLOR_TEXT_MUTED, 2);
+    return y;
+}
+
+static void render_online_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_w = dialog_card_w(w, 760.0f);
+    float card_h = 470.0f;
+    float card_x = centered_card_x(w, card_w);
+    float card_y = (h - card_h) * 0.5f;
+    float y;
+    int focus = 0;
+    if (card_y < 70.0f) card_y = 70.0f;
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+    draw_badge(ren, card_x + 32.0f, card_y + 24.0f, "SETTINGS", COLOR_BLUE);
+    draw_text_ellipsized(ren, card_x + 32.0f, card_y + 60.0f, "Online and developer options",
+                         1.8f, card_w - 64.0f, COLOR_TEXT_WHITE);
+    y = draw_text_wrapped(ren, card_x + 32.0f, card_y + 100.0f, card_w - 64.0f, k_online_not_yet,
+                          0.9f, COLOR_AMBER, 2);
+    y = render_option_switches(ren, app, in, card_x + 32.0f, y + 14.0f, card_w - 64.0f, &focus,
+                               true);
+    if (app->settings.developer_mode) {
+        bool focused = app->focus_index == focus++;
+        if (draw_button_focused(ren, card_x + 32.0f, y + 8.0f, 260.0f, 34.0f,
+                                "OPEN DEVELOPER LOG (F12)", false, in, focused)) {
+            (void)player_app_open_developer_log(app);
+        }
+    }
+    {
+        bool focused = app->focus_index == focus++;
+        if (draw_button_focused(ren, card_x + 32.0f, card_y + card_h - 62.0f, 160.0f, 44.0f,
+                                "BACK", true, in, focused)) {
+            player_app_set_view(app, VIEW_SETTINGS);
+        }
+    }
+    render_footer_hints(ren, app);
+}
+
+static void render_developer_log(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
+    static char clip[PLAYER_DEV_LOG_LINES * PLAYER_DEV_LOG_LINE_MAX + 1];
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_x = 24.0f;
+    float card_y = 64.0f;
+    float card_w = w - 48.0f;
+    float card_h = h - 64.0f - 40.0f;
+    float list_y = card_y + 96.0f;
+    float list_bottom = card_y + card_h - 72.0f;
+    size_t count = player_dev_log_count(app);
+    size_t rows;
+    size_t first;
+    if (card_w < 200.0f || card_h < 200.0f) return;
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+    draw_badge(ren, card_x + 24.0f, card_y + 20.0f, "DEVELOPER MODE", COLOR_AMBER);
+    draw_text_ellipsized(ren, card_x + 24.0f, card_y + 54.0f,
+                         "Developer log: on this PC only. Paths show as %USERPROFILE%.",
+                         1.1f, card_w - 48.0f, COLOR_TEXT_WHITE);
+    draw_rounded_fill(ren, card_x + 24.0f, list_y - 8.0f, card_w - 48.0f,
+                      list_bottom - list_y + 8.0f, 8.0f, (SDL_Color){ 8, 11, 15, 255 });
+    rows = list_bottom > list_y ? (size_t)((list_bottom - list_y) / 18.0f) : 0u;
+    first = count > rows ? count - rows : 0u;
+    if (count == 0u) {
+        draw_text(ren, card_x + 36.0f, list_y, "Nothing logged yet.", 0.9f, COLOR_TEXT_DIM);
+    }
+    for (size_t i = first; i < count; ++i) {
+        draw_text_ellipsized(ren, card_x + 36.0f, list_y + (float)(i - first) * 18.0f,
+                             player_dev_log_line(app, i), 0.8f, card_w - 72.0f,
+                             COLOR_TEXT_MUTED);
+    }
+    {
+        float by = card_y + card_h - 58.0f;
+        bool focused = app->focus_index == 0;
+        if (draw_button_focused(ren, card_x + 24.0f, by, 120.0f, 40.0f, "COPY", false, in,
+                                focused)) {
+            (void)player_dev_log_text(app, clip, sizeof(clip));
+            if (SDL_SetClipboardText(clip)) {
+                snprintf(app->dev_log.notice, sizeof(app->dev_log.notice),
+                         "Copied %zu lines.", count);
+            } else {
+                snprintf(app->dev_log.notice, sizeof(app->dev_log.notice),
+                         "The log could not be copied.");
+            }
+        }
+        focused = app->focus_index == 1;
+        if (draw_button_focused(ren, card_x + 156.0f, by, 120.0f, 40.0f, "SAVE", false, in,
+                                focused)) {
+            (void)player_dev_log_save(app);
+        }
+        focused = app->focus_index == 2;
+        if (draw_button_focused(ren, card_x + 288.0f, by, 140.0f, 40.0f, "CLOSE", true, in,
+                                focused)) {
+            player_app_close_developer_log(app);
+        }
+        if (app->dev_log.notice[0]) {
+            draw_text_ellipsized(ren, card_x + 448.0f, by + 12.0f, app->dev_log.notice, 0.9f,
+                                 card_w - 472.0f, COLOR_TEXT_DIM);
+        }
+    }
 }
 
 /* --- View: Error Dialog --- */
@@ -4159,11 +4340,11 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
 
     /* Wizard Step Breadcrumbs */
-    static const char *kSteps[] = { "1. Welcome", "2. Select Game", "3. Verify", "4. Fonts & System", "5. Ready" };
+    static const char *kSteps[] = { "1. Welcome", "2. Options", "3. Game", "4. Verify", "5. Fonts", "6. Ready" };
     float bc_x = card_x + 32.0f;
     float bc_y = card_y + 24.0f;
-    float bc_step_w = (card_w - 64.0f) / 5.0f;
-    for (int i = 0; i < 5; i++) {
+    float bc_step_w = (card_w - 64.0f) / 6.0f;
+    for (int i = 0; i < 6; i++) {
         bool current = (i == (int)app->wizard.step);
         bool past = (i < (int)app->wizard.step);
         SDL_Color pill_color = current ? COLOR_EMERALD : (past ? COLOR_BLUE : COLOR_TEXT_DIM);
@@ -4191,8 +4372,8 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                               " • A PSP game ISO you own\n"
                               " • Windows PC with a supported graphics driver\n"
                               " • Keyboard and mouse; a gamepad is optional\n\n"
-                              "This build decrypts encrypted executables with a local key file. It builds runtime "
-                              "packages from the library. Verify also lists font and audio status.",
+                              "Nakagawa does not decrypt games; it uses decrypted files from your own copy. "
+                              "It builds runtime packages from the library. Verify also lists font and audio status.",
                               1.1f, COLOR_TEXT_MUTED, 8);
 
             bool get_started_foc = (app->focus_index == focus++);
@@ -4519,6 +4700,37 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             break;
         }
 
+        case WIZARD_STEP_ONLINE_OPTIONS: {
+            /* CONTINUE takes the first focus stop so Enter never flips a switch
+               by accident; the switches come after the step's buttons. */
+            int switch_focus = 3;
+            draw_text(ren, card_x + 32.0f, content_y, "Online and developer options", 2.0f,
+                      COLOR_TEXT_WHITE);
+            float sy = draw_text_wrapped(ren, card_x + 32.0f, content_y + 40.0f, card_w - 64.0f,
+                                         "Both start off. You can change either one later in Settings.",
+                                         1.0f, COLOR_TEXT_MUTED, 2);
+            sy = draw_text_wrapped(ren, card_x + 32.0f, sy + 4.0f, card_w - 64.0f,
+                                   k_online_not_yet, 0.9f, COLOR_AMBER, 2);
+            (void)render_option_switches(ren, app, in, card_x + 32.0f, sy + 14.0f,
+                                         card_w - 64.0f, &switch_focus, false);
+            bool continue_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 32.0f, btn_y, 200.0f, 44.0f, "CONTINUE", true, in,
+                                    continue_foc)) {
+                player_app_wizard_next(app);
+            }
+            bool skip_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 248.0f, btn_y, 120.0f, 44.0f, "SKIP", false, in,
+                                    skip_foc)) {
+                player_app_wizard_skip_options(app);
+            }
+            bool back_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 384.0f, btn_y, 100.0f, 44.0f, "BACK", false, in,
+                                    back_foc)) {
+                player_app_wizard_back(app);
+            }
+            break;
+        }
+
         case WIZARD_STEP_READY_LAUNCH: {
             bool runtime_ready = app->inspecting_game.is_prepared;
             draw_text(ren, card_x + 32.0f, content_y,
@@ -4681,6 +4893,12 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
             break;
         case VIEW_CONFIRM_REMOVE_TOOLS:
             render_confirm_remove_tools(renderer, app, input);
+            break;
+        case VIEW_ONLINE_SETTINGS:
+            render_online_settings(renderer, app, input);
+            break;
+        case VIEW_DEVELOPER_LOG:
+            render_developer_log(renderer, app, input);
             break;
         default:
             render_empty_library(renderer, app, input);

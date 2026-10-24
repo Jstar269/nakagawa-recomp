@@ -110,6 +110,7 @@ extern uint32_t sr_hle_test_start_module(CpuState *s);
 extern uint32_t sr_hle_test_stop_module(CpuState *s);
 extern uint32_t sr_hle_test_unload_module(CpuState *s);
 extern uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, uint32_t module_stop);
+extern int sr_hle_test_set_module_image(uint32_t uid, uint32_t base, uint32_t end, uint32_t gp);
 extern void sr_hle_test_module_reset(void);
 /* Test-build-only: drop the virtual system registry and its handles, as a new process starts. */
 extern void sr_hle_test_sysreg_reset(void);
@@ -242,6 +243,11 @@ extern void sr_hle_test_hprm_set_remote(int attached);
 extern void sr_hle_test_hprm_set_headphone(int attached);
 extern void sr_hle_test_hprm_set_microphone(int attached);
 extern void sr_hle_test_power_set_low_battery(int low);
+extern void sr_hle_test_power_set_external(int external);
+extern void sr_hle_test_umd_reset(void);
+extern uint32_t sr_hle_test_guest_fault_count(void);
+extern uint32_t sr_hle_test_guest_fault_addr(void);
+extern void sr_hle_test_guest_fault_reset(void);
 extern uint32_t sr_vblank_handler(void);
 uint32_t sr_vblank_no(void);
 uint32_t sr_vblank_arg(void);
@@ -843,7 +849,7 @@ typedef struct {
 static TestGuestFn s_test_guest_fns[16];
 static int s_num_test_guest_fns = 0;
 
-static void sr_test_register_guest_fn(uint32_t addr, RecompFn fn) {
+void sr_test_register_guest_fn(uint32_t addr, RecompFn fn) {
     for (int i = 0; i < s_num_test_guest_fns; i++) {
         if (s_test_guest_fns[i].addr == addr) {
             s_test_guest_fns[i].fn = fn;
@@ -3921,20 +3927,25 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
     } refused[] = {
         {NID_SCE_GE_SAVE_CONTEXT, 0x80020002u, "sceGeSaveContext"},
         {NID_SCE_GE_RESTORE_CONTEXT, 0x80020002u, "sceGeRestoreContext"},
-        {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
+        {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec outside the declared package"},
         {NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE, 0x80020002u, "sceKernelSelfStopUnloadModule"},
         {0x08d98894u, 0x80020002u, "sceNpDrmEdataSetupKey"},
         {0xf9275d98u, 0x80020002u, "sceKernelLoadModuleBufferUsbWlan"},
     };
     reset_fixture();
     sr_hle_init();
+    const uint32_t outside_package_path = 0x08001080u;
+    title_hle_write_cstr(outside_package_path,
+                         "ms0:/PSP/GAME/OUTSIDE/LOADEXEC_B.PRX");
     for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
+        if (refused[i].nid == NID_SCE_KERNEL_LOAD_EXEC)
+            cpu.r[4] = outside_package_path;
         expect(sr_hle_test_is_registered(refused[i].nid),
                "kernel import sweep refusal has a production registration");
         expect(sr_syscall(&cpu, refused[i].nid) == refused[i].error,
-               "unsupported kernel import returns its explicit refusal code");
+               "kernel import returns its named fail-closed error");
     }
 }
 
@@ -5033,6 +5044,8 @@ static void test_unregistered_batch_refusals(void) {
            "sceAudiocodec 0x3dd7ee1a stays unregistered because no public name is confirmed");
 }
 
+extern void sr_hle_test_volatile_mem_reset(void);
+
 /* Enter the production Lock/TryLock NID mappings with an output span that crosses
  * the guest arena boundary. The regression protects the valid output from a partial
  * write and preserves the existing no-op behavior for NULL output pointers. */
@@ -5078,6 +5091,7 @@ static void test_volatile_mem_output_preflight(void) {
     expect(MEM_R32(paddr_out) == 0x08400000u && MEM_R32(size_out) == 0x00400000u,
            "volatile-memory Lock preserves the existing 4 MiB scratch-buffer route");
 
+    sr_hle_test_volatile_mem_reset();
     MEM_W32(paddr_out, sentinel);
     MEM_W32(size_out, sentinel);
     memset(&cpu, 0, sizeof(cpu));
@@ -5099,6 +5113,7 @@ static void test_volatile_mem_output_preflight(void) {
     expect(MEM_R32(size_out) == 0x00400000u,
            "volatile-memory Lock still writes the non-NULL size output");
 
+    sr_hle_test_volatile_mem_reset();
     MEM_W32(paddr_out, sentinel);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
@@ -5254,13 +5269,9 @@ static int osk_write_script(const char *const *lines, int count) {
     return 1;
 }
 
-/* ---- sceUtilityOskUpdate and sceUtilityOskShutdownStart before a keyboard is up, and from INIT ----
- *
- * PSP-3000 measurement (firmware 6.6.1, 2026-10-21, probe CASE=fake-success, evidence in the
- * private workspace): with no keyboard, Update returns 0x80110005 (SCE_ERROR_UTILITY_WRONG_TYPE);
- * after InitStart, Update returns 0x80110001 (SCE_ERROR_UTILITY_INVALID_STATUS), and ShutdownStart
- * returns 0x80110001 and leaves the keyboard in INIT. The VISIBLE and after-use states are not
- * measured by this test. */
+/* PSP-3000 return-code measurements: issue #363, comments 6330742629 and 6331070692.
+ * Drive the keyboard through its syscall lifecycle, distinguishing never opened from NONE
+ * after use, and retain the earlier INIT refusal coverage. */
 #define NID_OSK_UPDATE 0x4b85c861u
 extern void sr_hle_test_osk_slot_reset(void);
 
@@ -5273,8 +5284,16 @@ static void test_osk_update_and_shutdown_init_states(void) {
     osk_env("SR_OSK_TEXT", NULL);
 
     memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
     expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110005u,
-           "sceUtilityOskUpdate with no keyboard returns 0x80110005 (PSP-measured)");
+           "sceUtilityOskUpdate(0) never opened returns 0x80110005 (PSP-measured)");
+    cpu.r[4] = 1u;
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110005u,
+           "sceUtilityOskUpdate(1) never opened returns 0x80110005 (PSP-measured)");
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0x80110005u,
+           "sceUtilityOskShutdownStart never opened returns 0x80110005 (PSP-measured)");
+    expect(osk_poll(&cpu) == 0x80110005u,
+           "sceUtilityOskGetStatus never opened returns 0x80110005 (PSP-measured)");
 
     osk_guest_build(1, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
@@ -5282,12 +5301,43 @@ static void test_osk_update_and_shutdown_init_states(void) {
     expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "sceUtilityOskInitStart accepts the parameter block");
 
     memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
     expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110001u,
            "sceUtilityOskUpdate in INIT returns 0x80110001 (PSP-measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0x80110001u,
            "sceUtilityOskShutdownStart in INIT returns 0x80110001 (PSP-measured)");
+
+    s_osk_person_typing = 1;
+    expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u,
+           "INIT refusals leave the keyboard to enter VISIBLE through GetStatus");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0u,
+           "sceUtilityOskUpdate(0) in VISIBLE returns 0 (PSP-measured)");
+    cpu.r[4] = 1u;
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0u,
+           "sceUtilityOskUpdate(1) in VISIBLE returns 0 (PSP-measured)");
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0x80110001u,
+           "sceUtilityOskShutdownStart in VISIBLE returns 0x80110001 (PSP-measured)");
+    expect(osk_poll(&cpu) == 2u && s_osk_request_open,
+           "a refused ShutdownStart leaves the unanswered keyboard VISIBLE");
+
+    s_osk_person_typing = 0;
+    expect(osk_poll_past_visible(&cpu) == 3u && MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u,
+           "confirming the field reaches QUIT through GetStatus");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110001u,
+           "sceUtilityOskUpdate in QUIT returns 0x80110001 (PSP-measured)");
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u,
+           "sceUtilityOskShutdownStart in QUIT returns 0 (PSP-measured)");
+    expect(osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "accepted ShutdownStart reaches NONE after use through GetStatus");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110001u,
+           "sceUtilityOskUpdate in NONE after use returns 0x80110001 (PSP-measured)");
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0x80110001u,
+           "sceUtilityOskShutdownStart in NONE after use returns 0x80110001 (PSP-measured)");
 
     sr_hle_test_osk_slot_reset();
     osk_person_reset();
@@ -5669,23 +5719,26 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
     expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
            "the answered keyboard winds down through FINISHED to NONE");
 
-    /* The title shuts the keyboard down before the person answered. */
+    /* ShutdownStart is refused while the person is still answering. */
     osk_person_reset();
     s_osk_person_typing = 1;
     osk_guest_build(1, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard the title will close starts");
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard for a premature shutdown starts");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
     expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && s_osk_abandons == 1 && !s_osk_request_open,
-           "ShutdownStart drops the person's unanswered request");
-    expect(osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
-           "a keyboard closed before it was answered still winds down through FINISHED to NONE");
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0x80110001u && s_osk_abandons == 0 && s_osk_request_open,
+           "ShutdownStart in VISIBLE refuses and preserves the person's unanswered request");
+    expect(osk_poll(&cpu) == 2u, "the refused keyboard stays VISIBLE");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
-           "a dropped request writes nothing into the field");
+           "the pending request writes nothing into the field");
+    s_osk_person_typing = 0;
+    expect(osk_poll_past_visible(&cpu) == 3u && sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u &&
+               osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "after the answer the keyboard accepts shutdown and reaches NONE");
 
     /* A new keyboard replaces one whose request is still open. */
     osk_person_reset();
@@ -5941,6 +5994,7 @@ static void reset_fixture(void) {
     s_test_gui_last_addr = 0;
     s_test_gui_last_fmt = 0;
     s_test_gui_last_stride = 0;
+    sr_sched_pause_host = NULL;
     s_pace_on = 0;
     s_host_ns_fn = NULL;   /* deterministic timeline: no host clock in this fixture */
     sr_nested_frame_reset();
@@ -6877,6 +6931,251 @@ static void test_kernel_usec_sysclock_conversions(void) {
     cpu.r[5] = 0x0bfffffcu;
     expect(sr_syscall(&cpu, NID_USEC_TO_SYSCLOCK) == 0x800200d3u,
            "sceKernelUSec2SysClock rejects an unwritable clock span");
+}
+
+uint32_t sr_hle_test_umd_replace_permitted(void);
+
+/* sceUmdReplaceProhibit/Permit record the swap permission and return 0 whether or not
+ * it changes; sceUmdGetDiscInfo checks size == 8 and reports PSP_UMD_TYPE_GAME. */
+static void test_umd_replace_permission_and_disc_info(void) {
+    enum {
+        NID_UMD_REPLACE_PROHIBIT = 0x87533940u,
+        NID_UMD_REPLACE_PERMIT = 0xcbe9f02au,
+        NID_UMD_GET_DISC_INFO = 0x340b7686u,
+        INFO = ORACLE_CALLBACK_NAME + 0x200u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_hle_test_is_registered(NID_UMD_REPLACE_PROHIBIT) &&
+               sr_hle_test_is_registered(NID_UMD_REPLACE_PERMIT) &&
+               sr_hle_test_is_registered(NID_UMD_GET_DISC_INFO),
+           "sceUmdReplaceProhibit, sceUmdReplacePermit and sceUmdGetDiscInfo are registered");
+    expect(sr_syscall(&cpu, NID_UMD_REPLACE_PERMIT) == 0u && sr_hle_test_umd_replace_permitted() == 1u,
+           "sceUmdReplacePermit returns 0 and permits a disc swap");
+    expect(sr_syscall(&cpu, NID_UMD_REPLACE_PERMIT) == 0u && sr_hle_test_umd_replace_permitted() == 1u,
+           "a second sceUmdReplacePermit still returns 0");
+    expect(sr_syscall(&cpu, NID_UMD_REPLACE_PROHIBIT) == 0u && sr_hle_test_umd_replace_permitted() == 0u,
+           "sceUmdReplaceProhibit returns 0 and prohibits a disc swap");
+    expect(sr_syscall(&cpu, NID_UMD_REPLACE_PROHIBIT) == 0u && sr_hle_test_umd_replace_permitted() == 0u,
+           "a second sceUmdReplaceProhibit still returns 0");
+
+    sr_w32(INFO, 8u);
+    sr_w32(INFO + 4u, 0xffffffffu);
+    cpu.r[4] = INFO;
+    expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0u && sr_r32(INFO + 4u) == 0x10u,
+           "sceUmdGetDiscInfo reports PSP_UMD_TYPE_GAME for a size-8 record");
+    sr_w32(INFO, 12u);
+    sr_w32(INFO + 4u, 0xffffffffu);
+    cpu.r[4] = INFO;
+    expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0x80010016u && sr_r32(INFO + 4u) == 0xffffffffu,
+           "sceUmdGetDiscInfo refuses a record whose size is not 8 and writes nothing");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0x80010016u,
+           "sceUmdGetDiscInfo refuses a null record");
+}
+
+static uint32_t td24b_dispatch4(uint32_t nid, uint32_t a0, uint32_t a1,
+                                uint32_t a2, uint32_t a3);
+
+/* Physical PSP measurements, PSP-3000 firmware 6.61, 2026-10-24: the power and battery
+ * getters on AC and on battery, user-mode scePowerSetCpuClockFrequency, sceRtcGetTime64_t
+ * and the UMD drive state across sceUmdDeactivate. Every leg dispatches the production
+ * mapping through sr_syscall. */
+static void test_psp_measured_power_battery_20261024(void) {
+    enum {
+        NID_POWER_IS_ONLINE = 0x87440f5eu,
+        NID_POWER_BATTERY_EXIST = 0x0afd0d8bu,
+        NID_POWER_CHARGING = 0x1e490401u,
+        NID_POWER_CHARGING_STATUS = 0xb4432bc8u,
+        NID_POWER_PERCENT = 0x2085d15du,
+        NID_POWER_LOW = 0xd3075926u,
+        NID_POWER_LIFE_TIME = 0x8efb3fa2u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(NID_POWER_CHARGING_STATUS) &&
+               sr_hle_test_is_registered(NID_POWER_LIFE_TIME),
+           "scePowerGetBatteryChargingStatus and scePowerGetBatteryLifeTime are registered");
+
+    /* On AC, battery full: online 1, exists 1, charging 0, status 0, 96 %, low 0, life time 0. */
+    expect(td24b_dispatch4(NID_POWER_IS_ONLINE, 0u, 0u, 0u, 0u) == 1u,
+           "on AC scePowerIsPowerOnline reports 1 (measured)");
+    expect(td24b_dispatch4(NID_POWER_BATTERY_EXIST, 0u, 0u, 0u, 0u) == 1u,
+           "on AC scePowerIsBatteryExist reports 1 (measured)");
+    expect(td24b_dispatch4(NID_POWER_CHARGING, 0u, 0u, 0u, 0u) == 0u,
+           "on AC with a full battery scePowerIsBatteryCharging reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_CHARGING_STATUS, 0u, 0u, 0u, 0u) == 0u,
+           "on AC scePowerGetBatteryChargingStatus reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_PERCENT, 0u, 0u, 0u, 0u) == 96u,
+           "on AC scePowerGetBatteryLifePercent reports the measured 96");
+    expect(td24b_dispatch4(NID_POWER_LOW, 0u, 0u, 0u, 0u) == 0u,
+           "on AC scePowerIsLowBattery reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_LIFE_TIME, 0u, 0u, 0u, 0u) == 0u,
+           "on AC scePowerGetBatteryLifeTime reports 0 (measured)");
+
+    /* On battery: online 0, exists 1, charging 0, status 0, 93 %, low 0, life time 376 minutes. */
+    sr_hle_test_power_set_external(0);
+    expect(td24b_dispatch4(NID_POWER_IS_ONLINE, 0u, 0u, 0u, 0u) == 0u,
+           "on battery scePowerIsPowerOnline reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_BATTERY_EXIST, 0u, 0u, 0u, 0u) == 1u,
+           "on battery scePowerIsBatteryExist reports 1 (measured)");
+    expect(td24b_dispatch4(NID_POWER_CHARGING, 0u, 0u, 0u, 0u) == 0u,
+           "on battery scePowerIsBatteryCharging reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_CHARGING_STATUS, 0u, 0u, 0u, 0u) == 0u,
+           "on battery scePowerGetBatteryChargingStatus reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_PERCENT, 0u, 0u, 0u, 0u) == 93u,
+           "on battery scePowerGetBatteryLifePercent reports the measured 93");
+    expect(td24b_dispatch4(NID_POWER_LOW, 0u, 0u, 0u, 0u) == 0u,
+           "on battery scePowerIsLowBattery reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_LIFE_TIME, 0u, 0u, 0u, 0u) == 376u,
+           "on battery scePowerGetBatteryLifeTime reports the measured 376 minutes");
+    sr_hle_test_power_set_external(1);
+}
+
+static void test_psp_measured_cpu_clock_user_mode_20261024(void) {
+    enum { NID_POWER_SET_CPU_CLOCK = 0x843fbf43u, NID_POWER_GET_CPU_INT = 0xfdb5bfe9u };
+    static const uint32_t refused[] = { 0u, 333u, 334u, 223u /* PLL + 1 */, 0xffffffffu };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+    expect(sr_hle_test_is_registered(NID_POWER_SET_CPU_CLOCK),
+           "scePowerSetCpuClockFrequency is registered");
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        char what[96];
+        snprintf(what, sizeof(what),
+                 "scePowerSetCpuClockFrequency(%u) is refused with 0x800001FE at PLL 222", refused[i]);
+        expect(td24b_dispatch4(NID_POWER_SET_CPU_CLOCK, refused[i], 0u, 0u, 0u) == 0x800001feu, what);
+        expect(td24b_dispatch4(NID_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 222u,
+               "a refused CPU clock request leaves the retained CPU clock unchanged");
+    }
+    expect(td24b_dispatch4(NID_POWER_SET_CPU_CLOCK, 1u, 0u, 0u, 0u) == 0u,
+           "scePowerSetCpuClockFrequency(1) is accepted (measured)");
+    expect(td24b_dispatch4(NID_POWER_SET_CPU_CLOCK, 222u, 0u, 0u, 0u) == 0u,
+           "scePowerSetCpuClockFrequency(222) is accepted (measured)");
+    expect(td24b_dispatch4(NID_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 222u,
+           "the accepted request is the CPU clock the getter reports");
+    sr_hle_test_power_reset();
+}
+
+static void test_psp_measured_rtc_time64_20261024(void) {
+    enum {
+        NID_RTC_GET_TIME64 = 0xe1c93e47u,
+        DATE = 0x00200200u,
+        TIME_OUT = 0x00200210u,
+    };
+    static const struct {
+        uint16_t year, month, day, hour, minute, second;
+        uint32_t usec;
+        uint32_t result;
+        uint64_t seconds;
+        const char *what;
+    } cases[] = {
+        { 1970, 1, 1, 0, 0, 0, 0u, 0u, 0ull, "the epoch converts to 0" },
+        { 2000, 1, 1, 0, 0, 0, 0u, 0u, 946684800ull, "2000-01-01 converts" },
+        { 2026, 10, 24, 2, 1, 0, 999999u, 0u, 1792807260ull,
+          "a valid date converts, the microseconds dropped" },
+        { 2025, 13, 1, 0, 0, 0, 0u, 0u, 1767225600ull,
+          "month 13 is not rejected and normalises into January of the next year" },
+        { 2026, 1, 32, 0, 0, 0, 0u, 0u, 1769904000ull,
+          "day 32 is not rejected and normalises into the next month" },
+        { 2026, 2, 30, 0, 0, 0, 0u, 0u, 1772409600ull,
+          "February 30 is not rejected and normalises into March" },
+        { 2026, 1, 1, 24, 0, 0, 0u, 0u, 1767312000ull,
+          "hour 24 is not rejected and normalises into the next day" },
+        { 1, 1, 1, 0, 0, 0, 0u, 0x800001feu, 0ull, "year 1 is refused with 0x800001FE" },
+        { 1969, 12, 31, 23, 59, 59, 0u, 0x800001feu, 0ull,
+          "a date before the epoch is refused with 0x800001FE" },
+    };
+    reset_fixture();
+    sr_hle_init();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_hle_test_is_registered(NID_RTC_GET_TIME64), "sceRtcGetTime64_t is registered");
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        MEM_W16(DATE + 0u, cases[i].year); MEM_W16(DATE + 2u, cases[i].month);
+        MEM_W16(DATE + 4u, cases[i].day); MEM_W16(DATE + 6u, cases[i].hour);
+        MEM_W16(DATE + 8u, cases[i].minute); MEM_W16(DATE + 10u, cases[i].second);
+        MEM_W32(DATE + 12u, cases[i].usec);
+        MEM_W32(TIME_OUT, 0xDEADBEEFu); MEM_W32(TIME_OUT + 4u, 0xDEADBEEFu);
+        cpu.r[4] = DATE; cpu.r[5] = TIME_OUT;
+        expect(sr_syscall(&cpu, NID_RTC_GET_TIME64) == cases[i].result, cases[i].what);
+        expect(selftest_guest_u64(TIME_OUT) ==
+                   (cases[i].result == 0u ? cases[i].seconds : 0xDEADBEEFDEADBEEFull),
+               cases[i].result == 0u ? "sceRtcGetTime64_t writes the seconds since 1970"
+                                     : "a refused date leaves the output untouched");
+    }
+
+    /* A NULL output pointer returns 0 without a fault. */
+    MEM_W16(DATE + 0u, 2026u); MEM_W16(DATE + 2u, 10u); MEM_W16(DATE + 4u, 24u);
+    MEM_W16(DATE + 6u, 0u); MEM_W16(DATE + 8u, 0u); MEM_W16(DATE + 10u, 0u);
+    MEM_W32(DATE + 12u, 0u);
+    sr_hle_test_guest_fault_reset();
+    cpu.r[4] = DATE; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_RTC_GET_TIME64) == 0u && sr_hle_test_guest_fault_count() == 0u,
+           "sceRtcGetTime64_t with a NULL output returns 0 without a fault (measured)");
+
+    /* A NULL date pointer faults inside the PSP module: the runtime takes the guest-fault
+     * stop, never a quiet error code. */
+    cpu.r[4] = 0u; cpu.r[5] = TIME_OUT;
+    MEM_W32(TIME_OUT, 0xDEADBEEFu); MEM_W32(TIME_OUT + 4u, 0xDEADBEEFu);
+    (void)sr_syscall(&cpu, NID_RTC_GET_TIME64);
+    expect(sr_hle_test_guest_fault_count() == 1u && sr_hle_test_guest_fault_addr() == 0u,
+           "sceRtcGetTime64_t with a NULL date takes the guest-fault stop at address 0 (measured fault)");
+    expect(selftest_guest_u64(TIME_OUT) == 0xDEADBEEFDEADBEEFull,
+           "the faulting call writes no output");
+    sr_hle_test_guest_fault_reset();
+}
+
+static void test_psp_measured_umd_state_20261024(void) {
+    enum {
+        NID_UMD_ACTIVATE = 0xc6183d47u,
+        NID_UMD_DEACTIVATE = 0xe83742bau,
+        NID_UMD_GET_DRIVE_STAT = 0x6b4a146cu,
+        NID_UMD_WAIT_DRIVE_STAT = 0x8ef08fceu,
+        NID_UMD_GET_DISC_INFO = 0x340b7686u,
+        INFO = ORACLE_CALLBACK_NAME + 0x200u,
+        UMD_READY = 0x20u,
+    };
+    static const uint32_t bad_sizes[] = { 0u, 12u };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_umd_reset();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_hle_test_is_registered(NID_UMD_DEACTIVATE) &&
+               sr_hle_test_is_registered(NID_UMD_GET_DRIVE_STAT),
+           "sceUmdDeactivate and sceUmdGetDriveStat are registered");
+    expect(sr_syscall(&cpu, NID_UMD_GET_DRIVE_STAT) == 0x32u,
+           "the drive state at entry is the measured 0x32");
+    cpu.r[4] = 1u; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_UMD_DEACTIVATE) == 0u,
+           "sceUmdDeactivate returns 0");
+    expect(sr_syscall(&cpu, NID_UMD_GET_DRIVE_STAT) == 0x12u,
+           "after sceUmdDeactivate the drive state is the measured 0x12");
+    cpu.r[4] = 1u; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_UMD_ACTIVATE) == 0u &&
+               sr_syscall(&cpu, NID_UMD_GET_DRIVE_STAT) == 0x32u,
+           "sceUmdActivate returns 0 and the drive reports 0x32 again");
+    cpu.r[4] = UMD_READY;
+    expect(sr_syscall(&cpu, NID_UMD_WAIT_DRIVE_STAT) == 0u,
+           "sceUmdWaitDriveStat for READY returns 0 on the activated drive (measured)");
+
+    /* sceUmdGetDiscInfo: size 8 returns 0 and type 0x10; size 0 and 12 return 0x80010016. */
+    for (size_t i = 0; i < sizeof(bad_sizes) / sizeof(bad_sizes[0]); i++) {
+        sr_w32(INFO, bad_sizes[i]);
+        sr_w32(INFO + 4u, 0xffffffffu);
+        cpu.r[4] = INFO;
+        expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0x80010016u &&
+                   sr_r32(INFO + 4u) == 0xffffffffu,
+               "sceUmdGetDiscInfo refuses a size other than 8 with 0x80010016 (measured 0 and 12)");
+    }
+    sr_w32(INFO, 8u);
+    cpu.r[4] = INFO;
+    expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0u && sr_r32(INFO + 4u) == 0x10u,
+           "sceUmdGetDiscInfo with size 8 returns 0 and type 0x10 (measured)");
+    sr_hle_test_umd_reset();
 }
 
 static void test_umd_unregister_callback(void) {
@@ -17362,6 +17661,85 @@ static uint32_t ge_clut_enqueue(uint32_t src, uint32_t blocks) {
     return sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
 }
 
+/* Data-cache maintenance is the guest's coherence point for RAM the GE reads next.
+ * Guest code stores to RAM without any per-store renderer notification (only VRAM
+ * stores carry one), so a title that draws glyphs into a RAM texture and then writes
+ * the range back relies on the writeback to make the new texels visible. Before the
+ * fix these NIDs only served the stale-code detector, the renderer kept a texture whose
+ * sparse content hash missed the new glyph, and those glyphs never appeared. */
+static void test_dcache_maintenance_notifies_renderer(void) {
+    static const struct { uint32_t nid; const char *name; } range_ops[] = {
+        { 0x3ee30821u, "sceKernelDcacheWritebackRange" },
+        { 0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange" },
+        { 0xbfa98062u, "sceKernelDcacheInvalidateRange" },
+    };
+    static const struct { uint32_t nid; const char *name; } all_ops[] = {
+        { 0x79d1c3fau, "sceKernelDcacheWritebackAll" },
+        { 0xb435dec5u, "sceKernelDcacheWritebackInvalidateAll" },
+    };
+    char msg[160];
+    reset_fixture();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(range_ops) / sizeof(range_ops[0]); i++) {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        gpu_dirty_reset();
+        cpu.r[4] = 0x08abc000u;
+        cpu.r[5] = 0x2000u;
+        uint32_t rv = sr_syscall(&cpu, range_ops[i].nid);
+        snprintf(msg, sizeof(msg), "%s over RAM tells the renderer the range changed",
+                 range_ops[i].name);
+        expect(rv == 0u && s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == 0x08abc000u &&
+                   s_gpu_dirty_bytes == 0x2000u, msg);
+
+        memset(&cpu, 0, sizeof(cpu));
+        gpu_dirty_reset();
+        cpu.r[4] = 0x48abc000u;   /* uncached RAM alias */
+        cpu.r[5] = 0x40u;
+        (void)sr_syscall(&cpu, range_ops[i].nid);
+        snprintf(msg, sizeof(msg), "%s over an uncached RAM alias notifies that alias", range_ops[i].name);
+        expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == 0x48abc000u &&
+                   s_gpu_dirty_bytes == 0x40u, msg);
+
+        memset(&cpu, 0, sizeof(cpu));
+        gpu_dirty_reset();
+        cpu.r[4] = 0x08abc000u;
+        cpu.r[5] = 0u;
+        (void)sr_syscall(&cpu, range_ops[i].nid);
+        cpu.r[4] = 0u;
+        cpu.r[5] = 0x40u;
+        (void)sr_syscall(&cpu, range_ops[i].nid);
+        cpu.r[4] = 0x08abc000u;
+        cpu.r[5] = 0x80000000u;   /* negative size */
+        (void)sr_syscall(&cpu, range_ops[i].nid);
+        cpu.r[4] = 0xfffff000u;
+        cpu.r[5] = 0x2000u;       /* wraps the address space */
+        (void)sr_syscall(&cpu, range_ops[i].nid);
+        snprintf(msg, sizeof(msg), "%s with an empty, null, negative or wrapping range notifies nothing",
+                 range_ops[i].name);
+        expect(s_gpu_dirty_calls == 0u, msg);
+
+        memset(&cpu, 0, sizeof(cpu));
+        gpu_dirty_reset();
+        cpu.r[4] = 0x04100000u;   /* VRAM: guest stores there already notify per store */
+        cpu.r[5] = 0x1000u;
+        (void)sr_syscall(&cpu, range_ops[i].nid);
+        snprintf(msg, sizeof(msg), "%s over VRAM leaves render targets to the per-store path",
+                 range_ops[i].name);
+        expect(s_gpu_dirty_calls == 0u, msg);
+    }
+    for (size_t i = 0; i < sizeof(all_ops) / sizeof(all_ops[0]); i++) {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        gpu_dirty_reset();
+        uint32_t rv = sr_syscall(&cpu, all_ops[i].nid);
+        snprintf(msg, sizeof(msg), "%s tells the renderer all of main RAM changed", all_ops[i].name);
+        expect(rv == 0u && s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == 0x08000000u &&
+                   s_gpu_dirty_bytes == 0x04000000u, msg);
+    }
+    ge_set_gpu_hooks(NULL);
+}
+
 /* Host-memory safety for the production GE block-transfer command path.  The
  * temporary arena deliberately commits one complete maximum-transfer window after
  * the modeled 192 MiB guest arena.  That makes the historical later-row write
@@ -21784,6 +22162,65 @@ static void test_td28_partition_free_reuse(void) {
 /* Fixed-address reservation (sr_alloc_block_at + AllocPartitionMemory type 2).
  * heap_selftest.c covers recomp.c's newlib heap, a different allocator, so the
  * user-partition tests live here next to test_td28_partition_free_reuse. */
+/* A live thread stack is not free partition memory: the reported free sizes and every
+ * allocation end at the lowest live stack, so a game that takes the reported free
+ * memory never receives a block over its own stack. */
+static void test_partition_ends_at_lowest_live_stack(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern uint32_t sr_hle_test_partition_heap_ptr(void);
+    extern uint32_t sr_hle_test_partition_top(void);
+    extern uint32_t sr_hle_test_partition_bump_top(void);
+    const uint32_t NID_ALLOC_PART = 0x237dbd4fu;
+    const uint32_t NID_GET_HEAD   = 0x9d9a5ba1u;
+    const uint32_t NID_MAX_FREE   = 0xa291f107u;
+    const uint32_t FAIL = 0xFFFFFFFFu;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    uint32_t base0 = sr_hle_test_partition_heap_ptr();
+    expect(sr_hle_test_partition_bump_top() <= SR_STACK_ARENA_CEIL,
+           "the partition never reaches the runtime's VBLANK/nested-frame reservation");
+    uint32_t uid = sched_create_thread(0x2000u, 32, 0x40000u);
+    expect(uid != 0u, "a main thread with a 256 KiB stack is created");
+    uint32_t floor = sched_guest_stack_floor();
+    expect(sr_hle_test_partition_bump_top() == floor,
+           "the partition top is the lowest live stack reservation");
+    expect(sr_hle_test_partition_top() > floor, "the configured ceiling lies above the stack");
+
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t max_free = sr_syscall(&cpu, NID_MAX_FREE);
+    expect(max_free == floor - base0, "sceKernelMaxFreeMemSize stops at the stack");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = (floor - base0) + 0x10000u;
+    expect(sr_syscall(&cpu, NID_ALLOC_PART) == FAIL,
+           "an allocation that would cover the live stack fails");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = max_free & ~0xFFu;
+    uint32_t big = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(big != FAIL && big != 0u, "taking the reported free memory succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = big;
+    uint32_t head = sr_syscall(&cpu, NID_GET_HEAD);
+    expect(head + (max_free & ~0xFFu) <= floor, "the block taken ends at or below the stack");
+
+    /* A fixed reservation keeps its previous bounds: a title profile's late module base
+     * may lie above the lowest live stack, as one reviewed profile's does. */
+    extern uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name);
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    uint32_t upper = sched_create_thread(0x2000u, 32, 0x8000u);
+    uint32_t upper_floor = sched_guest_stack_floor();
+    uint32_t lower = sched_create_thread(0x2004u, 32, 0x8000u);
+    expect(upper != 0u && lower != 0u && sched_guest_stack_floor() < upper_floor,
+           "two stacked threads are created");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = upper;
+    expect(sr_syscall(&cpu, 0x9fa03cd3u) == 0u, "the dormant upper thread is deleted");
+    uint32_t between = sr_alloc_block_at(upper_floor, 0x1000u, "between-stacks");
+    expect(between != FAIL && between != 0u,
+           "a fixed reservation above the lowest live stack succeeds");
+}
+
 static void test_alloc_block_at_fixed_address(void) {
     extern void sr_hle_test_partition_reset(void);
     extern uint32_t sr_hle_test_partition_heap_ptr(void);
@@ -26620,11 +27057,17 @@ static void synth_module_start_fn(CpuState *s) {
 static uint32_t s_synth_stop_calls = 0;
 static uint32_t s_synth_stop_a0 = 0;
 static uint32_t s_synth_stop_a1 = 0;
+static uint32_t s_synth_stop_gp = 0;
+static uint32_t s_synth_stop_arg_words[3];
 
 static void synth_module_stop_fn(CpuState *s) {
     s_synth_stop_calls++;
     s_synth_stop_a0 = s->r[4];
     s_synth_stop_a1 = s->r[5];
+    s_synth_stop_gp = s->r[28];
+    for (unsigned i = 0; i < 3u; i++)
+        s_synth_stop_arg_words[i] = s->r[5] && s->r[4] >= (i + 1u) * 4u
+                                  ? MEM_R32(s->r[5] + i * 4u) : 0u;
     s->r[2] = 0x84u;
 }
 
@@ -26702,6 +27145,9 @@ static void test_real_module_start_lifecycle(void) {
     /* Register module and start it */
     uint32_t uid_on = sr_hle_test_register_module("gate_on.prx", SYNTH_MOD_START, SYNTH_MOD_STOP);
     expect(uid_on != 0, "registered synthetic module for gate-on test");
+    expect(sr_hle_test_set_module_image(uid_on, SYNTH_MOD_START,
+                                        SYNTH_MOD_STOP + 4u, 0x0aabbccdu),
+           "gate on: synthetic module image range and $gp are recorded");
 
     MEM_W32(SYNTH_MOD_STATUS_ADDR, 0xdeadbeefu);
     memset(&cpu, 0, sizeof(cpu));
@@ -26738,11 +27184,21 @@ static void test_real_module_start_lifecycle(void) {
     cpu.r[5] = 12u;
     cpu.r[6] = 0x089a0300u;
     cpu.r[7] = SYNTH_MOD_STATUS_ADDR;
+    MEM_W32(0x089a0300u, 0x12345678u);
+    MEM_W32(0x089a0304u, 0x9abcdef0u);
+    MEM_W32(0x089a0308u, 0x0badc0deu);
+    s_synth_stop_gp = 0u;
     ret = sr_syscall(&cpu, 0xd1ff982au);
     expect(ret == 0, "gate on: sceKernelStopModule returns 0 on success");
     expect(s_synth_stop_calls == 1, "gate on: module_stop executed exactly once");
     expect(s_synth_stop_a0 == 12u, "gate on: module_stop received arglen in $a0");
-    expect(s_synth_stop_a1 == 0x089a0300u, "gate on: module_stop received argp in $a1");
+    expect(s_synth_stop_a1 != 0u && s_synth_stop_a1 != 0x089a0300u &&
+               s_synth_stop_arg_words[0] == 0x12345678u &&
+               s_synth_stop_arg_words[1] == 0x9abcdef0u &&
+               s_synth_stop_arg_words[2] == 0x0badc0deu,
+           "gate on: module_stop runs on a guest thread with a copied argp block");
+    expect(s_synth_stop_gp == 0x0aabbccdu,
+           "gate on: module_stop thread runs with the module's $gp");
     expect(MEM_R32(SYNTH_MOD_STATUS_ADDR) == 0x84u,
            "gate on: module_stop return status written to status pointer");
 
@@ -26898,12 +27354,40 @@ static void test_prx_stop_entry_boundaries(void) {
 static uint32_t s_lifecycle_export_calls_a1, s_lifecycle_export_calls_a2;
 static uint32_t s_lifecycle_export_calls_b;
 static uint32_t s_lifecycle_start_calls, s_lifecycle_stop_calls;
+static uint32_t s_lifecycle_stop_gp;
+static uint32_t s_lifecycle_stop_arglen, s_lifecycle_stop_argp_word;
+static uint32_t s_lifecycle_stop_thread_uid;
+extern uint32_t sr_hle_test_scheduled_call_uid(void);
 
 static void lifecycle_export_a1_fn(CpuState *s) { s_lifecycle_export_calls_a1++; s->r[2] = 0xa1u; }
 static void lifecycle_export_a2_fn(CpuState *s) { s_lifecycle_export_calls_a2++; s->r[2] = 0xa2u; }
 static void lifecycle_export_b_fn(CpuState *s) { s_lifecycle_export_calls_b++; s->r[2] = 0xb2u; }
 static void lifecycle_start_fn(CpuState *s) { s_lifecycle_start_calls++; s->r[2] = 0x5u; }
-static void lifecycle_stop_fn(CpuState *s) { s_lifecycle_stop_calls++; s->r[2] = 0x6u; }
+static void lifecycle_stop_fn(CpuState *s) {
+    s_lifecycle_stop_calls++;
+    s_lifecycle_stop_thread_uid = sched_current_uid();
+    s_lifecycle_stop_gp = s->r[28];
+    s_lifecycle_stop_arglen = s->r[4];
+    s_lifecycle_stop_argp_word = s->r[5] && s->r[4] >= 4u ? MEM_R32(s->r[5]) : 0u;
+    s->r[2] = 0x6u;
+}
+
+#define SELFSTOP_ARG_ADDR 0x08a02000u
+static uint32_t s_selfstop_guest_gp;
+static uint32_t s_selfstop_guest_returned;
+static uint32_t s_selfstop_guest_pc;
+static int s_selfstop_guest_in_scheduler;
+static void selfstop_guest_entry(CpuState *s) {
+    s->pc = LIFECYCLE_MOD_B_BASE + LIFECYCLE_START_OFF;
+    s->r[28] = s_selfstop_guest_gp;
+    s_selfstop_guest_pc = s->pc;
+    s_selfstop_guest_in_scheduler = sched_guest_thread_running();
+    s->r[4] = 0u; /* first argument is unnamed in the public PSPSDK declaration */
+    s->r[5] = 4u;
+    s->r[6] = SELFSTOP_ARG_ADDR;
+    (void)sr_syscall(s, NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE);
+    s_selfstop_guest_returned = 1u; /* the API is terminal on the modeled success path */
+}
 
 /* Build a synthetic PRX image. Only the bytes are synthetic: the production
  * prx_loader.c parser consumes the file, exactly as a real module's would.
@@ -27100,10 +27584,14 @@ static void test_late_prx_unload_reload_lifecycle(void) {
 
     /* ---- stop (required before unload by the established contract) ---- */
     s_lifecycle_stop_calls = 0;
+    s_lifecycle_stop_thread_uid = 0u;
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid_a;
     expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "lifecycle: stop module A returns 0");
     expect(s_lifecycle_stop_calls == 1u, "lifecycle: module A's module_stop ran once");
+    expect(sr_hle_test_scheduled_call_uid() != 0u &&
+               s_lifecycle_stop_thread_uid != sr_hle_test_scheduled_call_uid(),
+           "lifecycle: module_stop ran on its own scheduler guest thread");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid_a;
     expect(sr_syscall(&cpu, 0xd1ff982au) == SCE_KERNEL_ERROR_ALREADY_STOPPED,
@@ -27120,6 +27608,20 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid_b;
     expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "lifecycle: stop module B returns 0");
+
+    /* A runnable continuation into A makes unload unsafe. This is an explicitly
+     * synthetic refusal; the measured #1106 blocked waiter case is exercised below
+     * and remains unloadable. */
+    TCB *active_module_thread = fixture_thread(0x6f0u, TH_READY, 20);
+    active_module_thread->started = 1;
+    active_module_thread->saved.pc = LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0x80020002u,
+           "lifecycle: unload refuses while a module thread is ready to execute its image");
+    active_module_thread->state = TH_DORMANT;
+    active_module_thread->deleted = 1;
+    active_module_thread->entry = 0u;
 
     /* ---- unload A: retire exactly its own state ---- */
     unsigned images_before = sr_hle_test_image_count();
@@ -27268,6 +27770,55 @@ static void test_late_prx_unload_reload_lifecycle(void) {
            "lifecycle: repeated cycles do not exhaust the 16-entry module table");
     expect(sr_hle_test_image_count() == 0u,
            "lifecycle: repeated cycles do not exhaust the 16-entry image table");
+
+    /* SelfStopUnloadModule cannot return into the image it retires. Run it from a
+     * scheduled module continuation, verify the stop entry's arguments/$gp, and
+     * observe unload only after the caller thread is deleted. */
+    expect(write_lifecycle_prx(path_b, 0x51570a0bu),
+           "self-stop: source-owned module image is written");
+    uint32_t self_uid = sr_hle_test_load_prx_image(path_b, LIFECYCLE_MOD_B_BASE,
+                                                   LIFECYCLE_EXPORT_B,
+                                                   LIFECYCLE_PATCH_OFF_A_1);
+    expect(self_uid != 0u, "self-stop: module image loads");
+    const uint32_t self_gp = 0x0aabbccdu;
+    expect(sr_hle_test_set_module_image(self_uid, LIFECYCLE_MOD_B_BASE,
+                                        LIFECYCLE_MOD_B_BASE + LIFECYCLE_IMAGE_SIZE,
+                                        self_gp),
+           "self-stop: module image range and $gp are attached");
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_START_OFF,
+                              lifecycle_start_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_STOP_OFF,
+                              lifecycle_stop_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_PATCH_OFF_A_1,
+                              lifecycle_export_b_fn);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = self_uid;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0u,
+           "self-stop: module_start marks the module started");
+    s_lifecycle_stop_calls = 0u;
+    s_lifecycle_stop_gp = 0u;
+    s_lifecycle_stop_arglen = 0u;
+    s_lifecycle_stop_argp_word = 0u;
+    s_selfstop_guest_gp = self_gp;
+    s_selfstop_guest_returned = 0u;
+    s_selfstop_guest_pc = 0u;
+    s_selfstop_guest_in_scheduler = 0;
+    MEM_W32(SELFSTOP_ARG_ADDR, 0x05116abcu);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_START_OFF,
+                              selfstop_guest_entry);
+    sched_run(LIFECYCLE_MOD_B_BASE + LIFECYCLE_START_OFF, 0u, 0u);
+    expect(s_selfstop_guest_pc == LIFECYCLE_MOD_B_BASE + LIFECYCLE_START_OFF &&
+               s_selfstop_guest_in_scheduler,
+           "self-stop: caller is a scheduled thread inside the module image");
+    expect(s_selfstop_guest_returned == 0u,
+           "self-stop: caller thread does not resume in the unloaded image");
+    expect(s_lifecycle_stop_calls == 1u && s_lifecycle_stop_arglen == 4u &&
+               s_lifecycle_stop_argp_word == 0x05116abcu &&
+               s_lifecycle_stop_gp == self_gp,
+           "self-stop: stop entry runs on a module-$gp guest thread with copied arguments");
+    expect(sr_hle_test_module_count() == 0u && sr_hle_test_image_count() == 0u &&
+               sr_hle_resolve_late_import(LIFECYCLE_EXPORT_B) == 0u,
+           "self-stop: caller exit retires the module record, image and exports");
 
     remove(path_a);
     remove(path_b);
@@ -27518,7 +28069,6 @@ static uint32_t psmf_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1)
 #define NID_VM_TRYLOCK 0xa14f40b2u
 #define VM_PTR_OUT     0x00250e00u
 #define VM_SIZE_OUT    0x00250e04u
-extern void sr_hle_test_volatile_mem_reset(void);
 
 static void test_volatile_mem_unlock_states(void) {
     CpuState cpu;
@@ -27547,6 +28097,22 @@ static void test_volatile_mem_unlock_states(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0u, "VolatileMemUnlock after TryLock returns 0");
 
+    /* TryLock while already held returns 0x802b0200 and writes neither output. */
+    sr_hle_test_volatile_mem_reset();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    MEM_W32(VM_PTR_OUT, 0xdeadbeefu); MEM_W32(VM_SIZE_OUT, 0xcafebabeu);
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock while unlocked returns 0");
+    MEM_W32(VM_PTR_OUT, 0x11111111u); MEM_W32(VM_SIZE_OUT, 0x22222222u);
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0x802b0200u, "VolatileMemTryLock while held returns 0x802b0200");
+    expect(MEM_R32(VM_PTR_OUT) == 0x11111111u && MEM_R32(VM_SIZE_OUT) == 0x22222222u,
+           "VolatileMemTryLock while held leaves outputs unchanged");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0u, "VolatileMemUnlock after held TryLock returns 0");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock succeeds again after Unlock");
     sr_hle_test_volatile_mem_reset();
 }
 
@@ -27586,15 +28152,34 @@ static void test_volatile_mem_unlock_states(void) {
 static uint32_t s_late_obj_sema;
 static uint32_t s_late_obj_ret;
 static int      s_late_obj_returned;
+static uint32_t s_late_obj_module_uid;
+static uint32_t s_late_obj_waiter_uid;
+static uint32_t s_late_obj_flag;
+static uint32_t s_late_obj_callback;
+static uint32_t s_late_obj_stop_rc;
+static uint32_t s_late_obj_unload_rc;
+static uint32_t s_late_obj_pre_status;
+static uint32_t s_late_obj_pre_waitid;
+static uint32_t s_late_obj_pre_numwait;
 
-static void late_obj_waiter_body(void *arg) {
-    (void)arg;
-    CpuState cpu;
-    memset(&cpu, 0, sizeof cpu);
-    cpu.r[4] = s_late_obj_sema; cpu.r[5] = 1u; cpu.r[6] = LATE_OBJ_WAIT_TMO_PTR;
-    s_late_obj_ret = sr_syscall(&cpu, NID_CNW_WAIT_SEMA);
+#define LATE_OBJ_WAIT_ENTRY       (LATE_OBJ_BASE + 0x90u)
+#define LATE_OBJ_RUNNER_ENTRY     0x08ffdf80u
+
+static void late_obj_waiter_entry(CpuState *s) {
+    s->r[4] = s_late_obj_sema;
+    s->r[5] = 1u;
+    s->r[6] = 0u; /* indefinite wait; hardware did not report a wake result */
+    s_late_obj_ret = sr_syscall(s, NID_CNW_WAIT_SEMA);
     s_late_obj_returned = 1;
-    selftest_park_on_scheduler();
+    s->r[2] = s_late_obj_ret;
+}
+
+static uint32_t late_obj_guest_call(CpuState *s, uint32_t nid, uint32_t a0,
+                                    uint32_t a1, uint32_t a2, uint32_t a3,
+                                    uint32_t a4, uint32_t a5) {
+    s->r[4] = a0; s->r[5] = a1; s->r[6] = a2; s->r[7] = a3;
+    s->r[8] = a4; s->r[9] = a5;
+    return sr_syscall(s, nid);
 }
 
 static uint32_t late_obj_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2) {
@@ -27604,11 +28189,100 @@ static uint32_t late_obj_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a
     return sr_syscall(&cpu, nid);
 }
 
+static void late_obj_guest_runner(CpuState *s) {
+    SrThreadInfo thread_info;
+
+    expect(late_obj_guest_call(s, LATE_OBJ_START_NID, s_late_obj_module_uid,
+                               0u, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: the module starts in the scheduled guest");
+
+    s_late_obj_sema = wsv_create(0u, 1u);
+    expect((int32_t)s_late_obj_sema > 0, "late-objects: semaphore created while the module runs");
+    s_late_obj_flag = late_obj_guest_call(s, LATE_OBJ_CREATE_EVFLAG,
+                                          LATE_OBJ_NAME, 0u, 0u, 0u, 0u, 0u);
+    expect((int32_t)s_late_obj_flag > 0,
+           "late-objects: event flag created while the module runs");
+    s_late_obj_callback = late_obj_guest_call(s, LATE_OBJ_CREATE_CB,
+                                              LATE_OBJ_NAME,
+                                              LATE_OBJ_BASE + LIFECYCLE_PATCH_OFF_A_1,
+                                              0u, 0u, 0u, 0u);
+    expect((int32_t)s_late_obj_callback > 0,
+           "late-objects: callback created while the module runs");
+
+    s_late_obj_waiter_uid = late_obj_guest_call(s, NID_SCE_KERNEL_CREATE_THREAD,
+                                                LATE_OBJ_NAME, LATE_OBJ_WAIT_ENTRY,
+                                                16u, 0x1000u, 0u, 0u);
+    expect(s_late_obj_waiter_uid != 0u,
+           "late-objects: project-owned worker thread created");
+    s_late_obj_returned = 0;
+    s_late_obj_ret = 0xffffffffu;
+    expect(late_obj_guest_call(s, NID_SCE_KERNEL_START_THREAD,
+                               s_late_obj_waiter_uid, 0u, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: worker starts and blocks on the semaphore");
+    expect(sched_thread_info(s_late_obj_waiter_uid, &thread_info) == 0 &&
+               thread_info.waitId == s_late_obj_sema,
+           "late-objects: worker waits on the semaphore it created");
+    expect(s_late_obj_returned == 0,
+           "late-objects: the worker has not returned from its wait");
+
+    expect(late_obj_guest_call(s, LATE_OBJ_REFER_THREAD, s_late_obj_waiter_uid,
+                               LATE_OBJ_INFO_THREAD, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: the worker resolves before the stop");
+    s_late_obj_pre_status = MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u);
+    s_late_obj_pre_waitid = MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u);
+    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
+    expect(late_obj_guest_call(s, LATE_OBJ_REFER_SEMA, s_late_obj_sema,
+                               LATE_OBJ_INFO_SEMA, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: the semaphore resolves before the stop");
+    s_late_obj_pre_numwait = MEM_R32(LATE_OBJ_INFO_SEMA + 52u);
+    expect(s_late_obj_pre_numwait == 1u,
+           "late-objects: the semaphore counts its one waiter");
+    expect(late_obj_guest_call(s, LATE_OBJ_REFER_EVFLAG, s_late_obj_flag,
+                               LATE_OBJ_INFO_FLAG, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: the event flag resolves before the stop");
+    expect(sr_callback_is_valid(s_late_obj_callback),
+           "late-objects: the callback resolves before the stop");
+
+    s_late_obj_stop_rc = late_obj_guest_call(s, LATE_OBJ_STOP_NID,
+                                              s_late_obj_module_uid, 0u, 0u,
+                                              0u, 0u, 0u);
+    expect(s_late_obj_stop_rc == 0u,
+           "late-objects: stopping the module returns 0");
+    s_late_obj_unload_rc = late_obj_guest_call(s, LATE_OBJ_UNLOAD_NID,
+                                                s_late_obj_module_uid, 0u, 0u,
+                                                0u, 0u, 0u);
+    expect(s_late_obj_unload_rc == 0u,
+           "late-objects: unloading the stopped module returns 0");
+
+    expect(late_obj_guest_call(s, LATE_OBJ_REFER_THREAD, s_late_obj_waiter_uid,
+                               LATE_OBJ_INFO_THREAD, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: the worker still resolves after unload");
+    expect(MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u) == s_late_obj_pre_status &&
+               MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u) == s_late_obj_pre_waitid,
+           "late-objects: the worker keeps its state and semaphore wait");
+    expect(sched_thread_info(s_late_obj_waiter_uid, &thread_info) == 0 &&
+               thread_info.status == s_late_obj_pre_status &&
+               thread_info.waitId == s_late_obj_pre_waitid,
+           "late-objects: the blocked worker remains intact after unload");
+    expect(s_late_obj_returned == 0,
+           "late-objects: unloading does not wake the worker");
+    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
+    expect(late_obj_guest_call(s, LATE_OBJ_REFER_SEMA, s_late_obj_sema,
+                               LATE_OBJ_INFO_SEMA, 0u, 0u, 0u, 0u) == 0u &&
+               MEM_R32(LATE_OBJ_INFO_SEMA + 52u) == s_late_obj_pre_numwait,
+           "late-objects: the semaphore still counts its waiter after unload");
+    expect(late_obj_guest_call(s, LATE_OBJ_REFER_EVFLAG, s_late_obj_flag,
+                               LATE_OBJ_INFO_FLAG, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: the event flag still resolves after unload");
+    expect(sr_callback_is_valid(s_late_obj_callback),
+           "late-objects: the callback still resolves until its owner exits");
+
+    s->r[2] = 0u;
+}
+
 static void test_late_prx_unload_keeps_module_owned_objects(void) {
     const char *path = HLE_BUILD_ROOT "/hle_late_objects.prx";
-    TCB *owner, *waiter;
-    uint32_t sema, flag, cb, pre_status, pre_waitid, pre_numwait;
-    uint32_t stop_rc, unload_rc;
+    TCB *waiter;
 
     reset_fixture();
     sr_hle_init();
@@ -27630,93 +28304,54 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
     sr_test_register_guest_fn(LATE_OBJ_BASE + LIFECYCLE_START_OFF, lifecycle_start_fn);
     sr_test_register_guest_fn(LATE_OBJ_BASE + LIFECYCLE_STOP_OFF, lifecycle_stop_fn);
     sr_test_register_guest_fn(LATE_OBJ_BASE + LIFECYCLE_PATCH_OFF_A_1, lifecycle_export_a1_fn);
-    expect(late_obj_call(LATE_OBJ_START_NID, uid, 0u, 0u) == 0u, "late-objects: the module starts");
-
-    /* The module's own thread creates the objects, so it is the owner of the callback. */
-    owner = fixture_thread(0x6b0u, TH_RUNNING, 40);
-    owner->started = 1;
-    s_cur = (int)(owner - s_tcb);
-    sema = wsv_create(0, 1);
-    expect((int32_t)sema > 0, "late-objects: semaphore created while the module runs");
-    flag = late_obj_call(LATE_OBJ_CREATE_EVFLAG, LATE_OBJ_NAME, 0u, 0u);
-    expect((int32_t)flag > 0, "late-objects: event flag created while the module runs");
-    cb = late_obj_call(LATE_OBJ_CREATE_CB, LATE_OBJ_NAME, LATE_OBJ_BASE + LIFECYCLE_PATCH_OFF_A_1, 0u);
-    expect((int32_t)cb > 0, "late-objects: callback created while the module runs");
-
-    /* A worker thread blocks on the semaphore for the rest of the test. */
-    waiter = fixture_thread(0x6b1u, TH_READY, 16);
-    waiter->started = 1;
-    s_late_obj_sema = sema;
+    title_hle_write_cstr(LATE_OBJ_NAME, "late-module-owner");
+    sr_test_register_guest_fn(LATE_OBJ_WAIT_ENTRY, late_obj_waiter_entry);
+    sr_test_register_guest_fn(LATE_OBJ_RUNNER_ENTRY, late_obj_guest_runner);
+    s_late_obj_module_uid = uid;
+    s_late_obj_sema = s_late_obj_flag = s_late_obj_callback = s_late_obj_waiter_uid = 0u;
+    s_late_obj_stop_rc = s_late_obj_unload_rc = 0xffffffffu;
     s_late_obj_returned = 0;
-    s_late_obj_ret = 0xFFFFFFFFu;
+    s_late_obj_ret = 0xffffffffu;
     MEM_W32(LATE_OBJ_WAIT_TMO_PTR, LATE_OBJ_WAIT_US);
-    waiter->coro = sr_coro_create(late_obj_waiter_body, NULL, (size_t)4 << 20);
-    expect(waiter->coro != NULL, "late-objects: worker coroutine created");
-    if (!waiter->coro) {
-        remove(path);
-        _putenv("SR_REAL_MODULE_START=0");
-        sr_test_guest_fn_reset();
-        sr_hle_test_module_reset();
-        s_cur = -1;
-        return;
-    }
-    s_cur = (int)(waiter - s_tcb);
-    waiter->state = TH_RUNNING;
-    sr_coro_switch(waiter->coro);
-    expect(waiter->state == TH_WAIT_OBJ, "late-objects: the worker blocks on the semaphore");
-    expect(s_late_obj_returned == 0, "late-objects: the worker has not returned from its wait");
-    s_cur = (int)(owner - s_tcb);
-    owner->state = TH_RUNNING;
 
-    /* Before the stop: each object is observable through its refer call. */
-    expect(late_obj_call(LATE_OBJ_REFER_THREAD, waiter->uid, LATE_OBJ_INFO_THREAD, 0u) == 0u,
-           "late-objects: the worker resolves before the stop");
-    pre_status = MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u);
-    pre_waitid = MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u);
-    expect(pre_waitid == sema, "late-objects: the worker waits on the semaphore it created");
-    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
-    expect(late_obj_call(LATE_OBJ_REFER_SEMA, sema, LATE_OBJ_INFO_SEMA, 0u) == 0u,
-           "late-objects: the semaphore resolves before the stop");
-    pre_numwait = MEM_R32(LATE_OBJ_INFO_SEMA + 52u);
-    expect(pre_numwait == 1u, "late-objects: the semaphore counts its one waiter");
-    expect(late_obj_call(LATE_OBJ_REFER_EVFLAG, flag, LATE_OBJ_INFO_FLAG, 0u) == 0u,
-           "late-objects: the event flag resolves before the stop");
-    expect(sr_callback_is_valid(cb), "late-objects: the callback resolves before the stop");
-
-    /* Stop and unload the module. The PSP measurement shows both succeed and neither
-     * removes the objects above. */
-    stop_rc = late_obj_call(LATE_OBJ_STOP_NID, uid, 0u, 0u);
-    expect(stop_rc == 0u, "late-objects: stopping the module returns 0");
-    unload_rc = late_obj_call(LATE_OBJ_UNLOAD_NID, uid, 0u, 0u);
-    expect(unload_rc == 0u, "late-objects: unloading the stopped module returns 0");
-
-    /* After the unload every object still resolves, with the same state as before. */
-    expect(late_obj_call(LATE_OBJ_REFER_THREAD, waiter->uid, LATE_OBJ_INFO_THREAD, 0u) == 0u,
-           "late-objects: the worker still resolves after the unload");
-    expect(MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u) == pre_status &&
-               MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u) == pre_waitid,
-           "late-objects: the worker keeps its status and the semaphore it waits on");
-    expect(waiter->state == TH_WAIT_OBJ,
+    /* The production handlers run inside the scheduler so the stop entry owns a
+     * real guest thread while the measured waiter remains blocked. */
+    sched_run(LATE_OBJ_RUNNER_ENTRY, 0u, 0u);
+    expect(s_late_obj_stop_rc == 0u && s_late_obj_unload_rc == 0u,
+           "late-objects: StopModule and UnloadModule both succeed");
+    expect(s_late_obj_waiter_uid != 0u, "late-objects: the worker thread was created");
+    waiter = tcb_by_uid(s_late_obj_waiter_uid);
+    expect(waiter != NULL && waiter->state == TH_WAIT_OBJ,
            "late-objects: the worker stays blocked after the unload");
-    expect(s_late_obj_returned == 0, "late-objects: the unload does not wake the worker");
-    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
-    expect(late_obj_call(LATE_OBJ_REFER_SEMA, sema, LATE_OBJ_INFO_SEMA, 0u) == 0u,
-           "late-objects: the semaphore still resolves after the unload");
-    expect(MEM_R32(LATE_OBJ_INFO_SEMA + 52u) == pre_numwait,
-           "late-objects: the semaphore still counts its waiter after the unload");
-    expect(late_obj_call(LATE_OBJ_REFER_EVFLAG, flag, LATE_OBJ_INFO_FLAG, 0u) == 0u,
-           "late-objects: the event flag still resolves after the unload");
-    expect(sr_callback_is_valid(cb), "late-objects: the callback still resolves after the unload");
+    expect(s_late_obj_returned == 0, "late-objects: unload does not wake the worker");
 
-    /* Cleanup: terminate the worker (no code runs), then delete the objects. */
-    expect(srt_call(NID_SCE_KERNEL_TERMINATE_DELETE_THREAD, waiter->uid) == 0u,
+    /* The callback was visible after unload while its owner was alive; deleting
+     * that owner removes it, matching the measured #1106 post-exit observation. */
+    expect(!sr_callback_is_valid(s_late_obj_callback),
+           "late-objects: callback unregisters with its owner thread's exit");
+    expect(late_obj_call(LATE_OBJ_REFER_THREAD, s_late_obj_waiter_uid,
+                         LATE_OBJ_INFO_THREAD, 0u) == 0u,
+           "late-objects: orphaned worker remains queryable after its owner exits");
+    expect(MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u) == s_late_obj_pre_status &&
+               MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u) == s_late_obj_pre_waitid,
+           "late-objects: the worker keeps its state and semaphore wait");
+    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
+    expect(late_obj_call(LATE_OBJ_REFER_SEMA, s_late_obj_sema,
+                         LATE_OBJ_INFO_SEMA, 0u) == 0u &&
+               MEM_R32(LATE_OBJ_INFO_SEMA + 52u) == s_late_obj_pre_numwait,
+           "late-objects: semaphore survives and still counts the waiter");
+    expect(late_obj_call(LATE_OBJ_REFER_EVFLAG, s_late_obj_flag,
+                         LATE_OBJ_INFO_FLAG, 0u) == 0u,
+           "late-objects: event flag survives unload");
+
+    /* Cleanup: terminate the orphaned worker, then delete the remaining objects. */
+    expect(srt_call(NID_SCE_KERNEL_TERMINATE_DELETE_THREAD, s_late_obj_waiter_uid) == 0u,
            "late-objects: the orphaned worker can be terminated and deleted");
-    if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
-    wsv_delete(sema);
-    expect(late_obj_call(LATE_OBJ_DELETE_EVFLAG, flag, 0u, 0u) == 0u,
+    wsv_delete(s_late_obj_sema);
+    expect(late_obj_call(LATE_OBJ_DELETE_EVFLAG, s_late_obj_flag, 0u, 0u) == 0u,
            "late-objects: the event flag deletes after the unload");
-    expect(late_obj_call(LATE_OBJ_DELETE_CB, cb, 0u, 0u) == 0u,
-           "late-objects: the callback deletes after the unload");
+    expect(late_obj_call(LATE_OBJ_DELETE_CB, s_late_obj_callback, 0u, 0u) != 0u,
+           "late-objects: callback was already removed with its owner thread");
     s_cur = -1;
     remove(path);
     _putenv("SR_REAL_MODULE_START=0");
@@ -27726,8 +28361,12 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
 
 /* ---- scePowerUnregisterCallback: release a slot scePowerRegisterCallback filled ----
  *
- * The slot range checks mirror scePowerRegisterCallback. An empty slot is refused with
- * SCE_KERNEL_ERROR_NOTIMP, because its PSP error code has not been measured. */
+ * Measured on PSP-3000, firmware 6.6.1, 2026-10-22 (merged PR #1153):
+ *   - an empty slot (0..15, nothing registered) returns 0x80000025;
+ *   - an owned slot returns 0;
+ *   - slot 16 returns 0x80000023;
+ *   - slots 32, -1, -2 and 1000 return 0x80000102.
+ * The slot range checks mirror scePowerRegisterCallback. */
 #define NID_POWER_REGISTER_CALLBACK   0x04b7766eu
 #define NID_POWER_UNREGISTER_CALLBACK 0xdfa8baf8u
 
@@ -27753,8 +28392,8 @@ static void test_power_unregister_callback_slots(void) {
     expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0u,
            "power unregister: a registered slot releases with 0");
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u;
-    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80020002u,
-           "power unregister: an empty slot is refused with SCE_KERNEL_ERROR_NOTIMP");
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000025u,
+           "power unregister: an empty slot is refused with 0x80000025 (PSP-measured)");
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u; cpu.r[5] = cb;
     expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0u,
            "power unregister: a released slot registers the callback again");
@@ -27767,6 +28406,12 @@ static void test_power_unregister_callback_slots(void) {
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 20u;
     expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000023u,
            "power unregister: a slot in 16..31 mirrors the register range check");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 16u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000023u,
+           "power unregister: slot 16 returns 0x80000023 (PSP-measured)");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = (uint32_t)-1;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000102u,
+           "power unregister: slot -1 returns 0x80000102 (PSP-measured)");
 }
 
 static void test_psmf_rejected_stream_names_the_boundary(void) {
@@ -30497,6 +31142,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_stall_alias_linear_from_uncached_list();
     test_ge_linear_filter_stays_inside_region();
     test_ge_block_transfer_span_atomicity();
+    test_dcache_maintenance_notifies_renderer();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_sysclib_memory_imports();
@@ -30522,6 +31168,11 @@ static int hle_selftest_main(int argc, char **argv) {
     test_unregistered_batch_sysclock_wide();
     test_kernel_usec_sysclock_conversions();
     test_umd_unregister_callback();
+    test_umd_replace_permission_and_disc_info();
+    test_psp_measured_power_battery_20261024();
+    test_psp_measured_cpu_clock_user_mode_20261024();
+    test_psp_measured_rtc_time64_20261024();
+    test_psp_measured_umd_state_20261024();
     test_unregistered_batch_ctrl_sampling_getter();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
@@ -30609,6 +31260,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_import_sweep_memory_blocks_and_sdk_alias();
     test_td28_partition_free_reuse();
     test_alloc_block_at_fixed_address();
+    test_partition_ends_at_lowest_live_stack();
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();

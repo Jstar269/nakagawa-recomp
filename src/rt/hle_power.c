@@ -4,6 +4,7 @@
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
 // See NOTICE.md for upstream lineage and modification provenance.
 // Derived from PPSSPP (https://github.com/hrydgard/ppsspp), GPL-2.0-or-later
+// Copyright (c) 2012- PPSSPP Project and contributors
 
 #include "hle_power.h"
 
@@ -11,20 +12,39 @@
 #define A1 (s->r[5])
 #define A2 (s->r[6])
 
-/* scePower */
-uint32_t h_PowerGetBatteryLifePercent(CpuState *s) { (void)s; return 100; }
-uint32_t h_PowerIsBatteryCharging(CpuState *s) { (void)s; return 1; }
-uint32_t h_PowerIsBatteryExist(CpuState *s) { (void)s; return 1; }
-uint32_t h_PowerIsPowerOnline(CpuState *s) { (void)s; return 1; }
+#define SCE_ERROR_INVALID_VALUE 0x800001feu
 
-/* scePowerIsLowBattery(void): check whether the battery is low (PSPSDK psppower.h). That header gives
- * no return value, so the encoding is UNMEASURED; this model reports 0 (not low) while the modeled
- * battery is full, which h_PowerGetBatteryLifePercent reports as 100. The flag is a model. */
+/* scePower battery and power-source getters. Measured on a PSP-3000, firmware 6.61, 2026-10-24
+ * (three samples one second apart, identical each time), in two power states:
+ *   - on AC with the battery full: online 1, battery exists 1, charging 0, charging status 0,
+ *     96 %, low 0, battery life time 0;
+ *   - on battery: online 0, battery exists 1, charging 0, charging status 0, 93 %, low 0, battery
+ *     life time 376 (minutes).
+ * The runtime models the first state (external power, the usual way a player runs it); the
+ * battery state is reachable from the test harness only. The two percentages are the two
+ * measured samples, not a discharge model. The battery is not charging in either measured
+ * state, and both charging getters report that state; what they report while the battery
+ * charges is UNMEASURED, so no charging value is modelled. */
+static int s_power_external = 1;
+static const uint32_t s_power_charging = 0u;
+uint32_t h_PowerGetBatteryLifePercent(CpuState *s) { (void)s; return s_power_external ? 96u : 93u; }
+uint32_t h_PowerIsBatteryCharging(CpuState *s) { (void)s; return s_power_charging; }
+uint32_t h_PowerGetBatteryChargingStatus(CpuState *s) { (void)s; return s_power_charging; }
+uint32_t h_PowerIsBatteryExist(CpuState *s) { (void)s; return 1; }
+uint32_t h_PowerIsPowerOnline(CpuState *s) { (void)s; return s_power_external ? 1u : 0u; }
+/* scePowerGetBatteryLifeTime(void): remaining battery time in minutes, 0 while external power is
+ * online (measured above). */
+uint32_t h_PowerGetBatteryLifeTime(CpuState *s) { (void)s; return s_power_external ? 0u : 376u; }
+
+/* scePowerIsLowBattery(void): check whether the battery is low (PSPSDK psppower.h). Measured 0 in
+ * both power states above; 1 for a low battery is UNMEASURED and stays a model the test harness
+ * can select. */
 static int s_power_battery_low = 0;
 uint32_t h_PowerIsLowBattery(CpuState *s) { (void)s; return s_power_battery_low ? 1u : 0u; }
 
 #ifdef SR_HLE_THREAD_SELFTEST
 void sr_hle_test_power_set_low_battery(int low) { s_power_battery_low = low != 0; }
+void sr_hle_test_power_set_external(int external) { s_power_external = external != 0; }
 #endif
 
 /* Retained clock request in MHz. Public behaviour reference: PSPSDK
@@ -64,6 +84,18 @@ uint32_t h_PowerSetClockFrequency(CpuState *s) {
     s_pll_freq = A0;
     s_cpu_freq = A1;
     s_bus_freq = A2;
+    return 0;
+}
+
+/* scePowerSetCpuClockFrequency(cpufreq): set the CPU clock alone. Measured in user mode on a
+ * PSP-3000, firmware 6.61, 2026-10-24, from the power-on clocks (PLL 222, CPU 222, bus 111): 1 and
+ * 222 return 0; 0, 333, 334 and 223 (PLL + 1) return 0x800001FE. The accepted range is therefore
+ * 1..PLL, and this handler checks against the retained PLL. A request at a PLL other than 222 is
+ * UNMEASURED, and so is the clock the getters report after an accepted request: the request is
+ * retained verbatim, as h_PowerSetClockFrequency retains its arguments. */
+uint32_t h_PowerSetCpuClockFrequency(CpuState *s) {
+    if (A0 < 1u || A0 > s_pll_freq) return SCE_ERROR_INVALID_VALUE;
+    s_cpu_freq = A0;
     return 0;
 }
 
@@ -115,14 +147,18 @@ uint32_t h_PowerRegisterCallback(CpuState *s) {
     return (uint32_t)result;
 }
 
-/* scePowerUnregisterCallback(slot): release the slot scePowerRegisterCallback filled. The slot
- * range checks mirror the register side. An empty or unknown slot is refused with
- * SCE_KERNEL_ERROR_NOTIMP rather than given a PSP error code that has not been measured. */
+/* scePowerUnregisterCallback(slot): release the slot scePowerRegisterCallback filled.
+ * Measured on PSP-3000, firmware 6.6.1, 2026-10-22 (merged PR #1153):
+ *   - an empty slot (0..15, nothing registered) returns 0x80000025;
+ *   - an owned slot returns 0;
+ *   - slot 16 returns 0x80000023;
+ *   - slots 32, -1, -2 and 1000 return 0x80000102.
+ * The slot range checks mirror the register side. */
 uint32_t h_PowerUnregisterCallback(CpuState *s) {
     int32_t slot = (int32_t)A0;
     if (slot < 0 || slot >= 32) return 0x80000102u;
     if (slot >= 16) return 0x80000023u;
-    if (s_power_cb_slots[slot] == 0) return 0x80020002u;
+    if (s_power_cb_slots[slot] == 0) return 0x80000025u;
     s_power_cb_slots[slot] = 0;
     return 0;
 }
@@ -186,6 +222,7 @@ void sr_hle_power_register_clock(void) {
     sr_hle_register(0x9badb3eb, "scePowerGetBusClockFrequencyFloat", h_PowerGetBusClockFrequencyFloat);
     sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
     sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
+    sr_hle_register(0x843fbf43, "scePowerSetCpuClockFrequency", h_PowerSetCpuClockFrequency);
     /* Battery state query, in the shared helper so the executable harness registers it too. */
     sr_hle_register(0xd3075926, "scePowerIsLowBattery", h_PowerIsLowBattery);
 }
@@ -204,13 +241,22 @@ void sr_hle_power_register_callback(void) {
     sr_hle_register(0xdfa8baf8, "scePowerUnregisterCallback", h_PowerUnregisterCallback);
 }
 
-/* Battery getters. Issue #86: the previous numeric NIDs were bogus (absent from the PPSSPP-derived
- * nid_names.h); these canonical NIDs replace them so real title imports route here instead of being
- * unregistered. The Int alias 0xbd681969 is not a battery getter; sr_hle_power_register_clock
- * registers it. */
+/* Battery getters, registered by both sr_hle_init() branches. Issue #86: the previous numeric NIDs
+ * were bogus (absent from the PPSSPP-derived nid_names.h); these canonical NIDs replace them so real
+ * title imports route here instead of being unregistered. The Int alias 0xbd681969 is not a battery
+ * getter; sr_hle_power_register_clock registers it. */
 void sr_hle_power_register_battery(void) {
     sr_hle_register(0x2085d15d, "scePowerGetBatteryLifePercent", h_PowerGetBatteryLifePercent);
     sr_hle_register(0x1e490401, "scePowerIsBatteryCharging", h_PowerIsBatteryCharging);
     sr_hle_register(0x0afd0d8b, "scePowerIsBatteryExist", h_PowerIsBatteryExist);
     sr_hle_register(0x87440f5e, "scePowerIsPowerOnline", h_PowerIsPowerOnline);
+    sr_hle_register(0xb4432bc8, "scePowerGetBatteryChargingStatus", h_PowerGetBatteryChargingStatus);
+    sr_hle_register(0x8efb3fa2, "scePowerGetBatteryLifeTime", h_PowerGetBatteryLifeTime);
+}
+
+void sr_hle_power_loadexec_reset(void) {
+    for (unsigned i = 0; i < sizeof(s_power_cb_slots) / sizeof(s_power_cb_slots[0]); i++)
+        s_power_cb_slots[i] = 0u;
+    s_power_lock_count = 0u;
+    s_power_tick_count = 0u;
 }

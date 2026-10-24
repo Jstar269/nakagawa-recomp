@@ -4,6 +4,7 @@
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
 // See NOTICE.md for upstream lineage and modification provenance.
 // Derived from PPSSPP (https://github.com/hrydgard/ppsspp), GPL-2.0-or-later
+// Copyright (c) 2012- PPSSPP Project and contributors
 //
 /*
  * The codegen emits one C function per guest function with signature void f_<hexaddr>(CpuState*).
@@ -626,8 +627,10 @@ static inline void sr_w32(uint32_t a, uint32_t v) { sr_w32_pc(a, v, 0); }
 #define MEM_W32_PC(a,v,pc) sr_w32_pc((a), (uint32_t)(v), (pc))
 
 void  sr_mem_init(void);
+void  sr_mem_reset(void);              /* LoadExec: zero guest RAM and retire executable spans */
 void  sr_load_segment(uint32_t vaddr, const void *data, uint32_t len);
 uint32_t sr_loaded_end(void);   /* highest guest address the loader wrote (module end incl. BSS) */
+void  sr_loaded_end_set(uint32_t end); /* host loader seed for a new package program */
 
 /* Backing store for the game's newlib allocation API (see tools/codegen.py custom
  * stubs). The retail memalign/realloc bodies edit dlmalloc metadata directly, so every
@@ -1172,10 +1175,58 @@ uint32_t gui_headless_acceptance_presented_frames(void);
  * gui_headless_acceptance_complete for an acceptance launch; NULL (the default) never stops. */
 extern int (*sr_sched_stop_requested)(void);
 
+/* Player pause is a scheduler-context host stall. C9a owns the audio callbacks;
+ * the presenter, input claim and busy-reason callback are supplied by C9b. */
+typedef enum {
+    SR_PAUSE_FRAME_CONTINUE = 0,
+    SR_PAUSE_FRAME_RESUME = 1
+} SrPauseFrame;
+typedef enum {
+    SR_PAUSE_ACCEPTED = 0,
+    SR_PAUSE_ALREADY,
+    SR_PAUSE_REFUSED_NO_PRESENTER,
+    SR_PAUSE_REFUSED_AUTOMATION,
+    SR_PAUSE_REFUSED_KEYBOARD,
+    SR_PAUSE_REFUSED_STOPPING
+} SrPauseVerdict;
+typedef enum {
+    SR_PAUSE_SRC_USER = 1,
+    SR_PAUSE_SRC_PAD_LOST,
+    SR_PAUSE_SRC_SCRIPT
+} SrPauseSource;
+typedef struct SrPauseHost {
+    void (*audio_enter)(void);
+    void (*audio_leave)(void);
+    /* Test-script seam: nonzero once its pending audio stimulus is queued. */
+    int (*script_ready)(void);
+    /* Returns 0 or a refusal verdict (keyboard/stopping); reserved for C9b. */
+    int (*busy_reason)(void);
+    void (*enter)(void);
+    SrPauseFrame (*frame)(void);
+    void (*leave)(void);
+} SrPauseHost;
+extern const SrPauseHost *sr_sched_pause_host;
+SrPauseVerdict sched_pause_request(SrPauseSource source);
+int      sched_pause_active(void);
+int      sched_pause_pending(void);
+uint64_t sched_pause_total_ns(void);
+uint32_t sr_display_vcount(void);
+
 typedef uint32_t (*HleFn)(CpuState *s);
 void     sr_hle_register(uint32_t nid, const char *name, HleFn fn);
 void     sr_hle_init(void);     /* registers all built-in handlers (idempotent) */
 uint32_t sr_syscall(CpuState *s, uint32_t nid);
+typedef struct SrLoadExecRequest {
+    char guest_path[256];
+    uint32_t arglen;
+    uint8_t *args; /* host-owned copy; released by sr_hle_loadexec_release */
+} SrLoadExecRequest;
+int  sr_hle_loadexec_take(SrLoadExecRequest *out);
+void sr_hle_loadexec_release(SrLoadExecRequest *request);
+void sr_hle_loadexec_reset_guest_state(void);
+int  sr_hle_loadexec_boot_module(const char *guest_path, uint32_t *entry_out,
+                                 uint32_t *gp_out);
+void sr_hle_loadexec_finish(void);
 extern uint32_t sr_last_nid;
 
 /* Late-import resolution contract (src/rt/hle.c, Track B). Runtime-loaded PRX exports are
@@ -1283,10 +1334,18 @@ int sr_host_data_prepare(void);
 size_t sr_host_data_entry_count(void);      /* valid after READY */
 
 void     sched_init(CpuState *cpu);                 /* CpuState the running thread reads/writes */
+int      sched_reset_for_loadexec(void);            /* retire the old guest threads after scheduler return */
+void     sched_set_guest_process_gp(uint32_t gp);    /* seed the replacement program's initial $gp */
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size);
 uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
                                 uint32_t attr, const char *name);
 uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp);
+int      sched_thread_set_gp(uint32_t uid, uint32_t gp);
+int      sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid);
+typedef void (*SrSchedThreadExitHook)(uint32_t uid);
+void     sched_set_thread_exit_hook(SrSchedThreadExitHook hook);
+int      sched_guest_thread_running(void);
+void     sched_request_guest_reset(void);
 void     sched_exit_current(int32_t status);        /* non-delete exit; normalize signed-negative status */
 void     sched_exit_current_unchecked(int32_t status); /* raw status for non-ThreadMan teardown */
 void     sched_exit_current_delete(int32_t status); /* current thread exits and deletes its object */

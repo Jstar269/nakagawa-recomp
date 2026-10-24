@@ -49,16 +49,6 @@ CORE_SOURCES = [
     "src/core/nk_json.c",
     "src/core/nk_font.c",
     "src/core/nk_input_profile.c",
-    "src/core/nk_psp_crypto.c",
-    "src/core/nk_psp_keystore.c",
-    "src/core/nk_psp_aes.c",
-    "src/core/nk_psp_sha1.c",
-    "src/core/nk_psp_ec.c",
-    "src/core/nk_psp_kirk.c",
-    "src/core/nk_psp_prx.c",
-    "src/core/nk_psp_kle.c",
-    "src/core/nk_psp_inflate.c",
-    "src/core/nk_psp_container.c",
     "src/core/generated/nk_title_catalog.c",
 ]
 
@@ -67,12 +57,12 @@ def _compile_object(
     owner: type[unittest.TestCase],
     source: str,
     object_name: str,
-    extra_includes: tuple[str, ...] = (),
+    extra_flags: tuple[str, ...] = (),
 ) -> Path:
     out = owner._object_dir / object_name
     compile_cmd = [
         "gcc", "-std=c99", "-Wall", "-Wextra", "-Werror",
-        "-Isrc/core", "-Isrc/core/generated", "-Isrc/rt", *extra_includes,
+        "-Isrc/core", "-Isrc/core/generated", "-Isrc/rt", *extra_flags,
         "-c", source, "-o", str(out),
     ]
     build = subprocess.run(compile_cmd, cwd=ROOT, capture_output=True, text=True)
@@ -140,7 +130,6 @@ def _build_and_run(
         "XDG_DATA_HOME": str(home / ".local" / "share"),
         "XDG_STATE_HOME": str(home / ".local" / "state"),
     })
-    env.pop("NAKAGAWA_PSP_KEY_FILE", None)
     run = subprocess.run([str(out)], cwd=ROOT, env=env, capture_output=True, text=True,
                          timeout=300)
     test_case.assertEqual(
@@ -195,7 +184,10 @@ class NativeHostBackendTests(unittest.TestCase):
             cls, "src/player/iso_reader.c", "iso_reader.o", ("-Isrc/player",)
         )
         cls._objects["src/player/package_builder.c"] = _compile_object(
-            cls, "src/player/package_builder.c", "package_builder.o", ("-Isrc/player",)
+            cls,
+            "src/player/package_builder.c",
+            "package_builder.o",
+            ("-Isrc/player", "-DNK_PLAYER_UI_REGRESSION_TEST"),
         )
         cls._objects["src/player/setup_staging.c"] = _compile_object(
             cls, "src/player/setup_staging.c", "setup_staging.o", ("-Isrc/player",)

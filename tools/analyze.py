@@ -284,7 +284,15 @@ class Elf:
             s["typ"] in (SHT_RELA, SHT_REL, SHT_PSP_RELA, SHT_PSP_REL)
             for s in self.sections
         )
-        if base is not None and (
+        # A fixed-address ET_EXEC whose base names its lowest PT_LOAD address is
+        # already at its guest addresses, the rule prxload's flat image applies
+        # (_image_address_bias). Retail executables keep empty .rel.* sections,
+        # which made the analyzer rebase such an image a second time and read
+        # its module info from an unmapped address.
+        fixed_exec_at_base = e_type == 2 and base is not None and base != 0 and any(
+            s["type"] == 1 for s in self.segments
+        ) and min(s["vaddr"] for s in self.segments if s["type"] == 1) == base
+        if base is not None and not fixed_exec_at_base and (
             e_type == ET_SCE_PRX or (base != 0 and (e_type == ET_REL or has_reloc_sections))
         ):
             from prxload import Prx

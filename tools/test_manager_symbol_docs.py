@@ -47,8 +47,25 @@ class ManagerSymbolDocumentationTests(unittest.TestCase):
             self.assertIn(manager_spelling, manager)
             self.assertIn(candidate, docs)
 
-        self.assertIn("optional reverse-engineering aid", docs)
-        self.assertIn("untracked", docs)
+        blocks = [
+            " ".join(line.strip() for line in block.splitlines() if line.strip())
+            for block in re.split(r"\n\s*\n", docs)
+            if block.strip()
+        ]
+        self.assertTrue(
+            any(
+                all(term in block.lower() for term in ("optional", "reverse-engineering", "functions.csv"))
+                for block in blocks
+            ),
+            "the symbol-reference guidance must describe the local CSV as optional",
+        )
+        self.assertTrue(
+            any(
+                all(term in block.lower() for term in ("functions.csv", "ignored", "untracked"))
+                for block in blocks
+            ),
+            "the symbol-reference guidance must keep local files ignored and untracked",
+        )
 
     def test_supported_symbol_reference_directories_are_ignored(self) -> None:
         ignored = GITIGNORE.read_text(encoding="utf-8")

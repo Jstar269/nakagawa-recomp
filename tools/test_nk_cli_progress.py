@@ -154,7 +154,11 @@ class NkCliProgressTests(unittest.TestCase):
         self.assertIn('env.pop("SR_DATAROOT", None)', child_env)
         self.assertIn('env.pop("SR_LOOSE_CONTENT_ROOTS", None)', child_env)
         self.assertIn('title_manifest.encode_loose_content_roots(manifest, data_root)', source)
-        self.assertIn('"SR_DATAROOT": str(data_root)', source)
+        # A manifest without a data root (the generic profile) binds none; a declared
+        # data root (a catalogued profile) is still bound.
+        self.assertIn("if not declared_data_root:\n            data_root = None", source)
+        self.assertIn('if data_root is not None:\n            env["SR_DATAROOT"] = str(data_root)',
+                      source)
         self.assertIn('"SR_LOOSE_CONTENT_ROOTS": loose_roots', source)
 
     def test_progress_json_invalid_disc_id(self) -> None:
@@ -283,7 +287,10 @@ class NkCliProgressTests(unittest.TestCase):
             events = [json.loads(line) for line in lines]
             fail_event = events[-1]
             self.assertEqual(fail_event["status"], "FAIL")
-            self.assertIn("in the works", fail_event["message"])
+            # Built-in decryption was removed: an encrypted executable fails closed with a named,
+            # plain instruction to supply a decrypted copy, never a decryption attempt.
+            self.assertIn("ENCRYPTED_EXECUTABLE", fail_event["message"])
+            self.assertIn("does not decrypt games", fail_event["message"])
             self.assertNotRegex(fail_event["message"], r"#[0-9]+")
 
 

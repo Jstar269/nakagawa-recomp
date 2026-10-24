@@ -1523,7 +1523,11 @@ def build_lg(plan: Plan, *, end_scratch_offset: int | None = None) -> Asm:
 #                                store into BSS at an offset whose low half has the
 #                                sign bit set, call through an R32 function pointer,
 #                                call its import stub, report into argp[0..1]
-#   module_stop()                read both BSS words back (state persisted)
+#   module_stop(argsize, argp)   read both BSS words back (state persisted) and report
+#                                them through the pointer stored in argp[0]: the module
+#                                manager runs module_stop in its own thread, and a thread
+#                                start copies the argument block onto that thread's stack,
+#                                so a store into argp itself would never reach the caller
 #   query(a0)                    the named export: a0 + the BSS word
 
 OVERLAY_TEXT_FILE_OFFSET = 0x100
@@ -1642,7 +1646,10 @@ def build_overlay_asm(spec: OverlaySpec) -> Asm:
     a.rr(2, 15, 2, 0, 0x26)                # xor v0, v0, t7
     a.beq(5, 0, "stop_return")             # no argument block: nothing to report
     a.nop()
-    a.i(0x2B, 5, 2, 0)                     # sw v0, 0(a1)
+    a.i(0x23, 5, 8, 0)                     # lw t0, 0(a1): the caller's report word
+    a.beq(8, 0, "stop_return")
+    a.nop()
+    a.i(0x2B, 8, 2, 0)                     # sw v0, 0(t0)
     a.label("stop_return")
     a.rr(31, 0, 0, 0, 0x08)                # jr ra
     a.rr(0, 0, 2, 0, 0x21)                 # (delay) v0 = 0: stopped
@@ -1808,7 +1815,8 @@ OVERLAY_ARG_B_OFF = 0x508
 OVERLAY_ARG_C_OFF = 0x510
 OVERLAY_ARG_A2_OFF = 0x518
 OVERLAY_STATUS_OFF = 0x540
-OVERLAY_STOP_ARG_OFF = 0x560
+OVERLAY_STOP_ARG_OFF = 0x560         # the word module_stop reports into
+OVERLAY_STOP_PTR_OFF = 0x580         # the argument block: one word holding that address
 OVERLAY_RESULTS_OFF = 0x600
 OVERLAY_RESULT_COUNT = 16
 OVERLAY_STATUS_SENTINEL = 0xFFFFFFFF
@@ -1915,9 +1923,13 @@ def build_overlay_main(plan: Plan) -> Asm:
         call(query_stub)
         store_result(result_index + 1, 2)
         preset_status()
+        ref(9, OVERLAY_STOP_ARG_OFF)
+        a.i(0x2B, 9, 0, 0)                   # report word = 0
+        ref(10, OVERLAY_STOP_PTR_OFF)
+        a.i(0x2B, 10, 9, 0)                  # argument block = &report word
         a.rr(uid_reg, 0, 4, 0, 0x25)         # a0 = uid
         a.i(0x09, 0, 5, 4)                   # a1 = argsize
-        ref(6, OVERLAY_STOP_ARG_OFF)         # a2 = argp: module_stop reports here
+        ref(6, OVERLAY_STOP_PTR_OFF)         # a2 = argp: module_stop reports through it
         ref(7, OVERLAY_STATUS_OFF)           # a3 = &status
         a.i(0x09, 0, 8, 0)
         call(STUB_STOP)

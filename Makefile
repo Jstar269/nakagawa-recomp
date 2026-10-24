@@ -144,6 +144,7 @@ EXTRA_SPAN_ARG  = $(if $(strip $(EFFECTIVE_EXTRA_SPANS)),--extra-span=$(strip $(
 ifneq ($(filter default undefined,$(origin CC)),)
 CC := gcc
 endif
+# Quote the executable in recipes so explicit Windows paths with spaces work.
 PYTHON     ?= python
 ifeq ($(OS),Windows_NT)
 POWERSHELL ?= powershell.exe
@@ -601,13 +602,13 @@ endif
 TITLE_CONFIG_IDENTITY := $(TITLE_CONFIG_DIGEST)$(if $(TITLE_CONFIG_HST_UNBOUND),-hst-unbound,)
 TITLE_CONFIG_STAMP := $(TITLE_CONFIG_DIR)/.title-config-$(TITLE_CONFIG_IDENTITY)
 $(TITLE_CONFIG_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".title-config-*" --value "$(TITLE_CONFIG_IDENTITY)" --invalidate "$(TITLE_CONFIG_HEADER)"
+	"$(PYTHON)" $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".title-config-*" --value "$(TITLE_CONFIG_IDENTITY)" --invalidate "$(TITLE_CONFIG_HEADER)"
 
 $(TITLE_CONFIG_HEADER): $(TITLE_CONFIG_TOOL) tools/title_manifest.py $(TITLE_CONFIG_STAMP)
 ifeq ($(TITLE_CONFIG_HST_UNBOUND),1)
 	$(error GAME_NAME=hst needs a validated title manifest: pass TITLE_MANIFEST=<path> or use nk_manager.ps1 -TitleManifest. Direct Make does not infer HST defaults; generic builds need no manifest when they use a different GAME_NAME.)
 endif
-	$(PYTHON) $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --output $@
+	"$(PYTHON)" $(TITLE_CONFIG_TOOL) $(TITLE_CONFIG_ARG) --output $@
 
 # Title-neutral configuration for the game-input-free selftests. Those targets assert
 # generic PSP behavior and install their own role fixtures, so binding them to a title
@@ -616,7 +617,7 @@ GENERIC_TITLE_CONFIG_DIR := $(BUILD_DIR)/title-config/generic
 GENERIC_TITLE_CONFIG_HEADER := $(GENERIC_TITLE_CONFIG_DIR)/sr_title_config.h
 
 $(GENERIC_TITLE_CONFIG_HEADER): $(TITLE_CONFIG_TOOL) tools/title_manifest.py
-	$(PYTHON) $(TITLE_CONFIG_TOOL) --output $@
+	"$(PYTHON)" $(TITLE_CONFIG_TOOL) --output $@
 
 RUNTIME_PROFILE_MANIFEST := $(BUILD_DIR)/runtime_profile.json
 RECOMP_PROFILE_MANIFEST := $(BUILD_DIR)/recomp_profile.json
@@ -686,6 +687,10 @@ PLAYER_PLATFORM_SRC := src/core/nk_platform_win32.c
 PLAYER_PLATFORM_LIBS := -lshell32 -lole32 -luuid
 PLAYER_EXTRA_LIBS   := $(PLAYER_PLATFORM_LIBS) -lwinhttp -lbcrypt
 PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
+# The Windows player is a GUI-subsystem program (-mwindows) so a double-click opens no console window;
+# main.c attaches to a parent terminal console or logs to the logs folder. The UI test binary keeps
+# the console subsystem because its harness reads stdout.
+PLAYER_GUI_LDFLAGS  := -mwindows
 # The player link consumes the Vulkan import library, so like CFLAGS/LDFLAGS it
 # must derive from the shared VULKAN_SDK resolution above (explicit override,
 # environment, then tools/vulkan_sdk.py discovery) rather than naming one
@@ -714,7 +719,9 @@ ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File too
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
 PLAYER_PLATFORM_LIBS :=
-PLAYER_EXTRA_LIBS   :=
+PLAYER_GUI_LDFLAGS  :=
+# The nk_ui draw and wave code calls libm (exp, sinf); glibc keeps it out of libc.
+PLAYER_EXTRA_LIBS   := -lm
 PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 PLAYER_VULKAN_INC   := $(VULKAN_INC_FLAGS)
 PLAYER_VULKAN_LIB   :=
@@ -947,6 +954,8 @@ PUBLIC_TARGETS := \
 	gui-present-selftest \
 	clay-layout-selftest \
 	nk-ui-core-selftest \
+	nk-ui-player-screens-selftest \
+	nk-ui-player-screens-capture \
 	nk-ui-sdlr-selftest \
 	nk-ui-focus-selftest \
 	coro-selftest \
@@ -1004,7 +1013,7 @@ PUBLIC_TARGETS := \
 	gpu-selftest-status
 
 PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-korean-font
-INTERNAL_TARGETS := FORCE project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+INTERNAL_TARGETS := FORCE project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1077,6 +1086,8 @@ HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_clay-layout-selftest := build and run the vendored Clay layout selftest
+HELP_DESCRIPTION_nk-ui-player-screens-selftest := build and run nk_ui Library, Title detail and router snapshots
+HELP_DESCRIPTION_nk-ui-player-screens-capture := save offscreen synthetic Library and Title detail captures (set NK_UI_CAPTURE_DIR)
 HELP_DESCRIPTION_nk-ui-core-selftest := build and run the nk_ui core selftest (synthetic layout, focus and scale)
 HELP_DESCRIPTION_nk-ui-sdlr-selftest := build and run the nk_ui SDL_Renderer and SDL3_ttf selftest (software snapshots; SKIPs without SDL3_ttf)
 HELP_DESCRIPTION_nk-ui-focus-selftest := build and run the nk_ui focus graph, input model and prompt glyph selftest (SDL translation leg SKIPs without SDL3)
@@ -1196,15 +1207,15 @@ ifndef NK_TRUSTED_LEDGER
 endif
 	@echo "== readiness: base $(READINESS_BASE)"
 	@test -n "$(NK_GIT_REV_HEAD)" || { echo "readiness: FAIL -- no source revision: $(GIT) is unavailable or this is not a git checkout, and the provenance attestation compares a candidate revision. Readiness needs a git checkout; set GIT to a git executable if it is not on PATH."; exit 1; }
-	$(PYTHON) tools/policy_sync.py
-	$(PYTHON) tools/lint_docs.py
-	$(PYTHON) tools/provenance_record_gap.py --check
-	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
-	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
-	$(PYTHON) tools/provenance_attest_verify.py --repo . --candidate "$(NK_GIT_REV_HEAD)" --base $(READINESS_BASE) --require-immutable-revisions --trusted-ledger "$(NK_TRUSTED_LEDGER)" --workdir "$(READINESS_WORKDIR)"
+	"$(PYTHON)" tools/policy_sync.py
+	"$(PYTHON)" tools/lint_docs.py
+	"$(PYTHON)" tools/provenance_record_gap.py --check
+	"$(PYTHON)" tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
+	"$(PYTHON)" tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+	"$(PYTHON)" tools/provenance_attest_verify.py --repo . --candidate "$(NK_GIT_REV_HEAD)" --base $(READINESS_BASE) --require-immutable-revisions --trusted-ledger "$(NK_TRUSTED_LEDGER)" --workdir "$(READINESS_WORKDIR)"
 	git diff --check $(READINESS_BASE)..HEAD
 	@echo "== readiness: control-file completeness"
-	$(PYTHON) tools/policy_sync.py --regen-export
+	"$(PYTHON)" tools/policy_sync.py --regen-export
 	git diff --quiet -- PUBLIC_EXPORT.json assets/public_provenance_ledger.json assets/public_source_profile.json || { echo "readiness: FAIL -- regenerating the control files changed them, so the commit does not carry the evidence for its own contents. Stage and commit assets/public_provenance_ledger.json, assets/public_source_profile.json and PUBLIC_EXPORT.json."; exit 1; }
 	@echo "== readiness: OK (the suite is separate and still yours to run)"
 
@@ -1224,11 +1235,11 @@ ifndef NK_TRUSTED_LEDGER
 	@echo "  Stage intended candidate changes before running this target."
 	@exit 1
 else
-	$(PYTHON) tools/provenance_refresh.py --trusted-ledger "$(NK_TRUSTED_LEDGER)" $(PROVENANCE_REFRESH_POLICY_ARG)
+	"$(PYTHON)" tools/provenance_refresh.py --trusted-ledger "$(NK_TRUSTED_LEDGER)" $(PROVENANCE_REFRESH_POLICY_ARG)
 endif
 
 provenance-record-gap-check:
-	$(PYTHON) tools/provenance_record_gap.py --check
+	"$(PYTHON)" tools/provenance_record_gap.py --check
 
 # The contributor fast path: one command, only the gates that apply to the
 # files this branch changed against origin/main, finished in minutes.
@@ -1262,10 +1273,10 @@ CONTRIB_BASE ?= origin/main
 # The sub-gates run in the same interpreter as this script by default. Set
 # CONTRIB_PYTHON in the environment when the repository's default python is not
 # the one holding ruff and the project dependencies -- which is the normal case
-# on Windows, where MSYS2's python precedes the CPython the project uses. It is
-# an environment variable rather than a make variable because an interpreter
-# path usually contains a space, and the rest of this Makefile expands
-# $(PYTHON) unquoted.
+# on Windows, where MSYS2's python precedes the CPython the project uses. Keep
+# this as an exported environment variable so the nested gates use the same
+# interpreter as tools/contrib_check.py; Make recipes quote $(PYTHON) so paths
+# with spaces survive the POSIX shell.
 #
 # GNU Make target-specific export exports CONTRIB_PYTHON into the recipe's
 # child process environment across platforms, avoiding POSIX shell syntax
@@ -1273,7 +1284,7 @@ CONTRIB_BASE ?= origin/main
 CONTRIB_PYTHON ?= $(PYTHON)
 contrib-check: export CONTRIB_PYTHON := $(CONTRIB_PYTHON)
 contrib-check:
-	$(PYTHON) tools/contrib_check.py --base "$(CONTRIB_BASE)"
+	"$(PYTHON)" tools/contrib_check.py --base "$(CONTRIB_BASE)"
 
 # Reproduce the two public provenance controls for the paths your change touches,
 # so an ordinary pull request does not wait on a maintainer for the ordinary case.
@@ -1297,7 +1308,7 @@ contrib-check:
 # refuses. A refusal prints its code and exits non-zero.
 CONTRIB_REFRESH_CHECK ?=
 contrib-refresh:
-	$(PYTHON) tools/contrib_refresh.py --base "$(CONTRIB_BASE)" $(CONTRIB_REFRESH_CHECK)
+	"$(PYTHON)" tools/contrib_refresh.py --base "$(CONTRIB_BASE)" $(CONTRIB_REFRESH_CHECK)
 
 public-safe-verify:
 	$(MAKE) PUBLIC_SAFE=1 portable-core-objects
@@ -1310,30 +1321,30 @@ public-safe-verify:
 # This target stays reporting-only so local inspection can show findings without
 # failing solely because it found candidates.
 tree-lint:
-	$(PYTHON) tools/tree_lint.py
+	"$(PYTHON)" tools/tree_lint.py
 
 # -----------------------------------------------------------------------------
 # Public Verification Entry Points (Issue #188 Finding 3 O-05)
 # -----------------------------------------------------------------------------
 test:
-	$(PYTHON) -m unittest discover -s tools -p "test_*.py" -v
+	"$(PYTHON)" -m unittest discover -s tools -p "test_*.py" -v
 
 check:
 	@echo "== [1/7] Documentation freshness lint =="
-	$(PYTHON) tools/lint_docs.py
+	"$(PYTHON)" tools/lint_docs.py
 	@echo "== [2/7] Canonical publication policy coverage =="
-	$(PYTHON) -m unittest tools/test_publication_policy_gate.py
+	"$(PYTHON)" -m unittest tools/test_publication_policy_gate.py
 	@echo "== [3/7] Provenance record and disposition gap check =="
-	$(PYTHON) tools/provenance_record_gap.py --check
+	"$(PYTHON)" tools/provenance_record_gap.py --check
 	@echo "== [4/7] Publication safety audits (index & worktree) =="
-	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
-	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
+	"$(PYTHON)" tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
+	"$(PYTHON)" tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
 	@echo "== [5/7] Native host core tests =="
 	$(MAKE) native-core-tests
 	@echo "== [6/7] Format portability check (32-bit newlib simulation) =="
-	$(PYTHON) tools/format_portability_check.py
+	"$(PYTHON)" tools/format_portability_check.py
 	@echo "== [7/7] Fast critical test subset =="
-	$(PYTHON) -m unittest \
+	"$(PYTHON)" -m unittest \
 		tools/test_title_manifest.py \
 		tools/test_title_catalog.py \
 		tools/test_build_system_parity.py \
@@ -1353,7 +1364,7 @@ all:
 	$(MAKE) compile
 
 production-smoke:
-	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) generate --out-dir $(PRODUCTION_SMOKE_FIXTURE)
+	"$(PYTHON)" $(PRODUCTION_SMOKE_GENERATOR) generate --out-dir $(PRODUCTION_SMOKE_FIXTURE)
 	$(MAKE) all \
 		GAME_NAME=production_smoke \
 		GAME_ELF=$(PRODUCTION_SMOKE_PRX) \
@@ -1364,23 +1375,23 @@ production-smoke:
 		BUILD_DIR=$(PRODUCTION_SMOKE_DIR) \
 		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 \
 		LDFLAGS="$(LDFLAGS) -Wl,-Map,$(PRODUCTION_SMOKE_MAP)"
-	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) verify --build-dir $(PRODUCTION_SMOKE_DIR) --mode aot
-	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) run --build-dir $(PRODUCTION_SMOKE_DIR) --mode aot
+	"$(PYTHON)" $(PRODUCTION_SMOKE_GENERATOR) verify --build-dir $(PRODUCTION_SMOKE_DIR) --mode aot
+	"$(PYTHON)" $(PRODUCTION_SMOKE_GENERATOR) run --build-dir $(PRODUCTION_SMOKE_DIR) --mode aot
 
 # Run the same smoke with the executable staged into a fresh directory outside
 # the build tree (#294): a launcher/staging path bug must fail here, not only in
 # the build-tree spelling.
 production-smoke-staged: production-smoke
-	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) run-staged --build-dir $(PRODUCTION_SMOKE_DIR) --mode aot
+	"$(PYTHON)" $(PRODUCTION_SMOKE_GENERATOR) run-staged --build-dir $(PRODUCTION_SMOKE_DIR) --mode aot
 
 production-smoke-clean:
 	$(MAKE) BUILD_DIR=$(PRODUCTION_SMOKE_DIR) clean
 
 showcase:
-	$(PYTHON) fixtures/showcase/showcase.py build
+	"$(PYTHON)" fixtures/showcase/showcase.py build
 
 showcase-smoke: showcase
-	$(PYTHON) fixtures/showcase/showcase.py smoke
+	"$(PYTHON)" fixtures/showcase/showcase.py smoke
 
 # The same showcase route on a POSIX host, with no WSL hop: PSPDEV builds the
 # guest PRX directly, `make all` (GAME_NAME/GAME_ELF/... exactly as the package
@@ -1393,15 +1404,15 @@ showcase-smoke: showcase
 # the repository for a source tree that is not a Git checkout; a real checkout
 # uses the default ignored build/ tree.
 showcase-linux:
-	$(PYTHON) fixtures/showcase/showcase.py build
-	$(PYTHON) fixtures/showcase/showcase.py smoke
+	"$(PYTHON)" fixtures/showcase/showcase.py build
+	"$(PYTHON)" fixtures/showcase/showcase.py smoke
 
 # display-smoke builds the guest and asserts the presented framebuffer word
 # headlessly. display-smoke-gui is the same image in the SDL3/Vulkan window and
 # is deliberately NOT part of any aggregate gate: it needs a display.
 display-smoke: DISPLAY_SMOKE_BUILD_FRAMES ?= $(DISPLAY_SMOKE_FRAMES)
 display-smoke:
-	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) generate --out-dir $(DISPLAY_SMOKE_FIXTURE) \
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) generate --out-dir $(DISPLAY_SMOKE_FIXTURE) \
 		--frames $(DISPLAY_SMOKE_BUILD_FRAMES)
 	$(MAKE) all \
 		GAME_NAME=$(DISPLAY_SMOKE_NAME) \
@@ -1412,27 +1423,27 @@ display-smoke:
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(DISPLAY_SMOKE_DIR) \
 		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1
-	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) verify --build-dir $(DISPLAY_SMOKE_DIR)
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) verify --build-dir $(DISPLAY_SMOKE_DIR)
 
 # display-smoke-run is the aggregate source-owned gate: it runs the guest-only
 # scheduler route and the --sched --gui route through the explicit no-window
 # presenter, then records and compares GE/present events from the same guest.
 display-smoke-run: display-smoke
-	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR)
-	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui --offscreen
-	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) vramdump --build-dir $(DISPLAY_SMOKE_DIR)
-	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) flight --build-dir $(DISPLAY_SMOKE_DIR)
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR)
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui --offscreen
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) vramdump --build-dir $(DISPLAY_SMOKE_DIR)
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) flight --build-dir $(DISPLAY_SMOKE_DIR)
 
 display-smoke-gui:
 	$(MAKE) display-smoke DISPLAY_SMOKE_BUILD_FRAMES=$(DISPLAY_SMOKE_DEMO_FRAMES)
-	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) run --build-dir $(DISPLAY_SMOKE_DIR) --gui
 
 # Drive the actual native-player PLAY NOW path against the launchable fixture.
 # The child opens a real window, so this is a developer/display gate rather than
 # part of the headless CI aggregate. The fixture generator records the child's
 # machine-readable window/first-frame evidence.
 display-smoke-player: player display-smoke-run
-	$(PYTHON) $(DISPLAY_SMOKE_GENERATOR) run-player --build-dir $(DISPLAY_SMOKE_DIR)
+	"$(PYTHON)" $(DISPLAY_SMOKE_GENERATOR) run-player --build-dir $(DISPLAY_SMOKE_DIR)
 
 display-smoke-clean:
 	$(MAKE) BUILD_DIR=$(DISPLAY_SMOKE_DIR) clean
@@ -1443,10 +1454,10 @@ display-smoke-clean:
 # then launches the fixture through the player in a sandboxed user-data root and writes a
 # bring-up-schema report under build/<title id>/title-qualification/.
 title-qualification:
-	$(PYTHON) tools/title_qualification.py validate
+	"$(PYTHON)" tools/title_qualification.py validate
 
 title-qualification-smoke: display-smoke player
-	$(PYTHON) tools/title_qualification.py smoke --manifest assets/titles/display-smoke.json
+	"$(PYTHON)" tools/title_qualification.py smoke --manifest assets/titles/display-smoke.json
 
 # AOT-gap mode of the same fixture: the helper is omitted from native emission
 # (build-time codegen choice), so region A reaches it through the typed production
@@ -1454,7 +1465,7 @@ title-qualification-smoke: display-smoke player
 # interpreter executes the helper and hands off to registered AOT region B, whose
 # final value is asserted by the production driver.
 production-smoke-gap:
-	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) generate --out-dir $(PRODUCTION_SMOKE_GAP_FIXTURE) --mode aot-gap
+	"$(PYTHON)" $(PRODUCTION_SMOKE_GENERATOR) generate --out-dir $(PRODUCTION_SMOKE_GAP_FIXTURE) --mode aot-gap
 	$(MAKE) all \
 		GAME_NAME=production_smoke_gap \
 		GAME_ELF=$(PRODUCTION_SMOKE_GAP_FIXTURE)/guest.prx \
@@ -1466,14 +1477,14 @@ production-smoke-gap:
 		FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 \
 		CODEGEN_USER_ARGS=$(PRODUCTION_SMOKE_GAP_CODEGEN_ARGS) \
 		LDFLAGS="$(LDFLAGS) -Wl,-Map,$(PRODUCTION_SMOKE_GAP_MAP)"
-	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) verify --build-dir $(PRODUCTION_SMOKE_GAP_DIR) --mode aot-gap
-	$(PYTHON) $(PRODUCTION_SMOKE_GENERATOR) run --build-dir $(PRODUCTION_SMOKE_GAP_DIR) --mode aot-gap
+	"$(PYTHON)" $(PRODUCTION_SMOKE_GENERATOR) verify --build-dir $(PRODUCTION_SMOKE_GAP_DIR) --mode aot-gap
+	"$(PYTHON)" $(PRODUCTION_SMOKE_GENERATOR) run --build-dir $(PRODUCTION_SMOKE_GAP_DIR) --mode aot-gap
 
 production-smoke-gap-clean:
 	$(MAKE) BUILD_DIR=$(PRODUCTION_SMOKE_GAP_DIR) clean
 
 perf-benchmark:
-	$(PYTHON) tools/run_perf_benchmarks.py --make "$(MAKE)" --python "$(PYTHON)" --output "$(BUILD_DIR)/perf-benchmark" --overhead
+	"$(PYTHON)" tools/run_perf_benchmarks.py --make "$(MAKE)" --python "$(PYTHON)" --output "$(BUILD_DIR)/perf-benchmark" --overhead
 
 # ---------------------------------------------------------------------------
 # Source-owned second-platform workload ladder.
@@ -1503,7 +1514,7 @@ PL_OVERLAY_FIXTURE := $(PLATFORM_LADDER_DIR)/ladder-overlay/fixture
 platform-ladder: platform-ladder-zero platform-ladder-reloc platform-ladder-gap platform-ladder-sched platform-ladder-fpu platform-ladder-fs platform-ladder-fs-negative platform-ladder-title2 platform-ladder-title2-negative platform-ladder-overlay
 
 platform-ladder-zero:
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-zero --out-dir $(PLATFORM_LADDER_DIR)/ladder-zero/fixture
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-zero --out-dir $(PLATFORM_LADDER_DIR)/ladder-zero/fixture
 	$(MAKE) all \
 		GAME_NAME=pl_zero \
 		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-zero/fixture/guest.prx \
@@ -1512,11 +1523,11 @@ platform-ladder-zero:
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-zero \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-zero --build-dir $(PLATFORM_LADDER_DIR)/ladder-zero
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-zero --build-dir $(PLATFORM_LADDER_DIR)/ladder-zero
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-zero --build-dir $(PLATFORM_LADDER_DIR)/ladder-zero
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) run --workload ladder-zero --build-dir $(PLATFORM_LADDER_DIR)/ladder-zero
 
 platform-ladder-reloc:
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-reloc --out-dir $(PLATFORM_LADDER_DIR)/ladder-reloc/fixture
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-reloc --out-dir $(PLATFORM_LADDER_DIR)/ladder-reloc/fixture
 	$(MAKE) all \
 		GAME_NAME=pl_reloc \
 		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-reloc/fixture/guest.prx \
@@ -1526,14 +1537,14 @@ platform-ladder-reloc:
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-reloc \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-reloc --build-dir $(PLATFORM_LADDER_DIR)/ladder-reloc
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-reloc --build-dir $(PLATFORM_LADDER_DIR)/ladder-reloc
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-reloc --build-dir $(PLATFORM_LADDER_DIR)/ladder-reloc
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) run --workload ladder-reloc --build-dir $(PLATFORM_LADDER_DIR)/ladder-reloc
 
 # AOT-gap mode of ladder-reloc's tier chain: the interior callee is omitted
 # from native emission so the call reaches the ordinary production dispatch()
 # interpreter seam. Expected result is byte-identical to the intended guest.
 platform-ladder-gap:
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-gap --out-dir $(PLATFORM_LADDER_DIR)/ladder-gap/fixture
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-gap --out-dir $(PLATFORM_LADDER_DIR)/ladder-gap/fixture
 	$(MAKE) all \
 		GAME_NAME=pl_gap_chain \
 		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-gap/fixture/guest.prx \
@@ -1544,11 +1555,11 @@ platform-ladder-gap:
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-gap \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1 \
 		CODEGEN_USER_ARGS=--omit-aot=0x08A00060
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-gap --build-dir $(PLATFORM_LADDER_DIR)/ladder-gap
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-gap --build-dir $(PLATFORM_LADDER_DIR)/ladder-gap
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-gap --build-dir $(PLATFORM_LADDER_DIR)/ladder-gap
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) run --workload ladder-gap --build-dir $(PLATFORM_LADDER_DIR)/ladder-gap
 
 platform-ladder-sched:
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-sched --out-dir $(PLATFORM_LADDER_DIR)/ladder-sched/fixture
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-sched --out-dir $(PLATFORM_LADDER_DIR)/ladder-sched/fixture
 	$(MAKE) all \
 		GAME_NAME=pl_sched \
 		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-sched/fixture/guest.prx \
@@ -1558,11 +1569,11 @@ platform-ladder-sched:
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-sched \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-sched --build-dir $(PLATFORM_LADDER_DIR)/ladder-sched
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-sched --build-dir $(PLATFORM_LADDER_DIR)/ladder-sched
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-sched --build-dir $(PLATFORM_LADDER_DIR)/ladder-sched
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) run --workload ladder-sched --build-dir $(PLATFORM_LADDER_DIR)/ladder-sched
 
 platform-ladder-fpu:
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-fpu --out-dir $(PLATFORM_LADDER_DIR)/ladder-fpu/fixture
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-fpu --out-dir $(PLATFORM_LADDER_DIR)/ladder-fpu/fixture
 	$(MAKE) all \
 		GAME_NAME=pl_fpu \
 		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-fpu/fixture/guest.prx \
@@ -1572,11 +1583,11 @@ platform-ladder-fpu:
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-fpu \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-fpu --build-dir $(PLATFORM_LADDER_DIR)/ladder-fpu
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fpu --build-dir $(PLATFORM_LADDER_DIR)/ladder-fpu
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-fpu --build-dir $(PLATFORM_LADDER_DIR)/ladder-fpu
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fpu --build-dir $(PLATFORM_LADDER_DIR)/ladder-fpu
 
 platform-ladder-fs:
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-fs --out-dir $(PLATFORM_LADDER_DIR)/ladder-fs/fixture
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-fs --out-dir $(PLATFORM_LADDER_DIR)/ladder-fs/fixture
 	$(MAKE) all \
 		GAME_NAME=pl_fs \
 		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-fs/fixture/guest.prx \
@@ -1586,16 +1597,16 @@ platform-ladder-fs:
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-fs \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs
 
 # Negative control: same executable and guest, but the payload file is absent.
 # sceIoOpen must fail visibly and the guest must store the failure sentinel.
 platform-ladder-fs-negative: platform-ladder-fs
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs --negative
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) run --workload ladder-fs --build-dir $(PLATFORM_LADDER_DIR)/ladder-fs --negative
 
 platform-ladder-title2:
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-title2 --out-dir $(PLATFORM_LADDER_DIR)/ladder-title2/fixture
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-title2 --out-dir $(PLATFORM_LADDER_DIR)/ladder-title2/fixture
 	$(MAKE) all \
 		GAME_NAME=pl_title2 \
 		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-title2/fixture/guest.prx \
@@ -1606,13 +1617,13 @@ platform-ladder-title2:
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-title2 \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1 \
 		CODEGEN_USER_ARGS=--omit-aot=0x08A40220
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-title2 --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-title2 --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-title2 --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) run --workload ladder-title2 --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2
 
 # Negative control: a real mapped import stub dispatches an absent NID through
 # sr_syscall() and the production unknown-HLE scheduler boundary must exit 7.
 platform-ladder-title2-negative:
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-title2-negative --out-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative/fixture
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-title2-negative --out-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative/fixture
 	$(MAKE) all \
 		GAME_NAME=pl_title2_negative \
 		GAME_ELF=$(PLATFORM_LADDER_DIR)/ladder-title2-negative/fixture/guest.prx \
@@ -1622,15 +1633,15 @@ platform-ladder-title2-negative:
 		GAME_EXTRA_ELFS= TITLE_MANIFEST= \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-title2-negative \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-title2-negative --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-title2-negative --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative --negative
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-title2-negative --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) run --workload ladder-title2-negative --build-dir $(PLATFORM_LADDER_DIR)/ladder-title2-negative --negative
 
 # Guest-placed modules (#704): three source-owned overlays are translated without a
 # load address (@runtime) and declared runtime-placed by the fixture's title manifest.
 # Together they exceed the user partition; the guest loads, starts, stops and unloads
 # them in sequence, and each lands wherever the partition allocator puts it.
 platform-ladder-overlay:
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-overlay --out-dir $(PL_OVERLAY_FIXTURE)
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) generate --workload ladder-overlay --out-dir $(PL_OVERLAY_FIXTURE)
 	$(MAKE) all \
 		GAME_NAME=pl_overlay \
 		GAME_ELF=$(PL_OVERLAY_FIXTURE)/guest.prx \
@@ -1641,14 +1652,14 @@ platform-ladder-overlay:
 		TITLE_MANIFEST=$(PL_OVERLAY_FIXTURE)/title.json \
 		BUILD_DIR=$(PLATFORM_LADDER_DIR)/ladder-overlay \
 		FUNCS_PER_CHUNK=2 PUBLIC_SAFE=1
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-overlay --build-dir $(PLATFORM_LADDER_DIR)/ladder-overlay
-	$(PYTHON) $(PLATFORM_LADDER_GENERATOR) run --workload ladder-overlay --build-dir $(PLATFORM_LADDER_DIR)/ladder-overlay
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) verify --workload ladder-overlay --build-dir $(PLATFORM_LADDER_DIR)/ladder-overlay
+	"$(PYTHON)" $(PLATFORM_LADDER_GENERATOR) run --workload ladder-overlay --build-dir $(PLATFORM_LADDER_DIR)/ladder-overlay
 
 platform-ladder-clean:
 	$(MAKE) BUILD_DIR=$(PLATFORM_LADDER_DIR) clean
 
 profile-zero-e2e:
-	$(PYTHON) -m unittest tools.test_profile_zero_e2e -v
+	"$(PYTHON)" -m unittest tools.test_profile_zero_e2e -v
 
 # The generator the codegen rule runs. Overridable so the cosim mutation
 # campaign can mutate the GENERATOR as well as the interpreter -- a
@@ -1727,31 +1738,31 @@ endif
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entries-env NK_CODEGEN_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entries-env NK_CODEGEN_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
 
 # Re-checked on every invocation that needs a guest input (hence FORCE), but rewritten
 # only when an input's identity actually changed, so dependents do not rebuild spuriously.
 # GAME_PSP_HEADER and GAME_EXTRA_ELFS_ENV are optional; GAME_ELF is not.
 $(GAME_INPUT_STAMP): $(BUILD_PROFILE_TOOL) FORCE
-	$(PYTHON) $(BUILD_PROFILE_TOOL) stamp-inputs --env GAME_ELF --optional-env GAME_PSP_HEADER --optional-env GAME_EXTRA_ELFS_ENV --list-env GAME_EXTRA_ELFS_ENV --out $@
+	"$(PYTHON)" $(BUILD_PROFILE_TOOL) stamp-inputs --env GAME_ELF --optional-env GAME_PSP_HEADER --optional-env GAME_EXTRA_ELFS_ENV --list-env GAME_EXTRA_ELFS_ENV --out $@
 
 FORCE:
 
 pipeline: $(BUILD_DIR)/$(GAME_NAME)_image.bin $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_imports.toml
 
 $(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_INPUT_PREREQ) tools/prxload.py
-	$(PYTHON) tools/prxload.py --env-elf $(GAME_BASE) $(PSP_HEADER_ENV_ARG) --out=$@
+	"$(PYTHON)" tools/prxload.py --env-elf $(GAME_BASE) $(PSP_HEADER_ENV_ARG) --out=$@
 
 ifeq ($(NK_AOT_PREGENERATED),1)
 $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h:
 	$(if $(wildcard $@),,$(error NK_AOT_PREGENERATED requires $@))
 else
 $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_INPUT_PREREQ) $(CODEGEN_TOOL) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP)
-	$(PYTHON) $(CODEGEN_TOOL) --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG) $(CODEGEN_USER_ARGS)
+	"$(PYTHON)" $(CODEGEN_TOOL) --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG) $(CODEGEN_USER_ARGS)
 endif
 
 $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py tools/analyze.py tools/prxload.py
-	$(PYTHON) tools/imports.py --env-elf $(GAME_BASE) --toml=$@
+	"$(PYTHON)" tools/imports.py --env-elf $(GAME_BASE) --toml=$@
 
 ifndef NK_BUILD_DIR_READY
 RUNTIME_PROFILE_HASH := $(call profile_hash,NK_RUNTIME_PROFILE_ENTRIES,$(CC),$(BUILD_DIR)/.runtime-profile-entries)
@@ -1764,7 +1775,7 @@ RUNTIME_INVALIDATE_LIST := $(BUILD_DIR)/.runtime-invalidate.lst
 
 $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
 	$(file >$(RUNTIME_INVALIDATE_LIST),$(RT_GE_O) $(RT_OBJS))
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entries-env NK_RUNTIME_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" --invalidate-file "$(RUNTIME_INVALIDATE_LIST)"
+	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entries-env NK_RUNTIME_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" --invalidate-file "$(RUNTIME_INVALIDATE_LIST)"
 
 $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
@@ -1774,14 +1785,14 @@ $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 # (or a trace-disabled object in an oracle run).
 TRACE_STAMP := $(BUILD_DIR)/.recomp-trace-$(TRACE)
 $(TRACE_STAMP):
-	$(PYTHON) $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".recomp-trace-*" --value "$(TRACE)"
+	"$(PYTHON)" $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".recomp-trace-*" --value "$(TRACE)"
 
 ifndef NK_BUILD_DIR_READY
 RECOMP_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
 endif
 RECOMP_PROFILE_STAMP := $(BUILD_DIR)/.recomp-profile-$(RECOMP_PROFILE_HASH)
 $(RECOMP_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
 
 # Compile the chunked generated C code.
 
@@ -1828,14 +1839,14 @@ portable-core-objects: $(PORTABLE_CORE_OBJS)
 # unsigned int and fail on 32-bit newlib targets; the checker reproduces that with a
 # shim and a 32-bit long (-m32 on LP64 hosts, see tools/format_portability_check.py).
 format-portability-check:
-	$(PYTHON) tools/format_portability_check.py
+	"$(PYTHON)" tools/format_portability_check.py
 
 # Only the flight recorder embeds the reproducible build identity. A stamp named
 # after the identity makes flight_recorder.o rebuild when the commit or
 # SOURCE_DATE_EPOCH changes, without touching the other runtime objects.
 FLIGHT_IDENTITY_STAMP := $(BUILD_DIR)/.flight-identity-$(or $(SR_SOURCE_COMMIT),none)-$(or $(SR_SOURCE_DATE_EPOCH),none)
 $(FLIGHT_IDENTITY_STAMP):
-	@$(PYTHON) -c "from pathlib import Path; p = Path(r'$@'); p.parent.mkdir(parents=True, exist_ok=True); [s.unlink() for s in p.parent.glob('.flight-identity-*') if s != p]; p.touch()"
+	@"$(PYTHON)" -c "from pathlib import Path; p = Path(r'$@'); p.parent.mkdir(parents=True, exist_ok=True); [s.unlink() for s in p.parent.glob('.flight-identity-*') if s != p]; p.touch()"
 
 # Explicit rules (not target-specific variables, which would also leak into the
 # runtime-profile stamp prerequisite and record a different CFLAGS than it hashes).
@@ -1861,33 +1872,43 @@ endif
 # A clear failure when SDL3 dependency is missing or invalid.
 .PHONY: sdl3-check
 sdl3-check:
-	@$(PYTHON) -c "import sys; sys.exit(sys.argv[1] or None)" "$(SDL3_ERROR)"
+	@"$(PYTHON)" -c "import sys; sys.exit(sys.argv[1] or None)" "$(SDL3_ERROR)"
 
 PLAYER_EXE ?= $(BUILD_ROOT)/nakagawa_player$(EXE_EXT)
 PLAYER_UI_TEST_EXE ?= $(BUILD_ROOT)/nakagawa_player_ui_test$(EXE_EXT)
-PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
-PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c $(PLAYER_CORE_SRCS)
-PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated -Isrc/rt $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
+PLAYER_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c $(NK_UI_PLAYER_C5_SRCS)
+# The player's About page shows "v<version> (MM-DD-YYYY)" (the version itself is
+# NK_PLAYER_VERSION in src/player/ui/player_ui_nk.h). The date is
+# SOURCE_DATE_EPOCH when the build sets it, else the source commit's time, so
+# two builds of one commit show the same date; a tree without git shows
+# "dev build". Only the player's compile sees these defines.
+NK_PLAYER_BUILD_EPOCH := $(or $(SR_SOURCE_DATE_EPOCH),$(strip $(shell "$(PYTHON)" -c "import shutil, subprocess, sys; exe = shutil.which(sys.argv[1]); out = subprocess.run([exe, 'log', '-1', '--format=%ct'], capture_output=True, text=True).stdout.strip() if exe else ''; print(out if out.isdigit() else '')" "$(GIT)")))
+NK_PLAYER_BUILD_COMMIT := $(shell "$(PYTHON)" -c "import sys; print(sys.argv[1][:7])" "$(SR_SOURCE_COMMIT)")
+NK_PLAYER_IDENTITY_DEFS := $(if $(NK_PLAYER_BUILD_EPOCH),-DNK_PLAYER_BUILD_EPOCH=$(NK_PLAYER_BUILD_EPOCH)LL,) $(if $(strip $(NK_PLAYER_BUILD_COMMIT)),-DNK_PLAYER_BUILD_COMMIT=\"$(strip $(NK_PLAYER_BUILD_COMMIT))\",)
+PLAYER_NK_UI_DEFS = -DNK_UI_WITH_SDL -DNK_UI_WITH_SDL3 $(if $(filter yes,$(SDL3_TTF_AVAILABLE)),-DNK_UI_WITH_SDL_TTF,) $(NK_PLAYER_IDENTITY_DEFS)
+PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c $(PLAYER_NK_UI_SRCS) $(PLAYER_CORE_SRCS)
+PLAYER_INCLUDES := -Isrc/player -Isrc/player/ui -Isrc/ui -Ithird_party/clay -Isrc/core -Isrc/core/generated -Isrc/rt $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
-	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_GUI_LDFLAGS) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 # Stage the SDL3/SDL3_ttf runtime DLL closure and its licence notices beside
 # the player (#421) so launches from Explorer or a plain cmd.exe (no MSYS2 on
 # PATH) use the readable TTF font instead of the bitmap fallback.
 .PHONY: player
 player: $(PLAYER_EXE)
-	$(PYTHON) tools/stage_runtime_dlls.py --target $(patsubst %/,%,$(dir $(PLAYER_EXE)))
+	"$(PYTHON)" tools/stage_runtime_dlls.py --target $(patsubst %/,%,$(dir $(PLAYER_EXE))) --include-ui-fonts --refresh
 
 $(PLAYER_UI_TEST_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
-	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+$(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 .PHONY: player-ui-regressions
 # Target-specific export exports NAKAGAWA_PLAYER_UI_TEST_EXE into the recipe's
@@ -1895,7 +1916,7 @@ $(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input
 # (e.g. VAR=val cmd) that fails under Windows cmd.exe.
 player-ui-regressions: export NAKAGAWA_PLAYER_UI_TEST_EXE := $(PLAYER_UI_TEST_EXE)
 player-ui-regressions: $(PLAYER_UI_TEST_EXE)
-	$(PYTHON) -m unittest discover -s tests/native -p "test_player_ui.py" -v
+	"$(PYTHON)" -m unittest discover -s tests/native -p "test_player_ui.py" -v
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
 # The title link passes its objects through a GCC response file. A package build
@@ -1942,7 +1963,7 @@ COSIM_FPU_REFERENCE_SRC ?= fixtures/cosim/fpu_reference.c
 # just to satisfy that gate would put a fiction in the fixture; the import path is
 # already covered end to end by fixtures/production_smoke.
 cosim-selftest:
-	$(PYTHON) $(COSIM_GENERATOR) generate --out-dir $(COSIM_FIXTURE)
+	"$(PYTHON)" $(COSIM_GENERATOR) generate --out-dir $(COSIM_FIXTURE)
 	$(MAKE) $(COSIM_DIR)/cosim_image.bin $(COSIM_DIR)/cosim_recomp.c \
 		GAME_NAME=cosim GAME_ELF=$(COSIM_FIXTURE)/guest.prx \
 		GAME_BASE=$(COSIM_BASE_ADDR) GAME_ENTRY=$(COSIM_BASE_ADDR) \
@@ -1951,7 +1972,7 @@ cosim-selftest:
 		BUILD_DIR=$(COSIM_DIR) FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1 TRACE=1 \
 		CODEGEN_USER_ARGS=--stack-census \
 		CODEGEN_TOOL=$(CODEGEN_TOOL)
-	$(PYTHON) $(COSIM_GENERATOR) verify --build-dir $(COSIM_DIR)
+	"$(PYTHON)" $(COSIM_GENERATOR) verify --build-dir $(COSIM_DIR)
 	$(MAKE) cosim-selftest-run \
 		GAME_NAME=cosim GAME_ELF=$(COSIM_FIXTURE)/guest.prx \
 		GAME_BASE=$(COSIM_BASE_ADDR) GAME_ENTRY=$(COSIM_BASE_ADDR) \
@@ -1982,7 +2003,7 @@ cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(
 # interpreter, FPU helper or generator that must make the gate FAIL. A mutant
 # that only breaks the build is not a kill and the driver rejects it.
 cosim-mutants:
-	$(PYTHON) fixtures/cosim/mutate.py --build-dir $(COSIM_DIR)
+	"$(PYTHON)" fixtures/cosim/mutate.py --build-dir $(COSIM_DIR)
 
 cosim-selftest-clean:
 	$(MAKE) BUILD_DIR=$(COSIM_DIR) clean
@@ -2015,14 +2036,14 @@ define PROJECT_FONT_RULE
 project-$(1)-font: $(PROJECT_FONT_GENERATED_DIR)/$(2)
 
 $(PROJECT_FONT_GENERATED_DIR)/$(2): $(3) $(4) $(5) tools/ttf2pgf.py tools/pgf_writer.py docs/cleanroom/PGF_CONVERTER_SPEC.md
-	@$(PYTHON) -c "from pathlib import Path; Path('$(PROJECT_FONT_GENERATED_DIR_PY)').mkdir(parents=True, exist_ok=True)"
-	$(PYTHON) tools/ttf2pgf.py "$$@" "$(3)" --pin "$(4)" $(6) --ppem 12 --font-name "$(7)" --font-type "Regular" --manifest "$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2)).json"
-	$(PYTHON) -c "import shutil; shutil.copyfile('$(5)', '$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2))-OFL.txt')"
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(PROJECT_FONT_GENERATED_DIR_PY)').mkdir(parents=True, exist_ok=True)"
+	"$(PYTHON)" tools/ttf2pgf.py "$$@" "$(3)" --pin "$(4)" $(6) $(8) --font-name "$(7)" --font-type "Regular" --manifest "$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2)).json"
+	"$(PYTHON)" -c "import shutil; shutil.copyfile('$(5)', '$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2))-OFL.txt')"
 endef
 
-$(eval $(call PROJECT_FONT_RULE,japanese,nkjpn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--jis-x-0208-japanese,Nakagawa Open Japanese))
-$(eval $(call PROJECT_FONT_RULE,latin,nkltn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin))
-$(eval $(call PROJECT_FONT_RULE,korean,nkkr.pgf,fixtures/fonts/gowundodum/GowunDodum-Regular.ttf,fixtures/fonts/gowundodum/PIN.json,fixtures/fonts/gowundodum/OFL.txt,--ks-x-1001-korean,Nakagawa Open Korean))
+$(eval $(call PROJECT_FONT_RULE,japanese,nkjpn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--jis-x-0208-japanese,Nakagawa Open Japanese,--ppem 12))
+$(eval $(call PROJECT_FONT_RULE,latin,nkltn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin,--ppem 13 --embolden-x 6 --embolden-y 4 --embolden-advance 3))
+$(eval $(call PROJECT_FONT_RULE,korean,nkkr.pgf,fixtures/fonts/gowundodum/GowunDodum-Regular.ttf,fixtures/fonts/gowundodum/PIN.json,fixtures/fonts/gowundodum/OFL.txt,--ks-x-1001-korean,Nakagawa Open Korean,--ppem 12))
 
 project-fonts: $(PROJECT_FONT_SLOT_TARGETS)
 
@@ -2035,10 +2056,10 @@ compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUI
 		@$(LINK_OBJECTS_RSP) \
 		$(LIBS)
 	$(ASSET_COPY_STEP)
-	@$(PYTHON) -c "print('Build finished: $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT)')"
+	@"$(PYTHON)" -c "print('Build finished: $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT)')"
 
 clean:
-	$(PYTHON) -c "import shutil, sys; from pathlib import Path; p = Path(r'$(BUILD_DIR)'); [shutil.rmtree(p) if p.is_dir() else p.unlink()] if p.exists() else None"
+	"$(PYTHON)" -c "import shutil, sys; from pathlib import Path; p = Path(r'$(BUILD_DIR)'); [shutil.rmtree(p) if p.is_dir() else p.unlink()] if p.exists() else None"
 
 # The shared fixture trees clean-fixtures removes, all beneath BUILD_ROOT.
 CLEAN_FIXTURE_DIRS := $(PRODUCTION_SMOKE_DIR) $(PRODUCTION_SMOKE_GAP_DIR) $(COSIM_DIR) \
@@ -2048,27 +2069,27 @@ CLEAN_FIXTURE_DIRS := $(PRODUCTION_SMOKE_DIR) $(PRODUCTION_SMOKE_GAP_DIR) $(COSI
 # nk_manager.ps1 writes there). Every other file under LOG_DIR is preserved.
 EPHEMERAL_LOG_NAMES := build_out_recomp.log build_err_recomp.log recomp_err.log obj_err.log \
 	link_err.log stdout_run.log stderr_run.log
-REMOVE_EPHEMERAL_LOGS = $(PYTHON) -c "import sys; from pathlib import Path; [Path(sys.argv[1], name).unlink(missing_ok=True) for name in sys.argv[2:]]" "$(LOG_DIR)" $(EPHEMERAL_LOG_NAMES)
+REMOVE_EPHEMERAL_LOGS = "$(PYTHON)" -c "import sys; from pathlib import Path; [Path(sys.argv[1], name).unlink(missing_ok=True) for name in sys.argv[2:]]" "$(LOG_DIR)" $(EPHEMERAL_LOG_NAMES)
 
 clean-fixtures:
-	$(PYTHON) -c "import shutil, sys; from pathlib import Path; [shutil.rmtree(p) if p.is_dir() else p.unlink() for p in map(Path, sys.argv[1:]) if p.exists()]" $(foreach d,$(CLEAN_FIXTURE_DIRS),"$(d)")
+	"$(PYTHON)" -c "import shutil, sys; from pathlib import Path; [shutil.rmtree(p) if p.is_dir() else p.unlink() for p in map(Path, sys.argv[1:]) if p.exists()]" $(foreach d,$(CLEAN_FIXTURE_DIRS),"$(d)")
 
 tidy: distclean
 
 distclean:
 	@echo "Removing stale build artefacts (preserving .exe and .pdb for debugger)"
-	$(PYTHON) -c "from pathlib import Path; r=Path(r'$(BUILD_DIR)'); [p.unlink(missing_ok=True) for g in ('**/*.o','**/*.d','.*-profile-*','*_profile.json') for p in r.glob(g)] if r.exists() else None"
+	"$(PYTHON)" -c "from pathlib import Path; r=Path(r'$(BUILD_DIR)'); [p.unlink(missing_ok=True) for g in ('**/*.o','**/*.d','.*-profile-*','*_profile.json') for p in r.glob(g)] if r.exists() else None"
 	$(REMOVE_EPHEMERAL_LOGS)
 
 clean-all: clean clean-fixtures
-	$(PYTHON) -c "import shutil, sys; from pathlib import Path; b = Path(sys.argv[1]); [shutil.rmtree(p) if p.is_dir() else p.unlink() for p in b.iterdir()] if b.exists() else None" "$(BUILD_ROOT)"
+	"$(PYTHON)" -c "import shutil, sys; from pathlib import Path; b = Path(sys.argv[1]); [shutil.rmtree(p) if p.is_dir() else p.unlink() for p in b.iterdir()] if b.exists() else None" "$(BUILD_ROOT)"
 	$(REMOVE_EPHEMERAL_LOGS)
 
 # Preview-first workspace clean (issue #368): plans allowlisted output roots and
 # prints the exact file set. Deletion requires CONFIRM=1 (which passes --yes);
 # OLDER_THAN=<days> bounds the plan by file age. Existing clean targets are untouched.
 clean-preview:
-	$(PYTHON) tools/nk_clean.py $(if $(filter 1,$(CONFIRM)),--yes,) $(if $(strip $(OLDER_THAN)),--older-than $(OLDER_THAN),)
+	"$(PYTHON)" tools/nk_clean.py $(if $(filter 1,$(CONFIRM)),--yes,) $(if $(strip $(OLDER_THAN)),--older-than $(OLDER_THAN),)
 
 # sched-selftest — white-box scheduler/lifecycle unit tests (src/rt/sched_selftest.c).
 # No game inputs needed; #includes sched.c for direct access to pick_next()/TCB state and
@@ -2099,7 +2120,7 @@ SCHED_SELFTEST_MANIFEST := $(SCHED_SELFTEST_MANIFEST_$(SCHED_SELFTEST_CONFIG))
 SCHED_SELFTEST_CONFIG_ARG := $(if $(strip $(SCHED_SELFTEST_MANIFEST)),--manifest $(strip $(SCHED_SELFTEST_MANIFEST)),)
 
 sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_frames.c src/rt/nested_frames.h
-	$(PYTHON) $(TITLE_CONFIG_TOOL) $(SCHED_SELFTEST_CONFIG_ARG) --output $(SCHED_SELFTEST_DIR)/sr_title_config.h
+	"$(PYTHON)" $(TITLE_CONFIG_TOOL) $(SCHED_SELFTEST_CONFIG_ARG) --output $(SCHED_SELFTEST_DIR)/sr_title_config.h
 	$(CC) $(CFLAGS) -I$(SCHED_SELFTEST_DIR) -DSR_SCHED_LIVENESS_TEST $(LDFLAGS) -o $(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe \
 		src/rt/sched_selftest.c src/rt/nested_frames.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/title_config.c $(LIBS)
 	$(BUILD_DIR)/sched_selftest_$(SCHED_SELFTEST_CONFIG).exe
@@ -2269,7 +2290,7 @@ vfpu-interp-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(BUILD_DIR)/vfpu_overlap_d
 	$(BUILD_DIR)/vfpu_interp_selftest.exe
 
 $(BUILD_DIR)/vfpu_overlap_diff_cases.h: tools/vfpu_overlap_diff_gen.py tools/codegen.py
-	$(PYTHON) tools/vfpu_overlap_diff_gen.py $@
+	"$(PYTHON)" tools/vfpu_overlap_diff_gen.py $@
 
 # Canonical Allegrex/VFPU float-to-word fixed-vector regression. Expected
 # results are explicit source-owned constants and the same vectors run under
@@ -2479,7 +2500,7 @@ hle-title-selftest:
 
 # -Wno-unused-function: unused static helpers, mostly src/rt/hle.c; 225 warnings without it across the three hle-title-selftest configs (#735 item 9).
 hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/audio_resample.h src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC)
-	$(PYTHON) $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
+	"$(PYTHON)" $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
 	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
@@ -2494,7 +2515,7 @@ hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py 
 # selftest so a deliberate FAIL remains visible in the record without turning the build recipe
 # into a second standalone oracle implementation.
 psp-oracle-nakagawa: hle-thread-selftest-build
-	$(PYTHON) tools/psp_oracle/run_nakagawa.py --executable "$(BUILD_DIR)/hle_thread_selftest.exe" --output "$(PSP_ORACLE_OUTPUT)" -- --psp-oracle --case "$(PSP_ORACLE_CASE)" --artifact "$(BUILD_DIR)/hle_thread_selftest.exe" --source-commit "$(PSP_ORACLE_SOURCE_COMMIT)" --model "$(PSP_ORACLE_MODEL)" --firmware "$(PSP_ORACLE_FIRMWARE)"
+	"$(PYTHON)" tools/psp_oracle/run_nakagawa.py --executable "$(BUILD_DIR)/hle_thread_selftest.exe" --output "$(PSP_ORACLE_OUTPUT)" -- --psp-oracle --case "$(PSP_ORACLE_CASE)" --artifact "$(BUILD_DIR)/hle_thread_selftest.exe" --source-commit "$(PSP_ORACLE_SOURCE_COMMIT)" --model "$(PSP_ORACLE_MODEL)" --firmware "$(PSP_ORACLE_FIRMWARE)"
 
 psp-oracle: psp-oracle-nakagawa
 
@@ -2505,8 +2526,8 @@ psp-oracle: psp-oracle-nakagawa
 psp-oracle-nakagawa-smoke-generate: $(PSP_ORACLE_SMOKE_STAMP)
 
 $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakagawa_smoke.py tools/codegen.py tools/analyze.py
-	$(PYTHON) tools/psp_oracle/build_nakagawa_smoke.py --elf "$(PSP_ORACLE_SMOKE_ELF)" --out-dir "$(PSP_ORACLE_SMOKE_DIR)"
-	$(PYTHON) -c "from pathlib import Path; Path(r'$(PSP_ORACLE_SMOKE_STAMP)').write_text('generated\n', encoding='ascii')"
+	"$(PYTHON)" tools/psp_oracle/build_nakagawa_smoke.py --elf "$(PSP_ORACLE_SMOKE_ELF)" --out-dir "$(PSP_ORACLE_SMOKE_DIR)"
+	"$(PYTHON)" -c "from pathlib import Path; Path(r'$(PSP_ORACLE_SMOKE_STAMP)').write_text('generated\n', encoding='ascii')"
 
 $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER): $(PSP_ORACLE_SMOKE_STAMP)
 
@@ -2533,7 +2554,7 @@ $(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(
 psp-oracle-nakagawa-smoke-build: $(PSP_ORACLE_SMOKE_EXE)
 
 psp-oracle-nakagawa-smoke: psp-oracle-nakagawa-smoke-build
-	$(PYTHON) tools/psp_oracle/run_nakagawa.py --executable "$(PSP_ORACLE_SMOKE_EXE)" --output "$(PSP_ORACLE_SMOKE_OUTPUT)" -- --psp-oracle --case sum-1-to-100 --artifact "$(PSP_ORACLE_SMOKE_EXE)" --source-commit "$(PSP_ORACLE_SOURCE_COMMIT)" --model "$(PSP_ORACLE_MODEL)" --firmware "$(PSP_ORACLE_FIRMWARE)"
+	"$(PYTHON)" tools/psp_oracle/run_nakagawa.py --executable "$(PSP_ORACLE_SMOKE_EXE)" --output "$(PSP_ORACLE_SMOKE_OUTPUT)" -- --psp-oracle --case sum-1-to-100 --artifact "$(PSP_ORACLE_SMOKE_EXE)" --source-commit "$(PSP_ORACLE_SOURCE_COMMIT)" --model "$(PSP_ORACLE_MODEL)" --firmware "$(PSP_ORACLE_FIRMWARE)"
 
 # dispatch-selftest — host-neutral unit tests for the guest code-address table (issue #45).# No game inputs needed; compiles src/rt/dispatch_selftest.c against the real primitives in
 # dispatch_table.h. Asserts that guest address 0 is a first-class key (register/look up,
@@ -2555,7 +2576,7 @@ stale-code-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Isrc/rt \
 		-o $(BUILD_DIR)/stale_code_selftest.exe src/rt/stale_code_selftest.c src/rt/stale_code.c
 	$(BUILD_DIR)/stale_code_selftest.exe
-	$(PYTHON) -c "import os,subprocess,sys; e=dict(os.environ); e['SR_STALE_DETECT']='1'; p=os.path.abspath(r'$(BUILD_DIR)/stale_code_selftest.exe'); sys.exit(subprocess.run([p], env=e).returncode)"
+	"$(PYTHON)" -c "import os,subprocess,sys; e=dict(os.environ); e['SR_STALE_DETECT']='1'; p=os.path.abspath(r'$(BUILD_DIR)/stale_code_selftest.exe'); sys.exit(subprocess.run([p], env=e).returncode)"
 
 # cpu-lle-selftest — host-neutral unit tests for the LLE Phase 1 COP0,
 # exception, and eret helpers (spec 3.2/3.3) plus the interpreter lane
@@ -2569,7 +2590,7 @@ stale-code-selftest:
 CPU_LLE_AOT_FIXTURE_C := $(BUILD_DIR)/cpu_lle_aot_flow_fixture.c
 
 $(CPU_LLE_AOT_FIXTURE_C): tools/test_cpu_lle.py tools/codegen.py tools/analyze.py
-	$(PYTHON) tools/test_cpu_lle.py --generate-lle-aot-flow-fixture $@
+	"$(PYTHON)" tools/test_cpu_lle.py --generate-lle-aot-flow-fixture $@
 
 cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(CPU_LLE_AOT_FIXTURE_C)
 	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
@@ -2617,7 +2638,7 @@ DISPATCH_ISO_MANIFEST := $(DISPATCH_ISO_MANIFEST_$(DISPATCH_ISO_CONFIG))
 DISPATCH_ISO_CONFIG_ARG := $(if $(strip $(DISPATCH_ISO_MANIFEST)),--manifest $(strip $(DISPATCH_ISO_MANIFEST)),)
 
 dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
-	$(PYTHON) $(TITLE_CONFIG_TOOL) $(DISPATCH_ISO_CONFIG_ARG) --output $(DISPATCH_ISO_DIR)/sr_title_config.h
+	"$(PYTHON)" $(TITLE_CONFIG_TOOL) $(DISPATCH_ISO_CONFIG_ARG) --output $(DISPATCH_ISO_DIR)/sr_title_config.h
 	$(CC) $(CFLAGS) -I$(DISPATCH_ISO_DIR) $(LDFLAGS) \
 		-o $(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe \
 		src/rt/dispatch_isolation_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c \
@@ -2677,6 +2698,9 @@ $(GPU_CAPTURE_BIN): shader-verify
 
 gpu-capture-selftest: $(GPU_CAPTURE_BIN)
 	$(GPU_CAPTURE_BIN)
+	SR_GPU_CAPTURE_TERMINAL_CASE=surface-lost $(GPU_CAPTURE_BIN)
+	SR_GPU_CAPTURE_TERMINAL_CASE=unclassified $(GPU_CAPTURE_BIN)
+	SR_GPU_CAPTURE_TERMINAL_CASE=device-lost $(GPU_CAPTURE_BIN)
 
 # gpu-selftest-status — outcome-preserving status seam for the GPU selftest binaries.
 # A failing recipe always leaves Make with its own generic status, so a child SKIP
@@ -2740,17 +2764,17 @@ VFPU_FUZZ_VALIDATE := vfpu_fuzz_validate_synthetic
 # CI/public mode: the caller generated a synthetic cases header explicitly.  Do not
 # introduce a fake GAME_ELF dependency or regenerate from proprietary/private input.
 $(VFPU_FUZZ_H):
-	$(PYTHON) tools/vfpu_fuzz_gen.py --require-synthetic "$@"
+	"$(PYTHON)" tools/vfpu_fuzz_gen.py --require-synthetic "$@"
 else
 VFPU_FUZZ_TITLE_OBJ := $(BUILD_DIR)/$(GAME_NAME)_recomp.o
 VFPU_FUZZ_CHUNK_OBJS := $(CHUNK_OBJS)
 VFPU_FUZZ_VALIDATE :=
 $(VFPU_FUZZ_H): $(GAME_INPUT_PREREQ) tools/vfpu_fuzz_gen.py tools/analyze.py tools/codegen.py
-	$(PYTHON) tools/vfpu_fuzz_gen.py --env-elf $(VFPU_FUZZ_H) --base=$(GAME_BASE) $(EXTRA_SPAN_ARG)
+	"$(PYTHON)" tools/vfpu_fuzz_gen.py --env-elf $(VFPU_FUZZ_H) --base=$(GAME_BASE) $(EXTRA_SPAN_ARG)
 endif
 
 vfpu_fuzz_validate_synthetic:
-	$(PYTHON) tools/vfpu_fuzz_gen.py --require-synthetic "$(VFPU_FUZZ_H)"
+	"$(PYTHON)" tools/vfpu_fuzz_gen.py --require-synthetic "$(VFPU_FUZZ_H)"
 
 $(BUILD_DIR)/vfpu_fuzz.o: src/rt/vfpu_fuzz.c $(VFPU_FUZZ_H) src/rt/recomp.h
 	$(CC) -O0 -fno-strict-aliasing -Isrc/rt -I$(BUILD_DIR) -DSR_SDL3VK $(DEPFLAGS) -c src/rt/vfpu_fuzz.c -o $@
@@ -2806,8 +2830,8 @@ PSP_VFPU_ORACLE_FIRMWARE ?= unknown
 PSP_VFPU_ORACLE_COMMIT ?= $(NK_GIT_REV_HEAD)
 
 psp-oracle-vfpu: $(PSP_VFPU_ORACLE_EXE)
-	$(PYTHON) -c "from pathlib import Path; Path(r'$(BUILD_DIR)/vfpu_oracle').mkdir(parents=True, exist_ok=True)"
-	$(PYTHON) tools/psp_oracle/run_nakagawa_vfpu.py --executable "$(PSP_VFPU_ORACLE_EXE)" --output "$(PSP_VFPU_ORACLE_OUT)" -- --model "$(PSP_VFPU_ORACLE_MODEL)" --firmware "$(PSP_VFPU_ORACLE_FIRMWARE)" --source-commit "$(PSP_VFPU_ORACLE_COMMIT)"
+	"$(PYTHON)" -c "from pathlib import Path; Path(r'$(BUILD_DIR)/vfpu_oracle').mkdir(parents=True, exist_ok=True)"
+	"$(PYTHON)" tools/psp_oracle/run_nakagawa_vfpu.py --executable "$(PSP_VFPU_ORACLE_EXE)" --output "$(PSP_VFPU_ORACLE_OUT)" -- --model "$(PSP_VFPU_ORACLE_MODEL)" --firmware "$(PSP_VFPU_ORACLE_FIRMWARE)" --source-commit "$(PSP_VFPU_ORACLE_COMMIT)"
 
 # verify — differential smoke gates (no recompiler build needed; runs Python analysis tools
 # and the host reference interpreter). Codegen and microtest compare project output against
@@ -2823,7 +2847,7 @@ psp-oracle-vfpu: $(PSP_VFPU_ORACLE_EXE)
 #          MICROTEST_MODULE=build/hst/microtest.elf MICROTEST_ORACLE=oracle/microtest.trace \
 #          PSP_HARDWARE_TRACE=oracle/psp-hardware.trace LOCAL_COSIM_TRACE=oracle/local-cosim.trace
 verify: run_elf
-	$(PYTHON) tools/verify_gates.py --cc "$(CC)" --env-elf \
+	"$(PYTHON)" tools/verify_gates.py --cc "$(CC)" --env-elf \
 		--run-elf "$(RUN_ELF_EXE)" --workdir "$(VERIFY_WORKDIR)" \
 		--codegen-oracle "$(CODEGEN_ORACLE)" --microtest-module "$(MICROTEST_MODULE)" \
 		--microtest-oracle "$(MICROTEST_ORACLE)" \
@@ -2850,13 +2874,13 @@ VERT_INC       := $(SHADER_DIR)/psp_vert.inc
 FRAG_INC       := $(SHADER_DIR)/psp_frag.inc
 
 shaders:
-	$(PYTHON) tools/shader_embed.py regenerate --glslc "$(GLSLC)"
+	"$(PYTHON)" tools/shader_embed.py regenerate --glslc "$(GLSLC)"
 
 shader-verify:
-	$(PYTHON) tools/shader_embed.py verify
+	"$(PYTHON)" tools/shader_embed.py verify
 
 shader-repro-verify:
-	$(PYTHON) tools/shader_embed.py verify --recompile --glslc "$(GLSLC)"
+	"$(PYTHON)" tools/shader_embed.py verify --recompile --glslc "$(GLSLC)"
 
 # -----------------------------------------------------------------------------
 # Native Product Core Tests
@@ -2878,7 +2902,7 @@ NC_OBJS_PLAYER   := $(addprefix $(NC_OBJ_DIR)/player/,$(notdir $(NC_SOURCES:.c=.
 # $(1) object directory, $(2) compile flags. Objects compile in source order and the first
 # failure stops the line, as it stopped each per-binary compile before.
 define NC_COMPILE_OBJECTS
-@$(PYTHON) -c "import os, sys; os.makedirs(sys.argv[1], exist_ok=True)" $(1)
+@"$(PYTHON)" -c "import os, sys; os.makedirs(sys.argv[1], exist_ok=True)" $(1)
 $(foreach s,$(NC_SOURCES),$(CC) $(2) -c $(s) -o $(1)/$(notdir $(s:.c=.o)) &&) true
 endef
 
@@ -2906,7 +2930,7 @@ $(CC) $(NC_CFLAGS_PLAYER) -DNK_PLAYER_UI_REGRESSION_TEST -DSR_SELFTEST_BUILD_ROO
 endef
 
 player-state-test-bin:
-	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(call PLAYER_STATE_TEST_BIN_CMD)
 
 # osk-overlay-paint-selftest - the in-window on-screen keyboard drawn over a synthetic frame
@@ -2919,37 +2943,97 @@ osk-overlay-paint-selftest:
 		src/rt/osk_overlay_paint_selftest.c src/rt/osk_overlay.c src/rt/osk_overlay_paint.c $(LDFLAGS) $(LIBS)
 	$(BUILD_DIR)/osk_overlay_paint_selftest$(EXE_EXT) $(BUILD_DIR)/osk_overlay_paint_selftest.bmp
 
+# Resolve the already-supported SDL3_ttf dependency for the font selftest. Linux
+# CI installs sdl3-ttf in the SDL3_ttf job; Windows uses the discovered UCRT64 SDK.
+ifeq ($(OS),Windows_NT)
+SDL3_TTF_AVAILABLE := $(shell "$(PYTHON)" -c "from pathlib import Path; import sys; root=Path(r'$(SDL3_DIR)'); sys.exit(0 if (root/'include/SDL3_ttf/SDL_ttf.h').is_file() and (root/'lib/libSDL3_ttf.dll.a').is_file() and (root/'bin/SDL3_ttf.dll').is_file() else 1)" && echo yes)
+SDL3_TTF_CFLAGS := $(SDL3_INC_FLAGS)
+SDL3_TTF_LIBS := $(SDL3_LDFLAGS) -lSDL3_ttf -lSDL3
+else
+SDL3_TTF_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sdl3-ttf && echo yes)
+SDL3_TTF_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags sdl3-ttf)
+SDL3_TTF_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs sdl3-ttf)
+endif
+
+.PHONY: ui-font-selftest
+ifeq ($(SDL3_TTF_AVAILABLE),yes)
+ui-font-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c11 -Wall -Wextra -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(SDL3_TTF_CFLAGS) tests/native/test_ui_font_assets.c \
+		-o $(BUILD_ROOT)/test_ui_font_assets$(EXE_EXT) $(SDL3_TTF_LIBS)
+	$(BUILD_ROOT_RUN)/test_ui_font_assets$(EXE_EXT) \
+		assets/fonts/ui/noto-sans-jp/NotoSansJP-Regular.ttf \
+		assets/fonts/ui/chakra-petch/ChakraPetch-SemiBold.ttf
+else
+ui-font-selftest:
+	@echo "SKIP: UI font native selftest requires the SDL3_ttf development package (sdl3-ttf on Linux or the MSYS2 SDL3_ttf import library on Windows)."
+endif
+
 # Player UI tests link SDL3 (software renderer, no window), so they run where the
-# player itself builds rather than in the SDL-free native-core-tests set.
-player-ui-tests: osk-overlay-paint-selftest
-	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+# player itself builds rather than in the SDL-free native-core-tests set. The
+# optional UI font selftest reports a named skip when SDL3_ttf is unavailable.
+player-ui-tests: osk-overlay-paint-selftest ui-font-selftest nk-ui-player-screens-selftest
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_ui_clip.c -lSDL3 \
 		-o $(BUILD_ROOT)/test_ui_clip$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_ui_clip$(EXE_EXT)
 
+.PHONY: nk-ui-player-screens-capture
+ifeq ($(SDL3_TTF_AVAILABLE),yes)
+ifeq ($(strip $(NK_UI_CAPTURE_DIR)),)
+nk-ui-player-screens-capture:
+	@echo "ERROR: set NK_UI_CAPTURE_DIR to a directory for synthetic screen captures"; exit 2
+else
+nk-ui-player-screens-capture: export SDL_VIDEODRIVER := dummy
+nk-ui-player-screens-capture: export SDL_RENDER_DRIVER := software
+nk-ui-player-screens-capture:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -DNK_UI_WITH_SDL -DNK_UI_WITH_SDL_TTF -DNK_UI_SCREEN_CAPTURE \
+		-Isrc/ui -Isrc/player/ui -Ithird_party/clay $(SDL3_TTF_CFLAGS) \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(NK_UI_CORE_SRCS) src/ui/nk_ui_ttf.c src/ui/backend/nk_ui_sdlr.c \
+		src/player/ui/ui_router.c src/player/ui/scr_library.c src/player/ui/scr_title.c \
+		tests/native/test_player_screens.c $(SDL3_TTF_LIBS) -lm \
+		-o $(BUILD_ROOT)/test_player_screens_capture$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_player_screens_capture$(EXE_EXT) --capture-dir="$(NK_UI_CAPTURE_DIR)"
+endif
+else
+nk-ui-player-screens-capture:
+	@echo "SKIP: offscreen screen captures require the SDL3_ttf development package"
+endif
+
 input-settings-test-bin: native-core-objects-player
-	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(call INPUT_SETTINGS_TEST_BIN_CMD)
 
 package-builder-test-bin: native-core-objects-player
-	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(call PACKAGE_BUILDER_TEST_BIN_CMD)
 
 .PHONY: clay-layout-selftest
 clay-layout-selftest:
-	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Ithird_party/clay -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-o $(BUILD_DIR)/clay_layout_selftest$(EXE_EXT) tests/native/test_clay_layout.c
 	$(BUILD_DIR)/clay_layout_selftest$(EXE_EXT)
 
 .PHONY: nk-ui-core-selftest
 nk-ui-core-selftest:
-	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Ithird_party/clay \
 		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(NK_UI_NATIVE_CORE_SRCS) tests/native/test_nk_ui_core.c -lm \
 		-o $(BUILD_ROOT)/test_nk_ui_core$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_nk_ui_core$(EXE_EXT)
+
+.PHONY: nk-ui-player-screens-selftest
+nk-ui-player-screens-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Isrc/player/ui -Ithird_party/clay \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(NK_UI_CORE_SRCS) $(filter-out src/player/ui/player_ui_nk.c,$(NK_UI_PLAYER_C5_SRCS)) \
+		tests/native/test_player_screens.c -lm -o $(BUILD_ROOT)/test_player_screens$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_player_screens$(EXE_EXT)
 
 # nk-ui-sdlr-selftest - the nk_ui SDL_Renderer backend and SDL3_ttf text engine (lane C3b) drawing a
 # synthetic screen into a software-rendered surface at 1x, 1.25x and 2x, with Japanese shaping and
@@ -2959,7 +3043,7 @@ nk-ui-core-selftest:
 # succeeds, so a skip is visible in the log but does not fail native-core-tests.
 .PHONY: nk-ui-sdlr-selftest
 nk-ui-sdlr-selftest:
-	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	@sdl_defs=""; sdl_libs=""; \
 	if printf '%s\n' '#include <SDL3/SDL.h>' '#include <SDL3_ttf/SDL_ttf.h>' '#include <SDL3_ttf/SDL_textengine.h>' | $(CC) -E -x c $(SDL3_INC_FLAGS) - >/dev/null 2>&1; then \
 		sdl_defs="-DNK_UI_WITH_SDL -DNK_UI_WITH_SDL_TTF"; sdl_libs="$(LDFLAGS) -lSDL3"; \
@@ -2982,7 +3066,7 @@ NK_UI_FOCUS_SDL_READY := $(and $(filter-out none,$(SDL3_PROVIDER)),$(if $(strip 
 NK_UI_FOCUS_SDL_CFLAGS := $(if $(NK_UI_FOCUS_SDL_READY),-DNK_UI_WITH_SDL3 $(SDL3_INC_FLAGS),)
 NK_UI_FOCUS_SDL_LIBS := $(if $(NK_UI_FOCUS_SDL_READY),$(SDL3_LDFLAGS) -lSDL3,)
 nk-ui-focus-selftest:
-	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Ithird_party/clay \
 		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(NK_UI_CORE_SRCS) src/ui/nk_ui_sdl_input.c tests/native/test_nk_ui_focus.c -lm \
@@ -2996,7 +3080,7 @@ nk-ui-focus-selftest:
 		if [ "$$rc" = 77 ]; then echo "SKIP nk-ui-focus-selftest SDL translation leg (exit 77): SDL3 not found by build discovery"; \
 		elif [ "$$rc" != 0 ]; then exit "$$rc"; fi
 
-native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player clay-layout-selftest nk-ui-core-selftest nk-ui-sdlr-selftest nk-ui-focus-selftest
+native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player clay-layout-selftest nk-ui-core-selftest nk-ui-player-screens-selftest nk-ui-sdlr-selftest nk-ui-focus-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" src/rt/pgf_public.c \
 		tests/native/test_pgf_public.c -o $(BUILD_ROOT)/test_pgf_public$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_pgf_public$(EXE_EXT)
@@ -3049,7 +3133,7 @@ FUZZ_SAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all
 endif
 
 fuzz-parsers:
-	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
 		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)

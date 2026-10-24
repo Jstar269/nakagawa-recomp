@@ -13,13 +13,16 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
 
 1. **Windows 11 x64** with a Vulkan-capable GPU and its current graphics driver. The player loads the
    driver's `vulkan-1.dll`.
-2. **PowerShell 7.4+** (`pwsh`). Windows PowerShell 5.1 is not supported.
+2. **PowerShell 7.4+** (`pwsh`), the shell you type commands into. Windows PowerShell 5.1 is not
+   supported for that.
 3. **MSYS2 UCRT64** with the packages in [section 1](#1-install-the-core-toolchain): GCC, GNU Make,
    SDL3, SDL3_ttf, and the Vulkan headers and loader.
-4. **CPython 3.14.x** on `PATH`. Read [PATH order](#path-order) before you install the Python tooling.
+4. **CPython 3.15.x** on `PATH`. Read [PATH order](#path-order) before you install the Python tooling.
 5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
+   LunarG Vulkan SDK 1.4.363.0 is recommended for Windows development.
 6. **Git for Windows**, to clone the repository and fetch optional third-party source.
-7. **Your own copy of the game** as an `.iso`, and your own key file if its executable is encrypted.
+7. **Your own copy of the game** as an `.iso`. If its executable is encrypted, you also need the
+   decrypted files from your own copy; see [Encrypted executables](#encrypted-executables).
    Nothing in this repository ships or downloads a game; see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md).
 
 For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20260601**; see
@@ -27,6 +30,11 @@ For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v2026060
 
 The player's **BUILD PACKAGE** can download pinned build tools on first use. A consent card lists each
 download first ([details](#player-build-package-prerequisites)).
+
+**Which PowerShell.** Type the PowerShell commands in this guide into PowerShell 7.4+ (`pwsh`). The
+build itself still calls the built-in Windows PowerShell 5.1 (`powershell.exe`) for one step,
+copying the build assets (`tools/copy_build_assets.ps1`, through `POWERSHELL` in the
+`Makefile`). That script supports 5.1, so you do not need to change or install anything for it.
 
 ## Showcase demos on Windows: WSL 2 and PSPDEV
 
@@ -81,9 +89,9 @@ player and your own game.
 ## Linux headless showcase
 
 Linux can build and run the two source-owned showcase packages through the runtime.
-The route needs GCC, GNU Make, Python 3.14, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.16,
+The route needs GCC, GNU Make, Python 3.15, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.18,
 and PSPDEV v20260601 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
-3.4.16 release commit and verifies the PSPDEV archive against
+3.4.18 release commit and verifies the PSPDEV archive against
 [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
 
 Run the showcase from the repository root:
@@ -102,11 +110,11 @@ consumer ISO compatibility and interactive Linux presentation remain in the work
 The supported and tested core development environment is:
 
 - Windows 11 x64. Older or unsupported Windows versions may work, but receive no compatibility guarantee.
-- PowerShell 7.4+ (`pwsh`). Windows PowerShell 5.1 is not supported.
-- CPython 3.14.x (`>=3.14,<3.15`), with `python` resolving to that feature line.
+- PowerShell 7.4+ (`pwsh`) as the shell you type into. Windows PowerShell 5.1 is not supported for that.
+- CPython 3.15.x (`>=3.15,<3.16`), with `python` resolving to that feature line.
 - Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages. The release
   manifest's `toolchain_policy` records only the floors the code actually needs: a C11 compiler
-  (GCC 4.9+), GNU Make 4.0+ (the title link uses `$(file ...)`), SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.14. The rolling
+  (GCC 4.9+), GNU Make 4.0+ (the title link uses `$(file ...)`), SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.15. The rolling
   MSYS2 packages are not pinned; `tools/record_toolchain.py` records the versions a release
   candidate was really built with (#367).
 - A current Vulkan SDK and Vulkan-capable GPU.
@@ -141,7 +149,7 @@ pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make mingw-w6
 
 Also install:
 
-- CPython 3.14.x on `PATH`.
+- CPython 3.15.x on `PATH`.
 - The [Vulkan SDK](https://vulkan.lunarg.com/sdk/home). The manager follows the discovery order above; pass `-VulkanSdk "C:\path\to\sdk"` or set `VULKAN_SDK` when an explicit location is needed.
 - Git, to fetch optional third-party source.
 
@@ -160,11 +168,12 @@ line to `PATH`; see [PATH order](#path-order).
 
 Some folders hold a second copy of a tool that the build also calls, so the order of `PATH` matters.
 
-- **MSYS2's Python.** `C:\msys64\ucrt64\bin` contains a `python.exe` that MSYS2 installs as a GLib
-  dependency. It has no pip, so `python -m pip install .` fails with `No module named pip` when that
-  folder comes before your CPython. Run the pip step from a PowerShell window that has not yet added the
-  MSYS2 line, and check that `python -c "import sys; print(sys.executable)"` prints your CPython. A UCRT64
-  terminal puts MSYS2 first, so do not run the pip step there.
+- **MSYS2's Python.** `C:\msys64\ucrt64\bin` may contain Python 3.14.8, which does not meet the
+  project's CPython 3.15.x host requirement. Run Python tooling with the Windows CPython installed
+  from python.org. Before building from a UCRT64 shell, set `PYTHON` to that interpreter's full path
+  (for example, `C:/path/to/Python315/python.exe`); Make recipes and the player package builder use
+  that explicit path even when MSYS2 is first on `PATH`. Run direct tooling commands through the
+  same `PYTHON` path. Install the declared Python tooling dependencies before adding MSYS2 to `PATH`.
 - **POSIX shell.** If a Make recipe needs `sh`, put Git for Windows' `usr\bin` (`%ProgramFiles%\Git\usr\bin`)
   ahead of MSYS2's `usr\bin` (`C:\msys64\usr\bin`), as the [Windows host pitfalls](#windows-host-pitfalls)
   table describes.
@@ -304,7 +313,7 @@ are retained as historical evidence in
 ### Plain module inputs
 
 Some titles load additional modules at runtime. The runtime accepts only plain (unencrypted)
-ELF/PRX files; this repository ships no keys or key material. The [built-in decryption boundary](#built-in-decryption-boundary-issue-295) below can unwrap the executable and required modules of your own copy of the game when you supply your own local key file. For what the player needs
+ELF/PRX files. Nakagawa does not decrypt games; it uses decrypted files from your own copy (see [Encrypted executables](#encrypted-executables)). For what the player needs
 and where your own unencrypted files go, see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). When you already have plain modules from your own
 copy of the game, place them at the paths the local manifest expects, for example:
 
@@ -331,27 +340,19 @@ When an imported ISO contains an encrypted executable (`EBOOT.BIN`), preflight c
 
 On Windows, the normal per-user data directory is `%LOCALAPPDATA%\Nakagawa\data`. The player and the Python tools both use `%LOCALAPPDATA%` first; when it is unset, the player also asks Windows for `FOLDERID_LocalAppData`. Both fall back to `%APPDATA%` and fail with `DATA_DIR_UNAVAILABLE` if neither application-data location resolves. `USERPROFILE` alone is never used as a data root. If the legacy `%USERPROFILE%\Nakagawa\data` exists while the current root does not, the player and Doctor report its exact path; move its contents manually. When a valid plain MIPS ELF32 `EBOOT.elf` is placed in the current folder, the player and CLI select it automatically for analysis ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)). If an experimental profile was created while the disc executable was still encrypted (binding no executable), supplying `EBOOT.elf` in this folder is automatically used by `nk_cli build-package` without requiring re-import.
 
-Decrypted guest modules in `<user data>/titles/<DISC_ID>/decrypted/` may be named either after their file name on the disc (for example `psmf.prx`) or after their manifest module name (for example `scePsmf_library.prx`). When a module is encrypted, invalid, or missing, error messages display both names (for example `psmf.prx (scePsmf_library.prx)`). The project ships no keys; the built-in boundary below fills this folder from your own key file when one is present ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+Decrypted guest modules in `<user data>/titles/<DISC_ID>/decrypted/` may be named either after their file name on the disc (for example `psmf.prx`) or after their manifest module name (for example `scePsmf_library.prx`). When a module is encrypted, invalid, or missing, error messages display both names (for example `psmf.prx (scePsmf_library.prx)`).
 
-### Built-in decryption boundary (issue #295)
+### Encrypted executables
 
-The standalone player and `nk_cli` contain a built-in decryption boundary for a disc image you supply. It understands the supported container forms — `~PSP` executables and PRXs (including `~SCE` outer wrappers and PBP `DATA.PSP` entries) plus the gzip-compressed payloads they can carry — and unwraps them into plain MIPS ELF32 images for the analyzer. The player processes its bounded set of eligible module candidates from four `PSP_GAME` directories (at most 32); CLI workflows process the required `guest-prx` modules declared by the title manifest. The decryption engine in `src/core/nk_psp_*` is ported from one GPL upstream, John-K/pspdecrypt (its libkirk code and its PRX decrypter, which itself derives from PPSSPP's PrxDecrypter), with every key removed. Each file's header names its upstream path, commit and notices, and [NOTICE.md](../NOTICE.md) lists the files and licences. The project ships no keys: key material comes only from a key file you supply.
+Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed, so the player and `nk_cli` never look for or read a key file.
 
-**The boundary never contains key material.** You supply a local-only key file at:
+An encrypted `EBOOT.BIN` (`~PSP`, `~SCE` or PBP) without a valid `EBOOT.elf` in the per-title folder above stops with a named message:
 
 ```text
-<user data>/keys/psp-keyfile.json
+ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games. Place a decrypted EBOOT.elf from your own copy in <user data>/titles/<DISC_ID>/decrypted.
 ```
 
-or at the path named by the `NAKAGAWA_PSP_KEY_FILE` environment variable. The file is JSON carrying `"format": "nakagawa-psp-keystore-1"` and an `entries` object; each entry is named by the thing it unlocks (for example a `prx.tag.0x........` recipe object, `kirk.cmd1.key`, or `kirk.keyvault.<slot>`) with hexadecimal values only. The KeyStore validates the shape, names, and value lengths before anything is decrypted.
-
-How the boundary behaves:
-
-- With a valid key file, `nk_cli inspect`, `build-package`, `bringup`, and the player's compatibility preflight decrypt the disc executable and the selected or required encrypted PRX modules automatically and continue to the analyzer. The executable lands in `titles/<DISC_ID>/decrypted/EBOOT.elf`; each decrypted module lands in the same folder under its file name on the disc (for example `psmf.prx`), staged to a temporary name and renamed into place so an interrupted run never leaves a half-written module. Decrypted bytes are written only under the private per-user data directory (`titles/<DISC_ID>/decrypted/` and `cache/decrypted/`) — never next to the ISO, and never into this repository.
-- A valid user-supplied plain copy always wins: if `EBOOT.elf` or a module is already present in the per-title folder under its disc file name or manifest module name, the boundary never overwrites it and that module is skipped.
-- Without a key file, or when an entry is missing, the boundary fails closed and names the exact entry the container needs (for example `MISSING_KEY_ENTRY prx.tag.0x........` and "this executable needs key entry ..."). Each module fails closed on its own: the other modules still decrypt, and the compatibility preflight reports "Guest modules: N of M ready" with the missing entry. The existing guidance to supply decrypted modules at `<user data>/titles/<DISC_ID>/decrypted/` remains, so that route keeps working; a user-supplied `EBOOT.elf` takes precedence over automatic decryption.
-- A reported failure belongs to the container type whose shape matched, not to the last type tried: a modified or corrupt container reports `INTEGRITY_CHECK_FAILED` (or `CONTAINER_MALFORMED` for inconsistent fields), `MISSING_KEY_ENTRY` names only an entry the matched type truly needs, and a `~PSP` container whose header matches no supported type fails closed as `CONTAINER_MALFORMED` naming that instead of requesting key material.
-- The key file is never uploaded, never packaged, and never committed. The publication audit rejects key-file paths and KeyStore content outright, and neither the tests nor any release contain key material — the tests generate clearly fake per-run keys only.
+An encrypted guest module without a plain copy in the same folder stops the same way with `ENCRYPTED_MODULE: <name> is encrypted.`, naming the module. A plain copy you place there is always used and never overwritten. Nothing is written next to the ISO or into this repository.
 
 ### User title manifests (`<user data>/manifests`)
 
@@ -643,11 +644,11 @@ automatically. Named error cards explain offline, redirect, size, hash, and disk
 errors and offer a retry.
 
 The pinned candidate download set is recorded in
-[`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.14.7
+[`assets/prereq_manifest.json`](../assets/prereq_manifest.json): CPython 3.15.1
 and 34 MSYS2 UCRT64 packages (GCC/binutils, make, SDL3 and `SDL3_ttf` with the
 readable-font runtime closure — FreeType, HarfBuzz, Graphite2, libpng, bzip2,
 Brotli, GLib, and PCRE2 — Vulkan headers/loader, and their runtime dependencies),
-totaling 100,665,604 bytes. Package hashes and
+totaling 100,732,586 bytes. Package hashes and
 sizes come from the signed MSYS2 repository database; the Python hash is from
 python.org's release page. The manifest's `source_snapshot_date` dates the MSYS2
 package pins only; the locked developer-tool pins carry their own retrieval
@@ -851,7 +852,7 @@ outside the published repository.
 - **Missing Vulkan headers:** pass the correct `-VulkanSdk` path or `VULKAN_SDK=...` Make variable.
 - **`SDL3.dll` missing:** for the release package, keep `bin/SDL3.dll` beside `bin/nakagawa_player.exe`; for a source build, install the MSYS2 UCRT64 SDL3 package so `tools/copy_build_assets.ps1` stages it beside `build/nakagawa_player.exe`.
 - **Retro 8x8 bitmap font in the player UI:** the readable-font path needs `SDL3_ttf.dll` and its dependency closure beside `nakagawa_player.exe` (or on `PATH`). Install the MSYS2 UCRT64 `sdl3-ttf` package and re-run `mingw32-make player`, which stages the whole closure and its licence notices; the workspace doctor reports `RUNTIME_SDL3_TTF`/`RUNTIME_SDL3_TTF_CLOSURE`, and the player itself logs the failing step once to stderr when it falls back. `NK_UI_NO_TTF=1` forces the bitmap fallback on purpose.
-- **`PUBLIC_SAFE=1` active:** when building in a public tree where the private backends are absent, the runtime compiles with `PUBLIC_SAFE=1`. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime still refuses encrypted `~PSP` executables because decryption happens earlier, in the player/CLI boundary that requires your own key file ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+- **`PUBLIC_SAFE=1` active:** when building in a public tree where the private backends are absent, the runtime compiles with `PUBLIC_SAFE=1`. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime refuses encrypted `~PSP` executables; Nakagawa does not decrypt games (see [Encrypted executables](#encrypted-executables)).
 - **Missing ISO or missing extracted assets:** `place_game_here/ISO/<game>.iso` must be present, and `place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted` (or configured `SR_DATAROOT`) must be populated. `SR_DATAROOT` may instead hold the read-only `<archive>.xb` archives; the runtime mounts those directly ([#298](https://github.com/Jstar269/nakagawa-recomp/issues/298)).
 - **No late PRX exports / asset lookups fail:** restore the required `place_game_here/EXTRACTED/` layout (decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx`).
 - **PSP font missing or text not rendering:** Run `python tools/nk_cli.py fonts status` to see each slot's source, and `python tools/nk_cli.py fonts import <folder>` for any slot that is missing. Your imported fonts are in `<user data>/fonts/v2/` with a `manifest.json`. See [System fonts](#system-fonts).
