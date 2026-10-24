@@ -330,7 +330,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "131d6fbe2107bd66eb70c6bf528ec09e7bda07a663704a47a6b3842967a46c72"
+      "sha256": "b509933bc0b7b1dc8ccf5479dbf15f7ecc80d0c2e4a879c67f35a8baceb857e2"
     },
     {
       "path": "CLAUDE.md",
@@ -444,7 +444,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3bacddcce632fd6e96f50991c5388c3e64340ab6abf237554754ba445d7d095a"
+      "sha256": "1618ed899b135ad149a4ccfaa9707c4e3f40a0dc823a467d2a054d495695113a"
     },
     {
       "path": "SECURITY.md",
@@ -1348,7 +1348,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "27df3d736e0e40ce76bc30b6b40c75650dfd599a68fe1743d57de62efd3af965"
+      "sha256": "06fcb21344cd1877ad815a0245dd8d28303dc557c0ece3bd7d4cf9b05db9d0c4"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1516,7 +1516,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6d8218fd9efb00eff076009d95bc15aea7bab5c512e8714523a8d1bb9e91b602"
+      "sha256": "98e6c69101938d66130073c665802282276331d00bf595c1ed2aaeda6a3ad330"
     },
     {
       "path": "docs/PLAYER_UI_DESIGN.md",
@@ -1648,7 +1648,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bf15a1a72ab467822528373b75fa05cbe0991df9adc2636d166246856885735b"
+      "sha256": "bfc244d904f72c6e9146e66931262d4e0a2cc8b7311a07803d2f950f2bd056b7"
     },
     {
       "path": "docs/SETUP.md",
@@ -1813,7 +1813,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ec3c2447ec9dd13e48c598e789054db9c0b53f99b495c2dfb05430f9a037865e"
+      "sha256": "b0822ff1edf87325b507e409134b8ec4dcc3a2ecec7c3279864f55867dfb6698"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -5424,7 +5424,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f7bb9fc7f15bfcb370286edbe4605aa30858fa9242de01cac24cc782f61af15e"
+      "sha256": "dfdfb964f6f05336bc9af1aed5677b8a0f3fafd02f5c2f870253251f3a076cf0"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5462,7 +5462,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0c26cfdb9820cd50a6678439a3870d88ff20e96df8dd1ce8250c7d556fdfd00c"
+      "sha256": "f1f8a94bfb545c586110a1e64218bb97f938bd309166726c67894e5423138712"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5889,7 +5889,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a12769a92beff1b48f93d2a61c84ef084ca9d9420289980543342cacc5ae5d8d"
+      "sha256": "affca84be77b8db4384ef750d4b517797afaa25d069b2eb575402b5391075503"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -5901,7 +5901,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b8dbd3e3ce1f46724c5bfc632e3adb283f7e95959688d3fcfdea5db5b0d56c8a"
+      "sha256": "ee90c8e58edfedb2d306838ffd1c1ef89a4fbd4d742f97d37b38c5818c8f9cdc"
     },
     {
       "path": "src/rt/scripted_input.h",
