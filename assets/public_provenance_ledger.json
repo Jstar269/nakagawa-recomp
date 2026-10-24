@@ -8759,7 +8759,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "20aa136cb9e595efd64ce3dca260a5fc601e6a2a7aca14a9909b99d049355002"
+      "sha256": "b6989e9a8591377a63a9d19081def4f6bdc6b016ba28227bd9cd997b8901163f"
     },
     {
       "path": "tools/recomp_helper_inventory.py",
@@ -10729,7 +10729,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "194f1bfd9365cbeba5ef6162d84b380518fca004a941fe5a8a701833858ec934"
+      "sha256": "5131e632ce487cbf723f6265598fe49a9e1bc9bb95c0101b9aa464dc8ea1f78a"
     },
     {
       "path": "tools/test_readme_images.py",
