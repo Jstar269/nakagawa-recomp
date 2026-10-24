@@ -779,19 +779,21 @@ def _is_hard_terminator(word):
 is_hard_terminator = _is_hard_terminator
 
 
-def _is_trailing_epilogue(elf, x):
-    # A `jr $ra` at x is a hoisted/outlined return-epilogue (not a real standalone
-    # function) when it sits 8 bytes after another `jr $ra` (the owning function's
-    # real return), separated by that return's delay slot. Such stubs (e.g.
-    # `return a0`) must be folded into the preceding function, not emitted as their
-    # own function -- otherwise trace diffs misalign on the mis-split boundary.
-    if x < 8:
+def _is_address_taken_entry(elf, x):
+    # An address materialized in code (`lui` + `addiu`/`ori`) is a code pointer: a
+    # callback, a thread entry, or a computed-goto base. It is a function entry when
+    # its first word is a leaf return (`jr $ra`) or a stack-allocating prologue; a
+    # computed-goto base is neither (bounded_computed_goto_targets resolves those),
+    # so it stays a weak signal. A `jr $ra` sitting 8 bytes after another `jr $ra`
+    # (the previous function's return and its delay slot) is unreachable by fall-
+    # through, so taking its address is the only way in: it is a separate leaf
+    # function (`return 0`, `return a0`), not a shared epilogue. Folding it into the
+    # previous function left callbacks and thread entries with no dispatch entry.
+    raw = elf.read_at_vaddr(x, 4)
+    if raw is None or len(raw) < 4:
         return False
-    a = elf.read_at_vaddr(x, 4)
-    b = elf.read_at_vaddr(x - 8, 4)
-    if a is None or b is None or len(a) < 4 or len(b) < 4:
-        return False
-    return int.from_bytes(a, 'little') == 0x03e00008 and int.from_bytes(b, 'little') == 0x03e00008
+    word = int.from_bytes(raw, 'little')
+    return word == 0x03e00008 or ((word >> 16) == 0x27BD and bool(word & 0x8000))
 
 
 def direct_j_edges(elf, ranges, targets=None):
@@ -971,6 +973,157 @@ def direct_branch_edges(elf, ranges, targets=None):
             continue
         edges.setdefault(target, []).append((source, branch_kind(word)))
     return {target: tuple(sorted(srcs)) for target, srcs in edges.items()}
+
+
+#: How far back from a computed ``jr`` the bounded-goto match looks, and the
+#: most landing pads one goto may name. A wider mask is left unresolved.
+COMPUTED_GOTO_WINDOW = 16
+COMPUTED_GOTO_MAX_TARGETS = 64
+
+
+def _gpr_writes(word):
+    """GPRs ``word`` writes: a frozenset, ``None`` for a control transfer, or
+    ``"unknown"`` for an encoding this decoder does not classify."""
+    op = word >> 26
+    rs, rt, rd = (word >> 21) & 0x1F, (word >> 16) & 0x1F, (word >> 11) & 0x1F
+    if op in (1, 2, 3, 4, 5, 6, 7, 20, 21, 22, 23):
+        return None
+    if op == 0:
+        funct = word & 0x3F
+        if funct in (0x08, 0x09):
+            return None
+        if funct in (0x0C, 0x0D, 0x0F, 0x11, 0x13) or 0x18 <= funct <= 0x1F:
+            return frozenset()  # syscall/break/sync, mthi/mtlo, mult/div/madd/msub
+        return frozenset({rd})
+    if 0x08 <= op <= 0x0F or 0x20 <= op <= 0x26 or op in (0x30, 0x38):
+        return frozenset({rt})  # ALU immediates, loads, ll/sc
+    if 0x28 <= op <= 0x2F or op in (0x31, 0x32, 0x35, 0x36, 0x39, 0x3A, 0x3D, 0x3E):
+        return frozenset()  # stores, cache, FPU/VFPU loads and stores
+    if op == 0x11:
+        if rs == 8:
+            return None  # bc1
+        return frozenset({rt}) if rs in (0, 2) else frozenset()  # mfc1/cfc1
+    if op == 0x1F:
+        funct = word & 0x3F
+        if funct in (0x00, 0x04):
+            return frozenset({rt})  # ext/ins
+        if funct == 0x20:
+            return frozenset({rd})  # seb/seh/wsbh/bitrev
+    return "unknown"
+
+
+def _defining_word(elf, start, use_addr, reg):
+    """The last word in ``[start, use_addr)`` that writes ``reg``, as
+    ``(addr, word)``, or ``None`` if none does or the straight-line run is
+    broken by a control transfer or an unclassified encoding."""
+    for addr in range(use_addr - 4, start - 4, -4):
+        raw = elf.read_at_vaddr(addr, 4)
+        if raw is None or len(raw) < 4:
+            return None
+        word = int.from_bytes(raw, "little")
+        writes = _gpr_writes(word)
+        if writes is None or writes == "unknown":
+            return None
+        if reg in writes:
+            return addr, word
+    return None
+
+
+def bounded_computed_goto_targets(elf, ranges):
+    """Landing pads of computed ``jr`` whose target set the code bounds itself.
+
+    The compiler's unrolled store/copy ladders enter at ``base -/+ (x & mask)``::
+
+        andi  idx, n, mask       # optionally followed by sll idx, idx, k
+        lui   at, %hi(base)
+        addiu at, at, %lo(base)  # or ori
+        subu  at, at, idx        # or addu at, at, idx / addu at, idx, at
+        jr    at
+
+    Every target is ``base`` minus (or plus) one value of ``x & mask``, so the
+    whole set is known statically. Each pad must be word-aligned and inside an
+    analyzer-owned range; a pad outside one, a mask naming more than
+    :data:`COMPUTED_GOTO_MAX_TARGETS` pads, or any other write to the index or
+    base register between its definition and the ``jr`` leaves the goto
+    unresolved (it still dispatches fail-closed at runtime). All matched words
+    must be one straight-line run with no control transfer between them.
+    """
+    targets = set()
+    for addr, word in _iter_code_words(elf, ranges):
+        if word >> 26 != 0 or (word & 0x3F) != 0x08:
+            continue
+        reg = (word >> 21) & 0x1F
+        if reg in (0, 31):
+            continue
+        window = max(addr - 4 * COMPUTED_GOTO_WINDOW, 0)
+        combine = _defining_word(elf, window, addr, reg)
+        if combine is None:
+            continue
+        c_addr, c_word = combine
+        funct = c_word & 0x3F
+        if c_word >> 26 != 0 or funct not in (0x21, 0x23):
+            continue
+        rs, rt = (c_word >> 21) & 0x1F, (c_word >> 16) & 0x1F
+        operands = [(rs, rt)] if funct == 0x23 else [(rs, rt), (rt, rs)]
+        for base_reg, idx_reg in operands:
+            base = _materialized_address(elf, window, c_addr, base_reg)
+            mask = _masked_index(elf, window, c_addr, idx_reg)
+            if base is None or mask is None:
+                continue
+            values = []
+            sub = mask
+            while True:
+                if sub % 4 == 0:
+                    values.append(sub)
+                if sub == 0:
+                    break
+                sub = (sub - 1) & mask
+            if len(values) > COMPUTED_GOTO_MAX_TARGETS:
+                break
+            sign = -1 if funct == 0x23 else 1
+            pads = {(base + sign * value) & 0xFFFFFFFF for value in values}
+            if all(in_ranges(pad, ranges) for pad in pads):
+                targets.update(pads)
+            break
+    return frozenset(targets)
+
+
+def _materialized_address(elf, window, use_addr, reg):
+    # `lui reg', hi` followed by `addiu/ori reg, reg', lo`, the `la` idiom.
+    low = _defining_word(elf, window, use_addr, reg)
+    if low is None:
+        return None
+    l_addr, l_word = low
+    op = l_word >> 26
+    if op not in (0x09, 0x0D):
+        return None
+    src = (l_word >> 21) & 0x1F
+    high = _defining_word(elf, window, l_addr, src)
+    if high is None or high[1] >> 26 != 0x0F:
+        return None
+    upper = (high[1] & 0xFFFF) << 16
+    if op == 0x09:
+        lo = l_word & 0xFFFF
+        return (upper + lo - (0x10000 if lo & 0x8000 else 0)) & 0xFFFFFFFF
+    return upper | (l_word & 0xFFFF)
+
+
+def _masked_index(elf, window, use_addr, reg):
+    # `andi reg, src, mask`, optionally shifted by `sll reg, reg, k`.
+    found = _defining_word(elf, window, use_addr, reg)
+    if found is None:
+        return None
+    f_addr, f_word = found
+    shift = 0
+    if f_word >> 26 == 0 and (f_word & 0x3F) == 0x00 and ((f_word >> 16) & 0x1F) == reg:
+        shift = (f_word >> 6) & 0x1F
+        found = _defining_word(elf, window, f_addr, reg)
+        if found is None:
+            return None
+        f_word = found[1]
+    if f_word >> 26 != 0x0C:
+        return None
+    return ((f_word & 0xFFFF) << shift) & 0xFFFFFFFF
 
 
 CFG_SCHEMA_VERSION = 2
@@ -2806,22 +2959,53 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None)
     # Keep their file-backed executable targets as traced entry candidates.
     hc.update(code_pointer_evidence(elf, ranges)["data"])
 
+    # A computed `jr` whose target set the code bounds (an `andi` mask applied to a
+    # materialized base) lands only on those pads; each one needs a dispatch entry.
+    hc.update(bounded_computed_goto_targets(elf, ranges))
+
     # Sweep executable sections for weaker "block boundary" signals and possible indirect
     # targets. Direct JAL targets are collected by trace_function only after their source
     # instruction is reached; a linear sweep can mistake data inside .text for a call.
     sys.stderr.write(f"SCANNING RANGES: {ranges}\n")
+
+    def note_address_taken(val):
+        if (val & 3) != 0:
+            return
+        if in_ranges(val, ranges):
+            if _is_address_taken_entry(elf, val):
+                hc.add(val)
+            else:
+                noisy.add(val)
+        elif in_ranges(val, file_exec_ranges) and _is_address_taken_entry(elf, val):
+            # Executable PT_LOAD bytes outside the named code sections (.init, .fini)
+            # are already callable when a `jal` names them; a materialized pointer to
+            # an entry-shaped word there (e.g. a `.fini` routine registered for exit)
+            # is the same evidence.
+            hc.add(val)
+
     for lo, hi in ranges:
         blob = elf.read_at_vaddr(lo, hi - lo)
         if blob is None:
             continue
         hireg = {}
-        clear_next = False
+        # A control transfer ends the straight-line run after its delay slot, which
+        # still executes first: an `la` whose low half sits in a `jal` delay slot
+        # (`lui a1, hi; ...; jal f; addiu a1, a1, lo`) is a pointer argument. Drop
+        # the state at the word after the delay slot, keeping what the slot wrote.
+        clear_at = None
+        before_slot = None
         for off in range(0, len(blob) - 3, 4):
-            if clear_next:
-                hireg.clear()
-                clear_next = False
             word = int.from_bytes(blob[off:off + 4], 'little')
             addr = lo + off
+            if clear_at is not None and addr == clear_at - 4:
+                before_slot = dict(hireg)
+            elif clear_at is not None and addr == clear_at:
+                hireg = {
+                    reg: value for reg, value in hireg.items()
+                    if before_slot is not None
+                    and (reg not in before_slot or before_slot[reg] != value)
+                }
+                clear_at = before_slot = None
             op = word >> 26
             if op == 2:  # j: tail call or intra-function goto -> weak
                 target = (addr & 0xF0000000) | ((word & 0x3FFFFFF) << 2)
@@ -2856,8 +3040,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None)
 
             is_branch = op in (1, 4, 5, 6, 7, 20, 21, 22, 23) or (op == 0x11 and ((word >> 21) & 0x1F) == 8)
             is_jump_or_call = op in (2, 3) or (op == 0 and (word & 0x3F) in (0x08, 0x09))
-            if is_branch or is_jump_or_call:
-                clear_next = True
+            if (is_branch or is_jump_or_call) and clear_at is None:
+                clear_at = addr + 8
 
             if op == 0x0F:  # lui rt, imm
                 hireg[(word >> 16) & 0x1F] = (word & 0xFFFF) << 16
@@ -2865,30 +3049,12 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None)
                 rs = (word >> 21) & 0x1F
                 if rs in hireg and isinstance(hireg[rs], int):
                     val = (hireg[rs] + ((word & 0xFFFF) - (0x10000 if word & 0x8000 else 0))) & 0xFFFFFFFF
-                    if in_text(val):
-                        tb = elf.read_at_vaddr(val, 4)
-                        is_jr_ra = tb is not None and len(tb) == 4 and int.from_bytes(tb, 'little') == 0x03e00008
-                        if is_jr_ra:
-                            if _is_trailing_epilogue(elf, val):
-                                noisy.add(val)
-                            else:
-                                hc.add(val)
-                        else:
-                            noisy.add(val)
+                    note_address_taken(val)
             elif op == 0x0D:  # ori rt, rs, imm  (la low half)
                 rs = (word >> 21) & 0x1F
                 if rs in hireg and isinstance(hireg[rs], int):
                     val = hireg[rs] | (word & 0xFFFF)
-                    if in_text(val):
-                        tb = elf.read_at_vaddr(val, 4)
-                        is_jr_ra = tb is not None and len(tb) == 4 and int.from_bytes(tb, 'little') == 0x03e00008
-                        if is_jr_ra:
-                            if _is_trailing_epilogue(elf, val):
-                                noisy.add(val)
-                            else:
-                                hc.add(val)
-                        else:
-                            noisy.add(val)
+                    note_address_taken(val)
             elif op == 0 and (word & 0x3F) == 0x21: # addu rd, rs, rt
                 rs_reg, rt_reg, rd_reg = (word >> 21) & 0x1F, (word >> 16) & 0x1F, (word >> 11) & 0x1F
                 if rs_reg in hireg and isinstance(hireg[rs_reg], int):
