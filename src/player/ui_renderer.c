@@ -37,10 +37,54 @@ static void draw_filled_rect(SDL_Renderer *ren, float x, float y, float w, float
     SDL_RenderFillRect(ren, &r);
 }
 
+/* Output pixels per layout unit: the canvas scale main.c sets (#1129). */
+static float ui_canvas_scale(SDL_Renderer *ren) {
+    float sx = 1.0f;
+    float sy = 1.0f;
+    if (!SDL_GetRenderScale(ren, &sx, &sy) || !(sx > 0.0f)) return 1.0f;
+    return sx;
+}
+
+/* Under a render scale other than 1, SDL plots a line as a run of scaled
+ * squares, so an outline comes out one or two pixels thick depending on where
+ * it falls and every diagonal is stair-stepped. Scaled outlines are therefore
+ * filled shapes whose edges sit on whole output pixels, one layout unit thick
+ * rounded to whole pixels. */
+static float ui_snap_to_pixel(float v, float scale) {
+    return SDL_roundf(v * scale) / scale;
+}
+
+static float ui_outline_thickness(float scale) {
+    float px = SDL_roundf(scale);
+    return (px < 1.0f ? 1.0f : px) / scale;
+}
+
 static void draw_rect_outline(SDL_Renderer *ren, float x, float y, float w, float h, SDL_Color c) {
     set_draw_color(ren, c);
-    SDL_FRect r = { x, y, w, h };
-    SDL_RenderRect(ren, &r);
+    float scale = ui_canvas_scale(ren);
+    if (scale == 1.0f) {
+        SDL_FRect r = { x, y, w, h };
+        SDL_RenderRect(ren, &r);
+        return;
+    }
+    /* SDL_RenderRect covers [x, x + w) at scale 1; keep that box. */
+    float x0 = ui_snap_to_pixel(x, scale);
+    float y0 = ui_snap_to_pixel(y, scale);
+    float x1 = ui_snap_to_pixel(x + w, scale);
+    float y1 = ui_snap_to_pixel(y + h, scale);
+    float t = ui_outline_thickness(scale);
+    if (x1 - x0 <= 2.0f * t || y1 - y0 <= 2.0f * t) {
+        SDL_FRect all = { x0, y0, x1 - x0, y1 - y0 };
+        SDL_RenderFillRect(ren, &all);
+        return;
+    }
+    SDL_FRect edges[4] = {
+        { x0, y0, x1 - x0, t },
+        { x0, y1 - t, x1 - x0, t },
+        { x0, y0 + t, t, y1 - y0 - 2.0f * t },
+        { x1 - t, y0 + t, t, y1 - y0 - 2.0f * t }
+    };
+    SDL_RenderFillRects(ren, edges, 4);
 }
 
 /* --- Runtime typography layer ---
@@ -120,8 +164,8 @@ static uint32_t ui_color_key(SDL_Color c) {
 /* Point size for a DebugText-style scale. 11pt at scale 1 keeps the new
  * proportions close to the old 8px debug glyphs so existing layouts hold. */
 static float ui_font_pt_for_scale(float scale, float density) {
-    if (density < 1.0f) density = 1.0f;
-    if (density > 3.0f) density = 3.0f;
+    if (density < PLAYER_UI_MIN_SCALE) density = PLAYER_UI_MIN_SCALE;
+    if (density > PLAYER_UI_MAX_SCALE) density = PLAYER_UI_MAX_SCALE;
     return 11.0f * scale * density;
 }
 
@@ -243,7 +287,9 @@ static void ui_font_ensure(void) {
     if (g_font.attempted) return;
     g_font.attempted = true;
     g_font.active_bucket = -1;
-    g_font.density = 1.0f;
+    /* The frame that first draws text has already set its density; keep it,
+       or that frame (the only one a --screenshot keeps) is drawn at 1x. */
+    if (!(g_font.density > 0.0f)) g_font.density = 1.0f;
     g_font.fallback_reason = "NONE";
 
     const char *force_off = getenv("NK_UI_NO_TTF");
@@ -960,10 +1006,22 @@ bool ui_renderer_test_saturate_art_cache(SDL_Renderer *renderer,
 }
 #endif
 
+/* The density is the canvas scale: output pixels per layout unit. Text is
+ * rasterised at it, so one raster pixel is one output pixel. */
 void ui_font_set_density(float density) {
-    if (density >= 1.0f && density <= 3.0f) {
+    if (density >= PLAYER_UI_MIN_SCALE && density <= PLAYER_UI_MAX_SCALE &&
+        density != g_font.density) {
         g_font.density = density;
+        /* The font object is still sized for the old density; the next
+           ui_font_begin_bucket must set it again. */
+        g_font.active_bucket = -1;
     }
+}
+
+/* Snap a layout coordinate to the output pixel grid, so a raster drawn 1:1
+ * is not resampled across two pixels. */
+static float ui_font_snap(float v) {
+    return SDL_roundf(v * g_font.density) / g_font.density;
 }
 
 const char *ui_font_mode(void) {
@@ -1086,7 +1144,8 @@ static bool ui_font_draw_uncached(SDL_Renderer *ren, float x, float y, const cha
         if (tex) SDL_DestroyTexture(tex);
         return false;
     }
-    SDL_FRect dst = { x, y, (float)sw / g_font.density, (float)sh / g_font.density };
+    SDL_FRect dst = { ui_font_snap(x), ui_font_snap(y),
+                      (float)sw / g_font.density, (float)sh / g_font.density };
     bool drawn = SDL_RenderTexture(ren, tex, NULL, &dst);
     SDL_DestroyTexture(tex);
     return drawn;
@@ -1125,7 +1184,7 @@ static bool ui_font_draw_cached(SDL_Renderer *ren, float x, float y, const char 
     }
     float dw = (float)e->w / g_font.density;
     float dh = (float)e->h / g_font.density;
-    SDL_FRect dst = { x, y, dw, dh };
+    SDL_FRect dst = { ui_font_snap(x), ui_font_snap(y), dw, dh };
     if (!SDL_RenderTexture(ren, e->tex, NULL, &dst)) return false;
     return true;
 }
@@ -1149,10 +1208,14 @@ static void draw_text(SDL_Renderer *ren, float x, float y, const char *str, floa
     char *ascii = (char *)malloc(len + 1);
     if (ascii) {
         player_text_for_bitmap_font(shown, ascii, len + 1);
+        /* The glyph scale composes with the canvas scale already set. */
+        float canvas_x = 1.0f;
+        float canvas_y = 1.0f;
+        (void)SDL_GetRenderScale(ren, &canvas_x, &canvas_y);
         set_draw_color(ren, c);
-        SDL_SetRenderScale(ren, scale, scale);
+        SDL_SetRenderScale(ren, canvas_x * scale, canvas_y * scale);
         SDL_RenderDebugText(ren, x / scale, y / scale, ascii);
-        SDL_SetRenderScale(ren, 1.0f, 1.0f);
+        SDL_SetRenderScale(ren, canvas_x, canvas_y);
         free(ascii);
     }
     free(shown);
@@ -1307,12 +1370,62 @@ static void draw_rounded_fill(SDL_Renderer *ren, float x, float y, float w, floa
     SDL_RenderGeometry(ren, NULL, verts, at, indices, ii);
 }
 
+/* Scaled rounded outline: a ring between the rounded box (x0, y0)-(x1, y1)
+ * and the same box inset by the outline thickness, with concentric corners so
+ * the ring is equally thick all round. */
+static void draw_rounded_ring(SDL_Renderer *ren, float x0, float y0, float x1, float y1,
+                              float r, float t, SDL_Color c) {
+    SDL_FColor fc = { (float)c.r / 255.0f, (float)c.g / 255.0f, (float)c.b / 255.0f, (float)c.a / 255.0f };
+    float centers[4][2] = { { x0 + r, y0 + r }, { x1 - r, y0 + r }, { x1 - r, y1 - r }, { x0 + r, y1 - r } };
+    SDL_Vertex verts[2 * 36];
+    int indices[36 * 6];
+    for (int corner = 0; corner < 4; corner++) {
+        for (int i = 0; i <= 8; i++) {
+            int at = (corner * 9 + i) * 2;
+            float px;
+            float py;
+            rounded_arc_point(corner, i, centers[corner][0], centers[corner][1], r, &px, &py);
+            verts[at].position.x = px;
+            verts[at].position.y = py;
+            rounded_arc_point(corner, i, centers[corner][0], centers[corner][1], r - t, &px, &py);
+            verts[at + 1].position.x = px;
+            verts[at + 1].position.y = py;
+            for (int k = 0; k < 2; k++) {
+                verts[at + k].color = fc;
+                verts[at + k].tex_coord.x = 0.0f;
+                verts[at + k].tex_coord.y = 0.0f;
+            }
+        }
+    }
+    int ii = 0;
+    for (int i = 0; i < 36; i++) {
+        int o0 = i * 2;
+        int o1 = ((i + 1) % 36) * 2;
+        indices[ii++] = o0;
+        indices[ii++] = o1;
+        indices[ii++] = o0 + 1;
+        indices[ii++] = o0 + 1;
+        indices[ii++] = o1;
+        indices[ii++] = o1 + 1;
+    }
+    SDL_RenderGeometry(ren, NULL, verts, 2 * 36, indices, ii);
+}
+
 /* Rounded outline from straight edges plus arc polylines. */
 static void draw_rounded_outline(SDL_Renderer *ren, float x, float y, float w, float h, float r, SDL_Color c) {
     if (w <= 0.0f || h <= 0.0f) return;
     r = minf(r, minf(w, h) * 0.5f);
     if (r <= 1.0f) {
         draw_rect_outline(ren, x, y, w, h, c);
+        return;
+    }
+    float scale = ui_canvas_scale(ren);
+    float t = ui_outline_thickness(scale);
+    if (scale != 1.0f && r > t) {
+        /* The lines below cover [x, x + w] at scale 1; keep that box. */
+        draw_rounded_ring(ren, ui_snap_to_pixel(x, scale), ui_snap_to_pixel(y, scale),
+                          ui_snap_to_pixel(x + w + 1.0f, scale),
+                          ui_snap_to_pixel(y + h + 1.0f, scale), r, t, c);
         return;
     }
     set_draw_color(ren, c);
