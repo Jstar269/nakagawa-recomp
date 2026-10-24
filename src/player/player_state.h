@@ -151,6 +151,7 @@ typedef struct {
     int fps_cap;          /* -1 = PSP scanout, 0 = uncapped host presentation */
     int master_volume;    /* 0..100 */
     bool reduce_motion;   /* freeze pulses/sweeps for motion sensitivity */
+    bool ui_sounds;       /* launcher move/confirm/back sounds; off by default */
     bool launcher_window_maximized;
     bool launcher_window_position_valid;
     int launcher_window_x;
@@ -564,6 +565,7 @@ bool player_window_fit_to_display(PlayerWindowRect requested,
                                   PlayerWindowRect *out);
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
+void player_app_toggle_ui_sounds(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
 void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
 
@@ -620,7 +622,7 @@ void player_app_stop_game(PlayerApp *app);
 
 /* Copy the launch-relevant player settings into a prepared session's runtime
  * configuration (resolution, frame cap, vsync, fullscreen, master volume).
- * reduce_motion is launcher-UI state and deliberately not copied. Kept as a
+ * reduce_motion and ui_sounds are launcher-UI state and deliberately not copied. Kept as a
  * named seam so tests can pin the settings -> session mapping without
  * spawning a child. */
 void player_app_apply_settings_to_session(const PlayerSettings *settings,

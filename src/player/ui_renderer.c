@@ -2664,6 +2664,14 @@ static const char *saves_root_display(void) {
     return g_saves_root_ready ? g_saves_root : "(unavailable)";
 }
 
+/* The launcher sounds switch (off by default). Returns true when activated. */
+static bool draw_ui_sounds_toggle(SDL_Renderer *ren, PlayerApp *app, const UiInput *in,
+                                  float x, float y, int focus) {
+    const char *label = app->settings.ui_sounds ? "UI sounds: ON" : "UI sounds: OFF";
+    return draw_button_focused(ren, x, y, 132.0f, 34.0f, label, app->settings.ui_sounds, in,
+                               app->focus_index == focus);
+}
+
 static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float w = (float)app->window_width;
     float h = (float)app->window_height;
@@ -2860,6 +2868,11 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             draw_text(ren, col1_x + 54.0f + bar_w + 64.0f, by + 4.0f, vol_str, 1.0f, COLOR_TEXT_MUTED);
             y = by + 50.0f;
         }
+        /* The launcher sounds toggle takes this row; it is drawn, and focused,
+           after every other control so their focus stops keep their places. */
+        float sounds_x = col1_x;
+        float sounds_y = y - 6.0f;
+        y += 40.0f;
         /* Gamepad + save stay one-liners here; the topbar badge already
          * carries live controller state and this is the default save root. */
         if (h >= 620.0f) {
@@ -2925,6 +2938,10 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         if (draw_button_focused(ren, card_x + 248.0f, close_y, 260.0f, 46.0f,
                                 "ONLINE & DEVELOPER", false, in, online_focused)) {
             player_app_set_view(app, VIEW_ONLINE_SETTINGS);
+        }
+        focus++;
+        if (draw_ui_sounds_toggle(ren, app, in, sounds_x, sounds_y, focus)) {
+            player_app_toggle_ui_sounds(app);
         }
         focus++;
         (void)focus;
@@ -3121,6 +3138,12 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
     }
+    /* Launcher sounds sit beside CONTROLLER SETTINGS (the right column is at
+       least 362 px wide), drawn and focused last. */
+    if (draw_ui_sounds_toggle(ren, app, in, col2_x + 230.0f, pad_y + 48.0f, focus)) {
+        player_app_toggle_ui_sounds(app);
+    }
+    focus++;
     (void)focus;
     render_footer_hints(ren, app);
 }

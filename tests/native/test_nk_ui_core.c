@@ -2,7 +2,9 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "nk_ui.h"
+#include "nk_ui_assets.h"
 #include "nk_ui_draw.h"
+#include "nk_ui_image.h"
 #include "nk_ui_text.h"
 #include "nk_ui_theme.h"
 #include "nk_ui_waves.h"
@@ -14,6 +16,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+size_t nk_ui_dump_draw_list(const NkUiDrawList *list, char *out, size_t cap);
 
 #define CHECK(condition, message) do { \
     if (!(condition)) { \
@@ -42,6 +46,10 @@ static const char *const g_ui_core_files[] = {
     "src/ui/nk_ui_input.h",
     "src/ui/nk_ui_input.c",
     "src/ui/nk_ui_prompts.c",
+    "src/ui/nk_ui_image.h",
+    "src/ui/nk_ui_image.c",
+    "src/ui/nk_ui_assets.h",
+    "src/ui/nk_ui_assets.c",
     "src/ui/nk_ui_sdl_input.c",
     /* nk_ui_ttf.c and backend/nk_ui_sdlr.* are the SDL edge since lane C3b: they
        include SDL headers behind NK_UI_WITH_SDL and are covered by test_nk_ui_sdlr.c. */
@@ -463,6 +471,136 @@ static int test_golden(const char *actual, size_t actual_size) {
     return 1;
 }
 
+/* A PNG signature and an IHDR chunk claiming w x h, 8-bit RGBA, and nothing
+   else: enough for the header check, never enough to decode. */
+static size_t png_header_only(uint8_t *out, uint32_t w, uint32_t h) {
+    static const uint8_t head[16] = {0x89u, 'P', 'N', 'G', '\r', '\n', 0x1Au, '\n',
+                                     0u, 0u, 0u, 13u, 'I', 'H', 'D', 'R'};
+    memcpy(out, head, sizeof(head));
+    out[16] = (uint8_t)(w >> 24); out[17] = (uint8_t)(w >> 16);
+    out[18] = (uint8_t)(w >> 8); out[19] = (uint8_t)w;
+    out[20] = (uint8_t)(h >> 24); out[21] = (uint8_t)(h >> 16);
+    out[22] = (uint8_t)(h >> 8); out[23] = (uint8_t)h;
+    out[24] = 8u; out[25] = 6u; out[26] = 0u; out[27] = 0u; out[28] = 0u;
+    memset(out + 29, 0, 4u); /* CRC, not checked by the header read */
+    return 33u;
+}
+
+/* The decoder: limits are applied before decoding, failures own nothing, and
+   pixels come back premultiplied. */
+static int test_image_decode(void) {
+    const NkUiEmbeddedAsset *glyph = nk_ui_embedded_asset("input-prompts/xbox_button_a.png");
+    NkUiImageLimits limits = {64u * 1024u, 256u, 256u};
+    NkUiImage image;
+    NkUiImage second;
+    uint8_t buffer[64];
+    uint64_t first_serial;
+    size_t i;
+    CHECK(glyph != NULL && glyph->size > 8u, "the embedded Xbox A glyph is present");
+    CHECK(nk_ui_embedded_asset("input-prompts/missing.png") == NULL &&
+          nk_ui_embedded_asset(NULL) == NULL, "an unknown asset name finds nothing");
+    CHECK(nk_ui_image_decode_png(glyph->bytes, glyph->size, &limits, &image) == NK_UI_IMAGE_OK,
+          "embedded glyph decodes");
+    CHECK(image.width == 64u && image.height == 64u && image.rgba_pm != NULL && image.serial != 0u,
+          "the Kenney Default glyphs are 64 x 64");
+    for (i = 0; i < (size_t)image.width * image.height; ++i) {
+        const uint8_t *p = image.rgba_pm + i * 4u;
+        CHECK(p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3], "pixels are premultiplied");
+    }
+    first_serial = image.serial;
+    CHECK(nk_ui_image_decode_png(glyph->bytes, glyph->size, &limits, &second) == NK_UI_IMAGE_OK &&
+          second.serial != first_serial, "every decode gets its own serial");
+    nk_ui_image_free(&second);
+    nk_ui_image_free(&image);
+    CHECK(image.rgba_pm == NULL && image.width == 0u && image.serial == 0u, "free zeroes the image");
+    nk_ui_image_free(NULL);
+
+    CHECK(nk_ui_image_decode_png(NULL, 10u, &limits, &image) == NK_UI_IMAGE_EMPTY &&
+          nk_ui_image_decode_png(glyph->bytes, 0u, &limits, &image) == NK_UI_IMAGE_EMPTY &&
+          nk_ui_image_decode_png(glyph->bytes, glyph->size, NULL, &image) == NK_UI_IMAGE_EMPTY &&
+          nk_ui_image_decode_png(glyph->bytes, glyph->size, &limits, NULL) == NK_UI_IMAGE_EMPTY,
+          "missing input is EMPTY");
+    memcpy(buffer, "GIF89a and some more bytes", 27u);
+    CHECK(nk_ui_image_decode_png(buffer, 27u, &limits, &image) == NK_UI_IMAGE_NOT_PNG &&
+          image.rgba_pm == NULL, "only PNG is accepted");
+    limits.max_bytes = glyph->size - 1u;
+    CHECK(nk_ui_image_decode_png(glyph->bytes, glyph->size, &limits, &image) == NK_UI_IMAGE_TOO_LARGE,
+          "encoded size over the limit");
+    limits.max_bytes = 64u * 1024u;
+    limits.max_width = 63u;
+    CHECK(nk_ui_image_decode_png(glyph->bytes, glyph->size, &limits, &image) == NK_UI_IMAGE_TOO_LARGE &&
+          image.rgba_pm == NULL, "width over the limit, refused before decoding");
+    limits.max_width = 256u;
+    limits.max_height = 63u;
+    CHECK(nk_ui_image_decode_png(glyph->bytes, glyph->size, &limits, &image) == NK_UI_IMAGE_TOO_LARGE,
+          "height over the limit");
+    limits.max_height = 256u;
+    /* A header claiming 5000 x 5000 never reaches the pixel decoder. */
+    limits.max_width = 4096u;
+    limits.max_height = 4096u;
+    CHECK(nk_ui_image_decode_png(buffer, png_header_only(buffer, 5000u, 5000u), &limits, &image) ==
+              NK_UI_IMAGE_TOO_LARGE, "a huge header is refused by the limits");
+    CHECK(nk_ui_image_decode_png(buffer, png_header_only(buffer, 16u, 16u), &limits, &image) ==
+              NK_UI_IMAGE_DECODE_FAILED && image.rgba_pm == NULL,
+          "a header without image data fails to decode");
+    CHECK(nk_ui_image_decode_png(glyph->bytes, glyph->size / 2u, &limits, &image) ==
+              NK_UI_IMAGE_DECODE_FAILED, "a truncated PNG fails to decode");
+    CHECK(strcmp(nk_ui_image_status_name(NK_UI_IMAGE_TOO_LARGE), "TOO_LARGE") == 0,
+          "status names");
+    {
+        /* Resampling averages premultiplied pixels: a 2 x 1 image of opaque
+           white and transparent black becomes one half-covered white pixel. */
+        uint8_t two[8] = {255u, 255u, 255u, 255u, 0u, 0u, 0u, 0u};
+        uint8_t one[4];
+        uint8_t up[16];
+        NkUiImage source;
+        source.width = 2u;
+        source.height = 1u;
+        source.rgba_pm = two;
+        source.serial = 1u;
+        CHECK(nk_ui_image_resample(&source, 1u, 1u, one) &&
+              one[0] == 128u && one[1] == 128u && one[2] == 128u && one[3] == 128u,
+              "area average of premultiplied pixels");
+        CHECK(nk_ui_image_resample(&source, 4u, 1u, up) && up[0] == 255u && up[4] == 255u &&
+              up[8] == 0u && up[15] == 0u, "growing repeats source pixels");
+        CHECK(!nk_ui_image_resample(&source, 0u, 1u, one) &&
+              !nk_ui_image_resample(NULL, 1u, 1u, one) &&
+              !nk_ui_image_resample(&source, 1u, 1u, NULL), "bad arguments are refused");
+    }
+    return 1;
+}
+
+/* An image command: tinted, dumped with the image's size, never drawn for an
+   empty box, refused for a missing image. */
+static int test_image_command(void) {
+    const NkUiEmbeddedAsset *glyph = nk_ui_embedded_asset("input-prompts/kbd_enter.png");
+    NkUiImageLimits limits = {64u * 1024u, 256u, 256u};
+    NkUiImage image;
+    NkUiImage empty;
+    NkUiDrawBuffer buffer;
+    NkUiPixelRect box = {10, 20, 34, 44};
+    NkUiPixelRect flat = {10, 20, 10, 44};
+    char dump[256];
+    memset(&buffer, 0, sizeof(buffer));
+    memset(&empty, 0, sizeof(empty));
+    CHECK(glyph != NULL && nk_ui_image_decode_png(glyph->bytes, glyph->size, &limits, &image) ==
+              NK_UI_IMAGE_OK, "decode the Enter keycap");
+    CHECK(nk_ui_draw_add_image(&buffer, &image, box, 0x80808080u, 7u), "image command");
+    CHECK(nk_ui_draw_add_image(&buffer, &image, flat, 0xFFFFFFFFu, 8u) && buffer.list.ncmd == 1u,
+          "an empty box draws nothing");
+    CHECK(!nk_ui_draw_add_image(&buffer, NULL, box, 0xFFFFFFFFu, 9u) &&
+          !nk_ui_draw_add_image(&buffer, &empty, box, 0xFFFFFFFFu, 9u), "no image, no command");
+    CHECK(buffer.list.cmd[0].kind == NK_UI_DRAW_CUSTOM &&
+          buffer.list.cmd[0].custom_kind == NK_UI_CUSTOM_IMAGE &&
+          buffer.list.cmd[0].custom == &image, "custom image command");
+    (void)nk_ui_dump_draw_list(&buffer.list, dump, sizeof(dump));
+    CHECK(strcmp(dump, "00000007 IMAGE 10 20 34 44 40404080 \"64x64\"\n") == 0,
+          "dump: bounds, premultiplied tint and the image size");
+    nk_ui_draw_buffer_destroy(&buffer);
+    nk_ui_image_free(&image);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     char actual[32768];
     size_t actual_size;
@@ -470,7 +608,8 @@ int main(int argc, char **argv) {
         !test_explicit_ui_scale_values() || !test_typed_prefs_and_events() ||
         !test_theme_access() || !test_overlay_rejects_waves() ||
         !test_container_return_contract() || !test_backend_declarations() ||
-        !test_rounding_edges() || !test_focused_button_activation() || !test_wave_caps()) {
+        !test_rounding_edges() || !test_focused_button_activation() || !test_wave_caps() ||
+        !test_image_decode() || !test_image_command()) {
         return 1;
     }
     if (!build_golden_output(actual, sizeof(actual))) {
@@ -484,6 +623,6 @@ int main(int argc, char **argv) {
     if (!test_golden(actual, actual_size)) {
         return 1;
     }
-    puts("nk_ui core goldens, pixel rounding, SDL/Vulkan boundary and wave caps passed");
+    puts("nk_ui core goldens, pixel rounding, SDL/Vulkan boundary, wave caps and image decoding passed");
     return 0;
 }

@@ -925,9 +925,10 @@ int player_app_focus_count(const PlayerApp *app) {
             /* Resolution (3) + presentation pacing (2) + game display toggles (4: vsync,
              * fullscreen, scaling, reduce-motion) + launcher fullscreen (1) + volume stepper (2) +
              * controller settings (1) + notices and remove-tools controls (2) + close (1),
-             * then online and developer options (1), in draw order. The 8x preset is
-             * not offered (GPU scale caps at 4x). */
-            return 17;
+             * then online and developer options (1), in draw order, and last the
+             * launcher sounds toggle (1), so the earlier stops keep their places.
+             * The 8x preset is not offered (GPU scale caps at 4x). */
+            return 18;
         case VIEW_ONLINE_SETTINGS:
             /* online switch (+ updates, news, reports while it is on), developer
                switch (+ open log while it is on), back */
@@ -1009,6 +1010,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->fps_cap = -1;
     settings->master_volume = 80;
     settings->reduce_motion = false;
+    settings->ui_sounds = false;
     settings->launcher_window_maximized = false;
     settings->launcher_window_position_valid = false;
     settings->launcher_window_x = 0;
@@ -1240,6 +1242,12 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         app->settings.reduce_motion = rm_val;
     }
 
+    NkJsonNode *sounds_node = nk_json_obj_get(root, "ui_sounds");
+    bool sounds_val = false;
+    if (sounds_node && nk_json_get_bool(sounds_node, &sounds_val)) {
+        app->settings.ui_sounds = sounds_val;
+    }
+
     NkJsonNode *vol_node = nk_json_obj_get(root, "master_volume");
     int64_t vol_val = 0;
     if (vol_node && nk_json_get_int64(vol_node, &vol_val)) {
@@ -1323,6 +1331,7 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"online_reports\": %s,\n", app->settings.online_reports ? "true" : "false");
     fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
     fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
+    fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
 
@@ -1614,6 +1623,12 @@ void player_app_toggle_vsync(PlayerApp *app) {
 void player_app_toggle_reduce_motion(PlayerApp *app) {
     if (!app) return;
     app->settings.reduce_motion = !app->settings.reduce_motion;
+    maybe_persist_settings(app);
+}
+
+void player_app_toggle_ui_sounds(PlayerApp *app) {
+    if (!app) return;
+    app->settings.ui_sounds = !app->settings.ui_sounds;
     maybe_persist_settings(app);
 }
 

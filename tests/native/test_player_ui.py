@@ -929,6 +929,18 @@ class NativePlayerUiTests(unittest.TestCase):
                 self.assertEqual(frames[0]["view"], "online_settings")
                 self.assertEqual(frames[1]["view"], "settings")
 
+    def test_next_ui_library_card_shows_the_disc_icon_once_read(self) -> None:
+        """The next UI reads ICON0.PNG from the disc in the background and shows
+        it on the card; a disc that cannot be read keeps the placeholder."""
+        shown = self.run_player("ready", ("WAIT_MS=1500",), art_iso="available", ui_mode="next")
+        missing = self.run_player("ready", ("WAIT_MS=1500",), art_iso="unavailable", ui_mode="next")
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in shown["stdout"]:
+            self.skipTest("the next UI could not start here (no UI fonts)")
+        self.assertIn("[PLAYER_UI_TEST] next_ui_disc_icon index=0 width=1 height=1", shown["stdout"],
+                      "the disc's 1 x 1 ICON0.PNG is decoded and shown on its card")
+        self.assertNotIn("next_ui_disc_icon", missing["stdout"],
+                         "an unreadable disc keeps the placeholder")
+
     def test_next_ui_is_the_default_with_a_legacy_fallback(self) -> None:
         marker = "[PLAYER_UI_TEST] UI_NEXT_ACTIVE"
         default_ui = self.run_player("empty")
@@ -983,7 +995,7 @@ class NativePlayerUiTests(unittest.TestCase):
         run = self.run_player("settings", events)
         frames = run["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[0]["focus_count"], "17")
+        self.assertEqual(frames[0]["focus_count"], "18")
         self.assertEqual(frames[4]["focus"], "4")
         self.assertEqual(frames[5]["focus"], "4")
         self.assertNotEqual(frames[4]["pixels"], frames[5]["pixels"])
@@ -993,6 +1005,7 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(settings, dict)
         self.assertEqual(settings.get("schema_version"), 2)
         self.assertEqual(settings.get("fps_cap"), 0)
+        self.assertIs(settings.get("ui_sounds"), False, "launcher sounds are off by default")
         renderer_source = (ROOT / "src" / "player" / "ui_renderer.c").read_text(
             encoding="utf-8"
         )
@@ -1015,11 +1028,23 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(settings, dict)
         self.assertEqual(settings.get("present_scaling"), "integer")
 
+    def test_settings_ui_sounds_toggle_is_the_last_stop_and_saves(self) -> None:
+        """The launcher sounds switch is focused after every older control, so their stops keep their places."""
+        run = self.run_player("settings", ("KEY_TAB",) * 17 + ("KEY_RETURN",))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["focus_count"], "18")
+        self.assertEqual(frames[17]["focus"], "17")
+        self.assertNotEqual(frames[17]["pixels"], frames[18]["pixels"])
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertIs(settings.get("ui_sounds"), True)
+
     def test_settings_about_opens_the_pinned_license_list(self) -> None:
         run = self.run_player("settings", ("KEY_TAB",) * 13 + ("KEY_RETURN",))
         frames = run["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[0]["focus_count"], "17")
+        self.assertEqual(frames[0]["focus_count"], "18")
         self.assertEqual(frames[13]["focus"], "13")
         self.assertEqual(frames[-1]["view"], "prereq_about")
 

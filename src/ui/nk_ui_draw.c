@@ -798,6 +798,27 @@ bool nk_ui_draw_add_custom(NkUiDrawBuffer *buffer, uint32_t custom_kind,
     return nk_ui_append_command(buffer, command);
 }
 
+bool nk_ui_draw_add_image(NkUiDrawBuffer *buffer, const NkUiImage *image,
+                          NkUiPixelRect bounds, uint32_t tint_rgba,
+                          uint32_t element_id) {
+    NkUiDrawCmd command;
+    if (buffer == NULL || image == NULL || image->rgba_pm == NULL || image->width == 0u ||
+        image->height == 0u || !nk_ui_reserve_commands(buffer, buffer->list.ncmd + 1u)) {
+        return false;
+    }
+    if (bounds.x1 <= bounds.x0 || bounds.y1 <= bounds.y0) {
+        return true; /* nothing to draw */
+    }
+    memset(&command, 0, sizeof(command));
+    command.kind = NK_UI_DRAW_CUSTOM;
+    command.custom_kind = NK_UI_CUSTOM_IMAGE;
+    command.custom = image;
+    command.element_id = element_id;
+    command.rgba_pm = nk_ui_premultiply(tint_rgba);
+    nk_ui_set_bounds(&command, bounds);
+    return nk_ui_append_command(buffer, command);
+}
+
 bool nk_ui_draw_add_scissor(NkUiDrawBuffer *buffer, bool start,
                             NkUiPixelRect bounds, uint32_t element_id) {
     NkUiDrawCmd command;

@@ -2673,7 +2673,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 17); /* two pacing modes; scaling; launcher fullscreen; online options */
+        assert(player_app_focus_count(stops) == 18); /* two pacing modes; scaling; launcher fullscreen; online options; UI sounds */
         stops->active_view = VIEW_PREREQ_CONSENT;
         assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_PREREQ_PROGRESS;
