@@ -13,6 +13,8 @@ Links for playing and trying the project, rather than changing it:
 
 - [`../README.md`](../README.md) — what the project is, and the quick start.
 - [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) — playing a game you own.
+- [`../ACCESSIBILITY.md`](../ACCESSIBILITY.md) — what the player does and does not support for accessibility, and how to report a barrier.
+- [`../SUPPORT.md`](../SUPPORT.md) — where to take a question.
 - [`SHOWCASE.md`](SHOWCASE.md) — the two demo programs.
 - [`COMPATIBILITY.md`](COMPATIBILITY.md) — which games work.
 - [`SETUP.md`](SETUP.md#windows-host-pitfalls) — troubleshooting: Windows host pitfalls.
