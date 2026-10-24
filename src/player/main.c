@@ -190,8 +190,6 @@ static void trigger_font_folder_picker(SDL_Window *window, PlayerApp *app) {
     SDL_ShowOpenFolderDialog(on_font_folder_dialog_callback, app, window, NULL, false);
 }
 
-#define PLAYER_UI_LOGICAL_WIDTH 1280
-#define PLAYER_UI_LOGICAL_HEIGHT 720
 #define PLAYER_WINDOW_MIN_LOGICAL_WIDTH 960
 #define PLAYER_WINDOW_MIN_LOGICAL_HEIGHT 540
 
@@ -240,8 +238,8 @@ static PlayerWindowRect player_requested_window(const PlayerSettings *settings,
         requested.width = settings->launcher_window_width;
         requested.height = settings->launcher_window_height;
     } else {
-        requested.width = (int)(PLAYER_UI_LOGICAL_WIDTH * content_scale + 0.5f);
-        requested.height = (int)(PLAYER_UI_LOGICAL_HEIGHT * content_scale + 0.5f);
+        requested.width = (int)(PLAYER_UI_DESIGN_WIDTH * content_scale + 0.5f);
+        requested.height = (int)(PLAYER_UI_DESIGN_HEIGHT * content_scale + 0.5f);
     }
     return requested;
 }
@@ -910,40 +908,57 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     }
 }
 
+/* The screens ui_renderer.c draws are laid out on a PlayerUiCanvas and drawn
+   with a render scale straight into the output's pixels, so text, icons and
+   card edges are rasterised at the size they are shown (#1129). SDL's logical
+   presentation stays off: it stretched a fixed 1280x720 canvas to the window.
+   An interactive launcher refits to the window every frame; a capture draws
+   its fixed --width x --height layout at --render-scale. */
+static bool s_ui_canvas_from_window = false;
+static PlayerUiCanvas s_ui_capture_canvas = {
+    PLAYER_UI_DESIGN_WIDTH, PLAYER_UI_DESIGN_HEIGHT, 1.0f
+};
+
+static void player_fit_ui_canvas(PlayerApp *app, SDL_Renderer *renderer) {
+    PlayerUiCanvas canvas = s_ui_capture_canvas;
+    if (s_ui_canvas_from_window) {
+        int pixel_width = 0;
+        int pixel_height = 0;
+        /* A failed fit (a minimized window has no pixels) keeps the last
+           canvas, so layout and hit-testing still agree with the screen. */
+        if (!SDL_GetRenderOutputSize(renderer, &pixel_width, &pixel_height) ||
+            !player_ui_canvas_fit(pixel_width, pixel_height, &canvas)) {
+            return;
+        }
+    }
+    if (!SDL_SetRenderScale(renderer, canvas.scale, canvas.scale)) return;
+    app->window_width = canvas.width;
+    app->window_height = canvas.height;
+    app->dpi_scale = canvas.scale;
+}
+
 /* With the next UI on, the launcher switches presentation with the renderer
    that draws the frame: nk_ui lays out at the window's real size, and the
    screens still drawn by ui_renderer.c (setup wizard, settings, build progress,
-   dialogs) keep the 1280x720 letterbox they were designed for. */
+   dialogs) use the fitted canvas above. */
 static bool s_switch_presentation = false;
-static int s_presentation = -1; /* 0 letterboxed, 1 native */
+static int s_presentation = -1; /* 0 fitted canvas, 1 native */
 
-static void player_use_presentation(PlayerApp *app, SDL_Renderer *renderer,
-                                    SDL_Window *window, bool native) {
+static void player_use_presentation(PlayerApp *app, SDL_Window *window,
+                                    bool native) {
     int want = native ? 1 : 0;
     if (!s_switch_presentation || s_presentation == want) return;
-    /* The app's sizes change only when SDL took the new presentation; a failed
-       switch keeps the old one, and the next frame tries again. */
     if (native) {
         int w = 0;
         int h = 0;
-        if (!SDL_SetRenderLogicalPresentation(renderer, 0, 0,
-                                              SDL_LOGICAL_PRESENTATION_DISABLED)) {
-            return;
-        }
         if (SDL_GetWindowSize(window, &w, &h) && w > 0 && h > 0) {
             app->window_width = w;
             app->window_height = h;
         }
         app->logical_ui = false;
     } else {
-        if (!SDL_SetRenderLogicalPresentation(renderer, PLAYER_UI_LOGICAL_WIDTH,
-                                              PLAYER_UI_LOGICAL_HEIGHT,
-                                              SDL_LOGICAL_PRESENTATION_LETTERBOX)) {
-            return;
-        }
+        /* player_fit_ui_canvas sets the sizes before the frame is drawn. */
         app->logical_ui = true;
-        app->window_width = PLAYER_UI_LOGICAL_WIDTH;
-        app->window_height = PLAYER_UI_LOGICAL_HEIGHT;
     }
     s_presentation = want;
 }
@@ -953,11 +968,15 @@ static void player_render_active_ui(PlayerUiNk *next_ui, PlayerApp *app,
                                     UiInput *input) {
     PlayerUiAction action;
     bool next = player_ui_nk_view_active(next_ui, app);
-    player_use_presentation(app, renderer, window, next);
+    player_use_presentation(app, window, next);
+    /* nk_ui sizes itself from the output's pixels; the canvas scale of the
+       screens below must not apply to it. */
+    if (next) (void)SDL_SetRenderScale(renderer, 1.0f, 1.0f);
     if (next && player_ui_nk_render(next_ui, app, renderer, window, &action)) {
         player_ui_nk_apply_action(app, &action);
     } else {
-        player_use_presentation(app, renderer, window, false);
+        player_use_presentation(app, window, false);
+        player_fit_ui_canvas(app, renderer);
         ui_render_frame(renderer, app, input);
     }
 }
@@ -2785,6 +2804,7 @@ int main(int argc, char *argv[]) {
     int launch_index = -1;
     int override_w = 1280;
     int override_h = 720;
+    float capture_render_scale = 1.0f;
     /* Demo fixtures are opt-in. Defaulting them on meant a normal first
        launch with an empty library populated TEST00005 and, through
        player_app_add_game, PERSISTED it: a new user's first sight of the
@@ -2807,6 +2827,7 @@ int main(int argc, char *argv[]) {
                    "[--ui=next|--ui=legacy] "
                    "[--iso=<path> [--stage|--stage-only|--launch-now]] "
                    "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>] "
+                   "[--width=W --height=H [--render-scale=S]] "
                    "[--launch-index=N] [--headless-launch] "
                    "[--headless-accept-presented-frames=N] "
                    "[--headless-timeout-ms=N]\n");
@@ -2881,6 +2902,15 @@ int main(int argc, char *argv[]) {
             override_w = atoi(argv[i] + 8);
         } else if (strncmp(argv[i], "--height=", 9) == 0) {
             override_h = atoi(argv[i] + 9);
+        } else if (strncmp(argv[i], "--render-scale=", 15) == 0) {
+            char *end = NULL;
+            float value = strtof(argv[i] + 15, &end);
+            if (end == argv[i] + 15 || *end != '\0' ||
+                !(value >= PLAYER_UI_MIN_SCALE && value <= PLAYER_UI_MAX_SCALE)) {
+                fprintf(stderr, "[PLAYER] --render-scale must be a number from 0.25 to 8.\n");
+                return 2;
+            }
+            capture_render_scale = value;
         } else if (strcmp(argv[i], "--demo") == 0) {
             populate_sample = true;
         } else if (strcmp(argv[i], "--headless-launch") == 0) {
@@ -3571,14 +3601,18 @@ int main(int argc, char *argv[]) {
     }
 #endif
     s_switch_presentation = interactive_window && next_ui != NULL;
-    bool logical_presentation_set = interactive_window && next_ui == NULL &&
-        SDL_SetRenderLogicalPresentation(
-            renderer, PLAYER_UI_LOGICAL_WIDTH, PLAYER_UI_LOGICAL_HEIGHT,
-            SDL_LOGICAL_PRESENTATION_LETTERBOX);
-    if (logical_presentation_set) {
+    s_ui_canvas_from_window = interactive_window;
+    /* A capture lays out --width x --height units, as before, and draws each
+       as --render-scale pixels; a window at the scale player_ui_canvas_fit
+       picks for it shows the same picture. */
+    s_ui_capture_canvas.width = override_w;
+    s_ui_capture_canvas.height = override_h;
+    s_ui_capture_canvas.scale = capture_render_scale;
+    int capture_pixel_width = (int)(override_w * capture_render_scale + 0.5f);
+    int capture_pixel_height = (int)(override_h * capture_render_scale + 0.5f);
+    if (interactive_window && next_ui == NULL) {
         app.logical_ui = true;
-        app.window_width = PLAYER_UI_LOGICAL_WIDTH;
-        app.window_height = PLAYER_UI_LOGICAL_HEIGHT;
+        player_fit_ui_canvas(&app, renderer);
     } else if (interactive_window) {
         int actual_width = startup_window.width;
         int actual_height = startup_window.height;
@@ -3586,8 +3620,8 @@ int main(int argc, char *argv[]) {
             actual_width = startup_window.width;
             actual_height = startup_window.height;
         }
-        app.window_width = actual_width > 0 ? actual_width : PLAYER_UI_LOGICAL_WIDTH;
-        app.window_height = actual_height > 0 ? actual_height : PLAYER_UI_LOGICAL_HEIGHT;
+        app.window_width = actual_width > 0 ? actual_width : PLAYER_UI_DESIGN_WIDTH;
+        app.window_height = actual_height > 0 ? actual_height : PLAYER_UI_DESIGN_HEIGHT;
     }
 
     UiInput input;
@@ -3598,7 +3632,8 @@ int main(int argc, char *argv[]) {
     if (ui_test_mode) {
         ui_test_target = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
                                            SDL_TEXTUREACCESS_TARGET,
-                                           app.window_width, app.window_height);
+                                           capture_pixel_width,
+                                           capture_pixel_height);
         if (!ui_test_target || !SDL_SetRenderTarget(renderer, ui_test_target)) {
             fprintf(stderr, "[PLAYER_UI_TEST] Could not create SDL render target: %s\n",
                     SDL_GetError());
@@ -3615,13 +3650,16 @@ int main(int argc, char *argv[]) {
 
     /* Headless Screenshot Mode */
     if (screenshot_path != NULL) {
-        SDL_Texture *target = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, app.window_width, app.window_height);
+        SDL_Texture *target = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET,
+                                                capture_pixel_width, capture_pixel_height);
         if (target) {
             SDL_SetRenderTarget(renderer, target);
         }
         player_render_active_ui(next_ui, &app, renderer, window, &input);
         if (ui_capture_screenshot(renderer, screenshot_path)) {
-            printf("[PLAYER] Screenshot saved to %s (%dx%d)\n", screenshot_path, app.window_width, app.window_height);
+            printf("[PLAYER] Screenshot saved to %s (%dx%d pixels, %dx%d layout)\n", screenshot_path,
+                   capture_pixel_width, capture_pixel_height,
+                   app.window_width, app.window_height);
         } else {
             fprintf(stderr, "[PLAYER] Failed saving screenshot to %s: %s\n", screenshot_path, SDL_GetError());
         }

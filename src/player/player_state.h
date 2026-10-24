@@ -87,6 +87,21 @@ typedef struct {
     int right;
 } PlayerWindowFrame;
 
+/* The launcher's design size, and the range of output pixels per layout unit
+   the UI (and its font rasteriser) is drawn at. */
+#define PLAYER_UI_DESIGN_WIDTH 1280
+#define PLAYER_UI_DESIGN_HEIGHT 720
+#define PLAYER_UI_MIN_SCALE 0.25f
+#define PLAYER_UI_MAX_SCALE 8.0f
+
+/* Where the launcher UI is laid out and how it reaches the output: `width` by
+   `height` layout units, each drawn as `scale` output pixels. */
+typedef struct {
+    int width;
+    int height;
+    float scale;
+} PlayerUiCanvas;
+
 typedef enum {
     PLAYER_CLOSE_QUIT = 0,
     PLAYER_CLOSE_CONFIRM_REQUIRED
@@ -562,6 +577,17 @@ bool player_window_fit_to_display(PlayerWindowRect requested,
                                   PlayerWindowFrame frame,
                                   bool requested_position_valid,
                                   PlayerWindowRect *out);
+/* Fit the launcher UI to a window whose drawable area is `pixel_width` x
+ * `pixel_height` output pixels (#1129). The design keeps the proportions the
+ * letterboxed 1280x720 canvas gave it: the scale is the one the letterbox
+ * used, so the screens never lay out smaller than the design. Instead of
+ * leaving bars, the canvas grows along the window's longer axis, and instead
+ * of stretching a finished picture, the UI is drawn straight into the output
+ * pixels with a uniform scale and no offset, so text is rasterised at exactly
+ * `scale` and lands on whole pixels. A high-DPI window has more pixels and
+ * therefore a larger scale. */
+bool player_ui_canvas_fit(int pixel_width, int pixel_height,
+                          PlayerUiCanvas *out);
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
