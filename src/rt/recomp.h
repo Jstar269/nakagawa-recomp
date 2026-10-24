@@ -616,6 +616,33 @@ static inline void sr_w8 (uint32_t a, uint8_t v) { sr_w8_pc(a, v, 0); }
 static inline void sr_w16(uint32_t a, uint16_t v) { sr_w16_pc(a, v, 0); }
 static inline void sr_w32(uint32_t a, uint32_t v) { sr_w32_pc(a, v, 0); }
 
+/* Native bulk copy/fill bodies for generated stubs that replace a title's own
+ * memmove/memset (#1170).  They keep the same VRAM coherence contract as the
+ * MEM_* accessors and h_Memcpy/h_Memset: a renderer-owned source is read back
+ * before the host pointer is formed, and the destination is prepared and
+ * committed so GPU targets and cached textures observe the store. */
+static inline void sr_native_memmove(uint32_t dest, uint32_t src, uint32_t size, uint32_t pc) {
+    if (size > 0u && size < 0x04000000u &&
+        sr_guest_span_writable(dest, size) && sr_guest_span_readable_current(src, size)) {
+        sr_guest_vram_write_prepare_bytes(dest, size);
+        if (g_sr_heap_watch) sr_heap_note_bulk_write(dest, size, pc);
+        memmove(SR_HOST(dest), SR_HOST(src), size);
+        sr_guest_vram_write_commit_bytes(dest, size);
+    } else if (size) {
+        sr_oor(dest, 0u, 1); sr_oor(src, 0u, 0);
+    }
+}
+static inline void sr_native_memset(uint32_t dest, uint8_t val, uint32_t size, uint32_t pc) {
+    if (size > 0u && size < 0x04000000u && sr_guest_span_writable(dest, size)) {
+        sr_guest_vram_write_prepare_bytes(dest, size);
+        if (g_sr_heap_watch) sr_heap_note_bulk_write(dest, size, pc);
+        memset(SR_HOST(dest), val, size);
+        sr_guest_vram_write_commit_bytes(dest, size);
+    } else if (size) {
+        sr_oor(dest, val, 1);
+    }
+}
+
 #define MEM_R8(a)   sr_r8(a)
 #define MEM_R16(a)  sr_r16(a)
 #define MEM_R32(a)  sr_r32(a)

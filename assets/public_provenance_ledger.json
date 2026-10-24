@@ -1630,7 +1630,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "ef94377df0b2e3f2b2727f14c6466d5ec2b4b9bc60ddeea17df6d8aa44983d0e"
+      "sha256": "92f50c50e9e6fe20b0eebf59afbf145dfc859714194517f4744b6dcbe5472103"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -5185,7 +5185,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "45423f875ddcd58c50c2338d2afb28e81aa3543f4591b42ecfb6351032a39baf"
+      "sha256": "b1074a22dbeecb560eb43fcb1bfb08833bc7cab5488e85496d0a950e348f5366"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -5863,7 +5863,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a2b87ae2b5524c36e00d2c4efbc18113c408283e41da96b885ada94622da88e3"
+      "sha256": "fad62b49105eded19b6c88c3766b36b71d2478742132cdf07b6921b7bee340d9"
     },
     {
       "path": "src/rt/savedata.c",
@@ -7281,7 +7281,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7d9ecf67c2b7c53c9eded6f985337b05d0a51e714722babe5b37a5cd65a9efd8"
+      "sha256": "4937f1fdec8a2b1175337d5e360d8ab24119e21567e745729d064a102deec068"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -7306,7 +7306,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "29e67ddfaeee9cdfd9c939eee11ceb7f40a1afa63e53a683665822af25fefeee"
+      "sha256": "75c3f4ea093dca52557a27a0f563e689958a2d94c83f53602337a6e31990c316"
     },
     {
       "path": "tools/compiler_compare.py",
@@ -9055,7 +9055,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3437a29adcf639a22d1ea678a7f565649224c3c0e4003335f67e884b2dea7197"
+      "sha256": "a5a67c676ef07bda1f3c2e911431044d86b4f8b26c3b04d18007fe113a038efd"
     },
     {
       "path": "tools/test_codegen_retail_allocator.py",
