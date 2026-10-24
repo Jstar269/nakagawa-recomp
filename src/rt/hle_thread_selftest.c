@@ -2286,8 +2286,16 @@ static void test_runtime_placed_modules(void) {
     {
         uint32_t floor = (sr_hle_test_partition_heap_ptr() + 0xFFu) & ~0xFFu;
         uint32_t top = sr_hle_test_partition_top();
-        expect(sr_alloc_block_at(floor, top - floor, "fill") != 0xFFFFFFFFu,
-               "runtime placement: the rest of the partition is reserved");
+        /* This partition is based below kernel RAM, so the runtime's stacks lie inside
+         * [floor, top). They are never partition memory, so the rest of the partition is
+         * the two spans either side of them. */
+        int filled = floor < SR_VBLANK_STACK_BASE && top > SR_NESTED_FRAME_END
+                         ? sr_alloc_block_at(floor, SR_VBLANK_STACK_BASE - floor, "fill") !=
+                                   0xFFFFFFFFu &&
+                               sr_alloc_block_at(SR_NESTED_FRAME_END, top - SR_NESTED_FRAME_END,
+                                                 "fill-high") != 0xFFFFFFFFu
+                         : sr_alloc_block_at(floor, top - floor, "fill") != 0xFFFFFFFFu;
+        expect(filled, "runtime placement: the rest of the partition is reserved");
         rt_capture_begin();
         refused = rt_load(alpha_guest, 0u);
         out = rt_capture_end();
