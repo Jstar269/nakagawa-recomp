@@ -54,15 +54,17 @@
 #include <stdint.h>
 
 /* ---- reserved guest region -------------------------------------------------
- * [0x09f00000, 0x0a000000): 1 MiB between the top of the thread-stack arena and
- * the runtime's newlib heap arena at SR_HEAP_BASE (0x0a000008, src/rt/recomp.c).
- * This hole was already unclaimed, so reserving it moves no existing allocation:
- * thread stacks, the VBLANK interrupt stack, guest VRAM and the heap all keep the
- * addresses they had.  src/rt/sched.c derives SR_STACK_ARENA_CEIL from
- * SR_NESTED_FRAME_BASE so the exclusion is structural rather than a coincidence
- * of two literals that happen to agree today. */
-#define SR_NESTED_FRAME_BASE      0x09f00000u
-#define SR_NESTED_FRAME_END       0x0a000000u
+ * [0x08300000, 0x08400000): the top 1 MiB of kernel RAM, ending where the volatile
+ * partition sceKernelVolatileMemLock hands out begins (0x08400000).  The frames
+ * are runtime-owned host->guest scratch, so they stay out of the PSP user
+ * partition [0x08800000, 0x0a000000): a game owns all of that span.  They used to
+ * occupy [0x09f00000, 0x0a000000), its top 1 MiB, and a game that allocated the
+ * free memory a PSP would leave it (for example a fixed 21 MB block) was refused.
+ * src/rt/sched.c derives the VBLANK interrupt stack from SR_NESTED_FRAME_BASE and
+ * keeps the thread-stack arena (the user partition) above SR_NESTED_FRAME_END, so
+ * the exclusion is structural rather than a coincidence of two literals. */
+#define SR_NESTED_FRAME_BASE      0x08300000u
+#define SR_NESTED_FRAME_END       0x08400000u
 #define SR_NESTED_FRAME_STRIDE    0x00010000u   /* 64 KiB per slot */
 #define SR_NESTED_FRAME_SLOTS     16u           /* (END - BASE) / STRIDE */
 

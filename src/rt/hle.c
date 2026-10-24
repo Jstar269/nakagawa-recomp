@@ -584,21 +584,27 @@ typedef struct { uint32_t uid, addr, size, slot_size, prev, next; } Block;
 static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
 
 /* Guest thread stacks are carved by the scheduler from a descending arena that ends at
- * 0x09ef0000, below the runtime's VBLANK stack and nested-frame region, i.e. inside the
- * PSP user-RAM span this partition also covers. On a PSP, thread stacks come out of the
+ * 0x0a000000, the top of the PSP user-RAM span this partition also covers (the runtime's
+ * VBLANK stack and nested frames live in kernel RAM). On a PSP, thread stacks come out of the
  * same user partition, so memory a game is told is free never contains a live stack.
  * Here the contiguous free space above the bump pointer therefore ends at the first live
  * stack above the partition base (and never above the arena ceiling). Before this, a
  * game that took the reported
  * free memory (21 MB and more) received a block over its own main-thread stack, zeroed
  * it, and returned through a clobbered $ra (AOT_RETURN_TARGET_MISMATCH). */
-#define USER_PARTITION_RESERVED_FLOOR 0x09ef0000u   /* sched.c SR_STACK_ARENA_CEIL */
+#define USER_PARTITION_RESERVED_FLOOR 0x0a000000u   /* sched.c SR_STACK_ARENA_CEIL */
 extern uint32_t sched_guest_stack_floor_above(uint32_t addr);
 static uint32_t user_partition_ceiling(void) {
     return s_part_top < USER_PARTITION_RESERVED_FLOOR ? s_part_top : USER_PARTITION_RESERVED_FLOOR;
 }
+/* The runtime's VBLANK stack and nested host->guest frames occupy the top of kernel RAM,
+ * [0x082f0000, SR_NESTED_FRAME_END). A partition based below them (an image linked at a
+ * low address) ends there, so no allocation is ever placed over a runtime stack. */
+#define USER_PARTITION_RUNTIME_STACKS_BASE 0x082f0000u   /* sched.c SR_VBLANK_STACK_BASE */
 static uint32_t user_partition_top(void) {
     uint32_t ceiling = user_partition_ceiling();
+    if (s_heap_base < SR_NESTED_FRAME_END && ceiling > USER_PARTITION_RUNTIME_STACKS_BASE)
+        ceiling = USER_PARTITION_RUNTIME_STACKS_BASE;
     uint32_t floor = sched_guest_stack_floor_above(s_heap_base);
     return floor < ceiling ? floor : ceiling;
 }

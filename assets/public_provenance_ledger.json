@@ -1534,7 +1534,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "42a2c27ff7624897be1bebcda5d6b5fe8c17edc18bbe300b91a3a5b3fdfd7a5a"
+      "sha256": "36df415c03a8323b1823c28855475798c1e4f5d6e2521470dfb41cd7099c5049"
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
@@ -1813,7 +1813,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b78bda240d35af588127a97ab6cb98b04d37eced3e7c5d164f5d575c96961857"
+      "sha256": "e2eb2bd1786582f2702624cf45f7412315c2aee708099f26eb92c7dfc167a7e8"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -5424,7 +5424,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e871d80ac8dda6dff4e8ca7fa28f2e0074d623487a6b8e0a6668d0531f0a4968"
+      "sha256": "992b822a984cd3887b92085a83aae78f46e1e20243a3f77903fa5317e9bd1a55"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5462,7 +5462,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f1efe9c534c254daa601ad50ca75983c1864abb06f24ea8de8c11d0d767b4299"
+      "sha256": "20c3861159d12a7d7c138b346d4a935fefc6762c3d1f03a23e1543a27334e8c6"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5548,7 +5548,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9e65bbd5ebc8333ee7bc09a2dde8f75671c4a66212e0b3af05b2f3fdf2452130"
+      "sha256": "ad6b7a4b291e7ace5d1c762b962d956d50e6b7ca7fddb359310c4ff50e20d632"
     },
     {
       "path": "src/rt/nid_names.h",
@@ -5850,7 +5850,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2fa60b6205965f4dca2ec57d7274a2a0c5353242b6e9e5cb3208421c44733f63"
+      "sha256": "0327ae2f7afb057874529dae6c5f38d176883fbf2acc3dfd23c1bf39bcbaa59d"
     },
     {
       "path": "src/rt/recomp.h",
@@ -5889,7 +5889,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "099288483564dbf80d2aab7ac87ae116336f0178e3e7cbba764aaab7fc9bf093"
+      "sha256": "d70eb102ff4bb8b61e87c849310102995a0eb5058a7610521cb4ccc22f9e774e"
     },
     {
       "path": "src/rt/sched_selftest.c",
