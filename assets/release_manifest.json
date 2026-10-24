@@ -79,6 +79,26 @@
       "disposition": "vendored_source_only; not linked into player runtime yet"
     },
     {
+      "id": "portable-snippets-safe-math",
+      "name": "Portable Snippets safe-math",
+      "license": "CC0-1.0",
+      "origin": "https://github.com/nemequ/portable-snippets",
+      "revision": "84abba93ff3d52c87e08ba81de1cc6615a42b72e",
+      "notice_path": "third_party/portable-snippets/COPYING.md",
+      "evidence_path": "third_party/portable-snippets/PROVENANCE.md",
+      "disposition": "vendored_header; compiled into the native player via src/core/nk_iso.c and src/core/nk_xb.c"
+    },
+    {
+      "id": "dr-libs-dr-wav",
+      "name": "dr_libs dr_wav",
+      "license": "Unlicense",
+      "origin": "https://github.com/mackron/dr_libs",
+      "revision": "d422edf14ec2b81ac40a7f22b5a7f64276b5fc34",
+      "notice_path": "third_party/dr_libs/LICENSE.txt",
+      "evidence_path": "third_party/dr_libs/PROVENANCE.md",
+      "disposition": "vendored_source_only; selftests only, not linked into the player or runtime"
+    },
+    {
       "id": "sdl3",
       "name": "SDL3",
       "license": "Zlib",

@@ -56,6 +56,15 @@ We aim to respond promptly and will remove material where appropriate.
   `third_party/clay/`.
   Clay is compiled into the native layout selftest and the `nk_ui` core library
   tests only; it is not linked into the player yet.
+- **Portable Snippets `safe-math`** — `CC0-1.0` (public domain dedication). The
+  byte-identical header, upstream `COPYING.md`, pinned source manifest, and
+  SHA-256 values are under `third_party/portable-snippets/`. It is compiled into
+  the native player through `src/core/nk_iso.c` and `src/core/nk_xb.c`.
+- **dr_libs `dr_wav`** — the Unlicense (public domain), elected from upstream's
+  Unlicense or `MIT-0` choice; both texts are kept. The byte-identical header,
+  upstream `LICENSE`, pinned source manifest, and SHA-256 values are under
+  `third_party/dr_libs/`. Only selftests compile it; it is not in the player or
+  the runtime.
 - **Optional system FFmpeg/libavcodec H.264 backend** — `H264_FFMPEG=1` links
   host-provided `libavcodec` and `libavutil` dynamically. Their source is not
   vendored and the Windows package does not bundle them; anyone who bundles them

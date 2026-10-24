@@ -2253,12 +2253,13 @@ atrac3p-selftest:
 # validation, NULL/contract-violation rejection, the deterministic terminator
 # and MONO transform-path canaries through the production bridge entry point,
 # determinism across instances/reset/recreate, destroy(NULL). No game inputs,
-# no fixtures required.
+# no fixtures required. With NK_PCM_WAV_DIR=<dir> it also writes the decoded canary
+# PCM there as WAV files (tests/native/pcm_wav_dump.c), to listen to while debugging.
 atrac3p-bridge-selftest:
 	$(CC) $(CFLAGS) -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec \
-		-Isrc/rt/atrac3p/libavutil $(LDFLAGS) \
+		-Isrc/rt/atrac3p/libavutil -Itests/native $(LDFLAGS) \
 		-o $(BUILD_DIR)/atrac3p_bridge_selftest.exe \
-		src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c \
+		src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c tests/native/pcm_wav_dump.c \
 		$(ATRAC3P_SRCS) src/rt/vfpu_tables.c -lm
 	$(BUILD_DIR)/atrac3p_bridge_selftest.exe
 
@@ -3111,6 +3112,12 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c src/rt/archive_vfs.c \
 		tests/native/native_test_isolation.c tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_xb_parser$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_xb_parser$(EXE_EXT)
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" tests/native/test_safe_math.c \
+		-o $(BUILD_ROOT)/test_safe_math$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_safe_math$(EXE_EXT)
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Itests/native -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		tests/native/pcm_wav_dump.c tests/native/test_pcm_wav_dump.c -o $(BUILD_ROOT)/test_pcm_wav_dump$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_pcm_wav_dump$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
 		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
