@@ -300,3 +300,26 @@ were the initial survey.
 
 The visual spec the player UI lanes (C5-C10) build against, with its tokens, components and the screen specs for
 Settings, first run and error dialogs, is [`PLAYER_UI_DESIGN.md`](PLAYER_UI_DESIGN.md).
+
+## 9. System check (planned)
+
+Maintainer decision of 2026-10-23: a **System check** page verifies that this PC can run every part of Nakagawa. It
+is a button in Settings, and the setup wizard's last step offers it ("Check this PC, about 2 minutes", skippable). Each
+row shows a pass or a named failure with the fix, in plain words:
+
+| Check | How |
+| --- | --- |
+| Graphics | Vulkan starts and the GPU and driver are named; the software fallback is reported when Vulkan does not start |
+| Display and fonts | The UI fonts load and text draws at the display's scaling |
+| Audio | The output device opens and a short tone plays, which the user confirms |
+| Input | A controller is detected, and a "press each button" test fills in a picture |
+| Storage | The data folders are writable and there is room for a typical package |
+| Build tools | Python, the compiler and make are found with their versions, or the consented download is offered |
+| Full pipeline | The project's own showcase demo is analysed, recompiled, built and launched for a few frames, proving the whole route works on this PC without any game |
+| Online | Only with online mode on: the host answers and the update notice's signature verifies |
+| Nakagawa Link | Later, only when the user has it: the PSP is found over USB |
+
+It never claims that a particular game works: game compatibility stays on each title's card. It reuses the
+prerequisite preflight, the showcase fixtures (project-made, no game data), the developer log from developer mode
+([`ONLINE_FEATURES.md`](ONLINE_FEATURES.md#developer-mode)), and, once online mode exists, the report flow with its
+preview ("Send this result").
