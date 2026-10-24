@@ -80,10 +80,22 @@
     "name": "sceIoMkdir",
     "status": "complete"
   },
+  "0x07ec321a": {
+    "classification": "dedicated",
+    "handler": "h_Mp3ReserveMp3Handle",
+    "name": "sceMp3ReserveMp3Handle",
+    "status": "unreviewed"
+  },
   "0x07f58c24": {
     "classification": "dedicated",
     "handler": "h_SasGetAllEnvelopeHeights",
     "name": "__sceSasGetAllEnvelopeHeights",
+    "status": "unreviewed"
+  },
+  "0x0840e808": {
+    "classification": "dedicated",
+    "handler": "h_Mp3ResetPlayPositionByFrame",
+    "name": "sceMp3ResetPlayPositionByFrame",
     "status": "unreviewed"
   },
   "0x08d98894": {
@@ -172,6 +184,12 @@
     "classification": "dedicated",
     "handler": "h_FontGetFontInfo",
     "name": "sceFontGetFontInfo",
+    "status": "unreviewed"
+  },
+  "0x0db149f4": {
+    "classification": "dedicated",
+    "handler": "h_Mp3NotifyAddStreamData",
+    "name": "sceMp3NotifyAddStreamData",
     "status": "unreviewed"
   },
   "0x0ddcd2c9": {
@@ -368,6 +386,13 @@
     "handler": "h_SetCompiledSdkVersion",
     "name": "sceKernelSetCompiledSdkVersion603_605",
     "status": "complete"
+  },
+  "0x1b839b83": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceMp3LowLevelInit",
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
   },
   "0x1c0d95a6": {
     "classification": "dedicated",
@@ -583,6 +608,12 @@
     "name": "sceUtilityLoadModule",
     "status": "unreviewed"
   },
+  "0x2a368661": {
+    "classification": "dedicated",
+    "handler": "h_Mp3ResetPlayPosition",
+    "name": "sceMp3ResetPlayPosition",
+    "status": "unreviewed"
+  },
   "0x2a3d44ff": {
     "classification": "dedicated",
     "handler": "h_GetCallbackCount",
@@ -769,11 +800,29 @@
     "name": "scePowerGetPllClockFrequencyInt",
     "status": "unreviewed"
   },
+  "0x3548aec8": {
+    "classification": "dedicated",
+    "handler": "h_Mp3GetFrameNum",
+    "name": "sceMp3GetFrameNum",
+    "status": "unreviewed"
+  },
+  "0x354d27ea": {
+    "classification": "dedicated",
+    "handler": "h_Mp3GetSumDecodedSample",
+    "name": "sceMp3GetSumDecodedSample",
+    "status": "unreviewed"
+  },
   "0x35669d4c": {
     "classification": "dedicated",
     "handler": "h_SetCompiledSdkVersion",
     "name": "sceKernelSetCompiledSdkVersion600_602",
     "status": "complete"
+  },
+  "0x35750070": {
+    "classification": "dedicated",
+    "handler": "h_Mp3InitResource",
+    "name": "sceMp3InitResource",
+    "status": "unreviewed"
   },
   "0x358ca1bb": {
     "classification": "dedicated",
@@ -903,6 +952,18 @@
     "name": "sceKernelCpuResumeIntrWithSync",
     "status": "unreviewed"
   },
+  "0x3c2fa058": {
+    "classification": "dedicated",
+    "handler": "h_Mp3TermResource",
+    "name": "sceMp3TermResource",
+    "status": "unreviewed"
+  },
+  "0x3cef484f": {
+    "classification": "dedicated",
+    "handler": "h_Mp3SetLoopNum",
+    "name": "sceMp3SetLoopNum",
+    "status": "unreviewed"
+  },
   "0x3dfaeba9": {
     "classification": "dedicated",
     "handler": "h_OskShutdown",
@@ -1011,6 +1072,12 @@
     "classification": "dedicated",
     "handler": "h_CreateThread",
     "name": "sceKernelCreateThread",
+    "status": "unreviewed"
+  },
+  "0x44e07129": {
+    "classification": "dedicated",
+    "handler": "h_Mp3Init",
+    "name": "sceMp3Init",
     "status": "unreviewed"
   },
   "0x4571cc64": {
@@ -1592,6 +1659,13 @@
     "name": "sceKernelReferCallbackStatus",
     "status": "unreviewed"
   },
+  "0x732b042a": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceMp3EndEntry",
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
+  },
   "0x737486f2": {
     "classification": "dedicated",
     "handler": "h_PowerSetClockFrequency",
@@ -1750,6 +1824,12 @@
     "refusal_error": "0x80020002",
     "status": "controlled_unsupported"
   },
+  "0x7f696782": {
+    "classification": "dedicated",
+    "handler": "h_Mp3GetMp3ChannelNum",
+    "name": "sceMp3GetMp3ChannelNum",
+    "status": "unreviewed"
+  },
   "0x800c44df": {
     "classification": "dedicated",
     "handler": "h_MpegAtracDecode",
@@ -1852,11 +1932,23 @@
     "name": "sceUmdReplaceProhibit",
     "status": "unreviewed"
   },
+  "0x87677e40": {
+    "classification": "dedicated",
+    "handler": "h_Mp3GetBitRate",
+    "name": "sceMp3GetBitRate",
+    "status": "unreviewed"
+  },
   "0x876dbfad": {
     "classification": "dedicated",
     "handler": "h_SendMsgPipe",
     "name": "sceKernelSendMsgPipe",
     "status": "partial"
+  },
+  "0x87c263d1": {
+    "classification": "dedicated",
+    "handler": "h_Mp3GetMaxOutputSample",
+    "name": "sceMp3GetMaxOutputSample",
+    "status": "unreviewed"
   },
   "0x87d4dd36": {
     "classification": "dedicated",
@@ -1900,6 +1992,13 @@
     "name": "sceKernelDisableSubIntr",
     "status": "unreviewed"
   },
+  "0x8ab81558": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceMp3StartEntry",
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
+  },
   "0x8c1e027d": {
     "classification": "controlled_unsupported",
     "handler": "h_MpegGetPcmAu",
@@ -1941,6 +2040,12 @@
     "classification": "dedicated",
     "handler": "h_StopUnloadSelfModuleWithStatus",
     "name": "sceKernelStopUnloadSelfModuleWithStatus",
+    "status": "unreviewed"
+  },
+  "0x8f450998": {
+    "classification": "dedicated",
+    "handler": "h_Mp3GetSamplingRate",
+    "name": "sceMp3GetSamplingRate",
     "status": "unreviewed"
   },
   "0x8ffdf9a2": {
@@ -2231,6 +2336,12 @@
     "name": "sceKernelStdout",
     "status": "unreviewed"
   },
+  "0xa703fe0f": {
+    "classification": "dedicated",
+    "handler": "h_Mp3GetInfoToAddStreamData",
+    "name": "sceMp3GetInfoToAddStreamData",
+    "status": "unreviewed"
+  },
   "0xa7144800": {
     "classification": "dedicated",
     "handler": "h_CtrlSetIdleCancelThreshold",
@@ -2296,6 +2407,12 @@
     "classification": "dedicated",
     "handler": "h_SasSetPitch",
     "name": "__sceSasSetPitch",
+    "status": "unreviewed"
+  },
+  "0xae6d2027": {
+    "classification": "dedicated",
+    "handler": "h_Mp3GetMPEGVersion",
+    "name": "sceMp3GetMPEGVersion",
     "status": "unreviewed"
   },
   "0xaee7404d": {
@@ -2682,6 +2799,18 @@
     "name": "sceRtcGetWin32FileTime",
     "status": "partial"
   },
+  "0xd021c0fb": {
+    "classification": "dedicated",
+    "handler": "h_Mp3Decode",
+    "name": "sceMp3Decode",
+    "status": "unreviewed"
+  },
+  "0xd0a56296": {
+    "classification": "dedicated",
+    "handler": "h_Mp3CheckStreamDataNeeded",
+    "name": "sceMp3CheckStreamDataNeeded",
+    "status": "unreviewed"
+  },
   "0xd0aeee87": {
     "classification": "dedicated",
     "handler": "h_StopVTimer",
@@ -2830,6 +2959,12 @@
     "name": "sceMpegCreate",
     "status": "unreviewed"
   },
+  "0xd8f54a51": {
+    "classification": "dedicated",
+    "handler": "h_Mp3GetLoopNum",
+    "name": "sceMp3GetLoopNum",
+    "status": "unreviewed"
+  },
   "0xd979e9bf": {
     "classification": "dedicated",
     "handler": "h_AllocateFpl",
@@ -2967,6 +3102,13 @@
     "handler": "h_IoDread",
     "name": "sceIoDread",
     "status": "unreviewed"
+  },
+  "0xe3ee2c81": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceMp3LowLevelDecode",
+    "refusal_error": "0x80010086",
+    "status": "controlled_unsupported"
   },
   "0xe47e40e4": {
     "classification": "dedicated",
@@ -3158,6 +3300,12 @@
     "classification": "dedicated",
     "handler": "h_StartThread",
     "name": "sceKernelStartThread",
+    "status": "unreviewed"
+  },
+  "0xf5478233": {
+    "classification": "dedicated",
+    "handler": "h_Mp3ReleaseMp3Handle",
+    "name": "sceMp3ReleaseMp3Handle",
     "status": "unreviewed"
   },
   "0xf6107f00": {
