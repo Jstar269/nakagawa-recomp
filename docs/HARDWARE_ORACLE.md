@@ -719,6 +719,14 @@ One console is one data point; see §11. Nothing here closes issue #70
     values listed as not cited are unmeasured; the handler metadata names the choices made for them.
   - *Transcendental words (`PSP-VFPU-TRANSCENDENTAL-001`, issue #347).* The eleven scalar operations returned 693 result words over the probe's fixed inputs: 20 special encodings (signed zeros, the smallest signed denormals, plus and minus one, two and one half, the smallest signed normals, plus and minus 2^127, the infinities, and quiet and signalling NaN encodings) and 43 evenly spaced domain constants per operation. The raw words stay private. Compared with the runtime (the generated code and `sr_vfpu_interp`), ten operations matched on all 63 inputs: `vsin.s`, `vcos.s`, `vexp2.s`, `vlog2.s`, `vrsq.s`, `vrcp.s`, `vsqrt.s`, `vasin.s`, `vnrcp.s` and `vnsin.s`. `vrexp2.s` matched on none: the runtime computed the negated `exp2(x)` (`0xBF800000` for an input of zero) where the console returned `exp2(-x)` (`0x3F800000` for zero, `0x40000000` for -1.0 and `0x3EFFFFFC` for +1.0). Both paths now compute `exp2(-x)`, and the 63 measured words are pinned in `src/rt/vfpu_interp_selftest.c`. The same opcode group still decodes five more negated forms (optypes 25, 27, 29, 30 and 31) as the negation of the positive operation; no probe covers them, so they are unmeasured.
 
+- **PSP-3000 single-case runs of `hle-issues-batch` and `hle-intr-cells` (pending)**: neither case
+  has run from a public commit. Both are single launches outside the campaign queue, built from
+  `fixtures/psp_oracle/probe_hle_issues.c`. When they run, this entry records the commit, firmware,
+  PSPLink version, model and preflight, then an evidence table in the format of the 2026-10-15
+  `hle-timer-order` entry above (columns: evidence id, cells cited, not cited, outcome) with one row
+  for `PSP-HLE-ISSUES-001` and one for `PSP-HLE-INTR-001`, and the manifest rows move from `NOT_RUN`
+  to `MEASURED` citing this section.
+
 - **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.
   - `PSP-HLE-AUDIO-SRC-001`, case `hle-audio-src`: the stream was complete, with 16 records PASS and 2 SKIP (`src-final-cleanup` and `out2-final-cleanup`). Both SKIP records were the probe's own gate for "nothing left to release", a pass-rule flaw that `7fc1641e` fixed, and a SKIP record makes the envelope ineligible. The 16 other records carry the same words as the eligible re-run above.
 
@@ -1557,7 +1565,7 @@ vram-mirror-done
 
 ## Pending PSP-3000 measurement campaign
 
-The following twenty-one source-owned cases are in the PSP-3000 / 6.61 measurement
+The following twenty-three source-owned cases are in the PSP-3000 / 6.61 measurement
 registry; the status column distinguishes measured, captured-only and pending evidence.
 Six were measured by the 2026-10-10 campaign on `f6ccfb33`; `ge-break-continue`
 was measured by its acceptance-eligible 2026-10-15 re-run on `c642039a` after two
@@ -1569,7 +1577,9 @@ form has not run), and null-out was captured incomplete. The added HLE timer-ord
 case (103) and the VFPU transcendental corpus were measured on 2026-10-15 from
 `22b027f6`, and the HLE audio case (102) from `7fc1641e` after a first run from
 `22b027f6` was captured only.
-These eight probes run as single launches outside the campaign queue
+The HLE issue cells `hle-issues-batch` (106) and `hle-intr-cells` (107),
+built from `probe_hle_issues.c`, have not run from a public commit.
+These ten probes run as single launches outside the campaign queue
 (`CAMPAIGN_QUEUE_CASES`); the manifest distinguishes measured, captured and
 not-run states. Their parsers check record order, scalar fields and completion,
 not expected PSP values.
@@ -1598,6 +1608,8 @@ not expected PSP values.
 | `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | `CAPTURED` (2026-10-15, `b5d6fc5b`; incomplete, not measured; retired, never to be scheduled) | The existing capture stopped at the first mandatory NULL output, `sceKernelReferSystemStatus(NULL)`, and the console needed a power cycle. The kernel pointer check rejects kernel-space addresses but not address 0, so that call writes through NULL and faults; the VTimer getters also write through their output pointers. No game can rely on these results. |
 | `hle-audio-src` | `PSP-HLE-AUDIO-SRC-001` | `MEASURED` (2026-10-15, `7fc1641e`; the earlier run of `22b027f6` was captured only; single launch, not in the campaign queue) | Unreserved SRC release and silent output; reserve 1024 samples at 44100 Hz stereo; second reserve; one silent blocking output; release after the blocking drain and release again; six invalid reserve shapes, immediately releasing any unexpected success; Output2-then-SRC and SRC-then-Output2 reservation attempts with cleanup. 18 result records. No SRC rest-sample query exists in the public NID corpus. Risk high: two silent blocking SRC calls, at most one block per call; schedule after the other new probes. |
 | `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Two equal-delay alarms set A then B; long-delay then short-delay alarm; nominally equal VTimer handler and alarm; SetAlarm(0). Each callback stores a shared sequence number and system-time low/high words. Every wait has an elapsed-time deadline; cancel all alarms and stop/delete the VTimer. Ordering only, no absolute-time claim; 18 result records. |
+| `hle-issues-batch` | `PSP-HLE-ISSUES-001` | `NOT_RUN` (not yet run from a public commit; single launch, not in the campaign queue) | #356 model getters: `kuKernelGetModel` and the `SysMemUserForUser` `sceKernelGetModel` import (NID `0x6373995d`), each twice with `$v0` preset to `0xA5A5A5A5`, with the import stub's words after loading; the `SysMemForKernel` getter through `sctrlHENFindFunction` and `kuKernelCall` (only for a kernel-RAM address). #326, two passes: `vscmp.s/p/t/q` and the same-register form over six NaN/infinity/signed-zero/denormal operand sets (C200 lanes, VFPU_CC, changed-word census), and one `vrndi.s` step from each of 2 x 448 written RCX states (RCX0-7 after the write and after the step). 1858 result records; register-only VFPU cells and read-only getters. |
+| `hle-intr-cells` | `PSP-HLE-INTR-001` | `NOT_RUN` (not yet run from a public commit; single launch, not in the campaign queue) | #325: VTimer and alarm handlers returning a reschedule interval then 0 (20 ms series, 1 us series, mixed series): the sequence number, scheduled and actual VTimer time and system time of every call, and whether a call follows a return of 0; a VBLANK sub-interrupt handler in the first free slot of 0..15, counted while free, across 20 ms, 50 ms and 20 ms `sceKernelCpuSuspendIntr` windows, and while one entry holds for 25 ms. Every VTimer is stopped and deleted, every alarm cancelled, every suspension resumed, and the handler disabled and released whenever a slot was registered. Risk medium: interrupts suspended for at most 50 ms. |
 
 ### PSP-UMDIO-001 measured run 2026-10-17
 
