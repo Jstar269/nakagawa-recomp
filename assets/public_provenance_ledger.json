@@ -7284,7 +7284,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3e7260e6ab83ee57c9f2e99aa7f9011fcd972aec959e66c94d8b53a299237aab"
+      "sha256": "cfde90830b34b24aa18522030c81c43846132c63a1f95c4df074d881712bb4e6"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -7756,7 +7756,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3122f86ee580e1bd5f245b3d583f65020788e3549287c95da03e29187ff33188"
+      "sha256": "12567e2abf643fa6ee069231998dbd0caa5d7f3686cd8d835c323c9ce862a00d"
     },
     {
       "path": "tools/ghidra_headless.py",
@@ -8506,7 +8506,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ba9d7b0f20ede34e56d052875355ee95c06a980aa53cd13be361a80da98294c0"
+      "sha256": "299bd6a63286dd12e0dcfbbfa2a0a91c58d6b488172bfdcbe82d2cf4e3b3add7"
     },
     {
       "path": "tools/psp_issue_matrix.py",
@@ -8962,7 +8962,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d81f4c37cfed2ed59144aa9342bc567c7602c40df2c0d680272db167508548b8"
+      "sha256": "91fbd60775cc3c54ce07b4b9e97bc2049a3341840c5e6c704453a544b324d269"
     },
     {
       "path": "tools/test_analyze_toml_emit.py",
@@ -9960,7 +9960,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "89c281a3b4e5aac0930f50f8b706457563414f09696b2384f1bde99a3b59a4ff"
+      "sha256": "33034c5bd104f0b3840082d89bc5859f141b5355d04be4afff33cbc265a6409e"
     },
     {
       "path": "tools/test_incident_regression_private.py",
