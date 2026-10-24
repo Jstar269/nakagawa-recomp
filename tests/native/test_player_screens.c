@@ -707,9 +707,9 @@ static void test_error_details_fit_the_minimum_window(void) {
     static char dump[CASE_DUMP_CAP];
     static const char details[] =
         "tools/nk_cli.py was not found. Searched, in order: the NK_INSTALL_ROOT environment "
-        "variable, D:/Synthetic/Players/Install Folder/Nakagawa Recomp/build/tools, "
-        "D:/Synthetic/Players/Install Folder/Nakagawa Recomp/build/../tools, "
-        "D:/Synthetic/Players/Install Folder/Nakagawa Recomp/build/../source/tools (the "
+        "variable, D:/Synthetic/Players/Install Folder/Nakagawa Recomp/bin/tools, "
+        "D:/Synthetic/Players/Install Folder/Nakagawa Recomp/bin/../tools, "
+        "D:/Synthetic/Players/Install Folder/Nakagawa Recomp/bin/../source/tools (the "
         "release layout), the working directory and its parent. Fix: run the "
         "player from a Nakagawa Recomp source checkout, keep a tools folder beside "
         "nakagawa_player.exe, or set NK_INSTALL_ROOT to the folder that contains tools/ "
