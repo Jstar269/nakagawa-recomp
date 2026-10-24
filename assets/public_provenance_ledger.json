@@ -1405,7 +1405,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d1395a678b5a8eb11002e7947c1f724838a1c1cb16f9f161a469e8f9abb649cd"
+      "sha256": "b2cd19624738e70642ceb9884d773bd1a6ea11d66155f8c880fa777543c9952e"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1630,7 +1630,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "ef94377df0b2e3f2b2727f14c6466d5ec2b4b9bc60ddeea17df6d8aa44983d0e"
+      "sha256": "aeaffbdc864d4a284eaed8bb4c8a01bce59147422cb190dac874eca909ff333b"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -4770,7 +4770,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1ffb437e88a8efea7c304d5ca6b1dbefd28134690f7de79502417ad6723a9796"
+      "sha256": "b0c6ed8e5fce65ecdacb8164ed2716ee4706bd299daa16b36613a6313fe3c87f"
     },
     {
       "path": "src/rt/evf.h",
@@ -5863,7 +5863,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a2b87ae2b5524c36e00d2c4efbc18113c408283e41da96b885ada94622da88e3"
+      "sha256": "105e7c66259a353a5491b54e51c6304ea695b1a8ae7dfbc909025dc1ee91643d"
     },
     {
       "path": "src/rt/savedata.c",
@@ -5889,7 +5889,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "099288483564dbf80d2aab7ac87ae116336f0178e3e7cbba764aaab7fc9bf093"
+      "sha256": "1a56164096c7b18e2929530ad8109b65b80d4aa26ee1eeb31f97caba51843ac8"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -6107,7 +6107,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ff76433ba8ad9071f3e1bea79225635b0a535e9dc53a62dd517488d6e74384d7"
+      "sha256": "26bdf5d01247e9b4b419e26c5ca35535bf8c9ef55e14f28cddd11a2501474175"
     },
     {
       "path": "src/rt/vfpu_interp_selftest.c",
@@ -6119,7 +6119,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c0a24c22442d8042460ceef90f3b4fb20c69b459450d632a456133235e136b1"
+      "sha256": "96689289190582f6e72d9f7bd1b156d90567690a80c9e0d627854b9153ab1227"
     },
     {
       "path": "src/rt/vfpu_oracle_host.c",
@@ -7281,7 +7281,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7d9ecf67c2b7c53c9eded6f985337b05d0a51e714722babe5b37a5cd65a9efd8"
+      "sha256": "b48a22c761290e633652e98bb7b7391a694cf5466188bedde760e3f2d02e94f4"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -9115,7 +9115,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4a50580f4d1e7d27192aa3b0e0fe1bb4cd5013dbf0dd7210e3c01354ab6ab4f1"
+      "sha256": "acc57fe74e12a9eed3dc5631055e94bfb818c772400ad69ea030ff772c391b0f"
     },
     {
       "path": "tools/test_compat_manifest.py",
@@ -11157,7 +11157,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a15ec1aab664664636b2473bafdd989cbea58523e41171a3fb618b7b9d5501f6"
+      "sha256": "9de75bd99ff7c8f99d87fee05019e116508a54d13fc62a1b3d35306f49df78ca"
     },
     {
       "path": "tools/test_vfpu_domain_boundary.py",
