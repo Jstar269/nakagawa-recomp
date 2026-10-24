@@ -37,6 +37,7 @@ from extract_xb import (  # noqa: E402
     verify_extracted_tree,
 )
 from test_xb_probe import (  # noqa: E402
+    HUFFMAN_TABLE_LEN,
     _huffman_codes,
     _lzs_body,
     _make_archive,
@@ -134,11 +135,11 @@ def _deflate_payload(expanded: bytes) -> bytes:
     """A well-formed DEFLATE payload: Huffman wrapping an inner LZS stream."""
 
     body = _lzs_body(expanded)
-    inner = struct.pack("<II", len(expanded), len(body)) + body
+    inner = struct.pack("<II", len(expanded), 8 + len(body)) + body
     # The Huffman decoder always reads ahead, so the stream needs trailing
     # lookahead words; they are zero and pass the decoder's padding check.
     huff = _huffman_stream(inner) + bytes(8)
-    return struct.pack("<II", len(inner), len(huff)) + huff
+    return struct.pack("<II", len(inner), len(huff) - HUFFMAN_TABLE_LEN) + huff
 
 
 def _write_raw_archive(directory: str, entries, name: str = "fixture.xb") -> str:

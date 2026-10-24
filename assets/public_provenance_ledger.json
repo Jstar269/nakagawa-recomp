@@ -9403,7 +9403,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f8eca3400a2fa0a2948dce12c3c6a9680a409410c013a5e70c9c6f6489f9d4cb"
+      "sha256": "113a97ff2efe24bb69b1d5f1cbf818c32147f90b2c9a5a1f9d90e903a02e7b15"
     },
     {
       "path": "tools/test_extract_xb_security.py",
@@ -9415,7 +9415,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f6f8089e824999d4188e539c42b72ede010e277835529071da665ba1a31d4914"
+      "sha256": "0dce6bf30c4968599551314366a9fe23623738b08bc23d61f5b42452b74990f1"
     },
     {
       "path": "tools/test_flash0_font.py",
@@ -11349,7 +11349,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f24a83505048e77c78a08e1da5013bf042b1e5a35c0c1b018a29f6f06476b24e"
+      "sha256": "05cb45cf43baa7aee87a66f5a7b43bd8f08e5431390e4fb92890f1747fecd292"
     },
     {
       "path": "tools/title_catalog_codegen.py",
@@ -11639,7 +11639,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
+      "sha256": "7fb2e9cac355cf7ca076a6e4c0113eeb3b1174e7b8ea328d14bc5c5ae03eb3b3"
     }
   ]
 }
