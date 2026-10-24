@@ -2485,11 +2485,10 @@
     "status": "partial"
   },
   "0xbd2f1094": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_LoadExec",
     "name": "sceKernelLoadExec",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "unreviewed"
   },
   "0xbd681969": {
     "classification": "dedicated",
@@ -2753,11 +2752,10 @@
     "status": "unreviewed"
   },
   "0xd675ebb8": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_SelfStopUnloadModule",
     "name": "sceKernelSelfStopUnloadModule",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "unreviewed"
   },
   "0xd6a5f2f7": {
     "classification": "dedicated",

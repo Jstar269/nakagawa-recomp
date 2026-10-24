@@ -117,6 +117,20 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {{
     return 0x0a000010u;
 }}
 void sched_init(CpuState *cpu) {{ s_cpu = cpu; }}
+/* sceKernelLoadExec restart seam (driver.c --sched loop). This harness never queues a
+ * LoadExec request, so take reports none and the loop ends; the rest are reachable only
+ * after a taken request and refuse instead of pretending a replacement program booted. */
+int sr_hle_loadexec_take(SrLoadExecRequest *out) {{ (void)out; return 0; }}
+void sr_hle_loadexec_release(SrLoadExecRequest *request) {{ (void)request; }}
+void sr_hle_loadexec_reset_guest_state(void) {{}}
+int sr_hle_loadexec_boot_module(const char *guest_path, uint32_t *entry_out, uint32_t *gp_out) {{
+    (void)guest_path; (void)entry_out; (void)gp_out; return 0;
+}}
+void sr_hle_loadexec_finish(void) {{}}
+int sched_reset_for_loadexec(void) {{ return 0; }}
+void sched_set_guest_process_gp(uint32_t gp) {{ (void)gp; }}
+void sr_mem_reset(void) {{}}
+void sr_loaded_end_set(uint32_t end) {{ (void)end; }}
 static void synthetic_module_start(uint32_t args, uint32_t argp) {{
     g_module_start_arglen = args;
     g_module_start_argp = argp;

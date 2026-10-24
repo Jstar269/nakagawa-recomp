@@ -163,6 +163,7 @@ typedef struct {
     int      sleeping;           /* 1 while blocked in sceKernelSleepThread[CB] */
     int32_t  exit_status;        /* value passed to sceKernelExitThread */
     uint32_t sp_init, k0_init;   /* initial sp/k0 (to re-seed registers on a restart) */
+    uint32_t gp_init;            /* initial $gp; module entry threads override the creator's */
     CpuState saved;              /* register file while not running */
     jmp_buf  unwind_jmp;         /* unwind point for clean fiber exit */
     int      has_unwind_jmp;     /* 1 when jump buffer is valid */
@@ -209,6 +210,7 @@ typedef struct {
 } SrPauseScriptStep;
 
 static int s_pause_requested;
+static int s_guest_reset_requested;
 static int s_pause_active;
 static SrPauseSource s_pause_source;
 static uint64_t s_pause_request_ns;
@@ -316,6 +318,7 @@ static uint32_t s_pending_interrupts;
 static int      s_servicing_interrupts;
 static SrCoro  *s_sched_coro = NULL;
 CpuState *s_cpu = NULL;
+static SrSchedThreadExitHook s_thread_exit_hook;
 /* Read by tools/mem_debug.py: a live debugger refuses CpuState access unless the
  * attached image reports the ABI it was compiled against. */
 const uint32_t sr_cpustate_abi_version __attribute__((used)) = SR_CPUSTATE_ABI_VERSION;
@@ -711,6 +714,7 @@ void sched_init(CpuState *cpu) {
     s_last_pick = -1;
     s_root_seen = 0;
     s_tick = 0;
+    s_guest_reset_requested = 0;
     s_pause_requested = 0;
     s_pause_active = 0;
     s_pause_source = SR_PAUSE_SRC_USER;
@@ -729,6 +733,27 @@ void sched_init(CpuState *cpu) {
 }
 
 uint32_t sched_current_uid(void) { return s_cur >= 0 ? s_tcb[s_cur].uid : 0; }
+
+int sched_guest_thread_running(void) {
+    return s_cur >= 0 && s_sched_coro && sr_coro_current() != s_sched_coro;
+}
+
+void sched_request_guest_reset(void) {
+    s_guest_reset_requested = 1;
+}
+
+void sched_set_thread_exit_hook(SrSchedThreadExitHook hook) {
+    s_thread_exit_hook = hook;
+}
+
+int sched_thread_set_gp(uint32_t uid, uint32_t gp) {
+    if (uid == 0u) return -1;
+    TCB *t = tcb_by_uid(resolve_thread_uid(uid));
+    if (!t || t->deleted || t->state != TH_DORMANT || t->started) return -1;
+    t->gp_init = gp;
+    t->saved.r[28] = gp;
+    return 0;
+}
 uint32_t sched_root_uid(void)     { return g_root_uid; }
 uint32_t sched_worker_uid(void)    { return g_worker_uid; }
 uint32_t sched_launcher_uid(void) { return g_launcher_uid; }
@@ -2536,6 +2561,7 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     t->saved.r[26] = t->k0_init;
     t->saved.r[29] = t->sp_init;
     t->saved.r[28] = s_cpu && s_cpu->r[28] ? s_cpu->r[28] : s_gp;
+    t->gp_init = t->saved.r[28];
     t->saved.pc = entry;                         /* BUG1 fix: must seed pc=entry; otherwise dispatch target=entry sees s->pc=0 */
     t->saved.vfpuCtrl[0] = 0xe4; t->saved.vfpuCtrl[1] = 0xe4; t->saved.vfpuCtrl[2] = 0;
 
@@ -2595,7 +2621,7 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
         memset(&t->saved, 0, sizeof(t->saved));
         t->saved.r[26] = t->k0_init;
         t->saved.r[29] = t->sp_init;
-        t->saved.r[28] = s_gp;
+        t->saved.r[28] = t->gp_init;
         t->saved.vfpuCtrl[0] = 0xe4; t->saved.vfpuCtrl[1] = 0xe4; t->saved.vfpuCtrl[2] = 0;
         t->saved.pc = t->entry;
     }
@@ -3321,6 +3347,80 @@ static void sched_wait_abandon_owner(TCB *owner) {
     owner->active_wait = 0u;
 }
 
+/* LoadExec ends one guest scheduler world while the host process and its outer
+ * coroutine continue. Unlike sched_init (which is process-start-only), this
+ * path first releases every TCB-owned resource and host fiber, then rebuilds
+ * only the scheduler state that belongs to the guest program. Call it after
+ * sched_run has returned to the scheduler's host coroutine. */
+int sched_reset_for_loadexec(void) {
+    if (!s_sched_coro || sr_coro_current() != s_sched_coro) {
+        fprintf(stderr, "SCHED_LOAD_EXEC_RESET_CONTEXT_REFUSED: scheduler reset requested "
+                        "while a guest coroutine is current\n");
+        return 0;
+    }
+
+    for (int i = 0; i < s_ntcb; i++) {
+        TCB *t = &s_tcb[i];
+        sched_release_thread_resources(t);
+        sched_destroy_thread_coro(t);
+        sr_aot_return_boundary_stack_destroy(&t->aot_return_boundary_stack);
+    }
+    /* Every wait is owned by one of the TCBs above. Keep teardown fail-closed
+     * if an invariant violation left an orphaned invocation behind. */
+    while (s_wait_invocations) {
+        fprintf(stderr, "SCHED_LOAD_EXEC_ORPHAN_WAIT_SYNTHETIC: retiring wait handle=%llu "
+                        "during process reset\n",
+                (unsigned long long)s_wait_invocations->handle);
+        (void)sched_wait_finish(s_wait_invocations->handle);
+    }
+
+    sr_aot_return_boundaries_reset();
+    memset(s_tcb, 0, sizeof(s_tcb));
+    memset(s_libc_threads, 0, sizeof(s_libc_threads));
+    s_ntcb = 0;
+    s_cur = -1;
+    s_last_pick = -1;
+    s_root_seen = 0;
+    g_root_uid = SR_ROLE_UID_NONE;
+    g_worker_uid = SR_ROLE_UID_NONE;
+    g_launcher_uid = SR_ROLE_UID_NONE;
+    g_master_reent = 0u;
+    s_tick = 0;
+    s_gp = 0u;
+    s_guest_reset_requested = 0;
+    s_sched_coro = sr_coro_main();
+    sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
+    sr_dispatch_host_stack_top = sr_coro_stack_top;
+    sr_sched_on = 1;
+    s_interrupts_enabled = 1;
+    s_dispatch_enabled = 1;
+    s_pending_interrupts = 0;
+    s_servicing_interrupts = 0;
+    s_vblank_masked_pending = 0;
+    atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
+    s_pause_requested = 0;
+    s_pause_active = 0;
+    s_pause_source = SR_PAUSE_SRC_USER;
+    s_pause_request_ns = 0u;
+    s_pause_requested_duration_ms = 0u;
+    s_pause_total_ns = 0u;
+    s_pause_count = 0u;
+    s_pause_exit_reason = SR_PAUSE_EXIT_NONE;
+    memset(s_pause_refusal_reported, 0, sizeof(s_pause_refusal_reported));
+    s_pause_clock_regression_reported = 0;
+#ifdef SR_SCHED_LIVENESS_TEST
+    sched_liveness_reset();
+#endif
+    stack_ranges_reset();
+    sched_alarm_reset();
+    return 1;
+}
+
+void sched_set_guest_process_gp(uint32_t gp) {
+    s_gp = gp;
+    if (s_cpu) s_cpu->r[28] = gp;
+}
+
 void sched_wait_cancel_object(uint32_t object, uint32_t result) {
     for (WaitInvocation *w = s_wait_invocations; w; w = w->next) {
         if (w->object != object) continue;
@@ -3778,6 +3878,30 @@ int sched_thread_info(uint32_t uid, SrThreadInfo *out) {
     return 0;
 }
 
+static int sched_pc_in_module(uint32_t pc, uint32_t start, uint32_t end) {
+    return pc >= start && pc < end;
+}
+
+/* A ready or currently running continuation may execute or return into the
+ * module image being retired. Refuse that synthetic safety case. Threads in
+ * object/timer waits are deliberately excluded: PSP-3000 measurement #1106
+ * showed that such waiters and their kernel objects survive late-module unload.
+ */
+int sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid) {
+    if (start >= end) return 0;
+    for (int i = 0; i < s_ntcb; i++) {
+        TCB *t = &s_tcb[i];
+        if (t->deleted || t->uid == ignored_uid) continue;
+        if (t->state != TH_READY && t->state != TH_RUNNING) continue;
+        const CpuState *state = (t->state == TH_RUNNING && i == s_cur && s_cpu)
+                              ? s_cpu : &t->saved;
+        if (sched_pc_in_module(state->pc, start, end) ||
+            sched_pc_in_module(state->r[31], start, end))
+            return 1;
+    }
+    return 0;
+}
+
 uint32_t sched_thread_exit_status(uint32_t uid) {
     uid = resolve_thread_uid(uid);
     TCB *t = tcb_by_uid(uid);
@@ -3819,6 +3943,7 @@ static void sched_exit_current_impl(int32_t status, int delete_object) {
         t->entry = 0;
         sched_release_thread_stack(t);
     }
+    if (s_thread_exit_hook) s_thread_exit_hook(uid);
     sched_wake_thread_joiners(uid, (uint32_t)status);
     sched_wake(uid);             /* release threads in sceKernelWaitThreadEnd on this thread */
     switch_to_scheduler();
@@ -4464,6 +4589,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
     int idle_no_progress = 0;
     if (sr_perf_enabled) sr_perf_sched_state(SR_PERF_SCHED_IDLE, 0u);
     for (;;) {
+        if (s_guest_reset_requested) break;
         /* An opt-in player acceptance run stops after its requested number of
          * successful window presentations. The guest is not resumed again. */
         if (sr_sched_stop_requested && sr_sched_stop_requested()) break;

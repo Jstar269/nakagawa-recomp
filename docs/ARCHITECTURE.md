@@ -591,6 +591,22 @@ preempt, and composite terminate/delete completes before replacement execution. 
 families remain on their existing APIs pending focused migration and semantic tests. This pilot
 does not establish speculative callback timeout policy or Message Pipe argument-five semantics.
 
+### Package-local program replacement (`sceKernelLoadExec`)
+
+`sceKernelLoadExec` accepts only a `ms0:/` guest path that exactly matches a required,
+runtime-placed guest program in the running package's validated module manifest. The package's
+module directory supplies the corresponding project-built image; the loader does not resolve an
+arbitrary host path. The parameter block's argument bytes are copied before the current guest
+thread exits. The driver then resets guest RAM, executable-span ownership, scheduler threads and
+waits, module/export records, callback and kernel-object tables, partition allocations, file
+descriptors, utility-dialog state, and guest audio/SAS/media-player state. Package configuration,
+registry and savedata files, and host presentation services persist across the replacement. The
+new module starts at its `module_start` with its own `$gp` and the copied `arglen`/`argp` on the
+new root stack.
+
+This is a synthetic program-replacement contract. Unsupported target classes and arguments fail
+closed with a named refusal; no network route participates in loading or validation.
+
 ### Clocks
 
 `sched.c` owns one authoritative monotonic microsecond timeline (`s_vtime_us`). Every guest-visible
