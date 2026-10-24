@@ -4447,15 +4447,15 @@ int main(int argc, char **argv) {
         fflush(stdout);
         assert(dev != NULL);
 #if defined(_WIN32) || defined(_WIN64)
-        assert(player_dev_log_redact("open C:\\Users\\Synth\\AppData\\x.log",
-                                     "C:\\Users\\Synth", "Synth", out, sizeof(out)));
+        assert(player_dev_log_redact("open D:\\Profiles\\Synth\\AppData\\x.log",
+                                     "D:\\Profiles\\Synth", "Synth", out, sizeof(out)));
         assert(strcmp(out, "open %USERPROFILE%\\AppData\\x.log") == 0);
         /* The other slash style and another case match too. */
-        assert(player_dev_log_redact("c:/users/synth/saves", "C:\\Users\\Synth\\", "Synth",
+        assert(player_dev_log_redact("d:/profiles/synth/saves", "D:\\Profiles\\Synth\\", "Synth",
                                      out, sizeof(out)));
         assert(strcmp(out, "%USERPROFILE%/saves") == 0);
 #else
-        assert(player_dev_log_redact("open /home/synth/.local/x.log", "/home/synth/", "synth",
+        assert(player_dev_log_redact("open /srv/profiles/synth/.local/x.log", "/srv/profiles/synth/", "synth",
                                      out, sizeof(out)));
         assert(strcmp(out, "open %USERPROFILE%/.local/x.log") == 0);
 #endif
