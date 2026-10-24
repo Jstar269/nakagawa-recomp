@@ -172,6 +172,41 @@ class SoakAuditTests(unittest.TestCase):
         self.assertIn("SOAK_CHECK: fatal FAIL", out)
         self.assertIn("SOAK_CHECK: route FAIL", out)
 
+    # -- fired compatibility patches (#1274) ----------------------------------
+    def test_fired_compat_patches_are_named_but_not_judged(self) -> None:
+        stderr = self._write("stderr.log", (
+            "COMPAT_PATCH_FIRST_HIT: order=1 id=SCHEDULER_HOOKS:0x08804200:worker thread reuse\n"
+            "COMPAT_PATCH_FIRED: order=1 hits=3 id=SCHEDULER_HOOKS:0x08804200:worker thread reuse\n"
+            "COMPAT_PATCH_REPORT: fired=1 overflow_hits=0 (title synthetic)\n"))
+        code, out = self._run("--stderr", stderr)
+        self.assertEqual(code, 0, out)
+        self.assertIn("SOAK_CHECK: compat_patches PASS fired=1: "
+                      "SCHEDULER_HOOKS:0x08804200:worker thread reuse hits=3", out)
+        code, out = self._run("--stderr", stderr, "--compat-counts-only")
+        self.assertIn("SOAK_CHECK: compat_patches PASS fired=1\n", out)
+        self.assertNotIn("worker thread reuse", out)
+
+    def test_a_run_where_nothing_fired_says_none(self) -> None:
+        stderr = self._write("stderr.log", "COMPAT_PATCH_REPORT: fired=0 none (title none)\n")
+        code, out = self._run("--stderr", stderr)
+        self.assertEqual(code, 0, out)
+        self.assertIn("SOAK_CHECK: compat_patches PASS fired=0 none", out)
+
+    def test_a_run_without_its_report_still_names_first_hits(self) -> None:
+        stderr = self._write("stderr.log",
+                             "COMPAT_PATCH_FIRST_HIT: order=1 id=A:0x00000001:first\n"
+                             "COMPAT_PATCH_FIRST_HIT: order=2 id=B:0x00000002:second\n")
+        code, out = self._run("--stderr", stderr)
+        self.assertEqual(code, 0, out)
+        self.assertIn("SOAK_CHECK: compat_patches PASS fired>=2 (no end-of-run report): "
+                      "A:0x00000001:first; B:0x00000002:second", out)
+
+    def test_a_log_with_no_report_skips_the_patch_check(self) -> None:
+        stderr = self._write("stderr.log", "PERF x\n")
+        code, out = self._run("--stderr", stderr)
+        self.assertEqual(code, 0, out)
+        self.assertIn("SOAK_CHECK: compat_patches SKIP", out)
+
     def test_no_audio_backend_totals_are_judged(self) -> None:
         good = self._write("good.log", "AUDIOSTAT_HOST: state=active driver=wasapi pushed=1000 "
                                       "underruns=0 overruns=0 backpressure=3 peak_q=1024\n")
@@ -391,7 +426,8 @@ class SoakAuditTests(unittest.TestCase):
         code, out = self._run()
         self.assertEqual(code, 0, out)
         self.assertNotIn("verdict=FAIL", out)
-        for name in ("presenting", "cadence", "memory_working_set", "handles", "fatal", "route"):
+        for name in ("presenting", "cadence", "memory_working_set", "handles", "fatal", "route",
+                     "compat_patches"):
             self.assertIn(f"SOAK_CHECK: {name} SKIP", out)
         self.assertIn("SOAK_AUDIT: verdict=PASS", out)
 

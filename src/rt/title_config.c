@@ -11,6 +11,7 @@
 
 #include "title_config.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -212,6 +213,11 @@ int sr_title_config_is_callback_terminator(uint32_t sentinel, uint32_t pc, uint3
          * against 0, which would silently narrow the site the title actually named. */
         if (t->has_pc && t->pc != pc) continue;
         if (t->has_ra && t->ra != ra) continue;
+        /* A match is the firing: dispatch reports completion on every 1 returned here.
+         * The census anchors a terminator on its pc constraint, else its ra. */
+        sr_compat_fired("TITLE_CONFIGURED_DISPATCH", t->has_pc ? t->pc : t->ra,
+                        sentinel == 0u ? "callback-list walker null terminator"
+                                       : "callback-list walker terminal miss");
         return 1;
     }
     return 0;
@@ -288,4 +294,65 @@ int sr_title_config_frame_latch_addr(uint32_t *out) {
 uint32_t sr_title_config_expected_data_file_count(void) {
     if (!(s_config.valid & SR_TITLE_CFG_EXPECTED_DATA_FILE_COUNT)) return 0u;
     return s_config.expected_data_file_count;
+}
+
+/* Fired-patch report (#1274). 32 slots cover the frozen census (24 entries) with room;
+ * hits on an entry past them still show in the summary's overflow count, never dropped
+ * silently. */
+#define SR_COMPAT_FIRED_MAX 32u
+typedef struct {
+    const char *collection;
+    const char *name;
+    uint32_t anchor;
+    unsigned long long hits;
+} SrCompatFired;
+static SrCompatFired s_compat_fired[SR_COMPAT_FIRED_MAX];
+static unsigned s_compat_fired_n;
+static unsigned long long s_compat_fired_overflow;
+
+void sr_compat_fired(const char *collection, uint32_t anchor, const char *name) {
+    for (unsigned i = 0; i < s_compat_fired_n; i++) {
+        SrCompatFired *e = &s_compat_fired[i];
+        if (e->anchor != anchor) continue;
+        if ((e->name == name || strcmp(e->name, name) == 0) &&
+            (e->collection == collection || strcmp(e->collection, collection) == 0)) {
+            e->hits++;
+            return;
+        }
+    }
+    if (s_compat_fired_n == SR_COMPAT_FIRED_MAX) {
+        s_compat_fired_overflow++;
+        return;
+    }
+    s_compat_fired[s_compat_fired_n++] = (SrCompatFired){ collection, name, anchor, 1u };
+    /* The first hit goes to the log as it happens, so a run that dies before its
+     * end-of-run report still shows which patches were active. */
+    fprintf(stderr, "COMPAT_PATCH_FIRST_HIT: order=%u id=%s:0x%08x:%s\n",
+            s_compat_fired_n, collection, anchor, name);
+}
+
+unsigned sr_compat_fired_count(void) { return s_compat_fired_n; }
+
+int sr_compat_fired_at(unsigned index, char *id, unsigned id_size, unsigned long long *hits) {
+    if (index >= s_compat_fired_n) return 0;
+    const SrCompatFired *e = &s_compat_fired[index];
+    if (id && id_size) snprintf(id, id_size, "%s:0x%08x:%s", e->collection, e->anchor, e->name);
+    if (hits) *hits = e->hits;
+    return 1;
+}
+
+void sr_compat_report(void) {
+    static int reported;
+    if (reported) return;
+    reported = 1;
+    char id[256];
+    unsigned long long hits;
+    for (unsigned i = 0; sr_compat_fired_at(i, id, sizeof id, &hits); i++)
+        fprintf(stderr, "COMPAT_PATCH_FIRED: order=%u hits=%llu id=%s\n", i + 1u, hits, id);
+    if (s_compat_fired_n == 0u)
+        fprintf(stderr, "COMPAT_PATCH_REPORT: fired=0 none (title %s)\n", s_config.source_id);
+    else
+        fprintf(stderr, "COMPAT_PATCH_REPORT: fired=%u overflow_hits=%llu (title %s)\n",
+                s_compat_fired_n, s_compat_fired_overflow, s_config.source_id);
+    fflush(stderr);
 }

@@ -1631,5 +1631,106 @@ class DiagnosticGroupConsistencyTests(unittest.TestCase):
         self.assertTrue(_runtime_has_dispatch_hook_table(mutant),
                         "hook-table guard did not detect the source mutation")
 
+
+# --- fired-patch report (#1274) ----------------------------------------------
+#: Collections whose patches codegen emits into generated code. Every other active
+#: census entry fires from a runtime source.
+FIRED_REPORT_CODEGEN_COLLECTIONS = frozenset({
+    "GUEST_PATCHES", "CODEGEN_CUSTOM_STUBS", "HST_SIMPLE_STUBS",
+})
+#: One recording call in a runtime source: the collection literal comes first, and the
+#: name may be a literal or a ternary of literals.
+_RUNTIME_COMPAT_FIRED = re.compile(r'\bsr_compat_fired\(\s*"(\w+)"\s*,(.*?)\);', re.DOTALL)
+_EMITTED_COMPAT_FIRED = re.compile(r'sr_compat_fired\("(\w+)", 0x([0-9a-f]{8})u, "([^"]+)"\);')
+
+
+def _active_census() -> "list[dict]":
+    """The census entries that can still fire: a retired entry has no firing site."""
+    return [patch for patch in compat_overrides.temporary_compatibility_patches()
+            if not str(patch.get("retirement") or "").startswith("retired")]
+
+
+def _runtime_compat_fired_sites(sources: "dict[str, str]") -> "set[tuple[str, str]]":
+    """(collection, name) for every recording call in the given runtime sources."""
+    sites: "set[tuple[str, str]]" = set()
+    for text in sources.values():
+        code = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.DOTALL)
+        for match in _RUNTIME_COMPAT_FIRED.finditer(code):
+            for name in re.findall(r'"([^"]*)"', match.group(2)):
+                sites.add((match.group(1), name))
+    return sites
+
+
+def _runtime_sources() -> "dict[str, str]":
+    return {path.name: path.read_text(encoding="utf-8")
+            for path in sorted((ROOT / "src" / "rt").glob("*.c"))
+            if not path.name.endswith("_selftest.c")}
+
+
+class FiredPatchReportCensusTests(unittest.TestCase):
+    """#1274: the ids the runtime can report are exactly the active debt census.
+
+    The report prints "<collection>:0x<anchor>:<name>" from the three arguments of
+    sr_compat_fired, so a firing site whose collection or name drifts from the census,
+    or a census entry with no firing site, would leave a patch firing unreported.
+    Codegen sites are checked as full ids from a real --profile=hst emission; runtime
+    sites get their anchor from a configured binding at run time, so their collection
+    and name are checked here, and the native sched-selftest matrix checks full ids.
+    """
+
+    def test_codegen_hst_emission_reports_exactly_the_codegen_census(self) -> None:
+        from test_codegen_profile_isolation import _CodegenRun
+
+        emitted = {f"{c}:0x{a}:{n}" for c, a, n in _EMITTED_COMPAT_FIRED.findall(
+            "\n".join(_CodegenRun.functions("hst").values()))}
+        expected = {patch["id"] for patch in _active_census()
+                    if patch["collection"] in FIRED_REPORT_CODEGEN_COLLECTIONS}
+        self.assertEqual(emitted, expected)
+
+    def test_ungated_codegen_emits_no_report_call(self) -> None:
+        from test_codegen_profile_isolation import _CodegenRun
+
+        combined = "\n".join(_CodegenRun.functions("none").values())
+        self.assertNotIn("sr_compat_fired(", combined)
+
+    def test_runtime_sites_name_exactly_the_runtime_census(self) -> None:
+        sites = _runtime_compat_fired_sites(_runtime_sources())
+        expected = {(patch["collection"], patch["name"]) for patch in _active_census()
+                    if patch["collection"] not in FIRED_REPORT_CODEGEN_COLLECTIONS}
+        self.assertEqual(sites, expected)
+
+        # Mutation proof: a new recording call is seen by the same scanner.
+        contaminated = {"x.c": 'void f(void) { sr_compat_fired("SCHEDULER_HOOKS", e,\n'
+                               '    ok ? "worker thread reuse" : "new hook"); }'}
+        self.assertEqual(_runtime_compat_fired_sites(contaminated),
+                         {("SCHEDULER_HOOKS", "worker thread reuse"),
+                          ("SCHEDULER_HOOKS", "new hook")})
+
+    def test_retired_entries_have_no_firing_site(self) -> None:
+        retired = [patch for patch in compat_overrides.temporary_compatibility_patches()
+                   if patch not in _active_census()]
+        sites = _runtime_compat_fired_sites(_runtime_sources())
+        for patch in retired:
+            with self.subTest(patch=patch["id"]):
+                self.assertNotIn((patch["collection"], patch["name"]), sites)
+
+    def test_title_config_reent_anchors_are_the_census_anchors(self) -> None:
+        # The one runtime anchor written in public source: the HST reent bindings.
+        source = (ROOT / "src" / "rt" / "title_config.c").read_text(encoding="utf-8")
+        literals = {
+            "master reent fallback address":
+                re.search(r"master_reent_addr = (0x[0-9a-f]{8})u", source).group(1),
+            "guest thread reent table root":
+                re.search(r"guest_thread_table_addr = (0x[0-9a-f]{8})u", source).group(1),
+        }
+        for patch in compat_overrides.TITLE_CONFIGURED_SCHEDULER_COMPAT:
+            with self.subTest(name=patch["name"]):
+                self.assertEqual(literals[patch["name"]], f"0x{patch['address']:08x}")
+
+    def test_release_notes_state_the_active_census_count(self) -> None:
+        notes = (ROOT / "docs" / "RELEASE_NOTES_v0.0.1.md").read_text(encoding="utf-8")
+        self.assertIn(f"{len(_active_census())} title-specific compatibility patches", notes)
+
+
 if __name__ == "__main__":
     unittest.main()

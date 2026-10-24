@@ -1024,6 +1024,7 @@ python tools/soak_audit.py --perf logs/perf.csv --proc proc.csv --stderr logs/st
 | `audio_drift` | un-consumed audio above `--max-drift-ms` at any point, the queue ending more than `--max-drift-net-ms` ahead of where it started, or a queue that rose at every single window |
 | `route` | a route program that ran without reporting `ROUTE_OK` |
 | `fatal` | `FATAL`, `ROUTE_FAIL`, `UNRESOLVED_DISPATCH`, watchdog or access-violation markers |
+| `compat_patches` | never: it names each temporary compatibility patch that fired (the runtime's `COMPAT_PATCH_REPORT`, #1274), so a defect can be traced to an active patch; `--compat-counts-only` keeps the ids out of a summary you will publish |
 
 Output is one `SOAK_CHECK:` line per assertion plus a `SOAK_AUDIT:` verdict line, and the exit
 status is non-zero if any assertion failed. Two rules keep it honest: an input it was not

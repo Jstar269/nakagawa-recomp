@@ -1752,6 +1752,8 @@ static void deliver_vblank(void) {
                  * be held forever, presenting only frame 0. Re-arm whenever the worker is
                  * dormant; the relaunch is the surrogate for the GE callback. */
                 fprintf(stderr, "RELAUNCH: worker 0x%x dormant, restarting to entry 0x%08x\n", wuid, w->entry);
+                sr_compat_fired("SCHEDULER_HOOKS", sr_title_config()->worker_thread_entry,
+                                "worker relaunch trampoline");
                 sched_start_thread(wuid, 0, 0);
             }
         }
@@ -2143,6 +2145,8 @@ static void guest_reent_register(uint32_t uid, uint32_t state_ptr) {
     /* Layout: { next(+0x00), state_ptr[32](+0x04..+0x80), uid[32](+0x84..+0x100) }.
      * Bucket = uid % 32 (signed-safe for positive PSP thread UIDs). */
     uint32_t node_addr = bindings.guest_thread_table_addr;
+    sr_compat_fired("TITLE_CONFIGURED_SCHEDULER_COMPAT", bindings.guest_thread_table_addr,
+                    "guest thread reent table root");
 
     if (getenv("SR_REENT_TRACE")) {
         fprintf(stderr, "REENT_TRACE guest_register: uid=0x%x state_ptr=0x%x bucket=%u\n",
@@ -2210,8 +2214,11 @@ static void guest_reent_unregister(uint32_t state_ptr) {
 static void init_guest_reent(uint32_t state_ptr, uint32_t uid) {
     SrTitleReentBindings bindings;
     int has_bindings = sr_title_config_reent_bindings(&bindings);
-    if (has_bindings && g_master_reent == 0u)
+    if (has_bindings && g_master_reent == 0u) {
         g_master_reent = bindings.master_reent_addr;
+        sr_compat_fired("TITLE_CONFIGURED_SCHEDULER_COMPAT", bindings.master_reent_addr,
+                        "master reent fallback address");
+    }
     /* Copy master thread's reent structure to initialize the new thread's reent.
      * This inherits the initialized allocator context. A thread holding the ROOT or
      * LAUNCHER role keeps its own independently-initialized reent: root has the
@@ -2288,6 +2295,8 @@ static int register_libc_thread(uint32_t k0, uint32_t state_ptr, uint32_t uid) {
      * master reent for every later thread. */
     if (sched_uid_is_launcher(uid)) {
         g_master_reent = state_ptr;
+        sr_compat_fired("SCHEDULER_HOOKS", sr_title_config()->launcher_thread_entry,
+                        "launcher reent ownership");
     }
 
     init_guest_reent(state_ptr, uid);
@@ -2384,6 +2393,7 @@ uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_siz
                         existing->uid, entry, existing->state, existing->started);
                 n_reuse_log++;
             }
+            sr_compat_fired("SCHEDULER_HOOKS", entry, "worker thread reuse");
             return existing->uid;
         }
     }
@@ -2544,6 +2554,7 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     if (!getenv("SR_NO_LAUNCHER_DEMOTE") && sr_title_config_is_launcher_entry(entry)) {
         const int demoted_priority = 50;
         t->priority = demoted_priority;
+        sr_compat_fired("SCHEDULER_HOOKS", entry, "launcher priority demotion");
         if (getenv("SR_THLOG")) fprintf(stderr, "LAUNCHER_DEMOTE: launcher uid=0x%x -> priority=%d\n",
                                         t->uid, demoted_priority);
     }
@@ -4585,6 +4596,8 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         sr_inrange(reent_bindings.guest_thread_table_addr) &&
         sr_inrange(reent_bindings.guest_thread_table_addr + 4u)) {
         MEM_W32(reent_bindings.guest_thread_table_addr, 0u);
+        sr_compat_fired("TITLE_CONFIGURED_SCHEDULER_COMPAT", reent_bindings.guest_thread_table_addr,
+                        "guest thread reent table root");
     }
     sched_start_thread(uid, arglen, argp);
 
