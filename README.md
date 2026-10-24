@@ -117,7 +117,8 @@ No game at hand? `mingw32-make player showcase` (on Windows it needs WSL 2 and P
 ## Learn more
 
 [How it works](docs/ARCHITECTURE.md#pipeline) · [All documentation](docs/README.md) · [Open issues](https://github.com/Jstar269/nakagawa-recomp/issues) ·
-[Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Code of conduct](CODE_OF_CONDUCT.md) ·
+[Contributing](CONTRIBUTING.md) · [Accessibility](ACCESSIBILITY.md) · [Getting help](SUPPORT.md) · [Security](SECURITY.md) ·
+[Code of conduct](CODE_OF_CONDUCT.md) ·
 [hst-decomp](https://github.com/Jstar269/hst-decomp)
 
 ## Project health

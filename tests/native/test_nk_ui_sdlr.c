@@ -656,6 +656,87 @@ static int test_rounded_border_and_waves(void) {
     return 1;
 }
 
+/* An image command: the texture is uploaded once and reused, the tint
+   multiplies the texels, a scissor crops it, and a stale serial uploads again. */
+static int test_image_commands(void) {
+    Target target;
+    NkUiSdlr *backend;
+    NkUiSdlrStats stats;
+    NkUiDrawBuffer buffer;
+    NkUiImage image;
+    uint8_t pixels[4u * 4u * 4u];
+    const uint32_t black = 0x000000FFu;
+    size_t i;
+    memset(&buffer, 0, sizeof(buffer));
+    /* A 4 x 4 opaque white image, premultiplied, so the tint is the colour. */
+    for (i = 0; i < sizeof(pixels); ++i) {
+        pixels[i] = 0xFFu;
+    }
+    image.width = 4u;
+    image.height = 4u;
+    image.rgba_pm = pixels;
+    image.serial = 0x5EED0001ull;
+    CHECK(target_open(&target, 64, 64), "open a render target");
+    backend = nk_ui_sdlr_create(target.renderer, NULL);
+    CHECK(backend != NULL, "create a backend");
+    CHECK(nk_ui_draw_add_image(&buffer, &image, (NkUiPixelRect){0, 0, 16, 16}, 0xFFFFFFFFu, 1u),
+          "untinted image");
+    CHECK(nk_ui_draw_add_image(&buffer, &image, (NkUiPixelRect){20, 0, 36, 16}, 0x00FF00FFu, 2u),
+          "green-tinted image");
+    CHECK(nk_ui_draw_add_scissor(&buffer, true, (NkUiPixelRect){40, 0, 48, 8}, 3u), "scissor on");
+    CHECK(nk_ui_draw_add_image(&buffer, &image, (NkUiPixelRect){40, 0, 56, 16}, 0xFFFFFFFFu, 4u),
+          "cropped image");
+    CHECK(nk_ui_draw_add_scissor(&buffer, false, (NkUiPixelRect){40, 0, 48, 8}, 3u), "scissor off");
+    target_clear(&target, black);
+    CHECK(nk_ui_sdlr_render(backend, &buffer.list), "render the image list");
+    CHECK(target_pixel(&target, 8, 8) == 0xFFFFFFFFu, "the image is drawn as it is");
+    CHECK(target_pixel(&target, 28, 8) == 0x00FF00FFu, "the tint multiplies the texels");
+    CHECK(target_pixel(&target, 44, 4) == 0xFFFFFFFFu && target_pixel(&target, 44, 12) == black &&
+          target_pixel(&target, 52, 4) == black, "the scissor crops the image");
+    nk_ui_sdlr_get_stats(backend, &stats);
+    CHECK(stats.images_drawn == 3u && stats.image_uploads == 1u && stats.images_failed == 0u,
+          "one upload serves every draw of the same image");
+    CHECK(nk_ui_sdlr_render(backend, &buffer.list), "render again");
+    nk_ui_sdlr_get_stats(backend, &stats);
+    CHECK(stats.images_drawn == 6u && stats.image_uploads == 1u, "the texture is cached across renders");
+    image.serial = 0x5EED0002ull;
+    CHECK(nk_ui_sdlr_render(backend, &buffer.list), "render with a new serial");
+    nk_ui_sdlr_get_stats(backend, &stats);
+    CHECK(stats.image_uploads == 2u, "a new serial is a new texture");
+    nk_ui_draw_buffer_destroy(&buffer);
+    {
+        /* A 64 x 64 image drawn at 24 px is uploaded once as an area-averaged
+           24 px copy; at 48 px it gets its own copy. */
+        static uint8_t big[64u * 64u * 4u];
+        NkUiImage glyph;
+        memset(big, 0xFF, sizeof(big));
+        glyph.width = 64u;
+        glyph.height = 64u;
+        glyph.rgba_pm = big;
+        glyph.serial = 0x5EED0003ull;
+        memset(&buffer, 0, sizeof(buffer));
+        CHECK(nk_ui_draw_add_image(&buffer, &glyph, (NkUiPixelRect){0, 20, 24, 44}, 0xFFFFFFFFu, 5u) &&
+              nk_ui_draw_add_image(&buffer, &glyph, (NkUiPixelRect){30, 20, 54, 44}, 0xFFFFFFFFu, 6u),
+              "two shrunk draws");
+        target_clear(&target, black);
+        CHECK(nk_ui_sdlr_render(backend, &buffer.list), "render the shrunk glyphs");
+        CHECK(target_pixel(&target, 12, 32) == 0xFFFFFFFFu, "the shrunk copy is drawn");
+        nk_ui_sdlr_get_stats(backend, &stats);
+        CHECK(stats.image_uploads == 3u, "one shrunk copy serves both 24 px draws");
+        nk_ui_draw_buffer_destroy(&buffer);
+        memset(&buffer, 0, sizeof(buffer));
+        CHECK(nk_ui_draw_add_image(&buffer, &glyph, (NkUiPixelRect){0, 0, 48, 48}, 0xFFFFFFFFu, 7u),
+              "a 48 px draw");
+        CHECK(nk_ui_sdlr_render(backend, &buffer.list), "render at 48 px");
+        nk_ui_sdlr_get_stats(backend, &stats);
+        CHECK(stats.image_uploads == 4u, "another size is another copy");
+        nk_ui_draw_buffer_destroy(&buffer);
+    }
+    nk_ui_sdlr_destroy(backend);
+    target_close(&target);
+    return 1;
+}
+
 static int test_availability(void) {
     CHECK(nk_ui_sdlr_available() && nk_ui_ttf_available(), "this build includes both halves");
     CHECK(nk_ui_sdlr_create(NULL, NULL) == NULL, "no renderer, no backend");
@@ -697,6 +778,7 @@ int main(void) {
         } \
     } while (0)
     RUN(test_availability);
+    RUN(test_image_commands);
     RUN(test_ttf_measure_and_kerning);
     RUN(test_ttf_japanese_shaping);
     RUN(test_scissor_and_custom);

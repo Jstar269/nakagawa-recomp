@@ -12,6 +12,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Overflow-checked size arithmetic from portable-snippets (CC0, pinned in
+   third_party/portable-snippets/PROVENANCE.md). The header declares
+   __int128 helpers, which -Wpedantic reports, so it is included quietly. */
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
+#include "../../third_party/portable-snippets/safe-math/safe-math.h"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #endif
@@ -69,9 +81,11 @@ static NkResult xb_fail(char *message, size_t message_size, const char *format, 
     return NK_ERROR_INVALID_XB;
 }
 
+/* On overflow *out is left unchanged. */
 static bool checked_mul_size(size_t left, size_t right, size_t *out) {
-    if (left != 0 && right > SIZE_MAX / left) return false;
-    *out = left * right;
+    size_t product;
+    if (!psnip_safe_size_mul(&product, left, right)) return false;
+    *out = product;
     return true;
 }
 

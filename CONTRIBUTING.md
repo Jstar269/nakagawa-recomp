@@ -36,6 +36,13 @@ The rules it links to decide whether a change can land, so read them once.
 9. **Open the pull request.** Use a draft if it is not finished, fill in the template, and say what is left.
    Ask questions by opening an issue, or by commenting on the issue you are working on.
 
+## Accessibility
+
+The player's accessibility statement, with what works, what does not and how to report a barrier, is
+[ACCESSIBILITY.md](ACCESSIBILITY.md). If you change the launcher or the documentation, follow its
+"Contributing accessibly" list and update its tables when a change adds, changes or removes a barrier.
+Questions that are not about code go through [SUPPORT.md](SUPPORT.md).
+
 ## Licensing
 
 The repository-level project declaration is

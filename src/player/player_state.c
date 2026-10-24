@@ -949,9 +949,10 @@ int player_app_focus_count(const PlayerApp *app) {
             /* Resolution (3) + presentation pacing (2) + game display toggles (4: vsync,
              * fullscreen, scaling, reduce-motion) + launcher fullscreen (1) + volume stepper (2) +
              * controller settings (1) + notices and remove-tools controls (2) + close (1),
-             * then online and developer options (1), in draw order. The 8x preset is
-             * not offered (GPU scale caps at 4x). */
-            return 17;
+             * then online and developer options (1), in draw order, and last the
+             * launcher sounds toggle (1), so the earlier stops keep their places.
+             * The 8x preset is not offered (GPU scale caps at 4x). */
+            return 18;
         case VIEW_ONLINE_SETTINGS:
             /* online switch (+ updates, news, reports while it is on), developer
                switch (+ open log while it is on), back */
@@ -1033,6 +1034,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->fps_cap = -1;
     settings->master_volume = 80;
     settings->reduce_motion = false;
+    settings->ui_sounds = false;
     settings->launcher_window_maximized = false;
     settings->launcher_window_position_valid = false;
     settings->launcher_window_x = 0;
@@ -1264,6 +1266,12 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         app->settings.reduce_motion = rm_val;
     }
 
+    NkJsonNode *sounds_node = nk_json_obj_get(root, "ui_sounds");
+    bool sounds_val = false;
+    if (sounds_node && nk_json_get_bool(sounds_node, &sounds_val)) {
+        app->settings.ui_sounds = sounds_val;
+    }
+
     NkJsonNode *vol_node = nk_json_obj_get(root, "master_volume");
     int64_t vol_val = 0;
     if (vol_node && nk_json_get_int64(vol_node, &vol_val)) {
@@ -1347,6 +1355,7 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"online_reports\": %s,\n", app->settings.online_reports ? "true" : "false");
     fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
     fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
+    fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
 
@@ -1629,6 +1638,28 @@ bool player_window_fit_to_display(PlayerWindowRect requested,
     return true;
 }
 
+bool player_ui_canvas_fit(int pixel_width, int pixel_height,
+                          PlayerUiCanvas *out) {
+    if (!out || pixel_width <= 0 || pixel_height <= 0) return false;
+    double fit_x = (double)pixel_width / PLAYER_UI_DESIGN_WIDTH;
+    double fit_y = (double)pixel_height / PLAYER_UI_DESIGN_HEIGHT;
+    double scale = fit_x < fit_y ? fit_x : fit_y;
+    if (scale < PLAYER_UI_MIN_SCALE) scale = PLAYER_UI_MIN_SCALE;
+    if (scale > PLAYER_UI_MAX_SCALE) scale = PLAYER_UI_MAX_SCALE;
+    /* Round down so the canvas never extends past the output; the slack
+       absorbs division error, so 800 px at 800/720 is 720 units, not 719.
+       What is left at the right and bottom edges is under one unit wide and
+       shows the cleared background. */
+    int width = (int)((double)pixel_width / scale + 1e-6);
+    int height = (int)((double)pixel_height / scale + 1e-6);
+    if (width < 1) width = 1;
+    if (height < 1) height = 1;
+    out->width = width;
+    out->height = height;
+    out->scale = (float)scale;
+    return true;
+}
+
 void player_app_toggle_vsync(PlayerApp *app) {
     if (!app) return;
     app->settings.vsync = !app->settings.vsync;
@@ -1638,6 +1669,12 @@ void player_app_toggle_vsync(PlayerApp *app) {
 void player_app_toggle_reduce_motion(PlayerApp *app) {
     if (!app) return;
     app->settings.reduce_motion = !app->settings.reduce_motion;
+    maybe_persist_settings(app);
+}
+
+void player_app_toggle_ui_sounds(PlayerApp *app) {
+    if (!app) return;
+    app->settings.ui_sounds = !app->settings.ui_sounds;
     maybe_persist_settings(app);
 }
 
@@ -2623,7 +2660,7 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 
     if (!have_python) {
         player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
-                             "Python 3.15 was not found and the pinned bootstrap is unavailable.",
+                             "Python 3.14 or 3.15 was not found and the pinned bootstrap is unavailable.",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }

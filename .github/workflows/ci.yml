@@ -1031,12 +1031,12 @@ jobs:
             src/rt/atrac3p/libavcodec/sinewin.c src/rt/atrac3p/libavutil/float_dsp.c \
             src/rt/atrac3p/libavutil/intmath.c src/rt/atrac3p/libavutil/log2_tab.c \
             src/rt/atrac3p/libavutil/mem.c src/rt/atrac3p/libavutil/reverse.c"
-          INC="-Isrc/rt -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/libavutil"
+          INC="-Isrc/rt -Itests/native -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/libavutil"
           gcc -std=c11 -O1 $INC -o build/atrac3p_selftest \
             src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_selftest
           gcc -std=c11 -O1 $INC -o build/atrac3p_bridge_selftest \
-            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c \
+            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c tests/native/pcm_wav_dump.c \
             $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_bridge_selftest
           SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
@@ -1044,7 +1044,7 @@ jobs:
             src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_selftest_san
           gcc -std=c11 -O1 $SAN $INC -o build/atrac3p_bridge_selftest_san \
-            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c \
+            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c tests/native/pcm_wav_dump.c \
             $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_bridge_selftest_san
 

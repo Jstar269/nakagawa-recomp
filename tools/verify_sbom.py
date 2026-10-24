@@ -25,9 +25,14 @@ EXPECTED_PROVENANCE_FAMILIES = frozenset({
     "ffmpeg-atrac3p",
     "ffmpeg-h264",
     "clay-layout",
+    "portable-snippets-safe-math",
+    "dr-libs-dr-wav",
+    "monocypher-ed25519",
     "sdl3",
     "vulkan",
     "vfpu",
+    "stb-image",
+    "kenney-ui-assets",
 })
 
 EXPECTED_TOOLCHAIN_COMPONENTS = frozenset({

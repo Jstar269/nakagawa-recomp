@@ -5,6 +5,7 @@
 #define NK_UI_DRAW_H
 
 #include "nk_ui.h"
+#include "nk_ui_image.h"
 
 typedef enum {
     NK_UI_DRAW_RECTANGLE = 1,
@@ -17,7 +18,8 @@ typedef enum {
 
 enum {
     NK_UI_CUSTOM_NONE = 0,
-    NK_UI_CUSTOM_WAVES = 1
+    NK_UI_CUSTOM_WAVES = 1,
+    NK_UI_CUSTOM_IMAGE = 2    /* custom: const NkUiImage *, rgba_pm: the tint */
 };
 
 typedef struct {
@@ -111,6 +113,12 @@ bool nk_ui_draw_add_text_centered(NkUiDrawBuffer *buffer, NkUiPixelRect bounds,
 bool nk_ui_draw_add_custom(NkUiDrawBuffer *buffer, uint32_t custom_kind,
                            const void *custom, NkUiPixelRect bounds,
                            uint32_t element_id);
+/* An image stretched over bounds (device px), every texel multiplied by the
+   tint (straight RGBA; 0xFFFFFFFF draws the image as it is). The image must
+   outlive the list; backends key their texture by NkUiImage.serial. */
+bool nk_ui_draw_add_image(NkUiDrawBuffer *buffer, const NkUiImage *image,
+                          NkUiPixelRect bounds, uint32_t tint_rgba,
+                          uint32_t element_id);
 bool nk_ui_draw_add_scissor(NkUiDrawBuffer *buffer, bool start,
                             NkUiPixelRect bounds, uint32_t element_id);
 

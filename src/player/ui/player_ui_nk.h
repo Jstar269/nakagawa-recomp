@@ -17,6 +17,7 @@ extern "C" {
 typedef struct PlayerApp PlayerApp;
 typedef struct PlayerUiNk PlayerUiNk;
 typedef struct NkUiRouter NkUiRouter;
+struct NkUiImage;
 struct SDL_Renderer;
 struct SDL_Window;
 union SDL_Event;
@@ -88,6 +89,10 @@ typedef struct {
        (NULL: "Your disc"). */
     unsigned art_kind;
     const char *badge;
+    /* The disc's own ICON0.PNG and PIC1.PNG, decoded at run time from the
+       user's disc image (never stored); NULL until read or when absent. */
+    const struct NkUiImage *icon;
+    const struct NkUiImage *picture;
 } PlayerUiTitle;
 
 typedef struct {

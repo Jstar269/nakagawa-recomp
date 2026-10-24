@@ -89,6 +89,36 @@
       "disposition": "vendored_source_only; not linked into player runtime yet"
     },
     {
+      "id": "portable-snippets-safe-math",
+      "name": "Portable Snippets safe-math",
+      "license": "CC0-1.0",
+      "origin": "https://github.com/nemequ/portable-snippets",
+      "revision": "84abba93ff3d52c87e08ba81de1cc6615a42b72e",
+      "notice_path": "third_party/portable-snippets/COPYING.md",
+      "evidence_path": "third_party/portable-snippets/PROVENANCE.md",
+      "disposition": "vendored_header; compiled into the native player via src/core/nk_iso.c and src/core/nk_xb.c"
+    },
+    {
+      "id": "dr-libs-dr-wav",
+      "name": "dr_libs dr_wav",
+      "license": "Unlicense",
+      "origin": "https://github.com/mackron/dr_libs",
+      "revision": "d422edf14ec2b81ac40a7f22b5a7f64276b5fc34",
+      "notice_path": "third_party/dr_libs/LICENSE.txt",
+      "evidence_path": "third_party/dr_libs/PROVENANCE.md",
+      "disposition": "vendored_source_only; selftests only, not linked into the player or runtime"
+    },
+    {
+      "id": "monocypher-ed25519",
+      "name": "Monocypher 4.0.3 Ed25519 signature check",
+      "license": "CC0-1.0",
+      "origin": "https://github.com/LoupVaillant/Monocypher",
+      "revision": "4.0.3 / ab2b16dd619ad5f6979a4fbe69cfa324a6fcc35f",
+      "notice_path": "third_party/monocypher/LICENCE.md",
+      "evidence_path": "third_party/monocypher/PROVENANCE.md",
+      "disposition": "vendored_source_only; upstream dual BSD-2-Clause OR CC0-1.0, CC0-1.0 elected; not linked into player runtime yet"
+    },
+    {
       "id": "sdl3",
       "name": "SDL3",
       "license": "Zlib",
@@ -117,6 +147,26 @@
       "notice_path": "assets/vfpu/PROVENANCE.json",
       "evidence_path": "assets/vfpu/PROVENANCE.json",
       "disposition": "included_byte_verified_data"
+    },
+    {
+      "id": "stb-image",
+      "name": "stb_image 2.30 PNG decoder",
+      "license": "Unlicense",
+      "origin": "https://github.com/nothings/stb",
+      "revision": "v2.30 / 003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5",
+      "notice_path": "third_party/stb/LICENSE",
+      "evidence_path": "third_party/stb/PROVENANCE.md",
+      "disposition": "vendored_source; MIT OR Unlicense upstream, used under Unlicense; linked into the player (PNG only)"
+    },
+    {
+      "id": "kenney-ui-assets",
+      "name": "Kenney Input Prompts 1.5 and Interface Sounds 1.0",
+      "license": "CC0-1.0",
+      "origin": "https://kenney.nl/assets/input-prompts",
+      "revision": "kenney_input-prompts_1.5.zip ac2fcf599080b0f3ba2d174c9474db6df1a0e96ff0662580e2da79a122ab78a1; kenney_interface-sounds.zip f2193d072726d6758a5f7871b2dcc54dcce0d5c35c6f0a62f92549b327c81232",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "evidence_path": "third_party/kenney/PROVENANCE.md",
+      "disposition": "vendored_assets; embedded in the player by tools/gen_ui_assets.py"
     }
   ],
   "excluded_paths": [
@@ -960,6 +1010,651 @@
         "sha256": "a66655d7b24ac6f793f73914c60ad44522b9fbd9e5f9b3706220b66c44fdaad2"
       },
       "comment": "Player UI font from google/fonts 45e3d5269e4a17d823f6d84470bc084dc5ae46f6 under the SIL Open Font License 1.1; origin and instancing recorded in docs/provenance/FONT_ORIGINS.md section 8."
+    },
+    {
+      "id": "stb-license",
+      "name": "stb licence text (MIT or Unlicense)",
+      "type": "documentation",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/stb/LICENSE",
+      "upstream_origin": "https://github.com/nothings/stb",
+      "license": "MIT OR Unlicense",
+      "notice_path": "third_party/stb/LICENSE",
+      "disposition": "included",
+      "public_scope_included": true,
+      "optional": false,
+      "comment": "Upstream LICENSE from nothings/stb 003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5, byte-identical; the project uses stb_image under the Unlicense option (third_party/stb/PROVENANCE.md)."
+    },
+    {
+      "id": "kenney-prompt-kbd-arrows",
+      "name": "UI prompt glyph: kbd_arrows.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/kbd_arrows.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "ab5374333366fe237be253bd7f051984dd4524e3c44d6fb351fd81574f78515e"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-kbd-d",
+      "name": "UI prompt glyph: kbd_d.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/kbd_d.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "6ca4515b5f56dd2730cb9acec3b183c8b2800ae641d75b434edd753e12bc36ad"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-kbd-e",
+      "name": "UI prompt glyph: kbd_e.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/kbd_e.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "1008502780281c8c2e06bebbc477a60f485d2260072b04611fbd294340f266d7"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-kbd-enter",
+      "name": "UI prompt glyph: kbd_enter.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/kbd_enter.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "f849f917caa0a7eaa5c2322acc62c1de8e18322036961a2282cd85f1eca302c1"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-kbd-escape",
+      "name": "UI prompt glyph: kbd_escape.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/kbd_escape.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "8874e394d80161d6188ffce8b715357fea8059a9d6627a28769a91e3855bcbd7"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-kbd-f1",
+      "name": "UI prompt glyph: kbd_f1.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/kbd_f1.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "78277a3c50bada687a7d912220c1caa581d9d23948b9884631d405a4b441e31e"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-kbd-q",
+      "name": "UI prompt glyph: kbd_q.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/kbd_q.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "cee375cefc9e2f19089bbd669153af9099fe71e08b6c577d48eb2a32bc567c96"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-kbd-space",
+      "name": "UI prompt glyph: kbd_space.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/kbd_space.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "8ce6f043b05888bd1655f7660f8f7cc02acb6c763fecf358fef20405239524bf"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-playstation5-button-options",
+      "name": "UI prompt glyph: playstation5_button_options.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/playstation5_button_options.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "330360b4eb9f62799521a01a8c95c9ca0ef31bf9ab235fd551fe0c35a0e973f3"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-playstation-button-circle",
+      "name": "UI prompt glyph: playstation_button_circle.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/playstation_button_circle.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "74a47e04595c6db17a5c7d6f3e9c8830732d3e81f1e66ff4b19782213c9411d7"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-playstation-button-cross",
+      "name": "UI prompt glyph: playstation_button_cross.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/playstation_button_cross.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "afa03be5a125aea7e9746e030adc63d78689e8931c05905b7c079b755796fbcc"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-playstation-button-square",
+      "name": "UI prompt glyph: playstation_button_square.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/playstation_button_square.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "66e53b7714e0e16eafa04713718667fa5b78b7c739f315e380a88f533eafc6db"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-playstation-button-triangle",
+      "name": "UI prompt glyph: playstation_button_triangle.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/playstation_button_triangle.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "73f646a94056a71484f788375dd25efa1555489085e7f2f727175b1384b89e1c"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-playstation-dpad",
+      "name": "UI prompt glyph: playstation_dpad.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/playstation_dpad.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "785171ce3d605c75accb44b6da44d05c2581cff3c32d905ab44ef76961f4222e"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-playstation-trigger-l1",
+      "name": "UI prompt glyph: playstation_trigger_l1.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/playstation_trigger_l1.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "17a323e995f7706a8237ef1db173a70f62b40585f6cb8a4557da05c92a4b8a94"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-playstation-trigger-r1",
+      "name": "UI prompt glyph: playstation_trigger_r1.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/playstation_trigger_r1.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "4fcd174085f00fdf22b286966d47ff52b2eac065df57b16ac68306ebb5d519a0"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-switch-button-a",
+      "name": "UI prompt glyph: switch_button_a.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/switch_button_a.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "c24af67ce34d3116e4750f052221d6bfe8a87cb0de8364bb23a573a85391fb10"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-switch-button-b",
+      "name": "UI prompt glyph: switch_button_b.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/switch_button_b.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "5d95680fcfbf59ba94a3cc696fd8251e4fe292b421716b90b5272ca5b32d91bf"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-switch-button-l",
+      "name": "UI prompt glyph: switch_button_l.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/switch_button_l.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "944cbe119693f0bbae7bfceb9cb453c5ee4da898180441937190aeedb6bc0b83"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-switch-button-plus",
+      "name": "UI prompt glyph: switch_button_plus.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/switch_button_plus.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "0f8b7a6deb6665279a7763e5150bb74303a83dc45f442c978ed990bbd8e76d64"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-switch-button-r",
+      "name": "UI prompt glyph: switch_button_r.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/switch_button_r.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "9a1a982e2f6ed96863d796809007298cd4108ac3b04e425f279d486ddd6051b1"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-switch-button-x",
+      "name": "UI prompt glyph: switch_button_x.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/switch_button_x.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "90f1f195dd70724a605408bd60359c04b4013d8c5236442655256f43ea0cc043"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-switch-button-y",
+      "name": "UI prompt glyph: switch_button_y.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/switch_button_y.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "133e98bbd388d29d7325b20b729518c98bb96707d743f2e142882b528bcf6263"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-switch-dpad",
+      "name": "UI prompt glyph: switch_dpad.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/switch_dpad.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "cb6bbdc12a3b651f65ba511a163c73020936696bb1f0ba26483653848bfc3109"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-xbox-button-a",
+      "name": "UI prompt glyph: xbox_button_a.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/xbox_button_a.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "c24af67ce34d3116e4750f052221d6bfe8a87cb0de8364bb23a573a85391fb10"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-xbox-button-b",
+      "name": "UI prompt glyph: xbox_button_b.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/xbox_button_b.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "5d95680fcfbf59ba94a3cc696fd8251e4fe292b421716b90b5272ca5b32d91bf"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-xbox-button-menu",
+      "name": "UI prompt glyph: xbox_button_menu.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/xbox_button_menu.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "49e03870c73236cdc757e7df6a053e52569acbf0ace0f95d4f1881c53e090247"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-xbox-button-x",
+      "name": "UI prompt glyph: xbox_button_x.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/xbox_button_x.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "90f1f195dd70724a605408bd60359c04b4013d8c5236442655256f43ea0cc043"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-xbox-button-y",
+      "name": "UI prompt glyph: xbox_button_y.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/xbox_button_y.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "133e98bbd388d29d7325b20b729518c98bb96707d743f2e142882b528bcf6263"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-xbox-dpad",
+      "name": "UI prompt glyph: xbox_dpad.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/xbox_dpad.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "10e27b4bb02ba3f6c9994e85998fca7bc002c6dc8297f8b67e80207273b202c6"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-xbox-lb",
+      "name": "UI prompt glyph: xbox_lb.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/xbox_lb.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "587d43aac834743c64e6958f3fb13b0c5cc9075c9a84400e59c6fe1acbe3897f"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-prompt-xbox-rb",
+      "name": "UI prompt glyph: xbox_rb.png",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/input-prompts/xbox_rb.png",
+      "upstream_origin": "https://kenney.nl/assets/input-prompts",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/input-prompts/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "692acf85c1b9e5c9d2b6c9b0a44bba2f21bf0f417e6192a4eb674f0c3627005e"
+      },
+      "comment": "Kenney Input Prompts 1.5 glyph, byte-identical to the archive's Default (64 x 64) file; embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-sound-back-001",
+      "name": "UI sound: back_001.wav",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/interface-sounds/back_001.wav",
+      "upstream_origin": "https://kenney.nl/assets/interface-sounds",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/interface-sounds/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "ea6abe8e02c7c2dd4d537a498d2a20f09f97d1983f4227fc45e65bdb3a7557e4"
+      },
+      "comment": "Kenney Interface Sounds 1.0 clip, decoded once from the archive's Ogg Vorbis to 16-bit PCM WAV (LOCAL DELTA); embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-sound-confirmation-001",
+      "name": "UI sound: confirmation_001.wav",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/interface-sounds/confirmation_001.wav",
+      "upstream_origin": "https://kenney.nl/assets/interface-sounds",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/interface-sounds/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "68771678d3d344051a1e7747e5f3384d35728b5232a043d4dd2851921b5c9293"
+      },
+      "comment": "Kenney Interface Sounds 1.0 clip, decoded once from the archive's Ogg Vorbis to 16-bit PCM WAV (LOCAL DELTA); embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
+    },
+    {
+      "id": "kenney-sound-tick-001",
+      "name": "UI sound: tick_001.wav",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "third_party/kenney/interface-sounds/tick_001.wav",
+      "upstream_origin": "https://kenney.nl/assets/interface-sounds",
+      "license": "CC0-1.0",
+      "notice_path": "third_party/kenney/interface-sounds/License.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "5bb62847f130ced4299d758cee7d21bef49bff53c906e44e1ebc19d3d8f3a91a"
+      },
+      "comment": "Kenney Interface Sounds 1.0 clip, decoded once from the archive's Ogg Vorbis to 16-bit PCM WAV (LOCAL DELTA); embedded in the player by tools/gen_ui_assets.py; manifest in third_party/kenney/PROVENANCE.md."
     }
   ]
 }

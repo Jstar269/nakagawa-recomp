@@ -9,7 +9,10 @@
    NkUiTextBackend into a per-scale glyph atlas: pages of 1024 x 1024 premultiplied
    white RGBA (the "A8 expanded" form the architecture calls for, since
    SDL_Renderer has no single-channel texture). Scissors become the renderer clip
-   rectangle, intersected when nested.
+   rectangle, intersected when nested. Image commands (NK_UI_CUSTOM_IMAGE) draw a
+   texture uploaded once per NkUiImage.serial (and per drawn size when the image is
+   shrunk, which is area-averaged on the CPU first, because SDL_Renderer has no
+   mipmaps) and kept in a small least recently used cache.
 
    Compiled only with NK_UI_WITH_SDL; otherwise every entry is a stub. */
 
@@ -70,6 +73,11 @@ void nk_ui_sdlr_get_stats(const NkUiSdlr *renderer, NkUiSdlrStats *out) {
    size (at most 480 px wide) and are scaled up with a linear filter. */
 #define NK_UI_SDLR_WAVES_DIVISOR 3
 #define NK_UI_SDLR_WAVES_MAX_W 480
+/* Image textures kept alive: a library page of disc art, the title's picture
+   and every prompt glyph set fit with room to spare. */
+#define NK_UI_SDLR_IMAGE_CACHE 64
+/* Larger images are left out (nk_ui decoders cap them far lower). */
+#define NK_UI_SDLR_IMAGE_MAX_SIDE 8192
 
 typedef struct {
     int font;
@@ -99,6 +107,14 @@ typedef struct {
     float v;
 } NkUiSdlrQuadVertex;
 
+typedef struct {
+    uint64_t serial;      /* 0: free */
+    int width;            /* the texture's size: the image's own, or a shrunk copy's */
+    int height;
+    uint64_t last_used;   /* render count when last drawn */
+    SDL_Texture *texture;
+} NkUiSdlrImageEntry;
+
 struct NkUiSdlr {
     SDL_Renderer *renderer;
     NkUiTextBackend text;
@@ -126,6 +142,8 @@ struct NkUiSdlr {
     int waves_h;
     bool waves_valid;
     NkUiWavesCommand waves_last;
+    NkUiSdlrImageEntry images[NK_UI_SDLR_IMAGE_CACHE];
+    uint64_t render_count;
     NkUiSdlrStats stats;
 };
 
@@ -596,6 +614,11 @@ void nk_ui_sdlr_destroy(NkUiSdlr *r) {
     if (r->waves_texture != NULL) {
         SDL_DestroyTexture(r->waves_texture);
     }
+    for (size_t i = 0; i < NK_UI_SDLR_IMAGE_CACHE; ++i) {
+        if (r->images[i].texture != NULL) {
+            SDL_DestroyTexture(r->images[i].texture);
+        }
+    }
     free(r->waves_pixels);
     free(r);
 }
@@ -622,6 +645,122 @@ void nk_ui_sdlr_get_stats(const NkUiSdlr *r, NkUiSdlrStats *out) {
     *out = r->stats;
     out->atlas_pages = (uint32_t)r->page_count;
     out->atlas_glyphs = (uint32_t)r->entry_count;
+}
+
+/* The texture for an image, uploaded on first use. A full cache gives up the
+   entry drawn longest ago; one drawn in this render is never evicted, so an
+   image beyond that is uploaded for this draw only (*transient is set). */
+static SDL_Texture *nk_ui_sdlr_image_texture(NkUiSdlr *r, const NkUiImage *image,
+                                             int width, int height, bool *transient) {
+    NkUiSdlrImageEntry *slot = NULL;
+    SDL_Texture *texture;
+    uint8_t *shrunk = NULL;
+    const uint8_t *pixels = image->rgba_pm;
+    size_t i;
+    *transient = false;
+    for (i = 0; i < NK_UI_SDLR_IMAGE_CACHE; ++i) {
+        if (r->images[i].serial == image->serial && r->images[i].texture != NULL &&
+            r->images[i].width == width && r->images[i].height == height) {
+            r->images[i].last_used = r->render_count;
+            return r->images[i].texture;
+        }
+    }
+    for (i = 0; i < NK_UI_SDLR_IMAGE_CACHE; ++i) {
+        NkUiSdlrImageEntry *entry = &r->images[i];
+        if (entry->texture == NULL) {
+            slot = entry;
+            break;
+        }
+        if (entry->last_used != r->render_count &&
+            (slot == NULL || entry->last_used < slot->last_used)) {
+            slot = entry;
+        }
+    }
+    if (width != (int)image->width || height != (int)image->height) {
+        shrunk = (uint8_t *)malloc((size_t)width * (size_t)height * 4u);
+        if (shrunk == NULL ||
+            !nk_ui_image_resample(image, (uint32_t)width, (uint32_t)height, shrunk)) {
+            free(shrunk);
+            return NULL;
+        }
+        pixels = shrunk;
+    }
+    texture = SDL_CreateTexture(r->renderer, SDL_PIXELFORMAT_RGBA32,
+                                SDL_TEXTUREACCESS_STATIC, width, height);
+    if (texture == NULL) {
+        free(shrunk);
+        return NULL;
+    }
+    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
+    SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_LINEAR);
+    if (!SDL_UpdateTexture(texture, NULL, pixels, width * 4)) {
+        SDL_DestroyTexture(texture);
+        free(shrunk);
+        return NULL;
+    }
+    free(shrunk);
+    ++r->stats.image_uploads;
+    if (slot == NULL) {
+        *transient = true;
+        return texture;
+    }
+    if (slot->texture != NULL) {
+        SDL_DestroyTexture(slot->texture);
+    }
+    slot->serial = image->serial;
+    slot->width = width;
+    slot->height = height;
+    slot->last_used = r->render_count;
+    slot->texture = texture;
+    return texture;
+}
+
+static bool nk_ui_sdlr_draw_image(NkUiSdlr *r, const NkUiDrawCmd *cmd) {
+    const NkUiImage *image = (const NkUiImage *)cmd->custom;
+    static const int indices[6] = {0, 1, 2, 0, 2, 3};
+    NkUiSdlrQuadVertex q[4];
+    SDL_Texture *texture;
+    SDL_FColor color;
+    bool transient = false;
+    int width;
+    int height;
+    int k;
+    if (image == NULL || image->rgba_pm == NULL || image->width == 0u || image->height == 0u ||
+        image->width > (uint32_t)NK_UI_SDLR_IMAGE_MAX_SIDE ||
+        image->height > (uint32_t)NK_UI_SDLR_IMAGE_MAX_SIDE ||
+        cmd->bounds[2] <= cmd->bounds[0] || cmd->bounds[3] <= cmd->bounds[1]) {
+        return true;
+    }
+    /* Shrunk by more than a quarter: upload an area-averaged copy at the drawn
+       size, so a 64 px glyph drawn at 24 px does not alias. */
+    width = (int)image->width;
+    height = (int)image->height;
+    if ((cmd->bounds[2] - cmd->bounds[0]) * 5 < width * 4 ||
+        (cmd->bounds[3] - cmd->bounds[1]) * 5 < height * 4) {
+        width = cmd->bounds[2] - cmd->bounds[0];
+        height = cmd->bounds[3] - cmd->bounds[1];
+    }
+    texture = nk_ui_sdlr_image_texture(r, image, width, height, &transient);
+    if (texture == NULL) {
+        ++r->stats.images_failed;
+        return true; /* an image that cannot upload is left out, never fatal */
+    }
+    color = nk_ui_sdlr_color(cmd->rgba_pm);
+    q[0].x = (float)cmd->bounds[0]; q[0].y = (float)cmd->bounds[1]; q[0].u = 0.0f; q[0].v = 0.0f;
+    q[1].x = (float)cmd->bounds[2]; q[1].y = (float)cmd->bounds[1]; q[1].u = 1.0f; q[1].v = 0.0f;
+    q[2].x = (float)cmd->bounds[2]; q[2].y = (float)cmd->bounds[3]; q[2].u = 1.0f; q[2].v = 1.0f;
+    q[3].x = (float)cmd->bounds[0]; q[3].y = (float)cmd->bounds[3]; q[3].u = 0.0f; q[3].v = 1.0f;
+    for (k = 0; k < 4; ++k) {
+        q[k].color = color;
+    }
+    SDL_RenderGeometryRaw(r->renderer, texture, &q[0].x, (int)sizeof(q[0]),
+                          &q[0].color, (int)sizeof(q[0]), &q[0].u, (int)sizeof(q[0]),
+                          4, indices, 6, (int)sizeof(int));
+    if (transient) {
+        SDL_DestroyTexture(texture);
+    }
+    ++r->stats.images_drawn;
+    return true;
 }
 
 /* Draws one waves command: the frame is re-rendered only when its phases, size
@@ -730,6 +869,7 @@ bool nk_ui_sdlr_render(NkUiSdlr *r, const NkUiDrawList *list) {
     if (r == NULL || list == NULL || !nk_ui_sdlr_list_valid(list)) {
         return false;
     }
+    ++r->render_count;
     if (list->nv > r->color_capacity) {
         SDL_FColor *grown = (SDL_FColor *)realloc(r->colors, list->nv * sizeof(*grown));
         if (grown == NULL) {
@@ -810,6 +950,10 @@ bool nk_ui_sdlr_render(NkUiSdlr *r, const NkUiDrawList *list) {
             if (cmd->custom_kind == NK_UI_CUSTOM_WAVES) {
                 if (!clip.empty) {
                     ok = nk_ui_sdlr_draw_waves(r, cmd);
+                }
+            } else if (cmd->custom_kind == NK_UI_CUSTOM_IMAGE) {
+                if (!clip.empty) {
+                    ok = nk_ui_sdlr_draw_image(r, cmd);
                 }
             } else {
                 ++r->stats.custom_skipped;

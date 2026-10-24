@@ -2034,8 +2034,9 @@ int main(int argc, char **argv) {
     }
     if (argc == 3 && strcmp(argv[1], "-c") == 0) {
         static const char python_probe[] =
-            "import sys; sys.exit(sys.implementation.name != 'cpython' or "
-            "sys.version_info[:2] != (3, 15))";
+            "import sys, sysconfig; sys.exit(sys.implementation.name != 'cpython' or "
+            "sysconfig.get_platform().startswith('mingw') or "
+            "not ((3, 14) <= sys.version_info[:2] <= (3, 15)))";
         return strcmp(argv[2], python_probe) == 0 ? 0 : 94;
     }
     if (argc >= 3 && strcmp(argv[2], "build-package") == 0) {
@@ -2673,7 +2674,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 17); /* two pacing modes; scaling; launcher fullscreen; online options */
+        assert(player_app_focus_count(stops) == 18); /* two pacing modes; scaling; launcher fullscreen; online options; UI sounds */
         stops->active_view = VIEW_PREREQ_CONSENT;
         assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_PREREQ_PROGRESS;
@@ -4176,6 +4177,50 @@ int main(int argc, char **argv) {
         }
         assert(player_settings_uses_two_columns(1280, 620));
         assert(!player_settings_uses_two_columns(1280, 619));
+
+        /* The launcher UI is drawn at the window's real pixel size (#1129)
+           with the scale the old 1280x720 letterbox used: the design never
+           lays out smaller, grows along the longer axis instead of leaving
+           bars, and the canvas covers the output with whole layout units. */
+        {
+            static const struct {
+                int pixel_w, pixel_h;
+                int width, height;
+                float scale;
+            } fits[] = {
+                { 1280, 720, 1280, 720, 1.0f },        /* 1x */
+                { 2560, 1440, 1280, 720, 2.0f },       /* 2x high-DPI window */
+                { 1920, 1080, 1280, 720, 1.5f },       /* 1080p fullscreen */
+                { 1500, 900, 1280, 768, 1.171875f },   /* fractional window */
+                { 3840, 2160, 1280, 720, 3.0f },       /* 4K fullscreen */
+                { 1920, 1200, 1280, 800, 1.5f },       /* 16:10 grows down */
+                { 2560, 1080, 1706, 720, 1.5f },       /* ultrawide grows across */
+                { 960, 540, 1280, 720, 0.75f },        /* minimum window */
+                { 1440, 810, 1280, 720, 1.125f },      /* minimum at 150% */
+                { 200, 100, 800, 400, 0.25f },         /* scale floor */
+                { 30720, 17280, 3840, 2160, 8.0f },    /* scale cap */
+            };
+            for (size_t i = 0; i < sizeof(fits) / sizeof(fits[0]); ++i) {
+                PlayerUiCanvas canvas;
+                assert(player_ui_canvas_fit(fits[i].pixel_w, fits[i].pixel_h,
+                                            &canvas));
+                assert(canvas.width == fits[i].width);
+                assert(canvas.height == fits[i].height);
+                assert(canvas.scale == fits[i].scale);
+                assert(canvas.width * canvas.scale <= fits[i].pixel_w + 0.01f);
+                assert(canvas.height * canvas.scale <= fits[i].pixel_h + 0.01f);
+                assert((canvas.width + 1) * canvas.scale > fits[i].pixel_w);
+                assert((canvas.height + 1) * canvas.scale > fits[i].pixel_h);
+            }
+            PlayerUiCanvas canvas;
+            /* 800 px at 800/720 is 720 units, not 719 from rounding error */
+            assert(player_ui_canvas_fit(1500, 800, &canvas));
+            assert(canvas.height == 720);
+            assert(canvas.width == 1350);
+            assert(!player_ui_canvas_fit(0, 720, &canvas));
+            assert(!player_ui_canvas_fit(1280, -1, &canvas));
+            assert(!player_ui_canvas_fit(1280, 720, NULL));
+        }
 
         /* The focus handoff is attempted once per launch, and only on proven
            evidence. A failed SDL_MinimizeWindow leaves the launcher visible:
