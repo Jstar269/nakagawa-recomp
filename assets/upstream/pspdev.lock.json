@@ -46,31 +46,31 @@
   },
   "distribution": {
     "archive_asset": "pspdev-ubuntu-latest-x86_64.tar.gz",
-    "archive_sha256": "e43f678219879b340892bab17c5d2a516d5363dda26a1ddea0e12834a44c1bdd",
-    "commit": "681088f7a4eaae47da5a4b277c12f27de3e9afbc",
-    "container_digest": "sha256:3349a5ecf311cd081b9214a9aeb04bac5d38f6ec2a8d80cd5d364edc25dc388b",
+    "archive_sha256": "a86efe624e770005290919617859e9df24bd8fcd3e364f4587f23ec7364b0acd",
+    "commit": "99dee465c534679f16cc7e0d9fc6a5b92d759d7d",
+    "container_digest": "sha256:54895e6f5afb71b8f4f6915ee6d5023e1e087ca7afdf2dcb1d7a694a5233e45f",
     "license_expression": "MIT",
-    "release": "v20260601",
+    "release": "v20261001",
     "repository": "https://github.com/pspdev/pspdev"
   },
   "local_verification": {
     "host_platform": "WSL2 Ubuntu (linux/amd64 toolchain binaries) on a Windows x86_64 host",
-    "installation_method": "Official GitHub v20260601 release asset pspdev-ubuntu-latest-x86_64.tar.gz independently downloaded, SHA-256-verified, and installed at /usr/local/pspdev in WSL Ubuntu; every pinned tool binary was byte-compared (size and SHA-256) against the same path in that release archive, and the release's Docker Hub tag was pulled by immutable digest",
+    "installation_method": "Official GitHub v20261001 release asset pspdev-ubuntu-latest-x86_64.tar.gz downloaded and independently SHA-256-verified against the GitHub release API (172980272 bytes); extracted under a scratch prefix and temporarily exposed at the documented /usr/local/pspdev path in WSL Ubuntu for fixture builds; every pinned tool binary was byte-compared by size and SHA-256 against the same path in the release archive; the Docker Hub v20261001 image was pulled by immutable digest and inspected as linux/amd64",
     "status": "complete",
     "tool_versions": {
-      "mksfoex": "v20260601 ubuntu-latest release asset; size=30600; sha256=41c7eab1ba30cab5fb53bdef219a865049b5d3947d2b29b43519b62bf34bb3d2",
-      "pack-pbp": "v20260601 ubuntu-latest release asset; size=23712; sha256=6d5a0148409b305a31ca478bf40660264a9093a58053ac75488be0187f3cbe68",
-      "psp-build-exports": "v20260601 ubuntu-latest release asset; size=95776; sha256=daf925e290e06f84bdcfb80293369ff8a04e01a9e1ae49c352b2ae80f1413342",
-      "psp-config": "v20260601 ubuntu-latest release asset; size=42096; sha256=fd4ba82db35bbe498b3a0c3eec4209f84bba6b53d132c8bbdfcff7980ccd77ee",
-      "psp-fixup-imports": "v20260601 ubuntu-latest release asset; size=79096; sha256=dd9ef65b179f9585f6d1790e2e69a63a93693a9f0de4d3e12c84e874d8e83f06",
-      "psp-gcc": "GCC 15.2.0; v20260601 ubuntu-latest release asset; size=2054992; sha256=6032f8cfbf0f68dfaa244146460d8a2a8c2ca9982aef18cd87126d82d76211ea",
-      "psp-ld": "GNU Binutils 2.44; v20260601 ubuntu-latest release asset; size=1915600; sha256=d119ef5866b70ce46293b4ee7bb5ac356d44f93d802ca25580d3ad682b95937b",
-      "psp-nm": "GNU Binutils 2.44; v20260601 ubuntu-latest release asset; size=1276544; sha256=3853942e455cb3773ac2b289be2a9cc92cbb7ba0902df942bd7038dd8684047c",
-      "psp-objdump": "GNU Binutils 2.44; v20260601 ubuntu-latest release asset; size=2618464; sha256=bb9cfc15da96a8a2dfd4b6c0903e6b15bc746320f6bf4c7694489470f1bd161b",
-      "psp-prxgen": "v20260601 ubuntu-latest release asset; size=67352; sha256=39f3b7a84fe19276c21734b28bf1f4e5cece8396063ed6b1df7fb9fc3ba3e08c",
-      "psp-readelf": "GNU Binutils 2.44; v20260601 ubuntu-latest release asset; size=1108840; sha256=2ec8654fde583954481a749f4d9fb15242175a0196b71a31c500e629cb470c70",
-      "pspsh": "v20260601 ubuntu-latest release asset; size=176168; sha256=fec6edd51c580cdf99f68555b7d9b0cf49f4a477d6711490c91a05cb7bc7f1a7",
-      "usbhostfs_pc": "v20260601 ubuntu-latest release asset; size=175848; sha256=bd5e8e09c246cec00c4a4e1fdad264c0c14ac472073f4ff1a33e436438cdf93b"
+      "mksfoex": "v20261001 ubuntu-latest release asset; size=31136; sha256=1ad00b5120def7ca83817f36edafe354a6c8d9e4d6a5306a2858d5adcbc64070",
+      "pack-pbp": "v20261001 ubuntu-latest release asset; size=23712; sha256=6d5a0148409b305a31ca478bf40660264a9093a58053ac75488be0187f3cbe68",
+      "psp-build-exports": "v20261001 ubuntu-latest release asset; size=95776; sha256=daf925e290e06f84bdcfb80293369ff8a04e01a9e1ae49c352b2ae80f1413342",
+      "psp-config": "v20261001 ubuntu-latest release asset; size=42096; sha256=fd4ba82db35bbe498b3a0c3eec4209f84bba6b53d132c8bbdfcff7980ccd77ee",
+      "psp-fixup-imports": "v20261001 ubuntu-latest release asset; size=79096; sha256=dd9ef65b179f9585f6d1790e2e69a63a93693a9f0de4d3e12c84e874d8e83f06",
+      "psp-gcc": "GCC 15.2.0; v20261001 ubuntu-latest release asset; size=2054992; sha256=6032f8cfbf0f68dfaa244146460d8a2a8c2ca9982aef18cd87126d82d76211ea",
+      "psp-ld": "GNU Binutils 2.44; v20261001 ubuntu-latest release asset; size=1915600; sha256=d119ef5866b70ce46293b4ee7bb5ac356d44f93d802ca25580d3ad682b95937b",
+      "psp-nm": "GNU Binutils 2.44; v20261001 ubuntu-latest release asset; size=1276544; sha256=3853942e455cb3773ac2b289be2a9cc92cbb7ba0902df942bd7038dd8684047c",
+      "psp-objdump": "GNU Binutils 2.44; v20261001 ubuntu-latest release asset; size=2618464; sha256=bb9cfc15da96a8a2dfd4b6c0903e6b15bc746320f6bf4c7694489470f1bd161b",
+      "psp-prxgen": "v20261001 ubuntu-latest release asset; size=67352; sha256=39f3b7a84fe19276c21734b28bf1f4e5cece8396063ed6b1df7fb9fc3ba3e08c",
+      "psp-readelf": "GNU Binutils 2.44; v20261001 ubuntu-latest release asset; size=1108840; sha256=2ec8654fde583954481a749f4d9fb15242175a0196b71a31c500e629cb470c70",
+      "pspsh": "v20261001 ubuntu-latest release asset; size=176168; sha256=401b6161f30f265c3b9253b75d5896409bc66a1b7e52129512ed42aa296ef0e1",
+      "usbhostfs_pc": "v20261001 ubuntu-latest release asset; size=175848; sha256=284c5bc5eb64f95c9fd565f067b5cbf74a597be0753f70b680a3f4fffa529730"
     }
   },
   "policy": {
@@ -81,7 +81,7 @@
     "network_access_from_normal_build": false,
     "tracked_generated_binaries_require_manifest": true
   },
-  "reviewed_at": "2026-10-07T04:32:14Z",
+  "reviewed_at": "2026-10-24T03:58:49Z",
   "schema": 2,
   "snapshot": {
     "kind": "source-review",
