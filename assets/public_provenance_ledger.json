@@ -1079,7 +1079,7 @@
         "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b7b6a28ae5e96c94b6df1ab12354e0278e3521902580644e2d6ac251981355f1"
+      "sha256": "cd639518c7a5791349f1ee23a9460566e843837cdee5e7e35d7373dceef341be"
     },
     {
       "path": "assets/upstream/pspdev.evidence.json",
@@ -1092,7 +1092,7 @@
         "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "da8b88a23887a0d6d225562f378342540f436a026f3dae3ef6050f86f4261ddb"
+      "sha256": "0d41ca352cde2141436d11e5daef5df6f807927c2d4fe66b6e6093c9eebd2b77"
     },
     {
       "path": "assets/upstream/pspdev.lock.json",
@@ -1105,7 +1105,7 @@
         "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "aae1782066dc50da84a02f9889d73ed4442c6c17c07c98df8902ffd51e4ab518"
+      "sha256": "2c739c4a211fc2d9247de915e1a958ad281d9b4857cc315afa55c6391562286d"
     },
     {
       "path": "assets/vfpu/PROVENANCE.json",
@@ -1450,7 +1450,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9b63300bd2464ed880ac7fb2f0ab106d3fb5368ee049e7e412f0d02374f35af1"
+      "sha256": "d07eb75a45bd77bac47efd4ca1b143ccc85dd7ef316b94197237ff04c76460bf"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -1570,7 +1570,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e7c842921d4194d11f36251d3664c62b1e3e4e917c4d0c5125b4f0ff5d28cecf"
+      "sha256": "02bcf4eac450a4d27955a0de2a1f4f066df5908ffb7ed2e379d98fdcae2a165a"
     },
     {
       "path": "docs/PSP_INTR_WAITS_CENSUS.md",
@@ -1657,7 +1657,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bff379518ef35c629be7eafd599ea7ca705a8d7cf78285e51674556c50b2998a"
+      "sha256": "23b18223ca1fb0a463b449ff946ac93fd635620a1cf667768c2aa81fc1bd34fc"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -2270,7 +2270,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8301c1a80ddfba25509a240302cd09cd0ced0b61f3151ff5dd43e4de1f79acf2"
+      "sha256": "87ad463553beb08fad37067ad605398cf290a98d5af1fbd8d6ab42078a8c38f9"
     },
     {
       "path": "fixtures/profile_zero/main.c",
@@ -2294,7 +2294,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d441545200cc0b2d233478883f0fab23fd9a6d3f557511e57b74c70fc2f619b5"
+      "sha256": "732675a263027037e9b00002a1c005ce7e772eb82b87066570b12416775fd7aa"
     },
     {
       "path": "fixtures/psp_oracle/Makefile",
@@ -2906,7 +2906,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cd1a7dc2f683dcf350249d9087977abf4c0e50a322d420486e49083258511387"
+      "sha256": "ab6504458e0e6ef177975d485f658a63af3d447aff80e6655be8a4cbbfc5f47f"
     },
     {
       "path": "fixtures/vfpu_addressing/hardware_vfpu_addr_001.json",
