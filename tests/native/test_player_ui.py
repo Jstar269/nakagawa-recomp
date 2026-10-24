@@ -901,27 +901,33 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["developer_mode"], "0")
 
     def test_developer_log_panel_needs_developer_mode(self) -> None:
-        panel = self.run_player("developer-log", ("KEY_F12",), ui_mode="legacy")
-        frames = panel["frames"]
-        assert isinstance(frames, list)
-        self.assertEqual(frames[0]["view"], "developer_log")
-        self.assertNotEqual(frames[0]["dev_log_lines"], "0")
-        self.assertEqual(frames[1]["view"], "library", "F12 closes the panel")
-        closed = self.run_player("developer-log", ("KEY_ESCAPE",), ui_mode="legacy")
-        frames = closed["frames"]
-        assert isinstance(frames, list)
-        self.assertEqual(frames[1]["view"], "library", "Esc closes the panel")
-        off = self.run_player("library", ("KEY_F12",), ui_mode="legacy")
-        frames = off["frames"]
-        assert isinstance(frames, list)
-        self.assertEqual(frames[-1]["view"], "library", "without developer mode F12 does nothing")
+        # The panel is drawn by the existing renderer in both launchers.
+        for ui_mode in ("next", "legacy"):
+            with self.subTest(ui_mode=ui_mode):
+                panel = self.run_player("developer-log", ("KEY_F12",), ui_mode=ui_mode)
+                frames = panel["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[0]["view"], "developer_log")
+                self.assertNotEqual(frames[0]["dev_log_lines"], "0")
+                self.assertEqual(frames[1]["view"], "library", "F12 closes the panel")
+                closed = self.run_player("developer-log", ("KEY_ESCAPE",), ui_mode=ui_mode)
+                frames = closed["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[1]["view"], "library", "Esc closes the panel")
+                off = self.run_player("library", ("KEY_F12",), ui_mode=ui_mode)
+                frames = off["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[-1]["view"], "library",
+                                 "without developer mode F12 does nothing")
 
     def test_online_settings_open_from_settings_and_back(self) -> None:
-        run = self.run_player("online-settings", ("KEY_ESCAPE",), ui_mode="legacy")
-        frames = run["frames"]
-        assert isinstance(frames, list)
-        self.assertEqual(frames[0]["view"], "online_settings")
-        self.assertEqual(frames[1]["view"], "settings")
+        for ui_mode in ("next", "legacy"):
+            with self.subTest(ui_mode=ui_mode):
+                run = self.run_player("online-settings", ("KEY_ESCAPE",), ui_mode=ui_mode)
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[0]["view"], "online_settings")
+                self.assertEqual(frames[1]["view"], "settings")
 
     def test_next_ui_is_the_default_with_a_legacy_fallback(self) -> None:
         marker = "[PLAYER_UI_TEST] UI_NEXT_ACTIVE"
