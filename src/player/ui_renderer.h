@@ -51,6 +51,7 @@ void ui_renderer_test_drop_art_events(bool drop);
 bool ui_renderer_test_saturate_art_cache(SDL_Renderer *renderer,
                                          const char *iso_path);
 const char *ui_test_last_status_badge_label(void);
+const char *ui_test_last_incompatible_reason(void);
 bool ui_test_error_text_complete(void);
 int ui_test_error_text_lines(void);
 bool ui_test_error_details_complete(void);
