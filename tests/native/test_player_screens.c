@@ -340,6 +340,25 @@ static bool build_library_golden(char *out, size_t cap, size_t *used) {
     }
     CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(1u),
           "right navigation moves focus to the adjacent title card");
+    {
+        /* Each later press moves on from where focus is now: right, right
+           again, then left back. */
+        static const NkUiNavDir dirs[3] = {NK_UI_DIR_RIGHT, NK_UI_DIR_LEFT, NK_UI_DIR_LEFT};
+        static const size_t expect[3] = {2u, 1u, 0u};
+        for (size_t step = 0u; step < 3u; ++step) {
+            NkUiEvent move;
+            memset(&move, 0, sizeof(move));
+            move.type = NK_UI_EV_NAV;
+            move.dir = dirs[step];
+            nk_ui_push_event(ui, &move);
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_library(ui, &model);
+            (void)nk_ui_end(ui);
+            CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(expect[step]),
+                  "repeated navigation keeps moving from the current card");
+        }
+        nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(1u));
+    }
     /* The prompt bar in each input mode: keyboard and mouse, then a pad. */
     {
         NkUiPrefs prefs;
@@ -661,6 +680,74 @@ static void test_wizard_actions(void) {
         CHECK(wizard_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
               cases[i].what);
     }
+}
+
+/* Glyphs as wide as the UI's mono face (about 0.62 em), so line breaks land
+   where they do on screen. */
+static NkUiTextSize screen_test_wide_measure(void *user, int font, int px, const char *text,
+                                             size_t length) {
+    NkUiTextSize measured = {0.0f, 0.0f, 0.0f};
+    size_t codepoints = 0u;
+    (void)user;
+    (void)font;
+    if (text == NULL || px <= 0) return measured;
+    for (size_t i = 0u; i < length; ++i) {
+        if (((unsigned char)text[i] & 0xC0u) != 0x80u) ++codepoints;
+    }
+    measured.width = (float)codepoints * (float)px * 0.62f;
+    measured.height = (float)px;
+    measured.baseline = (float)px * 0.8f;
+    return measured;
+}
+
+/* The error card keeps a CLI_NOT_FOUND-sized details text whole in the
+   960 x 540 minimum window: the fix it ends with must not be cut off. It was,
+   at six lines of a 700 px card. */
+static void test_error_details_fit_the_minimum_window(void) {
+    static char dump[CASE_DUMP_CAP];
+    static const char details[] =
+        "tools/nk_cli.py was not found. Searched, in order: the NK_INSTALL_ROOT environment "
+        "variable, D:/Synthetic/Players/Install Folder/Nakagawa Recomp/bin/tools, "
+        "D:/Synthetic/Players/Install Folder/Nakagawa Recomp/bin/../tools, "
+        "D:/Synthetic/Players/Install Folder/Nakagawa Recomp/bin/../source/tools (the "
+        "release layout), the working directory and its parent. Fix: run the "
+        "player from a Nakagawa Recomp source checkout, keep a tools folder beside "
+        "nakagawa_player.exe, or set NK_INSTALL_ROOT to the folder that contains tools/ "
+        "(for example the release's source folder).";
+    NkUiConfig config;
+    NkUiTextBackend text = screen_test_text_backend();
+    PlayerUiErrorModel error;
+    text.measure = screen_test_wide_measure;
+    NkUi *ui;
+    const NkUiDrawList *draw = NULL;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create a UI for the error card at the minimum window");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 960, 540);
+    memset(&error, 0, sizeof(error));
+    error.badge = "CLI_NOT_FOUND";
+    error.title = "Build Tools Not Found";
+    error.message = "Nakagawa Recomp's build tools were not found next to the app. Reinstall "
+                    "Nakagawa Recomp and keep its folder together.";
+    error.details = details;
+    error.recovery_label = "Return to Library";
+    error.logical_width = 960.0f;
+    error.logical_height = 540.0f;
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_error(ui, &error);
+        draw = nk_ui_end(ui);
+    }
+    CHECK(draw != NULL, "lay out the error card at the minimum window");
+    if (draw != NULL) {
+        size_t used = nk_ui_dump(ui, dump, sizeof(dump));
+        CHECK(used > 0u && strstr(dump, "folder).") != NULL,
+              "the error details keep their last sentence at 960 x 540");
+    }
+    nk_ui_destroy(ui);
 }
 
 static void test_screen_actions(void) {
@@ -1150,6 +1237,7 @@ int main(int argc, char **argv) {
     title[0] = '\0';
     test_router();
     test_screen_actions();
+    test_error_details_fit_the_minimum_window();
     test_wizard_actions();
     test_version_line();
     test_design_system_layout();

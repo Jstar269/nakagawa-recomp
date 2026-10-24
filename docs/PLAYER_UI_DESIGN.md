@@ -1,6 +1,7 @@
 # Player UI design system
 
-The visual spec for the native player's launcher UI (`--ui=next`, lanes C5-C10). It is the reference every
+The visual spec for the native player's launcher UI (the default since C10; `--ui=legacy` keeps the old one for
+one release). It is the reference every
 screen lane builds against: Library and Title detail (C5, built), Settings (C6), first run (C7) and error dialogs
 (C8). The tokens and components it names live in code:
 
@@ -249,7 +250,9 @@ step says the privacy promise once. The left rail below is the target layout for
 
 ### Error dialogs (C8)
 
-- Over the scrim, centred, 16 px from the edges; at most 660 px wide (760 for comparisons); `surface_raised`,
+- Over the scrim, centred, 16 px from the edges; at most 700 px wide, or 880 px with a details box (a path list or
+  a boundary), whose line budget grows by one per 16 px of window height past 540 so its fix is never cut off;
+  `surface_raised`,
   `line_strong` edge, radius 16, 26/28/22 px padding, 14 px gap.
 - Order: a status eyebrow in its colour with marker ("▲ CONTROLLER DISCONNECTED · GAME PAUSED"), a `TITLE` that says
   what happened in plain words, a `BODY` `muted` paragraph that says what to do, an optional detail box (ground
