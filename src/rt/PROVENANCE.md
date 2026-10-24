@@ -7,7 +7,7 @@ under `src/` that are marked GPL-2.0-or-later. It records what the project can
 establish about their origin and states plainly what it cannot.
 
 Related but separate manifests: `src/rt/atrac3p/PROVENANCE.md` (FFmpeg
-subset), `third_party/clay/PROVENANCE.md` (Clay),
+subset), `src/rt/minimp3/PROVENANCE.md` (minimp3), `third_party/clay/PROVENANCE.md` (Clay),
 `third_party/portable-snippets/PROVENANCE.md` (safe-math),
 `third_party/dr_libs/PROVENANCE.md` (dr_wav), and
 `assets/vfpu/PROVENANCE.json` (PPSSPP VFPU tables).
@@ -51,6 +51,7 @@ The one partial pin that exists is described under "Pins" below.
 | --- | --- | --- |
 | sal063 base for all inherited files | `da17b0e1db209206a407d097d132201e516e3855` (2026-06-14, "Update README.md") | `NOTICE.md`; `THIRD_PARTY_LICENSES/SAL063_CREDITS.txt`; the commit and its tree exist on GitHub and list the files marked "sal063 base blob" below. |
 | PPSSPP source of the sceMpeg port in `rt/mpeg.c` (and the mpeg wrappers in `rt/hle.c`) | `4e109dd6ae34cbcb39751bb7647d345569700161` (PPSSPP commit of 2026-05-20), file `Core/HLE/sceMpeg.cpp` | sal063's own `src/rt/mpeg.c` at `da17b0e` begins "ported from PPSSPP (Core/HLE/sceMpeg.cpp, rev 4e109dd6, GPLv2+)", and `SAL063_CREDITS.txt` repeats "rev 4e109dd6". The abbreviation was expanded to the full commit with the GitHub API; it resolves to exactly one PPSSPP commit that predates the sal063 base. This is a claim made by sal063 and has not been re-verified against the translated code. |
+| PPSSPP source of the sceMp3 adaptation in `rt/hle.c` (added 2026-10-24) | `0028f30da6784570264a41ef6cce1c3963692ea7` (PPSSPP `master` when adapted), files `Core/HLE/sceMp3.cpp` and `Core/HW/SimpleAudioDec.cpp` (`AuCtx`) | Adapted by this project under the 2026-10-20 import rule; the sceMp3 block comment in `rt/hle.c` names the pin, keeps the PPSSPP copyright line, lists the modifications and labels the block derived-translated. The decoder behind it is minimp3 (`src/rt/minimp3/PROVENANCE.md`), not PPSSPP code. |
 | Every other PPSSPP-derived file | unknown | No revision text exists in sal063's tree or in this repository's history. |
 
 ## Import-rule check (2026-10-20 and later)
@@ -69,6 +70,9 @@ for later adaptation found none:
   since 2026-10-20 contains the string "PPSSPP".
 - The other commits since 2026-10-20 that touch the files listed below are
   PSP-measurement and bug-fix changes and add no PPSSPP text.
+
+- 2026-10-24: the sceMp3 block in `rt/hle.c` adapts PPSSPP `Core/HLE/sceMp3.cpp`
+  and `Core/HW/SimpleAudioDec.cpp` at the exact pin in the table above, and says so.
 
 This is a text search of the history, not proof that no PPSSPP code was typed
 in by hand without a mention. The 2026-10-20 rule did not change the status of
@@ -199,6 +203,9 @@ Created in this repository. The code moved out of a sal063-lineage file, so the 
   implementation code was copied. Not an adaptation.
 - `rt/atrac3p_bridge.c` and `rt/atrac3p_bridge.h`: say they are not a PPSSPP
   translation. FFmpeg provenance is in `src/rt/atrac3p/PROVENANCE.md`.
+- `rt/mp3_bridge.c` and `rt/mp3_bridge.h`: GPL-3.0-or-later, project-authored frame
+  wrapper over minimp3 (CC0, byte-identical, `src/rt/minimp3/PROVENANCE.md`). They contain
+  no PPSSPP code.
 - Tests and documents that compare behaviour against PPSSPP (for example
   `rt/hle_thread_selftest.c`, `rt/intr_conformance.h`, `rt/guest_printf.c`) cite
   it as an oracle and are GPL-3.0-or-later. They are not adaptations.
