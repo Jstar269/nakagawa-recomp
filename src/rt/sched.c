@@ -571,6 +571,27 @@ static void stack_ranges_reset(void) {
     stack_ranges_update_top();
 }
 
+/* Live thread-stack reservations, as the HLE user partition sees them (hle.c): the
+ * lowest live reservation at or above addr (the arena ceiling when none). */
+uint32_t sched_guest_stack_floor_above(uint32_t addr) {
+    uint32_t floor = SR_STACK_ARENA_CEIL;
+    for (int i = 0; i < s_ntcb; i++) {
+        const TCB *t = &s_tcb[i];
+        if (t->stack_reservation == 0u || t->stack_released) continue;
+        if (t->stack_base >= addr && t->stack_base < floor) floor = t->stack_base;
+    }
+    return floor;
+}
+
+uint32_t sched_guest_stack_floor(void) { return sched_guest_stack_floor_above(0u); }
+
+/* The HLE user partition (hle.c) installs a check that refuses a stack range it has
+ * handed out. A callback rather than a link-time reference: several fixtures link
+ * sched.c without hle.c, and with no check installed every range is accepted. */
+typedef int (*SchedStackRangeRefusal)(uint32_t base, uint32_t end);
+static SchedStackRangeRefusal s_stack_range_refusal;
+void sched_set_stack_range_refusal(SchedStackRangeRefusal refusal) { s_stack_range_refusal = refusal; }
+
 static int stack_range_alloc(uint32_t size, uint32_t *base_out) {
     if (!s_stack_allocator_ready) stack_ranges_reset();
     if (!base_out || size == 0u) return 0;
@@ -2439,7 +2460,19 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     }
     uint32_t reservation = user_sz + tls_size;
     uint32_t user_base = 0;
-    if (!stack_range_alloc(reservation, &user_base)) {
+    int stack_ok = stack_range_alloc(reservation, &user_base);
+    if (stack_ok && s_stack_range_refusal &&
+        s_stack_range_refusal(user_base, user_base + reservation)) {
+        /* The descending arena reached memory the user partition has handed out. A PSP
+         * allocates thread stacks from that partition, so the create fails for lack of
+         * memory instead of placing a stack over a live block. */
+        fprintf(stderr, "sched_create_thread: stack [0x%08x,0x%08x) would overlap live "
+                "user-partition memory -- failing create (maps to SCE_KERNEL_ERROR_NO_MEMORY)\n",
+                user_base, user_base + reservation);
+        stack_range_release(user_base, reservation);
+        stack_ok = 0;
+    }
+    if (!stack_ok) {
         fprintf(stderr, "sched_create_thread: stack_size=0x%08x exceeds available "
                 "free guest stack ranges below s_stack_top=0x%08x (entry=0x%08x) -- failing create "
                 "(maps to SCE_KERNEL_ERROR_NO_MEMORY)\n",

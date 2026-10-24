@@ -154,7 +154,11 @@ class NkCliProgressTests(unittest.TestCase):
         self.assertIn('env.pop("SR_DATAROOT", None)', child_env)
         self.assertIn('env.pop("SR_LOOSE_CONTENT_ROOTS", None)', child_env)
         self.assertIn('title_manifest.encode_loose_content_roots(manifest, data_root)', source)
-        self.assertIn('"SR_DATAROOT": str(data_root)', source)
+        # A manifest without a data root (the generic profile) binds none; a declared
+        # data root (a catalogued profile) is still bound.
+        self.assertIn("if not declared_data_root:\n            data_root = None", source)
+        self.assertIn('if data_root is not None:\n            env["SR_DATAROOT"] = str(data_root)',
+                      source)
         self.assertIn('"SR_LOOSE_CONTENT_ROOTS": loose_roots', source)
 
     def test_progress_json_invalid_disc_id(self) -> None:

@@ -870,8 +870,12 @@ def write_experimental_profile(
             "extra_executable_spans": [],
         },
         "modules": [],
+        # A generic title reads its disc through PSP_ISO. The data root is the
+        # extracted-archive folder only a reviewed title manifest declares, so
+        # declaring one here made the player refuse every uncatalogued launch
+        # for a missing folder nothing creates.
         "filesystem": {
-            "data_root": "data",
+            "data_root": "",
             "memory_stick_root": "savedata",
             "device_prefixes": ["disc0:", "ms0:"],
         },

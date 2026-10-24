@@ -90,11 +90,30 @@ list is not evidence that a distributable installer or title package exists:
 
 ## 4. Packaging and Distribution Roadmap
 
+Maintainer decisions of 2026-10-23 (the per-OS choices; the shared install layout and manifest come
+first and each OS is a thin wrapper around them):
+
 | Target Environment | Packaging Strategy | Binary Artifacts |
 | --- | --- | --- |
-| **Windows x86-64** | Inno Setup / MSIX / Portable ZIP | `nakagawa_player.exe`, `bin/nakagawa_core.dll` (or static), `build/<game>/<game>.exe`, SDL3.dll, SDL3_ttf.dll + resolved closure, `THIRD_PARTY_NOTICES/` |
-| **Linux / Steam Deck** | AppImage / Flatpak | `nakagawa_player`, `bin/<game>`, `libSDL3.so` bundled in AppDir |
-| **macOS ARM64** | App Bundle (`Nakagawa.app`) | `Nakagawa.app/Contents/MacOS/nakagawa_player`, helper executables in `MacOS/` |
+| **Windows x86-64** | Portable ZIP now; a per-user Inno Setup wrapper later. No MSI or MSIX | `nakagawa_player.exe`, `bin/nakagawa_core.dll` (or static), `build/<game>/<game>.exe`, SDL3.dll, SDL3_ttf.dll + resolved closure, `THIRD_PARTY_NOTICES/` |
+| **Linux / Steam Deck** | Tarball plus a per-user `.desktop` entry, written by the same stager (`tools/stage_install.py`); AppImage later. No Flatpak: its sandbox conflicts with the host compiler the player needs | `nakagawa_player`, `bin/<game>`, `libSDL3.so` |
+| **macOS ARM64** | App Bundle (`Nakagawa.app`), not yet planned in detail | `Nakagawa.app/Contents/MacOS/nakagawa_player`, helper executables in `MacOS/` |
+| **Android** | Planned later (see `PLATFORM_PORTABILITY.md`); the user may move their own packages and saves to their own device | to be designed |
+
+Roadmap items decided with the table:
+
+* **C toolchain on Linux:** use the distribution's gcc, make and SDL3/Vulkan development packages,
+  with guided install commands in the player. The project ships and downloads nothing for them.
+* **Python on Linux:** the builder and `pyproject.toml` accept only CPython 3.15 today
+  (`src/player/package_builder.c`, `requires-python`). Widen the range to whatever the tool suite
+  actually passes on, starting with 3.14, once the full suite runs green on that version.
+* **One app ID on every host:** `nakagawa-recomp`, with the OS's own casing only where the OS
+  expects it. Today the data folders are `Nakagawa` (Windows), `nakagawa-recomp` (Linux) and
+  `NakagawaRecomp` (macOS); unify them before the first release, with a migration from the old
+  Windows folder.
+* **Code signing:** use a free open-source signing programme if the project qualifies (for example
+  SignPath Foundation's); paid certificates stay a maintainer decision. Unsigned builds show
+  SmartScreen warnings until then.
 
 ## 5. Local AOT package contract (v2)
 

@@ -38,6 +38,10 @@ but a successful object compile is not the same as a linked, running port.
 
 ### 3. Android
 
+Android and similar hosts are a planned target (maintainer decision, 2026-10-23). Every host needs a
+C toolchain for the user's own game, because the project never publishes recompiled game code; a
+user may build on their PC and move the result to their own device (`AGENTS.md`, section 5).
+
 1. Drive the native target with the Android NDK's CMake toolchain and Gradle packaging.
 2. Add an Android-compatible coroutine backend instead of assuming `ucontext` availability.
 3. Implement app lifecycle, scoped-storage/content access, touch/controller input, audio focus,

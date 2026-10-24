@@ -69,6 +69,40 @@ switchable alone. The step is skippable; skipping keeps both off.
   name with placeholders (`%USERPROFILE%`, `<user>`) before display.
 - Release builds keep the panel; it adds no performance cost while hidden.
 
+## Online play (later)
+
+A separate, later switch, **Online play**, lets games use the PSP's own network services. It is not part of online
+mode: online mode lets the launcher talk to one host, while online play lets game code reach the network, so it is
+its own explicit choice with its own sentence in Settings.
+
+- **Ad-hoc multiplayer first.** Most PSP multiplayer is local wireless ad-hoc play. Nakagawa implements the PSP ad-hoc
+  services for real and carries the traffic to a relay server the project hosts, or directly between devices on the
+  user's local network. One implementation covers many titles. Speaking the protocol of PPSSPP's ad-hoc server would
+  let Nakagawa players join PPSSPP players; its code may be adapted under the import rules in `AGENTS.md`, section 4.
+- **Infrastructure revivals, per title, later.** A game whose official servers are gone can be revived only by
+  rebuilding that game's own server protocol, one title at a time, from interoperability study of the game itself.
+- **Never:** anything that needs the console vendor's online-account sign-in or DNAS authentication. Those depend on
+  the vendor's keys and certificates, which stay out of the project like firmware and decryption.
+- **Still fail-closed where unbuilt.** A network service a title calls that Nakagawa does not implement stays a named,
+  visible stop, whatever this switch says; no setting makes a refusal permissive.
+- **Scope of traffic:** the project's relay host and the user's local network only, each listed in `docs/SETUP.md`
+  "Network use" when it ships.
+- **Hardware evidence:** ad-hoc behaviour is measured on PSP hardware (two consoles where the test needs a peer)
+  before it is claimed, as for every other runtime behaviour.
+
+## Testing online features
+
+- **The default test suite and hosted CI stay offline.** Online code is tested against a stub server on the loopback
+  interface with fixed signed fixtures (a valid update notice, a tampered one, a malformed feed, a timeout), and ad-hoc
+  play against a local relay with two player instances on loopback.
+- **One labelled online smoke check may use the internet,** opt-in only: it runs when the maintainer starts it or on a
+  schedule the maintainer sets, talks only to the project's own host, checks the live update notice's signature,
+  fetches the news feed and joins the relay. It is never part of the default suite; without network it reports
+  `NOT_RUN`, not a failure.
+- When the first online feature ships, the `AGENTS.md` section 5 sentence "Tests never touch the internet" becomes:
+  "The default test suite and hosted CI never touch the internet; the labelled online smoke check may, opt-in, and
+  only against the project's own host."
+
 ## Policy and code changes this needs
 
 1. `AGENTS.md`, section 5: offline by default becomes "offline until the user turns on online mode; then only the
@@ -92,3 +126,4 @@ switchable alone. The step is skippable; skipping keeps both off.
 3. Update check with signature verification.
 4. News strip.
 5. Reports, browser hand-off first, then the endpoint.
+6. Online play: ad-hoc relay first, then per-title infrastructure revivals.
