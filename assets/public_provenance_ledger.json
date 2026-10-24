@@ -9790,7 +9790,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e48a01fde33bd607e960f07c5dab1ffe50f301f9787b11f7bb4b28d0116b534e"
+      "sha256": "1f06fb0f9f2564f4c3b26dee0f6736693ae9c318bb215166592d8ab09f3f8166"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
