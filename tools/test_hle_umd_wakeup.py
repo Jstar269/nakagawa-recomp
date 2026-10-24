@@ -29,7 +29,13 @@ class UmdWakeupIsolationTests(unittest.TestCase):
     def test_ready_signal_only_wakes_umd_waiters_and_notifies_registered_callback(self):
         body = function_body("sr_umd_signal_ready")
         self.assertIn("sched_wake(0x554D44u)", body)
-        self.assertIn("sr_callback_notify(s_umd_cb_uid, 0x32u)", body)
+        # The ready signal restores the measured activated drive state (0x32) and notifies the
+        # callback with that state.
+        self.assertRegex(HLE_SOURCE, r"\bUMD_STAT_ACTIVE\s*=\s*0x32u\b")
+        self.assertIn("s_umd_drive_stat = UMD_STAT_ACTIVE;", body)
+        self.assertIn("sr_callback_notify(s_umd_cb_uid, s_umd_drive_stat)", body)
+        self.assertLess(body.index("s_umd_drive_stat = UMD_STAT_ACTIVE;"),
+                        body.index("sr_callback_notify(s_umd_cb_uid, s_umd_drive_stat)"))
         self.assertNotRegex(body, r"\bsched_thread_wakeup\s*\(")
 
     def test_callback_registration_validates_kernel_callback_id(self):

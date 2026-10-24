@@ -23,6 +23,7 @@
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #include <shellapi.h>
+#include <io.h>
 #endif
 
 static bool player_view_is_library(PlayerView view) {
@@ -2745,6 +2746,40 @@ static void player_update_prerequisite_operation(PlayerApp *app) {
     }
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+/* The Windows player is a GUI-subsystem program (-mwindows, CMake WIN32_EXECUTABLE), so a
+ * double-click starts with no console window. A process that already has standard handles, one
+ * started from cmd, PowerShell or Git Bash, keeps them. Without handles, the streams go to the
+ * parent terminal's console when there is one, and otherwise to player-output.txt in the logs
+ * folder under the player's data folder. Call after the data root is applied. */
+static void player_setup_standard_streams(void) {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != NULL && out != INVALID_HANDLE_VALUE) return;
+
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        SetConsoleOutputCP(CP_UTF8);
+        (void)freopen("CONOUT$", "w", stdout);
+        (void)freopen("CONOUT$", "w", stderr);
+        return;
+    }
+
+    char dir[NK_MAX_PATH];
+    char path[NK_MAX_PATH];
+    if (!nk_platform_get_path(NK_PATH_LOGS, dir, sizeof(dir)) || !nk_platform_mkdir_p(dir) ||
+        snprintf(path, sizeof(path), "%s%cplayer-output.txt", dir,
+                 nk_platform_path_separator()) >= (int)sizeof(path)) {
+        return;
+    }
+    FILE *log = nk_fopen_utf8(path, "wb");
+    if (!log) return;
+    /* _dup2 gives fds 1 and 2 their own copies of the log handle, so closing `log` is safe. */
+    _dup2(_fileno(log), 1);
+    _dup2(1, 2);
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    fclose(log);
+}
+#endif
+
 int main(int argc, char *argv[]) {
 #if defined(_WIN32) || defined(_WIN64)
     SetConsoleOutputCP(CP_UTF8);
@@ -2761,6 +2796,9 @@ int main(int argc, char *argv[]) {
 #endif
 
     if (!player_apply_user_data_root(argc, argv)) return 2;
+#if defined(_WIN32) || defined(_WIN64)
+    player_setup_standard_streams();
+#endif
     player_report_legacy_data_root();
 
     PlayerApp app;
