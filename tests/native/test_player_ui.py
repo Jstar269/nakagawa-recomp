@@ -521,9 +521,14 @@ def compute_effective_timeout(
 class NativePlayerUiTests(unittest.TestCase):
     # The next UI is the default. These tests pin behaviour of the existing
     # renderer, which stays for one release as the --ui=legacy fallback: its
-    # library layout and hit boxes, its disc-art workers and its package-status
-    # badges. They run with --ui=legacy unless they name a mode themselves.
+    # library layout and hit boxes, its disc-art workers, its package-status
+    # badges and its build and error-card text metrics (the next UI's cards are
+    # covered by tests/native/test_player_screens.c). They run with --ui=legacy
+    # unless they name a mode themselves.
     LEGACY_RENDERER_TESTS = frozenset((
+        "test_build_screen_follows_the_build_state",
+        "test_cli_not_found_error_text_fits_at_minimum_window",
+        "test_long_error_text_fits_at_minimum_window",
         "test_completed_retry_clears_failure_when_cache_generation_changes",
         "test_corrupt_art_is_failed_after_bounded_retries",
         "test_decoder_rejection_is_failed_after_bounded_retries",

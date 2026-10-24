@@ -503,7 +503,7 @@ static float nk_ui_measure_logical(const NkUi *ui, const NkUiTextStyle *style,
 const char *nk_ui_text_clamp(NkUi *ui, const char *text, const NkUiTextStyle *style,
                              float max_width, int max_lines) {
     static const char ellipsis[] = "\xE2\x80\xA6";
-    char out[512];
+    char out[2048]; /* a details box can carry a few install paths */
     size_t length;
     size_t line_start = 0u;
     size_t cursor = 0u;
