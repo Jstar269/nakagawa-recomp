@@ -2978,7 +2978,7 @@ player-ui-tests: osk-overlay-paint-selftest ui-font-selftest nk-ui-player-screen
 	$(CC) -std=c99 -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_ui_clip.c -lSDL3 \
 		-o $(BUILD_ROOT)/test_ui_clip$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_ui_clip$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Werror $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_player_ui_art.c \
+	$(CC) -std=c99 -Wall -Wextra -Werror -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_player_ui_art.c \
 		$(NK_UI_PLAYER_HOST_SRCS) src/ui/nk_ui_image.c src/ui/nk_ui_assets.c -lSDL3 \
 		-o $(BUILD_ROOT)/test_player_ui_art$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_player_ui_art$(EXE_EXT)
