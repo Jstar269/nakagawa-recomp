@@ -351,7 +351,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bdd55f2f67525a6ce612951a701ce3329105252aa49f11fef1b6a658f2520e77"
+      "sha256": "e605908ad1d0c6e0ba639e7a54a2a55e4e13a1a244d49e7aba9ff917806ccd39"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -409,7 +409,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "26997308b42853acb15907f6e12f10c6d7445610c2b04de34590bf62e2bf3610"
+      "sha256": "33642c5fa418d731145da66cddb79519b4f3c51c0ba89cee04ecacd2c5cc4d58"
     },
     {
       "path": "NOTICE.md",
@@ -3404,7 +3404,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "632480a3caab5d5c1f0c4ff6a9779da61b1ca42b5637833999bceb1de352cc2c"
+      "sha256": "b69f6372fd544861d9ae7200f6cedfc47f592a6b94cf9adbfca844f61abbeee6"
     },
     {
       "path": "src/player/package_builder.c",
