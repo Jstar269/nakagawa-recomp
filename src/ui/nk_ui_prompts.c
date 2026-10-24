@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
-/* Prompt glyphs for the four neutral prompt styles, drawn as nk_ui geometry.
-   No font, image or console-maker symbol is involved: dots, circles, keycaps and a
-   D-pad cross are rounded rectangles, and a letter or key name is ordinary text
-   drawn through the draw list. */
+/* Prompt glyphs. Every style has a project-drawn geometric form: dots, circles,
+   keycaps and a D-pad cross are rounded rectangles, and a letter or key name is
+   ordinary text drawn through the draw list. A host may hand nk_ui the embedded
+   Kenney "Input Prompts" glyphs (CC0, third_party/kenney/), which are then drawn,
+   tinted, for every style but NEUTRAL. */
 
+#include "nk_ui_assets.h"
 #include "nk_ui_input.h"
 
 #include <math.h>
@@ -25,14 +27,100 @@ static const char *const g_keycaps[NK_UI_PROMPT_ACT_MENU + 1] = {
     "ENTER", "ESC", "SPACE", "D", "Q", "E", "F1"
 };
 
+/* The Kenney file per action (CONFIRM, BACK, OPTIONS, DETAILS, TAB_PREV,
+   TAB_NEXT, MENU, MOVE). Face buttons follow position: confirm south, back
+   east, options west, details north. */
+static const char *const g_assets_letters_a_south[NK_UI_PROMPT_ACT_COUNT] = {
+    "input-prompts/xbox_button_a.png", "input-prompts/xbox_button_b.png",
+    "input-prompts/xbox_button_x.png", "input-prompts/xbox_button_y.png",
+    "input-prompts/xbox_lb.png", "input-prompts/xbox_rb.png",
+    "input-prompts/xbox_button_menu.png", "input-prompts/xbox_dpad.png"
+};
+static const char *const g_assets_letters_a_east[NK_UI_PROMPT_ACT_COUNT] = {
+    "input-prompts/switch_button_b.png", "input-prompts/switch_button_a.png",
+    "input-prompts/switch_button_y.png", "input-prompts/switch_button_x.png",
+    "input-prompts/switch_button_l.png", "input-prompts/switch_button_r.png",
+    "input-prompts/switch_button_plus.png", "input-prompts/switch_dpad.png"
+};
+static const char *const g_assets_shapes[NK_UI_PROMPT_ACT_COUNT] = {
+    "input-prompts/playstation_button_cross.png", "input-prompts/playstation_button_circle.png",
+    "input-prompts/playstation_button_square.png", "input-prompts/playstation_button_triangle.png",
+    "input-prompts/playstation_trigger_l1.png", "input-prompts/playstation_trigger_r1.png",
+    "input-prompts/playstation5_button_options.png", "input-prompts/playstation_dpad.png"
+};
+static const char *const g_assets_keycaps[NK_UI_PROMPT_ACT_COUNT] = {
+    "input-prompts/kbd_enter.png", "input-prompts/kbd_escape.png",
+    "input-prompts/kbd_space.png", "input-prompts/kbd_d.png",
+    "input-prompts/kbd_q.png", "input-prompts/kbd_e.png",
+    "input-prompts/kbd_f1.png", "input-prompts/kbd_arrows.png"
+};
+
+/* Prompt glyphs are drawn at most 48 px tall; the Kenney set is 64 px. */
+#define NK_UI_PROMPT_IMAGE_MAX_SIDE 256u
+#define NK_UI_PROMPT_IMAGE_MAX_BYTES (64u * 1024u)
+
+const char *nk_ui_prompt_asset_name(NkUiPromptStyle style, NkUiPromptAction action) {
+    if ((unsigned)action >= (unsigned)NK_UI_PROMPT_ACT_COUNT) {
+        return NULL;
+    }
+    switch (style) {
+    case NK_UI_PROMPT_LETTERS_A_SOUTH: return g_assets_letters_a_south[action];
+    case NK_UI_PROMPT_LETTERS_A_EAST: return g_assets_letters_a_east[action];
+    case NK_UI_PROMPT_SHAPES: return g_assets_shapes[action];
+    case NK_UI_PROMPT_KEYCAPS: return g_assets_keycaps[action];
+    case NK_UI_PROMPT_NEUTRAL:
+    case NK_UI_PROMPT_STYLE_COUNT:
+    default: return NULL;
+    }
+}
+
+size_t nk_ui_prompt_images_load(NkUiPromptImages *set) {
+    NkUiImageLimits limits;
+    size_t loaded = 0u;
+    int style;
+    int action;
+    if (set == NULL) {
+        return 0u;
+    }
+    memset(set, 0, sizeof(*set));
+    limits.max_bytes = NK_UI_PROMPT_IMAGE_MAX_BYTES;
+    limits.max_width = NK_UI_PROMPT_IMAGE_MAX_SIDE;
+    limits.max_height = NK_UI_PROMPT_IMAGE_MAX_SIDE;
+    for (style = 0; style < (int)NK_UI_PROMPT_STYLE_COUNT; ++style) {
+        for (action = 0; action < (int)NK_UI_PROMPT_ACT_COUNT; ++action) {
+            const NkUiEmbeddedAsset *asset = nk_ui_embedded_asset(
+                nk_ui_prompt_asset_name((NkUiPromptStyle)style, (NkUiPromptAction)action));
+            if (asset != NULL &&
+                nk_ui_image_decode_png(asset->bytes, asset->size, &limits,
+                                       &set->image[style][action]) == NK_UI_IMAGE_OK) {
+                ++loaded;
+            }
+        }
+    }
+    return loaded;
+}
+
+void nk_ui_prompt_images_free(NkUiPromptImages *set) {
+    int style;
+    int action;
+    if (set == NULL) {
+        return;
+    }
+    for (style = 0; style < (int)NK_UI_PROMPT_STYLE_COUNT; ++style) {
+        for (action = 0; action < (int)NK_UI_PROMPT_ACT_COUNT; ++action) {
+            nk_ui_image_free(&set->image[style][action]);
+        }
+    }
+}
+
 NkUiPadFamily nk_ui_pad_family_for_south_label(NkUiButtonLabel label) {
     switch (label) {
     case NK_UI_LABEL_A: return NK_UI_PAD_LETTERS_A_SOUTH;
     case NK_UI_LABEL_B: return NK_UI_PAD_LETTERS_A_EAST;
+    case NK_UI_LABEL_CROSS: return NK_UI_PAD_SHAPES;
     case NK_UI_LABEL_UNKNOWN:
     case NK_UI_LABEL_X:
     case NK_UI_LABEL_Y:
-    case NK_UI_LABEL_CROSS:
     case NK_UI_LABEL_CIRCLE:
     case NK_UI_LABEL_SQUARE:
     case NK_UI_LABEL_TRIANGLE:
@@ -46,6 +134,7 @@ NkUiPromptStyle nk_ui_prompt_style_for_family(NkUiPadFamily family) {
     case NK_UI_PAD_LETTERS_A_SOUTH: return NK_UI_PROMPT_LETTERS_A_SOUTH;
     case NK_UI_PAD_LETTERS_A_EAST: return NK_UI_PROMPT_LETTERS_A_EAST;
     case NK_UI_PAD_KEYBOARD: return NK_UI_PROMPT_KEYCAPS;
+    case NK_UI_PAD_SHAPES: return NK_UI_PROMPT_SHAPES;
     case NK_UI_PAD_NEUTRAL:
     default: return NK_UI_PROMPT_NEUTRAL;
     }
@@ -59,6 +148,7 @@ const char *nk_ui_prompt_text(NkUiPromptStyle style, NkUiPromptAction action) {
     case NK_UI_PROMPT_LETTERS_A_SOUTH: return g_letters_a_south[action];
     case NK_UI_PROMPT_LETTERS_A_EAST: return g_letters_a_east[action];
     case NK_UI_PROMPT_KEYCAPS: return g_keycaps[action];
+    case NK_UI_PROMPT_SHAPES:
     case NK_UI_PROMPT_NEUTRAL:
     default: return g_neutral[action];
     }
@@ -313,6 +403,26 @@ static bool nk_ui_prompt_arrow_keys(const NkUiPromptPx *p) {
     return true;
 }
 
+/* A Kenney glyph, "contain"-fitted into the box at whole device pixels and
+   tinted with the foreground colour (the glyphs are white). */
+static bool nk_ui_prompt_image(const NkUiPromptPx *p, const NkUiImage *image) {
+    NkUiPixelRect dst;
+    int w = p->w;
+    int h = (int)((float)w * (float)image->height / (float)image->width + 0.5f);
+    if (h > p->h) {
+        h = p->h;
+        w = (int)((float)h * (float)image->width / (float)image->height + 0.5f);
+    }
+    if (w < 1 || h < 1) {
+        return true;
+    }
+    dst.x0 = p->x0 + (p->w - w) / 2;
+    dst.y0 = p->y0 + (p->h - h) / 2;
+    dst.x1 = dst.x0 + w;
+    dst.y1 = dst.y0 + h;
+    return nk_ui_draw_add_image(p->buffer, image, dst, p->spec->fg_rgba, p->id);
+}
+
 bool nk_ui_prompt_draw(NkUiDrawBuffer *buffer, const NkUiPromptSpec *spec,
                        NkUiRect rect, float density, uint32_t element_id) {
     NkUiPromptPx p;
@@ -346,6 +456,10 @@ bool nk_ui_prompt_draw(NkUiDrawBuffer *buffer, const NkUiPromptSpec *spec,
     /* Center the even square on whole pixels. */
     p.cx = p.x0 + (p.w - p.side) / 2 + p.side / 2;
     p.cy = p.y0 + (p.h - p.side) / 2 + p.side / 2;
+    if (spec->image != NULL && spec->image->rgba_pm != NULL && spec->image->width > 0u &&
+        spec->image->height > 0u) {
+        return nk_ui_prompt_image(&p, spec->image);
+    }
     style = spec->style;
     switch (spec->action) {
     case NK_UI_PROMPT_ACT_MOVE:

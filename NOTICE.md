@@ -74,6 +74,18 @@ We aim to respond promptly and will remove material where appropriate.
   Copyright 2021 The Gowun Dodum Project Authors and Copyright 2016 The M+
   Project Authors. Pinned with their licence texts in `fixtures/fonts/gowundodum/`
   and `fixtures/fonts/mplus1p/`, for test fixtures only, on the same terms as Gudea.
+- **stb_image 2.30** — Sean Barrett; upstream offers `MIT OR Unlicense`, and the
+  project uses it under the public-domain (Unlicense) alternative. The byte-identical
+  header, upstream `LICENSE` and the pinned manifest are under `third_party/stb/`. It is
+  built for PNG only into the `nk_ui` core and the player, where it decodes the
+  embedded prompt glyphs and the `ICON0.PNG` / `PIC1.PNG` read at run time from the
+  user's own disc image; those images are kept in memory only.
+- **Kenney "Input Prompts" 1.5 and "Interface Sounds" 1.0** — CC0-1.0, by Kenney
+  (kenney.nl). The 32 prompt glyphs and three UI sounds the player uses, each pack's
+  `License.txt` and the pinned manifest are under `third_party/kenney/`;
+  `tools/gen_ui_assets.py` embeds them in `src/ui/nk_ui_assets.c`. The controller
+  glyphs only show which button to press on the pad that is connected; no console
+  maker is affiliated with or endorses the project.
 
 ## Generated third-party notices
 

@@ -58,6 +58,18 @@ typedef struct {
 bool nk_ui_shapes(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height,
                   const NkUiShapeArt *art);
 
+/* Decoded images in one element: `cover` fills it (cropped to the element),
+   then `contain` is fitted inside contain_scale (0..1; 0 means 1) of it,
+   centred. Either may be NULL. The images must outlive the frame's list. */
+typedef struct {
+    const NkUiImage *cover;
+    const NkUiImage *contain;
+    float contain_scale;
+} NkUiImageArt;
+
+bool nk_ui_image_art(NkUi *ui, NkUiId id, NkUiSizing width, NkUiSizing height,
+                     const NkUiImageArt *art);
+
 /* Project-drawn art. The N1 mark is the brand's Block & Branch; the showcase
    pictures belong to the project's own demo programs. No game or console art. */
 typedef enum {
@@ -147,6 +159,7 @@ typedef struct {
     const char *badge;        /* NULL: YOUR DISC */
     NkUiArtKind art;
     const char *art_key;      /* picks the art tint; NULL uses disc_id */
+    const NkUiImage *icon;    /* the disc's ICON0.PNG, when read; NULL keeps the placeholder */
     float width;
     bool muted_title;         /* an unsupported entry */
 } NkUiTileSpec;
@@ -158,8 +171,11 @@ bool nk_ui_tile(NkUi *ui, NkUiId id, const NkUiTileSpec *spec);
 bool nk_ui_add_tile(NkUi *ui, NkUiId id, const char *title, const char *detail,
                     float width, float height);
 
-/* Title-page hero: the art panel at 480:272 with its caption row. */
+/* Title-page hero: the art panel at 480:272 with its caption row. With the
+   disc's PIC1.PNG it fills the art area; with only its ICON0.PNG the icon sits
+   centred; with neither, the placeholder. */
 void nk_ui_hero(NkUi *ui, NkUiId id, NkUiArtKind art, const char *art_key,
+                const NkUiImage *icon, const NkUiImage *picture,
                 float width, const char *caption, const char *size_note);
 
 #endif /* NK_UI_WIDGETS_H */

@@ -15,6 +15,10 @@ Nakagawa has since substantially extended and modified that codebase. This repos
 - **Clay — Nic Barker** — zlib. The layout library in [`third_party/clay/`](third_party/clay/).
 - **PSPSDK / PSPDEV contributors** — BSD-family notices for public ABI definitions and source-owned fixtures ([`THIRD_PARTY_LICENSES/PSPSDK.txt`](THIRD_PARTY_LICENSES/PSPSDK.txt)).
 - **SDL, SDL_ttf and their dependencies** — staged beside the player with their licence texts (listed in [`NOTICE.md`](NOTICE.md)).
+- **stb_image 2.30 — Sean Barrett** — public domain (Unlicense), the alternative to MIT that upstream offers. The PNG
+  decoder in [`third_party/stb/`](third_party/stb/), for the player's prompt glyphs and the disc art read from your own disc.
+- **Kenney "Input Prompts" and "Interface Sounds" — Kenney Vleugels ([kenney.nl](https://kenney.nl))** — CC0-1.0. The
+  next UI's button prompt glyphs and its optional launcher sounds, in [`third_party/kenney/`](third_party/kenney/).
 - **Font fixtures** — Gudea (Agustina Mingote), Gowun Dodum (The Gowun Dodum Project Authors) and M+ 1p (The M+ Project Authors), all SIL Open Font License 1.1, used only by tests ([`fixtures/fonts/`](fixtures/fonts/)).
 
 The authoritative, component-by-component provenance records are [`NOTICE.md`](NOTICE.md) and the

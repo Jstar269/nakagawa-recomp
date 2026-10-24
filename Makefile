@@ -1878,7 +1878,7 @@ PLAYER_EXE ?= $(BUILD_ROOT)/nakagawa_player$(EXE_EXT)
 PLAYER_UI_TEST_EXE ?= $(BUILD_ROOT)/nakagawa_player_ui_test$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
-PLAYER_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c $(NK_UI_PLAYER_C5_SRCS)
+PLAYER_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c $(NK_UI_PLAYER_C5_SRCS) $(NK_UI_PLAYER_HOST_SRCS)
 # The player's About page shows "v<version> (MM-DD-YYYY)" (the version itself is
 # NK_PLAYER_VERSION in src/player/ui/player_ui_nk.h). The date is
 # SOURCE_DATE_EPOCH when the build sets it, else the source commit's time, so
@@ -2977,6 +2977,10 @@ player-ui-tests: osk-overlay-paint-selftest ui-font-selftest nk-ui-player-screen
 	$(CC) -std=c99 -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_ui_clip.c -lSDL3 \
 		-o $(BUILD_ROOT)/test_ui_clip$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_ui_clip$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Werror $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_player_ui_art.c \
+		$(NK_UI_PLAYER_HOST_SRCS) src/ui/nk_ui_image.c src/ui/nk_ui_assets.c -lSDL3 \
+		-o $(BUILD_ROOT)/test_player_ui_art$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_player_ui_art$(EXE_EXT)
 
 .PHONY: nk-ui-player-screens-capture
 ifeq ($(SDL3_TTF_AVAILABLE),yes)
