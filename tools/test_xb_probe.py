@@ -39,8 +39,10 @@ def _lzs_body(data: bytes) -> bytes:
 
 
 def _lzs_stream(data: bytes, endian: str = "<") -> bytes:
+    """A framed LZS stream; its size field counts the 8-byte header too."""
+
     body = _lzs_body(data)
-    return struct.pack(endian + "II", len(data), len(body)) + body
+    return struct.pack(endian + "II", len(data), 8 + len(body)) + body
 
 
 def _reverse_bits(value: int, width: int) -> int:
@@ -68,14 +70,27 @@ def _huffman_codes() -> dict[int, tuple[int, int]]:
     return result
 
 
-def _huffman_body(data: bytes, endian: str = "<") -> bytes:
-    codes = _huffman_codes()
+def _huffman_table() -> bytes:
+    """The code table matching :func:`_huffman_codes`, padded to an even length."""
+
     table = bytearray([9] + [0] * 7)
     table.extend((254,))
     table.extend(range(254))
     table.extend((4, 254, 255, 254, 255))
     if len(table) % 2:
         table.append(0)
+    return bytes(table)
+
+
+HUFFMAN_TABLE_LEN = len(_huffman_table())
+
+
+def _huffman_body(data: bytes, endian: str = "<") -> bytes:
+    """Code table plus bitstream.  A framed stream's size field counts only the
+    bitstream, i.e. ``len(body) - HUFFMAN_TABLE_LEN``."""
+
+    codes = _huffman_codes()
+    table = _huffman_table()
 
     bits = 0
     bit_count = 0
@@ -87,7 +102,7 @@ def _huffman_body(data: bytes, endian: str = "<") -> bytes:
     for offset in range(0, bit_count, 16):
         word = (bits >> offset) & 0xFFFF
         stream.extend(word.to_bytes(2, "little" if endian == "<" else "big"))
-    return bytes(table) + bytes(stream)
+    return table + bytes(stream)
 
 
 def _make_archive(
@@ -104,7 +119,7 @@ def _make_archive(
     string_table = b"".join(names)
     if string_table_compressed:
         body = _lzs_body(string_table)
-        string_section = struct.pack(endian + "II", len(string_table), len(body)) + body
+        string_section = struct.pack(endian + "II", len(string_table), 8 + len(body)) + body
     else:
         string_section = struct.pack(endian + "II", len(string_table), 0) + string_table
     string_section = _pad4(string_section)
@@ -118,15 +133,14 @@ def _make_archive(
         if compression is XBCompression.NONE:
             payload = raw_data
         elif compression is XBCompression.LZS:
-            body = _lzs_body(raw_data)
-            payload = struct.pack(endian + "II", len(raw_data), len(body)) + body
+            payload = _lzs_stream(raw_data, endian)
         elif compression is XBCompression.HUFFMAN:
             body = _huffman_body(raw_data, endian)
-            payload = struct.pack(endian + "II", len(raw_data), len(body)) + body
+            payload = struct.pack(endian + "II", len(raw_data), len(body) - HUFFMAN_TABLE_LEN) + body
         elif compression is XBCompression.DEFLATE:
             inner = _lzs_stream(raw_data, endian)
             body = _huffman_body(inner, endian)
-            payload = struct.pack(endian + "II", len(inner), len(body)) + body
+            payload = struct.pack(endian + "II", len(inner), len(body) - HUFFMAN_TABLE_LEN) + body
         else:  # pragma: no cover - enum exhaustiveness guard
             raise AssertionError(compression)
         payload = _pad4(payload)
@@ -345,7 +359,7 @@ class XBProbeTests(unittest.TestCase):
 
     def test_lzs_malformed_inputs(self) -> None:
         body = b"\x01\x00"
-        payload = struct.pack("<II", 10, len(body)) + body
+        payload = struct.pack("<II", 10, 8 + len(body)) + body
         raw = _make_archive([("a.bin", b"0123456789", XBCompression.NONE)])
         data_start = raw.find(b"0123456789")
         mutated = bytearray(raw[:data_start] + _pad4(payload))
@@ -355,7 +369,7 @@ class XBProbeTests(unittest.TestCase):
             reader.read_entry("a.bin")
 
         body = _lzs_body(b"x" * 20)
-        payload = struct.pack("<II", 10, len(body)) + body
+        payload = struct.pack("<II", 10, 8 + len(body)) + body
         mutated = bytearray(raw[:data_start] + _pad4(payload))
         struct.pack_into("<I", mutated, 8, 10)
         struct.pack_into("<I", mutated, 12, (2 << 28) | (data_start // 4))
@@ -364,27 +378,29 @@ class XBProbeTests(unittest.TestCase):
             reader.read_entry("a.bin")
 
     def test_huffman_malformed_inputs(self) -> None:
+        # Three codes cannot share a one-bit length, so the table is
+        # oversubscribed.  The code table is walked to find the stream's extent,
+        # so the archive is refused when it is opened.
         huf_table = bytes([1, 3, 65, 66, 67]) + b"\0"
-        payload = struct.pack("<II", 3, len(huf_table)) + huf_table
+        payload = struct.pack("<II", 3, 2) + huf_table + b"\0\0"
         raw = _make_archive([("a.bin", b"ABC", XBCompression.NONE)])
         data_start = raw.find(b"ABC")
         mutated = bytearray(raw[:data_start] + _pad4(payload))
         struct.pack_into("<I", mutated, 8, 3)
         struct.pack_into("<I", mutated, 12, (1 << 28) | (data_start // 4))
-        reader = XBArchiveReader.from_bytes(bytes(mutated))
         with self.assertRaises(XBProbeError):
-            reader.read_entry("a.bin")
+            XBArchiveReader.from_bytes(bytes(mutated))
 
     def test_huffman_truncated_bitstream(self) -> None:
-        # A one-symbol table is valid, but a declared output cannot be decoded
-        # without at least one complete 16-bit bitstream word.  The old reader
-        # substituted zero words and fabricated repeated symbols instead.
+        # A one-symbol table is valid, but 33 one-bit symbols need three
+        # bitstream words and only one is stored.  The old reader substituted
+        # zero words and fabricated repeated symbols instead.
         huf_table = bytes([1, 1, 65, 0])
-        payload = struct.pack("<II", 3, len(huf_table)) + huf_table
+        payload = struct.pack("<II", 33, 2) + huf_table + b"\0\0"
         raw = _make_archive([("a.bin", b"AAA", XBCompression.NONE)])
         data_start = raw.find(b"AAA")
         mutated = bytearray(raw[:data_start] + _pad4(payload))
-        struct.pack_into("<I", mutated, 8, 3)
+        struct.pack_into("<I", mutated, 8, 33)
         struct.pack_into("<I", mutated, 12, (1 << 28) | (data_start // 4))
         reader = XBArchiveReader.from_bytes(bytes(mutated))
         with self.assertRaisesRegex(XBProbeError, "Huffman bitstream is truncated"):
@@ -395,7 +411,7 @@ class XBProbeTests(unittest.TestCase):
         # buffered word.  Requiring another word after the seventh symbol
         # falsely rejected a valid stream with nine bits still buffered.
         huf_table = bytes([1, 1, 65, 0])
-        payload = struct.pack("<II", 16, len(huf_table) + 2) + huf_table + b"\0\0"
+        payload = struct.pack("<II", 16, 2) + huf_table + b"\0\0"
         raw = _make_archive([("a.bin", b"AAA", XBCompression.NONE)])
         data_start = raw.find(b"AAA")
         mutated = bytearray(raw[:data_start] + _pad4(payload))
@@ -517,6 +533,213 @@ class XBProbeTests(unittest.TestCase):
                 self.assertEqual(reader.read_entry("a.bin"), b"payload")
             finally:
                 Path.open = real_open
+
+
+def _raw_archive(
+    entries: list[tuple[str, int, XBCompression, bytes]],
+    *,
+    string_section: bytes | None = None,
+) -> bytes:
+    """Build an archive from ``(path, fst_size, compression, payload)`` rows.
+
+    Each payload is stored verbatim (padded to four bytes), so a test decides
+    exactly what the stream's own header claims.  ``string_section`` replaces the
+    default raw string table, header included, to exercise the compressed form.
+    """
+
+    names = []
+    for path, _, _, _ in entries:
+        raw = path.encode("shift_jis")
+        names.append(bytes((len(raw), _sjis_hash(raw))) + raw + b"\0")
+    string_table = b"".join(names)
+    if string_section is None:
+        string_section = struct.pack("<II", len(string_table), 0) + string_table
+    string_section = _pad4(string_section)
+    header = b"xe\0\1" + struct.pack("<I", len(entries))
+    offset = len(header) + len(entries) * 8 + len(string_section)
+    fst = bytearray()
+    payloads = []
+    for _, fst_size, compression, payload in entries:
+        payload = _pad4(payload)
+        fst.extend(struct.pack("<II", fst_size, (int(compression) << 28) | (offset // 4)))
+        payloads.append(payload)
+        offset += len(payload)
+    return header + bytes(fst) + string_section + b"".join(payloads)
+
+
+def _names_table(paths: list[str]) -> bytes:
+    names = []
+    for path in paths:
+        raw = path.encode("shift_jis")
+        names.append(bytes((len(raw), _sjis_hash(raw))) + raw + b"\0")
+    return b"".join(names)
+
+
+class RetailFramingTests(unittest.TestCase):
+    """The size fields of retail archives, reproduced with synthetic bytes.
+
+    Each accepted shape below was a refusal before: the reader took the LZS and
+    string-table size field for the body length and the Huffman size field for
+    the whole stream, so it read the next section's bytes as "trailing data".
+    The rejected shapes are the ones that must keep failing closed.
+    """
+
+    def _open(self, entries, **kwargs) -> XBArchiveReader:
+        return XBArchiveReader.from_bytes(_raw_archive(entries, **kwargs))
+
+    # -- accepted -----------------------------------------------------------
+
+    def test_lzs_size_field_counts_its_own_header_at_every_alignment(self) -> None:
+        # Stream lengths 9+n for n in 1..9 cover every padding amount, 0..3.
+        members = [(f"data/m{n}.bin", bytes(range(65, 65 + n))) for n in range(1, 10)]
+        rows = [(path, len(data), XBCompression.LZS, _lzs_stream(data)) for path, data in members]
+        archive = self._open(rows)
+        paddings = set()
+        for (path, data), entry in zip(members, archive.entries, strict=True):
+            self.assertEqual(archive.read_entry(path), data)
+            self.assertEqual(entry.stored_size, 9 + len(data))
+            paddings.add(entry.span_size - entry.stored_size)
+        self.assertEqual(paddings, {0, 1, 2, 3})
+
+    def test_compressed_string_table_size_field_counts_its_own_header(self) -> None:
+        paths = [f"data/menu/entry_number_{n}.bin" for n in range(3)]
+        table = _names_table(paths)
+        body = _lzs_body(table)
+        self.assertGreater(len(body), 8)
+        section = struct.pack("<II", len(table), 8 + len(body)) + body
+        rows = [(path, 1, XBCompression.NONE, b"x") for path in paths]
+        archive = self._open(rows, string_section=section)
+        self.assertEqual([entry.path for entry in archive.entries], paths)
+        self.assertEqual(archive.read_entry(paths[1]), b"x")
+
+    def test_huffman_size_field_counts_the_bitstream_not_the_code_table(self) -> None:
+        data = b"ABBAAB" * 5
+        body = _huffman_body(data)
+        stream = body[HUFFMAN_TABLE_LEN:]
+        payload = struct.pack("<II", len(data), len(stream)) + body
+        archive = self._open([("data/h.bin", len(data), XBCompression.HUFFMAN, payload)])
+        entry = archive.entries[0]
+        self.assertEqual(entry.stored_size, 8 + HUFFMAN_TABLE_LEN + len(stream))
+        self.assertEqual(archive.read_entry("data/h.bin"), data)
+
+    def test_deflate_nests_a_self_counting_lzs_stream_in_a_huffman_stream(self) -> None:
+        data = b"nested payload" * 3
+        inner = _lzs_stream(data)
+        self.assertEqual(struct.unpack_from("<I", inner, 4)[0], len(inner))
+        body = _huffman_body(inner)
+        stream = body[HUFFMAN_TABLE_LEN:]
+        payload = struct.pack("<II", len(inner), len(stream)) + body
+        archive = self._open([("data/d.bin", len(data), XBCompression.DEFLATE, payload)])
+        self.assertEqual(archive.entries[0].stored_size, 8 + HUFFMAN_TABLE_LEN + len(stream))
+        self.assertEqual(archive.read_entry("data/d.bin"), data)
+
+    def test_zero_alignment_after_a_stream_is_accepted_but_not_required(self) -> None:
+        data = b"abc"
+        stream = _lzs_stream(data)
+        for tail in (b"", b"\0", b"\0\0\0"):
+            with self.subTest(tail=tail):
+                archive = self._open(
+                    [("data/a.bin", len(data), XBCompression.LZS, stream + tail)]
+                )
+                self.assertEqual(archive.read_entry("data/a.bin"), data)
+
+    def test_zero_lookahead_words_after_the_bitstream_are_accepted(self) -> None:
+        data = b"ABBAAB"
+        body = _huffman_body(data)
+        stream = body[HUFFMAN_TABLE_LEN:] + bytes(4)
+        payload = struct.pack("<II", len(data), len(stream)) + body + bytes(4)
+        archive = self._open([("data/h.bin", len(data), XBCompression.HUFFMAN, payload)])
+        self.assertEqual(archive.read_entry("data/h.bin"), data)
+
+    # -- still refused ------------------------------------------------------
+
+    def test_lzs_size_field_that_cannot_cover_its_header_is_refused(self) -> None:
+        data = b"abcdef"
+        body = _lzs_body(data)
+        for field in (1, 8):
+            with self.subTest(field=field):
+                payload = struct.pack("<II", len(data), field) + body
+                with self.assertRaisesRegex(XBProbeError, "does not fit its FST span"):
+                    self._open([("data/a.bin", len(data), XBCompression.LZS, payload)])
+
+    def test_lzs_stream_that_under_reports_its_size_is_refused(self) -> None:
+        # Writing the body length (the old reading of the field) leaves body bytes
+        # outside the stream; they are not zero, so they cannot be padding.
+        data = bytes(range(65, 85))
+        body = _lzs_body(data)
+        payload = struct.pack("<II", len(data), len(body)) + body
+        with self.assertRaisesRegex(XBProbeError, "non-zero trailing bytes"):
+            self._open([("data/a.bin", len(data), XBCompression.LZS, payload)])
+
+    def test_stream_that_runs_past_the_end_of_the_archive_is_refused(self) -> None:
+        data = b"abcdef"
+        body = _lzs_body(data)
+        lzs = struct.pack("<II", len(data), 8 + len(body) + 16) + body
+        with self.assertRaisesRegex(XBProbeError, "does not fit its FST span"):
+            self._open([("data/a.bin", len(data), XBCompression.LZS, lzs)])
+        huffman_body = _huffman_body(b"ABBAAB")
+        huffman = struct.pack("<II", 6, len(huffman_body) - HUFFMAN_TABLE_LEN + 16) + huffman_body
+        with self.assertRaisesRegex(XBProbeError, "does not fit its FST span"):
+            self._open([("data/h.bin", 6, XBCompression.HUFFMAN, huffman)])
+
+    def test_non_zero_bytes_after_a_stream_are_not_padding(self) -> None:
+        data = b"abc"
+        stream = _lzs_stream(data)
+        for tail in (b"\x01", b"\0\0\0\x01", b"\0" * 8 + b"\x7f"):
+            with self.subTest(tail=tail):
+                with self.assertRaisesRegex(XBProbeError, "non-zero trailing bytes"):
+                    self._open([("data/a.bin", len(data), XBCompression.LZS, stream + tail)])
+
+    def test_lzs_size_field_that_overstates_the_body_must_cover_only_zeros(self) -> None:
+        data = b"abc"
+        body = _lzs_body(data)
+        zero = struct.pack("<II", len(data), 8 + len(body) + 4) + body + bytes(4)
+        archive = self._open([("data/a.bin", len(data), XBCompression.LZS, zero)])
+        self.assertEqual(archive.read_entry("data/a.bin"), data)
+        dirty = struct.pack("<II", len(data), 8 + len(body) + 4) + body + b"\0\0\0\x01"
+        archive = self._open([("data/a.bin", len(data), XBCompression.LZS, dirty)])
+        with self.assertRaisesRegex(XBProbeError, "non-zero trailing bytes in LZS body"):
+            archive.read_entry("data/a.bin")
+
+    def test_huffman_size_field_that_overstates_the_bitstream_must_cover_only_zeros(self) -> None:
+        data = b"ABBAAB"
+        body = _huffman_body(data)
+        field = len(body) - HUFFMAN_TABLE_LEN + 2
+        dirty = struct.pack("<II", len(data), field) + body + b"\x01\0"
+        archive = self._open([("data/h.bin", len(data), XBCompression.HUFFMAN, dirty)])
+        with self.assertRaisesRegex(XBProbeError, "non-zero trailing bytes in Huffman"):
+            archive.read_entry("data/h.bin")
+
+    def test_deflate_inner_stream_must_account_for_its_whole_intermediate(self) -> None:
+        data = b"nested payload"
+        inner = _lzs_stream(data)
+        for tail, ok in ((bytes(2), True), (b"\x01\0", False)):
+            with self.subTest(tail=tail):
+                body = _huffman_body(inner + tail)
+                payload = struct.pack("<II", len(inner) + len(tail), len(body) - HUFFMAN_TABLE_LEN) + body
+                archive = self._open([("data/d.bin", len(data), XBCompression.DEFLATE, payload)])
+                if ok:
+                    self.assertEqual(archive.read_entry("data/d.bin"), data)
+                else:
+                    with self.assertRaisesRegex(XBProbeError, "non-zero trailing bytes in nested LZS"):
+                        archive.read_entry("data/d.bin")
+
+    def test_string_table_size_field_is_checked(self) -> None:
+        paths = [f"data/menu/entry_number_{n}.bin" for n in range(3)]
+        table = _names_table(paths)
+        body = _lzs_body(table)
+        rows = [(path, 1, XBCompression.NONE, b"x") for path in paths]
+        # A field that cannot cover its own header.
+        for field in (1, 8):
+            with self.subTest(field=field):
+                section = struct.pack("<II", len(table), field) + body
+                with self.assertRaisesRegex(XBProbeError, "does not cover its header"):
+                    self._open(rows, string_section=section)
+        # The body length written as the field (the old reading) cuts the stream
+        # short, and a short LZS stream cannot fill the declared table.
+        section = struct.pack("<II", len(table), len(body)) + body
+        with self.assertRaises(XBProbeError):
+            self._open(rows, string_section=section)
 
 
 if __name__ == "__main__":

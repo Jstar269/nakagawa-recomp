@@ -727,7 +727,7 @@ uint32_t iso_physical_lba(uint32_t lba_or_token) {
  * the fixture rather than a measurement: 4 MiB, which sits above every guest
  * address this file fabricates (the 0x00200000 time block, the 0x00240000
  * conformance block, and sched.c's 0x0031xxxx / 0x00331b80 counters) and below
- * both the stack arena floor (0x05000000) and the default partition top
+ * both the stack arena floor (0x08800000) and the default partition top
  * (0x0A000000). Returning 0 is not an option -- user_partition_init() correctly
  * fail-closes on it rather than placing the partition over the image. */
 #ifndef SR_HLE_AOT_BOUNDARY_TEST
@@ -755,7 +755,10 @@ int sr_aot_return_boundary_scope_end(CpuState *s,
 }
 #endif
 
-uint32_t sr_loaded_end(void) { return 0x00400000u; }
+/* A test that needs a module image inside PSP user RAM sets this before
+ * sr_hle_test_partition_reset() and restores the default afterwards. */
+static uint32_t s_fixture_loaded_end = 0x00400000u;
+uint32_t sr_loaded_end(void) { return s_fixture_loaded_end; }
 
 int g_hle_depth;
 jmp_buf g_hle_jmp;
@@ -3947,6 +3950,42 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         expect(sr_syscall(&cpu, refused[i].nid) == refused[i].error,
                "kernel import returns its named fail-closed error");
     }
+}
+
+uint32_t sr_hle_test_npdrm_licensee_key(uint8_t out[16]);
+
+/* sceNpDrmSetLicenseeKey records the 16 key bytes and returns 0; sceNpDrmClearLicenseeKey forgets
+ * them; an unreadable key is refused with 0x80550902 and leaves the recorded key alone. */
+static void test_npdrm_licensee_key(void) {
+    enum {
+        NID_NPDRM_SET_LICENSEE_KEY = 0xa1336091u,
+        NID_NPDRM_CLEAR_LICENSEE_KEY = 0x9b745542u,
+        KEY = ORACLE_CALLBACK_NAME + 0x200u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    uint8_t key[16];
+    expect(sr_hle_test_is_registered(NID_NPDRM_SET_LICENSEE_KEY) &&
+               sr_hle_test_is_registered(NID_NPDRM_CLEAR_LICENSEE_KEY),
+           "sceNpDrmSetLicenseeKey and sceNpDrmClearLicenseeKey are registered");
+    for (uint32_t i = 0; i < 16u; i++) sr_w8(KEY + i, (uint8_t)(0xa0u + i));
+    cpu.r[4] = KEY;
+    expect(sr_syscall(&cpu, NID_NPDRM_SET_LICENSEE_KEY) == 0u, "sceNpDrmSetLicenseeKey returns 0");
+    expect(sr_hle_test_npdrm_licensee_key(key) == 1u && key[0] == 0xa0u && key[15] == 0xafu,
+           "sceNpDrmSetLicenseeKey records all 16 key bytes");
+    cpu.r[4] = 0x0bfffff8u;
+    expect(sr_syscall(&cpu, NID_NPDRM_SET_LICENSEE_KEY) == 0x80550902u &&
+               sr_hle_test_npdrm_licensee_key(key) == 1u && key[0] == 0xa0u,
+           "an unreadable licensee key is refused and the recorded key is kept");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_NPDRM_SET_LICENSEE_KEY) == 0x80550902u &&
+               sr_hle_test_npdrm_licensee_key(key) == 1u && key[0] == 0xa0u && key[15] == 0xafu,
+           "a null licensee key is refused and the recorded key is kept");
+    expect(sr_syscall(&cpu, NID_NPDRM_CLEAR_LICENSEE_KEY) == 0u &&
+               sr_hle_test_npdrm_licensee_key(key) == 0u && key[0] == 0u && key[15] == 0u,
+           "sceNpDrmClearLicenseeKey returns 0 and forgets the key");
 }
 
 /* sceReg virtual system registry (src/rt/hle.c): guest scratch lives in the arena at 0x08b00000,
@@ -16340,7 +16379,7 @@ static void test_nested_frame_region_is_reserved_from_thread_stacks(void) {
 
     /* C-6: the VBLANK interrupt stack is structurally reserved outside the
      * thread-stack arena and does not collide with any created thread stack. */
-    expect(SR_VBLANK_STACK_TOP > SR_STACK_ARENA_CEIL &&
+    expect(SR_VBLANK_STACK_TOP <= SR_STACK_ARENA_FLOOR ||
            SR_VBLANK_STACK_BASE >= SR_STACK_ARENA_CEIL,
            "C-6: the VBLANK interrupt stack is reserved outside the thread-stack arena");
 }
@@ -22176,11 +22215,12 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     const uint32_t FAIL = 0xFFFFFFFFu;
     CpuState cpu;
     reset_fixture();
+    s_fixture_loaded_end = 0x08a00000u;   /* a main image in user RAM, as a game's is */
     sr_hle_test_partition_reset();
     sr_hle_init();
     uint32_t base0 = sr_hle_test_partition_heap_ptr();
     expect(sr_hle_test_partition_bump_top() <= SR_STACK_ARENA_CEIL,
-           "the partition never reaches the runtime's VBLANK/nested-frame reservation");
+           "the partition never reaches above the thread-stack arena");
     uint32_t uid = sched_create_thread(0x2000u, 32, 0x40000u);
     expect(uid != 0u, "a main thread with a 256 KiB stack is created");
     uint32_t floor = sched_guest_stack_floor();
@@ -22219,6 +22259,91 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     uint32_t between = sr_alloc_block_at(upper_floor, 0x1000u, "between-stacks");
     expect(between != FAIL && between != 0u,
            "a fixed reservation above the lowest live stack succeeds");
+    s_fixture_loaded_end = 0x00400000u;
+}
+
+/* The runtime keeps none of the PSP user partition for itself. Its VBLANK interrupt stack and
+ * nested host->guest frames used to occupy [0x09ef0000, 0x0a000000), the partition's top
+ * 1.06 MiB, so with a main image ending at 0x08a00000 and a module_start and a main thread
+ * live, a game's fixed 21.5 MiB request (which fits on a PSP, whose stacks come from the
+ * same partition's top) was refused and the game went on to call through the null result.
+ * An image linked below kernel RAM gets a partition that ends below the runtime's stacks. */
+static void test_partition_spans_the_whole_user_partition(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern uint32_t sr_hle_test_partition_heap_ptr(void);
+    extern uint32_t sr_hle_test_partition_bump_top(void);
+    const uint32_t NID_ALLOC_PART = 0x237dbd4fu;
+    const uint32_t NID_GET_HEAD   = 0x9d9a5ba1u;
+    const uint32_t NID_MAX_FREE   = 0xa291f107u;
+    const uint32_t FAIL = 0xFFFFFFFFu;
+    const uint32_t request = 0x01580000u;   /* 21.5 MiB */
+    CpuState cpu;
+    uint32_t nested_base = 0u, nested_end = 0u;
+
+    reset_fixture();
+    s_fixture_loaded_end = 0x08a00000u;
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    uint32_t base0 = sr_hle_test_partition_heap_ptr();
+    uint32_t root = sched_create_thread(0x2000u, 32, 0x40000u);
+    uint32_t main_thread = sched_create_thread(0x2004u, 32, 0x20000u);
+    expect(root != 0u && main_thread != 0u, "a module_start and a main thread are created");
+    uint32_t floor = sched_guest_stack_floor();
+    expect(floor == 0x0a000000u - (0x40000u + 0x800u) - (0x20000u + 0x800u),
+           "thread stacks are carved from the top of the user partition, 0x0a000000");
+    expect(sr_hle_test_partition_bump_top() == floor,
+           "the free span runs from the image to the lowest live stack");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_MAX_FREE) == floor - base0,
+           "sceKernelMaxFreeMemSize reports everything below the live stacks");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = request;
+    uint32_t big = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(big != FAIL && big != 0u, "a 21.5 MiB block that fits on a PSP is granted");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = big;
+    uint32_t head = sr_syscall(&cpu, NID_GET_HEAD);
+    expect(head >= base0 && head + request <= floor, "the block lies between the image and the stacks");
+
+    sr_nested_frame_region(&nested_base, &nested_end);
+    expect(nested_end <= 0x08400000u && SR_VBLANK_STACK_BASE >= 0x08000000u &&
+           SR_VBLANK_STACK_TOP == nested_base,
+           "the runtime's VBLANK stack and nested frames sit in kernel RAM, below the volatile partition");
+
+    /* An image linked at a low address: the free span stops below the runtime's stacks. */
+    reset_fixture();
+    s_fixture_loaded_end = 0x00400000u;
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    base0 = sr_hle_test_partition_heap_ptr();
+    expect(sr_hle_test_partition_bump_top() == SR_VBLANK_STACK_BASE,
+           "a low-based partition ends at the runtime's VBLANK stack");
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t low_free = sr_syscall(&cpu, NID_MAX_FREE);
+    expect(low_free == SR_VBLANK_STACK_BASE - base0,
+           "the reported free memory excludes the runtime's stacks");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = low_free + 0x100u;
+    expect(sr_syscall(&cpu, NID_ALLOC_PART) == FAIL,
+           "a block that would cover the runtime's stacks is refused");
+
+    /* A fixed reservation above kernel RAM (a late PRX base) returns the skipped span to the
+     * free list without the runtime's stacks, and none may be reserved over them. */
+    extern uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name);
+    extern int sr_hle_test_partition_free_block_count(void);
+    extern int sr_hle_test_partition_get_free_block(int index, uint32_t *addr, uint32_t *size);
+    expect(sr_alloc_block_at(SR_VBLANK_STACK_BASE, 0x100u, "over-runtime-stacks") == FAIL,
+           "a fixed reservation over the runtime's stacks is refused");
+    uint32_t late = sr_alloc_block_at(0x09000000u, 0x1000u, "late-prx");
+    expect(late != FAIL && late != 0u, "a fixed reservation above kernel RAM succeeds");
+    int overlapping = 0, pieces = sr_hle_test_partition_free_block_count();
+    for (int i = 0; i < pieces; i++) {
+        uint32_t fa = 0u, fs = 0u;
+        if (sr_hle_test_partition_get_free_block(i, &fa, &fs) == 1 &&
+            fa < nested_end && fa + fs > SR_VBLANK_STACK_BASE)
+            overlapping++;
+    }
+    expect(pieces >= 2 && overlapping == 0,
+           "the skipped span returns to the free list around the runtime's stacks");
 }
 
 static void test_alloc_block_at_fixed_address(void) {
@@ -31081,6 +31206,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
     test_kernel_import_sweep_explicit_refusals();
+    test_npdrm_licensee_key();
     test_sysreg_virtual_registry();
     test_sysreg_write_model();
     test_sysparam_nickname_string();
@@ -31261,6 +31387,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_td28_partition_free_reuse();
     test_alloc_block_at_fixed_address();
     test_partition_ends_at_lowest_live_stack();
+    test_partition_spans_the_whole_user_partition();
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();
