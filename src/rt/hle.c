@@ -57,6 +57,7 @@
 #include "vfs_path.h"    /* host-neutral VFS path join helper (issue #19) */
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
 #include "atrac3p_bridge.h" /* HLE bridges for separate ATRAC3+ and AT3 decoding */
+#include "mp3_bridge.h"     /* minimp3 frame decoder behind sceMp3 */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
 #include "fbcap.h"           /* presenter-neutral frame capture service (issue #57) */
 #include "audio_resample.h"  /* deterministic SRC-to-host-rate conversion */
@@ -10317,6 +10318,478 @@ uint32_t sr_hle_test_atrac_reinit_count(void) { return s_atrac_reinit_count; }
 void sr_hle_test_atrac_reinit_reset(void) { s_atrac_reinit_count = 0u; }
 uint32_t sr_hle_test_atrac_release_count(void) { return s_atrac_release_count; }
 void sr_hle_test_atrac_release_reset(void) { s_atrac_release_count = 0u; }
+#endif
+
+/* ---- sceMp3 ---------------------------------------------------------------------------------
+ * The PSP MP3 library (libmp3.prx, loaded with sceUtilityLoadAvModule(PSP_AV_MODULE_MP3)). A game
+ * reserves a handle over a guest stream buffer and a guest PCM buffer, feeds the file through
+ * sceMp3GetInfoToAddStreamData/sceMp3NotifyAddStreamData, calls sceMp3Init once the first frame is
+ * in, and then each sceMp3Decode returns one frame of interleaved stereo s16 in the next half of
+ * its PCM buffer.
+ *
+ * derived-translated: the handle lifecycle, per-call error codes and their precedence, the stream
+ * buffer geometry (a 0x5c0-byte work area, then two halves the game refills in turn), the end and
+ * loop rules, the header parse and the frame-count/seek arithmetic are translated from PPSSPP
+ * Core/HLE/sceMp3.cpp and Core/HW/SimpleAudioDec.cpp (AuCtx) at hrydgard/ppsspp
+ * 0028f30da6784570264a41ef6cce1c3963692ea7 (GPL-2.0-or-later, Copyright (c) 2012- PPSSPP
+ * Project), whose comments cite the pspautotests audio/mp3 hardware tests for those rules.
+ * Modified for this runtime: frames are decoded by the vendored minimp3 through src/rt/mp3_bridge.c
+ * instead of FFmpeg; guest spans are validated when the handle is reserved; a frame still
+ * incomplete in the buffer is kept for the next call (PPSSPP drops the buffer) unless the whole
+ * file has been added; seeks reset the decoder history and use 64-bit offset arithmetic; after a
+ * seek by frame the two halves restart at the seek position (PPSSPP keeps them tied to the file
+ * start, so the next refill it asks for runs past the end of the stream buffer); the
+ * non-44.1 kHz refusal follows the libmp3 SDK-version threshold PPSSPP documents instead of its
+ * deliberate leniency. Nothing here is PSP-measured by this project.
+ *
+ * sceMp3LowLevelInit/sceMp3LowLevelDecode and the module entry points are refused by name (see
+ * hle_register_mp3_handlers): their contracts are not established. */
+#define MP3_MAX_HANDLES 2u
+#define MP3_AU_BUF_MIN_SIZE 8192
+#define MP3_PCM_BUF_MIN_SIZE 9216
+#define MP3_STREAM_WORKAREA 0x5c0u     /* stream bytes start this far into the stream buffer */
+#define MP3_HEADER_SEARCH 1440u        /* sceMp3Init looks this far past the work area for a sync */
+#define MP3_INIT_MIN_BYTES_SDK6 156    /* SDK 6+: bytes that must be added before sceMp3Init */
+#define SCE_MP3_ERROR_INVALID_HANDLE 0x80671001u
+#define SCE_MP3_ERROR_BAD_ADDR 0x80671002u
+#define SCE_MP3_ERROR_BAD_SIZE 0x80671003u
+#define SCE_MP3_ERROR_UNRESERVED_HANDLE 0x80671102u
+#define SCE_MP3_ERROR_NOT_YET_INIT_HANDLE 0x80671103u
+#define SCE_MP3_ERROR_NO_RESOURCE_AVAIL 0x80671201u
+#define SCE_MP3_ERROR_BAD_SAMPLE_RATE 0x80671302u
+#define SCE_MP3_ERROR_BAD_RESET_FRAME 0x80671501u
+#define SCE_MP3_AVCODEC_ERROR_INVALID_DATA 0x807f00fdu
+#define SCE_MP3_KERNEL_ERROR_INVALID_POINTER 0x80000103u
+#define SCE_MP3_KERNEL_ERROR_INVALID_VALUE 0x800001feu
+
+typedef struct Mp3Ctx {
+    int used;
+    uint64_t startPos, endPos;     /* file offsets from the reserve argument */
+    uint32_t auBuf, auBufSize;     /* guest stream buffer (0 for an argument-less handle) */
+    uint32_t pcmBuf, pcmBufSize;   /* guest PCM buffer, used in two halves */
+    int64_t readPos;               /* file offset of the next byte the game adds */
+    int64_t ringBase;              /* file offset that lands at the start of the first half */
+    int64_t available;             /* bytes added but not yet consumed by the decoder */
+    uint8_t *src;                  /* host copy of the added, unconsumed bytes */
+    uint32_t srcLen, srcCap;
+    int version;                   /* MPEG version bits once sceMp3Init succeeded, else -1 */
+    int channels, bitRate, samplingRate;
+    uint32_t maxOutputSample;
+    int frameNum;
+    uint32_t sumDecodedSamples;
+    int loopNum;                   /* -1: loop forever (the default) */
+    int nextOutputHalf;
+    Mp3Bridge *dec;
+} Mp3Ctx;
+static Mp3Ctx s_mp3[MP3_MAX_HANDLES];
+static int s_mp3_resource_inited;
+
+static Mp3Ctx *mp3_ctx(uint32_t handle) {
+    return handle < MP3_MAX_HANDLES && s_mp3[handle].used ? &s_mp3[handle] : NULL;
+}
+/* An out-of-range handle is always INVALID_HANDLE; an unused in-range one gets the call's code. */
+static uint32_t mp3_missing(uint32_t handle, uint32_t code) {
+    return handle >= MP3_MAX_HANDLES ? SCE_MP3_ERROR_INVALID_HANDLE : code;
+}
+static void mp3_free(Mp3Ctx *c) {
+    mp3_bridge_destroy(c->dec);
+    free(c->src);
+    memset(c, 0, sizeof(*c));
+}
+static void mp3_drop_source(Mp3Ctx *c, uint32_t n) {
+    if (n > c->srcLen) n = c->srcLen;
+    if (n) memmove(c->src, c->src + n, c->srcLen - n);
+    c->srcLen -= n;
+    c->available -= n;
+}
+static int32_t mp3_stream_half(const Mp3Ctx *c) {
+    return ((int32_t)c->auBufSize - (int32_t)MP3_STREAM_WORKAREA) / 2;
+}
+/* The game may write ahead to the end of the half after the one the decoder is reading, so a
+ * half opens up only once the decoder has consumed past its end. Not clamped to the buffer size:
+ * PPSSPP reports the hardware asking for 6721 bytes of an 8192-byte buffer after a notify of -1. */
+static int32_t mp3_bytes_needed(const Mp3Ctx *c) {
+    if (c->readPos >= (int64_t)c->endPos) return 0;
+    int32_t half = mp3_stream_half(c);
+    if (half <= 0) return 0;
+    int64_t written = c->readPos - c->ringBase;
+    int64_t consumed = written - c->available;
+    int64_t halves_done = consumed / half - ((consumed % half < 0) ? 1 : 0);
+    int64_t need = (halves_done + 2) * half - written;
+    return need > 0 ? (int32_t)need : 0;
+}
+/* Where the next added bytes go, past the work area: it walks the two halves and wraps. */
+static int32_t mp3_write_offset(const Mp3Ctx *c) {
+    int64_t size = (int64_t)mp3_stream_half(c) * 2;
+    if (size <= 0) return 0;
+    int64_t pos = (c->readPos - c->ringBase) % size;
+    return (int32_t)(pos < 0 ? pos + size : pos);
+}
+/* Header fields as libmp3 reports them: kbps (0 for free format, -1 when invalid) and Hz. */
+static int mp3_header_bitrate(int version, int layer, int index) {
+    static const int16_t v1[3][16] = {
+        {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, -1},     /* Layer III */
+        {0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, -1},    /* Layer II */
+        {0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, -1}, /* Layer I */
+    };
+    static const int16_t v2[2][16] = {
+        {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, -1},         /* Layer II/III */
+        {0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256, -1},    /* Layer I */
+    };
+    if (layer == 0) return -1;
+    if (version == 3) return v1[layer - 1][index];
+    if (version == 2 || version == 0) return v2[layer == 3][index];
+    return -1;
+}
+static int mp3_header_sample_rate(int version, int index) {
+    static const int32_t rates[4][4] = {
+        {11025, 12000, 8000, -1}, {-1, -1, -1, -1}, {22050, 24000, 16000, -1}, {44100, 48000, 32000, -1},
+    };
+    return rates[version & 3][index & 3];
+}
+
+static uint32_t h_Mp3InitResource(CpuState *s) {
+    (void)s;
+    if (s_mp3_resource_inited) return 0;
+    s_mp3_resource_inited = 1;
+    sched_delay_current(200);
+    return 0;
+}
+
+static uint32_t h_Mp3TermResource(CpuState *s) {
+    (void)s;
+    if (!s_mp3_resource_inited) return 0;
+    for (uint32_t i = 0; i < MP3_MAX_HANDLES; i++)
+        if (s_mp3[i].used) mp3_free(&s_mp3[i]);
+    s_mp3_resource_inited = 0;
+    sched_delay_current(100);
+    return 0;
+}
+
+/* sceMp3ReserveMp3Handle(SceMp3InitArg *arg): u64 stream start, u64 stream end, stream buffer
+ * and size, PCM buffer and size (32 bytes). A NULL arg reserves a handle with no buffers, which
+ * every stream call then reports as UNRESERVED. */
+static uint32_t h_Mp3ReserveMp3Handle(CpuState *s) {
+    uint32_t arg = A0;
+    if (!s_mp3_resource_inited) return SCE_MP3_ERROR_NO_RESOURCE_AVAIL;
+    uint32_t handle = MP3_MAX_HANDLES;
+    for (uint32_t i = 0; i < MP3_MAX_HANDLES; i++)
+        if (!s_mp3[i].used) { handle = i; break; }
+    if (handle == MP3_MAX_HANDLES) return SCE_MP3_ERROR_NO_RESOURCE_AVAIL;
+    /* The PSP crashes on a bad pointer; this is PPSSPP's error for it. */
+    if (arg && !sr_guest_span_readable(arg, 32u)) return SCE_MP3_KERNEL_ERROR_INVALID_POINTER;
+
+    Mp3Ctx c;
+    memset(&c, 0, sizeof(c));
+    if (arg) {
+        c.startPos = (uint64_t)MEM_R32(arg) | ((uint64_t)MEM_R32(arg + 4u) << 32);
+        c.endPos = (uint64_t)MEM_R32(arg + 8u) | ((uint64_t)MEM_R32(arg + 12u) << 32);
+        c.auBuf = MEM_R32(arg + 16u);
+        c.auBufSize = MEM_R32(arg + 20u);
+        c.pcmBuf = MEM_R32(arg + 24u);
+        c.pcmBufSize = MEM_R32(arg + 28u);
+        if (c.startPos >= c.endPos) return SCE_MP3_ERROR_BAD_SIZE;
+        if (!c.auBuf || !c.pcmBuf) return SCE_MP3_ERROR_BAD_ADDR;
+        if ((int32_t)c.auBufSize < MP3_AU_BUF_MIN_SIZE || (int32_t)c.pcmBufSize < MP3_PCM_BUF_MIN_SIZE)
+            return SCE_MP3_ERROR_BAD_SIZE;
+        /* Runtime safety choice (unmeasured on hardware): both buffers must be mapped guest
+         * memory before any host access is formed over them. */
+        if (!sr_guest_span_writable(c.auBuf, c.auBufSize) ||
+            !sr_guest_span_writable(c.pcmBuf, c.pcmBufSize))
+            return SCE_MP3_ERROR_BAD_ADDR;
+        /* Following the needed-bytes protocol keeps at most two halves unconsumed. */
+        c.srcCap = c.auBufSize;
+        c.src = (uint8_t *)malloc(c.srcCap);
+    }
+    if ((arg && !c.src) || mp3_bridge_create(&c.dec) != 0) {
+        fprintf(stderr, "MP3: host allocation failed reserving handle %u\n", handle);
+        free(c.src);
+        return SCE_MP3_ERROR_NO_RESOURCE_AVAIL;
+    }
+    c.used = 1;
+    c.readPos = (int64_t)c.startPos;
+    c.ringBase = c.readPos;
+    c.version = -1;
+    c.samplingRate = -1;
+    c.loopNum = -1;
+    s_mp3[handle] = c;
+    return handle;
+}
+
+static uint32_t h_Mp3ReleaseMp3Handle(CpuState *s) {
+    uint32_t handle = A0;
+    Mp3Ctx *c = mp3_ctx(handle);
+    if (c) { mp3_free(c); return 0; }
+    if (handle >= MP3_MAX_HANDLES) return SCE_MP3_ERROR_INVALID_HANDLE;
+    return 0; /* releasing an unused handle number is not an error */
+}
+
+/* sceMp3Init(handle): parse the first frame header found within MP3_HEADER_SEARCH bytes of the
+ * stream area (skipping, say, an ID3 tag) and fix the stream's format. */
+static uint32_t h_Mp3Init(CpuState *s) {
+    uint32_t handle = A0;
+    Mp3Ctx *c = mp3_ctx(handle);
+    if (!c) return mp3_missing(handle, SCE_MP3_ERROR_UNRESERVED_HANDLE);
+    if (!c->auBuf) return SCE_MP3_ERROR_UNRESERVED_HANDLE;
+    uint32_t area = c->auBuf + MP3_STREAM_WORKAREA;
+    uint32_t hdr = 0;
+    int found = 0;
+    /* Inside the stream buffer validated at reserve (at least 8192 bytes). */
+    for (uint32_t off = 0; off < MP3_HEADER_SEARCH; off++) {
+        if (MEM_R8(area + off) == 0xffu && (MEM_R8(area + off + 1u) & 0xc0u) == 0xc0u) {
+            hdr = 0xff000000u | ((uint32_t)MEM_R8(area + off + 1u) << 16) |
+                  ((uint32_t)MEM_R8(area + off + 2u) << 8) | MEM_R8(area + off + 3u);
+            found = 1;
+            break;
+        }
+    }
+    sched_delay_current(500);
+    if (!found) return SCE_MP3_AVCODEC_ERROR_INVALID_DATA;
+    int layer = (int)(hdr >> 17) & 3;
+    int version = (int)(hdr >> 19) & 3;
+    int bitrate = mp3_header_bitrate(version, layer, (int)(hdr >> 12) & 0xf);
+    int rate = mp3_header_sample_rate(version, (int)(hdr >> 10) & 3);
+    int channels = ((hdr >> 6) & 3) == 3 ? 1 : 2;
+    if (bitrate <= 0 || rate < 0) return SCE_MP3_AVCODEC_ERROR_INVALID_DATA;
+    uint32_t sdk = sr_sdkver_get(&g_sdk_version);
+    if (sdk >= 0x06000000u && c->readPos < MP3_INIT_MIN_BYTES_SDK6)
+        return SCE_MP3_KERNEL_ERROR_INVALID_VALUE;
+    /* libmp3 accepts a rate other than 44.1 kHz only from a game compiled with SDK 3.09.05 or
+     * later (it compares against 0x030904FF); 48 and 32 kHz otherwise come back as BAD_SAMPLE_RATE. */
+    if (rate != 44100 && sdk <= 0x030904ffu) return SCE_MP3_ERROR_BAD_SAMPLE_RATE;
+    c->samplingRate = rate;
+    c->channels = channels;
+    c->bitRate = bitrate;
+    c->maxOutputSample = layer == 3 ? 384u : (layer == 2 || version == 3) ? 1152u : 576u;
+    /* Frame count from the nominal frame size; like the PSP, padding slots are ignored and the
+     * upper halves of the 64-bit positions are not used. */
+    uint64_t bytes_per_second = (uint64_t)(c->maxOutputSample / 8u) * (uint64_t)bitrate * 1000u;
+    uint64_t total = (c->endPos & 0xffffffffu) - (c->startPos & 0xffffffffu);
+    c->frameNum = (int)((total * (uint64_t)rate) / bytes_per_second);
+    c->version = version;
+    return 0;
+}
+
+/* Decode the next frame into the next PCM half. Returns the PCM bytes reported (0 at the end of
+ * the stream). */
+static uint32_t mp3_decode_half(Mp3Ctx *c, uint32_t pcmAddr) {
+    uint32_t half = c->pcmBufSize / 2u;
+    uint32_t out = c->pcmBuf + (uint32_t)c->nextOutputHalf * half;
+    if (pcmAddr) MEM_W32(pcmAddr, out);
+
+    int16_t pcm[MP3_BRIDGE_MAX_PCM_VALUES];
+    uint32_t pcm_bytes = 0;
+    int all_added = c->readPos >= (int64_t)c->endPos;
+    int end = c->readPos - c->available >= (int64_t)c->endPos;
+    while (!end && c->srcLen) {
+        int consumed = 0, samples = 0;
+        int r = mp3_bridge_decode(c->dec, c->src, (int)c->srcLen, pcm, &consumed, &samples, NULL);
+        mp3_drop_source(c, (uint32_t)consumed);
+        if (r == MP3_BRIDGE_OK) {
+            c->sumDecodedSamples += (uint32_t)samples;
+            pcm_bytes = (uint32_t)samples * 4u;
+            break;
+        }
+        if (r == MP3_BRIDGE_BAD_FRAME && consumed > 0) continue;
+        /* No complete frame left. Once the whole file has been added nothing can complete it,
+         * so the remainder is not audio and the stream is over. */
+        if (all_added) mp3_drop_source(c, c->srcLen);
+        break;
+    }
+    /* The hardware rewinds in the same call that decodes the last frame. */
+    end = c->readPos - c->available >= (int64_t)c->endPos;
+    if (end && c->loopNum != 0) {
+        c->sumDecodedSamples = 0;
+        c->readPos = (int64_t)c->startPos;
+        c->ringBase = c->readPos;
+        if (c->loopNum > 0) c->loopNum--;
+    }
+    /* Inside the PCM buffer validated at reserve; a half holds a whole 1152-sample frame. */
+    for (uint32_t i = 0; i < pcm_bytes / 2u; i++) MEM_W16(out + i * 2u, (uint16_t)pcm[i]);
+    for (uint32_t i = pcm_bytes; i < half; i++) MEM_W8(out + i, 0u);
+    c->nextOutputHalf ^= 1;
+    if (pcm_bytes == 0 && !end) {
+        /* Underrun: no frame is buffered. Like PPSSPP, the half is silence and counts as
+         * decoded; what the PSP returns here is not measured. */
+        static unsigned underruns;
+        if (++underruns <= 8u) fprintf(stderr, "MP3: decode underrun, returned a half of silence\n");
+        return half;
+    }
+    return pcm_bytes;
+}
+
+/* sceMp3Decode(handle, s16 **pcm): *pcm receives the address of the half just written. */
+static uint32_t h_Mp3Decode(CpuState *s) {
+    uint32_t handle = A0, pcmAddr = A1;
+    Mp3Ctx *c = mp3_ctx(handle);
+    if (!c) return mp3_missing(handle, SCE_MP3_ERROR_NOT_YET_INIT_HANDLE);
+    if (c->version < 0 || !c->auBuf) return SCE_MP3_ERROR_NOT_YET_INIT_HANDLE;
+    /* The PSP faults on a bad out-pointer; refuse before decoding instead (unmeasured). */
+    if (pcmAddr && !sr_guest_span_writable(pcmAddr, 4u)) return SCE_MP3_ERROR_BAD_ADDR;
+    uint32_t bytes = mp3_decode_half(c, pcmAddr);
+    if (bytes) sched_delay_current(2400);
+    return bytes;
+}
+
+static uint32_t h_Mp3CheckStreamDataNeeded(CpuState *s) {
+    uint32_t handle = A0;
+    Mp3Ctx *c = mp3_ctx(handle);
+    if (!c) return mp3_missing(handle, SCE_MP3_ERROR_UNRESERVED_HANDLE);
+    if (!c->auBuf) return SCE_MP3_ERROR_UNRESERVED_HANDLE;
+    return mp3_bytes_needed(c) > 0 ? 1u : 0u;
+}
+
+/* sceMp3GetInfoToAddStreamData(handle, u8 **dst, int *towrite, int *srcpos). */
+static uint32_t h_Mp3GetInfoToAddStreamData(CpuState *s) {
+    uint32_t handle = A0, dstPtr = A1, sizePtr = A2, posPtr = A3;
+    Mp3Ctx *c = mp3_ctx(handle);
+    if (!c) return mp3_missing(handle, SCE_MP3_ERROR_UNRESERVED_HANDLE);
+    if (!c->auBuf) return SCE_MP3_ERROR_UNRESERVED_HANDLE;
+    int32_t need = mp3_bytes_needed(c);
+    uint32_t dst = need ? c->auBuf + MP3_STREAM_WORKAREA + (uint32_t)mp3_write_offset(c) : 0u;
+    uint32_t pos = need ? (uint32_t)c->readPos : 0u;
+    /* Each out-pointer is optional: an unmapped one is skipped, as in PPSSPP. */
+    if (dstPtr && sr_guest_span_writable(dstPtr, 4u)) MEM_W32(dstPtr, dst);
+    if (sizePtr && sr_guest_span_writable(sizePtr, 4u)) MEM_W32(sizePtr, (uint32_t)need);
+    if (posPtr && sr_guest_span_writable(posPtr, 4u)) MEM_W32(posPtr, pos);
+    return 0;
+}
+
+/* sceMp3NotifyAddStreamData(handle, int size): the game wrote size bytes where
+ * sceMp3GetInfoToAddStreamData pointed it. */
+static uint32_t h_Mp3NotifyAddStreamData(CpuState *s) {
+    uint32_t handle = A0;
+    int32_t size = (int32_t)A1;
+    Mp3Ctx *c = mp3_ctx(handle);
+    if (!c) return mp3_missing(handle, SCE_MP3_ERROR_UNRESERVED_HANDLE);
+    if (!c->auBuf) return SCE_MP3_ERROR_UNRESERVED_HANDLE;
+    int32_t write_offset = mp3_write_offset(c);
+    c->readPos += size;
+    c->available += size;
+    /* The positions follow the game's size even when it is negative or overruns the buffer;
+     * only bytes that really sit in the stream area are taken. */
+    if (size > 0 && (int64_t)MP3_STREAM_WORKAREA + write_offset + size <= (int64_t)c->auBufSize) {
+        if (c->srcLen + (uint32_t)size > c->srcCap) {
+            fprintf(stderr, "MP3: handle %u added %d bytes past two unconsumed halves; not taken\n",
+                    handle, size);
+        } else {
+            uint32_t from = c->auBuf + MP3_STREAM_WORKAREA + (uint32_t)write_offset;
+            for (int32_t i = 0; i < size; i++)
+                c->src[c->srcLen + (uint32_t)i] = (uint8_t)MEM_R8(from + (uint32_t)i);
+            c->srcLen += (uint32_t)size;
+        }
+    }
+    return 0;
+}
+
+static uint32_t h_Mp3ResetPlayPosition(CpuState *s) {
+    uint32_t handle = A0;
+    Mp3Ctx *c = mp3_ctx(handle);
+    if (!c) return mp3_missing(handle, SCE_MP3_ERROR_NOT_YET_INIT_HANDLE);
+    if (c->version < 0 || !c->auBuf) return SCE_MP3_ERROR_NOT_YET_INIT_HANDLE;
+    mp3_drop_source(c, c->srcLen);
+    c->readPos = (int64_t)c->startPos;
+    c->ringBase = c->readPos;
+    c->available = 0;
+    c->sumDecodedSamples = 0;
+    mp3_bridge_reset(c->dec);
+    return 0;
+}
+
+/* sceMp3ResetPlayPositionByFrame(handle, frame): seek to the nominal byte offset of frame. PPSSPP
+ * reports the PSP landing one byte early for any frame but 0; the sync search covers it. */
+static uint32_t h_Mp3ResetPlayPositionByFrame(CpuState *s) {
+    uint32_t handle = A0, frame = A1;
+    Mp3Ctx *c = mp3_ctx(handle);
+    if (!c) return mp3_missing(handle, SCE_MP3_ERROR_NOT_YET_INIT_HANDLE);
+    if (c->version < 0 || !c->auBuf) return SCE_MP3_ERROR_NOT_YET_INIT_HANDLE;
+    if (frame >= (uint32_t)c->frameNum) return SCE_MP3_ERROR_BAD_RESET_FRAME;
+    uint64_t bytes_per_second = (uint64_t)(c->maxOutputSample / 8u) * (uint64_t)c->bitRate * 1000u;
+    mp3_drop_source(c, c->srcLen);
+    c->readPos = (int64_t)c->startPos +
+                 (int64_t)(((uint64_t)frame * bytes_per_second) / (uint64_t)c->samplingRate);
+    if (frame) c->readPos -= 1;
+    c->ringBase = c->readPos;
+    c->available = 0;
+    c->sumDecodedSamples = frame * c->maxOutputSample;
+    mp3_bridge_reset(c->dec);
+    return 0;
+}
+
+/* Stream counters: an unused handle is UNRESERVED. */
+static Mp3Ctx *mp3_stream_ctx(uint32_t handle, uint32_t *err) {
+    Mp3Ctx *c = mp3_ctx(handle);
+    if (!c) { *err = mp3_missing(handle, SCE_MP3_ERROR_UNRESERVED_HANDLE); return NULL; }
+    if (!c->auBuf) { *err = SCE_MP3_ERROR_UNRESERVED_HANDLE; return NULL; }
+    return c;
+}
+static uint32_t h_Mp3GetSumDecodedSample(CpuState *s) {
+    uint32_t err = 0;
+    Mp3Ctx *c = mp3_stream_ctx(A0, &err);
+    return c ? c->sumDecodedSamples : err;
+}
+static uint32_t h_Mp3GetLoopNum(CpuState *s) {
+    uint32_t err = 0;
+    Mp3Ctx *c = mp3_stream_ctx(A0, &err);
+    return c ? (uint32_t)c->loopNum : err;
+}
+static uint32_t h_Mp3SetLoopNum(CpuState *s) {
+    uint32_t err = 0;
+    Mp3Ctx *c = mp3_stream_ctx(A0, &err);
+    if (!c) return err;
+    c->loopNum = (int32_t)A1 < 0 ? -1 : (int32_t)A1;
+    return 0;
+}
+
+/* Format getters: an unused handle, or one before sceMp3Init, is NOT_YET_INIT; an argument-less
+ * handle has no format and reads 0. */
+static uint32_t mp3_format_value(uint32_t handle, int which) {
+    Mp3Ctx *c = mp3_ctx(handle);
+    if (!c) return mp3_missing(handle, SCE_MP3_ERROR_NOT_YET_INIT_HANDLE);
+    if (c->version < 0) return SCE_MP3_ERROR_NOT_YET_INIT_HANDLE;
+    if (!c->auBuf) return 0;
+    switch (which) {
+    case 0: return c->maxOutputSample;
+    case 1: return (uint32_t)c->channels;
+    case 2: return (uint32_t)c->bitRate;
+    default: return (uint32_t)c->samplingRate;
+    }
+}
+static uint32_t h_Mp3GetMaxOutputSample(CpuState *s) { return mp3_format_value(A0, 0); }
+static uint32_t h_Mp3GetMp3ChannelNum(CpuState *s) { return mp3_format_value(A0, 1); }
+static uint32_t h_Mp3GetBitRate(CpuState *s) { return mp3_format_value(A0, 2); }
+static uint32_t h_Mp3GetSamplingRate(CpuState *s) { return mp3_format_value(A0, 3); }
+
+static uint32_t h_Mp3GetFrameNum(CpuState *s) {
+    uint32_t handle = A0;
+    Mp3Ctx *c = mp3_ctx(handle);
+    if (!c) return mp3_missing(handle, SCE_MP3_ERROR_NOT_YET_INIT_HANDLE);
+    if (c->version < 0 || !c->auBuf) return SCE_MP3_ERROR_NOT_YET_INIT_HANDLE;
+    return (uint32_t)c->frameNum;
+}
+
+/* Before sceMp3Init this reports UNRESERVED rather than NOT_YET_INIT; PPSSPP keeps that code
+ * from the hardware tests while noting it looks wrong. */
+static uint32_t h_Mp3GetMPEGVersion(CpuState *s) {
+    uint32_t handle = A0;
+    Mp3Ctx *c = mp3_ctx(handle);
+    if (!c) return mp3_missing(handle, SCE_MP3_ERROR_UNRESERVED_HANDLE);
+    if (c->version < 0) return SCE_MP3_ERROR_UNRESERVED_HANDLE;
+    if (!c->auBuf) return 0;
+    return (uint32_t)c->version;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test builds only: put the library back to its boot state between cases. */
+void sr_hle_test_mp3_reset(void) {
+    for (uint32_t i = 0; i < MP3_MAX_HANDLES; i++)
+        if (s_mp3[i].used) mp3_free(&s_mp3[i]);
+    s_mp3_resource_inited = 0;
+}
+/* Test builds only: the compiled SDK version libmp3 consults, set without a ThreadMan call. */
+void sr_hle_test_set_compiled_sdk_version(uint32_t version) {
+    (void)sr_sdkver_set(&g_sdk_version, version);
+}
 #endif
 
 /* sceUtility dialogs (savedata/msg). The public contract is a poll-driven status machine:
@@ -24198,6 +24671,38 @@ static void hle_register_ge_handlers(void) {
     sr_hle_register(0xdc93cfef, "sceGeGetCmd", h_GeGetCmd);
 }
 
+static void hle_register_mp3_handlers(void) {
+    /* sceMp3: the stream/handle lifecycle above. */
+    sr_hle_register(0x35750070u, "sceMp3InitResource", h_Mp3InitResource);
+    sr_hle_register(0x3c2fa058u, "sceMp3TermResource", h_Mp3TermResource);
+    sr_hle_register(0x07ec321au, "sceMp3ReserveMp3Handle", h_Mp3ReserveMp3Handle);
+    sr_hle_register(0xf5478233u, "sceMp3ReleaseMp3Handle", h_Mp3ReleaseMp3Handle);
+    sr_hle_register(0x44e07129u, "sceMp3Init", h_Mp3Init);
+    sr_hle_register(0xd021c0fbu, "sceMp3Decode", h_Mp3Decode);
+    sr_hle_register(0xd0a56296u, "sceMp3CheckStreamDataNeeded", h_Mp3CheckStreamDataNeeded);
+    sr_hle_register(0xa703fe0fu, "sceMp3GetInfoToAddStreamData", h_Mp3GetInfoToAddStreamData);
+    sr_hle_register(0x0db149f4u, "sceMp3NotifyAddStreamData", h_Mp3NotifyAddStreamData);
+    sr_hle_register(0x2a368661u, "sceMp3ResetPlayPosition", h_Mp3ResetPlayPosition);
+    sr_hle_register(0x0840e808u, "sceMp3ResetPlayPositionByFrame", h_Mp3ResetPlayPositionByFrame);
+    sr_hle_register(0x354d27eau, "sceMp3GetSumDecodedSample", h_Mp3GetSumDecodedSample);
+    sr_hle_register(0xd8f54a51u, "sceMp3GetLoopNum", h_Mp3GetLoopNum);
+    sr_hle_register(0x3cef484fu, "sceMp3SetLoopNum", h_Mp3SetLoopNum);
+    sr_hle_register(0x87c263d1u, "sceMp3GetMaxOutputSample", h_Mp3GetMaxOutputSample);
+    sr_hle_register(0x7f696782u, "sceMp3GetMp3ChannelNum", h_Mp3GetMp3ChannelNum);
+    sr_hle_register(0x87677e40u, "sceMp3GetBitRate", h_Mp3GetBitRate);
+    sr_hle_register(0x8f450998u, "sceMp3GetSamplingRate", h_Mp3GetSamplingRate);
+    sr_hle_register(0x3548aec8u, "sceMp3GetFrameNum", h_Mp3GetFrameNum);
+    sr_hle_register(0xae6d2027u, "sceMp3GetMPEGVersion", h_Mp3GetMPEGVersion);
+    /* Not modelled: the low-level pair works on caller-chosen handle numbers and an
+     * unestablished input/output contract (PPSSPP's version guesses a 4096-byte window), and
+     * the module entry points are not called by games. Refused by name with the non-kernel
+     * library code (SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED) rather than faked. */
+    sr_hle_register_unsupported(0x1b839b83u, "sceMp3LowLevelInit", 0x80010086u);
+    sr_hle_register_unsupported(0xe3ee2c81u, "sceMp3LowLevelDecode", 0x80010086u);
+    sr_hle_register_unsupported(0x8ab81558u, "sceMp3StartEntry", 0x80010086u);
+    sr_hle_register_unsupported(0x732b042au, "sceMp3EndEntry", 0x80010086u);
+}
+
 static void hle_register_atrac_handlers(void) {
     /* sceAtrac3plus (control flow only; silence output). */
     sr_hle_register(0x7a20e7af, "sceAtracSetDataAndGetID", h_AtracSetDataAndGetID);
@@ -24883,6 +25388,7 @@ void sr_hle_init(void) {
     hle_register_display_handlers();
 
     hle_register_atrac_handlers();
+    hle_register_mp3_handlers();
     hle_register_sas_handlers();
 #endif
     atomic_store_explicit(&s_hle_init_state, 2, memory_order_release);
