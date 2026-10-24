@@ -7,7 +7,9 @@ under `src/` that are marked GPL-2.0-or-later. It records what the project can
 establish about their origin and states plainly what it cannot.
 
 Related but separate manifests: `src/rt/atrac3p/PROVENANCE.md` (FFmpeg
-subset), `third_party/clay/PROVENANCE.md` (Clay), and
+subset), `third_party/clay/PROVENANCE.md` (Clay),
+`third_party/portable-snippets/PROVENANCE.md` (safe-math),
+`third_party/dr_libs/PROVENANCE.md` (dr_wav), and
 `assets/vfpu/PROVENANCE.json` (PPSSPP VFPU tables).
 
 ## Known gap (read this first)

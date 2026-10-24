@@ -1228,6 +1228,8 @@ SPDX_BYTE_EXACT_IMPORT_TREES = (
 
 SPDX_BYTE_EXACT_IMPORT_PATHS = frozenset({
     "third_party/clay/clay.h",
+    "third_party/dr_libs/dr_wav.h",
+    "third_party/portable-snippets/safe-math/safe-math.h",
 })
 
 # A small set of byte-exact FFmpeg headers already carry an SPDX identifier.

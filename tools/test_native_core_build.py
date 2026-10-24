@@ -54,6 +54,8 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/test_input_settings",
     "build/test_package_builder",
     "build/test_xb_parser",
+    "build/test_safe_math",
+    "build/test_pcm_wav_dump",
     "build/test_fuzz_parsers --iters 100",
     "build/mygame/psmf_producer_selftest --fuzz-iters 100",
     "build/test_input_profile",
