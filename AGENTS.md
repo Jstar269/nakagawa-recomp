@@ -143,10 +143,12 @@ subject to Section 2.
   entry in `docs/SETUP.md`, and an update to the egress allowlist test in
   `tools/test_prereq_fetcher.py`. The reserved `network_mode` setting accepts only `"offline"`,
   and a value a build does not know reads back as offline, never as something more permissive.
-- No feature sends game code, game data, decrypted modules, packages, saves or guest memory to
-  another machine; Game Sharing transfer stays out of scope. No telemetry: any upload is started
-  by the user. Tests never touch the internet. Network HLE stays fail-closed, and no network
-  setting makes a NID miss or refusal permissive.
+- A user may move their own packages and saves to their own devices, for example an Android phone
+  (maintainer decision, 2026-10-23); such a transfer is started by the user and goes directly to
+  their device, never through a server. No feature uploads game code, game data, decrypted
+  modules, packages, saves or guest memory to any server or third party, and nothing built from a
+  user's game is ever published or shared. No telemetry. Tests never touch the internet. Network
+  HLE stays fail-closed, and no network setting makes a NID miss or refusal permissive.
 
 ## 6. Correctness and evidence
 
