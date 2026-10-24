@@ -14,6 +14,29 @@ audit recorded in ``docs/archive/ISSUE196_DIRECT_XB.md``.  The implementation he
 source-owned and adds bounds, path containment, duplicate detection, and
 per-entry span checks that are intentionally stricter than the reference
 extractor.
+
+Stream framing
+--------------
+Every compressed stream, and the compressed string table, opens with an
+8-byte header: the expanded size, then a size field.  A size field of zero
+means the data was stored raw after the header.  Otherwise the field counts
+different things depending on the codec, and getting that wrong turns the next
+section's bytes into "trailing data":
+
+* **LZS** (and the string table): the field is the size of the whole stream
+  *including* its 8-byte header, so the LZS body is ``field - 8`` bytes.
+* **Huffman**: the field is the byte length of the bitstream only.  The code
+  table (a depth byte, one count byte per depth, and the symbols, padded to an
+  even length) sits between the header and the bitstream and is not counted, so
+  the stream occupies ``8 + table + field`` bytes.
+* **DEFLATE** (tag 0): a Huffman stream whose output is a complete LZS stream,
+  header included; the outer expanded size is that LZS stream's total size.
+
+The writer pads each stream to four bytes, so the span an FST offset pair
+delimits may carry up to three zero bytes after the stream.  The public
+libxb source (MIT, ``src/libxb/archives/implement.py`` and
+``src/libxb/core/compress.py``) reads streams by their own headers rather than
+by spans, which is why it accepts archives a span-checking reader refuses.
 """
 
 from __future__ import annotations
@@ -244,17 +267,22 @@ class _HuffmanSymbol:
     symbol: int
 
 
-def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits: XBLimits) -> bytes:
-    """Decode a bounded ClapHanz Huffman body."""
+def _read_huffman_table(
+    reader: _Reader, limits: XBLimits, *, build: bool
+) -> list[_HuffmanSymbol | None] | None:
+    """Read a Huffman code table, leaving ``reader`` at the first bitstream word.
 
-    if expanded_size <= 0 or expanded_size > limits.max_entry_bytes:
-        raise XBProbeError("invalid or oversized Huffman expanded size")
-    reader = _Reader(payload, endian)
+    ``build=False`` validates the table and finds its end without filling the
+    1024-entry lookup, which is all a span check needs.
+    """
+
     max_length = reader.u8("Huffman maximum depth")
     if max_length == 0 or max_length > limits.max_huffman_depth:
         raise XBProbeError("unsupported or invalid Huffman depth")
 
-    table: list[_HuffmanSymbol | None] = [None] * _HUF_TABLE_SIZE
+    table: list[_HuffmanSymbol | None] | None = (
+        [None] * _HUF_TABLE_SIZE if build else None
+    )
     code = 0
     length = 1
     code_count = 0
@@ -266,15 +294,16 @@ def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits
         for _ in range(code_num):
             if length <= _HUF_MAX_DEPTH and code >= (1 << length):
                 raise XBProbeError("oversubscribed Huffman table")
-            code_bits = code
-            index = 0
-            for _ in range(length):
-                index = (index << 1) | (code_bits & 1)
-                code_bits >>= 1
             symbol = reader.u8("Huffman symbol")
-            while index < _HUF_TABLE_SIZE:
-                table[index] = _HuffmanSymbol(length, symbol)
-                index += 1 << length
+            if table is not None:
+                code_bits = code
+                index = 0
+                for _ in range(length):
+                    index = (index << 1) | (code_bits & 1)
+                    code_bits >>= 1
+                while index < _HUF_TABLE_SIZE:
+                    table[index] = _HuffmanSymbol(length, symbol)
+                    index += 1 << length
             if length <= _HUF_MAX_DEPTH:
                 code += 1
         length += 1
@@ -282,6 +311,26 @@ def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits
 
     if reader.pos % 2:
         reader.read(1, "Huffman table alignment")
+    return table
+
+
+def _huffman_table_end(payload: bytes, start: int, endian: str, limits: XBLimits) -> int:
+    """Return the offset just past the code table of a Huffman stream."""
+
+    reader = _Reader(payload, endian)
+    reader.pos = start
+    _read_huffman_table(reader, limits, build=False)
+    return reader.pos
+
+
+def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits: XBLimits) -> bytes:
+    """Decode a bounded ClapHanz Huffman body (code table plus bitstream)."""
+
+    if expanded_size <= 0 or expanded_size > limits.max_entry_bytes:
+        raise XBProbeError("invalid or oversized Huffman expanded size")
+    reader = _Reader(payload, endian)
+    table = _read_huffman_table(reader, limits, build=True)
+    assert table is not None
 
     output = bytearray()
     bit_buffer = 0
@@ -329,8 +378,42 @@ def _decode_huffman_body(payload: bytes, expanded_size: int, endian: str, limits
                 bit_count -= 8
     except (IndexError, struct.error) as exc:
         raise XBProbeError("Huffman bitstream is malformed") from exc
+    _check_zero_padding(reader.data[reader.pos :].tobytes(), "Huffman bitstream")
     return bytes(output)
 
+
+
+def _frame_stream(
+    payload: bytes,
+    compression: XBCompression,
+    endian: str,
+    limits: XBLimits,
+) -> tuple[int, int, bytes, int]:
+    """Locate one framed stream at the start of ``payload``.
+
+    Returns ``(expanded_size, size_field, body, extent)`` where ``body`` is
+    what follows the 8-byte header and ``extent`` is the stream's total byte
+    length from the start of ``payload``.  See "Stream framing" in the module
+    docstring for what the size field counts.  ``payload`` may carry alignment
+    padding after the stream; the caller decides what to make of it.
+    """
+
+    if len(payload) < 8:
+        raise XBProbeError("compressed entry is missing its size header")
+    expanded_size, size_field = struct.unpack_from(endian + "II", payload)
+    if expanded_size <= 0 or expanded_size > limits.max_entry_bytes:
+        raise XBProbeError("invalid or oversized compressed expanded size")
+    if size_field == 0:
+        extent = 8 + expanded_size
+    elif compression is XBCompression.LZS:
+        if size_field <= 8:
+            raise XBProbeError("LZS size field does not cover its header and body")
+        extent = size_field
+    else:
+        extent = _huffman_table_end(payload, 8, endian, limits) + size_field
+    if extent > len(payload):
+        raise XBProbeError("compressed payload is truncated")
+    return expanded_size, size_field, payload[8:extent], extent
 
 
 def _decode_prefixed(
@@ -340,48 +423,40 @@ def _decode_prefixed(
     endian: str,
     limits: XBLimits,
 ) -> tuple[bytes, int]:
-    """Decode one file payload and return bytes plus its stored size."""
+    """Decode one file payload and return bytes plus the stream's extent.
 
-    if len(payload) < 8:
-        raise XBProbeError("compressed entry is missing its size header")
-    reader = _Reader(payload, endian)
-    expanded_size = reader.u32("compressed expanded size")
-    compressed_size = reader.u32("compressed payload size")
-    if expanded_size <= 0 or expanded_size > limits.max_entry_bytes:
-        raise XBProbeError("invalid or oversized compressed expanded size")
-    if compressed_size > reader.remaining():
-        raise XBProbeError("compressed payload is truncated")
-    if compressed_size == 0:
-        body = reader.read(expanded_size, "uncompressed fallback payload")
-        _check_zero_padding(reader.data[reader.pos :].tobytes(), "compressed entry")
-        stored_size = 8 + expanded_size
-    else:
-        body = reader.read(compressed_size, "compressed payload")
-        _check_zero_padding(reader.data[reader.pos :].tobytes(), "compressed entry")
-        stored_size = 8 + compressed_size
+    Bytes after the extent are not examined here.
+    """
+
+    expanded_size, size_field, body, extent = _frame_stream(
+        payload, compression, endian, limits
+    )
 
     if compression is XBCompression.LZS:
         if expanded_size != expected_size:
             raise XBProbeError("LZS expanded size disagrees with FST")
-        if compressed_size == 0:
-            if len(body) != expected_size:
-                raise XBProbeError("uncompressed LZS fallback has wrong size")
-            return body, stored_size
-        return _decode_lzs_body(body, expected_size, endian, limits), stored_size
+        if size_field == 0:
+            return body, extent
+        return _decode_lzs_body(body, expected_size, endian, limits), extent
 
     if compression is XBCompression.HUFFMAN:
         if expanded_size != expected_size:
             raise XBProbeError("Huffman expanded size disagrees with FST")
-        if compressed_size == 0:
-            if len(body) != expected_size:
-                raise XBProbeError("uncompressed Huffman fallback has wrong size")
-            return body, stored_size
-        return _decode_huffman_body(body, expected_size, endian, limits), stored_size
+        if size_field == 0:
+            return body, extent
+        return _decode_huffman_body(body, expected_size, endian, limits), extent
 
     if compression is XBCompression.DEFLATE:
-        intermediate = body if compressed_size == 0 else _decode_huffman_body(body, expanded_size, endian, limits)
-        result, _ = _decode_prefixed(intermediate, XBCompression.LZS, expected_size, endian, limits)
-        return result, stored_size
+        intermediate = (
+            body
+            if size_field == 0
+            else _decode_huffman_body(body, expanded_size, endian, limits)
+        )
+        result, inner_extent = _decode_prefixed(
+            intermediate, XBCompression.LZS, expected_size, endian, limits
+        )
+        _check_zero_padding(intermediate[inner_extent:], "nested LZS stream")
+        return result, extent
 
     raise XBProbeError(f"unsupported compression tag {compression!r}")
 
@@ -482,13 +557,14 @@ class XBArchiveReader:
         if entry.compression is XBCompression.NONE:
             data = payload[: entry.expanded_size]
         else:
-            data, _ = _decode_prefixed(
+            data, extent = _decode_prefixed(
                 payload,
                 entry.compression,
                 entry.expanded_size,
                 self.endian,
                 self.limits,
             )
+            _check_zero_padding(payload[extent:], "compressed entry")
         if len(data) != entry.expanded_size:
             raise XBProbeError("decoded entry size disagrees with FST")
         return data
@@ -549,7 +625,11 @@ class XBArchiveReader:
         else:
             if string_compressed > self.limits.max_string_table_bytes:
                 raise XBProbeError("oversized string-table compressed size")
-            compressed = reader.read(string_compressed, "compressed string table")
+            if string_compressed <= 8:
+                raise XBProbeError("string-table size field does not cover its header and body")
+            # The size field counts the 8-byte header it sits in (see "Stream
+            # framing"), so the LZS body is eight bytes shorter.
+            compressed = reader.read(string_compressed - 8, "compressed string table")
             table_data = _decode_lzs_body(compressed, string_expanded, self.endian, self.limits)
 
         table_reader = _Reader(table_data, self.endian)
@@ -608,21 +688,19 @@ class XBArchiveReader:
                     raise XBProbeError("raw FST entry is truncated")
                 _check_zero_padding(payload[stored_size:], "raw entry")
             else:
-                if len(payload) < 8:
-                    raise XBProbeError("compressed entry is missing its size header")
-                hdr_reader = _Reader(payload, self.endian)
-                hdr_expanded = hdr_reader.u32("compressed expanded size")
-                hdr_compressed = hdr_reader.u32("compressed payload size")
-                if hdr_expanded <= 0 or hdr_expanded > self.limits.max_entry_bytes:
-                    raise XBProbeError("invalid or oversized compressed expanded size")
-                if compression in (XBCompression.LZS, XBCompression.HUFFMAN) and hdr_expanded != expanded_size:
+                try:
+                    hdr_expanded, _, _, stored_size = _frame_stream(
+                        payload, compression, self.endian, self.limits
+                    )
+                except XBProbeError as exc:
+                    raise XBProbeError(
+                        f"compressed entry does not fit its FST span: {exc}"
+                    ) from exc
+                if (
+                    compression in (XBCompression.LZS, XBCompression.HUFFMAN)
+                    and hdr_expanded != expanded_size
+                ):
                     raise XBProbeError("compressed entry expanded size mismatch")
-                if hdr_compressed == 0:
-                    stored_size = 8 + hdr_expanded
-                else:
-                    stored_size = 8 + hdr_compressed
-                if stored_size > span_size:
-                    raise XBProbeError("compressed entry exceeds its FST span")
                 _check_zero_padding(payload[stored_size:], "compressed entry")
             total_expanded += expanded_size
             if total_expanded > self.limits.max_total_expanded_bytes:
