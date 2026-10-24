@@ -6177,7 +6177,7 @@ class HleIssuesProbeTests(unittest.TestCase):
                 self.assertEqual(row["hardware_evidence"], "NOT_RUN")
                 for absent in ("evidence_ref", "evidence_cases", "measurement_note"):
                     self.assertNotIn(absent, row)
-                self.assertIn("No hardware capture from a public commit exists yet",
+                self.assertIn("No acceptance-eligible capture exists",
                               row["evidence_note"])
                 self.assertIn("not in the campaign queue", row["evidence_note"])
                 self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
@@ -6320,13 +6320,14 @@ class HleIssuesProbeTests(unittest.TestCase):
 
     # ---- docs -----------------------------------------------------------------------------
 
-    def test_docs_list_both_cases_as_not_yet_run_from_a_public_commit(self) -> None:
+    def test_docs_list_both_cases_as_observed_but_not_acceptance_eligible(self) -> None:
         hardware = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
         readme = (self.fixture / "README.md").read_text(encoding="utf-8")
         for case, _cid, _stem, _macro, test_id, _log in self.CASES:
             with self.subTest(case=case):
-                self.assertIn(f"| `{case}` | `{test_id}` | `NOT_RUN` (not yet run from a public "
-                              "commit; single launch, not in the campaign queue) |", hardware)
+                self.assertIn(f"| `{case}` | `{test_id}` | `NOT_RUN` (observed 2026-10-24 from "
+                              "`da97b2c0` without a runner envelope, so not acceptance-eligible; "
+                              "single launch, not in the campaign queue) |", hardware)
                 self.assertIn(f"| `{case}` | `{test_id}` |", readme)
         self.assertIn("probe_hle_issues.c", readme)
 
