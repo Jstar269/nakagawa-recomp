@@ -281,6 +281,48 @@ def _computed_goto_words(index_def=0x30C3000C, inserted=(), la_low=0x24211030):
     return words
 
 
+class TestGprWrites(unittest.TestCase):
+    """The register-write decoder the bounded-goto match walks backwards with."""
+
+    def test_classes(self):
+        cases = {
+            0x0C000400: None,                  # jal
+            0x10400002: None,                  # beqz $v0
+            0x00200008: None,                  # jr $at
+            0x0040F809: None,                  # jalr $v0
+            0x45000002: None,                  # bc1f
+            0x0000000C: frozenset(),           # syscall
+            0x00850018: frozenset(),           # mult $a0, $a1
+            0x00000011: frozenset(),           # mthi $zero
+            0x00852021: frozenset({4}),        # addu $a0, $a0, $a1
+            0x00001810: frozenset({3}),        # mfhi $v1
+            0x30C3000C: frozenset({3}),        # andi $v1, $a2, 12
+            0x8C820000: frozenset({2}),        # lw $v0, 0($a0)
+            0xC0820000: frozenset({2}),        # ll $v0, 0($a0)
+            0xAC850000: frozenset(),           # sw $a1, 0($a0)
+            0xC4800000: frozenset(),           # lwc1 $f0, 0($a0)
+            0x44026000: frozenset({2}),        # mfc1 $v0, $f12
+            0x4442F800: frozenset({2}),        # cfc1 $v0, $31
+            0x44826000: frozenset(),           # mtc1 $v0, $f12
+            0x46000000: frozenset(),           # add.s
+            0x00801016: frozenset({2}),        # clz $v0, $a0 (SPECIAL on Allegrex)
+            0x70020024: "unknown",             # Allegrex mfic/mtic opcode space
+            0x7C8218C0: frozenset({2}),        # ext $v0, $a0, 3, 4
+            0x7C021420: frozenset({2}),        # seb $v0, $v0
+            0x7C02143B: "unknown",             # an unclassified SPECIAL3 form
+            0x48000000: "unknown",             # VFPU/COP2 transfer
+        }
+        for word, expected in cases.items():
+            with self.subTest(f"0x{word:08x}"):
+                self.assertEqual(analyze._gpr_writes(word), expected)
+
+    def test_unknown_or_unmapped_words_end_the_backward_walk(self):
+        words = {0x1000: 0x30C3000C, 0x1004: 0x48000000, 0x1008: 0x00000000}
+        self.assertIsNone(analyze._defining_word(FakeElf(words), 0x1000, 0x1008, 3))
+        sparse = FakeElf({0x1000: 0x30C3000C, 0x1008: 0x00000000})
+        self.assertIsNone(analyze._defining_word(sparse, 0x1000, 0x1008, 3))
+
+
 class TestBoundedComputedGoto(unittest.TestCase):
     PADS = {0x1024, 0x1028, 0x102C, 0x1030}
     RANGES = [(0x1000, 0x103C)]

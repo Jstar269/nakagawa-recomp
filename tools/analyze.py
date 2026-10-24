@@ -1003,8 +1003,6 @@ def _gpr_writes(word):
         if rs == 8:
             return None  # bc1
         return frozenset({rt}) if rs in (0, 2) else frozenset()  # mfc1/cfc1
-    if op == 0x1C:
-        return frozenset({rd})  # clz/clo and the other SPECIAL2 forms
     if op == 0x1F:
         funct = word & 0x3F
         if funct in (0x00, 0x04):
