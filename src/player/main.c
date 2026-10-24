@@ -1109,6 +1109,10 @@ static int player_ui_test_fail_title_index(const char *disc_id) {
     return -1;
 }
 
+/* The scripted pointer position, so a scripted click lands where it moved. */
+static float s_ui_test_mouse_x;
+static float s_ui_test_mouse_y;
+
 static int player_ui_test_next_event(const char *script, size_t *cursor,
                                     SDL_Event *event) {
     if (!script || !cursor || !event) return -1;
@@ -1264,12 +1268,19 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         event->type = SDL_EVENT_MOUSE_MOTION;
         event->motion.x = (float)x;
         event->motion.y = (float)y;
+        s_ui_test_mouse_x = (float)x;
+        s_ui_test_mouse_y = (float)y;
         return 1;
     }
     if (strcmp(token, "MOUSE_DOWN") == 0 || strcmp(token, "MOUSE_UP") == 0) {
+        /* As SDL reports a real click: at the pointer, with its button state. */
         event->type = strcmp(token, "MOUSE_DOWN") == 0
             ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
         event->button.button = SDL_BUTTON_LEFT;
+        event->button.down = event->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+        event->button.clicks = 1u;
+        event->button.x = s_ui_test_mouse_x;
+        event->button.y = s_ui_test_mouse_y;
         return 1;
     }
     if (strncmp(token, "KEY_", 4) == 0) {
@@ -2781,16 +2792,19 @@ int main(int argc, char *argv[]) {
        file, instead of the documented empty-library prompt. */
     bool populate_sample = false;
     bool force_empty = false;
-    bool ui_next_requested = false;
+    /* The next UI is the default. --ui=legacy (or NK_UI=legacy) keeps the
+       existing renderer for one release as the documented fallback; the
+       command line wins over the environment. */
+    bool ui_next_requested = true;
     const char *ui_environment = getenv("NK_UI");
-    if (ui_environment != NULL && strcmp(ui_environment, "next") == 0) {
-        ui_next_requested = true;
+    if (ui_environment != NULL && strcmp(ui_environment, "legacy") == 0) {
+        ui_next_requested = false;
     }
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nakagawa_player [--user-data-root=<folder>] "
-                   "[--ui=next] "
+                   "[--ui=next|--ui=legacy] "
                    "[--iso=<path> [--stage|--stage-only|--launch-now]] "
                    "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>] "
                    "[--launch-index=N] [--headless-launch] "
@@ -3546,7 +3560,7 @@ int main(int argc, char *argv[]) {
                                       ui_error, sizeof(ui_error));
         if (next_ui == NULL) {
             fprintf(stderr,
-                    "[PLAYER] The requested next UI could not start: %s. Keeping the existing player UI.\n",
+                    "[PLAYER] The next UI could not start: %s. Using the existing player UI.\n",
                     ui_error[0] != '\0' ? ui_error : "initialization failed");
             ui_next_requested = false;
         }

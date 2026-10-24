@@ -120,7 +120,7 @@ static void library_prompts(NkUi *ui, bool has_titles) {
     static const NkUiPromptItem empty[] = {
         {NK_UI_PROMPT_ACT_CONFIRM, "Select"}
     };
-    nk_ui_prompt_bar(ui, LIBRARY_ID_PROMPTS, "Bring your own game. Nothing is downloaded.",
+    nk_ui_prompt_bar(ui, LIBRARY_ID_PROMPTS, "",
                      has_titles ? with_titles : empty,
                      has_titles ? sizeof(with_titles) / sizeof(with_titles[0])
                                 : sizeof(empty) / sizeof(empty[0]));
@@ -156,12 +156,11 @@ static PlayerUiAction library_empty(NkUi *ui) {
             nk_ui_shapes(ui, LIBRARY_ID_EMPTY_ICON + 0x100u, sizing_grow(), sizing_grow(), &disc_art);
             nk_ui_end_container(ui);
         }
-        nk_ui_text_role(ui, LIBRARY_ID_EMPTY_TITLE, "Add a game you own",
+        nk_ui_text_role(ui, LIBRARY_ID_EMPTY_TITLE, "Add your first game",
                         NK_UI_TYPE_TITLE, theme->paper);
         nk_ui_text_role(ui, LIBRARY_ID_EMPTY_TEXT,
-                        "The setup wizard takes a decrypted disc image (.iso) of a PSP game you "
-                        "own, checks it, and gets it ready to play on this PC. No game data comes "
-                        "with the player.",
+                        "The setup wizard checks a decrypted disc image (.iso) of a PSP game you "
+                        "own and gets it ready to play on this PC.",
                         NK_UI_TYPE_BODY, theme->muted);
         {
             NkUiLayout actions = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
@@ -182,8 +181,7 @@ static PlayerUiAction library_empty(NkUi *ui) {
             }
         }
         nk_ui_text_role(ui, LIBRARY_ID_EMPTY_NOTE,
-                        "Or drop an .iso onto this window. Nothing is downloaded until you agree "
-                        "to fetch the build tools.",
+                        "Or drop an .iso onto this window.",
                         NK_UI_TYPE_CAPTION, theme->dim);
         nk_ui_end_container(ui);
     }
@@ -345,7 +343,7 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
                             }
                         } else if (nk_ui_add_tile(ui, PLAYER_UI_ID_LIBRARY_ADD,
                                                   "Add a disc image you own",
-                                                  "Choose an .iso. Nothing is downloaded.",
+                                                  "Choose an .iso file",
                                                   tile_width, tile_height)) {
                             result = action(PLAYER_UI_ACTION_ADD_DISC, 0u);
                         }

@@ -637,7 +637,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
 
     def run_launch(
         self, perf_csv: Path, *, accept_presented_frames: int | None = None,
-        headless_timeout_ms: int | None = None,
+        headless_timeout_ms: int | None = None, user_data_root: Path | None = None,
     ) -> subprocess.CompletedProcess:
         environment = os.environ.copy()
         environment["LOCALAPPDATA"] = str(self.local_appdata)
@@ -657,8 +657,10 @@ class TestPlayerPackageRoute(unittest.TestCase):
             environment["PATH"] = str(ucrt_bin) + os.pathsep + environment.get("PATH", "")
         arguments = [
             str(self.player), "--empty", "--launch-index=0", "--headless-launch",
-            f"--runtime-root={self.user_root}",
+            f"--runtime-root={user_data_root or self.user_root}",
         ]
+        if user_data_root is not None:
+            arguments.append(f"--user-data-root={user_data_root}")
         if accept_presented_frames is not None:
             arguments.append(
                 f"--headless-accept-presented-frames={accept_presented_frames}"
@@ -769,6 +771,9 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertEqual(manifest["executable"], expected_profile["manifest"]["executable"])
         self.assertEqual(manifest["modules"], [])
         self.assertNotIn("runtime_bindings", manifest)
+        # The disc is read through PSP_ISO; a declared data root would make the
+        # player refuse PLAY for a folder nothing creates.
+        self.assertEqual(manifest["filesystem"]["data_root"], "")
 
         identity = package_cache.read_local_title_input_identity(user_root, DISC_ID)
         self.assertIsNotNone(identity)
@@ -792,6 +797,18 @@ class TestPlayerPackageRoute(unittest.TestCase):
         )
         self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
         self.assertIn("PACKAGE_STATUS=OK", validated.stdout)
+
+        # PLAY, headless, through the player's own launch session, with the
+        # library in this user root. Nothing in a real import creates a data
+        # folder, so the one stage_library made for the native profile goes.
+        shutil.rmtree(user_root / "data", ignore_errors=True)
+        launched = self.run_launch(self.sandbox / "generic-perf.csv", user_data_root=user_root,
+                                   accept_presented_frames=FRAMES)
+        output = launched.stdout + launched.stderr
+        self.assertNotIn("needs its data folder", output)
+        self.assertIn("[PLAYER] Launch index 0: PLAY NOW available", launched.stdout, output[-4000:])
+        self.assertEqual(launched.returncode, 0, output[-4000:])
+        self.assertIn("HEADLESS_ACCEPTANCE status=PASS", launched.stdout)
         self.assertEqual(tracked_status(), before)
 
     def test_fixed_address_exec_outside_ram_has_named_builder_boundary(self):

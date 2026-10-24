@@ -260,9 +260,8 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
             {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
             {NK_UI_PROMPT_ACT_BACK, "Back"}
         };
-        nk_ui_prompt_bar(ui, TITLE_ID_PROMPTS,
-                         "Your disc stays on this PC. Nothing is copied out or uploaded.",
-                         prompts, sizeof(prompts) / sizeof(prompts[0]));
+        nk_ui_prompt_bar(ui, TITLE_ID_PROMPTS, "", prompts,
+                         sizeof(prompts) / sizeof(prompts[0]));
     }
     nk_ui_end_container(ui);
     return result;
@@ -594,11 +593,19 @@ PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model)
     const NkUiTheme *theme;
     PlayerUiAction result = action(PLAYER_UI_ACTION_NONE, 0u, PLAYER_UI_PRIMARY_NONE);
     float inner;
+    float height = model != NULL && model->logical_height > 80.0f ? model->logical_height : 800.0f;
+    bool has_details = model != NULL && model->details != NULL && model->details[0] != '\0';
+    int detail_lines;
     if (ui == NULL || model == NULL) return result;
     theme = nk_ui_theme(ui);
+    /* A details box (a path list, a boundary) gets a wider card, and every 16 px
+       of height past the 540 px minimum window buys one more line of it, so the
+       fix it names is not cut off. */
     inner = flow_begin(ui, model->logical_width > 80.0f ? model->logical_width : 1280.0f,
-                       model->logical_height > 80.0f ? model->logical_height : 800.0f, 700.0f);
+                       height, has_details ? 880.0f : 700.0f);
     if (inner <= 0.0f) return result;
+    detail_lines = 6 + (height > 540.0f ? (int)((height - 540.0f) / 16.0f) : 0);
+    if (detail_lines > 16) detail_lines = 16;
     flow_eyebrow(ui, FLOW_MARK_CROSS, safe_text(model->badge, "Error"), theme->error);
     nk_ui_text_role(ui, FLOW_ID_TITLE, safe_text(model->title, "Something went wrong"),
                     NK_UI_TYPE_TITLE, theme->paper);
@@ -622,7 +629,8 @@ PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model)
             if (model->details != NULL && model->details[0] != '\0') {
                 nk_ui_eyebrow(ui, FLOW_ID_DETAILS + 1u, "Details");
                 nk_ui_text(ui, FLOW_ID_DETAILS + 2u,
-                           nk_ui_text_clamp(ui, model->details, &data, inner - 28.0f, 6), &data);
+                           nk_ui_text_clamp(ui, model->details, &data, inner - 28.0f,
+                                            detail_lines), &data);
             }
             if (model->log_path != NULL && model->log_path[0] != '\0') {
                 char log[600];
@@ -734,8 +742,9 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
                 nk_ui_end_container(ui);
             }
             nk_ui_text_role(ui, ABOUT_ID_LEAD,
-                            "A PSP static recompiler: your own game, recompiled to run natively "
-                            "on your PC. Nothing is downloaded, and no game data is included.",
+                            "A PSP static recompiler: your own game, recompiled to run natively. "
+                            "Your games stay on this PC. Nakagawa never uploads "
+                            "anything, and downloads only the build tools you approve.",
                             NK_UI_TYPE_BODY_L, theme->muted);
             row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_4);
             if (nk_ui_begin_container(ui, ABOUT_ID_CARDS, &row, NULL)) {
@@ -767,7 +776,7 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
             }
             nk_ui_text_role(ui, ABOUT_ID_NOTICE,
                             "Not affiliated with or endorsed by Sony Interactive Entertainment. "
-                            "PSP is a trademark of its owner.",
+                            "PSP is a trademark of its owner. No game data is included.",
                             NK_UI_TYPE_CAPTION, theme->muted);
             nk_ui_text_role(ui, ABOUT_ID_LINK, "github.com/Jstar269/nakagawa-recomp",
                             NK_UI_TYPE_DATA, theme->paper);
@@ -786,9 +795,8 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
             {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
             {NK_UI_PROMPT_ACT_BACK, "Back"}
         };
-        nk_ui_prompt_bar(ui, ABOUT_ID_PROMPTS,
-                         "Nakagawa Recomp is free software under the GNU GPL.",
-                         prompts, sizeof(prompts) / sizeof(prompts[0]));
+        nk_ui_prompt_bar(ui, ABOUT_ID_PROMPTS, "", prompts,
+                         sizeof(prompts) / sizeof(prompts[0]));
     }
     nk_ui_end_container(ui);
     return result;
