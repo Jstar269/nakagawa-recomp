@@ -224,6 +224,30 @@ HANDLER_METADATA = {
         ],
         "limitation": "returns the float of the retained bus clock in $f0: the 111.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001, PSP-HLE-POWER-002), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured; $v0 is 0, a runtime choice: PSP-HLE-POWER-002 read a different word in $v0 after each call, neither 0 nor the clock, which is not modelled",
     },
+    "h_PowerSetCpuClockFrequency": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_psp_measured_cpu_clock_user_mode_20261024",
+            "hardware measurement 2026-10-24, PSP-3000 6.61 user mode at PLL 222 (1 and 222 accepted; 0, 333, 334 and 223 refused with 0x800001fe)",
+        ],
+        "limitation": "accepts 1..retained PLL and refuses the rest with 0x800001fe, measured only at PLL 222; the clock the getters report after an accepted request is the retained request, not measured",
+    },
+    "h_PowerGetBatteryLifeTime": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_psp_measured_power_battery_20261024",
+            "hardware measurement 2026-10-24, PSP-3000 6.61 (0 on AC; 376 minutes on battery)",
+        ],
+        "limitation": "reports the two measured samples for the modeled power source (external power by default); no discharge model",
+    },
+    "h_PowerGetBatteryChargingStatus": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_psp_measured_power_battery_20261024",
+            "hardware measurement 2026-10-24, PSP-3000 6.61 (0 on AC with a full battery and on battery)",
+        ],
+        "limitation": "reports the modeled charging state, measured 0 on AC with a full battery and on battery; the status of a charging battery is not measured",
+    },
     "h_KernelDevkitVersion": {
         "status": "partial",
         "evidence": [
@@ -393,11 +417,19 @@ HANDLER_METADATA = {
         "limitation": "concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)",
     },
     # This returns no error while the virtual ISO-backed UMD model reports its
-    # always-ready PRESENT|READY|READABLE state. Other drive-error states remain
-    # outside the modeled contract.
+    # disc present (activated 0x32 or deactivated 0x12). Other drive-error states
+    # remain outside the modeled contract.
     "h_UmdGetErrorStat": {
         "status": "compatibility",
-        "limitation": "returns no error under virtual ISO drive; other drive-error states unmodeled (#341)",
+        "limitation": "returns no error while the virtual ISO disc is present, activated or not; the deactivated drive's error stat and other drive-error states are unmodeled (#341)",
+    },
+    "h_UmdDeactivate": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_psp_measured_umd_state_20261024",
+            "hardware measurement 2026-10-24, PSP-3000 6.61 (drive state 0x32 at entry, 0x12 after sceUmdDeactivate)",
+        ],
+        "limitation": "moves the modeled drive to the measured deactivated state 0x12; its own return value (0) and argument checks are not hardware measured",
     },
     "h_UmdUnRegisterUMDCallBack": {
         "status": "partial",
@@ -841,6 +873,14 @@ HANDLER_METADATA = {
             "public PSPSDK contract (psprtc.h: sceRtcSetTick, 0 on success, <0 on error)",
             "PSPAutotests tests/rtc/convert.expected (checkSetTick: 835072 -> 0001-01-01, 62135596800000000 -> 1970-01-01)",
         ],
+    },
+    "h_RtcGetTime64_t": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_psp_measured_rtc_time64_20261024",
+            "hardware measurement 2026-10-24, PSP-3000 6.61 (valid dates convert; year 1 and pre-1970 dates return 0x800001fe; month 13, day 32, Feb 30 and hour 24 return 0 and normalise; NULL output returns 0; NULL date faults inside the module)",
+        ],
+        "limitation": "out-of-range fields normalise by calendar carry, whose exact seconds are this arithmetic rather than measured; year 0, month 0 and day 0 are refused with 0x800001fe and a refusal leaves the output unwritten, both unmeasured; a NULL or unreadable date and an unwritable non-NULL output take the HLE guest-fault stop",
     },
     "h_RtcGetWin32FileTime": {
         "status": "partial",

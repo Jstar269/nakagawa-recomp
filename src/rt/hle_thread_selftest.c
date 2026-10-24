@@ -243,6 +243,11 @@ extern void sr_hle_test_hprm_set_remote(int attached);
 extern void sr_hle_test_hprm_set_headphone(int attached);
 extern void sr_hle_test_hprm_set_microphone(int attached);
 extern void sr_hle_test_power_set_low_battery(int low);
+extern void sr_hle_test_power_set_external(int external);
+extern void sr_hle_test_umd_reset(void);
+extern uint32_t sr_hle_test_guest_fault_count(void);
+extern uint32_t sr_hle_test_guest_fault_addr(void);
+extern void sr_hle_test_guest_fault_reset(void);
 extern uint32_t sr_vblank_handler(void);
 uint32_t sr_vblank_no(void);
 uint32_t sr_vblank_arg(void);
@@ -7004,6 +7009,208 @@ static void test_umd_replace_permission_and_disc_info(void) {
     cpu.r[4] = 0u;
     expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0x80010016u,
            "sceUmdGetDiscInfo refuses a null record");
+}
+
+static uint32_t td24b_dispatch4(uint32_t nid, uint32_t a0, uint32_t a1,
+                                uint32_t a2, uint32_t a3);
+
+/* Physical PSP measurements, PSP-3000 firmware 6.61, 2026-10-24: the power and battery
+ * getters on AC and on battery, user-mode scePowerSetCpuClockFrequency, sceRtcGetTime64_t
+ * and the UMD drive state across sceUmdDeactivate. Every leg dispatches the production
+ * mapping through sr_syscall. */
+static void test_psp_measured_power_battery_20261024(void) {
+    enum {
+        NID_POWER_IS_ONLINE = 0x87440f5eu,
+        NID_POWER_BATTERY_EXIST = 0x0afd0d8bu,
+        NID_POWER_CHARGING = 0x1e490401u,
+        NID_POWER_CHARGING_STATUS = 0xb4432bc8u,
+        NID_POWER_PERCENT = 0x2085d15du,
+        NID_POWER_LOW = 0xd3075926u,
+        NID_POWER_LIFE_TIME = 0x8efb3fa2u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(NID_POWER_CHARGING_STATUS) &&
+               sr_hle_test_is_registered(NID_POWER_LIFE_TIME),
+           "scePowerGetBatteryChargingStatus and scePowerGetBatteryLifeTime are registered");
+
+    /* On AC, battery full: online 1, exists 1, charging 0, status 0, 96 %, low 0, life time 0. */
+    expect(td24b_dispatch4(NID_POWER_IS_ONLINE, 0u, 0u, 0u, 0u) == 1u,
+           "on AC scePowerIsPowerOnline reports 1 (measured)");
+    expect(td24b_dispatch4(NID_POWER_BATTERY_EXIST, 0u, 0u, 0u, 0u) == 1u,
+           "on AC scePowerIsBatteryExist reports 1 (measured)");
+    expect(td24b_dispatch4(NID_POWER_CHARGING, 0u, 0u, 0u, 0u) == 0u,
+           "on AC with a full battery scePowerIsBatteryCharging reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_CHARGING_STATUS, 0u, 0u, 0u, 0u) == 0u,
+           "on AC scePowerGetBatteryChargingStatus reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_PERCENT, 0u, 0u, 0u, 0u) == 96u,
+           "on AC scePowerGetBatteryLifePercent reports the measured 96");
+    expect(td24b_dispatch4(NID_POWER_LOW, 0u, 0u, 0u, 0u) == 0u,
+           "on AC scePowerIsLowBattery reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_LIFE_TIME, 0u, 0u, 0u, 0u) == 0u,
+           "on AC scePowerGetBatteryLifeTime reports 0 (measured)");
+
+    /* On battery: online 0, exists 1, charging 0, status 0, 93 %, low 0, life time 376 minutes. */
+    sr_hle_test_power_set_external(0);
+    expect(td24b_dispatch4(NID_POWER_IS_ONLINE, 0u, 0u, 0u, 0u) == 0u,
+           "on battery scePowerIsPowerOnline reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_BATTERY_EXIST, 0u, 0u, 0u, 0u) == 1u,
+           "on battery scePowerIsBatteryExist reports 1 (measured)");
+    expect(td24b_dispatch4(NID_POWER_CHARGING, 0u, 0u, 0u, 0u) == 0u,
+           "on battery scePowerIsBatteryCharging reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_CHARGING_STATUS, 0u, 0u, 0u, 0u) == 0u,
+           "on battery scePowerGetBatteryChargingStatus reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_PERCENT, 0u, 0u, 0u, 0u) == 93u,
+           "on battery scePowerGetBatteryLifePercent reports the measured 93");
+    expect(td24b_dispatch4(NID_POWER_LOW, 0u, 0u, 0u, 0u) == 0u,
+           "on battery scePowerIsLowBattery reports 0 (measured)");
+    expect(td24b_dispatch4(NID_POWER_LIFE_TIME, 0u, 0u, 0u, 0u) == 376u,
+           "on battery scePowerGetBatteryLifeTime reports the measured 376 minutes");
+    sr_hle_test_power_set_external(1);
+}
+
+static void test_psp_measured_cpu_clock_user_mode_20261024(void) {
+    enum { NID_POWER_SET_CPU_CLOCK = 0x843fbf43u, NID_POWER_GET_CPU_INT = 0xfdb5bfe9u };
+    static const uint32_t refused[] = { 0u, 333u, 334u, 223u /* PLL + 1 */, 0xffffffffu };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+    expect(sr_hle_test_is_registered(NID_POWER_SET_CPU_CLOCK),
+           "scePowerSetCpuClockFrequency is registered");
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        char what[96];
+        snprintf(what, sizeof(what),
+                 "scePowerSetCpuClockFrequency(%u) is refused with 0x800001FE at PLL 222", refused[i]);
+        expect(td24b_dispatch4(NID_POWER_SET_CPU_CLOCK, refused[i], 0u, 0u, 0u) == 0x800001feu, what);
+        expect(td24b_dispatch4(NID_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 222u,
+               "a refused CPU clock request leaves the retained CPU clock unchanged");
+    }
+    expect(td24b_dispatch4(NID_POWER_SET_CPU_CLOCK, 1u, 0u, 0u, 0u) == 0u,
+           "scePowerSetCpuClockFrequency(1) is accepted (measured)");
+    expect(td24b_dispatch4(NID_POWER_SET_CPU_CLOCK, 222u, 0u, 0u, 0u) == 0u,
+           "scePowerSetCpuClockFrequency(222) is accepted (measured)");
+    expect(td24b_dispatch4(NID_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 222u,
+           "the accepted request is the CPU clock the getter reports");
+    sr_hle_test_power_reset();
+}
+
+static void test_psp_measured_rtc_time64_20261024(void) {
+    enum {
+        NID_RTC_GET_TIME64 = 0xe1c93e47u,
+        DATE = 0x00200200u,
+        TIME_OUT = 0x00200210u,
+    };
+    static const struct {
+        uint16_t year, month, day, hour, minute, second;
+        uint32_t usec;
+        uint32_t result;
+        uint64_t seconds;
+        const char *what;
+    } cases[] = {
+        { 1970, 1, 1, 0, 0, 0, 0u, 0u, 0ull, "the epoch converts to 0" },
+        { 2000, 1, 1, 0, 0, 0, 0u, 0u, 946684800ull, "2000-01-01 converts" },
+        { 2026, 10, 24, 2, 1, 0, 999999u, 0u, 1792807260ull,
+          "a valid date converts, the microseconds dropped" },
+        { 2025, 13, 1, 0, 0, 0, 0u, 0u, 1767225600ull,
+          "month 13 is not rejected and normalises into January of the next year" },
+        { 2026, 1, 32, 0, 0, 0, 0u, 0u, 1769904000ull,
+          "day 32 is not rejected and normalises into the next month" },
+        { 2026, 2, 30, 0, 0, 0, 0u, 0u, 1772409600ull,
+          "February 30 is not rejected and normalises into March" },
+        { 2026, 1, 1, 24, 0, 0, 0u, 0u, 1767312000ull,
+          "hour 24 is not rejected and normalises into the next day" },
+        { 1, 1, 1, 0, 0, 0, 0u, 0x800001feu, 0ull, "year 1 is refused with 0x800001FE" },
+        { 1969, 12, 31, 23, 59, 59, 0u, 0x800001feu, 0ull,
+          "a date before the epoch is refused with 0x800001FE" },
+    };
+    reset_fixture();
+    sr_hle_init();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_hle_test_is_registered(NID_RTC_GET_TIME64), "sceRtcGetTime64_t is registered");
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        MEM_W16(DATE + 0u, cases[i].year); MEM_W16(DATE + 2u, cases[i].month);
+        MEM_W16(DATE + 4u, cases[i].day); MEM_W16(DATE + 6u, cases[i].hour);
+        MEM_W16(DATE + 8u, cases[i].minute); MEM_W16(DATE + 10u, cases[i].second);
+        MEM_W32(DATE + 12u, cases[i].usec);
+        MEM_W32(TIME_OUT, 0xDEADBEEFu); MEM_W32(TIME_OUT + 4u, 0xDEADBEEFu);
+        cpu.r[4] = DATE; cpu.r[5] = TIME_OUT;
+        expect(sr_syscall(&cpu, NID_RTC_GET_TIME64) == cases[i].result, cases[i].what);
+        expect(selftest_guest_u64(TIME_OUT) ==
+                   (cases[i].result == 0u ? cases[i].seconds : 0xDEADBEEFDEADBEEFull),
+               cases[i].result == 0u ? "sceRtcGetTime64_t writes the seconds since 1970"
+                                     : "a refused date leaves the output untouched");
+    }
+
+    /* A NULL output pointer returns 0 without a fault. */
+    MEM_W16(DATE + 0u, 2026u); MEM_W16(DATE + 2u, 10u); MEM_W16(DATE + 4u, 24u);
+    MEM_W16(DATE + 6u, 0u); MEM_W16(DATE + 8u, 0u); MEM_W16(DATE + 10u, 0u);
+    MEM_W32(DATE + 12u, 0u);
+    sr_hle_test_guest_fault_reset();
+    cpu.r[4] = DATE; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_RTC_GET_TIME64) == 0u && sr_hle_test_guest_fault_count() == 0u,
+           "sceRtcGetTime64_t with a NULL output returns 0 without a fault (measured)");
+
+    /* A NULL date pointer faults inside the PSP module: the runtime takes the guest-fault
+     * stop, never a quiet error code. */
+    cpu.r[4] = 0u; cpu.r[5] = TIME_OUT;
+    MEM_W32(TIME_OUT, 0xDEADBEEFu); MEM_W32(TIME_OUT + 4u, 0xDEADBEEFu);
+    (void)sr_syscall(&cpu, NID_RTC_GET_TIME64);
+    expect(sr_hle_test_guest_fault_count() == 1u && sr_hle_test_guest_fault_addr() == 0u,
+           "sceRtcGetTime64_t with a NULL date takes the guest-fault stop at address 0 (measured fault)");
+    expect(selftest_guest_u64(TIME_OUT) == 0xDEADBEEFDEADBEEFull,
+           "the faulting call writes no output");
+    sr_hle_test_guest_fault_reset();
+}
+
+static void test_psp_measured_umd_state_20261024(void) {
+    enum {
+        NID_UMD_ACTIVATE = 0xc6183d47u,
+        NID_UMD_DEACTIVATE = 0xe83742bau,
+        NID_UMD_GET_DRIVE_STAT = 0x6b4a146cu,
+        NID_UMD_WAIT_DRIVE_STAT = 0x8ef08fceu,
+        NID_UMD_GET_DISC_INFO = 0x340b7686u,
+        INFO = ORACLE_CALLBACK_NAME + 0x200u,
+        UMD_READY = 0x20u,
+    };
+    static const uint32_t bad_sizes[] = { 0u, 12u };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_umd_reset();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_hle_test_is_registered(NID_UMD_DEACTIVATE) &&
+               sr_hle_test_is_registered(NID_UMD_GET_DRIVE_STAT),
+           "sceUmdDeactivate and sceUmdGetDriveStat are registered");
+    expect(sr_syscall(&cpu, NID_UMD_GET_DRIVE_STAT) == 0x32u,
+           "the drive state at entry is the measured 0x32");
+    cpu.r[4] = 1u; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_UMD_DEACTIVATE) == 0u,
+           "sceUmdDeactivate returns 0");
+    expect(sr_syscall(&cpu, NID_UMD_GET_DRIVE_STAT) == 0x12u,
+           "after sceUmdDeactivate the drive state is the measured 0x12");
+    cpu.r[4] = 1u; cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_UMD_ACTIVATE) == 0u &&
+               sr_syscall(&cpu, NID_UMD_GET_DRIVE_STAT) == 0x32u,
+           "sceUmdActivate returns 0 and the drive reports 0x32 again");
+    cpu.r[4] = UMD_READY;
+    expect(sr_syscall(&cpu, NID_UMD_WAIT_DRIVE_STAT) == 0u,
+           "sceUmdWaitDriveStat for READY returns 0 on the activated drive (measured)");
+
+    /* sceUmdGetDiscInfo: size 8 returns 0 and type 0x10; size 0 and 12 return 0x80010016. */
+    for (size_t i = 0; i < sizeof(bad_sizes) / sizeof(bad_sizes[0]); i++) {
+        sr_w32(INFO, bad_sizes[i]);
+        sr_w32(INFO + 4u, 0xffffffffu);
+        cpu.r[4] = INFO;
+        expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0x80010016u &&
+                   sr_r32(INFO + 4u) == 0xffffffffu,
+               "sceUmdGetDiscInfo refuses a size other than 8 with 0x80010016 (measured 0 and 12)");
+    }
+    sr_w32(INFO, 8u);
+    cpu.r[4] = INFO;
+    expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0u && sr_r32(INFO + 4u) == 0x10u,
+           "sceUmdGetDiscInfo with size 8 returns 0 and type 0x10 (measured)");
+    sr_hle_test_umd_reset();
 }
 
 static void test_umd_unregister_callback(void) {
@@ -30998,6 +31205,10 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_usec_sysclock_conversions();
     test_umd_unregister_callback();
     test_umd_replace_permission_and_disc_info();
+    test_psp_measured_power_battery_20261024();
+    test_psp_measured_cpu_clock_user_mode_20261024();
+    test_psp_measured_rtc_time64_20261024();
+    test_psp_measured_umd_state_20261024();
     test_unregistered_batch_ctrl_sampling_getter();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
