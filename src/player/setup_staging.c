@@ -271,6 +271,8 @@ static bool discard_child_path_wide(const WCHAR *parent_path, const WCHAR *name,
 }
 
 static bool discard_directory_wide(HANDLE directory, const WCHAR *directory_path);
+static bool discard_entry_path_wide(const WCHAR *child_path,
+                                    const FILE_ID_BOTH_DIR_INFO *entry);
 
 static bool discard_entry_wide(const WCHAR *directory_path,
                                const FILE_ID_BOTH_DIR_INFO *entry) {
@@ -282,11 +284,24 @@ static bool discard_entry_wide(const WCHAR *directory_path,
         return true;
     }
 
-    WCHAR child_path[32768];
+    /* Each directory level holds its child path and its enumeration buffer.
+     * On the stack those were 128 KiB per level, so an archive disc's
+     * thirteen-level staging tree overflowed the 1 MiB thread stack
+     * (0xC00000FD) while the staging transaction discarded it. */
+    WCHAR *child_path = (WCHAR *)malloc(32768u * sizeof(WCHAR));
+    if (!child_path) return false;
     if (!discard_child_path_wide(directory_path, entry->FileName, name_length,
-                                 child_path, sizeof(child_path) / sizeof(child_path[0]))) {
+                                 child_path, 32768u)) {
+        free(child_path);
         return false;
     }
+    bool result = discard_entry_path_wide(child_path, entry);
+    free(child_path);
+    return result;
+}
+
+static bool discard_entry_path_wide(const WCHAR *child_path,
+                                    const FILE_ID_BOTH_DIR_INFO *entry) {
 
     /* The directory is enumerated through its handle. Opening the name again
      * is only a way to obtain a delete handle on Win32, so bind that handle to
@@ -318,28 +333,44 @@ static bool discard_entry_wide(const WCHAR *directory_path,
     return discard_delete_handle_wide(child);
 }
 
+#define DISCARD_ENUMERATION_BYTES (64u * 1024u)
+
 static bool discard_directory_wide(HANDLE directory, const WCHAR *directory_path) {
     if (!directory || !directory_path) return false;
-    BYTE buffer[64 * 1024];
+    /* Heap, not stack: see discard_entry_wide. The buffer is 8-byte aligned
+     * by malloc, as FILE_ID_BOTH_DIR_INFO requires. */
+    BYTE *buffer = (BYTE *)malloc(DISCARD_ENUMERATION_BYTES);
+    if (!buffer) return false;
+    bool result = false;
     for (;;) {
         if (!GetFileInformationByHandleEx(directory, FileIdBothDirectoryInfo,
-                                           buffer, sizeof(buffer))) {
+                                           buffer, DISCARD_ENUMERATION_BYTES)) {
             DWORD error = GetLastError();
-            return error == ERROR_NO_MORE_FILES;
+            result = error == ERROR_NO_MORE_FILES;
+            break;
         }
 
         BYTE *cursor = buffer;
+        bool entries_ok = true;
         for (;;) {
             const FILE_ID_BOTH_DIR_INFO *entry = (const FILE_ID_BOTH_DIR_INFO *)cursor;
-            if (!discard_entry_wide(directory_path, entry)) return false;
+            if (!discard_entry_wide(directory_path, entry)) {
+                entries_ok = false;
+                break;
+            }
             if (entry->NextEntryOffset == 0) break;
-            if (entry->NextEntryOffset >= sizeof(buffer) ||
-                entry->NextEntryOffset > sizeof(buffer) - (size_t)(cursor - buffer)) {
-                return false;
+            if (entry->NextEntryOffset >= DISCARD_ENUMERATION_BYTES ||
+                entry->NextEntryOffset >
+                    DISCARD_ENUMERATION_BYTES - (size_t)(cursor - buffer)) {
+                entries_ok = false;
+                break;
             }
             cursor += entry->NextEntryOffset;
         }
+        if (!entries_ok) break;
     }
+    free(buffer);
+    return result;
 }
 
 static bool discard_tree_wide(const WCHAR *path) {
