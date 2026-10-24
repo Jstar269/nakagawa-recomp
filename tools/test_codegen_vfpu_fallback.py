@@ -81,9 +81,6 @@ int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && 
         cases = (
             (0x01, 0x00, "vrnds"),
             (0x01, 0x02, "vrndf1"),
-            (0x02, 0x02, "vbfy1"),
-            (0x02, 0x0A, "vsgn"),
-            (0x02, 0x19, "vt4444"),
         )
         for rs, rt, name in cases:
             word = (0x34 << 26) | (rs << 21) | (rt << 16)
@@ -95,6 +92,27 @@ int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && 
                 self.assertIn(f"sr_vfpu_interp(s,0x{word:08x}u)", line)
                 self.assertIn("SR_VFPU_OTHER", line)
                 self.assertIn("VFPU_UNSUPPORTED", line)
+                self.assertIn("issue=326", line)
+                self.assertIn("return;", line)
+
+    def test_measured_vfpu9_forms_route_to_the_interpreter(self):
+        # vsgn, vbfy1, vbfy2 and vt4444 follow the 2026-10-24 PSP-3000 measurement
+        # (issue #326), implemented once in sr_vfpu_interp. The AOT routes exactly
+        # the widths the interpreter accepts and raises Unsupported for the rest.
+        routed = (0xD04A0405, 0xD04A0020, 0xD04A8080, 0xD0420183, 0xD0428080,
+                  0xD0438183, 0xD0599090)
+        for word in routed:
+            with self.subTest(word=f"0x{word:08x}"):
+                body, saddr, ssize = codegen.vfpu_effect(0x3400, word)
+                self.assertEqual((saddr, ssize), (None, 0))
+                self.assertIn("s->pc=0x00003400u", body)
+                self.assertIn(f"sr_vfpu_interp(s,0x{word:08x}u)", body)
+                self.assertIn("VFPU_UNSUPPORTED", body)
+        for word in (0xD0420000, 0xD0428000, 0xD0430080, 0xD0590080, 0xD0598000):
+            with self.subTest(word=f"0x{word:08x}"):
+                with self.assertRaises(codegen.Unsupported):
+                    codegen.vfpu_effect(0x3400, word)
+                line = codegen.normal_line(0x3400, word)
                 self.assertIn("issue=326", line)
                 self.assertIn("return;", line)
 
