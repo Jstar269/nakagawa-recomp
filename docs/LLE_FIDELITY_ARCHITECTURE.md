@@ -110,9 +110,16 @@ ahead of time without a load address and laid out only when the game loads it
   BSS, binds the translation at that base and registers the module's exports. The
   bound image is the only dispatch and fetch authority for its range.
 - **Lifecycle.** `module_start` and `module_stop` run with the module's own `$gp`;
-  `sceKernelUnloadModule` unbinds the translation (dispatch, fetch authority and
-  stale-code records), unlinks the exports and frees the memory, so a module later
-  placed at the same addresses never meets this one's code.
+  `module_start` still runs as a nested call, while `module_stop` runs on a
+  scheduler-managed guest thread with copied `arglen`/`argp`. The stop thread uses
+  the synthetic scheduler defaults; nonzero stop options fail closed. Stop keeps the
+  image and export authority loaded. Unload unbinds dispatch/fetch authority and stale
+  code, unlinks exports and imports, and frees the image. PSP-3000 measurement #1106
+  shows module-owned waiters and kernel objects can survive unload, so they remain
+  intact; a ready/running continuation into the image is refused with a named
+  synthetic `NOT_IMPLEMENTED` result. `sceKernelSelfStopUnloadModule` runs the same
+  stop path and retires its caller's image only after the caller thread exits; its
+  accepted argument form is synthetic pending hardware measurement.
 - **Memory policy.** Nothing is reserved for modules at build time and modules need
   not fit together; a main image must lie inside user memory, and a load the
   partition cannot hold fails at run time with `SCE_KERNEL_ERROR_NO_MEMORY`.
@@ -123,13 +130,14 @@ ahead of time without a load address and laid out only when the game loads it
   `SCE_KERNEL_ERROR_NOTIMP` and a `GUEST_MODULE_BOUNDARY` line.
 
 Remaining work on this path: `module_start` runs as a nested call on the caller's
-thread rather than in its own thread, start/stop statuses other than 0 are not
-acted on, one translation binds one live image, `PSP_SMEM_High` and fixed
-`PSP_SMEM_Addr` module placement are not modelled, and the runtime's thread stacks
-and nested-call frames occupy a fixed region near the top of user memory instead
-of partition blocks, so the allocator neither counts nor avoids them. The same
-machinery is the groundwork for late PRX user-memory bases and for
-`sceKernelLoadExec`.
+thread rather than in its own thread, module entry return values have no broader
+start-state policy beyond the stop status output, one translation binds one live
+image, `PSP_SMEM_High` and fixed `PSP_SMEM_Addr` module placement are not modelled,
+and the runtime's thread stacks and nested-call frames occupy a fixed region near
+the top of user memory instead of partition blocks, so the allocator neither
+counts nor avoids them. Package-local `sceKernelLoadExec` is limited to required,
+runtime-placed programs declared by the active title manifest; VSH and other launch
+variants remain outside that path.
 
 #### Why Guest PRXs Previously Failed
 

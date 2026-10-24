@@ -4457,6 +4457,7 @@ typedef struct {
     uint32_t module_start;
     uint32_t module_stop;
     uint32_t image_base;
+    uint32_t image_end;
     int start_entry_ran;
     LoadedModuleState state;
     int in_use;
@@ -4477,6 +4478,15 @@ typedef struct {
 #define HLE_MAX_LOADED_MODULES SR_MODULE_CODE_MAX_BOUND
 static LoadedModule s_loaded_modules[HLE_MAX_LOADED_MODULES];
 static int s_nloaded_modules = 0;
+static uint32_t s_deferred_self_stop_uid;
+static uint32_t s_deferred_self_stop_thread_uid;
+static void hle_module_thread_exit(uint32_t uid);
+static int hle_loadexec_dialog_busy(void);
+
+#define SR_LOAD_EXEC_MAX_ARGS (64u * 1024u)
+static SrLoadExecRequest s_loadexec_request;
+static int s_loadexec_pending;
+static uint32_t s_loadexec_boot_uid;
 
 /* Run a module entry (module_start/module_stop) as a nested guest call with the entry
  * ABI (args length, args pointer). A guest-placed module's entries run with its own
@@ -4486,6 +4496,52 @@ static uint32_t module_entry_call(CpuState *s, const LoadedModule *mod, uint32_t
     if (mod->runtime_placed && mod->code)
         return ge_call_guest_gp_rv(s, entry, mod->gp, arglen, argp, 0);
     return ge_call_guest_rv(s, entry, arglen, argp, 0);
+}
+
+/* module_stop is a module-manager entry, so execute it in its own guest thread.
+ * Thread creation uses the runtime's existing synthetic defaults (priority 32,
+ * default stack); callers that need a physical PSP's module-thread option rules
+ * remain behind this explicitly labelled boundary. The scheduler copies argp to
+ * the stop thread's stack before starting it, then this caller joins and deletes
+ * the temporary thread. */
+static uint32_t module_stop_thread_invoke(CpuState *caller, const LoadedModule *mod,
+                                          uint32_t arglen, uint32_t argp,
+                                          uint32_t *status_out) {
+    if (!caller || !mod || !mod->module_stop || sched_current_uid() == 0u) {
+        fprintf(stderr, "PRX_MODULE_STOP_THREAD_UNAVAILABLE_SYNTHETIC: no running guest "
+                        "thread or stop entry; refusing inline execution\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (arglen != 0u && (!argp || !sr_guest_span_readable(argp, arglen)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    uint32_t thread_uid = sched_create_thread_ex(mod->module_stop, 32, 0u, 0u,
+                                                 "module_stop");
+    if (!thread_uid) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+    uint32_t gp = mod->runtime_placed ? mod->gp : caller->r[28];
+    if (sched_thread_set_gp(thread_uid, gp) != 0) {
+        (void)sched_delete_thread(thread_uid);
+        fprintf(stderr, "PRX_MODULE_STOP_THREAD_GP_SYNTHETIC: failed to seed $gp; refusing\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    uint32_t rc = sched_start_thread(thread_uid, arglen, argp);
+    if (rc != 0u) {
+        (void)sched_delete_thread(thread_uid);
+        return rc;
+    }
+
+    caller->r[4] = thread_uid;
+    caller->r[5] = 0u;
+    uint32_t module_status = h_WaitThreadEnd_impl(caller, 0);
+    uint32_t delete_rc = sched_delete_thread(thread_uid);
+    if (delete_rc != 0u) {
+        fprintf(stderr, "PRX_MODULE_STOP_THREAD_JOIN_SYNTHETIC: stop thread uid=0x%x "
+                        "did not become deletable (0x%08x); refusing module transition\n",
+                thread_uid, delete_rc);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (status_out) *status_out = module_status;
+    return 0u;
 }
 
 static LoadedModule *find_loaded_module(uint32_t uid) {
@@ -4778,6 +4834,16 @@ static void unload_prx_image(uint32_t base) {
     }
 }
 
+static int prx_image_bounds(uint32_t base, uint32_t *start_out, uint32_t *end_out) {
+    for (unsigned i = 0; i < s_prx_image_count; i++) {
+        if (s_prx_images[i].base != base) continue;
+        if (start_out) *start_out = s_prx_images[i].base;
+        if (end_out) *end_out = s_prx_images[i].end;
+        return 1;
+    }
+    return 0;
+}
+
 static int load_prx_image(const char *host_path, uint32_t base, const char *name) {
     for (unsigned i = 0; i < s_prx_image_count; i++) {
         if (s_prx_images[i].base != base) continue;
@@ -4934,6 +5000,22 @@ static unsigned char *read_guest_module_file(const char *path, size_t *size_out,
     fclose(f);
     *size_out = (size_t)length;
     return bytes;
+}
+
+static int loadexec_module_file_matches_translation(const char *file) {
+    if (!file || !file[0]) return 0;
+    const SrModuleCode *code = sr_module_code_find(file);
+    if (!code || code->unsupported_reason) return 0;
+    char path[1024];
+    int written = snprintf(path, sizeof(path), "%s/%s", guest_module_root(), file);
+    if (written <= 0 || (size_t)written >= sizeof(path)) return 0;
+    size_t size = 0u;
+    int unreadable = 0;
+    unsigned char *bytes = read_guest_module_file(path, &size, &unreadable);
+    if (!bytes) return 0;
+    uint64_t digest = sr_module_code_fnv1a64(bytes, size);
+    free(bytes);
+    return size == code->file_size && digest == code->file_fnv1a64;
 }
 
 /* Lay a guest-placed module out and bind its translation. On success `mod` holds the
@@ -5125,6 +5207,7 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
         mod->module_start = 0;
     mod->module_stop = module_stop;
     mod->image_base = image;
+    mod->image_end = image + span;
     sr_flight_prx_load(image, 0u, mod->module_start, img.nimp, exported);
     sr_prx_image_free(&img);
     return 0;
@@ -5161,6 +5244,7 @@ static uint32_t load_module_by_guest_path(const char *path, uint32_t option) {
         mod->module_start = s_last_prx_entry;
         mod->module_stop = s_last_prx_stop;
         mod->image_base = s_last_prx_base;
+        (void)prx_image_bounds(mod->image_base, NULL, &mod->image_end);
     }
     uint32_t uid = sr_alloc_uid();
     fprintf(stderr, "sceKernelLoadModule(\"%s\") -> uid=0x%x\n", path, uid);
@@ -6423,6 +6507,12 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
         return SCE_ERROR_MODULE_BAD_ID;
     }
 
+    if (stack_arg(s, 0) != 0u) {
+        fprintf(stderr, "PRX_MODULE_STOP_OPTION_SYNTHETIC: nonzero SceKernelSMOption is "
+                        "unmeasured; refusing instead of guessing thread parameters\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+
     if (!mod->start_entry_ran) {
         fprintf(stderr, "PRX_MODULE_HOST_SKIPPED_STOP: sceKernelStopModule uid=0x%x "
                         "start entry was host-skipped; stop entry not called (#280)\n",
@@ -6447,9 +6537,15 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
         return SCE_KERNEL_ERROR_CAN_NOT_STOP;
     }
     mod->state = MODULE_STATE_STOPPING;
-    fprintf(stderr, "sceKernelStopModule(uid=0x%x, path='%s', stop=0x%08x): executing module_stop\n",
-            modid, mod->path, mod->module_stop);
-    uint32_t rv = module_entry_call(s, mod, mod->module_stop, arglen, argp);
+    fprintf(stderr, "PRX_MODULE_STOP_THREAD_SYNTHETIC: uid=0x%x stop=0x%08x "
+                    "uses scheduler default priority/stack; module option rules remain unmeasured\n",
+            modid, mod->module_stop);
+    uint32_t rv = 0u;
+    uint32_t call_rc = module_stop_thread_invoke(s, mod, arglen, argp, &rv);
+    if (call_rc != 0u) {
+        mod->state = MODULE_STATE_STARTED;
+        return call_rc;
+    }
     if (status_ptr && sr_guest_span_writable(status_ptr, 4u)) {
         MEM_W32(status_ptr, rv);
     }
@@ -6505,6 +6601,14 @@ static uint32_t h_UnloadModule_Trace(CpuState *s) {
     default:
         return SCE_ERROR_MODULE_BAD_ID;
     }
+    if (mod->image_base && mod->image_end > mod->image_base &&
+        sched_module_range_busy(mod->image_base, mod->image_end, 0u)) {
+        fprintf(stderr, "PRX_MODULE_UNLOAD_ACTIVE_THREAD_SYNTHETIC: uid=0x%x image="
+                        "[0x%08x,0x%08x) has a ready/running continuation; refusing "
+                        "with NOT_IMPLEMENTED (active-thread unload result unmeasured)\n",
+                modid, mod->image_base, mod->image_end);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
     mod->state = MODULE_STATE_UNLOADED;
     if (mod->code) {
         fprintf(stderr, "GUEST_MODULE_UNLOADED: %s uid=0x%x image=[0x%08x,0x%08x)\n",
@@ -6520,6 +6624,222 @@ static uint32_t h_UnloadModule_Trace(CpuState *s) {
     }
     retire_loaded_module(mod);
     return 0;
+}
+
+static LoadedModule *module_for_guest_pc(const CpuState *s) {
+    if (!s) return NULL;
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        LoadedModule *mod = &s_loaded_modules[i];
+        if (!mod->in_use || mod->state == MODULE_STATE_UNLOADED ||
+            mod->image_end <= mod->image_base) continue;
+        if ((s->pc >= mod->image_base && s->pc < mod->image_end) ||
+            (s->r[31] >= mod->image_base && s->r[31] < mod->image_end))
+            return mod;
+    }
+    return NULL;
+}
+
+static void hle_module_thread_exit(uint32_t uid) {
+    if (!s_deferred_self_stop_uid || uid != s_deferred_self_stop_thread_uid) return;
+    LoadedModule *mod = find_loaded_module(s_deferred_self_stop_uid);
+    uint32_t modid = s_deferred_self_stop_uid;
+    s_deferred_self_stop_uid = 0u;
+    s_deferred_self_stop_thread_uid = 0u;
+    if (!mod || mod->state != MODULE_STATE_STOPPED) return;
+    if (mod->image_base && mod->image_end > mod->image_base &&
+        sched_module_range_busy(mod->image_base, mod->image_end, 0u)) {
+        fprintf(stderr, "PRX_SELFSTOP_UNLOAD_DEFERRED_SYNTHETIC: uid=0x%x still has a "
+                        "ready/running image continuation; preserving image and exports\n",
+                modid);
+        return;
+    }
+    mod->state = MODULE_STATE_UNLOADED;
+    if (mod->image_base && !another_record_references_image(mod))
+        unload_prx_image(mod->image_base);
+    retire_loaded_module(mod);
+    fprintf(stderr, "PRX_SELFSTOP_UNLOADED_SYNTHETIC: uid=0x%x caller thread exited; "
+                    "retired the stopped module\n", modid);
+}
+
+/* PSPSDK declares the first argument unnamed. The successful homebrew path is
+ * deliberately synthetic and accepts only zero there; other values stay behind
+ * a named refusal until their meaning is measured. */
+static uint32_t h_SelfStopUnloadModule(CpuState *s) {
+    uint32_t unknown = A0;
+    uint32_t arglen = A1;
+    uint32_t argp = A2;
+    LoadedModule *mod = module_for_guest_pc(s);
+    uint32_t current_uid = sched_current_uid();
+    if (unknown != 0u || !mod || current_uid == 0u || !mod->start_entry_ran ||
+        mod->state != MODULE_STATE_STARTED) {
+        fprintf(stderr, "PRX_SELFSTOP_UNAVAILABLE_SYNTHETIC: unknown=0x%x module=%s "
+                        "thread=0x%x; refusing unsupported caller state\n",
+                unknown, mod ? mod->path : "none", current_uid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (arglen != 0u && (!argp || !sr_guest_span_readable(argp, arglen)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (mod->image_end > mod->image_base &&
+        sched_module_range_busy(mod->image_base, mod->image_end, current_uid)) {
+        fprintf(stderr, "PRX_SELFSTOP_SIBLING_THREAD_SYNTHETIC: uid=0x%x has another "
+                        "ready/running continuation; refusing module-wide teardown\n",
+                mod->uid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+
+    uint32_t stop_status = 0u;
+    if (mod->module_stop != 0u) {
+        if (sr_lookup(mod->module_stop) == NULL)
+            return SCE_KERNEL_ERROR_CAN_NOT_STOP;
+        mod->state = MODULE_STATE_STOPPING;
+        uint32_t rc = module_stop_thread_invoke(s, mod, arglen, argp, &stop_status);
+        if (rc != 0u) {
+            mod->state = MODULE_STATE_STARTED;
+            return rc;
+        }
+    } else {
+        fprintf(stderr, "PRX_SELFSTOP_NO_ENTRY_SYNTHETIC: uid=0x%x has no module_stop; "
+                        "treating stop as a no-op\n", mod->uid);
+    }
+    mod->state = MODULE_STATE_STOPPED;
+    s_deferred_self_stop_uid = mod->uid;
+    s_deferred_self_stop_thread_uid = current_uid;
+    /* The caller is executing from the image being retired. Delete its thread;
+     * the scheduler exit hook releases the image only after this guest frame is
+     * no longer runnable. The terminal result uses the module_stop result. */
+    sched_exit_current_delete((int32_t)stop_status);
+    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+}
+
+static int loadexec_ms0_path(const char *path) {
+    static const char prefix[] = "ms0:/";
+    if (!path) return 0;
+    for (size_t i = 0; i < sizeof(prefix) - 1u; i++) {
+        char c = path[i];
+        if (!c) return 0;
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != prefix[i]) return 0;
+    }
+    return 1;
+}
+
+static int loadexec_manifest_file_safe(const char *file) {
+    if (!file || !file[0] || file[0] == '/' || file[0] == '\\' || strchr(file, ':'))
+        return 0;
+    const char *part = file;
+    for (const char *p = file;; p++) {
+        if (*p != '/' && *p != '\\' && *p != '\0') continue;
+        size_t n = (size_t)(p - part);
+        if (n == 0u || (n == 1u && part[0] == '.') ||
+            (n == 2u && part[0] == '.' && part[1] == '.')) return 0;
+        if (*p == '\0') break;
+        part = p + 1;
+    }
+    return 1;
+}
+
+static uint32_t h_LoadExec(CpuState *s) {
+    char guest_path[sizeof(s_loadexec_request.guest_path)];
+    if (!A0 || !guest_cstr(A0, guest_path, sizeof(guest_path)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    const char *file = NULL;
+    int required = 0;
+    SrGuestModulePlacement placement = SR_GUEST_MODULE_FIXED;
+    if (!loadexec_ms0_path(guest_path) ||
+        !sr_title_config_guest_module(guest_path, &file, NULL, &required, &placement) ||
+        !required || placement != SR_GUEST_MODULE_RUNTIME ||
+        !loadexec_manifest_file_safe(file)) {
+        fprintf(stderr, "LOAD_EXEC_PACKAGE_PATH_REFUSED: sceKernelLoadExec path is not a "
+                        "required runtime program in this package's declared ms0 namespace\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (!loadexec_module_file_matches_translation(file)) {
+        fprintf(stderr, "LOAD_EXEC_PROGRAM_SOURCE_REFUSED: package module is missing, "
+                        "untranslated, or differs from the built module identity\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (hle_loadexec_dialog_busy()) {
+        fprintf(stderr, "LOAD_EXEC_DIALOG_ACTIVE_SYNTHETIC: refusing program replacement "
+                        "while a utility dialog is active\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (!sched_guest_thread_running()) {
+        fprintf(stderr, "LOAD_EXEC_SCHEDULER_UNAVAILABLE: sceKernelLoadExec requires the "
+                        "cooperative guest scheduler\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (s_loadexec_pending) return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+
+    uint32_t arglen = 0u;
+    uint32_t argp = 0u;
+    if (A1 != 0u) {
+        if (!sr_guest_span_readable(A1, 12u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+        uint32_t params_size = MEM_R32(A1);
+        if (params_size < 12u) {
+            fprintf(stderr, "LOAD_EXEC_PARAMETER_SIZE_SYNTHETIC: parameter block is "
+                            "smaller than the documented arg fields; refusing\n");
+            return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        }
+        arglen = MEM_R32(A1 + 4u);
+        argp = MEM_R32(A1 + 8u);
+        if (arglen > SR_LOAD_EXEC_MAX_ARGS) {
+            fprintf(stderr, "LOAD_EXEC_ARGUMENT_LIMIT_SYNTHETIC: %u bytes exceeds the "
+                            "bounded 64 KiB argument block\n", arglen);
+            return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        }
+        if (arglen != 0u && (!argp || !sr_guest_span_readable(argp, arglen)))
+            return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    }
+
+    /* A late program that is itself a loaded module gets its stop entry before
+     * replacement. The primary package program has no late-module record; its
+     * current thread is terminated below and the driver resets the process. */
+    LoadedModule *current_module = module_for_guest_pc(s);
+    if (current_module) {
+        if (current_module->state != MODULE_STATE_STARTED) {
+            fprintf(stderr, "LOAD_EXEC_CURRENT_MODULE_STATE_SYNTHETIC: module uid=0x%x "
+                            "is not in a stable started state; refusing replacement\n",
+                    current_module->uid);
+            return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        }
+        if (current_module->module_stop != 0u) {
+            if (sr_lookup(current_module->module_stop) == NULL)
+                return SCE_KERNEL_ERROR_CAN_NOT_STOP;
+            uint32_t stop_status = 0u;
+            current_module->state = MODULE_STATE_STOPPING;
+            uint32_t stop_rc = module_stop_thread_invoke(s, current_module, 0u, 0u,
+                                                         &stop_status);
+            if (stop_rc != 0u) {
+                current_module->state = MODULE_STATE_STARTED;
+                return stop_rc;
+            }
+            current_module->state = MODULE_STATE_STOPPED;
+        } else {
+            fprintf(stderr, "LOAD_EXEC_CURRENT_MODULE_NO_STOP_SYNTHETIC: uid=0x%x "
+                            "has no module_stop entry; continuing replacement\n",
+                    current_module->uid);
+            current_module->state = MODULE_STATE_STOPPED;
+        }
+    }
+
+    uint8_t *args = NULL;
+    if (arglen != 0u) {
+        args = (uint8_t *)malloc(arglen);
+        if (!args) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+        for (uint32_t i = 0; i < arglen; i++) args[i] = MEM_R8(argp + i);
+    }
+    memset(&s_loadexec_request, 0, sizeof(s_loadexec_request));
+    snprintf(s_loadexec_request.guest_path, sizeof(s_loadexec_request.guest_path), "%s",
+             guest_path);
+    s_loadexec_request.arglen = arglen;
+    s_loadexec_request.args = args;
+    s_loadexec_pending = 1;
+    fprintf(stderr, "LOAD_EXEC_REQUEST: package program path accepted, arglen=%u; "
+                    "stopping guest state before restart\n", arglen);
+    sched_request_guest_reset();
+    sched_exit_current_delete(0);
+    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
 }
 
 static uint32_t h_CreateCallback(CpuState *s) {
@@ -10223,6 +10543,12 @@ static int s_osk_request_open = 0;    /* a person's answer to that field is pend
  * rather than SCE_ERROR_UTILITY_WRONG_TYPE (0x80110005) once one has run: a game spinning
  * "while (sceUtilityOskGetStatus() != 0)" after name entry waits on 0 forever otherwise. */
 static int s_osk_current = 0;
+static int hle_loadexec_dialog_busy(void) {
+    dialog_lock();
+    int busy = s_dlg_status != 0;
+    dialog_unlock();
+    return busy || s_osk_status != OSK_NONE || s_osk_current != 0;
+}
 static void osk_abandon_request(void);  /* fwd: defined with the keyboard's field collection */
 /* Another utility dialog takes the slot: the keyboard is no longer polled, so a person's
  * pending answer is dropped and its box closed rather than left open with no poller. */
@@ -11826,8 +12152,39 @@ static uint32_t h_StartModule(CpuState *s) {
 uint32_t sr_hle_test_load_module(CpuState *s) { return h_LoadModule(s); }
 uint32_t sr_hle_test_load_module_by_id(CpuState *s) { return h_LoadModuleByID(s); }
 uint32_t sr_hle_test_start_module(CpuState *s) { return h_StartModule(s); }
-uint32_t sr_hle_test_stop_module(CpuState *s) { return h_StopModule_Trace(s); }
+uint32_t sr_hle_test_stop_module(CpuState *s) { return sr_syscall(s, 0xd1ff982au); }
 uint32_t sr_hle_test_unload_module(CpuState *s) { return h_UnloadModule_Trace(s); }
+
+#define HLE_TEST_SCHED_CALL_ENTRY 0x08ffdf00u
+static uint32_t s_hle_test_scheduled_nid;
+static uint32_t s_hle_test_scheduled_args[5];
+static uint32_t s_hle_test_scheduled_gp;
+static uint32_t s_hle_test_scheduled_result;
+static uint32_t s_hle_test_scheduled_call_uid;
+extern void sr_test_register_guest_fn(uint32_t addr, RecompFn fn);
+
+uint32_t sr_hle_test_scheduled_call_uid(void) {
+    return s_hle_test_scheduled_call_uid;
+}
+
+static void hle_test_scheduled_call_body(CpuState *s) {
+    for (unsigned i = 0; i < 5u; i++) s->r[4u + i] = s_hle_test_scheduled_args[i];
+    s->r[28] = s_hle_test_scheduled_gp;
+    s_hle_test_scheduled_call_uid = sched_current_uid();
+    s_hle_test_scheduled_result = sr_syscall(s, s_hle_test_scheduled_nid);
+    s->r[2] = s_hle_test_scheduled_result;
+}
+
+static uint32_t hle_test_run_on_guest_thread(CpuState *s, uint32_t nid) {
+    s_hle_test_scheduled_nid = nid;
+    for (unsigned i = 0; i < 5u; i++) s_hle_test_scheduled_args[i] = s->r[4u + i];
+    s_hle_test_scheduled_gp = s->r[28];
+    s_hle_test_scheduled_result = HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    s_hle_test_scheduled_call_uid = 0u;
+    sr_test_register_guest_fn(HLE_TEST_SCHED_CALL_ENTRY, hle_test_scheduled_call_body);
+    sched_run(HLE_TEST_SCHED_CALL_ENTRY, 0u, 0u);
+    return s_hle_test_scheduled_result;
+}
 
 uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, uint32_t module_stop) {
     LoadedModule *mod = alloc_loaded_module_slot();
@@ -11838,11 +12195,24 @@ uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, ui
     mod->module_start = module_start;
     mod->module_stop = module_stop;
     mod->image_base = 0;
+    mod->image_end = 0;
     mod->state = MODULE_STATE_LOADED;
     return uid;
 }
 
+int sr_hle_test_set_module_image(uint32_t uid, uint32_t base, uint32_t end, uint32_t gp) {
+    LoadedModule *mod = find_loaded_module(uid);
+    if (!mod || base >= end) return 0;
+    mod->image_base = base;
+    mod->image_end = end;
+    mod->gp = gp;
+    mod->runtime_placed = 1;
+    return 1;
+}
+
 void sr_hle_test_module_reset(void) {
+    s_deferred_self_stop_uid = 0u;
+    s_deferred_self_stop_thread_uid = 0u;
     s_nloaded_modules = 0;
     memset(s_loaded_modules, 0, sizeof(s_loaded_modules));
     s_prx_image_count = 0;
@@ -11891,6 +12261,7 @@ uint32_t sr_hle_test_load_prx_image(const char *host_path, uint32_t base,
     mod->module_start = base + 0x70;   /* module_start address the fixture declares */
     mod->module_stop = base + 0x78;    /* module_stop address the fixture declares */
     mod->image_base = s_last_prx_base;
+    (void)prx_image_bounds(mod->image_base, NULL, &mod->image_end);
     mod->state = MODULE_STATE_LOADED;
     return uid;
 }
@@ -16286,11 +16657,7 @@ static void audio_note_buf(uint32_t ch, uint32_t buf) {
     if (g_audio_nbufs[ch] < 4) g_audio_bufs[ch][g_audio_nbufs[ch]++] = buf;
 }
 
-#ifdef SR_HLE_THREAD_SELFTEST
-/* Read-only regular-audio state for production-dispatch contract regressions.
- * The reset is test-build-only because sr_hle_init() is process-global while the
- * executable harness deliberately runs many isolated synthetic fixtures. */
-void sr_hle_test_audio_reset(void) {
+static void hle_audio_guest_reset(void) {
     memset(s_audio_ch, 0, sizeof(s_audio_ch));
     memset(s_audio_fmt, 0, sizeof(s_audio_fmt));
     memset(s_audio_len, 0, sizeof(s_audio_len));
@@ -16302,7 +16669,16 @@ void sr_hle_test_audio_reset(void) {
     memset(s_audio_delay_carry, 0, sizeof(s_audio_delay_carry));
     memset(g_audio_bufs, 0, sizeof(g_audio_bufs));
     memset(g_audio_nbufs, 0, sizeof(g_audio_nbufs));
+    s_lead_last_vbl = 0u;
+    s_lead_outputs = s_lead_noqueue = 0u;
+    s_lead_peak = 0;
+    s_lead_peak_ch = 0u;
+    s_lead_last_ms = -1L;
 }
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Read-only regular-audio state for production-dispatch contract regressions. */
+void sr_hle_test_audio_reset(void) { hle_audio_guest_reset(); }
 
 int sr_hle_test_audio_state(uint32_t ch, int *reserved, uint32_t *frames, int *format) {
     if (ch >= 8u) return 0;
@@ -20400,16 +20776,18 @@ static SasVoice s_sasv[SAS_VOICES];
 static SasCoreState s_sas_core;
 static int s_sas_max_voices = SAS_VOICES;
 
+static void hle_sas_guest_reset(void) {
+    memset(&s_sas_core, 0, sizeof(s_sas_core));
+    memset(s_sasv, 0, sizeof(s_sasv));
+    s_sas_max_voices = SAS_VOICES;
+}
+
 #ifdef SR_HLE_THREAD_SELFTEST
 /* The selftest creates several independent synthetic cores in one process.  A
  * real guest would keep one initialized core until teardown; this explicit
  * fixture hook resets only the host-side model and never enters production
  * registration or dispatch paths. */
-void sr_hle_test_sas_reset(void) {
-    memset(&s_sas_core, 0, sizeof(s_sas_core));
-    memset(s_sasv, 0, sizeof(s_sasv));
-    s_sas_max_voices = SAS_VOICES;
-}
+void sr_hle_test_sas_reset(void) { hle_sas_guest_reset(); }
 #endif
 
 /* SR_SASLOG: decay-gated trace of KeyOn events and SAS mixer active-voice counts, to determine
@@ -22946,8 +23324,7 @@ void sr_mutex_release_thread(uint32_t thread_uid) {
     }
 }
 
-#ifdef SR_HLE_THREAD_SELFTEST
-void sr_hle_test_mutex_reset(void) {
+static void mutex_reset_all(void) {
     if (!s_mutexes) return;
     for (size_t i = 0; i < s_mutex_len; i++) {
         if (s_mutexes[i]) {
@@ -22960,6 +23337,8 @@ void sr_hle_test_mutex_reset(void) {
     s_mutex_len = 0;
     s_mutex_cap = 0;
 }
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_hle_test_mutex_reset(void) { mutex_reset_all(); }
 #endif
 
 static uint32_t h_CreateMutex(CpuState *s) {
@@ -23812,6 +24191,7 @@ static void hle_register_kernel_module_handlers(void) {
     sr_hle_register(0xd1ff982a, "sceKernelStopModule", h_StopModule_Trace);
     sr_hle_register(0x2e0911aa, "sceKernelUnloadModule", h_UnloadModule_Trace);
     sr_hle_register(0x8f2df740, "sceKernelStopUnloadSelfModuleWithStatus", h_StopUnloadSelfModuleWithStatus);
+    sr_hle_register(0xd675ebb8, "sceKernelSelfStopUnloadModule", h_SelfStopUnloadModule);
 }
 
 static void hle_register_bulk_memory_handlers(void) {
@@ -23973,8 +24353,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
      * controlled-refusal code and write nothing to the guest buffer. */
     sr_hle_register_unsupported(0x438a385au, "sceGeSaveContext", 0x80020002u);
     sr_hle_register_unsupported(0x0bf608fbu, "sceGeRestoreContext", 0x80020002u);
-    sr_hle_register_unsupported(0xbd2f1094, "sceKernelLoadExec", 0x80020002u);
-    sr_hle_register_unsupported(0xd675ebb8, "sceKernelSelfStopUnloadModule", 0x80020002u);
+    sr_hle_register(0xbd2f1094, "sceKernelLoadExec", h_LoadExec);
     sr_hle_register(0x40f1469c, "sceDisplayWaitVblankStartMulti", h_DisplayWaitVblankStartMulti);
 }
 
@@ -24117,6 +24496,7 @@ void sr_hle_init(void) {
         while (atomic_load_explicit(&s_hle_init_state, memory_order_acquire) != 2) { }
         return;
     }
+    sched_set_thread_exit_hook(hle_module_thread_exit);
 #ifdef SR_MPEG_MEDIA_SELFTEST
     hle_register_mpeg_ycbcr_handlers();
     /* The media fixture drives the production scePsmfPlayer handlers through sr_syscall,
@@ -24419,6 +24799,13 @@ static void hle_record_unsupported_import_stop(uint32_t nid, const char *name) {
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     sr_tail_assert_empty("tail-transfer-live-at-syscall");
     sr_hle_init();
+#ifdef SR_HLE_THREAD_SELFTEST
+    /* Direct white-box calls have no current TCB. Route module stop/self-stop
+     * through the production handlers inside the real scheduler; nested calls
+     * from that guest thread take the ordinary dispatch path below. */
+    if ((nid == 0xd1ff982au || nid == 0xd675ebb8u) && !sched_guest_thread_running())
+        return hle_test_run_on_guest_thread(s, nid);
+#endif
     io_async_dispatch_tick();
     /* A syscall is where a guest thread can stop making scheduler progress, so the
      * attribution of a late display period has to be able to name it. */
@@ -24514,4 +24901,172 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
     }
     sr_rt_phase = rt_phase_saved;
     return ret;
+}
+
+int sr_hle_loadexec_take(SrLoadExecRequest *out) {
+    if (!out || !s_loadexec_pending) return 0;
+    *out = s_loadexec_request;
+    memset(&s_loadexec_request, 0, sizeof(s_loadexec_request));
+    s_loadexec_pending = 0;
+    return 1;
+}
+
+void sr_hle_loadexec_release(SrLoadExecRequest *request) {
+    if (!request) return;
+    free(request->args);
+    memset(request, 0, sizeof(*request));
+}
+
+static void loadexec_reset_user_partition(void) {
+    s_heap = 0;
+    s_heap_base = 0;
+    s_part_top = 0;
+    s_heap_last_bump = 0;
+    s_nblocks = 0;
+    memset(s_blocks, 0, sizeof(s_blocks));
+    memset(s_memory_blocks, 0, sizeof(s_memory_blocks));
+    s_nfree_blocks = 0;
+    memset(s_free_blocks, 0, sizeof(s_free_blocks));
+}
+
+void sr_hle_loadexec_reset_guest_state(void) {
+    if (s_loadexec_request.args) free(s_loadexec_request.args);
+    memset(&s_loadexec_request, 0, sizeof(s_loadexec_request));
+    s_loadexec_pending = 0;
+    /* Retire module code/export authority before resetting the allocator and RAM. */
+    while (s_prx_image_count != 0u)
+        unload_prx_image(s_prx_images[0].base);
+    memset(s_loaded_modules, 0, sizeof(s_loaded_modules));
+    s_nloaded_modules = 0;
+    s_deferred_self_stop_uid = 0u;
+    s_deferred_self_stop_thread_uid = 0u;
+    s_last_prx_base = s_last_prx_entry = s_last_prx_stop = 0u;
+    s_prx_stage_base = s_prx_stage_len = 0u;
+    s_prx_staging = 0;
+    atomic_store_explicit(&s_prx_started_count, 0, memory_order_release);
+    loadexec_reset_user_partition();
+
+    for (unsigned i = 0; i < FPL_MAX; i++) {
+        free(s_fpls[i].free_blocks);
+        free(s_fpls[i].allocated);
+    }
+    memset(s_fpls, 0, sizeof(s_fpls));
+    memset(s_sync, 0, sizeof(s_sync));
+    memset(s_mbx, 0, sizeof(s_mbx));
+    mutex_reset_all();
+
+    if (s_callbacks) free(s_callbacks);
+    s_callbacks = NULL;
+    s_callbacks_len = 0u;
+    s_callbacks_cap = 0u;
+    s_exit_cb_uid = 0u;
+    s_utility_av_loaded = 0u;
+    s_volatile_locked = 0;
+    g_sdk_version = 0u;
+    s_loadexec_boot_uid = 0u;
+    sr_hle_power_loadexec_reset();
+
+    hle_fd_init();
+    memset(s_io_cwds, 0, sizeof(s_io_cwds));
+
+    /* Media-player state owns host decoder/producer objects as well as guest
+     * pointers. Close those objects before the next program reuses guest RAM. */
+    for (size_t i = 0; i < sizeof(s_psmf_players) / sizeof(s_psmf_players[0]); i++) {
+        SrPsmfPlayer *p = &s_psmf_players[i];
+        psmf_flush(p);
+        if (p->producer) {
+            sr_psmf_producer_close(p->producer);
+            p->producer = NULL;
+        }
+        psmf_media_reset(p);
+        memset(p, 0, sizeof(*p));
+        p->h264 = -1;
+    }
+    for (unsigned i = 0; i < sizeof(s_atrac) / sizeof(s_atrac[0]); i++) {
+        atrac_release_decoder(&s_atrac[i]);
+        atrac_stream_window_free(&s_atrac[i]);
+        memset(&s_atrac[i], 0, sizeof(s_atrac[i]));
+    }
+    hle_audio_guest_reset();
+    hle_sas_guest_reset();
+
+    if (s_osk_current) (void)s_osk_current_clear();
+    s_osk_status = OSK_NONE;
+    s_osk_param = 0u;
+    s_osk_field = 0;
+    s_osk_request_open = 0;
+    s_osk_current = 0;
+    s_osk_answer_count = 0;
+    s_osk_repeat = NULL;
+    s_osk_script_read = 0;
+    memset(s_osk_answers, 0, sizeof(s_osk_answers));
+    dialog_lock();
+    s_dlg_status = 0;
+    s_dlg_tick = 0;
+    s_dlg_param = 0u;
+    s_dlg_result = 0u;
+    s_dlg_work_started = s_dlg_work_done = 0u;
+    s_dlg_generation++;
+    dialog_unlock();
+
+    s_uid = 0x110u;
+    fprintf(stderr, "LOAD_EXEC_GUEST_RESET_SYNTHETIC: memory, scheduler objects, callbacks, "
+                    "module records and file descriptors will be rebuilt for the next program\n");
+}
+
+int sr_hle_loadexec_boot_module(const char *guest_path, uint32_t *entry_out,
+                                uint32_t *gp_out) {
+    const char *file = NULL;
+    int required = 0;
+    SrGuestModulePlacement placement = SR_GUEST_MODULE_FIXED;
+    if (!guest_path || !entry_out || !gp_out || !loadexec_ms0_path(guest_path) ||
+        !sr_title_config_guest_module(guest_path, &file, NULL, &required, &placement) ||
+        !required || placement != SR_GUEST_MODULE_RUNTIME ||
+        !loadexec_manifest_file_safe(file) ||
+        !loadexec_module_file_matches_translation(file)) {
+        fprintf(stderr, "LOAD_EXEC_PACKAGE_PATH_REFUSED: program is absent from the "
+                        "required runtime-module list\n");
+        return 0;
+    }
+
+    uint32_t uid = load_module_by_guest_path(guest_path, 0u);
+    if (uid == 0u || (uid & 0x80000000u)) {
+        fprintf(stderr, "LOAD_EXEC_PROGRAM_LOAD_FAILED: declared package program refused "
+                        "by its runtime module loader\n");
+        return 0;
+    }
+    LoadedModule *mod = find_loaded_module(uid);
+    if (!mod || !mod->runtime_placed || !mod->code || mod->module_start == 0u ||
+        sr_lookup(mod->module_start) == NULL) {
+        fprintf(stderr, "LOAD_EXEC_PROGRAM_ENTRY_UNAVAILABLE: declared package program "
+                        "has no translated module_start; refusing\n");
+        if (mod) {
+            mod->state = MODULE_STATE_STOPPED;
+            unload_prx_image(mod->image_base);
+            retire_loaded_module(mod);
+        }
+        return 0;
+    }
+    /* This image becomes the new root program rather than a guest LoadModule
+     * handle. Mark it as the active program before entering its module_start so
+     * a subsequent LoadExec can stop it on a guest stop thread. */
+    mod->state = MODULE_STATE_STARTED;
+    mod->start_entry_ran = 1;
+    mark_module_started(mod->module_start);
+    s_loadexec_boot_uid = uid;
+    *entry_out = mod->module_start;
+    *gp_out = mod->gp;
+    return 1;
+}
+
+void sr_hle_loadexec_finish(void) {
+    if (!s_loadexec_boot_uid) return;
+    LoadedModule *mod = find_loaded_module(s_loadexec_boot_uid);
+    uint32_t uid = s_loadexec_boot_uid;
+    s_loadexec_boot_uid = 0u;
+    if (!mod || mod->state != MODULE_STATE_STARTED) return;
+    mark_module_started(mod->module_start);
+    mod->start_entry_ran = 1;
+    fprintf(stderr, "LOAD_EXEC_PROGRAM_STARTED: uid=0x%x entry=0x%08x\n",
+            uid, mod->module_start);
 }

@@ -274,6 +274,7 @@ static void reset_sched(void) {
     s_interrupts_enabled = 1;
     s_pending_interrupts = 0;
     s_servicing_interrupts = 0;
+    s_guest_reset_requested = 0;
     s_pending_vblanks = 0;          /* owed VBLANK episodes, since the count change */
     s_vblank_masked_pending = 0;
     s_vbl_event_period_rem = 0;
@@ -4347,6 +4348,52 @@ static void test_pause_s13_repeated_pauses_accumulate(void) {
            "S13 the host clock continues from its initial value after cumulative shifts");
 }
 
+#define LOAD_EXEC_RESET_PARENT_ENTRY 0x08ffde00u
+#define LOAD_EXEC_RESET_CHILD_ENTRY 0x08ffde10u
+#define LOAD_EXEC_RESET_NEXT_ENTRY 0x08ffde20u
+static uint32_t s_loadexec_reset_child_uid;
+static uint32_t s_loadexec_reset_next_gp;
+
+static void loadexec_reset_parent_body(CpuState *s) {
+    (void)s;
+    s_loadexec_reset_child_uid = sched_create_thread(LOAD_EXEC_RESET_CHILD_ENTRY, 127, 0u);
+    expect(s_loadexec_reset_child_uid != 0u &&
+           sched_start_thread(s_loadexec_reset_child_uid, 0u, 0u) == 0u,
+           "LoadExec fixture leaves a ready sibling for process teardown");
+    sched_request_guest_reset();
+    sched_exit_current_delete(0);
+}
+
+static void loadexec_reset_next_body(CpuState *s) {
+    s_loadexec_reset_next_gp = s->r[28];
+    sched_exit_current_delete(0);
+}
+
+static void test_loadexec_retires_scheduler_world(void) {
+    reset_sched();
+    g_test_body = loadexec_reset_parent_body;
+    sched_run(LOAD_EXEC_RESET_PARENT_ENTRY, 0u, 0u);
+    expect(s_guest_reset_requested && !sched_guest_thread_running(),
+           "LoadExec request returns to the host scheduler before program state is reset");
+    expect(sched_reset_for_loadexec(),
+           "LoadExec scheduler reset is accepted from the host scheduler coroutine");
+    expect(s_ntcb == 0 && s_cur == -1 && !sched_guest_thread_running(),
+           "LoadExec reset destroys old TCBs and leaves no current guest thread");
+    expect(tcb_by_uid(s_loadexec_reset_child_uid) == NULL &&
+           g_root_uid == SR_ROLE_UID_NONE && g_worker_uid == SR_ROLE_UID_NONE &&
+           g_launcher_uid == SR_ROLE_UID_NONE && g_master_reent == 0u,
+           "LoadExec reset retires sibling threads and per-program role/libc state");
+
+    memset(&g_cpu_store, 0, sizeof(g_cpu_store));
+    g_cpu_store.r[28] = 0x1234abc0u;
+    sched_set_guest_process_gp(g_cpu_store.r[28]);
+    s_loadexec_reset_next_gp = 0u;
+    g_test_body = loadexec_reset_next_body;
+    sched_run(LOAD_EXEC_RESET_NEXT_ENTRY, 0u, 0u);
+    expect(s_loadexec_reset_next_gp == 0x1234abc0u,
+           "replacement root starts with its own module $gp");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--test-pace-setup") == 0) {
         s_pace_on = -1;
@@ -4489,6 +4536,7 @@ int main(int argc, char **argv) {
     test_pause_s11_refusal_verdicts();
     test_pause_s12_turbo_sequence_is_unchanged();
     test_pause_s13_repeated_pauses_accumulate();
+    test_loadexec_retires_scheduler_world();
 
     fprintf(stderr, "sched_selftest: title config \"%s\" (valid=0x%x)\n",
             sr_title_config()->source_id, sr_title_config()->valid);

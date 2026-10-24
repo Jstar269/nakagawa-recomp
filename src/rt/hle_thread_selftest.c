@@ -110,6 +110,7 @@ extern uint32_t sr_hle_test_start_module(CpuState *s);
 extern uint32_t sr_hle_test_stop_module(CpuState *s);
 extern uint32_t sr_hle_test_unload_module(CpuState *s);
 extern uint32_t sr_hle_test_register_module(const char *path, uint32_t module_start, uint32_t module_stop);
+extern int sr_hle_test_set_module_image(uint32_t uid, uint32_t base, uint32_t end, uint32_t gp);
 extern void sr_hle_test_module_reset(void);
 /* Test-build-only: drop the virtual system registry and its handles, as a new process starts. */
 extern void sr_hle_test_sysreg_reset(void);
@@ -843,7 +844,7 @@ typedef struct {
 static TestGuestFn s_test_guest_fns[16];
 static int s_num_test_guest_fns = 0;
 
-static void sr_test_register_guest_fn(uint32_t addr, RecompFn fn) {
+void sr_test_register_guest_fn(uint32_t addr, RecompFn fn) {
     for (int i = 0; i < s_num_test_guest_fns; i++) {
         if (s_test_guest_fns[i].addr == addr) {
             s_test_guest_fns[i].fn = fn;
@@ -3921,20 +3922,25 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
     } refused[] = {
         {NID_SCE_GE_SAVE_CONTEXT, 0x80020002u, "sceGeSaveContext"},
         {NID_SCE_GE_RESTORE_CONTEXT, 0x80020002u, "sceGeRestoreContext"},
-        {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
+        {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec outside the declared package"},
         {NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE, 0x80020002u, "sceKernelSelfStopUnloadModule"},
         {0x08d98894u, 0x80020002u, "sceNpDrmEdataSetupKey"},
         {0xf9275d98u, 0x80020002u, "sceKernelLoadModuleBufferUsbWlan"},
     };
     reset_fixture();
     sr_hle_init();
+    const uint32_t outside_package_path = 0x08001080u;
+    title_hle_write_cstr(outside_package_path,
+                         "ms0:/PSP/GAME/OUTSIDE/LOADEXEC_B.PRX");
     for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
+        if (refused[i].nid == NID_SCE_KERNEL_LOAD_EXEC)
+            cpu.r[4] = outside_package_path;
         expect(sr_hle_test_is_registered(refused[i].nid),
                "kernel import sweep refusal has a production registration");
         expect(sr_syscall(&cpu, refused[i].nid) == refused[i].error,
-               "unsupported kernel import returns its explicit refusal code");
+               "kernel import returns its named fail-closed error");
     }
 }
 
@@ -26844,11 +26850,17 @@ static void synth_module_start_fn(CpuState *s) {
 static uint32_t s_synth_stop_calls = 0;
 static uint32_t s_synth_stop_a0 = 0;
 static uint32_t s_synth_stop_a1 = 0;
+static uint32_t s_synth_stop_gp = 0;
+static uint32_t s_synth_stop_arg_words[3];
 
 static void synth_module_stop_fn(CpuState *s) {
     s_synth_stop_calls++;
     s_synth_stop_a0 = s->r[4];
     s_synth_stop_a1 = s->r[5];
+    s_synth_stop_gp = s->r[28];
+    for (unsigned i = 0; i < 3u; i++)
+        s_synth_stop_arg_words[i] = s->r[5] && s->r[4] >= (i + 1u) * 4u
+                                  ? MEM_R32(s->r[5] + i * 4u) : 0u;
     s->r[2] = 0x84u;
 }
 
@@ -26926,6 +26938,9 @@ static void test_real_module_start_lifecycle(void) {
     /* Register module and start it */
     uint32_t uid_on = sr_hle_test_register_module("gate_on.prx", SYNTH_MOD_START, SYNTH_MOD_STOP);
     expect(uid_on != 0, "registered synthetic module for gate-on test");
+    expect(sr_hle_test_set_module_image(uid_on, SYNTH_MOD_START,
+                                        SYNTH_MOD_STOP + 4u, 0x0aabbccdu),
+           "gate on: synthetic module image range and $gp are recorded");
 
     MEM_W32(SYNTH_MOD_STATUS_ADDR, 0xdeadbeefu);
     memset(&cpu, 0, sizeof(cpu));
@@ -26962,11 +26977,21 @@ static void test_real_module_start_lifecycle(void) {
     cpu.r[5] = 12u;
     cpu.r[6] = 0x089a0300u;
     cpu.r[7] = SYNTH_MOD_STATUS_ADDR;
+    MEM_W32(0x089a0300u, 0x12345678u);
+    MEM_W32(0x089a0304u, 0x9abcdef0u);
+    MEM_W32(0x089a0308u, 0x0badc0deu);
+    s_synth_stop_gp = 0u;
     ret = sr_syscall(&cpu, 0xd1ff982au);
     expect(ret == 0, "gate on: sceKernelStopModule returns 0 on success");
     expect(s_synth_stop_calls == 1, "gate on: module_stop executed exactly once");
     expect(s_synth_stop_a0 == 12u, "gate on: module_stop received arglen in $a0");
-    expect(s_synth_stop_a1 == 0x089a0300u, "gate on: module_stop received argp in $a1");
+    expect(s_synth_stop_a1 != 0u && s_synth_stop_a1 != 0x089a0300u &&
+               s_synth_stop_arg_words[0] == 0x12345678u &&
+               s_synth_stop_arg_words[1] == 0x9abcdef0u &&
+               s_synth_stop_arg_words[2] == 0x0badc0deu,
+           "gate on: module_stop runs on a guest thread with a copied argp block");
+    expect(s_synth_stop_gp == 0x0aabbccdu,
+           "gate on: module_stop thread runs with the module's $gp");
     expect(MEM_R32(SYNTH_MOD_STATUS_ADDR) == 0x84u,
            "gate on: module_stop return status written to status pointer");
 
@@ -27122,12 +27147,40 @@ static void test_prx_stop_entry_boundaries(void) {
 static uint32_t s_lifecycle_export_calls_a1, s_lifecycle_export_calls_a2;
 static uint32_t s_lifecycle_export_calls_b;
 static uint32_t s_lifecycle_start_calls, s_lifecycle_stop_calls;
+static uint32_t s_lifecycle_stop_gp;
+static uint32_t s_lifecycle_stop_arglen, s_lifecycle_stop_argp_word;
+static uint32_t s_lifecycle_stop_thread_uid;
+extern uint32_t sr_hle_test_scheduled_call_uid(void);
 
 static void lifecycle_export_a1_fn(CpuState *s) { s_lifecycle_export_calls_a1++; s->r[2] = 0xa1u; }
 static void lifecycle_export_a2_fn(CpuState *s) { s_lifecycle_export_calls_a2++; s->r[2] = 0xa2u; }
 static void lifecycle_export_b_fn(CpuState *s) { s_lifecycle_export_calls_b++; s->r[2] = 0xb2u; }
 static void lifecycle_start_fn(CpuState *s) { s_lifecycle_start_calls++; s->r[2] = 0x5u; }
-static void lifecycle_stop_fn(CpuState *s) { s_lifecycle_stop_calls++; s->r[2] = 0x6u; }
+static void lifecycle_stop_fn(CpuState *s) {
+    s_lifecycle_stop_calls++;
+    s_lifecycle_stop_thread_uid = sched_current_uid();
+    s_lifecycle_stop_gp = s->r[28];
+    s_lifecycle_stop_arglen = s->r[4];
+    s_lifecycle_stop_argp_word = s->r[5] && s->r[4] >= 4u ? MEM_R32(s->r[5]) : 0u;
+    s->r[2] = 0x6u;
+}
+
+#define SELFSTOP_ARG_ADDR 0x08a02000u
+static uint32_t s_selfstop_guest_gp;
+static uint32_t s_selfstop_guest_returned;
+static uint32_t s_selfstop_guest_pc;
+static int s_selfstop_guest_in_scheduler;
+static void selfstop_guest_entry(CpuState *s) {
+    s->pc = LIFECYCLE_MOD_B_BASE + LIFECYCLE_START_OFF;
+    s->r[28] = s_selfstop_guest_gp;
+    s_selfstop_guest_pc = s->pc;
+    s_selfstop_guest_in_scheduler = sched_guest_thread_running();
+    s->r[4] = 0u; /* first argument is unnamed in the public PSPSDK declaration */
+    s->r[5] = 4u;
+    s->r[6] = SELFSTOP_ARG_ADDR;
+    (void)sr_syscall(s, NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE);
+    s_selfstop_guest_returned = 1u; /* the API is terminal on the modeled success path */
+}
 
 /* Build a synthetic PRX image. Only the bytes are synthetic: the production
  * prx_loader.c parser consumes the file, exactly as a real module's would.
@@ -27324,10 +27377,14 @@ static void test_late_prx_unload_reload_lifecycle(void) {
 
     /* ---- stop (required before unload by the established contract) ---- */
     s_lifecycle_stop_calls = 0;
+    s_lifecycle_stop_thread_uid = 0u;
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid_a;
     expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "lifecycle: stop module A returns 0");
     expect(s_lifecycle_stop_calls == 1u, "lifecycle: module A's module_stop ran once");
+    expect(sr_hle_test_scheduled_call_uid() != 0u &&
+               s_lifecycle_stop_thread_uid != sr_hle_test_scheduled_call_uid(),
+           "lifecycle: module_stop ran on its own scheduler guest thread");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid_a;
     expect(sr_syscall(&cpu, 0xd1ff982au) == SCE_KERNEL_ERROR_ALREADY_STOPPED,
@@ -27344,6 +27401,20 @@ static void test_late_prx_unload_reload_lifecycle(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid_b;
     expect(sr_syscall(&cpu, 0xd1ff982au) == 0, "lifecycle: stop module B returns 0");
+
+    /* A runnable continuation into A makes unload unsafe. This is an explicitly
+     * synthetic refusal; the measured #1106 blocked waiter case is exercised below
+     * and remains unloadable. */
+    TCB *active_module_thread = fixture_thread(0x6f0u, TH_READY, 20);
+    active_module_thread->started = 1;
+    active_module_thread->saved.pc = LIFECYCLE_MOD_A_BASE + LIFECYCLE_PATCH_OFF_A_1;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid_a;
+    expect(sr_syscall(&cpu, 0x2e0911aau) == 0x80020002u,
+           "lifecycle: unload refuses while a module thread is ready to execute its image");
+    active_module_thread->state = TH_DORMANT;
+    active_module_thread->deleted = 1;
+    active_module_thread->entry = 0u;
 
     /* ---- unload A: retire exactly its own state ---- */
     unsigned images_before = sr_hle_test_image_count();
@@ -27492,6 +27563,55 @@ static void test_late_prx_unload_reload_lifecycle(void) {
            "lifecycle: repeated cycles do not exhaust the 16-entry module table");
     expect(sr_hle_test_image_count() == 0u,
            "lifecycle: repeated cycles do not exhaust the 16-entry image table");
+
+    /* SelfStopUnloadModule cannot return into the image it retires. Run it from a
+     * scheduled module continuation, verify the stop entry's arguments/$gp, and
+     * observe unload only after the caller thread is deleted. */
+    expect(write_lifecycle_prx(path_b, 0x51570a0bu),
+           "self-stop: source-owned module image is written");
+    uint32_t self_uid = sr_hle_test_load_prx_image(path_b, LIFECYCLE_MOD_B_BASE,
+                                                   LIFECYCLE_EXPORT_B,
+                                                   LIFECYCLE_PATCH_OFF_A_1);
+    expect(self_uid != 0u, "self-stop: module image loads");
+    const uint32_t self_gp = 0x0aabbccdu;
+    expect(sr_hle_test_set_module_image(self_uid, LIFECYCLE_MOD_B_BASE,
+                                        LIFECYCLE_MOD_B_BASE + LIFECYCLE_IMAGE_SIZE,
+                                        self_gp),
+           "self-stop: module image range and $gp are attached");
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_START_OFF,
+                              lifecycle_start_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_STOP_OFF,
+                              lifecycle_stop_fn);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_PATCH_OFF_A_1,
+                              lifecycle_export_b_fn);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = self_uid;
+    expect(sr_syscall(&cpu, 0x50f0c1ecu) == 0u,
+           "self-stop: module_start marks the module started");
+    s_lifecycle_stop_calls = 0u;
+    s_lifecycle_stop_gp = 0u;
+    s_lifecycle_stop_arglen = 0u;
+    s_lifecycle_stop_argp_word = 0u;
+    s_selfstop_guest_gp = self_gp;
+    s_selfstop_guest_returned = 0u;
+    s_selfstop_guest_pc = 0u;
+    s_selfstop_guest_in_scheduler = 0;
+    MEM_W32(SELFSTOP_ARG_ADDR, 0x05116abcu);
+    sr_test_register_guest_fn(LIFECYCLE_MOD_B_BASE + LIFECYCLE_START_OFF,
+                              selfstop_guest_entry);
+    sched_run(LIFECYCLE_MOD_B_BASE + LIFECYCLE_START_OFF, 0u, 0u);
+    expect(s_selfstop_guest_pc == LIFECYCLE_MOD_B_BASE + LIFECYCLE_START_OFF &&
+               s_selfstop_guest_in_scheduler,
+           "self-stop: caller is a scheduled thread inside the module image");
+    expect(s_selfstop_guest_returned == 0u,
+           "self-stop: caller thread does not resume in the unloaded image");
+    expect(s_lifecycle_stop_calls == 1u && s_lifecycle_stop_arglen == 4u &&
+               s_lifecycle_stop_argp_word == 0x05116abcu &&
+               s_lifecycle_stop_gp == self_gp,
+           "self-stop: stop entry runs on a module-$gp guest thread with copied arguments");
+    expect(sr_hle_test_module_count() == 0u && sr_hle_test_image_count() == 0u &&
+               sr_hle_resolve_late_import(LIFECYCLE_EXPORT_B) == 0u,
+           "self-stop: caller exit retires the module record, image and exports");
 
     remove(path_a);
     remove(path_b);
@@ -27825,15 +27945,34 @@ static void test_volatile_mem_unlock_states(void) {
 static uint32_t s_late_obj_sema;
 static uint32_t s_late_obj_ret;
 static int      s_late_obj_returned;
+static uint32_t s_late_obj_module_uid;
+static uint32_t s_late_obj_waiter_uid;
+static uint32_t s_late_obj_flag;
+static uint32_t s_late_obj_callback;
+static uint32_t s_late_obj_stop_rc;
+static uint32_t s_late_obj_unload_rc;
+static uint32_t s_late_obj_pre_status;
+static uint32_t s_late_obj_pre_waitid;
+static uint32_t s_late_obj_pre_numwait;
 
-static void late_obj_waiter_body(void *arg) {
-    (void)arg;
-    CpuState cpu;
-    memset(&cpu, 0, sizeof cpu);
-    cpu.r[4] = s_late_obj_sema; cpu.r[5] = 1u; cpu.r[6] = LATE_OBJ_WAIT_TMO_PTR;
-    s_late_obj_ret = sr_syscall(&cpu, NID_CNW_WAIT_SEMA);
+#define LATE_OBJ_WAIT_ENTRY       (LATE_OBJ_BASE + 0x90u)
+#define LATE_OBJ_RUNNER_ENTRY     0x08ffdf80u
+
+static void late_obj_waiter_entry(CpuState *s) {
+    s->r[4] = s_late_obj_sema;
+    s->r[5] = 1u;
+    s->r[6] = 0u; /* indefinite wait; hardware did not report a wake result */
+    s_late_obj_ret = sr_syscall(s, NID_CNW_WAIT_SEMA);
     s_late_obj_returned = 1;
-    selftest_park_on_scheduler();
+    s->r[2] = s_late_obj_ret;
+}
+
+static uint32_t late_obj_guest_call(CpuState *s, uint32_t nid, uint32_t a0,
+                                    uint32_t a1, uint32_t a2, uint32_t a3,
+                                    uint32_t a4, uint32_t a5) {
+    s->r[4] = a0; s->r[5] = a1; s->r[6] = a2; s->r[7] = a3;
+    s->r[8] = a4; s->r[9] = a5;
+    return sr_syscall(s, nid);
 }
 
 static uint32_t late_obj_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2) {
@@ -27843,11 +27982,100 @@ static uint32_t late_obj_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a
     return sr_syscall(&cpu, nid);
 }
 
+static void late_obj_guest_runner(CpuState *s) {
+    SrThreadInfo thread_info;
+
+    expect(late_obj_guest_call(s, LATE_OBJ_START_NID, s_late_obj_module_uid,
+                               0u, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: the module starts in the scheduled guest");
+
+    s_late_obj_sema = wsv_create(0u, 1u);
+    expect((int32_t)s_late_obj_sema > 0, "late-objects: semaphore created while the module runs");
+    s_late_obj_flag = late_obj_guest_call(s, LATE_OBJ_CREATE_EVFLAG,
+                                          LATE_OBJ_NAME, 0u, 0u, 0u, 0u, 0u);
+    expect((int32_t)s_late_obj_flag > 0,
+           "late-objects: event flag created while the module runs");
+    s_late_obj_callback = late_obj_guest_call(s, LATE_OBJ_CREATE_CB,
+                                              LATE_OBJ_NAME,
+                                              LATE_OBJ_BASE + LIFECYCLE_PATCH_OFF_A_1,
+                                              0u, 0u, 0u, 0u);
+    expect((int32_t)s_late_obj_callback > 0,
+           "late-objects: callback created while the module runs");
+
+    s_late_obj_waiter_uid = late_obj_guest_call(s, NID_SCE_KERNEL_CREATE_THREAD,
+                                                LATE_OBJ_NAME, LATE_OBJ_WAIT_ENTRY,
+                                                16u, 0x1000u, 0u, 0u);
+    expect(s_late_obj_waiter_uid != 0u,
+           "late-objects: project-owned worker thread created");
+    s_late_obj_returned = 0;
+    s_late_obj_ret = 0xffffffffu;
+    expect(late_obj_guest_call(s, NID_SCE_KERNEL_START_THREAD,
+                               s_late_obj_waiter_uid, 0u, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: worker starts and blocks on the semaphore");
+    expect(sched_thread_info(s_late_obj_waiter_uid, &thread_info) == 0 &&
+               thread_info.waitId == s_late_obj_sema,
+           "late-objects: worker waits on the semaphore it created");
+    expect(s_late_obj_returned == 0,
+           "late-objects: the worker has not returned from its wait");
+
+    expect(late_obj_guest_call(s, LATE_OBJ_REFER_THREAD, s_late_obj_waiter_uid,
+                               LATE_OBJ_INFO_THREAD, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: the worker resolves before the stop");
+    s_late_obj_pre_status = MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u);
+    s_late_obj_pre_waitid = MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u);
+    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
+    expect(late_obj_guest_call(s, LATE_OBJ_REFER_SEMA, s_late_obj_sema,
+                               LATE_OBJ_INFO_SEMA, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: the semaphore resolves before the stop");
+    s_late_obj_pre_numwait = MEM_R32(LATE_OBJ_INFO_SEMA + 52u);
+    expect(s_late_obj_pre_numwait == 1u,
+           "late-objects: the semaphore counts its one waiter");
+    expect(late_obj_guest_call(s, LATE_OBJ_REFER_EVFLAG, s_late_obj_flag,
+                               LATE_OBJ_INFO_FLAG, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: the event flag resolves before the stop");
+    expect(sr_callback_is_valid(s_late_obj_callback),
+           "late-objects: the callback resolves before the stop");
+
+    s_late_obj_stop_rc = late_obj_guest_call(s, LATE_OBJ_STOP_NID,
+                                              s_late_obj_module_uid, 0u, 0u,
+                                              0u, 0u, 0u);
+    expect(s_late_obj_stop_rc == 0u,
+           "late-objects: stopping the module returns 0");
+    s_late_obj_unload_rc = late_obj_guest_call(s, LATE_OBJ_UNLOAD_NID,
+                                                s_late_obj_module_uid, 0u, 0u,
+                                                0u, 0u, 0u);
+    expect(s_late_obj_unload_rc == 0u,
+           "late-objects: unloading the stopped module returns 0");
+
+    expect(late_obj_guest_call(s, LATE_OBJ_REFER_THREAD, s_late_obj_waiter_uid,
+                               LATE_OBJ_INFO_THREAD, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: the worker still resolves after unload");
+    expect(MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u) == s_late_obj_pre_status &&
+               MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u) == s_late_obj_pre_waitid,
+           "late-objects: the worker keeps its state and semaphore wait");
+    expect(sched_thread_info(s_late_obj_waiter_uid, &thread_info) == 0 &&
+               thread_info.status == s_late_obj_pre_status &&
+               thread_info.waitId == s_late_obj_pre_waitid,
+           "late-objects: the blocked worker remains intact after unload");
+    expect(s_late_obj_returned == 0,
+           "late-objects: unloading does not wake the worker");
+    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
+    expect(late_obj_guest_call(s, LATE_OBJ_REFER_SEMA, s_late_obj_sema,
+                               LATE_OBJ_INFO_SEMA, 0u, 0u, 0u, 0u) == 0u &&
+               MEM_R32(LATE_OBJ_INFO_SEMA + 52u) == s_late_obj_pre_numwait,
+           "late-objects: the semaphore still counts its waiter after unload");
+    expect(late_obj_guest_call(s, LATE_OBJ_REFER_EVFLAG, s_late_obj_flag,
+                               LATE_OBJ_INFO_FLAG, 0u, 0u, 0u, 0u) == 0u,
+           "late-objects: the event flag still resolves after unload");
+    expect(sr_callback_is_valid(s_late_obj_callback),
+           "late-objects: the callback still resolves until its owner exits");
+
+    s->r[2] = 0u;
+}
+
 static void test_late_prx_unload_keeps_module_owned_objects(void) {
     const char *path = HLE_BUILD_ROOT "/hle_late_objects.prx";
-    TCB *owner, *waiter;
-    uint32_t sema, flag, cb, pre_status, pre_waitid, pre_numwait;
-    uint32_t stop_rc, unload_rc;
+    TCB *waiter;
 
     reset_fixture();
     sr_hle_init();
@@ -27869,93 +28097,54 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
     sr_test_register_guest_fn(LATE_OBJ_BASE + LIFECYCLE_START_OFF, lifecycle_start_fn);
     sr_test_register_guest_fn(LATE_OBJ_BASE + LIFECYCLE_STOP_OFF, lifecycle_stop_fn);
     sr_test_register_guest_fn(LATE_OBJ_BASE + LIFECYCLE_PATCH_OFF_A_1, lifecycle_export_a1_fn);
-    expect(late_obj_call(LATE_OBJ_START_NID, uid, 0u, 0u) == 0u, "late-objects: the module starts");
-
-    /* The module's own thread creates the objects, so it is the owner of the callback. */
-    owner = fixture_thread(0x6b0u, TH_RUNNING, 40);
-    owner->started = 1;
-    s_cur = (int)(owner - s_tcb);
-    sema = wsv_create(0, 1);
-    expect((int32_t)sema > 0, "late-objects: semaphore created while the module runs");
-    flag = late_obj_call(LATE_OBJ_CREATE_EVFLAG, LATE_OBJ_NAME, 0u, 0u);
-    expect((int32_t)flag > 0, "late-objects: event flag created while the module runs");
-    cb = late_obj_call(LATE_OBJ_CREATE_CB, LATE_OBJ_NAME, LATE_OBJ_BASE + LIFECYCLE_PATCH_OFF_A_1, 0u);
-    expect((int32_t)cb > 0, "late-objects: callback created while the module runs");
-
-    /* A worker thread blocks on the semaphore for the rest of the test. */
-    waiter = fixture_thread(0x6b1u, TH_READY, 16);
-    waiter->started = 1;
-    s_late_obj_sema = sema;
+    title_hle_write_cstr(LATE_OBJ_NAME, "late-module-owner");
+    sr_test_register_guest_fn(LATE_OBJ_WAIT_ENTRY, late_obj_waiter_entry);
+    sr_test_register_guest_fn(LATE_OBJ_RUNNER_ENTRY, late_obj_guest_runner);
+    s_late_obj_module_uid = uid;
+    s_late_obj_sema = s_late_obj_flag = s_late_obj_callback = s_late_obj_waiter_uid = 0u;
+    s_late_obj_stop_rc = s_late_obj_unload_rc = 0xffffffffu;
     s_late_obj_returned = 0;
-    s_late_obj_ret = 0xFFFFFFFFu;
+    s_late_obj_ret = 0xffffffffu;
     MEM_W32(LATE_OBJ_WAIT_TMO_PTR, LATE_OBJ_WAIT_US);
-    waiter->coro = sr_coro_create(late_obj_waiter_body, NULL, (size_t)4 << 20);
-    expect(waiter->coro != NULL, "late-objects: worker coroutine created");
-    if (!waiter->coro) {
-        remove(path);
-        _putenv("SR_REAL_MODULE_START=0");
-        sr_test_guest_fn_reset();
-        sr_hle_test_module_reset();
-        s_cur = -1;
-        return;
-    }
-    s_cur = (int)(waiter - s_tcb);
-    waiter->state = TH_RUNNING;
-    sr_coro_switch(waiter->coro);
-    expect(waiter->state == TH_WAIT_OBJ, "late-objects: the worker blocks on the semaphore");
-    expect(s_late_obj_returned == 0, "late-objects: the worker has not returned from its wait");
-    s_cur = (int)(owner - s_tcb);
-    owner->state = TH_RUNNING;
 
-    /* Before the stop: each object is observable through its refer call. */
-    expect(late_obj_call(LATE_OBJ_REFER_THREAD, waiter->uid, LATE_OBJ_INFO_THREAD, 0u) == 0u,
-           "late-objects: the worker resolves before the stop");
-    pre_status = MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u);
-    pre_waitid = MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u);
-    expect(pre_waitid == sema, "late-objects: the worker waits on the semaphore it created");
-    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
-    expect(late_obj_call(LATE_OBJ_REFER_SEMA, sema, LATE_OBJ_INFO_SEMA, 0u) == 0u,
-           "late-objects: the semaphore resolves before the stop");
-    pre_numwait = MEM_R32(LATE_OBJ_INFO_SEMA + 52u);
-    expect(pre_numwait == 1u, "late-objects: the semaphore counts its one waiter");
-    expect(late_obj_call(LATE_OBJ_REFER_EVFLAG, flag, LATE_OBJ_INFO_FLAG, 0u) == 0u,
-           "late-objects: the event flag resolves before the stop");
-    expect(sr_callback_is_valid(cb), "late-objects: the callback resolves before the stop");
-
-    /* Stop and unload the module. The PSP measurement shows both succeed and neither
-     * removes the objects above. */
-    stop_rc = late_obj_call(LATE_OBJ_STOP_NID, uid, 0u, 0u);
-    expect(stop_rc == 0u, "late-objects: stopping the module returns 0");
-    unload_rc = late_obj_call(LATE_OBJ_UNLOAD_NID, uid, 0u, 0u);
-    expect(unload_rc == 0u, "late-objects: unloading the stopped module returns 0");
-
-    /* After the unload every object still resolves, with the same state as before. */
-    expect(late_obj_call(LATE_OBJ_REFER_THREAD, waiter->uid, LATE_OBJ_INFO_THREAD, 0u) == 0u,
-           "late-objects: the worker still resolves after the unload");
-    expect(MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u) == pre_status &&
-               MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u) == pre_waitid,
-           "late-objects: the worker keeps its status and the semaphore it waits on");
-    expect(waiter->state == TH_WAIT_OBJ,
+    /* The production handlers run inside the scheduler so the stop entry owns a
+     * real guest thread while the measured waiter remains blocked. */
+    sched_run(LATE_OBJ_RUNNER_ENTRY, 0u, 0u);
+    expect(s_late_obj_stop_rc == 0u && s_late_obj_unload_rc == 0u,
+           "late-objects: StopModule and UnloadModule both succeed");
+    expect(s_late_obj_waiter_uid != 0u, "late-objects: the worker thread was created");
+    waiter = tcb_by_uid(s_late_obj_waiter_uid);
+    expect(waiter != NULL && waiter->state == TH_WAIT_OBJ,
            "late-objects: the worker stays blocked after the unload");
-    expect(s_late_obj_returned == 0, "late-objects: the unload does not wake the worker");
-    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
-    expect(late_obj_call(LATE_OBJ_REFER_SEMA, sema, LATE_OBJ_INFO_SEMA, 0u) == 0u,
-           "late-objects: the semaphore still resolves after the unload");
-    expect(MEM_R32(LATE_OBJ_INFO_SEMA + 52u) == pre_numwait,
-           "late-objects: the semaphore still counts its waiter after the unload");
-    expect(late_obj_call(LATE_OBJ_REFER_EVFLAG, flag, LATE_OBJ_INFO_FLAG, 0u) == 0u,
-           "late-objects: the event flag still resolves after the unload");
-    expect(sr_callback_is_valid(cb), "late-objects: the callback still resolves after the unload");
+    expect(s_late_obj_returned == 0, "late-objects: unload does not wake the worker");
 
-    /* Cleanup: terminate the worker (no code runs), then delete the objects. */
-    expect(srt_call(NID_SCE_KERNEL_TERMINATE_DELETE_THREAD, waiter->uid) == 0u,
+    /* The callback was visible after unload while its owner was alive; deleting
+     * that owner removes it, matching the measured #1106 post-exit observation. */
+    expect(!sr_callback_is_valid(s_late_obj_callback),
+           "late-objects: callback unregisters with its owner thread's exit");
+    expect(late_obj_call(LATE_OBJ_REFER_THREAD, s_late_obj_waiter_uid,
+                         LATE_OBJ_INFO_THREAD, 0u) == 0u,
+           "late-objects: orphaned worker remains queryable after its owner exits");
+    expect(MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u) == s_late_obj_pre_status &&
+               MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u) == s_late_obj_pre_waitid,
+           "late-objects: the worker keeps its state and semaphore wait");
+    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
+    expect(late_obj_call(LATE_OBJ_REFER_SEMA, s_late_obj_sema,
+                         LATE_OBJ_INFO_SEMA, 0u) == 0u &&
+               MEM_R32(LATE_OBJ_INFO_SEMA + 52u) == s_late_obj_pre_numwait,
+           "late-objects: semaphore survives and still counts the waiter");
+    expect(late_obj_call(LATE_OBJ_REFER_EVFLAG, s_late_obj_flag,
+                         LATE_OBJ_INFO_FLAG, 0u) == 0u,
+           "late-objects: event flag survives unload");
+
+    /* Cleanup: terminate the orphaned worker, then delete the remaining objects. */
+    expect(srt_call(NID_SCE_KERNEL_TERMINATE_DELETE_THREAD, s_late_obj_waiter_uid) == 0u,
            "late-objects: the orphaned worker can be terminated and deleted");
-    if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
-    wsv_delete(sema);
-    expect(late_obj_call(LATE_OBJ_DELETE_EVFLAG, flag, 0u, 0u) == 0u,
+    wsv_delete(s_late_obj_sema);
+    expect(late_obj_call(LATE_OBJ_DELETE_EVFLAG, s_late_obj_flag, 0u, 0u) == 0u,
            "late-objects: the event flag deletes after the unload");
-    expect(late_obj_call(LATE_OBJ_DELETE_CB, cb, 0u, 0u) == 0u,
-           "late-objects: the callback deletes after the unload");
+    expect(late_obj_call(LATE_OBJ_DELETE_CB, s_late_obj_callback, 0u, 0u) != 0u,
+           "late-objects: callback was already removed with its owner thread");
     s_cur = -1;
     remove(path);
     _putenv("SR_REAL_MODULE_START=0");

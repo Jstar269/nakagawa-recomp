@@ -219,3 +219,10 @@ void sr_hle_power_register_battery(void) {
     sr_hle_register(0x0afd0d8b, "scePowerIsBatteryExist", h_PowerIsBatteryExist);
     sr_hle_register(0x87440f5e, "scePowerIsPowerOnline", h_PowerIsPowerOnline);
 }
+
+void sr_hle_power_loadexec_reset(void) {
+    for (unsigned i = 0; i < sizeof(s_power_cb_slots) / sizeof(s_power_cb_slots[0]); i++)
+        s_power_cb_slots[i] = 0u;
+    s_power_lock_count = 0u;
+    s_power_tick_count = 0u;
+}

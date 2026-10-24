@@ -38,6 +38,7 @@ void sr_hle_power_register_clock(void);
 void sr_hle_power_register_lock(void);
 void sr_hle_power_register_callback(void);
 void sr_hle_power_register_battery(void);
+void sr_hle_power_loadexec_reset(void); /* drop per-program callbacks and lock state */
 
 #ifdef SR_HLE_THREAD_SELFTEST
 uint32_t sr_hle_test_power_lock_count(void);

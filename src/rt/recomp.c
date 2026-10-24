@@ -245,6 +245,18 @@ static uint32_t g_loaded_end = 0;   /* highest guest address written by the load
 
 uint32_t sr_loaded_end(void) { return g_loaded_end; }
 
+void sr_loaded_end_set(uint32_t end) {
+    g_loaded_end = end;
+}
+
+void sr_mem_reset(void) {
+    sr_mem_init();
+    /* g_mem points at guest RAM 0x08000000 inside the full physical arena. */
+    memset(g_mem - 0x08000000u, 0, 0x0c000000u);
+    g_loaded_end = 0u;
+    sr_exec_span_reset();
+}
+
 void sr_load_segment(uint32_t vaddr, const void *data, uint32_t len) {
     sr_mem_init();
     /* Bounds-check against the 192 MB guest arena. A malformed ELF or a loader that

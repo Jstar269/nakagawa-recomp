@@ -120,6 +120,20 @@ int     sched_take_current_join_result(uint32_t uid, uint32_t *result_out) { (vo
 int     sched_current_priority(void) { return 32; }
 int     sched_is_dormant(uint32_t uid) { (void)uid; return 1; }
 void    sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) { (void)entry; (void)arglen; (void)argp; }
+/* sceKernelLoadExec restart seam (driver.c --sched loop). The headless gate never runs
+ * sched_run, so no guest thread can queue a LoadExec request: take reports "none" and the
+ * loop breaks. The remaining entries are reachable only after a request was taken, so they
+ * refuse (0 = failure) rather than pretend a replacement program booted. The request
+ * pointer is opaque here (SrLoadExecRequest lives in recomp.h, which this TU avoids). */
+int     sr_hle_loadexec_take(void *out) { (void)out; return 0; }
+void    sr_hle_loadexec_release(void *request) { (void)request; }
+void    sr_hle_loadexec_reset_guest_state(void) {}
+int     sr_hle_loadexec_boot_module(const char *guest_path, uint32_t *entry_out, uint32_t *gp_out) {
+    (void)guest_path; (void)entry_out; (void)gp_out; return 0;
+}
+void    sr_hle_loadexec_finish(void) {}
+int     sched_reset_for_loadexec(void) { return 0; }
+void    sched_set_guest_process_gp(uint32_t gp) { (void)gp; }
 int (*sr_sched_stop_requested)(void) = NULL;
 struct SrPauseHost;
 const struct SrPauseHost *sr_sched_pause_host = NULL;

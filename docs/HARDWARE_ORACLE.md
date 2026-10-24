@@ -47,7 +47,7 @@ proposals. Each claim covers only the exact fixture named:
   `sceDmacTryMemcpy` returned BUSY (`0x80000021`) in 64/64 trials while the
   first transfer was pending, and a concurrent blocking `sceDmacMemcpy`
   waited and returned 0 in 64/64 trials. Re-measured on 2026-10-23 on a
-  PSP-3000 / 6.6.1 / PSPLink v3.2.1 (probe `c2632954`, [#303](https://github.com/Jstar269/nakagawa-recomp/issues/303)):
+  PSP-3000 / 6.6.1 / PSPLink v3.2.1 (probe `c2632954`, historical issue #303):
   the same 64/64 results for all three combinations, a 1 MiB VRAM-to-VRAM
   first call lasting 4.43 to 4.55 ms for both APIs, a BUSY second `Try` returning
   in 14 to 90 us, a blocking second call returning 0 after 8.73 to 8.88 ms, and
