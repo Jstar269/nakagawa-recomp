@@ -1154,7 +1154,7 @@ static unsigned long long compat_hits(const char *id) {
 static void test_compat_fired_report_names_applied_patches(void) {
     char id[160];
     if (cfg_has(SR_TITLE_CFG_WORKER_ENTRY)) {
-        snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:worker thread reuse", cfg_worker_entry());
+        snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:worker thread reuse", (unsigned)cfg_worker_entry());
         unsigned long long before = compat_hits(id);
         reset_sched();
         expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");
@@ -1166,7 +1166,7 @@ static void test_compat_fired_report_names_applied_patches(void) {
     }
     if (cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
         snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:launcher priority demotion",
-                 cfg_launcher_entry());
+                 (unsigned)cfg_launcher_entry());
         unsigned long long before = compat_hits(id);
         reset_sched();
         expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");

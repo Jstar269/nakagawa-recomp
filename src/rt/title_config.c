@@ -328,7 +328,7 @@ void sr_compat_fired(const char *collection, uint32_t anchor, const char *name) 
     /* The first hit goes to the log as it happens, so a run that dies before its
      * end-of-run report still shows which patches were active. */
     fprintf(stderr, "COMPAT_PATCH_FIRST_HIT: order=%u id=%s:0x%08x:%s\n",
-            s_compat_fired_n, collection, anchor, name);
+            s_compat_fired_n, collection, (unsigned)anchor, name);
 }
 
 unsigned sr_compat_fired_count(void) { return s_compat_fired_n; }
@@ -336,7 +336,7 @@ unsigned sr_compat_fired_count(void) { return s_compat_fired_n; }
 int sr_compat_fired_at(unsigned index, char *id, unsigned id_size, unsigned long long *hits) {
     if (index >= s_compat_fired_n) return 0;
     const SrCompatFired *e = &s_compat_fired[index];
-    if (id && id_size) snprintf(id, id_size, "%s:0x%08x:%s", e->collection, e->anchor, e->name);
+    if (id && id_size) snprintf(id, id_size, "%s:0x%08x:%s", e->collection, (unsigned)e->anchor, e->name);
     if (hits) *hits = e->hits;
     return 1;
 }
