@@ -26,6 +26,7 @@ EXPECTED_PROVENANCE_FAMILIES = frozenset({
     "clay-layout",
     "portable-snippets-safe-math",
     "dr-libs-dr-wav",
+    "monocypher-ed25519",
     "sdl3",
     "vulkan",
     "vfpu",

@@ -102,6 +102,21 @@ class TestReleaseManifest(unittest.TestCase):
             self.assertTrue((ROOT / family["notice_path"]).is_file(), family["notice_path"])
             self.assertTrue((ROOT / family["evidence_path"]).is_file(), family["evidence_path"])
 
+    def test_monocypher_family_is_pinned_cc0_and_not_claimed_as_runtime_linked(self):
+        family = next(
+            item for item in load_manifest()["provenance_families"]
+            if item.get("id") == "monocypher-ed25519"
+        )
+        self.assertEqual(family["license"], "CC0-1.0")
+        self.assertEqual(family["origin"], "https://github.com/LoupVaillant/Monocypher")
+        self.assertEqual(
+            family["revision"],
+            "4.0.3 / ab2b16dd619ad5f6979a4fbe69cfa324a6fcc35f",
+        )
+        self.assertEqual(family["notice_path"], "third_party/monocypher/LICENCE.md")
+        self.assertEqual(family["evidence_path"], "third_party/monocypher/PROVENANCE.md")
+        self.assertIn("not linked into player runtime", family["disposition"])
+
     def test_project_korean_font_source_is_an_approved_pinned_binary(self):
         data = load_manifest()
         component = next(

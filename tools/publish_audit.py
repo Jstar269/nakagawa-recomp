@@ -1232,6 +1232,11 @@ SPDX_BYTE_EXACT_IMPORT_PATHS = frozenset({
     "third_party/dr_libs/dr_wav.h",
     "third_party/portable-snippets/safe-math/safe-math.h",
     "third_party/stb/stb_image.h",
+    # Monocypher declares its SPDX line below the 8-line header window.
+    "third_party/monocypher/monocypher-ed25519.c",
+    "third_party/monocypher/monocypher-ed25519.h",
+    "third_party/monocypher/monocypher.c",
+    "third_party/monocypher/monocypher.h",
 })
 
 # A small set of byte-exact FFmpeg headers already carry an SPDX identifier.

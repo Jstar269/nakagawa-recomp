@@ -99,6 +99,16 @@
       "disposition": "vendored_source_only; selftests only, not linked into the player or runtime"
     },
     {
+      "id": "monocypher-ed25519",
+      "name": "Monocypher 4.0.3 Ed25519 signature check",
+      "license": "CC0-1.0",
+      "origin": "https://github.com/LoupVaillant/Monocypher",
+      "revision": "4.0.3 / ab2b16dd619ad5f6979a4fbe69cfa324a6fcc35f",
+      "notice_path": "third_party/monocypher/LICENCE.md",
+      "evidence_path": "third_party/monocypher/PROVENANCE.md",
+      "disposition": "vendored_source_only; upstream dual BSD-2-Clause OR CC0-1.0, CC0-1.0 elected; not linked into player runtime yet"
+    },
+    {
       "id": "sdl3",
       "name": "SDL3",
       "license": "Zlib",

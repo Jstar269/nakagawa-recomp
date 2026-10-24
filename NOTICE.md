@@ -65,6 +65,10 @@ We aim to respond promptly and will remove material where appropriate.
   upstream `LICENSE`, pinned source manifest, and SHA-256 values are under
   `third_party/dr_libs/`. Only selftests compile it; it is not in the player or
   the runtime.
+- **Monocypher 4.0.3 Ed25519 signature check** — upstream offers `BSD-2-Clause OR CC0-1.0`;
+  the project uses it under CC0-1.0. Four byte-identical source files, the complete upstream
+  `LICENCE.md` and the pinned manifest are under `third_party/monocypher/`. It is compiled into
+  the `ed25519-verify-selftest` (RFC 8032 vectors) only; it is not linked into the player yet.
 - **Optional system FFmpeg/libavcodec H.264 backend** — `H264_FFMPEG=1` links
   host-provided `libavcodec` and `libavutil` dynamically. Their source is not
   vendored and the Windows package does not bundle them; anyone who bundles them

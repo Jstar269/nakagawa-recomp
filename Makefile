@@ -954,6 +954,7 @@ PUBLIC_TARGETS := \
 	profiler-selftest \
 	gui-present-selftest \
 	clay-layout-selftest \
+	ed25519-verify-selftest \
 	nk-ui-core-selftest \
 	nk-ui-player-screens-selftest \
 	nk-ui-player-screens-capture \
@@ -1087,6 +1088,7 @@ HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_clay-layout-selftest := build and run the vendored Clay layout selftest
+HELP_DESCRIPTION_ed25519-verify-selftest := check nk_ed25519_verify (vendored Monocypher) against the RFC 8032 vectors
 HELP_DESCRIPTION_nk-ui-player-screens-selftest := build and run nk_ui Library, Title detail and router snapshots
 HELP_DESCRIPTION_nk-ui-player-screens-capture := save offscreen synthetic Library and Title detail captures (set NK_UI_CAPTURE_DIR)
 HELP_DESCRIPTION_nk-ui-core-selftest := build and run the nk_ui core selftest (synthetic layout, focus and scale)
@@ -3023,6 +3025,21 @@ clay-layout-selftest:
 		-o $(BUILD_DIR)/clay_layout_selftest$(EXE_EXT) tests/native/test_clay_layout.c
 	$(BUILD_DIR)/clay_layout_selftest$(EXE_EXT)
 
+# nk_ed25519_verify (src/core/nk_sig.c) on the vendored Monocypher Ed25519 check,
+# against the RFC 8032 section 7.1 vectors. Nothing in the player links it yet.
+ED25519_VERIFY_SELFTEST_SRCS := src/core/nk_sig.c third_party/monocypher/monocypher.c \
+	third_party/monocypher/monocypher-ed25519.c tests/native/test_nk_sig.c
+define ED25519_VERIFY_SELFTEST_CMD
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Ithird_party/monocypher $(ED25519_VERIFY_SELFTEST_SRCS) \
+		-o $(BUILD_ROOT)/test_nk_sig$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_nk_sig$(EXE_EXT)
+endef
+
+.PHONY: ed25519-verify-selftest
+ed25519-verify-selftest:
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(call ED25519_VERIFY_SELFTEST_CMD)
+
 .PHONY: nk-ui-core-selftest
 nk-ui-core-selftest:
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
@@ -3126,6 +3143,7 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
 		tests/native/test_input_profile.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_input_profile$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_input_profile$(EXE_EXT)
+	$(call ED25519_VERIFY_SELFTEST_CMD)
 ifeq ($(OS),Windows_NT)
 	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o $(BUILD_ROOT)/argv_echo_helper$(EXE_EXT)
 	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \

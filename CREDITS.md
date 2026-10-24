@@ -16,6 +16,9 @@ Nakagawa has since substantially extended and modified that codebase. This repos
 - **Clay — Nic Barker** — zlib. The layout library in [`third_party/clay/`](third_party/clay/).
 - **Portable Snippets — Evan Nemerson** — CC0-1.0 (public domain). The overflow-checked arithmetic header in [`third_party/portable-snippets/`](third_party/portable-snippets/).
 - **dr_libs (dr_wav) — David Reid** — public domain (Unlicense), elected from its Unlicense or MIT-0 choice. The WAV writer selftests use, in [`third_party/dr_libs/`](third_party/dr_libs/).
+- **Monocypher 4.0.3 — Loup Vaillant, Michael Savage, Fabio Scotoni and contributors** — dual BSD-2-Clause or
+  CC0-1.0; the project uses it under CC0-1.0. The Ed25519 signature check in
+  [`third_party/monocypher/`](third_party/monocypher/).
 - **PSPSDK / PSPDEV contributors** — BSD-family notices for public ABI definitions and source-owned fixtures ([`THIRD_PARTY_LICENSES/PSPSDK.txt`](THIRD_PARTY_LICENSES/PSPSDK.txt)).
 - **SDL, SDL_ttf and their dependencies** — staged beside the player with their licence texts (listed in [`NOTICE.md`](NOTICE.md)).
 - **stb_image 2.30 — Sean Barrett** — public domain (Unlicense), the alternative to MIT that upstream offers. The PNG
