@@ -312,7 +312,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce97e6ddd576250eee26ca9b152b6fd62015118360a4008d7e124b8ca5f3e66b"
+      "sha256": "6deb1a9430cb08e45f6539e79474a39ecf1a31e09903e7f8ec5e10067e1614c6"
     },
     {
       "path": ".recomp.json",
@@ -1432,7 +1432,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e425644a17e55ad59e26e07c2c8f94c30151d87a2bbc81cde8d5533b52df8ae4"
+      "sha256": "88f067292d62772fc297d9205b77ff64584f0b20d29673ab99ab89bac07216bb"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",

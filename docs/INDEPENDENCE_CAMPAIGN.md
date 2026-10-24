@@ -310,6 +310,10 @@ replacement by an LLE path that makes the component unnecessary ·
   adapters project-authored. Continue validating codec setup and decode
   bookkeeping with synthetic tests. The first-frame `fact` delay remains
   `NOT_MEASURED`; claim hardware-equivalent trimming only after a PSP result.
+- **G18 MP3 frame decoder → evidence, not rewrite.** minimp3 (CC0-1.0) is vendored
+  byte-identical under the 2026-10-24 public-domain rule; keep `mp3_bridge` and the sceMp3
+  handlers as separate records. Validate decoding with the synthetic tone fixture; claim
+  hardware-equivalent sceMp3 timing only after a PSP result.
 
 ## 5. Clean-room protocol for AI-agent work
 
