@@ -2225,7 +2225,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3eada7a5730ea6c43f69335b4eb344d005b448525aad8ff335e2f19c55b9c924"
+      "sha256": "ce0122017653b008af699e8b2853ce8061859fd58bfc60367f2ccee9e5271a54"
     },
     {
       "path": "fixtures/production_smoke/README.md",
@@ -7499,7 +7499,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "348243b7f3cf4ec6d7ae91ed6c528d8059074ca749549c315ae30acba1339890"
+      "sha256": "4ab621f805665517a72bab0ed8746b7bc0461fd84e6f655226c0c330046195ef"
     },
     {
       "path": "tools/ge_replay_metrics.py",
@@ -10004,7 +10004,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dac85ac26ff8633719d81743f6c59121eea468a2478b28b5115f59fdf1b8be9d"
+      "sha256": "1ed85bb07d4644ce52236351a03e81fd7a897a0d3556fab38f392eb324f9682c"
     },
     {
       "path": "tools/test_native_gate_stub_link.py",
@@ -10196,7 +10196,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "745203b8881a8fd7354adfd180cbf928d1109431c84b4070022abb2c4f74b529"
+      "sha256": "51f79f865a28238ed3a0c552d4a6341707922f259c1d80e3d6aa9996d827332c"
     },
     {
       "path": "tools/test_player_package_determinism.py",
@@ -10568,7 +10568,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fe54bf909ca2d2de1454f33c9b664fc73b4cb4f59434f2c2ddc847bb623ec10c"
+      "sha256": "8ff7b843fc033e40a50c35bb0ef90d017536fb44fe544b0bcc614576124d10aa"
     },
     {
       "path": "tools/test_public_export.py",
