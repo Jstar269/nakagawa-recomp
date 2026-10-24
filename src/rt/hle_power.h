@@ -15,6 +15,8 @@ uint32_t h_PowerGetBatteryLifePercent(CpuState *s);
 uint32_t h_PowerIsBatteryCharging(CpuState *s);
 uint32_t h_PowerIsBatteryExist(CpuState *s);
 uint32_t h_PowerIsPowerOnline(CpuState *s);
+uint32_t h_PowerGetBatteryChargingStatus(CpuState *s);
+uint32_t h_PowerGetBatteryLifeTime(CpuState *s);
 uint32_t h_PowerIsLowBattery(CpuState *s);
 uint32_t h_PowerGetPllClockFrequencyInt(CpuState *s);
 uint32_t h_PowerGetCpuClockFrequencyInt(CpuState *s);
@@ -24,6 +26,7 @@ uint32_t h_PowerGetCpuClockFrequencyFloat(CpuState *s);
 uint32_t h_PowerGetBusClockFrequencyFloat(CpuState *s);
 uint32_t h_PowerSetClockFrequency(CpuState *s);
 uint32_t h_PowerSetClockFrequency350(CpuState *s);
+uint32_t h_PowerSetCpuClockFrequency(CpuState *s);
 uint32_t h_PowerRegisterCallback(CpuState *s);
 uint32_t h_PowerLock(CpuState *s);
 uint32_t h_PowerUnlock(CpuState *s);
@@ -44,6 +47,7 @@ void sr_hle_power_loadexec_reset(void); /* drop per-program callbacks and lock s
 uint32_t sr_hle_test_power_lock_count(void);
 uint32_t sr_hle_test_power_tick_count(void);
 void sr_hle_test_power_lock_reset(void);
+void sr_hle_test_power_set_external(int external);
 #endif
 
 #endif

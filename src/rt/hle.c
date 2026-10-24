@@ -10831,14 +10831,27 @@ void sr_hle_test_volatile_mem_reset(void) { s_volatile_locked = 0; }
  * on the launcher (0x111) to unstick it from sceKernelSleepThread. */
 static uint32_t s_umd_cb_uid = 0;
 
-static uint32_t h_UmdDriveStat(CpuState *s) { (void)s; return 0x32; }     /* PRESENT|READY|READABLE (matches PPSSPP reference) */
+/* Drive state sceUmdGetDriveStat reports. Measured on a PSP-3000, firmware 6.61, 2026-10-24,
+ * with a game disc inserted: 0x32 at program entry (PSPSDK pspumd.h: PRESENT 0x02 | INITED 0x10 |
+ * READY 0x20); sceUmdActivate, sceUmdWaitDriveStat for READY, sceUmdReplaceProhibit and
+ * sceUmdReplacePermit each return 0; after sceUmdDeactivate the state is 0x12 (READY cleared).
+ * The waits below read this state, so a wait for READY after a deactivate blocks until
+ * sceUmdActivate signals the drive ready again. */
+enum { UMD_STAT_PRESENT = 0x02u, UMD_STAT_ACTIVE = 0x32u, UMD_STAT_DEACTIVATED = 0x12u };
+static uint32_t s_umd_drive_stat = UMD_STAT_ACTIVE;
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_hle_test_umd_reset(void) { s_umd_drive_stat = UMD_STAT_ACTIVE; }
+#endif
 
-/* The virtual ISO-backed drive currently exposes only PRESENT|READY|READABLE.
- * In that modeled state sceUmdGetErrorStat reports no drive error. Other drive
- * error states remain outside this compatibility contract. */
+static uint32_t h_UmdDriveStat(CpuState *s) { (void)s; return s_umd_drive_stat; }
+
+/* The virtual ISO-backed drive serves one disc that never fails, so sceUmdGetErrorStat
+ * reports no drive error while that disc is present, activated or not. The error stat of a
+ * deactivated drive is UNMEASURED; other drive error states remain outside this
+ * compatibility contract. */
 static uint32_t h_UmdGetErrorStat(CpuState *s) {
     uint32_t drive_stat = h_UmdDriveStat(s);
-    return drive_stat == 0x32u ? 0u : 0x80010086u;
+    return (drive_stat & UMD_STAT_PRESENT) ? 0u : 0x80010086u;
 }
 
 /* sceUmdReplaceProhibit() / sceUmdReplacePermit(): whether the user may swap the disc.
@@ -10857,7 +10870,9 @@ uint32_t sr_hle_test_umd_replace_permitted(void) { return s_umd_replace_permitte
  * (u32) receives PSP_UMD_TYPE_GAME (0x10), the only medium this runtime serves.
  * A size other than 8 or an unusable pointer returns SCE_ERROR_ERRNO_EINVAL
  * (0x80010016). Public behaviour reference: PSPSDK pspumd.h (SceUmdDiscInfo,
- * PSP_UMD_TYPE_GAME) and PPSSPP Core/HLE/sceUmd.cpp; UNMEASURED on hardware. */
+ * PSP_UMD_TYPE_GAME) and PPSSPP Core/HLE/sceUmd.cpp. Measured on a PSP-3000, firmware 6.61,
+ * 2026-10-24, with a game disc: size 8 returns 0 and type 0x10; size 0 and size 12 return
+ * 0x80010016. */
 static uint32_t h_UmdGetDiscInfo(CpuState *s) {
     (void)s;
     uint32_t info = A0;
@@ -10872,23 +10887,21 @@ static uint32_t h_UmdGetDiscInfo(CpuState *s) {
  * notify the registered callback if one exists. */
 static void sr_umd_signal_ready(void) {
     extern void sched_wake(uint32_t);
+    s_umd_drive_stat = UMD_STAT_ACTIVE;
     sched_wake(0x554D44u);
     if (s_umd_cb_uid)
-        (void)sr_callback_notify(s_umd_cb_uid, 0x32u);
+        (void)sr_callback_notify(s_umd_cb_uid, s_umd_drive_stat);
 }
 
-/* Shared body for sceUmdWaitDriveStat / ...WithTimer. The emulated drive is a
- * constant present|ready|readable (0x32; see h_UmdDriveStat), so a request whose
- * bits all fall inside that mask is satisfied immediately; anything else can never
- * be satisfied and waits out the timeout. The post-wait re-read is against the same
- * drive model, so it stays unsatisfiable and reports SCE_KERNEL_ERROR_WAIT_TIMEOUT
- * -- kept (rather than returning the error unconditionally) so the shape still
- * matches a real drive whose state could change across the wait. */
+/* Shared body for sceUmdWaitDriveStat / ...WithTimer. A request whose bits all
+ * fall inside the current drive state (see s_umd_drive_stat) is satisfied
+ * immediately; otherwise the caller waits on the UMD object until sceUmdActivate
+ * signals the drive ready or the timeout passes, and the state is read again:
+ * still unsatisfied reports SCE_KERNEL_ERROR_WAIT_TIMEOUT. */
 static uint32_t umd_wait_drive_stat(uint32_t want, uint32_t timeout_us) {
-    const uint32_t drive = 0x32u;
-    if ((drive & want) == want) return 0;
+    if ((s_umd_drive_stat & want) == want) return 0;
     (void)sched_block_on_timeout(0x554D44u, timeout_us);
-    return (drive & want) == want ? 0u : 0x800201A8u;
+    return (s_umd_drive_stat & want) == want ? 0u : 0x800201A8u;
 }
 
 static uint32_t h_UmdWaitDriveStat(CpuState *s) {
@@ -10909,7 +10922,7 @@ static uint32_t h_UmdWaitDriveStatCB(CpuState *s) {
     if (sr_thread_has_pending_callbacks(self))
         sr_thread_dispatch_callbacks();
 
-    if ((0x32u & A0) == A0) return 0;
+    if ((s_umd_drive_stat & A0) == A0) return 0;
 
     uint32_t timeout = A1 ? A1 : 8000u;
     /* PSP hardware rounds very small UMD wait timeouts upward. */
@@ -10938,6 +10951,15 @@ static uint32_t h_UmdActivate(CpuState *s) {
     return 0;
 }
 
+/* sceUmdDeactivate(unit, drive): stop the drive. The measured state afterwards is 0x12 (see
+ * s_umd_drive_stat); the return value of a deactivate is UNMEASURED and reported as 0, like
+ * sceUmdActivate. The arguments are not checked, as sceUmdActivate does not check them. */
+static uint32_t h_UmdDeactivate(CpuState *s) {
+    (void)s;
+    s_umd_drive_stat = UMD_STAT_DEACTIVATED;
+    return 0;
+}
+
 /* sceUmdRegisterUMDCallBack: register a callback that fires when UMD drive state changes.
  * Registration only records the callback; it does not signal an event or alter any
  * thread's pending wakeup count. */
@@ -10962,6 +10984,8 @@ static uint32_t h_UmdUnRegisterUMDCallBack(CpuState *s) {
 
 static void hle_register_umd_callback_handlers(void) {
     sr_hle_register(0xc6183d47u, "sceUmdActivate", h_UmdActivate);
+    sr_hle_register(0xe83742bau, "sceUmdDeactivate", h_UmdDeactivate);
+    sr_hle_register(0x6b4a146cu, "sceUmdGetDriveStat", h_UmdDriveStat);
     sr_hle_register(0xaee7404du, "sceUmdRegisterUMDCallBack", h_UmdRegisterUMDCallBack);
     sr_hle_register(0xbd2bde07u, "sceUmdUnRegisterUMDCallBack", h_UmdUnRegisterUMDCallBack);
     sr_hle_register(0x87533940u, "sceUmdReplaceProhibit", h_UmdReplaceProhibit);
@@ -11862,6 +11886,80 @@ static uint32_t h_RtcGetWin32FileTime(CpuState *s) {
         return RTC_INVALID_VALUE;
     }
     return rtc_write_u64(A1, delta * 10u) ? 0u : RTC_INVALID_VALUE;
+}
+/* A guest access an HLE handler makes where its PSP counterpart has no pointer check and
+ * takes a bus error inside the system module. A user program cannot recover from that on the
+ * PSP, so the runtime does not turn it into an error code the program could read: the access
+ * is recorded as out of range (sr_oor), the fault goes to the flight recorder as a fault
+ * exception (MIPS ExcCode 7, data bus error, with the faulting guest address), and the run
+ * stops the way an unregistered import stops it, with its own exit status. The executable
+ * harness counts the fault and returns instead, so a test can assert it. */
+#define HLE_GUEST_FAULT_EXIT 10
+#define HLE_GUEST_FAULT_EXC_DBE 7u
+#ifdef SR_HLE_THREAD_SELFTEST
+static uint32_t s_hle_guest_fault_count, s_hle_guest_fault_addr;
+uint32_t sr_hle_test_guest_fault_count(void) { return s_hle_guest_fault_count; }
+uint32_t sr_hle_test_guest_fault_addr(void) { return s_hle_guest_fault_addr; }
+void sr_hle_test_guest_fault_reset(void) { s_hle_guest_fault_count = 0u; s_hle_guest_fault_addr = 0u; }
+#endif
+static void hle_guest_fault(CpuState *s, const char *name, uint32_t addr, int store) {
+    sr_oor(addr, 0u, store);
+    fprintf(stderr, "HLE: guest fault: %s %s guest 0x%08x; the PSP faults inside the module here, "
+                    "so the run stops\n", name, store ? "wrote" : "read", addr);
+    sr_flight_fault(SR_FLIGHT_KIND_FAULT_EXCEPTION, s->pc, HLE_GUEST_FAULT_EXC_DBE, addr);
+#ifdef SR_HLE_THREAD_SELFTEST
+    s_hle_guest_fault_count++;
+    s_hle_guest_fault_addr = addr;
+#else
+    if (sr_sched_on) {
+        sr_trace_close();
+        sr_perf_shutdown();
+        fflush(stderr);
+        _Exit(HLE_GUEST_FAULT_EXIT);
+    }
+    longjmp(g_hle_jmp, 1);
+#endif
+}
+
+/* sceRtcGetTime64_t(const pspTime *date, u64 *time): the date as seconds since
+ * 1970-01-01 00:00:00. Measured on a PSP-3000, firmware 6.61, 2026-10-24:
+ *   - valid dates convert and return 0;
+ *   - year 1 and any date before 1970 return 0x800001FE;
+ *   - month 13, day 32, February 30 and hour 24 are not rejected: they return 0 and
+ *     normalise, carrying into the next year, month or day;
+ *   - a NULL output pointer returns 0 without a fault;
+ *   - a NULL date pointer faults inside the module (it has no check), so it takes the
+ *     guest-fault stop above, as does any date span that is not readable.
+ * Carrying is modelled as calendar arithmetic: months past 12 move into the following
+ * years, and the day, hour, minute, second and microsecond fields add linearly through
+ * rtc_datetime_to_tick(). The measurement records the return codes and that these
+ * dates normalise; the exact seconds for them are this arithmetic. Year 0, month 0 and
+ * day 0 are UNMEASURED and refused with 0x800001FE rather than converted. On a refusal
+ * the output is not written (also UNMEASURED); a non-NULL output span that is not
+ * writable takes the guest-fault stop, as the module would store through it. */
+static uint32_t h_RtcGetTime64_t(CpuState *s) {
+    /* NULL is tested on its own: the guest arena backs low physical addresses, so the span
+     * check alone would read a date from address 0 where the PSP faults. */
+    if (!A0 || !sr_guest_span_readable(A0, 16u)) {
+        hle_guest_fault(s, "sceRtcGetTime64_t", A0, 0);
+        return 0u;
+    }
+    RtcDateTime value;
+    value.year = MEM_R16(A0 + 0u); value.month = MEM_R16(A0 + 2u);
+    value.day = MEM_R16(A0 + 4u); value.hour = MEM_R16(A0 + 6u);
+    value.minute = MEM_R16(A0 + 8u); value.second = MEM_R16(A0 + 10u);
+    value.microsecond = MEM_R32(A0 + 12u);
+    if (value.year < 1u || value.month < 1u || value.day < 1u) return RTC_INVALID_VALUE;
+    value.year += (value.month - 1u) / 12u;
+    value.month = (value.month - 1u) % 12u + 1u;
+    uint64_t tick = rtc_datetime_to_tick(&value);
+    if (tick < RTC_UNIX_EPOCH_TICK) return RTC_INVALID_VALUE;
+    if (!A1) return 0u;
+    if (!sr_guest_span_writable(A1, 8u)) {
+        hle_guest_fault(s, "sceRtcGetTime64_t", A1, 1);
+        return 0u;
+    }
+    return rtc_write_u64(A1, (tick - RTC_UNIX_EPOCH_TICK) / 1000000u) ? 0u : RTC_ILLEGAL_ADDR;
 }
 static uint32_t h_LibcTime(CpuState *s) {
     (void)s;
@@ -24020,6 +24118,7 @@ static void hle_register_time_handlers(void) {
     sr_hle_register(0x6ff40acc, "sceRtcGetTick", h_RtcGetTick);
     sr_hle_register(0x7ed29e40, "sceRtcSetTick", h_RtcSetTick);
     sr_hle_register(0xcf561893, "sceRtcGetWin32FileTime", h_RtcGetWin32FileTime);
+    sr_hle_register(0xe1c93e47, "sceRtcGetTime64_t", h_RtcGetTime64_t);
     sr_hle_register(0x4cfa57b0, "sceRtcGetCurrentClock", h_RtcGetCurrentClock);
     sr_hle_register(0xe7c27d1b, "sceRtcGetCurrentClockLocalTime", h_RtcGetCurrentClockLocal);
     sr_hle_register(0x3f7ad767, "sceRtcGetCurrentTick", h_RtcGetCurrentTick);
@@ -24534,6 +24633,7 @@ void sr_hle_init(void) {
     hle_register_ge_handlers();
     sr_hle_power_register_clock();
     sr_hle_power_register_callback();
+    sr_hle_power_register_battery();
     hle_register_devkit_version_handler();
     /* TD-24 batch 4 families: shared with production through the helpers, so
      * the executable harness dispatches the exact production mapping. */
@@ -24661,7 +24761,6 @@ void sr_hle_init(void) {
     sr_hle_register(0x3aea8cb6, "sceFontClose", h_FontClose);
     sr_hle_register(0xbb8e7fe6, "sceFontOpenUserMemory", h_FontOpenUserMemory);
     sr_hle_register_unsupported(0x6af9b50a, "sceUmdCancelWaitDriveStat", 0x80010086u); /* SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED */
-    sr_hle_register(0x6b4a146c, "sceUmdGetDriveStat", h_UmdDriveStat);
     sr_hle_register(0x20628e6f, "sceUmdGetErrorStat", h_UmdGetErrorStat);
     /* Callback-aware UMD wait consumes callbacks while preserving the drive wait. */
     hle_register_kernel_module_handlers();
