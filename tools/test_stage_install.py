@@ -5,13 +5,18 @@
 
 from __future__ import annotations
 
+import configparser
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
+import shlex
 import struct
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 import unittest
 
 TOOLS = Path(__file__).resolve().parent
@@ -143,6 +148,97 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(Path(target), (dest / "bin" / "nakagawa_player.exe").resolve())
         self.assertEqual(arguments, "--ui=next")
         self.assertEqual(Path(workdir), (dest / "bin").resolve())
+
+
+class LinuxInstallTests(unittest.TestCase):
+    """The Linux branch, exercised on any host by patching the platform flag."""
+
+    def setUp(self):
+        self._temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        self.root = Path(self._temp.name)
+        self.repo = _fixture_repo(self.root)
+        self.player = self.root / "nakagawa_player"
+        self.player.write_bytes(b"player")
+        # A space in the data home exercises quoting of every path the entry holds.
+        self.data = self.root / "xdg data"
+        for patcher in (
+            mock.patch.object(stage_install, "IS_WINDOWS", False),
+            mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(self.data)}),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_default_player_follows_the_host(self):
+        self.assertEqual(stage_install.default_player_path(False).name, "nakagawa_player")
+        self.assertEqual(stage_install.default_player_path(True).name, "nakagawa_player.exe")
+
+    def test_missing_player_hint_names_make(self):
+        with self.assertRaisesRegex(stage_install.InstallError,
+                                    r"build it with `make player`"):
+            stage_install.stage_install(self.root / "x", self.root / "absent",
+                                        repo=self.repo)
+
+    def test_linux_stage_skips_the_pe_runtime(self):
+        dest = self.root / "install"
+        record = stage_install.stage_install(dest, self.player, repo=self.repo)
+        self.assertEqual(record["runtime_stage"], "SKIPPED_NOT_PE")
+        self.assertEqual(record["runtime_files"], [])
+        self.assertEqual(record["player"], "bin/nakagawa_player")
+        self.assertTrue((dest / "bin" / "nakagawa_player").is_file())
+        self.assertEqual([p.name for p in (dest / "bin").iterdir()], ["nakagawa_player"])
+        self.assertTrue((dest / "source" / "tools" / "nk_cli.py").is_file())
+
+    def test_desktop_entry_is_a_parsable_ini_with_quoted_exec(self):
+        dest = self.root / "Nakagawa Recomp"
+        stage_install.stage_install(dest, self.player, repo=self.repo)
+        entry, icon = stage_install.write_desktop_entry(dest)
+        self.assertEqual(entry, self.data / "applications" / "nakagawa-recomp.desktop")
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser.read_string(entry.read_text(encoding="utf-8"))
+        section = parser["Desktop Entry"]
+        player = str((dest / "bin" / "nakagawa_player").resolve())
+        self.assertEqual(section["Type"], "Application")
+        self.assertEqual(shlex.split(section["Exec"]), [player, "--ui=next"])
+        self.assertEqual(section["TryExec"], player)
+        self.assertTrue(Path(section["TryExec"]).is_file())
+        self.assertEqual(Path(section["Icon"]), icon)
+        self.assertTrue(icon.is_file())
+
+    def test_desktop_icon_is_a_256_pixel_png(self):
+        _, icon = stage_install.write_desktop_entry(self.root / "install")
+        data = icon.read_bytes()
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(struct.unpack_from(">II", data, 16), (256, 256))
+
+    def test_exec_escapes_quotes_and_field_codes(self):
+        self.assertEqual(stage_install._exec_quote('a"b$c`d\\e%f'), '"a\\"b\\$c\\`d\\\\e%%f"')
+
+    def test_marker_lists_both_integration_paths(self):
+        dest = self.root / "install"
+        stage_install.stage_install(dest, self.player, repo=self.repo)
+        paths = stage_install.write_desktop_entry(dest)
+        stage_install.record_integration(dest, paths)
+        marker = json.loads((dest / stage_install.MARKER).read_text(encoding="utf-8"))
+        self.assertEqual(marker["schema_version"], 2)
+        self.assertEqual(marker["integration"], [str(p) for p in paths])
+        self.assertEqual(len(marker["integration"]), 2)
+
+    def test_relative_xdg_data_home_is_ignored(self):
+        home = self.root / "home"
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "relative/data"}), \
+                mock.patch.object(stage_install.Path, "home", return_value=home):
+            self.assertEqual(stage_install.xdg_data_home(), home / ".local" / "share")
+
+    def test_windows_only_shortcut_flag_is_refused_on_linux(self):
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            status = stage_install.main(["--dest", str(self.root / "x"),
+                                         "--player", str(self.player),
+                                         "--shortcut", str(self.root / "x.lnk")])
+        self.assertEqual(status, 1)
+        self.assertIn("INSTALL_SHORTCUT_UNSUPPORTED", stderr.getvalue())
+        self.assertFalse((self.root / "x").exists())
 
 
 if __name__ == "__main__":
