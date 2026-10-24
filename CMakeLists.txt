@@ -434,7 +434,8 @@ if(BUILD_PLAYER)
     endif()
 
     if(WIN32)
-        # Windows subsystem or console
+        # GUI subsystem, so a double-click opens no console window (see the Makefile PLAYER_GUI_LDFLAGS note)
+        set_target_properties(nakagawa_player PROPERTIES WIN32_EXECUTABLE TRUE)
         if(DEFINED ENV{VULKAN_SDK})
             target_include_directories(nakagawa_player PRIVATE
                 "$ENV{VULKAN_SDK}/Include"
