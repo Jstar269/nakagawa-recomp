@@ -1630,7 +1630,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "aeaffbdc864d4a284eaed8bb4c8a01bce59147422cb190dac874eca909ff333b"
+      "sha256": "3db99d4c4d6b0a1442496d9e5f6e43f7ea01658c79501c8f6f06c1e53319bf56"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -5209,7 +5209,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "45423f875ddcd58c50c2338d2afb28e81aa3543f4591b42ecfb6351032a39baf"
+      "sha256": "b1074a22dbeecb560eb43fcb1bfb08833bc7cab5488e85496d0a950e348f5366"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -5887,7 +5887,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "105e7c66259a353a5491b54e51c6304ea695b1a8ae7dfbc909025dc1ee91643d"
+      "sha256": "d8e5999bb70d89a2e0e155c9b60805f6c566089283703a98b2d1d4ee0161653c"
     },
     {
       "path": "src/rt/savedata.c",
@@ -7305,7 +7305,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b48a22c761290e633652e98bb7b7391a694cf5466188bedde760e3f2d02e94f4"
+      "sha256": "3fb510d2b78896403d8e422e175fdcebfc6ecc5b631e9b73810a3e7d8536a425"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -7330,7 +7330,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "29e67ddfaeee9cdfd9c939eee11ceb7f40a1afa63e53a683665822af25fefeee"
+      "sha256": "75c3f4ea093dca52557a27a0f563e689958a2d94c83f53602337a6e31990c316"
     },
     {
       "path": "tools/compiler_compare.py",
@@ -9079,7 +9079,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3437a29adcf639a22d1ea678a7f565649224c3c0e4003335f67e884b2dea7197"
+      "sha256": "a5a67c676ef07bda1f3c2e911431044d86b4f8b26c3b04d18007fe113a038efd"
     },
     {
       "path": "tools/test_codegen_retail_allocator.py",
@@ -9655,7 +9655,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8272d3b800efb8207bc9ce87dc4dd2e1e9664970617ad60c48536364e537a4a3"
+      "sha256": "771a7b3fd3e8532a6d563a1655b3fe0a9f9435f76f2ed0c5ff79931a934b90aa"
     },
     {
       "path": "tools/test_guestmem_c.py",
