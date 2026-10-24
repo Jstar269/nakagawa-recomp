@@ -516,6 +516,10 @@ const char *player_app_runtime_package_reason(const PlayerApp *app,
 size_t player_library_status_text(bool has_runtime, bool checking, bool check_failed,
                                   bool assets_staged, uint32_t staged_asset_count,
                                   const char *reason, char *out, size_t out_size);
+/* The one line an INCOMPATIBLE card gives for why its package no longer fits
+ * this player: the validator's first sentence when it gave one, or a plain
+ * fallback. Both title cards show it beside REBUILD PACKAGE. */
+size_t player_incompatible_reason_line(const char *reason, char *out, size_t out_size);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 uint64_t player_app_ui_test_validation_calls(void);
 #endif
