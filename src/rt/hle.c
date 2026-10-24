@@ -535,6 +535,7 @@ static uint32_t sr_last_alloc_addr = 0;     /* last heap allocation rounded addr
  * tools/prxload.py preserves the original ~PSP header's segment-memory sizes when a
  * stripped ELF has lost them. An explicit override may move the base higher, but may
  * never overlap the loaded module. */
+static int sr_user_partition_overlaps(uint32_t base, uint32_t end);
 static void user_partition_init(void) {
     if (s_heap) return;
     const char *eb = getenv("SR_HEAP_BASE");
@@ -557,6 +558,10 @@ static void user_partition_init(void) {
     }
     s_heap = base;
     s_heap_base = base;
+    {
+        extern void sched_set_stack_range_refusal(int (*refusal)(uint32_t, uint32_t));
+        sched_set_stack_range_refusal(sr_user_partition_overlaps);
+    }
     s_part_top = et ? (uint32_t)strtoul(et, NULL, 16) : 0x0A000000u;
     if (s_part_top <= s_heap) {
         fprintf(stderr,
@@ -577,7 +582,39 @@ static void user_partition_init(void) {
 typedef struct { uint32_t uid, addr, size, slot_size, prev, next; } Block;
 #define HLE_MAX_PARTITION_BLOCKS 256
 static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
+
+/* Guest thread stacks are carved by the scheduler from a descending arena that ends at
+ * 0x09ef0000, below the runtime's VBLANK stack and nested-frame region, i.e. inside the
+ * PSP user-RAM span this partition also covers. On a PSP, thread stacks come out of the
+ * same user partition, so memory a game is told is free never contains a live stack.
+ * Here the contiguous free space above the bump pointer therefore ends at the first live
+ * stack above the partition base (and never above the arena ceiling). Before this, a
+ * game that took the reported
+ * free memory (21 MB and more) received a block over its own main-thread stack, zeroed
+ * it, and returned through a clobbered $ra (AOT_RETURN_TARGET_MISMATCH). */
+#define USER_PARTITION_RESERVED_FLOOR 0x09ef0000u   /* sched.c SR_STACK_ARENA_CEIL */
+extern uint32_t sched_guest_stack_floor_above(uint32_t addr);
+static uint32_t user_partition_ceiling(void) {
+    return s_part_top < USER_PARTITION_RESERVED_FLOOR ? s_part_top : USER_PARTITION_RESERVED_FLOOR;
+}
+static uint32_t user_partition_top(void) {
+    uint32_t ceiling = user_partition_ceiling();
+    uint32_t floor = sched_guest_stack_floor_above(s_heap_base);
+    return floor < ceiling ? floor : ceiling;
+}
+
 static int s_nblocks = 0;
+
+/* 1 when [base, end) touches the bump region the partition has handed out (below the
+ * current bump pointer, its free-list holes included). The scheduler refuses a new stack
+ * there. Fixed-address reservations (sr_alloc_block_at: a title profile's module bases,
+ * PSP_SMEM_Addr requests) keep their previous bounds and are not checked against stacks:
+ * a reviewed profile's late PRX base can share the stack arena's address range on this
+ * runtime. 0 before the partition exists. */
+static int sr_user_partition_overlaps(uint32_t base, uint32_t end) {
+    if (!s_heap || end <= base) return 0;
+    return base < s_heap && end > s_heap_base;
+}
 
 typedef struct { uint32_t uid, backing_uid; } HleMemoryBlock;
 #define HLE_MAX_MEMORY_BLOCKS 256
@@ -682,7 +719,7 @@ static uint32_t alloc_block(uint32_t size) {
     if (size == 0 || size > max_req) {
         if (guard) {
             fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) heap=0x%08x top=0x%08x max=0x%08x\n",
-                    size, size, s_heap, s_part_top, max_req);
+                    size, size, s_heap, user_partition_top(), max_req);
             fflush(stderr);
         }
         return 0xFFFFFFFFu;
@@ -718,10 +755,11 @@ static uint32_t alloc_block(uint32_t size) {
     } else {
         /* Bump allocation from s_heap. */
         uint32_t aligned = (s_heap + 0xFFu) & ~0xFFu;
-        int overflow = (aligned + size < aligned) || (aligned + size > s_part_top);
+        uint32_t top = user_partition_top();
+        int overflow = (aligned + size < aligned) || (aligned + size > top);
         if (overflow && guard) {
             fprintf(stderr, "ALLOC_BLOCK_REJECT: size=%u (0x%x) heap=0x%08x top=0x%08x max=0x%08x\n",
-                    size, size, s_heap, s_part_top, max_req);
+                    size, size, s_heap, user_partition_top(), max_req);
             fflush(stderr);
             return 0xFFFFFFFFu;  /* PSP alloc-failure sentinel */
         }
@@ -942,6 +980,10 @@ uint32_t sr_hle_test_partition_heap_ptr(void) {
 uint32_t sr_hle_test_partition_top(void) {
     user_partition_init();
     return s_part_top;
+}
+uint32_t sr_hle_test_partition_bump_top(void) {
+    user_partition_init();
+    return user_partition_top();   /* where bump allocations and the free sizes stop */
 }
 #endif
 
@@ -2935,7 +2977,8 @@ static uint32_t h_FreeMemoryBlock(CpuState *s) {
 
 static uint32_t partition_free(void) {
     user_partition_init();
-    uint32_t f = s_heap < s_part_top ? s_part_top - s_heap : 0u;
+    uint32_t top = user_partition_top();
+    uint32_t f = s_heap < top ? top - s_heap : 0u;
     for (int i = 0; i < s_nfree_blocks; i++) {
         f += s_free_blocks[i].size;
     }
@@ -2953,7 +2996,8 @@ static uint32_t h_TotalFreeMemSize(CpuState *s) {
 static uint32_t h_MaxFreeMemSize(CpuState *s) {
     (void)s;
     user_partition_init();
-    uint32_t max_free = s_heap < s_part_top ? s_part_top - s_heap : 0u;
+    uint32_t top = user_partition_top();
+    uint32_t max_free = s_heap < top ? top - s_heap : 0u;
     for (int i = 0; i < s_nfree_blocks; i++) {
         if (s_free_blocks[i].size > max_free) {
             max_free = s_free_blocks[i].size;
@@ -10471,6 +10515,32 @@ static uint32_t h_UmdGetErrorStat(CpuState *s) {
     return drive_stat == 0x32u ? 0u : 0x80010086u;
 }
 
+/* sceUmdReplaceProhibit() / sceUmdReplacePermit(): whether the user may swap the disc.
+ * The runtime serves one ISO and never replaces it, so either call only records the
+ * permission and returns 0, changed or not. Public behaviour reference: PPSSPP
+ * Core/HLE/sceUmd.cpp. Firmware error cases (for example before sceUmdActivate) are
+ * UNMEASURED; a PSP oracle case is listed for the maintainer. */
+static uint32_t s_umd_replace_permitted = 0u;
+static uint32_t h_UmdReplaceProhibit(CpuState *s) { (void)s; s_umd_replace_permitted = 0u; return 0; }
+static uint32_t h_UmdReplacePermit(CpuState *s) { (void)s; s_umd_replace_permitted = 1u; return 0; }
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_umd_replace_permitted(void) { return s_umd_replace_permitted; }
+#endif
+
+/* sceUmdGetDiscInfo(SceUmdDiscInfo *info): info->size (u32) must be 8, then info->type
+ * (u32) receives PSP_UMD_TYPE_GAME (0x10), the only medium this runtime serves.
+ * A size other than 8 or an unusable pointer returns SCE_ERROR_ERRNO_EINVAL
+ * (0x80010016). Public behaviour reference: PSPSDK pspumd.h (SceUmdDiscInfo,
+ * PSP_UMD_TYPE_GAME) and PPSSPP Core/HLE/sceUmd.cpp; UNMEASURED on hardware. */
+static uint32_t h_UmdGetDiscInfo(CpuState *s) {
+    (void)s;
+    uint32_t info = A0;
+    if (!info || !sr_guest_span_writable(info, 8u)) return 0x80010016u;
+    if (sr_r32(info) != 8u) return 0x80010016u;
+    sr_w32(info + 4u, 0x10u);
+    return 0;
+}
+
 
 /* Signal that the UMD drive is ready. Wake only threads waiting on the UMD object and
  * notify the registered callback if one exists. */
@@ -10568,6 +10638,9 @@ static void hle_register_umd_callback_handlers(void) {
     sr_hle_register(0xc6183d47u, "sceUmdActivate", h_UmdActivate);
     sr_hle_register(0xaee7404du, "sceUmdRegisterUMDCallBack", h_UmdRegisterUMDCallBack);
     sr_hle_register(0xbd2bde07u, "sceUmdUnRegisterUMDCallBack", h_UmdUnRegisterUMDCallBack);
+    sr_hle_register(0x87533940u, "sceUmdReplaceProhibit", h_UmdReplaceProhibit);
+    sr_hle_register(0xcbe9f02au, "sceUmdReplacePermit", h_UmdReplacePermit);
+    sr_hle_register(0x340b7686u, "sceUmdGetDiscInfo", h_UmdGetDiscInfo);
 }
 
 /* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
@@ -23887,6 +23960,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
     sr_hle_register(0xfe707fdf, "sceKernelAllocMemoryBlock", h_AllocMemoryBlock);
     sr_hle_register(0x342061e5, "sceKernelSetCompiledSdkVersion370", h_SetCompiledSdkVersion);
+    sr_hle_register(0x315ad3a0u, "sceKernelSetCompiledSdkVersion380_390", h_SetCompiledSdkVersion);
     sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
     sr_hle_register(0x4c06e472, "sceGeContinue", h_GeContinue);
     sr_hle_register(0xb448ec0d, "sceGeBreak", h_GeBreak);

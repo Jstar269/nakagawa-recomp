@@ -22,6 +22,12 @@ only route here.
   `ISSUES.md`, maintained `docs/` contracts, then README/navigation and dated evidence.
 - Before a mutation, run `git fetch origin`, record the exact `BASE_SHA`, inspect
   `git status`, and verify on current `origin/main` that the task is not already fixed.
+  Without network access, work from the last fetched `origin/main` and report
+  `FETCH: NOT_RUN` with that SHA instead of stopping.
+- Development network use is expected: `git fetch`, `gh`, public documentation, specifications
+  and upstream repositories, and pushes as Section 8 allows. Section 5's offline rule governs
+  the shipped player, runtime and tests, not development; a mission's "no network" means that
+  product rule unless it names git or GitHub.
 - Inspect open PRs touching the issue or files. Record overlap, expected ownership, new
   paths, provenance disposition, private-input or hardware needs, and smallest proof.
 - Stale handoffs, copied chat summaries, ignored local configuration, and research pages
@@ -33,8 +39,9 @@ only route here.
 
 ## 2. Operating modes and autonomy
 
-- A mutating mission uses at most one dedicated temporary worktree and branch. Reuse it
-  when it already starts at the required exact base; never create a second.
+- A mutating mission uses one dedicated temporary worktree and branch per pull request.
+  Reuse it when it already starts at the required exact base. A follow-up to a PR handed
+  to integration (Section 8) is a new branch from `origin/main`.
 - Name branches for their topic (`docs/...`, `fix/...`, `lle/...`, `oracle/...`) with a
   date or issue suffix. There are no persistent per-agent lanes.
 - Keep the mission coherent, avoid stacked PRs, and preserve other agents' unmerged work.
@@ -70,10 +77,6 @@ never simulated or assumed.
 
 Agents must not create, move, push, or delete Git tags; create, edit, delete, publish, or unpublish GitHub Releases; upload release assets; or change a published version without explicit maintainer authorization in the current turn. Generic instructions such as 'finish', 'ship', 'publish', 'integrate', or 'do everything' do not authorize a version/tag/release operation.
 
-No agent may create, edit, publish, unpublish, or attach assets to a release to work
-around a blocked PR. Normal code, documentation, and configuration integration remains
-subject to Section 2.
-
 ## 4. Provenance and publication
 
 - Before a new implementation-bearing path, inspect `tools/provenance_ledger.py` and its
@@ -87,8 +90,7 @@ subject to Section 2.
 - `--provenance-self-consistency` is a developer tripwire only. It checks coverage,
   resolution, and hashes but does not attest provenance. Release readiness requires the
   external trusted ledger.
-- Preserve SPDX, copyright, upstream, and third-party notices. Agents must never invent a
-  human DCO identity or add `Signed-off-by:` on anyone's behalf.
+- Preserve SPDX, copyright, upstream, and third-party notices (sign-off identity: Section 3).
 - End agent commits with `Assisted-by: <tool> (<model>)`, never `Co-Authored-By:` ([form and tools](docs/AI_USAGE.md#disclosing-ai-help-in-commits)).
 - Keep public source correctness, provenance/publication readiness, private title
   acceptance, physical PSP correctness, visual evidence, and release readiness as
@@ -116,7 +118,8 @@ subject to Section 2.
   attestation accepts that only with a maintainer policy-delta authority in the private
   authority repository, plus an exact trusted record for a new implementation path.
   `provenance-refresh` and `tools/contrib_refresh.py` refuse added or removed paths and only
-  re-key admitted ones. Commit regenerated controls. Never hand-edit generated controls.
+  re-key admitted ones. A commit carries the regenerated controls for the paths it changes and
+  nothing more; a refresh after merging `main` is a commit of its own. Never hand-edit them.
 - Step by step for a pull request that adds a public path, with the failure each skipped step produces:
   [`docs/PUBLICATION_READINESS.md`](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path).
 
@@ -137,28 +140,30 @@ subject to Section 2.
   or external-oracle inputs are `NOT_RUN`, `BLOCKED`, or `SKIP`, never silent passes.
 - Do not run title or physical-hardware routes for a source/configuration mission unless
   explicitly required. Remote host work stays reversible and non-overlapping.
-- Offline by default (maintainer decision, 2026-10-22). The player and runtime make no network
+- Product network rule: offline by default (maintainer decision, 2026-10-22). The player and runtime make no network
   connection unless the user enables a documented, opt-in feature; today the only one is the
   consented prerequisite download. A new egress needs a maintainer decision, a "Network use"
   entry in `docs/SETUP.md`, and an update to the egress allowlist test in
   `tools/test_prereq_fetcher.py`. The reserved `network_mode` setting accepts only `"offline"`,
   and a value a build does not know reads back as offline, never as something more permissive.
-- No feature sends game code, game data, decrypted modules, packages, saves or guest memory to
-  another machine; Game Sharing transfer stays out of scope. No telemetry: any upload is started
-  by the user. Tests never touch the internet. Network HLE stays fail-closed, and no network
-  setting makes a NID miss or refusal permissive.
+- A user may move their own packages and saves to their own devices, for example an Android phone
+  (maintainer decision, 2026-10-23); such a transfer is started by the user and goes directly to
+  their device, never through a server. No feature uploads game code, game data, decrypted
+  modules, packages, saves or guest memory to any server or third party, and nothing built from a
+  user's game is ever published or shared. No telemetry. Tests never touch the internet. Network
+  HLE stays fail-closed, and no network setting makes a NID miss or refusal permissive.
 
 ## 6. Correctness and evidence
 
 - Prefer a small source-level root-cause fix with a failing-before production-path
   regression. Never add loop caps, sleeps, forced returns, fake success, latch hacks,
   arbitrary state writes, invented assets, or VFS aliases that hide missing behavior.
-- Unknown NIDs and dispatch misses remain visible. No switch makes a miss permissive: it runs
-  only inside analyzer-owned spans (the PR #118 floor), and every rejection terminates the run.
+- Unknown NIDs and dispatch misses remain visible. No switch makes a miss permissive: the interpreter
+  runs only inside analyzer-owned spans (the PR #118 floor), and every rejection terminates the run.
   Correctness evidence asserts PSP-visible results, state, and wakes.
 - Validate complete guest spans and checked size arithmetic before forming bulk host
   pointers.
-  `src/rt/recomp.h` is a load-bearing ABI: MIPS `$ra` is `r[31]`, with no separate `lr`.
+- `src/rt/recomp.h` is a load-bearing ABI: MIPS `$ra` is `r[31]`, with no separate `lr`.
 - Never hand-edit generated `build/<game>/<game>_recomp_*.c`. Change the generator,
   analysis, or runtime and regenerate. Chunk count is dynamic; `FUNCS_PER_CHUNK` is not
   a fixed ABI.
@@ -217,6 +222,9 @@ the PR numbers are navigation, not substitutes for source evidence:
 - Never write repository-local Git identity. A checkout `[user]` block silently re-authors
   later commits there and in every worktree sharing its Git directory. Use the host's
   existing identity or stop and report.
+- From hand-off to integration until merge or explicit hand-back, a PR's branch and worktree
+  belong to the integrator, which merges `main`, refreshes provenance and pushes from that same
+  worktree. Do not edit, stage, commit, merge or push there.
 - Push only to `origin` when the mission explicitly includes a PR. Never reconnect public branches
   to private-history refs.
 
@@ -232,60 +240,50 @@ are not hosted-CI evidence; report each as `PASS`, `FAIL`, `SKIP`, `BLOCKED`, or
 | scheduler/HLE lifecycle | `tools/test_sched_invariants.py` and `mingw32-make --no-print-directory sched-selftest` |
 | FPU/VFPU conversion | relevant `tools/test_*fpu*.py` plus `fp-convert-selftest`/`vfpu-interp-selftest` |
 | publication/provenance | `tools/policy_sync.py`, both publication-audit legs, and `tools/modified_file_notice_audit.py` |
-| docs and agent policy | `tools/lint_docs.py`, Markdown lint, focused policy tests, and public-link audit |
+| docs and agent policy | `python -m unittest tools.test_lint_docs tools.test_dco_policy`, markdownlint (below), and `python tools/audit_public_issue_links.py` |
 | workflow/configuration | `tools/test_ci_paths.py`, pre-commit, and the full applicable hosted matrix |
 | LLE CPU / domain modes | `tools/test_cpu_lle.py`, `tools/test_domain_mode.py`, then `mingw32-make native-core-tests` |
 
-`native-core-tests` also runs on hosted Linux, so native selftests must build and link
-there without Windows-only libraries. Check with a Linux shell such as WSL before pushing.
-
-Hosted CI runs the Python suite on Linux (`python_tools`) when `tools/ci_paths.py` routes Python: the full suite
-for `python_scope` `all`, and only the Makefile-coupled modules when a recipe-only `Makefile` change is the only
-Python-routing change in the diff (`python_scope` `makefile`), which is the evidence that change needs. An exact head whose required hosted CI is green, including
-`python_tools` when the change routes Python, meets the Python-suite requirement for readiness (Section 2); a change
-that routes no Python needs no local full run. Locally, run the focused gates above for the files you changed, then
-these whenever they apply:
+Locally, run the focused gates above for the files you changed, then these whenever they apply:
 
 ```powershell
 python tools/tree_lint.py --check
 python tools/lint_docs.py
 python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
 python -m pre_commit run --all-files
+npx --yes markdownlint-cli2@0.23.3 <changed .md files>
 ```
 
-No hosted job runs the Windows-only cases in `tools/test_asset_index_c.py`, `tools/test_scratch_dir.py`,
-`tools/test_player_package_route.py`, `tools/test_manager_safety.py`, `tools/test_visual_oracle.py` and
-`tools/test_library_sweep.py`. A change under `tools/`, `src/core/`, `src/player/`, the `Makefile` or any `.ps1` file
-(including the root `nk_manager.ps1`) runs those six modules locally on Windows. Run the full
-`python -m unittest discover -s tools -p "test_*.py" -v` locally only when hosted CI cannot run for the change as a
-whole: on Windows it also builds the native fixtures and takes over an hour. Make-based tests need a POSIX `sh` on
-`PATH` (MSYS2 `usr/bin` or Git for Windows `bin`). The PR template's checklist is satisfied the same way.
+Before the first push, check every item in [`REVIEW.md`](REVIEW.md#findings-to-pre-empt) "Findings to
+pre-empt"; hosted CI rejects most of them. Native code also builds and runs on hosted Linux, with and
+without SDL3: check it in a Linux shell such as WSL.
+
+Hosted CI is the full Python suite. An exact head whose required hosted CI is green meets the Python-suite
+requirement for readiness (Section 2); run the full suite locally only when hosted CI cannot run for the change.
+Which modules hosted CI routes, and the Windows-only modules a Windows-host change runs locally, are in
+[`docs/CI.md`](docs/CI.md#what-hosted-ci-does-not-run). The PR template's checklist is satisfied the same way.
 
 Windows host pitfalls: [`docs/SETUP.md`](docs/SETUP.md#windows-host-pitfalls). Quick recipes (find an HLE
 handler, run one native self-test, capture frames unattended):
-[`docs/DEBUGGING.md`](docs/DEBUGGING.md#quick-recipes). The findings reviewers raise most often:
-[`REVIEW.md`](REVIEW.md#findings-to-pre-empt).
-
-`workflow_dispatch` has no narrowing inputs. `tools/ci_paths.py` forces the full matrix
-for a manual run and sets `allow_substantive=true`; draft status does not suppress
-substantive gates. Verify these facts against the live workflow before documenting them.
+[`docs/DEBUGGING.md`](docs/DEBUGGING.md#quick-recipes).
 
 ## 10. PR and integration authorization
 
 - When requested, open one focused Draft PR after the first valid commit. Include exact
   base/head SHAs, scope, new-path provenance, failing-before evidence, tests,
   uncertainty, private/hardware status, and blockers.
-- Never mark Ready or merge unless Section 2's autonomous-integration conditions hold.
-  Cheap local success never means a Draft is hosted-CI green.
+- Never mark Ready, merge, enable auto-merge, close other PRs, or bypass required checks
+  unless Section 2's autonomous-integration conditions hold; local success never means a
+  Draft is hosted-CI green. A substantive correction after Ready returns the PR to Draft
+  and requires fresh exact-head validation.
 - Before readiness, fetch `origin/main` and merge it when needed; never rebase or
   force-push a pushed branch. Preserve newer-main behavior, regenerate only required
   canonical metadata, rerun affected gates, and freeze the exact validated head.
-- Never merge, enable auto-merge, close other PRs, or bypass required checks without the
-  authority in Section 2. A substantive correction after Ready returns the PR to Draft
-  and requires fresh exact-head validation.
-- PRs admitted together with `admit_paths.py --batch` may land in any order up to `--any-order-limit` (default 6);
-  a larger batch lands in its listed order, and `--batch-resume` re-issues the rest if one stalls. A path-adding PR
-  outside a batch still needs `--rekey` after another lands. Never hold a ready pull request for an unrelated one.
+- Hand a PR to integration only when its exact head is pushed and every review thread, an
+  advisory bot's included, is answered and resolved. The integrator lands one PR at a time from
+  one landing run. A path-adding PR needs a re-key after another path-adding PR lands unless both
+  were batch-admitted ([landing order](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path)).
+  Never hold a ready pull request for an unrelated one.
 
 ## 11. Reporting and cleanup
 

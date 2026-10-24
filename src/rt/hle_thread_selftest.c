@@ -6922,6 +6922,49 @@ static void test_kernel_usec_sysclock_conversions(void) {
            "sceKernelUSec2SysClock rejects an unwritable clock span");
 }
 
+uint32_t sr_hle_test_umd_replace_permitted(void);
+
+/* sceUmdReplaceProhibit/Permit record the swap permission and return 0 whether or not
+ * it changes; sceUmdGetDiscInfo checks size == 8 and reports PSP_UMD_TYPE_GAME. */
+static void test_umd_replace_permission_and_disc_info(void) {
+    enum {
+        NID_UMD_REPLACE_PROHIBIT = 0x87533940u,
+        NID_UMD_REPLACE_PERMIT = 0xcbe9f02au,
+        NID_UMD_GET_DISC_INFO = 0x340b7686u,
+        INFO = ORACLE_CALLBACK_NAME + 0x200u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_hle_test_is_registered(NID_UMD_REPLACE_PROHIBIT) &&
+               sr_hle_test_is_registered(NID_UMD_REPLACE_PERMIT) &&
+               sr_hle_test_is_registered(NID_UMD_GET_DISC_INFO),
+           "sceUmdReplaceProhibit, sceUmdReplacePermit and sceUmdGetDiscInfo are registered");
+    expect(sr_syscall(&cpu, NID_UMD_REPLACE_PERMIT) == 0u && sr_hle_test_umd_replace_permitted() == 1u,
+           "sceUmdReplacePermit returns 0 and permits a disc swap");
+    expect(sr_syscall(&cpu, NID_UMD_REPLACE_PERMIT) == 0u && sr_hle_test_umd_replace_permitted() == 1u,
+           "a second sceUmdReplacePermit still returns 0");
+    expect(sr_syscall(&cpu, NID_UMD_REPLACE_PROHIBIT) == 0u && sr_hle_test_umd_replace_permitted() == 0u,
+           "sceUmdReplaceProhibit returns 0 and prohibits a disc swap");
+    expect(sr_syscall(&cpu, NID_UMD_REPLACE_PROHIBIT) == 0u && sr_hle_test_umd_replace_permitted() == 0u,
+           "a second sceUmdReplaceProhibit still returns 0");
+
+    sr_w32(INFO, 8u);
+    sr_w32(INFO + 4u, 0xffffffffu);
+    cpu.r[4] = INFO;
+    expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0u && sr_r32(INFO + 4u) == 0x10u,
+           "sceUmdGetDiscInfo reports PSP_UMD_TYPE_GAME for a size-8 record");
+    sr_w32(INFO, 12u);
+    sr_w32(INFO + 4u, 0xffffffffu);
+    cpu.r[4] = INFO;
+    expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0x80010016u && sr_r32(INFO + 4u) == 0xffffffffu,
+           "sceUmdGetDiscInfo refuses a record whose size is not 8 and writes nothing");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_UMD_GET_DISC_INFO) == 0x80010016u,
+           "sceUmdGetDiscInfo refuses a null record");
+}
+
 static void test_umd_unregister_callback(void) {
     enum {
         NID_CREATE_CALLBACK = 0xe81caf8fu,
@@ -21906,6 +21949,65 @@ static void test_td28_partition_free_reuse(void) {
 /* Fixed-address reservation (sr_alloc_block_at + AllocPartitionMemory type 2).
  * heap_selftest.c covers recomp.c's newlib heap, a different allocator, so the
  * user-partition tests live here next to test_td28_partition_free_reuse. */
+/* A live thread stack is not free partition memory: the reported free sizes and every
+ * allocation end at the lowest live stack, so a game that takes the reported free
+ * memory never receives a block over its own stack. */
+static void test_partition_ends_at_lowest_live_stack(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern uint32_t sr_hle_test_partition_heap_ptr(void);
+    extern uint32_t sr_hle_test_partition_top(void);
+    extern uint32_t sr_hle_test_partition_bump_top(void);
+    const uint32_t NID_ALLOC_PART = 0x237dbd4fu;
+    const uint32_t NID_GET_HEAD   = 0x9d9a5ba1u;
+    const uint32_t NID_MAX_FREE   = 0xa291f107u;
+    const uint32_t FAIL = 0xFFFFFFFFu;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    uint32_t base0 = sr_hle_test_partition_heap_ptr();
+    expect(sr_hle_test_partition_bump_top() <= SR_STACK_ARENA_CEIL,
+           "the partition never reaches the runtime's VBLANK/nested-frame reservation");
+    uint32_t uid = sched_create_thread(0x2000u, 32, 0x40000u);
+    expect(uid != 0u, "a main thread with a 256 KiB stack is created");
+    uint32_t floor = sched_guest_stack_floor();
+    expect(sr_hle_test_partition_bump_top() == floor,
+           "the partition top is the lowest live stack reservation");
+    expect(sr_hle_test_partition_top() > floor, "the configured ceiling lies above the stack");
+
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t max_free = sr_syscall(&cpu, NID_MAX_FREE);
+    expect(max_free == floor - base0, "sceKernelMaxFreeMemSize stops at the stack");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = (floor - base0) + 0x10000u;
+    expect(sr_syscall(&cpu, NID_ALLOC_PART) == FAIL,
+           "an allocation that would cover the live stack fails");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = max_free & ~0xFFu;
+    uint32_t big = sr_syscall(&cpu, NID_ALLOC_PART);
+    expect(big != FAIL && big != 0u, "taking the reported free memory succeeds");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = big;
+    uint32_t head = sr_syscall(&cpu, NID_GET_HEAD);
+    expect(head + (max_free & ~0xFFu) <= floor, "the block taken ends at or below the stack");
+
+    /* A fixed reservation keeps its previous bounds: a title profile's late module base
+     * may lie above the lowest live stack, as one reviewed profile's does. */
+    extern uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name);
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+    uint32_t upper = sched_create_thread(0x2000u, 32, 0x8000u);
+    uint32_t upper_floor = sched_guest_stack_floor();
+    uint32_t lower = sched_create_thread(0x2004u, 32, 0x8000u);
+    expect(upper != 0u && lower != 0u && sched_guest_stack_floor() < upper_floor,
+           "two stacked threads are created");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = upper;
+    expect(sr_syscall(&cpu, 0x9fa03cd3u) == 0u, "the dormant upper thread is deleted");
+    uint32_t between = sr_alloc_block_at(upper_floor, 0x1000u, "between-stacks");
+    expect(between != FAIL && between != 0u,
+           "a fixed reservation above the lowest live stack succeeds");
+}
+
 static void test_alloc_block_at_fixed_address(void) {
     extern void sr_hle_test_partition_reset(void);
     extern uint32_t sr_hle_test_partition_heap_ptr(void);
@@ -30670,6 +30772,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_unregistered_batch_sysclock_wide();
     test_kernel_usec_sysclock_conversions();
     test_umd_unregister_callback();
+    test_umd_replace_permission_and_disc_info();
     test_unregistered_batch_ctrl_sampling_getter();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
@@ -30757,6 +30860,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_import_sweep_memory_blocks_and_sdk_alias();
     test_td28_partition_free_reuse();
     test_alloc_block_at_fixed_address();
+    test_partition_ends_at_lowest_live_stack();
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();

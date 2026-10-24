@@ -40,9 +40,11 @@ runtime, an interpreter floor, and HLE, moving toward low-level emulation.
 
 ## Do not flag
 
-- Regenerated `PUBLIC_EXPORT.json` and `assets/public_provenance_ledger.json` in a
-  focused provenance-refresh commit. Flag them if the commit changes anything else, or
-  if the "Trusted provenance attestation" check failed or did not run on the head (it
+- Regenerated `PUBLIC_EXPORT.json` and `assets/public_provenance_ledger.json` that
+  re-hash exactly the paths the same commit changes (the pre-commit publication audit
+  requires that), or a focused provenance-refresh commit after a merge from `main`. Flag
+  entries for paths the commit does not change, a refresh commit that changes anything
+  else, or a head whose "Trusted provenance attestation" check failed or did not run (it
   is currently observation-only, not required).
 - New `assets/public_source_profile.json` entries for files the same PR adds, provided
   the attestation check passed on the head. Otherwise flag them as unauthorized public
@@ -80,8 +82,17 @@ Authors, human or agent, check these before requesting review; reviewers flag th
   (`python tools/import_audit_gate.py`, not "the import audit").
 - **Tracking.** Every new claim, roadmap item or milestone links its tracking issue.
 - **Boundaries.** Widening an allow-list or match pattern adds refused cases that pin its edge.
-- **Indexes.** A new module under `tools/` gets its row in `tools/README.md` (`tools/tree_lint.py --check`,
-  `tools.test_lint_docs`).
+- **Indexes.** A new module under `tools/` gets its row in `tools/README.md`; only
+  `python -m unittest tools.test_lint_docs` checks it, not `tools/lint_docs.py` or `tools/tree_lint.py`.
+- **Linux native builds.** Native code and selftests build and link on hosted Linux with and without SDL3: no
+  Windows-only library, and `-lm` wherever `<math.h>` is used (`native-core-tests`, `portable-core-objects`).
+- **Native test order.** A binary added to `native-core-tests` joins `EXPECTED_RUNS` in
+  `tools/test_native_core_build.py` at the position the target runs it.
+- **Markdown tables.** A blank line before and after, and one column style in every row, such as `| a | b |` over
+  `| --- | --- |` (markdownlint MD058 and MD060; `npx --yes markdownlint-cli2@0.23.3 <file>`).
+- **Local-path words.** `tools/publish_audit.py` reports `LOCAL_PATH` for user-profile and temporary-directory
+  paths and for the cloud-folder product name anywhere in tracked text, docstrings and comments included. Describe
+  them in words, or split the literal the way `publish_audit.py` does.
 - **Citations.** Every cited path, line, flag, section and Make target exists: check with `git grep` before citing,
   and point at the section that actually states a rule.
 - **CI claims.** State the platform and the routing condition; for example, hosted `python_tools` runs on Linux and
