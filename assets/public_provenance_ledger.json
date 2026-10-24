@@ -15341,7 +15341,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fd4d6649a31b82c0ee1dd2a0548beddf3e9d33c49b2a6d311a8325624a35434c"
+      "sha256": "1355ea96141b709a9dc0d843efb07e0cf7f9d1c7e97813838471aba9eddb084f"
     },
     {
       "path": "tools/ttf2pgf.py",
