@@ -24,7 +24,8 @@ diagnosing new issues.
 
 ## Setup wizard step: "Online and developer options"
 
-Shown after the fonts step and before Ready. Two switches, each with one plain sentence:
+Shown right after Welcome, before the game step, so every first run sees it (it needs no game). Two switches, each
+with one plain sentence:
 
 | Switch | Default | Sentence |
 | --- | --- | --- |
@@ -73,8 +74,11 @@ switchable alone. The step is skippable; skipping keeps both off.
 
 1. `AGENTS.md`, section 5: offline by default becomes "offline until the user turns on online mode; then only the
    update check, news and user-sent reports, only to `nakagawa.jaycast.net`".
-2. `network_mode` in `settings.json` gains the value `"online"`; any unknown value still reads as offline, and the
-   per-feature switches are stored beside it.
+2. Until the first network feature ships, `network_mode` in `settings.json` stays `"offline"` (the only value
+   `AGENTS.md` section 5 accepts) and the user's choice lives in a separate `online_mode` key, with the per-feature
+   switches (`online_updates`, `online_news`, `online_reports`) and `developer_mode` beside it. `network_mode` gains
+   `"online"` when step 2 ships, together with the section 5 change in item 1; any unknown value still reads as
+   offline.
 3. `docs/SETUP.md` "Network use" gains one row per feature when each ships; the egress allowlist test
    (`tools/test_prereq_fetcher.py`) gains the one host and the one module allowed to use it.
 4. Tests never touch the internet: a local stub server and fixed signed fixtures cover the client.
@@ -87,12 +91,10 @@ switchable alone. The step is skippable; skipping keeps both off.
 ## Implementation order
 
 1. Settings fields, the wizard step and the developer log panel (no network). **Built.**
-   - `settings.json` keeps `"network_mode": "offline"`: `AGENTS.md` section 5 still accepts only that value, so the
-     user's choice is stored beside it as `online_mode`, with `online_updates`, `online_news`, `online_reports` and
-     `developer_mode`. Step 2 moves `network_mode` to `"online"` together with the section 5 change.
-   - The switches live on Settings > ONLINE & DEVELOPER and on the wizard step "Online and developer options",
-     both saying that this version has no online features yet. CONTINUE is the step's first focus, so Enter never
-     flips a switch; SKIP turns both off.
+   - The settings keys are as item 2 below describes.
+   - The switches live on Settings > ONLINE & DEVELOPER and on the wizard step "Online and developer options"
+     (right after Welcome), both saying that this version has no online features yet. CONTINUE is the step's
+     default focus, so Enter never flips a switch; SKIP turns both off.
    - The developer log (F12, or Select + R on a controller, with developer mode on) holds the player's errors,
      launches, setting changes, the game's exit code and the runtime's boot events (phases, the named stop boundary,
      missing imports), redacted as they are added. COPY puts it on the clipboard; SAVE writes `developer-log.txt` in

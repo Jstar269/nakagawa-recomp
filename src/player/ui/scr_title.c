@@ -822,11 +822,12 @@ static void wizard_text(NkUi *ui, uint32_t k, const char *text, NkUiTypeRole rol
 }
 
 static void wizard_steps(NkUi *ui, int step) {
-    static const char *const names[5] = {"Welcome", "Game", "Verify", "Fonts", "Ready"};
+    static const char *const names[6] = {"Welcome", "Options", "Game", "Verify", "Fonts",
+                                         "Ready"};
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_2);
     if (!nk_ui_begin_container(ui, WIZ_ID_STEPS, &row, NULL)) return;
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         bool done = i < step;
         bool current = i == step;
         NkUiLayout chip = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(),
@@ -865,6 +866,32 @@ static bool wizard_box_begin(NkUi *ui, uint32_t edge) {
     box.padding_top = box.padding_bottom = 14.0f;
     box.padding_left = box.padding_right = 16.0f;
     return nk_ui_begin_container(ui, WIZ_ID_BOX, &box, &style);
+}
+
+/* One option switch: a button reading "Name: On" or "Name: Off" (accent while
+   on) with its sentence beside it. Returns true when activated. */
+static bool wizard_switch(NkUi *ui, NkUiId id, NkUiId text_id, const char *name,
+                          const char *sentence, bool on, float width) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_4);
+    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->muted);
+    char label[48];
+    bool pressed = false;
+    row.align_y = NK_UI_ALIGN_CENTER;
+    (void)snprintf(label, sizeof(label), "%s: %s", name, on ? "On" : "Off");
+    if (!nk_ui_begin_container(ui, text_id, &row, NULL)) return false;
+    {
+        NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(220.0f), sizing_fit(), 0.0f);
+        if (nk_ui_begin_container(ui, text_id + 1u, &cell, NULL)) {
+            pressed = nk_ui_button(ui, id, label,
+                                   NK_UI_BUTTON_GROW | (on ? NK_UI_BUTTON_PRIMARY : 0u));
+            nk_ui_end_container(ui);
+        }
+    }
+    nk_ui_text(ui, text_id + 2u,
+               nk_ui_text_clamp(ui, sentence, &text, width - 220.0f - NK_UI_SPACE_4, 2), &text);
+    nk_ui_end_container(ui);
+    return pressed;
 }
 
 typedef struct {
@@ -934,6 +961,39 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         break;
     }
     case 1: {
+        static const WizardButton buttons[] = {
+            {PLAYER_UI_ID_WIZARD_PRIMARY, "Continue", NK_UI_BUTTON_PRIMARY,
+             PLAYER_UI_WIZARD_NEXT},
+            {PLAYER_UI_ID_WIZARD_SECOND, "Skip", 0u, PLAYER_UI_WIZARD_SKIP_OPTIONS},
+            {PLAYER_UI_ID_WIZARD_BACK, "Back", 0u, PLAYER_UI_WIZARD_BACK}
+        };
+        wizard_text(ui, 0u, "Online and developer options", NK_UI_TYPE_TITLE_XL, theme->paper);
+        wizard_text(ui, 1u, "Both start off. You can change either one later in Settings.",
+                    NK_UI_TYPE_BODY, theme->muted);
+        if (wizard_box_begin(ui, 0u)) {
+            if (wizard_switch(ui, PLAYER_UI_ID_WIZARD_ONLINE, WIZ_ID_TEXT + 0x80u, "Online mode",
+                              "Check nakagawa.jaycast.net for updates and news, and let you send "
+                              "reports. Nothing is sent without you.",
+                              model->online_mode, inner - 32.0f)) {
+                result = wizard_op(PLAYER_UI_WIZARD_TOGGLE_ONLINE);
+            }
+            if (wizard_switch(ui, PLAYER_UI_ID_WIZARD_DEVELOPER, WIZ_ID_TEXT + 0x90u,
+                              "Developer mode",
+                              "Show a developer log on screen to help track down problems. "
+                              "Stays on this PC.",
+                              model->developer_mode, inner - 32.0f)) {
+                result = wizard_op(PLAYER_UI_WIZARD_TOGGLE_DEVELOPER);
+            }
+            nk_ui_end_container(ui);
+        }
+        wizard_text(ui, 2u,
+                    "This version has no online features yet and makes no connection. Your "
+                    "choice is kept for when they arrive.",
+                    NK_UI_TYPE_CAPTION, theme->warning);
+        wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 3u, &result);
+        break;
+    }
+    case 2: {
         static const WizardButton choose[] = {
             {PLAYER_UI_ID_WIZARD_PRIMARY, "Choose a disc image", NK_UI_BUTTON_PRIMARY,
              PLAYER_UI_WIZARD_CHOOSE_ISO},
@@ -982,7 +1042,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         }
         break;
     }
-    case 2: {
+    case 3: {
         const char *badge = model->experimental ? "Experimental"
             : (model->supported ? "Title profiled" : "Profile missing");
         uint32_t tone = model->experimental ? theme->warning
@@ -1102,7 +1162,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         }
         break;
     }
-    case 3: {
+    case 4: {
         static const WizardButton buttons[] = {
             {PLAYER_UI_ID_WIZARD_PRIMARY, "Accept and continue", NK_UI_BUTTON_PRIMARY,
              PLAYER_UI_WIZARD_ACCEPT_FONTS},
@@ -1157,7 +1217,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 4u, &result);
         break;
     }
-    case 4:
+    case 5:
     default: {
         WizardButton buttons[3] = {
             {PLAYER_UI_ID_WIZARD_PRIMARY, "Play",

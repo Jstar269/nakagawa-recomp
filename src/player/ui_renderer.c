@@ -4340,7 +4340,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
 
     /* Wizard Step Breadcrumbs */
-    static const char *kSteps[] = { "1. Welcome", "2. Game", "3. Verify", "4. Fonts", "5. Options", "6. Ready" };
+    static const char *kSteps[] = { "1. Welcome", "2. Options", "3. Game", "4. Verify", "5. Fonts", "6. Ready" };
     float bc_x = card_x + 32.0f;
     float bc_y = card_y + 24.0f;
     float bc_step_w = (card_w - 64.0f) / 6.0f;

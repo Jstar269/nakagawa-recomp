@@ -117,7 +117,10 @@ typedef enum {
     PLAYER_UI_WIZARD_IMPORT_FONTS,       /* open the font folder picker */
     PLAYER_UI_WIZARD_REMOVE_FONTS,
     PLAYER_UI_WIZARD_FINISH,             /* save to the library, and launch when ready */
-    PLAYER_UI_WIZARD_GO_TO_LIBRARY
+    PLAYER_UI_WIZARD_GO_TO_LIBRARY,
+    PLAYER_UI_WIZARD_TOGGLE_ONLINE,      /* the options step's two switches */
+    PLAYER_UI_WIZARD_TOGGLE_DEVELOPER,
+    PLAYER_UI_WIZARD_SKIP_OPTIONS        /* both off, on to the game step */
 } PlayerUiWizardOp;
 
 typedef struct {
@@ -130,8 +133,8 @@ typedef struct {
 #define PLAYER_UI_WIZARD_FONT_LINES 24u
 #define PLAYER_UI_WIZARD_CHECKS 10u
 
-/* The setup wizard (VIEW_SETUP_WIZARD). step is 0-4: Welcome, Select game,
-   Verify, Fonts and system, Ready. */
+/* The setup wizard (VIEW_SETUP_WIZARD). step is 0-5: Welcome, Online and
+   developer options, Select game, Verify, Fonts and system, Ready. */
 typedef struct {
     int step;
     /* Select game */
@@ -163,6 +166,9 @@ typedef struct {
     /* Ready */
     bool runtime_ready;
     const char *summary_line;
+    /* Online and developer options */
+    bool online_mode;
+    bool developer_mode;
     float logical_width;
     float logical_height;
 } PlayerUiWizardModel;
@@ -248,6 +254,8 @@ enum {
     PLAYER_UI_ID_WIZARD_CANCEL = 0x4304u,
     PLAYER_UI_ID_WIZARD_IMPORT_FONTS = 0x4305u,
     PLAYER_UI_ID_WIZARD_REMOVE_FONTS = 0x4306u,
+    PLAYER_UI_ID_WIZARD_ONLINE = 0x4307u,
+    PLAYER_UI_ID_WIZARD_DEVELOPER = 0x4308u,
     PLAYER_UI_ID_LIBRARY_ITEM_BASE = 0x1100u,
     PLAYER_UI_ID_TITLE_BACK = 0x2001u,
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,

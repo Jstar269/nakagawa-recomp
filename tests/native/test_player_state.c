@@ -2736,6 +2736,8 @@ int main(int argc, char **argv) {
         assert(wiz->focus_index == 0);
 
         player_app_wizard_next(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
+        player_app_wizard_next(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_SELECT_GAME);
 
         /* Moving next without selected ISO requests file picker */
@@ -2803,13 +2805,13 @@ int main(int argc, char **argv) {
 
         /* Back navigation */
         player_app_wizard_back(wiz);
-        assert(wiz->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
-        player_app_wizard_back(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_SYSTEM_FONTS);
         player_app_wizard_back(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_INSPECT_VERIFY);
         player_app_wizard_back(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_SELECT_GAME);
+        player_app_wizard_back(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
         player_app_wizard_back(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_WELCOME);
         player_app_wizard_back(wiz);
@@ -4493,20 +4495,20 @@ int main(int argc, char **argv) {
         dev->settings.online_mode = true;
         assert(player_app_focus_count(dev) == 7);
 
-        /* The wizard step: Fonts -> Options -> Ready, and skipping turns both off. */
+        /* The wizard step: Welcome -> Options -> Select game, and skipping
+           turns both off. Every first run passes through it: it needs no game. */
         dev->active_view = VIEW_SETUP_WIZARD;
-        dev->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
+        dev->wizard.step = WIZARD_STEP_WELCOME;
         player_app_wizard_next(dev);
-        assert(dev->wizard.font_confirmed);
         assert(dev->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
         player_app_wizard_skip_options(dev);
-        assert(dev->wizard.step == WIZARD_STEP_READY_LAUNCH);
+        assert(dev->wizard.step == WIZARD_STEP_SELECT_GAME);
         assert(!dev->settings.online_mode && !dev->settings.developer_mode);
         player_app_wizard_back(dev);
         assert(dev->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
         player_app_set_online_mode(dev, true);
         player_app_wizard_next(dev);
-        assert(dev->wizard.step == WIZARD_STEP_READY_LAUNCH);
+        assert(dev->wizard.step == WIZARD_STEP_SELECT_GAME);
         assert(dev->settings.online_mode);
         assert(dev->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
         free(dev);

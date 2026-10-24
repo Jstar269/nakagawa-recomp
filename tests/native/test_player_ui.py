@@ -826,25 +826,23 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertTrue(run["legacy_root_exists"])
 
     def test_empty_library_wizard_picker_and_font_confirmation(self) -> None:
-        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN"))
+        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN", "KEY_RETURN"))
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[0]["view"], "library")
         self.assertEqual(frames[1]["view"], "wizard")
         self.assertEqual(frames[1]["wizard_step"], "welcome")
-        self.assertEqual(frames[2]["wizard_step"], "select_game")
-        self.assertEqual(frames[3]["picker"], "1")
+        self.assertEqual(frames[2]["wizard_step"], "online_options")
+        self.assertEqual(frames[3]["wizard_step"], "select_game")
+        self.assertEqual(frames[3]["online_mode"], "0", "CONTINUE moves on with both off")
+        self.assertEqual(frames[4]["picker"], "1")
         self.assertNotEqual(frames[0]["pixels"], frames[1]["pixels"])
 
-        fonts = self.run_player("wizard4", ("KEY_RETURN", "KEY_RETURN"))
+        fonts = self.run_player("wizard4", ("KEY_RETURN",))
         font_frames = fonts["frames"]
         assert isinstance(font_frames, list)
-        self.assertEqual(font_frames[1]["wizard_step"], "online_options")
+        self.assertEqual(font_frames[1]["wizard_step"], "ready_launch")
         self.assertEqual(font_frames[1]["font_confirmed"], "1")
-        # CONTINUE is the options step's first focus: Enter moves on with both off.
-        self.assertEqual(font_frames[2]["wizard_step"], "ready_launch")
-        self.assertEqual(font_frames[2]["online_mode"], "0")
-        self.assertEqual(font_frames[2]["developer_mode"], "0")
 
     def test_wizard_options_step_sets_the_switches_and_skip_clears_them(self) -> None:
         # Focus order on the step: CONTINUE, SKIP, BACK, then the two switches.
@@ -866,7 +864,7 @@ class NativePlayerUiTests(unittest.TestCase):
         frames = skipped["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[4]["online_mode"], "1")
-        self.assertEqual(frames[-1]["wizard_step"], "ready_launch")
+        self.assertEqual(frames[-1]["wizard_step"], "select_game")
         self.assertEqual(frames[-1]["online_mode"], "0", "SKIP turns online mode back off")
         self.assertEqual(frames[-1]["developer_mode"], "0")
 
@@ -1925,13 +1923,14 @@ class NativePlayerUiTests(unittest.TestCase):
     # The screens it hands over to keep drawing in the existing renderer.
 
     def test_empty_library_starts_the_setup_wizard(self) -> None:
-        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN"), ui_mode="next")
+        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN"), ui_mode="next")
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[0]["view"], "library")
         self.assertEqual(frames[1]["view"], "wizard")
         self.assertEqual(frames[1]["wizard_step"], "welcome")
-        self.assertEqual(frames[2]["wizard_step"], "select_game")
+        self.assertEqual(frames[2]["wizard_step"], "online_options")
+        self.assertEqual(frames[3]["wizard_step"], "select_game")
 
     def test_library_shortcuts_reach_settings_picker_and_quit(self) -> None:
         settings = self.run_player("library", ("KEY_S",), ui_mode="next")
@@ -1948,15 +1947,46 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["running"], "0")
 
     # The next UI draws the setup wizard too, with the existing wizard's handlers.
+    def test_next_ui_wizard_options_step_switches_and_skip(self) -> None:
+        # The switches sit above the buttons: Up from Continue reaches Developer
+        # mode, Up again Online mode.
+        run = self.run_player(
+            "wizard-options",
+            ("WAIT_MS=100", "KEY_UP", "KEY_UP", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN"),
+            ui_mode="next",
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["online_mode"], "1")
+        self.assertEqual(frames[-1]["developer_mode"], "1")
+        self.assertEqual(frames[-1]["wizard_step"], "online_options")
+        skipped = self.run_player(
+            "wizard-options",
+            # Down twice lands on the button row; Left twice reaches Continue
+            # whichever button it lands on, and Right is Skip.
+            ("WAIT_MS=100", "KEY_UP", "KEY_UP", "KEY_RETURN", "KEY_DOWN", "KEY_DOWN",
+             "KEY_LEFT", "KEY_LEFT", "KEY_RIGHT", "KEY_RETURN"),
+            ui_mode="next",
+        )
+        frames = skipped["frames"]
+        assert isinstance(frames, list)
+        self.assertIn("1", [frame["online_mode"] for frame in frames])
+        self.assertEqual(frames[-1]["wizard_step"], "select_game")
+        self.assertEqual(frames[-1]["online_mode"], "0", "Skip turns online mode back off")
+
     def test_next_ui_wizard_runs_the_first_run_path(self) -> None:
-        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN"),
+        run = self.run_player("empty", ("KEY_RETURN", "KEY_RETURN", "KEY_RETURN", "KEY_RETURN"),
                               ui_mode="next")
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[1]["view"], "wizard")
         self.assertEqual(frames[1]["wizard_step"], "welcome")
-        self.assertEqual(frames[2]["wizard_step"], "select_game")
-        self.assertEqual(frames[3]["picker"], "1",
+        self.assertEqual(frames[2]["wizard_step"], "online_options")
+        self.assertEqual(frames[3]["wizard_step"], "select_game")
+        self.assertEqual(frames[3]["online_mode"], "0", "Continue is the options step's focus")
+        self.assertEqual(frames[4]["picker"], "1",
                          "Choose a disc image is the focused action on Select game")
         if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" in run["stdout"]:
             # Without its fonts the next UI falls back to the existing renderer.

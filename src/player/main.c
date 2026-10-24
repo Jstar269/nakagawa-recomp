@@ -811,6 +811,15 @@ static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
             (void)player_ui_wizard_save_title(app);
             player_app_wizard_cancel(app);
             break;
+        case PLAYER_UI_WIZARD_TOGGLE_ONLINE:
+            player_app_set_online_mode(app, !app->settings.online_mode);
+            break;
+        case PLAYER_UI_WIZARD_TOGGLE_DEVELOPER:
+            player_app_set_developer_mode(app, !app->settings.developer_mode);
+            break;
+        case PLAYER_UI_WIZARD_SKIP_OPTIONS:
+            player_app_wizard_skip_options(app);
+            break;
         case PLAYER_UI_WIZARD_NONE:
         default:
             break;

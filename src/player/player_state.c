@@ -2881,6 +2881,10 @@ void player_app_wizard_next(PlayerApp *app) {
     if (!app) return;
     switch (app->wizard.step) {
         case WIZARD_STEP_WELCOME:
+            app->wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
+            app->focus_index = 0;
+            break;
+        case WIZARD_STEP_ONLINE_OPTIONS:
             app->wizard.step = WIZARD_STEP_SELECT_GAME;
             app->focus_index = 0;
             break;
@@ -2911,10 +2915,6 @@ void player_app_wizard_next(PlayerApp *app) {
             break;
         case WIZARD_STEP_SYSTEM_FONTS:
             app->wizard.font_confirmed = true;
-            app->wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
-            app->focus_index = 0;
-            break;
-        case WIZARD_STEP_ONLINE_OPTIONS:
             app->wizard.step = WIZARD_STEP_READY_LAUNCH;
             app->focus_index = 0;
             break;
@@ -2960,8 +2960,12 @@ void player_app_wizard_back(PlayerApp *app) {
         case WIZARD_STEP_WELCOME:
             player_app_wizard_cancel(app);
             break;
-        case WIZARD_STEP_SELECT_GAME:
+        case WIZARD_STEP_ONLINE_OPTIONS:
             app->wizard.step = WIZARD_STEP_WELCOME;
+            app->focus_index = 0;
+            break;
+        case WIZARD_STEP_SELECT_GAME:
+            app->wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
             app->focus_index = 0;
             break;
         case WIZARD_STEP_INSPECT_VERIFY:
@@ -2978,12 +2982,8 @@ void player_app_wizard_back(PlayerApp *app) {
             app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
             app->focus_index = 0;
             break;
-        case WIZARD_STEP_ONLINE_OPTIONS:
-            app->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
-            app->focus_index = 0;
-            break;
         case WIZARD_STEP_READY_LAUNCH:
-            app->wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
+            app->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
             app->active_view = VIEW_SETUP_WIZARD;
             app->focus_index = 0;
             break;
@@ -2996,7 +2996,7 @@ void player_app_wizard_skip_options(PlayerApp *app) {
     if (!app || app->wizard.step != WIZARD_STEP_ONLINE_OPTIONS) return;
     if (app->settings.online_mode) player_app_set_online_mode(app, false);
     if (app->settings.developer_mode) player_app_set_developer_mode(app, false);
-    app->wizard.step = WIZARD_STEP_READY_LAUNCH;
+    app->wizard.step = WIZARD_STEP_SELECT_GAME;
     app->focus_index = 0;
 }
 

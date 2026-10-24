@@ -218,10 +218,11 @@ typedef struct {
 
 typedef enum {
     WIZARD_STEP_WELCOME = 0,
+    WIZARD_STEP_ONLINE_OPTIONS, /* online mode and developer mode, both off unless chosen;
+                                   right after Welcome so every first run sees it */
     WIZARD_STEP_SELECT_GAME,
     WIZARD_STEP_INSPECT_VERIFY,
     WIZARD_STEP_SYSTEM_FONTS,
-    WIZARD_STEP_ONLINE_OPTIONS, /* online mode and developer mode, both off unless chosen */
     WIZARD_STEP_READY_LAUNCH
 } WizardStep;
 
