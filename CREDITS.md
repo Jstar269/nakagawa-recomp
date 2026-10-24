@@ -11,7 +11,7 @@ Nakagawa has since substantially extended and modified that codebase. This repos
 
 ## Other upstreams
 
-- **FFmpeg n4.4 — the FFmpeg developers** — LGPL-2.1-or-later. The ATRAC3 and ATRAC3+ decoder subsets in [`src/rt/atrac3p/`](src/rt/atrac3p/); two imported files also carry a MIPS Technologies, Inc. BSD-3-Clause notice.
+- **FFmpeg n4.4 — the FFmpeg developers** — LGPL-2.1-or-later. The ATRAC3 and ATRAC3+ decoder subsets in [`src/rt/atrac3p/`](src/rt/atrac3p/) and the H.264 video decoder subset in [`src/rt/h264_ffmpeg_sub/`](src/rt/h264_ffmpeg_sub/); two imported ATRAC files also carry a MIPS Technologies, Inc. BSD-3-Clause notice.
 - **Clay — Nic Barker** — zlib. The layout library in [`third_party/clay/`](third_party/clay/).
 - **PSPSDK / PSPDEV contributors** — BSD-family notices for public ABI definitions and source-owned fixtures ([`THIRD_PARTY_LICENSES/PSPSDK.txt`](THIRD_PARTY_LICENSES/PSPSDK.txt)).
 - **SDL, SDL_ttf and their dependencies** — staged beside the player with their licence texts (listed in [`NOTICE.md`](NOTICE.md)).

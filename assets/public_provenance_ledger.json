@@ -93,7 +93,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "55db75c069b3034f57be8ca6cb544f221e8205924e7279cd0d2689a84a55cc9b"
+      "sha256": "a654c4e4a1dffb187d448f9ca5c4ae6127513f7d536b1bd9198dd2c58c54d6e9"
     },
     {
       "path": ".github/CODEOWNERS",
@@ -186,7 +186,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0c58ad766b81ae7a39c01b68c0bdc4e983dfb2878bf7d4d2429e9b6bcc3f1230"
+      "sha256": "0934c689cb7044eb08e80b4b701ecd4cd246e21ff1cfb44d6b4dc48e8dbca817"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -312,7 +312,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce97e6ddd576250eee26ca9b152b6fd62015118360a4008d7e124b8ca5f3e66b"
+      "sha256": "629f15dd583c0bbd1b11dc79983cfd3b7d611c9da283cab82043a8285f458c7d"
     },
     {
       "path": ".recomp.json",
@@ -378,7 +378,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7e816d8113ce2b14ba8076fe4d0f5e31c243ac62b05105169409eaae4a70d43f"
+      "sha256": "f9cbf0d115b2c2d2cf79c84712b4db6569d6d2ea44a0578879c1cf20eefe359d"
     },
     {
       "path": "ISSUES.md",
@@ -409,7 +409,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "33642c5fa418d731145da66cddb79519b4f3c51c0ba89cee04ecacd2c5cc4d58"
+      "sha256": "038b39d5708b9b8c5883a387f426871e5305caf739f388cdbf92ecdf2092f2f6"
     },
     {
       "path": "NOTICE.md",
@@ -418,7 +418,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2ecb86a5465dd7a0fb1761b085571172db7b0775ead70ebcea5303deb01ad5d7"
+      "sha256": "28e89926a4871d2a165f6aa4295b45cfbe701016005f7abcea3a09d1026888a2"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -949,7 +949,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "6e58f8a8789e92ca9bac3273d54ae8c9534ec33267d4fd61b6f7f45f841b207f"
+      "sha256": "7ce28c4f59e9343f9d0f1f69f304aeac8aaefdf8afddfac28647a6ca3debd7e8"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -970,7 +970,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "90d1c11070907daeacfe959d1de8e38a8269c4f5b99ca49d3b64d3ac32cc6a7d"
+      "sha256": "2e9a38f23ec41d672f47891bc8f48bd51db7da1df7279f69f9e664f9264f8224"
     },
     {
       "path": "assets/third_party_components.json",
@@ -982,7 +982,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7cd68fa274c2bdfa5f1e0c1b41f52e71da222410f6a0781c3e8952d53a42fc45"
+      "sha256": "b03e74e1bb26d90eb020a20d9b0b43d5c1b2b8192d39133eb938eb5974786f8e"
     },
     {
       "path": "assets/third_party_components.schema.json",
@@ -1432,7 +1432,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cffe296c47be4fece4ab3bfbe306bbe19d41858b9e65bd114e537bd96405e1c2"
+      "sha256": "e49da6640345909e988515a3724a9aeedd3a7d36959f30f21c58c1b156f1c5e3"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -1516,7 +1516,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "98e6c69101938d66130073c665802282276331d00bf595c1ed2aaeda6a3ad330"
+      "sha256": "c31cf9fbaca4607bec7b4dd6730dcdda5220e0a8e949e600196a4a54c3d972a7"
     },
     {
       "path": "docs/PLAYER_UI_DESIGN.md",
@@ -5374,7 +5374,2841 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5d82919a7b8f6860afdafe3f11fc3b874fd55b0ea833530fdea267113a64abef"
+      "sha256": "77fd878c5a036d1d0e464f2354db1d444bf03ff690d4b86ce7a3ba8ffbd6bea6"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/LICENSE.LGPLv2.1.txt",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/PROVENANCE.md",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "207c9649fcebd6d86d6ae05c5fbe7e0e426f7cefaa6ee3c340bc8b0f30fe0691"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/compat/va_copy.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "8d639b4a61c4b3108c76494d79621cfbb40283bbe8951930fb7c76bc75bb1952"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/config.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "7bd01c5c1a41df8ee4fd08c159bf40ce4a302c482fde40e00e5a0f4d66f42f45"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/allcodecs.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "666945350a0613f8a9ee9ed8b8166005f8aabe00c3ac1c7a805b4ab834d33182"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/atsc_a53.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f4f4440b1882db6d5400f1106c6b4399405b391cf7c0a5650779a89f7b6dd185"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/atsc_a53.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "180e19aeff0ba00e06a12473b42678f1daf05b118fa4f31c6b81463b757648f7"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/avcodec.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "d351dba35fc6a4e32e2bf5840d035995385562caa8d21909e49962c18bc40491"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/avcodec.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "5d6fa1c75cfeedc632cd7c1aaded5fb863fb77d0211b7de621784701e1c51127"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/avpacket.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "12195d6c084b9c9fb92550b05c8f9adbfdb30a6a74194625a9e1020b70b28d30"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/bit_depth_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "6f7a2b7effab0e160bb3e23ff95d919f484d6fa9308869db1366720766a5f539"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/bitstream.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "e238284823fa0a29c5ef00fca47ce36cf6148bbae0a971d24fe29583e2bba3c2"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/bitstream_filters.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "316cde454ca93c04df1d8b0db1a6f25b3a0c2a480106390245bef113944e153b"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/blockdsp.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "1be15c1183746437d54f3925679d9195395747d8649a0d01a9c18bf3e5492d47"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/bsf.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "fa9cc17664d3c8018cb133b074ef71c5ab8a85f932c823a6f44025c31a84d5dd"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/bsf.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "2c96dfd906ba9dc831e07de4dc041a75827f6d8a87f0228f099dd8eac1245e29"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/bsf_internal.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "d23bcd6c8ae3b48a2e84fbfccdb82a63ae5f48ed55d18e862efd2eede37a5658"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/bsf_list.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "55a2c593718244f90db2e387d9ef945e129ca6b097905b3ead026c9b70dbce9b"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/bytestream.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "df4d5322def1da52d1ae586a68ec4f24ea91c8abadd29adafc7abd8483e6138d"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/cabac.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "96dad6066cbba72a5dac445bcb301c76151fc0e45fff39f98d56053a13cc9c07"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/cabac.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "7a15d32fc3405bf51872eaa32e8dcc7e55ae1329464bf2a836554199d62a1711"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/cabac_functions.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "648681f7fc299c7fcc156162244d6b4e67a03a337fa9af586317a5b459ac65b3"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/codec.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "37d3882fc87d791a07f45a24051928746edf2bd9a658f6250c442e8a7c8edc8c"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/codec_desc.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a739e25be12cdfbd87db9d77cc434a63fbb497bbefdff8282fa2add3e93d8e4c"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/codec_desc.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "30027aa432ae4ec3c10805850c9ba6880cf78b0e6c7f4e9198f6844481f3338b"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/codec_id.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "0243b38abc2286f9f284e940a2ebe9ac24a3693a4e7d9a530cb05078c23e4236"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/codec_list.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "0a3aaead7d71fa501691c9fac526327cd7fa34116f3fd730fd26d4f0400be7c1"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/codec_par.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "9b4a2cfd206b9738636c09f784fa4628ca00cf8bb8436ba122a6ce3c7aab5e5e"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/codec_par.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "164e5e5a12b28b5e58bf81546ea0c1f55acde461bf18509d654b04f3cd8d17ca"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/copy_block.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "47726c44d6d7fba0ade8017e487dc1aa2bf7e045f2af1aa99c38f153ba46b2f2"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/decode.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "b50969e48483dbb5c1c17cfabba4e96382ab3a409366f5ae1933be4e55aa80b2"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/decode.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "c7d2955122a76c7ee3c7b59fcf19f88eb125959f9a8e763d38699c4f1252c36d"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/encode.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "162c303e60305066fbd361b971795c4efd851553ec0e67784f1ce5bebfc56b18"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/encode.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "ea3196cec5b0a0e0650cd58d47aa0e24c164b23c30ab0013ac730cb8f5360950"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/error_resilience.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "b0cfcf6c4a661f935d7e71d70bf82bf32f8cdbe227c237b4004fceeef54b1e3a"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/error_resilience.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "1ba76ba7517272b5249d860d0fe188967a63aa5f7275ecce9868cb37fa98c839"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/fdctdsp.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "5743af2889e8fb6696957c8e62ef21ae5aab4efaae9fb3f0fbddcd868a2b0a04"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/frame_thread_encoder.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "1640d03cec089a4ef4edc63610d03bac9dc4e55a24aa00fc402869c547a12a05"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/get_bits.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "e3c5067c886a3a8bcabb0a1e0a2289dbb413644fe5e0de0a6cd85bd4741a927f"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/golomb.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "ecd6784b5a12136de3e2a35284af49cd61aa129c1eab5bacc340751dbd250e16"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/golomb.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f2db20edbce665602377be69d92b29e6bac039c14faad053709e495b54a1b410"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h263dsp.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "06b2b95f862da3d87bf22f2c5469a89925e22eaa36ba6558d2e983296f14c229"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "1b6a3724e55b2d5dac875bed666f9499ed33f404c14b37a560433bc34bde64c1"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h2645_parse.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "6be5358cb23afe1dbfb7b9531f40f7fca3da3f264c6dbfae1b8935f327f14c48"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h2645_parse.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "08ef31b654260ec77f4a6847393db9b35272ace824485ca15ba4c6b3f31d2a0a"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_cabac.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "8f87f62fbc086116cd41203d7dae6057aa21dbf01dd508b54e7b96d8ad2774ae"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_cavlc.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "b00c4c852d5984190a1ef32ef50675201f09327c61bfe53fab4bddd7c412acb0"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_direct.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "2b2ed39efde38c8574902e74ed2b332c7868ad94812895c01c3394e9b461dff8"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_loopfilter.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "e07dbed421791bcd36288e327936c8748e113861f4d328e4d5568a1cab13ee2b"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_mb.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "981ec8ebdbcaced48d1bc7b7fe1f3a5a1ce276974f91f87f5da79449ae7d7260"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_mb_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "3b667d71c5fe827480405c345326e112a862dc15fbe8dd91dc6c77186150bea8"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_mc_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "c0dab5fc866215599de7f8e46766cbcfb4ba5ab8af8ef6dca9243d3ff285b4d9"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_mvpred.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "4e385fc7367949e908216ace46563d0826f7a2abaafee2ba4e4016b0ca20fbc1"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_parse.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "6a39b41c56f6c2093c904e410006d570bab0db3b5d67d4bebbf35a608e49dca6"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_parse.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "116d83e62f173f5fe9a6d4de5301a914ed4bc782076d0446e12038a9b6c63a8c"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_picture.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "66159732d6b145dc52708e170041a01f96c1bd3425fc65a43e3529c139c55bb3"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_ps.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "b061a141f909bea024320522000ab4d9b4a2cbd7af819451d8f34a41b307e095"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_ps.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "48d39a131d89586c88d73d2f802bab532dea76b2708f27bfd39d4880dfd53213"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_refs.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "6f5daced33f21bdec7cddb84fcce149061dec932bbde6f8285b7f8c8541367b7"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_sei.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "87d53697262c3842a23e052402acf6be6c29d9aa8bb9a2af338697bc70aac479"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_sei.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "7b64bbadc0b348c015b299e33ec9a76b47361cb570d84038f84e7f4e6fd87c3e"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264_slice.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "53daccac871b28bc3875938eaedd3d66d3b45802e4c34f0e825b6e8214eca214"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264addpx_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "5cad7f0c7afc7292511453f33d73ef6d47af0902b219b679057d9703826d1213"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264chroma.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "522cc80b564ee4ab586f795ead17107b8b50246e5acd5ff65778d81e18c34abd"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264chroma.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "ffe95451dc7a4f4950230a426f40584326aa78f934022ef7c87ef2a24e44e39a"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264chroma_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "4a56b8d82dba6fd1aa58556414892d2da42d436782889fe0e47c090f74610191"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264data.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "b6386b98e89746fa6a894a05c4529d3c1777d63cd7e259f0486c90e7c8a2a061"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264data.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "e52fa867563b2edae6ef8031c990f4c5b84214b13d6e32c5c05007883fd00785"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264dec.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "af27219228e193e8d077b2ceada592c8a0c3357d0f527cac3c078a88f3d0aa24"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264dec.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "10a5def2c706048dae9ece38e3bf09f242cd1d2d93868645737b8038c35656cd"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264dsp.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "3da89e5595a95182a588162bb22697afd2ef3d54969e4842edb514742da685da"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264dsp.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "23bdd690c90055af41564fc29d52d122ee0279ab2ba4d068e7fa70747859c8b4"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264dsp_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f4fee93f12b36ec9127c1f6f93b89faeb7461c1404a915f53a2c16dc9fc7c011"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264idct.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f9c2a5c05a821b8d2ff2c340028c72cf6235498c0643d3724e6c59f5cd9a1d84"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264idct.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f425530f0aac7f1b2a31e69fb0f9e64b398598eb30cf571e838f837639fc1ce7"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264idct_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "1fefbc5ae2f10c1ef4262081f1827e1d6c4eb154949a54cdf20def36de658677"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264pred.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "9d1fac8709a301d0316d9e5d49e55cc2dc5213e91805f12a6628fd9db4f7c4e4"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264pred.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a97a2792cff6278ddf03c285efdf6ee514bc7837c53b879213f2027e2f205206"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264pred_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "088b511c22af16d4d50298cb3eff6b60455075ab1d9f306d5878cf199c0fa46d"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264qpel.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "31ea5e630890de3275ce7ac7a8e4ba9afd8b68465ddde41291b1e3d4af4054e3"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264qpel.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "3da6c49fb876440b9c1513fd5acd57179d2c57b8090abda3ea31731472f08824"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/h264qpel_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "60eb59ac9bb5a954ea433b74b7cf235ed53373c8087634138d29cac2c61586ca"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/hevc.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "1cf1b143962315bfe27f173e3abf774c7930fca40d12e52e8354a00af1443643"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/hpel_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f8e36ec2aab6dc86c675007775f717af7bccca1680168ddd63d81208c7227a62"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/hpeldsp.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "6362b3adc52c97259c24f08c1fd050c9826f5986461875c1833f3e248ab464ef"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/hwaccels.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "03c4935696ca69343e8f5d1b62aae8db4e2dae9e26ed1a5662457292fcbd51bc"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/hwconfig.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "d68cf13e200923ee3e0bb19023f89281309d995bb615c8cf96562489babd94bc"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/idctdsp.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "d1ccae5428680fabca8fa61a7f42504e21ec7839244093a01f8ec33003b44511"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/internal.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "edb8432f281ba5b0519f9ca6138dc55ab98c9d8b78d8dee836ab4a1351d37a9d"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/mathops.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "576fb9c5d57651010acfe43c4fd4d2ae88fc4ebde8b755d0b37391ca0332c047"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/mathtables.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "ebc88fd76c3c31ab651d4e1cf88cc823374ca781e4db05a84b9e114fa950fc03"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/me_cmp.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "adeb4a191dfaec0f6c45cd555257214a592ca833683ed8d55a7b4a5fb515dd1e"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/me_cmp.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "4b8940a15ecdf0a1f724bb5518a26bf2062fdf853527a774d0e27a9aa6b96a26"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/motion_est.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "2a406760ff3a02041e46af0b76dd10de550c363090e39ae04362546ecaed1e78"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/mpeg12data.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "266fdb248af726c773d81773c427a51e29624d28ab9eb54bc6737e53ca92eecb"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/mpegpicture.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "eb4d882e5fd2443c517a5d322464d6171c8839661540d9bfe80abb60fe6888ff"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/mpegutils.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "5bd08cbcfd2a8ff37fa9a18803b0cb731cca328b25502049f349df5a891ff4d5"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/mpegvideo.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "ecbaf3a8bb7167778d7b2a67aacddb138c26636610bdb40eda6618eee1a88938"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/mpegvideodata.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "67b6c120f9f6cb95e3faada8598aa949f7bc88ee567a84da70fa06772acc1275"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/mpegvideodsp.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "8774d88b74e4eb2d0d8ae4eaab0d5b5dba8fb2bfa0080cfa56ce7d74cd7e9201"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/mpegvideoencdsp.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "4b4b10be086c944cf6e1f3e996f4492ad6a994982bba8b19c0c8978d1c313317"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/null_bsf.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f17d7a48712900aa92c762eb2b3f6bf0e5d5a563198150313040a15c9ae3e8d6"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/options.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "bd9eaaf28cdb35fa638444825b3a9bc6fe16bc344448588481097b73779bb579"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/options_table.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "ef90277889a057904c2165c2db81b319a127b58a6037997621b813f269e22b4c"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/packet.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "4926222a572c3596b7a80189d9c607c7398319e3889566bd09e7658b0d20bc29"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/packet_internal.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "d1410709a05b1c71e546e89e86555438df9efc6b9337e1ab2554adab0c21a2c9"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/parser.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "714cab9aeb24333f0e904f2baf428dbc2ed741490359ba6256a94af89a128c2a"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/pel_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f4c25c4647379361b674bdd1bfe57387b46ac43305da587f33e65b2f93ab83c5"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/pixblockdsp.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "b7fef3ac5ea27e6808fb419160b822910de616540a19f7f9461828059f1b4ac6"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/pixels.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "d803e529fce9aa7b401098f90cf0e4375d26ce903167cc164fdffa44020cbc2e"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/profiles.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "cf98eaaec0c6f57be5770fa285755dbe96c15e53545709620b515db22713073d"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/profiles.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "c2c5c6c10517ece69dab2ba59a1d134c5f12ce1d8d82ed577aefc07035df9e03"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/put_bits.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "b24808cee11711da6c119c43bc71b03d3458d1d07be238128d264a5f244c18ab"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/qpeldsp.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a3902205126d676b57700dac88c58ab53ecaa518e0cc89280ddaf5fb17a48604"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/ratecontrol.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "4402dd0590037219f3e6a0baef3dafb3fb1cf90a6c14c0cecb919e491a6581e4"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/raw.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "39d14d66e40cb1edd888b66891d082fe79568475c792cc387db382945fef2025"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/rectangle.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "14465689bdf44299444dcc3a42f448a8e368e2b36545d621f93f6289deefd342"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/rl.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "bfed6410c0b07f404fcc0de97826453216bfabb35cb70f8dbb920c76361d4138"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/rnd_avg.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f72b4128db5851fe62ab72acb9203ffa333b3fe5ef563ff787698b5f504e91b1"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/sei.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "985241041622d624b4706caf0b4d038a37a352eb4f369161bf0a7ec2ce8d2612"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/simple_idct.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "68d33332d98689082ea215c860a2a6c088b807255f20fcbe28d73cf385a72afd"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/simple_idct.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "fcfdd224b3d6d70b67e56caad9b18763cb4d3d9ede84b613cc6cb987995b9b1c"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/simple_idct_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "092d1b0973e329b0b0aaae634e7cf2f5e97c06aaca2ce98450298ae185c3a14b"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/startcode.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "170d02c37be28b9bdb2cfda5bb05a5d8df8dc0df775aef36324635a7c2328085"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/startcode.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "eb292debb79db78311104416ec9b8c6bf6971c879496f3fd14fee75f495b3aea"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/thread.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "31b41c991a379a69657bef741a1f0c647ebe83d5e072b3bf755317539c58c69f"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/utils.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "bbdd6dfaf45bb253d17d86451a637939c16766056e5dfab3a99e85e6f87e463b"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/version.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "59da10d0543d7e4a4a11cccfc592335e24c1a94774cbedbd74968e6e1395cf40"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/videodsp.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "3c3482f1f44279429dacb644d9bfe8dde7448a1017495bc522c57912f21cee56"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/videodsp.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "ab81880d630bbe3ef8dbe4a2e15b2ee16635db37001fe5a09897ab8a3ff78460"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/videodsp_template.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "36d25ed6c1d13af948a783539ee87bf1bb2894c38f07fe4d0048806dd25b284b"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/vlc.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "94e1e4cd2472cd13a6d636da6f63650535d479fb7901267ecce75b57b5c0f754"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/attributes.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "5579591da44aa6d523ae4211d157abb503075ea818e49a8dc4e31c5933f79a58"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/avassert.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a067aceabf8c8998393bbd7ab3c3949e041948c6e9672dc22295b975a177c634"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/avconfig.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "cc63420a662cb71a0dde3b2f19a5e55559ad7f3e737fe437391f087e03be96b9"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/avstring.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "fe6c51a156d3000e9ff4d16f547eddcd4fcdb445fbc908f2897b98e5b5016a71"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/avstring.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "34d277cbf6e5031150edcac9566a8925c79b1c79d36fd35503ba98c39163eb19"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/avutil.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "5d868e4d3340fccd511662b67eb4e28febd23e4eb28466d57a7e277228d53baf"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/bprint.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "3f287775db19cf82eff1f3be22f9f23b7eab7b53ae3b5e0bf140c10d4de584a6"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/bprint.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "c4040dabbc4310b612834e6884f73119850704431a320e9b157275fca99b7066"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/bswap.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "7d6432122fcb3a261f037a4323738301a5a6b50ebe80940749a9c9704a56bc3c"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/buffer.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f38441aef7cca9cc0a624983c5f948029a436cd42ed963c9b7f2a0e1a0c4b5ad"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/buffer.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "6fd37a6f260bae80015a07cbf2e418a929dd4cfd0d8d39f69f96047f8521cc2f"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/buffer_internal.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "b149937296c7aa3319988c525b3a1f092ca81455c0b416d4cc528b67819e4de8"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/channel_layout.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "653a68b1433d5fe2caf6a4db826a5aacea8c73a3a9acbce93d67e4e1ef2f6177"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/channel_layout.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f59ee84455dc0b37d61ebb225123f5311cd5fd1161a62f120aab9c31d2b64c0d"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/common.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "9a229b2ef3c930961062a40807c6c689e250128a32dcb569c29ddc8fa5be002a"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/cpu.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a994aae78e15b62be62f10e6a393ee694eb07dfdd37c6fbd5f19e703114480b4"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/dict.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a55ecec218c3580bf316c8b1da2d0dd148948484dc474b598afddd4e93cab1de"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/dict.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "b8f3d9d4f4e59c77fede23eef817e5821608151f86cd8dfffb4b81c877d973c8"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/display.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "480c11c6af8c98529ddb85b40d1a2167602b44f721ca8876d42c990f3f88878e"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/display.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "c1f7f1151190de1e96fe998e245aae498e8f776f658ac3e566b24fc56de43866"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/dynarray.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "d94e00c37b220c230b23322a9e1fe24d092eda6ef2353953009727652dd1ee51"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/error.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "9a69dfa81739da5fd8fa1f6fc86be68e334c20ad65738e8ec45857631234c638"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/error.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "cd530a990c8949e867f05e08e4de07c2df170d435707a73679fe5fe53bb3389e"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/eval.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "3a6d376394916414454c129a0b425f812a089c881a492a7265265d44b6d5078a"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/eval.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "3b720c39b0ce8bb2342d8b224c4bc20d8e07e20de73d4292b1f6d279ba1da300"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/ffmath.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "522d6f0b024ebd05a1f4868439a5513321b45b54e1cae387b430da2acefe66ff"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/ffversion.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "12e78b37aa2c50dfd0d81e630590e7ddb871c03e6300bc6e8a2e7522a909797e"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/fifo.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "8149bc0e2df81c461c8f009c8a1350d0ad74d3cdaa19cfec9f87c885807828db"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/fifo.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "d8837e2675b3e4380e60857e94150713e612ea34f3da1868515d7449f05f1fbc"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/file_open.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "027d376141f1bfb89058fd3b175d9c8035b8621b870f4f918e1a7cf91a3dccc8"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/frame.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "9e5b067e9b8ef7652294e19390b0a3e2dc223b41c9e89589d0b15bc396be8470"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/frame.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "67632470cbcf8b413f84323bd9393f728c6ee83e0dd03537ebe813114ef898de"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/hwcontext.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "b198a4e0a8ecc6a80941947f31184897f60fd8e8d9d39f8ab6eff7c85fa12017"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/hwcontext.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "3c16d0ae1d7c52e82c6cdef20c530d10f401b56d16462339aa9256ea7aee2bee"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/hwcontext_internal.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a782131b0b457110601cb671dff934b7365cf5ccd9e496559fcf32c553c66852"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/imgutils.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "734861839047cebc759cdd77e14c811fe83194f19da6f94aebc9144756c9a0c7"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/imgutils.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "cdadd7eb61a9594ffc19ef5f43899370c359cbe2aa32ffd7e5333cd80cf01284"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/imgutils_internal.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "5a802569b1d673bb44593170be3ad1cd52c36b9f010906a2a3d62125645bc3b3"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/internal.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "151ab64199c4108d1a70b5234ae786f1aecce18036daa3d8ac744f188740f132"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/intfloat.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "3a29e4eebc8c269cfd867b96de91d8231773d392c12a8820e46eaba96d2b4ca1"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/intmath.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "905900f0d1f87ed265d2ff3db42fd9083212cd936f8d15bd384a2c4a03e46957"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/intreadwrite.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "61f5c70a02b95624756cc191c0c9d1c232219d37c051b4f33d662dfd33233958"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/libm.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "152e0a524cb4fa68831ddbe6ef1dc08e8a71cc87775d25f264a49eb991680da1"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/log.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "16d6768591dbea6976ab2bbc62c114fd8c12b8130f021eba3a3ea51b877d5291"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/log.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a2de7f9915057670e0e9a48326107072d0ded1e3c7d41f29103ea06f9d0f1274"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/log2_tab.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "825d10534b8851fa86761b28b06bec0a854c264c23cbcc144f4086ce5992781c"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/macros.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "7fd8514cbe4b6ef025b0f5cc3b752e2c3940e22f4945cf6e6372653b6e3d2bca"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/mathematics.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "fced0cd35aa4aea3858958e0c550bdc9eb0fd9933de628f83fd6d2e52c224260"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/mathematics.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a4cd34f7c19d82c4e58349f0c4987f5b3829dad15755f4eca166b492506cd37c"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/mem.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "7e965f7aa29f393243b18df96a2031ea7f34e2f397d6326e15e31dc3cf29c076"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/mem.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "2627c3903b04c29ade0d9d015edced178cb05e22e04b38aed6fc74aa58229d57"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/mem_internal.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f31a7c033140ed88d4736242162e22c9065ce9bb7a078c3351bb5ba9f9868fd7"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/opt.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "06164df87d9498d09237ac30762ed52d0ea44c2ba022d473ade7dd85172132e6"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/opt.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "97039a530c44143d9191955366b031a181192e9f09f4d8bb494a2dbe6f46104b"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/parseutils.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "ca53f46824d623705bdcc16277bb45e3698633e01d852d7bf9ac6d42f333c98a"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/parseutils.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "dafb4321ecbd52930d3900d8d22b2d1714b0375622aeea4acfdf8a0a4b6ee03b"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/pixdesc.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "315489469db2727ac7d63a0c1353de78ac5eff1ce7b93b72fa7244063922640f"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/pixdesc.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "2350ac3098c911c6ee3c6049ad4b46b8217f1773b0ece363a88be738e1932c03"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/pixfmt.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "108cca4aca94a89cb04c1e9542f71ec03b27ffd305e478827159d6dfb9b105e3"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/qsort.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "8b533441dbd78070ac2441ec965315c5328386c4716982c554353a8e56e4df8d"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/random_seed.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "9916eff0ee88225e1ce42e61c4d6af1411e67f946ac99e51fde349804b82aafb"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/random_seed.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "78b238cd2dacd863879052ca3b1405c314aab220f63b076602f10bf321974ac5"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/rational.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "f8d344ff41ed9ed6275b970de2b938d6ad47dcdf11b657dd79984677553886ca"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/rational.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "6efac8849324779e78f9a08f468a2bcb7d3386834539af4f7b13ce88d1e66f4d"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/reverse.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "1e7908e98aab981c801d6b016a1417d505c998ec8e91a8e1bace6b44a8813c85"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/reverse.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "7021f8d31b74233859d159ef8108ebe19d2e5e30c2025a728f23009e3233cc9e"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/samplefmt.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "4398cfbf2dcc96161af33fa4b8aa5d74054c4ee32b08e08e9b5d739b5973201a"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/samplefmt.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "e92c47e4aedb439ccb630e46e80ef884c848ca2b7baeb64b1050802312751e0d"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/sha.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "5eeccdc66851c312c9d7945358570f55d96e954c6cb9c940f20278d3236bf632"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/sha.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "7ae6876df76d49be52b7257a6bcc03406bb44946a302588774ce11aed25b3bff"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/stereo3d.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a7a0ab4b51b56811b724458975056c0ff6d6271479c1b6226d03046677c59f6c"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/stereo3d.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "1b841852957b05963deefaee454c5adef1a58e049bbca3cce4888dc3c09b7359"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/thread.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "49f19796bdd659700724a0f0df1e841ed68f5efea2d086f25748ccbe9ca6a42e"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/time.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "e433f3f7563a94bd4cc661532de45de4096bea74775380ee2b9cd591a7728a86"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/time.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "40e11fa242e0585996753affb054443e78be25919b7c3063042d0aaff1656760"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/time_internal.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a67628259c30eb05cb0c167f145dc7c31fafeaa5ba85da994645ea791f7bdb58"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/timecode.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "3fe2c531e2b37c2a9bd25f93a60a24f1e3e1759e258f7dafaa2c1b860e1c6e76"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/timecode.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "afd0a634b1abcb282c694ae6c43f0412fe2ccb37fb3f08433af33779ea9e572e"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/timer.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "6166677f38856c4dfe3c5d74e42bc5a02d4eddf819a9b4cdbf1cafb3a0b14480"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/utils.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "68e96acb4b9bc213bce1107e24b72e114f52e18ca91cf8c04d109e195922020f"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/version.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a39e6a9b5c3169f712e0e70ebbf096ca22e78f332a62948ee1d1e0af9c2d6a91"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/video_enc_params.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "da051f7a32a736c33fb7f821985027d051709b936f8fea157d7bade14f0f4ec2"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/video_enc_params.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "da9981247f7839abc4f0d117fe3bb547350cd2985dc17e3984d80258ebc73d60"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/nk_h264_api.c",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "1073b2bc42df4855d4a0dc699679eaacf5e1d0019bf4d8f84754a54dc1732c7f"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/nk_h264_api.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "611d5d6997a247b37d3534436773584fbe2de7f38f90835de949bca2a994ff6d"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/nk_h264_symbols.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "h264-ffmpeg-subset-import-283",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "LGPL-2.1-or-later",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "691c162825f2b9e2eab084526ce153a436713275aeb3d6fb2f469ebeeb051b47"
     },
     {
       "path": "src/rt/h264_mf.c",
@@ -8646,7 +11480,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "20aa136cb9e595efd64ce3dca260a5fc601e6a2a7aca14a9909b99d049355002"
+      "sha256": "58823c36a34897ab29eda8c13528b6417adf5e3cba94a39b79d32287df1a8a30"
     },
     {
       "path": "tools/recomp_helper_inventory.py",
@@ -11530,7 +14364,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4d1e54a879a0aee7be71441316025d47bcb4bbdd997804b8f2c7e2a7f771f745"
+      "sha256": "9bad0f68b4eded218aa942d534e7132f5e195974621fb0189e2f711b9ee11620"
     },
     {
       "path": "tools/verify_vfpu_provenance.py",

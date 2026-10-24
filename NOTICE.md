@@ -50,11 +50,13 @@ We aim to respond promptly and will remove material where appropriate.
   `third_party/clay/`.
   Clay is compiled into the native layout selftest and the `nk_ui` core library
   tests only; it is not linked into the player yet.
-- **Optional system FFmpeg/libavcodec H.264 backend** — `H264_FFMPEG=1` links
-  host-provided `libavcodec` and `libavutil` dynamically. Their source is not
-  vendored and the Windows package does not bundle them; anyone who bundles them
-  must keep the notices that build requires ([FFmpeg licensing](https://www.ffmpeg.org/legal.html);
-  build notes in `docs/PLATFORM_PORTABILITY.md`).
+- **FFmpeg n4.4 H.264 decoder subset** — LGPL-2.1-or-later, the same pin as the ATRAC3+
+  subset. The imported libavcodec/libavutil files (generic C only, no `--enable-gpl` or
+  `--enable-nonfree` component), their license text and the byte-exact manifest are under
+  `src/rt/h264_ffmpeg_sub/`; the project API layer and configuration stand-ins there are
+  separately identified in the ledger. It is the default H.264 decoder where no platform decoder
+  exists (`H264_FFMPEG=1`, the default off Windows); Windows uses Media Foundation, an operating
+  system component, and links none of it. Build notes are in `docs/PLATFORM_PORTABILITY.md`.
 - **SDL3** — zlib; used by the optional host renderer/audio integration. The
   first public profile excludes the sal063-derived `src/rt/audio.c` backend and
   links `src/rt/audio_unavailable.c` instead.
@@ -137,7 +139,8 @@ License choices and combination notes:
 - The **MinGW runtime** licenses (`gcc-libs`, `winpthreads`) were already
   covered by the existing records; no new text was needed for them.
 
-The FFmpeg ATRAC3 and ATRAC3+ subsets (LGPL-2.1-or-later) are statically linked. The whole
+The FFmpeg ATRAC3 and ATRAC3+ subsets and, in builds with `H264_FFMPEG=1`, the FFmpeg H.264
+subset (LGPL-2.1-or-later) are statically linked. The whole
 program is distributed under the GNU GPL version 3 (the project's own files are
 GPL-3.0-or-later) with its complete corresponding source, and `SOURCE.txt` names the exact repository commit or tag of each
 package, which is what lets a user modify and relink it (issue #421).

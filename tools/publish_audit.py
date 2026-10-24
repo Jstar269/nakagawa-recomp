@@ -1224,6 +1224,9 @@ def private_key_assignment_lines(text: str, filename: str = "") -> list[int]:
 SPDX_BYTE_EXACT_IMPORT_TREES = (
     "src/rt/atrac3p/libavcodec/",
     "src/rt/atrac3p/libavutil/",
+    "src/rt/h264_ffmpeg_sub/libavcodec/",
+    "src/rt/h264_ffmpeg_sub/libavutil/",
+    "src/rt/h264_ffmpeg_sub/compat/",
 )
 
 SPDX_BYTE_EXACT_IMPORT_PATHS = frozenset({
@@ -1243,6 +1246,10 @@ SPDX_BYTE_EXACT_IMPORT_HEADER_PATHS = frozenset({
     "src/rt/atrac3p/libavutil/libm.h",
     "src/rt/atrac3p/libavutil/mathematics.h",
     "src/rt/atrac3p/libavutil/thread.h",
+    "src/rt/h264_ffmpeg_sub/libavcodec/bsf_list.c",
+    "src/rt/h264_ffmpeg_sub/libavcodec/codec_list.c",
+    "src/rt/h264_ffmpeg_sub/libavutil/avconfig.h",
+    "src/rt/h264_ffmpeg_sub/libavutil/ffversion.h",
 })
 
 PROJECT_SPDX_IDENTIFIER = "GPL-3.0-or-later"
@@ -1533,6 +1540,8 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
     excluded_prefixes = (
         "third_party/",
         "src/rt/atrac3p/libavcodec/",
+        "src/rt/h264_ffmpeg_sub/libavcodec/",
+        "src/rt/h264_ffmpeg_sub/libavutil/",
         "build/",
         "fs/",
     )

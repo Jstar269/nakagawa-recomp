@@ -3,9 +3,11 @@
 
 /* FFmpeg (libavcodec) backend of the sr_h264 seam (sr_h264.h).
  *
- * Built only when SR_H264_FFMPEG is defined (Make: H264_FFMPEG=1), and linked dynamically against
- * the system libavcodec/libavutil (LGPL-2.1-or-later). Without the define this file compiles to
- * nothing and h264_null.c keeps failing closed.
+ * Built only when SR_H264_FFMPEG is defined (Make: H264_FFMPEG=1, the default off Windows). The
+ * decoder is the pinned FFmpeg n4.4 H.264 subset vendored under src/rt/h264_ffmpeg_sub/
+ * (LGPL-2.1-or-later, statically linked, no system FFmpeg); this file sees it only through
+ * nk_h264_api.h. Without the define this file compiles to nothing and h264_null.c keeps failing
+ * closed.
  *
  * The backend receives complete access units from the common PSMF producer. submit_au() queues
  * one validated Annex-B unit with its normalized timestamp; frame() decodes until one picture
@@ -19,11 +21,7 @@
 
 #include "recomp.h"
 #include "sr_h264.h"
-#include <libavcodec/avcodec.h>
-#include <libavutil/frame.h>
-#include <libavutil/log.h>
-#include <libavutil/pixfmt.h>
-#include <libavutil/rational.h>
+#include "h264_ffmpeg_sub/nk_h264_api.h"
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -46,9 +44,7 @@ typedef struct {
     int used;
     int failed;
     int drain_sent;      /* NULL packet sent: the decoder is draining its delayed pictures */
-    AVCodecContext *ctx;
-    AVFrame *pic;
-    AVPacket *pkt;
+    NkH264Decoder *dec;
     /* The common PSMF producer supplies complete access units to the backend. */
     uint8_t *es;
     uint32_t es_len, es_cap;
@@ -125,37 +121,19 @@ static void ff_es_compact(FfDec *d) {
     d->next_send -= done;
 }
 
-/* ---- libavcodec ------------------------------------------------------------------------- */
+/* ---- vendored decoder ----------------------------------------------------- */
 
 static void ff_close(FfDec *d) {
-    avcodec_free_context(&d->ctx);
-    av_frame_free(&d->pic);
-    av_packet_free(&d->pkt);
+    nk_h264_close(d->dec);
     free(d->es);
     free(d->unit);
     memset(d, 0, sizeof(*d));
 }
 
 static int ff_open(FfDec *d) {
-    static int log_level_set;
-    if (!log_level_set) {            /* keep libavcodec's own chatter out of the runtime log */
-        log_level_set = 1;
-        av_log_set_level(ff_log() ? AV_LOG_WARNING : AV_LOG_ERROR);
-    }
-    const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
-    if (!codec) {
-        fprintf(stderr, "h264-ffmpeg: libavcodec has no H.264 decoder\n");
-        return 0;
-    }
-    d->ctx = avcodec_alloc_context3(codec);
-    d->pic = av_frame_alloc();
-    d->pkt = av_packet_alloc();
-    if (!d->ctx || !d->pic || !d->pkt) return 0;
-    d->ctx->thread_count = 1;                 /* deterministic, low memory, no frame delay */
-    d->ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
-    d->ctx->pkt_timebase = (AVRational){1, 90000};
-    if (avcodec_open2(d->ctx, codec, NULL) < 0) {
-        fprintf(stderr, "h264-ffmpeg: avcodec_open2 failed\n");
+    d->dec = nk_h264_open(ff_log());
+    if (!d->dec) {
+        fprintf(stderr, "h264-ffmpeg: could not open the vendored H.264 decoder\n");
         return 0;
     }
     return 1;
@@ -167,14 +145,10 @@ static int ff_open(FfDec *d) {
 static int ff_send_next(FfDec *d) {
     FfUnit *u = &d->unit[d->next_send];
     if (u->off > d->es_len || u->len > d->es_len - u->off || u->len == 0) return -1;
-    av_packet_unref(d->pkt);
-    if (av_new_packet(d->pkt, (int)u->len) < 0) return -1;   /* zeroed input padding included */
-    memcpy(d->pkt->data, d->es + u->off, u->len);
-    d->pkt->pts = u->has_pts ? u->pts : AV_NOPTS_VALUE;
-    int r = avcodec_send_packet(d->ctx, d->pkt);
-    if (r == AVERROR(EAGAIN)) return 0;
-    if (r < 0 && r != AVERROR_INVALIDDATA) return -1;
-    if (r == AVERROR_INVALIDDATA && ff_log())
+    int r = nk_h264_send(d->dec, d->es + u->off, u->len, u->pts, u->has_pts);
+    if (r == NK_H264_AGAIN) return 0;
+    if (r == NK_H264_ERROR) return -1;
+    if (r == NK_H264_INVALID_DATA && ff_log())
         fprintf(stderr, "h264-ffmpeg: unit %u rejected as invalid data\n", d->next_send);
     d->next_send++;
     ff_es_compact(d);
@@ -208,16 +182,15 @@ typedef struct {
     SrH264PixelFormat native;
 } FfPlanes;
 
-static int ff_planes(const AVFrame *f, FfPlanes *pl) {
+static int ff_planes(const NkH264Picture *f, FfPlanes *pl) {
     memset(pl, 0, sizeof(*pl));
     switch (f->format) {
-        case AV_PIX_FMT_YUV420P:
-        case AV_PIX_FMT_YUVJ420P:
+        case NK_H264_FMT_YUV420P:
             pl->y = f->data[0]; pl->u = f->data[1]; pl->v = f->data[2];
             pl->y_stride = f->linesize[0]; pl->u_stride = f->linesize[1]; pl->v_stride = f->linesize[2];
             pl->native = SR_H264_PIXEL_NATIVE_YUV420P;
             break;
-        case AV_PIX_FMT_NV12:
+        case NK_H264_FMT_NV12:
             pl->y = f->data[0]; pl->u = f->data[1]; pl->v = f->data[1] + 1;
             pl->y_stride = f->linesize[0]; pl->u_stride = pl->v_stride = f->linesize[1];
             pl->interleaved = 1;
@@ -226,7 +199,7 @@ static int ff_planes(const AVFrame *f, FfPlanes *pl) {
         default:
             return 0;
     }
-    pl->full_range = f->format == AV_PIX_FMT_YUVJ420P || f->color_range == AVCOL_RANGE_JPEG;
+    pl->full_range = f->full_range;
     return pl->y && pl->u && pl->v && pl->y_stride > 0 && pl->u_stride > 0 && pl->v_stride > 0;
 }
 
@@ -256,7 +229,7 @@ static SrH264PixelFormat ff_guest_format(int mode) {
 
 /* Write the picture into a guest video buffer (stride frame_width pixels). Every destination
  * row is checked before the first write, so a refused conversion leaves guest memory intact. */
-static int ff_to_guest(const AVFrame *f, const FfPlanes *pl, const SrH264FrameTarget *t,
+static int ff_to_guest(const NkH264Picture *f, const FfPlanes *pl, const SrH264FrameTarget *t,
                        SrH264FrameInfo *info) {
     int w = f->width < t->frame_width ? f->width : t->frame_width;
     int h = f->height < FF_MOVIE_ROWS ? f->height : FF_MOVIE_ROWS;
@@ -314,7 +287,7 @@ static int ff_to_guest(const AVFrame *f, const FfPlanes *pl, const SrH264FrameTa
     return 1;
 }
 
-static int ff_to_host(const AVFrame *f, const FfPlanes *pl, const SrH264FrameTarget *t,
+static int ff_to_host(const NkH264Picture *f, const FfPlanes *pl, const SrH264FrameTarget *t,
                       SrH264FrameInfo *info) {
     int w = f->width < t->host_width ? f->width : t->host_width;
     int h = f->height < FF_MOVIE_ROWS ? f->height : FF_MOVIE_ROWS;
@@ -336,41 +309,41 @@ static int ff_to_host(const AVFrame *f, const FfPlanes *pl, const SrH264FrameTar
 }
 
 /* Deliver a decoded picture. 1 = written, 2 = decoded but not writable. */
-static int ff_deliver(FfDec *d, const SrH264FrameTarget *t, SrH264FrameInfo *info) {
+static int ff_deliver(const NkH264Picture *pic, const SrH264FrameTarget *t, SrH264FrameInfo *info) {
     FfPlanes pl;
     int ok = 0;
-    if (d->pic->width > 0 && d->pic->height > 0 && ff_planes(d->pic, &pl)) {
-        ok = t->kind == SR_H264_TARGET_HOST ? ff_to_host(d->pic, &pl, t, info)
-                                            : ff_to_guest(d->pic, &pl, t, info);
+    if (pic->width > 0 && pic->height > 0 && ff_planes(pic, &pl)) {
+        ok = t->kind == SR_H264_TARGET_HOST ? ff_to_host(pic, &pl, t, info)
+                                            : ff_to_guest(pic, &pl, t, info);
         if (ok && info) {
             info->native_format = pl.native;
-            /* pkt_timebase is 1/90000 and ff_send_next supplies AV_NOPTS_VALUE for an AU
-             * without a source PTS. Report the decoded frame PTS, never best_effort_timestamp. */
-            info->has_pts = d->pic->pts != AV_NOPTS_VALUE;
-            info->pts = info->has_pts ? d->pic->pts : -1;
+            /* The decoder reports the decoded frame PTS (the source PTS of the access unit it
+             * came from), never a best-effort timestamp. */
+            info->has_pts = pic->has_pts;
+            info->pts = pic->has_pts ? pic->pts : -1;
         }
     } else if (ff_log()) {
         fprintf(stderr, "h264-ffmpeg: unsupported decoded format %d (%dx%d)\n",
-                d->pic->format, d->pic->width, d->pic->height);
+                pic->format, pic->width, pic->height);
     }
-    av_frame_unref(d->pic);
     return ok ? 1 : 2;
 }
 
 static int ff_pull(FfDec *d, int eos, const SrH264FrameTarget *t, SrH264FrameInfo *info) {
-    if (d->failed || !d->ctx) return -1;
+    if (d->failed || !d->dec) return -1;
     for (int guard = 0; guard < 4096; guard++) {
-        int r = avcodec_receive_frame(d->ctx, d->pic);
-        if (r == 0) return ff_deliver(d, t, info) == 1 ? 1 : -1;
-        if (r != AVERROR(EAGAIN) && r != AVERROR_EOF) { d->failed = 1; return -1; }
-        if (r == AVERROR_EOF) return 0;                /* fully drained */
+        NkH264Picture pic;
+        int r = nk_h264_receive(d->dec, &pic);
+        if (r == NK_H264_OK) return ff_deliver(&pic, t, info) == 1 ? 1 : -1;
+        if (r != NK_H264_AGAIN && r != NK_H264_EOF) { d->failed = 1; return -1; }
+        if (r == NK_H264_EOF) return 0;                /* fully drained */
         if (d->next_send < d->n_unit) {
             int s = ff_send_next(d);
             if (s < 0) { d->failed = 1; return -1; }
             if (s == 0) return 0;                      /* full and nothing to receive */
         } else if (eos && !d->drain_sent) {
             d->drain_sent = 1;
-            if (avcodec_send_packet(d->ctx, NULL) < 0) { d->failed = 1; return -1; }
+            if (nk_h264_send_eos(d->dec) < 0) { d->failed = 1; return -1; }
         } else {
             return 0;                                  /* waiting for more input */
         }
@@ -388,7 +361,7 @@ static int ff_create(void) {
         memset(d, 0, sizeof(*d));
         d->used = 1;
         if (!ff_open(d)) { ff_close(d); return -1; }
-        if (ff_log()) fprintf(stderr, "h264-ffmpeg: decoder %d open (%s)\n", i, LIBAVCODEC_IDENT);
+        if (ff_log()) fprintf(stderr, "h264-ffmpeg: decoder %d open (%s)\n", i, nk_h264_ident());
         return i;
     }
     return -1;
