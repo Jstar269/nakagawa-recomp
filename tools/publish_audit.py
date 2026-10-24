@@ -1540,6 +1540,8 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
     excluded_prefixes = (
         "third_party/",
         "src/rt/atrac3p/libavcodec/",
+        "src/rt/h264_ffmpeg_sub/libavcodec/",
+        "src/rt/h264_ffmpeg_sub/libavutil/",
         "build/",
         "fs/",
     )
