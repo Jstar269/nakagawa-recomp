@@ -312,7 +312,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce97e6ddd576250eee26ca9b152b6fd62015118360a4008d7e124b8ca5f3e66b"
+      "sha256": "6deb1a9430cb08e45f6539e79474a39ecf1a31e09903e7f8ec5e10067e1614c6"
     },
     {
       "path": ".recomp.json",
@@ -378,7 +378,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7e816d8113ce2b14ba8076fe4d0f5e31c243ac62b05105169409eaae4a70d43f"
+      "sha256": "444b48f678baae3c0fa3ff90a000c45b08b2f30ca9dfc8521a465c7db57d7150"
     },
     {
       "path": "ISSUES.md",
@@ -409,7 +409,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "33642c5fa418d731145da66cddb79519b4f3c51c0ba89cee04ecacd2c5cc4d58"
+      "sha256": "067684fc6bce0a355bb14724654983d71e4888dd611e02136cd60dbf021d9e24"
     },
     {
       "path": "NOTICE.md",
@@ -418,7 +418,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2ecb86a5465dd7a0fb1761b085571172db7b0775ead70ebcea5303deb01ad5d7"
+      "sha256": "92eb2bac7b360493b9b9541f77e051000ebbd6fd1022ac0dc1c6a7207f43861e"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -949,7 +949,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "948c2f47d8fe20fca29b34645bbb194170c77c06b423df4f7e8009aa2533be81"
+      "sha256": "7c3c5f0143dfd6211982275acff2edcbfc19a32115a212592a935c0231734fbf"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1423,7 +1423,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f5a50f90245e950db691fe9b9f7f65691d0d777341a7934a793f8cef168243da"
+      "sha256": "6d034b0f5e4750c2fb0c3d0c47e4fa222795abc57607cea115f721670fea22f0"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1432,7 +1432,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cffe296c47be4fece4ab3bfbe306bbe19d41858b9e65bd114e537bd96405e1c2"
+      "sha256": "88f067292d62772fc297d9205b77ff64584f0b20d29673ab99ab89bac07216bb"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -2154,6 +2154,30 @@
         "upstream_attribution": null
       },
       "sha256": "f61b86a2e87ac1912290be5b5cfddf51ec8eb83a44c91b7c094afd7ff39556fc"
+    },
+    {
+      "path": "fixtures/mp3_tone/generate.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "mp3-tone-fixture-20261024",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "82e0d739a901512376a238abcf2539d3f472d7617d244f4edcdbbc0d4600264c"
+    },
+    {
+      "path": "fixtures/mp3_tone/mp3_tone.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "mp3-tone-fixture-20261024",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "9015059190a66b9580e66d50b4a2757f75db0cecf3c76ab1e953b7a2b738f08b"
     },
     {
       "path": "fixtures/nakagawa_minimal_v4/Makefile",
@@ -3673,7 +3697,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "df009cce2026c7a1029542277d0cfe753c0c973b80bb8f8186b27528f466781a"
+      "sha256": "7eaf2c47e67149ccbfe955989adf3fb6f11f6f195c378c44753468b250d964d6"
     },
     {
       "path": "src/rt/archive_vfs.c",
@@ -5448,7 +5472,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6b8fd3d76ea41277714034a064b4771569e5e3067438508326e9c191ccc5e2ba"
+      "sha256": "6171c0c3488bdcb0d4209fb56b8932d8e5f000a7439bb020cfd6be89da4c1928"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5486,7 +5510,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eb9a85253abc32413322065639b1eba868897e4a3571bcefe578a1ccf70c29b0"
+      "sha256": "8386fdef534c023779a48d41139d46cd4c78e2ff9003c5edac091deb0cdb06f8"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5536,6 +5560,68 @@
         "upstream_attribution": null
       },
       "sha256": "f6b8e637c002a8d74b3ea1881945c25a9a4822cecc6891f36675bbf9da643c8b"
+    },
+    {
+      "path": "src/rt/minimp3/LICENSE",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "minimp3-upstream-import-20261024",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "CC0-1.0",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "6a1ee543e5282cd9061881edf462e6fdab181f328da71fc2c9a6950a80e94d01"
+    },
+    {
+      "path": "src/rt/minimp3/PROVENANCE.md",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "scemp3-minimp3-bridge-20261024",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "9a84d402dee499fe51788d66ad85f4b7437bf1fed2e46f8b970540771a5658f0"
+    },
+    {
+      "path": "src/rt/minimp3/minimp3.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "minimp3-upstream-import-20261024",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "CC0-1.0",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "57e437c5c1f0e8b243885d3929c8973b5e6c778451e0100ab4251d19915cb3ad"
+    },
+    {
+      "path": "src/rt/mp3_bridge.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "scemp3-minimp3-bridge-20261024",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "400de6ad12c4b88d5bdc7fa46f8667861258f6940ba4feea6218ade1e7ce3dd5"
+    },
+    {
+      "path": "src/rt/mp3_bridge.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "scemp3-minimp3-bridge-20261024",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "cbd5bdd286a3a1119641f4d793615b1429b4d4d7a35c0009d8f6cfe1efdded26"
     },
     {
       "path": "src/rt/mpeg.c",
@@ -7122,7 +7208,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e3a8e7a19e820bec7bf74bf940febb0775f2b80b0aed27083caedebf42666015"
+      "sha256": "aaa1d0797aed9b35cb9fbef94d2c1c44713f33fa97b5666c0d62b8e8deba2c0d"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -7776,7 +7862,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6697fc398bd92255c0c1abbe19a5540093e01457465051d79a1e8d2969c3c7eb"
+      "sha256": "5384316226d249cef6a02106a76b4b5100aaa8964ce0f9c6bd561882dcc25555"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -8670,7 +8756,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "20aa136cb9e595efd64ce3dca260a5fc601e6a2a7aca14a9909b99d049355002"
+      "sha256": "6a37dc8d6ad64adf2d1742f118e351d53f2d8ad5fca6b0306836ec594ba97ddd"
     },
     {
       "path": "tools/recomp_helper_inventory.py",
@@ -9704,7 +9790,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e48a01fde33bd607e960f07c5dab1ffe50f301f9787b11f7bb4b28d0116b534e"
+      "sha256": "1f06fb0f9f2564f4c3b26dee0f6736693ae9c318bb215166592d8ab09f3f8166"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
@@ -9993,6 +10079,18 @@
         "upstream_attribution": null
       },
       "sha256": "98b70d30baed55ba68bb9722385c4c28a1225d33073e4b084bab84c4b0cc3653"
+    },
+    {
+      "path": "tools/test_mp3_tone_fixture.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "mp3-tone-fixture-20261024",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "22282f18e97537b6682ddae0e9c828b168f0cd5cbace2f47ddb5596f5ef3d96a"
     },
     {
       "path": "tools/test_mpeg_h264_bounds.py",
@@ -10640,7 +10738,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "194f1bfd9365cbeba5ef6162d84b380518fca004a941fe5a8a701833858ec934"
+      "sha256": "2dec378e3e8d7664c5d7003c1cd1c4e7bc9d75edbd1a968840ceeee0a56afaa8"
     },
     {
       "path": "tools/test_readme_images.py",
