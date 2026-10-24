@@ -323,6 +323,141 @@ def _build_prx(demo: dict[str, object], out_dir: Path) -> Path:
     return prx
 
 
+def _build_loadexec_prx(out_dir: Path, target: str, define: str) -> Path:
+    """Build one side of the LoadExec chain from the shared PSPSDK source."""
+    source_dir = ROOT / "fixtures" / "showcase" / "ge_scene"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    makefile = _host_path((ROOT / "fixtures" / "showcase" / "Makefile").resolve())
+    host_out = _host_path(out_dir.resolve())
+    host_source = _host_path(source_dir.resolve())
+    command = (
+        "export PSPDEV=/usr/local/pspdev; export PATH=\"$PSPDEV/bin:$PATH\"; "
+        f"make -B -f '{makefile}' -C '{host_out}' CC=psp-gcc VPATH='{host_source}' "
+        f"TARGET='{target}' SHOWCASE_DEFINES='-D{define}'"
+    )
+    if define == "NK_LOAD_EXEC_B":
+        exports = out_dir / "loadexec_b_exports.exp"
+        exports.write_text(
+            "PSP_BEGIN_EXPORTS\n"
+            "PSP_EXPORT_START(syslib, 0, 0x8000)\n"
+            "PSP_EXPORT_FUNC_HASH(module_start)\n"
+            "PSP_EXPORT_VAR_HASH(module_info)\n"
+            "PSP_EXPORT_END\n"
+            "PSP_END_EXPORTS\n",
+            encoding="ascii",
+        )
+        host_exports = _host_path(exports.resolve())
+        command += f" PRX_EXPORTS='{host_exports}' SHOWCASE_LDFLAGS='-nostartfiles'"
+    result = subprocess.run(_toolchain_shell(command), cwd=ROOT, text=True, check=False)
+    if result.returncode:
+        raise ShowcaseError(f"PSPDEV build failed for {target} (exit {result.returncode})")
+    prx = out_dir / f"{target}.prx"
+    if not prx.is_file():
+        raise ShowcaseError(f"PSPDEV did not produce the expected PRX: {prx}")
+    return prx
+
+
+def loadexec_smoke() -> None:
+    """Build and run project-owned A -> package-local B through production HLE."""
+    _check_pspdev()
+    root = BUILD_ROOT / "loadexec"
+    program_dir = root / "program-a"
+    module_dir = root / "program-b"
+    manifest_path = root / "title.json"
+
+    source_manifest = json.loads(
+        (ROOT / "assets" / "titles" / "showcase-scene.json").read_text(encoding="utf-8")
+    )
+    manifest = json.loads(json.dumps(source_manifest))
+    manifest["id"] = "showcase-loadexec-v1"
+    manifest["display_name"] = "Nakagawa LoadExec Showcase"
+    manifest["modules"] = [{
+        "name": "loadexec_b.prx",
+        "required": True,
+        "role": "guest-prx",
+        "placement": "runtime",
+        "guest_path": "ms0:/PSP/GAME/NAKAGAWA/LOADEXEC_B.PRX",
+    }]
+    manifest["filesystem"]["memory_stick_root"] = "build/showcase/loadexec/package/memstick"
+    manifest["profile_zero"]["source_program"]["source_files"] = [
+        "fixtures/showcase/ge_scene/main.c",
+    ]
+    manifest["profile_zero"]["build"]["target"] = "loadexec_a.prx"
+    manifest["notes"] = (
+        "Source-owned two-program LoadExec smoke; both programs are built from "
+        "fixtures/showcase/ge_scene/main.c with PSPDEV/PSPSDK."
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    program_a = _build_loadexec_prx(program_dir, "loadexec_a", "NK_LOAD_EXEC_A")
+    program_b = _build_loadexec_prx(module_dir, "loadexec_b", "NK_LOAD_EXEC_B")
+    base = int(manifest["executable"]["base"])
+    manifest["executable"]["entry"] = validate_psp_prx(program_a, base)
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    demo_fingerprint = _package_fingerprint(
+        {"id": manifest["id"], "manifest": manifest_path.relative_to(ROOT).as_posix()},
+        program_a,
+    )
+    fingerprint = hashlib.sha256(
+        (demo_fingerprint + hashlib.sha256(program_b.read_bytes()).hexdigest()).encode("ascii")
+    ).hexdigest()[:16]
+    package_dir = root / f"package-{fingerprint}"
+
+    command = [
+        sys.executable, str(ROOT / "tools" / "title_codegen_plan.py"),
+        str(manifest_path), "--package", "--public-safe",
+        "--game-elf", str(program_a), "--module-dir", str(module_dir),
+        "--output-dir", str(package_dir), "--python-command", sys.executable,
+    ]
+    result = subprocess.run(command, cwd=ROOT, check=False)
+    if result.returncode:
+        raise ShowcaseError(f"LoadExec AOT package build failed (exit {result.returncode})")
+    metadata = json.loads((package_dir / "package.json").read_text(encoding="utf-8"))
+    executable = package_dir / metadata["executable"]["path"]
+    image = package_dir / f"{manifest['id']}_image.bin"
+    module_root = package_dir / "modules"
+    module_root.mkdir(parents=True, exist_ok=True)
+    packaged_module = module_root / "loadexec_b.prx"
+    shutil.copyfile(program_b, packaged_module)
+    if not executable.is_file() or not image.is_file() or not packaged_module.is_file():
+        raise ShowcaseError("LoadExec package is missing its executable, image, or B module")
+
+    # Mirror B into the package's virtual Memory Stick tree so the path named by A
+    # is also present in the package filesystem used by the smoke.
+    memory_stick_root = package_dir / "memstick"
+    package_guest_path = memory_stick_root / "PSP" / "GAME" / "NAKAGAWA" / "LOADEXEC_B.PRX"
+    package_guest_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(packaged_module, package_guest_path)
+
+    driver_command = [
+        str(executable), "--image", str(image), f"0x{base:08x}",
+        metadata["runtime"]["run_entry"], "none", "none", "--sched",
+        "--expect-u32=0x09900000:0x4c454d42",
+    ]
+    env = os.environ.copy()
+    for name in ("SR_DATAROOT", "SR_FSDIR", "PSP_ISO", "SR_BOOT_PATH", "SR_EXIT_AT_VBLANK"):
+        env.pop(name, None)
+    env["SR_MODULE_DIR"] = str(module_root)
+    env["SR_MEMSTICK"] = str(memory_stick_root)
+    env["SR_NOVBPACE"] = "1"
+    env["SDL_VIDEODRIVER"] = "dummy"
+    env["SDL_AUDIODRIVER"] = "dummy"
+    result = subprocess.run(driver_command, cwd=package_dir, env=env, text=True,
+                            capture_output=True, timeout=30, check=False)
+    output = result.stdout + result.stderr
+    if result.returncode != 0:
+        raise ShowcaseError(f"LoadExec runtime failed ({result.returncode}):\n{output[-4000:]}")
+    if "LOAD_EXEC_B_ARGV" not in output or "loadexec-argv=project-built" not in output:
+        raise ShowcaseError(f"LoadExec B did not print the forwarded argv:\n{output[-4000:]}")
+    if "LOAD_EXEC_B_RESET: guest_ram_reset=1" not in output:
+        raise ShowcaseError(f"LoadExec did not clear program A's guest RAM:\n{output[-4000:]}")
+    if "DRIVER_EXPECT_U32 addr=0x09900000 got=0x4c454d42 expected=0x4c454d42 status=PASS" not in output:
+        raise ShowcaseError(f"LoadExec argv marker was not written by B:\n{output[-4000:]}")
+    print("SHOWCASE_LOAD_EXEC: PASS project-built A -> package-local B; argv forwarded; no sockets")
+
+
 def validate_psp_prx(path: Path, base: int) -> int:
     """Require the rebased, relocation-bearing PRX emitted by psp-prxgen."""
     header = path.read_bytes()[:52]
@@ -1011,7 +1146,7 @@ def smoke_all() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("build", "smoke", "stage-iso"))
+    parser.add_argument("action", choices=("build", "smoke", "stage-iso", "loadexec-smoke"))
     parser.add_argument("--out-dir", type=Path,
                         help="stage-iso: directory that receives TEST00007.iso")
     args = parser.parse_args()
@@ -1020,6 +1155,8 @@ def main() -> int:
             build_all()
         elif args.action == "smoke":
             smoke_all()
+        elif args.action == "loadexec-smoke":
+            loadexec_smoke()
         else:
             if args.out_dir is None:
                 parser.error("stage-iso requires --out-dir")

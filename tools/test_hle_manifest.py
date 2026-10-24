@@ -554,8 +554,8 @@ class LiveManifestTests(unittest.TestCase):
             0x1C0D95A6: ("sceGeListEnQueueHead", "h_GeListEnQueueHead", "dedicated"),
             0x4C06E472: ("sceGeContinue", "h_GeContinue", "dedicated"),
             0xB448EC0D: ("sceGeBreak", "h_GeBreak", "dedicated"),
-            0xBD2F1094: ("sceKernelLoadExec", "h_ControlledUnsupported", "controlled_unsupported"),
-            0xD675EBB8: ("sceKernelSelfStopUnloadModule", "h_ControlledUnsupported", "controlled_unsupported"),
+            0xBD2F1094: ("sceKernelLoadExec", "h_LoadExec", "dedicated"),
+            0xD675EBB8: ("sceKernelSelfStopUnloadModule", "h_SelfStopUnloadModule", "dedicated"),
             0x40F1469C: ("sceDisplayWaitVblankStartMulti", "h_DisplayWaitVblankStartMulti", "dedicated"),
             0xBC6FEBC5: ("sceKernelReferSemaStatus", "h_ReferSemaStatus", "dedicated"),
             0x438A385A: ("sceGeSaveContext", "h_ControlledUnsupported", "controlled_unsupported"),
@@ -1085,10 +1085,8 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x7ed59bc4": ("sceDisplaySetHoldMode", "0x80020002"),
                 "0x8c943191": ("sceImposeGetBatteryIconStatus", "0x80010086"),
                 "0xab1abe07": ("sceHttpInit", "0x80010086"),
-                "0xbd2f1094": ("sceKernelLoadExec", "0x80020002"),
                 "0xd1c8945e": ("sceHttpEnd", "0x80010086"),
                 "0xd1f59fdb": ("sceAtracStartEntry", "0x80630004"),
-                "0xd675ebb8": ("sceKernelSelfStopUnloadModule", "0x80020002"),
             },
         )
         self.assertEqual(

@@ -415,6 +415,30 @@ static int sr_driver_seed_boot_arguments(CpuState *state) {
     return 1;
 }
 
+static int sr_driver_seed_loadexec_arguments(CpuState *state,
+                                            const SrLoadExecRequest *request,
+                                            uint32_t entry, uint32_t gp) {
+    /* LoadExec arguments are copied into a bounded guest staging span above the
+     * modeled user partition. sched_run then applies the normal thread argument
+     * copy to the new root stack, keeping the host request buffer out of guest state. */
+    const uint32_t arg_base = 0x0bff0000u;
+    if (!state || !request || request->arglen > 0x10000u ||
+        (request->arglen && (!request->args ||
+         !sr_guest_span_writable(arg_base, request->arglen)))) {
+        fprintf(stderr, "LOAD_EXEC_ARGUMENT_STAGE_REFUSED: argument block is outside the "
+                        "bounded guest staging span\n");
+        return 0;
+    }
+    if (request->arglen)
+        memcpy(SR_HOST(arg_base), request->args, request->arglen);
+    state->pc = entry;
+    state->r[28] = gp;
+    state->r[29] = 0x09f00000u;
+    state->r[4] = request->arglen;
+    state->r[5] = request->arglen ? arg_base : 0u;
+    return 1;
+}
+
 #ifdef SR_SELFTEST_ONLY
 int driver_main(int argc, char **argv) {
 #else
@@ -597,13 +621,53 @@ have_image:;
     sr_sched_pause_host = &s_driver_pause_host;
 
     if (use_sched) {
-        /* Run with the cooperative scheduler so the game's threads interleave (the boot busy-
-         * waits on a sibling). sched_run uses s as the live register file for whichever thread
-         * runs; it returns when no thread is runnable, or the process exits at an unimplemented
-         * import inside a thread fiber. */
-        sr_driver_boot_event("BOOT_EVENT phase=guest_start mode=scheduler entry=0x%08x", entry);
+        /* Run with the cooperative scheduler so the program's threads interleave. A
+         * package-local sceKernelLoadExec request stops this scheduler at its next
+         * guest-thread exit boundary; the outer loop then clears guest state and boots
+         * the declared project program from the same runtime module package. sched_init
+         * is process-start-only; LoadExec uses the explicit teardown/rebind seam below. */
         sched_init(&s);
-        sched_run(entry, s.r[4], s.r[5]);
+        for (;;) {
+            sr_driver_boot_event("BOOT_EVENT phase=guest_start mode=scheduler entry=0x%08x", entry);
+            sched_run(entry, s.r[4], s.r[5]);
+
+            SrLoadExecRequest request;
+            memset(&request, 0, sizeof(request));
+            if (!sr_hle_loadexec_take(&request)) {
+                sr_hle_loadexec_finish();
+                break;
+            }
+
+            if (!sched_reset_for_loadexec()) {
+                fprintf(stderr, "LOAD_EXEC_SCHEDULER_RESET_REFUSED: unable to retire old guest threads\n");
+                sr_hle_loadexec_release(&request);
+                return 2;
+            }
+            sr_hle_loadexec_reset_guest_state();
+            sr_mem_reset();
+            /* The replacement module is the first image in a new user process.
+             * Its project-owned runtime loader allocates above this synthetic image
+             * floor; a real program ELF is loaded by load_elf and supplies its own end. */
+            sr_loaded_end_set(0x08800000u);
+            uint32_t next_entry = 0u, next_gp = 0u;
+            if (!sr_hle_loadexec_boot_module(request.guest_path, &next_entry, &next_gp)) {
+                sr_hle_loadexec_release(&request);
+                return 2;
+            }
+            memset(&s, 0, sizeof(s));
+            s.vfpuCtrl[0] = 0xe4;
+            s.vfpuCtrl[1] = 0xe4;
+            s.vfpuCtrl[2] = 0;
+            if (!sr_driver_seed_loadexec_arguments(&s, &request, next_entry, next_gp)) {
+                sr_hle_loadexec_release(&request);
+                return 2;
+            }
+            sched_set_guest_process_gp(next_gp);
+            sr_driver_boot_event("BOOT_EVENT phase=loadexec_restart entry=0x%08x args=%u",
+                                 next_entry, request.arglen);
+            entry = next_entry;
+            sr_hle_loadexec_release(&request);
+        }
     } else {
         const char *boot_path = getenv("SR_BOOT_PATH");
         if (boot_path && boot_path[0]) {
