@@ -8,7 +8,9 @@ The install uses the release layout the player already searches
 (``docs/PREVIEW_RELEASE.md``)::
 
     <dest>/bin/nakagawa_player.exe   the built player, its runtime DLL closure,
-                                     licence notices and UI fonts
+                                     licence notices and UI fonts (on Linux the
+                                     player is ``bin/nakagawa_player``, with no
+                                     DLL closure: the system libraries apply)
     <dest>/source/                   the committed source tree (``git archive``),
                                      which carries tools/nk_cli.py, the Makefile
                                      and assets/prereq_manifest.json, so BUILD
@@ -20,6 +22,9 @@ Only a folder this tool created (it holds ``.nakagawa-install.json``) is ever
 replaced, so pointing ``--dest`` at an unrelated folder fails closed. The
 shortcut is a plain Windows ``.lnk`` written through ``WScript.Shell``; it
 starts the player with ``--ui=next`` by default, the way Explorer would start it.
+On Linux, ``--desktop-shortcut`` writes a per-user ``.desktop`` entry and a 256 px
+icon under ``$XDG_DATA_HOME`` (``~/.local/share`` when unset). The marker records
+the paths written outside ``--dest`` in ``integration``.
 
 Usage::
 
@@ -47,8 +52,12 @@ if str(ROOT / "tools") not in sys.path:
 
 import stage_runtime_dlls  # noqa: E402
 
+IS_WINDOWS = os.name == "nt"
 MARKER = ".nakagawa-install.json"
+SCHEMA_VERSION = 2
 SHORTCUT_NAME = "Nakagawa Recomp.lnk"
+DESKTOP_ENTRY_NAME = "nakagawa-recomp.desktop"
+DESKTOP_ICON_NAME = "nakagawa-recomp.png"
 DEFAULT_ARGUMENTS = "--ui=next"
 ICON_SIZES = (16, 24, 32, 48, 64, 256)
 
@@ -72,6 +81,19 @@ _BACKGROUND = (0x10, 0x15, 0x1C)
 
 class InstallError(RuntimeError):
     """A named, fail-closed install boundary."""
+
+
+def default_player_path(windows: bool = IS_WINDOWS) -> Path:
+    """The player build's output on the given host, under ``build/``."""
+    return ROOT / "build" / ("nakagawa_player.exe" if windows else "nakagawa_player")
+
+
+def _build_hint() -> str:
+    return "`mingw32-make player`" if IS_WINDOWS else "`make player`"
+
+
+def _platform_name() -> str:
+    return "windows" if IS_WINDOWS else sys.platform
 
 
 def _inside_polygon(x: float, y: float, points) -> bool:
@@ -225,7 +247,7 @@ def stage_install(dest: Path, player: Path, *, repo: Path = ROOT,
     player = player.resolve()
     if not player.is_file():
         raise InstallError(
-            f"INSTALL_PLAYER_MISSING: {player} was not found; build it with `mingw32-make player`"
+            f"INSTALL_PLAYER_MISSING: {player} was not found; build it with {_build_hint()}"
         )
     _check_destination(dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -237,12 +259,18 @@ def stage_install(dest: Path, player: Path, *, repo: Path = ROOT,
         bin_dir = stage / "bin"
         bin_dir.mkdir()
         shutil.copy2(player, bin_dir / player.name)
-        stager = stage_dlls or (lambda target: stage_runtime_dlls.stage_runtime_dlls(
-            target, include_ui_fonts=True, refresh=True, repo_root=repo))
-        try:
-            staged = stager(bin_dir)
-        except stage_runtime_dlls.StageError as exc:
-            raise InstallError(f"INSTALL_RUNTIME_STAGE_FAILED: {exc}") from exc
+        # The PE DLL closure exists only for Windows; an injected stager still runs (tests).
+        if IS_WINDOWS or stage_dlls is not None:
+            stager = stage_dlls or (lambda target: stage_runtime_dlls.stage_runtime_dlls(
+                target, include_ui_fonts=True, refresh=True, repo_root=repo))
+            try:
+                staged = stager(bin_dir)
+            except stage_runtime_dlls.StageError as exc:
+                raise InstallError(f"INSTALL_RUNTIME_STAGE_FAILED: {exc}") from exc
+            runtime_stage = "STAGED"
+        else:
+            staged = []
+            runtime_stage = "SKIPPED_NOT_PE"
         commit = export_source(repo, stage / "source", revision)
         (stage / "nakagawa.ico").write_bytes(build_icon())
         _replace_owned(bin_dir, dest / "bin")
@@ -252,14 +280,71 @@ def stage_install(dest: Path, player: Path, *, repo: Path = ROOT,
         if stage.exists():
             shutil.rmtree(stage)
     record = {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "source_commit": commit,
+        "platform": _platform_name(),
         "player": f"bin/{player.name}",
+        "runtime_stage": runtime_stage,
         "runtime_files": sorted(staged),
+        "integration": [],
         "staged_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
     }
-    (dest / MARKER).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    _write_marker(dest, record)
     return record
+
+
+def _write_marker(dest: Path, record: dict) -> None:
+    (dest / MARKER).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+
+def record_integration(dest: Path, paths) -> None:
+    """Record the paths a shortcut wrote outside ``dest`` in the install marker."""
+    marker = dest.resolve() / MARKER
+    record = json.loads(marker.read_text(encoding="utf-8"))
+    record["integration"] = [str(path) for path in paths]
+    _write_marker(dest.resolve(), record)
+
+
+def xdg_data_home() -> Path:
+    """``$XDG_DATA_HOME``, or ``~/.local/share`` when it is unset or not an absolute path."""
+    value = os.environ.get("XDG_DATA_HOME", "")
+    if value and Path(value).is_absolute():
+        return Path(value)
+    return Path.home() / ".local" / "share"
+
+
+def _exec_quote(value: str) -> str:
+    """Quote one ``Exec=`` word as the Desktop Entry spec requires; ``%`` becomes ``%%``."""
+    escaped = (value.replace("\\", "\\\\").replace('"', '\\"')
+               .replace("`", "\\`").replace("$", "\\$"))
+    return '"' + escaped.replace("%", "%%") + '"'
+
+
+def write_desktop_entry(dest: Path, arguments: str = DEFAULT_ARGUMENTS) -> list[Path]:
+    """Write the per-user application entry and its 256 px icon; return both paths."""
+    dest = dest.resolve()
+    data = xdg_data_home()
+    entry = data / "applications" / DESKTOP_ENTRY_NAME
+    icon = data / "icons" / "hicolor" / "256x256" / "apps" / DESKTOP_ICON_NAME
+    player = dest / "bin" / "nakagawa_player"
+    lines = [
+        "[Desktop Entry]",
+        "Type=Application",
+        "Name=Nakagawa Recomp",
+        "Comment=Nakagawa Recomp player",
+        f"Exec={_exec_quote(str(player))} {arguments}".rstrip(),
+        f"TryExec={player}",
+        f"Path={dest / 'bin'}",
+        f"Icon={icon}",
+        "Terminal=false",
+        "Categories=Game;",
+        "",
+    ]
+    icon.parent.mkdir(parents=True, exist_ok=True)
+    icon.write_bytes(_png(256, render_icon_rgba(256)))
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_bytes("\n".join(lines).encode("utf-8"))
+    return [entry, icon]
 
 
 def desktop_folder() -> Path:
@@ -307,26 +392,37 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--dest", required=True, type=Path,
                         help="install folder outside the source tree")
-    parser.add_argument("--player", type=Path, default=ROOT / "build" / "nakagawa_player.exe",
-                        help="built player executable (default: build/nakagawa_player.exe)")
+    default_player = default_player_path(IS_WINDOWS)
+    parser.add_argument("--player", type=Path, default=default_player,
+                        help=f"built player executable (default: build/{default_player.name})")
     parser.add_argument("--revision", default="HEAD",
                         help="committed revision exported as source/ (default: HEAD)")
     parser.add_argument("--desktop-shortcut", action="store_true",
-                        help=f"also write '{SHORTCUT_NAME}' on the Desktop")
+                        help=f"also write '{SHORTCUT_NAME}' on the Desktop (Windows), or a "
+                             f"'{DESKTOP_ENTRY_NAME}' entry (Linux)")
     parser.add_argument("--shortcut", type=Path,
-                        help="write the shortcut at this exact .lnk path instead")
+                        help="write the Windows shortcut at this exact .lnk path instead")
     parser.add_argument("--arguments", default=DEFAULT_ARGUMENTS,
                         help=f"player arguments in the shortcut (default: {DEFAULT_ARGUMENTS})")
     args = parser.parse_args(argv)
     try:
+        if args.shortcut is not None and not IS_WINDOWS:
+            raise InstallError("INSTALL_SHORTCUT_UNSUPPORTED: --shortcut writes a Windows .lnk; "
+                               "on Linux use --desktop-shortcut")
         record = stage_install(args.dest, args.player, revision=args.revision)
         print(f"stage_install: staged {record['player']} and source {record['source_commit'][:12]} "
               f"into {args.dest.resolve()}")
-        shortcut = args.shortcut or (desktop_folder() / SHORTCUT_NAME
-                                     if args.desktop_shortcut else None)
-        if shortcut is not None:
-            write_shortcut(shortcut, args.dest, args.arguments)
-            print(f"stage_install: shortcut {shortcut}")
+        if not IS_WINDOWS and args.desktop_shortcut:
+            entry, icon = write_desktop_entry(args.dest, args.arguments)
+            record_integration(args.dest, [entry, icon])
+            print(f"stage_install: desktop entry {entry}")
+        else:
+            shortcut = args.shortcut or (desktop_folder() / SHORTCUT_NAME
+                                         if args.desktop_shortcut else None)
+            if shortcut is not None:
+                write_shortcut(shortcut, args.dest, args.arguments)
+                record_integration(args.dest, [shortcut])
+                print(f"stage_install: shortcut {shortcut}")
     except InstallError as exc:
         print(f"stage_install: FAIL: {exc}", file=sys.stderr)
         return 1
