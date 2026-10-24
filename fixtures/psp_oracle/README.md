@@ -540,6 +540,8 @@ publishes their words.
 | `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | Retired and never to be scheduled. The captured run stopped at `sceKernelReferSystemStatus(NULL)` and required a power cycle. The kernel pointer check does not reject address 0, so the call writes through NULL and faults; the VTimer getters also write through their output pointers. No game can rely on these results. |
 | `hle-audio-src` | `PSP-HLE-AUDIO-SRC-001` | No-reservation release/output, a 1024-sample/44100-Hz/stereo reservation, second reserve, one silent output block, release after drain and release again; six invalid shapes with immediate release on unexpected success; Output2/SRC reservations in both orders with cleanup. One launch, 18 result records, `MEASURED` on 2026-10-15 (`7fc1641e`); the public NID corpus has no SRC rest-sample query. |
 | `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | Same-delay A/B alarms, longer-then-shorter alarms, a nominally equal VTimer/alarm pair, and SetAlarm(0); each callback stores one shared sequence number and system-time low/high words. Waits are bounded and all alarms are canceled; the VTimer is stopped and deleted. Ordering only, no absolute-time claim; one launch, `MEASURED` on 2026-10-15 (`22b027f6`). |
+| `hle-issues-batch` | `PSP-HLE-ISSUES-001` | Built from `probe_hle_issues.c`. #356: `kuKernelGetModel` and the `SysMemUserForUser` `sceKernelGetModel` import (NID `0x6373995d`, a hand-written stub) twice each through a wrapper that presets `$v0` to `0xA5A5A5A5`, each row recording the returned `$v0`, the stub's two words after loading and the firmware word; then the kernel getter (`SysMemForKernel` NIDs `0x07c586a1` and `0x6373995d`) found with `sctrlHENFindFunction` and called through `kuKernelCall` only when its address lies in kernel RAM. #326, two passes: `vscmp` at every width and the same-register form over six NaN, infinity, signed-zero and denormal operand sets, then one `vrndi.s` step from each of 2 x 448 written RCX states. One launch, 1858 result records, `NOT_RUN` from a public commit. |
+| `hle-intr-cells` | `PSP-HLE-INTR-001` | Built from `probe_hle_issues.c`. #325: three VTimer handlers and two alarm handlers that return a reschedule interval and then 0 (each call's sequence number, scheduled and actual VTimer time and system time); a VBLANK sub-interrupt handler in the first free slot of 0..15, counted while free, across 20 ms, 50 ms and 20 ms `sceKernelCpuSuspendIntr` windows, and while one entry holds for 25 ms. Every VTimer is stopped and deleted, every alarm cancelled, every suspension resumed, and the handler disabled and released whenever a slot was registered. One launch, at most 72 lines (57 result records), `NOT_RUN` from a public commit. |
 
 The seven `hle-*` rows are single-launch probes built from `probe_hle_measure.c`, and they are
 not in the campaign queue. Five cases ran on a PSP-3000 on 2026-10-15 (build `b5d6fc5b`):
@@ -561,6 +563,20 @@ blocking SRC calls, at most one 1024-sample stereo block each. Timer waits are b
 250 ms elapsed-time deadlines. The VFPU corpus has no host I/O during its instruction span
 and records 89 result records. `hle-null-out-pointers` passes NULL as a mandatory out pointer.
 Risk high: a NULL mandatory out-pointer may fault in kernel mode; schedule last in a session, after every other case. On 2026-10-15 the stream stopped at the first NULL call's step and the console needed a power cycle, so plan one after this case.
+
+The `hle-issues-batch` (106) and `hle-intr-cells` (107) rows are single-launch probes built from
+`probe_hle_issues.c`, outside the campaign queue. They live apart from `probe_hle_measure.c`
+because they do what its families never may: `hle-intr-cells` registers a VBLANK sub-interrupt
+handler, sets VTimer and alarm handlers and suspends interrupts, and `hle-issues-batch` calls a
+kernel getter through the ARK kernel bridge (`-lpspkubridge -lpspsystemctrl_user`). The file
+repeats `probe_hle_measure.c`'s log writer, host0 round trip and module lifecycle unchanged
+(`tools/test_psp_oracle.py` pins both copies), and the Makefile pins each case's extra imports
+with `--exact-library`. `hle-issues-batch` writes 1911 lines (1858 records, 50 steps, the `-done`
+record, META and COMPLETE), so give it a case timeout of several minutes; the VFPU cells write one
+step per operand set or carry-grid row, never inside a cell. `hle-intr-cells` writes no step inside
+a timed window or a handler; its stream length depends on how many handler calls the console
+made, and `parse_hle_intr_cells_output` reads those counts from the stream and checks the probe's
+own bookkeeping. Neither has run from a public commit yet.
 
 The registry case opens the registry and every category in read mode. It never
 calls a set, create, remove, or flush API. It records values only for the

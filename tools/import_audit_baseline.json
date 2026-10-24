@@ -2081,6 +2081,12 @@
     "name": "scePsmfPlayerDelete",
     "status": "unreviewed"
   },
+  "0x9b745542": {
+    "classification": "dedicated",
+    "handler": "h_NpDrmClearLicenseeKey",
+    "name": "sceNpDrmClearLicenseeKey",
+    "status": "partial"
+  },
   "0x9badb3eb": {
     "classification": "dedicated",
     "handler": "h_PowerGetBusClockFrequencyFloat",
@@ -2163,6 +2169,12 @@
     "classification": "dedicated",
     "handler": "h_IoSetAsyncCallback",
     "name": "sceIoSetAsyncCallback",
+    "status": "partial"
+  },
+  "0xa1336091": {
+    "classification": "dedicated",
+    "handler": "h_NpDrmSetLicenseeKey",
+    "name": "sceNpDrmSetLicenseeKey",
     "status": "partial"
   },
   "0xa14f40b2": {
