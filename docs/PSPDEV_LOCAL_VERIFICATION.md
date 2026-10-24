@@ -35,10 +35,10 @@ The default `tools.test_profile_zero_e2e` run passes its lock/evidence checks
 and skips the production runtime route as configured. An opt-in
 `NK_TEST_TIER=full` attempt did not complete the runtime route and is
 `INCONCLUSIVE`; the standalone fixture rebuild and digest comparison passed.
-The documented `showcase-smoke` passed TEST00007 but failed TEST00008 twice:
-the scheduler pause was observed at vcount 121 instead of the expected 120.
-That runtime timing result remains separate from the successful PSPDEV fixture
-builds and is unresolved.
+The documented `showcase-smoke` passed TEST00007 but failed TEST00008 in three
+runs, including one at the merged head: the scheduler pause was observed at
+vcount 121 instead of the expected 120. That runtime timing result remains
+separate from the successful PSPDEV fixture builds and is unresolved.
 
 The earlier Debian evidence remains historical: neither the May 2026 nor the
 previous June 2026 Debian archive reproduced the committed profile-zero fixture.

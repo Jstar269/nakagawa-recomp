@@ -1570,7 +1570,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "02bcf4eac450a4d27955a0de2a1f4f066df5908ffb7ed2e379d98fdcae2a165a"
+      "sha256": "74dc4dc52215401fb6a6fb8f73d7489f74bdeee331a7bb17ab595c4c5ef07fe8"
     },
     {
       "path": "docs/PSP_INTR_WAITS_CENSUS.md",
