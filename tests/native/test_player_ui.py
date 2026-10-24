@@ -273,6 +273,13 @@ def synthetic_stale_package(runtime_root: Path) -> None:
     (package / "stale-synthetic.exe").write_bytes(b"synthetic stale executable")
 
 
+def break_package_manifest(runtime_root: Path) -> None:
+    """Make a built package unreadable, as an upgrade would: the validator calls it incompatible."""
+    package = runtime_root / "packages" / "TEST00006" / "package.json"
+    assert package.is_file()
+    package.write_text("{ not a package manifest", encoding="utf-8")
+
+
 def synthetic_ready_package(
     runtime_root: Path, source_executable: bytes, *, data_root_present: bool = True
 ) -> None:
@@ -538,6 +545,7 @@ class NativePlayerUiTests(unittest.TestCase):
         "test_iso_art_retry_rereads_only_the_image_that_is_still_missing",
         "test_late_mounted_iso_art_retries_after_cooldown",
         "test_library_keyboard_gamepad_navigation_and_picker",
+        "test_incompatible_card_offers_rebuild_package_in_the_legacy_renderer",
         "test_lost_worker_events_are_reclaimed_instead_of_stalling_the_card",
         "test_mouse_click_adds_disc_through_sdl_event_loop",
         "test_one_title_offline_art_and_stale_package_stay_off_frame_path",
@@ -561,6 +569,7 @@ class NativePlayerUiTests(unittest.TestCase):
         drop_pbp_iso: bool = False,
         art_iso: str | None = None,
         stale_package: bool = False,
+        incompatible_package: bool = False,
         wait_background: bool = False,
         catalog_reload_count: int = 0,
         build_ready_test: bool = False,
@@ -642,7 +651,7 @@ class NativePlayerUiTests(unittest.TestCase):
                     runtime_root, source_executable,
                     data_root_present=data_root_present,
                 )
-            elif post_build_ready:
+            elif post_build_ready or incompatible_package:
                 source_executable = b"synthetic input executable\n"
                 ready_source_iso = scratch / "ready-source.iso"
                 synthetic_art_iso(
@@ -716,6 +725,8 @@ class NativePlayerUiTests(unittest.TestCase):
                 ui_iso_path = ready_source_iso
             if stale_package:
                 synthetic_stale_package(runtime_root)
+            if incompatible_package:
+                break_package_manifest(runtime_root)
 
             env = os.environ.copy()
             env.update(
@@ -1225,6 +1236,64 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(art_frames[-1]["selected_package_status"], "3")
         # Synthetic icon art arrives without blocking the UI frame.
         self.assertTrue(has_icon_art(available["bmp"]))
+
+    # An upgrade can leave a built package the validator no longer accepts. The
+    # card then offers REBUILD PACKAGE (#1147) with the same consent, progress
+    # and restore as a first build, and says in one line why.
+    INCOMPATIBLE_REASON = "Built_for_another_player_version,_or_its_package_file_is_unreadable."
+
+    def assert_rebuild_started(self, frames: list, stdout: object) -> None:
+        # The dead pill left the view on the library. REBUILD PACKAGE takes the
+        # first-build path, which this host answers with the build screen, the
+        # build tools consent, or (no build tools on Linux) the error card.
+        self.assertIn(
+            frames[-1]["view"],
+            ("building_package", "prereq_consent", "prereq_progress", "error"),
+            stdout,
+        )
+
+    def test_incompatible_card_offers_rebuild_package_in_the_legacy_renderer(self) -> None:
+        shown = self.run_player("ready", (), incompatible_package=True, wait_background=True)
+        frames = shown["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["selected_package_status"], "2", shown["stdout"])
+        self.assertEqual(frames[-1]["incompatible_reason"], self.INCOMPATIBLE_REASON)
+        # The button is a focus stop (it was a dead pill, with no stop).
+        self.assertEqual(frames[-1]["focus_count"], "4")
+        run = self.run_player(
+            "ready", ("KEY_RETURN",), incompatible_package=True, wait_background=True,
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "ready_library")
+        self.assertTrue(
+            any(frame["selected_package_status"] == "2" for frame in frames), run["stdout"]
+        )
+        self.assert_rebuild_started(frames, run["stdout"])
+
+    def test_incompatible_title_offers_rebuild_package_in_the_next_ui(self) -> None:
+        shown = self.run_player(
+            "ready", ("WAIT_MS=100",), incompatible_package=True, wait_background=True,
+            ui_mode="next",
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in shown["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = shown["frames"]
+        assert isinstance(frames, list)
+        last = frames[-1]
+        self.assertEqual(last["selected_package_status"], "2", shown["stdout"])
+        self.assertEqual(last["next_primary_label"], "REBUILD_PACKAGE")
+        self.assertEqual(last["next_detail"], self.INCOMPATIBLE_REASON)
+        run = self.run_player(
+            "ready",
+            # Open the title, then Tab past the two top-bar tabs to the primary action.
+            ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", "KEY_TAB", "WAIT_MS=100",
+             "KEY_TAB", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=300"),
+            incompatible_package=True, wait_background=True, ui_mode="next",
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assert_rebuild_started(frames, run["stdout"])
 
     def test_package_status_worker_and_catalog_reload_do_not_deadlock_or_corrupt_status(
         self,

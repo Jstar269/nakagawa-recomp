@@ -195,9 +195,9 @@ and one-click play from an arbitrary ISO without the developer toolchain remain 
 6. **One-Click Play**: The hero card exposes *"PLAY NOW"* when a validating
    package is present or, for a non-experimental catalog title, when the
    launcher resolves that title's developer runtime ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)).
-   Otherwise it shows *"REBUILD PACKAGE"* for a stale package, *"BUILD
-   PACKAGE"* for a missing one, a `PACKAGE INCOMPATIBLE` status for an
-   incompatible one, `RUNTIME REQUIRED` for a staged entry with no runnable
+   Otherwise it shows *"REBUILD PACKAGE"* for a stale or an incompatible
+   package (the incompatible one with a line saying why it no longer fits),
+   *"BUILD PACKAGE"* for a missing one, `RUNTIME REQUIRED` for a staged entry with no runnable
    runtime, and `PREPARATION UNAVAILABLE` when nothing is staged. A package
    status worker that cannot start shows `PACKAGE CHECK FAILED` and offers
    `RETRY PACKAGE CHECK`; ordinary background rescans retry that failure only

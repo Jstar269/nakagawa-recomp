@@ -808,6 +808,20 @@ static void test_screen_actions(void) {
     CHECK(action.kind == PLAYER_UI_ACTION_PRIMARY &&
           action.primary == PLAYER_UI_PRIMARY_PLAY,
           "the primary button returns its existing Play action");
+    {
+        /* An INCOMPATIBLE package (#1147): REBUILD PACKAGE, not a dead label. */
+        PlayerUiTitle incompatible = k_titles[1];
+        incompatible.library_status_detail =
+            "Built for another player version, or its package file is unreadable.";
+        incompatible.primary_action_label = "REBUILD PACKAGE";
+        incompatible.primary_action = PLAYER_UI_PRIMARY_REBUILD;
+        detail.title = &incompatible;
+        action = activate_title_button(PLAYER_UI_ID_TITLE_PRIMARY, &detail);
+        CHECK(action.kind == PLAYER_UI_ACTION_PRIMARY &&
+              action.primary == PLAYER_UI_PRIMARY_REBUILD,
+              "the REBUILD PACKAGE button returns the rebuild action");
+        detail.title = &k_titles[0];
+    }
     action = activate_title_button(PLAYER_UI_ID_TITLE_SAVE_FOLDER, &detail);
     CHECK(action.kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER,
           "the save-folder button requests the existing per-title folder");

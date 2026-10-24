@@ -435,6 +435,29 @@ size_t player_library_status_text(bool has_runtime, bool checking, bool check_fa
     return (size_t)written < out_size ? (size_t)written : out_size - 1;
 }
 
+size_t player_incompatible_reason_line(const char *reason, char *out, size_t out_size) {
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+    /* Only a whole sentence is a reason worth showing. A parser message or the
+     * ABI note arrives without one, ahead of the validator's cache boilerplate
+     * (package_rebuild_reason), so those get the plain line; the log keeps the
+     * detail. */
+    char first[200] = "";
+    const char *boiler = reason ? strstr(reason, " Cache component/epoch mismatch") : NULL;
+    const char *dot = reason ? strchr(reason, '.') : NULL;
+    if (dot != NULL && boiler != NULL && dot > boiler) dot = NULL;
+    if (dot != NULL && (size_t)(dot - reason) < sizeof(first)) {
+        memcpy(first, reason, (size_t)(dot - reason));
+        first[dot - reason] = '\0';
+    }
+    int written = first[0]
+        ? snprintf(out, out_size, "No longer fits this player: %s.", first)
+        : snprintf(out, out_size,
+                   "Built for another player version, or its package file is unreadable.");
+    if (written < 0) return 0;
+    return (size_t)written < out_size ? (size_t)written : out_size - 1;
+}
+
 NkRuntimePackageStatus player_app_validate_runtime_package(
     const PlayerApp *app,
     const GameRecord *game,
@@ -895,7 +918,8 @@ int player_app_focus_count(const PlayerApp *app) {
                 bool can_build = game && !game_ready && !checking &&
                                  !check_failed &&
                                  (pkg_status == NK_RUNTIME_PACKAGE_MISSING ||
-                                  pkg_status == NK_RUNTIME_PACKAGE_STALE);
+                                  pkg_status == NK_RUNTIME_PACKAGE_STALE ||
+                                  pkg_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE);
                 if (game && (game_ready || app->is_game_running || can_build ||
                              check_failed || checking)) count++;
                 count += player_game_is_showcase(game) ? 1 : 2; /* add + optional remove */

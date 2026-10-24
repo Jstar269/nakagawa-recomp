@@ -38,7 +38,8 @@ typedef enum {
     PLAYER_UI_PRIMARY_PLAY,
     PLAYER_UI_PRIMARY_BUILD,
     PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK,
-    PLAYER_UI_PRIMARY_STOP_GAME
+    PLAYER_UI_PRIMARY_STOP_GAME,
+    PLAYER_UI_PRIMARY_REBUILD   /* an INCOMPATIBLE package: check, then build again */
 } PlayerUiPrimaryAction;
 
 typedef enum {
@@ -321,6 +322,10 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app);
 /* True when the next UI shows the Library at the bottom of its stack (Esc
    there asks to quit, as in the existing UI). */
 bool player_ui_nk_at_library_root(const PlayerUiNk *player);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+/* Test only: a title's model as the last frame filled it, or NULL. */
+const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t index);
+#endif
 bool player_ui_nk_handle_event(PlayerUiNk *player,
                                const union SDL_Event *event);
 /* A pad was opened (connected) or went away: the prompt glyphs and the top
