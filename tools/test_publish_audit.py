@@ -863,6 +863,11 @@ class TestPublishAudit(unittest.TestCase):
         )
         self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
 
+        stb_findings = self._spdx_provenance_findings(
+            "third_party/stb/stb_image.h", upstream_header, "upstream_derived", "Unlicense"
+        )
+        self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in stb_findings), stb_findings)
+
         sibling_findings = self._spdx_provenance_findings(
             "third_party/clay/other.h", upstream_header, "upstream_derived", "Zlib"
         )

@@ -135,7 +135,8 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                              NK_UI_SPACE_4);
         if (nk_ui_begin_container(ui, TITLE_ID_ASIDE, &layout, NULL)) {
             bool demo = title->art_kind != NK_UI_ART_NONE;
-            nk_ui_hero(ui, TITLE_ID_HERO, (NkUiArtKind)title->art_kind, title->disc_id, aside,
+            nk_ui_hero(ui, TITLE_ID_HERO, (NkUiArtKind)title->art_kind, title->disc_id,
+                       title->icon, title->picture, aside,
                        demo ? "Picture made by the project" : "Your disc",
                        "480 \xC3\x97 272");
             if (nk_ui_card_begin(ui, TITLE_ID_STATUS_CARD, sizing_grow(), sizing_fit(),

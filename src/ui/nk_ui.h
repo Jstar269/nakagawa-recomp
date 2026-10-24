@@ -173,13 +173,17 @@ typedef struct {
     int y1;
 } NkUiPixelRect;
 
-/* Which button-prompt glyph set the prompt bar draws. All four sets are drawn by
-   this project and use no console maker's symbols. Zero is the default. */
+/* Which button-prompt glyph set the prompt bar draws. Every set has a
+   project-drawn geometric form; a host may also hand nk_ui Kenney's CC0 prompt
+   glyphs (nk_ui_set_prompt_images), drawn instead for every set but NEUTRAL.
+   Zero is the default. */
 typedef enum {
-    NK_UI_PROMPT_NEUTRAL = 0,       /* neutral positions; PlayStation-family and unknown pads */
+    NK_UI_PROMPT_NEUTRAL = 0,       /* neutral positions; unknown pads */
     NK_UI_PROMPT_LETTERS_A_SOUTH,   /* letters, with A on the south button */
     NK_UI_PROMPT_LETTERS_A_EAST,    /* letters, with A on the east button */
-    NK_UI_PROMPT_KEYCAPS            /* keyboard keycaps */
+    NK_UI_PROMPT_KEYCAPS,           /* keyboard keycaps */
+    NK_UI_PROMPT_SHAPES,            /* cross, circle, square and triangle face buttons */
+    NK_UI_PROMPT_STYLE_COUNT
 } NkUiPromptStyle;
 
 /* Held-direction repeat rate. The timings are owned by NkUiRepeatConfig
@@ -192,10 +196,11 @@ typedef enum {
 
 /* Detected controller family; it picks a default NkUiPromptStyle. */
 typedef enum {
-    NK_UI_PAD_NEUTRAL = 0,  /* PlayStation-family and unknown pads */
+    NK_UI_PAD_NEUTRAL = 0,  /* unknown pads */
     NK_UI_PAD_LETTERS_A_SOUTH,
     NK_UI_PAD_LETTERS_A_EAST,
-    NK_UI_PAD_KEYBOARD
+    NK_UI_PAD_KEYBOARD,
+    NK_UI_PAD_SHAPES        /* a cross on the south button */
 } NkUiPadFamily;
 
 /* Direction of an NK_UI_EV_NAV event. */
@@ -313,6 +318,11 @@ bool nk_ui_take_event(NkUi *ui, NkUiEventType type, NkUiNavDir *dir);
 const NkUiTheme *nk_ui_theme(const NkUi *ui);
 /* The prompt-glyph style in the current preferences. */
 NkUiPromptStyle nk_ui_prompt_style(const NkUi *ui);
+/* Glyph images for the prompt bar (an NkUiPromptImages from nk_ui_input.h,
+   which must outlive every frame drawn with it); NULL returns to the
+   geometric glyphs. */
+struct NkUiPromptImages;
+void nk_ui_set_prompt_images(NkUi *ui, const struct NkUiPromptImages *images);
 
 /* Launcher-only custom element. Returns true when the waves were queued for the
    frame. Returns false, and draws nothing, on an overlay host (rejected by
