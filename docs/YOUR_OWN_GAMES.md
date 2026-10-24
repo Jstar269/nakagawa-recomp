@@ -189,8 +189,11 @@ crashes.
   exception is a non-experimental catalog title whose developer runtime the
   launcher resolves, which is playable without a package
   ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)); a stale
-  package shows **REBUILD PACKAGE** and an incompatible one shows
-  `PACKAGE INCOMPATIBLE`. If the package-check worker cannot start, the card
+  package, or one the player can no longer use (for example after an upgrade),
+  shows **REBUILD PACKAGE** with one line saying why; a rebuild asks for the
+  same consent, shows the same progress and restores the old package if it
+  fails, exactly like a first build
+  ([#1147](https://github.com/Jstar269/nakagawa-recomp/issues/1147)). If the package-check worker cannot start, the card
   shows `PACKAGE CHECK FAILED` with a `RETRY PACKAGE CHECK` action; background
   rescans retry after a bounded backoff.
 - **Missing firmware fonts:** if the player reports a missing system font, use

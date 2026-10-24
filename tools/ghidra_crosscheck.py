@@ -5,7 +5,7 @@
 
 Ghidra (with ghidra-allegrex) is an independent, mature disassembler; treating
 its function list as a second opinion surfaces analyze.py misdiscoveries of the
-0x000e1724 class (functions suppressed by the _is_trailing_epilogue heuristic,
+0x000e1724 class (functions suppressed by the former trailing-epilogue heuristic,
 which at runtime become NONPLT_MISS dispatch faults). See ISSUES.md 2026-07-17.
 
 Inputs:
