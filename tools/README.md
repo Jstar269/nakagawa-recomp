@@ -369,6 +369,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_dmac_semantics.py` | Source-shape gates for the measured DMAC copy path. |
 | `test_evf_c.py` | Regression coverage for PSP event-flag semantics. |
 | `test_guestmem_c.py` | Behavioral and wiring coverage for the guest-memory bounds contract. |
+| `test_mp3_tone_fixture.py` | The sceMp3 tone fixture header matches its source-authored generator. |
 | `test_mpeg_h264_bounds.py` | Static contracts and arithmetic fixtures for the MPEG bounds work. |
 | `test_native_driver_hardening.py` | Malformed-input regression tests for the native runtime driver. |
 | `test_native_gate_stub_link.py` | Keep the headless gate link surface synchronized with the runtime. |
