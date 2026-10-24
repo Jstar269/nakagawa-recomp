@@ -100,7 +100,7 @@ static const PlayerUiPrereqItem k_prereqs[] = {
 typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_CONSENT, FLOW_PROGRESS,
                FLOW_ERROR, FLOW_WIZ_WELCOME, FLOW_WIZ_CHOOSE, FLOW_WIZ_CHOSEN,
                FLOW_WIZ_COPYING, FLOW_WIZ_VERIFY, FLOW_WIZ_EXPERIMENTAL, FLOW_WIZ_FONTS,
-               FLOW_WIZ_READY, FLOW_WIZ_STAGED } FlowCase;
+               FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS } FlowCase;
 
 static const char *const k_font_lines[] = {
     "Japanese: synthetic fallback", "Latin 1: synthetic fallback",
@@ -124,10 +124,10 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
     wizard.title_name = "Synthetic Showcase Scene";
     switch (which) {
         case FLOW_WIZ_CHOOSE:
-            wizard.step = 1;
+            wizard.step = 2;
             break;
         case FLOW_WIZ_CHOSEN:
-            wizard.step = 1;
+            wizard.step = 2;
             wizard.has_iso = true;
             wizard.iso_selected = true;
             wizard.iso_path = "C:/synthetic/discs/synthetic-showcase.iso";
@@ -135,7 +135,7 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             wizard.status_message = "Disc identified: Synthetic Showcase Scene.";
             break;
         case FLOW_WIZ_COPYING:
-            wizard.step = 2;
+            wizard.step = 3;
             wizard.supported = true;
             wizard.extracting = true;
             wizard.files_extracted = 41;
@@ -145,7 +145,7 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             break;
         case FLOW_WIZ_VERIFY:
         case FLOW_WIZ_EXPERIMENTAL:
-            wizard.step = 2;
+            wizard.step = 3;
             wizard.supported = which == FLOW_WIZ_VERIFY;
             wizard.experimental = which == FLOW_WIZ_EXPERIMENTAL;
             wizard.extraction_complete = which == FLOW_WIZ_VERIFY;
@@ -160,7 +160,7 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             wizard.check_count = 3u;
             break;
         case FLOW_WIZ_FONTS:
-            wizard.step = 3;
+            wizard.step = 4;
             wizard.resolution_line = "Internal resolution: 2x (960x544)";
             wizard.controller_line = "Controller: keyboard and mouse";
             for (size_t i = 0u; i < sizeof(k_font_lines) / sizeof(k_font_lines[0]); ++i) {
@@ -169,10 +169,14 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             break;
         case FLOW_WIZ_READY:
         case FLOW_WIZ_STAGED:
-            wizard.step = 4;
+            wizard.step = 5;
             wizard.runtime_ready = which == FLOW_WIZ_READY;
             wizard.summary_line = "Resolution 2x (960x544) \xC2\xB7 Windowed \xC2\xB7 "
                                   "Sound 80% \xC2\xB7 Package ready";
+            break;
+        case FLOW_WIZ_OPTIONS:
+            wizard.step = 1;
+            wizard.online_mode = true;
             break;
         case FLOW_WIZ_WELCOME:
         default:
@@ -427,7 +431,7 @@ static bool build_title_golden(char *out, size_t cap, size_t *used) {
             {FLOW_WIZ_VERIFY, "wizard-verify"},
             {FLOW_WIZ_EXPERIMENTAL, "wizard-experimental"},
             {FLOW_WIZ_FONTS, "wizard-fonts"}, {FLOW_WIZ_READY, "wizard-ready"},
-            {FLOW_WIZ_STAGED, "wizard-staged"}
+            {FLOW_WIZ_STAGED, "wizard-staged"}, {FLOW_WIZ_OPTIONS, "wizard-options"}
         };
         for (size_t i = 0u; i < sizeof(flows) / sizeof(flows[0]); ++i) {
             g_flow_case = flows[i].which;
@@ -674,7 +678,15 @@ static void test_wizard_actions(void) {
         {FLOW_WIZ_READY, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_FINISH,
          "Play now finishes the wizard"},
         {FLOW_WIZ_STAGED, PLAYER_UI_ID_WIZARD_SECOND, PLAYER_UI_WIZARD_GO_TO_LIBRARY,
-         "Go to library saves and leaves"}
+         "Go to library saves and leaves"},
+        {FLOW_WIZ_OPTIONS, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_NEXT,
+         "Continue leaves the options step as they are"},
+        {FLOW_WIZ_OPTIONS, PLAYER_UI_ID_WIZARD_SECOND, PLAYER_UI_WIZARD_SKIP_OPTIONS,
+         "Skip turns both options off"},
+        {FLOW_WIZ_OPTIONS, PLAYER_UI_ID_WIZARD_ONLINE, PLAYER_UI_WIZARD_TOGGLE_ONLINE,
+         "the online switch toggles online mode"},
+        {FLOW_WIZ_OPTIONS, PLAYER_UI_ID_WIZARD_DEVELOPER, PLAYER_UI_WIZARD_TOGGLE_DEVELOPER,
+         "the developer switch toggles developer mode"}
     };
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         CHECK(wizard_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
@@ -1155,7 +1167,8 @@ static int capture_screens(const char *directory) {
             {FLOW_WIZ_COPYING, "wizard-copying", PLAYER_UI_ID_WIZARD_CANCEL},
             {FLOW_WIZ_VERIFY, "wizard-verify", PLAYER_UI_ID_WIZARD_PRIMARY},
             {FLOW_WIZ_FONTS, "wizard-fonts", PLAYER_UI_ID_WIZARD_PRIMARY},
-            {FLOW_WIZ_READY, "wizard-ready", PLAYER_UI_ID_WIZARD_PRIMARY}
+            {FLOW_WIZ_READY, "wizard-ready", PLAYER_UI_ID_WIZARD_PRIMARY},
+            {FLOW_WIZ_OPTIONS, "wizard-options", PLAYER_UI_ID_WIZARD_PRIMARY}
         };
         for (size_t i = 0u; i < sizeof(flows) / sizeof(flows[0]); ++i) {
             g_flow_case = flows[i].which;
