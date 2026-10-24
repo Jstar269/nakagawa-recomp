@@ -1,0 +1,90 @@
+name: Accessibility barrier
+description: Report something in the player, setup or documentation that you cannot use or find hard to use
+title: "[Accessibility]: "
+labels:
+  - accessibility
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for telling us. You do not need to know why it happens or use any technical term.
+        Describe what you were trying to do and what got in the way. Read what we already know in
+        [ACCESSIBILITY.md](https://github.com/Jstar269/nakagawa-recomp/blob/main/ACCESSIBILITY.md).
+        Do not attach game files, decrypted modules, private paths or personal data.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Before submitting
+      options:
+        - label: I did not attach game files, decrypted modules, private paths or personal data.
+          required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What were you trying to do?
+      placeholder: e.g. Add a disc image in the setup wizard
+    validations:
+      required: true
+
+  - type: textarea
+    id: barrier
+    attributes:
+      label: What got in the way?
+      description: What happened, what you expected, and the steps to reproduce it if you know them.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where did it happen?
+      options:
+        - Library or title page
+        - Setup wizard
+        - Settings or Controller settings
+        - Error or consent screen
+        - Running game window or F1 overlay
+        - Documentation
+        - Command-line tools
+        - Something else or unsure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: How bad is it?
+      options:
+        - Critical - I cannot set up or start the player
+        - Serious - I can finish only with great difficulty or outside help
+        - Moderate - I can finish, but it is hard or slow
+        - Minor - a nuisance or an inconsistency
+    validations:
+      required: true
+
+  - type: input
+    id: input_method
+    attributes:
+      label: How were you using the player?
+      description: Keyboard, mouse, which controller, magnifier, on-screen keyboard, switch or voice tools, and so on.
+      placeholder: e.g. Keyboard only with Windows Magnifier at 300%
+
+  - type: input
+    id: environment
+    attributes:
+      label: Windows version, display size and scale
+      placeholder: e.g. Windows 11 24H2, 1920x1080 at 150%
+
+  - type: input
+    id: revision
+    attributes:
+      label: Player revision
+      description: The version line on the About screen, or a commit SHA. Leave empty if you do not know.
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workaround or idea
+      description: Optional. Anything that helped, or what would have made it easier.
