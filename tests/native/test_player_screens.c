@@ -59,26 +59,26 @@ static const PlayerUiTitle k_titles[] = {
     {"Synthetic Showcase Scene", "TEST00007", "Ready", "",
      "Partially works", "Showcase profile-zero acceptance remains open.", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
-     NK_UI_ART_SHOWCASE_SCENE, NULL},
+     NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Partially works", "Showcase profile-zero acceptance remains open.", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
-     NK_UI_ART_SHOWCASE_BREAKOUT, NULL},
+     NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Experimental", "Source-owned compatibility fixture.", "", "RETRY PACKAGE CHECK",
-     "◆", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true, 0u, NULL},
+     "◆", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true, 0u, NULL, NULL, NULL},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "Untested", "No compatibility record exists.", "", "BUILD PACKAGE",
-     "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true, 0u, NULL},
+     "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true, 0u, NULL, NULL, NULL},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Boots to a named boundary", "Player launch stops at the package boundary.", "",
-     "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true, 0u, NULL},
+     "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true, 0u, NULL, NULL, NULL},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Works", "Source-owned runtime fixture.", "", "BUILD PACKAGE",
-     "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true, 0u, NULL},
+     "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true, 0u, NULL, NULL, NULL},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Works", "Source-owned runtime fixture.", "", "PLAY",
-     "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true, 0u, NULL}
+     "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true, 0u, NULL, NULL, NULL}
 };
 
 static const char *const k_compatibility_words[] = {
@@ -808,6 +808,20 @@ static void test_screen_actions(void) {
     CHECK(action.kind == PLAYER_UI_ACTION_PRIMARY &&
           action.primary == PLAYER_UI_PRIMARY_PLAY,
           "the primary button returns its existing Play action");
+    {
+        /* An INCOMPATIBLE package (#1147): REBUILD PACKAGE, not a dead label. */
+        PlayerUiTitle incompatible = k_titles[1];
+        incompatible.library_status_detail =
+            "Built for another player version, or its package file is unreadable.";
+        incompatible.primary_action_label = "REBUILD PACKAGE";
+        incompatible.primary_action = PLAYER_UI_PRIMARY_REBUILD;
+        detail.title = &incompatible;
+        action = activate_title_button(PLAYER_UI_ID_TITLE_PRIMARY, &detail);
+        CHECK(action.kind == PLAYER_UI_ACTION_PRIMARY &&
+              action.primary == PLAYER_UI_PRIMARY_REBUILD,
+              "the REBUILD PACKAGE button returns the rebuild action");
+        detail.title = &k_titles[0];
+    }
     action = activate_title_button(PLAYER_UI_ID_TITLE_SAVE_FOLDER, &detail);
     CHECK(action.kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER,
           "the save-folder button requests the existing per-title folder");
@@ -1042,7 +1056,31 @@ static bool capture_scaled(const char *directory, const NkUiTextBackend *text,
     return ok;
 }
 
+/* A project-made stand-in for disc art: a diagonal gradient, so a capture shows
+   how a disc's ICON0.PNG / PIC1.PNG sits on the card and the hero without any
+   game image. */
+static bool capture_gradient(NkUiImage *image, uint32_t w, uint32_t h, uint64_t serial) {
+    image->rgba_pm = (uint8_t *)malloc((size_t)w * h * 4u);
+    if (image->rgba_pm == NULL) return false;
+    image->width = w;
+    image->height = h;
+    image->serial = serial;
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            uint8_t *p = image->rgba_pm + ((size_t)y * w + x) * 4u;
+            p[0] = (uint8_t)(40u + 180u * x / w);
+            p[1] = (uint8_t)(60u + 120u * y / h);
+            p[2] = (uint8_t)(200u - 120u * x / w);
+            p[3] = 255u;
+        }
+    }
+    return true;
+}
+
 static int capture_screens(const char *directory) {
+    static NkUiPromptImages prompt_images;
+    NkUiImage icon_art = {0u, 0u, NULL, 0u};
+    NkUiImage picture_art = {0u, 0u, NULL, 0u};
     SDL_Surface *surface = NULL;
     SDL_Renderer *renderer = NULL;
     NkUiTtf *ttf = NULL;
@@ -1099,6 +1137,9 @@ static int capture_screens(const char *directory) {
     rig.renderer = renderer;
     rig.surface = surface;
     rig.directory = directory;
+    /* The player draws the embedded Kenney glyphs; so do the captures. */
+    if (nk_ui_prompt_images_load(&prompt_images) == 0u) goto done;
+    nk_ui_set_prompt_images(ui, &prompt_images);
 
     memset(&library, 0, sizeof(library));
     library.titles = k_titles;
@@ -1114,7 +1155,35 @@ static int capture_screens(const char *directory) {
     capture_prefs(ui, NK_UI_PROMPT_NEUTRAL, true);
     nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(1u));
     if (!capture_one(&rig, "library-controller-high-contrast", &library, NULL)) goto done;
+    {
+        static const struct { NkUiPromptStyle style; const char *name; } sets[] = {
+            {NK_UI_PROMPT_LETTERS_A_SOUTH, "library-prompts-letters-a-south"},
+            {NK_UI_PROMPT_LETTERS_A_EAST, "library-prompts-letters-a-east"},
+            {NK_UI_PROMPT_SHAPES, "library-prompts-shapes"}
+        };
+        for (size_t i = 0u; i < sizeof(sets) / sizeof(sets[0]); ++i) {
+            capture_prefs(ui, sets[i].style, false);
+            nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(0u));
+            if (!capture_one(&rig, sets[i].name, &library, NULL)) goto done;
+        }
+    }
     capture_prefs(ui, NK_UI_PROMPT_KEYCAPS, false);
+    {
+        /* Disc art: every title but the showcase demos gets the stand-in icon. */
+        static PlayerUiTitle art_titles[sizeof(k_titles) / sizeof(k_titles[0])];
+        PlayerUiLibraryModel art = library;
+        if (!capture_gradient(&icon_art, 144u, 80u, 0xA47001ull) ||
+            !capture_gradient(&picture_art, 480u, 272u, 0xA47002ull)) {
+            goto done;
+        }
+        for (size_t i = 0u; i < sizeof(k_titles) / sizeof(k_titles[0]); ++i) {
+            art_titles[i] = k_titles[i];
+            if (art_titles[i].art_kind == NK_UI_ART_NONE) art_titles[i].icon = &icon_art;
+        }
+        art.titles = art_titles;
+        nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(2u));
+        if (!capture_one(&rig, "library-disc-art", &art, NULL)) goto done;
+    }
     {
         PlayerUiLibraryModel empty = library;
         empty.titles = NULL;
@@ -1147,6 +1216,18 @@ static int capture_screens(const char *directory) {
     nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
     if (!capture_one(&rig, "title-controller", NULL, &title)) goto done;
     capture_prefs(ui, NK_UI_PROMPT_KEYCAPS, false);
+    {
+        PlayerUiTitle with_art = k_titles[4];
+        PlayerUiTitleModel art_title = title;
+        with_art.icon = &icon_art;
+        with_art.picture = &picture_art;
+        art_title.title = &with_art;
+        art_title.title_index = 4u;
+        nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
+        if (!capture_one(&rig, "title-disc-art", NULL, &art_title)) goto done;
+        with_art.picture = NULL;
+        if (!capture_one(&rig, "title-disc-icon-only", NULL, &art_title)) goto done;
+    }
     title.title = &setup_fixture;
     title.title_index = 4u;
     setup_fixture.library_status_detail =
@@ -1218,6 +1299,9 @@ done:
     }
     nk_ui_sdlr_destroy(backend);
     nk_ui_destroy(ui);
+    nk_ui_prompt_images_free(&prompt_images);
+    free(icon_art.rgba_pm);
+    free(picture_art.rgba_pm);
     nk_ui_ttf_destroy(ttf);
     if (renderer != NULL) SDL_DestroyRenderer(renderer);
     if (surface != NULL) SDL_DestroySurface(surface);

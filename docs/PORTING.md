@@ -437,11 +437,13 @@ the descending arena `sceKernelCreateThread` carves guest thread stacks from —
 fifth default-sized create landed a thread stack on top of it.
 
 `src/rt/nested_frames.c` replaces the single address with per-owner, per-depth frames
-out of a statically reserved 1 MiB region, `[0x09f00000, 0x0a000000)`. That region was
-already an unclaimed hole between the thread-stack arena and the runtime heap, so no
-existing allocation moved; `SR_STACK_ARENA_CEIL` in `src/rt/sched.c` is now *derived*
-from `SR_NESTED_FRAME_BASE` so the exclusion is structural rather than two literals
-that agree by coincidence. Frames carry address-keyed guard bands, a deterministic
+out of a statically reserved 1 MiB region, now `[0x08300000, 0x08400000)` at the top of
+kernel RAM, directly below the volatile partition. It first sat at `[0x09f00000, 0x0a000000)`,
+the top of the PSP user partition, which withheld that memory from the game: a title whose
+fixed-size block fits on a PSP was refused. Static assertions in `src/rt/sched.c` keep the
+region below the thread-stack arena (the user partition, `[0x08800000, 0x0a000000)`), and a
+partition based below kernel RAM ends at the runtime's stacks, so the exclusion is
+structural. Frames carry address-keyed guard bands, a deterministic
 maximum nesting depth, fail-closed refusal on exhaustion, and reclaim on both nonlocal
 exits (`sched_unwind_current` and the `g_hle_jmp` HLE boundary).
 
@@ -460,11 +462,12 @@ collision is fixed).
 
 `src/rt/sched.c`'s `deliver_vblank()` previously seeded `$sp = 0x09df0000` for the interrupt
 frame, which fell inside the active thread-stack allocator range `[SR_STACK_ARENA_FLOOR, SR_STACK_ARENA_CEIL)`.
-This has been retired: a dedicated 64 KiB region `[0x09ef0000, 0x09f00000)` (`SR_VBLANK_STACK_BASE` to
-`SR_VBLANK_STACK_TOP`) is now structurally reserved between the thread-stack arena ceiling and the
-nested host->guest frame region (`SR_NESTED_FRAME_BASE`). `SR_STACK_ARENA_CEIL` is derived from
-`SR_VBLANK_STACK_BASE`, ensuring that thread stacks allocated downwards cannot hand out, overlap, or
-collide with the VBLANK interrupt stack.
+This has been retired: a dedicated 64 KiB region `[0x082f0000, 0x08300000)` (`SR_VBLANK_STACK_BASE` to
+`SR_VBLANK_STACK_TOP`) in kernel RAM is now structurally reserved directly below the nested
+host->guest frame region (`SR_NESTED_FRAME_BASE`) and below the thread-stack arena, which is the PSP
+user partition `[0x08800000, 0x0a000000)`, so thread stacks allocated downwards cannot hand out,
+overlap, or collide with the VBLANK interrupt stack. (It first sat at `[0x09ef0000, 0x09f00000)`, inside
+the user partition, until that range was given back to the game.)
 `test_nested_frame_region_is_reserved_from_thread_stacks()` asserts the structural and empirical
 disjointness so it cannot drift silently. `GENERIC_PSP_SEMANTIC` — retired for this surface.
 

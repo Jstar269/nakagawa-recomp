@@ -14,6 +14,7 @@ Tracks #
      `make contrib-check` (Linux) or `mingw32-make contrib-check` (Windows), and say what you could not run. -->
 
 - [ ] No game files, decrypted data, traces, private paths or proprietary assets are in this change.
+- [ ] If this changes the launcher or documentation: it follows [ACCESSIBILITY.md](../ACCESSIBILITY.md#contributing-accessibly), or this change does not touch them.
 
 ## Only if it applies
 

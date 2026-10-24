@@ -397,6 +397,22 @@ def open_archive(archive_path, endian="<", limits=None):
         ) from exc
 
 
+def _same_decoded_bytes(reader, first, second):
+    """True when two entries decode to the same bytes, decoding under the budgets.
+
+    Sizes are compared first so differing members are never decoded, and each
+    decode is bound by the reader's per-entry limit.  An entry that fails to
+    decode is simply not a duplicate; the later stages report it.
+    """
+
+    if first.expanded_size != second.expanded_size:
+        return False
+    try:
+        return reader.read_entry(first) == reader.read_entry(second)
+    except XBProbeError:
+        return False
+
+
 def plan_archive_members(reader, dest_dir):
     """Normalize and contain every member name; return ``[(rel, entry), ...]``.
 
@@ -405,6 +421,8 @@ def plan_archive_members(reader, dest_dir):
     the case-insensitive component identity used by Windows filesystems.  A
     complete lowercased path is not enough: ``Foo/a.bin`` and ``foo/b.bin``
     would otherwise be distinct strings while sharing one on-disk directory.
+    A member repeated with byte-identical content (under the same name or a
+    case-variant of it) is planned once, at its first spelling.
     """
 
     root_real = canonical_root(dest_dir)
@@ -413,11 +431,21 @@ def plan_archive_members(reader, dest_dir):
     # rejecting case-colliding sibling components, the terminal marker catches
     # a member that is both a file and a directory prefix of another member.
     trie = {"children": {}, "terminal": None}
+    # Retail archives repeat a member under the same name, or under a name that
+    # differs only in letter case, with identical bytes.  One path on disk then
+    # holds exactly what every copy decodes to, so the repeat is dropped rather
+    # than refused.  Repeats whose bytes differ still collide below.
+    first_by_identity = {}
     for entry in reader.entries:
         rel = normalize_member_path(entry.path)
         contained_path(root_real, rel)
-        node = trie
         components = member_components(rel)
+        identity = tuple(component.casefold() for component in components)
+        earlier = first_by_identity.get(identity)
+        if earlier is not None and _same_decoded_bytes(reader, earlier, entry):
+            continue
+        first_by_identity.setdefault(identity, entry)
+        node = trie
         for index, component in enumerate(components):
             key = component.casefold()
             child = node["children"].get(key)

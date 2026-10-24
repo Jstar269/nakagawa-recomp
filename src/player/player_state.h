@@ -166,6 +166,7 @@ typedef struct {
     int fps_cap;          /* -1 = PSP scanout, 0 = uncapped host presentation */
     int master_volume;    /* 0..100 */
     bool reduce_motion;   /* freeze pulses/sweeps for motion sensitivity */
+    bool ui_sounds;       /* launcher move/confirm/back sounds; off by default */
     bool launcher_window_maximized;
     bool launcher_window_position_valid;
     int launcher_window_x;
@@ -531,6 +532,10 @@ const char *player_app_runtime_package_reason(const PlayerApp *app,
 size_t player_library_status_text(bool has_runtime, bool checking, bool check_failed,
                                   bool assets_staged, uint32_t staged_asset_count,
                                   const char *reason, char *out, size_t out_size);
+/* The one line an INCOMPATIBLE card gives for why its package no longer fits
+ * this player: the validator's first sentence when it gave one, or a plain
+ * fallback. Both title cards show it beside REBUILD PACKAGE. */
+size_t player_incompatible_reason_line(const char *reason, char *out, size_t out_size);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 uint64_t player_app_ui_test_validation_calls(void);
 #endif
@@ -590,6 +595,7 @@ bool player_ui_canvas_fit(int pixel_width, int pixel_height,
                           PlayerUiCanvas *out);
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
+void player_app_toggle_ui_sounds(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
 void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
 
@@ -646,7 +652,7 @@ void player_app_stop_game(PlayerApp *app);
 
 /* Copy the launch-relevant player settings into a prepared session's runtime
  * configuration (resolution, frame cap, vsync, fullscreen, master volume).
- * reduce_motion is launcher-UI state and deliberately not copied. Kept as a
+ * reduce_motion and ui_sounds are launcher-UI state and deliberately not copied. Kept as a
  * named seam so tests can pin the settings -> session mapping without
  * spawning a child. */
 void player_app_apply_settings_to_session(const PlayerSettings *settings,

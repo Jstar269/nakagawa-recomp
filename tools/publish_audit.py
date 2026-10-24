@@ -1228,6 +1228,15 @@ SPDX_BYTE_EXACT_IMPORT_TREES = (
 
 SPDX_BYTE_EXACT_IMPORT_PATHS = frozenset({
     "third_party/clay/clay.h",
+    "src/rt/minimp3/minimp3.h",
+    "third_party/dr_libs/dr_wav.h",
+    "third_party/portable-snippets/safe-math/safe-math.h",
+    "third_party/stb/stb_image.h",
+    # Monocypher declares its SPDX line below the 8-line header window.
+    "third_party/monocypher/monocypher-ed25519.c",
+    "third_party/monocypher/monocypher-ed25519.h",
+    "third_party/monocypher/monocypher.c",
+    "third_party/monocypher/monocypher.h",
 })
 
 # A small set of byte-exact FFmpeg headers already carry an SPDX identifier.
@@ -1533,6 +1542,7 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
     excluded_prefixes = (
         "third_party/",
         "src/rt/atrac3p/libavcodec/",
+        "src/rt/minimp3/minimp3.h",
         "build/",
         "fs/",
     )

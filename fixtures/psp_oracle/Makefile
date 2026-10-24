@@ -193,6 +193,12 @@ else ifeq ($(CASE),hle-audio-src)
 CASE_ID = 102
 else ifeq ($(CASE),hle-timer-order)
 CASE_ID = 103
+# 106-107: the HLE issue cells (probe_hle_issues.c). 106 is the #356 model-getter and
+# #326 vrnd carry / vscmp batch; 107 the #325 interrupt and timer delivery cells.
+else ifeq ($(CASE),hle-issues-batch)
+CASE_ID = 106
+else ifeq ($(CASE),hle-intr-cells)
+CASE_ID = 107
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
@@ -392,6 +398,15 @@ OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),hle-timer-order)
 TARGET = $(BUILD_DIR)/hle_timer_order
 OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+# HLE issue cells: their own source, which installs and removes interrupt and timer
+# handlers (107) and reaches a kernel getter through the kernel bridge (106), so they
+# stay out of probe_hle_measure.c. Same ThreadManForUser block and module lifecycle.
+else ifeq ($(CASE),hle-issues-batch)
+TARGET = $(BUILD_DIR)/hle_issues_batch
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-intr-cells)
+TARGET = $(BUILD_DIR)/hle_intr_cells
+OBJS = $(BUILD_DIR)/probe_hle_issues.o $(BUILD_DIR)/threadman_user_imports.o
 endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
@@ -433,6 +448,26 @@ endif
 endif
 ifeq ($(CASE),model-profile)
 LIBS += -lpspkubridge
+endif
+# hle-issues-batch: kuKernelGetModel, the hand-written sceKernelGetModel user import, and the
+# kernel getter through ARK's sctrlHENFindFunction + kuKernelCall.
+ifeq ($(CASE),hle-issues-batch)
+LIBS += -lpspkubridge -lpspsystemctrl_user
+# Exactly kuKernelGetModel + kuKernelCall, sctrlHENFindFunction, and SysMemUserForUser's
+# sceKernelGetModel (the hand stub) and sceKernelDevkitVersion plus the four memory calls
+# the PSPSDK libc glue imports; no interrupt-manager import at all.
+USER_MODE_IMPORT_GATE_ARGS += --exact-library KUBridge=0x24331850,0x9060F69D
+USER_MODE_IMPORT_GATE_ARGS += --exact-library SystemCtrlForUser=0x159AF5CC
+USER_MODE_IMPORT_GATE_ARGS += --exact-library SysMemUserForUser=0x6373995D,0x3FC9AE6A,0xA291F107,0x237DBD4F,0xB6D61D02,0x9D9A5BA1
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library InterruptManager
+endif
+# hle-intr-cells: exactly the four VBLANK sub-interrupt calls, and from Kernel_Library the
+# suspend/resume pair plus the two LwMutex calls the PSPSDK libc glue imports; nothing from
+# the kernel bridge.
+ifeq ($(CASE),hle-intr-cells)
+USER_MODE_IMPORT_GATE_ARGS += --exact-library InterruptManager=0xCA04A2B9,0xD61E6961,0xFB8E22EC,0x8A389411
+USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
+USER_MODE_IMPORT_GATE_ARGS += --forbid-library KUBridge --forbid-library SystemCtrlForUser
 endif
 # The registry cases may import only the eight read-only sceReg calls, exactly: the gate
 # below fails the build on any other sceReg NID (a set, create, remove or flush call).
@@ -490,6 +525,10 @@ endif
 # The HLE measurement probe (probe_hle_measure.c) has the same lifecycle, so it
 # exports module_stop from the same generated table.
 ifneq ($(filter $(BUILD_DIR)/probe_hle_measure.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
+# The HLE issue cells (probe_hle_issues.c) repeat that lifecycle.
+ifneq ($(filter $(BUILD_DIR)/probe_hle_issues.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
 
@@ -554,6 +593,9 @@ $(BUILD_DIR)/libfont_imports.o: libfont_imports.S
 	$(CC) $(ASFLAGS) $(LIBFONT_ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_hle_measure.o: probe_hle_measure.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_hle_issues.o: probe_hle_issues.c hle_vfpu_cells.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/hle_power_imports.o: hle_power_imports.S

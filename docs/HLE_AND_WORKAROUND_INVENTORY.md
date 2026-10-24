@@ -37,16 +37,16 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **548** (dedicated **501**, fake_success **4**, controlled_unsupported **43**).
-Semantic handler census: **469** handlers across **23** API families, covering **507** handler-associated NID registrations.
+Registered NIDs: **574** (dedicated **523**, fake_success **4**, controlled_unsupported **47**).
+Semantic handler census: **491** handlers across **25** API families, covering **529** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 13 | 22 |
-| `partial` | 164 | 166 |
+| `partial` | 166 | 168 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 289 | 312 |
+| `unreviewed` | 309 | 332 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -63,7 +63,9 @@ Semantic handler census: **469** handlers across **23** API families, covering *
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
 | `sceKernel` | 3 | 77 | 0 | 0 | 97 | 177 | 196 |
+| `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
+| `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 6 | 0 | 0 | 12 | 18 | 20 |
 | `scePsmf` | 0 | 2 | 0 | 0 | 12 | 14 | 14 |
@@ -73,7 +75,7 @@ Semantic handler census: **469** handlers across **23** API families, covering *
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **164** | **1** | **2** | **289** | **469** | **507** |
+| **Total** | **13** | **166** | **1** | **2** | **309** | **491** | **529** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -550,6 +552,10 @@ Semantic handler census: **469** handlers across **23** API families, covering *
   - Limitation: decode mode is validated and retained; skip mode fails closed because its queue/timestamp effect is not measured (#302)
 - **`h_MpegQueryPcmEsSize`** (`sceMpeg`): `sceMpegQueryPcmEsSize` (0xc02cf6b5)
   - Limitation: the public 320-byte LPCM ES/output sizes are retained, but no PCM stream is exposed by this runtime (#302)
+- **`h_NpDrmClearLicenseeKey`** (`sceNp`): `sceNpDrmClearLicenseeKey` (0x9b745542)
+  - Limitation: forgets the recorded key and returns 0; not hardware measured
+- **`h_NpDrmSetLicenseeKey`** (`sceNp`): `sceNpDrmSetLicenseeKey` (0xa1336091)
+  - Limitation: records the 16-byte key and returns 0; the 0x80550902 refusal of a null or unreadable key follows PPSSPP and is not hardware measured; the key is never used because sceNpDrmEdataSetupKey is refused
 - **`h_PowerGetBatteryChargingStatus`** (`scePower`): `scePowerGetBatteryChargingStatus` (0xb4432bc8)
   - Limitation: reports the modeled charging state, measured 0 on AC with a full battery and on battery; the status of a charging battery is not measured
   - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_power_battery_20261024

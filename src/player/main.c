@@ -896,6 +896,9 @@ static void player_ui_nk_apply_action(PlayerApp *app,
             case PLAYER_UI_PRIMARY_BUILD:
                 (void)player_app_start_package_build(app, index);
                 break;
+            case PLAYER_UI_PRIMARY_REBUILD:
+                (void)player_app_rebuild_package(app, index);
+                break;
             case PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK:
                 app->request_package_status_retry = true;
                 break;
@@ -1000,6 +1003,7 @@ enum {
 };
 
 static unsigned s_ui_test_package_status_thread_create_attempts;
+static const PlayerUiNk *s_ui_test_next_ui;
 #define UI_TEST_MAX_PACKAGE_STATUS_THREAD_CREATE_FAILURES 8
 static unsigned s_ui_test_fail_package_status_thread_create_on_attempts[
     UI_TEST_MAX_PACKAGE_STATUS_THREAD_CREATE_FAILURES];
@@ -1472,6 +1476,31 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     int settings_two_col = app->active_view == VIEW_SETTINGS
         ? (player_settings_uses_two_columns(app->window_width,
                                              app->window_height) ? 1 : 0) : -1;
+    /* The selected title's primary action as the next UI's model holds it
+     * (spaces become underscores): -1 and "none" with the existing UI. */
+    int next_primary = -1;
+    char next_primary_label[64] = "none";
+    char next_detail[256] = "none";
+    {
+        const PlayerUiTitle *model = selected != NULL
+            ? player_ui_nk_test_title(s_ui_test_next_ui, (size_t)app->selected_game_index)
+            : NULL;
+        if (model != NULL && model->primary_action_label != NULL) {
+            next_primary = (int)model->primary_action;
+            snprintf(next_primary_label, sizeof(next_primary_label), "%s%s",
+                     model->primary_action_enabled ? "" : "disabled:",
+                     model->primary_action_label);
+            snprintf(next_detail, sizeof(next_detail), "%s",
+                     model->library_status_detail != NULL && model->library_status_detail[0]
+                         ? model->library_status_detail : "none");
+            for (char *q = next_primary_label; *q; q++) if (*q == ' ') *q = '_';
+            for (char *q = next_detail; *q; q++) if (*q == ' ') *q = '_';
+        }
+    }
+    char incompatible_reason[256];
+    snprintf(incompatible_reason, sizeof(incompatible_reason), "%s",
+             ui_test_last_incompatible_reason()[0] ? ui_test_last_incompatible_reason() : "none");
+    for (char *q = incompatible_reason; *q; q++) if (*q == ' ') *q = '_';
     /* The build badge as a single token (spaces become underscores), so the
      * frame record stays parseable. "none" outside the build screen. */
     char build_badge[64];
@@ -1502,7 +1531,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "font=%s font_reason=%s bitmap_text_draws=%u build_badge=%s "
            "badge=%d,%d,%d,%d running=%d pixels=%016llx "
            "render_ns=%llu package_validations=%llu online_mode=%d developer_mode=%d "
-           "dev_log_lines=%zu\n",
+           "dev_log_lines=%zu next_primary=%d next_primary_label=%s next_detail=%s "
+           "incompatible_reason=%s next_at_root=%d\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -1558,7 +1588,9 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            (unsigned long long)render_elapsed_ns,
            (unsigned long long)validation_calls,
            app->settings.online_mode ? 1 : 0, app->settings.developer_mode ? 1 : 0,
-           player_dev_log_count(app));
+           player_dev_log_count(app), next_primary, next_primary_label, next_detail,
+           incompatible_reason,
+           s_ui_test_next_ui != NULL ? (player_ui_nk_at_library_root(s_ui_test_next_ui) ? 1 : 0) : -1);
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {
@@ -3626,6 +3658,9 @@ int main(int argc, char *argv[]) {
         char ui_error[256] = "";
         next_ui = player_ui_nk_create(renderer, window,
                                       ui_error, sizeof(ui_error));
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        s_ui_test_next_ui = next_ui;
+#endif
         if (next_ui == NULL) {
             fprintf(stderr,
                     "[PLAYER] The next UI could not start: %s. Using the existing player UI.\n",

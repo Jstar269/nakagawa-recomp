@@ -1765,6 +1765,7 @@ static SDL_FRect s_last_status_badge;
 static bool s_last_status_badge_valid;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 static const char *s_last_status_badge_label;
+static char s_last_incompatible_reason[256];
 static bool s_ui_test_error_text_complete = true;
 static int s_ui_test_error_text_lines;
 static bool s_ui_test_error_details_complete = true;
@@ -1772,6 +1773,10 @@ static int s_ui_test_error_details_lines;
 
 const char *ui_test_last_status_badge_label(void) {
     return s_last_status_badge_label ? s_last_status_badge_label : "";
+}
+
+const char *ui_test_last_incompatible_reason(void) {
+    return s_last_incompatible_reason;
 }
 
 bool ui_test_error_text_complete(void) {
@@ -2148,6 +2153,16 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                                  experimental_reason, 0.95f, hero_w - 64.0f,
                                  COLOR_TEXT_MUTED);
         }
+    } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE &&
+               !package_ready && !package_checking && !package_check_failed) {
+        char why[256];
+        (void)player_incompatible_reason_line(
+            player_app_runtime_package_reason(app, game), why, sizeof(why));
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        snprintf(s_last_incompatible_reason, sizeof(s_last_incompatible_reason), "%s", why);
+#endif
+        draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + (hero_h >= 300.0f ? 120.0f : 112.0f),
+                             why, 1.0f, hero_w - 64.0f, COLOR_AMBER);
     } else if (hero_h >= 300.0f) {
         draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 120.0f,
                              "PSP title · Native PC recompilation",
@@ -2286,8 +2301,11 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         }
         focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
-        draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                         "PACKAGE INCOMPATIBLE");
+        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                "REBUILD PACKAGE", true, in, primary_focused)) {
+            player_app_rebuild_package(app, app->selected_game_index);
+        }
+        focus++;
     } else if (game->assets_staged) {
         /* Disc extraction is useful progress, but it is not a runnable
          * recompiled title. Keep this state visible without exposing a
@@ -2777,6 +2795,14 @@ static const char *saves_root_display(void) {
     return g_saves_root_ready ? g_saves_root : "(unavailable)";
 }
 
+/* The launcher sounds switch (off by default). Returns true when activated. */
+static bool draw_ui_sounds_toggle(SDL_Renderer *ren, PlayerApp *app, const UiInput *in,
+                                  float x, float y, int focus) {
+    const char *label = app->settings.ui_sounds ? "UI sounds: ON" : "UI sounds: OFF";
+    return draw_button_focused(ren, x, y, 132.0f, 34.0f, label, app->settings.ui_sounds, in,
+                               app->focus_index == focus);
+}
+
 static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float w = (float)app->window_width;
     float h = (float)app->window_height;
@@ -2973,6 +2999,11 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             draw_text(ren, col1_x + 54.0f + bar_w + 64.0f, by + 4.0f, vol_str, 1.0f, COLOR_TEXT_MUTED);
             y = by + 50.0f;
         }
+        /* The launcher sounds toggle takes this row; it is drawn, and focused,
+           after every other control so their focus stops keep their places. */
+        float sounds_x = col1_x;
+        float sounds_y = y - 6.0f;
+        y += 40.0f;
         /* Gamepad + save stay one-liners here; the topbar badge already
          * carries live controller state and this is the default save root. */
         if (h >= 620.0f) {
@@ -3038,6 +3069,10 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         if (draw_button_focused(ren, card_x + 248.0f, close_y, 260.0f, 46.0f,
                                 "ONLINE & DEVELOPER", false, in, online_focused)) {
             player_app_set_view(app, VIEW_ONLINE_SETTINGS);
+        }
+        focus++;
+        if (draw_ui_sounds_toggle(ren, app, in, sounds_x, sounds_y, focus)) {
+            player_app_toggle_ui_sounds(app);
         }
         focus++;
         (void)focus;
@@ -3234,6 +3269,12 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
     }
+    /* Launcher sounds sit beside CONTROLLER SETTINGS (the right column is at
+       least 362 px wide), drawn and focused last. */
+    if (draw_ui_sounds_toggle(ren, app, in, col2_x + 230.0f, pad_y + 48.0f, focus)) {
+        player_app_toggle_ui_sounds(app);
+    }
+    focus++;
     (void)focus;
     render_footer_hints(ren, app);
 }
@@ -4932,6 +4973,7 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
     s_last_status_badge_valid = false;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     s_last_status_badge_label = NULL;
+    s_last_incompatible_reason[0] = '\0';
     s_ui_test_error_text_complete = true;
     s_ui_test_error_text_lines = 0;
     s_ui_test_error_details_complete = true;

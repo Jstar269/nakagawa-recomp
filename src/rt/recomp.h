@@ -98,6 +98,22 @@ static inline void sr_cpu_link_clear(CpuState *s) {
     s->llbit = 0u;
 }
 
+/* VFPU control state of a new thread: identity S/T prefixes, no D prefix, and the
+ * random-unit registers RCX0-7 (controls 8-15). The RCX words were measured on a
+ * PSP-3000 with mfvc at thread entry, before any vrnds (2026-10-24, issue #326):
+ * RCX0-3 = 3f800001 3f800002 3f800004 3f800008, RCX4-7 = 3f800000. The measurement
+ * cannot tell thread creation from reset, so every thread-entry seed site calls
+ * this. Controls 3-7 (CC and the rest) keep whatever the caller left. */
+static inline void sr_vfpu_thread_ctrl_init(CpuState *s) {
+    s->vfpuCtrl[0] = 0xe4u;
+    s->vfpuCtrl[1] = 0xe4u;
+    s->vfpuCtrl[2] = 0u;
+    for (int i = 0; i < 4; i++) {
+        s->vfpuCtrl[8 + i] = 0x3f800000u | (1u << i);
+        s->vfpuCtrl[12 + i] = 0x3f800000u;
+    }
+}
+
 /* LLE Phase 1 (PR 2): COP0/exception/eret helpers and flow metadata. Included
  * here so generated code and the interpreter share one declaration site. */
 #include "cpu_lle.h"
@@ -615,6 +631,33 @@ static inline void sr_w32_pc(uint32_t a, uint32_t v, uint32_t pc) {
 static inline void sr_w8 (uint32_t a, uint8_t v) { sr_w8_pc(a, v, 0); }
 static inline void sr_w16(uint32_t a, uint16_t v) { sr_w16_pc(a, v, 0); }
 static inline void sr_w32(uint32_t a, uint32_t v) { sr_w32_pc(a, v, 0); }
+
+/* Native bulk copy/fill bodies for generated stubs that replace a title's own
+ * memmove/memset (#1170).  They keep the same VRAM coherence contract as the
+ * MEM_* accessors and h_Memcpy/h_Memset: a renderer-owned source is read back
+ * before the host pointer is formed, and the destination is prepared and
+ * committed so GPU targets and cached textures observe the store. */
+static inline void sr_native_memmove(uint32_t dest, uint32_t src, uint32_t size, uint32_t pc) {
+    if (size > 0u && size < 0x04000000u &&
+        sr_guest_span_writable(dest, size) && sr_guest_span_readable_current(src, size)) {
+        sr_guest_vram_write_prepare_bytes(dest, size);
+        if (g_sr_heap_watch) sr_heap_note_bulk_write(dest, size, pc);
+        memmove(SR_HOST(dest), SR_HOST(src), size);
+        sr_guest_vram_write_commit_bytes(dest, size);
+    } else if (size) {
+        sr_oor(dest, 0u, 1); sr_oor(src, 0u, 0);
+    }
+}
+static inline void sr_native_memset(uint32_t dest, uint8_t val, uint32_t size, uint32_t pc) {
+    if (size > 0u && size < 0x04000000u && sr_guest_span_writable(dest, size)) {
+        sr_guest_vram_write_prepare_bytes(dest, size);
+        if (g_sr_heap_watch) sr_heap_note_bulk_write(dest, size, pc);
+        memset(SR_HOST(dest), val, size);
+        sr_guest_vram_write_commit_bytes(dest, size);
+    } else if (size) {
+        sr_oor(dest, val, 1);
+    }
+}
 
 #define MEM_R8(a)   sr_r8(a)
 #define MEM_R16(a)  sr_r16(a)
