@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Questions and support
+    url: https://github.com/Jstar269/nakagawa-recomp/blob/main/SUPPORT.md
+    about: Where to take setup questions and other help requests.
   - name: Rights-holder or legal concern
     url: https://github.com/Jstar269/nakagawa-recomp/security/advisories/new
     about: Contact the maintainer privately about any file in this repository.

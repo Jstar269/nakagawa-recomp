@@ -105,6 +105,15 @@
       "sha256": "38a029959232641f51970b830024a031e7bbdd5ca64d8473ba7a8d4c4170a6dc"
     },
     {
+      "path": ".github/ISSUE_TEMPLATE/accessibility.yml",
+      "classification": "reviewed_configuration",
+      "evidence": {
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
+      },
+      "sha256": "1656f16ae524d2328dfa9f67d4a5e503b3158e00c509dca3796372b94c9b2beb"
+    },
+    {
       "path": ".github/ISSUE_TEMPLATE/bug_report.yml",
       "classification": "reviewed_configuration",
       "evidence": {
@@ -120,7 +129,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ccb005ef93a4556e9f531f03b9844919123cfcd6ba4af3d74715a244fba8f67a"
+      "sha256": "9660f3e74abbae769998740dc24f365d741e0dc814c19c5d0da80bbd50e7773d"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/feature_request.yml",
@@ -147,7 +156,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5462d113c6fac92107ba6beff2d0b69cfe8dac1b299ad16b9d845e76403b275a"
+      "sha256": "4d27f7677218d9040a8d8049a2a7765928bd3985e5f1fa3c681ead5f936a06cc"
     },
     {
       "path": ".github/copilot-instructions.md",
@@ -324,6 +333,15 @@
       "sha256": "bd1844b244a2553975e5600a058f1da6ba1a5d5fd584ba2229a4c8aedcea2c72"
     },
     {
+      "path": "ACCESSIBILITY.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "db09911467067618458b583a43b1429874049c1305e2f1fbbc595b0d5eea8b80"
+    },
+    {
       "path": "AGENTS.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -369,7 +387,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c873ad6f146d6f957577373d50023cfe37a8c2e5d4623d98d0eeb6ab463475f6"
+      "sha256": "680800f84dc59d497ac804e5c2dad314431ce827c500883dd28657cf5efcf838"
     },
     {
       "path": "CREDITS.md",
@@ -435,7 +453,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cde4d2b3536c56fed8f9303fa09b357fec13d6e44e74a7da02a0cf09da62129e"
+      "sha256": "cef8c78717d84884f75cc788b9ea444a0d0c6ea212894797055873038ee11fe4"
     },
     {
       "path": "REVIEW.md",
@@ -454,6 +472,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "dfa39680d902a23b93042d1f6c820ebee5463c382f925093f4c48ccba94bf612"
+    },
+    {
+      "path": "SUPPORT.md",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "82aae1d37d4a784b7a6effcd9e048e70c607a487bc2bb522db4e2dcc46343335"
     },
     {
       "path": "THIRD_PARTY_LICENSES/Brotli.txt",
@@ -949,7 +976,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a23f0b4009ef36a671cde47934ce1b8315edcc527ad5cc8ae55c0e73cb0d099f"
+      "sha256": "5ed35894c8d87a2942ef42ae597f88038d2901fd8c8ab4cb6e9edf15943ef05b"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1618,7 +1645,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "84aa890f1b828f39abcb0f914ae12b17f8e9362ae01cd0a9a40f6a2ba9b876d5"
+      "sha256": "f5d872d4538059540601e23e8bf41612e999dfc261420a5527f1dbc2b6825d8d"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
