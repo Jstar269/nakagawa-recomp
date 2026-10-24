@@ -137,6 +137,9 @@ its own explicit choice with its own sentence in Settings.
 2. A small HTTPS client behind one host allowlist (WinHTTP on Windows, which the build-tool download already uses;
    a portable backend on Linux), with the stub-server tests.
 3. Update check with signature verification.
+   - The verify primitive is ready, with nothing calling it yet: `nk_ed25519_verify` in `src/core/nk_sig.h`,
+     on the vendored Monocypher 4.0.3 Ed25519 check (`third_party/monocypher/`), tested against the RFC 8032
+     vectors by `ed25519-verify-selftest`. It holds no key and makes no connection.
 4. News strip.
 5. Reports, browser hand-off first, then the endpoint.
 6. Online play: ad-hoc relay first, then per-title infrastructure revivals.
