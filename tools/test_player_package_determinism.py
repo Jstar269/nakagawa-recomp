@@ -935,7 +935,9 @@ _MAKE_ASSIGNMENT_RE = re.compile(
 _MAKE_VARIABLE_RE = re.compile(r"\$\(([A-Za-z0-9_]+)\)")
 _MAKE_CALL_ARGUMENT_RE = re.compile(r"\$\(([0-9]+)\)")
 _BUILD_DIR_FILE_RE = re.compile(r"\$\(BUILD_DIR\)/([^\s$()/]+)")
-_MAKE_INCLUDE_RE = re.compile(r"^[ \t]*-?include[ \t]+(.+)$", re.MULTILINE)
+# A tab-led line is a recipe, where `-include` is the compiler's force-include flag
+# (the H.264 subset's rule), not a make directive.
+_MAKE_INCLUDE_RE = re.compile(r"^ *-?include[ \t]+(.+)$", re.MULTILINE)
 # How many rounds of variable substitution a target may take. Every write today settles
 # within two; a target still changing after this many is a cycle or a chain the reader
 # refuses rather than follows.

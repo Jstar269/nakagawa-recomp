@@ -30,10 +30,10 @@ repos:
         # removes recorded trailing whitespace from those imported files. The local
         # staged-diff hook below still rejects any *new* whitespace in every file.
         exclude: >-
-          ^(assets/vfpu/.*\.dat|src/rt/sched_selftest\.c|tools/gen_microtest\.py|tools/test_codegen_gate_b_encoding\.py|src/rt/atrac3p/LICENSE\.LGPLv2\.1\.txt|THIRD_PARTY_LICENSES/GPL-2\.0\.txt|THIRD_PARTY_LICENSES/Graphite2\.txt|THIRD_PARTY_LICENSES/bzip2\.txt|THIRD_PARTY_LICENSES/libiconv\.txt|THIRD_PARTY_LICENSES/libintl\.txt|fixtures/fonts/gudea/OFL\.txt)$
+          ^(assets/vfpu/.*\.dat|src/rt/sched_selftest\.c|tools/gen_microtest\.py|tools/test_codegen_gate_b_encoding\.py|src/rt/atrac3p/LICENSE\.LGPLv2\.1\.txt|src/rt/h264_ffmpeg_sub/LICENSE\.LGPLv2\.1\.txt|THIRD_PARTY_LICENSES/GPL-2\.0\.txt|THIRD_PARTY_LICENSES/Graphite2\.txt|THIRD_PARTY_LICENSES/bzip2\.txt|THIRD_PARTY_LICENSES/libiconv\.txt|THIRD_PARTY_LICENSES/libintl\.txt|fixtures/fonts/gudea/OFL\.txt)$
       - id: end-of-file-fixer
-        # Never mutate pinned binary LUT bytes or the byte-identical minimp3 licence.
-        exclude: ^(assets/vfpu/.*\.dat|src/rt/minimp3/LICENSE)$
+        # Never mutate pinned binary LUT bytes, the byte-identical minimp3 licence, or the byte-exact FFmpeg import that ends in a blank line.
+        exclude: ^(assets/vfpu/.*\.dat|src/rt/minimp3/LICENSE|src/rt/h264_ffmpeg_sub/libavcodec/h264_mc_template\.c)$
       - id: check-yaml
       - id: check-json
       - id: check-toml

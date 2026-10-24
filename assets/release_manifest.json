@@ -69,6 +69,16 @@
       "disposition": "included_vendored_subset"
     },
     {
+      "id": "ffmpeg-h264",
+      "name": "FFmpeg n4.4 H.264 decoder subset",
+      "license": "LGPL-2.1-or-later",
+      "origin": "https://github.com/FFmpeg/FFmpeg",
+      "revision": "n4.4 / dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1",
+      "notice_path": "src/rt/h264_ffmpeg_sub/LICENSE.LGPLv2.1.txt",
+      "evidence_path": "src/rt/h264_ffmpeg_sub/PROVENANCE.md",
+      "disposition": "included_vendored_subset"
+    },
+    {
       "id": "clay-layout",
       "name": "Clay v0.14 layout library",
       "license": "Zlib",

@@ -383,6 +383,24 @@
         ]
       },
       {
+        "id": "ffmpeg-h264",
+        "name": "FFmpeg H.264 decoder subset",
+        "spdx_id": "LGPL-2.1-or-later",
+        "upstream_origin": "https://github.com/FFmpeg/FFmpeg",
+        "upstream_revision": "n4.4 / dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1",
+        "disposition": "statically_linked_subset",
+        "notice_file": "FFmpeg-H264.txt",
+        "object_glob": "build/*/h264sub_*.o",
+        "relink_doc": "RELINK.md",
+        "license_texts": [
+          {
+            "file": "src/rt/h264_ffmpeg_sub/LICENSE.LGPLv2.1.txt",
+            "copied_from": "FFmpeg n4.4 upstream COPYING.LGPLv2.1 as imported into src/rt/h264_ffmpeg_sub/",
+            "sha256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe"
+          }
+        ]
+      },
+      {
         "id": "sal063-ppsspp-lineage",
         "name": "sal063 / PPSSPP lineage runtime code",
         "spdx_id": "GPL-2.0-or-later",
