@@ -6229,7 +6229,7 @@ class HleIssuesProbeTests(unittest.TestCase):
     @staticmethod
     def _intr_records(calls=(6, 5, 4, 6, 5), failed_vtimers=(), register="enabled"):
         records = []
-        for name, count in zip(parse_golden.HLE_INTR_SERIES, calls):
+        for name, count in zip(parse_golden.HLE_INTR_SERIES, calls, strict=True):
             if name in failed_vtimers:
                 records.append((name, "FAIL", 0x80020190, []))
                 continue
