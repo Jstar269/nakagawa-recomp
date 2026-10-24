@@ -22289,6 +22289,25 @@ static void test_partition_spans_the_whole_user_partition(void) {
     cpu.r[4] = 2u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = low_free + 0x100u;
     expect(sr_syscall(&cpu, NID_ALLOC_PART) == FAIL,
            "a block that would cover the runtime's stacks is refused");
+
+    /* A fixed reservation above kernel RAM (a late PRX base) returns the skipped span to the
+     * free list without the runtime's stacks, and none may be reserved over them. */
+    extern uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name);
+    extern int sr_hle_test_partition_free_block_count(void);
+    extern int sr_hle_test_partition_get_free_block(int index, uint32_t *addr, uint32_t *size);
+    expect(sr_alloc_block_at(SR_VBLANK_STACK_BASE, 0x100u, "over-runtime-stacks") == FAIL,
+           "a fixed reservation over the runtime's stacks is refused");
+    uint32_t late = sr_alloc_block_at(0x09000000u, 0x1000u, "late-prx");
+    expect(late != FAIL && late != 0u, "a fixed reservation above kernel RAM succeeds");
+    int overlapping = 0, pieces = sr_hle_test_partition_free_block_count();
+    for (int i = 0; i < pieces; i++) {
+        uint32_t fa = 0u, fs = 0u;
+        if (sr_hle_test_partition_get_free_block(i, &fa, &fs) == 1 &&
+            fa < nested_end && fa + fs > SR_VBLANK_STACK_BASE)
+            overlapping++;
+    }
+    expect(pieces >= 2 && overlapping == 0,
+           "the skipped span returns to the free list around the runtime's stacks");
 }
 
 static void test_alloc_block_at_fixed_address(void) {

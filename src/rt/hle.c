@@ -849,6 +849,9 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     if (end64 > (uint64_t)0xFFFFFFFFu) return 0xFFFFFFFFu;
     uint32_t end = (uint32_t)end64;
     if (addr < s_heap_base || end > s_part_top) return 0xFFFFFFFFu;
+    /* The runtime's stacks are never partition memory (user_partition_top). */
+    if (addr < SR_NESTED_FRAME_END && end64 > USER_PARTITION_RUNTIME_STACKS_BASE)
+        return 0xFFFFFFFFu;
 
     /* Live occupancy is the slot span [b.addr, b.addr+b.slot_size): Low blocks
      * own their 256-byte rounding slack, fixed blocks own their exact range. */
@@ -884,6 +887,11 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     int have_gap = (addr > old_heap && gap_start < addr) ? 1 : 0;
     if (have_gap && gap_start < old_heap) return 0xFFFFFFFFu;   /* bump rounding wrapped */
     if (have_gap) need_slots++;
+    /* A gap that spans the runtime's stacks (a low-based partition reserving above kernel
+     * RAM) is returned as the two pieces either side of them. */
+    int gap_splits = have_gap && gap_start < SR_NESTED_FRAME_END &&
+                     addr > USER_PARTITION_RUNTIME_STACKS_BASE;
+    if (gap_splits) need_slots++;
     if (s_nfree_blocks + need_slots > HLE_MAX_FREE_BLOCKS) return 0xFFFFFFFFu;
 
     int slot = -1;
@@ -927,7 +935,14 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     /* Return the skipped virgin gap to the free list (aligned start keeps later
      * Low heads 256-byte aligned: every Low take is a 0x100 multiple). The sliver
      * below the alignment stays leaked, exactly like today's bump alignment. */
-    if (have_gap) free_list_insert_sorted(gap_start, addr - gap_start);
+    if (gap_splits) {
+        if (gap_start < USER_PARTITION_RUNTIME_STACKS_BASE)
+            free_list_insert_sorted(gap_start, USER_PARTITION_RUNTIME_STACKS_BASE - gap_start);
+        if (addr > SR_NESTED_FRAME_END)
+            free_list_insert_sorted(SR_NESTED_FRAME_END, addr - SR_NESTED_FRAME_END);
+    } else if (have_gap) {
+        free_list_insert_sorted(gap_start, addr - gap_start);
+    }
 
     if (end > s_heap) {
         s_heap = end;
