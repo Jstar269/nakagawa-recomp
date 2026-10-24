@@ -282,6 +282,8 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
     model.logical_height = scale.logical_h;
     model.disc_id = game->disc_id;
     model.title_name = game->title_name;
+    model.online_mode = app->settings.online_mode;
+    model.developer_mode = app->settings.developer_mode;
     switch (app->wizard.step) {
         case WIZARD_STEP_SELECT_GAME:
             model.has_iso = game->iso_path[0] != '\0';

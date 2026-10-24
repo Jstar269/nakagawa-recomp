@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdarg.h>
 #include <time.h>
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -924,8 +925,16 @@ int player_app_focus_count(const PlayerApp *app) {
             /* Resolution (3) + presentation pacing (2) + game display toggles (4: vsync,
              * fullscreen, scaling, reduce-motion) + launcher fullscreen (1) + volume stepper (2) +
              * controller settings (1) + notices and remove-tools controls (2) + close (1),
-             * in draw order. The 8x preset is not offered (GPU scale caps at 4x). */
-            return 16;
+             * then online and developer options (1), in draw order. The 8x preset is
+             * not offered (GPU scale caps at 4x). */
+            return 17;
+        case VIEW_ONLINE_SETTINGS:
+            /* online switch (+ updates, news, reports while it is on), developer
+               switch (+ open log while it is on), back */
+            return 1 + (app->settings.online_mode ? 3 : 0) + 1 +
+                   (app->settings.developer_mode ? 1 : 0) + 1;
+        case VIEW_DEVELOPER_LOG:
+            return 3; /* copy, save, close */
         case VIEW_CONTROLLER_SETTINGS:
             if (input_settings_is_calibrating(&app->input_settings)) {
                 switch (input_settings_get_calibration_stage(&app->input_settings)) {
@@ -956,6 +965,9 @@ int player_app_focus_count(const PlayerApp *app) {
                     return 3;
                 case WIZARD_STEP_SYSTEM_FONTS:
                     return 6;
+                case WIZARD_STEP_ONLINE_OPTIONS:
+                    /* online switch, developer switch, continue, skip, back */
+                    return 5;
                 case WIZARD_STEP_READY_LAUNCH:
                     return 3;
                 default:
@@ -1006,6 +1018,11 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->controller_name[0] = '\0';
     settings->controller_connected = false;
     settings->network_mode = NK_NETWORK_MODE_OFFLINE;
+    settings->online_mode = false;
+    settings->online_updates = true;
+    settings->online_news = true;
+    settings->online_reports = true;
+    settings->developer_mode = false;
 }
 
 static bool resolution_scale_valid(int scale) {
@@ -1201,7 +1218,21 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
     }
 
     /* network_mode is not read: "offline" is the only mode this build accepts, so
-       any stored value, known or not, stays at the offline default. */
+       any stored value, known or not, stays at the offline default. The online
+       and developer switches are the user's choices, read as booleans; a value
+       of another type keeps the default (off, or on for the online parts). */
+    {
+        static const char *const keys[5] = {"online_mode", "online_updates", "online_news",
+                                            "online_reports", "developer_mode"};
+        bool *fields[5] = {&app->settings.online_mode, &app->settings.online_updates,
+                           &app->settings.online_news, &app->settings.online_reports,
+                           &app->settings.developer_mode};
+        for (int k = 0; k < 5; ++k) {
+            NkJsonNode *node = nk_json_obj_get(root, keys[k]);
+            bool value = false;
+            if (node && nk_json_get_bool(node, &value)) *fields[k] = value;
+        }
+    }
 
     NkJsonNode *rm_node = nk_json_obj_get(root, "reduce_motion");
     bool rm_val = false;
@@ -1286,6 +1317,11 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"launcher_window_width\": %d,\n", app->settings.launcher_window_width);
     fprintf(f, "  \"launcher_window_height\": %d,\n", app->settings.launcher_window_height);
     fprintf(f, "  \"network_mode\": \"offline\",\n");
+    fprintf(f, "  \"online_mode\": %s,\n", app->settings.online_mode ? "true" : "false");
+    fprintf(f, "  \"online_updates\": %s,\n", app->settings.online_updates ? "true" : "false");
+    fprintf(f, "  \"online_news\": %s,\n", app->settings.online_news ? "true" : "false");
+    fprintf(f, "  \"online_reports\": %s,\n", app->settings.online_reports ? "true" : "false");
+    fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
     fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
@@ -1581,6 +1617,234 @@ void player_app_toggle_reduce_motion(PlayerApp *app) {
     maybe_persist_settings(app);
 }
 
+void player_app_set_online_mode(PlayerApp *app, bool on) {
+    if (!app) return;
+    app->settings.online_mode = on;
+    player_dev_log_add(app, "settings", "online mode %s (this build makes no connection)",
+                       on ? "on" : "off");
+    maybe_persist_settings(app);
+}
+
+void player_app_toggle_online_feature(PlayerApp *app, int feature) {
+    bool *field;
+    if (!app) return;
+    field = feature == 0 ? &app->settings.online_updates
+          : feature == 1 ? &app->settings.online_news
+          : feature == 2 ? &app->settings.online_reports : NULL;
+    if (!field) return;
+    *field = !*field;
+    maybe_persist_settings(app);
+}
+
+void player_app_set_developer_mode(PlayerApp *app, bool on) {
+    if (!app) return;
+    app->settings.developer_mode = on;
+    player_dev_log_add(app, "settings", "developer mode %s", on ? "on" : "off");
+    if (!on && app->active_view == VIEW_DEVELOPER_LOG) player_app_close_developer_log(app);
+    maybe_persist_settings(app);
+}
+
+/* ---- Developer log ---------------------------------------------------------------- */
+
+static bool player_dev_log_char_eq(char a, char b) {
+#if defined(_WIN32) || defined(_WIN64)
+    if (a == '\\' || a == '/') return b == '\\' || b == '/';
+    return tolower((unsigned char)a) == tolower((unsigned char)b);
+#else
+    return a == b;
+#endif
+}
+
+static size_t player_dev_log_match(const char *at, const char *needle) {
+    size_t n = 0;
+    while (needle[n] != '\0') {
+        if (at[n] == '\0' || !player_dev_log_char_eq(at[n], needle[n])) return 0;
+        ++n;
+    }
+    return n;
+}
+
+static bool player_dev_log_word_char(char c) {
+    return isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.';
+}
+
+bool player_dev_log_redact(const char *in, const char *profile, const char *user,
+                           char *out, size_t out_size) {
+    size_t used = 0;
+    bool fits = true;
+    size_t profile_len = profile ? strlen(profile) : 0;
+    size_t user_len = user ? strlen(user) : 0;
+    const char *p = in ? in : "";
+    if (!out || out_size == 0) return false;
+    /* A trailing separator on the profile path would stop a match at the end
+       of a line; trim it. */
+    while (profile_len > 0 && (profile[profile_len - 1] == '\\' || profile[profile_len - 1] == '/')) {
+        --profile_len;
+    }
+    while (*p != '\0') {
+        const char *put = NULL;
+        size_t skip = 0;
+        if (profile_len >= 3) {
+            char trimmed[512];
+            if (profile_len < sizeof(trimmed)) {
+                memcpy(trimmed, profile, profile_len);
+                trimmed[profile_len] = '\0';
+                skip = player_dev_log_match(p, trimmed);
+                if (skip > 0) put = "%USERPROFILE%";
+            }
+        }
+        if (put == NULL && user_len >= 3 &&
+            (p == (in ? in : "") || !player_dev_log_word_char(p[-1]))) {
+            skip = player_dev_log_match(p, user);
+            if (skip > 0 && !player_dev_log_word_char(p[skip])) {
+                put = "<user>";
+            } else {
+                skip = 0;
+            }
+        }
+        if (put != NULL) {
+            size_t len = strlen(put);
+            if (used + len >= out_size) { fits = false; break; }
+            memcpy(out + used, put, len);
+            used += len;
+            p += skip;
+        } else {
+            if (used + 1 >= out_size) { fits = false; break; }
+            out[used++] = *p++;
+        }
+    }
+    out[used] = '\0';
+    return fits;
+}
+
+static void player_dev_log_identity(const char **profile, const char **user) {
+#if defined(_WIN32) || defined(_WIN64)
+    *profile = getenv("USERPROFILE");
+    *user = getenv("USERNAME");
+#else
+    *profile = getenv("HOME");
+    *user = getenv("USER");
+#endif
+}
+
+void player_dev_log_add(PlayerApp *app, const char *source, const char *fmt, ...) {
+    char raw[PLAYER_DEV_LOG_LINE_MAX * 2];
+    char text[PLAYER_DEV_LOG_LINE_MAX * 2];
+    const char *profile = NULL;
+    const char *user = NULL;
+    size_t slot;
+    int written;
+    va_list args;
+    if (!app || !fmt) return;
+    if (app->dev_log.head >= PLAYER_DEV_LOG_LINES || app->dev_log.count > PLAYER_DEV_LOG_LINES) {
+        app->dev_log.head = 0;
+        app->dev_log.count = 0;
+    }
+    written = snprintf(raw, sizeof(raw), "[%s] ", source && source[0] ? source : "player");
+    if (written < 0 || (size_t)written >= sizeof(raw)) return;
+    va_start(args, fmt);
+    (void)vsnprintf(raw + written, sizeof(raw) - (size_t)written, fmt, args);
+    va_end(args);
+    for (char *c = raw; *c; ++c) {
+        if (*c == '\r' || *c == '\n' || *c == '\t') *c = ' ';
+    }
+    player_dev_log_identity(&profile, &user);
+    (void)player_dev_log_redact(raw, profile, user, text, sizeof(text));
+    if (app->dev_log.count < PLAYER_DEV_LOG_LINES) {
+        slot = (app->dev_log.head + app->dev_log.count) % PLAYER_DEV_LOG_LINES;
+        ++app->dev_log.count;
+    } else {
+        slot = app->dev_log.head;
+        app->dev_log.head = (app->dev_log.head + 1u) % PLAYER_DEV_LOG_LINES;
+    }
+    {
+        /* Truncate on a character boundary, never inside a UTF-8 sequence. */
+        size_t len = strlen(text);
+        if (len >= PLAYER_DEV_LOG_LINE_MAX) {
+            len = PLAYER_DEV_LOG_LINE_MAX - 1u;
+            while (len > 0 && ((unsigned char)text[len] & 0xC0u) == 0x80u) --len;
+        }
+        memcpy(app->dev_log.lines[slot], text, len);
+        app->dev_log.lines[slot][len] = 0;
+    }
+}
+
+size_t player_dev_log_count(const PlayerApp *app) {
+    return app ? app->dev_log.count : 0u;
+}
+
+const char *player_dev_log_line(const PlayerApp *app, size_t index) {
+    if (!app || index >= app->dev_log.count) return "";
+    return app->dev_log.lines[(app->dev_log.head + index) % PLAYER_DEV_LOG_LINES];
+}
+
+size_t player_dev_log_text(const PlayerApp *app, char *out, size_t out_size) {
+    size_t used = 0;
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+    for (size_t i = 0; app && i < app->dev_log.count; ++i) {
+        const char *line = player_dev_log_line(app, i);
+        size_t len = strlen(line);
+        if (used + len + 2 > out_size) break;
+        memcpy(out + used, line, len);
+        used += len;
+        out[used++] = '\n';
+        out[used] = '\0';
+    }
+    return used;
+}
+
+bool player_dev_log_save(PlayerApp *app) {
+    static char text[PLAYER_DEV_LOG_LINES * PLAYER_DEV_LOG_LINE_MAX + 1];
+    char dir[MAX_PATH_LEN];
+    char path[MAX_PATH_LEN];
+    const char *profile = NULL;
+    const char *user = NULL;
+    FILE *file;
+    size_t used;
+    bool ok;
+    if (!app) return false;
+    if (!nk_platform_get_path(NK_PATH_LOGS, dir, sizeof(dir)) || !nk_platform_mkdir_p(dir) ||
+        snprintf(path, sizeof(path), "%s%cdeveloper-log.txt", dir,
+                 nk_platform_path_separator()) >= (int)sizeof(path)) {
+        snprintf(app->dev_log.notice, sizeof(app->dev_log.notice),
+                 "The logs folder could not be opened.");
+        return false;
+    }
+    used = player_dev_log_text(app, text, sizeof(text));
+    file = nk_fopen_utf8(path, "wb");
+    ok = file != NULL && fwrite(text, 1, used, file) == used;
+    if (file && fclose(file) != 0) ok = false;
+    if (ok) {
+        char shown[sizeof(app->dev_log.notice)];
+        player_dev_log_identity(&profile, &user);
+        (void)player_dev_log_redact(path, profile, user, shown, sizeof(shown));
+        snprintf(app->dev_log.notice, sizeof(app->dev_log.notice), "Saved to %.200s", shown);
+    } else {
+        snprintf(app->dev_log.notice, sizeof(app->dev_log.notice),
+                 "The developer log could not be saved.");
+    }
+    return ok;
+}
+
+bool player_app_open_developer_log(PlayerApp *app) {
+    if (!app || !app->settings.developer_mode) return false;
+    if (app->active_view != VIEW_DEVELOPER_LOG) {
+        app->dev_log.return_view = app->active_view;
+        app->dev_log.notice[0] = '\0';
+        app->active_view = VIEW_DEVELOPER_LOG;
+        app->focus_index = 0;
+    }
+    return true;
+}
+
+void player_app_close_developer_log(PlayerApp *app) {
+    if (!app || app->active_view != VIEW_DEVELOPER_LOG) return;
+    app->active_view = app->dev_log.return_view == VIEW_DEVELOPER_LOG ? VIEW_LIBRARY
+                                                                       : app->dev_log.return_view;
+    app->focus_index = 0;
+}
+
 void player_app_adjust_volume(PlayerApp *app, int delta) {
     if (!app) return;
     int volume = app->settings.master_volume + delta;
@@ -1634,6 +1898,8 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
     app->last_error.boundary_text[0] = '\0';
     app->last_error.log_file_path[0] = '\0';
     app->active_view = VIEW_ERROR;
+    player_dev_log_add(app, "error", "%s: %s", app->last_error.error_code,
+                       app->last_error.title);
 }
 
 void player_app_set_cli_not_found_error(PlayerApp *app,
@@ -1930,6 +2196,8 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
         }
     }
     printf("[PLAYER] Game started successfully (PID: %d)!\n", app->launch_session.process.process_id);
+    player_dev_log_add(app, "launch", "started %s (%s)", app->games[game_index].disc_id,
+                       app->games[game_index].title_name);
     return true;
 }
 
@@ -2199,6 +2467,25 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
        one job handle per finished game in the long-lived player (#511). */
     nk_launch_stop(&app->launch_session);
     app->child_window_ready = false;
+    player_dev_log_add(app, "runtime", "game exited with code %d after %llu ms", code,
+                       (unsigned long long)elapsed_ms);
+    if (app->boot_event_file_path[0]) {
+        /* The runtime's boot events: the phases reached, the named stop
+           boundary and missing imports. At most 48 lines. */
+        FILE *events = nk_fopen_utf8(app->boot_event_file_path, "rb");
+        char event_line[PLAYER_DEV_LOG_LINE_MAX];
+        int shown = 0;
+        while (events && shown < 48 && fgets(event_line, sizeof(event_line), events)) {
+            size_t len = strlen(event_line);
+            while (len > 0 && (event_line[len - 1] == '\n' || event_line[len - 1] == '\r')) {
+                event_line[--len] = '\0';
+            }
+            if (len == 0) continue;
+            player_dev_log_add(app, "runtime", "%s", event_line);
+            ++shown;
+        }
+        if (events) fclose(events);
+    }
     if (app->boot_event_file_path[0] && !has_semantic_stop) {
         remove(app->boot_event_file_path);
     }
@@ -2594,6 +2881,10 @@ void player_app_wizard_next(PlayerApp *app) {
     if (!app) return;
     switch (app->wizard.step) {
         case WIZARD_STEP_WELCOME:
+            app->wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
+            app->focus_index = 0;
+            break;
+        case WIZARD_STEP_ONLINE_OPTIONS:
             app->wizard.step = WIZARD_STEP_SELECT_GAME;
             app->focus_index = 0;
             break;
@@ -2669,8 +2960,12 @@ void player_app_wizard_back(PlayerApp *app) {
         case WIZARD_STEP_WELCOME:
             player_app_wizard_cancel(app);
             break;
-        case WIZARD_STEP_SELECT_GAME:
+        case WIZARD_STEP_ONLINE_OPTIONS:
             app->wizard.step = WIZARD_STEP_WELCOME;
+            app->focus_index = 0;
+            break;
+        case WIZARD_STEP_SELECT_GAME:
+            app->wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
             app->focus_index = 0;
             break;
         case WIZARD_STEP_INSPECT_VERIFY:
@@ -2695,6 +2990,14 @@ void player_app_wizard_back(PlayerApp *app) {
         default:
             break;
     }
+}
+
+void player_app_wizard_skip_options(PlayerApp *app) {
+    if (!app || app->wizard.step != WIZARD_STEP_ONLINE_OPTIONS) return;
+    if (app->settings.online_mode) player_app_set_online_mode(app, false);
+    if (app->settings.developer_mode) player_app_set_developer_mode(app, false);
+    app->wizard.step = WIZARD_STEP_SELECT_GAME;
+    app->focus_index = 0;
 }
 
 void player_app_wizard_cancel(PlayerApp *app) {

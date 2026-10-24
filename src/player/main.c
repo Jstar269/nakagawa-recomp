@@ -371,6 +371,9 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
 /* Keep the user-input mapping in one place so the native loop and the headless
  * regression drive the same SDL event path. Worker and device-lifecycle events
  * remain owned by the loop because they carry live handles. */
+/* Select is held: with R it toggles the developer log panel. */
+static bool s_pad_select_held;
+
 static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                                      PlayerUiNk *next_ui,
                                      SDL_Window *window, bool *running,
@@ -433,6 +436,16 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         if (event->button.button == SDL_BUTTON_LEFT) input->mouse_down = false;
         return true;
     case SDL_EVENT_KEY_DOWN:
+        if (!event->key.repeat && event->key.key == SDLK_F12 &&
+            app->settings.developer_mode) {
+            /* The developer log panel, from any launcher view. */
+            if (app->active_view == VIEW_DEVELOPER_LOG) {
+                player_app_close_developer_log(app);
+            } else {
+                (void)player_app_open_developer_log(app);
+            }
+            return true;
+        }
         if (!event->key.repeat &&
             (event->key.key == SDLK_F11 ||
              ((event->key.key == SDLK_RETURN || event->key.key == SDLK_KP_ENTER) &&
@@ -467,8 +480,11 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_PREREQ_PROGRESS) {
                 player_app_prereq_cancel(app);
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
-                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS) {
+                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS ||
+                       app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
+            } else if (app->active_view == VIEW_DEVELOPER_LOG) {
+                player_app_close_developer_log(app);
             } else if (app->active_view == VIEW_BUILDING_PACKAGE) {
                 player_app_cancel_package_build(app);
                 player_app_set_view(app, VIEW_LIBRARY);
@@ -541,6 +557,18 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         }
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        if (event->gbutton.button == SDL_GAMEPAD_BUTTON_BACK) {
+            s_pad_select_held = true;
+        } else if (event->gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER &&
+                   s_pad_select_held && app->settings.developer_mode) {
+            /* Select + R: the developer log panel. */
+            if (app->active_view == VIEW_DEVELOPER_LOG) {
+                player_app_close_developer_log(app);
+            } else {
+                (void)player_app_open_developer_log(app);
+            }
+            return true;
+        }
         if (use_next_ui && event->gbutton.button == SDL_GAMEPAD_BUTTON_START &&
             player_view_is_library(app->active_view)) {
             player_app_set_view(app, VIEW_SETTINGS);
@@ -600,8 +628,11 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                        app->active_view == VIEW_PREREQ_PROGRESS) {
                 player_app_prereq_cancel(app);
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
-                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS) {
+                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS ||
+                       app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
+            } else if (app->active_view == VIEW_DEVELOPER_LOG) {
+                player_app_close_developer_log(app);
             } else if (app->active_view == VIEW_BUILDING_PACKAGE) {
                 player_app_cancel_package_build(app);
                 player_app_set_view(app, VIEW_LIBRARY);
@@ -626,6 +657,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         }
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_UP:
+        if (event->gbutton.button == SDL_GAMEPAD_BUTTON_BACK) s_pad_select_held = false;
         if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
         return false;
     case SDL_EVENT_FINGER_MOTION:
@@ -778,6 +810,15 @@ static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
         case PLAYER_UI_WIZARD_GO_TO_LIBRARY:
             (void)player_ui_wizard_save_title(app);
             player_app_wizard_cancel(app);
+            break;
+        case PLAYER_UI_WIZARD_TOGGLE_ONLINE:
+            player_app_set_online_mode(app, !app->settings.online_mode);
+            break;
+        case PLAYER_UI_WIZARD_TOGGLE_DEVELOPER:
+            player_app_set_developer_mode(app, !app->settings.developer_mode);
+            break;
+        case PLAYER_UI_WIZARD_SKIP_OPTIONS:
+            player_app_wizard_skip_options(app);
             break;
         case PLAYER_UI_WIZARD_NONE:
         default:
@@ -1249,7 +1290,7 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
             { "RIGHT", SDLK_RIGHT }, { "UP", SDLK_UP }, { "DOWN", SDLK_DOWN },
             { "HOME", SDLK_HOME }, { "END", SDLK_END },
             { "PAGEUP", SDLK_PAGEUP }, { "PAGEDOWN", SDLK_PAGEDOWN },
-            { "S", SDLK_S }, { "O", SDLK_O }
+            { "S", SDLK_S }, { "O", SDLK_O }, { "F12", SDLK_F12 }
         };
         for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             if (strcmp(token + 4, keys[i].name) == 0) {
@@ -1338,6 +1379,8 @@ static const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_PREREQ_PROGRESS: return "prereq_progress";
     case VIEW_PREREQ_ABOUT: return "prereq_about";
     case VIEW_CONFIRM_REMOVE_TOOLS: return "confirm_remove_tools";
+    case VIEW_ONLINE_SETTINGS: return "online_settings";
+    case VIEW_DEVELOPER_LOG: return "developer_log";
     default: return "unknown";
     }
 }
@@ -1348,6 +1391,7 @@ static const char *player_ui_test_wizard_step_name(WizardStep step) {
     case WIZARD_STEP_SELECT_GAME: return "select_game";
     case WIZARD_STEP_INSPECT_VERIFY: return "inspect_verify";
     case WIZARD_STEP_SYSTEM_FONTS: return "system_fonts";
+    case WIZARD_STEP_ONLINE_OPTIONS: return "online_options";
     case WIZARD_STEP_READY_LAUNCH: return "ready_launch";
     default: return "unknown";
     }
@@ -1437,7 +1481,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "prereq_items=%zu prereq_bytes=%llu game_running=%d build_stage=%d "
            "font=%s font_reason=%s bitmap_text_draws=%u build_badge=%s "
            "badge=%d,%d,%d,%d running=%d pixels=%016llx "
-           "render_ns=%llu package_validations=%llu\n",
+           "render_ns=%llu package_validations=%llu online_mode=%d developer_mode=%d "
+           "dev_log_lines=%zu\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -1491,7 +1536,9 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            running ? 1 : 0,
            (unsigned long long)player_ui_test_frame_hash(renderer),
            (unsigned long long)render_elapsed_ns,
-           (unsigned long long)validation_calls);
+           (unsigned long long)validation_calls,
+           app->settings.online_mode ? 1 : 0, app->settings.developer_mode ? 1 : 0,
+           player_dev_log_count(app));
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {
@@ -3242,6 +3289,15 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(test_view, "wizard4") == 0) {
             player_app_start_setup_wizard(&app);
             app.wizard.step = WIZARD_STEP_SYSTEM_FONTS;
+        } else if (strcmp(test_view, "wizard-options") == 0) {
+            player_app_start_setup_wizard(&app);
+            app.wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
+        } else if (strcmp(test_view, "online-settings") == 0) {
+            player_app_set_view(&app, VIEW_ONLINE_SETTINGS);
+        } else if (strcmp(test_view, "developer-log") == 0) {
+            app.settings.developer_mode = true;
+            player_dev_log_add(&app, "test", "synthetic developer log line");
+            (void)player_app_open_developer_log(&app);
         } else if (strcmp(test_view, "wizard5") == 0) {
             player_app_start_setup_wizard(&app);
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "UCUS98701");

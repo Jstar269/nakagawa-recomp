@@ -2673,7 +2673,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 16); /* two pacing modes; scaling; launcher fullscreen */
+        assert(player_app_focus_count(stops) == 17); /* two pacing modes; scaling; launcher fullscreen; online options */
         stops->active_view = VIEW_PREREQ_CONSENT;
         assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_PREREQ_PROGRESS;
@@ -2715,6 +2715,8 @@ int main(int argc, char **argv) {
         assert(player_app_focus_count(stops) == 3);
         stops->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
         assert(player_app_focus_count(stops) == 6); /* accept, cycle, back, cancel, import, remove */
+        stops->wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
+        assert(player_app_focus_count(stops) == 5); /* online, developer, continue, skip, back */
         stops->wizard.step = WIZARD_STEP_READY_LAUNCH;
         assert(player_app_focus_count(stops) == 3);
         free(stops);
@@ -2733,6 +2735,8 @@ int main(int argc, char **argv) {
         assert(wiz->wizard.step == WIZARD_STEP_WELCOME);
         assert(wiz->focus_index == 0);
 
+        player_app_wizard_next(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
         player_app_wizard_next(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_SELECT_GAME);
 
@@ -2806,6 +2810,8 @@ int main(int argc, char **argv) {
         assert(wiz->wizard.step == WIZARD_STEP_INSPECT_VERIFY);
         player_app_wizard_back(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_SELECT_GAME);
+        player_app_wizard_back(wiz);
+        assert(wiz->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
         player_app_wizard_back(wiz);
         assert(wiz->wizard.step == WIZARD_STEP_WELCOME);
         player_app_wizard_back(wiz);
@@ -4403,9 +4409,109 @@ int main(int argc, char **argv) {
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
 
+        /* Online and developer options: both off by default, the online parts on
+           once online mode is; all five round-trip, a non-boolean keeps the
+           default, and none of them moves network_mode off offline. */
+        player_app_init(s_app2);
+        assert(!s_app2->settings.online_mode && !s_app2->settings.developer_mode);
+        assert(s_app2->settings.online_updates && s_app2->settings.online_news &&
+               s_app2->settings.online_reports);
+        s_app2->settings.online_mode = true;
+        s_app2->settings.online_news = false;
+        s_app2->settings.developer_mode = true;
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.online_mode && s_app2->settings.developer_mode);
+        assert(s_app2->settings.online_updates && !s_app2->settings.online_news &&
+               s_app2->settings.online_reports);
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"network_mode\": \"online\", "
+                        "\"online_mode\": \"yes\", \"developer_mode\": 1}");
+        player_app_init(s_app2);
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(!s_app2->settings.online_mode && !s_app2->settings.developer_mode);
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+
         remove(test_settings_path);
         free(s_app);
         free(s_app2);
+    }
+
+    /* 15b. Developer log: redaction, the ring, the panel and the wizard step. */
+    {
+        char out[256];
+        PlayerApp *dev = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        printf("[PLAYER_STATE_TEST] Subtest 15b: developer log and options step\n");
+        fflush(stdout);
+        assert(dev != NULL);
+#if defined(_WIN32) || defined(_WIN64)
+        assert(player_dev_log_redact("open D:\\Profiles\\Synth\\AppData\\x.log",
+                                     "D:\\Profiles\\Synth", "Synth", out, sizeof(out)));
+        assert(strcmp(out, "open %USERPROFILE%\\AppData\\x.log") == 0);
+        /* The other slash style and another case match too. */
+        assert(player_dev_log_redact("d:/profiles/synth/saves", "D:\\Profiles\\Synth\\", "Synth",
+                                     out, sizeof(out)));
+        assert(strcmp(out, "%USERPROFILE%/saves") == 0);
+#else
+        assert(player_dev_log_redact("open /srv/profiles/synth/.local/x.log", "/srv/profiles/synth/", "synth",
+                                     out, sizeof(out)));
+        assert(strcmp(out, "open %USERPROFILE%/.local/x.log") == 0);
+#endif
+        /* The user name is replaced as a whole word only. */
+        assert(player_dev_log_redact("by synth, not synthetic", NULL, "synth", out, sizeof(out)));
+        assert(strcmp(out, "by <user>, not synthetic") == 0);
+        /* Short names are left alone rather than blanking common letters. */
+        assert(player_dev_log_redact("ab cd", NULL, "ab", out, sizeof(out)));
+        assert(strcmp(out, "ab cd") == 0);
+        assert(!player_dev_log_redact("abcdef", NULL, NULL, out, 4u));
+        assert(strcmp(out, "abc") == 0);
+
+        player_app_init(dev);
+        for (int i = 0; i < PLAYER_DEV_LOG_LINES + 5; ++i) {
+            player_dev_log_add(dev, "test", "line %d\nsplit", i);
+        }
+        assert(player_dev_log_count(dev) == PLAYER_DEV_LOG_LINES);
+        assert(strcmp(player_dev_log_line(dev, 0), "[test] line 5 split") == 0);
+        snprintf(out, sizeof(out), "[test] line %d split", PLAYER_DEV_LOG_LINES + 4);
+        assert(strcmp(player_dev_log_line(dev, PLAYER_DEV_LOG_LINES - 1u), out) == 0);
+        player_app_set_error(dev, "SYNTHETIC_ERROR", "Synthetic", "m", "Back", VIEW_LIBRARY);
+        assert(strstr(player_dev_log_line(dev, PLAYER_DEV_LOG_LINES - 1u),
+                      "SYNTHETIC_ERROR: Synthetic") != NULL);
+
+        /* The panel opens only with developer mode, and closes to where it was. */
+        dev->active_view = VIEW_SETTINGS;
+        assert(!player_app_open_developer_log(dev));
+        assert(dev->active_view == VIEW_SETTINGS);
+        dev->settings.developer_mode = true;
+        assert(player_app_open_developer_log(dev));
+        assert(dev->active_view == VIEW_DEVELOPER_LOG);
+        assert(player_app_focus_count(dev) == 3);
+        player_app_close_developer_log(dev);
+        assert(dev->active_view == VIEW_SETTINGS);
+        dev->active_view = VIEW_ONLINE_SETTINGS;
+        assert(player_app_focus_count(dev) == 4); /* online, developer, open log, back */
+        dev->settings.online_mode = true;
+        assert(player_app_focus_count(dev) == 7);
+
+        /* The wizard step: Welcome -> Options -> Select game, and skipping
+           turns both off. Every first run passes through it: it needs no game. */
+        dev->active_view = VIEW_SETUP_WIZARD;
+        dev->wizard.step = WIZARD_STEP_WELCOME;
+        player_app_wizard_next(dev);
+        assert(dev->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
+        player_app_wizard_skip_options(dev);
+        assert(dev->wizard.step == WIZARD_STEP_SELECT_GAME);
+        assert(!dev->settings.online_mode && !dev->settings.developer_mode);
+        player_app_wizard_back(dev);
+        assert(dev->wizard.step == WIZARD_STEP_ONLINE_OPTIONS);
+        player_app_set_online_mode(dev, true);
+        player_app_wizard_next(dev);
+        assert(dev->wizard.step == WIZARD_STEP_SELECT_GAME);
+        assert(dev->settings.online_mode);
+        assert(dev->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+        free(dev);
     }
 
     /* 16. Icon and PNG image validation / fallback logic.
