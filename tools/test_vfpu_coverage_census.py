@@ -118,9 +118,6 @@ class VfpuCoverageCensusTests(unittest.TestCase):
         cases = (
             (0x01, 0x00, "vrnds"),
             (0x01, 0x02, "vrndf1"),
-            (0x02, 0x02, "vbfy1"),
-            (0x02, 0x0A, "vsgn"),
-            (0x02, 0x19, "vt4444"),
         )
         words = tuple((0x34 << 26) | (rs << 21) | (rt << 16)
                       for rs, rt, _ in cases)
@@ -143,6 +140,27 @@ class VfpuCoverageCensusTests(unittest.TestCase):
                 self.assertEqual(row["boundary_issue"], 326)
                 self.assertEqual(row["compatibility_disposition"], "supported-opcode-form-unmodeled")
                 self.assertEqual(row["agreement"], "agree-unsupported")
+
+    def test_measured_vfpu9_forms_agree_as_interpreter_routes(self):
+        # PSP-3000 measured forms (2026-10-24, issue #326): both lanes support the
+        # measured widths through sr_vfpu_interp and both reject the other widths.
+        supported = (0xD04A0405, 0xD0420183, 0xD0428080, 0xD0438183, 0xD0599090)
+        rejected = (0xD0420000, 0xD0430080, 0xD0590080)
+        records = {r["word"]: r for r in census.classify_words(supported + rejected)}
+        for word in supported:
+            with self.subTest(word=f"0x{word:08x}"):
+                record = records[word]
+                self.assertTrue(record["interpreter_supported"])
+                self.assertEqual(record["interpreter_kind"], "compute")
+                self.assertEqual(census.agreement_status(record), "agree-supported-routed")
+                self.assertEqual(
+                    census.compatibility_disposition(record), "aot-routes-to-sr-vfpu-interp"
+                )
+        for word in rejected:
+            with self.subTest(word=f"0x{word:08x}"):
+                record = records[word]
+                self.assertFalse(record["interpreter_supported"])
+                self.assertEqual(census.agreement_status(record), "agree-unsupported")
 
     def test_reserved_vcmov_form_is_unmodeled_and_fail_closed(self):
         # vcmov lives in VFPU4 (jump 21); imm3 7 is the reserved selector.

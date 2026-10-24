@@ -4890,6 +4890,91 @@ static int coherence_run_submit_batch(void) {
     return ok;
 }
 
+static int coherence_queue_flat_sprite(uint32_t base, uint32_t stride, uint32_t fmt,
+                                       float x0, float y0, float x1, float y1) {
+    memset(s_ge, 0, sizeof(*s_ge));
+    s_ge->fbp = base;
+    s_ge->fbw = stride;
+    s_ge->fbfmt = fmt;
+    s_ge->zbp = 0x04080000u;
+    s_ge->zbw = stride;
+    s_ge->scis_x2 = (int)FB_W - 1;
+    s_ge->scis_y2 = (int)FB_H - 1;
+    s_ge->maxz = 65535u;
+    GeVtx p0 = { x0, y0, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0x40, 0x50, 0x60, 0xff };
+    GeVtx p1 = p0;
+    p1.x = x1;
+    p1.y = y1;
+    return hook_sprite(&p0, &p1, 0) && s_nbatch;
+}
+
+/* #1170: a title's own memmove/memset replaced by a native codegen stub
+ * (sr_native_memmove/sr_native_memset) must keep the scalar accessors' VRAM
+ * contract.  The HST HUD copies a rendered 5551 framebuffer rect into a RAM
+ * texture right after the list ends; a stub that formed its host pointer
+ * without the read prepare copied whatever stale bytes guest VRAM held.  A
+ * fill that skipped the write commit was later overwritten by the stale GPU
+ * target on the next readback. */
+static int coherence_run_native_bulk_copy(void) {
+    const uint32_t fba = 0x00100000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t stride = 512u, fmt = 1u;
+    const uint32_t ram = 0x08020000u;
+    const uint32_t rect = 8u;
+    const uint16_t want = (uint16_t)(fb_pack(0x00605040u, fmt) & 0x7fffu);
+    coherence_reset_targets();
+    g_sr_vram_read_pending = 0;
+    memset(SR_HOST(base), 0, stride * FB_H * 2u);
+    memset(SR_HOST(ram), 0xEE, rect * rect * 2u);
+    if (!coherence_queue_flat_sprite(base, stride, fmt, 10.0f, 10.0f,
+                                     10.0f + (float)rect, 10.0f + (float)rect)) {
+        fprintf(stderr, "gpu coherence selftest: native-bulk failed to queue sprite\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    gegpu_flush("listend");
+    if (!g_sr_vram_read_pending) {
+        fprintf(stderr, "gpu coherence selftest: native-bulk list end missed pending ownership\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    for (uint32_t row = 0; row < rect; row++)
+        sr_native_memmove(ram + row * rect * 2u, base + ((10u + row) * stride + 10u) * 2u,
+                          rect * 2u, 0u);
+    for (uint32_t i = 0; i < rect * rect; i++) {
+        uint16_t px;
+        memcpy(&px, SR_HOST(ram + i * 2u), sizeof px);
+        if ((px & 0x7fffu) != want) {
+            fprintf(stderr,
+                    "gpu coherence selftest: native-bulk memmove pixel %u copied 0x%04x, expected 0x%04x\n",
+                    i, px, want);
+            coherence_reset_targets();
+            return 0;
+        }
+    }
+
+    const uint32_t fill = base + (12u * stride + 12u) * 2u;
+    sr_native_memset(fill, 0xABu, 4u, 0u);
+    if (!coherence_queue_flat_sprite(base, stride, fmt, 100.0f, 100.0f, 104.0f, 104.0f)) {
+        fprintf(stderr, "gpu coherence selftest: native-bulk failed to queue second sprite\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    gegpu_flush("listend");
+    uint32_t filled = MEM_R32(fill);
+    if (filled != 0xABABABABu) {
+        fprintf(stderr,
+                "gpu coherence selftest: native-bulk memset lost to the GPU target (0x%08x, expected 0xabababab)\n",
+                filled);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS native-bulk-copy       5551 memmove rows=%u + memset survives readback\n",
+           rect);
+    coherence_reset_targets();
+    return 1;
+}
+
 int gegpu_coherence_selftest(void) {
     static const CoherenceCase cases[] = {
         { "8888-middle", 3, 512, (91u * 512u + 137u) * 4u, 4, 0, 0, 0 },
@@ -4926,6 +5011,7 @@ int gegpu_coherence_selftest(void) {
      * 0x0a2854 for pixel 10,10). The 0x0ce000 placement used by the software selftest would overlap the
      * colour surface at 0x100000 here. */
     if (!coherence_run_scalar_vram_read(0x040A2000u)) ok = 0;
+    if (!coherence_run_native_bulk_copy()) ok = 0;
     coherence_reset_targets();
     return ok;
 }

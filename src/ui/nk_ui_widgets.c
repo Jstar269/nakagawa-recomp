@@ -295,10 +295,12 @@ static uint32_t nk_ui_art_fill(NkUiArtKind art, const char *key) {
     return nk_ui_art_tint(key);
 }
 
-/* The art itself, centred in a growing area: the picture at `scale` of the
-   area's height, or a labelled placeholder box. */
-static void nk_ui_art_content(NkUi *ui, NkUiId id, NkUiArtKind art, float area_h,
-                              float scale, const char *placeholder) {
+/* The art itself, centred in a growing area: the disc's own picture or icon
+   when the host read them, else the project picture at `scale` of the area's
+   height, else a labelled placeholder box. */
+static void nk_ui_art_content(NkUi *ui, NkUiId id, NkUiArtKind art, const NkUiImage *icon,
+                              const NkUiImage *disc_picture, float area_h, float scale,
+                              const char *placeholder) {
     const NkUiTheme *theme = nk_ui_theme(ui);
     const NkUiShapeArt *picture = nk_ui_art_picture(art);
     NkUiLayout layout = nk_ui_row(nk_ui_grow(), nk_ui_grow(), 0.0f);
@@ -306,7 +308,14 @@ static void nk_ui_art_content(NkUi *ui, NkUiId id, NkUiArtKind art, float area_h
     if (!nk_ui_begin_container(ui, id, &layout, NULL)) {
         return;
     }
-    if (picture != NULL) {
+    if ((icon != NULL && icon->rgba_pm != NULL) ||
+        (disc_picture != NULL && disc_picture->rgba_pm != NULL)) {
+        NkUiImageArt image;
+        image.cover = disc_picture != NULL && disc_picture->rgba_pm != NULL ? disc_picture : NULL;
+        image.contain = image.cover == NULL ? icon : NULL;
+        image.contain_scale = scale;
+        nk_ui_image_art(ui, nk_ui_child_id(id, 4u), nk_ui_grow(), nk_ui_grow(), &image);
+    } else if (picture != NULL) {
         float h = area_h * scale;
         float w = h * picture->view_w / picture->view_h;
         nk_ui_shapes(ui, nk_ui_child_id(id, 1u), nk_ui_fixed(w), nk_ui_fixed(h), picture);
@@ -361,7 +370,7 @@ bool nk_ui_tile(NkUi *ui, NkUiId id, const NkUiTileSpec *spec) {
     if (nk_ui_begin_container(ui, nk_ui_child_id(id, 1u), &layout, &style)) {
         nk_ui_badge(ui, nk_ui_child_id(id, 2u),
                     spec->badge != NULL && spec->badge[0] != '\0' ? spec->badge : "Your disc");
-        nk_ui_art_content(ui, nk_ui_child_id(id, 3u), spec->art,
+        nk_ui_art_content(ui, nk_ui_child_id(id, 3u), spec->art, spec->icon, NULL,
                           art_h - NK_UI_SPACE_2 * 2.0f - NK_UI_BADGE_HEIGHT, 0.82f,
                           "ART FROM YOUR DISC");
         nk_ui_end_container(ui);
@@ -454,6 +463,7 @@ bool nk_ui_add_tile(NkUi *ui, NkUiId id, const char *title, const char *detail,
 }
 
 void nk_ui_hero(NkUi *ui, NkUiId id, NkUiArtKind art, const char *art_key,
+                const NkUiImage *icon, const NkUiImage *picture,
                 float width, const char *caption, const char *size_note) {
     const NkUiTheme *theme = nk_ui_theme(ui);
     float height = (float)(int)(width * NK_UI_HERO_ASPECT + 0.5f);
@@ -463,7 +473,7 @@ void nk_ui_hero(NkUi *ui, NkUiId id, NkUiArtKind art, const char *art_key,
     if (!nk_ui_begin_container(ui, id, &layout, &style)) {
         return;
     }
-    nk_ui_art_content(ui, nk_ui_child_id(id, 1u), art,
+    nk_ui_art_content(ui, nk_ui_child_id(id, 1u), art, icon, picture,
                       height - NK_UI_SPACE_3 * 2.0f - NK_UI_BADGE_HEIGHT - NK_UI_SPACE_2,
                       0.78f, "ART FROM YOUR DISC SHOWS HERE");
     layout = nk_ui_row(nk_ui_grow(), nk_ui_fixed(NK_UI_BADGE_HEIGHT), NK_UI_SPACE_2);
@@ -488,6 +498,7 @@ const char *nk_ui_input_label(NkUiPromptStyle style) {
     case NK_UI_PROMPT_KEYCAPS: return "KEYBOARD AND MOUSE";
     case NK_UI_PROMPT_LETTERS_A_SOUTH: return "CONTROLLER \xC2\xB7 LETTERS, A SOUTH";
     case NK_UI_PROMPT_LETTERS_A_EAST: return "CONTROLLER \xC2\xB7 LETTERS, A EAST";
+    case NK_UI_PROMPT_SHAPES: return "CONTROLLER \xC2\xB7 SHAPES";
     case NK_UI_PROMPT_NEUTRAL:
     default: return "CONTROLLER \xC2\xB7 NEUTRAL PROMPTS";
     }

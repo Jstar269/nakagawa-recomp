@@ -9,6 +9,7 @@
    -DNK_UI_WITH_SDL3. Pass --print to dump the prompt glyph goldens. */
 
 #include "nk_ui.h"
+#include "nk_ui_assets.h"
 #include "nk_ui_draw.h"
 #include "nk_ui_focus.h"
 #include "nk_ui_input.h"
@@ -580,8 +581,10 @@ static int test_label_table(void) {
           "A on south: letters, A south");
     CHECK(nk_ui_pad_family_for_south_label(NK_UI_LABEL_B) == NK_UI_PAD_LETTERS_A_EAST,
           "B on south: letters, A east");
+    CHECK(nk_ui_pad_family_for_south_label(NK_UI_LABEL_CROSS) == NK_UI_PAD_SHAPES,
+          "a cross on south: shapes");
     for (label = 0; label <= NK_UI_LABEL_COUNT; ++label) {
-        if (label == NK_UI_LABEL_A || label == NK_UI_LABEL_B) {
+        if (label == NK_UI_LABEL_A || label == NK_UI_LABEL_B || label == NK_UI_LABEL_CROSS) {
             continue;
         }
         CHECK(nk_ui_pad_family_for_south_label((NkUiButtonLabel)label) == NK_UI_PAD_NEUTRAL,
@@ -592,7 +595,9 @@ static int test_label_table(void) {
     CHECK(nk_ui_prompt_style_for_family(NK_UI_PAD_NEUTRAL) == NK_UI_PROMPT_NEUTRAL &&
           nk_ui_prompt_style_for_family(NK_UI_PAD_LETTERS_A_SOUTH) == NK_UI_PROMPT_LETTERS_A_SOUTH &&
           nk_ui_prompt_style_for_family(NK_UI_PAD_LETTERS_A_EAST) == NK_UI_PROMPT_LETTERS_A_EAST &&
-          nk_ui_prompt_style_for_family(NK_UI_PAD_KEYBOARD) == NK_UI_PROMPT_KEYCAPS,
+          nk_ui_prompt_style_for_family(NK_UI_PAD_KEYBOARD) == NK_UI_PROMPT_KEYCAPS &&
+          nk_ui_prompt_style_for_family(NK_UI_PAD_SHAPES) == NK_UI_PROMPT_SHAPES &&
+          nk_ui_prompt_style_for_family((NkUiPadFamily)99) == NK_UI_PROMPT_NEUTRAL,
           "family to style");
     /* Confirm is positional south in every set. */
     CHECK(strcmp(nk_ui_prompt_text(NK_UI_PROMPT_LETTERS_A_SOUTH, NK_UI_PROMPT_ACT_CONFIRM), "A") == 0 &&
@@ -624,7 +629,9 @@ static int test_label_table(void) {
     return 1;
 }
 
-static const char *const g_style_names[4] = {"neutral", "letters-a-south", "letters-a-east", "keycaps"};
+static const char *const g_style_names[NK_UI_PROMPT_STYLE_COUNT] = {
+    "neutral", "letters-a-south", "letters-a-east", "keycaps", "shapes"
+};
 static const char *const g_action_names[NK_UI_PROMPT_ACT_COUNT] = {
     "confirm", "back", "options", "details", "tab-prev", "tab-next", "menu", "move"
 };
@@ -638,6 +645,7 @@ static NkUiPromptSpec spec_for(NkUiPromptStyle style, NkUiPromptAction action) {
     s.dim_rgba = theme->muted;
     s.face_rgba = theme->surface_high;
     s.font = 0;
+    s.image = NULL;
     return s;
 }
 
@@ -666,7 +674,7 @@ static int test_prompt_bounds(void) {
     int style;
     int action;
     int d;
-    for (style = 0; style < 4; ++style) {
+    for (style = 0; style < (int)NK_UI_PROMPT_STYLE_COUNT; ++style) {
         for (action = 0; action < NK_UI_PROMPT_ACT_COUNT; ++action) {
             for (d = 0; d < 4; ++d) {
                 NkUiDrawBuffer buffer;
@@ -713,6 +721,78 @@ static int test_prompt_bounds(void) {
         CHECK(!nk_ui_prompt_draw(&buffer, &spec, rect, 1.0f, 1u), "unknown action");
         nk_ui_draw_buffer_destroy(&buffer);
     }
+    return 1;
+}
+
+/* The Kenney glyph sets: one embedded, decodable image per action for every
+   style but NEUTRAL, white (so the tint is the colour), confirm positional,
+   and drawn as one tinted image inside the glyph box at every density. */
+static int test_prompt_images(void) {
+    static const float densities[4] = {1.0f, 1.25f, 1.5f, 2.0f};
+    static NkUiPromptImages images;
+    const NkUiTheme *theme = nk_ui_theme_n1();
+    int style;
+    int action;
+    int d;
+    CHECK(strcmp(nk_ui_prompt_asset_name(NK_UI_PROMPT_LETTERS_A_SOUTH, NK_UI_PROMPT_ACT_CONFIRM),
+                 "input-prompts/xbox_button_a.png") == 0 &&
+          strcmp(nk_ui_prompt_asset_name(NK_UI_PROMPT_LETTERS_A_EAST, NK_UI_PROMPT_ACT_CONFIRM),
+                 "input-prompts/switch_button_b.png") == 0 &&
+          strcmp(nk_ui_prompt_asset_name(NK_UI_PROMPT_SHAPES, NK_UI_PROMPT_ACT_BACK),
+                 "input-prompts/playstation_button_circle.png") == 0 &&
+          strcmp(nk_ui_prompt_asset_name(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_CONFIRM),
+                 "input-prompts/kbd_enter.png") == 0 &&
+          strcmp(nk_ui_prompt_asset_name(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_MOVE),
+                 "input-prompts/kbd_arrows.png") == 0,
+          "confirm is the south button, so A east shows B; Enter and the arrows on a keyboard");
+    CHECK(nk_ui_prompt_asset_name(NK_UI_PROMPT_KEYCAPS, NK_UI_PROMPT_ACT_COUNT) == NULL &&
+          nk_ui_prompt_asset_name(NK_UI_PROMPT_STYLE_COUNT, NK_UI_PROMPT_ACT_CONFIRM) == NULL,
+          "out-of-range names");
+    CHECK(nk_ui_prompt_images_load(&images) ==
+              (size_t)(NK_UI_PROMPT_STYLE_COUNT - 1) * NK_UI_PROMPT_ACT_COUNT,
+          "every glyph but the neutral set decodes");
+    for (style = 0; style < (int)NK_UI_PROMPT_STYLE_COUNT; ++style) {
+        for (action = 0; action < NK_UI_PROMPT_ACT_COUNT; ++action) {
+            const NkUiImage *image = &images.image[style][action];
+            const char *name = nk_ui_prompt_asset_name((NkUiPromptStyle)style,
+                                                       (NkUiPromptAction)action);
+            size_t i;
+            if (style == NK_UI_PROMPT_NEUTRAL) {
+                CHECK(name == NULL && image->rgba_pm == NULL, "the neutral set keeps its dots");
+                continue;
+            }
+            CHECK(name != NULL && nk_ui_embedded_asset(name) != NULL && image->rgba_pm != NULL &&
+                  image->width == 64u && image->height == 64u, "glyph decoded at 64 x 64");
+            for (i = 0; i < (size_t)image->width * image->height; ++i) {
+                const uint8_t *p = image->rgba_pm + i * 4u;
+                CHECK(p[0] == p[3] && p[1] == p[3] && p[2] == p[3],
+                      "glyphs are white, so the tint alone sets their colour");
+            }
+            for (d = 0; d < 4; ++d) {
+                NkUiDrawBuffer buffer;
+                NkUiPromptSpec spec = spec_for((NkUiPromptStyle)style, (NkUiPromptAction)action);
+                NkUiRect rect = {10.0f, 4.0f, 24.0f, 24.0f};
+                NkUiPixelRect box;
+                const NkUiDrawCmd *c;
+                memset(&buffer, 0, sizeof(buffer));
+                spec.image = image;
+                CHECK(nk_ui_prompt_draw(&buffer, &spec, rect, densities[d], 6u), "image glyph draws");
+                CHECK(buffer.list.ncmd == 1u, "an image glyph is one command");
+                c = &buffer.list.cmd[0];
+                box = nk_ui_round_rect(rect, densities[d]);
+                CHECK(c->kind == NK_UI_DRAW_CUSTOM && c->custom_kind == NK_UI_CUSTOM_IMAGE &&
+                      c->custom == image, "the glyph is the image");
+                CHECK(c->bounds[0] >= box.x0 && c->bounds[1] >= box.y0 &&
+                      c->bounds[2] <= box.x1 && c->bounds[3] <= box.y1 &&
+                      c->bounds[2] - c->bounds[0] == box.x1 - box.x0,
+                      "the square glyph fills its square box");
+                CHECK(c->rgba_pm == theme->paper, "tinted with the opaque foreground colour");
+                nk_ui_draw_buffer_destroy(&buffer);
+            }
+        }
+    }
+    nk_ui_prompt_images_free(&images);
+    CHECK(images.image[NK_UI_PROMPT_KEYCAPS][0].rgba_pm == NULL, "free releases every glyph");
     return 1;
 }
 
@@ -939,6 +1019,8 @@ static int test_sdl_translation(void) {
             CHECK(family == NK_UI_PAD_LETTERS_A_SOUTH, "SDL label A -> letters, A south");
         } else if (label == SDL_GAMEPAD_BUTTON_LABEL_B) {
             CHECK(family == NK_UI_PAD_LETTERS_A_EAST, "SDL label B -> letters, A east");
+        } else if (label == SDL_GAMEPAD_BUTTON_LABEL_CROSS) {
+            CHECK(family == NK_UI_PAD_SHAPES, "SDL label cross -> shapes");
         } else {
             CHECK(family == NK_UI_PAD_NEUTRAL, "every other SDL label -> neutral");
         }
@@ -1165,9 +1247,9 @@ int main(int argc, char **argv) {
         !test_repeat_timing() || !test_stick_hysteresis() || !test_event_construction() ||
         !test_prompt_style_follows_device() ||
         !test_utf8() || !test_label_table() || !test_prompt_bounds() ||
-        !test_glyph_goldens()) {
+        !test_prompt_images() || !test_glyph_goldens()) {
         return 1;
     }
-    puts("nk_ui focus graph, input model, label table and prompt glyph goldens passed");
+    puts("nk_ui focus graph, input model, label table, prompt glyph goldens and images passed");
     return 0;
 }

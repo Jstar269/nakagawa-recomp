@@ -267,17 +267,20 @@ CODEGEN_CUSTOM_STUBS = [
          retirement="root-cause the retail chooser's id=0 result (or translate its real body) so "
                     "the postcondition recovery is unnecessary"),
     dict(address=0x00011090, category="faithful_abi_bridge", name="memcpy native",
-         reason="native memmove-backed reimplementation, same semantics as the translated body",
-         test="none"),
+         reason="native memmove-backed reimplementation (sr_native_memmove), same semantics as "
+                "the translated body, including the scalar accessors' VRAM read-back and write "
+                "notification",
+         test="make gpu-coherence-selftest (native-bulk-copy: rendered 5551 rect read and fill kept coherent, #1170)"),
     dict(address=0x000110dc, category="faithful_abi_bridge", name="memcpy native (alias)",
          reason="see 0x11090",
-         test="none"),
+         test="make gpu-coherence-selftest (native-bulk-copy: rendered 5551 rect read and fill kept coherent, #1170)"),
     dict(address=0x000114c0, category="faithful_abi_bridge", name="sceKernelMemset native",
-         reason="native memset-backed reimplementation, same semantics as the translated body",
-         test="none"),
+         reason="native memset-backed reimplementation (sr_native_memset), same semantics as "
+                "the translated body, including the scalar accessors' VRAM write notification",
+         test="make gpu-coherence-selftest (native-bulk-copy: rendered 5551 rect read and fill kept coherent, #1170)"),
     dict(address=0x000114a8, category="faithful_abi_bridge", name="sceKernelMemset native (alias)",
          reason="see 0x114c0",
-         test="none"),
+         test="make gpu-coherence-selftest (native-bulk-copy: rendered 5551 rect read and fill kept coherent, #1170)"),
     dict(address=0x000149a8, category="faithful_abi_bridge", name="strcpy native",
          reason="the boot file-open wrapper's source path copy was previously miscompiled as "
                 "strcmp, corrupting every resource path; this native strcpy replaces it",

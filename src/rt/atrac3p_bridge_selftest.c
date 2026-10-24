@@ -53,6 +53,7 @@
 #include "libavutil/error.h"
 #include "vfpu_tables.h"
 #include "perf.h"
+#include "pcm_wav_dump.h"
 
 static int g_checks = 0;
 static int g_failures = 0;
@@ -229,6 +230,9 @@ static void test_terminator_decode(void)
                                 pcm1, &samples) == 0, "decode after recreate");
     pcm_sha256_hex(pcm1, n, sha1);
     CHECK(strcmp(sha1, sha2) == 0, "PCM after recreate identical");
+    CHECK(nk_pcm_wav_dump("atrac3p_bridge_terminator", pcm1, ATRAC3P_FRAME_SAMPLES, 2u,
+                          44100u) >= 0,
+          "terminator WAV dump");
 
     atrac3p_bridge_destroy(b1);
     atrac3p_bridge_destroy(b2);
@@ -267,6 +271,10 @@ static void test_imdct_path_decode(void)
                                 pcm1, &samples) == 0, "mono unit after reset");
     pcm_sha256_hex(pcm1, ATRAC3P_FRAME_SAMPLES, sha1);
     CHECK(strcmp(sha1, sha2) == 0, "mono unit PCM deterministic after reset");
+    /* NK_PCM_WAV_DIR=<dir> keeps the canary PCM as a WAV file for listening. */
+    CHECK(nk_pcm_wav_dump("atrac3p_bridge_mono_unit", pcm1, ATRAC3P_FRAME_SAMPLES, 1u,
+                          44100u) >= 0,
+          "mono unit WAV dump");
 
     atrac3p_bridge_destroy(b1);
     atrac3p_bridge_destroy(b2);
