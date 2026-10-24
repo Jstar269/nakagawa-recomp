@@ -1831,18 +1831,27 @@ class NativePlayerUiTests(unittest.TestCase):
             "RUNTIME_PREMATURE_EXIT",
             "RUNTIME_ERROR_EXIT",
         )
-        for code in recovery_codes:
-            with self.subTest(code=code):
-                recovered = self.run_player("library", ("KEY_RETURN",), error_code=code)
-                frames = recovered["frames"]
-                assert isinstance(frames, list)
-                self.assertEqual(frames[0]["view"], "error")
-                self.assertEqual(frames[0]["error"], code)
-                self.assertEqual(frames[1]["view"], "library")
-                self.assertNotEqual(frames[0]["pixels"], frames[1]["pixels"])
-                # Only a missing or corrupt source reopens the file picker.
-                expected_picker = "1" if code in ("ISO_CORRUPT", "SOURCE_NOT_FOUND") else "0"
-                self.assertEqual(frames[1]["picker"], expected_picker)
+        # Both launchers: the next UI applies a control's action after the frame
+        # that drew it, so the frame of the press still shows the card and the
+        # library is drawn from the next frame; compare a frame after the wait.
+        for ui_mode in ("next", "legacy"):
+            for code in recovery_codes:
+                with self.subTest(code=code, ui_mode=ui_mode):
+                    recovered = self.run_player(
+                        "library", ("KEY_RETURN", "WAIT_MS=100"), error_code=code,
+                        ui_mode=ui_mode,
+                    )
+                    frames = recovered["frames"]
+                    assert isinstance(frames, list)
+                    self.assertEqual(frames[0]["view"], "error")
+                    self.assertEqual(frames[0]["error"], code)
+                    self.assertEqual(frames[1]["view"], "library")
+                    self.assertEqual(frames[-1]["view"], "library")
+                    self.assertNotEqual(frames[0]["pixels"], frames[-1]["pixels"],
+                                        "the library replaces the error card on screen")
+                    # Only a missing or corrupt source reopens the file picker.
+                    expected_picker = "1" if code in ("ISO_CORRUPT", "SOURCE_NOT_FOUND") else "0"
+                    self.assertEqual(frames[1]["picker"], expected_picker)
 
     def test_pbp_package_error_card_names_the_package_boundary(self) -> None:
         """A store package dropped as an ISO is named as a package, not a broken disc.
