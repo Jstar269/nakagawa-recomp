@@ -93,6 +93,18 @@
     {
       "path": "fixtures/vfpu_oracle/Makefile",
       "reason": "Builds the VFPU transcendental probe whose case header fixtures/vfpu_oracle/vfpu_oracle_cases.h the root Makefile compiles into src/rt/vfpu_oracle_host.c. The bare token `Makefile` is shared by the root and all ten fixture Makefiles, so it cannot say which one it names."
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/config.h",
+      "reason": "FFmpeg configure stand-in of the H.264 subset, included as \"config.h\" through the Makefile's -I$(H264_SUB_DIR) and listed in src/rt/h264_ffmpeg_sub/PROVENANCE.md; config.h is also a common basename elsewhere in the tree, so the bare name cannot say which one it names."
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavcodec/*.h",
+      "reason": "Byte-exact FFmpeg n4.4 H.264 subset header (src/rt/h264_ffmpeg_sub/PROVENANCE.md names it relative to that directory, and the subset's C files include it by that relative path); its basename is shared with the ATRAC3+ subset's copy, so the bare name cannot say which one it names."
+    },
+    {
+      "path": "src/rt/h264_ffmpeg_sub/libavutil/*.h",
+      "reason": "Byte-exact FFmpeg n4.4 H.264 subset header (src/rt/h264_ffmpeg_sub/PROVENANCE.md names it relative to that directory, and the subset's C files include it by that relative path); its basename is shared with the ATRAC3+ subset's copy, so the bare name cannot say which one it names."
     }
   ]
 }

@@ -521,7 +521,7 @@ jobs:
             # Both halves are capped per attempt so a slow mirror cannot spend the whole step budget
             # before the fallback runs: 3 minutes for the index update, 8 for the install.
             if sudo timeout 180 apt-get update && sudo timeout 480 apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
-                git libavcodec-dev libavutil-dev libc6-dev-i386 libvulkan-dev \
+                git libc6-dev-i386 libvulkan-dev \
                 libxcursor-dev libxext-dev libxfixes-dev libxi-dev libxinerama-dev \
                 libxkbcommon-dev libx11-dev libxrandr-dev libxss-dev libxtst-dev \
                 mesa-vulkan-drivers ninja-build pkg-config vulkan-tools \
@@ -680,10 +680,11 @@ jobs:
           printf 'SDL3_ttf %s; ' "$ttf_version"
           "$RUNNER_TEMP/sdl3-ttf-features"
 
-      - name: Build and run the opt-in FFmpeg H.264 media selftest
-        # Exercise the real libavcodec route, including guest-VRAM coherence, explicit backend
-        # selection, native-format reporting, and the source-authored final-AU fixture. Use an
-        # isolated build root so non-FFmpeg objects from earlier steps cannot be reused.
+      - name: Build and run the vendored FFmpeg H.264 media selftest
+        # Exercise the pinned, vendored FFmpeg H.264 subset (src/rt/h264_ffmpeg_sub, no system
+        # FFmpeg installed), including guest-VRAM coherence, explicit backend selection,
+        # native-format reporting, and the source-authored final-AU fixture. Use an isolated build
+        # root so non-FFmpeg objects from earlier steps cannot be reused.
         run: make CC=gcc H264_FFMPEG=1 BUILD_ROOT="$RUNNER_TEMP/ffmpeg-h264-build" psmf-media-selftest
 
       - name: Install PSPDEV from the checked-in lock
