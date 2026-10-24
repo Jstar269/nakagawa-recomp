@@ -152,6 +152,10 @@ Additions the mission list missed (all `upstream_derived` in the ledger):
 - `src/rt/atrac3p/*` — ~60-file FFmpeg n4.4 ATRAC3+ decoder subset
   (LGPL-2.1-or-later) with a byte-exact blob manifest in
   `src/rt/atrac3p/PROVENANCE.md`. Dependency, not campaign code (see §3).
+- `src/rt/h264_ffmpeg_sub/*` — ~210-file FFmpeg n4.4 H.264 decoder subset
+  (LGPL-2.1-or-later; 208 byte-identical upstream files plus a few authored configuration
+  stand-ins and the `nk_h264_api` layer) with a byte-exact blob manifest in
+  `src/rt/h264_ffmpeg_sub/PROVENANCE.md`. Dependency, not campaign code (see §3).
 - `tools/codegen_gate.py` is listed in the mission; the same record also
   covers the other gates named above — all are in scope together.
 
@@ -189,6 +193,7 @@ notices, not derived code. None should be replaced by original code:
 | Dependency | Position | Verdict and why |
 | --- | --- | --- |
 | FFmpeg n4.4 ATRAC3+ subset (`src/rt/atrac3p/`, LGPL-2.1-or-later, byte-exact manifest) | Vendored decoder for ATRAC3plus audio | **Keep.** A working ATRAC3+ decoder is codec mathematics plus a maintained standard library; rewriting it gains no independence (the format is Sony's regardless) and loses a pinned, auditable, licence-clean implementation. The project wrapper (`atrac3p_bridge`) is already project-authored. A future move from vendoring to dynamic FFmpeg linkage is packaging hygiene, not an independence item. |
+| FFmpeg n4.4 H.264 decoder subset (`src/rt/h264_ffmpeg_sub/`, LGPL-2.1-or-later, byte-exact manifest) | Vendored portable H.264 decoder behind the `sr_h264` seam for Linux (later Android), decided by the maintainer on 2026-10-24 (#283) | **Keep.** H.264 decoding is standardized codec mathematics; a project rewrite would gain no independence and would lose a pinned, auditable, bit-exact implementation. Windows keeps the Media Foundation operating-system decoder; the backend glue `src/rt/h264_ffmpeg.c` and the API layer are project-authored. The inherited Media Foundation glue `src/rt/h264_mf.c` (G12) is a separate item and is not changed here. |
 | PSPSDK / PSPDEV headers and fixtures (BSD-family notices; `assets/upstream/`, `THIRD_PARTY_LICENSES/PSPSDK.txt`) | External ABI facts + local verification fixtures | **Keep.** Public ABI declarations are facts (names, numbers, layouts), not protectable expression; the tree already enforces identity by pin (`pspdev.lock.json`, `pspsdk_sync.py`). Replacing them would *remove* the independent anchor the clean-room specs cite. |
 | SDL3 (zlib) | Host window/input/audio abstraction | **Keep.** Host-platform abstraction is exactly what the portability rules require (`AGENTS.md`, `PLATFORM_PORTABILITY.md`); a project-owned OS layer per platform would be larger, worse-tested, and no more independent. The excluded `audio.c` SDL backend is still rewritten as original SDL3 API use (G2-adjacent audio item), which is not the same as replacing SDL. |
 | Vulkan loader/headers (Apache-2.0; SDK not redistributed) | Host GPU submission | **Keep**, same reason as SDL3. The independence-relevant code is what is *submitted* (GE semantics, G10/G11), not the submission API. |

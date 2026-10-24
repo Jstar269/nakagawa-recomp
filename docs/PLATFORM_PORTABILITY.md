@@ -11,7 +11,7 @@ but a successful object compile is not the same as a linked, running port.
 | Thread coroutines | Win32 fibers on Windows; `ucontext` plus `mmap` on POSIX | Suitable for an initial glibc Linux port. Android and consoles need a supported platform backend behind `sr_coro`. |
 | Window, input, and presentation | SDL3/Vulkan path exists, but public `gui_*` functions are inside Windows-only `gui.c`; GDI is the fallback | Move the SDL path into platform-neutral code and keep GDI in a Windows backend. |
 | Audio | SDL3 audio stream | Portable in principle; validate device lifecycle, latency, and suspend/resume on each platform. |
-| Video decode | The common project-authored PSMF producer owns stream demux and AU boundaries; Windows uses Media Foundation, while non-Windows H.264 decoding fails closed pending a portable dependency and license decision | Select and validate a portable decoder behind `sr_h264` after its licensing and redistribution model is approved. |
+| Video decode | The common project-authored PSMF producer owns stream demux and AU boundaries; Windows uses Media Foundation; elsewhere the pinned, vendored FFmpeg n4.4 H.264 decoder subset (`src/rt/h264_ffmpeg_sub/`, LGPL-2.1-or-later, generic C, statically linked, no system FFmpeg) is the default `sr_h264` backend, and `H264_FFMPEG=0` keeps the fail-closed null backend | Android needs a build of the same subset for its ABI; validate decode speed on target devices (the C-only DSP paths are slower than SIMD). |
 | HLE host services | `hle.c` directly uses Win32 time, directory, file, sleep, and string APIs | Extract filesystem, clock/timezone, sleep, and process-exit services into a host-platform layer. |
 | On-screen keyboard | Win32 dialog and a `wchar_t` interface | Change the seam to explicit UTF-16 code units and provide SDL/mobile/platform UI backends. |
 | Savedata and ISO access | Already contain Windows/POSIX branches | Consolidate them into the same host filesystem layer and test path/case semantics. |
@@ -88,27 +88,29 @@ must not silently weaken this contract.
 | Candidate | Licence position | Packaging and decision still required |
 | --- | --- | --- |
 | Cisco OpenH264 | BSD-2-Clause is generally compatible with GPL-3.0-or-later, subject to the exact binary's notices and any codec/patent terms. | Prefer a pinned shared library or source-built package per host. Verify redistribution terms, notice retention, architecture coverage, and decoder error behavior. **Awaiting maintainer decision.** |
-| FFmpeg/libavcodec H.264 decoder | Optional `H264_FFMPEG=1` builds dynamically link host `libavcodec`/`libavutil`. FFmpeg's LGPL build is distinct from a GPL-enabled build; GPL-2.0-or-later can be combined under the project's GPL-3.0-or-later terms. FFmpeg marks `--enable-nonfree` builds non-redistributable. | CI builds and runs `psmf-media-selftest` with the real backend. The repository does not bundle these shared libraries, and the Windows package route does not stage them, so `H264_FFMPEG=1` is not a supported packaged runtime. A downstream package that bundles FFmpeg must retain notices and corresponding-source materials for its exact build. See [FFmpeg licensing](https://www.ffmpeg.org/legal.html) and [GNU compatibility](https://www.gnu.org/licenses/gpl-faq.en.html). |
+| FFmpeg/libavcodec H.264 decoder | **Chosen** (maintainer decision, 2026-10-24, #283). A pinned subset of FFmpeg n4.4 (the pin of the ATRAC3+ import) is vendored under `src/rt/h264_ffmpeg_sub/`: LGPL-2.1-or-later, LGPL configuration only (no `--enable-gpl`, no `--enable-nonfree`), combined with the project's GPL-3.0-or-later terms. | Statically linked with generic C paths only; byte-exact manifest in `src/rt/h264_ffmpeg_sub/PROVENANCE.md`, notices in `NOTICE.md` and `CREDITS.md`. H.264 is patent-encumbered in some jurisdictions: the project ships no encoder and the decoder runs only on the user's own PSP movies. Windows keeps Media Foundation. |
 | dav1d | Not a candidate: it decodes AV1, not H.264. | No H.264 backend may be represented by dav1d. |
 
-The null backend remains the default when `H264_FFMPEG` is unset and on hosts without another
-platform backend. The opt-in FFmpeg build is exercised by CI and remains dynamically linked to
-the system libraries; this repository does not package those runtime binaries.
+`H264_FFMPEG` selects the FFmpeg backend: `1` builds the vendored subset and makes it the
+decoder where no platform decoder exists, `0` keeps `h264_null.c` failing closed. The default is
+`1` off Windows and `0` on Windows, where Media Foundation (`h264_mf.c`) stays the backend. The
+build needs no FFmpeg package, headers or `pkg-config`. Setting `SR_NOH264` still disables the
+decoder at run time.
 
 ### FFmpeg H.264 selftest
 
 On Ubuntu or WSL already configured with the SDL3 and Vulkan development prerequisites in
-`docs/SETUP.md`, install the FFmpeg development headers and run the same source-authored fixture
-used in CI:
+`docs/SETUP.md`, with no FFmpeg package installed, run the same source-authored fixture used in
+CI:
 
 ```bash
-sudo apt-get install -y pkg-config libavcodec-dev libavutil-dev
 make CC=gcc H264_FFMPEG=1 BUILD_ROOT=build/ffmpeg-h264 psmf-media-selftest
 ```
 
 The test explicitly selects the FFmpeg backend, decodes the synthetic I_PCM pictures through
-libavcodec, checks the guest-visible pixels and final-AU/EOS behavior, and asserts guest-VRAM
-prepare/commit order. A build without `H264_FFMPEG=1` keeps the null backend fail-closed.
+the vendored decoder, checks the guest-visible pixels and final-AU/EOS behavior, and asserts
+guest-VRAM prepare/commit order. A build with `H264_FFMPEG=0` keeps the null backend fail-closed.
+The executable links no `libavcodec` shared library.
 
 ## Completed Milestones (ux-investigation)
 
