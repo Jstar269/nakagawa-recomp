@@ -41,11 +41,29 @@ def _range(text: str, name: str) -> tuple[int, int]:
 class TestGuestSpanRouting(unittest.TestCase):
     def test_generated_bulk_stubs_use_complete_span_helpers(self) -> None:
         text = (ROOT / "tools" / "codegen.py").read_text(encoding="utf-8")
-        self.assertIn("sr_guest_span_readable(src, size)", text)
-        self.assertIn("sr_guest_span_writable(dest, size)", text)
+        self.assertIn("sr_native_memmove(dest, s->r[5], s->r[6], 0x{a:08x}u);", text)
+        self.assertIn("sr_native_memset(dest, (uint8_t)(s->r[5] & 0xFF), s->r[6], 0x{a:08x}u);", text)
         self.assertIn("sr_guest_span_writable(_mf_base, _mf_cnt)", text)
-        self.assertIn("sr_oor(dest, 0u, 1); sr_oor(src, 0u, 0);", text)
-        self.assertNotIn("memmove(SR_HOST(dest), SR_HOST(src), size);\n        }} else {{", text)
+        self.assertNotIn("memmove(SR_HOST(dest), SR_HOST(src), size)", text)
+        self.assertNotIn("memset(SR_HOST(dest), val, size)", text)
+        # The stubs' bodies live in recomp.h (#1170): whole-span checks, the
+        # VRAM read-back before the source pointer, and the write notification.
+        header = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        memmove = _body(header, "sr_native_memmove")
+        self.assertIn("sr_guest_span_writable(dest, size) && sr_guest_span_readable_current(src, size)", memmove)
+        self.assertIn("sr_oor(dest, 0u, 1); sr_oor(src, 0u, 0);", memmove)
+        self.assertIn("sr_guest_vram_write_prepare_bytes(dest, size)", memmove)
+        self.assertLess(memmove.find("sr_guest_vram_write_prepare_bytes(dest, size)"),
+                        memmove.find("memmove(SR_HOST(dest), SR_HOST(src), size)"))
+        self.assertGreater(memmove.find("sr_guest_vram_write_commit_bytes(dest, size)"),
+                           memmove.find("memmove(SR_HOST(dest), SR_HOST(src), size)"))
+        memset = _body(header, "sr_native_memset")
+        self.assertIn("sr_guest_span_writable(dest, size)", memset)
+        self.assertIn("sr_guest_vram_write_prepare_bytes(dest, size)", memset)
+        self.assertLess(memset.find("sr_guest_vram_write_prepare_bytes(dest, size)"),
+                        memset.find("memset(SR_HOST(dest), val, size)"))
+        self.assertGreater(memset.find("sr_guest_vram_write_commit_bytes(dest, size)"),
+                           memset.find("memset(SR_HOST(dest), val, size)"))
 
     def test_generic_memcpy_memset_preflight_before_sr_host(self) -> None:
         text = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")

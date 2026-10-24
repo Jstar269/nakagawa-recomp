@@ -1427,10 +1427,17 @@ static bool scan_path_for_names(const char *const *names, size_t name_count,
  * start on a cold machine can spend seconds in antivirus scanning, and a false
  * rejection sends the user to an unneeded download; the Store alias fails at
  * once, so the bound only matters for a hung wrapper. */
-static bool python_candidate_runs_required_version(const char *executable_path) {
-    static const char *probe =
-        "import sys; sys.exit(sys.implementation.name != 'cpython' or "
+static bool python_candidate_runs_required_version(const char *executable_path,
+                                                   bool only_315) {
+    static const char *probe_315 =
+        "import sys, sysconfig; sys.exit(sys.implementation.name != 'cpython' or "
+        "sysconfig.get_platform().startswith('mingw') or "
         "sys.version_info[:2] != (3, 15))";
+    static const char *probe_314_or_315 =
+        "import sys, sysconfig; sys.exit(sys.implementation.name != 'cpython' or "
+        "sysconfig.get_platform().startswith('mingw') or "
+        "not ((3, 14) <= sys.version_info[:2] <= (3, 15)))";
+    const char *probe = only_315 ? probe_315 : probe_314_or_315;
     NkProcessHandle process;
     const char *argv[] = { executable_path, "-c", probe, NULL };
     if (!executable_path || !executable_path[0] ||
@@ -1447,7 +1454,7 @@ static bool python_candidate_runs_required_version(const char *executable_path) 
     return exit_code == 0;
 }
 
-static bool accept_python_candidate(const char *candidate,
+static bool accept_python_candidate(const char *candidate, bool only_315,
                                     char *out_path, size_t out_size) {
     char resolved[NK_MAX_PATH * 2];
     if (!candidate || !candidate[0] || !out_path || out_size == 0 ||
@@ -1459,7 +1466,7 @@ static bool accept_python_candidate(const char *candidate,
         if (candidate_len >= sizeof(resolved)) return false;
         memcpy(resolved, candidate, candidate_len + 1);
     }
-    if (!python_candidate_runs_required_version(resolved)) return false;
+    if (!python_candidate_runs_required_version(resolved, only_315)) return false;
     size_t resolved_len = strlen(resolved);
     if (resolved_len >= out_size) return false;
     memcpy(out_path, resolved, resolved_len + 1);
@@ -1468,7 +1475,7 @@ static bool accept_python_candidate(const char *candidate,
 
 /* Unlike the shared file-existence scan above, Python discovery must keep
  * walking PATH after an unusable entry (including the Windows Store alias). */
-static bool scan_path_for_python(char *out_path, size_t out_size) {
+static bool scan_path_for_python(bool only_315, char *out_path, size_t out_size) {
     const char *path_env = getenv("PATH");
     if (!path_env || !path_env[0]) return false;
 
@@ -1492,7 +1499,7 @@ static bool scan_path_for_python(char *out_path, size_t out_size) {
                                        NK_MAX_PATH - 1, dir,
                                        nk_platform_path_separator(), kPathNames[i]);
                 if (written > 0 && (size_t)written < sizeof(candidate) &&
-                    accept_python_candidate(candidate, out_path, out_size)) {
+                    accept_python_candidate(candidate, only_315, out_path, out_size)) {
                     return true;
                 }
             }
@@ -1502,10 +1509,9 @@ static bool scan_path_for_python(char *out_path, size_t out_size) {
     return false;
 }
 
-bool package_builder_find_python(char *out_path, size_t out_size) {
-    if (!out_path || out_size == 0) return false;
-    out_path[0] = '\0';
-
+/* One search over PYTHON, the MSYS2 locations, PATH and the POSIX fallbacks,
+ * accepting only CPython 3.15 when only_315 is set. */
+static bool find_python_pass(bool only_315, char *out_path, size_t out_size) {
     bool ignore_external_python = false;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     /* Let player regression tests model a clean account on a tool-equipped host. */
@@ -1513,10 +1519,11 @@ bool package_builder_find_python(char *out_path, size_t out_size) {
     ignore_external_python = isolate_python && strcmp(isolate_python, "1") == 0;
 #endif
 
-    /* 1. Check PYTHON environment variable */
+    /* 1. Check PYTHON environment variable. An explicit choice wins over the
+     * 3.15-first search, so it accepts 3.14 as well. */
     const char *env_py = ignore_external_python ? NULL : getenv("PYTHON");
     if (env_py && env_py[0] &&
-        accept_python_candidate(env_py, out_path, out_size)) return true;
+        accept_python_candidate(env_py, false, out_path, out_size)) return true;
 
 #if defined(_WIN32) || defined(_WIN64)
     /* 2. Check standard MSYS2 UCRT64 toolchain locations */
@@ -1528,12 +1535,12 @@ bool package_builder_find_python(char *out_path, size_t out_size) {
     };
     for (size_t i = 0; !ignore_external_python &&
                         i < sizeof(kWinCandidates) / sizeof(kWinCandidates[0]); i++) {
-        if (accept_python_candidate(kWinCandidates[i], out_path, out_size)) return true;
+        if (accept_python_candidate(kWinCandidates[i], only_315, out_path, out_size)) return true;
     }
 #endif
 
     /* 3. Scan PATH for python3 / python */
-    if (scan_path_for_python(out_path, out_size)) return true;
+    if (scan_path_for_python(only_315, out_path, out_size)) return true;
 
 #if !defined(_WIN32) && !defined(_WIN64)
     static const char *kPosixCandidates[] = {
@@ -1543,13 +1550,24 @@ bool package_builder_find_python(char *out_path, size_t out_size) {
     };
     for (size_t i = 0; !ignore_external_python &&
                         i < sizeof(kPosixCandidates) / sizeof(kPosixCandidates[0]); i++) {
-        if (accept_python_candidate(kPosixCandidates[i], out_path, out_size)) {
+        if (accept_python_candidate(kPosixCandidates[i], only_315, out_path, out_size)) {
             return true;
         }
     }
 #endif
 
     return false;
+}
+
+bool package_builder_find_python(char *out_path, size_t out_size) {
+    if (!out_path || out_size == 0) return false;
+    out_path[0] = '\0';
+
+    /* CPython 3.15 is the documented default, so search every location for it
+     * first. A 3.14 interpreter is accepted only when no runnable 3.15 exists;
+     * otherwise an MSYS2 3.14 earlier on PATH would win over the 3.15 install. */
+    if (find_python_pass(true, out_path, out_size)) return true;
+    return find_python_pass(false, out_path, out_size);
 }
 
 bool package_builder_find_python_in_root(const char *data_root,
@@ -1561,7 +1579,7 @@ bool package_builder_find_python_in_root(const char *data_root,
                          data_root, nk_platform_path_separator(),
                          nk_platform_path_separator(), nk_platform_path_separator());
         if (n > 0 && (size_t)n < sizeof(candidate) &&
-            accept_python_candidate(candidate, out_path, out_size)) {
+            accept_python_candidate(candidate, true, out_path, out_size)) {
             return true;
         }
     }
@@ -1708,7 +1726,7 @@ bool package_builder_toolchain_missing(
     const char *fix = NULL;
     if (!have_python) {
         tool = "python";
-        fix = "Install CPython 3.15 (see docs/SETUP.md) or set the PYTHON environment "
+        fix = "Install CPython 3.15 or 3.14 (see docs/SETUP.md) or set the PYTHON environment "
               "variable to the interpreter.";
     } else if (!have_gcc) {
         tool = "gcc";
