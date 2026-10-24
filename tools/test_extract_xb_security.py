@@ -443,6 +443,54 @@ class PreflightTests(unittest.TestCase):
                 preflight_archive_members(archive, dest)
             self.assertIn("colliding", str(caught.exception))
 
+    def test_repeated_member_with_identical_bytes_is_written_once(self) -> None:
+        # Retail archives repeat a member, sometimes with different letter case.
+        # Every copy decodes to the same bytes, so one file holds them all.
+        same = b"synthetic repeated member"
+        for second_name in (
+            "data/menu/common.to",
+            "data" + BACKSLASH + "menu" + BACKSLASH + "Common.to",
+            "Data/Menu/common.to",
+        ):
+            with self.subTest(second_name=second_name):
+                with tempfile.TemporaryDirectory() as base:
+                    archive = _write_archive(
+                        base,
+                        [
+                            ("data/menu/common.to", same, XBCompression.LZS),
+                            (second_name, same, XBCompression.NONE),
+                            ("data/menu/other.to", b"another member", XBCompression.NONE),
+                        ],
+                    )
+                    dest = os.path.join(base, "out")
+                    _, status, err = extract_xb.extract_one(archive, dest)
+                    self.assertEqual((status, err), ("ok", None))
+                    self.assertEqual(
+                        Path(dest, "data", "menu", "common.to").read_bytes(), same
+                    )
+                    self.assertEqual(
+                        sorted(os.listdir(os.path.join(dest, "data", "menu"))),
+                        ["common.to", "other.to"],
+                    )
+
+    def test_repeated_member_whose_bytes_differ_is_still_refused(self) -> None:
+        for second_name in ("data/menu/common.to", "data/menu/Common.to"):
+            with self.subTest(second_name=second_name):
+                with tempfile.TemporaryDirectory() as base:
+                    # Same decoded length, different bytes: sizes alone must not
+                    # be taken for identity.
+                    archive = _write_archive(
+                        base,
+                        [
+                            ("data/menu/common.to", b"first!", XBCompression.NONE),
+                            (second_name, b"second", XBCompression.NONE),
+                        ],
+                    )
+                    dest = os.path.join(base, "out")
+                    os.makedirs(dest)
+                    with self.assertRaises(UnsafeArchivePathError):
+                        preflight_archive_members(archive, dest)
+
     def test_case_colliding_directory_components_are_refused(self) -> None:
         with tempfile.TemporaryDirectory() as base:
             archive = _write_archive(
