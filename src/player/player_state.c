@@ -2623,7 +2623,7 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 
     if (!have_python) {
         player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
-                             "Python 3.15 was not found and the pinned bootstrap is unavailable.",
+                             "Python 3.14 or 3.15 was not found and the pinned bootstrap is unavailable.",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }

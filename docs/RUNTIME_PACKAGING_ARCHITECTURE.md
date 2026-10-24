@@ -104,9 +104,9 @@ Roadmap items decided with the table:
 
 * **C toolchain on Linux:** use the distribution's gcc, make and SDL3/Vulkan development packages,
   with guided install commands in the player. The project ships and downloads nothing for them.
-* **Python on Linux:** the builder and `pyproject.toml` accept only CPython 3.15 today
-  (`src/player/package_builder.c`, `requires-python`). Widen the range to whatever the tool suite
-  actually passes on, starting with 3.14, once the full suite runs green on that version.
+* **Python on Linux:** the builder and `pyproject.toml` accept CPython 3.14 and 3.15
+  (`src/player/package_builder.c`, `requires-python`). 3.15 stays the default. Widen further only to
+  what the tool suite actually passes on, and only after the full suite runs green on that version.
 * **One app ID on every host:** `nakagawa-recomp`, with the OS's own casing only where the OS
   expects it. Today the data folders are `Nakagawa` (Windows), `nakagawa-recomp` (Linux) and
   `NakagawaRecomp` (macOS); unify them before the first release, with a migration from the old

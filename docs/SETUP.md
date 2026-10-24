@@ -17,7 +17,7 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
    supported for that.
 3. **MSYS2 UCRT64** with the packages in [section 1](#1-install-the-core-toolchain): GCC, GNU Make,
    SDL3, SDL3_ttf, and the Vulkan headers and loader.
-4. **CPython 3.15.x** on `PATH`. Read [PATH order](#path-order) before you install the Python tooling.
+4. **CPython 3.15.x** (3.14.x is also accepted) on `PATH`. Read [PATH order](#path-order) before you install the Python tooling.
 5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
    LunarG Vulkan SDK 1.4.363.0 is recommended for Windows development.
 6. **Git for Windows**, to clone the repository and fetch optional third-party source.
@@ -111,7 +111,7 @@ The supported and tested core development environment is:
 
 - Windows 11 x64. Older or unsupported Windows versions may work, but receive no compatibility guarantee.
 - PowerShell 7.4+ (`pwsh`) as the shell you type into. Windows PowerShell 5.1 is not supported for that.
-- CPython 3.15.x (`>=3.15,<3.16`), with `python` resolving to that feature line.
+- CPython 3.15.x (3.14.x is also accepted, `>=3.14,<3.16`), with `python` resolving to that feature line. 3.15 is the default: hosted CI and the pinned prerequisite use 3.15.1.
 - Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages. The release
   manifest's `toolchain_policy` records only the floors the code actually needs: a C11 compiler
   (GCC 4.9+), GNU Make 4.0+ (the title link uses `$(file ...)`), SDL3 3.x, a Vulkan SDK for API 1.1+, and Python 3.15. The rolling
@@ -168,8 +168,8 @@ line to `PATH`; see [PATH order](#path-order).
 
 Some folders hold a second copy of a tool that the build also calls, so the order of `PATH` matters.
 
-- **MSYS2's Python.** `C:\msys64\ucrt64\bin` may contain Python 3.14.8, which does not meet the
-  project's CPython 3.15.x host requirement. Run Python tooling with the Windows CPython installed
+- **MSYS2's Python.** `C:\msys64\ucrt64\bin` may contain Python 3.14.8, which the tooling accepts but
+  CI does not use; the default is CPython 3.15.x. Run Python tooling with the Windows CPython installed
   from python.org. Before building from a UCRT64 shell, set `PYTHON` to that interpreter's full path
   (for example, `C:/path/to/Python315/python.exe`); Make recipes and the player package builder use
   that explicit path even when MSYS2 is first on `PATH`. Run direct tooling commands through the

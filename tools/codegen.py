@@ -1156,9 +1156,17 @@ def _flit(v):
 _VFPU4_NAMED_UNIMPLEMENTED = {
     (0x01, 0x00): "vrnds",
     (0x01, 0x02): "vrndf1",
-    (0x02, 0x02): "vbfy1",
-    (0x02, 0x0A): "vsgn",
-    (0x02, 0x19): "vt4444",
+}
+
+# VFPU9 forms whose semantics follow the 2026-10-24 PSP-3000 measurement (issue
+# #326) and live only in sr_vfpu_interp: op9 -> (name, vector sizes it accepts).
+# The AOT routes exactly these sizes to the interpreter; any other size raises
+# Unsupported, matching the interpreter's SR_VFPU_OTHER for it.
+_VFPU9_INTERP_ROUTED = {
+    0x02: ("vbfy1", (2, 4)),
+    0x03: ("vbfy2", (4,)),
+    0x0A: ("vsgn", (1, 2, 3, 4)),
+    0x19: ("vt4444", (4,)),
 }
 
 
@@ -1229,6 +1237,11 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                         + _nanv(addr, "vocp.s", vd, "_d", n, "_s", n, "_t", n)
                         + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
                 return "{ " + body + " }", None, 0
+            routed = _VFPU9_INTERP_ROUTED.get(op9)
+            if routed is not None and n in routed[1]:
+                # Measured rules (forced vbfy prefixes, canonical NaN, denormal
+                # flush, sign-bit vsgn, vt4444 nibble packing) have one owner.
+                return _vfpu_interp_stmt(addr, w), None, 0
             raise Unsupported(f"VFPU9 op 0x{op9:02x} at 0x{addr:08x}")
         if jump == 0x03:  # vcst
             val = _flit(_VFPU_CST[(w >> 16) & 0x1F])

@@ -98,6 +98,22 @@ static inline void sr_cpu_link_clear(CpuState *s) {
     s->llbit = 0u;
 }
 
+/* VFPU control state of a new thread: identity S/T prefixes, no D prefix, and the
+ * random-unit registers RCX0-7 (controls 8-15). The RCX words were measured on a
+ * PSP-3000 with mfvc at thread entry, before any vrnds (2026-10-24, issue #326):
+ * RCX0-3 = 3f800001 3f800002 3f800004 3f800008, RCX4-7 = 3f800000. The measurement
+ * cannot tell thread creation from reset, so every thread-entry seed site calls
+ * this. Controls 3-7 (CC and the rest) keep whatever the caller left. */
+static inline void sr_vfpu_thread_ctrl_init(CpuState *s) {
+    s->vfpuCtrl[0] = 0xe4u;
+    s->vfpuCtrl[1] = 0xe4u;
+    s->vfpuCtrl[2] = 0u;
+    for (int i = 0; i < 4; i++) {
+        s->vfpuCtrl[8 + i] = 0x3f800000u | (1u << i);
+        s->vfpuCtrl[12 + i] = 0x3f800000u;
+    }
+}
+
 /* LLE Phase 1 (PR 2): COP0/exception/eret helpers and flow metadata. Included
  * here so generated code and the interpreter share one declaration site. */
 #include "cpu_lle.h"
