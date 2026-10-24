@@ -1156,9 +1156,17 @@ def _flit(v):
 _VFPU4_NAMED_UNIMPLEMENTED = {
     (0x01, 0x00): "vrnds",
     (0x01, 0x02): "vrndf1",
-    (0x02, 0x02): "vbfy1",
-    (0x02, 0x0A): "vsgn",
-    (0x02, 0x19): "vt4444",
+}
+
+# VFPU9 forms whose semantics follow the 2026-10-24 PSP-3000 measurement (issue
+# #326) and live only in sr_vfpu_interp: op9 -> (name, vector sizes it accepts).
+# The AOT routes exactly these sizes to the interpreter; any other size raises
+# Unsupported, matching the interpreter's SR_VFPU_OTHER for it.
+_VFPU9_INTERP_ROUTED = {
+    0x02: ("vbfy1", (2, 4)),
+    0x03: ("vbfy2", (4,)),
+    0x0A: ("vsgn", (1, 2, 3, 4)),
+    0x19: ("vt4444", (4,)),
 }
 
 
@@ -1229,6 +1237,11 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                         + _nanv(addr, "vocp.s", vd, "_d", n, "_s", n, "_t", n)
                         + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
                 return "{ " + body + " }", None, 0
+            routed = _VFPU9_INTERP_ROUTED.get(op9)
+            if routed is not None and n in routed[1]:
+                # Measured rules (forced vbfy prefixes, canonical NaN, denormal
+                # flush, sign-bit vsgn, vt4444 nibble packing) have one owner.
+                return _vfpu_interp_stmt(addr, w), None, 0
             raise Unsupported(f"VFPU9 op 0x{op9:02x} at 0x{addr:08x}")
         if jump == 0x03:  # vcst
             val = _flit(_VFPU_CST[(w >> 16) & 0x1F])
@@ -3490,14 +3503,8 @@ def main(argv):
 
         if hst_profile and a in (0x00011090, 0x000110dc):
             text = f"""void f_{a:08x}(CpuState *s) {{  /* custom stub: memcpy native */
-    uint32_t dest = s->r[4], src = s->r[5], size = s->r[6];
-    if (size > 0 && size < 0x04000000u &&
-        sr_guest_span_writable(dest, size) && sr_guest_span_readable(src, size)) {{
-            if (g_sr_heap_watch) sr_heap_note_bulk_write(dest, size, 0x{a:08x}u);
-            memmove(SR_HOST(dest), SR_HOST(src), size);
-    }} else if (size) {{
-        sr_oor(dest, 0u, 1); sr_oor(src, 0u, 0);
-    }}
+    uint32_t dest = s->r[4];
+    sr_native_memmove(dest, s->r[5], s->r[6], 0x{a:08x}u);
     s->r[2] = dest;
     s->pc = s->r[31];
 }}"""
@@ -3505,14 +3512,8 @@ def main(argv):
 
         if hst_profile and a in (0x000114c0, 0x000114a8):
             text = f"""void f_{a:08x}(CpuState *s) {{  /* custom stub: sceKernelMemset native */
-    uint32_t dest = s->r[4], size = s->r[6];
-    uint8_t val = (uint8_t)(s->r[5] & 0xFF);
-    if (size > 0 && size < 0x04000000u && sr_guest_span_writable(dest, size)) {{
-            if (g_sr_heap_watch) sr_heap_note_bulk_write(dest, size, 0x{a:08x}u);
-            memset(SR_HOST(dest), val, size);
-    }} else if (size) {{
-        sr_oor(dest, val, 1);
-    }}
+    uint32_t dest = s->r[4];
+    sr_native_memset(dest, (uint8_t)(s->r[5] & 0xFF), s->r[6], 0x{a:08x}u);
     s->r[2] = dest;
     s->pc = s->r[31];
 }}"""
