@@ -49,6 +49,25 @@ class ExtractXbProbeFallbackTests(unittest.TestCase):
         self.assertEqual(extracted_hello.read_bytes(), b"Hello from synthetic XB!")
         self.assertEqual(extracted_comp.read_bytes(), b"A" * 120 + b"B" * 60)
 
+    def test_extract_one_retail_framed_streams_of_every_codec(self) -> None:
+        # Retail size fields: LZS and the string table count their own header,
+        # Huffman counts only its bitstream.  Member lengths vary so every
+        # alignment padding (0..3 zero bytes) follows some stream.
+        members = [
+            (f"data/test/{codec.name.lower()}{n}.bin", bytes(range(65, 65 + n)) * 3, codec)
+            for codec in (XBCompression.LZS, XBCompression.HUFFMAN, XBCompression.DEFLATE)
+            for n in range(1, 6)
+        ]
+        archive_path = Path(self.temp_dir) / "retail.xb"
+        archive_path.write_bytes(
+            _make_archive(members, string_table_compressed=True, name="retail.xb")
+        )
+        out_dir = Path(self.temp_dir) / "output"
+        _, status, err = extract_one(str(archive_path), str(out_dir))
+        self.assertEqual((status, err), ("ok", None))
+        for path, data, _ in members:
+            self.assertEqual((out_dir / path).read_bytes(), data)
+
 
 if __name__ == "__main__":
     unittest.main()

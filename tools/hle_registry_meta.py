@@ -345,6 +345,16 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)",
     },
+    # The licensee key is recorded for sceNpDrmEdataSetupKey, which stays refused: no key
+    # material ships with the project and nothing decrypts.
+    "h_NpDrmSetLicenseeKey": {
+        "status": "partial",
+        "limitation": "records the 16-byte key and returns 0; the 0x80550902 refusal of a null or unreadable key follows PPSSPP and is not hardware measured; the key is never used because sceNpDrmEdataSetupKey is refused",
+    },
+    "h_NpDrmClearLicenseeKey": {
+        "status": "partial",
+        "limitation": "forgets the recorded key and returns 0; not hardware measured",
+    },
     "h_MpegAvcQueryYCbCrSize": {
         "status": "partial",
         "limitation": "the YCbCr size formula, pointer preflight, and guest geometry are source-tested; firmware mode coverage and the hardware-oracle contract remain open (#302)",

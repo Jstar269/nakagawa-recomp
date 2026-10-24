@@ -513,6 +513,12 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
     player->flow_screen = screen;
 }
 
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t index) {
+    return player != NULL && index < PLAYER_UI_TITLE_CAP ? &player->titles[index] : NULL;
+}
+#endif
+
 bool player_ui_nk_at_library_root(const PlayerUiNk *player) {
     return player != NULL && player->ready &&
            nk_ui_router_current(player->router) == PLAYER_UI_ROUTE_LIBRARY &&
@@ -696,7 +702,11 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->primary_action_enabled = true;
         primary = PLAYER_UI_PRIMARY_BUILD;
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
-        out->primary_action_label = "PACKAGE INCOMPATIBLE";
+        out->primary_action_label = "REBUILD PACKAGE";
+        out->primary_action_enabled = true;
+        primary = PLAYER_UI_PRIMARY_REBUILD;
+        (void)player_incompatible_reason_line(reason, player->status_text[index],
+                                              sizeof(player->status_text[index]));
     } else if (game->assets_staged) {
         out->primary_action_label = "RUNTIME REQUIRED";
     } else {

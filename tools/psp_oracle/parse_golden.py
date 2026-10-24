@@ -1705,6 +1705,45 @@ _register_campaign_probe(
     },
 )
 
+# hle-issues-batch (106, probe_hle_issues.c): the #356 model getters, then two passes of the
+# #326 vscmp cells and the vrndi.s carry grids. Every row is emitted on every run, so the
+# stream is fixed-shape; the row names are those of the 2026-10-24 measured build.
+HLE_ISSUES_MODEL_CASES = (
+    "model-ku-get-model", "model-sce-get-model", "model-ku-get-model-again",
+    "model-sce-get-model-again", "model-kernel-get-model-07c586a1",
+    "model-kernel-get-model-6373995d",
+)
+HLE_ISSUES_VSCMP_SETS = ("qnan-inf", "nan-kinds", "inf-inf", "zero-nan", "denorm-finite",
+                         "nan-mixed")
+HLE_ISSUES_VSCMP_FORMS = ("vscmp.s", "vscmp.p", "vscmp.t", "vscmp.q", "vscmp.q-same")
+#: Carry-grid dimensions: 8 C2 words x 8 C3 words x 7 carry words, per stem and pass.
+HLE_ISSUES_CARRY_GRID = (8, 8, 7)
+HLE_ISSUES_CARRY_STEMS = ("rcar", "rcbig")
+HLE_ISSUES_PASSES = 2
+
+
+def _hle_issues_pass_cases(pass_index: int) -> tuple[str, ...]:
+    vscmp = tuple(f"vscmp-p{pass_index}-{name}-{form}"
+                  for name in HLE_ISSUES_VSCMP_SETS for form in HLE_ISSUES_VSCMP_FORMS)
+    c2s, c3s, carries = HLE_ISSUES_CARRY_GRID
+    carry = tuple(f"{stem}-p{pass_index}-{i}-{j}-{k}"
+                  for stem in HLE_ISSUES_CARRY_STEMS
+                  for i in range(c2s) for j in range(c3s) for k in range(carries))
+    return vscmp + carry
+
+
+HLE_ISSUES_BATCH_CASES = HLE_ISSUES_MODEL_CASES + tuple(
+    case for pass_index in range(HLE_ISSUES_PASSES)
+    for case in _hle_issues_pass_cases(pass_index))
+_register_campaign_probe(
+    "hle-issues-batch", "PSP-HLE-ISSUES-001", HLE_ISSUES_BATCH_CASES,
+    {
+        **{case: 3 for case in HLE_ISSUES_MODEL_CASES},
+        **{case: (16 if case.startswith("vscmp-") else 17)
+           for case in HLE_ISSUES_BATCH_CASES if case not in HLE_ISSUES_MODEL_CASES},
+    },
+)
+
 VFPU_TRANSCENDENTAL_OPS = (
     "vsin", "vcos", "vexp2", "vlog2", "vrsq", "vrcp", "vsqrt", "vasin",
     "vnrcp", "vnsin", "vrexp2",
@@ -1815,6 +1854,8 @@ HLE_MACHINERY_STATUS_CASES = frozenset({
     "hle-null-out-pointers", "hle-audio-src", "hle-timer-order",
 })
 VFPU_RAW_WORD_CASES = frozenset({"vfpu-transcendental-corpus"})
+#: Cases whose every cell is an unconditional observation: each record is PASS.
+HLE_OBSERVATION_CASES = frozenset({"hle-issues-batch"})
 
 #: hle-kernel-pool-bounds fixed-pool (create, delete) cell pairs.
 HLE_POOL_BOUNDS_FPL_PAIRS = (
@@ -1886,6 +1927,135 @@ def parse_campaign_probe_output(
                 raise ProtocolError(
                     f"{spec.test_id}: {record.case_id} must carry a produced raw-word record"
                 )
+    if campaign_case in HLE_OBSERVATION_CASES:
+        for record in sequence.results.values():
+            if record.status != "PASS":
+                raise ProtocolError(
+                    f"{spec.test_id}: {record.case_id} status {record.status!r}; every cell "
+                    "of this case is an unconditional observation recorded PASS"
+                )
+    return sequence
+
+
+# ---------------------------------------------------------------------------
+# PSP-HLE-INTR-001 (hle-intr-cells, probe_hle_issues.c): #325 delivery cells
+# ---------------------------------------------------------------------------
+
+HLE_INTR_TEST_ID = "PSP-HLE-INTR-001"
+HLE_INTR_TERMINAL = "hle-intr-cells-done"
+#: The handler-return series, in emission order. Each is `<name>-call<i>` per stored
+#: handler call (at most HLE_INTR_TCALLS), then `<name>`, then `<name>-after-zero`; a VTimer
+#: series whose create failed is the single FAIL record `<name>` with no out words.
+HLE_INTR_SERIES = ("vtimer-ret-20ms", "vtimer-ret-1us", "vtimer-ret-mixed",
+                   "alarm-ret-20ms", "alarm-ret-1us")
+HLE_INTR_TCALLS = 8
+#: The VBLANK cells that run only when a sub-interrupt slot was registered and enabled.
+HLE_INTR_VBL_CELLS = ("vbl-free", "vbl-masked-20ms", "vbl-masked-50ms",
+                      "vbl-masked-20ms-again", "vbl-hold-25ms")
+HLE_INTR_OUT_COUNTS = {
+    "vbl-register": 17, "vbl-free": 12, "vbl-masked-20ms": 14, "vbl-masked-50ms": 14,
+    "vbl-masked-20ms-again": 14, "vbl-hold-25ms": 16, "vbl-release": 2,
+    HLE_INTR_TERMINAL: 1,
+}
+HLE_INTR_NO_SLOT = 0xFFFFFFFF
+
+
+def _hle_intr_expected_cases(ids: list[str], results: dict[str, TestResult]) -> list[str]:
+    """The record sequence the probe emits, with its run-dependent parts read from the stream.
+
+    How many handler calls each series stored, whether a VTimer was created and whether a
+    VBLANK slot was registered and enabled are run facts; everything else is fixed. For a
+    stream cut short the rest of the success path is assumed, so parse_sequence sees an
+    ordered prefix of it.
+    """
+    expected: list[str] = []
+    for name in HLE_INTR_SERIES:
+        calls = 0
+        while (calls < HLE_INTR_TCALLS and len(expected) < len(ids)
+               and ids[len(expected)] == f"{name}-call{calls}"):
+            expected.append(f"{name}-call{calls}")
+            calls += 1
+        expected.append(name)
+        record = results.get(name)
+        if not (record is not None and record.status == "FAIL" and calls == 0
+                and name.startswith("vtimer-")):
+            expected.append(f"{name}-after-zero")
+    expected.append("vbl-register")
+    register = results.get("vbl-register")
+    if register is None or register.status == "PASS":
+        expected.extend(HLE_INTR_VBL_CELLS)
+        expected.append("vbl-release")
+    elif int(dict(register.values)["result"], 0) != HLE_INTR_NO_SLOT:
+        expected.append("vbl-release")
+    return expected
+
+
+def _hle_intr_out_count(case_id: str, record: TestResult) -> int:
+    if case_id in HLE_INTR_OUT_COUNTS:
+        return HLE_INTR_OUT_COUNTS[case_id]
+    if case_id in HLE_INTR_SERIES:
+        return 0 if record.status == "FAIL" else 3
+    if case_id.endswith("-after-zero"):
+        return 1
+    return 4  # <series>-call<i>
+
+
+def parse_hle_intr_cells_output(text: str, *, require_complete: bool = True) -> SequenceReport:
+    """Parse the hle-intr-cells stream: exact order, field counts and the probe's bookkeeping.
+
+    The checks compare the probe with itself: call rows carry sequence numbers 1..n, a series
+    has as many call rows as its count says (up to the eight the probe stores), the VBLANK
+    cells are present exactly when a slot was registered and enabled, and the release is
+    present whenever a slot was registered. No returned value is compared with an expected
+    PSP value.
+    """
+
+    parsed = parse_output(text)
+    ids = [record.case_id for record in parsed.results]
+    by_id = {record.case_id: record for record in parsed.results}
+    spec = StreamSpec(HLE_INTR_TEST_ID, tuple(_hle_intr_expected_cases(ids, by_id)),
+                      HLE_INTR_TERMINAL)
+    sequence = parse_sequence(text, spec, require_complete=require_complete)
+    _validate_scalar_shape(sequence, {case_id: _hle_intr_out_count(case_id, record)
+                                      for case_id, record in sequence.results.items()})
+    results = sequence.results
+    for case_id, record in results.items():
+        values = {key: int(value, 0) for key, value in record.values}
+        if case_id in HLE_INTR_SERIES:
+            if record.status == "FAIL":
+                if not case_id.startswith("vtimer-"):
+                    raise ProtocolError(f"{HLE_INTR_TEST_ID}: {case_id} FAIL; only a VTimer "
+                                        "create can fail a series")
+                continue
+            if record.status != "PASS":
+                raise ProtocolError(f"{HLE_INTR_TEST_ID}: {case_id} status {record.status!r} "
+                                    "is not PASS")
+            calls = sum(1 for other in results if other.startswith(f"{case_id}-call"))
+            if calls != min(values["out0"], HLE_INTR_TCALLS):
+                raise ProtocolError(
+                    f"{HLE_INTR_TEST_ID}: {case_id} counts {values['out0']:#x} calls but "
+                    f"{calls} call rows were recorded (the probe stores at most "
+                    f"{HLE_INTR_TCALLS})")
+        elif case_id == "vbl-register":
+            slot, enable = values["result"], values["out0"]
+            registered = slot != HLE_INTR_NO_SLOT
+            if registered and slot >= 16:
+                raise ProtocolError(
+                    f"{HLE_INTR_TEST_ID}: vbl-register slot {slot:#x} is not 0..15")
+            enabled = registered and enable < 0x80000000
+            if record.status != ("PASS" if enabled else "FAIL"):
+                raise ProtocolError(
+                    f"{HLE_INTR_TEST_ID}: vbl-register status {record.status!r} disagrees "
+                    f"with slot {slot:#x} and enable {enable:#x}")
+        elif case_id != HLE_INTR_TERMINAL:
+            if record.status != "PASS":
+                raise ProtocolError(f"{HLE_INTR_TEST_ID}: {case_id} status {record.status!r} "
+                                    "is not PASS")
+            call = re.fullmatch(r"(.+)-call(\d+)", case_id)
+            if call is not None and values["result"] != int(call.group(2)) + 1:
+                raise ProtocolError(
+                    f"{HLE_INTR_TEST_ID}: {case_id} sequence {values['result']:#x} is not "
+                    f"{int(call.group(2)) + 1}")
     return sequence
 
 
