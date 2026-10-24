@@ -92,6 +92,7 @@ from psp_oracle.parse_golden import (
     parse_font_files_output,
     parse_font_list_output,
     parse_ge_nan_output,
+    parse_hle_intr_cells_output,
     parse_registry_font_output,
     parse_registry_readonly_output,
     parse_umd_io_output,
@@ -2443,12 +2444,13 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 95)
+        self.assertEqual(len(routes), 97)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {110, 111, 112, 113}, set(ids))
+        self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107}
+                         | {110, 111, 112, 113}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -4668,8 +4670,10 @@ class HleMeasureProbeTests(unittest.TestCase):
     def test_case_ids_are_registered_once_and_match_the_families(self) -> None:
         pairs = re.findall(r"else ifeq \(\$\(CASE\),(hle-[a-z0-9-]+)\)\nCASE_ID = (\d+)",
                            self.makefile)
+        # The HLE issue cells (106-107) are routed too, from their own source.
+        registered = self.ALL_FAMILIES + HleIssuesProbeTests.CASES
         self.assertEqual(sorted(pairs),
-                         sorted((case, str(case_id)) for case, case_id, *_ in self.ALL_FAMILIES))
+                         sorted((case, str(case_id)) for case, case_id, *_ in registered))
         all_ids = re.findall(r"^CASE_ID = (\d+)$", self.makefile, re.MULTILINE)
         self.assertEqual(len(all_ids), len(set(all_ids)), "duplicate CASE_ID in Makefile")
 
@@ -5634,6 +5638,699 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
         self.assertNotIn("until refusal", readme)
         self.assertIn("up to 64 creates; out1 records whether a refusal occurred", hardware)
         self.assertIn("up to 64 creates; out1 records whether a refusal occurred", readme)
+
+# ---- probe_hle_issues.c: the HLE issue cells (106-107) --------------------------------
+
+def _c_function_bodies(code: str) -> dict[str, str]:
+    """Top-level function bodies of comment-free C text, by name (braces included)."""
+    functions: dict[str, str] = {}
+    for match in re.finditer(r"^(?:static\s+)?[A-Za-z_][\w \t\*]*?\b(\w+)\s*\(([^;{}]*)\)\s*\{",
+                             code, re.MULTILINE):
+        name = match.group(1)
+        if name in _C_NOT_CALLS:
+            continue
+        brace = code.index("{", match.end() - 1)
+        functions[name] = code[brace:_c_close(code, brace) + 1]
+    return functions
+
+
+#: Install and remove calls of the interrupt-cell case, and what removes each one.
+_HLE_INTR_REMOVERS = {
+    "sceKernelCreateVTimer": "sceKernelDeleteVTimer",
+    "sceKernelStartVTimer": "sceKernelStopVTimer",
+    "sceKernelSetAlarm": "sceKernelCancelAlarm",
+    "sceKernelRegisterSubIntrHandler": "sceKernelReleaseSubIntrHandler",
+    "sceKernelEnableSubIntr": "sceKernelDisableSubIntr",
+    "sceKernelCpuSuspendIntr": "sceKernelCpuResumeIntr",
+}
+
+
+def _hle_intr_cleanup_problems(probe: str) -> list[str]:
+    """Paths of the hle-intr-cells section that leave a handler, timer, alarm or suspension.
+
+    Checked on the comment-free section text: each function that installs something also
+    removes it, after the install, with no `return` between the two; the VTimer delete
+    is reached whenever its create succeeded; an alarm is cancelled whenever SetAlarm
+    returned a UID; and the sub-interrupt release sits in its own `if (slot >= 0)` block,
+    not inside the block that also needs Enable to have succeeded.
+    """
+    start = probe.rindex("#if PSP_ORACLE_CASE == HLE_CASE_INTR_CELLS\n")
+    section = _c_code(probe[start:probe.index("#endif /* HLE_CASE_INTR_CELLS */", start)])
+    functions = _c_function_bodies(section)
+    problems: list[str] = []
+    for install, remove in _HLE_INTR_REMOVERS.items():
+        owners = [name for name, body in functions.items() if f"{install}(" in body]
+        if len(owners) != 1:
+            problems.append(f"{install} is called from {owners}, not from exactly one function")
+            continue
+        body = functions[owners[0]]
+        if body.count(f"{install}(") != 1:
+            problems.append(f"{install} is called more than once in {owners[0]}")
+            continue
+        at = body.index(f"{install}(")
+        if f"{remove}(" not in body[at:]:
+            problems.append(f"{owners[0]} calls {install} without a later {remove}")
+            continue
+        between = body[at:body.index(f"{remove}(", at)]
+        # The install's own failure branch (`if (vt < 0) { ...; return; }`) installed nothing.
+        between = re.sub(r"if \(\w+ < 0\) \{[^{}]*\}", "", between)
+        if re.search(r"\breturn\b", between):
+            problems.append(f"{owners[0]} can return between {install} and {remove}")
+    vtimer = functions.get("ic_vtimer_series", "")
+    if not re.search(r"if \(vt < 0\) \{[^{}]*return;\s*\}", vtimer):
+        problems.append("ic_vtimer_series has no early return for a failed create only")
+    alarm = functions.get("ic_alarm_series", "")
+    if not re.search(r"if \(alarm >= 0\) \{\s*\(void\)sceKernelCancelAlarm\(alarm\);\s*\}", alarm):
+        problems.append("ic_alarm_series does not cancel every alarm UID SetAlarm returned")
+    run = functions.get("hle_run", "")
+    release = run.find("sceKernelReleaseSubIntrHandler(")
+    guard = run.rfind("if (slot >= 0) {", 0, release) if release >= 0 else -1
+    if guard < 0 or _c_close(run, guard + len("if (slot >= 0) ")) < release:
+        problems.append("the sub-interrupt release is not in its own if (slot >= 0) block")
+    else:
+        enabled = run.rfind("if (slot >= 0 && en >= 0) {", 0, release)
+        if enabled >= 0 and _c_close(run, enabled + len("if (slot >= 0 && en >= 0) ")) > release:
+            problems.append("the sub-interrupt release needs Enable to have succeeded")
+    return problems
+
+
+class HleIssuesProbeTests(unittest.TestCase):
+    """The HLE issue cells in probe_hle_issues.c: hle-issues-batch (106) and hle-intr-cells (107).
+
+    These cases do what the probe_hle_measure.c families may not: 107 installs VTimer,
+    alarm and VBLANK sub-interrupt handlers and suspends interrupts, and 106 calls a kernel
+    getter through the kernel bridge. The tests here hold them to the same safety rules
+    in spirit, adapted to what they do: every loop and wait bounded, a durable step marker
+    before each cell's calls (never inside a timed window), every handler, timer, alarm and
+    suspension removed on every path, import tables pinned exactly at link time, manifest
+    apis naming every import, and a strict parser for each stream.
+    """
+
+    # campaign case, CASE_ID, PRX stem, section macro, test id, host0 log
+    CASES = (
+        ("hle-issues-batch", 106, "hle_issues_batch", "HLE_CASE_ISSUES_BATCH",
+         "PSP-HLE-ISSUES-001", "hle_issues_batch_log.txt"),
+        ("hle-intr-cells", 107, "hle_intr_cells", "HLE_CASE_INTR_CELLS",
+         "PSP-HLE-INTR-001", "hle_intr_cells_log.txt"),
+    )
+    # The libraries each case imports beyond ThreadManForUser and the PSPSDK IO/CRT glue,
+    # exactly: library -> {NID: name}. `GLUE` names are imported by the PSPSDK libc glue,
+    # not called by the probe.
+    EXACT_IMPORTS = {
+        "hle-issues-batch": {
+            "KUBridge": {0x24331850: "kuKernelGetModel", 0x9060F69D: "kuKernelCall"},
+            "SystemCtrlForUser": {0x159AF5CC: "sctrlHENFindFunction"},
+            "SysMemUserForUser": {
+                0x6373995D: "sceKernelGetModel", 0x3FC9AE6A: "sceKernelDevkitVersion",
+                0xA291F107: "sceKernelMaxFreeMemSize", 0x237DBD4F: "sceKernelAllocPartitionMemory",
+                0xB6D61D02: "sceKernelFreePartitionMemory",
+                0x9D9A5BA1: "sceKernelGetBlockHeadAddr",
+            },
+        },
+        "hle-intr-cells": {
+            "InterruptManager": {
+                0xCA04A2B9: "sceKernelRegisterSubIntrHandler",
+                0xD61E6961: "sceKernelReleaseSubIntrHandler",
+                0xFB8E22EC: "sceKernelEnableSubIntr", 0x8A389411: "sceKernelDisableSubIntr",
+            },
+            "Kernel_Library": {
+                0x092968F4: "sceKernelCpuSuspendIntr", 0x5F10D406: "sceKernelCpuResumeIntr",
+                0xBEA46419: "sceKernelLockLwMutex", 0x15B6446B: "sceKernelUnlockLwMutex",
+            },
+        },
+    }
+    FORBIDDEN = {
+        "hle-issues-batch": ("InterruptManager",),
+        "hle-intr-cells": ("KUBridge", "SystemCtrlForUser"),
+    }
+    GLUE = frozenset({"sceKernelMaxFreeMemSize", "sceKernelAllocPartitionMemory",
+                      "sceKernelFreePartitionMemory", "sceKernelGetBlockHeadAddr",
+                      "sceKernelLockLwMutex", "sceKernelUnlockLwMutex"})
+    # The shared writer, round trip and module lifecycle, repeated from probe_hle_measure.c.
+    SHARED_FUNCTIONS = (
+        "static void hle_write(const char *line, int truncate)",
+        "static void hle_begin(void)",
+        "static void hle_step(const char *step)",
+        "static void hle_emit(const char *case_id, const char *status, uint32_t result,",
+        "static void hle_record(const char *case_id, const char *status, uint32_t result,",
+        "static int hle_host0_roundtrip(void)",
+        "static void hle_finish(int ok)",
+        "static void hle_park_until_stop(void)",
+        "int module_stop(SceSize args, void *argp)",
+        "int main(int argc, char **argv)",
+    )
+    # Calls that sit inside a cell and could hang or fault: each is made after the cell's
+    # own step marker (see test_each_cell_writes_its_step_before_its_calls).
+    MEASURED_CALL_RE = re.compile(
+        r"\b(sceKernel(?:CreateVTimer|StartVTimer|StopVTimer|DeleteVTimer|SetVTimerHandler|"
+        r"SetAlarm|CancelAlarm|DelayThread|RegisterSubIntrHandler|EnableSubIntr|"
+        r"DisableSubIntr|ReleaseSubIntrHandler|CpuSuspendIntr|CpuResumeIntr|DevkitVersion)|"
+        r"sctrlHENFindFunction|kuKernelCall|call)\s*\(")
+    HANDLERS = ("ic_vbl_handler", "ic_vtimer_handler", "ic_alarm_handler")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = Path(__file__).resolve().parents[1]
+        cls.fixture = cls.root / "fixtures" / "psp_oracle"
+        cls.probe = (cls.fixture / "probe_hle_issues.c").read_text(encoding="utf-8")
+        cls.measure = (cls.fixture / "probe_hle_measure.c").read_text(encoding="utf-8")
+        cls.makefile = (cls.fixture / "Makefile").read_text(encoding="utf-8")
+        cls.threadman = (cls.fixture / "threadman_user_imports.S").read_text(encoding="utf-8")
+        cls.manifest = json.loads((cls.root / "tools" / "psp_oracle" / "manifest.json")
+                                  .read_text(encoding="utf-8"))
+        cls.code = _c_code(cls.probe)
+
+    def _section(self, macro: str) -> str:
+        # The section, not the #if chain at the top that names the same macro.
+        start = self.probe.rindex(f"#if PSP_ORACLE_CASE == {macro}\n")
+        end = self.probe.index(f"#endif /* {macro} */", start)
+        return self.probe[start:end]
+
+    def _shared(self) -> str:
+        text = self.probe
+        for *_head, macro, _test, _log in reversed(self.CASES):
+            start = text.rindex(f"#if PSP_ORACLE_CASE == {macro}\n")
+            end = text.index(f"#endif /* {macro} */", start) + len(f"#endif /* {macro} */")
+            text = text[:start] + text[end:]
+        return text
+
+    def _case_block(self, case: str) -> str:
+        start = re.search(rf"^ifeq \(\$\(CASE\),{case}\)\n", self.makefile, re.MULTILINE).start()
+        return self.makefile[start:self.makefile.index("\nendif\n", start)]
+
+    # ---- Makefile wiring and import tables -------------------------------------------
+
+    def test_routes_build_each_case_from_the_issues_source_and_threadman_block(self) -> None:
+        routes = dict(re.findall(r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
+                                 self.makefile, re.MULTILINE))
+        for case, case_id, stem, *_rest in self.CASES:
+            with self.subTest(case=case):
+                self.assertEqual(routes.get(case), str(case_id))
+                match = re.search(rf"else ifeq \(\$\(CASE\),{case}\)\nTARGET = \$\(BUILD_DIR\)/"
+                                  rf"{stem}\nOBJS = (.*)\n", self.makefile)
+                self.assertIsNotNone(match, case)
+                self.assertEqual(match.group(1).split(), ["$(BUILD_DIR)/probe_hle_issues.o",
+                                                          "$(BUILD_DIR)/threadman_user_imports.o"])
+        self.assertIn("$(BUILD_DIR)/probe_hle_issues.o: probe_hle_issues.c hle_vfpu_cells.h\n"
+                      "\t$(CC) $(CFLAGS) -c $< -o $@\n", self.makefile)
+        self.assertIn("ifneq ($(filter $(BUILD_DIR)/probe_hle_issues.o,$(OBJS)),)\n"
+                      "PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp\nendif\n", self.makefile)
+        self.assertIn("int module_stop(SceSize args, void *argp)", self.probe)
+        # The bridge libraries are linked by the model-getter case only.
+        self.assertEqual(re.findall(r"^LIBS \+= .*pspsystemctrl_user.*$", self.makefile,
+                                    re.MULTILINE), ["LIBS += -lpspkubridge -lpspsystemctrl_user"])
+        self.assertIn("LIBS += -lpspkubridge -lpspsystemctrl_user",
+                      self._case_block("hle-issues-batch"))
+
+    def test_link_gate_pins_each_cases_extra_libraries_exactly(self) -> None:
+        nid_names = dict(
+            (int(nid, 16), name) for nid, name in re.findall(
+                r'\{0x([0-9a-f]{8})u, "(\w+)"\}',
+                (self.root / "src" / "rt" / "nid_names.h").read_text(encoding="utf-8")))
+        for case, *_rest in self.CASES:
+            with self.subTest(case=case):
+                block = self._case_block(case)
+                pins = {library: {int(nid, 16) for nid in nids.split(",")}
+                        for library, nids in re.findall(
+                            r"--exact-library (\w+)=((?:0x[0-9A-F]{8},?)+)", block)}
+                self.assertEqual(pins, {library: set(table) for library, table
+                                        in self.EXACT_IMPORTS[case].items()})
+                self.assertEqual(sorted(re.findall(r"--forbid-library (\w+)", block)),
+                                 sorted(self.FORBIDDEN[case]))
+                for table in self.EXACT_IMPORTS[case].values():
+                    for nid, name in table.items():
+                        if nid in nid_names:
+                            self.assertEqual(nid_names[nid], name, hex(nid))
+        # The two bridge NIDs nid_names.h does not carry, as PSPSDK's archives declare them.
+        self.assertEqual(self._nid_free_names(), {0x9060F69D, 0x159AF5CC})
+
+    def _nid_free_names(self) -> set[int]:
+        names = (self.root / "src" / "rt" / "nid_names.h").read_text(encoding="utf-8").lower()
+        return {nid for table in self.EXACT_IMPORTS.values() for library in table.values()
+                for nid in library if f"0x{nid:08x}u" not in names}
+
+    def test_every_called_import_is_pinned_or_declared_by_the_threadman_block(self) -> None:
+        threadman = {name for _lib, _nid, name in HleMeasureProbeTests._imports(self.threadman)}
+        sdk_io = HleMeasureProbeTests.SDK_DEFAULT_CALLS
+        for case, _cid, _stem, macro, _test, _log in self.CASES:
+            with self.subTest(case=case):
+                called = self._calls(macro)
+                pinned = {name for table in self.EXACT_IMPORTS[case].values()
+                          for name in table.values()}
+                self.assertEqual(sorted(called - threadman - sdk_io - pinned), [])
+                self.assertEqual(sorted(pinned - called - self.GLUE), [])
+
+    def test_built_import_tables_match_the_pins_when_a_local_build_exists(self) -> None:
+        build = self.fixture / "build"
+        present = [(case, build / f"{stem}.elf") for case, _i, stem, *_r in self.CASES
+                   if (build / f"{stem}.elf").is_file()]
+        if not present:
+            self.skipTest("no local hle_issues_batch/hle_intr_cells ELF; make CASE=<case> builds one")
+        threadman = {nid for _lib, nid, _name in HleMeasureProbeTests._imports(self.threadman)}
+        for case, path in present:
+            with self.subTest(elf=path.name):
+                data = path.read_bytes()
+                result = user_mode_imports.check_module(
+                    data,
+                    {library: frozenset(table) for library, table
+                     in self.EXACT_IMPORTS[case].items()},
+                    frozenset(self.FORBIDDEN[case]))
+                self.assertTrue(result.passed, result)
+                table = user_mode_imports.parse_import_table(data)
+                self.assertLessEqual({f.nid for f in table.funcs
+                                      if f.library == "ThreadManForUser"}, threadman)
+
+    # ---- shared code ------------------------------------------------------------------
+
+    def test_writer_round_trip_and_lifecycle_are_the_probe_hle_measure_copies(self) -> None:
+        for signature in self.SHARED_FUNCTIONS:
+            with self.subTest(function=signature):
+                self.assertEqual(HleMeasureProbeTests._function_body(self.probe, signature),
+                                 HleMeasureProbeTests._function_body(self.measure, signature))
+        for define in ('#define HLE_DONE_ID HLE_CAMPAIGN_ID "-done"',
+                       "#define HLE_SENTINEL 0xA5A5A5A5u",
+                       '#define HLE_SENTINEL_HEX "0xA5A5A5A5"',
+                       '#define HLE_ROUNDTRIP_PATH "host0:/nakagawa_transport_write.bin"',
+                       "#define HLE_ROUNDTRIP_BYTES 64u",
+                       "#define HLE_MAIN_STOP_TIMEOUT_US 1000000u",
+                       'PSP_MODULE_INFO("PSP_HLE_MEASURE", 0, 1, 0);'):
+            with self.subTest(define=define):
+                self.assertIn(define, self.probe)
+                self.assertIn(define, self.measure)
+        # Only the issue cases are built from this file.
+        self.assertIn("#error probe_hle_issues.c has no case for this PSP_ORACLE_CASE", self.probe)
+
+    def test_registrations_name_each_cases_test_id_and_log(self) -> None:
+        for case, case_id, _stem, macro, test_id, log in self.CASES:
+            with self.subTest(case=case):
+                self.assertIn(f"#define {macro} {case_id}\n", self.probe)
+                self.assertIn(f'#define HLE_CAMPAIGN_ID "{case}"\n#define HLE_TEST_ID "{test_id}"\n'
+                              f'#define HLE_LOG "host0:/{log}"', self.probe)
+                self.assertEqual(_campaign_host0_log_path(Path("/scratch"), case).name, log)
+                self.assertEqual(_campaign_completeness_contract(case), "strict-golden-sequence")
+                self.assertNotIn(case, CAMPAIGN_QUEUE_CASES)
+        self.assertNotIn("hle-intr-cells", CAMPAIGN_PROBE_CASES)
+        spec, _counts = CAMPAIGN_PROBE_CASES["hle-issues-batch"]
+        self.assertEqual(spec.test_id, "PSP-HLE-ISSUES-001")
+
+    def test_only_the_vfpu_case_runs_its_main_thread_with_the_vfpu_attribute(self) -> None:
+        self.assertIn("#if PSP_ORACLE_CASE == 106\n", self.probe)
+        attr = self.probe[self.probe.index("#if PSP_ORACLE_CASE == 106\n"):]
+        attr = attr[:attr.index("#endif") + len("#endif")]
+        self.assertIn("PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);\n#else\n"
+                      "PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);\n#endif", attr)
+        self.assertNotIn("lv.q", self._section("HLE_CASE_INTR_CELLS"))
+
+    # ---- source safety rules ----------------------------------------------------------
+
+    def test_every_loop_and_wait_is_bounded(self) -> None:
+        code = self.code
+        self.assertEqual(sorted(re.findall(r"while \(([^{]*)\) \{", code)), sorted([
+            "!s_hle_stop_requested", "offset < length",
+            "(uint32_t)(sceKernelGetSystemTimeLow() - t) < hold",
+            "(uint32_t)(sceKernelGetSystemTimeLow() - t0) < us",
+        ]))
+        for banned in ("for (;;)", "do {", "goto ", "malloc(", "sceKernelAllocPartitionMemory"):
+            self.assertNotIn(banned, code)
+        bound = r"(?:\d+u?|[A-Z][A-Z0-9_]*|sizeof\(\w+\)|first \+ n && k < 16u|count && .*|n)"
+        # The one variable bound: the stored handler calls, capped at IC_TCALLS.
+        self.assertIn("const uint32_t n = s_ic_tcount < IC_TCALLS ? s_ic_tcount : IC_TCALLS;", code)
+        headers = [code[loop.end():_c_close(code, loop.end() - 1)]
+                   for loop in re.finditer(r"\bfor \(", code)]
+        self.assertGreaterEqual(len(headers), 15)
+        for header in headers:
+            with self.subTest(loop=header):
+                self.assertRegex(header, rf"^(?:unsigned|int|uint32_t|size_t) (\w+) = [^;]+; "
+                                         rf"(?:\1 < {bound}|\w+ < 100u && s_ic_vbl_count == c); "
+                                         rf"\w+\+\+$")
+        # The spins: the handler hold is 0 or 25 ms, a suspension is at most 50 ms, and
+        # ic_spin_us runs only those windows and a 200 us settle.
+        intr = _c_code(self._section("HLE_CASE_INTR_CELLS"))
+        self.assertEqual(sorted(re.findall(r"s_ic_vbl_hold_us = (\w+);", intr)),
+                         ["0u", "25000u"])
+        self.assertEqual(sorted(int(us[:-1]) for us in
+                                re.findall(r'ic_vbl_masked\("[\w-]+", (\d+u)\)', intr)),
+                         [20000, 20000, 50000])
+        self.assertEqual(sorted(re.findall(r"\bic_spin_us\((\w+)\);", intr)), ["200u", "us"])
+        for delay in re.findall(r"sceKernelDelayThread\((\w+)\)", intr):
+            with self.subTest(delay=delay):
+                self.assertRegex(delay, r"^\d+$")
+                self.assertLessEqual(int(delay), 250000)
+        self.assertNotIn("sceKernelSleepThread", _c_code(self._section("HLE_CASE_INTR_CELLS")))
+        self.assertNotIn("sceKernelSleepThread", _c_code(self._section("HLE_CASE_ISSUES_BATCH")))
+
+    def test_each_cell_writes_its_step_before_its_calls(self) -> None:
+        """Scanning each function in order, a measured call never follows a record (the end
+        of a cell) without a new step; a helper with measured calls but no step of its own
+        counts as a measured call where it is called. The VFPU instruction cells, which make
+        no system call, write one step per group: per vscmp operand set and per C2 row of a
+        carry grid (at most 56 cells)."""
+        functions = _c_function_bodies(self.code)
+        helpers = {name for name, body in functions.items()
+                   if self.MEASURED_CALL_RE.search(body) and "hle_step(" not in body
+                   and name not in self.HANDLERS}
+        self.assertEqual(helpers, {"ic_vbl_align"})
+        event_re = re.compile(r"\bhle_step\(|\bhle_record\(|" + self.MEASURED_CALL_RE.pattern
+                              + r"|\b(?:" + "|".join(sorted(helpers)) + r")\(")
+        checked = 0
+        for name, body in functions.items():
+            if name in self.HANDLERS or name in helpers:
+                continue
+            stepped = False
+            for event in event_re.finditer(body):
+                token = event.group(0)
+                if token.startswith("hle_step("):
+                    stepped = True
+                elif token.startswith("hle_record("):
+                    # A record ends its cell, unless it is a failure record and the
+                    # function returns right after it.
+                    rest = body[body.index(";", event.end()) + 1:].lstrip()
+                    stepped = stepped and rest.startswith("return")
+                else:
+                    checked += 1
+                    self.assertTrue(stepped, f"{name}: {token} is not after its cell's step")
+        self.assertGreaterEqual(checked, 20)
+        carry = functions["ic_rnd_carry"]
+        self.assertLess(carry.index("for (unsigned i = 0; i < 8u; i++) {"), carry.index("hle_step(name);"))
+        self.assertLess(carry.index("hle_step(name);"), carry.index("for (unsigned j = 0; j < 8u; j++) {"))
+        self.assertLess(carry.index("for (unsigned k = 0; k < 7u; k++) {"), carry.index("ic_rnd_step("))
+        vscmp = functions["ic_vscmp"]
+        self.assertLess(vscmp.index("hle_step(name);"), vscmp.index("for (unsigned f = 0; f < 5u; f++) {"))
+
+    def test_no_host_io_runs_inside_a_timed_window_or_a_handler(self) -> None:
+        functions = _c_function_bodies(_c_code(self._section("HLE_CASE_INTR_CELLS")))
+        for handler in self.HANDLERS:
+            with self.subTest(handler=handler):
+                body = functions[handler]
+                self.assertNotRegex(body, r"\bhle_\w+\(")
+                self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", body)),
+                                 {"sceKernelGetSystemTimeLow"})
+        masked = functions["ic_vbl_masked"]
+        window = masked[masked.index("sceKernelCpuSuspendIntr()"):
+                        masked.index("sceKernelCpuResumeIntr(flags)")]
+        self.assertNotRegex(window, r"\bhle_\w+\(")
+        run = functions["hle_run"]
+        hold = run[run.index("s_ic_vbl_hold_us = 25000u;"):]
+        self.assertNotRegex(hold[:hold.index("ic_vbl_times(")], r"\bhle_\w+\(")
+        for series in ("ic_vtimer_series", "ic_alarm_series"):
+            with self.subTest(series=series):
+                body = functions[series]
+                timed = body[body.index("const uint32_t ref = "):body.index("ic_tcalls_rows(")]
+                self.assertNotRegex(timed, r"\bhle_\w+\(")
+
+    def test_every_handler_timer_alarm_and_suspension_is_removed_on_every_path(self) -> None:
+        self.assertEqual(_hle_intr_cleanup_problems(self.probe), [])
+        section = _c_code(self._section("HLE_CASE_INTR_CELLS"))
+        self.assertIn("sceKernelRegisterSubIntrHandler(PSP_VBLANK_INT, s, (void *)ic_vbl_handler, NULL)",
+                      section)
+        self.assertIn("for (int s = 0; s < 16; s++) {", section)
+        self.assertIn("if (slot < 0) {", section)
+
+    def test_the_cleanup_check_refuses_each_leak(self) -> None:
+        release = ("    if (slot >= 0) {\n        hle_step(\"vbl-release\");\n"
+                   "        const int dis = sceKernelDisableSubIntr(PSP_VBLANK_INT, slot);\n"
+                   "        const int rel = sceKernelReleaseSubIntrHandler(PSP_VBLANK_INT, slot);\n")
+        self.assertIn(release, self.probe)
+        # The measured 2026-10-24 revision released the handler only when Enable succeeded.
+        measured_shape = re.sub(r'(ic_vbl_times\("vbl-hold-25ms", ref2, 0u, 8u, 1\);\n)    \}\n',
+                                r"\1", self.probe, count=1)
+        measured_shape = measured_shape.replace(
+            '        hle_record("vbl-release", "PASS", (uint32_t)rel, w, 2);\n    }\n',
+            '        hle_record("vbl-release", "PASS", (uint32_t)rel, w, 2);\n    }\n    }\n', 1)
+        mutants = {
+            "release-needs-enable": measured_shape,
+            "no-release": self.probe.replace(
+                "const int rel = sceKernelReleaseSubIntrHandler(PSP_VBLANK_INT, slot);",
+                "const int rel = 0;", 1),
+            "no-cancel": self.probe.replace("(void)sceKernelCancelAlarm(alarm);", "", 1),
+            "no-delete": self.probe.replace("(void)sceKernelDeleteVTimer(vt);", "", 1),
+            "early-return": self.probe.replace(
+                "(void)sceKernelStartVTimer(vt);\n",
+                "(void)sceKernelStartVTimer(vt);\n    if (first_us == 0u) {\n        return;\n    }\n", 1),
+            "no-resume": self.probe.replace("sceKernelCpuResumeIntr(flags);", "", 1),
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name):
+                self.assertNotEqual(mutant, self.probe)
+                self.assertNotEqual(_hle_intr_cleanup_problems(mutant), [], name)
+
+    def test_only_the_interrupt_case_names_state_changing_stubs(self) -> None:
+        forbidden = re.compile(r"sce\w*(?:Set|Install|Remove|Flush|Register|Reset)\w*")
+        for macro, expected in (("HLE_CASE_INTR_CELLS", {"sceKernelSetAlarm",
+                                                          "sceKernelSetVTimerHandler",
+                                                          "sceKernelRegisterSubIntrHandler"}),
+                                ("HLE_CASE_ISSUES_BATCH", set())):
+            with self.subTest(section=macro):
+                names = set(re.findall(r"\b(sce\w+)\b", _c_code(self._section(macro))))
+                self.assertEqual({name for name in names if forbidden.fullmatch(name)}, expected)
+        shared = set(re.findall(r"\b(sce\w+)\b", _c_code(self._shared())))
+        self.assertEqual({name for name in shared if forbidden.fullmatch(name)}, set())
+
+    def test_the_kernel_getter_call_is_pinned_and_guarded(self) -> None:
+        section = _c_code(self._section("HLE_CASE_ISSUES_BATCH"))
+        self.assertEqual(section.count("kuKernelCall("), 1)
+        self.assertIn("static const uint32_t nids[2] = {0x07c586a1u, 0x6373995du};", section)
+        self.assertIn('sctrlHENFindFunction("sceSystemMemoryManager", "SysMemForKernel", nids[n])',
+                      section)
+        guard = section.index("if (addr >= 0x88000000u && addr < 0x8c000000u) {")
+        self.assertLess(guard, section.index("kuKernelCall("))
+        self.assertLess(section.index("kuKernelCall("), _c_close(section, section.index("{", guard)))
+        self.assertIn("arg.ret1 = HLE_SENTINEL;", section)
+        # The hand-written user import: SysMemUserForUser, NID 0x6373995d, PSPSDK stub flags.
+        for fragment in ('".word 0x40010000\\n\\t"', '".word 0x6373995d\\n\\t"',
+                         '".asciz \\"SysMemUserForUser\\"\\n\\t"'):
+            self.assertIn(fragment, section)
+        self.assertEqual(HleMeasureProbeTests._nid("sceKernelGetModel"), 0x6373995D)
+
+    def test_record_shapes_and_grids_match_the_registry(self) -> None:
+        section = _c_code(self._section("HLE_CASE_ISSUES_BATCH"))
+        _spec, counts = CAMPAIGN_PROBE_CASES["hle-issues-batch"]
+        self.assertIn('hle_record(case_id, "PASS", v0, w, 3);', section)
+        self.assertIn('hle_record(name, "PASS", arg.ret1, w, 3);', section)
+        self.assertIn('hle_record(name, "PASS", out[0], w, 17);', section)
+        self.assertIn('hle_record(name, "PASS", s_ic_vscmp_forms[f].word, w, 16);', section)
+        self.assertEqual({counts[case] for case in parse_golden.HLE_ISSUES_MODEL_CASES}, {3})
+        self.assertEqual(counts["vscmp-p1-nan-mixed-vscmp.q-same"], 16)
+        self.assertEqual(counts["rcbig-p1-7-7-6"], 17)
+        c2s, c3s, carries = parse_golden.HLE_ISSUES_CARRY_GRID
+        for fragment in (f"s_ic_c2[{c2s}]", f"s_ic_c3[{c3s}]", f"s_ic_carry[{carries}]",
+                         f"s_ic_carry_big[{carries}]",
+                         f"s_ic_vscmp_sets[{len(parse_golden.HLE_ISSUES_VSCMP_SETS)}]",
+                         f"s_ic_vscmp_forms[{len(parse_golden.HLE_ISSUES_VSCMP_FORMS)}]",
+                         f"pass < {parse_golden.HLE_ISSUES_PASSES}u"):
+            self.assertIn(fragment, section)
+        for name in parse_golden.HLE_ISSUES_VSCMP_SETS:
+            self.assertIn(f'{{"{name}", {{', section)
+        for form in parse_golden.HLE_ISSUES_VSCMP_FORMS:
+            self.assertIn(f'{{"{form}", 0x', section)
+        for name in parse_golden.HLE_ISSUES_MODEL_CASES[:4]:
+            self.assertIn(f'ic_model_row("{name}", ', section)
+        self.assertIn('"model-kernel-get-model-%08x"', section)
+        self.assertIn('"%s-p%u-%u-%u-%u", stem, pass, i, j, k', section)
+        self.assertIn('ic_rnd_carry(pass, "rcar", s_ic_carry);\n        '
+                      'ic_rnd_carry(pass, "rcbig", s_ic_carry_big);', section)
+        self.assertLess(section.index("ic_vscmp(pass);"), section.index('ic_rnd_carry(pass, "rcar"'))
+        self.assertEqual(len(parse_golden.HLE_ISSUES_BATCH_CASES), 1858)
+
+    def test_interrupt_cell_names_and_out_counts_match_the_parser(self) -> None:
+        section = _c_code(self._section("HLE_CASE_INTR_CELLS"))
+        self.assertEqual(tuple(re.findall(r'ic_(?:vtimer|alarm)_series\("([\w-]+)"', section)),
+                         parse_golden.HLE_INTR_SERIES)
+        self.assertIn(f"#define IC_TCALLS {parse_golden.HLE_INTR_TCALLS}u", self.probe)
+        self.assertEqual(tuple(re.findall(r'hle_step\("(vbl-[\w-]+)"\)|ic_vbl_masked\("([\w-]+)"',
+                                          section)),
+                         (("vbl-register", ""), ("vbl-free", ""), ("", "vbl-masked-20ms"),
+                          ("", "vbl-masked-50ms"), ("", "vbl-masked-20ms-again"),
+                          ("vbl-hold-25ms", ""), ("vbl-release", "")))
+        counts = parse_golden.HLE_INTR_OUT_COUNTS
+        self.assertIn('hle_record("vbl-register", slot >= 0 && en >= 0 ? "PASS" : "FAIL", '
+                      f'(uint32_t)slot, w, {counts["vbl-register"]});', section)
+        self.assertIn(f'hle_record("vbl-release", "PASS", (uint32_t)rel, w, {counts["vbl-release"]});',
+                      section)
+        self.assertIn(f"uint32_t w[{counts['vbl-masked-20ms']}] = ", section)
+        self.assertIn(f'ic_vbl_times("vbl-free", ref, 0u, {counts["vbl-free"]}u, 0);', section)
+        self.assertIn(f'ic_vbl_times("vbl-hold-25ms", ref2, 0u, {counts["vbl-hold-25ms"] // 2}u, 1);',
+                      section)
+        self.assertIn('hle_record(row, "PASS", i + 1u, w, 4);', section)
+        self.assertIn('hle_record(name, "PASS", calls_at_end, w, 3);', section)
+        self.assertIn('hle_record(row, "PASS", later - at_end, w, 1);', section)
+        self.assertIn('hle_record(name, "FAIL", (uint32_t)vt, NULL, 0);', section)
+
+    # ---- manifest -----------------------------------------------------------------------
+
+    WRAPPER_RE = re.compile(r"^IC_V0_WRAPPER\(\w+, (\w+)\);$", re.MULTILINE)
+
+    def _calls(self, macro: str) -> set[str]:
+        text = _c_code(self._shared() + self._section(macro))
+        calls = set(re.findall(r"\b((?:sce|ku|sctrl)\w+)\s*\(", text))
+        calls |= {target[3:] if target.startswith("ic_") else target
+                  for target in self.WRAPPER_RE.findall(text)}
+        return calls
+
+    def test_manifest_rows_are_not_run_and_name_every_import(self) -> None:
+        by_id = {test["id"]: test for test in self.manifest["tests"]}
+        for case, _cid, stem, macro, test_id, _log in self.CASES:
+            with self.subTest(case=case):
+                self.assertEqual(sum(1 for test in self.manifest["tests"] if test["id"] == test_id), 1)
+                row = by_id[test_id]
+                self.assertEqual(row["status"], "implemented")
+                self.assertEqual(row["hardware_evidence"], "NOT_RUN")
+                for absent in ("evidence_ref", "evidence_cases", "measurement_note"):
+                    self.assertNotIn(absent, row)
+                self.assertIn("No acceptance-eligible capture exists",
+                              row["evidence_note"])
+                self.assertIn("not in the campaign queue", row["evidence_note"])
+                self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_issues.c")
+                self.assertEqual(row["prx"], f"{stem}.prx")
+                self.assertEqual(row["diagnostic_case_ids"], [case])
+                self.assertEqual(row["reset"], "one PRX launch; PSPLink soft reset before the next launch")
+                listed = {api for api in row["apis"] if not api.startswith("Allegrex ")}
+                self.assertEqual(sorted(listed), sorted(self._calls(macro)))
+                self.assertEqual(row["case_ids"][-1], f"{case}-done")
+        self.assertEqual(by_id["PSP-HLE-ISSUES-001"]["issues"], [326, 356])
+        self.assertEqual(by_id["PSP-HLE-INTR-001"]["issues"], [325])
+
+    def test_manifest_case_patterns_cover_each_stream_in_order(self) -> None:
+        by_id = {test["id"]: test for test in self.manifest["tests"]}
+        spec, _counts = CAMPAIGN_PROBE_CASES["hle-issues-batch"]
+        streams = {
+            "PSP-HLE-ISSUES-001": list(spec.ordered_cases),
+            "PSP-HLE-INTR-001": [case_id for case_id, *_r in self._intr_records(calls=(8, 8, 8, 8, 8))],
+        }
+        for test_id, cases in streams.items():
+            with self.subTest(test_id=test_id):
+                patterns = [re.compile(re.escape(p).replace(r"\*", ".+"))
+                            for p in by_id[test_id]["case_ids"]]
+                position = 0
+                for case_id in cases:
+                    while position < len(patterns) and not patterns[position].fullmatch(case_id):
+                        position += 1
+                    self.assertLess(position, len(patterns), f"{case_id} is not covered in order")
+
+    # ---- parsers ------------------------------------------------------------------------
+
+    def test_issues_batch_stream_is_strict_and_pass_only(self) -> None:
+        helper = HleMeasureProbeTests("test_case_ids_are_registered_once_and_match_the_families")
+        text = helper._stream("hle-issues-batch")
+        body = helper._body(text)
+        self.assertTrue(parse_campaign_probe_output(body, "hle-issues-batch").complete)
+        self.assertTrue(_campaign_stream_complete(text, "hle-issues-batch"))
+        spec, counts = CAMPAIGN_PROBE_CASES["hle-issues-batch"]
+        self.assertEqual(len(spec.semantic_cases), 1858)
+        skipped = helper._stream("hle-issues-batch", {"rcar-p0-3-4-5": ("SKIP", 0, [0] * 17)})
+        with self.assertRaisesRegex(ProtocolError, "unconditional observation"):
+            parse_campaign_probe_output(helper._body(skipped), "hle-issues-batch")
+        short = helper._stream("hle-issues-batch", {"vscmp-p0-inf-inf-vscmp.t": ("PASS", 0, [0] * 15)})
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(helper._body(short), "hle-issues-batch")
+        truncated = "\n".join(text.splitlines()[:-200]) + "\n"
+        self.assertFalse(_campaign_stream_complete(truncated, "hle-issues-batch"))
+
+    @staticmethod
+    def _intr_records(calls=(6, 5, 4, 6, 5), failed_vtimers=(), register="enabled"):
+        records = []
+        for name, count in zip(parse_golden.HLE_INTR_SERIES, calls, strict=True):
+            if name in failed_vtimers:
+                records.append((name, "FAIL", 0x80020190, []))
+                continue
+            for i in range(min(count, parse_golden.HLE_INTR_TCALLS)):
+                records.append((f"{name}-call{i}", "PASS", i + 1, [0x1000 * i, 0, 0, 0]))
+            records.append((name, "PASS", count, [count, 0, 0]))
+            records.append((f"{name}-after-zero", "PASS", 0, [count]))
+        tries = [0x80020067, 0] + [0] * 14
+        if register == "enabled":
+            records.append(("vbl-register", "PASS", 1, [0] + tries))
+            for cell in parse_golden.HLE_INTR_VBL_CELLS:
+                records.append((cell, "PASS", 0, [0] * parse_golden.HLE_INTR_OUT_COUNTS[cell]))
+            records.append(("vbl-release", "PASS", 0, [0, 0]))
+        elif register == "enable-refused":
+            records.append(("vbl-register", "FAIL", 1, [0x80020065] + tries))
+            records.append(("vbl-release", "PASS", 0, [0, 0]))
+        else:  # no slot
+            records.append(("vbl-register", "FAIL", 0xFFFFFFFF, [0xFFFFFFFF] + [0x80020067] * 16))
+        return records
+
+    @staticmethod
+    def _intr_text(records, done=None) -> str:
+        lines = ["NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown "
+                 "binary_sha256=" + "0" * 64 + " source_commit=" + "b" * 40 + " fixture=hle-measure"]
+        for case_id, status, result, outs in records:
+            lines.append(f"NAKAGAWA_PSP_STEP schema=1 case_id=hle-intr-cells step={case_id}")
+            fields = " ".join(f"out{i}=0x{value:x}" for i, value in enumerate(outs))
+            lines.append(f"NAKAGAWA_PSP_TEST schema=1 test_id=PSP-HLE-INTR-001 case_id={case_id} "
+                         f"status={status} result=0x{result:x} {fields}".rstrip())
+        count = len(records) if done is None else done
+        lines.append("NAKAGAWA_PSP_TEST schema=1 test_id=PSP-HLE-INTR-001 case_id=hle-intr-cells-done "
+                     f"status=PASS result=0x0 out0=0x{count:x}")
+        return "\n".join(lines) + "\n"
+
+    def test_intr_parser_accepts_every_shape_the_probe_can_emit(self) -> None:
+        shapes = {
+            "measured-like": self._intr_records(),
+            "no-calls": self._intr_records(calls=(0, 0, 0, 0, 0)),
+            "more-calls-than-stored": self._intr_records(calls=(12, 9, 8, 30, 8)),
+            "vtimer-create-failed": self._intr_records(failed_vtimers=("vtimer-ret-1us",)),
+            "enable-refused": self._intr_records(register="enable-refused"),
+            "no-slot": self._intr_records(register="no-slot"),
+        }
+        for name, records in shapes.items():
+            with self.subTest(shape=name):
+                text = self._intr_text(records)
+                self.assertTrue(parse_hle_intr_cells_output(text).complete)
+                full = text + "NAKAGAWA_PSP_COMPLETE schema=1 status=PASS\n"
+                self.assertTrue(_campaign_stream_complete(full, "hle-intr-cells"))
+
+    def test_intr_parser_refuses_bookkeeping_damage(self) -> None:
+        good = self._intr_records()
+
+        def edit(case_id, **change):
+            records = []
+            for record in good:
+                if record[0] == case_id:
+                    record = (change.get("case_id", record[0]), change.get("status", record[1]),
+                              change.get("result", record[2]), change.get("outs", record[3]))
+                records.append(record)
+            return records
+
+        mutants = {
+            "call-count": edit("vtimer-ret-20ms", outs=[7, 0, 0]),
+            "sequence": edit("alarm-ret-1us-call2", result=7),
+            "short-row": edit("vbl-masked-50ms", outs=[0] * 13),
+            "failed-cell": edit("vbl-free", status="FAIL"),
+            "alarm-fail": edit("alarm-ret-20ms", status="FAIL"),
+            "register-status": edit("vbl-register", status="FAIL"),
+            "slot-range": edit("vbl-register", result=16),
+            "missing-release": [r for r in good if r[0] != "vbl-release"],
+            "missing-after-zero": [r for r in good if r[0] != "vtimer-ret-mixed-after-zero"],
+            "cells-without-slot": [r for r in self._intr_records(register="no-slot")]
+            + [("vbl-free", "PASS", 0, [0] * 12)],
+            "reordered": good[:3] + [good[4], good[3]] + good[5:],
+        }
+        for name, records in mutants.items():
+            with self.subTest(mutant=name):
+                with self.assertRaises(ProtocolError):
+                    parse_hle_intr_cells_output(self._intr_text(records))
+        with self.assertRaises(ProtocolError):
+            parse_hle_intr_cells_output(self._intr_text(good, done=len(good) - 1))
+        text = self._intr_text(good)
+        truncated = "\n".join(text.splitlines()[:-6]) + "\n"
+        self.assertFalse(parse_hle_intr_cells_output(truncated, require_complete=False).complete)
+        with self.assertRaises(ProtocolError):
+            parse_hle_intr_cells_output(truncated)
+
+    # ---- docs -----------------------------------------------------------------------------
+
+    def test_docs_list_both_cases_as_observed_but_not_acceptance_eligible(self) -> None:
+        hardware = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        readme = (self.fixture / "README.md").read_text(encoding="utf-8")
+        for case, _cid, _stem, _macro, test_id, _log in self.CASES:
+            with self.subTest(case=case):
+                self.assertIn(f"| `{case}` | `{test_id}` | `NOT_RUN` (observed 2026-10-24 from "
+                              "`da97b2c0` without a runner envelope, so not acceptance-eligible; "
+                              "single launch, not in the campaign queue) |", hardware)
+                self.assertIn(f"| `{case}` | `{test_id}` |", readme)
+        self.assertIn("probe_hle_issues.c", readme)
+
 
 class VramMirrorParserTests(unittest.TestCase):
     TEST_ID = "PSP-VRAM-MIRROR-001"

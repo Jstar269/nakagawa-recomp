@@ -117,23 +117,29 @@ static int sched_status_is_negative(int32_t status) {
     return status < 0;
 }
 
-#define SR_STACK_ARENA_FLOOR 0x05000000u
+/* Thread stacks come out of the PSP user partition [0x08800000, 0x0a000000), as on a PSP,
+ * descending from its top. The runtime's own guest-visible stacks (the VBLANK interrupt
+ * stack below and the nested host->guest frames, nested_frames.h) live in kernel RAM below
+ * the volatile partition, so none of the user partition is withheld from the game: a
+ * fixed 21 MB request that fits on a PSP used to be refused here because the arena ended
+ * 1.06 MiB early, at 0x09ef0000. */
+#define SR_STACK_ARENA_FLOOR 0x08800000u
+#define SR_STACK_ARENA_CEIL  0x0a000000u
 /* Dedicated VBLANK interrupt stack reservation (Issue #98 / PORTING.md Section C-6).
- * 64 KiB region [0x09ef0000, 0x09f00000) structurally reserved between the
- * thread-stack arena ceiling and the nested host->guest frame region.
- * The thread-stack arena ceiling is derived from this base, ensuring that
- * thread stack allocation can never hand out or collide with the VBLANK interrupt stack. */
+ * 64 KiB region [0x082f0000, 0x08300000) in kernel RAM, directly below the nested
+ * host->guest frame region and outside the thread-stack arena, so thread stack
+ * allocation can never hand out or collide with the VBLANK interrupt stack. */
 #define SR_VBLANK_STACK_SIZE 0x00010000u
 #define SR_VBLANK_STACK_TOP  SR_NESTED_FRAME_BASE
 #define SR_VBLANK_STACK_BASE (SR_VBLANK_STACK_TOP - SR_VBLANK_STACK_SIZE)
 
-#define SR_STACK_ARENA_CEIL  SR_VBLANK_STACK_BASE
-_Static_assert(SR_STACK_ARENA_CEIL == 0x09ef0000u,
-               "deriving the ceiling from the VBLANK reservation must set expected floor");
 _Static_assert(SR_STACK_ARENA_FLOOR < SR_STACK_ARENA_CEIL,
-               "the thread-stack arena must be non-empty and below the VBLANK reservation");
-_Static_assert(SR_STACK_ARENA_CEIL == SR_VBLANK_STACK_BASE,
-               "the thread-stack arena must end exactly at the VBLANK reservation base");
+               "the thread-stack arena must be non-empty");
+_Static_assert(SR_VBLANK_STACK_BASE >= 0x08000000u && SR_NESTED_FRAME_END <= 0x08400000u,
+               "the runtime's VBLANK stack and nested frames must stay in kernel RAM, "
+               "below the volatile partition");
+_Static_assert(SR_NESTED_FRAME_END <= SR_STACK_ARENA_FLOOR,
+               "the runtime's stacks must lie below the thread-stack arena");
 _Static_assert(SR_VBLANK_STACK_TOP == SR_NESTED_FRAME_BASE,
                "the VBLANK reservation must end exactly at the nested-frame region base");
 #define SR_STACK_RANGE_MAX   (MAXTHREADS + 1)
@@ -2563,7 +2569,7 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     t->saved.r[28] = s_cpu && s_cpu->r[28] ? s_cpu->r[28] : s_gp;
     t->gp_init = t->saved.r[28];
     t->saved.pc = entry;                         /* BUG1 fix: must seed pc=entry; otherwise dispatch target=entry sees s->pc=0 */
-    t->saved.vfpuCtrl[0] = 0xe4; t->saved.vfpuCtrl[1] = 0xe4; t->saved.vfpuCtrl[2] = 0;
+    sr_vfpu_thread_ctrl_init(&t->saved);
 
     /* Seed the thread's TLS region (k0 + 4) to point to its own private reentrancy
      * structure space (allocated within the k0 region at k0 + 0x10) to prevent cross-thread
@@ -2622,7 +2628,7 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
         t->saved.r[26] = t->k0_init;
         t->saved.r[29] = t->sp_init;
         t->saved.r[28] = t->gp_init;
-        t->saved.vfpuCtrl[0] = 0xe4; t->saved.vfpuCtrl[1] = 0xe4; t->saved.vfpuCtrl[2] = 0;
+        sr_vfpu_thread_ctrl_init(&t->saved);
         t->saved.pc = t->entry;
     }
     /* sceKernelStartThread copies the caller-supplied argument block onto the new

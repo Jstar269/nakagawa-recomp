@@ -59,6 +59,29 @@ def _entry_offset(blob: bytes, index: int) -> int:
     return DATA_FILE_OFF + (libstub - BASE_VADDR) + 20 * index
 
 
+def _own_stub_run_layout(primary, moved: int):
+    """A layout whose window ``moved`` has its own stub run, NIDs left in place.
+
+    The shape of a stripped retail module importing from a game-supplied library:
+    no .sceStub.text section, the system-library stubs in one block, the game
+    library's stub run placed elsewhere by the linker (here past the NID table,
+    leaving a gap after the stub block), and every NID contiguous in
+    .rodata.sceNid. Returns (ELF bytes, expected stub map).
+    """
+    blob, expected = build_import_layout_elf(primary, per_library_stub_sections=True)
+    image = bytearray(blob)
+    nid_section = Elf(blob, base=0).sec(".rodata.sceNid")
+    run = (nid_section["addr"] + nid_section["size"] + 15) & ~7
+    entry = _entry_offset(blob, moved)
+    old_sym = struct.unpack_from("<I", image, entry + 16)[0]
+    struct.pack_into("<I", image, entry + 16, run)
+    name, nids = primary[moved]
+    expected = {addr: value for addr, value in expected.items()
+                if not old_sym <= addr < old_sym + 8 * len(nids)}
+    expected.update({run + 8 * k: (name, nid) for k, nid in enumerate(nids)})
+    return bytes(image), expected
+
+
 class CodegenImportCompatibilityTests(unittest.TestCase):
     def _parse(self, blob: bytes):
         with tempfile.TemporaryDirectory(prefix="imports-codegen-") as tmp:
@@ -218,6 +241,32 @@ class RetailImportLayoutTests(unittest.TestCase):
         exc = self._boundary(blob)
         self.assertEqual(exc.code, "ANALYZER_IMPORT_TABLE_INVALID")
         self.assertIn("no import window lies in the named import sections", str(exc))
+
+    def test_window_with_its_own_stub_run_pairs_by_that_run(self) -> None:
+        # The last library's stubs sit apart from the stub block while its NIDs
+        # end .rodata.sceNid: the loader patches that window's slots from its own
+        # NIDs, so it pairs by its own run instead of failing the 1:1 rule.
+        blob, expected = _own_stub_run_layout(PRIMARY, moved=2)
+        stubs, findings = self._model(blob)
+        self.assertEqual(stubs, expected)
+        self.assertEqual(findings, [
+            ".rodata.sceNid has a tail of 2 NID words outside the window-paired run "
+            "(4 slots); 2 NID words of it belong to windows paired by their own stub runs",
+            "import windows outside the named import sections: 1 windows, "
+            "2 slots paired by their own runs",
+        ])
+
+    def test_own_stub_run_split_keeps_its_edges(self) -> None:
+        cases = {
+            # Two windows at two offsets: no majority says which one moved.
+            "no majority offset": _own_stub_run_layout(PRIMARY[:2], moved=1)[0],
+            # The moved window's NIDs sit between the others' NIDs, so the
+            # majority's run would not pair 1:1 without it.
+            "nid run inside the majority's": _own_stub_run_layout(PRIMARY, moved=1)[0],
+        }
+        for label, blob in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self._boundary(blob).code, "ANALYZER_IMPORT_REGIONS_MISMATCH")
 
     def test_sectionless_windows_with_different_offsets_fail_closed(self) -> None:
         # Without section bounds a detached run cannot be told from a corrupted
@@ -387,6 +436,7 @@ class AuditAnalyzerParityTests(unittest.TestCase):
             "padded section table": build_import_layout_elf(PRIMARY, padding_sections=600),
             "duplicate nid section header": build_import_layout_elf(
                 PRIMARY, duplicate_nid_section=True),
+            "window with its own stub run": _own_stub_run_layout(PRIMARY, moved=2),
         }
         for label, (blob, expected) in cases.items():
             self.assertParity(blob, accepted=True, label=label)

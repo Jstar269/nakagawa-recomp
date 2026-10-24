@@ -2628,10 +2628,10 @@ int main(int argc, char **argv) {
         stops->games[0] = entry;
         stops->game_count = 1;
         stops->selected_game_index = 0;
-        assert(player_app_focus_count(stops) == 3); /* incompatible package: add + remove + mapping */
+        assert(player_app_focus_count(stops) == 4); /* incompatible package: rebuild + add + remove + mapping (#1147) */
 
         stops->games[0].is_prepared = true;
-        assert(player_app_focus_count(stops) == 3); /* no validated package: add + remove + mapping */
+        assert(player_app_focus_count(stops) == 4); /* no validated package is still incompatible: rebuild + add + remove + mapping */
 
         stops->is_game_running = true;
         assert(player_app_focus_count(stops) == 4); /* stop + add + remove + mapping */
@@ -2641,13 +2641,13 @@ int main(int argc, char **argv) {
         stops->window_width = 640;
         assert(player_app_visible_library_cards(stops) == 2);
         stops->game_count = 1;
-        assert(player_app_focus_count(stops) == 3); /* add + remove + mapping */
+        assert(player_app_focus_count(stops) == 4); /* rebuild + add + remove + mapping */
         seed_entry(&entry, "FCS00002", "Second");
         stops->games[1] = entry;
         seed_entry(&entry, "FCS00003", "Third");
         stops->games[2] = entry;
         stops->game_count = 3;
-        assert(player_app_focus_count(stops) == 5); /* + both paging stops */
+        assert(player_app_focus_count(stops) == 6); /* + both paging stops */
 
         /* A title with missing package offers the BUILD PACKAGE button */
         stops->window_width = 1280;

@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **320** (declared in `recomp.h`: 262)
-- reach class: emitter-reached 58, production-runtime-only 237, selftest-only 14, address-only 3, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 23, upstream_derived 296
+- helpers: **321** (declared in `recomp.h`: 263)
+- reach class: emitter-reached 58, production-runtime-only 238, selftest-only 14, address-only 3, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 23, upstream_derived 297
 
 ## Helpers
 
@@ -352,6 +352,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_vfpu_rsqrt` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_sin` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_sqrt` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
+| `sr_vfpu_thread_ctrl_init` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_vram_cpu_address` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_vram_cpu_aperture` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_vram_cpu_span_touches` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |

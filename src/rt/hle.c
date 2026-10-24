@@ -584,21 +584,27 @@ typedef struct { uint32_t uid, addr, size, slot_size, prev, next; } Block;
 static Block s_blocks[HLE_MAX_PARTITION_BLOCKS];
 
 /* Guest thread stacks are carved by the scheduler from a descending arena that ends at
- * 0x09ef0000, below the runtime's VBLANK stack and nested-frame region, i.e. inside the
- * PSP user-RAM span this partition also covers. On a PSP, thread stacks come out of the
+ * 0x0a000000, the top of the PSP user-RAM span this partition also covers (the runtime's
+ * VBLANK stack and nested frames live in kernel RAM). On a PSP, thread stacks come out of the
  * same user partition, so memory a game is told is free never contains a live stack.
  * Here the contiguous free space above the bump pointer therefore ends at the first live
  * stack above the partition base (and never above the arena ceiling). Before this, a
  * game that took the reported
  * free memory (21 MB and more) received a block over its own main-thread stack, zeroed
  * it, and returned through a clobbered $ra (AOT_RETURN_TARGET_MISMATCH). */
-#define USER_PARTITION_RESERVED_FLOOR 0x09ef0000u   /* sched.c SR_STACK_ARENA_CEIL */
+#define USER_PARTITION_RESERVED_FLOOR 0x0a000000u   /* sched.c SR_STACK_ARENA_CEIL */
 extern uint32_t sched_guest_stack_floor_above(uint32_t addr);
 static uint32_t user_partition_ceiling(void) {
     return s_part_top < USER_PARTITION_RESERVED_FLOOR ? s_part_top : USER_PARTITION_RESERVED_FLOOR;
 }
+/* The runtime's VBLANK stack and nested host->guest frames occupy the top of kernel RAM,
+ * [0x082f0000, SR_NESTED_FRAME_END). A partition based below them (an image linked at a
+ * low address) ends there, so no allocation is ever placed over a runtime stack. */
+#define USER_PARTITION_RUNTIME_STACKS_BASE 0x082f0000u   /* sched.c SR_VBLANK_STACK_BASE */
 static uint32_t user_partition_top(void) {
     uint32_t ceiling = user_partition_ceiling();
+    if (s_heap_base < SR_NESTED_FRAME_END && ceiling > USER_PARTITION_RUNTIME_STACKS_BASE)
+        ceiling = USER_PARTITION_RUNTIME_STACKS_BASE;
     uint32_t floor = sched_guest_stack_floor_above(s_heap_base);
     return floor < ceiling ? floor : ceiling;
 }
@@ -843,6 +849,9 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     if (end64 > (uint64_t)0xFFFFFFFFu) return 0xFFFFFFFFu;
     uint32_t end = (uint32_t)end64;
     if (addr < s_heap_base || end > s_part_top) return 0xFFFFFFFFu;
+    /* The runtime's stacks are never partition memory (user_partition_top). */
+    if (addr < SR_NESTED_FRAME_END && end64 > USER_PARTITION_RUNTIME_STACKS_BASE)
+        return 0xFFFFFFFFu;
 
     /* Live occupancy is the slot span [b.addr, b.addr+b.slot_size): Low blocks
      * own their 256-byte rounding slack, fixed blocks own their exact range. */
@@ -878,6 +887,11 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     int have_gap = (addr > old_heap && gap_start < addr) ? 1 : 0;
     if (have_gap && gap_start < old_heap) return 0xFFFFFFFFu;   /* bump rounding wrapped */
     if (have_gap) need_slots++;
+    /* A gap that spans the runtime's stacks (a low-based partition reserving above kernel
+     * RAM) is returned as the two pieces either side of them. */
+    int gap_splits = have_gap && gap_start < SR_NESTED_FRAME_END &&
+                     addr > USER_PARTITION_RUNTIME_STACKS_BASE;
+    if (gap_splits) need_slots++;
     if (s_nfree_blocks + need_slots > HLE_MAX_FREE_BLOCKS) return 0xFFFFFFFFu;
 
     int slot = -1;
@@ -921,7 +935,14 @@ uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name) {
     /* Return the skipped virgin gap to the free list (aligned start keeps later
      * Low heads 256-byte aligned: every Low take is a 0x100 multiple). The sliver
      * below the alignment stays leaked, exactly like today's bump alignment. */
-    if (have_gap) free_list_insert_sorted(gap_start, addr - gap_start);
+    if (gap_splits) {
+        if (gap_start < USER_PARTITION_RUNTIME_STACKS_BASE)
+            free_list_insert_sorted(gap_start, USER_PARTITION_RUNTIME_STACKS_BASE - gap_start);
+        if (addr > SR_NESTED_FRAME_END)
+            free_list_insert_sorted(SR_NESTED_FRAME_END, addr - SR_NESTED_FRAME_END);
+    } else if (have_gap) {
+        free_list_insert_sorted(gap_start, addr - gap_start);
+    }
 
     if (end > s_heap) {
         s_heap = end;
@@ -24277,7 +24298,36 @@ static void hle_register_utility_module_handlers(void) {
     sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_OskUpdate);
 }
 
+/* sceNpDrmSetLicenseeKey(const u8 key[16]) records the title's 16-byte licensee key for a later
+ * sceNpDrmEdataSetupKey and returns 0; sceNpDrmClearLicenseeKey(void) forgets it and returns 0.
+ * Recording the key is the whole contract of both calls: no key material ships with this project
+ * and nothing here decrypts, so EdataSetupKey stays refused below. An unreadable key pointer
+ * returns SCE_NPDRM_ERROR_INVALID_FILE (0x80550902), PPSSPP's choice, not measured. */
+#define SR_NPDRM_LICENSEE_KEY_BYTES 16u
+static uint8_t s_npdrm_licensee_key[SR_NPDRM_LICENSEE_KEY_BYTES];
+static uint32_t s_npdrm_licensee_key_set = 0u;
+static uint32_t h_NpDrmSetLicenseeKey(CpuState *s) {
+    if (!A0 || !sr_guest_span_readable(A0, SR_NPDRM_LICENSEE_KEY_BYTES)) return 0x80550902u;
+    for (uint32_t i = 0; i < SR_NPDRM_LICENSEE_KEY_BYTES; i++) s_npdrm_licensee_key[i] = MEM_R8(A0 + i);
+    s_npdrm_licensee_key_set = 1u;
+    return 0;
+}
+static uint32_t h_NpDrmClearLicenseeKey(CpuState *s) {
+    (void)s;
+    memset(s_npdrm_licensee_key, 0, sizeof(s_npdrm_licensee_key));
+    s_npdrm_licensee_key_set = 0u;
+    return 0;
+}
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_npdrm_licensee_key(uint8_t out[16]) {
+    memcpy(out, s_npdrm_licensee_key, sizeof(s_npdrm_licensee_key));
+    return s_npdrm_licensee_key_set;
+}
+#endif
+
 static void hle_register_kernel_module_handlers(void) {
+    sr_hle_register(0xa1336091u, "sceNpDrmSetLicenseeKey", h_NpDrmSetLicenseeKey);
+    sr_hle_register(0x9b745542u, "sceNpDrmClearLicenseeKey", h_NpDrmClearLicenseeKey);
     /* No NP DRM key material is part of this project, so the edata key setup is refused. The
      * module-from-buffer loader is not implemented, so its USB/WLAN variant is refused too. Both use
      * SCE_KERNEL_ERROR_NOTIMP, the runtime's controlled refusal for kernel functions it does not provide. */
