@@ -2034,8 +2034,9 @@ int main(int argc, char **argv) {
     }
     if (argc == 3 && strcmp(argv[1], "-c") == 0) {
         static const char python_probe[] =
-            "import sys; sys.exit(sys.implementation.name != 'cpython' or "
-            "sys.version_info[:2] != (3, 15))";
+            "import sys, sysconfig; sys.exit(sys.implementation.name != 'cpython' or "
+            "sysconfig.get_platform().startswith('mingw') or "
+            "not ((3, 14) <= sys.version_info[:2] <= (3, 15)))";
         return strcmp(argv[2], python_probe) == 0 ? 0 : 94;
     }
     if (argc >= 3 && strcmp(argv[2], "build-package") == 0) {
