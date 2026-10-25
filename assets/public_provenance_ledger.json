@@ -2366,7 +2366,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "d60dc5e03bd3f6c7000895707df8024aa59870fa3b9c458daf26580fb5ce3dac"
+      "sha256": "8b0239e869ac49397baeab965b1ea0eb02a0b7fabb55c8e6c75cce21f0f12f91"
     },
     {
       "path": "fixtures/psp_oracle/display_user_imports.S",

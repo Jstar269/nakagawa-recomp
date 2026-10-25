@@ -508,7 +508,7 @@ it measures bounded overrun classification and never treats `K` as a physical
 invalid boundary. An unowned destination tail remains `SKIP`; invalid-span
 validation and K3/K4 remain `NOT_RUN` under #303.
 
-## Allegrex and syscall timing (`CASE=cpu-timing`)
+## Allegrex and syscall timing (`CASE=cpu-timing`; [issue #1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296))
 
 The CPU timing case uses an unrolled eight-instruction body, a matched loop
 control, eight rounds, and seven trials at each block size. The instruction
