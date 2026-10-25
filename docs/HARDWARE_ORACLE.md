@@ -1718,8 +1718,11 @@ and module unload was not verified.
 The 900-second event is a host-harness timeout followed by transport loss. It
 does not establish the PSP sceIoRead return semantics or distinguish a PSP call
 hang from a USBHostFS/PSPLink loss. No raw UMD read or seek semantics are
-measured. Do not retry this boot; a fresh physical power-cycle is required
-before any new target launch.
+measured. The former runner required a physical power-cycle before another
+launch. Under the device-state attestation route, keep the same-boot refusal;
+resume only after the controller has recovered and requalified PSPLink on a
+newer boot. Physical intervention remains for a hard kernel hang, a dead cable
+or PC, an inert boot, or low battery.
 
 Captured result-record IDs:
 
@@ -1774,11 +1777,17 @@ non-finite, DMA cells, five invalid-tail cases, and four mutex cases. The
 already measured `delay-zero` case is excluded. The runner launches one PRX per
 boot, performs a PSPLink soft reset between completed cases, validates the
 whole private plan in offline dry-run mode, and checkpoints each case. A timed
-out or incomplete launch stops the queue. After the maintainer power-cycles
-and confirms that action, the runner resumes at the next case without
-reclassifying the interrupted capture. A stop before a launch, such as a
-transport start failure, keeps the checkpoint at the same case and needs no
-power-cycle confirmation.
+out or incomplete launch stops the queue. The checkpoint records the boot
+number qualified for the interrupted case. Resume requires a fresh,
+same-session device-state record with a strictly newer boot number, a successful
+PSPLink qualification, a current timestamp, and a healthy watchdog on that
+boot. Here `healthy` means the watchdog is running without disabled, crashed,
+exhausted, or low-battery flags; the independent 600-second healthy-uptime
+milestone is also recorded. The former `--confirm-power-cycle` override is removed because a manual
+confirmation does not identify the boot that ran the case. A missing, stale,
+wrong-session, unqualified, or same/older-boot record keeps the campaign
+stopped. A stop before a launch, such as a transport start failure, keeps the
+checkpoint at the same case and does not require a newer boot.
 
 ## 1. The gap this closes
 
@@ -2118,7 +2127,9 @@ long as probes are homebrew rather than instrumentation of the shipped title.
 - **A hardware result proves the behaviour actually executed** — one opcode, not a subsystem.
 - **All oracles agreeing does not mean correct.** They may share an assumption inherited from the
   same documentation.
-- **Crash recovery needs a human** or a USB-controlled relay; a hard hang requires a power cycle.
+- **Physical intervention remains a hard stop** when software cannot run or regain its channel: a kernel hard hang,
+  dead cable or PC, inert boot, or low battery needs a person. Recoverable PSPLink and probe failures use the
+  controller's kill, reset, watchdog, and requalification path.
 - **A whole-game hardware trace is not realistic.** Do not plan around it.
 
 ## Sources
