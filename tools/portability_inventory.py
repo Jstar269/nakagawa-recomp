@@ -58,8 +58,8 @@ CORE_HEADERS = {
 BACKEND_HEADERS = {"pgd_api.h", "pgf_api.h"}
 BACKEND_FILES = {
     "gui.c", "osk_win.c", "h264_mf.c", "h264_null.c", "driver.c",
-    "iso_unavailable.c", "iso_public.c", "iso.c", "pgf_public.c", "pgf.c",
-    "pgd_unavailable.c", "pgd.c", "audio_unavailable.c", "audio.c",
+    "iso_unavailable.c", "iso_public.c", "pgf_public.c",
+    "pgd_unavailable.c", "audio_unavailable.c",
     "fbcap_policy.c", "ge_capture.c", "atrac3p_bridge.c",
 }
 TEST_FILES_RE = re.compile(r"selftest|_selftest\.c$")
