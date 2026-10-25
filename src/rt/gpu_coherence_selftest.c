@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <vulkan/vulkan.h>
 
 /* Standalone support required by recomp.h and the production GE object. The test owns a
  * synthetic guest arena and never consumes game binaries, captures, or private inputs. */
@@ -66,7 +67,31 @@ void sr_heap_note_bulk_write(uint32_t addr, uint32_t width, uint32_t pc) {
 uint32_t sched_current_uid(void) { return 0; }
 uint32_t sr_get_ge_status(void) { return 0; }
 
+/* Host-mapped buffer memory selection (#1296), pure and device-free so it runs where Vulkan
+ * does not. The table is an RTX 3080's: type 3 is visible+coherent but uncached, type 4 adds
+ * HOST_CACHED. A readback must take type 4; an upload keeps the first visible+coherent type;
+ * a readback with no cached+coherent type keeps the old choice. */
+static int host_mem_type_selection_ok(void) {
+    const uint32_t vis = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    const uint32_t rtx3080[6] = {
+        0u, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vis,
+        vis | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | vis,
+    };
+    const uint32_t cached_noncoherent[3] = {
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, vis, 0u,
+    };
+    int ok = 1;
+    ok &= gegpu_pick_host_mem_type(rtx3080, 6u, 0x3fu, 1) == 4u;
+    ok &= gegpu_pick_host_mem_type(rtx3080, 6u, 0x3fu, 0) == 3u;
+    ok &= gegpu_pick_host_mem_type(rtx3080, 6u, 0x2fu, 1) == 3u;   /* type 4 not allowed */
+    ok &= gegpu_pick_host_mem_type(rtx3080, 6u, 0x07u, 1) == UINT32_MAX;
+    ok &= gegpu_pick_host_mem_type(cached_noncoherent, 3u, 0x7u, 1) == 1u;
+    if (!ok) fprintf(stderr, "gpu coherence selftest: FAIL host buffer memory type selection\n");
+    return ok;
+}
+
 int main(void) {
+    if (!host_mem_type_selection_ok()) return 1;
     uint8_t *arena = (uint8_t *)calloc(0x0c000000u, 1);
     if (!arena) return 2;
     g_mem = arena + 0x08000000u;

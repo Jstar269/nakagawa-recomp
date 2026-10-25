@@ -573,25 +573,14 @@ CODEGEN_USER_ARGS += --nan-trap
 override CFLAGS += -DSR_NAN_TRAP
 endif
 
-# A filtered public candidate uses the project-authored PGF reader and the
-# fail-closed PGD/amctrl backend. Full private checkouts default to their local
-# backends; candidate trees use only sources admitted to the public profile.
-PUBLIC_SAFE ?= $(if $(and $(wildcard src/rt/pgf.c),$(wildcard src/rt/pgd.c)),0,1)
-ifneq ($(PUBLIC_SAFE),0)
+# The runtime builds only the public backends: the project-authored PGF reader and
+# ISO backend, the fail-closed PGD/amctrl backend and the SDL3 host-audio backend. The
+# private-backend mode (PUBLIC_SAFE=0) was retired on 2026-10-25; PUBLIC_SAFE=1 stays
+# accepted so existing command lines keep working.
+PUBLIC_SAFE ?= 1
 ifneq ($(PUBLIC_SAFE),1)
-$(error PUBLIC_SAFE must be 0 or 1)
+$(error PUBLIC_SAFE=0 was retired; the runtime builds only the public backends)
 endif
-endif
-ifeq ($(PUBLIC_SAFE),0)
-ifeq ($(and $(wildcard src/rt/pgf.c),$(wildcard src/rt/pgd.c)),)
-$(error PUBLIC_SAFE=0 requires the private PGF and PGD backends)
-endif
-PGF_BACKEND_SRC := src/rt/pgf.c
-PGD_BACKEND_SRC := src/rt/pgd.c
-ISO_BACKEND_SRC := src/rt/iso.c
-AUDIO_BACKEND_SRC := src/rt/audio.c
-ASSET_COPY_ARGS :=
-else
 PGF_BACKEND_SRC := src/rt/pgf_public.c
 PGD_BACKEND_SRC := src/rt/pgd_unavailable.c
 ISO_BACKEND_SRC := src/rt/iso_public.c
@@ -599,10 +588,9 @@ AUDIO_BACKEND_SRC := src/rt/audio_unavailable.c
 ASSET_COPY_ARGS := -ExcludeOptionalFonts
 # override for the same reason as SR_BUILD_DIR above, and because it is now required:
 # once any append to CFLAGS uses override, GNU make ignores later ordinary assignments to
-# it. Losing this define is the worse failure of the two -- a PUBLIC_SAFE build would stop
-# declaring itself, and the production-smoke evidence check fails on exactly that.
+# it. Losing this define is the worse failure of the two -- the build would stop
+# declaring itself public-safe, and the production-smoke evidence check fails on exactly that.
 override CFLAGS += -DSR_PUBLIC_SAFE
-endif
 
 include mk/build_common.mk
 include mk/nk_ui.mk
@@ -1922,7 +1910,6 @@ $(BUILD_DIR)/hle_power.o: src/rt/hle_power.c src/rt/hle_power.h
 
 $(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/audio_resample.h src/rt/osk_overlay.h src/rt/osk_text_entry.h src/rt/flash0_font.h src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/mp3_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h src/rt/scripted_input.h
 	$(CC) $(CFLAGS) $(HLE_INCLUDES) $(DEPFLAGS) -c $< -o $@
-$(BUILD_DIR)/pgf.o: src/rt/pgf.c src/rt/pgf_api.h src/rt/pgf.h
 $(BUILD_DIR)/pgf_public.o: src/rt/pgf_public.c src/rt/pgf_api.h src/rt/recomp.h src/rt/ge_shared.h
 
 runtime-objects: shader-verify $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
@@ -2238,6 +2225,8 @@ heap-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		src/rt/heap_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
 	$(BUILD_DIR)/heap_selftest.exe
 
+native-core-tests: heap-selftest
+
 # profiler-selftest — production profiler hash-table regression suite. Exercises PC zero as a
 # real key and a deliberately saturated 64-probe collision window without game inputs.
 profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
@@ -2247,6 +2236,9 @@ profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		-Wl,--gc-sections -o $(BUILD_DIR)/profiler_selftest.exe \
 		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
 	$(BUILD_DIR)/profiler_selftest.exe
+
+# Also covers the SR_PERF line formats, PERF_AUDIO included (#1296).
+native-core-tests: profiler-selftest
 
 gui-present-selftest:
 	$(CC) $(CFLAGS) -DSR_GUI_PRESENT_SELFTEST -ffunction-sections -fdata-sections \

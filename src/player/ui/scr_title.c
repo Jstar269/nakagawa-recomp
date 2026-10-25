@@ -34,9 +34,11 @@
 #define TITLE_ID_COMPAT 0x20000005u
 #define TITLE_ID_COMPAT_HEAD 0x2000002Cu
 #define TITLE_ID_COMPAT_EYEBROW 0x20000006u
-#define TITLE_ID_COMPAT_WORD 0x20000007u
-#define TITLE_ID_COMPAT_DETAIL 0x20000008u
-#define TITLE_ID_COMPAT_SOURCE 0x2000002Du
+#define TITLE_ID_COMPAT_TIER 0x20000007u
+#define TITLE_ID_COMPAT_EXPECT 0x20000008u
+#define TITLE_ID_COMPAT_ISSUES 0x2000002Eu
+#define TITLE_ID_COMPAT_CATEGORY 0x2000002Du
+#define TITLE_ID_REMOVE_ROW 0x2000002Fu
 #define TITLE_ID_PROMPTS 0x20000040u
 #define TITLE_ID_WAVES 0x20000050u
 
@@ -79,17 +81,77 @@ static const char *safe_text(const char *text, const char *fallback) {
     return text != NULL && text[0] != '\0' ? text : fallback;
 }
 
-/* Presentation colour for a compatibility word. The word itself comes from the
-   host's data; this only picks how it is drawn. */
-static uint32_t compatibility_rgba(const NkUiTheme *theme, const char *word) {
-    if (word == NULL) return theme->muted;
-    if (strcmp(word, "Works") == 0) return theme->ready;
-    if (strcmp(word, "Partially works") == 0 || strcmp(word, "Experimental") == 0) {
-        return theme->info;
+/* docs/COMPATIBILITY.md category -> player tier, for a title with no player
+   record of its own (#1297). The same table is in the "Status words" section
+   of docs/COMPATIBILITY.md; test_player_screens.c pins both. A category
+   describes the project's test route, so each maps to the most a player can
+   count on: a title that only boots to a named boundary is not promised more
+   than its title screen. Experimental and Untested have no tier. */
+static const struct {
+    const char *category;
+    PlayerUiTier tier;
+} s_tier_by_category[] = {
+    {"Works", PLAYER_UI_TIER_PERFECT},
+    {"Partially works", PLAYER_UI_TIER_IN_GAME},
+    {"Boots to a named boundary", PLAYER_UI_TIER_TITLE_SCREEN},
+    {"Not started", PLAYER_UI_TIER_WONT_BOOT},
+    {"Not supported", PLAYER_UI_TIER_WONT_BOOT},
+    {"Experimental", PLAYER_UI_TIER_NONE},
+    {"Untested", PLAYER_UI_TIER_NONE}
+};
+
+PlayerUiTier player_ui_tier_for_category(const char *category) {
+    if (category == NULL) return PLAYER_UI_TIER_NONE;
+    for (size_t i = 0u; i < sizeof(s_tier_by_category) / sizeof(s_tier_by_category[0]);
+         ++i) {
+        if (strcmp(category, s_tier_by_category[i].category) == 0) {
+            return s_tier_by_category[i].tier;
+        }
     }
-    if (strcmp(word, "Boots to a named boundary") == 0) return theme->warning;
-    if (strcmp(word, "Not supported") == 0) return theme->error;
-    return theme->muted;
+    return PLAYER_UI_TIER_NONE;
+}
+
+const char *player_ui_tier_word(PlayerUiTier tier) {
+    switch (tier) {
+        case PLAYER_UI_TIER_PERFECT: return "Perfect";
+        case PLAYER_UI_TIER_PLAYABLE: return "Playable";
+        case PLAYER_UI_TIER_IN_GAME: return "In-game";
+        case PLAYER_UI_TIER_MENU: return "Menu";
+        case PLAYER_UI_TIER_TITLE_SCREEN: return "Title screen";
+        case PLAYER_UI_TIER_WONT_BOOT: return "Won't boot";
+        case PLAYER_UI_TIER_NONE:
+        default: return NULL;
+    }
+}
+
+/* How a tier chip is drawn; the word itself comes from the host's data. */
+static uint32_t tier_rgba(const NkUiTheme *theme, PlayerUiTier tier) {
+    switch (tier) {
+        case PLAYER_UI_TIER_PERFECT:
+        case PLAYER_UI_TIER_PLAYABLE: return theme->ready;
+        case PLAYER_UI_TIER_IN_GAME:
+        case PLAYER_UI_TIER_MENU: return theme->info;
+        case PLAYER_UI_TIER_TITLE_SCREEN: return theme->warning;
+        case PLAYER_UI_TIER_WONT_BOOT: return theme->error;
+        case PLAYER_UI_TIER_NONE:
+        default: return theme->muted;
+    }
+}
+
+/* The package card's sentence for each package state (#1297). */
+static const char *package_state_text(PlayerUiPackageState state) {
+    switch (state) {
+        case PLAYER_UI_PACKAGE_READY: return "Built for this PC and ready to play.";
+        case PLAYER_UI_PACKAGE_CHECKING: return "Checking the package for this game.";
+        case PLAYER_UI_PACKAGE_BUILDING: return "Building the package for this game.";
+        case PLAYER_UI_PACKAGE_CHECK_FAILED: return "The package could not be checked.";
+        case PLAYER_UI_PACKAGE_STARTING:
+            return "Starting the game. Its window opens when it is ready.";
+        case PLAYER_UI_PACKAGE_RUNNING:
+            return "Running now. Stop the game to rebuild or change settings.";
+        case PLAYER_UI_PACKAGE_MISSING:
+        default: return "The package for this game is not ready yet.";
+    }
 }
 
 PlayerUiAction player_ui_screen_title(NkUi *ui,
@@ -152,13 +214,23 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                     }
                     nk_ui_end_container(ui);
                 }
-                nk_ui_text_role(ui, TITLE_ID_STATUS_DETAIL,
-                                safe_text(title->library_status_detail,
-                                          title->primary_action == PLAYER_UI_PRIMARY_PLAY
-                                              ? "Built for this PC and ready to play."
-                                              : "The package for this game is not ready yet."),
-                                NK_UI_TYPE_BODY_S, theme->muted);
-                if (title->input_note != NULL && title->input_note[0] != '\0') {
+                {
+                    /* A starting or running game says so; otherwise the host's
+                       reason, or the package state's own sentence. */
+                    bool live = title->package_state == PLAYER_UI_PACKAGE_STARTING ||
+                                title->package_state == PLAYER_UI_PACKAGE_RUNNING;
+                    const char *state_text = package_state_text(title->package_state);
+                    nk_ui_text_role(ui, TITLE_ID_STATUS_DETAIL,
+                                    live ? state_text
+                                         : safe_text(title->library_status_detail, state_text),
+                                    NK_UI_TYPE_BODY_S, theme->muted);
+                }
+                /* The decrypted-files note belongs to the steps that need those
+                   files: a built, starting or running package has them (#1297). */
+                if (title->input_note != NULL && title->input_note[0] != '\0' &&
+                    (title->package_state == PLAYER_UI_PACKAGE_MISSING ||
+                     title->package_state == PLAYER_UI_PACKAGE_CHECKING ||
+                     title->package_state == PLAYER_UI_PACKAGE_CHECK_FAILED)) {
                     NkUiLayout note = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(),
                                                   sizing_fit(), 0.0f);
                     NkUiStyle note_style;
@@ -229,27 +301,57 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 }
                 nk_ui_end_container(ui);
             }
+            /* The player tier, then what to expect in plain words and any
+               known issues (#1297). The docs category describes the
+               project's test route, so only the developer view names it. */
             if (nk_ui_card_begin(ui, TITLE_ID_COMPAT, sizing_grow(), sizing_fit(),
                                  NK_UI_SPACE_3)) {
                 NkUiLayout head = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
                                               NK_UI_SPACE_3);
-                const char *word = safe_text(title->compatibility_word, "Untested");
                 head.align_y = NK_UI_ALIGN_CENTER;
                 if (nk_ui_begin_container(ui, TITLE_ID_COMPAT_HEAD, &head, NULL)) {
-                    nk_ui_eyebrow(ui, TITLE_ID_COMPAT_EYEBROW, "Compatibility");
-                    nk_ui_status_pill(ui, TITLE_ID_COMPAT_WORD, NULL, word,
-                                      compatibility_rgba(theme, word));
+                    nk_ui_eyebrow(ui, TITLE_ID_COMPAT_EYEBROW, "What to expect");
+                    const char *tier = player_ui_tier_word(title->compatibility_tier);
+                    if (tier != NULL) {
+                        nk_ui_status_pill(ui, TITLE_ID_COMPAT_TIER, NULL, tier,
+                                          tier_rgba(theme, title->compatibility_tier));
+                    }
                     nk_ui_end_container(ui);
                 }
-                if (title->compatibility_detail != NULL &&
-                    title->compatibility_detail[0] != '\0') {
-                    nk_ui_text_role(ui, TITLE_ID_COMPAT_DETAIL, title->compatibility_detail,
-                                    NK_UI_TYPE_BODY_S, theme->paper);
+                nk_ui_text_role(ui, TITLE_ID_COMPAT_EXPECT,
+                                safe_text(title->compatibility_expect,
+                                          "No one has tried this game in Nakagawa yet."),
+                                NK_UI_TYPE_BODY_S, theme->paper);
+                if (title->compatibility_known_issues != NULL &&
+                    title->compatibility_known_issues[0] != '\0') {
+                    nk_ui_text_role(ui, TITLE_ID_COMPAT_ISSUES,
+                                    title->compatibility_known_issues,
+                                    NK_UI_TYPE_BODY_S, theme->muted);
                 }
-                nk_ui_text_role(ui, TITLE_ID_COMPAT_SOURCE,
-                                "Words come from docs/COMPATIBILITY.md for this build.",
-                                NK_UI_TYPE_FOOTNOTE, theme->dim);
+                if (title->compatibility_category != NULL &&
+                    title->compatibility_category[0] != '\0') {
+                    char line[160];
+                    (void)snprintf(line, sizeof(line),
+                                   "Developer view: \"%s\" in docs/COMPATIBILITY.md.",
+                                   title->compatibility_category);
+                    nk_ui_text_role(ui, TITLE_ID_COMPAT_CATEGORY, nk_ui_frame_text(ui, line),
+                                    NK_UI_TYPE_FOOTNOTE, theme->dim);
+                }
                 nk_ui_end_container(ui);
+            }
+            /* Remove from library (#1304), apart from the play actions: it
+               deletes what Nakagawa built, so it asks first. */
+            if (title->can_remove) {
+                NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                             NK_UI_SPACE_3);
+                if (nk_ui_begin_container(ui, TITLE_ID_REMOVE_ROW, &row, NULL)) {
+                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_REMOVE, "Remove from library",
+                                     NK_UI_BUTTON_DANGER)) {
+                        result = action(PLAYER_UI_ACTION_REMOVE_TITLE, model->title_index,
+                                        PLAYER_UI_PRIMARY_NONE);
+                    }
+                    nk_ui_end_container(ui);
+                }
             }
             nk_ui_end_container(ui);
         }
@@ -286,6 +388,7 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
 #define FLOW_ID_STATUS 0x60000041u
 #define FLOW_ID_MESSAGE 0x60000042u
 #define FLOW_ID_ELAPSED 0x60000043u
+#define FLOW_ID_NOTICE 0x60000044u
 #define FLOW_ID_LOG 0x60000050u
 #define FLOW_ID_ROWS 0x60000060u
 #define FLOW_ID_TOTAL 0x60000070u
@@ -409,7 +512,9 @@ PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model)
             nk_ui_end_container(ui);
         }
     }
-    nk_ui_progress_bar(ui, FLOW_ID_BAR, inner, model->built ? 1.0f : -1.0f, model->now_s);
+    /* Determinate while the compile stage counts its parts; a sweep otherwise. */
+    nk_ui_progress_bar(ui, FLOW_ID_BAR, inner, model->built ? 1.0f : model->fraction,
+                       model->now_s);
     {
         NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
                                      NK_UI_SPACE_4);
@@ -427,6 +532,13 @@ PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model)
             nk_ui_text_role(ui, FLOW_ID_ELAPSED, elapsed, NK_UI_TYPE_DATA, theme->muted);
             nk_ui_end_container(ui);
         }
+    }
+    if (!model->built && model->notice != NULL && model->notice[0] != '\0') {
+        /* A calm note that other apps may feel slower: muted body text, no warning
+           colour or mark, because nothing is wrong. */
+        NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->muted);
+        nk_ui_text(ui, FLOW_ID_NOTICE, nk_ui_text_clamp(ui, model->notice, &text, inner, 2),
+                   &text);
     }
     {
         NkUiLayout log = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fixed(104.0f),
@@ -468,13 +580,115 @@ PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model)
 }
 
 static void flow_bytes(char *out, size_t cap, unsigned long long bytes) {
-    if (bytes >= 1024ull * 1024ull) {
+    if (bytes >= 1024ull * 1024ull * 1024ull) {
+        (void)snprintf(out, cap, "%.1f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
+    } else if (bytes >= 1024ull * 1024ull) {
         (void)snprintf(out, cap, "%.1f MB", (double)bytes / (1024.0 * 1024.0));
     } else if (bytes >= 1024ull) {
         (void)snprintf(out, cap, "%.1f KB", (double)bytes / 1024.0);
     } else {
         (void)snprintf(out, cap, "%llu bytes", bytes);
     }
+}
+
+/* Remove from library (#1304): the game, what Nakagawa built for it with
+   sizes, the promise about the disc image, and the saves box, which stays
+   off until the user ticks it. Cancel holds focus first. */
+PlayerUiAction player_ui_screen_remove(NkUi *ui, const PlayerUiRemoveModel *model) {
+    static const NkUiPromptItem prompts[] = {
+        {NK_UI_PROMPT_ACT_MOVE, "Move"}, {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
+        {NK_UI_PROMPT_ACT_BACK, "Cancel"}
+    };
+    const NkUiTheme *theme;
+    PlayerUiAction result = action(PLAYER_UI_ACTION_NONE, 0u, PLAYER_UI_PRIMARY_NONE);
+    float inner;
+    char text[320];
+    char size[32];
+    unsigned long long total = 0ull;
+    size_t shown;
+    if (ui == NULL || model == NULL) return result;
+    theme = nk_ui_theme(ui);
+    inner = flow_begin(ui, model->logical_width > 80.0f ? model->logical_width : 1280.0f,
+                       model->logical_height > 80.0f ? model->logical_height : 800.0f, 640.0f);
+    if (inner <= 0.0f) return result;
+    flow_eyebrow(ui, FLOW_MARK_TRIANGLE, "Remove from library", theme->warning);
+    (void)snprintf(text, sizeof(text), "Remove %s?", safe_text(model->title, "this game"));
+    nk_ui_text_role(ui, FLOW_ID_TITLE, nk_ui_frame_text(ui, text), NK_UI_TYPE_TITLE,
+                    theme->paper);
+    shown = model->items != NULL ? model->item_count : 0u;
+    if (shown > PLAYER_UI_REMOVE_ITEM_CAP) shown = PLAYER_UI_REMOVE_ITEM_CAP;
+    nk_ui_text_role(ui, FLOW_ID_LEAD,
+                    shown > 0u
+                        ? "It leaves your library, and Nakagawa deletes what it built for it:"
+                        : "It leaves your library. Nakagawa has not built anything for it yet.",
+                    NK_UI_TYPE_BODY_S, theme->muted);
+    if (shown > 0u) {
+        NkUiLayout rows = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fit(), 4.0f);
+        NkUiStyle style = flow_box_style(theme, theme->surface);
+        rows.padding_top = rows.padding_bottom = 10.0f;
+        rows.padding_left = rows.padding_right = 14.0f;
+        if (nk_ui_begin_container(ui, FLOW_ID_ROWS, &rows, &style)) {
+            for (size_t i = 0u; i < shown; ++i) {
+                NkUiLayout line = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
+                                              NK_UI_SPACE_3);
+                total += model->items[i].bytes;
+                if (nk_ui_begin_container(ui, (NkUiId)(FLOW_ID_ROWS + 0x10u + (NkUiId)i),
+                                          &line, NULL)) {
+                    nk_ui_text_role(ui, (NkUiId)(FLOW_ID_ROWS + 0x20u + (NkUiId)i),
+                                    safe_text(model->items[i].label, "Built files"),
+                                    NK_UI_TYPE_BODY_S, theme->paper);
+                    nk_ui_spacer(ui, (NkUiId)(FLOW_ID_ROWS + 0x30u + (NkUiId)i),
+                                 sizing_grow(), sizing_fixed(1.0f));
+                    flow_bytes(size, sizeof(size), model->items[i].bytes);
+                    nk_ui_text_role(ui, (NkUiId)(FLOW_ID_ROWS + 0x40u + (NkUiId)i),
+                                    nk_ui_frame_text(ui, size), NK_UI_TYPE_DATA, theme->muted);
+                    nk_ui_end_container(ui);
+                }
+            }
+            nk_ui_end_container(ui);
+        }
+        flow_bytes(size, sizeof(size), total);
+        (void)snprintf(text, sizeof(text), "Frees %s", size);
+        nk_ui_text_role(ui, FLOW_ID_TOTAL, nk_ui_caps(ui, text), NK_UI_TYPE_LABEL_S,
+                        theme->warning);
+    }
+    nk_ui_text_role(ui, FLOW_ID_DETAILS,
+                    FLOW_MARK_CHECK "The disc image on your PC is not touched.",
+                    NK_UI_TYPE_BODY_S, theme->ready);
+    if (model->has_saves) {
+        flow_bytes(size, sizeof(size), model->saves_bytes);
+        (void)snprintf(text, sizeof(text), "%sAlso delete this game's saves (%s)",
+                       model->delete_saves ? FLOW_MARK_CHECK : "", size);
+        if (nk_ui_button(ui, PLAYER_UI_ID_REMOVE_SAVES, nk_ui_frame_text(ui, text), 0u)) {
+            result = action(PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES, model->title_index,
+                            PLAYER_UI_PRIMARY_NONE);
+        }
+        nk_ui_text_role(ui, FLOW_ID_MESSAGE,
+                        model->delete_saves ? "Your saves for this game will be deleted too."
+                                            : "Your saves stay.",
+                        NK_UI_TYPE_BODY_S, model->delete_saves ? theme->error : theme->muted);
+    } else {
+        nk_ui_text_role(ui, FLOW_ID_MESSAGE, "This game has no saves.", NK_UI_TYPE_BODY_S,
+                        theme->muted);
+    }
+    {
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                     NK_UI_SPACE_3);
+        if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+            if (nk_ui_button(ui, PLAYER_UI_ID_REMOVE_CANCEL, "Cancel", 0u)) {
+                result = action(PLAYER_UI_ACTION_BACK, model->title_index,
+                                PLAYER_UI_PRIMARY_NONE);
+            }
+            if (nk_ui_button(ui, PLAYER_UI_ID_REMOVE_CONFIRM, "Remove", NK_UI_BUTTON_DANGER)) {
+                result = action(PLAYER_UI_ACTION_REMOVE_CONFIRM, model->title_index,
+                                model->delete_saves ? (PlayerUiPrimaryAction)1
+                                                    : PLAYER_UI_PRIMARY_NONE);
+            }
+            nk_ui_end_container(ui);
+        }
+    }
+    flow_end(ui, "", prompts, 3u);
+    return result;
 }
 
 PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *model) {

@@ -98,6 +98,109 @@ bool nk_platform_path_missing(const char *path) {
     return errno == ENOENT || errno == ENOTDIR;
 }
 
+static bool tree_size_posix(const char *path, uint64_t *bytes) {
+    struct stat st;
+    if (lstat(path, &st) != 0) return errno == ENOENT || errno == ENOTDIR;
+    if (S_ISLNK(st.st_mode)) return true;
+    if (!S_ISDIR(st.st_mode)) {
+        if (S_ISREG(st.st_mode)) *bytes += (uint64_t)st.st_size;
+        return true;
+    }
+    DIR *dir = opendir(path);
+    if (!dir) return false;
+    struct dirent *ent;
+    bool ok = true;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        char child[4096];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child) || !tree_size_posix(child, bytes)) {
+            ok = false;
+            break;
+        }
+    }
+    closedir(dir);
+    return ok;
+}
+
+static bool remove_tree_posix(const char *path) {
+    /* unlink() removes a file or symlink as itself and fails on a directory. */
+    if (unlink(path) == 0 || errno == ENOENT || errno == ENOTDIR) return true;
+    if (errno != EISDIR && errno != EPERM) return false;
+    /* O_NOFOLLOW refuses a symlink swapped in for the directory. */
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (fd < 0) return errno == ENOENT;
+    DIR *dir = fdopendir(fd);
+    if (!dir) {
+        close(fd);
+        return false;
+    }
+    struct dirent *ent;
+    bool ok = true;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        char child[4096];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child) || !remove_tree_posix(child)) {
+            ok = false;
+            break;
+        }
+    }
+    closedir(dir);
+    if (!ok) return false;
+    return rmdir(path) == 0 || errno == ENOENT;
+}
+
+/* Runs fn on path, or with skip_child set on each top-level child but that one. */
+static bool tree_walk_top(const char *path, const char *skip_child,
+                          bool (*fn)(const char *, void *), void *ctx, bool *kept) {
+    if (!path || !*path) return false;
+    if (kept) *kept = false;
+    struct stat st;
+    if (!skip_child || lstat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return fn(path, ctx);
+    DIR *dir = opendir(path);
+    if (!dir) return false;
+    struct dirent *ent;
+    bool ok = true;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        if (strcmp(ent->d_name, skip_child) == 0) {
+            if (kept) *kept = true;
+            continue;
+        }
+        char child[4096];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child) || !fn(child, ctx)) {
+            ok = false;
+            break;
+        }
+    }
+    closedir(dir);
+    return ok;
+}
+
+static bool tree_size_step(const char *path, void *ctx) {
+    return tree_size_posix(path, (uint64_t *)ctx);
+}
+
+static bool remove_tree_step(const char *path, void *ctx) {
+    (void)ctx;
+    return remove_tree_posix(path);
+}
+
+bool nk_platform_tree_size(const char *path, const char *skip_child, uint64_t *out_bytes) {
+    if (!out_bytes) return false;
+    *out_bytes = 0;
+    return tree_walk_top(path, skip_child, tree_size_step, out_bytes, NULL);
+}
+
+bool nk_platform_remove_tree(const char *path, const char *skip_child) {
+    bool kept = false;
+    if (!tree_walk_top(path, skip_child, remove_tree_step, NULL, &kept)) return false;
+    if (!skip_child || kept) return true;
+    return remove_tree_posix(path);
+}
+
 bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
     if (!dir || !*dir || !fn) return false;
     DIR *handle = opendir(dir);
@@ -422,6 +525,11 @@ static bool deadline_passed(const struct timespec *deadline) {
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return true;
     if (now.tv_sec != deadline->tv_sec) return now.tv_sec > deadline->tv_sec;
     return now.tv_nsec >= deadline->tv_nsec;
+}
+
+bool nk_platform_bring_process_window_to_front(const NkProcessHandle *process) {
+    (void)process;
+    return false;
 }
 
 int nk_platform_wait_process(NkProcessHandle *process, int timeout_ms) {
