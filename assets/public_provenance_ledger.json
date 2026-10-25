@@ -453,7 +453,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cef8c78717d84884f75cc788b9ea444a0d0c6ea212894797055873038ee11fe4"
+      "sha256": "a7bc9ed0f6b65aa854b6cca401e21bc3c6a596d065800c6e8368500bb4d73940"
     },
     {
       "path": "REVIEW.md",
@@ -1666,7 +1666,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5301ec402cec10ebc418cd52d6173a171c8e7c579559bb23ed88fb657ef56bb9"
+      "sha256": "05113019b0cffcd6ab20ebe3cd1f397332f24512c66ca7e41c20d577ea0e543d"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1684,7 +1684,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d268c80b3fdd24a4e761fda659b1a8b0b2235bbf0eadf9f9095f265b8e043c43"
+      "sha256": "7dcf1a4b5bdb8c8a06ee34de491529cf639a5aee120960bbbff4386a6003675d"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -9630,7 +9630,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "56eae4852fafac739e449f5dc6d49330a1a9f005b05dd10229e15d547dac3e82"
+      "sha256": "970c32b1d9295dfd946eb3b4a55e888daeeace35f84bfb015fbb93deb9e743cb"
     },
     {
       "path": "src/ui/nk_ui_widgets.h",
@@ -9642,7 +9642,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f2206be228c89259e2366618440a2e2cab94e1b76102c4616a07952a6cd6b8b"
+      "sha256": "109c26efb39f7664687e021bd46dbed9fbb9b0f8007fa8607c9b2fda1d882d8d"
     },
     {
       "path": "src/ui/shaders/shader_manifest.json",
@@ -9930,7 +9930,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3cd5d0ebeb780a3922de4a093d6645cf4907f692421b68038d81ef5e2c53726b"
+      "sha256": "6da6e686c465e3a99f8605ca8d62318d6c67043ea37a828adee9c4859603b150"
     },
     {
       "path": "tests/native/test_nk_ui_focus.c",

@@ -36,6 +36,31 @@ build itself still calls the built-in Windows PowerShell 5.1 (`powershell.exe`) 
 copying the build assets (`tools/copy_build_assets.ps1`, through `POWERSHELL` in the
 `Makefile`). That script supports 5.1, so you do not need to change or install anything for it.
 
+## System requirements
+
+Measured on a Windows 11 x64 PC building and running Hot Shots Tennis with the player's
+**BUILD PACKAGE**:
+
+| | Minimum | Recommended |
+| --- | --- | --- |
+| Operating system | Windows 11 x64 | Windows 11 x64 |
+| Graphics | A GPU with a current Vulkan driver | Same |
+| Processor | Any 64-bit x86 CPU | 4 or more cores |
+| Memory | 8 GB RAM | 16 GB RAM |
+| Free disk space | 5 GB | 10 GB or more, on an SSD |
+
+- **Memory.** Building a game is the heavy part. One compiler process peaked at about 3 GB
+  while it compiled a large block of translated game code, and BUILD PACKAGE runs two at
+  once. Playing a built game needs far less.
+- **Disk space.** Each game keeps three things in the player's data folder: its imported disc
+  image (about 1.4 GB for Hot Shots Tennis), the built game (about 470 MB) and the build cache
+  (about 400 MB). If the player downloads the build tools, they add a 102 MB download, and
+  more once unpacked.
+- **SSD.** Builds read and write thousands of small files, so a hard disk makes them much
+  slower. Keep the player's data folder on an SSD if you can.
+- **Processor.** BUILD PACKAGE runs two compile jobs at a time, so more cores do not shorten
+  it yet. A first build takes several minutes.
+
 ## Showcase demos on Windows: WSL 2 and PSPDEV
 
 The two showcase demos are project-written PSP programs. Their build uses PSPDEV, the PSP toolchain,
