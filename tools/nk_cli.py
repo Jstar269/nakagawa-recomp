@@ -1325,6 +1325,10 @@ def _current_package_cache_key(
         ),
     }
     environment = _runtime_build_environment(instruction_trace=instruction_trace)
+    # The planner compiles with these when the environment sets none; the key must agree.
+    environment.update(package_cache.package_optimization(
+        manifest.get("codegen_profile", "none"), environment
+    ))
     options = _package_codegen_options(manifest, environment)
     return package_cache.build_cache_key(
         input_hashes=input_hashes,
