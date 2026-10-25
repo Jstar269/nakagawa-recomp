@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **324** (declared in `recomp.h`: 266)
-- reach class: emitter-reached 61, production-runtime-only 238, selftest-only 14, address-only 3, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 24, upstream_derived 299
+- helpers: **329** (declared in `recomp.h`: 271)
+- reach class: emitter-reached 61, production-runtime-only 239, selftest-only 14, address-only 7, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 24, upstream_derived 304
 
 ## Helpers
 
@@ -78,6 +78,11 @@ does not make this file stale. `--details` prints them to stdout.
 | `gui_on` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `gui_pad_present` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `gui_pad_pulses_take` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
+| `gui_pause_busy_reason` | `rt/gui.c` | yes | address-only | `rt/gui.c`: upstream_derived |
+| `gui_pause_enter` | `rt/gui.c` | yes | address-only | `rt/gui.c`: upstream_derived |
+| `gui_pause_frame` | `rt/gui.c` | yes | address-only | `rt/gui.c`: upstream_derived |
+| `gui_pause_leave` | `rt/gui.c` | yes | address-only | `rt/gui.c`: upstream_derived |
+| `gui_pause_presenter` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `gui_present` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `prof_find` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `prof_lookup` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
