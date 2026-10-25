@@ -3840,7 +3840,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                 for (int i = 0; i < nv; i++) {
                     uint32_t a = prim_vtx_addr(vbase, ibase, idxfmt, i, vf.stride);
                     char hex[3*32 + 1]; int hn = vf.stride < 32 ? vf.stride : 32;
-                    for (int k = 0; k < hn; k++) sprintf(hex + 3*k, "%02x ", MEM_R8(a + (uint32_t)k));
+                    for (int k = 0; k < hn; k++) snprintf(hex + 3*k, 4, "%02x ", MEM_R8(a + (uint32_t)k));
                     hex[3*hn] = 0;
                     float px, py, pz, nx = 0, ny = 0, nz = 0, u = 0, tv = 0, w0 = 0;
                     int r, g, b, al;
