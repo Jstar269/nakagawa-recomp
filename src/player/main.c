@@ -1557,6 +1557,11 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     } else {
         snprintf(build_badge, sizeof(build_badge), "none");
     }
+    /* The build bar's fill in thousandths, -1 for the sweep or off the build screen. */
+    int build_bar_permille = -1;
+    if (app->active_view == VIEW_BUILDING_PACKAGE && ui_test_build_bar_fraction() >= 0.0f) {
+        build_bar_permille = (int)(ui_test_build_bar_fraction() * 1000.0f + 0.5f);
+    }
     printf("[PLAYER_UI_TEST] frame=%d ticks_ms=%llu view=%s "
            "selected=%d selected_disc=%s selected_title_id=%s "
            "focus=%d focus_count=%d settings_two_col=%d wizard_step=%s "
@@ -1573,7 +1578,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "package_status_thread_attempts=%u "
            "titles_pending=%d titles_failed=%d titles_unclaimed=%d "
            "prereq_items=%zu prereq_bytes=%llu game_running=%d build_stage=%d "
-           "font=%s font_reason=%s bitmap_text_draws=%u build_badge=%s "
+           "font=%s font_reason=%s bitmap_text_draws=%u build_badge=%s build_bar_permille=%d "
+           "build_notice=%d "
            "badge=%d,%d,%d,%d running=%d pixels=%016llx "
            "render_ns=%llu package_validations=%llu online_mode=%d developer_mode=%d "
            "dev_log_lines=%zu next_primary=%d next_primary_label=%s next_detail=%s "
@@ -1626,7 +1632,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->is_game_running ? 1 : 0,
            (int)app->build_session.current_stage,
            ui_font_mode(), ui_font_fallback_reason(),
-           ui_test_bitmap_text_draws(), build_badge,
+           ui_test_bitmap_text_draws(), build_badge, build_bar_permille,
+           app->active_view == VIEW_BUILDING_PACKAGE && ui_test_build_notice_drawn() ? 1 : 0,
            badge_valid ? (int)badge.x : -1, badge_valid ? (int)badge.y : -1,
            badge_valid ? (int)badge.w : 0, badge_valid ? (int)badge.h : 0,
            running ? 1 : 0,
@@ -3494,7 +3501,8 @@ int main(int argc, char *argv[]) {
             snprintf(app.build_session.failure_boundary,
                      sizeof(app.build_session.failure_boundary),
                      "Synthetic compile failure.");
-        } else if (strcmp(test_view, "building") == 0 || strcmp(test_view, "building_package") == 0) {
+        } else if (strcmp(test_view, "building") == 0 || strcmp(test_view, "building_package") == 0 ||
+                   strcmp(test_view, "building-parts") == 0) {
             player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
             const char *disc = (app.selected_game_index >= 0 && app.selected_game_index < app.game_count)
                 ? app.games[app.selected_game_index].disc_id : "TEST80001";
@@ -3510,6 +3518,20 @@ int main(int argc, char *argv[]) {
             package_builder_add_output_line(&app.build_session, "[preflight] PASS: Disc preflight inspection succeeded.");
             package_builder_add_output_line(&app.build_session, "[extract] PASS: Staged plaintext guest modules to cache.");
             package_builder_add_output_line(&app.build_session, "[compile] RUNNING: Compiling translated native C sources...");
+            if (strcmp(test_view, "building-parts") == 0) {
+                /* The compile stage's part count, through the same parser and state
+                   machine as a line nk_cli writes. */
+                static const char parts_line[] =
+                    "{\"stage\":\"compile\",\"status\":\"RUNNING\","
+                    "\"message\":\"Compiling part 13 of 40\",\"completed\":12,\"total\":40,"
+                    "\"notice\":\"Building uses most of your PC's power for a few minutes, "
+                    "so other apps may feel slower until it finishes.\"}";
+                PackageProgressEvent parts_event;
+                if (package_builder_parse_progress_line(parts_line, sizeof(parts_line) - 1u,
+                                                        &parts_event)) {
+                    package_builder_apply_event(&app.build_session, &parts_event);
+                }
+            }
         }
     }
 
