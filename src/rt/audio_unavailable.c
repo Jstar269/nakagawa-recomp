@@ -1538,12 +1538,12 @@ static void test_pause_stash_failure_is_visible(void) {
     test_reset();
     SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE);
     assert(sr_audio_init() == 0 && s_audio_state == AUDIO_STATE_ACTIVE);
-    int16_t dc[512 * 2];
-    for (int i = 0; i < 512 * 2; i++) dc[i] = 8000;
+    static int16_t dc[8192 * 2];
+    for (int i = 0; i < 8192 * 2; i++) dc[i] = 8000;
 
     for (int failure = 1; failure <= 2; failure++) {
         assert(SDL_PauseAudioDevice(s_device_id));
-        sr_audio_push(0, dc, 512, 0x8000, 0x8000);
+        sr_audio_push(0, dc, 8192, 0x8000, 0x8000);
         assert(SDL_ResumeAudioDevice(s_device_id));
         s_test_fail_pause_stash_alloc = 1;
         sr_audio_pause_enter();
@@ -1551,6 +1551,15 @@ static void test_pause_stash_failure_is_visible(void) {
         assert(SDL_AudioDevicePaused(s_device_id));
         assert(s_stats.pause_stash_failures == (uint64_t)failure);
         assert(s_test_pause_failure_messages == 1);
+        /* The fallback holds the guest's queue where the pause found it: the device thread
+         * consumes nothing while the guest is stopped, so the depth the guest reads after
+         * resume is the depth it left (8192 frames last 186 ms; the hold lasts 60 ms). */
+        const int held = sr_audio_queued(0);
+        assert(held > 0);
+        SDL_Delay(60);
+        if (sr_audio_queued(0) != held)
+            fprintf(stderr, "AUDIO_PAUSE_TEST: fallback queue moved %d -> %d\n", held, sr_audio_queued(0));
+        assert(sr_audio_queued(0) == held);
         sr_audio_pause_leave();
         assert(!s_pause_active && !SDL_AudioDevicePaused(s_device_id));
     }

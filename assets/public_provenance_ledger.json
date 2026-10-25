@@ -1357,7 +1357,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "266425863ebaf6cced9c1998132f52b6493c73d297f58ae704966ab065729def"
+      "sha256": "608cadc0084a5abc88d588f706105de6a35df4b5ade638c0af842596c2c18cd2"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -4760,7 +4760,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d2f66e518b0cdf45c93122423571361a439c1d067d38a8beb079eecfdaf56dbb"
+      "sha256": "0de9a0a47bfdbce22c9b8b0a9dcafcd869023d5ee762211d7f952fb0963e6598"
     },
     {
       "path": "src/rt/cpu_lle.c",
@@ -14644,7 +14644,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eda3b4fcb9b7fb3b1e7b42eed412f409ed64424589d14d483a4672440c893207"
+      "sha256": "3ce566a452046578081be58a6973116b65335aae0d0157093e85965ea7e8cec7"
     },
     {
       "path": "tools/test_scratch_dir.py",
