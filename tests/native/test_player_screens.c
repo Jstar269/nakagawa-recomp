@@ -631,6 +631,28 @@ static void test_router(void) {
           "root Back is consumed without changing route");
     CHECK(nk_ui_router_current(router) == PLAYER_UI_ROUTE_TITLE,
           "Back at root leaves the route in place");
+    /* #1281: About is a route the router accepts, opened over the screen it
+       was chosen from; Back returns there with the ABOUT tab focused. */
+    nk_ui_router_set_focus(router, PLAYER_UI_ID_TAB_ABOUT);
+    CHECK(nk_ui_router_push(router, PLAYER_UI_ROUTE_ABOUT),
+          "router pushes About");
+    CHECK(nk_ui_router_current(router) == PLAYER_UI_ROUTE_ABOUT &&
+          nk_ui_router_depth(router) == 2u, "About sits over the screen it came from");
+    CHECK(nk_ui_router_handle_event(router, &back) &&
+          nk_ui_router_current(router) == PLAYER_UI_ROUTE_TITLE,
+          "Back from About returns to that screen");
+    CHECK(nk_ui_router_take_focus_restore(router) == PLAYER_UI_ID_TAB_ABOUT,
+          "Back from About restores the ABOUT tab focus");
+    CHECK(nk_ui_router_replace(router, PLAYER_UI_ROUTE_ABOUT) &&
+          nk_ui_router_current(router) == PLAYER_UI_ROUTE_ABOUT,
+          "router replaces the root screen with About");
+    CHECK(!nk_ui_router_replace(router, (PlayerUiRoute)0) &&
+          !nk_ui_router_push(router, (PlayerUiRoute)0) &&
+          !nk_ui_router_replace(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_ABOUT + 1)) &&
+          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_ABOUT + 1)),
+          "router refuses routes it does not draw");
+    CHECK(nk_ui_router_current(router) == PLAYER_UI_ROUTE_ABOUT &&
+          nk_ui_router_depth(router) == 1u, "a refused route leaves the stack alone");
     nk_ui_router_destroy(router);
 }
 
@@ -899,6 +921,35 @@ static void test_screen_actions(void) {
     action = activate_library_button(PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD, &library);
     CHECK(action.kind == PLAYER_UI_ACTION_START_WIZARD,
           "the empty Library's main action starts the setup wizard");
+    /* #1281: the top bar opens About, and Settings has a visible tab there. */
+    action = activate_library_button(PLAYER_UI_ID_TAB_SETTINGS, &library);
+    CHECK(action.kind == PLAYER_UI_ACTION_OPEN_SETTINGS,
+          "the empty Library's SETTINGS tab opens Settings");
+    action = activate_library_button(PLAYER_UI_ID_TAB_ABOUT, &library);
+    CHECK(action.kind == PLAYER_UI_ACTION_OPEN_ABOUT, "the ABOUT tab opens About");
+    {
+        /* The menu prompt (Start, F1) opens Settings as well. */
+        NkUiConfig config;
+        NkUiEvent menu;
+        NkUi *ui;
+        memset(&config, 0, sizeof(config));
+        config.host = NK_UI_HOST_LAUNCHER;
+        ui = nk_ui_create(&config);
+        CHECK(ui != NULL, "create a UI for the Library's menu prompt");
+        if (ui != NULL) {
+            set_test_viewport(ui, 1280, 800);
+            memset(&menu, 0, sizeof(menu));
+            menu.type = NK_UI_EV_MENU;
+            menu.down = true;
+            nk_ui_push_event(ui, &menu);
+            nk_ui_begin(ui, 0.0);
+            action = player_ui_screen_library(ui, &library);
+            (void)nk_ui_end(ui);
+            CHECK(action.kind == PLAYER_UI_ACTION_OPEN_SETTINGS,
+                  "the Library's menu prompt opens Settings");
+            nk_ui_destroy(ui);
+        }
+    }
     {
         /* With nothing focused, START SETUP WIZARD is the one default. */
         NkUiConfig config;
@@ -924,6 +975,9 @@ static void test_screen_actions(void) {
     action = activate_library_button(PLAYER_UI_ID_LIBRARY_ITEM(2u), &library);
     CHECK(action.kind == PLAYER_UI_ACTION_OPEN_TITLE && action.title_index == 2u,
           "a Library card opens its matching Title detail");
+    action = activate_library_button(PLAYER_UI_ID_TAB_SETTINGS, &library);
+    CHECK(action.kind == PLAYER_UI_ACTION_OPEN_SETTINGS,
+          "the Library's SETTINGS tab opens Settings");
     detail.title = &k_titles[0];
     detail.title_index = 0u;
     action = activate_title_button(PLAYER_UI_ID_TITLE_PRIMARY, &detail);

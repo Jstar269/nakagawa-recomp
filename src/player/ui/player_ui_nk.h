@@ -299,6 +299,7 @@ enum {
     PLAYER_UI_ID_TITLE_SAVE_FOLDER = 0x2003u,
     PLAYER_UI_ID_TAB_LIBRARY = 0x0F01u,
     PLAYER_UI_ID_TAB_ABOUT = 0x0F02u,
+    PLAYER_UI_ID_TAB_SETTINGS = 0x0F03u,
     PLAYER_UI_ID_ABOUT_NOTICES = 0x3001u
 };
 
@@ -333,9 +334,10 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
 PlayerUiAction player_ui_screen_about(NkUi *ui,
                                       const PlayerUiAboutModel *model);
 
-/* The top bar every launcher screen draws: LIBRARY and ABOUT tabs, focusable
-   and switched with L / R. Returns the action for a tab the user chose this
-   frame (OPEN_LIBRARY or OPEN_ABOUT), else NONE. */
+/* The top bar every launcher screen draws: LIBRARY, ABOUT and SETTINGS tabs,
+   focusable and switched with L / R. Returns the action for a tab the user
+   chose this frame (OPEN_LIBRARY, OPEN_ABOUT or OPEN_SETTINGS; the menu
+   prompt, Start or F1, also opens Settings), else NONE. */
 PlayerUiActionKind player_ui_top_bar(NkUi *ui, NkUiId id, PlayerUiRoute active);
 
 /* The build date for an epoch (Unix seconds, UTC) as MM-DD-YYYY. Returns false
@@ -356,6 +358,8 @@ bool player_ui_nk_at_library_root(const PlayerUiNk *player);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 /* Test only: a title's model as the last frame filled it, or NULL. */
 const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t index);
+/* Test only: the route the next UI shows, or 0 when it has none. */
+int player_ui_nk_test_route(const PlayerUiNk *player);
 #endif
 bool player_ui_nk_handle_event(PlayerUiNk *player,
                                const union SDL_Event *event);

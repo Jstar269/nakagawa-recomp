@@ -53,6 +53,8 @@ and no date is set. Until then you build the player from source yourself: see [B
 To play, you need:
 
 - **A Windows 11 PC** (64-bit) with a graphics card that supports Vulkan.
+- **8 GB of RAM** (16 GB recommended) and **5 GB of free disk space**, ideally on an SSD. Building a
+  game is the heavy part; [System requirements](docs/SETUP.md#system-requirements) has the measured numbers.
 - **Your own copy of the game**, as an uncompressed `.iso` disc image. Nothing here downloads games, firmware or fonts.
 - **Decrypted files from your own copy** if the game's code is encrypted, as it is on most retail PSP discs.
   Nakagawa does not decrypt games. [`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md) explains what goes where.

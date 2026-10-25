@@ -558,6 +558,10 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
 const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t index) {
     return player != NULL && index < PLAYER_UI_TITLE_CAP ? &player->titles[index] : NULL;
 }
+
+int player_ui_nk_test_route(const PlayerUiNk *player) {
+    return player != NULL ? (int)nk_ui_router_current(player->router) : 0;
+}
 #endif
 
 bool player_ui_nk_at_library_root(const PlayerUiNk *player) {
@@ -582,12 +586,7 @@ bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
                    !translated[i].repeat && player->pending_sound < 0) {
             player->pending_sound = PLAYER_UI_SOUND_CONFIRM;
         }
-        if (translated[i].type == NK_UI_EV_BACK &&
-            nk_ui_router_current(player->router) == PLAYER_UI_ROUTE_ABOUT) {
-            /* About is a top-level section: Back returns to the Library. */
-            (void)nk_ui_router_replace(player->router, PLAYER_UI_ROUTE_LIBRARY);
-            nk_ui_router_set_focus(player->router, PLAYER_UI_ID_TAB_ABOUT);
-        } else if (translated[i].type == NK_UI_EV_BACK) {
+        if (translated[i].type == NK_UI_EV_BACK) {
             nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
             (void)nk_ui_router_handle_event(player->router, &translated[i]);
         } else {
@@ -1024,7 +1023,10 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     }
     /* The top-bar sections switch the root screen. */
     if (action.kind == PLAYER_UI_ACTION_OPEN_ABOUT) {
-        (void)nk_ui_router_replace(player->router, PLAYER_UI_ROUTE_ABOUT);
+        /* About opens over the screen it was chosen from, so Back returns
+           there with the ABOUT tab focused. */
+        nk_ui_router_set_focus(player->router, PLAYER_UI_ID_TAB_ABOUT);
+        (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_ABOUT);
         nk_ui_focus(player->ui, PLAYER_UI_ID_TAB_ABOUT);
         action.kind = PLAYER_UI_ACTION_NONE;
     } else if (action.kind == PLAYER_UI_ACTION_OPEN_LIBRARY) {
