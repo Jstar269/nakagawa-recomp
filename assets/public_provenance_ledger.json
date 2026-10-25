@@ -427,7 +427,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c7d288e91e0b1ca4fb64f392b50874b9715cf0dbd2d099cbe18fb998697236d1"
+      "sha256": "6e8d124bdca9cf6eb71239f473b00e116a09db133088b070ebeace7779defa26"
     },
     {
       "path": "NOTICE.md",
@@ -13875,7 +13875,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4cbc6c1f5149dca1286dc336e70788f2a685f6e812230ef3273bc1b8ec9f2fbc"
+      "sha256": "a9cef25b283c111e2bdc553619d3bd74b9e7890a65bdae3d1f039974532e526c"
     },
     {
       "path": "tools/test_native_driver_hardening.py",

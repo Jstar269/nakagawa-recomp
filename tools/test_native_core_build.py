@@ -37,6 +37,8 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/test_player_screens",
     "build/test_nk_ui_focus",
     "build/test_nk_ui_focus_sdl --sdl-input",
+    "build/mygame/heap_selftest",
+    "build/mygame/profiler_selftest",
     "build/mygame/ge_texture_ref_selftest",
     "build/mygame/fbcap_selftest build/mygame/fbcap_selftest",
     "build/mygame/osk_text_entry_selftest",
