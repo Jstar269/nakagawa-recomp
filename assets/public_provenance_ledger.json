@@ -3563,7 +3563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "865afcf6949bf813bf7a605d34854836ef7c5764ff74bce7c4ef3d5f9566b15a"
+      "sha256": "ce850b464a730c290310ec9af00c3f98ab881a914945045460d1a7727f6e0c08"
     },
     {
       "path": "src/player/setup_staging.h",
@@ -3575,7 +3575,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bcba25ba7f96e452ba72bd8297b79172ccd29857ab79cee59c825d60873aa568"
+      "sha256": "6c65aafce912f49185f76e678a5cd59fb5bc7ab8f7c0ad9c7961a42120dadf15"
     },
     {
       "path": "src/player/ui/player_ui_art.c",
@@ -10146,7 +10146,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7e6ef8d286103ebb3f807c4c7ea5023b3314c9a3360e6ea23b2a8d2ceb3c595b"
+      "sha256": "7733f6dd39f5988b06546cf4f05280b048b331b8b5fdf470828abe1618472b9b"
     },
     {
       "path": "third_party/clay/LICENSE.md",
