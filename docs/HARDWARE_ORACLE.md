@@ -1774,11 +1774,15 @@ non-finite, DMA cells, five invalid-tail cases, and four mutex cases. The
 already measured `delay-zero` case is excluded. The runner launches one PRX per
 boot, performs a PSPLink soft reset between completed cases, validates the
 whole private plan in offline dry-run mode, and checkpoints each case. A timed
-out or incomplete launch stops the queue. After the maintainer power-cycles
-and confirms that action, the runner resumes at the next case without
-reclassifying the interrupted capture. A stop before a launch, such as a
-transport start failure, keeps the checkpoint at the same case and needs no
-power-cycle confirmation.
+out or incomplete launch stops the queue. The checkpoint records the boot
+number qualified for the interrupted case. Resume requires a fresh,
+same-session device-state record with a strictly newer boot number, a successful
+PSPLink qualification, a current timestamp, and a healthy watchdog on that
+boot. The former `--confirm-power-cycle` override is removed because a manual
+confirmation does not identify the boot that ran the case. A missing, stale,
+wrong-session, unqualified, or same/older-boot record keeps the campaign
+stopped. A stop before a launch, such as a transport start failure, keeps the
+checkpoint at the same case and does not require a newer boot.
 
 ## 1. The gap this closes
 

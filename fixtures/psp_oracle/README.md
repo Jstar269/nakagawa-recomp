@@ -679,24 +679,34 @@ Validate the private queue offline before a hardware session:
 python tools/psp_oracle/run_psplink.py --campaign-plan <private-campaign-plan.json> --dry-run
 ```
 
-The actual campaign refuses to start unless the hardware lock is `HELD`,
-confirms a power cycle, and names the same session as the private plan. Every
-mode that touches the PSP goes through the same lock gate. `--campaign-case` and
-`--command` require `--session-id`, which names the lock holder. The gate is
-checked before the USBHostFS transport starts, and it is read again before each
-case's soft reset, before each launch, and before every PSPLink `reset`. A
-refusal stops with `HARDWARE_LOCK_REFUSED` before the next PSP action. In plan
-mode it keeps the checkpoint at the unlaunched case.
-After an interrupted case, the maintainer power-cycles the PSP and resumes with
-`--confirm-power-cycle`; the failed case is retained as incomplete and the next
-case starts on the new boot. No automatic retry or semantic result is inferred
-from a host timeout.
+The actual campaign requires the hardware lock to be `HELD` by the session in
+the private plan. The lock must also contain a fresh `device_state_attestation`
+for that same session. The record has schema 1, a non-negative `boot_number`,
+`qualification_result` equal to `QUALIFIED`, a UTC `qualified_at_utc`, the
+matching `session_id`, and a `watchdog_state` with the same boot number and
+`healthy: true`, a boolean `armed`, and a non-negative integer `remaining_s`.
+Its qualification time must be no earlier than the lock's
+`acquired_utc`, no more than 30 minutes old, and no more than five seconds in
+the future. Every mode that touches the PSP goes through the same lock gate.
+`--campaign-case` and `--command` require `--session-id`, which names the lock
+holder. The gate is checked before the USBHostFS transport starts, and it is
+read again before each case's soft reset, before each launch, and before every
+PSPLink `reset`. A refusal stops with `HARDWARE_LOCK_REFUSED` before the next
+PSP action. In plan mode it keeps the checkpoint at the unlaunched case.
+
+After an interrupted case, the checkpoint records its attested boot number.
+The campaign resumes automatically only when the held session provides a fresh
+qualified device-state record with a strictly higher boot number. The former
+`--confirm-power-cycle` override is removed; a person's confirmation alone
+cannot identify which boot ran the interrupted case. A missing, stale,
+wrong-session, unqualified, or same/older-boot record fails closed. No automatic
+retry or semantic result is inferred from a host timeout.
 
 The checkpoint never loses its resume position. A stop before the next case is
 launched, such as `TRANSPORT_START_FAILED` or a failed baseline snapshot, leaves
-the checkpoint `IN_PROGRESS` at that case and owes no power cycle; rerun without
-`--confirm-power-cycle`. Only a launched case without a clean completion, or a
-failed soft reset, waits for a power cycle. The checkpoint also records whether
+the checkpoint `IN_PROGRESS` at that case and needs no newer boot. Only a
+launched case without a clean completion, or a failed soft reset, waits for a
+new qualified boot. The checkpoint also records whether
 the `transport-write` preflight qualified host0; a campaign resumes past the
 preflight only when it did, and an interrupted preflight resumes at
 `transport-write`. Interrupted cases accumulate in `interrupted_cases`.
@@ -716,8 +726,8 @@ A host-side exception never crashes the queue. The case ends as `HOST_ERROR`, an
 the report's `host_error` names the exception type, the raising function and the
 message. If the probe was launched, the runner still unloads it and compares S2
 with S0. A verified-clean teardown records the case as interrupted and keeps the
-checkpoint `IN_PROGRESS` at the next case. Any other outcome waits for a power
-cycle, as an incomplete case does. Verbatim console captures from the
+checkpoint `IN_PROGRESS` at the next case. Any other outcome stops and needs a
+newer qualified boot record to resume. Verbatim console captures from the
 2026-10-08 session under `fixtures/psp_oracle_captures/` pin the parsers and
 runner stages against real probe output.
 
