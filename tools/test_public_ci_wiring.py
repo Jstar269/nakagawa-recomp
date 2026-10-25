@@ -59,12 +59,15 @@ def _ci_step(block: list[str], name: str) -> list[str] | None:
     return block[start:end]
 
 
-def _makefile_public_safe_arms(makefile: str) -> tuple[str, str]:
-    """The private (PUBLIC_SAFE=0) and public-safe (PUBLIC_SAFE=1) arms of the Makefile switch."""
-    start = makefile.index("ifeq ($(PUBLIC_SAFE),0)\n")
-    else_at = makefile.index("\nelse\n", start)
-    end = makefile.index("\nendif\n", else_at)
-    return makefile[start:else_at], makefile[else_at:end]
+# The private backends the retired PUBLIC_SAFE=0 mode compiled. No build file may name them.
+RETIRED_PRIVATE_BACKENDS = frozenset({"src/rt/pgf.c", "src/rt/pgd.c", "src/rt/iso.c", "src/rt/audio.c"})
+
+
+def _makefile_backend_block(makefile: str) -> str:
+    """The Makefile block that selects the runtime backends and defines SR_PUBLIC_SAFE."""
+    start = makefile.index("PUBLIC_SAFE ?= 1\n")
+    marker = "override CFLAGS += -DSR_PUBLIC_SAFE\n"
+    return makefile[start:makefile.index(marker, start) + len(marker)]
 
 
 def _cmake_sources_and_definitions() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
@@ -256,20 +259,24 @@ class PublicCiWiringTests(unittest.TestCase):
     def test_public_safe_define_agrees_between_cmake_and_makefile(self) -> None:
         """SR_PUBLIC_SAFE marks the public-backend build in both build files.
 
-        The Makefile's PUBLIC_SAFE=1 arm selects the public backends and defines the macro for
-        every object; the PUBLIC_SAFE=0 arm uses the private backends and must not define it.
-        CMake has no private arm, so every target that compiles a public backend must define the
-        macro, and no CMake target may compile a private backend. This test does not cover the
-        guarded code itself: src/rt/driver.c and src/rt/gui.c are in no CMake target.
+        The Makefile selects only the public backends, defines the macro for every object,
+        refuses the retired PUBLIC_SAFE=0 mode, and names none of the private backends that mode
+        compiled. Every CMake target that compiles a public backend must define the macro, and no
+        CMake target may compile a private backend. This test does not cover the guarded code
+        itself: src/rt/driver.c and src/rt/gui.c are in no CMake target.
         """
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        private_arm, public_arm = _makefile_public_safe_arms(makefile)
-        self.assertRegex(public_arm, r"(?m)^override CFLAGS \+= -DSR_PUBLIC_SAFE$")
-        self.assertNotIn("SR_PUBLIC_SAFE", private_arm)
-        public_backends = set(re.findall(r"(?m)^\w+_BACKEND_SRC := (\S+)$", public_arm))
-        private_backends = set(re.findall(r"(?m)^\w+_BACKEND_SRC := (\S+)$", private_arm))
-        self.assertIn("src/rt/pgf_public.c", public_backends)
-        self.assertFalse(public_backends & private_backends)
+        block = _makefile_backend_block(makefile)
+        self.assertIn("ifneq ($(PUBLIC_SAFE),1)\n$(error PUBLIC_SAFE=0 was retired", block)
+        public_backends = set(re.findall(r"(?m)^\w+_BACKEND_SRC := (\S+)$", block))
+        self.assertEqual(public_backends, {
+            "src/rt/pgf_public.c", "src/rt/pgd_unavailable.c",
+            "src/rt/iso_public.c", "src/rt/audio_unavailable.c",
+        })
+        private_backends = set(RETIRED_PRIVATE_BACKENDS)
+        for path in sorted(private_backends):
+            with self.subTest(makefile_names=path):
+                self.assertNotRegex(makefile, rf"(?<![\w/]){re.escape(path)}(?![\w.])")
 
         sources, definitions = _cmake_sources_and_definitions()
         public_targets = {target: files & public_backends

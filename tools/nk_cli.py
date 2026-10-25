@@ -1278,10 +1278,6 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
     return options
 
 
-def _has_private_backends(root: Path = ROOT) -> bool:
-    return (root / "src" / "rt" / "pgf.c").is_file() and (root / "src" / "rt" / "pgd.c").is_file()
-
-
 def _current_package_cache_key(
     manifest: dict,
     manifest_path: Path,
@@ -1290,13 +1286,11 @@ def _current_package_cache_key(
     psp_header: Path | None,
     title_input_identity: dict,
     *,
-    public_safe: bool | None = None,
+    public_safe: bool = True,
     instruction_trace: bool = False,
 ) -> dict:
     import title_codegen_plan
 
-    if public_safe is None:
-        public_safe = not _has_private_backends()
     selected_modules = [
         module for module in manifest.get("modules", [])
         if module.get("role") == "guest-prx" and module.get("required", False)
@@ -1892,7 +1886,6 @@ def _build_package(args: argparse.Namespace, stage_observer,
         _require_child(user_root, target_dir, "Package destination")
         if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
             raise PackageBuildError("Package destination is not a safe directory; refusing to replace it.")
-        public_safe = not _has_private_backends()
         cache_key = _current_package_cache_key(
             manifest,
             manifest_cache_path,
@@ -1900,7 +1893,6 @@ def _build_package(args: argparse.Namespace, stage_observer,
             module_dir,
             cached_header,
             title_input_identity,
-            public_safe=public_safe,
             instruction_trace=bool(getattr(args, "instruction_trace", False)),
         )
         previous_key = package_cache.package_cache_key(target_dir) if target_dir.is_dir() else None
@@ -1986,9 +1978,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 str(output_dir),
                 "--title-input-identity-file",
                 str(identity_path),
+                "--public-safe",
             ]
-            if public_safe:
-                planner.append("--public-safe")
             if module_dir is not None:
                 planner.extend(("--module-dir", str(module_dir)))
             if cached_header is not None:
@@ -2155,15 +2146,11 @@ def _build_package(args: argparse.Namespace, stage_observer,
                             f"Guest module staging collision: {target_module} is a directory, expecting a file."
                         )
                     shutil.copyfile(module_file, target_module)
-        backends_mode = "public" if public_safe else "private"
-        backend_limits = (
-            [
-                "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
-                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
-            ]
-            if public_safe
-            else []
-        )
+        backends_mode = "public"
+        backend_limits = [
+            "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+            "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
+        ]
         package_cache.write_completion_manifest(
             build_dir,
             cache_key,
