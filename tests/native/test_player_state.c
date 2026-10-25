@@ -1378,6 +1378,12 @@ static int repeat_launch_child_mode(void) {
                      marker_present ? 1 : 0) >= 0;
     if (fclose(report) != 0) ok = 0;
     if (!ok) return 4;
+    /* Runtime output: the launch sends stdout and stderr to the boot-event
+       file, which the player keeps as logs/game-<disc>-last.txt (#1303). */
+    printf("synthetic runtime stdout marker_present=%d\n", marker_present ? 1 : 0);
+    fflush(stdout);
+    fprintf(stderr, "synthetic runtime stderr line\n");
+    fflush(stderr);
     const char *stop_reason = getenv("NK_REPEAT_LAUNCH_STOP_REASON");
     const char *boot_event_path = getenv("SR_BOOT_EVENT_FILE");
     if (stop_reason && strcmp(stop_reason, "semantic-boundary") == 0 &&
@@ -1405,6 +1411,26 @@ static int repeat_launch_child_mode(void) {
         if (!ok) return 5;
     }
     return exit_code;
+}
+
+/* True when the file at `path` holds `needle`. */
+static bool run_log_contains(const char *path, const char *needle) {
+    FILE *file = nk_fopen_utf8(path, "rb");
+    if (!file) return false;
+    char text[8192];
+    size_t got = fread(text, 1, sizeof(text) - 1u, file);
+    fclose(file);
+    text[got] = '\0';
+    return strstr(text, needle) != NULL;
+}
+
+/* True when a developer log line holds `needle`. */
+static bool dev_log_contains(const PlayerApp *app, const char *needle) {
+    for (size_t i = 0; i < player_dev_log_count(app); i++) {
+        const char *line = player_dev_log_line(app, i);
+        if (line && strstr(line, needle)) return true;
+    }
+    return false;
 }
 
 /* Launch through the player-owned session path, let the child reach a
@@ -5865,6 +5891,17 @@ int main(int argc, char **argv) {
                  user_root, sep, sep);
         assert(nk_platform_mkdir_p(data_root));
         nk_title_catalog_snapshot_release(&title_snapshot);
+        char logs_dir[NK_MAX_PATH];
+        char run_log_last[NK_MAX_PATH + 64];
+        char run_log_prev[NK_MAX_PATH + 64];
+        char run_log_name[64];
+        assert(nk_platform_get_path(NK_PATH_LOGS, logs_dir, sizeof(logs_dir)));
+        snprintf(run_log_name, sizeof(run_log_name), "game-%s-last.txt", disc_id);
+        snprintf(run_log_last, sizeof(run_log_last), "%s%c%s", logs_dir, sep, run_log_name);
+        snprintf(run_log_prev, sizeof(run_log_prev), "%s%cgame-%s-prev.txt", logs_dir, sep,
+                 disc_id);
+        remove(run_log_last);
+        remove(run_log_prev);
 
         char source_media_json[512];
         snprintf(source_media_json, sizeof(source_media_json),
@@ -5982,6 +6019,14 @@ int main(int argc, char **argv) {
             assert(report.marker_present == false);
             assert(strcmp(report.memstick, memstick1) == 0);
         }
+        /* #1303: the ended run's output is in the logs folder, not only in
+           the cache file the session deletes, and the developer log names it. */
+        assert(run_log_contains(run_log_last, "synthetic runtime stdout marker_present=0"));
+        assert(run_log_contains(run_log_last, "synthetic runtime stderr line"));
+        assert(!nk_platform_file_exists(run_log_prev));
+        assert(!nk_platform_file_exists(rep->boot_event_file_path));
+        assert(dev_log_contains(rep, "game output kept in "));
+        assert(dev_log_contains(rep, run_log_name));
 
         /* Launch 2 in the same process: same save root, and the child sees
            the savedata the first launch wrote. */
@@ -5992,6 +6037,9 @@ int main(int argc, char **argv) {
             assert(report.marker_present == true);
             assert(strcmp(report.memstick, memstick1) == 0);
         }
+        /* The second run is -last and the first run moved to -prev. */
+        assert(run_log_contains(run_log_last, "synthetic runtime stdout marker_present=1"));
+        assert(run_log_contains(run_log_prev, "synthetic runtime stdout marker_present=0"));
         /* The pre-existing per-disc slot survives both launches. */
         assert(nk_platform_file_exists(slot_sentinel));
 
@@ -6148,9 +6196,24 @@ int main(int argc, char **argv) {
         assert(strstr(rep->last_error.boundary_text, "tracked in issue 308") != NULL);
         assert(strchr(rep->last_error.boundary_text, '#') == NULL);
         assert(strcmp(player_error_retry_label(&rep->last_error), "Restart game") == 0);
-        assert(strcmp(rep->last_error.log_file_path, stop_event_path) == 0);
-        assert(nk_platform_file_exists(stop_event_path));
-        remove(stop_event_path);
+        /* #1303: the card's log file is the kept run log, which holds the
+           stop event and the runtime's output; the cache copy is gone. */
+        assert(strcmp(rep->last_error.log_file_path, run_log_last) == 0);
+        assert(run_log_contains(run_log_last,
+                                "BOOT_EVENT phase=stop reason=semantic-boundary "
+                                "boundary=unsupported-interpreter-form issue=308"));
+        assert(run_log_contains(run_log_last, "synthetic runtime stderr line"));
+        assert(!nk_platform_file_exists(stop_event_path));
+        {
+            char report_text[PLAYER_ERROR_DETAILS_MAX + 4096];
+            assert(player_app_format_error_report(rep, "test", report_text,
+                                                  sizeof(report_text)) > 0);
+            const char *log_line = strstr(report_text, "Log file: ");
+            assert(log_line != NULL);
+            const char *log_end = strchr(log_line, '\n');
+            const char *name = strstr(log_line, run_log_name);
+            assert(name != NULL && (!log_end || name < log_end));
+        }
         set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "");
 
         /* Runtime stack exhaustion has no tracker issue and must still reach the
@@ -6204,6 +6267,8 @@ int main(int argc, char **argv) {
            pre-existing per-disc save slot is left alone. */
         test_rmdir(memstick1);
         remove(report_path);
+        remove(run_log_last);
+        remove(run_log_prev);
         remove(git_before);
         remove(git_after);
         remove(iso_path);
