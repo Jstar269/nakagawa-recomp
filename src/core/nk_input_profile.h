@@ -502,6 +502,37 @@ uint32_t nk_input_profile_eval_navigation(
     const int16_t host_axes[NK_HOST_AXIS_COUNT]
 );
 
+/* -----------------------------------------------------------------------------
+ * Overlay input gate (#1159)
+ *
+ * The in-game overlay claims host input while it has focus: the game then
+ * reads every button released and the stick centred. When the claim ends,
+ * every button still held and a stick still pushed away from the centre stay
+ * hidden from the game until they are let go, so the press that closed the
+ * overlay never reaches the game and no button sticks. A hidden button shows
+ * again after a release, or after a press event the host saw once the claim
+ * ended (only a released button can be pressed again).
+ *
+ * Buttons are PSP bits (NK_PSP_BTN_*_BIT). `pressed` is the button-down events
+ * since the game last sampled, which a host keeps so a press and release
+ * between two samples is not lost.
+ * -------------------------------------------------------------------------- */
+
+typedef struct {
+    bool claimed;
+    uint32_t hidden;       /* buttons held when the claim ended, hidden until let go */
+    bool stick_hidden;     /* stick off centre when the claim ended, centred until it returns */
+} NkInputGate;
+
+void nk_input_gate_init(NkInputGate *gate);
+void nk_input_gate_claim(NkInputGate *gate);
+/* Ends the claim. `held`, `lx` and `ly` are the host state at that moment. */
+void nk_input_gate_release(NkInputGate *gate, uint32_t held, uint8_t lx, uint8_t ly);
+/* Filters one host sample in place: what the game may see of it. Any pointer
+ * may be NULL; a NULL `held` skips the button update. */
+void nk_input_gate_apply(NkInputGate *gate, uint32_t *held, uint32_t *pressed,
+                         uint8_t *lx, uint8_t *ly);
+
 #ifdef __cplusplus
 }
 #endif

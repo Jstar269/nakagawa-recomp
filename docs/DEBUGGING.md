@@ -1382,7 +1382,7 @@ VIDEO: present fb=0x04000000 fmt=3 stride=512
 The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance overlay (HUD) that can be toggled at runtime or enabled at process start:
 
 - **Startup Switch**: Launch with `SR_HUD=1` to have the overlay enabled at startup.
-- **Runtime Toggle**: Press `F1` while the game window is focused to toggle the overlay on or off.
+- **Runtime Toggle**: Press `F3` while the game window is focused to toggle the overlay on or off. (`F1`, like `Esc` and the controller's Guide button, pauses the game; see [Clocks](ARCHITECTURE.md#clocks).)
 - **Telemetry Displayed**:
   - **FPS & Frame Time**: Presented frames per second and average millisecond latency per presented frame.
   - **VBlank Rate**: Cadence of the scheduler's VBlank ticks in Hertz.
