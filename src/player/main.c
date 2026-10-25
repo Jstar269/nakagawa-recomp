@@ -2865,7 +2865,6 @@ static void player_setup_standard_streams(void) {
     /* _dup2 gives fds 1 and 2 their own copies of the log handle, so closing `log` is safe. */
     _dup2(_fileno(log), 1);
     _dup2(1, 2);
-    setvbuf(stdout, NULL, _IOLBF, 0);
     fclose(log);
 }
 #endif
@@ -2888,6 +2887,11 @@ int main(int argc, char *argv[]) {
     if (!player_apply_user_data_root(argc, argv)) return 2;
 #if defined(_WIN32) || defined(_WIN64)
     player_setup_standard_streams();
+    /* The Windows CRT has no line buffering: _IOLBF is full buffering, so a file or pipe got
+       nothing until 4 KiB had piled up or the player exited, and player-output.txt stayed empty
+       while the player ran (#1303). Unbuffered, each printf reaches it as one write. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
 #endif
     player_report_legacy_data_root();
 
