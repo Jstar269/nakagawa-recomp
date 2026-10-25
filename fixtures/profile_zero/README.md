@@ -30,7 +30,7 @@ directory. They contain no retail or private bytes.
 
 From the repository root, with `psp-config`, `psp-gcc`, `psp-prxgen`, and
 `pack-pbp` on `PATH` (the committed bytes came from the PSPDEV distribution
-pinned by `assets/upstream/pspdev.lock.json`: release `v20260601`, official
+pinned by `assets/upstream/pspdev.lock.json`: release `v20261001`, official
 `pspdev-ubuntu-latest-x86_64.tar.gz` release asset, installed into a WSL Ubuntu
 `/usr/local/pspdev`, `psp-gcc (GCC) 15.2.0`):
 
@@ -55,11 +55,18 @@ seven-case route on bytes already staged in `prebuilt/` (in hosted CI, the
 `profile_zero_fixture` artifact), checked against the digests, and reports
 `NOT_RUN` when no bytes are staged.
 
-The rebuild-and-compare is authoritative only for the pinned distribution
-(#708). The gate first verifies that the installed PSPDEV tool binaries match
+The rebuild-and-compare is authoritative only for the pinned distribution.
+The gate first verifies that the installed PSPDEV tool binaries match
 the identities `assets/upstream/pspdev.lock.json` records for release
-`v20260601` and the `pspdev-ubuntu-latest-x86_64.tar.gz` release asset; a
+`v20261001` and the `pspdev-ubuntu-latest-x86_64.tar.gz` release asset; a
 PSPDEV from a different asset class (for example the Debian archives) or a
 different release ships different tool binaries and produces different fixture
 bytes, so the gate fails closed naming the pin instead of reporting drift from
 an unauthoritative toolchain.
+
+The `v20261001` rebuild changed both generated outputs, so only
+`prebuilt/SHA256SUMS` was refreshed; the generated PBP and PRX remain ignored.
+Its PSPSDK `build.mak` changes the default `MEMSIZE` from 1 to 2 for firmware
+versions above 3.90, changing the SFO included in `EBOOT.PBP`. All 11 PSP SDK
+archives linked by this fixture also changed, while the compiled `main.o`
+remained byte-identical; this changed `profile_zero_guest.prx`.

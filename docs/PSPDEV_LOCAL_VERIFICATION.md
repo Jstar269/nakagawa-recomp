@@ -4,28 +4,46 @@ This document is the exact boundary between the remote, source-only work in the
 first PSPDEV integration slice and the operations that require a local checkout,
 a PSPDEV installation, or controlled downloads.
 
-## Completed immutable baseline
+## Current immutable baseline
 
-The authoritative `v20260601` local evidence gate is complete in
-`assets/upstream/pspdev.evidence.json` (#708):
+The authoritative `v20261001` local evidence gate is recorded in
+`assets/upstream/pspdev.evidence.json`:
 
-- the official `pspdev-ubuntu-latest-x86_64.tar.gz` release asset was downloaded
-  and its 171,708,474-byte payload independently matched GitHub's published
-  SHA-256;
-- the official Docker Hub `v20260601` tag was pulled by immutable digest and
+- the official `pspdev-ubuntu-latest-x86_64.tar.gz` release asset was downloaded;
+  its 172,980,272-byte payload matched GitHub's published release API SHA-256;
+- the official Docker Hub `v20261001` tag was pulled by immutable digest and
   inspected as `linux/amd64`;
-- all 13 required/optional tools from that release asset were installed at
-  `/usr/local/pspdev` in WSL Ubuntu, byte-compared tool-by-tool against the
-  release archive, and their executable sizes, SHA-256 values, and bounded
-  identity output were recorded;
-- a clean rebuild of `fixtures/profile_zero/{main.c,Makefile}` with that exact
-  toolchain reproduced the committed profile-zero fixture byte-for-byte;
-- `assets/upstream/pspdev.lock.json` now passes `--require-local`.
+- all 13 required/optional tools from the release asset were fingerprinted by
+  size and SHA-256 against the extracted archive, then checked at the
+  documented `/usr/local/pspdev` path in WSL Ubuntu;
+- the showcase and PSP oracle fixtures were rebuilt with that toolchain, and
+  the documented profile-zero recipe rebuilt both generated outputs in a
+  scratch directory against the refreshed committed digests;
+- `assets/upstream/pspdev.lock.json` passes `--require-local`.
 
-The earlier `v20260501` Debian evidence gate was superseded by this pin
-(#708): neither the v20260501 Debian archive nor the v20260601 Debian archive
-reproduces the committed profile-zero fixture, and only the v20260601
-`ubuntu-latest` release asset does.
+The release changed the profile-zero output bytes. The v20261001 PSPSDK
+`build.mak` defaults `MEMSIZE` to 2 instead of 1 for firmware versions above
+3.90, which changes the SFO in `EBOOT.PBP`; the 11 PSP SDK static archives
+linked by the fixture also changed while `main.o` remained byte-identical.
+Only the generated-output checksum file was refreshed. The new digests are
+`168dc9eceb038066ebcda305c23efe826cbfbfd346c03526329f928c946d5b63` for
+`EBOOT.PBP` and
+`c644fdaa9682480b72f52d6aaa83b64c1b2d3ef2bed8e74eb548eaf0a669c6f6` for
+`profile_zero_guest.prx`; neither generated binary is tracked.
+
+The default `tools.test_profile_zero_e2e` run passes its lock/evidence checks
+and skips the production runtime route as configured. An opt-in
+`NK_TEST_TIER=full` attempt did not complete the runtime route and is
+`INCONCLUSIVE`; the standalone fixture rebuild and digest comparison passed.
+The documented `showcase-smoke` passed TEST00007 but failed TEST00008 in three
+runs, including one at the merged head: the scheduler pause was observed at
+vcount 121 instead of the expected 120. That runtime timing result remains
+separate from the successful PSPDEV fixture builds and is unresolved.
+
+The earlier Debian evidence remains historical: neither the May 2026 nor the
+previous June 2026 Debian archive reproduced the committed profile-zero fixture.
+The current pin uses the October 2026 Ubuntu asset, and its profile-zero result
+is recorded by the check above.
 
 This proves the locked distribution and tool identities. It still does not
 assert that the independently pinned component repository heads are the exact

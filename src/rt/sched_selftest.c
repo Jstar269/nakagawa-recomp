@@ -4395,6 +4395,59 @@ static void test_pause_s13_repeated_pauses_accumulate(void) {
            "S13 the host clock continues from its initial value after cumulative shifts");
 }
 
+/* S14: a scripted pause latched by the VBLANK the idle scheduler delivers is
+ * entered before the guest that edge woke runs again. The switch-in gives that
+ * thread a fresh slice, so without the rendezvous it ran one more frame past the
+ * request and, on a slow host, past the next VBLANK too (the TEST00008
+ * showcase-smoke pause, PR #1259).
+ *
+ * MUTANT: drop the `s_pause_requested` check before the switch-in in sched_run
+ *   -- the woken waiter resumes with s_pause_count == 0, and this fails. */
+static uint64_t g_pause_idle_count_at_resume;
+static uint64_t g_pause_idle_vcount_at_resume;
+static uint32_t g_pause_idle_request_vcount;
+static int g_pause_idle_resumed;
+static void pause_idle_wait_body(CpuState *s) {
+    (void)s;
+    /* Arm the script for the edge that will release this wait, so the request is
+     * latched by the VBLANK the idle scheduler delivers to a parked waiter. Settle
+     * the edge the wait's own observation point would latch first. */
+    vtime_refresh();
+    scheduler_service_pending();
+    g_pause_idle_request_vcount = (uint32_t)g_test_vcount + 1u;
+    s_pause_script_steps[0].vcount = g_pause_idle_request_vcount;
+    s_pause_script_index = 0;
+    sched_wait_vblank_start();
+    g_pause_idle_resumed = 1;
+    g_pause_idle_count_at_resume = s_pause_count;
+    g_pause_idle_vcount_at_resume = g_test_vcount;
+    g_pause_test_stop = 1;
+}
+
+static void test_pause_s14_idle_vblank_request_enters_before_guest_resumes(void) {
+    pause_test_reset(0, 2000u);
+    s_pause_script_steps = calloc(1, sizeof(*s_pause_script_steps));
+    expect(s_pause_script_steps != NULL, "S14 script step allocated");
+    if (!s_pause_script_steps) return;
+    s_pause_script_steps[0].host_ms = 0u;
+    s_pause_script_steps[0].source = SR_PAUSE_SRC_SCRIPT;
+    s_pause_script_count = 1;
+    s_pause_script_index = 1;   /* disarmed until the guest parks */
+    s_pause_script_loaded = 1;
+    g_pause_idle_count_at_resume = UINT64_MAX;
+    g_pause_idle_vcount_at_resume = UINT64_MAX;
+    g_pause_idle_resumed = 0;
+    sr_sched_stop_requested = pause_test_stop_requested;
+    g_test_body = pause_idle_wait_body;
+    sched_run(0x08ffdf00u, 0u, 0u);
+    expect(g_pause_idle_resumed, "S14 the display waiter resumed after the edge");
+    expect(g_pause_idle_count_at_resume == 1u,
+           "S14 the idle-VBLANK pause request is entered before the woken guest runs");
+    expect(g_pause_idle_vcount_at_resume == g_pause_idle_request_vcount && s_pause_count == 1u,
+           "S14 exactly one pause, entered at the requested VCOUNT");
+    sr_sched_stop_requested = NULL;
+}
+
 #define LOAD_EXEC_RESET_PARENT_ENTRY 0x08ffde00u
 #define LOAD_EXEC_RESET_CHILD_ENTRY 0x08ffde10u
 #define LOAD_EXEC_RESET_NEXT_ENTRY 0x08ffde20u
@@ -4584,6 +4637,7 @@ int main(int argc, char **argv) {
     test_pause_s11_refusal_verdicts();
     test_pause_s12_turbo_sequence_is_unchanged();
     test_pause_s13_repeated_pauses_accumulate();
+    test_pause_s14_idle_vblank_request_enters_before_guest_resumes();
     test_loadexec_retires_scheduler_world();
 
     fprintf(stderr, "sched_selftest: title config \"%s\" (valid=0x%x)\n",

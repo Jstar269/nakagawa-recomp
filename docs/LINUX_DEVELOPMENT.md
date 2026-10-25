@@ -52,7 +52,7 @@ sudo ldconfig
 pkg-config --modversion sdl3   # should print 3.4.18
 ```
 
-Install PSPDEV v20260601 at `/usr/local/pspdev` (the official
+Install PSPDEV v20261001 at `/usr/local/pspdev` (the official
 `pspdev-ubuntu-latest-x86_64.tar.gz` release asset); CI downloads its archive from
 `assets/upstream/pspdev.evidence.json` and verifies the digest recorded in
 `assets/upstream/pspdev.lock.json`.
