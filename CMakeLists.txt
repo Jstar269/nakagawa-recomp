@@ -196,6 +196,16 @@ set(NK_UI_OVERLAY_SOURCES
     src/rt/overlay/overlay_hud.c
     src/rt/overlay/overlay_toast.c
     src/rt/overlay/overlay_dialogs.c
+    src/rt/overlay/overlay_controls.c
+    src/rt/overlay/overlay_host.c
+)
+# The overlay pages built so far (C9c), SDL-free; overlay_host.c builds only into the runtime.
+set(NK_UI_OVERLAY_C9C_SOURCES
+    src/rt/overlay/nk_overlay.c
+    src/rt/overlay/overlay_pause.c
+    src/rt/overlay/overlay_quick.c
+    src/rt/overlay/overlay_dialogs.c
+    src/rt/overlay/overlay_controls.c
 )
 set(NK_UI_TEST_SOURCES
     tests/native/test_nk_ui_core.c
@@ -242,6 +252,25 @@ if(NOT WIN32)
 endif()
 add_test(NAME player_screens_test COMMAND test_player_screens)
 set_tests_properties(player_screens_test PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# The in-game overlay's pages (#1159, C9c): flow, focus, fit and fixtures/nk_ui/overlay.golden.
+add_executable(test_overlay_screens
+    tests/native/test_overlay_screens.c
+    ${NK_UI_CORE_SOURCES}
+    ${NK_UI_OVERLAY_C9C_SOURCES}
+)
+target_include_directories(test_overlay_screens PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/rt/overlay
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
+)
+if(NOT WIN32)
+    target_link_libraries(test_overlay_screens PRIVATE m)
+endif()
+add_test(NAME overlay_screens_test COMMAND test_overlay_screens)
+set_tests_properties(overlay_screens_test PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # The SDL_Renderer backend and SDL3_ttf text engine (lane C3b). With SDL3 and

@@ -1263,6 +1263,9 @@ SrPauseFrame gui_pause_frame(void);
 void         gui_pause_leave(void);
 SrPauseVerdict sched_pause_request(SrPauseSource source);
 int      sched_pause_active(void);
+/* The source of the pause requested or open now (the presenter opens on the controller
+ * dialog for SR_PAUSE_SRC_PAD_LOST); meaningful while sched_pause_pending() is nonzero. */
+SrPauseSource sched_pause_source(void);
 int      sched_pause_pending(void);
 uint64_t sched_pause_total_ns(void);
 uint32_t sr_display_vcount(void);

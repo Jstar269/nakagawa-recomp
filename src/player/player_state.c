@@ -2411,6 +2411,9 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
 
     NkResult res = nk_launch_prepare_session(&app->launch_session, game,
                                               player_package_root(app, game));
+    /* The runtime's pause overlay draws with the player's UI fonts. */
+    snprintf(app->launch_session.ui_root, sizeof(app->launch_session.ui_root), "%s",
+             app->install_root);
     /* nk_launch defaults gui_mode to false for headless harnesses. */
     app->launch_session.config.gui_mode = !app->launch_headless;
     if (res != NK_OK) {

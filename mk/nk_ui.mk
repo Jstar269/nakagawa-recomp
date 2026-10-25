@@ -50,7 +50,20 @@ NK_UI_OVERLAY_SRCS := \
 	src/rt/overlay/overlay_quick.c \
 	src/rt/overlay/overlay_hud.c \
 	src/rt/overlay/overlay_toast.c \
-	src/rt/overlay/overlay_dialogs.c
+	src/rt/overlay/overlay_dialogs.c \
+	src/rt/overlay/overlay_controls.c \
+	src/rt/overlay/overlay_host.c
+
+# The overlay pages built so far (C9c); the HUD port and toasts keep their reserved names.
+# They are SDL-free; overlay_host.c is the runtime's SDL side and builds only into it.
+NK_UI_OVERLAY_C9C_SRCS := \
+	src/rt/overlay/nk_overlay.c \
+	src/rt/overlay/overlay_pause.c \
+	src/rt/overlay/overlay_quick.c \
+	src/rt/overlay/overlay_dialogs.c \
+	src/rt/overlay/overlay_controls.c
+
+NK_UI_OVERLAY_HOST_SRCS := src/rt/overlay/overlay_host.c
 
 NK_UI_NATIVE_CORE_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) $(NK_UI_BACKEND_SRCS)
 

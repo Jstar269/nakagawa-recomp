@@ -32,6 +32,7 @@
 #endif
 #if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
 #include "nk_ui_theme.h"         /* the pause overlay's scrim token */
+#include "overlay/overlay_host.h" /* the pause overlay's pages (C9c) */
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_render.h>
 #endif
@@ -781,21 +782,28 @@ pace:
 #ifdef SR_SDL3VK
 static int          s_pause_open;
 static int          s_pause_resume;      /* the overlay asked to resume */
-static int          s_pause_dirty;       /* the overlay image must be composed again */
+static int          s_pause_dirty;       /* the overlay image must be drawn again */
+static int          s_pause_base_dirty;  /* the frozen frame under the scrim must be composed again */
 static int          s_pause_have_frame;  /* s_px holds the frozen game frame */
 static int          s_pause_failure_reported;
 static uint64_t     s_pause_next_ns;
-static SDL_Surface  *s_pause_surface;
-static SDL_Renderer *s_pause_ren;
-static SDL_Texture  *s_pause_tex;
+static SDL_Surface  *s_pause_base;       /* the frozen frame under the scrim, at the window's size */
+static SDL_Surface  *s_pause_surface;    /* the overlay image: the base with the pages over it */
+static SDL_Renderer *s_pause_ren;        /* draws the pages into s_pause_surface */
+static NkOverlayHost *s_pause_host;      /* the pages; NULL shows the base alone (no SDL3_ttf or fonts) */
+static int          s_pause_host_tried;
+static NkOverlayControls s_pause_controls;
+
+int sr_savedata_pause_busy(void);   /* hle.c: a save is in progress, so quitting is refused */
 
 static void gui_pause_free_canvas(void) {
-    if (s_pause_tex) SDL_DestroyTexture(s_pause_tex);
+    nk_overlay_host_unbind(s_pause_host);
     if (s_pause_ren) SDL_DestroyRenderer(s_pause_ren);
     if (s_pause_surface) SDL_DestroySurface(s_pause_surface);
-    s_pause_tex = NULL;
+    if (s_pause_base) SDL_DestroySurface(s_pause_base);
     s_pause_ren = NULL;
     s_pause_surface = NULL;
+    s_pause_base = NULL;
 }
 
 /* The frame under the overlay is the displayed framebuffer as it is now. A framebuffer the
@@ -810,8 +818,104 @@ static int gui_pause_freeze(void) {
     return 1;
 }
 
-/* Draws the overlay image at the swapchain's size: the frozen frame placed where a game
- * frame would be, then the scrim over all of it. */
+/* Composes the base at the swapchain's size: the frozen frame placed where a game frame
+ * would be (with the scaling in force), then the scrim over all of it. */
+static int gui_pause_compose_base(int w, int h, SDL_PixelFormat format) {
+    if (!s_pause_base || s_pause_base->w != w || s_pause_base->h != h || s_pause_base->format != format) {
+        if (s_pause_base) SDL_DestroySurface(s_pause_base);
+        s_pause_base = SDL_CreateSurface(w, h, format);
+        if (!s_pause_base) return 0;
+    }
+    SDL_Renderer *ren = SDL_CreateSoftwareRenderer(s_pause_base);
+    if (!ren) return 0;
+    int ok = 1;
+    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    SDL_RenderClear(ren);
+    if (s_pause_have_frame) {
+        SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STATIC,
+                                             PSP_W, PSP_H);
+        if (!tex || !SDL_UpdateTexture(tex, NULL, s_px, PSP_W * 4)) {
+            ok = 0;
+        } else {
+            Sdl3VkPresentPlan plan = sdl3vk_present_plan(sdl3vk_present_scaling(), PSP_W, PSP_H, w, h, INT32_MAX);
+            if (plan.w > 0 && plan.h > 0) {
+                SDL_FRect dst = { (float)plan.x, (float)plan.y, (float)plan.w, (float)plan.h };
+                SDL_SetTextureScaleMode(tex, plan.nearest ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR);
+                SDL_RenderTexture(ren, tex, NULL, &dst);
+            }
+        }
+        if (tex) SDL_DestroyTexture(tex);
+    }
+    const uint32_t scrim = nk_ui_theme_n1()->scrim;
+    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(ren, (Uint8)(scrim >> 24), (Uint8)(scrim >> 16),
+                           (Uint8)(scrim >> 8), (Uint8)scrim);
+    SDL_RenderFillRect(ren, NULL);
+    SDL_RenderPresent(ren);
+    SDL_DestroyRenderer(ren);
+    return ok;
+}
+
+static int gui_pause_scaling_to_overlay(int mode) {
+    switch (mode) {
+    case SDL3VK_SCALING_INTEGER:  return NK_OVERLAY_SCALING_INTEGER;
+    case SDL3VK_SCALING_BILINEAR: return NK_OVERLAY_SCALING_SMOOTH;
+    default:                      return NK_OVERLAY_SCALING_SHARP;
+    }
+}
+
+static int gui_pause_scaling_from_overlay(int scaling) {
+    switch (scaling) {
+    case NK_OVERLAY_SCALING_INTEGER: return SDL3VK_SCALING_INTEGER;
+    case NK_OVERLAY_SCALING_SMOOTH:  return SDL3VK_SCALING_BILINEAR;
+    default:                         return SDL3VK_SCALING_SHARP;
+    }
+}
+
+/* The controls page describes the mapping in force: the window's key table and the input
+ * profile, with the pad's buttons named for the pad that is there. */
+static void gui_pause_describe_controls(void) {
+    NkOverlayKey keys[32];
+    size_t count = 0;
+    uint32_t bits;
+    const char *label;
+    while (count < sizeof(keys) / sizeof(keys[0]) && sdl3vk_keyboard_key((int)count, &bits, &label)) {
+        keys[count].psp_bits = bits;
+        keys[count].label = label;
+        count++;
+    }
+    nk_overlay_describe_controls(&s_pause_controls, sdl3vk_get_input_profile(),
+                                 nk_overlay_host_pad_family(s_pause_host), keys, count);
+}
+
+/* Carries out what the person chose on a page. */
+static void gui_pause_act(NkOverlayAction action) {
+    switch (action.kind) {
+    case NK_OVERLAY_ACT_RESUME:
+        s_pause_resume = 1;
+        break;
+    case NK_OVERLAY_ACT_QUIT:
+        /* Confirmed, and refused by the page while a save is in progress: the run ends the
+         * way a window close ends it, and the player is back in the library. */
+        fprintf(stderr, "SR_PAUSE: quit to library\n");
+        fflush(stderr);
+        _Exit(0);
+    case NK_OVERLAY_ACT_SET_SCALING:
+        if (sdl3vk_set_present_scaling(gui_pause_scaling_from_overlay(action.value)))
+            s_pause_base_dirty = 1;
+        s_pause_dirty = 1;
+        break;
+    case NK_OVERLAY_ACT_SET_HUD:
+        sdl3vk_hud_set_enabled(action.value != 0);
+        s_pause_dirty = 1;
+        break;
+    default:
+        break;
+    }
+}
+
+/* Draws the overlay image at the swapchain's size: the base, then the pages over it. */
 static int gui_pause_compose(int w, int h, int rgba) {
     SDL_PixelFormat format = rgba ? SDL_PIXELFORMAT_RGBA32 : SDL_PIXELFORMAT_BGRA32;
     if (!s_pause_surface || s_pause_surface->w != w || s_pause_surface->h != h ||
@@ -823,60 +927,78 @@ static int gui_pause_compose(int w, int h, int rgba) {
             gui_pause_free_canvas();
             return 0;
         }
-        if (s_pause_have_frame) {
-            s_pause_tex = SDL_CreateTexture(s_pause_ren, SDL_PIXELFORMAT_XRGB8888,
-                                            SDL_TEXTUREACCESS_STATIC, PSP_W, PSP_H);
-            if (s_pause_tex && !SDL_UpdateTexture(s_pause_tex, NULL, s_px, PSP_W * 4)) {
-                SDL_DestroyTexture(s_pause_tex);
-                s_pause_tex = NULL;
-            }
-            if (!s_pause_tex) {
-                gui_pause_free_canvas();
-                return 0;
-            }
-        }
+        s_pause_base_dirty = 1;
     }
-    SDL_SetRenderDrawBlendMode(s_pause_ren, SDL_BLENDMODE_NONE);
-    SDL_SetRenderDrawColor(s_pause_ren, 0, 0, 0, 255);
-    SDL_RenderClear(s_pause_ren);
-    if (s_pause_tex) {
-        Sdl3VkPresentPlan plan = sdl3vk_present_plan(sdl3vk_present_scaling(), PSP_W, PSP_H, w, h, INT32_MAX);
-        if (plan.w > 0 && plan.h > 0) {
-            SDL_FRect dst = { (float)plan.x, (float)plan.y, (float)plan.w, (float)plan.h };
-            SDL_SetTextureScaleMode(s_pause_tex, plan.nearest ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR);
-            SDL_RenderTexture(s_pause_ren, s_pause_tex, NULL, &dst);
-        }
+    if (s_pause_base_dirty) {
+        if (!gui_pause_compose_base(w, h, format)) return 0;
+        s_pause_base_dirty = 0;
     }
-    const uint32_t scrim = nk_ui_theme_n1()->scrim;
-    SDL_SetRenderDrawBlendMode(s_pause_ren, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(s_pause_ren, (Uint8)(scrim >> 24), (Uint8)(scrim >> 16),
-                           (Uint8)(scrim >> 8), (Uint8)scrim);
-    SDL_RenderFillRect(s_pause_ren, NULL);
-    SDL_RenderPresent(s_pause_ren);
+    SDL_SetSurfaceBlendMode(s_pause_base, SDL_BLENDMODE_NONE);
+    if (!SDL_BlitSurface(s_pause_base, NULL, s_pause_surface, NULL)) return 0;
+    if (s_pause_host) {
+        NkOverlayModel model;
+        NkOverlayAction action;
+        float display_scale = 1.0f, pixels_per_point = 1.0f;
+        (void)sdl3vk_window_scales(&display_scale, &pixels_per_point);
+        gui_pause_describe_controls();
+        memset(&model, 0, sizeof(model));
+        model.title_name = getenv("SR_TITLE_NAME");
+        model.disc_id = getenv("SR_DISC_ID");
+        model.scaling = gui_pause_scaling_to_overlay(sdl3vk_present_scaling());
+        model.hud_on = sdl3vk_hud_is_enabled() != 0;
+        model.saving = sr_savedata_pause_busy() != 0;
+        model.controls = s_pause_controls.rows;
+        model.control_count = s_pause_controls.count;
+        if (!nk_overlay_host_draw(s_pause_host, s_pause_ren, display_scale, pixels_per_point,
+                                  &model, &action))
+            return 0;
+        SDL_RenderPresent(s_pause_ren);
+        gui_pause_act(action);
+    }
     return 1;
 }
 
-/* Every input and window event while the overlay is open (sdl3vk_set_input_claim). Esc,
- * F1, Guide and the pad's back button (east) close it. */
+/* Every input and window event while the overlay is open (sdl3vk_set_input_claim). Guide
+ * closes it from any page. The pages take the rest: Esc and the pad's back button go back a
+ * page (and resume from the menu), F1 and the pad's Start resume. Without the pages, Esc,
+ * F1 and the pad's back button (east) close it. */
 static void gui_pause_input(const void *event, void *user) {
     const SDL_Event *ev = (const SDL_Event *)event;
     (void)user;
+    switch (ev->type) {
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+    case SDL_EVENT_GAMEPAD_BUTTON_UP:
+        if (ev->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) {
+            if (ev->gbutton.down) s_pause_resume = 1;
+            return;
+        }
+        break;
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        s_pause_dirty = 1;
+        s_pause_base_dirty = 1;
+        s_pause_next_ns = 0;
+        break;
+    case SDL_EVENT_WINDOW_EXPOSED:
+        s_pause_next_ns = 0;
+        break;
+    default:
+        break;
+    }
+    if (nk_overlay_host_is_open(s_pause_host)) {
+        if (nk_overlay_host_event(s_pause_host, ev)) {
+            s_pause_dirty = 1;
+            s_pause_next_ns = 0;
+        }
+        return;
+    }
     switch (ev->type) {
     case SDL_EVENT_KEY_DOWN:
         if (!ev->key.repeat && (ev->key.key == SDLK_ESCAPE || ev->key.key == SDLK_F1))
             s_pause_resume = 1;
         break;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-        if (ev->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE ||
-            ev->gbutton.button == SDL_GAMEPAD_BUTTON_EAST)
+        if (ev->gbutton.button == SDL_GAMEPAD_BUTTON_EAST)
             s_pause_resume = 1;
-        break;
-    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-        s_pause_dirty = 1;
-        s_pause_next_ns = 0;
-        break;
-    case SDL_EVENT_WINDOW_EXPOSED:
-        s_pause_next_ns = 0;
         break;
     default:
         break;
@@ -906,12 +1028,25 @@ void gui_pause_enter(void) {
     s_pause_open = 1;
     s_pause_resume = 0;
     s_pause_dirty = 1;
+    s_pause_base_dirty = 1;
     s_pause_next_ns = 0;
     sdl3vk_set_input_claim(gui_pause_input, NULL);
     s_buttons = 0;
     s_lx = 128;
     s_ly = 128;
     s_pause_have_frame = gui_pause_freeze();
+    /* The pages load once, on the first pause: SDL3_ttf and the fonts come from the player's
+     * folder. Without them the pause shows the frozen frame alone, and says why once. */
+    if (!s_pause_host && !s_pause_host_tried) {
+        char error[256];
+        s_pause_host_tried = 1;
+        s_pause_host = nk_overlay_host_create(getenv("SR_UI_ROOT"), error, sizeof(error));
+        if (!s_pause_host)
+            fprintf(stderr, "SR_PAUSE: the overlay pages are unavailable (%s); the pause shows the "
+                            "frozen frame only\n", error);
+    }
+    nk_overlay_host_open(s_pause_host, sched_pause_source() == SR_PAUSE_SRC_PAD_LOST
+                                           ? NK_OVERLAY_OPEN_PAD_LOST : NK_OVERLAY_OPEN_USER);
 #endif
 }
 
@@ -929,28 +1064,33 @@ SrPauseFrame gui_pause_frame(void) {
     if (sdl3vk_window_minimized() || now < s_pause_next_ns) return SR_PAUSE_FRAME_CONTINUE;
     uint64_t period = sdl3vk_display_period_ns();
     s_pause_next_ns = now + (period ? period : PSP_SCANOUT_PERIOD_NS);
+    /* A held direction repeats, and a new page's second frame navigates by its layout. */
+    if (nk_overlay_host_due(s_pause_host, (double)now / 1e9)) s_pause_dirty = 1;
 
     int w = 0, h = 0, rgba = 0;
     if (!sdl3vk_overlay_extent(&w, &h, &rgba)) return SR_PAUSE_FRAME_CONTINUE;
     const void *px = NULL;
     int pitch = 0;
     if (s_pause_dirty) {
+        s_pause_dirty = 0;
         if (!gui_pause_compose(w, h, rgba)) {
             if (!s_pause_failure_reported) {
                 s_pause_failure_reported = 1;
                 fprintf(stderr, "SR_PAUSE: the overlay image (%dx%d) could not be drawn: %s\n",
                         w, h, SDL_GetError());
             }
+            s_pause_dirty = 1;
             return SR_PAUSE_FRAME_CONTINUE;
         }
+        if (s_pause_resume) return SR_PAUSE_FRAME_RESUME;
         px = s_pause_surface->pixels;
         pitch = s_pause_surface->pitch;
-        s_pause_dirty = 0;
     }
     int presented = sdl3vk_present_overlay(px, pitch);
     if (presented == 0) { _Exit(0); }
     if (presented == 2) {
         s_pause_dirty = 1;
+        s_pause_base_dirty = 1;
         s_pause_next_ns = 0;
     } else if (presented < 0) {
         /* A renderer that can no longer present cannot show the overlay; the game goes on
@@ -972,6 +1112,7 @@ void gui_pause_leave(void) {
     if (!sdl3vk_poll()) { _Exit(0); }
     sdl3vk_set_input_claim(NULL, NULL);
     sdl3vk_overlay_release();
+    nk_overlay_host_close(s_pause_host);
     gui_pause_free_canvas();
     s_pause_open = 0;
     s_pause_resume = 0;

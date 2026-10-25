@@ -283,6 +283,34 @@ step says the privacy promise once. The left rail below is the target layout for
   library. A disc whose program is encrypted gets the "does not decrypt games" explanation, never a request for a
   key file.
 
+### In-game overlay (C9c, built)
+
+Drawn by the runtime over the frozen game frame under the `scrim` while the game is paused
+(`src/rt/overlay/`, hosted by the pause presenter in `src/rt/gui.c`). No top bar and no waves: one card centred
+16 px from the edges, and the prompt bar along the bottom. The card is the error dialog's (`nk_ui_dialog_begin`).
+
+- Menu (480 px card): `GAME PAUSED` eyebrow in `muted`, the game's name in `TITLE` (two lines at most, else
+  "Paused"), the disc ID in `DATA` `muted`, then a full-width column of buttons: RESUME (primary, 52 px, the
+  default focus), SETTINGS, CONTROLS, QUIT TO LIBRARY. Prompts: MOVE, SELECT, RESUME.
+- Settings (640 px): Settings rows as in C6. Game scaling is a segmented control (SHARP, INTEGER, SMOOTH; left and
+  right step it, Confirm cycles it), the performance HUD a toggle. A `FOOTNOTE` says the changes apply now and last
+  until the game closes; the player's Settings keep the saved values. BACK.
+- Controls (640 px, or 880 px in two side-by-side tables when the window is under 720 px high and there are more
+  than six rows): a PSP / KEYBOARD / CONTROLLER header in `EYEBROW` and 38 px rows (34 px when split) with `line`
+  dividers; an unbound control shows an em dash. The rows describe the mapping in force: the window's own key
+  table and the input profile, with the pad's buttons named for its family (A, B, X, Y and LB for an Xbox-style
+  pad, Cross and L1 for a PlayStation-style one, the position for an unknown pad), the prompt bar's rule. A
+  `FOOTNOTE` points at the player's Settings for remapping. BACK.
+- Quit to library (560 px): `▲ QUIT TO LIBRARY` in `warning`, "Quit" and the game's name, "Anything the game has not saved is
+  lost.", then KEEP PLAYING (primary, the default) and QUIT TO LIBRARY (danger, never the default). While a save is
+  in progress the dialog says so ("The game is saving") and offers RESUME and BACK only.
+- Controller disconnected (560 px): `▲ CONTROLLER DISCONNECTED · GAME PAUSED` in `warning` and what to do; once a
+  pad is back, `● CONTROLLER CONNECTED · GAME PAUSED` in `ready`. RESUME (primary) and PAUSE MENU.
+- Input: Esc and the pad's back button go back a page and resume from the menu; F1 and the pad's Start resume from
+  any page; Guide resumes from anywhere. Back on the controller dialog goes to the menu, never into the game.
+- Without SDL3_ttf or the bundled fonts the runtime shows the frozen frame under the scrim alone (C9b's overlay),
+  and says why once on stderr; Esc, F1, Guide and the pad's back button resume.
+
 ## Accessibility
 
 - Text contrast is at least 4.5:1 for everything except `dim`, which is reserved for disabled controls and
@@ -302,3 +330,7 @@ step says the privacy promise once. The left rail below is the target layout for
 3. `mingw32-make nk-ui-player-screens-capture NK_UI_CAPTURE_DIR=<dir>` saves offscreen captures of each state at
    1280 x 800, 1920 x 1200 at 150% and 960 x 600, from synthetic fixture titles only. Compare them with the
    design boards before review.
+4. The in-game overlay's pages have their own gates: `mingw32-make nk-ui-overlay-screens-selftest` (flow, focus,
+   fit at those three sizes, and `fixtures/nk_ui/overlay.golden`; rewrite it with
+   `build/test_overlay_screens --write-goldens`) and `mingw32-make nk-ui-overlay-host-selftest` (the runtime host on
+   SDL3_ttf, the bundled fonts and real key events).

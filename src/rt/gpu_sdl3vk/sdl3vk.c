@@ -749,23 +749,39 @@ static void queue_text_utf8(const char *s) {
     }
 }
 
+/* The keyboard's PSP buttons. One table serves the game's input and the pause overlay's
+ * controls page (sdl3vk_keyboard_key), so the page can never describe another mapping. */
+static const struct {
+    SDL_Scancode sc;
+    uint32_t     psp;
+    const char  *label;
+} s_keyboard_map[] = {
+    { SDL_SCANCODE_RETURN, 0x0008, "Enter" },
+    { SDL_SCANCODE_LSHIFT, 0x0001, "Shift" },
+    { SDL_SCANCODE_RSHIFT, 0x0001, "Shift" },
+    { SDL_SCANCODE_X,      0x4000, "X" },
+    { SDL_SCANCODE_Z,      0x2000, "Z" },
+    { SDL_SCANCODE_A,      0x8000, "A" },
+    { SDL_SCANCODE_S,      0x1000, "S" },
+    { SDL_SCANCODE_Q,      0x0100, "Q" },
+    { SDL_SCANCODE_W,      0x0200, "W" },
+    { SDL_SCANCODE_UP,     0x0010, "Arrow keys" },
+    { SDL_SCANCODE_DOWN,   0x0040, "Arrow keys" },
+    { SDL_SCANCODE_LEFT,   0x0080, "Arrow keys" },
+    { SDL_SCANCODE_RIGHT,  0x0020, "Arrow keys" },
+};
+
 static uint32_t keyboard_button(SDL_Scancode sc) {
-    switch (sc) {
-    case SDL_SCANCODE_RETURN: return 0x0008;
-    case SDL_SCANCODE_LSHIFT:
-    case SDL_SCANCODE_RSHIFT: return 0x0001;
-    case SDL_SCANCODE_X:      return 0x4000;
-    case SDL_SCANCODE_Z:      return 0x2000;
-    case SDL_SCANCODE_A:      return 0x8000;
-    case SDL_SCANCODE_S:      return 0x1000;
-    case SDL_SCANCODE_Q:      return 0x0100;
-    case SDL_SCANCODE_W:      return 0x0200;
-    case SDL_SCANCODE_UP:     return 0x0010;
-    case SDL_SCANCODE_DOWN:   return 0x0040;
-    case SDL_SCANCODE_LEFT:   return 0x0080;
-    case SDL_SCANCODE_RIGHT:  return 0x0020;
-    default:                  return 0;
-    }
+    for (size_t i = 0; i < sizeof(s_keyboard_map) / sizeof(s_keyboard_map[0]); i++)
+        if (s_keyboard_map[i].sc == sc) return s_keyboard_map[i].psp;
+    return 0;
+}
+
+int sdl3vk_keyboard_key(int index, uint32_t *psp_bits, const char **label) {
+    if (index < 0 || (size_t)index >= sizeof(s_keyboard_map) / sizeof(s_keyboard_map[0])) return 0;
+    if (psp_bits) *psp_bits = s_keyboard_map[index].psp;
+    if (label) *label = s_keyboard_map[index].label;
+    return 1;
 }
 
 static uint32_t gamepad_button(Uint8 button) {
@@ -1720,6 +1736,25 @@ void sdl3vk_wait_events(uint32_t timeout_ms) {
 }
 
 int sdl3vk_present_scaling(void) { return s_scaling; }
+
+int sdl3vk_window_scales(float *display_scale, float *pixels_per_point) {
+    if (!s_win) return 0;
+    int pw = 0, ph = 0, ww = 0, wh = 0;
+    float scale = SDL_GetWindowDisplayScale(s_win);
+    if (!(scale > 0.0f)) scale = 1.0f;
+    (void)SDL_GetWindowSizeInPixels(s_win, &pw, &ph);
+    (void)SDL_GetWindowSize(s_win, &ww, &wh);
+    if (display_scale) *display_scale = scale;
+    if (pixels_per_point) *pixels_per_point = ww > 0 && pw > 0 ? (float)pw / (float)ww : scale;
+    return 1;
+}
+
+int sdl3vk_set_present_scaling(int mode) {
+    if (mode != SDL3VK_SCALING_SHARP && mode != SDL3VK_SCALING_INTEGER &&
+        mode != SDL3VK_SCALING_BILINEAR) return 0;
+    s_scaling = mode;
+    return 1;
+}
 
 uint64_t sdl3vk_display_period_ns(void) {
     if (!s_win) return 0;
