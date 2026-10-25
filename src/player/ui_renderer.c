@@ -2125,8 +2125,11 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                          2.5f, hero_w - 64.0f, COLOR_TEXT_WHITE);
     if (game->is_experimental) {
         char experimental_reason[224];
+        /* The decrypted-files step matters only while there is no package
+           built from them (#1297). */
         if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
-            game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
+            game->executable_selection == NK_ISO_EXEC_SELECTION_NONE &&
+            !package_ready) {
             snprintf(experimental_reason, sizeof(experimental_reason),
                      "ENCRYPTED_EXECUTABLE: Nakagawa does not decrypt games. Add a decrypted EBOOT.elf from your own copy. Build the runtime package from the library.");
         } else if (game->selected_executable[0]) {
@@ -2262,7 +2265,13 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
      * stay clear of them.) */
     int focus = 0;
     bool primary_focused = (app->focus_index == focus);
-    if (app->is_game_running) {
+    if (app->launch_pending) {
+        /* The launch worker is checking the package or starting the game
+           (#1298); the button comes back as STOP GAME or with the error. */
+        draw_status_pill_focused(ren, hero_x + 32.0f, btn_y, 220.0f,
+                                 54.0f, "STARTING...", primary_focused);
+        focus++;
+    } else if (app->is_game_running) {
         char run_str[64];
         snprintf(run_str, sizeof(run_str), "STOP GAME (PID %d)", app->launch_session.process.process_id);
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f, run_str, true, in, primary_focused)) {
@@ -2272,7 +2281,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     } else if (package_ready) {
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                                 "PLAY NOW", true, in, primary_focused)) {
-            player_app_launch_game(app, app->selected_game_index);
+            player_app_request_launch(app, app->selected_game_index);
         }
         focus++;
     } else if (package_checking) {
@@ -4962,7 +4971,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                     int idx = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
                     if (idx >= 0) {
                         app->selected_game_index = idx;
-                        if (runtime_ready) player_app_launch_game(app, idx);
+                        if (runtime_ready) player_app_request_launch(app, idx);
                     }
                 }
                 player_app_set_view(app, VIEW_LIBRARY);

@@ -396,6 +396,16 @@ typedef struct PlayerApp {
     /* The library card requests a package-status worker retry through this
        flag; worker creation and queue ownership stay on the main event loop. */
     bool request_package_status_retry;
+    /* A control asked to start game `request_launch_index`. The launch runs
+       on a worker the event loop in main.c owns (#1298), so renderers raise
+       this instead of starting the game from draw code. */
+    bool request_launch;
+    int request_launch_index;
+    /* A launch is checking the package or starting the process on that
+       worker; `launch_pending_disc_id` names the game. The UI keeps drawing
+       and shows the game as starting until the worker hands back. */
+    bool launch_pending;
+    char launch_pending_disc_id[NK_MAX_DISC_ID_LEN];
 
     /* Index of the leftmost visible card in the library strip. The strip
        lays cards out horizontally and a 1280-wide window fits about four, so
@@ -484,7 +494,9 @@ const char *player_error_badge(const ErrorState *error);
 bool player_error_leads_with_message(const ErrorState *error);
 /* "Restart game", "Try again", or NULL when the card has no retry action. */
 const char *player_error_retry_label(const ErrorState *error);
-/* Run the card's retry action. False when it has none or its game is gone. */
+/* Run the card's retry action. False when it has none or its game is gone.
+   Restart game asks for the launch (player_app_request_launch); Try again
+   starts the build. */
 bool player_app_retry_from_error(PlayerApp *app);
 /* The report Copy details puts on the clipboard: version, problem, code, game,
    disc ID, stage, details, log file and the last runtime boot events. The
@@ -687,8 +699,9 @@ float player_settings_second_column_offset(float card_width);
 
 /* Whether the event loop should attempt the launcher-to-game focus handoff on
  * this frame. Pure state logic so the once-per-launch contract is tested
- * without SDL: a failed SDL_MinimizeWindow keeps the launcher visible, and
- * retrying it every frame would rewrite the launcher settings every frame. */
+ * without SDL: the launcher stays open behind the game and hands it the
+ * foreground once, after the game reports its window (#1298); retrying every
+ * frame would take the foreground back from a user who moved away. */
 bool player_app_should_attempt_window_handoff(bool interactive_window,
                                               bool game_running,
                                               bool handoff_attempted,
@@ -708,6 +721,49 @@ int player_app_focus_count(const PlayerApp *app);
 /* Process launch integration */
 bool player_app_launch_game(PlayerApp *app, int game_index);
 void player_app_stop_game(PlayerApp *app);
+
+/* One PLAY, split so its slow part can leave the UI thread (#1298). Checking a
+ * package hashes every artifact it lists (hundreds of MB for a retail title),
+ * and the launch checks it again while preparing and before spawning.
+ *
+ * player_app_launch_begin (UI thread) copies what the launch needs out of the
+ * app; player_launch_work_run touches only the work and may run on any
+ * thread; player_app_launch_finish (UI thread) adopts the started session or
+ * shows the error card the old single call showed. player_app_launch_game is
+ * all three in a row. */
+typedef enum {
+    PLAYER_LAUNCH_STEP_NONE = 0,
+    PLAYER_LAUNCH_STEP_PACKAGE,
+    PLAYER_LAUNCH_STEP_DATA_ROOT,
+    PLAYER_LAUNCH_STEP_PREPARE,
+    PLAYER_LAUNCH_STEP_START
+} PlayerLaunchStep;
+
+typedef struct {
+    int game_index;
+    GameRecord game;
+    char package_root[MAX_PATH_LEN];
+    bool has_package_root;
+    PlayerSettings settings;
+    bool launch_headless;
+    uint32_t headless_accept_presented_frames;
+    char boot_event_file_path[MAX_PATH_LEN];
+    char input_profile_path[NK_MAX_PATH];
+    /* Results, written by player_launch_work_run. */
+    PlayerLaunchStep failed_step;
+    NkResult result;
+    NkLaunchDataRootStatus data_root_status;
+    char package_error[2048];
+    char data_root_reason[1024];
+    NkLaunchSession session;
+} PlayerLaunchWork;
+
+bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *work);
+void player_launch_work_run(PlayerLaunchWork *work);
+bool player_app_launch_finish(PlayerApp *app, PlayerLaunchWork *work);
+
+/* Ask the event loop to start game `game_index` (see request_launch). */
+void player_app_request_launch(PlayerApp *app, int game_index);
 
 /* Copy the launch-relevant player settings into a prepared session's runtime
  * configuration (resolution, frame cap, vsync, fullscreen, master volume).

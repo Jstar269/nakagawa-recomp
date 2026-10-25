@@ -424,6 +424,11 @@ static bool deadline_passed(const struct timespec *deadline) {
     return now.tv_nsec >= deadline->tv_nsec;
 }
 
+bool nk_platform_bring_process_window_to_front(const NkProcessHandle *process) {
+    (void)process;
+    return false;
+}
+
 int nk_platform_wait_process(NkProcessHandle *process, int timeout_ms) {
     if (!process) return -1;
     if (process->has_cached_exit) {

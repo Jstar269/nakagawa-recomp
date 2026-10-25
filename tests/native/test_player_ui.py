@@ -2402,6 +2402,96 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIn(frames[-1]["error"], ("RUNTIME_PACKAGE_NOT_READY",), run["stdout"])
         self.assertNotEqual(frames[-1]["error_retry"], "Restart_game")
 
+    # Enum values of PlayerUiPackageState (src/player/ui/player_ui_nk.h).
+    PACKAGE_READY = "1"
+    PACKAGE_STARTING = "5"
+    PACKAGE_RUNNING = "6"
+
+    # Open the ready title, then Tab past the two top-bar tabs to its PLAY.
+    PLAY_READY_TITLE = ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", "KEY_TAB",
+                        "WAIT_MS=100", "KEY_TAB", "WAIT_MS=100")
+
+    def test_play_keeps_drawing_through_a_slow_start(self) -> None:
+        """#1298: PLAY answers at once and the launcher keeps drawing while the game starts.
+
+        NK_UI_TEST_SLOW_START_MS makes the launch take 1.5 s before its package
+        check, standing in for a retail package whose check hashes several
+        hundred MB. Failing-before: the launch ran on the UI thread, so the
+        frames stopped for the whole start and PLAY showed nothing until it
+        ended (about 20 s for the owner's Hot Shots Tennis package)."""
+        run = self.run_player(
+            "ready", (*self.PLAY_READY_TITLE, "KEY_RETURN", "WAIT_MS=2500"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            env_extra={"NK_UI_TEST_SLOW_START_MS": "1500"},
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        before = [frame for frame in frames if frame["next_primary_label"] == "PLAY"]
+        self.assertTrue(before, "the synthetic ready package offers PLAY")
+        pending = [frame for frame in frames if frame["launch_pending"] == "1"]
+        self.assertGreater(len(pending), 1, run["stdout"])
+        # The frame that took the press drew the title before the launch began;
+        # every later one shows it starting.
+        for frame in pending[1:]:
+            self.assertEqual(frame["next_primary_label"], "disabled:STARTING...")
+            self.assertEqual(frame["next_package"], self.PACKAGE_STARTING)
+        first = frames.index(pending[0])
+        last = frames.index(pending[-1])
+        ticks = [int(frame["ticks_ms"]) for frame in frames[first:last + 2]]
+        self.assertGreaterEqual(ticks[-1] - ticks[0], 1400, "the start took its 1.5 s")
+        self.assertGreaterEqual(len(pending), 10, "the launcher drew through the start")
+        gaps = [later - earlier for earlier, later in zip(ticks, ticks[1:])]
+        self.assertLess(max(gaps), 500, f"a frame took {max(gaps)} ms during the start")
+        # The synthetic package has no staged disc and no real program, so the
+        # start ends with the launch's own card, as a synchronous launch did.
+        outcome = frames[-1]
+        self.assertEqual(outcome["launch_pending"], "0")
+        self.assertIn(outcome["error"], ("RUNTIME_NOT_FOUND", "PROCESS_SPAWN_FAILED",
+                                         "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT"),
+                      run["stdout"])
+
+    def title_frame_with_a_game_running(self, running: str) -> dict[str, str]:
+        """The open title's last frame while NK_UI_TEST_GAME_RUNNING=`running`.
+
+        A running game makes quitting ask first, so the script closes twice
+        with the confirmation unavailable (as the close-confirmation test does)."""
+        run = self.run_player(
+            "ready", ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", "CLOSE", "CLOSE"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            env_extra={"NK_UI_TEST_GAME_RUNNING": running,
+                       "NK_UI_TEST_MESSAGEBOX_FAIL": "1"},
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        titled = [frame for frame in frames if frame["next_package"] != "-1"]
+        self.assertTrue(titled, run["stdout"])
+        return titled[-1]
+
+    def test_title_page_while_the_game_runs(self) -> None:
+        """#1297: the running game's title page follows the package, not the STOP GAME action.
+
+        The drawn texts are checked by test_player_screens.c; this pins the
+        state the launcher hands the screen."""
+        cases = {
+            "TEST00006": ("STOP_GAME", self.PACKAGE_RUNNING),
+            "starting:TEST00006": ("STOP_GAME", self.PACKAGE_STARTING),
+        }
+        for running, (label, state) in cases.items():
+            with self.subTest(running=running):
+                last = self.title_frame_with_a_game_running(running)
+                self.assertEqual(last["selected_disc"], "TEST00006")
+                self.assertEqual(last["selected_runtime"], "1", "the package is ready")
+                self.assertEqual(last["next_primary_label"], label)
+                self.assertEqual(last["next_package"], state)
+                self.assertNotIn("boundary", last["next_expect"])
+        # Another game running leaves this title's package card alone.
+        other = self.title_frame_with_a_game_running("TEST00001")
+        self.assertEqual(other["next_package"], self.PACKAGE_READY)
+
     def test_preflight_refusal_is_not_a_build_failure(self) -> None:
         """#1286: a build refused at preflight never started, so its card is not
         "Package Build Failed" and its badge is not a code."""

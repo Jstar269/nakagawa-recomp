@@ -34,9 +34,9 @@
 #define TITLE_ID_COMPAT 0x20000005u
 #define TITLE_ID_COMPAT_HEAD 0x2000002Cu
 #define TITLE_ID_COMPAT_EYEBROW 0x20000006u
-#define TITLE_ID_COMPAT_WORD 0x20000007u
-#define TITLE_ID_COMPAT_DETAIL 0x20000008u
-#define TITLE_ID_COMPAT_SOURCE 0x2000002Du
+#define TITLE_ID_COMPAT_EXPECT 0x20000008u
+#define TITLE_ID_COMPAT_ISSUES 0x2000002Eu
+#define TITLE_ID_COMPAT_CATEGORY 0x2000002Du
 #define TITLE_ID_PROMPTS 0x20000040u
 #define TITLE_ID_WAVES 0x20000050u
 
@@ -79,17 +79,20 @@ static const char *safe_text(const char *text, const char *fallback) {
     return text != NULL && text[0] != '\0' ? text : fallback;
 }
 
-/* Presentation colour for a compatibility word. The word itself comes from the
-   host's data; this only picks how it is drawn. */
-static uint32_t compatibility_rgba(const NkUiTheme *theme, const char *word) {
-    if (word == NULL) return theme->muted;
-    if (strcmp(word, "Works") == 0) return theme->ready;
-    if (strcmp(word, "Partially works") == 0 || strcmp(word, "Experimental") == 0) {
-        return theme->info;
+/* The package card's sentence for each package state (#1297). */
+static const char *package_state_text(PlayerUiPackageState state) {
+    switch (state) {
+        case PLAYER_UI_PACKAGE_READY: return "Built for this PC and ready to play.";
+        case PLAYER_UI_PACKAGE_CHECKING: return "Checking the package for this game.";
+        case PLAYER_UI_PACKAGE_BUILDING: return "Building the package for this game.";
+        case PLAYER_UI_PACKAGE_CHECK_FAILED: return "The package could not be checked.";
+        case PLAYER_UI_PACKAGE_STARTING:
+            return "Starting the game. Its window opens when it is ready.";
+        case PLAYER_UI_PACKAGE_RUNNING:
+            return "Running now. Stop the game to rebuild or change settings.";
+        case PLAYER_UI_PACKAGE_MISSING:
+        default: return "The package for this game is not ready yet.";
     }
-    if (strcmp(word, "Boots to a named boundary") == 0) return theme->warning;
-    if (strcmp(word, "Not supported") == 0) return theme->error;
-    return theme->muted;
 }
 
 PlayerUiAction player_ui_screen_title(NkUi *ui,
@@ -152,13 +155,23 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                     }
                     nk_ui_end_container(ui);
                 }
-                nk_ui_text_role(ui, TITLE_ID_STATUS_DETAIL,
-                                safe_text(title->library_status_detail,
-                                          title->primary_action == PLAYER_UI_PRIMARY_PLAY
-                                              ? "Built for this PC and ready to play."
-                                              : "The package for this game is not ready yet."),
-                                NK_UI_TYPE_BODY_S, theme->muted);
-                if (title->input_note != NULL && title->input_note[0] != '\0') {
+                {
+                    /* A starting or running game says so; otherwise the host's
+                       reason, or the package state's own sentence. */
+                    bool live = title->package_state == PLAYER_UI_PACKAGE_STARTING ||
+                                title->package_state == PLAYER_UI_PACKAGE_RUNNING;
+                    const char *state_text = package_state_text(title->package_state);
+                    nk_ui_text_role(ui, TITLE_ID_STATUS_DETAIL,
+                                    live ? state_text
+                                         : safe_text(title->library_status_detail, state_text),
+                                    NK_UI_TYPE_BODY_S, theme->muted);
+                }
+                /* The decrypted-files note belongs to the steps that need those
+                   files: a built, starting or running package has them (#1297). */
+                if (title->input_note != NULL && title->input_note[0] != '\0' &&
+                    (title->package_state == PLAYER_UI_PACKAGE_MISSING ||
+                     title->package_state == PLAYER_UI_PACKAGE_CHECKING ||
+                     title->package_state == PLAYER_UI_PACKAGE_CHECK_FAILED)) {
                     NkUiLayout note = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(),
                                                   sizing_fit(), 0.0f);
                     NkUiStyle note_style;
@@ -229,26 +242,38 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 }
                 nk_ui_end_container(ui);
             }
+            /* What to expect, in plain words, with no category chip: the
+               category describes the project's test route, and read as a
+               claim about this game on this PC (#1297). The developer view
+               still names it. */
             if (nk_ui_card_begin(ui, TITLE_ID_COMPAT, sizing_grow(), sizing_fit(),
                                  NK_UI_SPACE_3)) {
                 NkUiLayout head = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
                                               NK_UI_SPACE_3);
-                const char *word = safe_text(title->compatibility_word, "Untested");
                 head.align_y = NK_UI_ALIGN_CENTER;
                 if (nk_ui_begin_container(ui, TITLE_ID_COMPAT_HEAD, &head, NULL)) {
-                    nk_ui_eyebrow(ui, TITLE_ID_COMPAT_EYEBROW, "Compatibility");
-                    nk_ui_status_pill(ui, TITLE_ID_COMPAT_WORD, NULL, word,
-                                      compatibility_rgba(theme, word));
+                    nk_ui_eyebrow(ui, TITLE_ID_COMPAT_EYEBROW, "What to expect");
                     nk_ui_end_container(ui);
                 }
-                if (title->compatibility_detail != NULL &&
-                    title->compatibility_detail[0] != '\0') {
-                    nk_ui_text_role(ui, TITLE_ID_COMPAT_DETAIL, title->compatibility_detail,
-                                    NK_UI_TYPE_BODY_S, theme->paper);
+                nk_ui_text_role(ui, TITLE_ID_COMPAT_EXPECT,
+                                safe_text(title->compatibility_expect,
+                                          "No one has tried this game in Nakagawa yet."),
+                                NK_UI_TYPE_BODY_S, theme->paper);
+                if (title->compatibility_known_issues != NULL &&
+                    title->compatibility_known_issues[0] != '\0') {
+                    nk_ui_text_role(ui, TITLE_ID_COMPAT_ISSUES,
+                                    title->compatibility_known_issues,
+                                    NK_UI_TYPE_BODY_S, theme->muted);
                 }
-                nk_ui_text_role(ui, TITLE_ID_COMPAT_SOURCE,
-                                "Words come from docs/COMPATIBILITY.md for this build.",
-                                NK_UI_TYPE_FOOTNOTE, theme->dim);
+                if (title->compatibility_category != NULL &&
+                    title->compatibility_category[0] != '\0') {
+                    char line[160];
+                    (void)snprintf(line, sizeof(line),
+                                   "Developer view: \"%s\" in docs/COMPATIBILITY.md.",
+                                   title->compatibility_category);
+                    nk_ui_text_role(ui, TITLE_ID_COMPAT_CATEGORY, nk_ui_frame_text(ui, line),
+                                    NK_UI_TYPE_FOOTNOTE, theme->dim);
+                }
                 nk_ui_end_container(ui);
             }
             nk_ui_end_container(ui);

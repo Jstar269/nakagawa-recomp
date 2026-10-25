@@ -199,11 +199,16 @@ line, the primary START SETUP WIZARD button (the default focus), CHOOSE A DISC I
 ### Title detail (C5, built)
 
 Aside: the hero, then a PACKAGE card (eyebrow, status pill, the status detail in `BODY_S` `muted`, and any input
-note in an inset `info` box). Main column: eyebrow LIBRARY › TITLE, the name in `TITLE_XL`, the disc ID in
-`DATA`, the status pill and tag, one action row on the column's left edge with every button 52 px (the primary
-action, PLAY when the package is ready, then OPEN SAVE FOLDER and BACK), and the COMPATIBILITY card (eyebrow, the word as a pill coloured by the word: Works `ready`,
-Partially works and Experimental `info`, Boots to a named boundary `warning`, others `muted`; the detail; a
-`FOOTNOTE` naming `docs/COMPATIBILITY.md`). Prompt bar: MOVE, SELECT, BACK.
+note in an inset `info` box). The detail follows the package state (ready, checking, building, check failed,
+missing, starting, running), never the primary action: while its game runs, a ready package says "Running now.
+Stop the game to rebuild or change settings." The input note about decrypted files shows only while the package
+still needs them. Main column: eyebrow LIBRARY › TITLE, the name in `TITLE_XL`, the disc ID in `DATA`, the status
+pill and tag, one action row on the column's left edge with every button 52 px (the primary action, PLAY when
+the package is ready, STARTING... while the launch starts, STOP GAME while a game runs, then OPEN SAVE FOLDER and
+BACK), and the WHAT TO EXPECT card: one or two plain sentences on what to expect on this PC in `BODY_S` `paper`,
+then the known issues in `muted` when there are any. It has no category chip: the `docs/COMPATIBILITY.md`
+category describes the project's test route and read as a claim about the user's game (#1297), so only developer
+mode names it, in a `FOOTNOTE`. Prompt bar: MOVE, SELECT, BACK.
 
 ### About (built)
 

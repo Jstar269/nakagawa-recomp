@@ -675,8 +675,9 @@ bool nk_platform_spawn_process(
         return false;
     }
 
-    /* The player may minimize itself after the runtime reports its first GUI
-       window. Allow that user-launched child to claim the foreground then. */
+    /* Let this user-launched child claim the foreground when its window opens.
+       The grant needs the launcher to be the foreground process now, which it
+       is only while its own window keeps responding (#1298). */
     AllowSetForegroundWindow(pi.dwProcessId);
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
@@ -695,6 +696,33 @@ bool nk_platform_is_process_running(NkProcessHandle *process) {
     }
     process->is_active = false;
     return false;
+}
+
+typedef struct {
+    DWORD process_id;
+    HWND window;
+} NkProcessWindowSearch;
+
+static BOOL CALLBACK nk_find_process_window(HWND window, LPARAM data) {
+    NkProcessWindowSearch *search = (NkProcessWindowSearch *)data;
+    DWORD owner = 0;
+    GetWindowThreadProcessId(window, &owner);
+    if (owner != search->process_id || !IsWindowVisible(window) ||
+        GetWindow(window, GW_OWNER) != NULL) {
+        return TRUE;
+    }
+    search->window = window;
+    return FALSE;
+}
+
+bool nk_platform_bring_process_window_to_front(const NkProcessHandle *process) {
+    if (!process || !process->is_active || process->process_id <= 0) return false;
+    NkProcessWindowSearch search = {(DWORD)process->process_id, NULL};
+    EnumWindows(nk_find_process_window, (LPARAM)&search);
+    if (!search.window) return false;
+    if (GetForegroundWindow() == search.window) return true;
+    if (IsIconic(search.window)) ShowWindow(search.window, SW_RESTORE);
+    return SetForegroundWindow(search.window) != 0;
 }
 
 int nk_platform_wait_process(NkProcessHandle *process, int timeout_ms) {

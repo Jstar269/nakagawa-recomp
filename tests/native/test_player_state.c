@@ -1891,9 +1891,13 @@ static void test_error_cards_are_plain(void) {
     if (!profile || !profile[0]) profile = getenv("HOME");
     if (profile && strlen(profile) > 3) assert(strstr(report, profile) == NULL);
 
-    /* Restart game relaunches the same game: here its package is missing, so
-       the launch itself says so. */
-    assert(!player_app_retry_from_error(app));
+    /* Restart game asks the main loop to relaunch the same game off the UI
+       thread (#1298); here its package is missing, so the launch says so. */
+    assert(!app->request_launch);
+    assert(player_app_retry_from_error(app));
+    assert(app->request_launch && app->request_launch_index == 0);
+    app->request_launch = false;
+    assert(!player_app_launch_game(app, app->request_launch_index));
     assert(strcmp(app->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0);
     assert(app->selected_game_index == 0);
 
@@ -4492,9 +4496,9 @@ int main(int argc, char **argv) {
         }
 
         /* The focus handoff is attempted once per launch, and only on proven
-           evidence. A failed SDL_MinimizeWindow leaves the launcher visible:
-           the contract is that the loop does not retry, because each retry
-           would recapture and rewrite the launcher settings every frame. */
+           evidence. The launcher stays open behind the game (#1298) and hands
+           its window the foreground once: retrying every frame would take the
+           foreground back from a user who moved to another window. */
         assert(player_app_should_attempt_window_handoff(true, true, false, true));
         assert(player_app_should_attempt_window_handoff(true, true, false, false) == false);
         assert(player_app_should_attempt_window_handoff(true, false, false, true) == false);

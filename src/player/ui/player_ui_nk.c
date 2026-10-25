@@ -38,24 +38,37 @@
 
 typedef struct {
     const char *key;
-    const char *word;
-    const char *detail;
+    const char *category;
+    const char *expect;
+    const char *known_issues;
 } PlayerUiCompatibilityRecord;
 
-/* These labels mirror the current public compatibility table. Lookup is data
-   driven so the screen never assigns a compatibility claim from layout code. */
+/* What a player can expect from each title in the public compatibility table,
+   in plain words (#1297). The category is the table's own word, kept for the
+   developer view: it describes the project's test route, not this PC. Lookup
+   is data driven so the screen never assigns a compatibility claim from
+   layout code. */
 static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
-    {"display-smoke-v1", "Works", "Source-owned display fixture."},
-    {"synthetic-allegrex-v1", "Works", "Source-owned runtime fixture."},
+    {"display-smoke-v1", "Works",
+     "Draws the project's moving test pattern. There is nothing to play.", ""},
+    {"synthetic-allegrex-v1", "Works",
+     "Runs the project's test program, then closes.", ""},
     {"pspdev-phase5-v1", "Boots to a named boundary",
-     "Player launch stops at the unbuilt package boundary."},
-    {"synthetic-title2-v1", "Works", "Source-owned runtime fixture."},
-    {"showcase-scene-v1", "Partially works", "Showcase profile-zero acceptance remains open."},
-    {"showcase-breakout-v1", "Partially works", "Showcase profile-zero acceptance remains open."},
-    {"UCUS98701", "Boots to a named boundary", "The public route stops at a named boundary."},
-    {"UCUS-98701", "Boots to a named boundary", "The public route stops at a named boundary."},
+     "A project test module. It does not start from the player yet.", ""},
+    {"synthetic-title2-v1", "Works",
+     "Runs the project's test program, then closes.", ""},
+    {"showcase-scene-v1", "Partially works",
+     "Shows a lit, rotating cube that answers the stick and buttons, with sound.", ""},
+    {"showcase-breakout-v1", "Partially works",
+     "Plays a full game of Breakout with sound and keeps your high score.", ""},
+    /* The owner's own play on 2026-10-24 (#1297). */
+    {"UCUS98701", "Boots to a named boundary", "Plays full matches and Story Mode.",
+     "Known issues: low frame rate, sound drops out, and movies show black."},
+    {"UCUS-98701", "Boots to a named boundary", "Plays full matches and Story Mode.",
+     "Known issues: low frame rate, sound drops out, and movies show black."},
     {"PAC-MAN Championship Edition", "Partially works",
-     "The documented route reaches the title screen and plays a stage."}
+     "Reaches the title screen and plays a stage. The rest of the game has not been tried yet.",
+     ""}
 };
 
 struct PlayerUiNk {
@@ -593,9 +606,13 @@ void player_ui_nk_note_gamepad(PlayerUiNk *player, uint32_t which, bool connecte
     (void)player_ui_nk_handle_event(player, &event);
 }
 
-static const char *player_ui_compatibility_word(const GameRecord *game,
-                                               const char **detail) {
-    if (detail != NULL) *detail = "";
+/* The title's compatibility record: what to expect and its known issues, in
+   plain words. Returns the docs/COMPATIBILITY.md category for the developer
+   view. A title with no record gets a sentence for its general state. */
+static const char *player_ui_compatibility(const GameRecord *game, const char **expect,
+                                           const char **known_issues) {
+    *expect = "No one has tried this game in Nakagawa yet.";
+    *known_issues = "";
     if (game == NULL) return "Untested";
     for (size_t i = 0u;
          i < sizeof(s_compatibility_records) / sizeof(s_compatibility_records[0]);
@@ -606,25 +623,35 @@ static const char *player_ui_compatibility_word(const GameRecord *game,
              strcmp(game->disc_id, s_compatibility_records[i].key) == 0) ||
             (game->title_name[0] != '\0' &&
              strcmp(game->title_name, s_compatibility_records[i].key) == 0)) {
-            if (detail != NULL) *detail = s_compatibility_records[i].detail;
-            return s_compatibility_records[i].word;
+            *expect = s_compatibility_records[i].expect;
+            *known_issues = s_compatibility_records[i].known_issues;
+            return s_compatibility_records[i].category;
         }
     }
     if (game->is_experimental) {
         if (game->status == NK_STATUS_BOOTS || game->status == NK_STATUS_PLAYABLE) {
+            *expect = "This game has started in Nakagawa, but no one has checked how "
+                      "far it plays. It may stop early.";
             return "Experimental";
         }
+        *expect = "No one has tried this game in Nakagawa yet. It may not start.";
         return "Untested";
     }
     switch (game->status) {
-        case NK_STATUS_BOOTS: return "Boots to a named boundary";
-        case NK_STATUS_PLAYABLE: return "Partially works";
+        case NK_STATUS_BOOTS:
+            *expect = "Starts, then stops at a part Nakagawa does not support yet.";
+            return "Boots to a named boundary";
+        case NK_STATUS_PLAYABLE:
+            *expect = "Plays, but some parts may not work yet.";
+            return "Partially works";
         case NK_STATUS_UNIDENTIFIED:
         case NK_STATUS_IDENTIFIED: return "Untested";
         case NK_STATUS_SUPPORTED_PREPARATION:
         case NK_STATUS_PREPARED:
         case NK_STATUS_VERIFIED:
-        default: return "Not started";
+        default:
+            *expect = "This game does not run in Nakagawa yet.";
+            return "Not started";
     }
 }
 
@@ -678,6 +705,8 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     bool package_ready;
     bool checking;
     bool check_failed;
+    bool starting;
+    bool running;
     PlayerUiPrimaryAction primary = PLAYER_UI_PRIMARY_NONE;
     if (player == NULL || app == NULL || out == NULL || index < 0 ||
         index >= app->game_count || index >= (int)PLAYER_UI_TITLE_CAP) {
@@ -689,6 +718,15 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     checking = player_app_runtime_package_check_pending(app, game);
     check_failed = player_app_runtime_package_check_failed(app, game);
     reason = player_app_runtime_package_reason(app, game);
+    /* This title is the game being started or the one that runs now. A game
+       whose window is not up yet is still starting. */
+    starting = game->disc_id[0] != '\0' &&
+        ((app->launch_pending &&
+          strcmp(app->launch_pending_disc_id, game->disc_id) == 0) ||
+         (app->is_game_running && !app->child_window_ready &&
+          strcmp(app->launch_session.disc_id, game->disc_id) == 0));
+    running = !starting && game->disc_id[0] != '\0' && app->is_game_running &&
+              strcmp(app->launch_session.disc_id, game->disc_id) == 0;
     player_library_status_text(package_ready, checking, check_failed,
                                game->assets_staged,
                                game->extracted_asset_count, reason,
@@ -699,8 +737,29 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     out->library_status = player_ui_library_status_word(game, package_ready);
     out->library_status_detail = package_ready || checking
         ? "" : player->status_text[index];
-    out->compatibility_word = player_ui_compatibility_word(game,
-                                                           &out->compatibility_detail);
+    /* The package card's text follows the package, not the primary action
+       (#1297): a ready package stays ready while its game runs. */
+    if (starting) {
+        out->package_state = PLAYER_UI_PACKAGE_STARTING;
+    } else if (running) {
+        out->package_state = PLAYER_UI_PACKAGE_RUNNING;
+    } else if (app->build_session.is_building &&
+               strcmp(app->build_session.disc_id, game->disc_id) == 0) {
+        out->package_state = PLAYER_UI_PACKAGE_BUILDING;
+    } else if (package_ready) {
+        out->package_state = PLAYER_UI_PACKAGE_READY;
+    } else if (checking || package_status == NK_RUNTIME_PACKAGE_UNKNOWN) {
+        out->package_state = PLAYER_UI_PACKAGE_CHECKING;
+    } else if (check_failed) {
+        out->package_state = PLAYER_UI_PACKAGE_CHECK_FAILED;
+    } else {
+        out->package_state = PLAYER_UI_PACKAGE_MISSING;
+    }
+    out->compatibility_category = player_ui_compatibility(
+        game, &out->compatibility_expect, &out->compatibility_known_issues);
+    if (!app->settings.developer_mode) out->compatibility_category = NULL;
+    /* The disc's executable is encrypted and no decrypted copy was found. The
+       title screen shows this only while the package still needs it. */
     out->input_note =
         game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
         game->executable_selection == NK_ISO_EXEC_SELECTION_NONE
@@ -708,6 +767,15 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
             : "";
     out->status_rgba = player_ui_library_status_color(game, package_ready);
     out->status_marker = player_ui_library_status_marker(game, package_ready);
+    if (starting) {
+        out->library_status = "Starting";
+        out->status_rgba = PLAYER_UI_INFO;
+        out->status_marker = "◆";
+    } else if (running) {
+        out->library_status = "Running";
+        out->status_rgba = PLAYER_UI_READY;
+        out->status_marker = "●";
+    }
     out->art_kind = player_ui_art_kind(game);
     out->badge = out->art_kind != NK_UI_ART_NONE ? "Showcase demo" : "Your disc";
     out->icon = NULL;
@@ -725,7 +793,10 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     out->save_folder_enabled = game->disc_id[0] != '\0';
     out->primary_action_enabled = false;
     out->primary_action = PLAYER_UI_PRIMARY_NONE;
-    if (app->is_game_running) {
+    if (app->launch_pending) {
+        /* The launch worker hands back STOP GAME or an error card. */
+        out->primary_action_label = "STARTING...";
+    } else if (app->is_game_running) {
         out->primary_action_label = "STOP GAME";
         out->primary_action_enabled = true;
         primary = PLAYER_UI_PRIMARY_STOP_GAME;

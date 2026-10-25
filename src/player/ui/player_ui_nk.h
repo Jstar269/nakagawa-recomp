@@ -42,6 +42,19 @@ typedef enum {
     PLAYER_UI_PRIMARY_REBUILD   /* an INCOMPATIBLE package: check, then build again */
 } PlayerUiPrimaryAction;
 
+/* Where this title's package stands, which picks the package card's text
+   (#1297). The primary action does not: while a game runs, it is STOP GAME
+   whatever the package is. */
+typedef enum {
+    PLAYER_UI_PACKAGE_MISSING = 0, /* not built, stale or incompatible */
+    PLAYER_UI_PACKAGE_READY,
+    PLAYER_UI_PACKAGE_CHECKING,
+    PLAYER_UI_PACKAGE_BUILDING,
+    PLAYER_UI_PACKAGE_CHECK_FAILED,
+    PLAYER_UI_PACKAGE_STARTING,    /* PLAY was pressed; the game window is not up yet */
+    PLAYER_UI_PACKAGE_RUNNING      /* this title is the game that runs now */
+} PlayerUiPackageState;
+
 typedef enum {
     PLAYER_UI_ACTION_NONE = 0,
     PLAYER_UI_ACTION_OPEN_TITLE,
@@ -77,8 +90,13 @@ typedef struct {
     const char *disc_id;
     const char *library_status;
     const char *library_status_detail;
-    const char *compatibility_word;
-    const char *compatibility_detail;
+    /* What to expect on this PC, in plain words, and the known issues as one
+       sentence (empty when there are none) (#1297). */
+    const char *compatibility_expect;
+    const char *compatibility_known_issues;
+    /* The docs/COMPATIBILITY.md category, for the developer view only: NULL
+       or empty hides it. */
+    const char *compatibility_category;
     const char *input_note;
     const char *primary_action_label;
     const char *status_marker;
@@ -95,6 +113,7 @@ typedef struct {
        user's disc image (never stored); NULL until read or when absent. */
     const struct NkUiImage *icon;
     const struct NkUiImage *picture;
+    PlayerUiPackageState package_state;
 } PlayerUiTitle;
 
 typedef struct {

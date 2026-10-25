@@ -142,6 +142,11 @@ bool nk_platform_spawn_process(
 
 bool nk_platform_is_process_running(NkProcessHandle *process);
 int nk_platform_wait_process(NkProcessHandle *process, int timeout_ms);
+/* Gives the foreground to the child's visible top-level window. The caller must
+   be the foreground process, as a launcher that just started the child is.
+   False when the child has no such window yet, or where there is no window
+   system to ask (the POSIX build). */
+bool nk_platform_bring_process_window_to_front(const NkProcessHandle *process);
 void nk_platform_terminate_process(NkProcessHandle *process);
 void nk_platform_close_process(NkProcessHandle *process);
 

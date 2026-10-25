@@ -2038,7 +2038,11 @@ bool player_app_retry_from_error(PlayerApp *app) {
                        app->last_error.subject_disc_id);
     app->selected_game_index = index;
     player_app_set_view(app, VIEW_LIBRARY);
-    if (retry == PLAYER_ERROR_RETRY_RESTART_GAME) return player_app_launch_game(app, index);
+    if (retry == PLAYER_ERROR_RETRY_RESTART_GAME) {
+        /* The same launch PLAY runs, on the event loop's launch worker. */
+        player_app_request_launch(app, index);
+        return true;
+    }
     return player_app_start_package_build(app, index);
 }
 
@@ -2350,50 +2354,29 @@ static void player_set_boundary_text(PlayerApp *app, const char *reason) {
     }
 }
 
-bool player_app_launch_game(PlayerApp *app, int game_index) {
-    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+static NkResult player_resolve_input_profile(PlayerApp *app, const GameRecord *game,
+                                             char *out, size_t out_size);
+
+bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *work) {
+    if (!app || !work || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
+    const char *root = player_package_root(app, game);
+    memset(work, 0, sizeof(*work));
     app->close_confirmation_pending = false;
     /* A launch initiated by the player requests a GUI child by default, even if
        package preflight rejects it before launch-session preparation. */
     app->launch_session.config.gui_mode = !app->launch_headless;
-
-    char package_error[2048] = "";
-    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
-        app, game, NULL, package_error, sizeof(package_error));
-    char data_root_path[NK_MAX_PATH] = "";
-    char data_root_reason[1024] = "";
-    NkLaunchDataRootStatus data_root_status = player_app_game_data_root_status(
-        app, game, data_root_path, sizeof(data_root_path), data_root_reason,
-        sizeof(data_root_reason));
-    bool runtime_available = package_status == NK_RUNTIME_PACKAGE_OK ||
-        (package_status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
-         nk_launch_runtime_available(player_package_root(app, game),
-                                     game->title_id));
-    if (!runtime_available) {
-        player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Game Not Ready",
-                             "This game isn't ready to start yet. Build or repair its game files, then try again.",
-                             "Return to Library", VIEW_LIBRARY);
-        player_set_boundary_text(app, package_error[0] ? package_error :
-                                     "Runtime package is missing or incompatible.");
-        return false;
+    work->game_index = game_index;
+    work->game = *game;
+    if (root) {
+        snprintf(work->package_root, sizeof(work->package_root), "%s", root);
+        work->has_package_root = true;
     }
-    if (data_root_status != NK_LAUNCH_DATA_ROOT_READY &&
-        data_root_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
-        player_app_set_error(app,
-                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
-                                 ? "TITLE_DATA_MISSING" : "TITLE_PROFILE_INVALID",
-                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
-                                 ? "Game Data Missing" : "Game Settings Unavailable",
-                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
-                                 ? "This game needs its data files before it can start. Add the missing files, then try again."
-                                 : "This game's title settings could not be checked. Review the details and try again.",
-                             "Return to Library", VIEW_LIBRARY);
-        player_set_boundary_text(app, data_root_reason[0] ? data_root_reason :
-                                     "The title data folder could not be resolved.");
-        return false;
-    }
-
+    work->settings = app->settings;
+    work->launch_headless = app->launch_headless;
+    work->headless_accept_presented_frames = app->headless_accept_presented_frames;
+    /* The boot-event marker and the input mapping are written here, on the
+       thread that owns the app; the work only reads the resulting paths. */
     app->child_window_ready = false;
     app->launch_session.boot_event_file_path[0] = '\0';
     if (!player_prepare_boot_event_file(app)) {
@@ -2407,18 +2390,122 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
         );
         return false;
     }
+    snprintf(work->boot_event_file_path, sizeof(work->boot_event_file_path), "%s",
+             app->boot_event_file_path);
+    (void)player_resolve_input_profile(app, game, work->input_profile_path,
+                                       sizeof(work->input_profile_path));
+    return true;
+}
+
+void player_launch_work_run(PlayerLaunchWork *work) {
+    if (!work) return;
+    const GameRecord *game = &work->game;
+    const char *root = work->has_package_root ? work->package_root : NULL;
+    char default_root[NK_MAX_PATH];
+    const char *package_root = root;
+    work->failed_step = PLAYER_LAUNCH_STEP_NONE;
+    work->result = NK_OK;
+    if (!package_root) {
+        if (nk_platform_get_app_data_dir(default_root, sizeof(default_root))) {
+            package_root = default_root;
+        } else {
+            snprintf(work->package_error, sizeof(work->package_error), "%s",
+                "DATA_DIR_UNAVAILABLE: the Windows Local AppData known folder, LOCALAPPDATA, or APPDATA could not be resolved; package discovery cannot run.");
+        }
+    }
+    NkRuntimePackageStatus package_status = package_root
+        ? nk_launch_validate_runtime_package(package_root, game, NULL,
+                                             work->package_error,
+                                             sizeof(work->package_error))
+        : NK_RUNTIME_PACKAGE_MISSING;
+    bool runtime_available = package_status == NK_RUNTIME_PACKAGE_OK ||
+        (package_status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
+         nk_launch_runtime_available(root, game->title_id));
+    if (!runtime_available) {
+        work->failed_step = PLAYER_LAUNCH_STEP_PACKAGE;
+        return;
+    }
+    char data_root_path[NK_MAX_PATH] = "";
+    work->data_root_status = nk_launch_game_data_root_status(
+        root, game, data_root_path, sizeof(data_root_path), work->data_root_reason,
+        sizeof(work->data_root_reason));
+    if (work->data_root_status != NK_LAUNCH_DATA_ROOT_READY &&
+        work->data_root_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+        work->failed_step = PLAYER_LAUNCH_STEP_DATA_ROOT;
+        return;
+    }
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
-    NkResult res = nk_launch_prepare_session(&app->launch_session, game,
-                                              player_package_root(app, game));
+    NkLaunchSession *session = &work->session;
+    work->result = nk_launch_prepare_session(session, game, root);
     /* nk_launch defaults gui_mode to false for headless harnesses. */
-    app->launch_session.config.gui_mode = !app->launch_headless;
-    if (res != NK_OK) {
+    session->config.gui_mode = !work->launch_headless;
+    if (work->result != NK_OK) {
+        printf("[PLAYER] Launch preparation failed: %s\n", session->last_error);
+        work->failed_step = PLAYER_LAUNCH_STEP_PREPARE;
+        return;
+    }
+
+    /* Apply user settings via typed runtime configuration */
+    player_app_apply_settings_to_session(&work->settings, &session->config);
+    if (work->input_profile_path[0]) {
+        snprintf(session->config.input_profile_path,
+                 sizeof(session->config.input_profile_path), "%s",
+                 work->input_profile_path);
+    }
+    session->config.headless_accept_presented_frames =
+        work->headless_accept_presented_frames;
+    session->config.gui_mode = !work->launch_headless ||
+        work->headless_accept_presented_frames > 0u;
+    if (work->boot_event_file_path[0]) {
+        snprintf(session->boot_event_file_path,
+                 sizeof(session->boot_event_file_path), "%s",
+                 work->boot_event_file_path);
+    }
+
+    printf("[PLAYER] Spawning runtime: %s (ISO: %s)\n", session->executable_path, session->iso_path);
+
+    work->result = nk_launch_start(session);
+    if (work->result != NK_OK) {
+        printf("[PLAYER] Runtime process spawn failed: %s\n", session->last_error);
+        work->failed_step = PLAYER_LAUNCH_STEP_START;
+    }
+}
+
+bool player_app_launch_finish(PlayerApp *app, PlayerLaunchWork *work) {
+    if (!app || !work) return false;
+    int game_index = work->game_index;
+    if (work->failed_step == PLAYER_LAUNCH_STEP_PACKAGE) {
+        player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Game Not Ready",
+                             "This game isn't ready to start yet. Build or repair its game files, then try again.",
+                             "Return to Library", VIEW_LIBRARY);
+        player_set_boundary_text(app, work->package_error[0] ? work->package_error :
+                                     "Runtime package is missing or incompatible.");
+        return false;
+    }
+    if (work->failed_step == PLAYER_LAUNCH_STEP_DATA_ROOT) {
+        NkLaunchDataRootStatus data_root_status = work->data_root_status;
+        player_app_set_error(app,
+                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                                 ? "TITLE_DATA_MISSING" : "TITLE_PROFILE_INVALID",
+                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                                 ? "Game Data Missing" : "Game Settings Unavailable",
+                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                                 ? "This game needs its data files before it can start. Add the missing files, then try again."
+                                 : "This game's title settings could not be checked. Review the details and try again.",
+                             "Return to Library", VIEW_LIBRARY);
+        player_set_boundary_text(app, work->data_root_reason[0] ? work->data_root_reason :
+                                     "The title data folder could not be resolved.");
+        return false;
+    }
+    /* From here the prepared session is the app's, started or not, as it was
+       when the launch prepared app->launch_session in place. */
+    app->launch_session = work->session;
+    if (work->failed_step == PLAYER_LAUNCH_STEP_PREPARE) {
         if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
-        printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
         const char *err_code = "RUNTIME_NOT_FOUND";
         const char *err_title = "Recompiled Binary Not Available";
-        if (res == NK_ERROR_INVALID_EXECUTABLE) {
+        if (work->result == NK_ERROR_INVALID_EXECUTABLE) {
             err_code = "STAGED_EXECUTABLE_INVALID";
             err_title = "Staged Executable Is Invalid";
         } else if (strstr(app->launch_session.last_error, "manifest") != NULL ||
@@ -2438,26 +2525,8 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
         );
         return false;
     }
-
-    /* Apply user settings via typed runtime configuration */
-    player_app_apply_settings_to_session(&app->settings, &app->launch_session.config);
-    player_app_apply_input_profile_to_session(app, game);
-    app->launch_session.config.headless_accept_presented_frames =
-        app->headless_accept_presented_frames;
-    app->launch_session.config.gui_mode = !app->launch_headless ||
-        app->headless_accept_presented_frames > 0u;
-    if (app->boot_event_file_path[0]) {
-        snprintf(app->launch_session.boot_event_file_path,
-                 sizeof(app->launch_session.boot_event_file_path), "%s",
-                 app->boot_event_file_path);
-    }
-
-    printf("[PLAYER] Spawning runtime: %s (ISO: %s)\n", app->launch_session.executable_path, app->launch_session.iso_path);
-
-    NkResult start_res = nk_launch_start(&app->launch_session);
-    if (start_res != NK_OK) {
+    if (work->failed_step == PLAYER_LAUNCH_STEP_START) {
         if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
-        printf("[PLAYER] Runtime process spawn failed: %s\n", app->launch_session.last_error);
         player_app_set_error(
             app,
             "PROCESS_SPAWN_FAILED",
@@ -2471,9 +2540,14 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
 
     app->is_game_running = true;
     app->launch_time_ms = 0;
+    /* The library may have changed while the work ran: find the game again. */
+    if (game_index < 0 || game_index >= app->game_count ||
+        strcmp(app->games[game_index].disc_id, work->game.disc_id) != 0) {
+        game_index = player_app_find_game_by_disc_id(app, work->game.disc_id);
+    }
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
-    if (tm_info) {
+    if (tm_info && game_index >= 0) {
         strftime(app->games[game_index].last_played, sizeof(app->games[game_index].last_played),
                  "%Y-%m-%d %H:%M", tm_info);
         /* A bundled demo or sample that ran is not a library title: its last-played
@@ -2484,9 +2558,28 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
         }
     }
     printf("[PLAYER] Game started successfully (PID: %d)!\n", app->launch_session.process.process_id);
-    player_dev_log_add(app, "launch", "started %s (%s)", app->games[game_index].disc_id,
-                       app->games[game_index].title_name);
+    player_dev_log_add(app, "launch", "started %s (%s)", work->game.disc_id,
+                       work->game.title_name);
     return true;
+}
+
+bool player_app_launch_game(PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    PlayerLaunchWork *work = (PlayerLaunchWork *)malloc(sizeof(*work));
+    if (!work) return false;
+    bool started = player_app_launch_begin(app, game_index, work);
+    if (started) {
+        player_launch_work_run(work);
+        started = player_app_launch_finish(app, work);
+    }
+    free(work);
+    return started;
+}
+
+void player_app_request_launch(PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return;
+    app->request_launch = true;
+    app->request_launch_index = game_index;
 }
 
 static bool player_copy_bounded_text(char *destination, size_t destination_size,
@@ -2642,19 +2735,20 @@ void player_app_apply_settings_to_session(const PlayerSettings *settings,
     config->master_volume = settings->master_volume;
 }
 
-NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRecord *game) {
+/* The NK_INPUT_PROFILE path `game` launches with, written to `out`; `out` is
+ * left as it was when there is no path to hand over. */
+static NkResult player_resolve_input_profile(PlayerApp *app, const GameRecord *game,
+                                             char *out, size_t out_size) {
     if (!app) return NK_ERROR_GENERIC;
     app->input_profile_notice[0] = '\0';
-    if (!game || !game->disc_id[0]) return NK_ERROR_GENERIC;
+    if (!game || !game->disc_id[0] || !out || out_size == 0) return NK_ERROR_GENERIC;
 
     char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN] = {0};
     if (!input_settings_has_title_mapping(&app->input_settings, game->disc_id)) {
         /* No per-title entry: the disc runs the global mapping, which is the
          * file the player already owns and the runtime already resolves. */
         if (app->input_settings.profile_path[0]) {
-            snprintf(app->launch_session.config.input_profile_path,
-                     sizeof(app->launch_session.config.input_profile_path), "%s",
-                     app->input_settings.profile_path);
+            snprintf(out, out_size, "%s", app->input_settings.profile_path);
         }
         return NK_OK;
     }
@@ -2672,9 +2766,14 @@ NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRec
         return res;
     }
 
-    snprintf(app->launch_session.config.input_profile_path,
-             sizeof(app->launch_session.config.input_profile_path), "%s", path);
+    snprintf(out, out_size, "%s", path);
     return NK_OK;
+}
+
+NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRecord *game) {
+    if (!app) return NK_ERROR_GENERIC;
+    return player_resolve_input_profile(app, game, app->launch_session.config.input_profile_path,
+                                        sizeof(app->launch_session.config.input_profile_path));
 }
 
 static bool player_read_semantic_stop(const char *path, char *boundary,
