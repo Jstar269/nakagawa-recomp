@@ -1265,9 +1265,14 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             } else {
                 nk_ui_status_pill(ui, WIZ_ID_TEXT + 2u, FLOW_MARK_TRIANGLE, "No file chosen",
                                   theme->warning);
-                wizard_text(ui, 5u,
-                            "Choose a disc image below, or drop an .iso file onto this window.",
-                            NK_UI_TYPE_BODY_S, theme->muted);
+                if (model->status_message != NULL && model->status_message[0] != '\0') {
+                    wizard_text(ui, 5u, model->status_message,
+                                NK_UI_TYPE_BODY_S, theme->warning);
+                } else {
+                    wizard_text(ui, 5u,
+                                "Choose a disc image below, or drop an .iso file onto this window.",
+                                NK_UI_TYPE_BODY_S, theme->muted);
+                }
             }
             nk_ui_end_container(ui);
         }
