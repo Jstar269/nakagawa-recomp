@@ -3178,6 +3178,7 @@ nk-ui-player-screens-selftest:
 nk-ui-overlay-screens-selftest:
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Isrc/rt/overlay -Isrc/core -Ithird_party/clay \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(NK_UI_CORE_SRCS) $(NK_UI_OVERLAY_C9C_SRCS) \
 		tests/native/test_overlay_screens.c -lm -o $(BUILD_ROOT)/test_overlay_screens$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_overlay_screens$(EXE_EXT)
@@ -3198,6 +3199,7 @@ nk-ui-overlay-host-selftest:
 		echo "nk-ui-overlay-host-selftest: SDL3 or SDL3_ttf headers not found; building the SKIP variant"; \
 	fi; \
 	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Isrc/rt/overlay -Isrc/core -Ithird_party/clay \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(SDL3_INC_FLAGS) $$sdl_defs $$host_srcs tests/native/test_overlay_host.c \
 		$$sdl_libs -lm -o $(BUILD_ROOT)/test_overlay_host$(EXE_EXT) || exit 1; \
 	rc=0; $(BUILD_ROOT_RUN)/test_overlay_host$(EXE_EXT) . || rc=$$?; \
