@@ -85,10 +85,12 @@ Notes on what the table deliberately does not claim:
 - Since the next UI became the default launcher, the tests that pin the existing
   renderer's layout, hit boxes, art workers and package badges run with
   `--ui=legacy`; `LEGACY_RENDERER_TESTS` in `tests/native/test_player_ui.py` lists
-  them. The controller settings screen and the developer log are still drawn by
-  `src/player/ui_renderer.c` inside the next UI; the game-found card and Settings are
-  next-UI screens (`test_next_ui_game_found_cards_use_plain_words_and_offer_add_honestly`,
-  `test_next_ui_settings_changes_are_saved_and_done_returns`).
+  them. The game-found card, Settings, the controller settings screen and the
+  developer log are next-UI screens
+  (`test_next_ui_game_found_cards_use_plain_words_and_offer_add_honestly`,
+  `test_next_ui_settings_changes_are_saved_and_done_returns`,
+  `test_next_ui_controller_rebind_calibrate_save_and_back`,
+  `test_next_ui_developer_log_buttons`).
 
 - Every automated row runs on source-owned input: the `display-smoke-v1`,
   `profile-zero` or synthetic fixture guests, or a synthetic ISO/XB tree. No row

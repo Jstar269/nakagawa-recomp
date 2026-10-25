@@ -110,6 +110,8 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
 - High-contrast focus (`NkUiPrefs.high_contrast_focus`): a 4 px white ring between 2 px black keylines.
 - A focusable control calls `nk_ui_register_button` and, when focused, `nk_ui_focus_ring(ui, id, radius)`. A focused
   secondary button also fills with `surface_high`; a focused card's edge becomes `line_strong`.
+- Arrow keys move to the nearest control in that direction. A button with `NK_UI_BUTTON_ROW` keeps Left and Right in
+  its row, so a row of actions under cards of different heights is walked end to end.
 
 ### Layout grid
 
@@ -245,9 +247,9 @@ button that changes it: GAME (resolution, frame pacing, VSync, fullscreen, scali
 volume with - and +, launcher fullscreen, reduce motion, menu sounds, controller settings, then the controller and the
 saves folder as captions). Under them DONE (primary: saves and returns to the Library), ONLINE AND DEVELOPER,
 THIRD-PARTY NOTICES and REMOVE BUILD TOOLS; the online options, the notices and the removal check are dialog cards.
-Every change is saved as it is made. Below a 680 px tall window the `SETTINGS` heading is left out (the tab names the
-page) so every row fits 960 x 540. The controller settings screen and the developer log are still drawn by
-`src/player/ui_renderer.c`. The tabbed layout below is the target for a later pass:
+Left and Right move between the two cards along a row (`NK_UI_BUTTON_ROW`), so CONTROLLER SETTINGS is reached from
+SCALING. Every change is saved as it is made. Below a 680 px tall window the `SETTINGS` heading is left out (the tab names the
+page) so every row fits 960 x 540. The tabbed layout below is the target for a later pass:
 
 - Top bar with SETTINGS active; `SETTINGS` in `DISPLAY`; a tab row (`LABEL`, 10/12 px padding, 3 px accent rule
   under the active tab, `line` underneath): DISPLAY, AUDIO, CONTROLS, PATHS AND STORAGE, ACCESSIBILITY, ABOUT.
@@ -266,6 +268,32 @@ page) so every row fits 960 x 540. The controller settings screen and the develo
   row.
 - Controls tab: a 30 px mapping header in `EYEBROW` and 38 px mapping rows; a row waiting for a press fills with
   `capture` and the prompt bar shows only CANCEL.
+
+### Controller settings (built)
+
+Settings > Controls opens one page under the top bar with SETTINGS active. Under the `CONTROLLER` heading (left out
+below 680 px tall), one status line: a conflict in `error`, a load or save message, the prompt while a button is
+awaited, or which controller is connected. Two cards side by side:
+
+- BUTTONS: the eyebrow names the mapping being edited (`BUTTONS · GLOBAL MAPPING`, or the game's own in `ready`),
+  then the 14 PSP controls in two columns of name and binding. The binding is a small button with the host button's
+  name; a conflicted control's name is `error`; the control waiting for a press shows `Press a button...` as the
+  primary button. Choosing it again, or Esc, cancels the wait.
+- STICK AND TRIGGERS: dead zone and trigger threshold with - and +, CALIBRATE STICK, and LIVE INPUT in `DATA`: the
+  raw stick, the PSP value it maps to, the triggers and the buttons held.
+
+Under the cards SAVE PROFILE (primary), RESET TO DEFAULTS and, with a game selected, USE THIS GAME'S OWN MAPPING or
+USE THE GLOBAL MAPPING; BACK sits at the right end, under the stick card. The page opens on the first binding.
+Calibration replaces the cards with a 720 px dialog card per step: rest (a progress bar, CANCEL only), range
+(FINISH) and result (ACCEPT), each with its live numbers. Esc or East cancels a step and returns to CALIBRATE STICK.
+Every page fits 960 x 540.
+
+### Developer log (built)
+
+F12 in developer mode opens one card under a top bar without tabs: a `warning` `▲ DEVELOPER MODE` eyebrow, the
+privacy line (on this PC only, paths as `%USERPROFILE%`), then the newest lines that fit in `DATA` on the ground
+colour, each cut to the card's width, and COPY, SAVE and CLOSE (primary, focused first) with the last notice beside
+them. Esc or F12 closes it.
 
 ### First run (C7)
 

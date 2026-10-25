@@ -68,7 +68,10 @@ typedef enum {
     PLAYER_UI_ACTION_OPEN_ABOUT,
     PLAYER_UI_ACTION_OPEN_NOTICES,
     PLAYER_UI_ACTION_DISC,             /* a game-found card control; .primary carries the op */
-    PLAYER_UI_ACTION_SETTINGS          /* a Settings control; .primary carries the op */
+    PLAYER_UI_ACTION_SETTINGS,         /* a Settings control; .primary carries the op */
+    PLAYER_UI_ACTION_CONTROLLER,       /* a controller settings control; .primary carries the
+                                          op, .title_index the PSP control it rebinds */
+    PLAYER_UI_ACTION_DEVELOPER_LOG     /* a developer log control; .primary carries the op */
 } PlayerUiActionKind;
 
 typedef struct {
@@ -299,6 +302,81 @@ typedef struct {
     float logical_height;
 } PlayerUiSettingsModel;
 
+/* The controller settings page (VIEW_CONTROLLER_SETTINGS): the mapping, or a
+   step of the guided stick and trigger calibration while one runs. */
+typedef enum {
+    PLAYER_UI_CONTROLLER_PAGE_MAPPING = 0,
+    PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_REST,      /* step 1: leave the stick alone */
+    PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_EXTREMES,  /* step 2: move it to its limits */
+    PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_RESULT     /* step 3: accept or cancel */
+} PlayerUiControllerPage;
+
+/* What a controller settings control asks for (PLAYER_UI_ACTION_CONTROLLER).
+   main.c runs the same input_settings handlers the existing renderer's
+   controller buttons call. */
+typedef enum {
+    PLAYER_UI_CONTROLLER_NONE = 0,
+    PLAYER_UI_CONTROLLER_REBIND,             /* wait for a press for .title_index, or stop */
+    PLAYER_UI_CONTROLLER_DEADZONE_DOWN,
+    PLAYER_UI_CONTROLLER_DEADZONE_UP,
+    PLAYER_UI_CONTROLLER_TRIGGER_DOWN,
+    PLAYER_UI_CONTROLLER_TRIGGER_UP,
+    PLAYER_UI_CONTROLLER_CALIBRATE,
+    PLAYER_UI_CONTROLLER_SAVE,
+    PLAYER_UI_CONTROLLER_RESET,
+    PLAYER_UI_CONTROLLER_BACK,               /* back to Settings */
+    PLAYER_UI_CONTROLLER_CLOSE,              /* a top-bar tab or Start: Settings closes */
+    PLAYER_UI_CONTROLLER_TOGGLE_SCOPE,       /* this game's own mapping, or the global one */
+    PLAYER_UI_CONTROLLER_CALIBRATION_FINISH, /* step 2 done: show the result */
+    PLAYER_UI_CONTROLLER_CALIBRATION_ACCEPT,
+    PLAYER_UI_CONTROLLER_CALIBRATION_CANCEL
+} PlayerUiControllerOp;
+
+#define PLAYER_UI_CONTROLLER_BUTTONS 14u   /* INPUT_CONTROL_DIGITAL_COUNT */
+#define PLAYER_UI_CONTROLLER_LIVE_LINES 4u
+
+typedef struct {
+    PlayerUiControllerPage page;
+    /* Mapping: each PSP control's name and what it is bound to, in words */
+    const char *names[PLAYER_UI_CONTROLLER_BUTTONS];
+    const char *bindings[PLAYER_UI_CONTROLLER_BUTTONS];
+    bool conflicted[PLAYER_UI_CONTROLLER_BUTTONS];
+    int capturing;                  /* the control waiting for a press, or -1 */
+    const char *scope;              /* "global mapping", "TEST00005 only" */
+    bool scope_title;               /* editing one game's own mapping */
+    bool offer_scope;               /* a game is selected, so the choice is offered */
+    const char *status;             /* a conflict, a load or save note, or the pad */
+    bool status_error;              /* status is a conflict */
+    const char *deadzone;           /* "Dead zone 9%" */
+    const char *trigger;            /* "Trigger point 49%" */
+    /* The live input, and on a calibration page its numbers */
+    const char *live[PLAYER_UI_CONTROLLER_LIVE_LINES];
+    size_t live_count;
+    float calibration_fraction;     /* step 1: 0-1 of the sampling time */
+    float logical_width;
+    float logical_height;
+} PlayerUiControllerModel;
+
+/* What a developer log control asks for (PLAYER_UI_ACTION_DEVELOPER_LOG). */
+typedef enum {
+    PLAYER_UI_DEVELOPER_LOG_NONE = 0,
+    PLAYER_UI_DEVELOPER_LOG_COPY,
+    PLAYER_UI_DEVELOPER_LOG_SAVE,
+    PLAYER_UI_DEVELOPER_LOG_CLOSE
+} PlayerUiDeveloperLogOp;
+
+#define PLAYER_UI_DEVELOPER_LOG_LINES 256u   /* PLAYER_DEV_LOG_LINES */
+
+/* The developer log panel (VIEW_DEVELOPER_LOG): the newest lines that fit,
+   oldest first. */
+typedef struct {
+    const char *lines[PLAYER_UI_DEVELOPER_LOG_LINES];
+    size_t line_count;
+    const char *notice;             /* "Copied 12 lines.", or NULL */
+    float logical_width;
+    float logical_height;
+} PlayerUiDeveloperLogModel;
+
 /* Package build progress (VIEW_BUILDING_PACKAGE). stage is 0-3 for Preflight,
    Extract, Compile and Package, 4 when every stage is done. */
 typedef struct {
@@ -420,8 +498,26 @@ enum {
     PLAYER_UI_ID_SETTINGS_DEVELOPER_LOG = 0x4516u,
     PLAYER_UI_ID_SETTINGS_BACK = 0x4517u,
     PLAYER_UI_ID_SETTINGS_LICENSE_TEXTS = 0x4518u,
-    PLAYER_UI_ID_SETTINGS_CONFIRM_REMOVE = 0x4519u
+    PLAYER_UI_ID_SETTINGS_CONFIRM_REMOVE = 0x4519u,
+    PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
+    PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
+    PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,
+    PLAYER_UI_ID_CONTROLLER_TRIGGER_DOWN = 0x4623u,
+    PLAYER_UI_ID_CONTROLLER_TRIGGER_UP = 0x4624u,
+    PLAYER_UI_ID_CONTROLLER_CALIBRATE = 0x4625u,
+    PLAYER_UI_ID_CONTROLLER_SAVE = 0x4626u,
+    PLAYER_UI_ID_CONTROLLER_RESET = 0x4627u,
+    PLAYER_UI_ID_CONTROLLER_BACK = 0x4628u,
+    PLAYER_UI_ID_CONTROLLER_SCOPE = 0x4629u,
+    PLAYER_UI_ID_CONTROLLER_CALIBRATION_PRIMARY = 0x462Au,
+    PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL = 0x462Bu,
+    PLAYER_UI_ID_DEVELOPER_LOG_COPY = 0x4701u,
+    PLAYER_UI_ID_DEVELOPER_LOG_SAVE = 0x4702u,
+    PLAYER_UI_ID_DEVELOPER_LOG_CLOSE = 0x4703u
 };
+
+#define PLAYER_UI_ID_CONTROLLER_BUTTON(control) \
+    ((NkUiId)(PLAYER_UI_ID_CONTROLLER_BUTTON_BASE + (uint32_t)(control)))
 
 #define PLAYER_UI_ID_LIBRARY_ITEM(index) \
     ((NkUiId)(PLAYER_UI_ID_LIBRARY_ITEM_BASE + (uint32_t)(index)))
@@ -455,6 +551,8 @@ PlayerUiAction player_ui_screen_about(NkUi *ui,
                                       const PlayerUiAboutModel *model);
 PlayerUiAction player_ui_screen_disc(NkUi *ui, const PlayerUiDiscModel *model);
 PlayerUiAction player_ui_screen_settings(NkUi *ui, const PlayerUiSettingsModel *model);
+PlayerUiAction player_ui_screen_controller(NkUi *ui, const PlayerUiControllerModel *model);
+PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperLogModel *model);
 
 /* The top bar every launcher screen draws: LIBRARY, ABOUT and SETTINGS tabs,
    focusable and switched with L / R. Returns the action for a tab the user

@@ -104,7 +104,9 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_CONSENT, FLOW_PROGRES
                FLOW_WIZ_COPY_FAILED, FLOW_ERROR_STOP, FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
                FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
-               FLOW_SETTINGS_REMOVE } FlowCase;
+               FLOW_SETTINGS_REMOVE, FLOW_CONTROLLER, FLOW_CONTROLLER_GAME,
+               FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
+               FLOW_DEVLOG, FLOW_DEVLOG_EMPTY } FlowCase;
 
 /* The window size the game-found and Settings cases lay out for. */
 static float g_flow_width = 1280.0f;
@@ -210,6 +212,81 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.logical_width = g_flow_width;
     settings.logical_height = g_flow_height;
     return player_ui_screen_settings(ui, &settings);
+}
+
+/* input_settings.c's names and its default bindings, in its own words: the
+   longest it writes, so the rows are laid out as tight as they get. */
+static const char *const k_pad_names[PLAYER_UI_CONTROLLER_BUTTONS] = {
+    "Select", "Start", "D-Pad Up", "D-Pad Right", "D-Pad Down", "D-Pad Left",
+    "L Trigger (L1)", "R Trigger (R1)", "Triangle", "Circle", "Cross", "Square", "Home", "Hold"
+};
+static const char *const k_pad_bindings[PLAYER_UI_CONTROLLER_BUTTONS] = {
+    "Button Back / Select", "Button Start", "D-Pad Up", "D-Pad Right", "D-Pad Down",
+    "D-Pad Left", "Left Bumper (LB / L1) / Left Trigger", "Right Bumper (RB / R1) / Right Trigger",
+    "Button North (Y / Triangle)", "Button East (B / Circle)", "Button South (A / Cross)",
+    "Button West (X / Square)", "Guide / Home", "None (Unbound)"
+};
+
+static PlayerUiAction draw_controller_case(NkUi *ui, FlowCase which) {
+    PlayerUiControllerModel pad;
+    memset(&pad, 0, sizeof(pad));
+    pad.page = which == FLOW_CALIBRATE_REST ? PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_REST
+        : which == FLOW_CALIBRATE_EXTREMES ? PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_EXTREMES
+        : which == FLOW_CALIBRATE_RESULT ? PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_RESULT
+        : PLAYER_UI_CONTROLLER_PAGE_MAPPING;
+    for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_BUTTONS; ++i) {
+        pad.names[i] = k_pad_names[i];
+        pad.bindings[i] = k_pad_bindings[i];
+    }
+    pad.capturing = -1;
+    pad.scope = "global mapping";
+    pad.deadzone = "Dead zone 24%";
+    pad.trigger = "Triggers at 49%";
+    pad.live[0] = "Stick  -32768,  32767";
+    pad.live[1] = "PSP      0, 255  moving";
+    pad.live[2] = "Triggers L 32767  R 0";
+    pad.live[3] = "Pressed south, east, left_shoulder";
+    pad.live_count = 4u;
+    if (which == FLOW_CONTROLLER_GAME) {
+        /* One game's own mapping, a control waiting for a press, and a conflict. */
+        pad.scope = "TEST00005 only";
+        pad.scope_title = true;
+        pad.offer_scope = true;
+        pad.capturing = 10;
+        pad.conflicted[8] = true;
+        pad.conflicted[11] = true;
+        pad.status = "Conflict: Button North (Y / Triangle) bound to both Triangle and Square";
+        pad.status_error = true;
+    } else if (which == FLOW_CALIBRATE_REST) {
+        pad.calibration_fraction = 0.4f;
+        pad.live_count = 2u;
+    } else if (which == FLOW_CALIBRATE_RESULT) {
+        pad.live_count = 3u;
+    }
+    pad.logical_width = g_flow_width;
+    pad.logical_height = g_flow_height;
+    return player_ui_screen_controller(ui, &pad);
+}
+
+static PlayerUiAction draw_developer_log_case(NkUi *ui, FlowCase which) {
+    static char lines[PLAYER_UI_DEVELOPER_LOG_LINES][160];
+    PlayerUiDeveloperLogModel log;
+    memset(&log, 0, sizeof(log));
+    if (which == FLOW_DEVLOG) {
+        /* A full log: the newest lines are the ones shown. */
+        for (size_t i = 0u; i < PLAYER_UI_DEVELOPER_LOG_LINES; ++i) {
+            (void)snprintf(lines[i], sizeof(lines[i]),
+                           "[%03zu] [runtime] synthetic line %zu from %%USERPROFILE%%\\fixture "
+                           "that is long enough to be cut at the edge of the box",
+                           i, i);
+            log.lines[i] = lines[i];
+        }
+        log.line_count = PLAYER_UI_DEVELOPER_LOG_LINES;
+        log.notice = "Copied 256 lines.";
+    }
+    log.logical_width = g_flow_width;
+    log.logical_height = g_flow_height;
+    return player_ui_screen_developer_log(ui, &log);
 }
 
 static const char *const k_font_lines[] = {
@@ -331,6 +408,8 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         error.logical_height = 800.0f;
         return player_ui_screen_error(ui, &error);
     }
+    if (which >= FLOW_DEVLOG) return draw_developer_log_case(ui, which);
+    if (which >= FLOW_CONTROLLER) return draw_controller_case(ui, which);
     if (which >= FLOW_SETTINGS) return draw_settings_case(ui, which);
     if (which >= FLOW_DISC_CHECKING) return draw_disc_case(ui, which);
     if (which >= FLOW_WIZ_WELCOME) return draw_wizard_case(ui, which);
@@ -1168,6 +1247,117 @@ static void test_settings_pages(void) {
           "Done and every Settings button are on screen at 960 x 540");
 }
 
+static bool controller_op_is(PlayerUiAction action, PlayerUiControllerOp op, size_t control) {
+    return action.kind == PLAYER_UI_ACTION_CONTROLLER &&
+           (PlayerUiControllerOp)action.primary == op && action.title_index == control;
+}
+
+static bool developer_log_op_is(PlayerUiAction action, PlayerUiDeveloperLogOp op) {
+    return action.kind == PLAYER_UI_ACTION_DEVELOPER_LOG &&
+           (PlayerUiDeveloperLogOp)action.primary == op;
+}
+
+/* Controller settings and the developer log in the next UI. Every control
+   returns the op main.c runs with the existing renderer's handlers, and each
+   page fits the 960 x 540 minimum window with no text over other text. */
+static void test_controller_and_developer_log_pages(void) {
+    static char dump[CASE_DUMP_CAP];
+    static const struct { FlowCase which; NkUiId id; PlayerUiControllerOp op; const char *what; }
+        cases[] = {
+        {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN,
+         PLAYER_UI_CONTROLLER_DEADZONE_DOWN, "minus narrows the stick dead zone"},
+        {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_DEADZONE_UP, PLAYER_UI_CONTROLLER_DEADZONE_UP,
+         "plus widens the stick dead zone"},
+        {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_TRIGGER_DOWN, PLAYER_UI_CONTROLLER_TRIGGER_DOWN,
+         "minus lowers the trigger point"},
+        {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_TRIGGER_UP, PLAYER_UI_CONTROLLER_TRIGGER_UP,
+         "plus raises the trigger point"},
+        {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_CALIBRATE, PLAYER_UI_CONTROLLER_CALIBRATE,
+         "Calibrate stick starts the guided calibration"},
+        {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_SAVE, PLAYER_UI_CONTROLLER_SAVE,
+         "Save profile writes the mapping"},
+        {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_RESET, PLAYER_UI_CONTROLLER_RESET,
+         "Reset to defaults resets the mapping"},
+        {FLOW_CONTROLLER, PLAYER_UI_ID_CONTROLLER_BACK, PLAYER_UI_CONTROLLER_BACK,
+         "Back returns to Settings"},
+        {FLOW_CONTROLLER_GAME, PLAYER_UI_ID_CONTROLLER_SCOPE, PLAYER_UI_CONTROLLER_TOGGLE_SCOPE,
+         "the mapping choice switches between the game's own and the global one (#520)"},
+        {FLOW_CALIBRATE_REST, PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL,
+         PLAYER_UI_CONTROLLER_CALIBRATION_CANCEL, "Cancel stops the calibration at rest"},
+        {FLOW_CALIBRATE_EXTREMES, PLAYER_UI_ID_CONTROLLER_CALIBRATION_PRIMARY,
+         PLAYER_UI_CONTROLLER_CALIBRATION_FINISH, "Finish ends the range sampling"},
+        {FLOW_CALIBRATE_EXTREMES, PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL,
+         PLAYER_UI_CONTROLLER_CALIBRATION_CANCEL, "Cancel stops the range sampling"},
+        {FLOW_CALIBRATE_RESULT, PLAYER_UI_ID_CONTROLLER_CALIBRATION_PRIMARY,
+         PLAYER_UI_CONTROLLER_CALIBRATION_ACCEPT, "Accept keeps the calibration"},
+        {FLOW_CALIBRATE_RESULT, PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL,
+         PLAYER_UI_CONTROLLER_CALIBRATION_CANCEL, "Cancel drops the calibration"}
+    };
+    static const FlowCase pages[] = {FLOW_CONTROLLER, FLOW_CONTROLLER_GAME, FLOW_CALIBRATE_REST,
+                                     FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT, FLOW_DEVLOG,
+                                     FLOW_DEVLOG_EMPTY};
+    for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        CHECK(controller_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op, 0u),
+              cases[i].what);
+    }
+    for (size_t control = 0u; control < PLAYER_UI_CONTROLLER_BUTTONS; ++control) {
+        CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_BUTTON(control),
+                                                    FLOW_CONTROLLER),
+                               PLAYER_UI_CONTROLLER_REBIND, control),
+              "each PSP control's button rebinds that control");
+    }
+    CHECK(activate_flow_button(PLAYER_UI_ID_CONTROLLER_SCOPE, FLOW_CONTROLLER).kind ==
+              PLAYER_UI_ACTION_NONE,
+          "with no game selected there is no mapping choice");
+    CHECK(activate_flow_button(PLAYER_UI_ID_CONTROLLER_CALIBRATION_PRIMARY,
+                               FLOW_CALIBRATE_REST).kind == PLAYER_UI_ACTION_NONE,
+          "the resting step only offers Cancel");
+    CHECK(activate_flow_button(PLAYER_UI_ID_TAB_LIBRARY, FLOW_CONTROLLER).kind ==
+              PLAYER_UI_ACTION_OPEN_LIBRARY,
+          "the LIBRARY tab on the controller page opens the library");
+    CHECK(developer_log_op_is(activate_flow_button(PLAYER_UI_ID_DEVELOPER_LOG_COPY, FLOW_DEVLOG),
+                              PLAYER_UI_DEVELOPER_LOG_COPY),
+          "Copy puts the log on the clipboard");
+    CHECK(developer_log_op_is(activate_flow_button(PLAYER_UI_ID_DEVELOPER_LOG_SAVE, FLOW_DEVLOG),
+                              PLAYER_UI_DEVELOPER_LOG_SAVE),
+          "Save writes the log to the logs folder");
+    CHECK(developer_log_op_is(activate_flow_button(PLAYER_UI_ID_DEVELOPER_LOG_CLOSE,
+                                                   FLOW_DEVLOG_EMPTY),
+                              PLAYER_UI_DEVELOPER_LOG_CLOSE),
+          "Close leaves the developer log");
+    CHECK(dump_flow_case(FLOW_CONTROLLER, dump, sizeof(dump)) &&
+              strstr(dump, "\"BUTTONS \xC2\xB7 GLOBAL MAPPING\"") != NULL &&
+              strstr(dump, "\"Cross\"") != NULL && strstr(dump, "\"BUTTON SOUTH (A / CROSS)\"") != NULL &&
+              strstr(dump, "\"Dead zone 24%\"") != NULL && strstr(dump, "\"SAVE PROFILE\"") != NULL,
+          "the mapping names each control beside its binding, and the mapping it edits");
+    CHECK(dump_flow_case(FLOW_CONTROLLER_GAME, dump, sizeof(dump)) &&
+              strstr(dump, "TEST00005 ONLY") != NULL &&
+              strstr(dump, "\"PRESS A BUTTON...\"") != NULL &&
+              strstr(dump, "Conflict: Button North") != NULL &&
+              strstr(dump, "\"USE THE GLOBAL MAPPING\"") != NULL,
+          "a game's own mapping is named, with the waiting control and the conflict");
+    CHECK(dump_flow_case(FLOW_DEVLOG, dump, sizeof(dump)) &&
+              strstr(dump, "[255] [runtime]") != NULL && strstr(dump, "[000] [runtime]") == NULL &&
+              strstr(dump, "\"Copied 256 lines.\"") != NULL,
+          "the log shows its newest lines and the last notice");
+    CHECK(dump_flow_case(FLOW_DEVLOG_EMPTY, dump, sizeof(dump)) &&
+              strstr(dump, "\"Nothing logged yet.\"") != NULL,
+          "an empty log says so");
+    for (size_t i = 0u; i < sizeof(pages) / sizeof(pages[0]); ++i) {
+        CHECK(flow_case_fits(pages[i], 960, 540, dump, sizeof(dump)),
+              "each controller and developer log page fits the 960 x 540 minimum window");
+        CHECK(flow_case_fits(pages[i], 1280, 800, dump, sizeof(dump)),
+              "each controller and developer log page fits 1280 x 800");
+    }
+    CHECK(flow_case_fits(FLOW_CONTROLLER_GAME, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "\"Hold\"") != NULL && strstr(dump, "\"LIVE INPUT\"") != NULL &&
+              strstr(dump, "\"USE THE GLOBAL MAPPING\"") != NULL,
+          "every control, the live input and the mapping choice are on screen at 960 x 540");
+    CHECK(flow_case_fits(FLOW_DEVLOG, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "[255] [runtime]") != NULL && strstr(dump, "\"CLOSE\"") != NULL,
+          "the newest log line and Close are on screen at 960 x 540");
+}
+
 static void test_error_details_fit_the_minimum_window(void) {
     static char dump[CASE_DUMP_CAP];
     static const char details[] =
@@ -1744,7 +1934,16 @@ static int capture_screens(const char *directory) {
             {FLOW_SETTINGS, "settings", PLAYER_UI_ID_SETTINGS_RESOLUTION},
             {FLOW_SETTINGS_ONLINE, "settings-online", PLAYER_UI_ID_SETTINGS_ONLINE_MODE},
             {FLOW_SETTINGS_NOTICES, "settings-notices", PLAYER_UI_ID_SETTINGS_BACK},
-            {FLOW_SETTINGS_REMOVE, "settings-remove-tools", PLAYER_UI_ID_SETTINGS_BACK}
+            {FLOW_SETTINGS_REMOVE, "settings-remove-tools", PLAYER_UI_ID_SETTINGS_BACK},
+            {FLOW_CONTROLLER, "controller", PLAYER_UI_ID_CONTROLLER_BUTTON(0u)},
+            {FLOW_CONTROLLER_GAME, "controller-game-mapping", PLAYER_UI_ID_CONTROLLER_BUTTON(10u)},
+            {FLOW_CALIBRATE_REST, "controller-calibrate-rest",
+             PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL},
+            {FLOW_CALIBRATE_EXTREMES, "controller-calibrate-range",
+             PLAYER_UI_ID_CONTROLLER_CALIBRATION_PRIMARY},
+            {FLOW_CALIBRATE_RESULT, "controller-calibrate-result",
+             PLAYER_UI_ID_CONTROLLER_CALIBRATION_PRIMARY},
+            {FLOW_DEVLOG, "developer-log", PLAYER_UI_ID_DEVELOPER_LOG_CLOSE}
         };
         for (size_t i = 0u; i < sizeof(flows) / sizeof(flows[0]); ++i) {
             g_flow_case = flows[i].which;
@@ -1834,6 +2033,7 @@ int main(int argc, char **argv) {
     test_plain_cards();
     test_disc_cards();
     test_settings_pages();
+    test_controller_and_developer_log_pages();
     test_version_line();
     test_design_system_layout();
     CHECK(build_library_golden(library, sizeof(library), &library_size),

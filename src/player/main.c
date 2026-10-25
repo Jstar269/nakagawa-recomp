@@ -544,7 +544,11 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         }
         return true;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
-        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
+        /* A trigger waiting to be bound is the binding in both launchers. */
+        if (use_next_ui && !(app->active_view == VIEW_CONTROLLER_SETTINGS &&
+                             input_settings_is_capturing(&app->input_settings))) {
+            return player_ui_nk_handle_event(next_ui, event);
+        }
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings) &&
             (event->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
@@ -574,10 +578,8 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             player_app_set_view(app, VIEW_SETTINGS);
             return true;
         }
-        if (use_next_ui && !(event->gbutton.button == SDL_GAMEPAD_BUTTON_EAST &&
-                             !player_view_is_library(app->active_view))) {
-            return player_ui_nk_handle_event(next_ui, event);
-        }
+        /* While a control waits to be bound, the next press is its binding, in
+           both launchers. */
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings)) {
             NkBindingSource src;
@@ -585,6 +587,10 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             src.index = event->gbutton.button;
             input_settings_feed_capture_source(&app->input_settings, src);
             return true;
+        }
+        if (use_next_ui && !(event->gbutton.button == SDL_GAMEPAD_BUTTON_EAST &&
+                             !player_view_is_library(app->active_view))) {
+            return player_ui_nk_handle_event(next_ui, event);
         }
         if (player_view_is_library(app->active_view)) {
             switch (event->gbutton.button) {
@@ -945,10 +951,97 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
     }
 }
 
+/* The controller settings controls: the same input_settings handlers the
+   existing renderer's controller buttons call. */
+static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
+                                       size_t control) {
+    InputSettingsState *input = &app->input_settings;
+    switch (op) {
+        case PLAYER_UI_CONTROLLER_REBIND:
+            if (control >= (size_t)INPUT_CONTROL_DIGITAL_COUNT) break;
+            /* Choosing the button that is waiting stops the wait. */
+            if (input->capturing && input->capture_control == (int)control) {
+                input_settings_cancel_capture(input);
+            } else {
+                (void)input_settings_start_capture(input, (int)control);
+            }
+            break;
+        case PLAYER_UI_CONTROLLER_DEADZONE_DOWN:
+            (void)input_settings_adjust_deadzone(input, -1, -1000);
+            break;
+        case PLAYER_UI_CONTROLLER_DEADZONE_UP:
+            (void)input_settings_adjust_deadzone(input, -1, 1000);
+            break;
+        case PLAYER_UI_CONTROLLER_TRIGGER_DOWN:
+            (void)input_settings_adjust_trigger_threshold(input, -1000);
+            break;
+        case PLAYER_UI_CONTROLLER_TRIGGER_UP:
+            (void)input_settings_adjust_trigger_threshold(input, 1000);
+            break;
+        case PLAYER_UI_CONTROLLER_CALIBRATE: (void)input_settings_start_calibration(input); break;
+        case PLAYER_UI_CONTROLLER_SAVE:
+            if (input_settings_save(input, NULL) == NK_OK) {
+                snprintf(input->save_diagnostic, sizeof(input->save_diagnostic),
+                         "Profile successfully saved to disk");
+                input->has_save_diagnostic = true;
+            }
+            break;
+        case PLAYER_UI_CONTROLLER_RESET: input_settings_reset_to_defaults(input); break;
+        case PLAYER_UI_CONTROLLER_BACK:
+        case PLAYER_UI_CONTROLLER_CLOSE:
+            if (input_settings_is_capturing(input)) input_settings_cancel_capture(input);
+            if (input_settings_is_calibrating(input)) input_settings_cancel_calibration(input);
+            player_app_set_view(app, op == PLAYER_UI_CONTROLLER_BACK ? VIEW_SETTINGS
+                                                                     : VIEW_LIBRARY);
+            break;
+        case PLAYER_UI_CONTROLLER_TOGGLE_SCOPE:
+            if (player_app_selected_disc_id(app) != NULL) {
+                (void)input_settings_toggle_scope(input, player_app_selected_disc_id(app));
+            }
+            break;
+        case PLAYER_UI_CONTROLLER_CALIBRATION_FINISH:
+            (void)input_settings_finish_calibration_extremes(input);
+            break;
+        case PLAYER_UI_CONTROLLER_CALIBRATION_ACCEPT:
+            (void)input_settings_accept_calibration(input);
+            break;
+        case PLAYER_UI_CONTROLLER_CALIBRATION_CANCEL:
+            input_settings_cancel_calibration(input);
+            break;
+        case PLAYER_UI_CONTROLLER_NONE:
+        default:
+            break;
+    }
+}
+
+/* The developer log controls, as the existing renderer's log buttons. */
+static void player_ui_developer_log_apply(PlayerApp *app, PlayerUiDeveloperLogOp op) {
+    static char clip[PLAYER_DEV_LOG_LINES * PLAYER_DEV_LOG_LINE_MAX + 1];
+    switch (op) {
+        case PLAYER_UI_DEVELOPER_LOG_COPY:
+            (void)player_dev_log_text(app, clip, sizeof(clip));
+            if (SDL_SetClipboardText(clip)) {
+                snprintf(app->dev_log.notice, sizeof(app->dev_log.notice), "Copied %zu lines.",
+                         player_dev_log_count(app));
+            } else {
+                snprintf(app->dev_log.notice, sizeof(app->dev_log.notice),
+                         "The log could not be copied.");
+            }
+            break;
+        case PLAYER_UI_DEVELOPER_LOG_SAVE: (void)player_dev_log_save(app); break;
+        case PLAYER_UI_DEVELOPER_LOG_CLOSE: player_app_close_developer_log(app); break;
+        case PLAYER_UI_DEVELOPER_LOG_NONE:
+        default:
+            break;
+    }
+}
+
 static void player_ui_nk_apply_action(PlayerApp *app,
                                      const PlayerUiAction *action) {
     int index;
-    if (app == NULL || action == NULL) return;
+    /* Most frames carry no action; its zero title_index must not reselect the
+       first title under a Title detail page or the controller page. */
+    if (app == NULL || action == NULL || action->kind == PLAYER_UI_ACTION_NONE) return;
     if (action->kind == PLAYER_UI_ACTION_WIZARD) {
         player_ui_wizard_apply(app, (PlayerUiWizardOp)action->primary);
         return;
@@ -959,6 +1052,15 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     }
     if (action->kind == PLAYER_UI_ACTION_SETTINGS) {
         player_ui_settings_apply(app, (PlayerUiSettingsOp)action->primary);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_CONTROLLER) {
+        player_ui_controller_apply(app, (PlayerUiControllerOp)action->primary,
+                                   action->title_index);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_DEVELOPER_LOG) {
+        player_ui_developer_log_apply(app, (PlayerUiDeveloperLogOp)action->primary);
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_ADD_DISC) {
