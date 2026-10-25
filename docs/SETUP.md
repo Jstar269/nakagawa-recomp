@@ -25,7 +25,7 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
    decrypted files from your own copy; see [Encrypted executables](#encrypted-executables).
    Nothing in this repository ships or downloads a game; see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md).
 
-For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20260601**; see
+For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20261001**; see
 [Showcase demos on Windows](#showcase-demos-on-windows-wsl-2-and-pspdev).
 
 The player's **BUILD PACKAGE** can download pinned build tools on first use. A consent card lists each
@@ -35,6 +35,31 @@ download first ([details](#player-build-package-prerequisites)).
 build itself still calls the built-in Windows PowerShell 5.1 (`powershell.exe`) for one step,
 copying the build assets (`tools/copy_build_assets.ps1`, through `POWERSHELL` in the
 `Makefile`). That script supports 5.1, so you do not need to change or install anything for it.
+
+## System requirements
+
+Measured on a Windows 11 x64 PC building and running Hot Shots Tennis with the player's
+**BUILD PACKAGE**:
+
+| | Minimum | Recommended |
+| --- | --- | --- |
+| Operating system | Windows 11 x64 | Windows 11 x64 |
+| Graphics | A GPU with a current Vulkan driver | Same |
+| Processor | Any 64-bit x86 CPU | 4 or more cores |
+| Memory | 8 GB RAM | 16 GB RAM |
+| Free disk space | 5 GB | 10 GB or more, on an SSD |
+
+- **Memory.** Building a game is the heavy part. One compiler process peaked at about 3 GB
+  while it compiled a large block of translated game code, and BUILD PACKAGE runs two at
+  once. Playing a built game needs far less.
+- **Disk space.** Each game keeps three things in the player's data folder: its imported disc
+  image (about 1.4 GB for Hot Shots Tennis), the built game (about 470 MB) and the build cache
+  (about 400 MB). If the player downloads the build tools, they add a 102 MB download, and
+  more once unpacked.
+- **SSD.** Builds read and write thousands of small files, so a hard disk makes them much
+  slower. Keep the player's data folder on an SSD if you can.
+- **Processor.** BUILD PACKAGE runs two compile jobs at a time, so more cores do not shorten
+  it yet. A first build takes several minutes.
 
 ## Showcase demos on Windows: WSL 2 and PSPDEV
 
@@ -51,7 +76,7 @@ player and your own game.
    Open Ubuntu once and create your Linux user. Make Ubuntu the default distribution, because the build
    runs `wsl -e` without naming one: `wsl --set-default Ubuntu`. `wsl -l -v` marks the default with `*`.
 
-2. In Ubuntu, download `pspdev-ubuntu-latest-x86_64.tar.gz` from the `v20260601` release at
+2. In Ubuntu, download `pspdev-ubuntu-latest-x86_64.tar.gz` from the `v20261001` release at
    <https://github.com/pspdev/pspdev/releases>. The asset name, release and archive hash are recorded in
    [`assets/upstream/pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
 
@@ -90,7 +115,7 @@ player and your own game.
 
 Linux can build and run the two source-owned showcase packages through the runtime.
 The route needs GCC, GNU Make, Python 3.15, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.18,
-and PSPDEV v20260601 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
+and PSPDEV v20261001 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
 3.4.18 release commit and verifies the PSPDEV archive against
 [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
 

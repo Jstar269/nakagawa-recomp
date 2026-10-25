@@ -453,7 +453,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cef8c78717d84884f75cc788b9ea444a0d0c6ea212894797055873038ee11fe4"
+      "sha256": "a7bc9ed0f6b65aa854b6cca401e21bc3c6a596d065800c6e8368500bb4d73940"
     },
     {
       "path": "REVIEW.md",
@@ -1106,7 +1106,7 @@
         "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b7b6a28ae5e96c94b6df1ab12354e0278e3521902580644e2d6ac251981355f1"
+      "sha256": "cd639518c7a5791349f1ee23a9460566e843837cdee5e7e35d7373dceef341be"
     },
     {
       "path": "assets/upstream/pspdev.evidence.json",
@@ -1119,7 +1119,7 @@
         "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "da8b88a23887a0d6d225562f378342540f436a026f3dae3ef6050f86f4261ddb"
+      "sha256": "0d41ca352cde2141436d11e5daef5df6f807927c2d4fe66b6e6093c9eebd2b77"
     },
     {
       "path": "assets/upstream/pspdev.lock.json",
@@ -1132,7 +1132,7 @@
         "license": "BSD-3-Clause and per-component",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "aae1782066dc50da84a02f9889d73ed4442c6c17c07c98df8902ffd51e4ab518"
+      "sha256": "2c739c4a211fc2d9247de915e1a958ad281d9b4857cc315afa55c6391562286d"
     },
     {
       "path": "assets/vfpu/PROVENANCE.json",
@@ -1477,7 +1477,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9b63300bd2464ed880ac7fb2f0ab106d3fb5368ee049e7e412f0d02374f35af1"
+      "sha256": "d07eb75a45bd77bac47efd4ca1b143ccc85dd7ef316b94197237ff04c76460bf"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -1597,7 +1597,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e7c842921d4194d11f36251d3664c62b1e3e4e917c4d0c5125b4f0ff5d28cecf"
+      "sha256": "74dc4dc52215401fb6a6fb8f73d7489f74bdeee331a7bb17ab595c4c5ef07fe8"
     },
     {
       "path": "docs/PSP_INTR_WAITS_CENSUS.md",
@@ -1666,7 +1666,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5301ec402cec10ebc418cd52d6173a171c8e7c579559bb23ed88fb657ef56bb9"
+      "sha256": "05113019b0cffcd6ab20ebe3cd1f397332f24512c66ca7e41c20d577ea0e543d"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1684,7 +1684,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d268c80b3fdd24a4e761fda659b1a8b0b2235bbf0eadf9f9095f265b8e043c43"
+      "sha256": "99d910c70d611e9ce5184e7498630eac42b0ca6bdfef0dd3397390617f501b8d"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1840,7 +1840,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e2eb2bd1786582f2702624cf45f7412315c2aee708099f26eb92c7dfc167a7e8"
+      "sha256": "d1da2cd908426621bdbc0c7eb62f0c21aba9966006e6df2f424ba6a5f2a521ac"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -2321,7 +2321,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8301c1a80ddfba25509a240302cd09cd0ced0b61f3151ff5dd43e4de1f79acf2"
+      "sha256": "87ad463553beb08fad37067ad605398cf290a98d5af1fbd8d6ab42078a8c38f9"
     },
     {
       "path": "fixtures/profile_zero/main.c",
@@ -2345,7 +2345,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d441545200cc0b2d233478883f0fab23fd9a6d3f557511e57b74c70fc2f619b5"
+      "sha256": "732675a263027037e9b00002a1c005ce7e772eb82b87066570b12416775fd7aa"
     },
     {
       "path": "fixtures/psp_oracle/Makefile",
@@ -2981,7 +2981,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cd1a7dc2f683dcf350249d9087977abf4c0e50a322d420486e49083258511387"
+      "sha256": "ab6504458e0e6ef177975d485f658a63af3d447aff80e6655be8a4cbbfc5f47f"
     },
     {
       "path": "fixtures/vfpu_addressing/hardware_vfpu_addr_001.json",
@@ -8932,7 +8932,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a6520f471afe7a004b8bd0315dcebd0800b8019b00caa498cebf37ced7fe8af2"
+      "sha256": "19b0b1d0fbbf6704b17b944afd43e34686302d7d555fb4036f907dd82a304db2"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -8944,7 +8944,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e1fec803da4beccabea88ba4cc74bfd5b7e7e9c567b41f782f505904f27bfc48"
+      "sha256": "a8c89ffa67d7e93d1736402137ef637293af2d490993201c33cff78c8ee7fedd"
     },
     {
       "path": "src/rt/scripted_input.h",
@@ -9630,7 +9630,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "56eae4852fafac739e449f5dc6d49330a1a9f005b05dd10229e15d547dac3e82"
+      "sha256": "970c32b1d9295dfd946eb3b4a55e888daeeace35f84bfb015fbb93deb9e743cb"
     },
     {
       "path": "src/ui/nk_ui_widgets.h",
@@ -9642,7 +9642,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f2206be228c89259e2366618440a2e2cab94e1b76102c4616a07952a6cd6b8b"
+      "sha256": "109c26efb39f7664687e021bd46dbed9fbb9b0f8007fa8607c9b2fda1d882d8d"
     },
     {
       "path": "src/ui/shaders/shader_manifest.json",
@@ -9930,7 +9930,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3cd5d0ebeb780a3922de4a093d6645cf4907f692421b68038d81ef5e2c53726b"
+      "sha256": "6da6e686c465e3a99f8605ca8d62318d6c67043ea37a828adee9c4859603b150"
     },
     {
       "path": "tests/native/test_nk_ui_focus.c",

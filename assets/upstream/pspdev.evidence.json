@@ -1,29 +1,31 @@
 {
   "archive": {
     "asset_name": "pspdev-ubuntu-latest-x86_64.tar.gz",
-    "download_url": "https://github.com/pspdev/pspdev/releases/download/v20260601/pspdev-ubuntu-latest-x86_64.tar.gz",
-    "github_asset_digest": "sha256:e43f678219879b340892bab17c5d2a516d5363dda26a1ddea0e12834a44c1bdd",
-    "local_sha256": "e43f678219879b340892bab17c5d2a516d5363dda26a1ddea0e12834a44c1bdd",
-    "size": 171708474,
+    "download_url": "https://github.com/pspdev/pspdev/releases/download/v20261001/pspdev-ubuntu-latest-x86_64.tar.gz",
+    "github_asset_digest": "sha256:a86efe624e770005290919617859e9df24bd8fcd3e364f4587f23ec7364b0acd",
+    "local_sha256": "a86efe624e770005290919617859e9df24bd8fcd3e364f4587f23ec7364b0acd",
+    "size": 172980272,
     "verified": true
   },
   "container": {
     "architecture": "amd64",
-    "created_at": "2026-06-01T20:55:27.83871673Z",
-    "digest": "sha256:3349a5ecf311cd081b9214a9aeb04bac5d38f6ec2a8d80cd5d364edc25dc388b",
+    "created_at": "2026-10-01T21:34:52.858302642Z",
+    "digest": "sha256:54895e6f5afb71b8f4f6915ee6d5023e1e087ca7afdf2dcb1d7a694a5233e45f",
     "operating_system": "linux",
-    "reference": "docker.io/pspdev/pspdev:v20260601",
+    "reference": "docker.io/pspdev/pspdev:v20261001",
     "verified_pull": true
   },
-  "release": "v20260601",
+  "release": "v20261001",
   "schema": 1,
   "tools": [
     {
       "identity": "mksfoex usage path",
-      "identity_args": ["--help"],
+      "identity_args": [
+        "--help"
+      ],
       "name": "mksfoex",
-      "sha256": "41c7eab1ba30cab5fb53bdef219a865049b5d3947d2b29b43519b62bf34bb3d2",
-      "size": 30600
+      "sha256": "1ad00b5120def7ca83817f36edafe354a6c8d9e4d6a5306a2858d5adcbc64070",
+      "size": 31136
     },
     {
       "identity": "pack-pbp usage",
@@ -34,81 +36,103 @@
     },
     {
       "identity": "psp-build-exports usage",
-      "identity_args": ["--help"],
+      "identity_args": [
+        "--help"
+      ],
       "name": "psp-build-exports",
       "sha256": "daf925e290e06f84bdcfb80293369ff8a04e01a9e1ae49c352b2ae80f1413342",
       "size": 95776
     },
     {
       "identity": "PSPSDK path reported successfully",
-      "identity_args": ["--pspsdk-path"],
+      "identity_args": [
+        "--pspsdk-path"
+      ],
       "name": "psp-config",
       "sha256": "fd4ba82db35bbe498b3a0c3eec4209f84bba6b53d132c8bbdfcff7980ccd77ee",
       "size": 42096
     },
     {
       "identity": "psp-fixup-imports usage",
-      "identity_args": ["--help"],
+      "identity_args": [
+        "--help"
+      ],
       "name": "psp-fixup-imports",
       "sha256": "dd9ef65b179f9585f6d1790e2e69a63a93693a9f0de4d3e12c84e874d8e83f06",
       "size": 79096
     },
     {
       "identity": "psp-gcc (GCC) 15.2.0",
-      "identity_args": ["--version"],
+      "identity_args": [
+        "--version"
+      ],
       "name": "psp-gcc",
       "sha256": "6032f8cfbf0f68dfaa244146460d8a2a8c2ca9982aef18cd87126d82d76211ea",
       "size": 2054992
     },
     {
       "identity": "GNU ld (GNU Binutils) 2.44",
-      "identity_args": ["--version"],
+      "identity_args": [
+        "--version"
+      ],
       "name": "psp-ld",
       "sha256": "d119ef5866b70ce46293b4ee7bb5ac356d44f93d802ca25580d3ad682b95937b",
       "size": 1915600
     },
     {
       "identity": "GNU nm (GNU Binutils) 2.44",
-      "identity_args": ["--version"],
+      "identity_args": [
+        "--version"
+      ],
       "name": "psp-nm",
       "sha256": "3853942e455cb3773ac2b289be2a9cc92cbb7ba0902df942bd7038dd8684047c",
       "size": 1276544
     },
     {
       "identity": "GNU objdump (GNU Binutils) 2.44",
-      "identity_args": ["--version"],
+      "identity_args": [
+        "--version"
+      ],
       "name": "psp-objdump",
       "sha256": "bb9cfc15da96a8a2dfd4b6c0903e6b15bc746320f6bf4c7694489470f1bd161b",
       "size": 2618464
     },
     {
       "identity": "psp-prxgen usage",
-      "identity_args": ["--version"],
+      "identity_args": [
+        "--version"
+      ],
       "name": "psp-prxgen",
       "sha256": "39f3b7a84fe19276c21734b28bf1f4e5cece8396063ed6b1df7fb9fc3ba3e08c",
       "size": 67352
     },
     {
       "identity": "GNU readelf (GNU Binutils) 2.44",
-      "identity_args": ["--version"],
+      "identity_args": [
+        "--version"
+      ],
       "name": "psp-readelf",
       "sha256": "2ec8654fde583954481a749f4d9fb15242175a0196b71a31c500e629cb470c70",
       "size": 1108840
     },
     {
       "identity": "pspsh usage path",
-      "identity_args": ["--help"],
+      "identity_args": [
+        "--help"
+      ],
       "name": "pspsh",
-      "sha256": "fec6edd51c580cdf99f68555b7d9b0cf49f4a477d6711490c91a05cb7bc7f1a7",
+      "sha256": "401b6161f30f265c3b9253b75d5896409bc66a1b7e52129512ed42aa296ef0e1",
       "size": 176168
     },
     {
       "identity": "USBHostFS (c) TyRaNiD 2k6",
-      "identity_args": ["--help"],
+      "identity_args": [
+        "--help"
+      ],
       "name": "usbhostfs_pc",
-      "sha256": "bd5e8e09c246cec00c4a4e1fdad264c0c14ac472073f4ff1a33e436438cdf93b",
+      "sha256": "284c5bc5eb64f95c9fd565f067b5cbf74a597be0753f70b680a3f4fffa529730",
       "size": 175848
     }
   ],
-  "verified_at": "2026-10-07T04:32:14Z"
+  "verified_at": "2026-10-24T03:58:49Z"
 }

@@ -86,6 +86,11 @@ loader and a Vulkan-capable graphics driver remain host-provided:
 
 The exact package command and its fail-closed scan are in [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md).
 
+**Hardware:** Windows 11 x64 with a Vulkan GPU, 8 GB RAM (16 GB recommended) and 5 GB of free
+disk space (10 GB on an SSD recommended). Building a game is the heavy part: one compiler process
+peaked at about 3 GB. The measured numbers are in
+[`SETUP.md`](SETUP.md#system-requirements).
+
 ## Title-specific compatibility patches
 
 Hot Shots Tennis runs with 23 title-specific compatibility patches: the forced branches, success stubs and scheduler or display surrogates that `python tools/compat_overrides.py --debt-census` lists. They fire only for that title. The recompiler emits its patches only under that title's profile, and the runtime applies the rest only through that title's validated configuration, so generic runtime code outside the configuration layer carries no title address. They are not fail-closed, so a missing behaviour can look like success on that route. Each run's log names every patch that fired, or says that none did, in its `COMPAT_PATCH_REPORT` lines. Retiring them is v0.0.2 work, tracked in [#363](https://github.com/Jstar269/nakagawa-recomp/issues/363).
