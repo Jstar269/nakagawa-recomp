@@ -380,18 +380,9 @@ def verify_narrow_long(compiler: str, flags: list[str], scratch_dir: Path) -> No
 
 
 def get_core_sources(repo_root: Path) -> list[str]:
-    """Return default 23 portable core files, adapting to private alternatives if present."""
-    sources: list[str] = []
-    for item in DEFAULT_CORE_SRCS:
-        if item == "src/rt/iso_public.c" and (repo_root / "src/rt/iso.c").exists():
-            sources.append("src/rt/iso.c")
-        elif item == "src/rt/pgd_unavailable.c" and (repo_root / "src/rt/pgd.c").exists():
-            sources.append("src/rt/pgd.c")
-        elif item == "src/rt/pgf_public.c" and (repo_root / "src/rt/pgf.c").exists():
-            sources.append("src/rt/pgf.c")
-        else:
-            sources.append(item)
-    return sources
+    """Return the default 23 portable core files (always the public backends)."""
+    del repo_root  # The private-backend alternatives were retired on 2026-10-25.
+    return list(DEFAULT_CORE_SRCS)
 
 
 def check_format_portability(
