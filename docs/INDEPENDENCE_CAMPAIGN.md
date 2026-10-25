@@ -574,7 +574,8 @@ that authority.
 - Exact sizes of the excluded implementations (`iso.c`, `audio.c`,
   `pgf.c`/`.h`, `pgd.c`/`.h`, `pgd_decrypt.py`, and the historical
   `evf.c`/`fp_convert.c` from which today's headers descend): not
-  measurable from the public tree; record from the private checkout at
+  measurable from the public tree; record from the retired private copy
+  (the private-backend build mode was retired on 2026-10-25) at
   implementation time. They do not affect sequencing.
 - Whether the `sched_*` flat-C API spellings originated with sal063 or
   earlier: believed project-coined (PPSSPP's kernel is C++ with different

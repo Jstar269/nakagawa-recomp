@@ -156,6 +156,10 @@ static UiFont g_font;
 static unsigned s_ui_test_bitmap_text_draws;
 /* Badge text of the package build screen as last drawn. */
 static const char *s_ui_test_build_badge;
+/* Fill of the package build screen's bar as last drawn, -1 for the sweep. */
+static float s_ui_test_build_bar_fraction = -1.0f;
+/* Whether the package build screen drew its "other apps may feel slower" note. */
+static bool s_ui_test_build_notice_drawn;
 #endif
 
 static uint32_t ui_color_key(SDL_Color c) {
@@ -1802,6 +1806,14 @@ unsigned ui_test_bitmap_text_draws(void) {
 
 const char *ui_test_build_badge(void) {
     return s_ui_test_build_badge ? s_ui_test_build_badge : "none";
+}
+
+float ui_test_build_bar_fraction(void) {
+    return s_ui_test_build_bar_fraction;
+}
+
+bool ui_test_build_notice_drawn(void) {
+    return s_ui_test_build_notice_drawn;
 }
 #endif
 
@@ -3913,13 +3925,21 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
                   stages[i], 1.0f, text_col);
     }
 
-    /* Progress bar */
+    /* Progress bar: the compiled share of the parts while the compile stage
+     * counts them; otherwise an indeterminate sweep that claims no percentage. */
     float bar_y = stage_y + 40.0f;
+    float compile_fraction = package_builder_compile_fraction(&app->build_session);
     if (built) {
         draw_progress_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, 100.0f);
+    } else if (compile_fraction >= 0.0f) {
+        draw_progress_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f,
+                          compile_fraction * 100.0f);
     } else {
         draw_indeterminate_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, g_reduce_motion);
     }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_build_bar_fraction = built ? 1.0f : compile_fraction;
+#endif
 
     /* Current status message & elapsed time */
     float info_y = bar_y + 24.0f;
@@ -3935,8 +3955,20 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
     snprintf(elapsed_str, sizeof(elapsed_str), "Elapsed: %u.%u s", sec, tenths);
     draw_text(ren, card_x + card_w - 150.0f, info_y, elapsed_str, 1.0f, COLOR_TEXT_MUTED);
 
-    /* Output log box */
+    /* While the compile stage runs several jobs, a calm note in muted body text that
+     * other apps may feel slower. No warning colour or icon: nothing is wrong. */
     float log_y = info_y + 28.0f;
+    const char *notice = built ? NULL : package_builder_compile_notice(&app->build_session);
+    if (notice) {
+        float after = draw_text_wrapped(ren, card_x + 32.0f, info_y + 26.0f, card_w - 64.0f,
+                                        notice, 1.0f, COLOR_TEXT_MUTED, 2);
+        log_y = after + 8.0f;
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_build_notice_drawn = notice != NULL;
+#endif
+
+    /* Output log box */
     float log_h = 100.0f;
     draw_rounded_fill(ren, card_x + 32.0f, log_y, card_w - 64.0f, log_h, 6.0f, (SDL_Color){ 14, 18, 22, 255 });
     draw_rounded_outline(ren, card_x + 32.0f, log_y, card_w - 64.0f, log_h, 6.0f, COLOR_CARD_BORDER);
