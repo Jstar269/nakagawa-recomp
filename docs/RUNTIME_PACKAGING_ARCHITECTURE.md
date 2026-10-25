@@ -317,6 +317,36 @@ public export and provenance tree. Publication policy remains default-deny for
 `cache/` paths; a cache artifact accidentally proposed for publication is
 rejected by the public-scope audit.
 
+### Shared compiled objects (#1306)
+
+Below the package entries, the compile phase shares objects between builds. Before
+Make compiles, the planner keys every object it plans from the compiler identity
+(driver hash and `gcc -v` report), the exact compile command with the build folder
+written as a placeholder (so the optimization level and every flag count), and the
+preprocessed source. A cached object with that key is copied into place, and the
+compile writes the object's dependency file as Make would, so a later header change
+still rebuilds it. An object that is compiled is stored only when its key, taken
+again after the build, has not changed. A key that cannot be taken, for a source
+whose header the build generates, is a miss, never a guess. The runtime therefore
+compiles once and serves every game, and a rebuild of an unchanged game compiles
+nothing; an object that embeds its build folder (`SR_BUILD_DIR`) keys per folder.
+
+* `<user data>/cache/objects/` holds runtime and game objects.
+  `NK_OBJECT_CACHE_MAX_BYTES` bounds it (default 2 GiB, least recently used first).
+  `NK_OBJECT_CACHE_DIR=0` turns reuse off for one build.
+* `<user data>/cache/shared-libraries/` holds the system libraries a disc carries.
+  Codegen writes a runtime-placed module that the build carries once to its own
+  `nk_lib_<fnv1a64>.c`, named by the module's bytes, with symbols `l<fnv>_<link>` and
+  `sr_l<fnv>_base` and nothing that names the game. Another game with the same module
+  compiles the identical file, and the build log names each library it reused or
+  compiled. Settings > BUILD TOOLS & CACHE turns this sharing off
+  (`build-package --no-shared-libraries`) and clears the folder. A module carried
+  twice in one build, or a stack-census build, keeps its indexed `m<k>` names inside
+  the game's chunks.
+
+Neither folder is shipped, uploaded or shared: both stay in the player's data
+folder like the package entries.
+
 ### Generated-code stage reuse (bring-up)
 
 `nk_cli.py bringup` generates each title's code once. Its codegen stage runs

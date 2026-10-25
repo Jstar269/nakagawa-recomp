@@ -42,6 +42,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -1329,6 +1330,49 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertEqual(self.player_boot_event_files(), boot_logs_before_refusal,
                          "a stale package must not create guest boot evidence")
         self.assertEqual(tracked_status(), before)
+
+    def test_builds_share_compiled_objects_through_the_data_folder(self):
+        """#1306: a rebuild compiles nothing, and another title compiles no runtime file."""
+        self.skip_if_toolchain_unavailable()
+        log_path = self.user_root / "logs" / f"build_{DISC_ID}.log"
+        timings = []
+
+        def build() -> tuple[int, int, list[str]]:
+            started = time.perf_counter()
+            built = self.run_build_action(self.user_root)
+            timings.append(time.perf_counter() - started)
+            self.assertEqual(built.returncode, 0, built.stdout[-4000:] + built.stderr[-4000:])
+            log = log_path.read_text(encoding="utf-8", errors="replace")
+            reuse = re.search(r"^OBJECT_CACHE: reused (\d+) of (\d+) objects$", log, re.M)
+            self.assertIsNotNone(reuse, log[-4000:])
+            compiled = re.search(r"^OBJECT_CACHE: compiling (.+)$", log, re.M)
+            return int(reuse.group(1)), int(reuse.group(2)), (
+                compiled.group(1).split() if compiled else []
+            )
+
+        reused, planned, compiled = build()
+        self.assertEqual(reused, 0)
+        self.assertGreater(planned, 1)
+        self.assertEqual(len(compiled), planned)
+        cache = package_cache.ObjectCache(package_cache.object_cache_root(self.user_root))
+        self.assertEqual(len(cache.entries()), planned)
+
+        # The same title again: every object comes from the cache.
+        reused, planned_again, compiled = build()
+        self.assertEqual((reused, compiled), (planned_again, []))
+
+        # A different executable stands in for a second title: only its generated
+        # chunks compile, and every runtime object is reused.
+        self._bind_fixed_address_main(LOW_FIXED_ADDRESS_BASE)
+        reused, planned_other, compiled = build()
+        self.assertTrue(compiled, "the second title's generated code must compile")
+        self.assertTrue(all("_recomp" in name for name in compiled), compiled)
+        self.assertEqual(reused + len(compiled), planned_other)
+        sys.stderr.write(
+            "OBJECT_CACHE_TIMINGS cold={:.1f}s rebuild={:.1f}s second_title={:.1f}s\n".format(
+                *timings
+            )
+        )
 
     def test_missing_prerequisites_fail_closed_with_documented_codes(self):
         self.skip_if_toolchain_unavailable()

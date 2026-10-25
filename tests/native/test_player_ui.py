@@ -1006,6 +1006,24 @@ class NativePlayerUiTests(unittest.TestCase):
                 self.assertEqual(frames[0]["view"], "online_settings")
                 self.assertEqual(frames[1]["view"], "settings")
 
+    def test_build_cache_page_leads_to_tool_removal_and_back(self) -> None:
+        """#1306: Settings > Build tools and cache holds the shared-library switch, the
+        clear button and tool removal; cancelling a removal returns to the page."""
+        for ui_mode in ("next", "legacy"):
+            with self.subTest(ui_mode=ui_mode):
+                run = self.run_player(
+                    "build-cache",
+                    ("KEY_TAB", "KEY_TAB", "KEY_RETURN", "KEY_ESCAPE", "KEY_ESCAPE"),
+                    ui_mode=ui_mode,
+                )
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                views = [frame["view"] for frame in frames]
+                visited = [view for i, view in enumerate(views) if i == 0 or views[i - 1] != view]
+                self.assertEqual(
+                    visited, ["build_cache", "confirm_remove_tools", "build_cache", "settings"], views
+                )
+
     def test_next_ui_library_card_shows_the_disc_icon_once_read(self) -> None:
         """The next UI reads ICON0.PNG from the disc in the background and shows
         it on the card; a disc that cannot be read keeps the placeholder."""
@@ -1197,12 +1215,14 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["view"], "prereq_about")
 
     def test_settings_removal_requires_confirmation_and_keeps_other_app_data(self) -> None:
-        events = ("KEY_TAB",) * 14 + ("KEY_RETURN", "KEY_RETURN")
+        # Settings > BUILD TOOLS & CACHE, then that page's REMOVE DOWNLOADED BUILD TOOLS.
+        events = ("KEY_TAB",) * 14 + ("KEY_RETURN", "KEY_TAB", "KEY_TAB", "KEY_RETURN", "KEY_RETURN")
         run = self.run_player("settings", events, downloaded_tool_payload=True)
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[14]["focus"], "14")
-        self.assertEqual(frames[15]["view"], "confirm_remove_tools")
+        self.assertEqual(frames[15]["view"], "build_cache")
+        self.assertEqual(frames[18]["view"], "confirm_remove_tools")
         self.assertEqual(frames[-1]["view"], "settings")
         self.assertFalse(run["downloaded_tool_marker_exists"])
 

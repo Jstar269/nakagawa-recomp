@@ -1835,7 +1835,7 @@ endif
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entries-env NK_CODEGEN_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entries-env NK_CODEGEN_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o" --invalidate-glob "$(BUILD_DIR)/nk_lib_*.o"
 
 # Re-checked on every invocation that needs a guest input (hence FORCE), but rewritten
 # only when an input's identity actually changed, so dependents do not rebuild spuriously.
@@ -1889,7 +1889,7 @@ RECOMP_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler
 endif
 RECOMP_PROFILE_STAMP := $(BUILD_DIR)/.recomp-profile-$(RECOMP_PROFILE_HASH)
 $(RECOMP_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o" --invalidate-glob "$(BUILD_DIR)/nk_lib_*.o"
 
 # Compile the chunked generated C code.
 
@@ -1898,6 +1898,13 @@ $(BUILD_DIR)/$(GAME_NAME)_recomp_%.o: $(BUILD_DIR)/$(GAME_NAME)_recomp_%.c src/r
 
 $(BUILD_DIR)/$(GAME_NAME)_recomp.o: $(BUILD_DIR)/$(GAME_NAME)_recomp.c src/rt/recomp.h $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h $(TRACE_STAMP) $(RECOMP_PROFILE_STAMP)
 	$(CC) $(RECOMP_FLAGS) -I$(BUILD_DIR) -Isrc/rt -DSR_SDL3VK $(DEPFLAGS) -c $< -o $@
+
+# A system library carried once is its own translation unit (tools/codegen.py
+# shared_library_source_text), named by the module's bytes and including only the
+# runtime header, so every game's build compiles the identical file and a package
+# build reuses its object (#1306).
+$(BUILD_DIR)/nk_lib_%.o: $(BUILD_DIR)/nk_lib_%.c src/rt/recomp.h $(TRACE_STAMP) $(RECOMP_PROFILE_STAMP)
+	$(CC) $(RECOMP_FLAGS) -Isrc/rt -DSR_SDL3VK $(DEPFLAGS) -c $< -o $@
 
 # Compile runtime sources.
 $(BUILD_DIR)/%.o: src/rt/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
@@ -2016,15 +2023,16 @@ player-ui-regressions: $(PLAYER_UI_TEST_EXE)
 	"$(PYTHON)" -m unittest discover -s tests/native -p "test_player_ui.py" -v
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
+LIBRARY_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/nk_lib_*.c))
 # The title link passes its objects through a GCC response file. A package build
 # under the player's user-data folder has long object paths, and the expanded list
 # overran the Windows command-line limit: the command was cut mid-path and ld
 # reported a missing ".../atrac3p" input. GCC reads backslashes in a response file
 # as escapes, so the paths are written with forward slashes; BUILD_DIR is already
 # refused when it contains whitespace, so each object stays one argument.
-LINK_OBJECTS = $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
+LINK_OBJECTS = $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(CHUNK_OBJS) $(LIBRARY_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
 LINK_OBJECTS_RSP = $(BUILD_DIR)/link-objects.rsp
-DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
+DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
 
 # ---- AOT <-> interpreter cosimulation gate ---------------------------------------
 #
@@ -2087,11 +2095,11 @@ cosim-selftest:
 # the comparison links with neither SDL3 nor Vulkan. Keeping it that way is
 # deliberate -- this gate should stay runnable anywhere the toolchain is,
 # not inherit the graphics stack's environment requirements.
-cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
 	$(CC) $(CFLAGS) $(COSIM_FP_CONVERT_PRELUDE_FLAG) -DSR_INSTRUCTION_TRACE \
 		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
 		-o $(BUILD_DIR)/cosim_selftest.exe \
-		$(COSIM_HARNESS) $(COSIM_FPU_REFERENCE_SRC) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
+		$(COSIM_HARNESS) $(COSIM_FPU_REFERENCE_SRC) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
 		$(COSIM_INTERP_SRC) src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c -lm
 	$(BUILD_DIR)/cosim_selftest.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin \
 		$(COSIM_BASE_ADDR) $(COSIM_TRACES)
@@ -2147,7 +2155,7 @@ project-fonts: $(PROJECT_FONT_SLOT_TARGETS)
 # Project PGFs are generated before compile but are not link inputs, so keep the
 # dependency order-only and preserve the link set below.
 compile: | project-fonts
-compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
+compile: shader-verify $(CHUNK_OBJS) $(LIBRARY_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
 	$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT) \
 		@$(LINK_OBJECTS_RSP) \

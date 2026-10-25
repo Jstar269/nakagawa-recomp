@@ -953,6 +953,8 @@ int player_app_focus_count(const PlayerApp *app) {
              * launcher sounds toggle (1), so the earlier stops keep their places.
              * The 8x preset is not offered (GPU scale caps at 4x). */
             return 18;
+        case VIEW_BUILD_CACHE:
+            return 4; /* share switch, clear cache, remove tools, back */
         case VIEW_ONLINE_SETTINGS:
             /* online switch (+ updates, news, reports while it is on), developer
                switch (+ open log while it is on), back */
@@ -1048,6 +1050,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->online_updates = true;
     settings->online_news = true;
     settings->online_reports = true;
+    settings->share_system_libraries = true;
     settings->developer_mode = false;
 }
 
@@ -1266,6 +1269,12 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         app->settings.reduce_motion = rm_val;
     }
 
+    NkJsonNode *share_node = nk_json_obj_get(root, "share_system_libraries");
+    bool share_val = true;
+    if (share_node && nk_json_get_bool(share_node, &share_val)) {
+        app->settings.share_system_libraries = share_val;
+    }
+
     NkJsonNode *sounds_node = nk_json_obj_get(root, "ui_sounds");
     bool sounds_val = false;
     if (sounds_node && nk_json_get_bool(sounds_node, &sounds_val)) {
@@ -1356,6 +1365,8 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
     fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
     fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
+    fprintf(f, "  \"share_system_libraries\": %s,\n",
+            app->settings.share_system_libraries ? "true" : "false");
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
 
@@ -1675,6 +1686,12 @@ void player_app_toggle_reduce_motion(PlayerApp *app) {
 void player_app_toggle_ui_sounds(PlayerApp *app) {
     if (!app) return;
     app->settings.ui_sounds = !app->settings.ui_sounds;
+    maybe_persist_settings(app);
+}
+
+void player_app_toggle_share_system_libraries(PlayerApp *app) {
+    if (!app) return;
+    app->settings.share_system_libraries = !app->settings.share_system_libraries;
     maybe_persist_settings(app);
 }
 
@@ -2886,6 +2903,7 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
     snprintf(log_dir, sizeof(log_dir), "%.490s%clogs", user_data_root, nk_platform_path_separator());
     nk_platform_mkdir_p(log_dir);
 
+    app->build_session.no_shared_libraries = !app->settings.share_system_libraries;
     NkResult res = package_builder_start(&app->build_session, python_path, cli_path, user_data_root, log_dir);
     if (res != NK_OK) {
         if (res == NK_ERROR_ALREADY_EXISTS) {
@@ -3113,6 +3131,26 @@ void player_app_remove_prerequisites(PlayerApp *app) {
                          "Downloaded Build Tools Could Not Be Removed",
                          message[0] ? message : "Close applications using the tools and retry.",
                          "Return to Settings", VIEW_SETTINGS);
+}
+
+void player_app_clear_shared_library_cache(PlayerApp *app) {
+    if (!app) return;
+    if (app->build_session.is_building) {
+        snprintf(app->settings_notice, sizeof(app->settings_notice),
+                 "A package is building. Clear the shared library cache when it finishes.");
+        return;
+    }
+    char data_root[NK_MAX_PATH];
+    char code[48];
+    if (!player_app_data_root(app, data_root, sizeof(data_root))) {
+        snprintf(app->settings_notice, sizeof(app->settings_notice),
+                 "The app-data folder is unavailable. Nothing was removed.");
+    } else if (package_builder_clear_shared_library_cache(data_root, code, sizeof(code),
+                                                          app->settings_notice,
+                                                          sizeof(app->settings_notice))) {
+        snprintf(app->settings_notice, sizeof(app->settings_notice),
+                 "Shared library cache cleared. The next build compiles its libraries again.");
+    }
 }
 
 void player_app_set_build_error(

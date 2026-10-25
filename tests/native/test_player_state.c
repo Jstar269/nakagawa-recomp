@@ -4353,6 +4353,9 @@ int main(int argc, char **argv) {
         s_app->settings.fullscreen = true;
         s_app->settings.launcher_fullscreen = true;
         s_app->settings.reduce_motion = true;
+        /* #1306: shared system libraries are on by default and persist when turned off. */
+        assert(s_app->settings.share_system_libraries == true);
+        player_app_toggle_share_system_libraries(s_app);
         s_app->settings.master_volume = 55;
         s_app->settings.launcher_window_maximized = true;
         s_app->settings.launcher_window_position_valid = true;
@@ -4373,6 +4376,7 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.fullscreen == true);
         assert(s_app2->settings.launcher_fullscreen == true);
         assert(s_app2->settings.reduce_motion == true);
+        assert(s_app2->settings.share_system_libraries == false);
         assert(s_app2->settings.master_volume == 55);
         assert(s_app2->settings.launcher_window_maximized == true);
         assert(s_app2->settings.launcher_window_position_valid == true);

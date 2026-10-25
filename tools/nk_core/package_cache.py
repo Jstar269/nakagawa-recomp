@@ -1630,3 +1630,281 @@ def evaluate_aot_stage(
         return _refused_stage(code, *(decision.reasons or ("cache key mismatch",)))
     artifacts = {record["path"]: record["sha256"] for record in document["artifacts"]}
     return AotStageDecision(True, AOT_STAGE_ACCEPTED, (), artifacts)
+
+
+# ---------------------------------------------------------------------------
+# Compiled-object cache
+#
+# A package build compiles the same runtime sources for every game, and the same
+# generated chunks again when a game is rebuilt. Each object is cached under a key
+# made of the compiler's identity, the exact compile command (with the build
+# directory spelled as a placeholder) and the preprocessed translation unit, so an
+# object is reused only when the compiler would see exactly the same input. The
+# optimization level is part of the command, so an -O0 object never stands in for
+# an -O2 one. The package build passes no -g, so an object carries no
+# build-directory path and a cached copy is the object the compiler would write.
+# The cache lives in the player's data folder only; nothing in it is shipped,
+# uploaded or shared.
+# ---------------------------------------------------------------------------
+
+OBJECT_CACHE_ROOT_PARTS = ("cache", "objects")
+OBJECT_CACHE_DIR_ENV = "NK_OBJECT_CACHE_DIR"
+# The system libraries a disc carries (tools/codegen.py nk_lib_*.c) are kept apart, so
+# the player's Settings can turn their sharing off and clear them on their own.
+SHARED_LIBRARY_CACHE_ROOT_PARTS = ("cache", "shared-libraries")
+SHARED_LIBRARY_CACHE_DIR_ENV = "NK_SHARED_LIBRARY_CACHE_DIR"
+OBJECT_CACHE_LIMIT_ENV = "NK_OBJECT_CACHE_MAX_BYTES"
+DEFAULT_OBJECT_CACHE_MAX_BYTES = 2 * 1024**3
+OBJECT_CACHE_KEY_EPOCH = "nakagawa-object-cache-v1"
+_OBJECT_CACHE_SHARD_RE = re.compile(r"[0-9a-f]{2}")
+_OBJECT_CACHE_ENTRY_RE = re.compile(r"[0-9a-f]{64}\.o")
+_BUILD_DIR_PLACEHOLDER = "<BUILD_DIR>"
+# Options whose value is the next argument.
+_SEPARATE_VALUE_OPTIONS = frozenset(
+    {"-o", "-MF", "-MT", "-MQ", "-include", "-imacros", "-I", "-D", "-U", "-x"}
+)
+_DEPENDENCY_OPTIONS = frozenset({"-M", "-MM", "-MD", "-MMD", "-MP", "-MG"})
+_DEPENDENCY_VALUE_OPTIONS = frozenset({"-MF", "-MT", "-MQ"})
+
+
+def object_cache_root(user_data_root: Path | str) -> Path:
+    root = Path(user_data_root).expanduser().resolve(strict=False)
+    return root.joinpath(*OBJECT_CACHE_ROOT_PARTS)
+
+
+def object_cache_limit(environment: Mapping[str, str] | None = None) -> int:
+    """The object cache's byte budget; ``NK_OBJECT_CACHE_MAX_BYTES`` overrides it."""
+    env = os.environ if environment is None else environment
+    raw = env.get(OBJECT_CACHE_LIMIT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_OBJECT_CACHE_MAX_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise PackageCacheError(f"{OBJECT_CACHE_LIMIT_ENV} must be a whole number of bytes")
+    return value
+
+
+@dataclass(frozen=True)
+class CompileCommand:
+    """One ``-c`` compile of a single C source, read from a ``make -n`` listing."""
+
+    line: str
+    argv: tuple[str, ...]
+    source: str
+    output: str
+
+
+def parse_compile_command(line: str) -> CompileCommand | None:
+    """Read a compile of one C source to one ``.o``; anything else is None.
+
+    A line that does not split cleanly, or is not exactly one source and one
+    object, is left to Make: the cache never guesses at a command. The line is
+    split as the POSIX shell Make runs it with would split it, so an escaped
+    quote such as ``-DSR_BUILD_DIR=\\"...\\"`` reaches the compiler as it would.
+    """
+    import shlex
+
+    try:
+        argv = shlex.split(line)
+    except ValueError:
+        return None
+    if len(argv) < 4 or "-c" not in argv:
+        return None
+    positionals: list[str] = []
+    outputs: list[str] = []
+    index = 1
+    while index < len(argv):
+        arg = argv[index]
+        if arg in _SEPARATE_VALUE_OPTIONS:
+            if index + 1 >= len(argv):
+                return None
+            if arg == "-o":
+                outputs.append(argv[index + 1])
+            index += 2
+            continue
+        if not arg.startswith("-"):
+            positionals.append(arg)
+        index += 1
+    if len(outputs) != 1 or not outputs[0].endswith(".o"):
+        return None
+    if len(positionals) != 1 or not positionals[0].endswith(".c"):
+        return None
+    return CompileCommand(line=line.strip(), argv=tuple(argv), source=positionals[0], output=outputs[0])
+
+
+def preprocess_command(command: CompileCommand) -> list[str]:
+    """The same compile as a preprocess-only run to standard output, without line markers.
+
+    When the compile names its dependency file (``-MF``), the preprocess run keeps the
+    dependency options and so writes that file too: an object taken from the cache then
+    has the same dependency record a compile would have left, and Make still rebuilds
+    it when one of its headers changes.
+    """
+    keep_dependencies = "-MF" in command.argv
+    argv: list[str] = []
+    index = 0
+    while index < len(command.argv):
+        arg = command.argv[index]
+        if arg == "-o" or (arg in _DEPENDENCY_VALUE_OPTIONS and not keep_dependencies):
+            index += 2
+            continue
+        if arg == "-c" or (arg in _DEPENDENCY_OPTIONS and not keep_dependencies):
+            index += 1
+            continue
+        if arg in _DEPENDENCY_VALUE_OPTIONS:
+            argv.extend(command.argv[index : index + 2])
+            index += 2
+            continue
+        argv.append(arg)
+        index += 1
+    return argv + ["-E", "-P"]
+
+
+def object_compiler_identity(
+    compiler: str, *, environment: Mapping[str, str] | None = None
+) -> str | None:
+    """The driver's hash plus its ``-v`` report (version, target and configuration)."""
+    env = dict(os.environ if environment is None else environment)
+    executable = shutil.which(compiler, path=env.get("PATH"))
+    if executable is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [executable, "-v"], env=env, capture_output=True, text=True, timeout=60, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return f"{Path(executable).name}:{sha256_file(Path(executable))}\n{completed.stderr.strip()}"
+
+
+def object_cache_key(
+    command: CompileCommand,
+    *,
+    compiler_identity_text: str,
+    build_dir: str,
+    preprocessed: bytes,
+) -> str:
+    """Key one object by compiler, exact command and preprocessed input."""
+    normalized = command.line
+    if build_dir:
+        normalized = normalized.replace(build_dir, _BUILD_DIR_PLACEHOLDER)
+    digest = hashlib.sha256()
+    for part in (OBJECT_CACHE_KEY_EPOCH, compiler_identity_text, normalized):
+        digest.update(part.encode("utf-8"))
+        digest.update(b"\0")
+    digest.update(preprocessed)
+    return digest.hexdigest()
+
+
+class ObjectCache:
+    """Objects stored as ``<root>/<key[:2]>/<key>.o``; reads and writes never fail a build."""
+
+    def __init__(self, root: Path | str):
+        self.root = Path(root)
+
+    def path_for(self, key: str) -> Path:
+        if not _is_cache_digest(key):
+            raise PackageCacheError("object cache key must be a SHA-256 digest")
+        return self.root / key[:2] / f"{key}.o"
+
+    def fetch(self, key: str, destination: Path | str) -> bool:
+        """Copy a cached object to ``destination``; False when there is none."""
+        cached = self.path_for(key)
+        if cached.is_symlink() or not cached.is_file():
+            return False
+        destination = Path(destination)
+        temporary = destination.with_name(destination.name + ".nkcache-tmp")
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(cached, temporary)
+            os.replace(temporary, destination)
+            os.utime(cached)  # the most recently used survive pruning
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            return False
+        return True
+
+    def store(self, key: str, source: Path | str) -> bool:
+        """Copy a freshly compiled object into the cache."""
+        cached = self.path_for(key)
+        source = Path(source)
+        if source.is_symlink() or not source.is_file() or source.stat().st_size == 0:
+            return False
+        temporary: str | None = None
+        try:
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            handle, temporary = tempfile.mkstemp(prefix=".store-", suffix=".tmp", dir=cached.parent)
+            os.close(handle)
+            shutil.copyfile(source, temporary)
+            os.replace(temporary, cached)
+        except OSError:
+            if temporary is not None:
+                Path(temporary).unlink(missing_ok=True)
+            return False
+        return True
+
+    def entries(self) -> list[Path]:
+        """Every object the cache wrote; nothing else under the root is ever touched."""
+        if self.root.is_symlink() or not self.root.is_dir():
+            return []
+        found: list[Path] = []
+        for shard in self.root.iterdir():
+            if shard.is_symlink() or not shard.is_dir() or not _OBJECT_CACHE_SHARD_RE.fullmatch(shard.name):
+                continue
+            for entry in shard.iterdir():
+                if (
+                    _OBJECT_CACHE_ENTRY_RE.fullmatch(entry.name)
+                    and entry.name.startswith(shard.name)
+                    and entry.is_file()
+                    and not entry.is_symlink()
+                ):
+                    found.append(entry)
+        return found
+
+    def size(self) -> int:
+        total = 0
+        for entry in self.entries():
+            try:
+                total += entry.stat().st_size
+            except OSError:
+                continue
+        return total
+
+    def prune(self, max_bytes: int) -> int:
+        """Remove the least recently used objects until the cache fits; return how many."""
+        sized: list[tuple[int, int, Path]] = []
+        for entry in self.entries():
+            try:
+                stat = entry.stat()
+            except OSError:
+                continue
+            sized.append((stat.st_mtime_ns, stat.st_size, entry))
+        sized.sort(key=lambda item: item[0], reverse=True)
+        kept = 0
+        removed = 0
+        for _mtime, size, entry in sized:
+            if kept + size <= max_bytes:
+                kept += size
+                continue
+            try:
+                entry.unlink()
+                removed += 1
+            except OSError:
+                kept += size
+        return removed
+
+    def clear(self) -> int:
+        """Remove every cached object; return how many."""
+        removed = 0
+        for entry in self.entries():
+            try:
+                entry.unlink()
+                removed += 1
+            except OSError:
+                continue
+        return removed
