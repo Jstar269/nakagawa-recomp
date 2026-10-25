@@ -2514,7 +2514,7 @@ class NativePlayerUiTests(unittest.TestCase):
         ticks = [int(frame["ticks_ms"]) for frame in frames[first:last + 2]]
         self.assertGreaterEqual(ticks[-1] - ticks[0], 1400, "the start took its 1.5 s")
         self.assertGreaterEqual(len(pending), 10, "the launcher drew through the start")
-        gaps = [later - earlier for earlier, later in zip(ticks, ticks[1:])]
+        gaps = [later - earlier for earlier, later in zip(ticks, ticks[1:], strict=False)]
         self.assertLess(max(gaps), 500, f"a frame took {max(gaps)} ms during the start")
         # The synthetic package has no staged disc and no real program, so the
         # start ends with the launch's own card, as a synchronous launch did.
