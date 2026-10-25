@@ -120,7 +120,8 @@ static const PlayerUiPrereqItem k_prereqs[] = {
 };
 
 typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CONSENT,
-               FLOW_PROGRESS, FLOW_ERROR, FLOW_WIZ_WELCOME, FLOW_WIZ_CHOOSE, FLOW_WIZ_CHOSEN,
+               FLOW_PROGRESS, FLOW_ERROR, FLOW_WIZ_WELCOME, FLOW_WIZ_CHOOSE,
+               FLOW_WIZ_BAD_DISC, FLOW_WIZ_CHOSEN,
                FLOW_WIZ_COPYING, FLOW_WIZ_VERIFY, FLOW_WIZ_EXPERIMENTAL, FLOW_WIZ_FONTS,
                FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_BLOCKED,
                FLOW_WIZ_COPY_FAILED, FLOW_ERROR_STOP, FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
@@ -334,6 +335,10 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
     switch (which) {
         case FLOW_WIZ_CHOOSE:
             wizard.step = 2;
+            break;
+        case FLOW_WIZ_BAD_DISC:
+            wizard.step = 2;
+            wizard.status_message = "This file isn't a PSP disc image.";
             break;
         case FLOW_WIZ_CHOSEN:
             wizard.step = 2;
@@ -1161,6 +1166,10 @@ static void test_plain_cards(void) {
               strstr(dump, "EBOOT.BIN is encrypted") != NULL &&
               strstr(dump, "can't be played") != NULL,
           "a disc this version cannot use says why, with no Add to library");
+    CHECK(dump_flow_case(FLOW_WIZ_BAD_DISC, dump, sizeof(dump)) &&
+              strstr(dump, "This file isn't a PSP disc image.") != NULL &&
+              strstr(dump, "\"CHOOSE A DISC IMAGE\"") != NULL,
+          "a rejected file keeps its plain reason and next step visible in the wizard");
     CHECK(dump_flow_case(FLOW_WIZ_COPY_FAILED, dump, sizeof(dump)) &&
               strstr(dump, "Synthetic reason") != NULL &&
               strstr(dump, "listed in the native title catalog") == NULL,
