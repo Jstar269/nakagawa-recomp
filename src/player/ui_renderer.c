@@ -4674,40 +4674,31 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             if (!app->wizard.is_extracting) {
                 for (size_t i = 0; i < app->wizard.preflight.count; i++) {
                     const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
-                    const char *status_text = "UNKNOWN";
                     SDL_Color status_color = COLOR_TEXT_DIM;
                     switch (check->status) {
                         case PREFLIGHT_OK:
-                            status_text = "OK";
                             status_color = COLOR_EMERALD;
                             break;
                         case PREFLIGHT_MISSING:
-                            status_text = "MISSING";
                             status_color = COLOR_AMBER;
                             break;
                         case PREFLIGHT_INCOMPATIBLE:
-                            status_text = "INCOMPATIBLE";
                             status_color = COLOR_RED;
                             break;
                         case PREFLIGHT_STALE:
-                            status_text = "STALE";
                             status_color = COLOR_AMBER;
                             break;
                         case PREFLIGHT_UNSUPPORTED:
-                            status_text = "UNSUPPORTED";
                             status_color = COLOR_RED;
                             break;
                         case PREFLIGHT_IN_PROGRESS:
-                            status_text = "IN PROGRESS";
                             status_color = COLOR_AMBER;
                             break;
                         case PREFLIGHT_INVALID:
-                            status_text = "INVALID";
                             status_color = COLOR_RED;
                             break;
                     }
                     /* Plain words, no raw codes (#1280). */
-                    (void)status_text;
                     float row_y = panel_y + 100.0f + (float)i * 25.0f;
                     draw_text_ellipsized(ren, card_x + 48.0f, row_y,
                                          player_preflight_status_word(check), 0.8f, 80.0f,
