@@ -685,6 +685,9 @@ for that same session. The record has schema 1, a non-negative `boot_number`,
 `qualification_result` equal to `QUALIFIED`, a UTC `qualified_at_utc`, the
 matching `session_id`, and a `watchdog_state` with the same boot number and
 `healthy: true`, a boolean `armed`, and a non-negative integer `remaining_s`.
+Here `healthy` means the watchdog is running without disabled, crashed,
+exhausted, or low-battery flags. The separate `healthy_uptime_reached` field
+preserves the watchdog's 600-second boot-loop-counter milestone.
 Its qualification time must be no earlier than the lock's
 `acquired_utc`, no more than 30 minutes old, and no more than five seconds in
 the future. Every mode that touches the PSP goes through the same lock gate.
