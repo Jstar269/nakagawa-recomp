@@ -2498,6 +2498,247 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIn(frames[-1]["error"], ("RUNTIME_PACKAGE_NOT_READY",), run["stdout"])
         self.assertNotEqual(frames[-1]["error_retry"], "Restart_game")
 
+    # Enum values of PlayerUiPackageState (src/player/ui/player_ui_nk.h).
+    PACKAGE_READY = "1"
+    PACKAGE_STARTING = "5"
+    PACKAGE_RUNNING = "6"
+
+    # Open the ready title, then Tab past the three top-bar tabs to its PLAY.
+    PLAY_READY_TITLE = ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", "KEY_TAB",
+                        "WAIT_MS=100", "KEY_TAB", "WAIT_MS=100", "KEY_TAB", "WAIT_MS=100")
+
+    def test_play_keeps_drawing_through_a_slow_start(self) -> None:
+        """#1298: PLAY answers at once and the launcher keeps drawing while the game starts.
+
+        NK_UI_TEST_SLOW_START_MS makes the launch take 1.5 s before its package
+        check, standing in for a retail package whose check hashes several
+        hundred MB. Failing-before: the launch ran on the UI thread, so the
+        frames stopped for the whole start and PLAY showed nothing until it
+        ended (about 20 s for the owner's Hot Shots Tennis package)."""
+        run = self.run_player(
+            "ready", (*self.PLAY_READY_TITLE, "KEY_RETURN", "WAIT_MS=2500"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            env_extra={"NK_UI_TEST_SLOW_START_MS": "1500"},
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        before = [frame for frame in frames if frame["next_primary_label"] == "PLAY"]
+        self.assertTrue(before, "the synthetic ready package offers PLAY")
+        pending = [frame for frame in frames if frame["launch_pending"] == "1"]
+        self.assertGreater(len(pending), 1, run["stdout"])
+        # The frame that took the press drew the title before the launch began;
+        # every later one shows it starting.
+        for frame in pending[1:]:
+            self.assertEqual(frame["next_primary_label"], "disabled:STARTING...")
+            self.assertEqual(frame["next_package"], self.PACKAGE_STARTING)
+        first = frames.index(pending[0])
+        last = frames.index(pending[-1])
+        ticks = [int(frame["ticks_ms"]) for frame in frames[first:last + 2]]
+        self.assertGreaterEqual(ticks[-1] - ticks[0], 1400, "the start took its 1.5 s")
+        self.assertGreaterEqual(len(pending), 10, "the launcher drew through the start")
+        gaps = [later - earlier for earlier, later in zip(ticks, ticks[1:], strict=False)]
+        self.assertLess(max(gaps), 500, f"a frame took {max(gaps)} ms during the start")
+        # The synthetic package has no staged disc and no real program, so the
+        # start ends with the launch's own card, as a synchronous launch did.
+        outcome = frames[-1]
+        self.assertEqual(outcome["launch_pending"], "0")
+        self.assertIn(outcome["error"], ("RUNTIME_NOT_FOUND", "PROCESS_SPAWN_FAILED",
+                                         "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT"),
+                      run["stdout"])
+
+    def title_frame_with_a_game_running(self, running: str) -> dict[str, str]:
+        """The open title's last frame while NK_UI_TEST_GAME_RUNNING=`running`.
+
+        A running game makes quitting ask first, so the script closes twice
+        with the confirmation unavailable (as the close-confirmation test does)."""
+        run = self.run_player(
+            "ready", ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", "CLOSE", "CLOSE"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            env_extra={"NK_UI_TEST_GAME_RUNNING": running,
+                       "NK_UI_TEST_MESSAGEBOX_FAIL": "1"},
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        titled = [frame for frame in frames if frame["next_package"] != "-1"]
+        self.assertTrue(titled, run["stdout"])
+        return titled[-1]
+
+    # The "library" view's tiles at 1280x720: TEST00005, then TEST00006.
+    FIRST_TILE = "MOUSE_MOVE=175,260"
+    SECOND_TILE = "MOUSE_MOVE=485,260"
+
+    def opened_titles(self, frames: list[dict[str, str]]) -> list[str]:
+        """The disc of each title page the run opened, in order."""
+        opened: list[str] = []
+        previous = None
+        for frame in frames:
+            route = frame["next_route"]
+            if route == "2" and previous != "2":
+                opened.append(frame["selected_disc"])
+            elif route == "2" and opened and frame["selected_disc"] != opened[-1]:
+                opened.append(frame["selected_disc"])
+            previous = route
+        return opened
+
+    def test_clicking_a_tile_opens_that_tile(self) -> None:
+        """#1301: a click opens the tile under the pointer, not the focused one.
+
+        Failing-before: every frame without an action handed the launcher a
+        NONE action whose title_index was 0, and the launcher selected that
+        index, so each title page it opened showed the first game."""
+        run = self.run_player(
+            "library",
+            ("WAIT_MS=300", self.SECOND_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300"),
+            ui_mode="next", wait_background=True,
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["selected_disc"], "TEST00005", "focus starts on tile 1")
+        self.assertEqual(self.opened_titles(frames), ["TEST00006"], run["stdout"])
+        self.assertEqual(frames[-1]["next_route"], "2")
+        self.assertEqual(frames[-1]["selected_disc"], "TEST00006")
+
+    def test_clicking_a_tile_after_a_build_opens_that_tile(self) -> None:
+        """#1301: after a build, with the built title focused, a click opens the clicked tile."""
+        run = self.run_player(
+            "library",
+            ("WAIT_MS=300", "START_SYNTHETIC_BUILD=2", "WAIT_MS=2200",
+             # Back in the library, focus the built title, as the owner had it.
+             "KEY_RIGHT", "WAIT_MS=200",
+             self.FIRST_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300",
+             "KEY_ESCAPE", "WAIT_MS=300",
+             self.SECOND_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300"),
+            ui_mode="next", wait_background=True, post_build_ready=True,
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        self.assertIn("synthetic_build result=PASS index=1 disc=TEST00006", str(run["stdout"]))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        focused_built = [frame for frame in frames
+                         if frame["view"] == "ready_library" and frame["next_route"] == "1"
+                         and frame["selected_disc"] == "TEST00006"]
+        self.assertTrue(focused_built, "the built title had focus before the click")
+        self.assertEqual(self.opened_titles(frames), ["TEST00005", "TEST00006"], run["stdout"])
+
+    # Control IDs from src/player/ui/player_ui_nk.h, as the frame records print them.
+    TITLE_REMOVE = str(0x2004)
+    REMOVE_CANCEL = str(0x4401)
+    REMOVE_CONFIRM = str(0x4402)
+    ROUTE_REMOVE = "4"
+
+    def library_item(self, index: int) -> str:
+        return str(0x1100 + index)
+
+    LIBRARY_ADD = str(0x1002)
+
+    # Remove from library is the title page's lowest control, so Down presses
+    # end on it whichever action-row buttons are enabled.
+    DOWN_TO_REMOVE = ("KEY_DOWN", "WAIT_MS=80") * 4
+
+    def remove_run(self, events: tuple[str, ...]) -> list[dict[str, str]]:
+        run = self.run_player("library", events, ui_mode="next", wait_background=True)
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        return frames
+
+    def test_remove_from_library_asks_then_focuses_the_next_tile(self) -> None:
+        """#1304: Remove from library asks first, Cancel keeps the game, and Remove
+        returns to the library with the next tile focused."""
+        open_first = ("WAIT_MS=300", self.FIRST_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300")
+        frames = self.remove_run((*open_first, *self.DOWN_TO_REMOVE, "KEY_RETURN", "WAIT_MS=200",
+                                  "KEY_ESCAPE", "WAIT_MS=200"))
+        dialog = [frame for frame in frames if frame["next_route"] == self.ROUTE_REMOVE]
+        self.assertGreater(len(dialog), 1, "Remove from library opens the dialog")
+        # The title frame that took the press pushed the route; the dialog
+        # draws from the next frame on, with Cancel focused.
+        self.assertEqual(dialog[1]["next_focus"], self.REMOVE_CANCEL, "Cancel has the first focus")
+        self.assertEqual(frames[-1]["next_route"], "2", "Back closes the dialog onto the title page")
+        self.assertEqual(frames[-1]["next_focus"], self.TITLE_REMOVE)
+        self.assertEqual(frames[-1]["games"], frames[0]["games"], "Cancel removes nothing")
+
+        frames = self.remove_run((*open_first, *self.DOWN_TO_REMOVE, "KEY_RETURN", "WAIT_MS=200",
+                                  "KEY_RIGHT", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=400"))
+        confirm = [frame for frame in frames if frame["next_focus"] == self.REMOVE_CONFIRM]
+        self.assertTrue(confirm, "the dialog's Remove button takes focus")
+        last = frames[-1]
+        self.assertEqual(int(last["games"]), int(frames[0]["games"]) - 1, "the title left")
+        self.assertEqual(last["next_route"], "1", "Remove returns to the library")
+        self.assertEqual(last["next_at_root"], "1")
+        # TEST00005 was the first tile, so TEST00006 now holds its place.
+        self.assertEqual(last["next_focus"], self.library_item(0))
+        self.assertEqual(last["selected_disc"], "TEST00006")
+
+    def test_removing_the_last_tile_focuses_the_add_card(self) -> None:
+        """#1304: with no tile after the removed one, focus goes to the add card."""
+        frames = self.remove_run(("WAIT_MS=300", self.SECOND_TILE, "MOUSE_DOWN", "MOUSE_UP",
+                                  "WAIT_MS=300", *self.DOWN_TO_REMOVE, "KEY_RETURN",
+                                  "WAIT_MS=200", "KEY_RIGHT", "WAIT_MS=100", "KEY_RETURN",
+                                  "WAIT_MS=400"))
+        last = frames[-1]
+        self.assertEqual(int(last["games"]), int(frames[0]["games"]) - 1, "the title left")
+        self.assertEqual(last["next_route"], "1")
+        self.assertEqual(last["next_focus"], self.LIBRARY_ADD)
+        self.assertEqual(last["selected_disc"], "TEST00005")
+
+    def test_compatibility_records_carry_a_player_tier(self) -> None:
+        """#1297: every title record maps to a player tier; Hot Shots Tennis is Playable.
+
+        The category -> tier table itself is pinned against docs/COMPATIBILITY.md
+        by test_player_screens.c; this checks the per-title records the
+        launcher really uses."""
+        run = self.run_player(
+            "library", ("WAIT_MS=100",),
+            env_extra={"NK_UI_TEST_REPORT_COMPATIBILITY": "1"},
+        )
+        records = {}
+        for line in str(run["stdout"]).splitlines():
+            match = re.match(
+                r"\[PLAYER_UI_TEST\] compatibility key=(\S+) category_tier=(.+?) tier=(.+)$",
+                line,
+            )
+            if match:
+                records[match.group(1)] = (match.group(2), match.group(3))
+        self.assertIn("UCUS98701", records, run["stdout"])
+        tiers = {"Perfect", "Playable", "In-game", "Menu", "Title screen", "Won't boot"}
+        for key, (category_tier, tier) in records.items():
+            with self.subTest(key=key):
+                self.assertIn(category_tier, tiers, "the record's docs category has a tier")
+                self.assertIn(tier, tiers)
+        self.assertEqual(records["UCUS98701"], ("Title screen", "Playable"))
+        self.assertEqual(records["UCUS-98701"], ("Title screen", "Playable"))
+        self.assertEqual(records["PAC-MAN_Championship_Edition"][1], "In-game")
+        self.assertEqual(records["pspdev-phase5-v1"][1], "Won't boot")
+
+    def test_title_page_while_the_game_runs(self) -> None:
+        """#1297: the running game's title page follows the package, not the STOP GAME action.
+
+        The drawn texts are checked by test_player_screens.c; this pins the
+        state the launcher hands the screen."""
+        cases = {
+            "TEST00006": ("STOP_GAME", self.PACKAGE_RUNNING),
+            "starting:TEST00006": ("STOP_GAME", self.PACKAGE_STARTING),
+        }
+        for running, (label, state) in cases.items():
+            with self.subTest(running=running):
+                last = self.title_frame_with_a_game_running(running)
+                self.assertEqual(last["selected_disc"], "TEST00006")
+                self.assertEqual(last["selected_runtime"], "1", "the package is ready")
+                self.assertEqual(last["next_primary_label"], label)
+                self.assertEqual(last["next_package"], state)
+                self.assertNotIn("boundary", last["next_expect"])
+        # Another game running leaves this title's package card alone.
+        other = self.title_frame_with_a_game_running("TEST00001")
+        self.assertEqual(other["next_package"], self.PACKAGE_READY)
+
     def test_preflight_refusal_is_not_a_build_failure(self) -> None:
         """#1286: a build refused at preflight never started, so its card is not
         "Package Build Failed" and its badge is not a code."""
