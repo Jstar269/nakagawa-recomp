@@ -2746,6 +2746,7 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
     bool has_semantic_stop = player_read_semantic_stop(
         app->boot_event_file_path, stopped_boundary, sizeof(stopped_boundary),
         &stopped_issue);
+    bool runtime_failed = elapsed_ms < 500 || code != 0 || has_semantic_stop;
     /* Restart game on the card relaunches this one. */
     char stopped_disc_id[sizeof(app->last_error.subject_disc_id)];
     snprintf(stopped_disc_id, sizeof(stopped_disc_id), "%s",
@@ -2762,8 +2763,8 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
     player_dev_log_add(app, "runtime", "game exited with code %d after %llu ms", code,
                        (unsigned long long)elapsed_ms);
     if (app->boot_event_file_path[0]) {
-        /* The runtime's boot events: the phases reached, the named stop
-           boundary and missing imports. At most 48 lines. */
+        /* Runtime stdout/stderr share this session log with boot events. At
+           most 48 lines are copied into the in-memory developer log. */
         FILE *events = nk_fopen_utf8(app->boot_event_file_path, "rb");
         char event_line[PLAYER_DEV_LOG_LINE_MAX];
         int shown = 0;
@@ -2778,7 +2779,7 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
         }
         if (events) fclose(events);
     }
-    if (app->boot_event_file_path[0] && !has_semantic_stop) {
+    if (app->boot_event_file_path[0] && !runtime_failed) {
         remove(app->boot_event_file_path);
     }
     printf("[PLAYER] Game process exited with code %d (ran for %llu ms)\n", code,
@@ -2790,10 +2791,12 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
                                        app->boot_event_file_path);
     } else if (elapsed_ms < 500) {
         player_app_set_game_stop_error(app, "RUNTIME_PREMATURE_EXIT", NULL, 0, code,
-                                       elapsed_ms, stopped_disc_id, NULL);
+                                       elapsed_ms, stopped_disc_id,
+                                       app->boot_event_file_path);
     } else if (code != 0) {
         player_app_set_game_stop_error(app, "RUNTIME_ERROR_EXIT", NULL, 0, code, elapsed_ms,
-                                       stopped_disc_id, NULL);
+                                       stopped_disc_id,
+                                       app->boot_event_file_path);
     }
     return true;
 }

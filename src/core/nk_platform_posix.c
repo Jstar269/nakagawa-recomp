@@ -317,19 +317,35 @@ bool nk_platform_spawn_process(
     const char * const *argv,
     const char * const *envp,
     const char *working_directory,
+    const char *output_log_path,
     NkProcessHandle *out_process
 ) {
     if (!executable_path || !out_process) return false;
     memset(out_process, 0, sizeof(*out_process));
 
+    int output_fd = -1;
+    if (output_log_path && output_log_path[0]) {
+        output_fd = open(output_log_path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+        if (output_fd < 0) return false;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
+        if (output_fd >= 0) close(output_fd);
         return false;
     }
 
     if (pid == 0) {
         /* Child process: establish own process group to allow tree-wide signals */
         (void)setpgid(0, 0);
+
+        if (output_fd >= 0) {
+            if (dup2(output_fd, STDOUT_FILENO) < 0 ||
+                dup2(output_fd, STDERR_FILENO) < 0) {
+                _exit(127);
+            }
+            close(output_fd);
+        }
 
         if (working_directory && *working_directory) {
             if (chdir(working_directory) != 0) {
@@ -357,6 +373,8 @@ bool nk_platform_spawn_process(
         execv(executable_path, exec_argv);
         _exit(127);
     }
+
+    if (output_fd >= 0) close(output_fd);
 
     /* Parent process: close race by setting child's process group */
     (void)setpgid(pid, pid);

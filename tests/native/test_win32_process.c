@@ -30,6 +30,44 @@ int main(int argc, char *argv[]) {
     /* Verify helper executable exists */
     assert(nk_platform_file_exists(helper_exe));
 
+    /* The console-subsystem helper must report no console. This check fails
+       before the process helper uses CREATE_NO_WINDOW on a desktop runner. */
+    const char *console_probe_path = SR_SELFTEST_BUILD_ROOT "\\process_console_probe.txt";
+    remove(console_probe_path);
+    const char *console_probe_argv[] = {
+        helper_exe, "--write-stdio-probe", console_probe_path, NULL
+    };
+    NkProcessHandle console_probe_process;
+    assert(nk_platform_spawn_process(helper_exe, console_probe_argv, NULL, NULL,
+                                     NULL, &console_probe_process));
+    assert(nk_platform_wait_process(&console_probe_process, 5000) == 0);
+    nk_platform_close_process(&console_probe_process);
+    FILE *console_probe = fopen(console_probe_path, "rb");
+    assert(console_probe != NULL);
+    char console_probe_line[64];
+    assert(fgets(console_probe_line, sizeof(console_probe_line), console_probe) != NULL);
+    fclose(console_probe);
+    remove(console_probe_path);
+    assert(strcmp(console_probe_line, "CONSOLE_WINDOW=NULL\n") == 0);
+
+    const char *stdio_log_path = SR_SELFTEST_BUILD_ROOT "\\process_stdio.log";
+    remove(stdio_log_path);
+    NkProcessHandle logged_process;
+    assert(nk_platform_spawn_process(helper_exe, console_probe_argv, NULL, NULL,
+                                     stdio_log_path, &logged_process));
+    assert(nk_platform_wait_process(&logged_process, 5000) == 0);
+    nk_platform_close_process(&logged_process);
+    FILE *stdio_log = fopen(stdio_log_path, "rb");
+    assert(stdio_log != NULL);
+    char stdio_output[1024];
+    size_t stdio_size = fread(stdio_output, 1, sizeof(stdio_output) - 1, stdio_log);
+    fclose(stdio_log);
+    stdio_output[stdio_size] = '\0';
+    assert(strstr(stdio_output, "CONSOLE_WINDOW=NULL") != NULL);
+    assert(strstr(stdio_output, "PROCESS_STDOUT_MARKER") != NULL);
+    assert(strstr(stdio_output, "PROCESS_STDERR_MARKER") != NULL);
+    remove(stdio_log_path);
+
     const char *out_file = SR_SELFTEST_BUILD_ROOT "\\argv_echo_out.txt";
     /* Sized for an absolute BUILD_ROOT: the scratch path is far longer than the default. */
     char out_arg[1024];
@@ -64,6 +102,7 @@ int main(int argc, char *argv[]) {
         helper_exe,
         test_argv,
         test_env,
+        NULL,
         NULL,
         &proc
     );
@@ -136,9 +175,9 @@ int main(int argc, char *argv[]) {
     const char *bad_env[] = {bad_env_item, NULL};
     const char *quiet_argv[] = {helper_exe, out_arg, NULL};
     NkProcessHandle refused;
-    assert(!nk_platform_spawn_process(helper_exe, quiet_argv, NULL, bad_utf8, &refused));
+    assert(!nk_platform_spawn_process(helper_exe, quiet_argv, NULL, bad_utf8, NULL, &refused));
     assert(!refused.is_active);
-    assert(!nk_platform_spawn_process(helper_exe, quiet_argv, bad_env, NULL, &refused));
+    assert(!nk_platform_spawn_process(helper_exe, quiet_argv, bad_env, NULL, NULL, &refused));
     assert(!refused.is_active);
     printf("[PROCESS_TEST] Invalid UTF-8 working directory and environment refused.\n");
 
@@ -197,6 +236,7 @@ int main(int argc, char *argv[]) {
     bool tree_ok = nk_platform_spawn_process(
         helper_exe,
         tree_argv,
+        NULL,
         NULL,
         NULL,
         &tree_proc

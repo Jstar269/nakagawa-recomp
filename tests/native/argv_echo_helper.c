@@ -19,6 +19,23 @@
 
 int main(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--write-stdio-probe") == 0 && i + 1 < argc) {
+            FILE *probe = fopen(argv[i + 1], "wb");
+            if (!probe) return 3;
+#if defined(_WIN32) || defined(_WIN64)
+            const char *console_status = GetConsoleWindow() ? "PRESENT" : "NULL";
+#else
+            const char *console_status = "UNAVAILABLE";
+#endif
+            fprintf(probe, "CONSOLE_WINDOW=%s\n", console_status);
+            fclose(probe);
+            printf("CONSOLE_WINDOW=%s\n", console_status);
+            puts("PROCESS_STDOUT_MARKER");
+            fputs("PROCESS_STDERR_MARKER\n", stderr);
+            fflush(stdout);
+            fflush(stderr);
+            return 0;
+        }
         if (strcmp(argv[i], "--sleep-ms") == 0 && i + 1 < argc) {
             int ms = atoi(argv[i + 1]);
 #if defined(_WIN32) || defined(_WIN64)
