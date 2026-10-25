@@ -1807,6 +1807,148 @@ static void poll_player_package_build_to_terminal(PlayerApp *app) {
     assert(!app->build_session.is_building);
 }
 
+/* #1282, #1286, #1280: the cards say what happened in plain words. Codes and
+   raw boundaries go to the details, the developer log and the copied report,
+   never the badge or the headline. */
+static void test_error_cards_are_plain(void) {
+    /* The reason table, one place for every stop boundary. */
+    assert(strcmp(player_runtime_stop_feature("unsupported-import-scenetadhocinit"),
+                  "ad hoc wireless play") == 0);
+    assert(strcmp(player_runtime_stop_feature("unsupported-import-scenetinit"),
+                  "online features") == 0);
+    assert(strcmp(player_runtime_stop_feature("unsupported-import-scehttpinit"),
+                  "online features") == 0);
+    assert(strcmp(player_runtime_stop_feature("unsupported-import-sceatracgetsecondbufferinfo"),
+                  "a sound feature") == 0);
+    assert(strcmp(player_runtime_stop_feature("unsupported-import-scesascore"),
+                  "a sound feature") == 0);
+    assert(strcmp(player_runtime_stop_feature("unsupported-import-scempegcreate"),
+                  "video playback") == 0);
+    assert(strcmp(player_runtime_stop_feature("unsupported-import-scepsmfgetnumberofstreams"),
+                  "video playback") == 0);
+    assert(strcmp(player_runtime_stop_feature("unsupported-import-sceutilitysavedatainitstart"),
+                  "a system dialog") == 0);
+    assert(strcmp(player_runtime_stop_feature("unsupported-interpreter-form"),
+                  "a processor feature") == 0);
+    assert(strcmp(player_runtime_stop_feature("host-fiber-stack-exhausted"),
+                  "a processor feature") == 0);
+    assert(strcmp(player_runtime_stop_feature("unsupported-import-scekernelfoo"),
+                  "a system feature") == 0);
+    assert(strcmp(player_runtime_stop_feature("some-new-boundary"), "a system feature") == 0);
+    assert(strcmp(player_runtime_stop_feature(NULL), "a system feature") == 0);
+
+    assert(strcmp(player_plain_reason("[STAGE_BUSY] Let that finish."), "Let that finish.") == 0);
+    assert(strcmp(player_plain_reason("ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted."),
+                  "EBOOT.BIN is encrypted.") == 0);
+    assert(strcmp(player_plain_reason("EBOOT.BIN: plain text"), "EBOOT.BIN: plain text") == 0);
+    assert(strcmp(player_plain_reason("OK: short"), "OK: short") == 0);
+
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    nk_library_init(&app->library);
+    snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "TEST00042");
+    snprintf(app->games[0].title_name, sizeof(app->games[0].title_name), "Plain Card Fixture");
+    app->game_count = 1;
+
+    /* An unknown code gets a plain badge, never the code. */
+    player_app_set_error(app, "SOME_INTERNAL_CODE", "Something Went Wrong", "Plain words.",
+                         "Return to Library", VIEW_LIBRARY);
+    assert(strcmp(player_error_badge(&app->last_error), "Problem") == 0);
+    assert(player_error_retry_label(&app->last_error) == NULL);
+    assert(!player_app_retry_from_error(app));
+
+    /* The stop card and Copy details. */
+    player_dev_log_add(app, "runtime",
+                       "BOOT_EVENT phase=boot reason=entry");
+    player_dev_log_add(app, "runtime",
+                       "BOOT_EVENT phase=stop reason=semantic-boundary "
+                       "boundary=unsupported-import-scenetadhocinit issue=308");
+    player_app_set_game_stop_error(app, "RUNTIME_SEMANTIC_BOUNDARY",
+                                   "unsupported-import-scenetadhocinit", 308u, 9, 9000u,
+                                   "TEST00042", "C:/logs/boot_TEST00042.log");
+    assert(strcmp(app->last_error.title, "Game Stopped Early") == 0);
+    assert(strcmp(player_error_badge(&app->last_error), "Game stopped") == 0);
+    assert(strstr(app->last_error.message, "ad hoc wireless play") != NULL);
+    assert(strstr(app->last_error.message, "unsupported-") == NULL);
+    assert(strstr(app->last_error.boundary_text,
+                  "unsupported-import-scenetadhocinit") != NULL);
+    assert(strcmp(player_error_retry_label(&app->last_error), "Restart game") == 0);
+    char report[PLAYER_ERROR_DETAILS_MAX + 4096];
+    assert(player_app_format_error_report(app, "v0.0.1", report, sizeof(report)) > 0);
+    assert(strstr(report, "Nakagawa Recomp v0.0.1\n") != NULL);
+    assert(strstr(report, "Problem: Game Stopped Early\n") != NULL);
+    assert(strstr(report, "Code: RUNTIME_SEMANTIC_BOUNDARY\n") != NULL);
+    assert(strstr(report, "Game: Plain Card Fixture\n") != NULL);
+    assert(strstr(report, "Disc ID: TEST00042\n") != NULL);
+    assert(strstr(report, "Reason: Stopped at unsupported-import-scenetadhocinit") != NULL);
+    assert(strstr(report, "Log file: C:/logs/boot_TEST00042.log\n") != NULL);
+    assert(strstr(report, "Last boot events:\n  BOOT_EVENT phase=boot reason=entry\n"
+                          "  BOOT_EVENT phase=stop") != NULL);
+    /* Only the user's own log location: no other path, no profile folder. */
+    assert(strchr(report, '\\') == NULL);
+    assert(strstr(report, "C:/") == strstr(report, "Log file: C:/") + 10);
+    const char *profile = getenv("USERPROFILE");
+    if (!profile || !profile[0]) profile = getenv("HOME");
+    if (profile && strlen(profile) > 3) assert(strstr(report, profile) == NULL);
+
+    /* Restart game relaunches the same game: here its package is missing, so
+       the launch itself says so. */
+    assert(!player_app_retry_from_error(app));
+    assert(strcmp(app->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0);
+    assert(app->selected_game_index == 0);
+
+    /* The build cards. */
+    package_builder_init_session(&app->build_session, "TEST00042", "Plain Card Fixture");
+    player_app_set_build_error(app, "compile", "PACKAGE_BUILD_FAILED: build exited with code 2",
+                               NULL);
+    assert(strcmp(app->last_error.title, "Couldn't Finish Building") == 0);
+    assert(strstr(app->last_error.message, "PACKAGE_BUILD_FAILED") == NULL);
+    assert(strcmp(player_error_retry_label(&app->last_error), "Try again") == 0);
+    assert(player_error_leads_with_message(&app->last_error));
+    player_app_set_build_error(app, "package",
+                               "[Errno 28] No space left on device: 'package.staging'", NULL);
+    assert(strcmp(app->last_error.error_code, "PACKAGE_DISK_FULL") == 0);
+    assert(strcmp(app->last_error.title, "Not Enough Disk Space") == 0);
+    player_app_set_build_error(app, "preflight",
+                               "Build refused: TEST00042 is already being built by another "
+                               "Nakagawa window.", NULL);
+    assert(strcmp(app->last_error.error_code, "PACKAGE_BUILD_REFUSED") == 0);
+    assert(strcmp(player_error_badge(&app->last_error), "Build not started") == 0);
+    assert(strstr(app->last_error.message, "already being built") != NULL);
+    assert(strstr(app->last_error.details, "check that runs before a build") != NULL);
+
+    /* Preflight rows in plain words (#1280). */
+    PlayerCompatibilityPreflight preflight;
+    memset(&preflight, 0, sizeof(preflight));
+    PlayerPreflightCheck *check = &preflight.checks[preflight.count++];
+    snprintf(check->code, sizeof(check->code), "RUNTIME_PACKAGE");
+    check->status = PREFLIGHT_MISSING;
+    snprintf(check->message, sizeof(check->message),
+             "Cache component/epoch mismatch or incomplete entry");
+    assert(strcmp(player_preflight_label(check), "Game build") == 0);
+    assert(strcmp(player_preflight_status_word(check), "Not built yet") == 0);
+    assert(strstr(player_preflight_plain_message(check), "epoch") == NULL);
+    assert(player_preflight_blocking_check(&preflight) == NULL);
+    check = &preflight.checks[preflight.count++];
+    snprintf(check->code, sizeof(check->code), "SYSTEM_FONTS");
+    check->status = PREFLIGHT_MISSING;
+    snprintf(check->message, sizeof(check->message), "L1 missing ltn0.pgf L2 missing ltn1.pgf");
+    assert(strstr(player_preflight_plain_message(check), "ltn0") == NULL);
+    check = &preflight.checks[preflight.count++];
+    snprintf(check->code, sizeof(check->code), "EXECUTABLE");
+    check->status = PREFLIGHT_UNSUPPORTED;
+    snprintf(check->message, sizeof(check->message),
+             "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.");
+    assert(strcmp(player_preflight_label(check), "Game program") == 0);
+    assert(strcmp(player_preflight_status_word(check), "Not supported") == 0);
+    assert(strcmp(player_preflight_plain_message(check),
+                  "EBOOT.BIN is encrypted. Nakagawa does not decrypt games.") == 0);
+    assert(player_preflight_blocking_check(&preflight) == check);
+
+    free(app);
+    printf("[PLAYER_STATE_TEST] error cards are plain, with their codes in the details PASS\n");
+}
+
 /* #1277: the main loop asks for the build outcome every frame. A failure card
    and a cancel's return to the Library are shown once per build session, so
    the card can be dismissed and the Library left. */
@@ -2094,7 +2236,12 @@ static void test_package_build_lifecycle(const char *self_executable) {
     assert(strcmp(rebuild_app->last_error.error_code, "PACKAGE_REVALIDATION_FAILED") == 0);
     assert(strcmp(rebuild_app->last_error.title, "Package Build Failed") != 0);
     assert(rebuild_app->last_error.failed_stage[0] == '\0');
-    assert(strstr(rebuild_app->last_error.message, "Synthetic stale package.") != NULL);
+    /* #1286: the card says what happened in plain words; the checker's reason
+       is the details. */
+    assert(strstr(rebuild_app->last_error.message, "Synthetic stale package.") == NULL);
+    assert(strstr(rebuild_app->last_error.message, "Try again") != NULL);
+    assert(strcmp(rebuild_app->last_error.boundary_text, "Synthetic stale package.") == 0);
+    assert(player_error_leads_with_message(&rebuild_app->last_error));
     bool logged_code = false;
     for (size_t i = 0; i < player_dev_log_count(rebuild_app); i++) {
         const char *line = player_dev_log_line(rebuild_app, i);
@@ -2220,6 +2367,7 @@ int main(int argc, char **argv) {
 
     test_stage_discard_removes_a_deep_tree();
     test_package_build_lifecycle(self_executable);
+    test_error_cards_are_plain();
     test_build_outcome_is_shown_once_per_session();
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
@@ -4777,7 +4925,12 @@ int main(int argc, char **argv) {
                                    "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.",
                                    "C:/logs/build_TEST80001.log");
         assert(bapp->active_view == VIEW_ERROR);
-        assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
+        /* #1286: a preflight refusal is not a failed build. The card leads with
+           the reason, without its code. */
+        assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_REFUSED") == 0);
+        assert(strcmp(bapp->last_error.title, "Build Not Started") == 0);
+        assert(strncmp(bapp->last_error.message, "EBOOT.BIN is encrypted.", 23) == 0);
+        assert(strstr(bapp->last_error.message, "ENCRYPTED_EXECUTABLE") == NULL);
         assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
         assert(strstr(bapp->last_error.boundary_text, "ENCRYPTED_EXECUTABLE") != NULL);
         assert(strcmp(bapp->last_error.log_file_path, "C:/logs/build_TEST80001.log") == 0);
@@ -5700,7 +5853,13 @@ int main(int argc, char **argv) {
         assert_session_released(&rep->launch_session);
         assert(rep->active_view == VIEW_ERROR);
         assert(strcmp(rep->last_error.error_code, "RUNTIME_PREMATURE_EXIT") == 0);
-        assert(strstr(rep->last_error.message, "exit code 7") != NULL);
+        /* #1282: a plain title and sentence; the exit code is in the details. */
+        assert(strcmp(rep->last_error.title, "Game Couldn't Start") == 0);
+        assert(strstr(rep->last_error.message, "Child") == NULL);
+        assert(strstr(rep->last_error.message, "7") == NULL);
+        assert(strstr(rep->last_error.details, "Exit code 7") != NULL);
+        assert(strcmp(player_error_retry_label(&rep->last_error), "Restart game") == 0);
+        assert(strcmp(rep->last_error.subject_disc_id, rep->games[0].disc_id) == 0);
         assert(strcmp(rep->last_error.recovery_action_label, "Return to Library") == 0);
         assert(rep->last_error.return_view == VIEW_LIBRARY);
         /* Recovery after the premature exit. */
@@ -5719,7 +5878,11 @@ int main(int argc, char **argv) {
         assert_session_released(&rep->launch_session);
         assert(rep->active_view == VIEW_ERROR);
         assert(strcmp(rep->last_error.error_code, "RUNTIME_ERROR_EXIT") == 0);
-        assert(strstr(rep->last_error.message, "with code 9") != NULL);
+        assert(strcmp(rep->last_error.title, "Game Closed Unexpectedly") == 0);
+        assert(strstr(rep->last_error.message, "last in-game save") != NULL);
+        assert(strstr(rep->last_error.message, "9") == NULL);
+        assert(strstr(rep->last_error.details, "Exit code 9") != NULL);
+        assert(strcmp(player_error_retry_label(&rep->last_error), "Restart game") == 0);
         /* A structured runtime stop must reach the player error view with a
            plain sentence first and machine detail kept below it. */
         set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "semantic-boundary");
@@ -5733,12 +5896,18 @@ int main(int argc, char **argv) {
         assert(nk_launch_wait(&rep->launch_session, 10000) == 9);
         assert(player_app_monitor_game_session(rep, 16000));
         assert(strcmp(rep->last_error.error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0);
-        assert(strcmp(rep->last_error.message,
-                      "This part of the game isn't supported yet. Check the details below and try again after an update.") == 0);
+        /* #1282: what the game needed, in plain words, and what happens to
+           progress; the raw boundary and its tracker issue are the details. */
+        assert(strcmp(rep->last_error.title, "Game Stopped Early") == 0);
+        assert(strstr(rep->last_error.message, "a processor feature") != NULL);
+        assert(strstr(rep->last_error.message, "last in-game save") != NULL);
+        assert(strstr(rep->last_error.message, "unsupported-") == NULL);
         assert(strstr(rep->last_error.boundary_text,
                       "unsupported-interpreter-form") != NULL);
         assert(strstr(rep->last_error.boundary_text, "not supported yet") != NULL);
+        assert(strstr(rep->last_error.boundary_text, "tracked in issue 308") != NULL);
         assert(strchr(rep->last_error.boundary_text, '#') == NULL);
+        assert(strcmp(player_error_retry_label(&rep->last_error), "Restart game") == 0);
         assert(strcmp(rep->last_error.log_file_path, stop_event_path) == 0);
         assert(nk_platform_file_exists(stop_event_path));
         remove(stop_event_path);
@@ -5756,9 +5925,9 @@ int main(int argc, char **argv) {
         assert(strstr(rep->last_error.boundary_text,
                       "host-fiber-stack-exhausted") != NULL);
         assert(strstr(rep->last_error.boundary_text, "not supported yet") != NULL);
+        assert(strstr(rep->last_error.boundary_text, "issue") == NULL);
         assert(strchr(rep->last_error.boundary_text, '#') == NULL);
-        assert(strcmp(rep->last_error.message,
-                      "This part of the game isn't supported yet. Check the details below and try again after an update.") == 0);
+        assert(strstr(rep->last_error.message, "a processor feature") != NULL);
         if (stop_event_path[0]) remove(stop_event_path);
         set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "");
         /* Final recovery launch: the session is never stuck. */
