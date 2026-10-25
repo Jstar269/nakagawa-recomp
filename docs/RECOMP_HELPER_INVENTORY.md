@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **324** (declared in `recomp.h`: 266)
-- reach class: emitter-reached 61, production-runtime-only 238, selftest-only 14, address-only 3, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 24, upstream_derived 299
+- helpers: **325** (declared in `recomp.h`: 267)
+- reach class: emitter-reached 61, production-runtime-only 239, selftest-only 14, address-only 3, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 24, upstream_derived 300
 
 ## Helpers
 
@@ -131,6 +131,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sched_set_current_cb_wait` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_set_current_join_target` | `rt/sched.c` | yes | none | `rt/sched.c`: upstream_derived |
 | `sched_set_current_wait_kind` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_set_ge_timing_hooks` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_set_guest_process_gp` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_set_priority` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_set_thread_exit_hook` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |

@@ -1402,7 +1402,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ca2ba1220d75bae3a0b5b0cf45b272c59333171d278a6f08c01a20e375b4cdd6"
+      "sha256": "7ecb5e78ce614125636af76af7fc4eb935d33388b95fea228624f44d6779cf6c"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1657,7 +1657,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "f6c7e2920502c934eb01a6a4c0c98ad96e404754771714b30e112ee49d8c3de0"
+      "sha256": "1420697b378adb0e984bb02d79c659df00b6274de1f4f63a9c126bc9d601ae8f"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1840,7 +1840,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d1da2cd908426621bdbc0c7eb62f0c21aba9966006e6df2f424ba6a5f2a521ac"
+      "sha256": "132b5c43959bbf89ccfec174aee33af337908049bbded664e6939db37255423c"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -5101,7 +5101,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "39c43b35b1befcc0fb0d3cb5fbecc14a2e03d54b1cb837dafbe5c37d491c06c5"
+      "sha256": "1111a17153719b0cf2153353d71929a375bdbee7fdff2d6ba88c2b1b9d230156"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "db7e0e24d81555c3d1771b8df58ff79bba48cd0199b8ec3cbb9e438552da0261"
+      "sha256": "51bfd234078398f546ebd840362f8220e85ea76948ec348e2d69b4e583bc8e53"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8443,7 +8443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dad2e13e033d4326159abaee51a5a0382fce8ce209670afd24c1f73029f80d14"
+      "sha256": "d394163b9e868f5b81523d50c408c267f8233913d9455cb3eeb0a0c84acbbb56"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -8906,7 +8906,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0d49aed6192ada22dc89e273d6088eb639b319f0acef6e50d7ab01760a40b35f"
+      "sha256": "adeb500a8d5897eab72f47738e2abaff105170d094fcdce0ff5721a6c1694cc0"
     },
     {
       "path": "src/rt/savedata.c",
@@ -8932,7 +8932,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "19b0b1d0fbbf6704b17b944afd43e34686302d7d555fb4036f907dd82a304db2"
+      "sha256": "7be7dce5b8846ac7340c471ed5e0c2704308c34852c8c7d9c6c8d07af6efaed8"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -8944,7 +8944,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a8c89ffa67d7e93d1736402137ef637293af2d490993201c33cff78c8ee7fedd"
+      "sha256": "0e79fc32ab18c30e67eed56a8fa3271344bd269e5e31885c211e8a3291ccda4c"
     },
     {
       "path": "src/rt/scripted_input.h",

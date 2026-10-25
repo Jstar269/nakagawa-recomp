@@ -1119,6 +1119,8 @@ committed.
 | ---------- | ------------- |
 | `SR_VBLANK_Q_US=N` | Host-clock vblank quantum in microseconds. In the default paced profile it does **not** produce vblanks -- the scheduler's rational 60000/1001 source is the only producer -- and only sets the threshold at which a yield is counted as late vblank *service* (reported as `vbl_late_service_yields` by the spin watchdog). It is an out-of-band vblank source only under `SR_NOVBPACE=1` |
 | `SR_WATCHDOG_EXIT=N` | Abort after N vblanks with no new frame; a firing is a NO-NEW-FLIP observation, not a hang verdict -- classify it with the display counters, thread dump, and MPEG/PSMF activity the watchdog prints |
+| `SR_GE_TIMING=1` | Opt-in GE completion timing (issue #1296), off by default. A display list that reached its END completes -- finish callback, `sceGeDrawSync`, `sceGeListSync` -- only once guest time passes a per-list cost estimate on one serial GE timeline; the callback is delivered as an interrupt. Every cost value is **synthetic and unmeasured** (derived from published PSP figures, not timed on a PSP). Startup prints `GE_TIMING: on, synthetic unmeasured cost model ...` |
+| `SR_GE_TIMING_COST=L,C,V,P` | With `SR_GE_TIMING=1`, override the synthetic costs: L ns per list, C ns per command word, V ns per submitted vertex, P ps per screen pixel of submitted primitive area (defaults 2000,6,30,1500). For sensitivity runs only |
 | `SR_NO_RELAUNCH=1` | Disable thread relaunch |
 | `SR_NO_THREAD_REUSE=1` | Disable thread reuse |
 | `SR_NOAUDIO=1` | Disable audio output |

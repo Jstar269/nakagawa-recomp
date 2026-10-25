@@ -2457,8 +2457,21 @@ static int vtx_nonfinite(const Vtx *a, const Vtx *b, const Vtx *c) {
     return 1;
 }
 
+/* Inputs to the opt-in GE completion-time model (hle.c, SR_GE_TIMING): the commands
+ * fetched and the screen area submitted for rasterisation by the current ge_run_list
+ * call.  Counted before the GPU hook, so both backends feed the model the same work.
+ * The area is the submitted primitive's own, clamped to one 480x272 screen; culling,
+ * clipping and depth rejection are not modelled. */
+unsigned long g_ge_list_commands = 0;
+double g_ge_list_area_px = 0.0;
+static void ge_timing_note_area(double px) {
+    if (px > 0.0) g_ge_list_area_px += px < 480.0 * 272.0 ? px : 480.0 * 272.0;
+}
+
 static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
     if (vtx_nonfinite(A, B, C)) return;
+    ge_timing_note_area(0.5 * fabs((double)(B->x - A->x) * (C->y - A->y) -
+                                   (double)(C->x - A->x) * (B->y - A->y)));
     if ((ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
         !ge_zbuf_prepare_current()) return;
     /* GPU capture seam: a registered backend takes the triangle (and reproduces culling,
@@ -3241,6 +3254,7 @@ static void fill_rect_clear_fast(int xa, int ya, int xb, int yb, int r, int g, i
  * persp=1 recovers UV from the over-w storage and depth-tests with the second vertex's z. */
 static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     if (vtx_nonfinite(p0, p1, NULL)) return;
+    ge_timing_note_area(fabs((double)(p1->x - p0->x) * (p1->y - p0->y)));
     if ((ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
         !ge_zbuf_prepare_current()) return;
     if (s_gpu && s_gpu->sprite) {
@@ -4401,6 +4415,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     g_ge_list_through_cmds=0; g_ge_list_transform_cmds=0;
     g_ge_list_through_vertices=0; g_ge_list_transform_vertices=0;
     g_ge_list_through_sprites=0; g_ge_list_transform_sprites=0;
+    g_ge_list_commands=0; g_ge_list_area_px=0.0;
     extern unsigned long g_tex_nonzero; unsigned long start_nz=g_tex_nonzero;
     unsigned long sig=0; unsigned long prims=0;
     int pending_signal=0;
@@ -4421,6 +4436,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
         uint32_t op=MEM_R32(addr); addr+=4;
         uint32_t cmd=op>>24, data=op&0xFFFFFF;
         s_ge_command[cmd] = data;
+        g_ge_list_commands++;
         if (s_cpu_profile) s_cpu_profile_stats.commands++;
         sig=sig*1000003ul+op;
         switch (cmd) {
