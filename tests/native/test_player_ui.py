@@ -2368,6 +2368,8 @@ class NativePlayerUiTests(unittest.TestCase):
             error_code="RUNTIME_SEMANTIC_BOUNDARY", ui_mode="next",
         )
         stdout = str(copied["stdout"])
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in stdout:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
         report = re.search(r"\[PLAYER_UI_TEST\] copied_details clipboard=(\d) report=(.*)", stdout)
         self.assertIsNotNone(report, stdout)
         assert report is not None
@@ -2392,6 +2394,8 @@ class NativePlayerUiTests(unittest.TestCase):
             "library", ("WAIT_MS=50", "KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100"),
             error_code="RUNTIME_ERROR_EXIT", ui_mode="next",
         )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[0]["error"], "RUNTIME_ERROR_EXIT")
