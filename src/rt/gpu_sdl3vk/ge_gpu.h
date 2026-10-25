@@ -76,6 +76,13 @@ typedef struct GeGpuFbSpan {
 int gegpu_validate_guest_fb_descriptor(const GeGpuFbDescriptor *desc,
                                        GeGpuFbSpan *out_span, const char **why);
 
+/* Memory type for a host-mapped buffer: `type_flags` are the device's per-type Vulkan
+ * property flags, `allowed_bits` the buffer's memoryTypeBits, and `cpu_reads` nonzero for a
+ * buffer the GPU copies into for the CPU to read. Returns UINT32_MAX when no allowed type is
+ * host-visible and host-coherent. */
+uint32_t gegpu_pick_host_mem_type(const uint32_t *type_flags, uint32_t type_count,
+                                  uint32_t allowed_bits, int cpu_reads);
+
 typedef enum GeGpuSyncResult {
     GEGPU_SYNC_FAILED = -1,
     GEGPU_SYNC_OK = 1,

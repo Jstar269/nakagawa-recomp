@@ -1685,7 +1685,13 @@ def _cache_key_for_build(
         compiler=package_cache.compiler_identity(compiler_name, repository_root=ROOT),
         target=package_cache.compiler_target(repository_root=ROOT),
         runtime_source_digest=package_cache.source_tree_digest(ROOT),
-        compile_flags=package_cache.native_compile_flags(public_safe=public_safe),
+        compile_flags=package_cache.native_compile_flags(
+            public_safe=public_safe,
+            environment={
+                **os.environ,
+                **package_cache.package_optimization(plan["codegen_profile"]),
+            },
+        ),
         link_flags=os.environ.get("LDFLAGS", ""),
     )
 
@@ -2022,6 +2028,10 @@ def build_package(
         ]
         link_map = build_workspace / f"{selected_name}.map"
         build_environment = os.environ.copy()
+        # The optimization the cache key above names is what Make compiles with.
+        build_environment.update(
+            package_cache.package_optimization(plan["codegen_profile"], build_environment)
+        )
         build_environment.update({
             "PYTHON": python_command,
             "GAME_NAME": selected_name,

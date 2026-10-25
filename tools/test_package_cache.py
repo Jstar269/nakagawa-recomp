@@ -1863,6 +1863,70 @@ class ObjectCacheTests(unittest.TestCase):
                       builder)
 
 
+class PackageOptimizationTests(unittest.TestCase):
+    """A package build compiles the runtime at -O2 and generated code at the profile's
+    qualified level unless the caller sets one (#1296); the key names what Make really used."""
+
+    def test_defaults_follow_the_codegen_profile(self):
+        self.assertEqual(
+            package_cache.package_optimization("none", {}),
+            {"RUNTIME_OPT": "-O2", "RECOMP_OPT": "-O0"},
+        )
+        self.assertEqual(
+            package_cache.package_optimization("hst", {}),
+            {"RUNTIME_OPT": "-O2", "RECOMP_OPT": "-O1"},
+        )
+
+    def test_a_caller_set_value_wins(self):
+        self.assertEqual(
+            package_cache.package_optimization("hst", {"RUNTIME_OPT": "-O0", "RECOMP_OPT": "-O0"}),
+            {"RUNTIME_OPT": "-O0", "RECOMP_OPT": "-O0"},
+        )
+        self.assertEqual(
+            package_cache.package_optimization("none", {"RECOMP_OPT": "-O2"})["RECOMP_OPT"], "-O2"
+        )
+
+    def test_planner_and_player_keys_name_the_package_optimization(self):
+        for profile, recomp in (("none", "-O0"), ("hst", "-O1")):
+            with self.subTest(profile=profile):
+                captured = []
+                manifest = {
+                    "executable": {"base": 0x08804000, "entry": 0x08804100},
+                    "codegen_profile": profile,
+                }
+                plan = {
+                    "environment": {
+                        "GAME_BASE": "0x08804000", "GAME_ENTRY": "0x08804100",
+                        "TITLE_EXTRA_SPANS": "",
+                    },
+                    "codegen_profile": profile,
+                }
+                with mock.patch.object(
+                    package_cache, "build_cache_key",
+                    side_effect=lambda sink=captured, **kwargs: sink.append(kwargs) or {},
+                ), mock.patch.object(
+                    package_cache, "compiler_identity", return_value="synthetic-compiler"
+                ), mock.patch.object(
+                    package_cache, "compiler_target", return_value="synthetic-target"
+                ), mock.patch.object(
+                    nk_cli, "_runtime_build_environment", return_value={}
+                ), mock.patch.dict(os.environ, {}, clear=True),                         tempfile.TemporaryDirectory(prefix="package_opt_") as temp_dir:
+                    manifest_path = Path(temp_dir) / "synthetic.json"
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    nk_cli._current_package_cache_key(
+                        manifest, manifest_path, "1" * 64, None, None, {}, public_safe=True,
+                    )
+                    title_codegen_plan._cache_key_for_build(
+                        input_hashes={}, title_input_identity={}, plan=plan,
+                        selected_optional=set(), funcs_per_chunk=2000, public_safe=True,
+                        compiler_name="gcc",
+                    )
+                cli_flags, planner_flags = (call["compile_flags"] for call in captured)
+                self.assertEqual(cli_flags, planner_flags)
+                self.assertTrue(cli_flags.startswith("|-O2|"), cli_flags)
+                self.assertIn(f"|{recomp}|", cli_flags)
+
+
 class DecryptedElfRefusalTests(unittest.TestCase):
     def test_unusable_eboot_elf_points_at_the_users_own_copy(self) -> None:
         """Nakagawa never decrypts and reads no key file, so the refusal of an

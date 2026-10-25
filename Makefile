@@ -2230,6 +2230,8 @@ heap-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		src/rt/heap_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
 	$(BUILD_DIR)/heap_selftest.exe
 
+native-core-tests: heap-selftest
+
 # profiler-selftest — production profiler hash-table regression suite. Exercises PC zero as a
 # real key and a deliberately saturated 64-probe collision window without game inputs.
 profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
@@ -2239,6 +2241,9 @@ profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		-Wl,--gc-sections -o $(BUILD_DIR)/profiler_selftest.exe \
 		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
 	$(BUILD_DIR)/profiler_selftest.exe
+
+# Also covers the SR_PERF line formats, PERF_AUDIO included (#1296).
+native-core-tests: profiler-selftest
 
 gui-present-selftest:
 	$(CC) $(CFLAGS) -DSR_GUI_PRESENT_SELFTEST -ffunction-sections -fdata-sections \
