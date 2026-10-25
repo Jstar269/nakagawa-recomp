@@ -62,6 +62,16 @@ bool nk_platform_path_missing(const char *path);
  * Returns false when dir cannot be opened. */
 typedef bool (*NkDirFileFn)(const char *name, void *ctx);
 bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx);
+/* The bytes of every regular file under path (path itself when it is a file),
+ * without following a symlink, junction or other reparse point: one counts as
+ * nothing. A top-level child of path named skip_child (NULL for none) is left
+ * out. A missing path is 0 bytes and true; false means a part could not be read. */
+bool nk_platform_tree_size(const char *path, const char *skip_child, uint64_t *out_bytes);
+/* Delete path and everything under it, without following a symlink, junction or
+ * other reparse point: the link itself is removed, never its target. A
+ * top-level child named skip_child (NULL for none) is kept, and then so is
+ * path. A missing path is already gone: true. */
+bool nk_platform_remove_tree(const char *path, const char *skip_child);
 int64_t nk_platform_get_file_size(const char *path);
 bool nk_platform_mkdir_p(const char *dir_path);
 /* Create a directory tree and private files for user-owned source material.

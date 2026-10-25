@@ -2603,6 +2603,68 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertTrue(focused_built, "the built title had focus before the click")
         self.assertEqual(self.opened_titles(frames), ["TEST00005", "TEST00006"], run["stdout"])
 
+    # Control IDs from src/player/ui/player_ui_nk.h, as the frame records print them.
+    TITLE_REMOVE = str(0x2004)
+    REMOVE_CANCEL = str(0x4401)
+    REMOVE_CONFIRM = str(0x4402)
+    ROUTE_REMOVE = "4"
+
+    def library_item(self, index: int) -> str:
+        return str(0x1100 + index)
+
+    LIBRARY_ADD = str(0x1002)
+
+    # Remove from library is the title page's lowest control, so Down presses
+    # end on it whichever action-row buttons are enabled.
+    DOWN_TO_REMOVE = ("KEY_DOWN", "WAIT_MS=80") * 4
+
+    def remove_run(self, events: tuple[str, ...]) -> list[dict[str, str]]:
+        run = self.run_player("library", events, ui_mode="next", wait_background=True)
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        return frames
+
+    def test_remove_from_library_asks_then_focuses_the_next_tile(self) -> None:
+        """#1304: Remove from library asks first, Cancel keeps the game, and Remove
+        returns to the library with the next tile focused."""
+        open_first = ("WAIT_MS=300", self.FIRST_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300")
+        frames = self.remove_run((*open_first, *self.DOWN_TO_REMOVE, "KEY_RETURN", "WAIT_MS=200",
+                                  "KEY_ESCAPE", "WAIT_MS=200"))
+        dialog = [frame for frame in frames if frame["next_route"] == self.ROUTE_REMOVE]
+        self.assertGreater(len(dialog), 1, "Remove from library opens the dialog")
+        # The title frame that took the press pushed the route; the dialog
+        # draws from the next frame on, with Cancel focused.
+        self.assertEqual(dialog[1]["next_focus"], self.REMOVE_CANCEL, "Cancel has the first focus")
+        self.assertEqual(frames[-1]["next_route"], "2", "Back closes the dialog onto the title page")
+        self.assertEqual(frames[-1]["next_focus"], self.TITLE_REMOVE)
+        self.assertEqual(frames[-1]["games"], frames[0]["games"], "Cancel removes nothing")
+
+        frames = self.remove_run((*open_first, *self.DOWN_TO_REMOVE, "KEY_RETURN", "WAIT_MS=200",
+                                  "KEY_RIGHT", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=400"))
+        confirm = [frame for frame in frames if frame["next_focus"] == self.REMOVE_CONFIRM]
+        self.assertTrue(confirm, "the dialog's Remove button takes focus")
+        last = frames[-1]
+        self.assertEqual(int(last["games"]), int(frames[0]["games"]) - 1, "the title left")
+        self.assertEqual(last["next_route"], "1", "Remove returns to the library")
+        self.assertEqual(last["next_at_root"], "1")
+        # TEST00005 was the first tile, so TEST00006 now holds its place.
+        self.assertEqual(last["next_focus"], self.library_item(0))
+        self.assertEqual(last["selected_disc"], "TEST00006")
+
+    def test_removing_the_last_tile_focuses_the_add_card(self) -> None:
+        """#1304: with no tile after the removed one, focus goes to the add card."""
+        frames = self.remove_run(("WAIT_MS=300", self.SECOND_TILE, "MOUSE_DOWN", "MOUSE_UP",
+                                  "WAIT_MS=300", *self.DOWN_TO_REMOVE, "KEY_RETURN",
+                                  "WAIT_MS=200", "KEY_RIGHT", "WAIT_MS=100", "KEY_RETURN",
+                                  "WAIT_MS=400"))
+        last = frames[-1]
+        self.assertEqual(int(last["games"]), int(frames[0]["games"]) - 1, "the title left")
+        self.assertEqual(last["next_route"], "1")
+        self.assertEqual(last["next_focus"], self.LIBRARY_ADD)
+        self.assertEqual(last["selected_disc"], "TEST00005")
+
     def test_compatibility_records_carry_a_player_tier(self) -> None:
         """#1297: every title record maps to a player tier; Hot Shots Tennis is Playable.
 

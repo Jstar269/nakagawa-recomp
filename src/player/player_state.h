@@ -481,6 +481,54 @@ size_t player_display_text_with_home(const char *in, const char *home,
 size_t player_display_text(const char *in, char *out, size_t out_size);
 
 bool player_app_remove_game(PlayerApp *app, int game_index);
+
+/* Remove from library (#1304). What Nakagawa built for one game, found from
+ * its disc ID under the player's own roots (never from a stored path): the
+ * built package, the build cache, and the disc files it extracted. The disc
+ * image and the user's own decrypted files are never part of it. Saves are
+ * listed apart and go only when asked. */
+typedef enum {
+    PLAYER_REMOVAL_PACKAGE = 0,
+    PLAYER_REMOVAL_BUILD_CACHE,
+    PLAYER_REMOVAL_EXTRACTED,
+    PLAYER_REMOVAL_KIND_COUNT
+} PlayerRemovalKind;
+
+#define PLAYER_REMOVAL_PATH_CAP 12
+
+typedef struct {
+    char path[NK_MAX_PATH];
+    /* A top-level child kept when the folder is deleted (the saves inside
+       the extracted disc files), or empty. */
+    char keep_child[16];
+    PlayerRemovalKind kind;
+    bool saves;              /* this path is save data */
+    uint64_t bytes;
+} PlayerRemovalPath;
+
+typedef struct {
+    char disc_id[NK_MAX_DISC_ID_LEN];
+    PlayerRemovalPath paths[PLAYER_REMOVAL_PATH_CAP];
+    size_t path_count;
+    uint64_t kind_bytes[PLAYER_REMOVAL_KIND_COUNT];
+    bool kind_present[PLAYER_REMOVAL_KIND_COUNT];
+    bool has_saves;
+    uint64_t saves_bytes;
+} PlayerRemovalPlan;
+
+/* Why a title cannot be removed now, or NULL when it can: a showcase demo,
+ * a game that starts or runs, a build or a disc copy in progress. */
+const char *player_app_removal_blocker(const PlayerApp *app, int game_index);
+/* Fills plan with what exists now for the title, with sizes. False when the
+ * title cannot be removed or its disc ID is not a plain folder name. */
+bool player_app_plan_game_removal(const PlayerApp *app, int game_index,
+                                  PlayerRemovalPlan *plan);
+/* Removes the title from the library and deletes what the plan lists, the
+ * saves only when delete_saves is set. Every folder is checked again just
+ * before it goes. On failure the library entry stays and error says what was
+ * left; the rest may already be deleted. */
+bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete_saves,
+                                     char *error, size_t error_size);
 void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);
 void player_app_set_cli_not_found_error(PlayerApp *app,

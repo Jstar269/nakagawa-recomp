@@ -921,6 +921,15 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     app->selected_game_index = index;
     if (action->kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER) {
         player_ui_open_save_folder(app, action->title_index);
+    } else if (action->kind == PLAYER_UI_ACTION_REMOVE_CONFIRM) {
+        /* Remove from library (#1304): what Nakagawa built goes with it, the
+           saves only when the dialog's box was ticked. */
+        char reason[NK_MAX_PATH + 96];
+        if (!player_app_remove_game_and_data(app, index, action->primary == 1,
+                                             reason, sizeof(reason))) {
+            player_app_set_error(app, "REMOVE_FAILED", "The game was not removed", reason,
+                                 "Back to library", VIEW_LIBRARY);
+        }
     } else if (action->kind == PLAYER_UI_ACTION_PRIMARY) {
         switch (action->primary) {
             case PLAYER_UI_PRIMARY_PLAY:
@@ -1588,7 +1597,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "dev_log_lines=%zu next_primary=%d next_primary_label=%s next_detail=%s "
            "incompatible_reason=%s next_at_root=%d next_route=%d "
            "error_title=%s error_badge=%s error_retry=%s error_copied=%d "
-           "next_package=%d next_expect=%s launch_pending=%d\n",
+           "next_package=%d next_expect=%s launch_pending=%d next_focus=%u\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -1650,7 +1659,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            s_ui_test_next_ui != NULL ? player_ui_nk_test_route(s_ui_test_next_ui) : -1,
            error_title, error_badge, error_retry,
            app->last_error.details_copied ? 1 : 0,
-           next_package, next_expect, app->launch_pending ? 1 : 0);
+           next_package, next_expect, app->launch_pending ? 1 : 0,
+           s_ui_test_next_ui != NULL ? player_ui_nk_test_focus(s_ui_test_next_ui) : 0u);
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {

@@ -2299,6 +2299,240 @@ static void test_stage_discard_removes_a_deep_tree(void) {
     printf("PASS: staging discard removes a 32-level tree without exhausting the stack\n");
 }
 
+/* Joins root and up to three parts with the platform separator. */
+static void removal_test_path(char *out, size_t size, const char *root, const char *a,
+                              const char *b, const char *c) {
+    const char sep = nk_platform_path_separator();
+    int n;
+    if (c) n = snprintf(out, size, "%s%c%s%c%s%c%s", root, sep, a, sep, b, sep, c);
+    else if (b) n = snprintf(out, size, "%s%c%s%c%s", root, sep, a, sep, b);
+    else n = snprintf(out, size, "%s%c%s", root, sep, a);
+    assert(n > 0 && (size_t)n < size);
+}
+
+/* A folder holding one file of the given size. */
+static void removal_test_tree(const char *dir, const char *name, size_t bytes) {
+    char file[NK_MAX_PATH * 2];
+    assert(nk_platform_mkdir_p(dir));
+    removal_test_path(file, sizeof(file), dir, name, NULL, NULL);
+    FILE *out = fopen(file, "wb");
+    assert(out != NULL);
+    for (size_t i = 0; i < bytes; ++i) assert(fputc('x', out) != EOF);
+    assert(fclose(out) == 0);
+}
+
+typedef struct {
+    char build_root[NK_MAX_PATH];
+    char data_root[NK_MAX_PATH];
+    char saves_root[NK_MAX_PATH];
+    char package[NK_MAX_PATH];
+    char cache_packages[NK_MAX_PATH];
+    char cache_bringup[NK_MAX_PATH];
+    char games[NK_MAX_PATH];
+    char memstick[NK_MAX_PATH];
+    char staging[NK_MAX_PATH];
+    char saves[NK_MAX_PATH];
+    char decrypted[NK_MAX_PATH];
+    char manifests[NK_MAX_PATH];
+    char iso[NK_MAX_PATH];
+} RemovalFixture;
+
+/* Everything Nakagawa keeps for one disc, plus what it must never delete:
+   the disc image, the user's decrypted files and the shared manifests. */
+static void removal_fixture_make(RemovalFixture *f, const char *disc) {
+    char name[64];
+    memset(f, 0, sizeof(*f));
+    removal_test_path(f->build_root, sizeof(f->build_root), native_test_get_root(),
+                      "rt1304", NULL, NULL);
+    assert(nk_platform_get_app_data_dir(f->data_root, sizeof(f->data_root)));
+    assert(nk_platform_get_path(NK_PATH_SAVES, f->saves_root, sizeof(f->saves_root)));
+    assert(native_test_path_within(f->data_root, native_test_get_root()));
+    assert(native_test_path_within(f->saves_root, native_test_get_root()));
+    removal_test_path(f->package, sizeof(f->package), f->build_root, "packages", disc, NULL);
+    removal_test_path(f->cache_packages, sizeof(f->cache_packages), f->build_root, "cache",
+                      "packages", disc);
+    removal_test_path(f->cache_bringup, sizeof(f->cache_bringup), f->build_root, "cache",
+                      "bringup", disc);
+    removal_test_path(f->games, sizeof(f->games), f->data_root, "games", disc, NULL);
+    removal_test_path(f->memstick, sizeof(f->memstick), f->games, "memstick", NULL, NULL);
+    snprintf(name, sizeof(name), ".staging_%s", disc);
+    removal_test_path(f->staging, sizeof(f->staging), f->data_root, "games", name, NULL);
+    removal_test_path(f->saves, sizeof(f->saves), f->saves_root, disc, NULL, NULL);
+    removal_test_path(f->decrypted, sizeof(f->decrypted), f->build_root, "titles", disc,
+                      "decrypted");
+    removal_test_path(f->manifests, sizeof(f->manifests), f->build_root, "manifests", NULL,
+                      NULL);
+    snprintf(name, sizeof(name), "%s.iso", disc);
+    removal_test_path(f->iso, sizeof(f->iso), native_test_get_root(), name, NULL, NULL);
+    removal_test_tree(f->package, "package.json", 3000);
+    removal_test_tree(f->cache_packages, "objects.bin", 200);
+    removal_test_tree(f->cache_bringup, "bringup.json", 100);
+    removal_test_tree(f->games, "EBOOT.BIN", 1000);
+    removal_test_tree(f->memstick, "DATA.BIN", 40);
+    removal_test_tree(f->staging, "partial.bin", 7);
+    removal_test_tree(f->saves, "SAVE.BIN", 2);
+    removal_test_tree(f->decrypted, "EBOOT.BIN", 9);
+    removal_test_tree(f->manifests, "title.json", 5);
+    write_text_file(f->iso, "disc image");
+}
+
+static PlayerApp *removal_test_app(const RemovalFixture *f, const char *disc) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    NkGameEntry entry;
+    char library[NK_MAX_PATH * 2];
+    assert(app != NULL);
+    nk_library_init(&app->library);
+    removal_test_path(library, sizeof(library), f->build_root, "library1304.json", NULL,
+                      NULL);
+    assert(strlen(library) < sizeof(app->library.library_path));
+    snprintf(app->library.library_path, sizeof(app->library.library_path), "%s", library);
+    remove(app->library.library_path);
+    assert(strlen(f->build_root) < sizeof(app->runtime_root));
+    snprintf(app->runtime_root, sizeof(app->runtime_root), "%s", f->build_root);
+    seed_entry(&entry, disc, "Removal Fixture");
+    snprintf(entry.iso_path, sizeof(entry.iso_path), "%s", f->iso);
+    assert(nk_library_add_or_update(&app->library, &entry) == NK_OK);
+    seed_entry(&entry, "RMV01305", "Next Fixture");
+    assert(nk_library_add_or_update(&app->library, &entry) == NK_OK);
+    player_app_sync_library(app);
+    assert(app->game_count == 2);
+    assert(player_app_find_game_by_disc_id(app, disc) == 0);
+    return app;
+}
+
+/* The tree helpers behind Remove from library walk a deep tree without
+   running out of stack, keep the named top-level child, and delete a link as
+   itself, never what it points at. */
+static void test_tree_helpers_walk_a_deep_tree(void) {
+    char root[NK_MAX_PATH];
+    char path[NK_MAX_PATH * 4];
+    char keep[NK_MAX_PATH * 2];
+    uint64_t bytes = 0;
+    const char sep = nk_platform_path_separator();
+    removal_test_path(root, sizeof(root), native_test_get_root(), "tree1304", NULL, NULL);
+    snprintf(path, sizeof(path), "%s", root);
+    for (int depth = 0; depth < 48; depth++) {
+        size_t length = strlen(path);
+        assert(length + 4 < sizeof(path));
+        snprintf(path + length, sizeof(path) - length, "%cd%d", sep, depth % 10);
+        removal_test_tree(path, "f.bin", 3);
+    }
+    removal_test_path(keep, sizeof(keep), root, "memstick", NULL, NULL);
+    removal_test_tree(keep, "SAVE.BIN", 5);
+    assert(nk_platform_tree_size(root, NULL, &bytes) && bytes == 48u * 3u + 5u);
+    assert(nk_platform_tree_size(root, "memstick", &bytes) && bytes == 48u * 3u);
+    assert(nk_platform_remove_tree(root, "memstick"));
+    assert(nk_platform_dir_exists(keep) && !nk_platform_path_missing(root));
+    removal_test_path(path, sizeof(path), root, "d0", NULL, NULL);
+    assert(!nk_platform_dir_exists(path));
+#if !defined(_WIN32) && !defined(_WIN64)
+    {
+        /* Windows needs a privilege for a symlink, so only POSIX checks it. */
+        char outside[NK_MAX_PATH * 2];
+        char outside_file[NK_MAX_PATH * 2];
+        char link[NK_MAX_PATH * 2];
+        removal_test_path(outside, sizeof(outside), native_test_get_root(), "tree1304-outside",
+                          NULL, NULL);
+        removal_test_tree(outside, "KEEP.BIN", 4);
+        removal_test_path(outside_file, sizeof(outside_file), outside, "KEEP.BIN", NULL, NULL);
+        removal_test_path(link, sizeof(link), root, "link", NULL, NULL);
+        assert(symlink(outside, link) == 0);
+        assert(nk_platform_tree_size(root, "memstick", &bytes) && bytes == 0u);
+        assert(nk_platform_remove_tree(root, NULL));
+        assert(nk_platform_file_exists(outside_file));
+    }
+#else
+    assert(nk_platform_remove_tree(root, NULL));
+#endif
+    assert(nk_platform_path_missing(root));
+    assert(nk_platform_remove_tree(root, NULL));
+    assert(nk_platform_tree_size(root, NULL, &bytes) && bytes == 0u);
+    printf("PASS: tree size and removal walk a 48-level tree and keep the named child\n");
+}
+
+/* #1304: Remove from library deletes the package, the build cache and the disc
+   files Nakagawa copied, keeps the saves unless asked, and never touches the
+   disc image, the user's decrypted files or another title's data. */
+static void test_remove_from_library_deletes_what_nakagawa_built(void) {
+    RemovalFixture f;
+    PlayerRemovalPlan plan;
+    char error[NK_MAX_PATH + 128];
+    removal_fixture_make(&f, "RMV01304");
+    PlayerApp *app = removal_test_app(&f, "RMV01304");
+
+    assert(player_app_plan_game_removal(app, 0, &plan));
+    assert(plan.kind_present[PLAYER_REMOVAL_PACKAGE] &&
+           plan.kind_bytes[PLAYER_REMOVAL_PACKAGE] == 3000u);
+    assert(plan.kind_present[PLAYER_REMOVAL_BUILD_CACHE] &&
+           plan.kind_bytes[PLAYER_REMOVAL_BUILD_CACHE] == 300u);
+    /* The copied disc files without their Memory Stick folder, and the
+       leftover staging folder. */
+    assert(plan.kind_present[PLAYER_REMOVAL_EXTRACTED] &&
+           plan.kind_bytes[PLAYER_REMOVAL_EXTRACTED] == 1007u);
+    assert(plan.has_saves && plan.saves_bytes == 42u);
+    for (size_t i = 0; i < plan.path_count; ++i) {
+        assert(strcmp(plan.paths[i].path, f.iso) != 0);
+        assert(!native_test_path_within(plan.paths[i].path, f.decrypted));
+        assert(!native_test_path_within(plan.paths[i].path, f.manifests));
+    }
+
+    /* Nothing goes while the game starts, runs or builds. */
+    app->launch_pending = true;
+    assert(player_app_removal_blocker(app, 0) != NULL);
+    assert(!player_app_remove_game_and_data(app, 0, false, error, sizeof(error)));
+    assert(error[0] != '\0');
+    app->launch_pending = false;
+    app->is_game_running = true;
+    assert(!player_app_plan_game_removal(app, 0, &plan));
+    app->is_game_running = false;
+    app->build_session.is_building = true;
+    assert(player_app_removal_blocker(app, 0) != NULL);
+    app->build_session.is_building = false;
+    assert(nk_platform_dir_exists(f.package));
+
+    assert(player_app_remove_game_and_data(app, 0, false, error, sizeof(error)));
+    assert(app->game_count == 1 && strcmp(app->games[0].disc_id, "RMV01305") == 0);
+    assert(!nk_platform_dir_exists(f.package));
+    assert(!nk_platform_dir_exists(f.cache_packages));
+    assert(!nk_platform_dir_exists(f.cache_bringup));
+    assert(!nk_platform_dir_exists(f.staging));
+    assert(nk_platform_dir_exists(f.games) && nk_platform_dir_exists(f.memstick));
+    {
+        char eboot[NK_MAX_PATH * 2];
+        removal_test_path(eboot, sizeof(eboot), f.games, "EBOOT.BIN", NULL, NULL);
+        assert(!nk_platform_file_exists(eboot));
+    }
+    assert(nk_platform_dir_exists(f.saves));
+    assert(nk_platform_dir_exists(f.decrypted));
+    assert(nk_platform_dir_exists(f.manifests));
+    assert(nk_platform_file_exists(f.iso));
+    remove(app->library.library_path);
+    free(app);
+
+    /* With the box ticked the saves go too, and so does the emptied folder. */
+    removal_fixture_make(&f, "RMV01304");
+    app = removal_test_app(&f, "RMV01304");
+    assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+    assert(!nk_platform_dir_exists(f.games));
+    assert(!nk_platform_dir_exists(f.saves));
+    assert(!nk_platform_dir_exists(f.package));
+    assert(nk_platform_dir_exists(f.decrypted));
+    assert(nk_platform_file_exists(f.iso));
+    remove(app->library.library_path);
+
+    /* A showcase demo and a disc ID that is not a plain folder name are
+       refused before anything is planned. */
+    snprintf(app->games[0].title_id, sizeof(app->games[0].title_id), "showcase-scene");
+    assert(!player_app_plan_game_removal(app, 0, &plan));
+    app->games[0].title_id[0] = '\0';
+    snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "..");
+    assert(player_app_removal_blocker(app, 0) != NULL);
+    assert(!player_app_remove_game_and_data(app, 0, false, error, sizeof(error)));
+    free(app);
+    printf("PASS: remove from library deletes what Nakagawa built and keeps the disc "
+           "image and, unless asked, the saves\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -2370,6 +2604,8 @@ int main(int argc, char **argv) {
     native_test_assert_config_root_isolated();
 
     test_stage_discard_removes_a_deep_tree();
+    test_tree_helpers_walk_a_deep_tree();
+    test_remove_from_library_deletes_what_nakagawa_built();
     test_package_build_lifecycle(self_executable);
     test_error_cards_are_plain();
     test_build_outcome_is_shown_once_per_session();

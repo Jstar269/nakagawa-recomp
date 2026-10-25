@@ -104,6 +104,18 @@ struct PlayerUiNk {
     PlayerUiSounds *sounds;          /* optional launcher sounds (ui_sounds) */
     int pending_sound;               /* a PlayerUiSound for this frame, or -1 */
     NkUiId sound_focus;              /* focus after the last frame, for the move sound */
+    /* Remove from library (#1304): the title the dialog is for, what it lists,
+       and the saves box, which every dialog opens unticked. */
+    PlayerRemovalPlan remove_plan;
+    PlayerUiRemoveItem remove_items[PLAYER_UI_REMOVE_ITEM_CAP];
+    size_t remove_item_count;
+    int remove_index;
+    char remove_disc[NK_MAX_DISC_ID_LEN];
+    bool remove_delete_saves;
+    bool remove_focus_pending;
+    /* After a removal the library focuses the tile that took its place. */
+    bool library_focus_pending;
+    size_t library_focus_index;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     bool icon_reported[PLAYER_UI_TITLE_CAP];
 #endif
@@ -568,7 +580,37 @@ const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t in
 int player_ui_nk_test_route(const PlayerUiNk *player) {
     return player != NULL ? (int)nk_ui_router_current(player->router) : 0;
 }
+
+unsigned player_ui_nk_test_focus(const PlayerUiNk *player) {
+    return player != NULL && player->ui != NULL ? (unsigned)nk_ui_focused(player->ui) : 0u;
+}
 #endif
+
+/* Opens the Remove from library dialog for a title, listing what Nakagawa
+   built for it as it is on disk now. */
+static bool player_ui_open_remove(PlayerUiNk *player, const PlayerApp *app, int index) {
+    static const char *const labels[PLAYER_REMOVAL_KIND_COUNT] = {
+        "Built package", "Build cache", "Disc files Nakagawa copied"
+    };
+    if (!player_app_plan_game_removal(app, index, &player->remove_plan)) return false;
+    player->remove_item_count = 0u;
+    for (int kind = 0; kind < PLAYER_REMOVAL_KIND_COUNT; ++kind) {
+        if (!player->remove_plan.kind_present[kind] ||
+            player->remove_item_count >= PLAYER_UI_REMOVE_ITEM_CAP) {
+            continue;
+        }
+        player->remove_items[player->remove_item_count].label = labels[kind];
+        player->remove_items[player->remove_item_count].bytes =
+            player->remove_plan.kind_bytes[kind];
+        ++player->remove_item_count;
+    }
+    player->remove_index = index;
+    snprintf(player->remove_disc, sizeof(player->remove_disc), "%s",
+             app->games[index].disc_id);
+    player->remove_delete_saves = false;
+    player->remove_focus_pending = true;
+    return true;
+}
 
 bool player_ui_nk_at_library_root(const PlayerUiNk *player) {
     return player != NULL && player->ready &&
@@ -834,6 +876,7 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     }
 #endif
     out->save_folder_enabled = game->disc_id[0] != '\0';
+    out->can_remove = player_app_removal_blocker(app, index) == NULL;
     out->primary_action_enabled = false;
     out->primary_action = PLAYER_UI_PRIMARY_NONE;
     if (app->launch_pending) {
@@ -986,6 +1029,19 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         if (nk_ui_focused(player->ui) == PLAYER_UI_ID_LIBRARY_ADD && slots > 0u) {
             player->library_page = (slots - 1u) / page_size;
         }
+        if (player->library_focus_pending) {
+            player->library_focus_pending = false;
+            if (player->library_focus_index < count) {
+                nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ITEM(player->library_focus_index));
+                app->selected_game_index = (int)player->library_focus_index;
+                player->library_page = player->library_focus_index / page_size;
+            } else if (count > 0u) {
+                nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ADD);
+                player->library_page = (slots - 1u) / page_size;
+            } else {
+                nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_EMPTY_ADD);
+            }
+        }
         if (slots == 0u) player->library_page = 0u;
         else if (player->library_page > (slots - 1u) / page_size) {
             player->library_page = (slots - 1u) / page_size;
@@ -1051,9 +1107,59 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
                 (void)nk_ui_router_pop(player->router);
                 action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TITLE) {
+                if (player_ui_open_remove(player, app, index)) {
+                    nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
+                    (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_REMOVE);
+                }
+                action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_PRIMARY ||
                        action.kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER) {
                 if (out_action != NULL) *out_action = action;
+            }
+        }
+    } else if (route == PLAYER_UI_ROUTE_REMOVE) {
+        int index = player->remove_index;
+        /* The dialog closes if its title left the library or can no longer
+           be removed (a build or a launch started under it). */
+        if (index < 0 || index >= app->game_count ||
+            strcmp(app->games[index].disc_id, player->remove_disc) != 0 ||
+            player_app_removal_blocker(app, index) != NULL) {
+            (void)nk_ui_router_pop(player->router);
+        } else {
+            PlayerUiRemoveModel model;
+            if (player->remove_focus_pending) {
+                nk_ui_focus(player->ui, PLAYER_UI_ID_REMOVE_CANCEL);
+                player->remove_focus_pending = false;
+            }
+            memset(&model, 0, sizeof(model));
+            model.title = app->games[index].title_name;
+            model.disc_id = app->games[index].disc_id;
+            model.title_index = (size_t)index;
+            model.items = player->remove_items;
+            model.item_count = player->remove_item_count;
+            model.has_saves = player->remove_plan.has_saves;
+            model.saves_bytes = player->remove_plan.saves_bytes;
+            model.delete_saves = player->remove_delete_saves;
+            model.logical_width = scale.logical_w;
+            model.logical_height = scale.logical_h;
+            action = player_ui_screen_remove(player->ui, &model);
+            if (action.kind == PLAYER_UI_ACTION_BACK) {
+                (void)nk_ui_router_pop(player->router);
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES) {
+                player->remove_delete_saves = !player->remove_delete_saves;
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM) {
+                /* The removal runs after this frame; the library then
+                   focuses the tile that takes this one's place. */
+                if (out_action != NULL) *out_action = action;
+                while (nk_ui_router_depth(player->router) > 1u) {
+                    (void)nk_ui_router_pop(player->router);
+                }
+                player->library_focus_pending = true;
+                player->library_focus_index = (size_t)index;
+                action.kind = PLAYER_UI_ACTION_NONE;
             }
         }
     } else if (route == PLAYER_UI_ROUTE_ABOUT) {

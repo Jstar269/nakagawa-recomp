@@ -212,7 +212,24 @@ one or two plain sentences on what to expect on this PC in `BODY_S` `paper`, the
 when there are any. The tier comes from the title's own player record, or else from its `docs/COMPATIBILITY.md`
 status word through the table in [Status words](COMPATIBILITY.md#status-words). The status word itself describes
 the project's test route and read as a claim about the user's game (#1297), so only developer mode names it, in a
-`FOOTNOTE`. Prompt bar: MOVE, SELECT, BACK.
+`FOOTNOTE`. Under the card, REMOVE FROM LIBRARY (a `DANGER` button) for a disc the user added. It is left off
+the showcase demos, and also while that game starts or runs, a package builds or a disc is being copied. Prompt
+bar: MOVE, SELECT, BACK.
+
+### Remove from library (built)
+
+A flow card, 640 px wide, opened over the title page. Cancel has the first focus, and Back closes it, as Cancel
+does. The eyebrow is REMOVE FROM LIBRARY with a `warning` triangle, then "Remove *title*?" in `TITLE`. A box lists
+what Nakagawa built for the game, each item with its size: the built package, the build cache (packages and
+bring-up), and the disc files Nakagawa copied. A `warning` FREES line gives the total. A `ready` line says the disc
+image on the user's PC is not touched. The game's saves are the copied disc's Memory Stick folder and its
+per-user save folder. They get their own box, unticked every time the dialog opens; under it, "Your saves stay." in
+`muted`, or in `error` once the box is ticked, "Your saves for this game will be deleted too." A game with nothing
+built and no saves says so. REMOVE (`DANGER`) removes the title, deletes those folders (and the saves only when
+ticked), and returns to the library. Focus lands on the tile that took the removed title's place, or on the add
+card when it was the last, and the page turns to it. The folders are found from the disc ID under the player's own
+roots, never from a path stored in the library. The disc image, the user's decrypted files and the shared
+manifests are never on the list. Prompt bar: MOVE, SELECT, CANCEL.
 
 ### About (built)
 

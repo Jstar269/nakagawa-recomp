@@ -1941,6 +1941,148 @@ bool player_app_remove_game(PlayerApp *app, int game_index) {
     return true;
 }
 
+/* A disc ID used as a folder name: letters, digits, '-' and '_' only, so it
+   can never name a parent, a separator or a drive. */
+static bool player_removal_disc_id_ok(const char *disc_id) {
+    if (!disc_id || !disc_id[0] || strlen(disc_id) >= NK_MAX_DISC_ID_LEN) return false;
+    for (const char *p = disc_id; *p; ++p) {
+        char c = *p;
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+              c == '-' || c == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+const char *player_app_removal_blocker(const PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return "The game is not in the library.";
+    const GameRecord *game = &app->games[game_index];
+    if (player_game_is_showcase(game)) return "Showcase demos come with Nakagawa and stay in the library.";
+    if (!player_removal_disc_id_ok(game->disc_id)) return "This game's disc ID cannot name a folder.";
+    if (app->is_game_running || app->launch_pending) return "Stop the game first.";
+    if (app->build_session.is_building) return "Wait for the package build to finish first.";
+    if (app->wizard.is_extracting) return "Wait for the disc copy to finish first.";
+    return NULL;
+}
+
+static bool player_removal_add(PlayerRemovalPlan *plan, PlayerRemovalKind kind, bool saves,
+                               const char *keep_child, const char *root, const char *a,
+                               const char *b, const char *c) {
+    if (plan->path_count >= PLAYER_REMOVAL_PATH_CAP || !root || !root[0]) return false;
+    PlayerRemovalPath *entry = &plan->paths[plan->path_count];
+    char sep = nk_platform_path_separator();
+    int n;
+    if (c) {
+        n = snprintf(entry->path, sizeof(entry->path), "%s%c%s%c%s%c%s", root, sep, a, sep, b,
+                     sep, c);
+    } else if (b) {
+        n = snprintf(entry->path, sizeof(entry->path), "%s%c%s%c%s", root, sep, a, sep, b);
+    } else {
+        n = snprintf(entry->path, sizeof(entry->path), "%s%c%s", root, sep, a);
+    }
+    if (n <= 0 || (size_t)n >= sizeof(entry->path)) return false;
+    if (nk_platform_path_missing(entry->path)) return true;
+    snprintf(entry->keep_child, sizeof(entry->keep_child), "%s", keep_child ? keep_child : "");
+    entry->kind = kind;
+    entry->saves = saves;
+    entry->bytes = 0;
+    if (!nk_platform_tree_size(entry->path, keep_child, &entry->bytes)) entry->bytes = 0;
+    plan->path_count++;
+    if (saves) {
+        plan->has_saves = true;
+        plan->saves_bytes += entry->bytes;
+    } else {
+        plan->kind_present[kind] = true;
+        plan->kind_bytes[kind] += entry->bytes;
+    }
+    return true;
+}
+
+bool player_app_plan_game_removal(const PlayerApp *app, int game_index,
+                                  PlayerRemovalPlan *plan) {
+    if (!plan) return false;
+    memset(plan, 0, sizeof(*plan));
+    if (player_app_removal_blocker(app, game_index) != NULL) return false;
+    const char *disc = app->games[game_index].disc_id;
+    snprintf(plan->disc_id, sizeof(plan->disc_id), "%s", disc);
+    /* The build writes under the runtime root when one is set; disc copies
+       and saves always live in the per-user directories. */
+    char build_root[NK_MAX_PATH];
+    char data_root[NK_MAX_PATH];
+    char saves_root[NK_MAX_PATH];
+    bool have_build = player_app_data_root(app, build_root, sizeof(build_root));
+    bool have_data = nk_platform_get_app_data_dir(data_root, sizeof(data_root));
+    bool have_saves = nk_platform_get_path(NK_PATH_SAVES, saves_root, sizeof(saves_root));
+    bool ok = true;
+    if (have_build) {
+        ok = player_removal_add(plan, PLAYER_REMOVAL_PACKAGE, false, NULL, build_root,
+                                "packages", disc, NULL) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, false, NULL, build_root,
+                                "cache", "packages", disc) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, false, NULL, build_root,
+                                "cache", "bringup", disc) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, false, NULL, build_root,
+                                "experimental", disc, NULL) && ok;
+    }
+    if (have_data) {
+        /* The extracted disc files keep their Memory Stick folder, the saves
+           of a game started from them, unless the saves go too. */
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, false, "memstick", data_root,
+                                "games", disc, NULL) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, true, NULL, data_root,
+                                "games", disc, "memstick") && ok;
+        /* A disc copy that stopped part way leaves these beside it. */
+        char staging[NK_MAX_DISC_ID_LEN + 24];
+        snprintf(staging, sizeof(staging), ".staging_%s", disc);
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, false, NULL, data_root,
+                                "games", staging, NULL) && ok;
+        snprintf(staging, sizeof(staging), ".staging_%s.retired", disc);
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, false, NULL, data_root,
+                                "games", staging, NULL) && ok;
+    }
+    if (have_saves) {
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, true, NULL, saves_root, disc,
+                                NULL, NULL) && ok;
+    }
+    return ok;
+}
+
+bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete_saves,
+                                     char *error, size_t error_size) {
+    if (error && error_size) error[0] = '\0';
+    PlayerRemovalPlan plan;
+    const char *blocker = player_app_removal_blocker(app, game_index);
+    if (blocker) {
+        if (error && error_size) snprintf(error, error_size, "%s", blocker);
+        return false;
+    }
+    if (!player_app_plan_game_removal(app, game_index, &plan)) {
+        if (error && error_size) {
+            snprintf(error, error_size, "The folders for this game could not be listed.");
+        }
+        return false;
+    }
+    /* Saves first when they go, so a kept Memory Stick folder never holds up
+       the extracted files around it. */
+    for (int pass = 0; pass < 2; ++pass) {
+        for (size_t i = 0; i < plan.path_count; ++i) {
+            const PlayerRemovalPath *entry = &plan.paths[i];
+            if (entry->saves != (pass == 0)) continue;
+            if (entry->saves && !delete_saves) continue;
+            const char *keep = entry->keep_child[0] && !delete_saves ? entry->keep_child : NULL;
+            if (!nk_platform_remove_tree(entry->path, keep)) {
+                if (error && error_size) {
+                    snprintf(error, error_size, "%s could not be deleted. Close any program "
+                             "using it and try again.", entry->path);
+                }
+                return false;
+            }
+        }
+    }
+    return player_app_remove_game(app, game_index);
+}
+
 void player_app_set_view(PlayerApp *app, PlayerView view) {
     if (!app) return;
     app->active_view = view;

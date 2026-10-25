@@ -60,37 +60,37 @@ static const PlayerUiTitle k_titles[] = {
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE},
+     PLAYER_UI_TIER_PLAYABLE, false},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PLAYABLE},
+     PLAYER_UI_TIER_PLAYABLE, false},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "RETRY PACKAGE CHECK",
      "◆", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE},
+     PLAYER_UI_TIER_NONE, true},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "BUILD PACKAGE",
      "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE},
+     PLAYER_UI_TIER_NONE, true},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_WONT_BOOT},
+     PLAYER_UI_TIER_WONT_BOOT, true},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "BUILD PACKAGE",
      "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PERFECT},
+     PLAYER_UI_TIER_PERFECT, true},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "PLAY",
      "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PERFECT}
+     PLAYER_UI_TIER_PERFECT, true}
 };
 
 /* What-to-expect cards: a player tier with plain words, with known issues, the
@@ -661,8 +661,8 @@ static void test_router(void) {
           "router replaces the root screen with About");
     CHECK(!nk_ui_router_replace(router, (PlayerUiRoute)0) &&
           !nk_ui_router_push(router, (PlayerUiRoute)0) &&
-          !nk_ui_router_replace(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_ABOUT + 1)) &&
-          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_ABOUT + 1)),
+          !nk_ui_router_replace(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)) &&
+          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)),
           "router refuses routes it does not draw");
     CHECK(nk_ui_router_current(router) == PLAYER_UI_ROUTE_ABOUT &&
           nk_ui_router_depth(router) == 1u, "a refused route leaves the stack alone");
@@ -1608,6 +1608,130 @@ static void test_title_with_a_running_game(void) {
     nk_ui_destroy(ui);
 }
 
+static PlayerUiAction activate_remove_button(NkUiId id, const PlayerUiRemoveModel *model) {
+    NkUiConfig config;
+    NkUiEvent activate;
+    NkUi *ui;
+    PlayerUiAction result = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    ui = nk_ui_create(&config);
+    if (ui == NULL) return result;
+    set_test_viewport(ui, 1280, 800);
+    nk_ui_focus(ui, id);
+    memset(&activate, 0, sizeof(activate));
+    activate.type = NK_UI_EV_ACTIVATE;
+    activate.down = true;
+    nk_ui_push_event(ui, &activate);
+    nk_ui_begin(ui, 0.0);
+    result = player_ui_screen_remove(ui, model);
+    (void)nk_ui_end(ui);
+    nk_ui_destroy(ui);
+    return result;
+}
+
+/* #1304: Remove from library sits on a disc's title page, never a showcase
+   demo's, and asks first: the dialog lists what Nakagawa built with sizes,
+   says the disc image stays, and keeps the saves unless their box is ticked. */
+static void test_remove_from_library(void) {
+    static char dump[CASE_DUMP_CAP];
+    static const PlayerUiRemoveItem items[] = {
+        {"Built package", 3u * 1024u * 1024u}, {"Build cache", 512u * 1024u},
+        {"Disc files Nakagawa copied", 40u * 1024u * 1024u}
+    };
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    PlayerUiTitleModel title;
+    PlayerUiRemoveModel remove;
+    PlayerUiAction action;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the remove-from-library UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    memset(&title, 0, sizeof(title));
+    title.title = &k_titles[3];
+    title.title_index = 3u;
+    title.logical_width = 1280.0f;
+    title.logical_height = 800.0f;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_title(ui, &title);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "REMOVE FROM LIBRARY") != NULL, "a disc's title page offers removal");
+    action = activate_title_button(PLAYER_UI_ID_TITLE_REMOVE, &title);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_TITLE && action.title_index == 3u,
+          "Remove from library asks for the dialog for that title");
+    title.title = &k_titles[0];
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_title(ui, &title);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "REMOVE FROM LIBRARY") == NULL,
+          "a showcase demo's title page offers no removal");
+
+    memset(&remove, 0, sizeof(remove));
+    remove.title = "Synthetic Untested Fixture";
+    remove.disc_id = "TEST00005";
+    remove.title_index = 3u;
+    remove.items = items;
+    remove.item_count = sizeof(items) / sizeof(items[0]);
+    remove.has_saves = true;
+    remove.saves_bytes = 2048u;
+    remove.logical_width = 1280.0f;
+    remove.logical_height = 800.0f;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_remove(ui, &remove);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "Remove Synthetic Untested Fixture?") != NULL,
+          "the dialog names the game");
+    CHECK(strstr(dump, "Built package") != NULL && strstr(dump, "3.0 MB") != NULL &&
+              strstr(dump, "Build cache") != NULL && strstr(dump, "512.0 KB") != NULL &&
+              strstr(dump, "Disc files Nakagawa copied") != NULL &&
+              strstr(dump, "40.0 MB") != NULL,
+          "the dialog lists each item with its size");
+    CHECK(strstr(dump, "FREES 43.5 MB") != NULL, "the dialog says how much it frees");
+    CHECK(strstr(dump, "The disc image on your PC is not touched.") != NULL,
+          "the dialog says the disc image stays");
+    CHECK(strstr(dump, "Your saves stay.") != NULL &&
+              strstr(dump, "will be deleted too") == NULL,
+          "the saves box starts unticked and the saves stay");
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_CONFIRM, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM && action.title_index == 3u &&
+              action.primary == PLAYER_UI_PRIMARY_NONE,
+          "Remove without the box keeps the saves");
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_SAVES, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES, "the saves box toggles");
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_CANCEL, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_BACK, "Cancel leaves the dialog");
+    remove.delete_saves = true;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_remove(ui, &remove);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "Your saves for this game will be deleted too.") != NULL,
+          "a ticked box says the saves go too");
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_CONFIRM, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM && action.primary == 1,
+          "Remove with the box ticked deletes the saves");
+    remove.item_count = 0u;
+    remove.has_saves = false;
+    remove.delete_saves = false;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_remove(ui, &remove);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "Nakagawa has not built anything for it yet.") != NULL &&
+              strstr(dump, "This game has no saves.") != NULL &&
+              strstr(dump, "The disc image on your PC is not touched.") != NULL,
+          "a game with nothing built says so and still promises the disc image");
+    nk_ui_destroy(ui);
+}
+
 /* The category -> player tier table in scr_title.c and the "Status words"
    table in docs/COMPATIBILITY.md say the same thing, row for row (#1297). */
 static void test_tier_table_matches_the_docs(void) {
@@ -1697,6 +1821,7 @@ int main(int argc, char **argv) {
     test_design_system_layout();
     test_title_with_a_running_game();
     test_tier_table_matches_the_docs();
+    test_remove_from_library();
     CHECK(build_library_golden(library, sizeof(library), &library_size),
           "build Library screen dumps");
     CHECK(build_title_golden(title, sizeof(title), &title_size),
