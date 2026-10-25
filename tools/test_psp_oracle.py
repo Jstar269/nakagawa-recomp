@@ -2670,6 +2670,9 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn("#define CPU_TIMING_GE_CALLS_PER_TRIAL 1u", self.probe)
         self.assertIn("CPU_TIMING_GE_CALLS_PER_TRIAL, &error", self.probe)
         self.assertIn("sceGuStart(GU_SEND, s_cpu_timing_ge_list);", self.probe)
+        self.assertIn("s_cpu_timing_ge_list_bytes = (uint32_t)list_bytes;", self.probe)
+        self.assertIn("(uintptr_t)s_cpu_timing_ge_list +", self.probe)
+        self.assertIn("(uint32_t)list_bytes > sizeof(s_cpu_timing_ge_list)", self.probe)
 
     def test_dmac_cases_are_individually_buildable_and_use_the_real_imports(self) -> None:
         for case in (

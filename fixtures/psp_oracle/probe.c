@@ -9480,6 +9480,7 @@ typedef struct {
 static uint32_t s_cpu_timing_memory[CPU_TIMING_MISS_BYTES / sizeof(uint32_t)]
     __attribute__((aligned(64)));
 static uint32_t s_cpu_timing_ge_list[64] __attribute__((aligned(64)));
+static uint32_t s_cpu_timing_ge_list_bytes;
 static int s_cpu_timing_ge_qids[CPU_TIMING_GE_CALLS_PER_TRIAL];
 static uint32_t s_cpu_timing_ge_count;
 static uint32_t s_cpu_timing_ge_index;
@@ -9714,7 +9715,9 @@ static int cpu_timing_call_ge_enqueue(void) {
 static int cpu_timing_call_ge_update_stall(void) {
     if (s_cpu_timing_ge_index >= s_cpu_timing_ge_count) return -1;
     const int qid = s_cpu_timing_ge_qids[s_cpu_timing_ge_index++];
-    return sceGeListUpdateStallAddr(qid, s_cpu_timing_ge_list + 2);
+    const uintptr_t stall_addr = (uintptr_t)s_cpu_timing_ge_list +
+                                 s_cpu_timing_ge_list_bytes;
+    return sceGeListUpdateStallAddr(qid, (void *)stall_addr);
 }
 
 static uint32_t cpu_timing_call_batch(CpuTimingCall fn, uint32_t calls, int *error) {
@@ -9892,8 +9895,21 @@ static int cpu_timing_measure_ge_calls(int emulated, uint32_t cpu_mhz) {
     }
     int pass = 1;
     /* This buffer is enqueued below, so libpspgu must emit a queued list to memory. */
-    sceGuStart(GU_SEND, s_cpu_timing_ge_list);
-    sceGuFinish();
+    const int gu_start_rc = sceGuStart(GU_SEND, s_cpu_timing_ge_list);
+    if (gu_start_rc < 0) {
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-enqueue");
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-update-stall");
+        return 0;
+    }
+    const int list_bytes = sceGuFinish();
+    if (list_bytes < (int)(2u * sizeof(s_cpu_timing_ge_list[0])) ||
+        (uint32_t)list_bytes > sizeof(s_cpu_timing_ge_list) ||
+        ((uint32_t)list_bytes & (sizeof(s_cpu_timing_ge_list[0]) - 1u)) != 0u) {
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-enqueue");
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-update-stall");
+        return 0;
+    }
+    s_cpu_timing_ge_list_bytes = (uint32_t)list_bytes;
     sceKernelDcacheWritebackAll();
     probe_step(emulated, "cpu-timing", "ge-enqueue-stall-update");
     for (uint32_t trial = 0; pass && trial < CPU_TIMING_TRIALS; trial++) {

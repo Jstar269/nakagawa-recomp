@@ -531,8 +531,9 @@ is recorded separately as wall latency because the scheduler owns the wait;
 it is not charged as CPU service time. Blocking `sceGeDrawSync(0)` uses four calls
 per trial in a helper thread with a 100 ms caller timeout and termination path.
 GE enqueue and stall-update measurements queue one stalled list per trial,
-release it, and wait for idle before the next trial. GE list completion is polled
-for at most 250 ms and reset on timeout.
+advance the stall address to the byte end returned by `sceGuFinish()`, and wait
+for idle before the next trial. GE list completion is polled for at most 250 ms
+and reset on timeout.
 
 The 64 semantic rows end with `cpu-timing-done` (clock restoration), followed
 by `cpu-timing-complete` with `out0=64`. The runner checks their exact order and
