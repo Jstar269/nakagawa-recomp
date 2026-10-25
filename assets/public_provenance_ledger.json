@@ -4760,7 +4760,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d2f66e518b0cdf45c93122423571361a439c1d067d38a8beb079eecfdaf56dbb"
+      "sha256": "acf6945c9c40cc7d283b58256db513a3f33c16b5e2eeb1cbc5d90e8ab6c4a335"
     },
     {
       "path": "src/rt/cpu_lle.c",
@@ -5306,7 +5306,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1bc121bdc3004fdb75ff897d3ece3b09d026bb0be9b563164ba5829ee5fbcd26"
+      "sha256": "20b08aada587d6b1ed8ad0337648b4ab5bc1bfd5274972d4e29c2b96b7f6b9dc"
     },
     {
       "path": "src/rt/gpu_sdl3vk/README.md",
@@ -5332,7 +5332,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b1074a22dbeecb560eb43fcb1bfb08833bc7cab5488e85496d0a950e348f5366"
+      "sha256": "2209028b3857881de4dda7ace8cede3a8026e02c387974bfcc428b2f9bdac3ad"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -5345,7 +5345,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d39772f540505c2cf9b3c0c34b8ae05c2e77874a2ad70f9837b3bd1564380b4d"
+      "sha256": "9ab04c725d62f5e4cfae70f733f908d75c94e67fd4d031adc4ce27b320357010"
     },
     {
       "path": "src/rt/gpu_sdl3vk/psp_frag.inc",
@@ -8736,7 +8736,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "91d5882b815a52fc2d026651700670842cc79d1ea8d29e9d2ed7e4d86a212c37"
+      "sha256": "38aac467d0d01be8d7ca18a3b3a1f6a228a017fd32b4b0690d5561f2ffcd82e9"
     },
     {
       "path": "src/rt/perf.h",
@@ -8748,7 +8748,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "13537381734e4492fef3ee0e013a7d4712d533216d5890de3338eef54b3cbcf9"
+      "sha256": "3949526218a97ae50419e9d26d7a53adaa97c7baf186e827a4627b58b7b0f245"
     },
     {
       "path": "src/rt/pgd_api.h",
@@ -8808,7 +8808,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "83b6375b750e4e664363fdceb918ac7c11ef968bf651de703cfb0326935cd955"
+      "sha256": "a93402ce0b5f21a8aaf4b090a2e48dc3e6270f0094c91545424989a239a4b956"
     },
     {
       "path": "src/rt/prx_loader.c",
