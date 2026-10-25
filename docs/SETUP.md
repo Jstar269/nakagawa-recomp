@@ -50,16 +50,20 @@ Measured on a Windows 11 x64 PC building and running Hot Shots Tennis with the p
 | Free disk space | 5 GB | 10 GB or more, on an SSD |
 
 - **Memory.** Building a game is the heavy part. One compiler process peaked at about 3 GB
-  while it compiled a large block of translated game code, and BUILD PACKAGE runs two at
-  once. Playing a built game needs far less.
+  while it compiled a large block of translated game code. BUILD PACKAGE keeps 4 GB free
+  for everything else and runs one compile job for each further 3 GB of available memory,
+  so a PC with 8 GB compiles one part at a time and one with 16 GB two or three, depending
+  on what else is running. Playing a built game needs far less.
 - **Disk space.** Each game keeps three things in the player's data folder: its imported disc
   image (about 1.4 GB for Hot Shots Tennis), the built game (about 470 MB) and the build cache
   (about 400 MB). If the player downloads the build tools, they add a 102 MB download, and
   more once unpacked.
 - **SSD.** Builds read and write thousands of small files, so a hard disk makes them much
   slower. Keep the player's data folder on an SSD if you can.
-- **Processor.** BUILD PACKAGE runs two compile jobs at a time, so more cores do not shorten
-  it yet. A first build takes several minutes.
+- **Processor.** BUILD PACKAGE runs up to eight compile jobs at a time, one per logical
+  processor, as far as memory allows, and the build screen counts the parts as they finish.
+  A first build takes several minutes. To choose the job count yourself, set the
+  `NK_PACKAGE_JOBS` environment variable to a number from 1 to 8 before starting the player.
 
 ## Showcase demos on Windows: WSL 2 and PSPDEV
 
@@ -491,7 +495,7 @@ python tools/nk_cli.py build-package <disc_id>
 
 This extracts the plaintext executable (or automatically uses `EBOOT.elf` and guest PRXs from `<user data>/titles/<DISC_ID>/decrypted/`), runs the build pipeline, stages runtime assets, and promotes the package to `<user data>/packages/<DISC_ID>/`. The native player (`build/nakagawa_player.exe`) discovers, validates, and launches packages from that directory ([#297](https://github.com/Jstar269/nakagawa-recomp/issues/297)). An explicit `--module-dir <directory>` can be passed when modules are located elsewhere. When a manifest reads BSS metadata from the disc's `~PSP` executable header (`bss_metadata_source: "psp-header"`), `build-package` extracts it directly from the disc image into `cache/packages/<DISC_ID>/selected.psp` and verifies the `~PSP` magic, so `--psp-header` is only needed if the file on the disc lacks that header.
 
-The built package ships its required guest modules inside `<package>/modules/` (copied under their manifest names), and the launcher sets `SR_MODULE_DIR` to `<package>/modules` so launches are self-contained without external dependencies. A run begins at the title's resolved run entry (`run_entry`: a declared `runtime_bindings.fallback_entry`, else `executable.entry`), ensuring that titles requiring a fallback entry point start there across both the native player and CLI launchers. Re-adding an already imported disc in the library preserves its completed staging and extraction state (`player_merge_readded_game`) when the disc ID, version, and image size match. In a checkout without the private PGF/PGD runtime backends, `build-package` builds with the public backends automatically; PGD-protected game data remains unavailable at run time ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Only an explicit private-backend build (`PUBLIC_SAFE=0`) refuses in such a checkout, with a message naming [#297](https://github.com/Jstar269/nakagawa-recomp/issues/297).
+The built package ships its required guest modules inside `<package>/modules/` (copied under their manifest names), and the launcher sets `SR_MODULE_DIR` to `<package>/modules` so launches are self-contained without external dependencies. A run begins at the title's resolved run entry (`run_entry`: a declared `runtime_bindings.fallback_entry`, else `executable.entry`), ensuring that titles requiring a fallback entry point start there across both the native player and CLI launchers. Re-adding an already imported disc in the library preserves its completed staging and extraction state (`player_merge_readded_game`) when the disc ID, version, and image size match. `build-package` always builds with the public runtime backends; PGD-protected game data remains unavailable at run time ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). The private-backend mode (`PUBLIC_SAFE=0`) was retired on 2026-10-25, and `make` refuses it.
 
 Package work is content-addressed below `<user data>/cache/packages/<DISC_ID>/`; the cache key covers executable bytes, analyzer/codegen semantics, codegen options, generated-code/runtime ABI epochs, compiler identity/target, and native flags. An unchanged key reuses the published package, an ABI-compatible runtime or compiler change recompiles native objects while retaining generated C, and any other semantic change regenerates AOT. The builder writes and verifies `completion-manifest.json` before an atomic directory promotion; interrupted or corrupt entries are refused by the player and launcher. The full contract and rebuild-component names are in [`RUNTIME_PACKAGING_ARCHITECTURE.md`](RUNTIME_PACKAGING_ARCHITECTURE.md#6-private-content-addressed-cache-contract-316), tracked by [#316](https://github.com/Jstar269/nakagawa-recomp/issues/316).
 
@@ -877,7 +881,7 @@ outside the published repository.
 - **Missing Vulkan headers:** pass the correct `-VulkanSdk` path or `VULKAN_SDK=...` Make variable.
 - **`SDL3.dll` missing:** for the release package, keep `bin/SDL3.dll` beside `bin/nakagawa_player.exe`; for a source build, install the MSYS2 UCRT64 SDL3 package so `tools/copy_build_assets.ps1` stages it beside `build/nakagawa_player.exe`.
 - **Retro 8x8 bitmap font in the player UI:** the readable-font path needs `SDL3_ttf.dll` and its dependency closure beside `nakagawa_player.exe` (or on `PATH`). Install the MSYS2 UCRT64 `sdl3-ttf` package and re-run `mingw32-make player`, which stages the whole closure and its licence notices; the workspace doctor reports `RUNTIME_SDL3_TTF`/`RUNTIME_SDL3_TTF_CLOSURE`, and the player itself logs the failing step once to stderr when it falls back. `NK_UI_NO_TTF=1` forces the bitmap fallback on purpose.
-- **`PUBLIC_SAFE=1` active:** when building in a public tree where the private backends are absent, the runtime compiles with `PUBLIC_SAFE=1`. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime refuses encrypted `~PSP` executables; Nakagawa does not decrypt games (see [Encrypted executables](#encrypted-executables)).
+- **`PUBLIC_SAFE=1` active:** the runtime always compiles with `PUBLIC_SAFE=1`; the private-backend mode was retired on 2026-10-25. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime refuses encrypted `~PSP` executables; Nakagawa does not decrypt games (see [Encrypted executables](#encrypted-executables)).
 - **Missing ISO or missing extracted assets:** `place_game_here/ISO/<game>.iso` must be present, and `place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted` (or configured `SR_DATAROOT`) must be populated. `SR_DATAROOT` may instead hold the read-only `<archive>.xb` archives; the runtime mounts those directly ([#298](https://github.com/Jstar269/nakagawa-recomp/issues/298)).
 - **No late PRX exports / asset lookups fail:** restore the required `place_game_here/EXTRACTED/` layout (decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx`).
 - **PSP font missing or text not rendering:** Run `python tools/nk_cli.py fonts status` to see each slot's source, and `python tools/nk_cli.py fonts import <folder>` for any slot that is missing. Your imported fonts are in `<user data>/fonts/v2/` with a `manifest.json`. See [System fonts](#system-fonts).

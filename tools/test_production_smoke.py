@@ -752,7 +752,6 @@ class TestProductionSmokePackage(unittest.TestCase):
                         game_elf=self.fixture_dir / "guest.prx",
                         psp_header=self.fixture_dir / "guest.psp",
                         output_dir=self.root / "out dir",
-                        public_safe=True,
                     )
                 self.assertEqual(caught.exception.code, "PACKAGE_UNSUPPORTED_PATH")
                 self.assertIn("contains spaces", str(caught.exception))
@@ -767,7 +766,6 @@ class TestProductionSmokePackage(unittest.TestCase):
                 game_elf=self.fixture_dir / "guest.prx",
                 psp_header=self.fixture_dir / "guest.psp",
                 output_dir=self.root / "out#dir",
-                public_safe=True,
             )
         self.assertEqual(caught.exception.code, "PACKAGE_UNSUPPORTED_PATH")
         self.assertIn("characters the Make recipes cannot quote", str(caught.exception))
@@ -787,7 +785,6 @@ class TestProductionSmokePackage(unittest.TestCase):
                 game_elf=self.fixture_dir / "guest.prx",
                 psp_header=self.fixture_dir / "guest.psp",
                 output_dir=spaced_dest,
-                public_safe=True,
             )
         self.assertTrue((spaced_dest / "package.json").is_file())
         self.assertTrue((spaced_dest / "build-report.json").is_file())
@@ -818,7 +815,6 @@ class TestProductionSmokePackage(unittest.TestCase):
                     game_elf=self.fixture_dir / "guest.prx",
                     psp_header=self.fixture_dir / "guest.psp",
                     output_dir=spaced_dest,
-                    public_safe=True,
                 )
         self.assertTrue((spaced_dest / "package.json").is_file())
         self.assertTrue((spaced_dest / "build-report.json").is_file())
@@ -852,7 +848,6 @@ class TestProductionSmokePackage(unittest.TestCase):
                 game_elf=self.fixture_dir / "guest.prx",
                 psp_header=self.fixture_dir / "guest.psp",
                 output_dir=spaced_dest,
-                public_safe=True,
             )
         self.assertTrue((spaced_dest / "package.json").is_file())
         self.assertTrue((spaced_dest / "production_smoke.exe").is_file())
@@ -1186,7 +1181,6 @@ class TestCodegenStageReuse(unittest.TestCase):
                 psp_header=self.fixture_dir / "guest.psp",
                 output_dir=output_dir,
                 funcs_per_chunk=1,
-                public_safe=True,
                 **options,
             )
         return result, stdout.getvalue()
@@ -1210,16 +1204,19 @@ class TestCodegenStageReuse(unittest.TestCase):
     def attempt(self, stage: Path, output_dir: Path, *, environment=None):
         """Run the package route against ``stage`` with its Make call recorded, not run.
 
-        Returns the Make target and NK_AOT_PREGENERATED the route chose, and the
-        route's printed output. Make never runs, so the package is incomplete.
+        Returns the Make targets the route ran, in order, with the NK_AOT_PREGENERATED
+        they shared, and the route's printed output. Make never runs, so the package
+        is incomplete.
         """
         real_run = subprocess.run
-        calls = []
+        targets = []
+        pregenerated = set()
         sink = io.StringIO()
 
         def record_make(command, *args, **kwargs):
-            if "--no-print-directory" in command and command[-1] in {"all", "compile"}:
-                calls.append((command[-1], kwargs["env"]["NK_AOT_PREGENERATED"]))
+            if "--no-print-directory" in command and command[-1] in {"all", "pipeline", "compile"}:
+                targets.append(command[-1])
+                pregenerated.add(kwargs["env"]["NK_AOT_PREGENERATED"])
                 return subprocess.CompletedProcess(command, 0)
             return real_run(command, *args, **kwargs)
 
@@ -1230,8 +1227,8 @@ class TestCodegenStageReuse(unittest.TestCase):
         ):
             self.build(output_dir, sink=sink, reuse_aot_stage=stage)
         self.assertEqual(caught.exception.code, "PACKAGE_BUILD_INCOMPLETE")
-        self.assertEqual(len(calls), 1, calls)
-        return calls[0], sink.getvalue()
+        self.assertEqual(len(pregenerated), 1, pregenerated)
+        return (tuple(targets), pregenerated.pop()), sink.getvalue()
 
     def assert_refused(self, stage: Path, code: str, *, environment=None, name: str):
         output_dir = self.root / name
@@ -1239,8 +1236,9 @@ class TestCodegenStageReuse(unittest.TestCase):
         lines = [line for line in output.splitlines() if line.startswith("AOT_STAGE_REUSE:")]
         self.assertEqual(len(lines), 1, output)
         self.assertTrue(lines[0].startswith(f"AOT_STAGE_REUSE: REFUSED {code}"), lines[0])
-        # A refused stage is regenerated from source: the whole build, nothing copied.
-        self.assertEqual(make_call, ("all", "0"))
+        # A refused stage is regenerated from source: the whole build (generation, then
+        # compilation, as `make all` runs them), nothing copied.
+        self.assertEqual(make_call, (("pipeline", "compile"), "0"))
         self.assertEqual(self.generated_code(output_dir), {})
         return lines[0]
 
@@ -1261,7 +1259,7 @@ class TestCodegenStageReuse(unittest.TestCase):
         output_dir = self.root / "accepted"
         make_call, output = self.attempt(stage, output_dir)
         self.assertIn("AOT_STAGE_REUSE: ACCEPTED AOT_STAGE_ACCEPTED", output)
-        self.assertEqual(make_call, ("compile", "1"))
+        self.assertEqual(make_call, (("compile",), "1"))
         copied = self.generated_code(output_dir)
         self.assertEqual(copied, self.generated_code(stage))
         self.assertTrue(set(title_codegen_plan._aot_required_outputs(self.GAME)) <= set(copied))
@@ -1310,7 +1308,7 @@ class TestCodegenStageReuse(unittest.TestCase):
 
         # The stage itself was never modified by any refusal and is still accepted.
         make_call, _output = self.attempt(stage, self.root / "still-accepted")
-        self.assertEqual(make_call, ("compile", "1"))
+        self.assertEqual(make_call, (("compile",), "1"))
 
     def test_stage_changed_after_its_check_is_refused_and_leaves_nothing(self):
         self.require_make()

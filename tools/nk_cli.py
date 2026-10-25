@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
 import time
 import zlib
@@ -1278,10 +1279,6 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
     return options
 
 
-def _has_private_backends(root: Path = ROOT) -> bool:
-    return (root / "src" / "rt" / "pgf.c").is_file() and (root / "src" / "rt" / "pgd.c").is_file()
-
-
 def _current_package_cache_key(
     manifest: dict,
     manifest_path: Path,
@@ -1290,13 +1287,11 @@ def _current_package_cache_key(
     psp_header: Path | None,
     title_input_identity: dict,
     *,
-    public_safe: bool | None = None,
+    public_safe: bool = True,
     instruction_trace: bool = False,
 ) -> dict:
     import title_codegen_plan
 
-    if public_safe is None:
-        public_safe = not _has_private_backends()
     selected_modules = [
         module for module in manifest.get("modules", [])
         if module.get("role") == "guest-prx" and module.get("required", False)
@@ -1464,13 +1459,19 @@ class _BuildProgressReporter:
                 self._out_stream = p.open("a", encoding="utf-8")
 
     def report(self, stage: str, status: str, message: str,
-               detail: str | None = None) -> None:
+               detail: str | None = None, *, completed: int | None = None,
+               total: int | None = None, notice: str | None = None) -> None:
         self.current_stage = stage
         if status == "FAIL":
             self._failed = True
         payload = {"stage": stage, "status": status, "message": message}
         if detail:
             payload["detail"] = detail
+        if completed is not None and total is not None:
+            payload["completed"] = completed
+            payload["total"] = total
+        if notice:
+            payload["notice"] = notice
         line = json.dumps(payload, ensure_ascii=False) + "\n"
         if self._out_stream is not None:
             self._out_stream.write(line)
@@ -1508,6 +1509,91 @@ class _BuildProgressReporter:
             except OSError:
                 pass
             self._log_stream = None
+
+
+# The planner appends {"completed": N, "total": M} lines here while Make compiles
+# (title_codegen_plan.COMPILE_PROGRESS_FILE_ENV).
+_COMPILE_PROGRESS_FILE_ENV = "NK_COMPILE_PROGRESS_FILE"
+
+
+def compile_progress_message(completed: int, total: int) -> str:
+    """Name the part being compiled, or the link once every part is compiled."""
+    if completed >= total:
+        return f"Linking the package ({total} of {total} parts compiled)"
+    return f"Compiling part {completed + 1} of {total}"
+
+
+def compile_load_notice(jobs: int | None, cpus: int | None) -> str | None:
+    """A calm note that other apps may slow down, sized to the share of the PC in use.
+
+    One job leaves most of the PC free, so it gets no notice.
+    """
+    if not jobs or jobs <= 1:
+        return None
+    if not cpus or jobs * 2 >= cpus:
+        return ("Building uses most of your PC's power for a few minutes, "
+                "so other apps may feel slower until it finishes.")
+    return ("Building uses some of your PC's power for a few minutes, "
+            "so other apps may feel a little slower until it finishes.")
+
+
+class _CompileProgressRelay:
+    """Report the planner's compile progress file as ``compile`` RUNNING events.
+
+    A thread reads complete lines as the planner appends them, so the player sees
+    "Compiling part N of M" while the planner process is still running.
+    """
+
+    def __init__(self, reporter: _BuildProgressReporter, path: Path,
+                 poll_seconds: float = 0.5):
+        self.reporter = reporter
+        self.path = path
+        self.poll_seconds = poll_seconds
+        self.last: tuple[int, int] | None = None
+        self._offset = 0
+        self._partial = ""
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="compile-progress", daemon=True)
+
+    def __enter__(self) -> "_CompileProgressRelay":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._stop.set()
+        self._thread.join()
+        self.drain()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.poll_seconds):
+            self.drain()
+
+    def drain(self) -> None:
+        try:
+            with self.path.open("r", encoding="utf-8") as stream:
+                stream.seek(self._offset)
+                text = stream.read()
+                self._offset = stream.tell()
+        except OSError:
+            return
+        lines = (self._partial + text).split("\n")
+        self._partial = lines.pop()
+        for line in lines:
+            try:
+                row = json.loads(line)
+                completed, total = int(row["completed"]), int(row["total"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if total <= 0 or not 0 <= completed <= total or (completed, total) == self.last:
+                continue
+            self.last = (completed, total)
+            jobs, cpus = row.get("jobs"), row.get("cpus")
+            self.reporter.report("compile", "RUNNING",
+                                 compile_progress_message(completed, total),
+                                 completed=completed, total=total,
+                                 notice=compile_load_notice(
+                                     jobs if isinstance(jobs, int) else None,
+                                     cpus if isinstance(cpus, int) else None))
 
 
 _BUILD_DIAGNOSTIC_MARKERS = ("error:", "cannot find", "undefined reference")
@@ -1892,7 +1978,6 @@ def _build_package(args: argparse.Namespace, stage_observer,
         _require_child(user_root, target_dir, "Package destination")
         if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
             raise PackageBuildError("Package destination is not a safe directory; refusing to replace it.")
-        public_safe = not _has_private_backends()
         cache_key = _current_package_cache_key(
             manifest,
             manifest_cache_path,
@@ -1900,7 +1985,6 @@ def _build_package(args: argparse.Namespace, stage_observer,
             module_dir,
             cached_header,
             title_input_identity,
-            public_safe=public_safe,
             instruction_trace=bool(getattr(args, "instruction_trace", False)),
         )
         previous_key = package_cache.package_cache_key(target_dir) if target_dir.is_dir() else None
@@ -1986,9 +2070,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 str(output_dir),
                 "--title-input-identity-file",
                 str(identity_path),
+                "--public-safe",
             ]
-            if public_safe:
-                planner.append("--public-safe")
             if module_dir is not None:
                 planner.extend(("--module-dir", str(module_dir)))
             if cached_header is not None:
@@ -2067,14 +2150,19 @@ def _build_package(args: argparse.Namespace, stage_observer,
             stage_observer("compile", "START", 0)
         log_command(command)
         compile_started = time.perf_counter()
-        completed = subprocess.run(
-            command,
-            cwd=ROOT,
-            env=build_environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory(prefix="nk-compile-progress-") as progress_dir:
+            progress_path = Path(progress_dir) / "compile-progress.jsonl"
+            compile_environment = dict(build_environment)
+            compile_environment[_COMPILE_PROGRESS_FILE_ENV] = str(progress_path)
+            with _CompileProgressRelay(reporter, progress_path):
+                completed = subprocess.run(
+                    command,
+                    cwd=ROOT,
+                    env=compile_environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
         if completed.stdout:
             reporter.log(completed.stdout)
             if not reporter.is_json_stdout:
@@ -2155,15 +2243,11 @@ def _build_package(args: argparse.Namespace, stage_observer,
                             f"Guest module staging collision: {target_module} is a directory, expecting a file."
                         )
                     shutil.copyfile(module_file, target_module)
-        backends_mode = "public" if public_safe else "private"
-        backend_limits = (
-            [
-                "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
-                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
-            ]
-            if public_safe
-            else []
-        )
+        backends_mode = "public"
+        backend_limits = [
+            "Fonts: import your own PSP fonts; the public PGF reader is available for supported inputs.",
+            "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
+        ]
         package_cache.write_completion_manifest(
             build_dir,
             cache_key,

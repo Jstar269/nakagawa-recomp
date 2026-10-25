@@ -1281,6 +1281,19 @@ bool package_builder_parse_progress_line(
     safe_str_copy(out_event->stage, sizeof(out_event->stage), nk_json_get_string(n_stage));
     safe_str_copy(out_event->status, sizeof(out_event->status), nk_json_get_string(n_status));
     safe_str_copy(out_event->message, sizeof(out_event->message), nk_json_get_string(n_message));
+    {
+        /* Optional compile part count; a malformed or inconsistent pair is ignored,
+           leaving the event without a count rather than refusing the line. */
+        int64_t completed = 0, total = 0;
+        if (nk_json_get_int64(nk_json_obj_get(root, "completed"), &completed) &&
+            nk_json_get_int64(nk_json_obj_get(root, "total"), &total) &&
+            total > 0 && total <= (int64_t)UINT32_MAX && completed >= 0 && completed <= total) {
+            out_event->parts_completed = (uint32_t)completed;
+            out_event->parts_total = (uint32_t)total;
+        }
+        const char *notice = nk_json_get_string(nk_json_obj_get(root, "notice"));
+        if (notice) safe_str_copy(out_event->notice, sizeof(out_event->notice), notice);
+    }
     nk_json_free(root);
 
     /* Map stage string to enum */
@@ -1354,6 +1367,22 @@ const char *package_builder_get_output_line(
     return session->output_lines[slot];
 }
 
+float package_builder_compile_fraction(const PackageBuildSession *session) {
+    if (!session || session->parts_total == 0 ||
+        session->current_stage != PACKAGE_BUILD_STAGE_COMPILE) {
+        return -1.0f;
+    }
+    return (float)session->parts_completed / (float)session->parts_total;
+}
+
+const char *package_builder_compile_notice(const PackageBuildSession *session) {
+    if (!session || session->compile_notice[0] == '\0' ||
+        session->current_stage != PACKAGE_BUILD_STAGE_COMPILE) {
+        return NULL;
+    }
+    return session->compile_notice;
+}
+
 void package_builder_apply_event(
     PackageBuildSession *session,
     const PackageProgressEvent *event
@@ -1376,11 +1405,26 @@ void package_builder_apply_event(
     }
     if (event->error_code[0]) safe_str_copy(session->failure_code, sizeof(session->failure_code), event->error_code);
     if (event->install_complete) session->prerequisite_install_complete = true;
+    if (event->parts_total > 0) {
+        session->parts_completed = event->parts_completed;
+        session->parts_total = event->parts_total;
+        safe_str_copy(session->compile_notice, sizeof(session->compile_notice), event->notice);
+    } else if (event->stage_enum == PACKAGE_BUILD_STAGE_COMPILE &&
+               event->status_enum == PACKAGE_PROGRESS_STATUS_START) {
+        /* A new compile phase has not counted its parts yet. */
+        session->parts_completed = 0;
+        session->parts_total = 0;
+        session->compile_notice[0] = '\0';
+    }
 
-    char line_buf[PACKAGE_BUILD_LINE_LEN];
-    snprintf(line_buf, sizeof(line_buf), "[%.31s] %.31s: %.180s",
-             event->stage, event->status, event->message);
-    package_builder_add_output_line(session, line_buf);
+    /* A part count arrives once per finished object; the card's bar and message
+       show it, so it would only push the meaningful lines out of the log. */
+    if (event->parts_total == 0) {
+        char line_buf[PACKAGE_BUILD_LINE_LEN];
+        snprintf(line_buf, sizeof(line_buf), "[%.31s] %.31s: %.180s",
+                 event->stage, event->status, event->message);
+        package_builder_add_output_line(session, line_buf);
+    }
 
     if (event->status_enum == PACKAGE_PROGRESS_STATUS_FAIL) {
         session->current_stage = PACKAGE_BUILD_STAGE_FAILED;
@@ -1838,11 +1882,14 @@ NkResult package_builder_start(
     char path_environment[32784];
     const char *envp[2] = { NULL, NULL };
     char downloaded_bin[NK_MAX_PATH];
-    int path_len = snprintf(downloaded_bin, sizeof(downloaded_bin),
+    int path_len = 0;
+    if (user_data_root && user_data_root[0]) {
+        path_len = snprintf(downloaded_bin, sizeof(downloaded_bin),
                             "%s%cprerequisites%cmsys64%cucrt64%cbin",
                             user_data_root, nk_platform_path_separator(),
                             nk_platform_path_separator(), nk_platform_path_separator(),
                             nk_platform_path_separator());
+    }
     const char *old_path = getenv("PATH");
     if (path_len > 0 && (size_t)path_len < sizeof(downloaded_bin)) {
         char downloaded_gcc[NK_MAX_PATH];
