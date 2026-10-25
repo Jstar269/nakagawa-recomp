@@ -17,6 +17,8 @@ number, so a reader never has to trust a summary sentence.
     audio_drift  queue depth over time: bounded, and not accumulating across the run
     route        ROUTE_OK present when a route program was loaded
     fatal        FATAL / ROUTE_FAIL / watchdog / access-violation markers
+    compat_patches  which temporary compatibility patches fired (#1274): reported, not judged,
+                 so a defect found in the run can be traced to a patch that was active
 
 Every threshold is a flag; the defaults are the ones the flagship campaign uses. Nothing here
 knows what game produced the telemetry, and no assertion is derived from a title: the same
@@ -80,6 +82,12 @@ AUDIOSTAT_WIN = re.compile(
     r"(?:\s+queued=(-?\d+)\s+lead_ms=(-?\d+))?"
 )
 ROUTE_OK = re.compile(r"ROUTE_OK: (\d+) steps completed by vblank (\d+)")
+# The runtime's fired-patch report (#1274): one line per patch that fired, then a summary that
+# says "fired=0 none" outright. First-hit lines are printed as each patch first fires, so a run
+# that died before its report still names what was active.
+COMPAT_PATCH_REPORT = re.compile(r"^COMPAT_PATCH_REPORT: fired=(\d+)", re.MULTILINE)
+COMPAT_PATCH_FIRED = re.compile(r"^COMPAT_PATCH_FIRED: order=\d+ hits=(\d+) id=(.+)$", re.MULTILINE)
+COMPAT_PATCH_FIRST_HIT = re.compile(r"^COMPAT_PATCH_FIRST_HIT: order=\d+ id=(.+)$", re.MULTILINE)
 
 
 @dataclass
@@ -364,6 +372,31 @@ def check_fatal(report: Report, text: str) -> None:
         report.add("fatal", True, "no fatal marker")
 
 
+def check_compat_patches(report: Report, text: str, counts_only: bool) -> None:
+    """Name the temporary compatibility patches that fired; never a failure on its own.
+
+    The ids carry title addresses, so a summary meant for publication passes counts_only.
+    """
+    summary = COMPAT_PATCH_REPORT.search(text)
+    if summary:
+        fired = [(hits, pid.strip()) for hits, pid in COMPAT_PATCH_FIRED.findall(text)]
+        detail = f"fired={summary.group(1)}"
+        if summary.group(1) == "0":
+            detail += " none"
+        elif not counts_only:
+            detail += ": " + "; ".join(f"{pid} hits={hits}" for hits, pid in fired)
+        report.add("compat_patches", True, detail)
+        return
+    first_hits = [pid.strip() for pid in COMPAT_PATCH_FIRST_HIT.findall(text)]
+    if first_hits:
+        detail = f"fired>={len(first_hits)} (no end-of-run report)"
+        if not counts_only:
+            detail += ": " + "; ".join(first_hits)
+        report.add("compat_patches", True, detail)
+        return
+    report.add("compat_patches", None, "no COMPAT_PATCH_REPORT in the log (build predates #1274?)")
+
+
 def audit(args: argparse.Namespace) -> Report:
     report = Report()
     if args.perf:
@@ -387,6 +420,7 @@ def audit(args: argparse.Namespace) -> Report:
         text = Path(args.stderr).read_text(encoding="utf-8", errors="replace")
         check_fatal(report, text)
         check_route(report, text)
+        check_compat_patches(report, text, args.compat_counts_only)
         if args.audio:
             check_audio(report, text, args.max_underruns, args.max_drift_ms,
                         args.max_drift_net_ms)
@@ -395,7 +429,7 @@ def audit(args: argparse.Namespace) -> Report:
                 report.add(name, None,
                            "not judged (pass --audio to read the run's own counters)")
     else:
-        for name in ("fatal", "route", "audio", "audio_drift"):
+        for name in ("fatal", "route", "compat_patches", "audio", "audio_drift"):
             report.add(name, None, "no stderr log given")
     return report
 
@@ -419,6 +453,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-drift-net-ms", type=int, default=250,
                     help="how far the queue may end up ahead of where it started")
     ap.add_argument("--audio", action="store_true", help="judge the audio counters")
+    ap.add_argument("--compat-counts-only", action="store_true",
+                    help="report how many compatibility patches fired, not which (for a public summary)")
     ap.add_argument("--json", action="store_true", help="also print the report as JSON")
     args = ap.parse_args(argv)
 

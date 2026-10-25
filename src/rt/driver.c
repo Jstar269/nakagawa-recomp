@@ -477,6 +477,8 @@ int main(int argc, char **argv) {
     sr_debug_init_watches();
     sr_perf_init();
     sr_profile_init();
+    /* Fired-patch report (#1274) at an ordinary exit; the _Exit paths call it directly. */
+    (void)atexit(sr_compat_report);
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--expect-u32", 12) != 0) continue;

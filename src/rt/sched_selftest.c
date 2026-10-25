@@ -1139,6 +1139,53 @@ static void test_title_config_configured_roles_act(void) {
     }
 }
 
+/* Hits recorded so far for one census id in the fired-patch report, 0 when absent. */
+static unsigned long long compat_hits(const char *id) {
+    char got[160];
+    unsigned long long hits;
+    for (unsigned i = 0; sr_compat_fired_at(i, got, sizeof got, &hits); i++)
+        if (strcmp(got, id) == 0) return hits;
+    return 0;
+}
+
+/* #1274: a configured scheduler patch that applies is named in the fired-patch report
+ * by its census id and counted once per application; a build that configures neither
+ * role drives the same create paths at every candidate entry and reports nothing. */
+static void test_compat_fired_report_names_applied_patches(void) {
+    char id[160];
+    if (cfg_has(SR_TITLE_CFG_WORKER_ENTRY)) {
+        snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:worker thread reuse", (unsigned)cfg_worker_entry());
+        unsigned long long before = compat_hits(id);
+        reset_sched();
+        expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");
+        uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+        expect(compat_hits(id) == before, "the first worker create is not a reuse");
+        expect(sched_create_thread(cfg_worker_entry(), 36, 0x1000u) == worker &&
+               compat_hits(id) == before + 1u,
+               "a worker reuse appears in the fired-patch report under its census id");
+    }
+    if (cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
+        snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:launcher priority demotion",
+                 (unsigned)cfg_launcher_entry());
+        unsigned long long before = compat_hits(id);
+        reset_sched();
+        expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");
+        expect(sched_create_thread(cfg_launcher_entry(), 32, 0x1000u) != 0 &&
+               compat_hits(id) == before + 1u,
+               "a launcher demotion appears in the fired-patch report under its census id");
+    }
+    if (!cfg_has(SR_TITLE_CFG_WORKER_ENTRY) && !cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
+        for (size_t i = 0; i < sizeof(k_candidate_entries) / sizeof(k_candidate_entries[0]); i++) {
+            reset_sched();
+            expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");
+            (void)sched_create_thread(k_candidate_entries[i], 32, 0x1000u);
+            (void)sched_create_thread(k_candidate_entries[i], 32, 0x1000u);
+        }
+        expect(sr_compat_fired_count() == 0u,
+               "a build that configures no compatibility binding reports no fired patch");
+    }
+}
+
 /* A delivered VBLANK writes no guest memory of its own. The only code that may advance a
  * guest's frame or vsync words is the guest's own VBLANK handler; a runtime that also
  * incremented a title-named pair counted every VBLANK twice for a guest whose handler
@@ -4454,6 +4501,7 @@ int main(int argc, char **argv) {
     test_role_uid_capture();
     test_title_config_foreign_entries_are_inert();
     test_title_config_configured_roles_act();
+    test_compat_fired_report_names_applied_patches();
     test_delivered_vblank_writes_no_guest_memory();
     test_historical_launcher_uid_is_ordinary_when_unconfigured();
     test_historical_worker_uid_is_ordinary_when_unconfigured();
@@ -4540,6 +4588,7 @@ int main(int argc, char **argv) {
 
     fprintf(stderr, "sched_selftest: title config \"%s\" (valid=0x%x)\n",
             sr_title_config()->source_id, sr_title_config()->valid);
+    sr_compat_report();   /* the end-of-run report a real run prints (#1274) */
     fprintf(stderr, "sched_selftest: %d checks, %d failures\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

@@ -32,6 +32,7 @@ from analyze import (
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
 )
 from host_stubs import HST_SIMPLE_STUBS
+import compat_overrides
 import entry_frame_balance
 from imports import ImportTableError, format_boundary
 
@@ -2200,6 +2201,24 @@ GUEST_PATCHES = {
 # Static-verify exclusions: the four stand-alone specials plus every patched addr.
 _SV_SPECIAL |= _GUEST_PATCH_KEYS
 
+
+def compat_fired_stmt(collection, address):
+    """The generated call that records one temporary compatibility patch firing (#1274).
+
+    The collection, address and name are the census id parts from
+    tools/compat_overrides.py, so the runtime report prints exactly the id that
+    `compat_overrides.py --debt-census` lists.  An entry of another category is not
+    census debt and records nothing; an address missing from the manifest is an
+    error rather than a patch that fires unreported.
+    """
+    for entry in getattr(compat_overrides, collection):
+        if entry.get("address") != address:
+            continue
+        if entry.get("category") != "temporary_compatibility_patch":
+            return ""
+        return f' sr_compat_fired("{collection}", 0x{address:08x}u, "{entry["name"]}");'
+    raise KeyError(f"{collection} has no manifest entry for 0x{address:08x}")
+
 # Opcodes that write no GPR at all (FPU/VFPU compute + loads/stores to
 # coprocessors, plain stores, cache/pref).
 _SV_NOGPR_OPS = {0x18, 0x19, 0x1B, 0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x2F,
@@ -2792,6 +2811,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                     inject_stmt += p["stmt"]
             elif p["kind"] == "inject":
                 inject_stmt += p["stmt"]
+            inject_stmt += compat_fired_stmt("GUEST_PATCHES", addr)
 
         out.append(f"    {{ uint32_t _c = {cond};{inject_stmt}")
         out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
@@ -3428,12 +3448,13 @@ def main(argv):
             func_texts.append(text); emitted.append(a); continue
 
         if hst_profile and a == 0x0001034c:
-            text = """void f_0001034c(CpuState *s) {  /* custom stub: skip corrupted heap-statistics walk */
+            text = f"""void f_0001034c(CpuState *s) {{  /* custom stub: skip corrupted heap-statistics walk */
     /* This routine only accumulates mallinfo-style counters. The guest free-list can be
      * incomplete during bring-up; walking it must not block game initialization. */
+   {compat_fired_stmt("CODEGEN_CUSTOM_STUBS", a)}
     s->r[2] = 0u;
     s->pc = s->r[31];
-}"""
+}}"""
             func_texts.append(text); emitted.append(a); continue
 
 
@@ -3441,6 +3462,7 @@ def main(argv):
         if a in SIMPLE_STUBS:
             name, ret_val = SIMPLE_STUBS[a]
             text = f"""void f_{a:08x}(CpuState *s) {{  /* custom stub: {name} - return static val */
+   {compat_fired_stmt("HST_SIMPLE_STUBS", a)}
     s->r[2] = {ret_val};
     s->pc = s->r[31];
 }}"""
@@ -3496,6 +3518,7 @@ def main(argv):
             fflush(stderr);
             warned = 1;
         }
+       """ + compat_fired_stmt("CODEGEN_CUSTOM_STUBS", a) + """
         s->r[2] = 1u;
     }
 }"""

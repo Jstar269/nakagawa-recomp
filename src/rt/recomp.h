@@ -696,6 +696,10 @@ void     sr_break(CpuState *s, uint32_t code, uint32_t pc);
 void     sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
 uint32_t sr_bitrev(uint32_t x);
 
+/* Fired-patch report (#1274), defined in title_config.c and declared in title_config.h
+ * too: generated code calls it where a codegen temporary compatibility patch applies. */
+void sr_compat_fired(const char *collection, uint32_t anchor, const char *name);
+
 /* PSP-EABI bridge used by the generated guest sprintf entry. */
 void sr_guest_sprintf(CpuState *s);
 /* Format the guest string at `fmt` with variadic words starting in register
