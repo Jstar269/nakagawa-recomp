@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 
 from nk_doctor_core import (
@@ -47,6 +48,17 @@ from vulkan_sdk import VulkanSdkError, discover_vulkan_sdk
 # raise this floor to (7, 6) then.
 MINIMUM_POWERSHELL: tuple[int, int] = (7, 4)
 MINIMUM_POWERSHELL_TEXT = ".".join(str(part) for part in MINIMUM_POWERSHELL)
+
+#: Advisory worktree-accumulation bounds (#368 item 8). These are not gates:
+#: a developer with many lanes must be told that the checkout is accumulating
+#: state, not have the build refused. The defaults are the point at which a
+#: single machine is carrying more parallel canaries than a review can track,
+#: and the point at which regenerable build output is worth reclaiming.
+WORKTREE_COUNT_ADVISORY = 16
+WORKTREE_BUILD_TOTAL_ADVISORY = 10 * 1024 ** 3
+WORKTREE_BUILD_SINGLE_ADVISORY = 5 * 1024 ** 3
+WORKTREE_SCAN_SECONDS = 20.0
+WORKTREE_SCAN_FILE_LIMIT = 200_000
 
 
 def _probe_powershell() -> tuple[Path | None, str | None, str | None, str | None]:
@@ -418,6 +430,313 @@ def check_long_paths(
             path=expected_deepest,
             detail=f"LongPathsEnabled={long_paths_enabled}, {detail}",
             metadata=metadata,
+        )
+
+
+def _bounded_directory_bytes(
+    path: Path,
+    *,
+    deadline: float,
+    file_limit: int,
+) -> tuple[int, bool]:
+    """Sum regular-file bytes under *path* without following links or crossing .git.
+
+    Bounded twice: by a monotonic deadline and by a file count, so an advisory
+    diagnostic cannot turn a checkout with a large build tree into a stall. The
+    boolean result is True when either bound stopped the walk early.
+    """
+    total = 0
+    seen = 0
+    stack: list[Path] = [path]
+    while stack:
+        if time.monotonic() >= deadline:
+            return total, True
+        current = stack.pop()
+        try:
+            with os.scandir(current) as iterator:
+                for entry in iterator:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if entry.name != ".git":
+                                stack.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                            seen += 1
+                            if seen >= file_limit:
+                                return total, True
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return total, False
+
+
+def _parse_worktree_listing(text: str) -> list[dict[str, object]]:
+    """Parse ``git worktree list --porcelain`` without losing paths with spaces."""
+    entries: list[dict[str, object]] = []
+    current: dict[str, object] | None = None
+    for line in text.splitlines():
+        if line.startswith("worktree "):
+            if current is not None:
+                entries.append(current)
+            current = {"path": line[len("worktree "):], "prunable": False, "locked": False}
+        elif current is None:
+            continue
+        elif line == "prunable" or line.startswith("prunable "):
+            current["prunable"] = True
+        elif line == "locked" or line.startswith("locked "):
+            current["locked"] = True
+    if current is not None:
+        entries.append(current)
+    return entries
+
+
+def _format_bytes(count: int) -> str:
+    for suffix, factor in (("GiB", 1024 ** 3), ("MiB", 1024 ** 2), ("KiB", 1024)):
+        if count >= factor:
+            return f"{count / factor:.1f} {suffix}"
+    return f"{count} B"
+
+
+def _git_common_dir(git: str, root: Path) -> Path | None:
+    """Return the shared git directory, falling back to a relative answer."""
+    for args in (
+        ("rev-parse", "--path-format=absolute", "--git-common-dir"),
+        ("rev-parse", "--git-common-dir"),
+    ):
+        try:
+            proc = subprocess.run(
+                [git, "-C", str(root), *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode == 0 and proc.stdout.strip():
+            candidate = Path(proc.stdout.strip())
+            if not candidate.is_absolute():
+                candidate = (root / candidate)
+            try:
+                return candidate.resolve()
+            except OSError:
+                return None
+    return None
+
+
+def check_worktree_accumulation(
+    report: Report,
+    root: Path | None = None,
+    *,
+    count_limit: int = WORKTREE_COUNT_ADVISORY,
+    total_build_limit: int = WORKTREE_BUILD_TOTAL_ADVISORY,
+    single_build_limit: int = WORKTREE_BUILD_SINGLE_ADVISORY,
+    time_budget: float = WORKTREE_SCAN_SECONDS,
+    file_limit: int = WORKTREE_SCAN_FILE_LIMIT,
+) -> None:
+    """Report linked-worktree and regenerable build-output accumulation (#368).
+
+    A long-lived checkout accumulates Git worktrees, and each one accumulates a
+    ``build`` output tree. Neither is visible from inside a single checkout, and
+    both grow until a machine runs out of space or a search reads stale copies of
+    the policy engine. This is an advisory inventory: it never removes, prunes or
+    writes anything, and it reports names and sizes rather than contents.
+
+    Checks, each its own result so a reader can act on one at a time:
+
+    * ``WORKTREES_COUNT`` -- more linked worktrees than the advisory bound;
+    * ``WORKTREES_NESTED`` -- a linked worktree placed inside this checkout, which
+      recursive tooling, searches and archivers then sweep;
+    * ``WORKTREES_UNREGISTERED`` -- directories beside the checkout in the
+      conventional ``worktrees/`` directory that Git does not know about;
+    * ``WORKTREES_STALE`` -- a registered worktree whose path is gone or prunable;
+    * ``WORKTREES_BUILD_SIZE`` -- regenerable build output above the advisory size.
+
+    The scan is bounded by *time_budget* and *file_limit*; a truncated scan still
+    reports the bytes it measured and says so in the detail.
+    """
+    resolved_root = (root or report.root).resolve()
+    git = shutil.which("git")
+    if not git:
+        report.warn(
+            "WORKTREES",
+            "Linked Git worktrees were not audited because git was not found on PATH",
+        )
+        return
+    try:
+        listing = subprocess.run(
+            [git, "-C", str(resolved_root), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        report.warn("WORKTREES", "Linked Git worktrees could not be enumerated", detail=str(exc))
+        return
+    if listing.returncode != 0:
+        report.info("WORKTREES", "Not a Git checkout; linked worktrees were not audited")
+        return
+
+    entries = _parse_worktree_listing(listing.stdout)
+    registered: dict[str, dict[str, object]] = {}
+    for entry in entries:
+        try:
+            registered[os.path.normcase(str(Path(str(entry["path"])).resolve()))] = entry
+        except OSError:
+            registered[os.path.normcase(str(entry["path"]))] = entry
+
+    common = _git_common_dir(git, resolved_root)
+    main_checkout = common.parent if common is not None else resolved_root
+
+    # A linked worktree is nested when it sits inside any checkout of this
+    # repository, not only the one running the diagnostic: a lane created under
+    # a sibling checkout is still swept by that checkout's searches and archives.
+    containers = {resolved_root, main_checkout.resolve()}
+    nested: list[str] = []
+    stale: list[str] = []
+    for entry in registered.values():
+        path = Path(str(entry["path"]))
+        try:
+            candidate = path.resolve()
+        except OSError:
+            candidate = path
+        if candidate not in containers and any(box in candidate.parents for box in containers):
+            nested.append(path.name or str(path))
+        if entry.get("prunable") or not path.exists():
+            stale.append(path.name or str(path))
+
+    unregistered: list[str] = []
+    if common is not None:
+        # The documented layout keeps linked worktrees in a ``worktrees/``
+        # directory beside the main checkout, so that directory is the main
+        # checkout's sibling, not a child of it.
+        sibling = main_checkout.parent / "worktrees"
+        if sibling is not None and sibling.is_dir():
+            # Only treat the directory as the workspace layout when at least one
+            # registered worktree already lives there; an unrelated neighbouring
+            # "worktrees" directory must not produce findings.
+            sibling_name = os.path.normcase(str(sibling.resolve()))
+            in_layout = any(
+                key == sibling_name or key.startswith(sibling_name + os.sep)
+                for key in registered
+            )
+            if in_layout:
+                try:
+                    for child in sorted(sibling.iterdir()):
+                        if not child.is_dir():
+                            continue
+                        try:
+                            child_key = os.path.normcase(str(child.resolve()))
+                        except OSError:
+                            child_key = os.path.normcase(str(child))
+                        if child_key not in registered:
+                            unregistered.append(child.name)
+                except OSError:
+                    pass
+
+    deadline = time.monotonic() + max(0.0, time_budget)
+    build_sizes: list[tuple[str, int]] = []
+    truncated = False
+    for entry in registered.values():
+        build_dir = Path(str(entry["path"])) / "build"
+        if not build_dir.is_dir():
+            continue
+        size, stopped = _bounded_directory_bytes(build_dir, deadline=deadline, file_limit=file_limit)
+        truncated = truncated or stopped
+        build_sizes.append((Path(str(entry["path"])).name or str(entry["path"]), size))
+    total_build = sum(size for _name, size in build_sizes)
+    largest = max(build_sizes, key=lambda item: item[1]) if build_sizes else None
+
+    problems = False
+    if len(registered) > count_limit:
+        problems = True
+        report.warn(
+            "WORKTREES_COUNT",
+            f"{len(registered)} linked worktrees are registered (advisory limit {count_limit})",
+            detail=(
+                "Retire finished lanes rather than leaving them registered: export the working-tree "
+                "diff and a bundle of the branch first, then remove the worktree and prune. "
+                "Doctor never removes a worktree."
+            ),
+            metadata={"count": len(registered), "limit": count_limit},
+        )
+    if nested:
+        problems = True
+        report.warn(
+            "WORKTREES_NESTED",
+            f"{len(nested)} linked worktree(s) live inside a checkout of this repository",
+            detail=(
+                "Nested: " + ", ".join(sorted(nested)[:8])
+                + (" (and more)" if len(nested) > 8 else "")
+                + ". Recursive searches, archives and linters sweep the containing checkout, so a "
+                "nested worktree is read as part of it. Place linked worktrees beside a checkout, "
+                "not inside one."
+            ),
+            metadata={"nested": sorted(nested)},
+        )
+    if unregistered:
+        problems = True
+        report.warn(
+            "WORKTREES_UNREGISTERED",
+            f"{len(unregistered)} directory(ies) beside the checkout are not registered worktrees",
+            detail=(
+                "Unregistered: " + ", ".join(sorted(unregistered)[:8])
+                + (" (and more)" if len(unregistered) > 8 else "")
+                + ". A plain copy is not a worktree: Git will not prune it and it will not follow the "
+                "repository. Remove it after exporting anything unique, or re-create it with "
+                "git worktree add."
+            ),
+            metadata={"unregistered": sorted(unregistered)},
+        )
+    if stale:
+        problems = True
+        report.warn(
+            "WORKTREES_STALE",
+            f"{len(stale)} registered worktree path(s) are missing or prunable",
+            detail=(
+                "Stale: " + ", ".join(sorted(stale)[:8])
+                + (" (and more)" if len(stale) > 8 else "")
+                + ". Run 'git worktree prune' after confirming no uncommitted work remains at those paths."
+            ),
+            metadata={"stale": sorted(stale)},
+        )
+    if total_build > total_build_limit or (largest is not None and largest[1] > single_build_limit):
+        problems = True
+        if total_build > total_build_limit:
+            scope = "the total"
+        elif largest is not None:
+            scope = f"worktree {largest[0]}"
+        else:
+            scope = "one worktree"
+        report.warn(
+            "WORKTREES_BUILD_SIZE",
+            f"Regenerable build output is {_format_bytes(total_build)} across {len(build_sizes)} worktree(s)",
+            detail=(
+                f"Measured {_format_bytes(total_build)} total across {len(build_sizes)} worktree(s); "
+                f"advisory limits: {_format_bytes(total_build_limit)} total, "
+                f"{_format_bytes(single_build_limit)} per worktree; exceeded for {scope}"
+                + (f"; largest is {largest[0]} at {_format_bytes(largest[1])}" if largest else "")
+                + ("; the scan hit its time or file bound, so the figure is a lower bound" if truncated else "")
+                + ". Build products are regenerable: remove a finished lane's build directory before "
+                "archiving the worktree, or run the scoped clean preview for this checkout."
+            ),
+            metadata={
+                "total_bytes": total_build,
+                "total_limit": total_build_limit,
+                "single_limit": single_build_limit,
+                "largest": largest[0] if largest else None,
+                "largest_bytes": largest[1] if largest else None,
+                "truncated": truncated,
+            },
+        )
+    if not problems:
+        report.pass_(
+            "WORKTREES",
+            f"{len(registered)} worktree(s) registered; regenerable build output {_format_bytes(total_build)}",
+            detail="No nested, unregistered, stale or oversized worktree accumulation was found",
+            metadata={"count": len(registered), "build_bytes": total_build, "truncated": truncated},
         )
 
 
