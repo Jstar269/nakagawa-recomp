@@ -1114,6 +1114,22 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertIn("title_codegen_plan.py", build_log)
         self.assertIn("gcc", build_log)
         self.assertIn("Build finished:", build_log)
+        # The planner logs the job count it chose, and the player's progress stream
+        # counted the compiled parts up to every planned part.
+        self.assertRegex(build_log, r"PACKAGE_BUILD_JOBS: [1-8] \(")
+        progress_line = re.search(r"^PACKAGE_BUILD_ROUTE progress=(.+)$", built.stdout, re.M)
+        self.assertIsNotNone(progress_line, built.stdout[-4000:])
+        events = [
+            json.loads(line)
+            for line in Path(progress_line.group(1).strip()).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        parts = [event for event in events if "total" in event]
+        self.assertTrue(parts, events)
+        self.assertTrue(all(event["stage"] == "compile" for event in parts), parts)
+        self.assertEqual(parts[0]["completed"], 0, parts)
+        self.assertEqual(parts[-1]["completed"], parts[-1]["total"], parts)
+        self.assertGreater(parts[-1]["total"], 1, parts)
         package_dir = self.user_root / "packages" / DISC_ID
         self.assertTrue((package_dir / "package.json").is_file())
         self.assertTrue((package_dir / "build-report.json").is_file())

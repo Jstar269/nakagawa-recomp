@@ -388,6 +388,7 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
 #define FLOW_ID_STATUS 0x60000041u
 #define FLOW_ID_MESSAGE 0x60000042u
 #define FLOW_ID_ELAPSED 0x60000043u
+#define FLOW_ID_NOTICE 0x60000044u
 #define FLOW_ID_LOG 0x60000050u
 #define FLOW_ID_ROWS 0x60000060u
 #define FLOW_ID_TOTAL 0x60000070u
@@ -511,7 +512,9 @@ PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model)
             nk_ui_end_container(ui);
         }
     }
-    nk_ui_progress_bar(ui, FLOW_ID_BAR, inner, model->built ? 1.0f : -1.0f, model->now_s);
+    /* Determinate while the compile stage counts its parts; a sweep otherwise. */
+    nk_ui_progress_bar(ui, FLOW_ID_BAR, inner, model->built ? 1.0f : model->fraction,
+                       model->now_s);
     {
         NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
                                      NK_UI_SPACE_4);
@@ -529,6 +532,13 @@ PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model)
             nk_ui_text_role(ui, FLOW_ID_ELAPSED, elapsed, NK_UI_TYPE_DATA, theme->muted);
             nk_ui_end_container(ui);
         }
+    }
+    if (!model->built && model->notice != NULL && model->notice[0] != '\0') {
+        /* A calm note that other apps may feel slower: muted body text, no warning
+           colour or mark, because nothing is wrong. */
+        NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->muted);
+        nk_ui_text(ui, FLOW_ID_NOTICE, nk_ui_text_clamp(ui, model->notice, &text, inner, 2),
+                   &text);
     }
     {
         NkUiLayout log = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fixed(104.0f),
