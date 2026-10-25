@@ -473,7 +473,9 @@ USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D4
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library KUBridge --forbid-library SystemCtrlForUser
 endif
 ifeq ($(CASE),cpu-timing)
-USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
+# The shared probe cleanup checks interrupt state; cpu-timing also calls the
+# lightweight-mutex lock/unlock pair through Kernel_Library.
+USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0x47A0B729,0xB55249D2,0xBEA46419,0x15B6446B
 endif
 # The registry cases may import only the eight read-only sceReg calls, exactly: the gate
 # below fails the build on any other sceReg NID (a set, create, remove or flush call).

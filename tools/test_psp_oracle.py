@@ -2478,11 +2478,10 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
 
     def test_cpu_timing_imports_only_the_required_kernel_library_nids(self) -> None:
+        self.assertIn("ifeq ($(CASE),cpu-timing)", self.makefile)
         self.assertIn(
-            "ifeq ($(CASE),cpu-timing)\n"
-            "USER_MODE_IMPORT_GATE_ARGS += --exact-library "
-            "Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B\n"
-            "endif",
+            "Kernel_Library=0x092968F4,0x5F10D406,0x47A0B729,0xB55249D2,"
+            "0xBEA46419,0x15B6446B",
             self.makefile,
         )
 
