@@ -98,6 +98,58 @@ static void test_progress_line_parsing(void) {
     assert(!package_builder_parse_progress_line("{truncated", 10, &ev));
 }
 
+/* The compile stage's part count reaches the session, and the build card's bar is
+ * determinate only while that count is known. */
+static void test_compile_part_count(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest: compile part count\n");
+    PackageProgressEvent ev;
+    PackageBuildSession session;
+    package_builder_init_session(&session, "TEST00001", "Part Count");
+
+    const char *start = "{\"stage\": \"compile\", \"status\": \"START\", \"message\": \"Compiling package with AOT codegen...\"}";
+    assert(package_builder_parse_progress_line(start, strlen(start), &ev));
+    assert(ev.parts_total == 0);
+    package_builder_apply_event(&session, &ev);
+    assert(package_builder_compile_fraction(&session) < 0.0f);
+    int lines_before = session.output_line_count;
+
+    const char *part = "{\"stage\": \"compile\", \"status\": \"RUNNING\", \"message\": \"Compiling part 11 of 40\", \"completed\": 10, \"total\": 40}";
+    assert(package_builder_parse_progress_line(part, strlen(part), &ev));
+    assert(ev.parts_completed == 10 && ev.parts_total == 40);
+    package_builder_apply_event(&session, &ev);
+    assert(session.parts_completed == 10 && session.parts_total == 40);
+    assert(package_builder_compile_fraction(&session) == 0.25f);
+    assert(strcmp(session.current_message, "Compiling part 11 of 40") == 0);
+    assert(session.output_line_count == lines_before);
+
+    /* An inconsistent or malformed count is ignored; the line still applies. */
+    const char *over = "{\"stage\": \"compile\", \"status\": \"RUNNING\", \"message\": \"m\", \"completed\": 41, \"total\": 40}";
+    assert(package_builder_parse_progress_line(over, strlen(over), &ev));
+    assert(ev.parts_total == 0);
+    const char *zero = "{\"stage\": \"compile\", \"status\": \"RUNNING\", \"message\": \"m\", \"completed\": 0, \"total\": 0}";
+    assert(package_builder_parse_progress_line(zero, strlen(zero), &ev));
+    assert(ev.parts_total == 0);
+    const char *text = "{\"stage\": \"compile\", \"status\": \"RUNNING\", \"message\": \"m\", \"completed\": \"1\", \"total\": 40}";
+    assert(package_builder_parse_progress_line(text, strlen(text), &ev));
+    assert(ev.parts_total == 0);
+    const char *negative = "{\"stage\": \"compile\", \"status\": \"RUNNING\", \"message\": \"m\", \"completed\": -1, \"total\": 40}";
+    assert(package_builder_parse_progress_line(negative, strlen(negative), &ev));
+    assert(ev.parts_total == 0);
+
+    /* Leaving the compile stage returns the bar to its own state. */
+    const char *package = "{\"stage\": \"package\", \"status\": \"START\", \"message\": \"Staging runtime assets\"}";
+    assert(package_builder_parse_progress_line(package, strlen(package), &ev));
+    package_builder_apply_event(&session, &ev);
+    assert(package_builder_compile_fraction(&session) < 0.0f);
+
+    /* A new compile phase starts without a count. */
+    assert(package_builder_parse_progress_line(start, strlen(start), &ev));
+    package_builder_apply_event(&session, &ev);
+    assert(session.parts_total == 0);
+    assert(package_builder_compile_fraction(&session) < 0.0f);
+    assert(package_builder_compile_fraction(NULL) < 0.0f);
+}
+
 /* Elapsed time runs while a build is active: the first poll starts the clock and
  * later polls advance it (it stayed at 0.0 s because nothing set the start time). */
 static void test_elapsed_time_advances_while_building(void) {
@@ -888,6 +940,7 @@ int main(int argc, char *argv[]) {
     native_test_assert_config_root_isolated();
 
     test_progress_line_parsing();
+    test_compile_part_count();
     test_elapsed_time_advances_while_building();
     test_reused_session_restarts_the_clock();
     test_state_machine_transitions();

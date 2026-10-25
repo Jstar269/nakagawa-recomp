@@ -442,6 +442,7 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
             case PACKAGE_BUILD_STAGE_PREFLIGHT:
             default: model.stage = 0; break;
         }
+        model.fraction = package_builder_compile_fraction(build);
         model.message = build->current_message;
         model.elapsed_ms = build->elapsed_ms;
         for (int i = first; i < count && model.line_count < 4u; ++i) {

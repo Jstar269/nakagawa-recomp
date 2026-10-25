@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
 import time
 import zlib
@@ -1464,13 +1465,17 @@ class _BuildProgressReporter:
                 self._out_stream = p.open("a", encoding="utf-8")
 
     def report(self, stage: str, status: str, message: str,
-               detail: str | None = None) -> None:
+               detail: str | None = None, *, completed: int | None = None,
+               total: int | None = None) -> None:
         self.current_stage = stage
         if status == "FAIL":
             self._failed = True
         payload = {"stage": stage, "status": status, "message": message}
         if detail:
             payload["detail"] = detail
+        if completed is not None and total is not None:
+            payload["completed"] = completed
+            payload["total"] = total
         line = json.dumps(payload, ensure_ascii=False) + "\n"
         if self._out_stream is not None:
             self._out_stream.write(line)
@@ -1508,6 +1513,73 @@ class _BuildProgressReporter:
             except OSError:
                 pass
             self._log_stream = None
+
+
+# The planner appends {"completed": N, "total": M} lines here while Make compiles
+# (title_codegen_plan.COMPILE_PROGRESS_FILE_ENV).
+_COMPILE_PROGRESS_FILE_ENV = "NK_COMPILE_PROGRESS_FILE"
+
+
+def compile_progress_message(completed: int, total: int) -> str:
+    """Name the part being compiled, or the link once every part is compiled."""
+    if completed >= total:
+        return f"Linking the package ({total} of {total} parts compiled)"
+    return f"Compiling part {completed + 1} of {total}"
+
+
+class _CompileProgressRelay:
+    """Report the planner's compile progress file as ``compile`` RUNNING events.
+
+    A thread reads complete lines as the planner appends them, so the player sees
+    "Compiling part N of M" while the planner process is still running.
+    """
+
+    def __init__(self, reporter: _BuildProgressReporter, path: Path,
+                 poll_seconds: float = 0.5):
+        self.reporter = reporter
+        self.path = path
+        self.poll_seconds = poll_seconds
+        self.last: tuple[int, int] | None = None
+        self._offset = 0
+        self._partial = ""
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="compile-progress", daemon=True)
+
+    def __enter__(self) -> "_CompileProgressRelay":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._stop.set()
+        self._thread.join()
+        self.drain()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.poll_seconds):
+            self.drain()
+
+    def drain(self) -> None:
+        try:
+            with self.path.open("r", encoding="utf-8") as stream:
+                stream.seek(self._offset)
+                text = stream.read()
+                self._offset = stream.tell()
+        except OSError:
+            return
+        lines = (self._partial + text).split("\n")
+        self._partial = lines.pop()
+        for line in lines:
+            try:
+                row = json.loads(line)
+                completed, total = int(row["completed"]), int(row["total"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if total <= 0 or not 0 <= completed <= total or (completed, total) == self.last:
+                continue
+            self.last = (completed, total)
+            self.reporter.report("compile", "RUNNING",
+                                 compile_progress_message(completed, total),
+                                 completed=completed, total=total)
 
 
 _BUILD_DIAGNOSTIC_MARKERS = ("error:", "cannot find", "undefined reference")
@@ -2067,14 +2139,19 @@ def _build_package(args: argparse.Namespace, stage_observer,
             stage_observer("compile", "START", 0)
         log_command(command)
         compile_started = time.perf_counter()
-        completed = subprocess.run(
-            command,
-            cwd=ROOT,
-            env=build_environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory(prefix="nk-compile-progress-") as progress_dir:
+            progress_path = Path(progress_dir) / "compile-progress.jsonl"
+            compile_environment = dict(build_environment)
+            compile_environment[_COMPILE_PROGRESS_FILE_ENV] = str(progress_path)
+            with _CompileProgressRelay(reporter, progress_path):
+                completed = subprocess.run(
+                    command,
+                    cwd=ROOT,
+                    env=compile_environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
         if completed.stdout:
             reporter.log(completed.stdout)
             if not reporter.is_json_stdout:

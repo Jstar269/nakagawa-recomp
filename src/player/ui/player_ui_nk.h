@@ -192,6 +192,7 @@ typedef struct {
     const char *title_line;        /* "Game name (DISC-ID)" */
     int stage;
     bool built;                    /* written; being checked before PLAY */
+    float fraction;                /* compiled share of the parts, -1 when unknown */
     const char *message;
     unsigned elapsed_ms;
     const char *lines[4];          /* the last output lines, oldest first */

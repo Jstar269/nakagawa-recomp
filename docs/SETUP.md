@@ -50,16 +50,20 @@ Measured on a Windows 11 x64 PC building and running Hot Shots Tennis with the p
 | Free disk space | 5 GB | 10 GB or more, on an SSD |
 
 - **Memory.** Building a game is the heavy part. One compiler process peaked at about 3 GB
-  while it compiled a large block of translated game code, and BUILD PACKAGE runs two at
-  once. Playing a built game needs far less.
+  while it compiled a large block of translated game code. BUILD PACKAGE keeps 4 GB free
+  for everything else and runs one compile job for each further 3 GB of available memory,
+  so a PC with 8 GB compiles one part at a time and one with 16 GB two or three, depending
+  on what else is running. Playing a built game needs far less.
 - **Disk space.** Each game keeps three things in the player's data folder: its imported disc
   image (about 1.4 GB for Hot Shots Tennis), the built game (about 470 MB) and the build cache
   (about 400 MB). If the player downloads the build tools, they add a 102 MB download, and
   more once unpacked.
 - **SSD.** Builds read and write thousands of small files, so a hard disk makes them much
   slower. Keep the player's data folder on an SSD if you can.
-- **Processor.** BUILD PACKAGE runs two compile jobs at a time, so more cores do not shorten
-  it yet. A first build takes several minutes.
+- **Processor.** BUILD PACKAGE runs up to eight compile jobs at a time, one per logical
+  processor, as far as memory allows, and the build screen counts the parts as they finish.
+  A first build takes several minutes. To choose the job count yourself, set the
+  `NK_PACKAGE_JOBS` environment variable to a number from 1 to 8 before starting the player.
 
 ## Showcase demos on Windows: WSL 2 and PSPDEV
 

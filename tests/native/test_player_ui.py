@@ -2045,6 +2045,23 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(built_frames[0]["view"], "building_package")
         self.assertEqual(built_frames[0]["build_badge"], "PACKAGE_BUILT", built["stdout"])
 
+    def test_build_bar_shows_the_compiled_share_of_parts(self) -> None:
+        """A compile stage that counts its parts fills the bar to that share.
+
+        Without a count the bar sweeps and claims no percentage; a package build
+        once sat on that sweep for minutes with no sign of how far it had got."""
+        sweeping = self.run_player("building", ("KEY_ESCAPE",))
+        sweeping_frames = sweeping["frames"]
+        assert isinstance(sweeping_frames, list)
+        self.assertEqual(sweeping_frames[0]["build_bar_permille"], "-1")
+
+        counted = self.run_player("building-parts", ("KEY_ESCAPE",))
+        counted_frames = counted["frames"]
+        assert isinstance(counted_frames, list)
+        self.assertEqual(counted_frames[0]["view"], "building_package")
+        self.assertEqual(counted_frames[0]["build_bar_permille"], "300", counted["stdout"])
+        self.assertEqual(counted_frames[1]["build_bar_permille"], "-1")
+
     def test_controller_bind_conflict_calibration_and_profile_save(self) -> None:
         bind = self.run_player("controller", ("KEY_TAB", "KEY_RETURN", "PAD_SOUTH"))
         bind_frames = bind["frames"]

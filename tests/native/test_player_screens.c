@@ -97,8 +97,8 @@ static const PlayerUiPrereqItem k_prereqs[] = {
     {"synthetic-headers", "0.9", "example.invalid", "NOASSERTION", 4096ull}
 };
 
-typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_CONSENT, FLOW_PROGRESS,
-               FLOW_ERROR, FLOW_WIZ_WELCOME, FLOW_WIZ_CHOOSE, FLOW_WIZ_CHOSEN,
+typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CONSENT,
+               FLOW_PROGRESS, FLOW_ERROR, FLOW_WIZ_WELCOME, FLOW_WIZ_CHOOSE, FLOW_WIZ_CHOSEN,
                FLOW_WIZ_COPYING, FLOW_WIZ_VERIFY, FLOW_WIZ_EXPERIMENTAL, FLOW_WIZ_FONTS,
                FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_BLOCKED,
                FLOW_WIZ_COPY_FAILED, FLOW_ERROR_STOP } FlowCase;
@@ -223,13 +223,16 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         return player_ui_screen_error(ui, &error);
     }
     if (which >= FLOW_WIZ_WELCOME) return draw_wizard_case(ui, which);
-    if (which == FLOW_BUILD || which == FLOW_BUILT) {
+    if (which == FLOW_BUILD || which == FLOW_BUILT || which == FLOW_BUILD_PARTS) {
         PlayerUiBuildModel build;
         memset(&build, 0, sizeof(build));
         build.title_line = "Synthetic Showcase Scene (TEST00007)";
         build.stage = which == FLOW_BUILT ? 4 : 2;
         build.built = which == FLOW_BUILT;
-        build.message = "Compiling the translated game for this PC.";
+        build.fraction = which == FLOW_BUILD_PARTS ? 0.25f : -1.0f;
+        build.message = which == FLOW_BUILD_PARTS
+            ? "Compiling part 4 of 12"
+            : "Compiling the translated game for this PC.";
         build.elapsed_ms = 83400u;
         build.lines[0] = "[compile] 1204 of 3311 functions";
         build.lines[1] = "[compile] chunk 12 of 31";
@@ -319,6 +322,62 @@ static bool append_case(char *out, size_t cap, size_t *used,
         return false;
     }
     return true;
+}
+
+/* Return the x extent of the dump row for element id, or false if it is absent. */
+static bool dump_row_x_extent(const char *dump, NkUiId id, int *out_x0, int *out_x1) {
+    char prefix[16];
+    const char *row = dump;
+    (void)snprintf(prefix, sizeof(prefix), "%08X RECT ", (unsigned)id);
+    while (row != NULL && *row != '\0') {
+        if (strncmp(row, prefix, strlen(prefix)) == 0) {
+            int x0 = 0, y0 = 0, x1 = 0;
+            if (sscanf(row + strlen(prefix), "%d %d %d", &x0, &y0, &x1) == 3) {
+                *out_x0 = x0;
+                *out_x1 = x1;
+                return true;
+            }
+        }
+        row = strchr(row, '\n');
+        if (row != NULL) ++row;
+    }
+    return false;
+}
+
+/* While the compile stage counts its parts, the build card's bar is filled to the
+   compiled share instead of sweeping. */
+static void test_build_bar_shows_compiled_parts(void) {
+    static char out[CASE_DUMP_CAP];
+    size_t used = 0u;
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    int track_x0 = 0, track_x1 = 0, fill_x0 = 0, fill_x1 = 0;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the build-card UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    g_flow_case = FLOW_BUILD_PARTS;
+    CHECK(append_case(out, sizeof(out), &used, "flow-build-parts", ui, NULL, NULL),
+          "draw the build card with a part count");
+    g_flow_case = FLOW_NONE;
+    nk_ui_destroy(ui);
+    CHECK(dump_row_x_extent(out, 0x60000040u, &track_x0, &track_x1),
+          "the build card draws its progress track");
+    CHECK(dump_row_x_extent(out, nk_ui_child_id(0x60000040u, 2u), &fill_x0, &fill_x1),
+          "the build card fills its progress track");
+    CHECK(fill_x0 == track_x0, "the compiled share starts at the track's left edge");
+    {
+        int expected = (track_x1 - track_x0) / 4;
+        int width = fill_x1 - fill_x0;
+        CHECK(width >= expected - 1 && width <= expected + 1,
+              "a quarter of the parts fills a quarter of the track");
+    }
+    CHECK(strstr(out, "\"Compiling part 4 of 12\"") != NULL,
+          "the build card names the part being compiled");
 }
 
 static bool build_library_golden(char *out, size_t cap, size_t *used) {
@@ -1430,6 +1489,7 @@ int main(int argc, char **argv) {
     test_plain_cards();
     test_version_line();
     test_design_system_layout();
+    test_build_bar_shows_compiled_parts();
     CHECK(build_library_golden(library, sizeof(library), &library_size),
           "build Library screen dumps");
     CHECK(build_title_golden(title, sizeof(title), &title_size),

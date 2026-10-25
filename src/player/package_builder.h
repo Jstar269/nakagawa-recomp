@@ -44,6 +44,10 @@ typedef struct {
     uint64_t total_received_bytes;
     uint64_t total_bytes;
     bool install_complete;
+    /* Compile parts finished and planned ("completed"/"total"); total 0 when the
+       event carries no part count. */
+    uint32_t parts_completed;
+    uint32_t parts_total;
     PackageBuildStage stage_enum;
     PackageProgressStatus status_enum;
 } PackageProgressEvent;
@@ -92,6 +96,10 @@ typedef struct {
     uint64_t total_received_bytes;
     uint64_t total_bytes;
     bool prerequisite_install_complete;
+    /* Compile parts finished and planned; parts_total stays 0 until the compile
+       stage reports a count, and the build card then shows an indeterminate bar. */
+    uint32_t parts_completed;
+    uint32_t parts_total;
     char log_file_path[NK_MAX_PATH];
     char progress_file_path[NK_MAX_PATH];
     char cancel_file_path[NK_MAX_PATH];
@@ -114,7 +122,8 @@ typedef struct {
 } PackageBuildSession;
 
 /* Parse a single JSON progress line into a PackageProgressEvent.
- * The JSON object must contain "stage", "status", and "message" strings.
+ * The JSON object must contain "stage", "status", and "message" strings, and may
+ * carry integer "completed" and "total" compile part counts.
  * Returns true if valid, false on malformed or incomplete lines. */
 bool package_builder_parse_progress_line(
     const char *line,
@@ -128,6 +137,10 @@ void package_builder_init_session(
     const char *disc_id,
     const char *title_name
 );
+
+/* Fraction of the compile parts finished, or -1 when no part count is known
+ * (the build card then shows an indeterminate bar). */
+float package_builder_compile_fraction(const PackageBuildSession *session);
 
 /* Apply a progress event to the session state machine. */
 void package_builder_apply_event(

@@ -161,6 +161,66 @@ class NkCliProgressTests(unittest.TestCase):
                       source)
         self.assertIn('"SR_LOOSE_CONTENT_ROOTS": loose_roots', source)
 
+    def test_compile_progress_message_names_the_part_or_the_link(self) -> None:
+        import nk_cli
+
+        self.assertEqual(nk_cli.compile_progress_message(0, 40), "Compiling part 1 of 40")
+        self.assertEqual(nk_cli.compile_progress_message(39, 40), "Compiling part 40 of 40")
+        self.assertEqual(nk_cli.compile_progress_message(40, 40),
+                         "Linking the package (40 of 40 parts compiled)")
+
+    def test_compile_progress_relay_reports_each_new_count(self) -> None:
+        import nk_cli
+
+        with tempfile.TemporaryDirectory(prefix="nk_cli_compile_progress_") as temp:
+            events_path = Path(temp) / "events.jsonl"
+            progress_path = Path(temp) / "compile-progress.jsonl"
+            reporter = nk_cli._BuildProgressReporter(events_path)
+            relay = nk_cli._CompileProgressRelay(reporter, progress_path, poll_seconds=0.01)
+            relay.drain()  # no file yet: nothing to report
+            with progress_path.open("w", encoding="utf-8") as stream:
+                stream.write('{"completed": 0, "total": 4}\n')
+                stream.write('{"completed": 0, "total": 4}\n')  # repeated: reported once
+                stream.write('not json\n')
+                stream.write('{"completed": 5, "total": 4}\n')  # impossible: ignored
+                stream.write('{"completed": 2, "tot')  # still being written
+            relay.drain()
+            with progress_path.open("a", encoding="utf-8") as stream:
+                stream.write('al": 4}\n{"completed": 4, "total": 4}\n')
+            with relay:
+                pass  # the final drain on exit picks up what is left
+            reporter.close()
+            rows = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(
+            [(row["stage"], row["status"], row["completed"], row["total"]) for row in rows],
+            [("compile", "RUNNING", 0, 4), ("compile", "RUNNING", 2, 4), ("compile", "RUNNING", 4, 4)],
+        )
+        self.assertEqual(rows[1]["message"], "Compiling part 3 of 4")
+        self.assertEqual(rows[2]["message"], "Linking the package (4 of 4 parts compiled)")
+
+    def test_progress_events_without_a_count_carry_no_count_fields(self) -> None:
+        import nk_cli
+
+        with tempfile.TemporaryDirectory(prefix="nk_cli_progress_fields_") as temp:
+            events_path = Path(temp) / "events.jsonl"
+            reporter = nk_cli._BuildProgressReporter(events_path)
+            reporter.report("compile", "START", "Compiling package with AOT codegen...")
+            reporter.close()
+            row = json.loads(events_path.read_text(encoding="utf-8"))
+        self.assertEqual(set(row), {"stage", "status", "message"})
+
+    def test_package_build_passes_the_progress_file_to_the_planner(self) -> None:
+        # The planner reads its progress destination from the environment, under the
+        # name both modules use.
+        import nk_cli
+        import title_codegen_plan
+
+        self.assertEqual(nk_cli._COMPILE_PROGRESS_FILE_ENV,
+                         title_codegen_plan.COMPILE_PROGRESS_FILE_ENV)
+        source = Path(nk_cli.__file__).read_text(encoding="utf-8")
+        self.assertIn("compile_environment[_COMPILE_PROGRESS_FILE_ENV] = str(progress_path)", source)
+        self.assertIn("with _CompileProgressRelay(reporter, progress_path):", source)
+
     def test_progress_json_invalid_disc_id(self) -> None:
         """Verify --progress-json reports failure for an invalid disc ID format."""
         cmd = [

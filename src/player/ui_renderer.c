@@ -156,6 +156,8 @@ static UiFont g_font;
 static unsigned s_ui_test_bitmap_text_draws;
 /* Badge text of the package build screen as last drawn. */
 static const char *s_ui_test_build_badge;
+/* Fill of the package build screen's bar as last drawn, -1 for the sweep. */
+static float s_ui_test_build_bar_fraction = -1.0f;
 #endif
 
 static uint32_t ui_color_key(SDL_Color c) {
@@ -1802,6 +1804,10 @@ unsigned ui_test_bitmap_text_draws(void) {
 
 const char *ui_test_build_badge(void) {
     return s_ui_test_build_badge ? s_ui_test_build_badge : "none";
+}
+
+float ui_test_build_bar_fraction(void) {
+    return s_ui_test_build_bar_fraction;
 }
 #endif
 
@@ -3913,13 +3919,21 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
                   stages[i], 1.0f, text_col);
     }
 
-    /* Progress bar */
+    /* Progress bar: the compiled share of the parts while the compile stage
+     * counts them; otherwise an indeterminate sweep that claims no percentage. */
     float bar_y = stage_y + 40.0f;
+    float compile_fraction = package_builder_compile_fraction(&app->build_session);
     if (built) {
         draw_progress_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, 100.0f);
+    } else if (compile_fraction >= 0.0f) {
+        draw_progress_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f,
+                          compile_fraction * 100.0f);
     } else {
         draw_indeterminate_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, g_reduce_motion);
     }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_build_bar_fraction = built ? 1.0f : compile_fraction;
+#endif
 
     /* Current status message & elapsed time */
     float info_y = bar_y + 24.0f;

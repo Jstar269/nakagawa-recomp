@@ -409,7 +409,9 @@ PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model)
             nk_ui_end_container(ui);
         }
     }
-    nk_ui_progress_bar(ui, FLOW_ID_BAR, inner, model->built ? 1.0f : -1.0f, model->now_s);
+    /* Determinate while the compile stage counts its parts; a sweep otherwise. */
+    nk_ui_progress_bar(ui, FLOW_ID_BAR, inner, model->built ? 1.0f : model->fraction,
+                       model->now_s);
     {
         NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
                                      NK_UI_SPACE_4);
