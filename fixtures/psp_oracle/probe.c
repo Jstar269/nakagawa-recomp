@@ -9463,7 +9463,8 @@ static void run_fake_success(int emulated) {
 #define CPU_TIMING_MISS_STRIDE 512u
 #define CPU_TIMING_MISS_BYTES (CPU_TIMING_MISS_MAX_BLOCKS * CPU_TIMING_MISS_STRIDE)
 #define CPU_TIMING_SYSCALL_CALLS 2048u
-#define CPU_TIMING_GE_BATCH 8u
+#define CPU_TIMING_DRAW_SYNC_CALLS 32u
+#define CPU_TIMING_GE_CALLS_PER_TRIAL 1u
 #define CPU_TIMING_RESULT_COUNT 64u
 #define CPU_TIMING_REPEAT_8(OP) OP OP OP OP OP OP OP OP
 
@@ -9479,7 +9480,7 @@ typedef struct {
 static uint32_t s_cpu_timing_memory[CPU_TIMING_MISS_BYTES / sizeof(uint32_t)]
     __attribute__((aligned(64)));
 static uint32_t s_cpu_timing_ge_list[64] __attribute__((aligned(64)));
-static int s_cpu_timing_ge_qids[CPU_TIMING_GE_BATCH];
+static int s_cpu_timing_ge_qids[CPU_TIMING_GE_CALLS_PER_TRIAL];
 static uint32_t s_cpu_timing_ge_count;
 static uint32_t s_cpu_timing_ge_index;
 static SceLwMutexWorkarea s_cpu_timing_lwmutex;
@@ -9703,7 +9704,7 @@ static int cpu_timing_call_lwmutex_pair(void) {
 }
 static int cpu_timing_call_vblank_start(void) { return sceDisplayWaitVblankStart(); }
 static int cpu_timing_call_ge_enqueue(void) {
-    if (s_cpu_timing_ge_count >= CPU_TIMING_GE_BATCH) return -1;
+    if (s_cpu_timing_ge_count >= CPU_TIMING_GE_CALLS_PER_TRIAL) return -1;
     const int qid = sceGeListEnQueue(s_cpu_timing_ge_list,
                                      s_cpu_timing_ge_list, -1, NULL);
     if (qid < 0) return qid;
@@ -9747,7 +9748,7 @@ static int cpu_timing_drawsync_worker(SceSize args, void *argp) {
 
 static void cpu_timing_measure_drawsync(int emulated, uint32_t cpu_mhz) {
     memset((void *)&s_cpu_timing_drawsync_job, 0, sizeof(s_cpu_timing_drawsync_job));
-    s_cpu_timing_drawsync_job.calls = CPU_TIMING_SYSCALL_CALLS;
+    s_cpu_timing_drawsync_job.calls = CPU_TIMING_DRAW_SYNC_CALLS;
     const SceUID thread = sceKernelCreateThread("cpu-ge-sync", cpu_timing_drawsync_worker,
                                                32, 0x1000, THREAD_ATTR_USER, NULL);
     if (thread < 0) {
@@ -9779,7 +9780,7 @@ static void cpu_timing_measure_drawsync(int emulated, uint32_t cpu_mhz) {
     cpu_timing_sort(control);
     const uint32_t measured_us = elapsed[CPU_TIMING_TRIALS / 2u];
     const uint32_t control_us = control[CPU_TIMING_TRIALS / 2u];
-    const uint32_t calls = CPU_TIMING_SYSCALL_CALLS;
+    const uint32_t calls = CPU_TIMING_DRAW_SYNC_CALLS;
     const uint32_t delta_us = measured_us >= control_us ? measured_us - control_us : 0u;
     const uint32_t cycles_x100 =
         (uint32_t)(((uint64_t)delta_us * cpu_mhz * 100u + calls / 2u) / calls);
@@ -9854,8 +9855,9 @@ static void cpu_timing_emit_ge_cell(int emulated, const char *case_id,
     const uint32_t control_us = baseline[CPU_TIMING_TRIALS / 2u];
     const uint32_t delta_us = measured_us >= control_us ? measured_us - control_us : 0u;
     const uint32_t cycles_x100 = ((uint64_t)delta_us * cpu_mhz * 100u +
-                                  CPU_TIMING_GE_BATCH / 2u) / CPU_TIMING_GE_BATCH;
-    uint32_t out[7] = {CPU_TIMING_GE_BATCH, measured_us, control_us, valid_trials,
+                                  CPU_TIMING_GE_CALLS_PER_TRIAL / 2u) /
+                                 CPU_TIMING_GE_CALLS_PER_TRIAL;
+    uint32_t out[7] = {CPU_TIMING_GE_CALLS_PER_TRIAL, measured_us, control_us, valid_trials,
                        (uint32_t)error, enqueued, update_attempts};
     emit_record_extended(emulated, "PSP-CPU-TIMING-001", case_id,
                          pass && measured_us >= control_us ? "PASS" : "FAIL",
@@ -9863,7 +9865,7 @@ static void cpu_timing_emit_ge_cell(int emulated, const char *case_id,
 }
 
 static void cpu_timing_emit_ge_skip(int emulated, const char *case_id) {
-    uint32_t out[7] = {CPU_TIMING_GE_BATCH, 0u, 0u, 0u, 0u, 0u, 0u};
+    uint32_t out[7] = {CPU_TIMING_GE_CALLS_PER_TRIAL, 0u, 0u, 0u, 0u, 0u, 0u};
     emit_record_extended(emulated, "PSP-CPU-TIMING-001", case_id,
                          "SKIP", 0u, out, 7);
 }
@@ -9898,16 +9900,16 @@ static int cpu_timing_measure_ge_calls(int emulated, uint32_t cpu_mhz) {
         s_cpu_timing_ge_count = 0;
         s_cpu_timing_ge_index = 0;
         enqueue[trial] = cpu_timing_call_batch(cpu_timing_call_ge_enqueue,
-                                               CPU_TIMING_GE_BATCH, &error);
+                                               CPU_TIMING_GE_CALLS_PER_TRIAL, &error);
         enqueue_base[trial] = cpu_timing_call_batch(cpu_timing_noop_call,
-                                                    CPU_TIMING_GE_BATCH, &error);
+                                                    CPU_TIMING_GE_CALLS_PER_TRIAL, &error);
         if (error < 0 && first_error == 0) first_error = error;
         last_enqueued = s_cpu_timing_ge_count;
-        if (error == 0 && s_cpu_timing_ge_count == CPU_TIMING_GE_BATCH) {
+        if (error == 0 && s_cpu_timing_ge_count == CPU_TIMING_GE_CALLS_PER_TRIAL) {
             update[trial] = cpu_timing_call_batch(cpu_timing_call_ge_update_stall,
-                                                  CPU_TIMING_GE_BATCH, &error);
+                                                  CPU_TIMING_GE_CALLS_PER_TRIAL, &error);
             update_base[trial] = cpu_timing_call_batch(cpu_timing_noop_call,
-                                                       CPU_TIMING_GE_BATCH, &error);
+                                                       CPU_TIMING_GE_CALLS_PER_TRIAL, &error);
             if (error < 0 && first_error == 0) first_error = error;
             last_update_attempts = s_cpu_timing_ge_index;
         } else {
@@ -10043,7 +10045,7 @@ static void run_cpu_timing(int emulated) {
         cpu_timing_measure_drawsync(emulated, (uint32_t)cpu_mhz);
         (void)cpu_timing_measure_ge_calls(emulated, (uint32_t)cpu_mhz);
     } else {
-        uint32_t drawsync_out[4] = {CPU_TIMING_SYSCALL_CALLS, 0u, 0u,
+        uint32_t drawsync_out[4] = {CPU_TIMING_DRAW_SYNC_CALLS, 0u, 0u,
                                     (uint32_t)cpu_mhz};
         emit_record_extended(emulated, "PSP-CPU-TIMING-001", "syscall-ge-drawsync-done",
                              "SKIP", 0u, drawsync_out, 4);

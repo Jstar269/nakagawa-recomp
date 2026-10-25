@@ -528,8 +528,10 @@ currently displayed framebuffer to the same buffer, accumulated hcount,
 completed `sceGeDrawSync(0)`, empty GE list enqueue and stall release, and
 uncontended semaphore and lightweight-mutex pairs. `sceDisplayWaitVblankStart`
 is recorded separately as wall latency because the scheduler owns the wait;
-it is not charged as CPU service time. Blocking GE sync runs in a helper thread
-with a 100 ms caller timeout and termination path. GE list completion is polled
+it is not charged as CPU service time. Blocking `sceGeDrawSync(0)` uses 32 calls
+per trial in a helper thread with a 100 ms caller timeout and termination path.
+GE enqueue and stall-update measurements queue one stalled list per trial,
+release it, and wait for idle before the next trial. GE list completion is polled
 for at most 250 ms and reset on timeout.
 
 The 64 semantic rows end with `cpu-timing-done` (clock restoration), followed

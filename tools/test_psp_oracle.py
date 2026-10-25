@@ -2663,6 +2663,13 @@ class PspDmacProbeTests(unittest.TestCase):
     def assert_probe_contains(self, needle: str) -> None:
         self.assertTrue(needle in self.probe, f"probe is missing required source: {needle}")
 
+    def test_cpu_timing_bounds_blocking_ge_calls_and_stalled_queue_occupancy(self) -> None:
+        self.assertIn("#define CPU_TIMING_DRAW_SYNC_CALLS 32u", self.probe)
+        self.assertIn("s_cpu_timing_drawsync_job.calls = CPU_TIMING_DRAW_SYNC_CALLS;", self.probe)
+        self.assertIn("const uint32_t calls = CPU_TIMING_DRAW_SYNC_CALLS;", self.probe)
+        self.assertIn("#define CPU_TIMING_GE_CALLS_PER_TRIAL 1u", self.probe)
+        self.assertIn("CPU_TIMING_GE_CALLS_PER_TRIAL, &error", self.probe)
+
     def test_dmac_cases_are_individually_buildable_and_use_the_real_imports(self) -> None:
         for case in (
             "dma-concurrency",
