@@ -1049,6 +1049,77 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(frames, list)
         self.assertEqual(frames[-1]["picker"], "1", "arrow keys reach the add card")
 
+    @staticmethod
+    def screens(run: dict[str, object]) -> list[tuple[str, str]]:
+        """The (view, next UI route) a run showed, with repeats collapsed."""
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        shown: list[tuple[str, str]] = []
+        for frame in frames:
+            screen = (frame["view"], frame["next_route"])
+            if not shown or shown[-1] != screen:
+                shown.append(screen)
+        return shown
+
+    def test_next_ui_about_tab_opens_by_mouse_keyboard_and_controller(self) -> None:
+        """#1281: the ABOUT tab opens About, and Back returns where it came from."""
+        library, about, title = ("library", "1"), ("library", "3"), ("library", "2")
+        runs = {
+            "mouse": ("WAIT_MS=100", "MOUSE_MOVE=400,30", "MOUSE_DOWN", "MOUSE_UP",
+                      "KEY_ESCAPE"),
+            "keyboard": ("WAIT_MS=100", "KEY_UP", "KEY_RIGHT", "KEY_RETURN", "KEY_ESCAPE"),
+            "d-pad": ("WAIT_MS=100", "PAD_DPAD_UP", "PAD_DPAD_RIGHT", "PAD_SOUTH",
+                      "PAD_EAST"),
+            "shoulder": ("WAIT_MS=100", "PAD_RIGHT_SHOULDER", "PAD_LEFT_SHOULDER"),
+        }
+        for name, events in runs.items():
+            run = self.run_player("library", events)
+            if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+                self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+            with self.subTest(input=name):
+                self.assertEqual(self.screens(run), [library, about, library])
+        empty = self.run_player("empty", runs["mouse"])
+        self.assertEqual(self.screens(empty), [library, about, library],
+                         "ABOUT opens with an empty library too")
+        from_title = self.run_player(
+            "library",
+            ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100", "MOUSE_MOVE=400,30", "MOUSE_DOWN",
+             "MOUSE_UP", "KEY_ESCAPE", "KEY_ESCAPE"),
+        )
+        self.assertEqual(self.screens(from_title), [library, title, about, title, library],
+                         "Back from About returns to the title page it was opened from")
+
+    def test_next_ui_settings_tab_opens_by_mouse_keyboard_and_controller(self) -> None:
+        """#1281: Settings has a visible SETTINGS tab, and the menu prompt opens it."""
+        library, settings = ("library", "1"), ("settings", "1")
+        runs = {
+            "mouse": ("WAIT_MS=100", "MOUSE_MOVE=470,30", "MOUSE_DOWN", "MOUSE_UP",
+                      "KEY_ESCAPE"),
+            "keyboard": ("WAIT_MS=100", "KEY_UP", "KEY_RIGHT", "KEY_RIGHT", "KEY_RETURN",
+                         "KEY_ESCAPE"),
+            "menu key": ("WAIT_MS=100", "KEY_F1", "KEY_ESCAPE"),
+            "d-pad": ("WAIT_MS=100", "PAD_DPAD_UP", "PAD_DPAD_RIGHT", "PAD_DPAD_RIGHT",
+                      "PAD_SOUTH", "PAD_EAST"),
+            "start": ("WAIT_MS=100", "PAD_START", "PAD_EAST"),
+        }
+        for name, events in runs.items():
+            run = self.run_player("library", events)
+            if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+                self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+            with self.subTest(input=name):
+                self.assertEqual(self.screens(run), [library, settings, library])
+        empty = self.run_player("empty", runs["mouse"])
+        self.assertEqual(self.screens(empty), [library, settings, library],
+                         "the SETTINGS tab works with an empty library too")
+        from_about = self.run_player(
+            "library", ("WAIT_MS=100", "PAD_RIGHT_SHOULDER", "PAD_RIGHT_SHOULDER", "PAD_EAST")
+        )
+        self.assertEqual(
+            self.screens(from_about),
+            [library, ("library", "3"), ("settings", "3"), ("library", "3")],
+            "R steps from About to Settings, and Back returns to About",
+        )
+
     def test_library_keyboard_gamepad_navigation_and_picker(self) -> None:
         run = self.run_player("library", ("KEY_RIGHT", "PAD_DPAD_RIGHT", "KEY_TAB", "KEY_RETURN"))
         frames = run["frames"]
@@ -1352,9 +1423,10 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(last["next_detail"], self.INCOMPATIBLE_REASON)
         run = self.run_player(
             "ready",
-            # Open the title, then Tab past the two top-bar tabs to the primary action.
+            # Open the title, then Tab past the three top-bar tabs to the primary action.
             ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", "KEY_TAB", "WAIT_MS=100",
-             "KEY_TAB", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=300"),
+             "KEY_TAB", "WAIT_MS=100", "KEY_TAB", "WAIT_MS=100", "KEY_RETURN",
+             "WAIT_MS=300"),
             incompatible_package=True, wait_background=True, ui_mode="next",
         )
         frames = run["frames"]

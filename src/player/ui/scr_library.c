@@ -115,10 +115,12 @@ static const char *safe_text(const char *text, const char *fallback) {
 static void library_prompts(NkUi *ui, bool has_titles) {
     static const NkUiPromptItem with_titles[] = {
         {NK_UI_PROMPT_ACT_MOVE, "Move"},
-        {NK_UI_PROMPT_ACT_CONFIRM, "Open"}
+        {NK_UI_PROMPT_ACT_CONFIRM, "Open"},
+        {NK_UI_PROMPT_ACT_MENU, "Settings"}
     };
     static const NkUiPromptItem empty[] = {
-        {NK_UI_PROMPT_ACT_CONFIRM, "Select"}
+        {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
+        {NK_UI_PROMPT_ACT_MENU, "Settings"}
     };
     nk_ui_prompt_bar(ui, LIBRARY_ID_PROMPTS, "",
                      has_titles ? with_titles : empty,

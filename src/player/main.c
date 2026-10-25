@@ -1345,7 +1345,7 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
             { "RIGHT", SDLK_RIGHT }, { "UP", SDLK_UP }, { "DOWN", SDLK_DOWN },
             { "HOME", SDLK_HOME }, { "END", SDLK_END },
             { "PAGEUP", SDLK_PAGEUP }, { "PAGEDOWN", SDLK_PAGEDOWN },
-            { "S", SDLK_S }, { "O", SDLK_O }, { "F12", SDLK_F12 }
+            { "S", SDLK_S }, { "O", SDLK_O }, { "F1", SDLK_F1 }, { "F12", SDLK_F12 }
         };
         for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             if (strcmp(token + 4, keys[i].name) == 0) {
@@ -1366,7 +1366,9 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
             { "DPAD_RIGHT", SDL_GAMEPAD_BUTTON_DPAD_RIGHT },
             { "DPAD_UP", SDL_GAMEPAD_BUTTON_DPAD_UP },
             { "DPAD_DOWN", SDL_GAMEPAD_BUTTON_DPAD_DOWN },
-            { "START", SDL_GAMEPAD_BUTTON_START }
+            { "START", SDL_GAMEPAD_BUTTON_START },
+            { "LEFT_SHOULDER", SDL_GAMEPAD_BUTTON_LEFT_SHOULDER },
+            { "RIGHT_SHOULDER", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER }
         };
         for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
             if (strcmp(token + 4, buttons[i].name) == 0) {
@@ -1575,7 +1577,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "badge=%d,%d,%d,%d running=%d pixels=%016llx "
            "render_ns=%llu package_validations=%llu online_mode=%d developer_mode=%d "
            "dev_log_lines=%zu next_primary=%d next_primary_label=%s next_detail=%s "
-           "incompatible_reason=%s next_at_root=%d "
+           "incompatible_reason=%s next_at_root=%d next_route=%d "
            "error_title=%s error_badge=%s error_retry=%s error_copied=%d\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
@@ -1635,6 +1637,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            player_dev_log_count(app), next_primary, next_primary_label, next_detail,
            incompatible_reason,
            s_ui_test_next_ui != NULL ? (player_ui_nk_at_library_root(s_ui_test_next_ui) ? 1 : 0) : -1,
+           s_ui_test_next_ui != NULL ? player_ui_nk_test_route(s_ui_test_next_ui) : -1,
            error_title, error_badge, error_retry,
            app->last_error.details_copied ? 1 : 0);
 
