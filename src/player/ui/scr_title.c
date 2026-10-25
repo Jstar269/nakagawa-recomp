@@ -1521,3 +1521,634 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
     flow_end(ui, "", prompts, 3u);
     return result;
 }
+
+/* ---- Game found ------------------------------------------------------------------
+   The card a disc gets when it is added from the library (#1302): the game's
+   name, one sentence on what Nakagawa can do with it, every check in plain
+   words, and Add to library when the disc can be added. Only a check that
+   keeps the disc out of the library reads as an error. */
+
+#define DISC_ID_CHIPS 0x62000001u
+#define DISC_ID_BOX 0x62000010u
+#define DISC_ID_ROWS 0x62000100u
+#define DISC_ID_DETAILS 0x62000020u
+#define DISC_ID_TEXT 0x62001000u
+
+static PlayerUiAction disc_op(PlayerUiDiscOp op) {
+    PlayerUiAction result;
+    result.kind = PLAYER_UI_ACTION_DISC;
+    result.primary = (PlayerUiPrimaryAction)op;
+    result.title_index = 0u;
+    return result;
+}
+
+static void disc_text(NkUi *ui, uint32_t k, const char *text, NkUiTypeRole role, uint32_t rgba) {
+    if (text != NULL && text[0] != '\0') {
+        nk_ui_text_role(ui, (NkUiId)(DISC_ID_TEXT + k), text, role, rgba);
+    }
+}
+
+/* The check rows: the status word in its colour, what was checked, and the
+   sentence, two lines of it when the window has the room. */
+static void disc_rows(NkUi *ui, const PlayerUiDiscModel *model, float inner, int lines) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    NkUiLayout box = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fit(), 4.0f);
+    NkUiStyle style = flow_box_style(theme, theme->surface);
+    float message = inner - 32.0f - 132.0f - 124.0f - 2.0f * NK_UI_SPACE_3;
+    box.padding_top = box.padding_bottom = lines > 1 ? 12.0f : 8.0f;
+    box.padding_left = box.padding_right = 16.0f;
+    if (lines < 2) box.gap = 2.0f;
+    if (model->check_count == 0u || !nk_ui_begin_container(ui, DISC_ID_BOX, &box, &style)) return;
+    for (size_t i = 0u; i < model->check_count && i < PLAYER_UI_DISC_CHECKS; ++i) {
+        const PlayerUiCheckRow *check = &model->checks[i];
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_3);
+        NkUiId base = (NkUiId)(DISC_ID_ROWS + (NkUiId)i * 8u);
+        if (nk_ui_begin_container(ui, base, &row, NULL)) {
+            NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(132.0f), sizing_fit(),
+                                          0.0f);
+            NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->paper);
+            cell.padding_top = 2.0f;
+            if (nk_ui_begin_container(ui, base + 1u, &cell, NULL)) {
+                nk_ui_text_role(ui, base + 4u, nk_ui_caps(ui, safe_text(check->status, "Checked")),
+                                NK_UI_TYPE_LABEL, check->rgba);
+                nk_ui_end_container(ui);
+            }
+            cell.width = sizing_fixed(124.0f);
+            cell.padding_top = 0.0f;
+            if (nk_ui_begin_container(ui, base + 2u, &cell, NULL)) {
+                nk_ui_text_role(ui, base + 5u, safe_text(check->code, "Check"), NK_UI_TYPE_BODY_S,
+                                theme->paper);
+                nk_ui_end_container(ui);
+            }
+            text.rgba = theme->muted;
+            nk_ui_text(ui, base + 3u,
+                       nk_ui_text_clamp(ui, safe_text(check->message, ""), &text, message, lines),
+                       &text);
+            nk_ui_end_container(ui);
+        }
+    }
+    nk_ui_end_container(ui);
+}
+
+PlayerUiAction player_ui_screen_disc(NkUi *ui, const PlayerUiDiscModel *model) {
+    static const NkUiPromptItem prompts[] = {
+        {NK_UI_PROMPT_ACT_MOVE, "Move"}, {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
+        {NK_UI_PROMPT_ACT_BACK, "Back to library"}
+    };
+    const NkUiTheme *theme;
+    PlayerUiAction result = action(PLAYER_UI_ACTION_NONE, 0u, PLAYER_UI_PRIMARY_NONE);
+    const char *marker = FLOW_MARK_DOT;
+    const char *badge = "Game found";
+    const char *lead = NULL;
+    uint32_t tone;
+    float inner;
+    float height;
+    if (ui == NULL || model == NULL) return result;
+    theme = nk_ui_theme(ui);
+    height = model->logical_height > 80.0f ? model->logical_height : 800.0f;
+    inner = flow_begin(ui, model->logical_width > 80.0f ? model->logical_width : 1280.0f,
+                       height, 820.0f);
+    if (inner <= 0.0f) return result;
+    tone = theme->ready;
+    switch (model->kind) {
+        case PLAYER_UI_DISC_CHECKING:
+            marker = FLOW_MARK_DIAMOND;
+            badge = "Checking the disc";
+            tone = theme->accent_dark;
+            lead = "Nakagawa is reading the disc image to find out which game it is.";
+            break;
+        case PLAYER_UI_DISC_SUPPORTED:
+            lead = "On Nakagawa's list. Add it to your library, then build it there to play.";
+            break;
+        case PLAYER_UI_DISC_UNTESTED:
+            marker = "?";
+            badge = "Not tested yet";
+            tone = theme->info;
+            lead = "Not tested with this game yet. You can add it and try.";
+            break;
+        case PLAYER_UI_DISC_BLOCKED:
+            marker = FLOW_MARK_CROSS;
+            badge = "Can't play yet";
+            tone = theme->error;
+            lead = "This game can't be played in this version of Nakagawa yet.";
+            break;
+        case PLAYER_UI_DISC_UNSUPPORTED:
+        default:
+            marker = FLOW_MARK_CROSS;
+            badge = "Not on the list yet";
+            tone = theme->error;
+            lead = model->profile_details != NULL && model->profile_details[0] != '\0'
+                ? "Nakagawa couldn't use this game's title profile, so it can't be added yet."
+                : "This game isn't on Nakagawa's list yet, so it can't be added.";
+            break;
+    }
+    {
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_2);
+        if (nk_ui_begin_container(ui, DISC_ID_CHIPS, &row, NULL)) {
+            nk_ui_status_pill(ui, DISC_ID_CHIPS + 1u, marker, badge, tone);
+            if (model->disc_id != NULL && model->disc_id[0] != '\0') {
+                nk_ui_tag(ui, DISC_ID_CHIPS + 2u, model->disc_id);
+            }
+            if (model->kind != PLAYER_UI_DISC_CHECKING) {
+                nk_ui_tag(ui, DISC_ID_CHIPS + 3u, "Your disc");
+            }
+            nk_ui_end_container(ui);
+        }
+    }
+    if (model->kind == PLAYER_UI_DISC_CHECKING) {
+        disc_text(ui, 0u, "Checking your disc", NK_UI_TYPE_TITLE, theme->paper);
+    } else {
+        disc_text(ui, 0u, safe_text(model->title_name, "PSP game"), NK_UI_TYPE_TITLE,
+                  theme->paper);
+    }
+    disc_text(ui, 1u, lead, NK_UI_TYPE_BODY, model->kind == PLAYER_UI_DISC_BLOCKED
+                                                 ? theme->error : theme->muted);
+    if (model->kind == PLAYER_UI_DISC_BLOCKED && model->reason != NULL) {
+        /* The reason names the folder a file goes in, so it is kept whole. */
+        NkUiTextStyle reason = nk_ui_type(NK_UI_TYPE_BODY_S, theme->paper);
+        nk_ui_text(ui, DISC_ID_TEXT + 2u,
+                   nk_ui_text_clamp(ui, model->reason, &reason, inner, 5), &reason);
+    }
+    disc_text(ui, 3u, model->profile_note, NK_UI_TYPE_BODY_S, theme->warning);
+    {
+        if (model->profile_details != NULL && model->profile_details[0] != '\0') {
+            NkUiLayout box = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fit(), 4.0f);
+            NkUiStyle style = flow_box_style(theme, theme->surface);
+            box.padding_top = box.padding_bottom = 10.0f;
+            box.padding_left = box.padding_right = 14.0f;
+            if (nk_ui_begin_container(ui, DISC_ID_DETAILS, &box, &style)) {
+                NkUiTextStyle data = nk_ui_type(NK_UI_TYPE_DATA, theme->muted);
+                data.wrap = true;
+                nk_ui_eyebrow(ui, DISC_ID_DETAILS + 1u, "Details");
+                nk_ui_text(ui, DISC_ID_DETAILS + 2u,
+                           nk_ui_text_clamp(ui, model->profile_details, &data, inner - 28.0f, 2),
+                           &data);
+                nk_ui_end_container(ui);
+            }
+        }
+    }
+    if (model->kind == PLAYER_UI_DISC_CHECKING) {
+        NkUiTextStyle path = nk_ui_type(NK_UI_TYPE_DATA, theme->muted);
+        if (model->iso_path != NULL && model->iso_path[0] != '\0') {
+            nk_ui_text(ui, DISC_ID_TEXT + 4u,
+                       nk_ui_text_clamp(ui, model->iso_path, &path, inner, 2), &path);
+        }
+        nk_ui_progress_bar(ui, DISC_ID_TEXT + 5u, inner, -1.0f, model->now_s);
+    } else if (model->kind != PLAYER_UI_DISC_BLOCKED || height >= 680.0f) {
+        /* Two lines of each sentence from a 680 px tall window; one below it,
+           so the card still fits the 540 px minimum. A disc that can't be added
+           gives the room to its reason there. */
+        disc_rows(ui, model, inner, height >= 680.0f ? 2 : 1);
+    }
+    {
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+        row.padding_top = NK_UI_SPACE_1;
+        if (nk_ui_begin_container(ui, DISC_ID_TEXT + 0x40u, &row, NULL)) {
+            switch (model->kind) {
+                case PLAYER_UI_DISC_CHECKING:
+                    if (nk_ui_button(ui, PLAYER_UI_ID_DISC_PRIMARY, "Cancel", 0u)) {
+                        result = disc_op(PLAYER_UI_DISC_BACK);
+                    }
+                    break;
+                case PLAYER_UI_DISC_SUPPORTED:
+                case PLAYER_UI_DISC_UNTESTED:
+                    if (nk_ui_button(ui, PLAYER_UI_ID_DISC_PRIMARY, "Add to library",
+                                     NK_UI_BUTTON_PRIMARY)) {
+                        result = disc_op(PLAYER_UI_DISC_ADD);
+                    }
+                    if (nk_ui_button(ui, PLAYER_UI_ID_DISC_SECOND, "Back", 0u)) {
+                        result = disc_op(PLAYER_UI_DISC_BACK);
+                    }
+                    break;
+                case PLAYER_UI_DISC_BLOCKED:
+                    /* Adding it would only fail later, at build time (#1280). */
+                    if (nk_ui_button(ui, PLAYER_UI_ID_DISC_PRIMARY, "Choose another disc",
+                                     NK_UI_BUTTON_PRIMARY)) {
+                        result = disc_op(PLAYER_UI_DISC_CHOOSE_ANOTHER);
+                    }
+                    if (nk_ui_button(ui, PLAYER_UI_ID_DISC_SECOND, "Back", 0u)) {
+                        result = disc_op(PLAYER_UI_DISC_BACK);
+                    }
+                    break;
+                case PLAYER_UI_DISC_UNSUPPORTED:
+                default:
+                    if (nk_ui_button(ui, PLAYER_UI_ID_DISC_PRIMARY, "Back to library",
+                                     NK_UI_BUTTON_PRIMARY)) {
+                        result = disc_op(PLAYER_UI_DISC_BACK);
+                    }
+                    if (nk_ui_button(ui, PLAYER_UI_ID_DISC_SECOND, "Choose another disc", 0u)) {
+                        result = disc_op(PLAYER_UI_DISC_CHOOSE_ANOTHER);
+                    }
+                    break;
+            }
+            nk_ui_end_container(ui);
+        }
+    }
+    flow_end(ui, model->kind == PLAYER_UI_DISC_SUPPORTED || model->kind == PLAYER_UI_DISC_UNTESTED
+                     ? "Your disc image stays where it is. Nothing is uploaded."
+                     : "",
+             prompts, 3u);
+    return result;
+}
+
+/* ---- Settings ----------------------------------------------------------------------
+   One page of named rows, each with its value on the button that changes it, in
+   two cards: what a game uses the next time it starts, and the launcher and
+   sound. Its pages (online and developer options, third-party notices, removing
+   the build tools) are dialog cards like the rest of the flow. Every change is
+   saved as it is made. */
+
+#define SET_ID_ROOT 0x63000001u
+#define SET_ID_TOP 0x63000010u
+#define SET_ID_BODY 0x63000020u
+#define SET_ID_COLUMN 0x63000021u
+#define SET_ID_HEAD 0x63000022u
+#define SET_ID_CARDS 0x63000023u
+#define SET_ID_GAME 0x63000024u
+#define SET_ID_LAUNCHER 0x63000025u
+#define SET_ID_ACTIONS 0x63000026u
+#define SET_ID_PROMPTS 0x63000040u
+#define SET_ID_WAVES 0x63000050u
+#define SET_ID_ROWS 0x63000100u
+#define SET_ID_TEXT 0x63001000u
+
+static PlayerUiAction settings_op(PlayerUiSettingsOp op) {
+    PlayerUiAction result;
+    result.kind = PLAYER_UI_ACTION_SETTINGS;
+    result.primary = (PlayerUiPrimaryAction)op;
+    result.title_index = 0u;
+    return result;
+}
+
+static const char *settings_on_off(bool on) {
+    return on ? "On" : "Off";
+}
+
+/* A named row with its value on the button beside it. Returns true when the
+   button is activated. */
+static bool settings_row(NkUi *ui, uint32_t k, NkUiId button, const char *name,
+                         const char *value, bool on, float name_width) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_3);
+    NkUiId base = (NkUiId)(SET_ID_ROWS + k * 4u);
+    bool pressed = false;
+    row.align_y = NK_UI_ALIGN_CENTER;
+    if (!nk_ui_begin_container(ui, base, &row, NULL)) return false;
+    {
+        NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(name_width), sizing_fit(),
+                                      0.0f);
+        if (nk_ui_begin_container(ui, base + 1u, &cell, NULL)) {
+            nk_ui_text_role(ui, base + 2u, name, NK_UI_TYPE_BODY, theme->paper);
+            nk_ui_end_container(ui);
+        }
+    }
+    pressed = nk_ui_button(ui, button, value,
+                           NK_UI_BUTTON_SMALL | NK_UI_BUTTON_GROW |
+                               (on ? NK_UI_BUTTON_PRIMARY : 0u));
+    nk_ui_end_container(ui);
+    return pressed;
+}
+
+static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float width,
+                          float height, PlayerUiAction *result) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    float column = width - 2.0f * (width < 900.0f ? NK_UI_GUTTER_NARROW : NK_UI_GUTTER);
+    float card;
+    float name_width;
+    char line[192];
+    NkUiLayout layout;
+    if (column > 1040.0f) column = 1040.0f;
+    card = (column - NK_UI_SPACE_4) * 0.5f;
+    name_width = card - 40.0f - NK_UI_SPACE_3 - 190.0f;
+    if (name_width > 200.0f) name_width = 200.0f;
+    if (name_width < 110.0f) name_width = 110.0f;
+    layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_fixed(column), sizing_fit(), NK_UI_SPACE_4);
+    if (!nk_ui_begin_container(ui, SET_ID_COLUMN, &layout, NULL)) return;
+    {
+        NkUiLayout head = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fit(),
+                                      NK_UI_SPACE_1);
+        if (nk_ui_begin_container(ui, SET_ID_HEAD, &head, NULL)) {
+            /* The SETTINGS tab names the page, so a short window drops the
+               heading to keep every row on screen. */
+            if (height >= 680.0f) {
+                nk_ui_text_role(ui, SET_ID_TEXT + 0u, "SETTINGS", NK_UI_TYPE_DISPLAY,
+                                theme->paper);
+            }
+            nk_ui_text_role(ui, SET_ID_TEXT + 1u,
+                            safe_text(model->notice,
+                                      "Changes are saved as you make them. Game settings apply "
+                                      "the next time a game starts."),
+                            NK_UI_TYPE_BODY_S,
+                            model->notice != NULL && model->notice[0] != '\0'
+                                ? theme->warning : theme->muted);
+            nk_ui_end_container(ui);
+        }
+    }
+    layout = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_4);
+    if (nk_ui_begin_container(ui, SET_ID_CARDS, &layout, NULL)) {
+        if (nk_ui_card_begin(ui, SET_ID_GAME, sizing_fixed(card), sizing_grow(), NK_UI_SPACE_2)) {
+            nk_ui_eyebrow(ui, SET_ID_TEXT + 0x10u, "Game");
+            if (settings_row(ui, 0u, PLAYER_UI_ID_SETTINGS_RESOLUTION, "Resolution",
+                             safe_text(model->resolution, "2x"), false, name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_RESOLUTION);
+            }
+            if (settings_row(ui, 1u, PLAYER_UI_ID_SETTINGS_PACING, "Frame pacing",
+                             safe_text(model->pacing, "PSP timing"), false, name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_PACING);
+            }
+            if (settings_row(ui, 2u, PLAYER_UI_ID_SETTINGS_VSYNC, "VSync",
+                             settings_on_off(model->vsync), model->vsync, name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_VSYNC);
+            }
+            if (settings_row(ui, 3u, PLAYER_UI_ID_SETTINGS_FULLSCREEN, "Fullscreen",
+                             settings_on_off(model->fullscreen), model->fullscreen,
+                             name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_FULLSCREEN);
+            }
+            if (settings_row(ui, 4u, PLAYER_UI_ID_SETTINGS_SCALING, "Scaling",
+                             safe_text(model->scaling, "Sharp"), false, name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_CYCLE_SCALING);
+            }
+            nk_ui_end_container(ui);
+        }
+        if (nk_ui_card_begin(ui, SET_ID_LAUNCHER, sizing_fixed(card), sizing_grow(),
+                             NK_UI_SPACE_2)) {
+            nk_ui_eyebrow(ui, SET_ID_TEXT + 0x20u, "Launcher and sound");
+            {
+                /* Volume: the two steps either side of the level. */
+                NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
+                                             NK_UI_SPACE_3);
+                NkUiId base = (NkUiId)(SET_ID_ROWS + 5u * 4u);
+                row.align_y = NK_UI_ALIGN_CENTER;
+                if (nk_ui_begin_container(ui, base, &row, NULL)) {
+                    NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(name_width),
+                                                  sizing_fit(), 0.0f);
+                    if (nk_ui_begin_container(ui, base + 1u, &cell, NULL)) {
+                        nk_ui_text_role(ui, base + 2u, "Game volume", NK_UI_TYPE_BODY,
+                                        theme->paper);
+                        nk_ui_end_container(ui);
+                    }
+                    if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_VOLUME_DOWN, "-",
+                                     NK_UI_BUTTON_SMALL)) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_VOLUME_DOWN);
+                    }
+                    (void)snprintf(line, sizeof(line), "%d%%", model->volume);
+                    cell.width = sizing_fixed(52.0f);
+                    cell.align_x = NK_UI_ALIGN_CENTER;
+                    if (nk_ui_begin_container(ui, base + 3u, &cell, NULL)) {
+                        nk_ui_text_role(ui, SET_ID_TEXT + 0x11u, line, NK_UI_TYPE_DATA,
+                                        theme->paper);
+                        nk_ui_end_container(ui);
+                    }
+                    if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_VOLUME_UP, "+",
+                                     NK_UI_BUTTON_SMALL)) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_VOLUME_UP);
+                    }
+                    nk_ui_end_container(ui);
+                }
+            }
+            if (settings_row(ui, 6u, PLAYER_UI_ID_SETTINGS_LAUNCHER_FULLSCREEN,
+                             "Fullscreen (F11)", settings_on_off(model->launcher_fullscreen),
+                             model->launcher_fullscreen, name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN);
+            }
+            if (settings_row(ui, 7u, PLAYER_UI_ID_SETTINGS_REDUCE_MOTION, "Reduce motion",
+                             settings_on_off(model->reduce_motion), model->reduce_motion,
+                             name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_REDUCE_MOTION);
+            }
+            if (settings_row(ui, 8u, PLAYER_UI_ID_SETTINGS_UI_SOUNDS, "Menu sounds",
+                             settings_on_off(model->ui_sounds), model->ui_sounds, name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_UI_SOUNDS);
+            }
+            if (settings_row(ui, 9u, PLAYER_UI_ID_SETTINGS_CONTROLLER, "Controls",
+                             "Controller settings", false, name_width)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_OPEN_CONTROLLER);
+            }
+            {
+                NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
+                (void)snprintf(line, sizeof(line), "Controller: %s",
+                               safe_text(model->controller_line, "keyboard and mouse"));
+                nk_ui_text(ui, SET_ID_TEXT + 0x21u,
+                           nk_ui_text_clamp(ui, line, &text, card - 40.0f, 1), &text);
+                if (model->saves_folder != NULL && model->saves_folder[0] != '\0') {
+                    char saves[600];
+                    text = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
+                    /* A no-break space keeps the folder on the line, so a long
+                       one is cut short rather than dropped. */
+                    (void)snprintf(saves, sizeof(saves), "Saves:\xC2\xA0%s",
+                                   model->saves_folder);
+                    nk_ui_text(ui, SET_ID_TEXT + 0x22u,
+                               nk_ui_text_clamp(ui, saves, &text, card - 40.0f, 1), &text);
+                }
+            }
+            nk_ui_end_container(ui);
+        }
+        nk_ui_end_container(ui);
+    }
+    layout = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+    if (nk_ui_begin_container(ui, SET_ID_ACTIONS, &layout, NULL)) {
+        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_DONE, "Done", NK_UI_BUTTON_PRIMARY)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_DONE);
+        }
+        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_ONLINE, "Online and developer", 0u)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_ONLINE);
+        }
+        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_NOTICES, "Third-party notices", 0u)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_NOTICES);
+        }
+        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS, "Remove build tools", 0u)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_REMOVE_TOOLS);
+        }
+        nk_ui_end_container(ui);
+    }
+    nk_ui_end_container(ui);
+}
+
+/* The Settings pages that are a dialog card over the flow frame. */
+static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float width,
+                            float height, PlayerUiAction *result) {
+    static const NkUiPromptItem prompts[] = {
+        {NK_UI_PROMPT_ACT_MOVE, "Move"}, {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
+        {NK_UI_PROMPT_ACT_BACK, "Back to settings"}
+    };
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    float inner = flow_begin(ui, width, height, 760.0f);
+    if (inner <= 0.0f) return;
+    switch (model->page) {
+    case PLAYER_UI_SETTINGS_PAGE_ONLINE:
+        flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
+        nk_ui_text_role(ui, FLOW_ID_TITLE, "Online and developer options", NK_UI_TYPE_TITLE,
+                        theme->paper);
+        nk_ui_text_role(ui, FLOW_ID_LEAD,
+                        "This version has no online features yet and makes no connection. Your "
+                        "choice is kept for when they arrive.",
+                        NK_UI_TYPE_BODY_S, theme->warning);
+        if (wizard_box_begin(ui, 0u)) {
+            if (wizard_switch(ui, PLAYER_UI_ID_SETTINGS_ONLINE_MODE, SET_ID_TEXT + 0x80u,
+                              "Online mode",
+                              "Check nakagawa.jaycast.net for updates and news, and let you send "
+                              "reports. Nothing is sent without you.",
+                              model->online_mode, inner - 32.0f)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_ONLINE);
+            }
+            if (model->online_mode) {
+                NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                             NK_UI_SPACE_3);
+                char label[48];
+                if (nk_ui_begin_container(ui, SET_ID_TEXT + 0x88u, &row, NULL)) {
+                    (void)snprintf(label, sizeof(label), "Update check: %s",
+                                   settings_on_off(model->online_updates));
+                    if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_UPDATES, label,
+                                     NK_UI_BUTTON_SMALL |
+                                         (model->online_updates ? NK_UI_BUTTON_PRIMARY : 0u))) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_UPDATES);
+                    }
+                    (void)snprintf(label, sizeof(label), "News: %s",
+                                   settings_on_off(model->online_news));
+                    if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_NEWS, label,
+                                     NK_UI_BUTTON_SMALL |
+                                         (model->online_news ? NK_UI_BUTTON_PRIMARY : 0u))) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_NEWS);
+                    }
+                    (void)snprintf(label, sizeof(label), "Reports: %s",
+                                   settings_on_off(model->online_reports));
+                    if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_REPORTS, label,
+                                     NK_UI_BUTTON_SMALL |
+                                         (model->online_reports ? NK_UI_BUTTON_PRIMARY : 0u))) {
+                        *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_REPORTS);
+                    }
+                    nk_ui_end_container(ui);
+                }
+            }
+            if (wizard_switch(ui, PLAYER_UI_ID_SETTINGS_DEVELOPER, SET_ID_TEXT + 0x90u,
+                              "Developer mode",
+                              "Show a developer log on screen to help track down problems. "
+                              "Stays on this PC.",
+                              model->developer_mode, inner - 32.0f)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_DEVELOPER);
+            }
+            nk_ui_end_container(ui);
+        }
+        {
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                         NK_UI_SPACE_3);
+            row.padding_top = NK_UI_SPACE_1;
+            if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back", NK_UI_BUTTON_PRIMARY)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+                }
+                if (model->developer_mode &&
+                    nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_DEVELOPER_LOG,
+                                 "Open developer log (F12)", 0u)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_OPEN_DEVELOPER_LOG);
+                }
+                nk_ui_end_container(ui);
+            }
+        }
+        break;
+    case PLAYER_UI_SETTINGS_PAGE_NOTICES:
+        flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Third-party notices", theme->accent_dark);
+        nk_ui_text_role(ui, FLOW_ID_TITLE, "Build tools and their licences", NK_UI_TYPE_TITLE,
+                        theme->paper);
+        if (wizard_box_begin(ui, 0u)) {
+            NkUiTextStyle data = nk_ui_type(NK_UI_TYPE_DATA, theme->paper);
+            for (size_t i = 0u; i < model->tool_count && i < PLAYER_UI_SETTINGS_TOOLS; ++i) {
+                nk_ui_text(ui, (NkUiId)(SET_ID_TEXT + 0xA0u + (NkUiId)i),
+                           nk_ui_text_clamp(ui, safe_text(model->tools[i], ""), &data,
+                                            inner - 32.0f, 1), &data);
+            }
+            if (model->tool_count == 0u) {
+                nk_ui_text_role(ui, SET_ID_TEXT + 0x9Fu,
+                                "No build tools have been downloaded on this PC yet.",
+                                NK_UI_TYPE_BODY_S, theme->muted);
+            }
+            nk_ui_end_container(ui);
+        }
+        nk_ui_text_role(ui, FLOW_ID_LEAD,
+                        "Nakagawa Recomp is free software (GPL-3.0-or-later; see LICENSE and "
+                        "NOTICE.md). Not affiliated with or endorsed by Sony Interactive "
+                        "Entertainment; PlayStation and PSP are its trademarks.",
+                        NK_UI_TYPE_CAPTION, theme->muted);
+        {
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                         NK_UI_SPACE_3);
+            row.padding_top = NK_UI_SPACE_1;
+            if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back", NK_UI_BUTTON_PRIMARY)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+                }
+                if (model->tool_count > 0u &&
+                    nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_LICENSE_TEXTS, "Open licence texts",
+                                 0u)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_OPEN_LICENSE_TEXTS);
+                }
+                nk_ui_end_container(ui);
+            }
+        }
+        break;
+    case PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS:
+    default:
+        flow_eyebrow(ui, FLOW_MARK_TRIANGLE, "Remove build tools", theme->warning);
+        nk_ui_text_role(ui, FLOW_ID_TITLE, "Remove the downloaded build tools?",
+                        NK_UI_TYPE_TITLE, theme->paper);
+        nk_ui_text_role(ui, FLOW_ID_LEAD,
+                        "This removes the build tools Nakagawa downloaded. Your library, disc "
+                        "images, saves and built games are kept. Nakagawa asks before it "
+                        "downloads them again, the next time you build a game.",
+                        NK_UI_TYPE_BODY, theme->muted);
+        {
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                         NK_UI_SPACE_3);
+            row.padding_top = NK_UI_SPACE_1;
+            if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Keep them",
+                                 NK_UI_BUTTON_PRIMARY)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+                }
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_CONFIRM_REMOVE, "Remove tools",
+                                 NK_UI_BUTTON_DANGER)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_REMOVE_TOOLS);
+                }
+                nk_ui_end_container(ui);
+            }
+        }
+        break;
+    }
+    flow_end(ui, "", prompts, 3u);
+}
+
+PlayerUiAction player_ui_screen_settings(NkUi *ui, const PlayerUiSettingsModel *model) {
+    static const NkUiPromptItem prompts[] = {
+        {NK_UI_PROMPT_ACT_MOVE, "Move"}, {NK_UI_PROMPT_ACT_CONFIRM, "Change"},
+        {NK_UI_PROMPT_ACT_BACK, "Back"}
+    };
+    PlayerUiAction result = action(PLAYER_UI_ACTION_NONE, 0u, PLAYER_UI_PRIMARY_NONE);
+    NkUiLayout layout;
+    float width;
+    float height;
+    if (ui == NULL || model == NULL) return result;
+    width = model->logical_width > 80.0f ? model->logical_width : 1280.0f;
+    height = model->logical_height > 80.0f ? model->logical_height : 800.0f;
+    if (model->page != PLAYER_UI_SETTINGS_PAGE_MAIN) {
+        settings_dialog(ui, model, width, height, &result);
+        return result;
+    }
+    (void)nk_ui_waves_element(ui, SET_ID_WAVES, (NkUiRect){0.0f, 0.0f, width, height}, 0u);
+    layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_grow(), 0.0f);
+    if (!nk_ui_begin_container(ui, SET_ID_ROOT, &layout, NULL)) return result;
+    {
+        PlayerUiActionKind tab = player_ui_top_bar(ui, SET_ID_TOP, PLAYER_UI_ROUTE_SETTINGS);
+        if (tab != PLAYER_UI_ACTION_NONE) result = action(tab, 0u, PLAYER_UI_PRIMARY_NONE);
+    }
+    layout = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_grow(), 0.0f);
+    layout.align_x = NK_UI_ALIGN_CENTER;
+    layout.padding_top = height >= 680.0f ? NK_UI_SPACE_7 : NK_UI_SPACE_4;
+    if (nk_ui_begin_container(ui, SET_ID_BODY, &layout, NULL)) {
+        settings_main(ui, model, width, height, &result);
+        nk_ui_end_container(ui);
+    }
+    nk_ui_prompt_bar(ui, SET_ID_PROMPTS, "", prompts, sizeof(prompts) / sizeof(prompts[0]));
+    nk_ui_end_container(ui);
+    return result;
+}

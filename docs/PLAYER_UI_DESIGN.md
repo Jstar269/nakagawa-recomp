@@ -189,7 +189,7 @@ Only actions the screen handles appear in its prompt bar.
 
 ### Library (C5, built)
 
-Top bar with LIBRARY, ABOUT and SETTINGS tabs (SETTINGS opens the Settings view, so it is never the active tab;
+Top bar with LIBRARY, ABOUT and SETTINGS tabs (SETTINGS opens the Settings view, whose page shows that tab active;
 Start or F1, the menu prompt, opens it too); `LIBRARY` in `DISPLAY` with the count in `CAPTION` beside it ("7 titles · 2 showcase demos"); a pager
 (small PREVIOUS and NEXT buttons around "PAGE 1 OF 2") on the right of that row when the grid spans pages; the card
 grid, ending with the add card ("Add a disc image you own", "Choose an .iso file"); prompt bar with MOVE, OPEN and
@@ -249,7 +249,30 @@ The version is written once, `NK_PLAYER_VERSION` in `src/player/ui/player_ui_nk.
 `SOURCE_DATE_EPOCH` when set, else the source commit's time (Makefile and CMake both), formatted in UTC as
 MM-DD-YYYY; without either the line reads `(dev build)`. No tag or release is implied by it.
 
+### Game found (built)
+
+The card a disc gets when it is added from the Library ([#1302](https://github.com/Jstar269/nakagawa-recomp/issues/1302)),
+in the dialog card the wizard and error screens use, 820 px wide. A status pill (GAME FOUND `ready`, NOT TESTED YET
+`info`, CAN'T PLAY YET or NOT ON THE LIST YET `error`) with the disc ID and YOUR DISC tags; the game's name in
+`TITLE` ("PSP game" when the disc has none); one `BODY` lead saying what Nakagawa can do with it; then the checks in an
+inset box, one row each: the status word in its colour (132 px), what was checked (124 px), and the sentence in
+`muted`, two lines of it from a 680 px tall window and one below that. Every row is a player sentence from
+`player_preflight_plain_message`, never the developer message, which stays in the log. Only a check that keeps the disc
+out of the library is `error`; anything still to do (not built yet, PSP fonts missing) is `warning`, so nothing red
+sits beside ADD TO LIBRARY. A disc this version cannot use is not offered to the library: its reason replaces the
+lead's second line and the card offers CHOOSE ANOTHER DISC and BACK. While the disc is read, the card shows its path,
+an indeterminate bar and CANCEL. The whole card fits the 960 x 540 minimum window.
+
 ### Settings (C6)
+
+Built now (#1302): one page under the top bar with SETTINGS active, two cards of named rows, each value on the 34 px
+button that changes it: GAME (resolution, frame pacing, VSync, fullscreen, scaling) and LAUNCHER AND SOUND (game
+volume with - and +, launcher fullscreen, reduce motion, menu sounds, controller settings, then the controller and the
+saves folder as captions). Under them DONE (primary: saves and returns to the Library), ONLINE AND DEVELOPER,
+THIRD-PARTY NOTICES and REMOVE BUILD TOOLS; the online options, the notices and the removal check are dialog cards.
+Every change is saved as it is made. Below a 680 px tall window the `SETTINGS` heading is left out (the tab names the
+page) so every row fits 960 x 540. The controller settings screen and the developer log are still drawn by
+`src/player/ui_renderer.c`. The tabbed layout below is the target for a later pass:
 
 - Top bar with SETTINGS active; `SETTINGS` in `DISPLAY`; a tab row (`LABEL`, 10/12 px padding, 3 px accent rule
   under the active tab, `line` underneath): DISPLAY, AUDIO, CONTROLS, PATHS AND STORAGE, ACCESSIBILITY, ABOUT.

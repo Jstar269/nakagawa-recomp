@@ -3342,6 +3342,19 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
     return true;
 }
 
+bool player_app_request_license_folder(PlayerApp *app) {
+    char data_root[NK_MAX_PATH];
+    int n;
+    if (!app) return false;
+    app->request_open_license_folder = false;
+    if (!player_app_data_root(app, data_root, sizeof(data_root)) || !data_root[0]) return false;
+    n = snprintf(app->requested_open_path, sizeof(app->requested_open_path),
+                 "%s%cprerequisites%cnotices", data_root,
+                 nk_platform_path_separator(), nk_platform_path_separator());
+    app->request_open_license_folder = n > 0 && (size_t)n < sizeof(app->requested_open_path);
+    return app->request_open_license_folder;
+}
+
 void player_app_remove_prerequisites(PlayerApp *app) {
     if (!app) return;
     if (app->prerequisite_job_started || app->prerequisite_fetcher_started ||
@@ -3762,26 +3775,62 @@ const char *player_preflight_label(const PlayerPreflightCheck *check) {
     return "Check";
 }
 
+bool player_preflight_check_blocks(const PlayerPreflightCheck *check) {
+    return check && check->status == PREFLIGHT_UNSUPPORTED &&
+           (strcmp(check->code, "EXECUTABLE") == 0 || strcmp(check->code, "DISC_SFO") == 0);
+}
+
 const char *player_preflight_status_word(const PlayerPreflightCheck *check) {
     if (!check) return "Unknown";
-    bool package = strcmp(check->code, "RUNTIME_PACKAGE") == 0;
-    switch (check->status) {
-        case PREFLIGHT_OK: return "Ready";
-        case PREFLIGHT_MISSING: return package ? "Not built yet" : "Needed";
-        case PREFLIGHT_INCOMPATIBLE: return "Rebuild";
-        case PREFLIGHT_STALE: return "Out of date";
-        case PREFLIGHT_UNSUPPORTED: return "Not supported";
-        case PREFLIGHT_IN_PROGRESS: return "Untested";
-        case PREFLIGHT_INVALID: return "Problem";
+    if (check->status == PREFLIGHT_OK) return "Ready";
+    if (player_preflight_check_blocks(check)) return "Can't use";
+    if (strcmp(check->code, "RUNTIME_PACKAGE") == 0) {
+        switch (check->status) {
+            case PREFLIGHT_MISSING: return "Not built yet";
+            case PREFLIGHT_STALE:
+            case PREFLIGHT_INCOMPATIBLE: return "Build again";
+            default: return "Not yet";
+        }
     }
-    return "Unknown";
+    if (strcmp(check->code, "DATA_ROOT") == 0) return "Checked later";
+    if (strcmp(check->code, "SYSTEM_FONTS") == 0) {
+        return check->status == PREFLIGHT_INVALID ? "Can't read" : "Some missing";
+    }
+    switch (check->status) {
+        case PREFLIGHT_MISSING: return "Needed";
+        case PREFLIGHT_INCOMPATIBLE: return "Build again";
+        case PREFLIGHT_STALE: return "Out of date";
+        case PREFLIGHT_IN_PROGRESS: return "Untested";
+        case PREFLIGHT_UNSUPPORTED:
+        case PREFLIGHT_INVALID:
+        default: return "Not yet";
+    }
 }
 
 const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
     if (!check) return "";
-    /* The package validator and the font summary speak in cache and slot terms;
-       the card says what they mean for the player. */
-    if (strcmp(check->code, "RUNTIME_PACKAGE") == 0) {
+    if (check->plain[0]) return check->plain;
+    /* The checks speak in file, cache and profile terms for the developer log;
+       the card says what each one means for the player (#1302). */
+    bool ok = check->status == PREFLIGHT_OK;
+    if (strcmp(check->code, "EXPERIMENTAL") == 0) {
+        return "Not tested with this game yet. You can add it and try.";
+    } else if (strcmp(check->code, "DISC_SFO") == 0) {
+        if (ok) return "Nakagawa read the disc and knows which game it is.";
+        if (check->status == PREFLIGHT_MISSING) {
+            return "The disc's game information is missing, so Nakagawa can't tell which "
+                   "game it is.";
+        }
+        return "Nakagawa couldn't read this disc image. Check that it's a complete copy of "
+               "your disc.";
+    } else if (strcmp(check->code, "EXECUTABLE") == 0) {
+        return ok ? "Found the game's program."
+                  : "Nakagawa can't use the game's program on this disc.";
+    } else if (strcmp(check->code, "GUEST_MODULES") == 0) {
+        return ok ? "Found the game's other program files."
+                  : "Some of the game's program files are encrypted, and Nakagawa doesn't "
+                    "decrypt games.";
+    } else if (strcmp(check->code, "RUNTIME_PACKAGE") == 0) {
         switch (check->status) {
             case PREFLIGHT_OK: return "Built and ready to play.";
             case PREFLIGHT_MISSING:
@@ -3789,29 +3838,32 @@ const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
             case PREFLIGHT_STALE:
             case PREFLIGHT_INCOMPATIBLE:
                 return "Built by an older version of Nakagawa. Build it again from the Library.";
-            default: break;
+            default:
+                return "Nakagawa can't build this game yet.";
         }
+    } else if (strcmp(check->code, "DATA_ROOT") == 0) {
+        if (ok) return "The game's files are ready.";
+        return "Nakagawa checks the game's files again after you build it.";
     } else if (strcmp(check->code, "SYSTEM_FONTS") == 0) {
-        if (check->status == PREFLIGHT_OK) return "PSP system fonts found.";
-        if (check->status == PREFLIGHT_MISSING) {
-            return "Some PSP system fonts were not found, so some text may look different. "
-                   "You can import your own fonts in the setup wizard.";
+        if (ok) return "PSP system fonts found.";
+        if (check->status == PREFLIGHT_INVALID) {
+            return "Your imported PSP fonts can't be read. You can import them again in the "
+                   "setup wizard.";
         }
-    } else if (strcmp(check->code, "EXPERIMENTAL") == 0) {
-        return "Not tested yet: this game may not start, or may stop early.";
+        return "Some PSP system fonts were not found, so some text may look different. "
+               "You can import your own fonts in the setup wizard.";
+    } else if (strcmp(check->code, "AUDIO_OUTPUT") == 0) {
+        return "Sound plays through your default audio device. With no device, the game "
+               "runs silently.";
     }
-    return player_plain_reason(check->message);
+    return ok ? "Ready." : "Nakagawa checks this again before the game plays.";
 }
 
 const PlayerPreflightCheck *player_preflight_blocking_check(
     const PlayerCompatibilityPreflight *preflight) {
     if (!preflight) return NULL;
     for (size_t i = 0; i < preflight->count; i++) {
-        const PlayerPreflightCheck *check = &preflight->checks[i];
-        if (check->status == PREFLIGHT_UNSUPPORTED &&
-            (strcmp(check->code, "EXECUTABLE") == 0 || strcmp(check->code, "DISC_SFO") == 0)) {
-            return check;
-        }
+        if (player_preflight_check_blocks(&preflight->checks[i])) return &preflight->checks[i];
     }
     return NULL;
 }
@@ -3834,6 +3886,18 @@ static void player_preflight_add(PlayerCompatibilityPreflight *preflight,
         memcpy(check->issue_numbers, issues, issue_count * sizeof(issues[0]));
         check->issue_count = issue_count;
     }
+}
+
+/* The player sentence for the check added last, when it names this check's own
+   facts. */
+static void player_preflight_set_plain(PlayerCompatibilityPreflight *preflight,
+                                       const char *format, ...) {
+    va_list args;
+    if (!preflight || preflight->count == 0 || !format) return;
+    PlayerPreflightCheck *check = &preflight->checks[preflight->count - 1u];
+    va_start(args, format);
+    vsnprintf(check->plain, sizeof(check->plain), format, args);
+    va_end(args);
 }
 
 typedef enum {
@@ -4299,6 +4363,10 @@ static void player_check_guest_modules(PlayerApp *app,
                      first_name, decrypted_dir);
             player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_MISSING,
                                  message, issues, 1);
+            player_preflight_set_plain(preflight,
+                "Some of the game's program files are encrypted, and Nakagawa doesn't "
+                "decrypt games. Put a decrypted %.120s from your own copy in %.300s.",
+                first_name, decrypted_dir);
         } else {
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; %.200s is not ready "
@@ -4307,6 +4375,10 @@ static void player_check_guest_modules(PlayerApp *app,
                      more, decrypted_dir);
             player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
                                  message, issues, 1);
+            player_preflight_set_plain(preflight,
+                "One of the game's program files (%.120s) can't be used yet. Put a "
+                "working decrypted copy from your own disc in %.300s.",
+                first_name, decrypted_dir);
         }
     }
     free(modules);
@@ -4479,6 +4551,9 @@ void player_app_build_compatibility_preflight(
                 decrypted_dir);
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                  message, NULL, 0);
+            player_preflight_set_plain(preflight,
+                "The EBOOT.elf you added isn't a working game program. Replace it with a "
+                "decrypted EBOOT.elf from your own copy in %.300s.", decrypted_dir);
         } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_MISSING) {
             /* Nakagawa does not decrypt games and reads no key file: an
              * encrypted EBOOT.BIN needs a user-supplied decrypted EBOOT.elf. */
@@ -4490,6 +4565,9 @@ void player_app_build_compatibility_preflight(
                 decrypted_dir);
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                  message, issues, 1);
+            player_preflight_set_plain(preflight,
+                "The game's program is encrypted, and Nakagawa doesn't decrypt games. Put a "
+                "decrypted EBOOT.elf from your own copy in %.300s.", decrypted_dir);
         } else {
             static const unsigned int path_issues[] = { 308 };
             char message[512];
@@ -4499,15 +4577,24 @@ void player_app_build_compatibility_preflight(
                 "broader ISO-to-Play support is in the works.");
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                  message, path_issues, 1);
+            player_preflight_set_plain(preflight,
+                "Nakagawa couldn't find a safe folder for this game's files. Check that "
+                "your user folder can be written to.");
         }
     } else if (eboot == NK_ISO_EXEC_EMPTY_OR_ZERO) {
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                              "EBOOT.BIN is empty or zero-filled and cannot be analyzed.", NULL, 0);
+        player_preflight_set_plain(preflight,
+                                   "The game's program on this disc is empty, so the disc "
+                                   "image may be damaged.");
     } else {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                              "Unknown/malformed executable boundary; broader title support is in the works.",
                              issues, 1);
+        player_preflight_set_plain(preflight,
+                                   "Nakagawa doesn't recognise the game's program on this "
+                                   "disc.");
     }
 
     if (disc_readable) {

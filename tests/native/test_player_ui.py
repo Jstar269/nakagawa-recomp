@@ -603,6 +603,12 @@ class NativePlayerUiTests(unittest.TestCase):
         "test_per_title_controller_mapping_choice",
         "test_readable_art_without_png_decoder_is_unsupported",
         "test_repeated_post_build_failures_keep_prior_title_retryable",
+        "test_settings_about_opens_the_pinned_license_list",
+        "test_settings_presentation_choice_saves_with_native_default_schema",
+        "test_settings_removal_requires_confirmation_and_keeps_other_app_data",
+        "test_settings_scaling_choice_cycles_and_saves_by_name",
+        "test_settings_screen_returns_to_library",
+        "test_settings_ui_sounds_toggle_is_the_last_stop_and_saves",
         "test_staged_card_exposes_runtime_required_status",
         "test_worker_start_failure_does_not_block_other_title_builds",
     ))
@@ -1119,6 +1125,181 @@ class NativePlayerUiTests(unittest.TestCase):
             [library, ("library", "3"), ("settings", "3"), ("library", "3")],
             "R steps from About to Settings, and Back returns to About",
         )
+
+    def next_ui_run(self, view: str, events: tuple[str, ...], **kwargs: object) -> dict[str, object]:
+        run = self.run_player(view, events, ui_mode="next", **kwargs)  # type: ignore[arg-type]
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        return run
+
+    @staticmethod
+    def disc_card(run: dict[str, object]) -> tuple[dict[str, str], list[dict[str, str]]]:
+        """The game-found card the next UI drew first: its kind and its check rows."""
+        stdout = run["stdout"]
+        assert isinstance(stdout, str)
+        card: dict[str, str] = {}
+        rows: list[dict[str, str]] = []
+        for line in stdout.splitlines():
+            if line.startswith("[PLAYER_UI_TEST] next_ui_disc ") and not card:
+                card = dict(part.split("=", 1) for part in line.split()[2:])
+            elif line.startswith("[PLAYER_UI_TEST] next_ui_disc_row ") and card and \
+                    len(rows) < int(card["rows"]):
+                fields = line[len("[PLAYER_UI_TEST] next_ui_disc_row "):]
+                status, rest = fields.split(" tone=", 1)
+                tone, rest = rest.split(" label=", 1)
+                label, message = rest.split(" message=", 1)
+                rows.append({"status": status[len("status="):], "tone": tone,
+                             "label": label, "message": message})
+        return card, rows
+
+    def assert_plain_rows(self, rows: list[dict[str, str]], stdout: object) -> None:
+        self.assertTrue(rows, stdout)
+        for row in rows:
+            with self.subTest(row=row["label"]):
+                self.assertTrue(row["label"] and row["message"] and row["status"], row)
+                self.assertNotIn("Not supported", row["status"])
+                # Developer codes and messages stay in the log (#1280, #1302).
+                self.assertNotRegex(row["message"], r"\b[A-Z][A-Z_]{3,}\b:")
+                self.assertNotIn(" .", row["message"])
+                self.assertNotIn("PARAM.SFO", row["message"])
+                self.assertNotIn("jpn0", row["message"])
+                self.assertTrue(row["message"].endswith("."), row)
+
+    def test_next_ui_game_found_cards_use_plain_words_and_offer_add_honestly(self) -> None:
+        """#1302: the three discs' cards in the next UI, with their real checks."""
+        supported = self.next_ui_run("supported", ("WAIT_MS=100", "KEY_ESCAPE"))
+        card, rows = self.disc_card(supported)
+        self.assertEqual((card.get("kind"), card.get("add")), ("1", "1"), supported["stdout"])
+        self.assert_plain_rows(rows, supported["stdout"])
+        self.assertNotIn("error", [row["tone"] for row in rows],
+                         "nothing beside Add to library reads as an error")
+        fonts = [row for row in rows if row["label"] == "Fonts"]
+        self.assertEqual(len(fonts), 1, rows)
+        self.assertEqual((fonts[0]["status"], fonts[0]["tone"]), ("Some missing", "warning"),
+                         "missing PSP fonts are a warning the game can still be added with")
+        self.assertEqual(self.screens(supported)[-1][0], "library")
+
+        untested = self.next_ui_run("experimental", ("WAIT_MS=100", "KEY_RETURN"))
+        card, rows = self.disc_card(untested)
+        frames = untested["frames"]
+        assert isinstance(frames, list)
+        games_before = int(frames[0]["games"])
+        self.assertEqual((card.get("kind"), card.get("add")), ("2", "1"), untested["stdout"])
+        self.assert_plain_rows(rows, untested["stdout"])
+        self.assertNotIn("error", [row["tone"] for row in rows])
+        self.assertEqual(frames[-1]["view"], "library", "Add to library adds and returns")
+        self.assertEqual(int(frames[-1]["games"]), games_before + 1)
+
+        blocked = self.next_ui_run("experimental-blocked", ("WAIT_MS=100", "KEY_RETURN"))
+        card, rows = self.disc_card(blocked)
+        self.assertEqual((card.get("kind"), card.get("add")), ("3", "0"), blocked["stdout"])
+        self.assert_plain_rows(rows, blocked["stdout"])
+        self.assertNotIn("Game program", [row["label"] for row in rows],
+                         "the check that keeps the disc out is the card's reason, not a row")
+        frames = blocked["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["picker"], "1", "Choose another disc opens the picker")
+        self.assertEqual(frames[-1]["games"], frames[0]["games"], "nothing is added")
+
+        unsupported = self.next_ui_run("unsupported", ("WAIT_MS=100", "KEY_RETURN"))
+        card, _ = self.disc_card(unsupported)
+        self.assertEqual((card.get("kind"), card.get("add")), ("4", "0"), unsupported["stdout"])
+        self.assertEqual(self.screens(unsupported)[-1][0], "library")
+
+    # The next UI's Settings controls (player_ui_nk.h), as the frame line prints them.
+    SETTINGS_FOCUS = {
+        "resolution": str(0x4501), "pacing": str(0x4502), "done": str(0x450C),
+        "online": str(0x450D), "notices": str(0x450E), "remove_tools": str(0x450F),
+        "online_mode": str(0x4511), "back": str(0x4517), "confirm_remove": str(0x4519),
+    }
+    # From Resolution, Down runs through the Game card's five rows to the button
+    # row, which it enters at Third-party notices.
+    TO_SETTINGS_BUTTONS = ("KEY_DOWN",) * 5
+
+    def focus_trail(self, run: dict[str, object]) -> list[str]:
+        """The controls the next UI focused, with repeats collapsed."""
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        trail: list[str] = []
+        for frame in frames:
+            if not trail or trail[-1] != frame["next_focus"]:
+                trail.append(frame["next_focus"])
+        return trail
+
+    def test_next_ui_settings_changes_are_saved_and_done_returns(self) -> None:
+        """#1302: Settings in the next UI runs the same handlers and saves each change."""
+        focus = self.SETTINGS_FOCUS
+        run = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
+        )
+        self.assertEqual(self.focus_trail(run)[:2], [focus["resolution"], focus["pacing"]],
+                         "Settings opens on Resolution")
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("resolution_scale"), 2, "Resolution steps 1x to 2x")
+        self.assertEqual(settings.get("fps_cap"), 0, "Frame pacing switches to no extra cap")
+        self.assertEqual(self.screens(run)[-1][0], "library")
+
+        done = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS + ("KEY_LEFT", "KEY_LEFT", "KEY_RETURN"),
+        )
+        self.assertIn(focus["done"], self.focus_trail(done))
+        self.assertEqual(self.screens(done), [("settings", "1"), ("library", "1")],
+                         "Done saves and returns to the library")
+
+        tabs = self.next_ui_run(
+            "settings", ("WAIT_MS=100", "MOUSE_MOVE=400,30", "MOUSE_DOWN", "MOUSE_UP")
+        )
+        self.assertEqual(self.screens(tabs), [("settings", "1"), ("library", "3")],
+                         "the ABOUT tab on Settings closes it and opens About")
+
+    def test_next_ui_settings_pages_open_and_return(self) -> None:
+        """#1302: the online, notices and removal pages are next-UI cards too."""
+        focus = self.SETTINGS_FOCUS
+        online = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS +
+            ("KEY_LEFT", "KEY_RETURN", "WAIT_MS=100", "KEY_RETURN", "KEY_ESCAPE", "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(online)],
+                         ["settings", "online_settings", "settings"])
+        trail = self.focus_trail(online)
+        self.assertEqual(trail[-3:], [focus["online"], focus["online_mode"], focus["online"]],
+                         "the page opens on its first switch and Back focuses its button")
+        frames = online["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["online_mode"], "1")
+
+        notices = self.next_ui_run(
+            "settings", ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS + ("KEY_RETURN", "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(notices)],
+                         ["settings", "prereq_about"])
+        self.assertEqual(self.focus_trail(notices)[-1], focus["back"])
+
+        # Right comes straight after the card opens, before its buttons are laid
+        # out; nk_ui holds it a frame instead of losing it (a slow CI runner did).
+        removal = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS +
+            ("KEY_RIGHT", "KEY_RETURN", "WAIT_MS=1", "KEY_RIGHT", "KEY_RETURN"),
+            downloaded_tool_payload=True,
+        )
+        self.assertEqual([view for view, _ in self.screens(removal)],
+                         ["settings", "confirm_remove_tools", "settings"])
+        self.assertIn(focus["confirm_remove"], self.focus_trail(removal))
+        self.assertFalse(removal["downloaded_tool_marker_exists"])
+
+        kept = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS +
+            ("KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100", "KEY_RETURN"),
+            downloaded_tool_payload=True,
+        )
+        self.assertTrue(kept["downloaded_tool_marker_exists"],
+                        "the removal card opens on the choice that keeps the tools")
 
     def test_library_keyboard_gamepad_navigation_and_picker(self) -> None:
         run = self.run_player("library", ("KEY_RIGHT", "PAD_DPAD_RIGHT", "KEY_TAB", "KEY_RETURN"))

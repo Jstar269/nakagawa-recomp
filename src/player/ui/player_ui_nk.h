@@ -26,7 +26,10 @@ typedef enum {
     PLAYER_UI_ROUTE_LIBRARY = 1,
     PLAYER_UI_ROUTE_TITLE = 2,
     PLAYER_UI_ROUTE_ABOUT = 3,
-    PLAYER_UI_ROUTE_REMOVE = 4     /* confirm Remove from library (#1304) */
+    PLAYER_UI_ROUTE_REMOVE = 4,    /* confirm Remove from library (#1304) */
+    /* Settings is a view over the routes, never pushed; the top bar takes it to
+       show the SETTINGS tab as the active one. */
+    PLAYER_UI_ROUTE_SETTINGS = 5
 } PlayerUiRoute;
 
 /* The player's version: the one place it is written. The About page shows
@@ -100,7 +103,9 @@ typedef enum {
     PLAYER_UI_ACTION_OPEN_NOTICES,
     PLAYER_UI_ACTION_REMOVE_TITLE,         /* the title page asks to remove it (#1304) */
     PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES,  /* the confirm screen's saves box */
-    PLAYER_UI_ACTION_REMOVE_CONFIRM        /* remove it; .primary is 1 to delete saves */
+    PLAYER_UI_ACTION_REMOVE_CONFIRM,       /* remove it; .primary is 1 to delete saves */
+    PLAYER_UI_ACTION_DISC,             /* a game-found card control; .primary carries the op */
+    PLAYER_UI_ACTION_SETTINGS          /* a Settings control; .primary carries the op */
 } PlayerUiActionKind;
 
 typedef struct {
@@ -233,6 +238,114 @@ typedef struct {
     float logical_height;
 } PlayerUiWizardModel;
 
+/* The card a disc gets when it is added from the library: checking it
+   (VIEW_INSPECTING), then found (VIEW_SUPPORTED_TITLE), found but not tested
+   (VIEW_EXPERIMENTAL_TITLE, blocked when this version cannot use it), or not
+   on the list (VIEW_UNSUPPORTED_TITLE). */
+typedef enum {
+    PLAYER_UI_DISC_CHECKING = 0,
+    PLAYER_UI_DISC_SUPPORTED,
+    PLAYER_UI_DISC_UNTESTED,
+    PLAYER_UI_DISC_BLOCKED,
+    PLAYER_UI_DISC_UNSUPPORTED
+} PlayerUiDiscKind;
+
+/* What a game-found card control asks for (PLAYER_UI_ACTION_DISC). */
+typedef enum {
+    PLAYER_UI_DISC_NONE = 0,
+    PLAYER_UI_DISC_ADD,             /* add the disc to the library */
+    PLAYER_UI_DISC_BACK,            /* back to the library, nothing added */
+    PLAYER_UI_DISC_CHOOSE_ANOTHER   /* open the file picker */
+} PlayerUiDiscOp;
+
+#define PLAYER_UI_DISC_CHECKS 10u
+
+typedef struct {
+    PlayerUiDiscKind kind;
+    const char *title_name;
+    const char *disc_id;
+    const char *iso_path;           /* checking: the file being read */
+    const char *reason;             /* blocked: why, and what to do next */
+    const char *profile_note;       /* a refused local title profile, in words */
+    const char *profile_details;    /* its refusal, shown as details */
+    PlayerUiCheckRow checks[PLAYER_UI_DISC_CHECKS];
+    size_t check_count;
+    double now_s;                   /* drives the checking bar (0 holds it still) */
+    float logical_width;
+    float logical_height;
+} PlayerUiDiscModel;
+
+/* The Settings pages: the main page (VIEW_SETTINGS), online and developer
+   options (VIEW_ONLINE_SETTINGS), the third-party notices for downloaded build
+   tools (VIEW_PREREQ_ABOUT) and the build tool removal check
+   (VIEW_CONFIRM_REMOVE_TOOLS). */
+typedef enum {
+    PLAYER_UI_SETTINGS_PAGE_MAIN = 0,
+    PLAYER_UI_SETTINGS_PAGE_ONLINE,
+    PLAYER_UI_SETTINGS_PAGE_NOTICES,
+    PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
+} PlayerUiSettingsPage;
+
+/* What a Settings control asks for (PLAYER_UI_ACTION_SETTINGS). main.c runs the
+   same player_state handlers the existing renderer's Settings buttons call. */
+typedef enum {
+    PLAYER_UI_SETTINGS_NONE = 0,
+    PLAYER_UI_SETTINGS_CYCLE_RESOLUTION,
+    PLAYER_UI_SETTINGS_TOGGLE_PACING,
+    PLAYER_UI_SETTINGS_TOGGLE_VSYNC,
+    PLAYER_UI_SETTINGS_TOGGLE_FULLSCREEN,
+    PLAYER_UI_SETTINGS_CYCLE_SCALING,
+    PLAYER_UI_SETTINGS_VOLUME_DOWN,
+    PLAYER_UI_SETTINGS_VOLUME_UP,
+    PLAYER_UI_SETTINGS_TOGGLE_UI_SOUNDS,
+    PLAYER_UI_SETTINGS_TOGGLE_REDUCE_MOTION,
+    PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN,
+    PLAYER_UI_SETTINGS_OPEN_CONTROLLER,
+    PLAYER_UI_SETTINGS_OPEN_ONLINE,
+    PLAYER_UI_SETTINGS_OPEN_NOTICES,
+    PLAYER_UI_SETTINGS_OPEN_REMOVE_TOOLS,
+    PLAYER_UI_SETTINGS_DONE,              /* save, back to the library */
+    PLAYER_UI_SETTINGS_BACK,              /* a Settings page, back to the main page */
+    PLAYER_UI_SETTINGS_TOGGLE_ONLINE,
+    PLAYER_UI_SETTINGS_TOGGLE_UPDATES,
+    PLAYER_UI_SETTINGS_TOGGLE_NEWS,
+    PLAYER_UI_SETTINGS_TOGGLE_REPORTS,
+    PLAYER_UI_SETTINGS_TOGGLE_DEVELOPER,
+    PLAYER_UI_SETTINGS_OPEN_DEVELOPER_LOG,
+    PLAYER_UI_SETTINGS_OPEN_LICENSE_TEXTS,
+    PLAYER_UI_SETTINGS_REMOVE_TOOLS
+} PlayerUiSettingsOp;
+
+#define PLAYER_UI_SETTINGS_TOOLS 16u
+
+typedef struct {
+    PlayerUiSettingsPage page;
+    /* Main page: the current value of each control, in words */
+    const char *resolution;         /* "2x (960x544)" */
+    const char *pacing;             /* "PSP timing" */
+    const char *scaling;            /* "Sharp" */
+    bool vsync;
+    bool fullscreen;
+    int volume;                     /* 0-100 */
+    bool ui_sounds;
+    bool reduce_motion;
+    bool launcher_fullscreen;
+    const char *controller_line;    /* "Keyboard ready" or the pad's name */
+    const char *saves_folder;
+    const char *notice;             /* a settings notice (a failed save), or NULL */
+    /* Online and developer options */
+    bool online_mode;
+    bool online_updates;
+    bool online_news;
+    bool online_reports;
+    bool developer_mode;
+    /* Third-party notices: "name version · licence" per downloaded tool */
+    const char *tools[PLAYER_UI_SETTINGS_TOOLS];
+    size_t tool_count;
+    float logical_width;
+    float logical_height;
+} PlayerUiSettingsModel;
+
 /* Package build progress (VIEW_BUILDING_PACKAGE). stage is 0-3 for Preflight,
    Extract, Compile and Package, 4 when every stage is done. */
 typedef struct {
@@ -334,7 +447,33 @@ enum {
     PLAYER_UI_ID_TAB_LIBRARY = 0x0F01u,
     PLAYER_UI_ID_TAB_ABOUT = 0x0F02u,
     PLAYER_UI_ID_TAB_SETTINGS = 0x0F03u,
-    PLAYER_UI_ID_ABOUT_NOTICES = 0x3001u
+    PLAYER_UI_ID_ABOUT_NOTICES = 0x3001u,
+    PLAYER_UI_ID_DISC_PRIMARY = 0x4601u,
+    PLAYER_UI_ID_DISC_SECOND = 0x4602u,
+    PLAYER_UI_ID_SETTINGS_RESOLUTION = 0x4501u,
+    PLAYER_UI_ID_SETTINGS_PACING = 0x4502u,
+    PLAYER_UI_ID_SETTINGS_VSYNC = 0x4503u,
+    PLAYER_UI_ID_SETTINGS_FULLSCREEN = 0x4504u,
+    PLAYER_UI_ID_SETTINGS_SCALING = 0x4505u,
+    PLAYER_UI_ID_SETTINGS_VOLUME_DOWN = 0x4506u,
+    PLAYER_UI_ID_SETTINGS_VOLUME_UP = 0x4507u,
+    PLAYER_UI_ID_SETTINGS_UI_SOUNDS = 0x4508u,
+    PLAYER_UI_ID_SETTINGS_REDUCE_MOTION = 0x4509u,
+    PLAYER_UI_ID_SETTINGS_LAUNCHER_FULLSCREEN = 0x450Au,
+    PLAYER_UI_ID_SETTINGS_CONTROLLER = 0x450Bu,
+    PLAYER_UI_ID_SETTINGS_DONE = 0x450Cu,
+    PLAYER_UI_ID_SETTINGS_ONLINE = 0x450Du,
+    PLAYER_UI_ID_SETTINGS_NOTICES = 0x450Eu,
+    PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS = 0x450Fu,
+    PLAYER_UI_ID_SETTINGS_ONLINE_MODE = 0x4511u,
+    PLAYER_UI_ID_SETTINGS_UPDATES = 0x4512u,
+    PLAYER_UI_ID_SETTINGS_NEWS = 0x4513u,
+    PLAYER_UI_ID_SETTINGS_REPORTS = 0x4514u,
+    PLAYER_UI_ID_SETTINGS_DEVELOPER = 0x4515u,
+    PLAYER_UI_ID_SETTINGS_DEVELOPER_LOG = 0x4516u,
+    PLAYER_UI_ID_SETTINGS_BACK = 0x4517u,
+    PLAYER_UI_ID_SETTINGS_LICENSE_TEXTS = 0x4518u,
+    PLAYER_UI_ID_SETTINGS_CONFIRM_REMOVE = 0x4519u
 };
 
 #define PLAYER_UI_ID_LIBRARY_ITEM(index) \
@@ -389,11 +528,14 @@ PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model)
 PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *model);
 PlayerUiAction player_ui_screen_about(NkUi *ui,
                                       const PlayerUiAboutModel *model);
+PlayerUiAction player_ui_screen_disc(NkUi *ui, const PlayerUiDiscModel *model);
+PlayerUiAction player_ui_screen_settings(NkUi *ui, const PlayerUiSettingsModel *model);
 
 /* The top bar every launcher screen draws: LIBRARY, ABOUT and SETTINGS tabs,
    focusable and switched with L / R. Returns the action for a tab the user
    chose this frame (OPEN_LIBRARY, OPEN_ABOUT or OPEN_SETTINGS; the menu
-   prompt, Start or F1, also opens Settings), else NONE. */
+   prompt, Start or F1, also opens Settings), else NONE. `active` is the route
+   shown, or PLAYER_UI_ROUTE_SETTINGS on the Settings page. */
 PlayerUiActionKind player_ui_top_bar(NkUi *ui, NkUiId id, PlayerUiRoute active);
 
 /* The build date for an epoch (Unix seconds, UTC) as MM-DD-YYYY. Returns false

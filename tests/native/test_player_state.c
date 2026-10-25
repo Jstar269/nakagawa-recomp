@@ -1604,6 +1604,22 @@ static void test_bitmap_font_text_fallback(void) {
  * "~" (the stored path is untouched). The profile folder is matched on whole
  * path components only, so a profile name that is a prefix of another folder
  * name is left alone. */
+/* Open licence texts asks for <data root>/prerequisites/notices, from the same
+   data root the rest of the player uses, and asks for nothing without an app. */
+static void test_license_folder_request(void) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    char expected[NK_MAX_PATH];
+    char sep = nk_platform_path_separator();
+    assert(app != NULL);
+    assert(!player_app_request_license_folder(NULL));
+    snprintf(app->runtime_root, sizeof(app->runtime_root), "synthetic-data-root");
+    assert(player_app_request_license_folder(app));
+    assert(app->request_open_license_folder);
+    snprintf(expected, sizeof(expected), "synthetic-data-root%cprerequisites%cnotices", sep, sep);
+    assert(strcmp(app->requested_open_path, expected) == 0);
+    free(app);
+}
+
 static void test_display_path_hides_profile_folder(void) {
     /* Each platform's own path spelling: the profile folder and its separator. */
 #if defined(_WIN32) || defined(_WIN64)
@@ -1970,10 +1986,50 @@ static void test_error_cards_are_plain(void) {
     snprintf(check->message, sizeof(check->message),
              "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.");
     assert(strcmp(player_preflight_label(check), "Game program") == 0);
-    assert(strcmp(player_preflight_status_word(check), "Not supported") == 0);
+    assert(strcmp(player_preflight_status_word(check), "Can't use") == 0);
     assert(strcmp(player_preflight_plain_message(check),
-                  "EBOOT.BIN is encrypted. Nakagawa does not decrypt games.") == 0);
+                  "Nakagawa can't use the game's program on this disc.") == 0);
     assert(player_preflight_blocking_check(&preflight) == check);
+    /* A check with its own facts (the folder to put a file in) says them. */
+    snprintf(check->plain, sizeof(check->plain), "Put a decrypted EBOOT.elf in C:/synthetic.");
+    assert(strcmp(player_preflight_plain_message(check),
+                  "Put a decrypted EBOOT.elf in C:/synthetic.") == 0);
+
+    /* #1302: every code and status reads as a player sentence: no developer
+       code, no empty name, and "Can't use" only where the disc is kept out. */
+    {
+        static const char *const codes[] = {
+            "EXPERIMENTAL", "DISC_SFO", "EXECUTABLE", "GUEST_MODULES", "RUNTIME_PACKAGE",
+            "DATA_ROOT", "SYSTEM_FONTS", "AUDIO_OUTPUT", "SOMETHING_NEW"
+        };
+        static const PlayerPreflightStatus statuses[] = {
+            PREFLIGHT_OK, PREFLIGHT_MISSING, PREFLIGHT_INCOMPATIBLE, PREFLIGHT_STALE,
+            PREFLIGHT_UNSUPPORTED, PREFLIGHT_IN_PROGRESS, PREFLIGHT_INVALID
+        };
+        PlayerPreflightCheck row;
+        for (size_t c = 0; c < sizeof(codes) / sizeof(codes[0]); c++) {
+            for (size_t s = 0; s < sizeof(statuses) / sizeof(statuses[0]); s++) {
+                const char *message;
+                const char *word;
+                size_t length;
+                memset(&row, 0, sizeof(row));
+                snprintf(row.code, sizeof(row.code), "%s", codes[c]);
+                row.status = statuses[s];
+                snprintf(row.message, sizeof(row.message),
+                         "SYNTHETIC_CODE: developer text with an empty name .");
+                message = player_preflight_plain_message(&row);
+                word = player_preflight_status_word(&row);
+                length = strlen(message);
+                assert(length > 1u && message[length - 1u] == '.');
+                assert(strstr(message, "SYNTHETIC_CODE") == NULL);
+                assert(strstr(message, "developer text") == NULL);
+                assert(strstr(message, " .") == NULL);
+                assert(strcmp(word, "Not supported") != 0);
+                assert(player_preflight_label(&row)[0] != '\0');
+                assert((strcmp(word, "Can't use") == 0) == player_preflight_check_blocks(&row));
+            }
+        }
+    }
 
     free(app);
     printf("[PLAYER_STATE_TEST] error cards are plain, with their codes in the details PASS\n");
@@ -2637,6 +2693,7 @@ int main(int argc, char **argv) {
     test_build_outcome_is_shown_once_per_session();
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
+    test_license_folder_request();
     test_library_card_status_text();
     /* Saves a library file under the cache root, so it runs only once that
      * root is the temporary one. */

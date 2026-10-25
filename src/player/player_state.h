@@ -268,6 +268,9 @@ typedef struct {
     char code[32];
     PlayerPreflightStatus status;
     char message[2048];
+    /* The row's player sentence when it needs this check's own facts (a
+       folder to put a file in); empty uses the sentence for code and status. */
+    char plain[640];
     unsigned int issue_numbers[2];
     size_t issue_count;
 } PlayerPreflightCheck;
@@ -282,14 +285,17 @@ typedef struct {
     size_t count;
 } PlayerCompatibilityPreflight;
 
-/* A preflight row in plain words for the cards (#1280): a name for what was
-   checked, a status word, and the reason without its code prefix. */
+/* A preflight row in plain words for the cards (#1280, #1302): a name for what
+   was checked, a status word, and one player sentence. Every code and status has
+   its own sentence; the developer message stays in the log. */
 const char *player_preflight_label(const PlayerPreflightCheck *check);
 const char *player_preflight_status_word(const PlayerPreflightCheck *check);
 const char *player_preflight_plain_message(const PlayerPreflightCheck *check);
-/* The check that keeps the game out of the library in this version: an
-   unreadable disc or an executable Nakagawa cannot use. NULL when the game can
-   be added. */
+/* True for a check that keeps the game out of the library in this version: an
+   unreadable disc or an executable Nakagawa cannot use. Only these rows read as
+   errors; the rest are steps for later, on a card that offers ADD TO LIBRARY. */
+bool player_preflight_check_blocks(const PlayerPreflightCheck *check);
+/* The first blocking check, or NULL when the game can be added. */
 const PlayerPreflightCheck *player_preflight_blocking_check(
     const PlayerCompatibilityPreflight *preflight);
 
@@ -949,6 +955,9 @@ void player_app_prereq_cancel(PlayerApp *app);
 void player_app_prereq_finish_cancel(PlayerApp *app);
 bool player_app_prereq_take_resume(PlayerApp *app);
 bool player_app_open_prerequisite_about(PlayerApp *app);
+/* Asks the main loop to open the downloaded tools' licence texts folder. Asks
+   nothing, and returns false, when the per-user data folder can't be found. */
+bool player_app_request_license_folder(PlayerApp *app);
 void player_app_remove_prerequisites(PlayerApp *app);
 void player_app_set_build_error(
     PlayerApp *app,
