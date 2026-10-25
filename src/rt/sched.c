@@ -4712,6 +4712,12 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             idle_no_progress = 0;
             idle_vbl_mark = s_vbl_count;
         }
+        /* The idle path above can deliver the VBLANK that latches a pause request
+         * (the pause script, a presenter request) and ready that edge's waiter in
+         * the same iteration. Rendezvous at the loop top before resuming anyone:
+         * the switch-in below grants a fresh slice, which would let the woken
+         * thread run a whole frame past the request boundary. */
+        if (s_pause_requested) continue;
         TCB *t = &s_tcb[idx];
         uint32_t previous_uid = 0;
         if (sr_perf_enabled && s_cur >= 0 && s_cur < s_ntcb)

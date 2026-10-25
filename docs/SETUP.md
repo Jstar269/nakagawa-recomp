@@ -25,7 +25,7 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
    decrypted files from your own copy; see [Encrypted executables](#encrypted-executables).
    Nothing in this repository ships or downloads a game; see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md).
 
-For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20260601**; see
+For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20261001**; see
 [Showcase demos on Windows](#showcase-demos-on-windows-wsl-2-and-pspdev).
 
 The player's **BUILD PACKAGE** can download pinned build tools on first use. A consent card lists each
@@ -76,7 +76,7 @@ player and your own game.
    Open Ubuntu once and create your Linux user. Make Ubuntu the default distribution, because the build
    runs `wsl -e` without naming one: `wsl --set-default Ubuntu`. `wsl -l -v` marks the default with `*`.
 
-2. In Ubuntu, download `pspdev-ubuntu-latest-x86_64.tar.gz` from the `v20260601` release at
+2. In Ubuntu, download `pspdev-ubuntu-latest-x86_64.tar.gz` from the `v20261001` release at
    <https://github.com/pspdev/pspdev/releases>. The asset name, release and archive hash are recorded in
    [`assets/upstream/pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
 
@@ -115,7 +115,7 @@ player and your own game.
 
 Linux can build and run the two source-owned showcase packages through the runtime.
 The route needs GCC, GNU Make, Python 3.15, CMake, Ninja, `libvulkan-dev`, SDL3 3.4.18,
-and PSPDEV v20260601 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
+and PSPDEV v20261001 installed at `/usr/local/pspdev`. CI builds SDL3 from its pinned
 3.4.18 release commit and verifies the PSPDEV archive against
 [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
 
