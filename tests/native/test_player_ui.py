@@ -2543,6 +2543,66 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertTrue(titled, run["stdout"])
         return titled[-1]
 
+    # The "library" view's tiles at 1280x720: TEST00005, then TEST00006.
+    FIRST_TILE = "MOUSE_MOVE=175,260"
+    SECOND_TILE = "MOUSE_MOVE=485,260"
+
+    def opened_titles(self, frames: list[dict[str, str]]) -> list[str]:
+        """The disc of each title page the run opened, in order."""
+        opened: list[str] = []
+        previous = None
+        for frame in frames:
+            route = frame["next_route"]
+            if route == "2" and previous != "2":
+                opened.append(frame["selected_disc"])
+            elif route == "2" and opened and frame["selected_disc"] != opened[-1]:
+                opened.append(frame["selected_disc"])
+            previous = route
+        return opened
+
+    def test_clicking_a_tile_opens_that_tile(self) -> None:
+        """#1301: a click opens the tile under the pointer, not the focused one.
+
+        Failing-before: every frame without an action handed the launcher a
+        NONE action whose title_index was 0, and the launcher selected that
+        index, so each title page it opened showed the first game."""
+        run = self.run_player(
+            "library",
+            ("WAIT_MS=300", self.SECOND_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300"),
+            ui_mode="next", wait_background=True,
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["selected_disc"], "TEST00005", "focus starts on tile 1")
+        self.assertEqual(self.opened_titles(frames), ["TEST00006"], run["stdout"])
+        self.assertEqual(frames[-1]["next_route"], "2")
+        self.assertEqual(frames[-1]["selected_disc"], "TEST00006")
+
+    def test_clicking_a_tile_after_a_build_opens_that_tile(self) -> None:
+        """#1301: after a build, with the built title focused, a click opens the clicked tile."""
+        run = self.run_player(
+            "library",
+            ("WAIT_MS=300", "START_SYNTHETIC_BUILD=2", "WAIT_MS=2200",
+             # Back in the library, focus the built title, as the owner had it.
+             "KEY_RIGHT", "WAIT_MS=200",
+             self.FIRST_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300",
+             "KEY_ESCAPE", "WAIT_MS=300",
+             self.SECOND_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300"),
+            ui_mode="next", wait_background=True, post_build_ready=True,
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        self.assertIn("synthetic_build result=PASS index=1 disc=TEST00006", str(run["stdout"]))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        focused_built = [frame for frame in frames
+                         if frame["view"] == "ready_library" and frame["next_route"] == "1"
+                         and frame["selected_disc"] == "TEST00006"]
+        self.assertTrue(focused_built, "the built title had focus before the click")
+        self.assertEqual(self.opened_titles(frames), ["TEST00005", "TEST00006"], run["stdout"])
+
     def test_compatibility_records_carry_a_player_tier(self) -> None:
         """#1297: every title record maps to a player tier; Hot Shots Tennis is Playable.
 

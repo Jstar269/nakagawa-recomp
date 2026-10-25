@@ -849,7 +849,9 @@ static void player_ui_copy_error_details(PlayerApp *app) {
 static void player_ui_nk_apply_action(PlayerApp *app,
                                      const PlayerUiAction *action) {
     int index;
-    if (app == NULL || action == NULL) return;
+    /* Most frames carry no action, and its title_index is 0: selecting that
+       index here made every open title page show the first game (#1301). */
+    if (app == NULL || action == NULL || action->kind == PLAYER_UI_ACTION_NONE) return;
     if (action->kind == PLAYER_UI_ACTION_WIZARD) {
         player_ui_wizard_apply(app, (PlayerUiWizardOp)action->primary);
         return;
