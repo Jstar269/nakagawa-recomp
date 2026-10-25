@@ -1191,6 +1191,129 @@ class PackageCacheTests(unittest.TestCase):
             self.assertEqual(waits, [0.1])
             self.assertTrue(other.is_dir(), "the staged folder is left for cleanup, not lost")
 
+    def test_sharing_violation_is_retried_and_other_errors_are_not(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "staging"
+            source.mkdir()
+            target = Path(tmp) / "ABCD12345"
+            real_replace = os.replace
+            sharing_violation = OSError(13, "The process cannot access the file")
+            sharing_violation.winerror = 32
+            failures = [sharing_violation]
+
+            def flaky_replace(src, dst):
+                if failures:
+                    raise failures.pop()
+                real_replace(src, dst)
+
+            waits = []
+            with mock.patch.object(nk_cli.os, "replace", side_effect=flaky_replace):
+                nk_cli._replace_package_folder(source, target, sleeper=waits.append,
+                                               delays=(0.1, 0.2))
+            self.assertTrue(target.is_dir())
+            self.assertEqual(waits, [0.1])
+
+            other = Path(tmp) / "other"
+            other.mkdir()
+            waits.clear()
+            with mock.patch.object(nk_cli.os, "replace",
+                                   side_effect=FileNotFoundError(2, "missing")):
+                with self.assertRaises(FileNotFoundError):
+                    nk_cli._replace_package_folder(other, Path(tmp) / "dest",
+                                                   sleeper=waits.append, delays=(0.1,))
+            self.assertEqual(waits, [])
+
+    def test_build_promotion_rides_out_a_lock_and_restores_on_give_up(self) -> None:
+        """The build's own promotion retries like the cache path (#1286 item 3)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_dir = root / "cache"
+            cache_dir.mkdir()
+            target = root / "packages" / "ABCD12345"
+            target.mkdir(parents=True)
+            (target / "package.json").write_text('{"previous": true}', encoding="utf-8")
+            staging = root / "packages" / ".ABCD12345.staging-1"
+            staging.mkdir()
+            (staging / "package.json").write_text('{"new": true}', encoding="utf-8")
+            real_replace = os.replace
+            failures = [PermissionError(13, "[WinError 5] Access is denied")]
+
+            def flaky_staging_replace(src, dst):
+                if Path(src) == staging and failures:
+                    raise failures.pop()
+                real_replace(src, dst)
+
+            waits = []
+            real_helper = nk_cli._replace_package_folder
+
+            def windows_retry(source, destination):
+                # The Windows retry schedule on any host, with the waits recorded.
+                return real_helper(source, destination, sleeper=waits.append, delays=(0.1,))
+
+            with mock.patch.object(nk_cli.os, "replace", side_effect=flaky_staging_replace), \
+                    mock.patch.object(nk_cli, "_replace_package_folder", side_effect=windows_retry):
+                backup = nk_cli._swap_in_package_folder(staging, target, cache_dir)
+            self.assertEqual(waits, [0.1])
+            self.assertEqual((target / "package.json").read_text(encoding="utf-8"), '{"new": true}')
+            self.assertIsNotNone(backup)
+            self.assertEqual((backup / "package.json").read_text(encoding="utf-8"),
+                             '{"previous": true}')
+
+            staging.mkdir()
+            (staging / "package.json").write_text('{"newer": true}', encoding="utf-8")
+
+            def locked_staging_replace(src, dst):
+                if Path(src) == staging:
+                    raise PermissionError(13, "[WinError 5] Access is denied")
+                real_replace(src, dst)
+
+            waits.clear()
+            with mock.patch.object(nk_cli.os, "replace", side_effect=locked_staging_replace), \
+                    mock.patch.object(nk_cli, "_replace_package_folder", side_effect=windows_retry):
+                with self.assertRaisesRegex(nk_cli.PackageBuildError, "PACKAGE_FOLDER_LOCKED"):
+                    nk_cli._swap_in_package_folder(staging, target, cache_dir)
+            self.assertEqual(waits, [0.1])
+            # The package that was in place before stays in place.
+            self.assertEqual((target / "package.json").read_text(encoding="utf-8"), '{"new": true}')
+
+    def test_second_build_of_a_title_is_refused_while_one_runs(self) -> None:
+        import argparse
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            user_root = Path(tmp) / "user-data"
+            user_root.mkdir()
+            with nk_cli._package_build_lock(user_root, "ABCD12345") as first:
+                self.assertTrue(first)
+                with nk_cli._package_build_lock(user_root, "ABCD12345") as second:
+                    self.assertFalse(second)
+                with nk_cli._package_build_lock(user_root, "WXYZ54321") as other_title:
+                    self.assertTrue(other_title)
+                progress = Path(tmp) / "progress.jsonl"
+                args = argparse.Namespace(
+                    disc_id="abcd12345", user_data_root=user_root, module_dir=None,
+                    psp_header=None, instruction_trace=False,
+                    register_local_compatibility_record=False,
+                    progress_json=progress, log_file=None,
+                )
+                stderr = io.StringIO()
+                with mock.patch.object(nk_cli, "_build_package") as build, \
+                        contextlib.redirect_stderr(stderr):
+                    status = nk_cli.cmd_build_package(args)
+                self.assertEqual(status, 2)
+                build.assert_not_called()
+                self.assertIn("BUILD_ALREADY_RUNNING: ABCD12345 is already being built.",
+                              stderr.getvalue())
+                events = [json.loads(line)
+                          for line in progress.read_text(encoding="utf-8").splitlines()]
+                self.assertEqual(events[-1]["status"], "FAIL")
+                self.assertIn("BUILD_ALREADY_RUNNING", events[-1]["message"])
+            # Released with the first build: the next one starts.
+            with mock.patch.object(nk_cli, "_build_package", return_value=0) as build:
+                self.assertEqual(nk_cli.cmd_build_package(args), 0)
+            build.assert_called_once()
+
     def test_cache_cleanup_is_bounded_and_preserves_protected_entry(self) -> None:
         cache_root = package_cache.cache_root(self.root / "user-data", "TEST00001")
         entries_root = cache_root / "entries"

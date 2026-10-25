@@ -321,6 +321,12 @@ typedef struct PlayerApp {
     ErrorState last_error;
     SetupWizardState wizard;
     PackageBuildSession build_session;
+    /* The build session whose failure or cancellation has been shown, so the
+       main loop shows it once and the user can leave the card (#1277). */
+    uint64_t build_outcome_handled_generation;
+    /* The build session the prerequisite fetcher ran in. Its outcome belongs
+       to the prerequisite card, not the package build card. */
+    uint64_t prerequisite_session_generation;
     PlayerPrerequisiteState prerequisites;
     PackageBootstrapSession bootstrap_session;
     bool prerequisite_job_started;
@@ -751,6 +757,20 @@ bool player_app_start_package_build(PlayerApp *app, int game_index);
 /* Rebuild an existing package only when validation marks it incompatible.
    Uses the same prerequisite consent and package-builder transaction as a new build. */
 bool player_app_rebuild_package(PlayerApp *app, int game_index);
+/* An experimental entry saved without a selected executable (its EBOOT.BIN was
+   encrypted at import) takes the one its validated profile binds, and the
+   library is saved. Returns true when the entry changed (#1276). */
+bool player_app_adopt_profile_executable(PlayerApp *app, int game_index);
+/* Show a failed or cancelled build session once per session: a failure opens
+   the build error card, a cancel returns to the Library. Later calls for the
+   same session do nothing, so the card can be dismissed and the Library left
+   (#1277). Returns true when it changed the view. */
+bool player_app_apply_build_outcome(PlayerApp *app);
+/* The package passed its build but not the check that follows it. The internal
+   code PACKAGE_REVALIDATION_FAILED goes to the developer log; the card does
+   not claim the build failed (#1276). */
+void player_app_set_package_revalidation_error(PlayerApp *app, const char *reason,
+                                               const char *log_file_path);
 /* Poll the active package builder once per player-loop iteration, independent
    of which view is currently visible. */
 void player_app_poll_package_build(PlayerApp *app, uint64_t current_time_ms);

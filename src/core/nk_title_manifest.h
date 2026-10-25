@@ -137,6 +137,20 @@ bool nk_title_manifest_read_experimental_profile(
     size_t error_buf_len
 );
 
+/* The executable leaf ("EBOOT.BIN" or "BOOT.BIN") that an experimental
+ * profile binds, returned only when the whole profile validates for that leaf.
+ * A disc imported while its EBOOT.BIN was encrypted has a library entry with
+ * no selected executable; a later build with a user-supplied decrypted
+ * EBOOT.elf rewrites the profile to bind EBOOT.BIN, and the library entry
+ * adopts it from here (#1276). */
+bool nk_title_manifest_experimental_profile_executable(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    char *out_leaf,
+    size_t out_leaf_size
+);
+
 /* Validate the v2 generated package at <user_data_root>/packages/<DISC_ID>.
  * Experimental entries are additionally bound to their private profile's
  * selected executable hash. `current_disc_version` comes from the selected

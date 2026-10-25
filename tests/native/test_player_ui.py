@@ -281,11 +281,14 @@ def break_package_manifest(runtime_root: Path) -> None:
 
 
 def synthetic_ready_package(
-    runtime_root: Path, source_executable: bytes, *, data_root_present: bool = True
+    runtime_root: Path,
+    source_executable: bytes,
+    *,
+    data_root_present: bool = True,
+    disc_id: str = "TEST00006",
+    title_id: str = "display-smoke-v1",
 ) -> None:
     """Write a source-owned package accepted by the real native validator."""
-    disc_id = "TEST00006"
-    title_id = "display-smoke-v1"
     package = runtime_root / "packages" / disc_id
     package.mkdir(parents=True)
     executable_name = f"{title_id}.exe"
@@ -438,6 +441,53 @@ def synthetic_ready_package(
         (runtime_root / "fixtures" / "display_smoke").mkdir(parents=True, exist_ok=True)
 
 
+def synthetic_experimental_profile(
+    runtime_root: Path, disc_id: str, source_executable: bytes
+) -> None:
+    """Write the profile a passing experimental build leaves: it binds EBOOT.BIN.
+
+    The library entry is saved with no selected executable, as the importer
+    saves a disc whose EBOOT.BIN was encrypted (#1276).
+    """
+    title_id = f"experimental-{disc_id.lower()}"
+    executable_hash = hashlib.sha256(source_executable).hexdigest()
+    profile = {
+        "schema_version": 1,
+        "manifest": {
+            "schema_version": 1,
+            "id": title_id,
+            "game_name": title_id,
+            "display_name": "Synthetic experiment",
+            "kind": "retail",
+            "disc": {"id": disc_id, "region": "NA", "revision_policy": "exact-disc-id"},
+            "executable": {
+                "base": 0,
+                "entry": 0,
+                "bss_metadata_source": "none",
+                "extra_executable_spans": [],
+            },
+            "modules": [],
+            "filesystem": {
+                "data_root": "",
+                "memory_stick_root": "savedata",
+                "device_prefixes": ["disc0:", "ms0:"],
+            },
+            "hle_profile": "generic",
+            "feature_requirements": [],
+            "verification_profile": "experimental-unverified",
+        },
+        "input_identity": {
+            "disc_id": disc_id,
+            "selected_executable": "PSP_GAME/SYSDIR/EBOOT.BIN",
+            "executable_sha256": executable_hash,
+            "elf_sha256": executable_hash,
+        },
+    }
+    profile_path = runtime_root / "experimental" / disc_id / "profile.json"
+    profile_path.parent.mkdir(parents=True)
+    profile_path.write_text(json.dumps(profile, separators=(",", ":")) + "\n", encoding="utf-8")
+
+
 def badge_rect(frame: dict[str, str]) -> tuple[int, int, int, int]:
     """The status badge rectangle the renderer reported for this frame."""
     x, y, w, h = (int(value) for value in frame["badge"].split(","))
@@ -573,6 +623,7 @@ class NativePlayerUiTests(unittest.TestCase):
         wait_background: bool = False,
         catalog_reload_count: int = 0,
         build_ready_test: bool = False,
+        experimental_build_ready: bool = False,
         post_build_ready: bool = False,
         downloaded_tool_payload: bool = False,
         data_root_present: bool = True,
@@ -650,6 +701,17 @@ class NativePlayerUiTests(unittest.TestCase):
                 synthetic_ready_package(
                     runtime_root, source_executable,
                     data_root_present=data_root_present,
+                )
+            elif experimental_build_ready:
+                source_executable = b"synthetic input executable\n"
+                ready_source_iso = scratch / "ready-source.iso"
+                synthetic_art_iso(
+                    ready_source_iso, source_executable=source_executable
+                )
+                synthetic_experimental_profile(runtime_root, "TEST00009", source_executable)
+                synthetic_ready_package(
+                    runtime_root, source_executable,
+                    disc_id="TEST00009", title_id="experimental-test00009",
                 )
             elif post_build_ready or incompatible_package:
                 source_executable = b"synthetic input executable\n"
@@ -746,7 +808,11 @@ class NativePlayerUiTests(unittest.TestCase):
             if env_extra:
                 env.update(env_extra)
 
-            args = [str(PLAYER_EXE), f"--view={'build-ready' if build_ready_test else view}"]
+            if build_ready_test:
+                view = "build-ready"
+            elif experimental_build_ready:
+                view = "build-ready-experimental"
+            args = [str(PLAYER_EXE), f"--view={view}"]
             if ui_mode is None and self._testMethodName in self.LEGACY_RENDERER_TESTS:
                 ui_mode = "legacy"
             if ui_mode is not None:
@@ -1848,6 +1914,63 @@ class NativePlayerUiTests(unittest.TestCase):
             r"\[PLAYER_UI_TEST\] post_build_transition view=ready_library "
             r"disc=TEST00006 found=1 prepared=1 status=\d+",
         )
+
+    def test_experimental_build_without_selected_executable_ends_ready(self) -> None:
+        """#1276: a passing build of a disc saved with no selected executable.
+
+        The build bound EBOOT.BIN in the experimental profile; the check after
+        it used the empty library value, refused the new package and showed
+        "Package Build Failed". It must end on READY with a playable package
+        (runtime=1 is what makes its card offer PLAY)."""
+        run = self.run_player(
+            "ready",
+            ("WAIT_VIEW=ready_library,10000", "ASSERT_VIEW=ready_library"),
+            experimental_build_ready=True,
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "building_package")
+        self.assertRegex(
+            run["stdout"],
+            r"\[PLAYER_UI_TEST\] post_build_validation status=0 "
+            r"reason=Runtime package v\d is valid for TEST00009",
+        )
+        self.assertRegex(
+            run["stdout"],
+            r"\[PLAYER_UI_TEST\] post_build_transition view=ready_library "
+            r"disc=TEST00009 found=1 prepared=1 status=\d+ runtime=1",
+        )
+        self.assertEqual(frames[-1]["view"], "ready_library")
+        self.assertFalse(any(frame["view"] == "error" for frame in frames), run["stdout"])
+
+    def test_build_failure_card_dismisses_and_cancel_stays_away(self) -> None:
+        """#1277: a finished build's outcome is shown once per session.
+
+        The failure card was re-opened on every frame, so Return to Library
+        could not dismiss it, and a cancelled build pulled every later view
+        back to the Library."""
+        failed = self.run_player(
+            "build-failed",
+            ("WAIT_VIEW=error,5000", "KEY_RETURN", "WAIT_MS=300", "ASSERT_VIEW=library"),
+        )
+        self.assertIn("[PLAYER_UI_TEST] assert_view result=PASS actual=library", failed["stdout"])
+        failed_frames = failed["frames"]
+        assert isinstance(failed_frames, list)
+        self.assertEqual(failed_frames[-1]["view"], "library")
+
+        cancelled = self.run_player(
+            "building",
+            ("KEY_ESCAPE", "WAIT_MS=200", "KEY_S", "WAIT_MS=300", "ASSERT_VIEW=settings"),
+            ui_mode="next",
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in cancelled["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        self.assertIn(
+            "[PLAYER_UI_TEST] assert_view result=PASS actual=settings", cancelled["stdout"]
+        )
+        cancelled_frames = cancelled["frames"]
+        assert isinstance(cancelled_frames, list)
+        self.assertEqual(cancelled_frames[-1]["view"], "settings")
 
     def test_late_mounted_iso_art_retries_after_cooldown(self) -> None:
         run = self.run_player(
