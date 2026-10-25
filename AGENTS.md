@@ -251,7 +251,7 @@ python tools/tree_lint.py --check
 python tools/lint_docs.py
 python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
 python -m pre_commit run --all-files
-npx --yes markdownlint-cli2@0.23.3 <changed .md files>
+npx --yes markdownlint-cli2@0.24.0 <changed .md files>
 ```
 
 Before the first push, check every item in [`REVIEW.md`](REVIEW.md#findings-to-pre-empt) "Findings to
