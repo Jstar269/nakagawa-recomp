@@ -31,6 +31,7 @@ Fail-closed invariants under test, in one sentence each:
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -873,8 +874,21 @@ class Orchestrator:
             self.state = "SESSION_WEDGED"
 
 
-def _lock_held(_session_id):
-    return True, "HELD_AND_CONFIRMED"
+def _lock_held(_session_id, boot_number=42):
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return True, "HELD_AND_QUALIFIED", {
+        "schema": 1,
+        "boot_number": boot_number,
+        "qualification_result": "QUALIFIED",
+        "qualified_at_utc": now,
+        "session_id": _session_id,
+        "watchdog_state": {
+            "boot_number": boot_number,
+            "healthy": True,
+            "armed": False,
+            "remaining_s": 0,
+        },
+    }
 
 
 class HardwareRunnerProtocolTests(unittest.TestCase):
@@ -3150,7 +3164,6 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 code, report = run_campaign_plan(
                     plan_path,
                     dry_run=True,
-                    confirm_power_cycle=False,
                     pspsh_argv=["pspsh", "-e", "{remote_command}"],
                     usbhostfs_argv=["usbhostfs_pc", "{host0_root}"],
                 )
@@ -3389,7 +3402,7 @@ class TransportStartReadinessTests(unittest.TestCase):
 
 def _checkpoint_state(**fields):
     state = {
-        "schema": 1,
+        "schema": 2,
         "campaign_id": "synthetic-campaign",
         "source_commit": SOURCE_COMMIT,
         "session_id": "synthetic-session",
@@ -3401,6 +3414,8 @@ def _checkpoint_state(**fields):
         "next_case_index": 0,
         "active_case_index": None,
         "active_case_id": None,
+        "active_case_boot_number": 41,
+        "interrupted_boot_number": 41,
         "phase": None,
         "failed_case_id": None,
     }
@@ -3450,7 +3465,7 @@ class CampaignCheckpointTransitionTests(unittest.TestCase):
             running, 1, "kernel-alarm",
             intervention_case_id="kernel-alarm", resume_case_index=2, host0_qualified=True,
         )
-        self.assertEqual(finished["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(finished["state"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
         self.assertEqual(finished["next_case_index"], 2)
         self.assertEqual(finished["failed_case_id"], "kernel-alarm")
         self.assertEqual(finished["interrupted_cases"], ["kernel-alarm"])
@@ -3468,13 +3483,13 @@ class CampaignCheckpointTransitionTests(unittest.TestCase):
             running, 0, "transport-write",
             intervention_case_id="transport-write", resume_case_index=1, host0_qualified=False,
         )
-        self.assertEqual(finished["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(finished["state"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
         self.assertEqual(finished["next_case_index"], 0)
         self.assertFalse(finished["host0_qualified"])
 
     def test_run_end_keeps_a_per_case_power_cycle_record(self):
         waiting = _checkpoint_state(
-            state="WAITING_FOR_POWER_CYCLE", next_case_index=2, failed_case_id="kernel-alarm",
+            state="WAITING_FOR_NEW_QUALIFIED_BOOT", next_case_index=2, failed_case_id="kernel-alarm",
             host0_qualified=True,
         )
         self.assertEqual(
@@ -3502,8 +3517,7 @@ class CampaignCheckpointTransitionTests(unittest.TestCase):
         )
 
     def test_transport_start_failure_keeps_the_resume_position_without_power_cycle(self):
-        # The 2026-10-08 failure: resumed after a confirmed power cycle at case 1, then the
-        # transport did not start. The position must survive and no confirmation is owed.
+        # The saved position survives a failed host start after a newer boot qualified.
         resumed = _checkpoint_state(
             next_case_index=1, host0_qualified=True, interrupted_cases=["transport-write"]
         )
@@ -3522,7 +3536,7 @@ class CampaignCheckpointTransitionTests(unittest.TestCase):
             resumed, terminal_reason="PHYSICAL_INTERVENTION_REQUIRED",
             intervention_case_id=None, resume_case_index=None, case_count=self.CASES,
         )
-        self.assertEqual(final["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(final["state"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
         self.assertEqual(final["next_case_index"], 1)
 
     def test_stop_after_reset_but_before_launch_resumes_that_case_without_power_cycle(self):
@@ -3547,7 +3561,7 @@ class CampaignCheckpointTransitionTests(unittest.TestCase):
             reset, terminal_reason="PHYSICAL_INTERVENTION_REQUIRED",
             intervention_case_id="ge-break-continue", resume_case_index=5, case_count=self.CASES,
         )
-        self.assertEqual(final["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(final["state"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
         self.assertEqual(final["next_case_index"], 5)
         self.assertEqual(final["failed_case_id"], "ge-break-continue")
 
@@ -3561,7 +3575,7 @@ class CampaignCheckpointTransitionTests(unittest.TestCase):
             launched, terminal_reason="CHECKPOINT_WRITE_FAILED", intervention_case_id=None,
             resume_case_index=None, case_count=self.CASES,
         )
-        self.assertEqual(final["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(final["state"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
         self.assertEqual(final["next_case_index"], kernel_index + 1)
         self.assertEqual(final["failed_case_id"], "kernel-misc")
 
@@ -3574,60 +3588,61 @@ class CampaignCheckpointTransitionTests(unittest.TestCase):
 
     def test_resume_without_checkpoint(self):
         self.assertEqual(
-            _checkpoint_resume(None, confirm_power_cycle=False, case_count=self.CASES),
+            _checkpoint_resume(None, case_count=self.CASES),
             (0, {"completed_cases": [], "interrupted_cases": [], "host0_qualified": False}),
         )
-        refused = _checkpoint_resume(None, confirm_power_cycle=True, case_count=self.CASES)
-        self.assertEqual(refused["status"], "REFUSED")
 
     def test_resume_complete_checkpoint(self):
         result = _checkpoint_resume(
             _checkpoint_state(state="COMPLETE", next_case_index=self.CASES),
-            confirm_power_cycle=False, case_count=self.CASES,
+            case_count=self.CASES,
         )
         self.assertEqual(result["status"], "COMPLETE")
 
-    def test_resume_running_checkpoint_requires_confirmation_and_skips_a_launched_case(self):
+    def test_resume_running_checkpoint_requires_a_new_qualified_boot_and_skips_a_launched_case(self):
         launched = _checkpoint_state(
             state="RUNNING", active_case_index=4, active_case_id="ge-break-continue",
             phase="CASE_ACTIVE", next_case_index=4, host0_qualified=True,
         )
-        waiting = _checkpoint_resume(launched, confirm_power_cycle=False, case_count=self.CASES)
-        self.assertEqual(waiting["status"], "WAITING_FOR_POWER_CYCLE_CONFIRMATION")
-        start, carried = _checkpoint_resume(launched, confirm_power_cycle=True, case_count=self.CASES)
+        current = _lock_held("synthetic-session", boot_number=41)[2]
+        waiting = _checkpoint_resume(launched, device_state=current, case_count=self.CASES)
+        self.assertEqual(waiting["status"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
+        newer = dict(current, boot_number=42)
+        newer["watchdog_state"] = dict(newer["watchdog_state"], boot_number=42)
+        start, carried = _checkpoint_resume(launched, device_state=newer, case_count=self.CASES)
         self.assertEqual(start, 5)
         self.assertTrue(carried["host0_qualified"])
         reset = dict(launched, phase="RESET_BEFORE_CASE")
         self.assertEqual(
-            _checkpoint_resume(reset, confirm_power_cycle=True, case_count=self.CASES)[0], 4
+            _checkpoint_resume(reset, device_state=newer, case_count=self.CASES)[0], 4
         )
         for broken in (dict(launched, active_case_index=None), dict(launched, phase=None)):
-            refused = _checkpoint_resume(broken, confirm_power_cycle=True, case_count=self.CASES)
+            refused = _checkpoint_resume(broken, device_state=newer, case_count=self.CASES)
             self.assertEqual(refused["status"], "REFUSED")
 
-    def test_resume_waiting_checkpoint_requires_confirmation(self):
+    def test_resume_waiting_checkpoint_requires_a_new_qualified_boot(self):
         waiting = _checkpoint_state(
-            state="WAITING_FOR_POWER_CYCLE", next_case_index=1, failed_case_id="transport-write",
+            state="WAITING_FOR_NEW_QUALIFIED_BOOT", next_case_index=1, failed_case_id="transport-write",
             host0_qualified=True,
         )
-        status = _checkpoint_resume(waiting, confirm_power_cycle=False, case_count=self.CASES)
-        self.assertEqual(status["status"], "WAITING_FOR_POWER_CYCLE_CONFIRMATION")
+        current = _lock_held("synthetic-session", boot_number=41)[2]
+        status = _checkpoint_resume(waiting, device_state=current, case_count=self.CASES)
+        self.assertEqual(status["status"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
         self.assertEqual(status["resume_case_index"], 1)
+        newer = dict(current, boot_number=42)
+        newer["watchdog_state"] = dict(newer["watchdog_state"], boot_number=42)
         self.assertEqual(
-            _checkpoint_resume(waiting, confirm_power_cycle=True, case_count=self.CASES)[0], 1
+            _checkpoint_resume(waiting, device_state=newer, case_count=self.CASES)[0], 1
         )
         clobbered = dict(waiting, next_case_index=None)
-        refused = _checkpoint_resume(clobbered, confirm_power_cycle=True, case_count=self.CASES)
+        refused = _checkpoint_resume(clobbered, device_state=newer, case_count=self.CASES)
         self.assertEqual(refused, {"status": "REFUSED", "reason": "invalid resume case index"})
 
-    def test_resume_in_progress_checkpoint_refuses_a_confirmation(self):
+    def test_resume_in_progress_checkpoint_does_not_need_a_new_boot(self):
         in_progress = _checkpoint_state(next_case_index=1, host0_qualified=True)
         self.assertEqual(
-            _checkpoint_resume(in_progress, confirm_power_cycle=False, case_count=self.CASES)[0], 1
+            _checkpoint_resume(in_progress, case_count=self.CASES)[0], 1
         )
-        refused = _checkpoint_resume(in_progress, confirm_power_cycle=True, case_count=self.CASES)
-        self.assertEqual(refused["status"], "REFUSED")
-        self.assertIn("case index 1", refused["reason"])
 
     def test_resume_rejects_unknown_state_and_non_integer_positions(self):
         for checkpoint in (
@@ -3636,18 +3651,18 @@ class CampaignCheckpointTransitionTests(unittest.TestCase):
             _checkpoint_state(next_case_index=self.CASES + 1, host0_qualified=True),
             _checkpoint_state(next_case_index=-1),
         ):
-            result = _checkpoint_resume(checkpoint, confirm_power_cycle=False, case_count=self.CASES)
+            result = _checkpoint_resume(checkpoint, case_count=self.CASES)
             self.assertEqual(result["status"], "REFUSED")
 
     def test_resume_past_the_preflight_requires_recorded_host0_qualification(self):
         legacy = _checkpoint_state(next_case_index=1)
         del legacy["host0_qualified"]
         for checkpoint in (legacy, _checkpoint_state(next_case_index=1)):
-            refused = _checkpoint_resume(checkpoint, confirm_power_cycle=False, case_count=self.CASES)
+            refused = _checkpoint_resume(checkpoint, case_count=self.CASES)
             self.assertEqual(refused["status"], "REFUSED")
             self.assertIn("transport-write host0 preflight", refused["reason"])
         start, _carried = _checkpoint_resume(
-            _checkpoint_state(next_case_index=0), confirm_power_cycle=False, case_count=self.CASES
+            _checkpoint_state(next_case_index=0), case_count=self.CASES
         )
         self.assertEqual(start, 0)
 
@@ -3676,18 +3691,19 @@ class CampaignPlanCheckpointTests(unittest.TestCase):
         }), encoding="utf-8")
         return plan_path
 
-    def _run(self, plan_path: Path, *, confirm: bool, transport: SimulatedPsplinkTransport):
+    def _run(
+        self, plan_path: Path, *, transport: SimulatedPsplinkTransport, boot_number: int = 42
+    ):
         def factory(**kwargs):
             transport.host0_root = kwargs["host0_root"]
             return transport
 
         with patch.object(run_psplink_module, "_read_hardware_lock",
-                          return_value=(True, "HELD_AND_CONFIRMED")), \
+                          side_effect=lambda session: _lock_held(session, boot_number)), \
                 patch.object(run_psplink_module, "_check_source_tree", return_value=None):
             return run_campaign_plan(
                 plan_path,
                 dry_run=False,
-                confirm_power_cycle=confirm,
                 pspsh_argv=["pspsh", "-e", "{remote_command}"],
                 usbhostfs_argv=["usbhostfs_pc", "{host0_root}"],
                 transport_factory=factory,
@@ -3705,7 +3721,7 @@ class CampaignPlanCheckpointTests(unittest.TestCase):
             if command.startswith("ldstart ")
         ]
 
-    def test_transport_start_failure_after_confirmed_power_cycle_keeps_the_resume_position(self):
+    def test_campaign_resume_requires_a_new_qualified_boot_and_keeps_the_resume_position(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
         with tempfile.TemporaryDirectory(prefix="campaign-checkpoint-", dir=fixture_dir) as scratch_name:
             plan_path = self._plan(Path(scratch_name))
@@ -3714,19 +3730,27 @@ class CampaignPlanCheckpointTests(unittest.TestCase):
             first = SimulatedPsplinkTransport(
                 transport_file_cases={"transport-write"}, unfinished_cases={"kernel-alarm"}
             )
-            code, report = self._run(plan_path, confirm=False, transport=first)
+            code, report = self._run(plan_path, transport=first, boot_number=41)
             self.assertEqual(code, 3)
             self.assertEqual(self._launched(first), ["transport-write", "kernel-alarm"])
             checkpoint = self._checkpoint(plan_path)
-            self.assertEqual(checkpoint["state"], "WAITING_FOR_POWER_CYCLE")
+            self.assertEqual(checkpoint["state"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
             self.assertEqual(checkpoint["next_case_index"], 2)
             self.assertEqual(checkpoint["completed_cases"], ["transport-write"])
             self.assertEqual(checkpoint["interrupted_cases"], ["kernel-alarm"])
             self.assertTrue(checkpoint["host0_qualified"])
 
-            # Run 2: power cycle confirmed, but the shell never qualifies before any launch.
+            # Run 2: the old boot is still attested, so the campaign does not restart.
+            second = SimulatedPsplinkTransport()
+            code, report = self._run(plan_path, transport=second, boot_number=41)
+            self.assertEqual(code, 2)
+            self.assertEqual(report["status"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
+            self.assertEqual(self._launched(second), [])
+            self.assertEqual(self._checkpoint(plan_path), checkpoint)
+
+            # Run 3: the resident agent qualifies a newer boot, then transport setup fails.
             second = SimulatedPsplinkTransport(fail_all_ver=True)
-            code, report = self._run(plan_path, confirm=True, transport=second)
+            code, report = self._run(plan_path, transport=second, boot_number=42)
             self.assertEqual(code, 2)
             self.assertEqual(report["terminal_reason"], "TRANSPORT_START_FAILED")
             self.assertEqual(self._launched(second), [])
@@ -3737,22 +3761,14 @@ class CampaignPlanCheckpointTests(unittest.TestCase):
             self.assertEqual(checkpoint["completed_cases"], ["transport-write"])
             self.assertTrue(checkpoint["host0_qualified"])
 
-            # Run 3: a repeated confirmation is refused and changes nothing.
-            code, report = self._run(
-                plan_path, confirm=True, transport=SimulatedPsplinkTransport()
-            )
-            self.assertEqual(code, 2)
-            self.assertEqual(report["status"], "REFUSED")
-            self.assertEqual(self._checkpoint(plan_path), checkpoint)
-
-            # Run 4: without a confirmation the queue resumes at the preserved case.
+            # Run 4: no flag is needed; the already qualified boot resumes at the case.
             fourth = SimulatedPsplinkTransport(unfinished_cases={"thread-scheduler"})
-            code, report = self._run(plan_path, confirm=False, transport=fourth)
+            code, report = self._run(plan_path, transport=fourth, boot_number=42)
             self.assertEqual(code, 3)
             self.assertEqual(self._launched(fourth), ["thread-scheduler"])
             self.assertNotIn("reset", [command for command, _timeout in fourth.commands])
             checkpoint = self._checkpoint(plan_path)
-            self.assertEqual(checkpoint["state"], "WAITING_FOR_POWER_CYCLE")
+            self.assertEqual(checkpoint["state"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
             self.assertEqual(checkpoint["next_case_index"], 3)
             self.assertEqual(checkpoint["interrupted_cases"], ["kernel-alarm", "thread-scheduler"])
 
@@ -3761,7 +3777,7 @@ class CampaignPlanCheckpointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="campaign-start-fail-", dir=fixture_dir) as scratch_name:
             plan_path = self._plan(Path(scratch_name))
             transport = SimulatedPsplinkTransport(start_error="usbhostfs_pc printed nothing")
-            code, report = self._run(plan_path, confirm=False, transport=transport)
+            code, report = self._run(plan_path, transport=transport)
             checkpoint = self._checkpoint(plan_path)
 
         self.assertEqual(code, 2)
@@ -3775,12 +3791,12 @@ class CampaignPlanCheckpointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="campaign-preflight-", dir=fixture_dir) as scratch_name:
             plan_path = self._plan(Path(scratch_name))
             transport = SimulatedPsplinkTransport(fail_host0_roundtrip_cases={"transport-write"})
-            code, report = self._run(plan_path, confirm=False, transport=transport)
+            code, report = self._run(plan_path, transport=transport)
             checkpoint = self._checkpoint(plan_path)
 
         self.assertEqual(code, 3)
         self.assertEqual(report["intervention_case_id"], "transport-write")
-        self.assertEqual(checkpoint["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(checkpoint["state"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
         self.assertEqual(checkpoint["next_case_index"], 0)
         self.assertFalse(checkpoint["host0_qualified"])
 
@@ -3795,40 +3811,51 @@ class HardwareLockGateTests(unittest.TestCase):
                 run_psplink_module.require_hardware_lock(session)
             self.assertEqual(raised.exception.status, "HARDWARE_LOCK_SESSION_REQUIRED")
         with patch.object(run_psplink_module, "_read_hardware_lock",
-                          return_value=(False, "HARDWARE_LOCK_SESSION_MISMATCH")):
+                          return_value=(False, "HARDWARE_LOCK_SESSION_MISMATCH", None)):
             with self.assertRaises(HardwareLockError) as raised:
                 run_psplink_module.require_hardware_lock("synthetic-session")
         self.assertEqual(raised.exception.status, "HARDWARE_LOCK_SESSION_MISMATCH")
         with patch.object(run_psplink_module, "_read_hardware_lock", _lock_held):
-            run_psplink_module.require_hardware_lock("synthetic-session")
+            self.assertEqual(
+                run_psplink_module.require_hardware_lock("synthetic-session")["boot_number"], 42
+            )
 
     def test_lock_file_contract(self):
         with tempfile.TemporaryDirectory() as scratch_name:
             lock_path = Path(scratch_name) / "HARDWARE_LOCK.json"
+            acquired = (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat()
+            device_state = _lock_held("s")[2]
+            valid_lock = {
+                "state": "HELD",
+                "holder_session": "s",
+                "acquired_utc": acquired,
+                "device_state_attestation": device_state,
+            }
             cases = (
-                (None, "HARDWARE_LOCK_UNAVAILABLE:FileNotFoundError"),
-                ({"state": "FREE"}, "HARDWARE_LOCK_NOT_HELD"),
-                ({"state": "HELD", "holder_session": "s"}, "HARDWARE_LOCK_POWER_CYCLE_NOT_CONFIRMED"),
-                ({"state": "HELD", "power_cycle_confirmed": True, "holder_session": "other"},
-                 "HARDWARE_LOCK_SESSION_MISMATCH"),
-                ({"state": "HELD", "power_cycle_confirmed": True, "holder_session": "s"},
-                 "HELD_AND_CONFIRMED"),
+                (None, "HARDWARE_LOCK_UNAVAILABLE:FileNotFoundError", False),
+                ({"state": "FREE"}, "HARDWARE_LOCK_NOT_HELD", False),
+                ({"state": "HELD", "holder_session": "s", "power_cycle_confirmed": True},
+                 "HARDWARE_LOCK_DEVICE_STATE_MISSING", False),
+                ({**valid_lock, "holder_session": "other"},
+                 "HARDWARE_LOCK_SESSION_MISMATCH", False),
+                (valid_lock, "HELD_AND_QUALIFIED", True),
             )
             with patch.object(run_psplink_module, "HARDWARE_LOCK_PATH", lock_path):
-                for content, expected in cases:
+                for content, expected_status, expected_held in cases:
                     if content is None:
                         lock_path.unlink(missing_ok=True)
                     else:
                         lock_path.write_text(json.dumps(content), encoding="utf-8")
-                    held, status = run_psplink_module._read_hardware_lock("s")
-                    self.assertEqual(status, expected)
-                    self.assertEqual(held, expected == "HELD_AND_CONFIRMED")
+                    held, status, attestation = run_psplink_module._read_hardware_lock("s")
+                    self.assertEqual(status, expected_status)
+                    self.assertEqual(held, expected_held)
+                    self.assertEqual(attestation, device_state if expected_held else None)
 
     def test_process_transport_checks_the_lock_before_spawning_usbhostfs(self):
         spawned = []
         with tempfile.TemporaryDirectory() as scratch_name, \
                 patch.object(run_psplink_module, "_read_hardware_lock",
-                             return_value=(False, "HARDWARE_LOCK_NOT_HELD")):
+                             return_value=(False, "HARDWARE_LOCK_NOT_HELD", None)):
             adapter = PsplinkProcessTransport(
                 session_id="synthetic-session",
                 pspsh_argv=["fake-pspsh"],
@@ -3906,16 +3933,16 @@ class HardwareLockGateTests(unittest.TestCase):
             plan_path = CampaignPlanCheckpointTests()._plan(Path(scratch_name))
             factory_calls = []
             with patch.object(run_psplink_module, "_read_hardware_lock",
-                              return_value=(False, "HARDWARE_LOCK_POWER_CYCLE_NOT_CONFIRMED")):
+                              return_value=(False, "HARDWARE_LOCK_DEVICE_STATE_MISSING", None)):
                 code, report = run_campaign_plan(
-                    plan_path, dry_run=False, confirm_power_cycle=False,
+                    plan_path, dry_run=False,
                     pspsh_argv=["pspsh"], usbhostfs_argv=["usbhostfs_pc"],
                     transport_factory=lambda **kwargs: factory_calls.append(kwargs),
                 )
             checkpoint_written = (plan_path.parent / "checkpoint.json").exists()
 
         self.assertEqual(code, 2)
-        self.assertEqual(report["reason"], "HARDWARE_LOCK_POWER_CYCLE_NOT_CONFIRMED")
+        self.assertEqual(report["reason"], "HARDWARE_LOCK_DEVICE_STATE_MISSING")
         self.assertEqual(factory_calls, [])
         self.assertFalse(checkpoint_written)
 
@@ -3927,7 +3954,7 @@ class HardwareLockGateTests(unittest.TestCase):
             transport = SimulatedPsplinkTransport(
                 transport_file_cases={"transport-write"}, lock_held_checks=3,
             )
-            code, report = helper._run(plan_path, confirm=False, transport=transport)
+            code, report = helper._run(plan_path, transport=transport)
             checkpoint = helper._checkpoint(plan_path)
 
         self.assertEqual(code, 2)
@@ -3941,6 +3968,13 @@ class HardwareLockGateTests(unittest.TestCase):
             run_psplink_module.main([
                 "--campaign-plan", "plan.json", "--session-id", "synthetic-session",
             ])
+
+    def test_campaign_plan_no_longer_accepts_a_manual_power_cycle_override(self):
+        with self.assertRaises(SystemExit) as raised:
+            run_psplink_module.main([
+                "--campaign-plan", "plan.json", "--confirm-power-cycle",
+            ])
+        self.assertEqual(raised.exception.code, 2)
 
     def _campaign_case_argv(self, scratch: Path, *extra: str) -> list[str]:
         binary = scratch / "transport-write.prx"
@@ -3968,7 +4002,7 @@ class HardwareLockGateTests(unittest.TestCase):
             scratch = Path(scratch_name)
             argv = self._campaign_case_argv(scratch, "--session-id", "synthetic-session")
             with patch.object(run_psplink_module, "_read_hardware_lock",
-                              return_value=(False, "HARDWARE_LOCK_SESSION_MISMATCH")):
+                              return_value=(False, "HARDWARE_LOCK_SESSION_MISMATCH", None)):
                 code = run_psplink_module.main(argv)
             report = json.loads((scratch / "report.json").read_text(encoding="utf-8"))
 
@@ -3987,7 +4021,7 @@ class HardwareLockGateTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     run_psplink_module.main(command)
                 with patch.object(run_psplink_module, "_read_hardware_lock",
-                                  return_value=(False, "HARDWARE_LOCK_NOT_HELD")):
+                                  return_value=(False, "HARDWARE_LOCK_NOT_HELD", None)):
                     code = run_psplink_module.main(command + ["--session-id", "synthetic-session"])
                 run_command.assert_not_called()
             report = json.loads(out.read_text(encoding="utf-8"))
@@ -4011,7 +4045,7 @@ class ExpectedFirmwareFormTests(unittest.TestCase):
     def _dry_run(self, plan_path: Path):
         with patch.object(run_psplink_module, "_check_source_tree", return_value=None):
             return run_campaign_plan(
-                plan_path, dry_run=True, confirm_power_cycle=False,
+                plan_path, dry_run=True,
                 pspsh_argv=["pspsh"], usbhostfs_argv=["usbhostfs_pc"],
             )
 
@@ -4234,7 +4268,7 @@ class HostErrorContainmentTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             for target, attribute, kwargs in patches:
                 stack.enter_context(patch.object(target, attribute, **kwargs))
-            code, report = helper._run(plan_path, confirm=False, transport=transport)
+            code, report = helper._run(plan_path, transport=transport)
         return code, report, helper._checkpoint(plan_path)
 
     @staticmethod
@@ -4274,7 +4308,7 @@ class HostErrorContainmentTests(unittest.TestCase):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
         for fail_unload, expected_state, expected_code in (
             (False, "IN_PROGRESS", 2),
-            (True, "WAITING_FOR_POWER_CYCLE", 3),
+            (True, "WAITING_FOR_NEW_QUALIFIED_BOOT", 3),
         ):
             with self.subTest(fail_unload=fail_unload), tempfile.TemporaryDirectory(
                 prefix="host-error-unload-", dir=fixture_dir
@@ -4355,7 +4389,7 @@ class HostErrorContainmentTests(unittest.TestCase):
         self.assertEqual(report["terminal_reason"], "HOST_ERROR")
         self.assertIn("campaign runner: ValueError", report["host_error"])
         # A launch was recorded without a completion: the durable state owes a power cycle.
-        self.assertEqual(checkpoint["state"], "WAITING_FOR_POWER_CYCLE")
+        self.assertEqual(checkpoint["state"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
         self.assertEqual(checkpoint["next_case_index"], 0)
         self.assertTrue(transport.stopped)
 
@@ -5049,6 +5083,121 @@ class Host0DriverWarmupTests(unittest.TestCase):
         self.assertEqual(envelope["TEARDOWN_CHECK"]["stage"], "S0")
         self.assertIn("ls host0:/", commands)
         self.assertFalse([command for command in commands if command.startswith("ldstart")])
+
+
+class DeviceStateAttestationTests(unittest.TestCase):
+    """The hardware lock and an interrupted campaign bind to a fresh PSP boot."""
+
+    @staticmethod
+    def _lock(now=None, **attestation_overrides):
+        now = now or datetime.now(timezone.utc)
+        qualified_at = now.isoformat().replace("+00:00", "Z")
+        attestation = {
+            "schema": 1,
+            "boot_number": 42,
+            "qualification_result": "QUALIFIED",
+            "qualified_at_utc": qualified_at,
+            "session_id": "session-a",
+            "watchdog_state": {
+                "boot_number": 42,
+                "healthy": True,
+                "armed": False,
+                "remaining_s": 0,
+            },
+        }
+        attestation.update(attestation_overrides)
+        return {
+            "state": "HELD",
+            "holder_session": "session-a",
+            "acquired_utc": (now - timedelta(seconds=2)).isoformat().replace("+00:00", "Z"),
+            "device_state_attestation": attestation,
+        }
+
+    def test_lock_requires_recent_qualified_same_session_and_healthy_watchdog_state(self):
+        now = datetime.now(timezone.utc)
+        valid = self._lock(now)
+        cases = (
+            (valid, (True, "HELD_AND_QUALIFIED", valid["device_state_attestation"])),
+            ({k: v for k, v in valid.items() if k != "device_state_attestation"},
+             (False, "HARDWARE_LOCK_DEVICE_STATE_MISSING", None)),
+            (self._lock(now, session_id="session-b"),
+             (False, "HARDWARE_LOCK_DEVICE_STATE_SESSION_MISMATCH", None)),
+            (self._lock(now, qualification_result="UNQUALIFIED"),
+             (False, "HARDWARE_LOCK_DEVICE_STATE_NOT_QUALIFIED", None)),
+            (self._lock(now, qualified_at_utc=(now - timedelta(hours=1)).isoformat()),
+             (False, "HARDWARE_LOCK_DEVICE_STATE_STALE", None)),
+            (self._lock(now, watchdog_state={"boot_number": 42, "healthy": False,
+                                             "armed": False, "remaining_s": 0}),
+             (False, "HARDWARE_LOCK_DEVICE_STATE_WATCHDOG_UNHEALTHY", None)),
+            (self._lock(now, watchdog_state={"boot_number": 41, "healthy": True,
+                                             "armed": False, "remaining_s": 0}),
+             (False, "HARDWARE_LOCK_DEVICE_STATE_INVALID", None)),
+        )
+        with tempfile.TemporaryDirectory() as scratch_name:
+            lock_path = Path(scratch_name) / "HARDWARE_LOCK.json"
+            with patch.object(run_psplink_module, "HARDWARE_LOCK_PATH", lock_path):
+                for lock, expected in cases:
+                    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+                    self.assertEqual(run_psplink_module._read_hardware_lock("session-a"), expected)
+
+    def test_interrupted_campaign_needs_a_qualified_boot_newer_than_the_case_boot(self):
+        checkpoint = {
+            "state": "WAITING_FOR_NEW_QUALIFIED_BOOT",
+            "failed_case_id": "cpu-timing",
+            "next_case_index": 2,
+            "interrupted_boot_number": 42,
+            "completed_cases": ["transport-write"],
+            "interrupted_cases": ["cpu-timing"],
+            "host0_qualified": True,
+        }
+        same_boot = self._lock()["device_state_attestation"]
+        waiting = _checkpoint_resume(checkpoint, device_state=same_boot, case_count=5)
+        self.assertEqual(waiting["status"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
+
+        newer_boot = dict(same_boot, boot_number=43)
+        newer_boot["watchdog_state"] = dict(newer_boot["watchdog_state"], boot_number=43)
+        start, carried = _checkpoint_resume(checkpoint, device_state=newer_boot, case_count=5)
+        self.assertEqual(start, 2)
+        self.assertEqual(carried["completed_cases"], ["transport-write"])
+        self.assertEqual(carried["interrupted_cases"], ["cpu-timing"])
+
+    def test_interrupted_campaign_refuses_missing_or_malformed_boot_identity(self):
+        checkpoint = {
+            "state": "WAITING_FOR_NEW_QUALIFIED_BOOT",
+            "failed_case_id": "cpu-timing",
+            "next_case_index": 2,
+            "completed_cases": ["transport-write"],
+            "interrupted_cases": ["cpu-timing"],
+            "host0_qualified": True,
+        }
+        missing = _checkpoint_resume(
+            checkpoint, device_state=self._lock()["device_state_attestation"], case_count=5
+        )
+        self.assertEqual(missing["status"], "REFUSED")
+        self.assertIn("interrupted boot", missing["reason"])
+
+        malformed = dict(checkpoint, interrupted_boot_number=True)
+        refused = _checkpoint_resume(
+            malformed, device_state=self._lock()["device_state_attestation"], case_count=5
+        )
+        self.assertEqual(refused["status"], "REFUSED")
+        self.assertIn("interrupted boot", refused["reason"])
+
+    def test_checkpoint_transition_preserves_the_boot_that_ran_the_interrupted_case(self):
+        started = _checkpoint_case_started(
+            _checkpoint_state(), 1, "cpu-timing", "CASE_ACTIVE", device_boot_number=42
+        )
+        waiting = _checkpoint_case_finished(
+            started,
+            1,
+            "cpu-timing",
+            intervention_case_id="cpu-timing",
+            resume_case_index=2,
+            host0_qualified=True,
+        )
+        self.assertEqual(waiting["state"], "WAITING_FOR_NEW_QUALIFIED_BOOT")
+        self.assertEqual(waiting["interrupted_boot_number"], 42)
+        self.assertIsNone(waiting["active_case_boot_number"])
 
 
 if __name__ == "__main__":
