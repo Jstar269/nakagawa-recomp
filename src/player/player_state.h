@@ -220,6 +220,13 @@ typedef struct {
  * surrounding guidance (CLI_NOT_FOUND is the longest today). */
 #define PLAYER_ERROR_DETAILS_MAX (MAX_PATH_LEN * 3 + 512)
 
+/* The error card's second action, next to its recovery action. */
+typedef enum {
+    PLAYER_ERROR_RETRY_NONE = 0,
+    PLAYER_ERROR_RETRY_RESTART_GAME,  /* "Restart game": launch subject_disc_id again */
+    PLAYER_ERROR_RETRY_BUILD          /* "Try again": build subject_disc_id again */
+} PlayerErrorRetry;
+
 typedef struct {
     char error_code[32];
     char title[128];
@@ -230,6 +237,11 @@ typedef struct {
     char failed_stage[64];
     char boundary_text[512];
     char log_file_path[MAX_PATH_LEN];
+    /* The game the card is about, for its retry action; "" for none. */
+    char subject_disc_id[32];
+    PlayerErrorRetry retry;
+    /* Copy details has put this card's report on the clipboard. */
+    bool details_copied;
 } ErrorState;
 
 typedef enum {
@@ -269,6 +281,17 @@ typedef struct {
     PlayerPreflightCheck checks[PLAYER_PREFLIGHT_MAX_CHECKS];
     size_t count;
 } PlayerCompatibilityPreflight;
+
+/* A preflight row in plain words for the cards (#1280): a name for what was
+   checked, a status word, and the reason without its code prefix. */
+const char *player_preflight_label(const PlayerPreflightCheck *check);
+const char *player_preflight_status_word(const PlayerPreflightCheck *check);
+const char *player_preflight_plain_message(const PlayerPreflightCheck *check);
+/* The check that keeps the game out of the library in this version: an
+   unreadable disc or an executable Nakagawa cannot use. NULL when the game can
+   be added. */
+const PlayerPreflightCheck *player_preflight_blocking_check(
+    const PlayerCompatibilityPreflight *preflight);
 
 #define PLAYER_DEV_LOG_LINES 256
 #define PLAYER_DEV_LOG_LINE_MAX 240
@@ -453,6 +476,36 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
 void player_app_set_cli_not_found_error(PlayerApp *app,
                                         const char *recovery_label,
                                         PlayerView return_view);
+/* The error card's words, shared by both launchers. The badge is a plain word
+   for the kind of problem; an unknown code gets "Problem", never the code. */
+const char *player_error_badge(const ErrorState *error);
+/* True when the card leads with its plain message and shows boundary_text as
+   details; otherwise boundary_text is the message. */
+bool player_error_leads_with_message(const ErrorState *error);
+/* "Restart game", "Try again", or NULL when the card has no retry action. */
+const char *player_error_retry_label(const ErrorState *error);
+/* Run the card's retry action. False when it has none or its game is gone. */
+bool player_app_retry_from_error(PlayerApp *app);
+/* The report Copy details puts on the clipboard: version, problem, code, game,
+   disc ID, stage, details, log file and the last runtime boot events. The
+   user's profile folder and name are redacted, as in the developer log. Only
+   the clipboard sees it; nothing is sent anywhere. Returns its length. */
+size_t player_app_format_error_report(const PlayerApp *app, const char *version,
+                                      char *out, size_t out_size);
+/* Text after a leading "[CODE] " or "CODE: " prefix, so a card shows the
+   sentence, not the code. */
+const char *player_plain_reason(const char *text);
+/* What a runtime stop boundary needed, in plain words ("ad hoc wireless play",
+   "a processor feature", ...); "a system feature" for an unknown name. */
+const char *player_runtime_stop_feature(const char *boundary);
+/* The cards for a game that ended on its own: RUNTIME_SEMANTIC_BOUNDARY (the
+   runtime stopped at a named boundary, tracked by issue when non-zero),
+   RUNTIME_PREMATURE_EXIT and RUNTIME_ERROR_EXIT. The raw boundary and the exit
+   code go into the details, never the headline. */
+void player_app_set_game_stop_error(PlayerApp *app, const char *code,
+                                    const char *boundary, unsigned int issue,
+                                    int exit_code, uint64_t elapsed_ms,
+                                    const char *disc_id, const char *log_file_path);
 void player_app_populate_sample_games(PlayerApp *app);
 void player_app_sync_library(PlayerApp *app);
 bool player_app_discover_showcase(PlayerApp *app, const char *executable_directory);

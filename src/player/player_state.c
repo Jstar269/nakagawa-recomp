@@ -1958,6 +1958,9 @@ void player_app_set_error(PlayerApp *app, const char *code, const char *title, c
     app->last_error.failed_stage[0] = '\0';
     app->last_error.boundary_text[0] = '\0';
     app->last_error.log_file_path[0] = '\0';
+    app->last_error.subject_disc_id[0] = '\0';
+    app->last_error.retry = PLAYER_ERROR_RETRY_NONE;
+    app->last_error.details_copied = false;
     app->active_view = VIEW_ERROR;
     player_dev_log_add(app, "error", "%s: %s", app->last_error.error_code,
                        app->last_error.title);
@@ -1978,6 +1981,230 @@ void player_app_set_cli_not_found_error(PlayerApp *app,
                                            sizeof(app->last_error.details));
     fprintf(stderr, "[PLAYER] CLI_NOT_FOUND details: %s\n",
             app->last_error.details);
+}
+
+const char *player_error_badge(const ErrorState *error) {
+    static const struct { const char *code; const char *badge; } badges[] = {
+        {"RUNTIME_SEMANTIC_BOUNDARY", "Game stopped"},
+        {"RUNTIME_PREMATURE_EXIT", "Game didn't start"},
+        {"RUNTIME_ERROR_EXIT", "Game closed"},
+        {"TITLE_DATA_MISSING", "Game data needed"},
+        {"RUNTIME_PACKAGE_NOT_READY", "Game not ready"},
+        {"TITLE_PROFILE_INVALID", "Title settings needed"},
+        {"PACKAGE_REVALIDATION_FAILED", "Package check"},
+        {"PACKAGE_BUILD_FAILED", "Build stopped"},
+        {"PACKAGE_BUILD_REFUSED", "Build not started"},
+        {"PACKAGE_DISK_FULL", "Disk full"},
+    };
+    if (!error) return "Problem";
+    for (size_t i = 0; i < sizeof(badges) / sizeof(badges[0]); i++) {
+        if (strcmp(error->error_code, badges[i].code) == 0) return badges[i].badge;
+    }
+    /* The code itself goes to the developer log and the copied details. */
+    return "Problem";
+}
+
+bool player_error_leads_with_message(const ErrorState *error) {
+    static const char *const codes[] = {
+        "RUNTIME_SEMANTIC_BOUNDARY", "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT",
+        "TITLE_DATA_MISSING", "TITLE_PROFILE_INVALID", "RUNTIME_PACKAGE_NOT_READY",
+        "PACKAGE_REVALIDATION_FAILED", "PACKAGE_BUILD_FAILED", "PACKAGE_BUILD_REFUSED",
+        "PACKAGE_DISK_FULL",
+    };
+    if (!error) return false;
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
+        if (strcmp(error->error_code, codes[i]) == 0) return true;
+    }
+    return false;
+}
+
+const char *player_error_retry_label(const ErrorState *error) {
+    if (!error || !error->subject_disc_id[0]) return NULL;
+    switch (error->retry) {
+        case PLAYER_ERROR_RETRY_RESTART_GAME: return "Restart game";
+        case PLAYER_ERROR_RETRY_BUILD: return "Try again";
+        case PLAYER_ERROR_RETRY_NONE:
+        default: return NULL;
+    }
+}
+
+bool player_app_retry_from_error(PlayerApp *app) {
+    if (!app || !player_error_retry_label(&app->last_error)) return false;
+    int index = player_app_find_game_by_disc_id(app, app->last_error.subject_disc_id);
+    if (index < 0) return false;
+    PlayerErrorRetry retry = app->last_error.retry;
+    player_dev_log_add(app, "error", "%s: %s for %s", app->last_error.error_code,
+                       retry == PLAYER_ERROR_RETRY_RESTART_GAME ? "restart" : "build again",
+                       app->last_error.subject_disc_id);
+    app->selected_game_index = index;
+    player_app_set_view(app, VIEW_LIBRARY);
+    if (retry == PLAYER_ERROR_RETRY_RESTART_GAME) return player_app_launch_game(app, index);
+    return player_app_start_package_build(app, index);
+}
+
+static void player_report_append(char *out, size_t out_size, size_t *used,
+                                 const char *label, const char *value) {
+    if (!value || !value[0] || *used + 1u >= out_size) return;
+    int written = snprintf(out + *used, out_size - *used, "%s%s\n", label, value);
+    if (written < 0) return;
+    size_t room = out_size - *used - 1u;
+    *used += (size_t)written < room ? (size_t)written : room;
+}
+
+size_t player_app_format_error_report(const PlayerApp *app, const char *version,
+                                      char *out, size_t out_size) {
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+    if (!app) return 0;
+    const ErrorState *error = &app->last_error;
+    char raw[PLAYER_ERROR_DETAILS_MAX + 4096];
+    size_t used = 0;
+    raw[0] = '\0';
+    player_report_append(raw, sizeof(raw), &used, "", "Nakagawa Recomp problem report");
+    player_report_append(raw, sizeof(raw), &used, "Nakagawa Recomp ",
+                         version && version[0] ? version : "(unknown version)");
+    player_report_append(raw, sizeof(raw), &used, "Problem: ", error->title);
+    player_report_append(raw, sizeof(raw), &used, "Code: ", error->error_code);
+    int index = error->subject_disc_id[0]
+        ? player_app_find_game_by_disc_id(app, error->subject_disc_id) : -1;
+    if (index >= 0) {
+        player_report_append(raw, sizeof(raw), &used, "Game: ", app->games[index].title_name);
+    }
+    player_report_append(raw, sizeof(raw), &used, "Disc ID: ", error->subject_disc_id);
+    player_report_append(raw, sizeof(raw), &used, "Stage: ", error->failed_stage);
+    player_report_append(raw, sizeof(raw), &used, "Reason: ", error->boundary_text);
+    player_report_append(raw, sizeof(raw), &used, "Details: ", error->details);
+    player_report_append(raw, sizeof(raw), &used, "Log file: ", error->log_file_path);
+    /* The runtime's boot events reach the developer log as "[runtime] BOOT_EVENT ...";
+       the last few say how far the game got. */
+    static const char event_prefix[] = "[runtime] ";
+    size_t events[8];
+    size_t event_count = 0;
+    for (size_t i = player_dev_log_count(app); i > 0 && event_count < 8u; i--) {
+        const char *line = player_dev_log_line(app, i - 1u);
+        if (line && strncmp(line, "[runtime] BOOT_EVENT ", 21) == 0) events[event_count++] = i - 1u;
+    }
+    if (event_count > 0) {
+        player_report_append(raw, sizeof(raw), &used, "", "Last boot events:");
+        while (event_count > 0) {
+            player_report_append(raw, sizeof(raw), &used, "  ",
+                                 player_dev_log_line(app, events[--event_count]) +
+                                     sizeof(event_prefix) - 1u);
+        }
+    }
+    const char *profile = NULL;
+    const char *user = NULL;
+    player_dev_log_identity(&profile, &user);
+    (void)player_dev_log_redact(raw, profile, user, out, out_size);
+    return strlen(out);
+}
+
+const char *player_plain_reason(const char *text) {
+    if (!text) return "";
+    const char *p = text;
+    bool bracket = *p == '[';
+    if (bracket) p++;
+    const char *start = p;
+    while ((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_') p++;
+    if (p - start < 4) return text;
+    if (bracket ? (p[0] == ']' && p[1] == ' ') : (p[0] == ':' && p[1] == ' ')) {
+        return p + 2;
+    }
+    return text;
+}
+
+const char *player_runtime_stop_feature(const char *boundary) {
+    /* By import-name prefix; scenetadhoc before scenet. */
+    static const struct { const char *prefix; const char *feature; } imports[] = {
+        {"scenetadhoc", "ad hoc wireless play"},
+        {"sceatrac", "a sound feature"},
+        {"scesas", "a sound feature"},
+        {"scemp3", "a sound feature"},
+        {"sceaudio", "a sound feature"},
+        {"scempeg", "video playback"},
+        {"scepsmf", "video playback"},
+        {"sceutility", "a system dialog"},
+        {"scenet", "online features"},
+        {"scehttp", "online features"},
+    };
+    /* The dispatcher and interpreter boundaries (dispatch_semantic_boundary_name
+       in src/rt/recomp.c). */
+    static const char *const processor[] = {
+        "target-not-executable", "misaligned-control-target", "incomplete-executable-span",
+        "unsupported-interpreter-form", "invalid-guest-memory-access",
+        "misaligned-guest-memory-access", "invalid-control-flow", "interpreter-rejection",
+    };
+    static const char import_prefix[] = "unsupported-import-";
+    if (!boundary) return "a system feature";
+    if (strncmp(boundary, import_prefix, sizeof(import_prefix) - 1u) == 0) {
+        const char *name = boundary + sizeof(import_prefix) - 1u;
+        for (size_t i = 0; i < sizeof(imports) / sizeof(imports[0]); i++) {
+            if (strncmp(name, imports[i].prefix, strlen(imports[i].prefix)) == 0) {
+                return imports[i].feature;
+            }
+        }
+        return "a system feature";
+    }
+    if (strncmp(boundary, "host-fiber-stack-", 17) == 0) return "a processor feature";
+    for (size_t i = 0; i < sizeof(processor) / sizeof(processor[0]); i++) {
+        if (strcmp(boundary, processor[i]) == 0) return "a processor feature";
+    }
+    return "a system feature";
+}
+
+void player_app_set_game_stop_error(PlayerApp *app, const char *code,
+                                    const char *boundary, unsigned int issue,
+                                    int exit_code, uint64_t elapsed_ms,
+                                    const char *disc_id, const char *log_file_path) {
+    if (!app || !code) return;
+    static const char progress[] =
+        "Anything since your last in-game save is lost; saves the game finished writing are kept.";
+    const char *where = boundary && boundary[0] ? boundary : "an unnamed boundary";
+    char message[512];
+    if (strcmp(code, "RUNTIME_SEMANTIC_BOUNDARY") == 0) {
+        snprintf(message, sizeof(message),
+                 "The game needed %s that this version of Nakagawa can't run yet, so it was "
+                 "stopped. %s",
+                 player_runtime_stop_feature(boundary), progress);
+        player_app_set_error(app, code, "Game Stopped Early", message,
+                             "Return to Library", VIEW_LIBRARY);
+        if (issue != 0) {
+            snprintf(app->last_error.boundary_text, sizeof(app->last_error.boundary_text),
+                     "Stopped at %s (not supported yet). A known gap, tracked in issue %u.",
+                     where, issue);
+        } else {
+            snprintf(app->last_error.boundary_text, sizeof(app->last_error.boundary_text),
+                     "Stopped at %s (not supported yet).", where);
+        }
+    } else if (strcmp(code, "RUNTIME_PREMATURE_EXIT") == 0) {
+        player_app_set_error(app, code, "Game Couldn't Start",
+                             "The game closed while it was starting. Press Restart game to try "
+                             "again. If it keeps happening, use Copy details and include the "
+                             "report when you ask for help.",
+                             "Return to Library", VIEW_LIBRARY);
+        snprintf(app->last_error.details, sizeof(app->last_error.details),
+                 "Exit code %d after %llu ms.", exit_code, (unsigned long long)elapsed_ms);
+    } else {
+        snprintf(message, sizeof(message),
+                 "The game stopped running on its own. %s Press Restart game to play again.",
+                 progress);
+        player_app_set_error(app, code, "Game Closed Unexpectedly", message,
+                             "Return to Library", VIEW_LIBRARY);
+        snprintf(app->last_error.details, sizeof(app->last_error.details),
+                 "Exit code %d after %llu ms.", exit_code, (unsigned long long)elapsed_ms);
+    }
+    if (log_file_path) {
+        snprintf(app->last_error.log_file_path, sizeof(app->last_error.log_file_path),
+                 "%s", log_file_path);
+    }
+    if (disc_id && disc_id[0]) {
+        snprintf(app->last_error.subject_disc_id, sizeof(app->last_error.subject_disc_id),
+                 "%s", disc_id);
+        app->last_error.retry = PLAYER_ERROR_RETRY_RESTART_GAME;
+    }
+    player_dev_log_add(app, "runtime", "%s: %s", code,
+                       app->last_error.boundary_text[0] ? app->last_error.boundary_text
+                                                        : app->last_error.details);
 }
 
 void player_app_populate_sample_games(PlayerApp *app) {
@@ -2520,6 +2747,10 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
         app->boot_event_file_path, stopped_boundary, sizeof(stopped_boundary),
         &stopped_issue);
     bool runtime_failed = elapsed_ms < 500 || code != 0 || has_semantic_stop;
+    /* Restart game on the card relaunches this one. */
+    char stopped_disc_id[sizeof(app->last_error.subject_disc_id)];
+    snprintf(stopped_disc_id, sizeof(stopped_disc_id), "%s",
+             app->launch_session.disc_id);
     app->is_game_running = false;
     app->close_confirmation_pending = false;
     /* The child has exited and been reaped: release its process and job
@@ -2555,39 +2786,17 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
            (unsigned long long)elapsed_ms);
 
     if (has_semantic_stop) {
-        player_app_set_error(
-            app, "RUNTIME_SEMANTIC_BOUNDARY", "Game Stopped Early",
-            "This part of the game isn't supported yet. Check the details below and try again after an update.",
-            "Return to Library", VIEW_LIBRARY);
-        snprintf(app->last_error.boundary_text,
-                 sizeof(app->last_error.boundary_text),
-                 "RUNTIME_SEMANTIC_BOUNDARY: %s; not supported yet.",
-                 stopped_boundary);
-        snprintf(app->last_error.log_file_path,
-                 sizeof(app->last_error.log_file_path), "%s",
-                 app->boot_event_file_path);
+        player_app_set_game_stop_error(app, "RUNTIME_SEMANTIC_BOUNDARY", stopped_boundary,
+                                       stopped_issue, code, elapsed_ms, stopped_disc_id,
+                                       app->boot_event_file_path);
     } else if (elapsed_ms < 500) {
-        char err_msg[512];
-        snprintf(err_msg, sizeof(err_msg),
-                 "Child runtime exited prematurely after %llu ms (exit code %d).\n"
-                 "Process terminated before initialization or scheduler loop could start.",
-                 (unsigned long long)elapsed_ms, code);
-        player_app_set_error(app, "RUNTIME_PREMATURE_EXIT", "Child Process Terminated Early",
-                             err_msg, "Return to Library", VIEW_LIBRARY);
-        snprintf(app->last_error.log_file_path,
-                 sizeof(app->last_error.log_file_path), "%s",
-                 app->boot_event_file_path);
+        player_app_set_game_stop_error(app, "RUNTIME_PREMATURE_EXIT", NULL, 0, code,
+                                       elapsed_ms, stopped_disc_id,
+                                       app->boot_event_file_path);
     } else if (code != 0) {
-        char err_msg[512];
-        snprintf(err_msg, sizeof(err_msg),
-                 "Child runtime process exited abnormally with code %d.\n"
-                 "Check runtime log files for crash traceback or missing symbol details.",
-                 code);
-        player_app_set_error(app, "RUNTIME_ERROR_EXIT", "Child Process Error Exit",
-                             err_msg, "Return to Library", VIEW_LIBRARY);
-        snprintf(app->last_error.log_file_path,
-                 sizeof(app->last_error.log_file_path), "%s",
-                 app->boot_event_file_path);
+        player_app_set_game_stop_error(app, "RUNTIME_ERROR_EXIT", NULL, 0, code, elapsed_ms,
+                                       stopped_disc_id,
+                                       app->boot_event_file_path);
     }
     return true;
 }
@@ -2913,20 +3122,50 @@ void player_app_set_build_error(
     const char *log_file_path
 ) {
     if (!app) return;
+    const char *reason = boundary_text && boundary_text[0] ? boundary_text : NULL;
+    /* A preflight refusal is not a failed build: the build never started and
+       the reason says what the user needs to do (#1286). */
+    bool refused = failed_stage && strcmp(failed_stage, "preflight") == 0;
+    bool disk_full = reason &&
+        (strstr(reason, "No space left") != NULL || strstr(reason, "[Errno 28]") != NULL ||
+         strstr(reason, "[WinError 112]") != NULL ||
+         strstr(reason, "not enough space on the disk") != NULL);
     char msg[512];
-    if (boundary_text && boundary_text[0]) {
-        snprintf(msg, sizeof(msg), "%s", boundary_text);
+    if (refused) {
+        snprintf(msg, sizeof(msg), "%.400s The build did not start.",
+                 reason ? player_plain_reason(reason) : "The build was refused before it started.");
+        player_app_set_error(app, "PACKAGE_BUILD_REFUSED", "Build Not Started",
+                             msg, "Return to Library", VIEW_LIBRARY);
+    } else if (disk_full) {
+        player_app_set_error(app, "PACKAGE_DISK_FULL", "Not Enough Disk Space",
+                             "The build ran out of disk space. Free some space on the drive "
+                             "that holds Nakagawa's data folder, then press Try again.",
+                             "Return to Library", VIEW_LIBRARY);
     } else {
-        snprintf(msg, sizeof(msg), "Package build failed during stage '%s'. Check logs for details.",
-                 failed_stage && failed_stage[0] ? failed_stage : "unknown");
+        player_app_set_error(app, "PACKAGE_BUILD_FAILED", "Couldn't Finish Building",
+                             "The build stopped before the game was ready. Press Try again. If "
+                             "it stops again, use Copy details and include the report when you "
+                             "ask for help.",
+                             "Return to Library", VIEW_LIBRARY);
     }
-    player_app_set_error(app, "PACKAGE_BUILD_FAILED", "Package Build Failed",
-                         msg, "Return to Library", VIEW_LIBRARY);
+    player_dev_log_add(app, "build", "%s at %s: %s", app->last_error.error_code,
+                       failed_stage && failed_stage[0] ? failed_stage : "build",
+                       reason ? reason : "no reason recorded");
+    if (app->build_session.disc_id[0]) {
+        snprintf(app->last_error.subject_disc_id, sizeof(app->last_error.subject_disc_id),
+                 "%s", app->build_session.disc_id);
+        app->last_error.retry = PLAYER_ERROR_RETRY_BUILD;
+    }
     if (failed_stage) {
         snprintf(app->last_error.failed_stage, sizeof(app->last_error.failed_stage), "%s", failed_stage);
     }
     if (boundary_text) {
         snprintf(app->last_error.boundary_text, sizeof(app->last_error.boundary_text), "%s", boundary_text);
+    }
+    if (refused) {
+        /* The message already carries the reason; the details name the step. */
+        snprintf(app->last_error.details, sizeof(app->last_error.details), "%s",
+                 "Refused by the check that runs before a build.");
     }
     if (log_file_path) {
         snprintf(app->last_error.log_file_path, sizeof(app->last_error.log_file_path), "%s", log_file_path);
@@ -2938,13 +3177,19 @@ void player_app_set_package_revalidation_error(PlayerApp *app, const char *reaso
     if (!app) return;
     const char *detail = reason && reason[0]
         ? reason : "The new package could not be checked.";
-    char msg[512];
-    snprintf(msg, sizeof(msg),
-             "The package was built, but the check that follows the build did not pass: %.380s "
-             "Build the package again from the Library.", detail);
     player_app_set_error(app, "PACKAGE_REVALIDATION_FAILED", "Package Check Failed",
-                         msg, "Return to Library", VIEW_LIBRARY);
+                         "The game was built, but the check after the build did not pass, so "
+                         "it is not marked ready. Press Try again to build it again. If it "
+                         "happens again, use Copy details and include the report when you ask "
+                         "for help.",
+                         "Return to Library", VIEW_LIBRARY);
+    snprintf(app->last_error.boundary_text, sizeof(app->last_error.boundary_text), "%s", detail);
     player_dev_log_add(app, "build", "PACKAGE_REVALIDATION_FAILED: %s", detail);
+    if (app->build_session.disc_id[0]) {
+        snprintf(app->last_error.subject_disc_id, sizeof(app->last_error.subject_disc_id),
+                 "%s", app->build_session.disc_id);
+        app->last_error.retry = PLAYER_ERROR_RETRY_BUILD;
+    }
     if (log_file_path) {
         snprintf(app->last_error.log_file_path, sizeof(app->last_error.log_file_path),
                  "%s", log_file_path);
@@ -3241,6 +3486,74 @@ void player_app_wizard_finish_extraction(PlayerApp *app, NkResult result,
         snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
                  "%s", app->wizard.extraction_error);
     }
+}
+
+const char *player_preflight_label(const PlayerPreflightCheck *check) {
+    static const struct { const char *code; const char *label; } labels[] = {
+        {"EXPERIMENTAL", "Compatibility"}, {"DISC_SFO", "Disc"},
+        {"EXECUTABLE", "Game program"}, {"GUEST_MODULES", "Game modules"},
+        {"RUNTIME_PACKAGE", "Game build"}, {"DATA_ROOT", "Game data"},
+        {"SYSTEM_FONTS", "Fonts"}, {"AUDIO_OUTPUT", "Sound"},
+    };
+    if (!check) return "Check";
+    for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++) {
+        if (strcmp(check->code, labels[i].code) == 0) return labels[i].label;
+    }
+    return "Check";
+}
+
+const char *player_preflight_status_word(const PlayerPreflightCheck *check) {
+    if (!check) return "Unknown";
+    bool package = strcmp(check->code, "RUNTIME_PACKAGE") == 0;
+    switch (check->status) {
+        case PREFLIGHT_OK: return "Ready";
+        case PREFLIGHT_MISSING: return package ? "Not built yet" : "Needed";
+        case PREFLIGHT_INCOMPATIBLE: return "Rebuild";
+        case PREFLIGHT_STALE: return "Out of date";
+        case PREFLIGHT_UNSUPPORTED: return "Not supported";
+        case PREFLIGHT_IN_PROGRESS: return "Untested";
+        case PREFLIGHT_INVALID: return "Problem";
+    }
+    return "Unknown";
+}
+
+const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
+    if (!check) return "";
+    /* The package validator and the font summary speak in cache and slot terms;
+       the card says what they mean for the player. */
+    if (strcmp(check->code, "RUNTIME_PACKAGE") == 0) {
+        switch (check->status) {
+            case PREFLIGHT_OK: return "Built and ready to play.";
+            case PREFLIGHT_MISSING:
+                return "Not built yet. After you add the game, build it from the Library.";
+            case PREFLIGHT_STALE:
+            case PREFLIGHT_INCOMPATIBLE:
+                return "Built by an older version of Nakagawa. Build it again from the Library.";
+            default: break;
+        }
+    } else if (strcmp(check->code, "SYSTEM_FONTS") == 0) {
+        if (check->status == PREFLIGHT_OK) return "PSP system fonts found.";
+        if (check->status == PREFLIGHT_MISSING) {
+            return "Some PSP system fonts were not found, so some text may look different. "
+                   "You can import your own fonts in the setup wizard.";
+        }
+    } else if (strcmp(check->code, "EXPERIMENTAL") == 0) {
+        return "Not tested yet: this game may not start, or may stop early.";
+    }
+    return player_plain_reason(check->message);
+}
+
+const PlayerPreflightCheck *player_preflight_blocking_check(
+    const PlayerCompatibilityPreflight *preflight) {
+    if (!preflight) return NULL;
+    for (size_t i = 0; i < preflight->count; i++) {
+        const PlayerPreflightCheck *check = &preflight->checks[i];
+        if (check->status == PREFLIGHT_UNSUPPORTED &&
+            (strcmp(check->code, "EXECUTABLE") == 0 || strcmp(check->code, "DISC_SFO") == 0)) {
+            return check;
+        }
+    }
+    return NULL;
 }
 
 static void player_preflight_add(PlayerCompatibilityPreflight *preflight,

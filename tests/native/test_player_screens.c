@@ -100,7 +100,8 @@ static const PlayerUiPrereqItem k_prereqs[] = {
 typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_CONSENT, FLOW_PROGRESS,
                FLOW_ERROR, FLOW_WIZ_WELCOME, FLOW_WIZ_CHOOSE, FLOW_WIZ_CHOSEN,
                FLOW_WIZ_COPYING, FLOW_WIZ_VERIFY, FLOW_WIZ_EXPERIMENTAL, FLOW_WIZ_FONTS,
-               FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS } FlowCase;
+               FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_BLOCKED,
+               FLOW_WIZ_COPY_FAILED, FLOW_ERROR_STOP } FlowCase;
 
 static const char *const k_font_lines[] = {
     "Japanese: synthetic fallback", "Latin 1: synthetic fallback",
@@ -178,6 +179,23 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             wizard.step = 1;
             wizard.online_mode = true;
             break;
+        case FLOW_WIZ_BLOCKED:
+            /* #1280: an experimental disc this version cannot use. */
+            wizard.step = 3;
+            wizard.experimental = true;
+            wizard.blocked_reason = "EBOOT.BIN is encrypted. Nakagawa does not decrypt games. "
+                                    "Then open the disc again.";
+            wizard.checks[0] = (PlayerUiCheckRow){"Not built yet", "Game build",
+                                                  "Not built yet.", 0xDBB024FFu};
+            wizard.check_count = 1u;
+            break;
+        case FLOW_WIZ_COPY_FAILED:
+            /* #1278: the copy failed; the card says why. */
+            wizard.step = 3;
+            wizard.extraction_failed = true;
+            wizard.extraction_error = "Synthetic reason: the title manifest asks for a folder "
+                                      "that is not on this disc image.";
+            break;
         case FLOW_WIZ_WELCOME:
         default:
             wizard.step = 0;
@@ -189,6 +207,21 @@ static FlowCase g_flow_case;
 
 static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
     PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    if (which == FLOW_ERROR_STOP) {
+        /* #1282: a game that stopped early, with Restart game and Copy details. */
+        PlayerUiErrorModel error;
+        memset(&error, 0, sizeof(error));
+        error.badge = "Game stopped";
+        error.title = "Game Stopped Early";
+        error.message = "The game needed ad hoc wireless play that this version can't run yet.";
+        error.details = "Stopped at a synthetic boundary (not supported yet).";
+        error.recovery_label = "Return to Library";
+        error.retry_label = "Restart game";
+        error.copy_available = true;
+        error.logical_width = 1280.0f;
+        error.logical_height = 800.0f;
+        return player_ui_screen_error(ui, &error);
+    }
     if (which >= FLOW_WIZ_WELCOME) return draw_wizard_case(ui, which);
     if (which == FLOW_BUILD || which == FLOW_BUILT) {
         PlayerUiBuildModel build;
@@ -667,6 +700,8 @@ static void test_wizard_actions(void) {
          "Continue after staging moves on"},
         {FLOW_WIZ_EXPERIMENTAL, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_ADD_EXPERIMENTAL,
          "an experimental disc is added to the library"},
+        {FLOW_WIZ_BLOCKED, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_CHOOSE_DIFFERENT,
+         "a disc this version cannot use is not offered to the library (#1280)"},
         {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_ACCEPT_FONTS,
          "Accept and continue confirms the fonts step"},
         {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_SECOND, PLAYER_UI_WIZARD_CYCLE_RESOLUTION,
@@ -715,6 +750,62 @@ static NkUiTextSize screen_test_wide_measure(void *user, int font, int px, const
 /* The error card keeps a CLI_NOT_FOUND-sized details text whole in the
    960 x 540 minimum window: the fix it ends with must not be cut off. It was,
    at six lines of a 700 px card. */
+/* The text a flow case lays out, for checks on what the card says. */
+static bool dump_flow_case(FlowCase which, char *dump, size_t cap) {
+    NkUiConfig config;
+    NkUiTextBackend text = screen_test_text_backend();
+    NkUi *ui;
+    size_t used = 0u;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    if (ui == NULL) return false;
+    set_test_viewport(ui, 1280, 800);
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)draw_flow_case(ui, which);
+        (void)nk_ui_end(ui);
+    }
+    used = nk_ui_dump(ui, dump, cap);
+    nk_ui_destroy(ui);
+    return used > 0u;
+}
+
+/* #1282, #1280, #1278: the cards' actions and words. */
+static void test_plain_cards(void) {
+    static char dump[CASE_DUMP_CAP];
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_RETRY, FLOW_ERROR_STOP).kind ==
+              PLAYER_UI_ACTION_ERROR_RETRY,
+          "Restart game on a stopped game's card asks for the relaunch");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_COPY, FLOW_ERROR_STOP).kind ==
+              PLAYER_UI_ACTION_ERROR_COPY,
+          "Copy details asks for the report on the clipboard");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_RECOVER, FLOW_ERROR_STOP).kind ==
+              PLAYER_UI_ACTION_ERROR_RECOVER,
+          "Return to Library still leaves the card");
+    CHECK(activate_flow_button(PLAYER_UI_ID_ERROR_RETRY, FLOW_ERROR).kind ==
+              PLAYER_UI_ACTION_NONE,
+          "a card without a retry action draws no retry button");
+    CHECK(dump_flow_case(FLOW_ERROR_STOP, dump, sizeof(dump)), "lay out the stopped game's card");
+    /* Buttons are drawn in capitals. */
+    CHECK(strstr(dump, "\"RESTART GAME\"") != NULL && strstr(dump, "\"COPY DETAILS\"") != NULL,
+          "the stopped game's card offers Restart game and Copy details");
+    CHECK(strstr(dump, "CONTINUE") == NULL && strstr(dump, "ontinue") == NULL,
+          "the stopped game's card never offers to continue");
+    CHECK(strstr(dump, "Nothing is sent anywhere") != NULL,
+          "the card says the report stays on this computer");
+    CHECK(dump_flow_case(FLOW_WIZ_BLOCKED, dump, sizeof(dump)) &&
+              strstr(dump, "ADD TO LIBRARY") == NULL &&
+              strstr(dump, "EBOOT.BIN is encrypted") != NULL &&
+              strstr(dump, "can't be played") != NULL,
+          "a disc this version cannot use says why, with no Add to library");
+    CHECK(dump_flow_case(FLOW_WIZ_COPY_FAILED, dump, sizeof(dump)) &&
+              strstr(dump, "Synthetic reason") != NULL &&
+              strstr(dump, "listed in the native title catalog") == NULL,
+          "a failed copy shows its reason in place of the catalog note");
+}
+
 static void test_error_details_fit_the_minimum_window(void) {
     static char dump[CASE_DUMP_CAP];
     static const char details[] =
@@ -1336,6 +1427,7 @@ int main(int argc, char **argv) {
     test_screen_actions();
     test_error_details_fit_the_minimum_window();
     test_wizard_actions();
+    test_plain_cards();
     test_version_line();
     test_design_system_layout();
     CHECK(build_library_golden(library, sizeof(library), &library_size),

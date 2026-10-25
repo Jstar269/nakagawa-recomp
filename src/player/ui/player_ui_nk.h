@@ -57,7 +57,9 @@ typedef enum {
     PLAYER_UI_ACTION_LEAVE_BUILD,      /* the package is written: back to the library */
     PLAYER_UI_ACTION_PREREQ_ACCEPT,    /* download the listed build tools */
     PLAYER_UI_ACTION_PREREQ_CANCEL,
-    PLAYER_UI_ACTION_ERROR_RECOVER,    /* the error card's one recovery action */
+    PLAYER_UI_ACTION_ERROR_RECOVER,    /* the error card's recovery action */
+    PLAYER_UI_ACTION_ERROR_RETRY,      /* Restart game / Try again (ErrorState.retry) */
+    PLAYER_UI_ACTION_ERROR_COPY,       /* put the problem report on the clipboard */
     PLAYER_UI_ACTION_WIZARD,           /* a setup wizard control; .primary carries the op */
     PLAYER_UI_ACTION_OPEN_LIBRARY,
     PLAYER_UI_ACTION_OPEN_ABOUT,
@@ -155,6 +157,11 @@ typedef struct {
     bool extraction_failed;
     bool experimental;
     bool supported;
+    /* Experimental, but this version cannot use the disc (#1280): the reason
+       and its next step, and no Add to library. NULL when it can be added. */
+    const char *blocked_reason;
+    /* Why the copy failed, without its code (#1278). */
+    const char *extraction_error;
     const char *disc_id;
     const char *title_name;
     PlayerUiCheckRow checks[PLAYER_UI_WIZARD_CHECKS];
@@ -226,6 +233,9 @@ typedef struct {
     const char *details;
     const char *log_path;
     const char *recovery_label;
+    const char *retry_label;    /* "Restart game", "Try again", or NULL for none */
+    bool copy_available;        /* offer Copy details */
+    bool copied;                /* the report is on the clipboard: say so */
     float logical_width;
     float logical_height;
 } PlayerUiErrorModel;
@@ -254,6 +264,8 @@ enum {
     PLAYER_UI_ID_PREREQ_ACCEPT = 0x4101u,
     PLAYER_UI_ID_PREREQ_CANCEL = 0x4102u,
     PLAYER_UI_ID_ERROR_RECOVER = 0x4201u,
+    PLAYER_UI_ID_ERROR_RETRY = 0x4202u,
+    PLAYER_UI_ID_ERROR_COPY = 0x4203u,
     PLAYER_UI_ID_WIZARD_PRIMARY = 0x4301u,
     PLAYER_UI_ID_WIZARD_SECOND = 0x4302u,
     PLAYER_UI_ID_WIZARD_BACK = 0x4303u,

@@ -909,8 +909,11 @@ static int stage_lock_acquire(const char *path, PlayerStageLock *lock) {
     if (!stage_utf8_to_wide(path, wide, (int)(sizeof(wide) / sizeof(wide[0])))) return -1;
     /* No sharing: a second open of the same lock file fails while this handle
      * is open, in this process or any other. */
-    HANDLE handle = CreateFileW(wide, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-                                OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    /* Delete-on-close: the lock file goes when its handle does, on a crash
+       too, so no stale .staging_<DISC>.lock stays in the games folder (#1278). */
+    HANDLE handle = CreateFileW(wide, GENERIC_READ | GENERIC_WRITE | DELETE, 0, NULL,
+                                OPEN_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, NULL);
     if (handle == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
         return (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION) ? 0 : -1;
@@ -1149,6 +1152,48 @@ static NkResult stage_title_fail(PlayerStageLock *lock, const char *staging_root
     return result;
 }
 
+/* The title's manifest names a data folder that is not where staging looks for
+   it. The folder may come from an older setup that unpacked the game's
+   archives, which staging cannot recreate from a disc image, so the user is
+   told what to check rather than to copy the disc again (#1278). */
+static void stage_title_data_folder_message(char *message, size_t message_size,
+                                            const char *folder) {
+    stage_title_message(message, message_size,
+        "[STAGE_DATA_FOLDER_MISSING] This game's title manifest asks for a '%.64s' folder "
+        "that is not on this disc image, so its files could not be set up from it, and no "
+        "files were kept. If you added a title manifest for this game, update it to the "
+        "current manifest format; otherwise this game cannot be set up from a disc image "
+        "in this version.",
+        folder ? folder : "");
+}
+
+/* Whether the disc has the data folder a title that takes its data from the disc
+   needs. Folders staging makes itself (an unpacked archive, "<name>.d") are not
+   looked for; the check after the copy still covers them. True when the disc
+   cannot be read here, so the copy reports that itself. */
+static bool stage_iso_has_data_folder(const PlayerStageTitleRequest *request) {
+    if (!player_stage_title_takes_data_from_disc(request)) return true;
+    char path[PLAYER_STAGE_PATH_MAX];
+    int written = snprintf(path, sizeof(path), "PSP_GAME/USRDIR/%s", request->data_root);
+    if (written < 0 || (size_t)written >= sizeof(path)) return true;
+    for (char *component = path; *component;) {
+        char *end = strchr(component, '/');
+        size_t length = end ? (size_t)(end - component) : strlen(component);
+        if (length >= 2u && component[length - 2u] == '.' && component[length - 1u] == 'd') {
+            if (component > path) component[-1] = '\0';
+            break;
+        }
+        if (!end) break;
+        component = end + 1;
+    }
+    NkIsoReader *reader = nk_iso_reader_open(request->iso_path);
+    if (!reader) return true;
+    bool is_dir = false;
+    bool found = nk_iso_reader_lookup(reader, path, NULL, NULL, &is_dir) == 0 && is_dir;
+    nk_iso_reader_close(reader);
+    return found;
+}
+
 NkResult player_stage_title(const PlayerStageTitleRequest *request,
                             const PlayerStageCallbacks *callbacks,
                             PlayerStageSummary *summary,
@@ -1243,6 +1288,13 @@ NkResult player_stage_title(const PlayerStageTitleRequest *request,
         return stage_title_fail(&lock, NULL, summary, NK_ERROR_ALREADY_EXISTS);
     }
 
+    /* A data folder the disc does not have cannot appear by copying it, so say
+       so before the copy instead of after it (#1278). */
+    if (!stage_iso_has_data_folder(request)) {
+        stage_title_data_folder_message(message, message_size, request->data_root);
+        return stage_title_fail(&lock, NULL, summary, NK_ERROR_INVALID_ISO);
+    }
+
     char detail[256];
     NkResult result = player_stage_game_with_summary(
         request->iso_path, paths.staging_root, request->loose_content_roots,
@@ -1261,9 +1313,7 @@ NkResult player_stage_title(const PlayerStageTitleRequest *request,
                                 NK_ERROR_FILE_NOT_FOUND);
     }
     if (missing) {
-        stage_title_message(message, message_size,
-            "[STAGE_DATA_FOLDER_MISSING] This disc image has no '%.64s' folder, which this game needs. The image may be incomplete or from a different version of the game; make a fresh copy of your disc and try again.",
-            missing);
+        stage_title_data_folder_message(message, message_size, missing);
         return stage_title_fail(&lock, paths.staging_root, summary,
                                 NK_ERROR_INVALID_ISO);
     }
