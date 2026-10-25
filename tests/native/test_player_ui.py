@@ -2337,6 +2337,85 @@ class NativePlayerUiTests(unittest.TestCase):
                 self.assertEqual(frames[1]["view"], "library")
                 self.assertEqual(frames[1]["picker"], "0")
 
+    def test_game_stop_cards_are_plain_with_restart_and_copy(self) -> None:
+        """#1282: a game that ends on its own gets a plain card, not a raw code.
+
+        Failing-before: "Child Process Terminated Early" and "Child Process Error
+        Exit" were developer text, the stop card's badge fell back to the raw code
+        for the two exit cards, and Return to Library was the only action."""
+        expected = {
+            "RUNTIME_SEMANTIC_BOUNDARY": ("Game_Stopped_Early", "Game_stopped"),
+            "RUNTIME_PREMATURE_EXIT": ("Game_Couldn't_Start", "Game_didn't_start"),
+            "RUNTIME_ERROR_EXIT": ("Game_Closed_Unexpectedly", "Game_closed"),
+        }
+        for code, (title, badge) in expected.items():
+            with self.subTest(code=code):
+                run = self.run_player("library", ("WAIT_MS=50",), error_code=code,
+                                      ui_mode="next")
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                self.assertEqual(frames[0]["view"], "error")
+                self.assertEqual(frames[0]["error"], code)
+                self.assertEqual(frames[0]["error_title"], title)
+                self.assertEqual(frames[0]["error_badge"], badge)
+                self.assertNotIn("Child", frames[0]["error_title"])
+                self.assertEqual(frames[0]["error_retry"], "Restart_game")
+
+        # Copy details: the third button. The report names the problem, its code
+        # and the raw boundary, and stays on this computer (clipboard only).
+        copied = self.run_player(
+            "library", ("WAIT_MS=50", "KEY_RIGHT", "KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100"),
+            error_code="RUNTIME_SEMANTIC_BOUNDARY", ui_mode="next",
+        )
+        stdout = str(copied["stdout"])
+        report = re.search(r"\[PLAYER_UI_TEST\] copied_details clipboard=(\d) report=(.*)", stdout)
+        self.assertIsNotNone(report, stdout)
+        assert report is not None
+        self.assertEqual(report.group(1), "1", "the report did not reach the clipboard")
+        for field in ("Nakagawa Recomp v", "Problem: Game Stopped Early",
+                      "Code: RUNTIME_SEMANTIC_BOUNDARY",
+                      "Reason: Stopped at unsupported-import-scenetadhocinit",
+                      "tracked in issue 308", "Last boot events:",
+                      "BOOT_EVENT phase=stop reason=semantic-boundary"):
+            self.assertIn(field, report.group(2))
+        frames = copied["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["view"], "error", "Copy details keeps the card open")
+        self.assertEqual(frames[-1]["error_copied"], "1")
+
+    def test_restart_game_relaunches_the_stopped_game(self) -> None:
+        """#1282: Restart game runs the same launch PLAY does for that game.
+
+        The synthetic library game has no package, so the launch answers with
+        its own Game Not Ready card: the restart reached the launch path."""
+        run = self.run_player(
+            "library", ("WAIT_MS=50", "KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100"),
+            error_code="RUNTIME_ERROR_EXIT", ui_mode="next",
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["error"], "RUNTIME_ERROR_EXIT")
+        self.assertIn(frames[-1]["error"], ("RUNTIME_PACKAGE_NOT_READY",), run["stdout"])
+        self.assertNotEqual(frames[-1]["error_retry"], "Restart_game")
+
+    def test_preflight_refusal_is_not_a_build_failure(self) -> None:
+        """#1286: a build refused at preflight never started, so its card is not
+        "Package Build Failed" and its badge is not a code."""
+        run = self.run_player("library", ("WAIT_MS=50",), error_code="PACKAGE_BUILD_REFUSED",
+                              ui_mode="next")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "error")
+        self.assertEqual(frames[0]["error_title"], "Build_Not_Started")
+        self.assertEqual(frames[0]["error_badge"], "Build_not_started")
+        self.assertEqual(frames[0]["error_retry"], "Try_again")
+        # An unknown code still gets a plain badge.
+        other = self.run_player("library", ("WAIT_MS=50",), error_code="PYTHON_NOT_FOUND",
+                                ui_mode="next")
+        other_frames = other["frames"]
+        assert isinstance(other_frames, list)
+        self.assertEqual(other_frames[0]["error_badge"], "Problem")
+
     def test_failed_close_confirmation_needs_a_second_explicit_close(self) -> None:
         run = self.run_player(
             "library",
