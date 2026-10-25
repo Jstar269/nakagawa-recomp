@@ -2117,6 +2117,30 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(built_frames[0]["view"], "building_package")
         self.assertEqual(built_frames[0]["build_badge"], "PACKAGE_BUILT", built["stdout"])
 
+    def test_build_bar_shows_the_compiled_share_of_parts(self) -> None:
+        """A compile stage that counts its parts fills the bar to that share.
+
+        Without a count the bar sweeps and claims no percentage; a package build
+        once sat on that sweep for minutes with no sign of how far it had got.
+        The same count carries a calm note that other apps may feel slower, drawn
+        under the bar; a build without one draws no note. The next UI's card is
+        checked by nk-ui-player-screens-selftest."""
+        sweeping = self.run_player("building", ("KEY_ESCAPE",), ui_mode="legacy")
+        sweeping_frames = sweeping["frames"]
+        assert isinstance(sweeping_frames, list)
+        self.assertEqual(sweeping_frames[0]["build_badge"], "BUILDING_RUNTIME_PACKAGE")
+        self.assertEqual(sweeping_frames[0]["build_bar_permille"], "-1")
+        self.assertEqual(sweeping_frames[0]["build_notice"], "0")
+
+        counted = self.run_player("building-parts", ("KEY_ESCAPE",), ui_mode="legacy")
+        counted_frames = counted["frames"]
+        assert isinstance(counted_frames, list)
+        self.assertEqual(counted_frames[0]["view"], "building_package")
+        self.assertEqual(counted_frames[0]["build_bar_permille"], "300", counted["stdout"])
+        self.assertEqual(counted_frames[0]["build_notice"], "1", counted["stdout"])
+        self.assertEqual(counted_frames[1]["build_bar_permille"], "-1")
+        self.assertEqual(counted_frames[1]["build_notice"], "0")
+
     def test_controller_bind_conflict_calibration_and_profile_save(self) -> None:
         bind = self.run_player("controller", ("KEY_TAB", "KEY_RETURN", "PAD_SOUTH"))
         bind_frames = bind["frames"]
