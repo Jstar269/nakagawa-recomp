@@ -2444,13 +2444,13 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 97)
+        self.assertEqual(len(routes), 98)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107}
-                         | {110, 111, 112, 113}, set(ids))
+                         | {110, 111, 112, 113, 115}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -2469,10 +2469,20 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertIn("OBJS = $(BUILD_DIR)/probe.o\n", self.makefile)
         self.assertIn("MUTEX_CASES = mutex-refer-unlocked mutex-timeout-quanta", self.makefile)
         self.assertIn("mutex-priority-inheritance mutex-interrupt-context", self.makefile)
+        self.assertIn("mutex-interrupt-context cpu-timing", self.makefile)
         self.assertIn("ifneq ($(filter $(MUTEX_CASES),$(CASE)),)\n", self.makefile)
         self.assertIn("OBJS += $(BUILD_DIR)/mutex_imports.o\n", self.makefile)
         self.assertNotIn(
             "OBJS = $(BUILD_DIR)/probe.o $(BUILD_DIR)/mutex_imports.o",
+            self.makefile,
+        )
+
+    def test_cpu_timing_imports_only_the_required_kernel_library_nids(self) -> None:
+        self.assertIn(
+            "ifeq ($(CASE),cpu-timing)\n"
+            "USER_MODE_IMPORT_GATE_ARGS += --exact-library "
+            "Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B\n"
+            "endif",
             self.makefile,
         )
 
@@ -3608,7 +3618,8 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
     """Step markers, bounded waits and record shapes of the campaign probes."""
 
     NEW_CASES = ("KERNEL_ALARM", "THREAD_SCHEDULER", "WAIT_OUTCOMES", "GE_BREAK_CONTINUE",
-                 "REFER_STATUS_SIZE", "REGISTRY_READONLY", "KERNEL_MISC", "VFPU_COMPARE")
+                 "REFER_STATUS_SIZE", "REGISTRY_READONLY", "KERNEL_MISC", "VFPU_COMPARE",
+                 "CPU_TIMING")
 
     def setUp(self) -> None:
         self.root = Path(__file__).resolve().parents[1]
@@ -3741,11 +3752,22 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
             self.assertEqual(int(done.group(1)), len(spec.ordered_cases) - 1, case)
 
     def test_no_probe_blocks_on_the_ge_without_a_bound(self) -> None:
+        # A blocking sync is measured only inside a helper thread whose caller has a finite
+        # wait and terminates the worker if the GE never completes.
         for source in sorted(self.fixture.glob("*.c")):
             text = re.sub(r"/\*.*?\*/|//[^\n]*", "", source.read_text(encoding="utf-8"),
                           flags=re.DOTALL)
-            self.assertIsNone(re.search(r"sceGeListSync\([^;]*,\s*0\s*\)", text), source.name)
-            self.assertIsNone(re.search(r"sceGeDrawSync\(\s*0\s*\)", text), source.name)
+            for call in re.finditer(r"sceGeListSync\([^;]*,\s*0\s*\)|sceGeDrawSync\(\s*0\s*\)", text):
+                head = text.rfind("\nstatic ", 0, call.start())
+                entry = re.match(r"\nstatic int (\w+)\(SceSize \w+, void \*\w+\) \{",
+                                 text[head:text.index("{", head) + 1])
+                self.assertIsNotNone(entry, f"{source.name}: {call.group(0)} outside a helper thread")
+                create = re.search(r"sceKernelCreateThread\([^;]*\b%s\b" % entry.group(1), text)
+                self.assertIsNotNone(create, f"{source.name}: {entry.group(1)} is never started")
+                caller_head = text.rfind("\nstatic ", 0, create.start())
+                caller = text[caller_head:text.index("\n}\n", create.start())]
+                self.assertRegex(caller, r"sceKernelWaitThreadEnd\(\s*\w+\s*,\s*&\w+\s*\)", source.name)
+                self.assertIn("sceKernelTerminateDeleteThread(", caller, source.name)
             self.assertNotIn("sceGuSync(", text, source.name)
 
     def test_ge_break_continue_writes_the_list_back_before_enqueueing_it(self) -> None:
@@ -4020,7 +4042,8 @@ class VfpuCompareProbeTests(unittest.TestCase):
         start = self.probe.index(
             "#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \\\n"
             "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE || \\\n"
-            "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS\n"
+            "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS || \\\n"
+            "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING\n"
         )
         attr = self.probe[start:self.probe.index("#else", start)]
         self.assertIn("PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);", attr)

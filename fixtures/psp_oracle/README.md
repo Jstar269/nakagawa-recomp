@@ -45,6 +45,11 @@ decoder maps the ordinal to a generation and retail family; it never applies
 the PSPSDK enum table to the kernel-only `sceKernelGetModel()` original/slim
 convention.
 
+`CASE=cpu-timing` measures generic Allegrex instruction classes and PSP syscall
+fast paths using fixed synthetic buffers. It runs at 333/166 MHz and restores
+the boot clocks before teardown; raw measurements are retained in the private
+host0 log.
+
 Bounded follow-up cases for issues #69, #311, and #303 are `CASE=ge-nan`,
 `CASE=audio-query`, and `CASE=dma-cells`; these remain `NOT_RUN`. The
 `CASE=delay-zero` records were measured on the accepted 2026-10-01 PSPLink
@@ -502,6 +507,30 @@ destination spans inside the probe-owned scratch block or module-owned array;
 it measures bounded overrun classification and never treats `K` as a physical
 invalid boundary. An unowned destination tail remains `SKIP`; invalid-span
 validation and K3/K4 remain `NOT_RUN` under #303.
+
+## Allegrex and syscall timing (`CASE=cpu-timing`)
+
+The CPU timing case uses an unrolled eight-instruction body, a matched loop
+control, eight rounds, and seven trials at each block size. The instruction
+cells cover integer add/shift/logic, multiply and divide with `mflo`, cached
+and streamed loads/stores, taken and not-taken branches with delay slots, FPU
+add/multiply/divide, and VFPU add/multiply. The streamed cells use a 128 KiB
+synthetic buffer and one cache-line stride; the hot cells repeatedly access one
+word. The case changes the PSP clock to 333/166 MHz for the measurements and
+restores the boot CPU and bus clocks before teardown.
+
+Each instruction record's `result` is hundredths of a CPU cycle per counted
+instruction after subtracting the matched loop control. Its outputs are the
+instruction count, median measured microseconds, median control microseconds,
+and CPU MHz. The syscall cells use repeated calls with a matched no-op call
+loop and report hundredths of a CPU cycle per API call. They cover setting the
+currently displayed framebuffer to the same buffer, accumulated hcount,
+completed `sceGeDrawSync(0)`, empty GE list enqueue and stall release, and
+uncontended semaphore and lightweight-mutex pairs. `sceDisplayWaitVblankStart`
+is recorded separately as wall latency because the scheduler owns the wait;
+it is not charged as CPU service time. Blocking GE sync runs in a helper thread
+with a 100 ms caller timeout and termination path. GE list completion is polled
+for at most 250 ms and reset on timeout.
 
 ## Pending PSP-3000 campaign
 

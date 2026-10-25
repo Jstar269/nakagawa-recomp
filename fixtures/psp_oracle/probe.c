@@ -141,6 +141,8 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_FAKE_SUCCESS 112
 /* #1055: project and console PGFs opened in the resident font library; see run_font_userpgf. */
 #define PSP_ORACLE_CASE_FONT_USERPGF 113
+/* #1296: CPU instruction-class and per-frame syscall timing; synthetic buffers only. */
+#define PSP_ORACLE_CASE_CPU_TIMING 115
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -184,7 +186,8 @@ int sceKernelReferMutexStatus(SceUID mutexid, SceKernelMutexInfo *info);
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
       PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE || \
-      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
+      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS || \
+      PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
 /* vadd.s/vmul.s run on the main thread; without the VFPU attribute the first
  * VFPU instruction traps (measured on PSP-3001 6.6.1: the thread stops after META).
  * The VFPU compare case runs vscmp.s/vsge.s/vslt.s there for the same reason. */
@@ -367,6 +370,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/fake_success_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_USERPGF
 #define PROBE_HOST0_LOG "host0:/font_userpgf_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
+#define PROBE_HOST0_LOG "host0:/cpu_timing_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -9450,6 +9455,608 @@ static void run_fake_success(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
+#define CPU_TIMING_TRIALS 7u
+#define CPU_TIMING_ROUNDS 8u
+#define CPU_TIMING_OPS 8u
+#define CPU_TIMING_MISS_MAX_BLOCKS 256u
+#define CPU_TIMING_MISS_STRIDE 512u
+#define CPU_TIMING_MISS_BYTES (CPU_TIMING_MISS_MAX_BLOCKS * CPU_TIMING_MISS_STRIDE)
+#define CPU_TIMING_SYSCALL_CALLS 2048u
+#define CPU_TIMING_GE_BATCH 8u
+#define CPU_TIMING_REPEAT_8(OP) OP OP OP OP OP OP OP OP
+
+typedef uint32_t (*CpuTimingLoop)(uint32_t blocks);
+typedef int (*CpuTimingCall)(void);
+typedef struct {
+    uint32_t calls;
+    uint32_t elapsed[CPU_TIMING_TRIALS];
+    uint32_t control[CPU_TIMING_TRIALS];
+    int error;
+} CpuTimingDrawSyncJob;
+
+static uint32_t s_cpu_timing_memory[CPU_TIMING_MISS_BYTES / sizeof(uint32_t)]
+    __attribute__((aligned(64)));
+static uint32_t s_cpu_timing_ge_list[64] __attribute__((aligned(64)));
+static int s_cpu_timing_ge_qids[CPU_TIMING_GE_BATCH];
+static uint32_t s_cpu_timing_ge_count;
+static uint32_t s_cpu_timing_ge_index;
+static SceLwMutexWorkarea s_cpu_timing_lwmutex;
+static SceUID s_cpu_timing_sema = -1;
+static void *s_cpu_timing_framebuffer;
+static int s_cpu_timing_stride;
+static int s_cpu_timing_format;
+static volatile uint32_t s_cpu_timing_sink;
+
+static uint32_t cpu_timing_loop_empty(uint32_t blocks) {
+    __asm__ volatile(
+        ".set push\n\t.set noreorder\n\t"
+        "1:\n\taddiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\t.set pop\n\t"
+        : "+&r"(blocks) : : "memory");
+    return blocks;
+}
+
+static uint32_t cpu_timing_loop_walk(uint32_t blocks) {
+    uint32_t address = (uint32_t)(uintptr_t)s_cpu_timing_memory;
+    __asm__ volatile(
+        ".set push\n\t.set noreorder\n\t1:\n\t"
+        "addiu %1,%1,512\n\taddiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\t.set pop\n\t"
+        : "+&r"(blocks), "+&r"(address) : : "memory");
+    return address;
+}
+
+#define CPU_TIMING_ALU_FN(NAME, OP) \
+static uint32_t NAME(uint32_t blocks) { \
+    uint32_t value = 0x13579bdfu; \
+    __asm__ volatile(".set push\n\t.set noreorder\n\t1:\n\t" \
+        CPU_TIMING_REPEAT_8(OP) \
+        "addiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\t.set pop\n\t" \
+        : "+&r"(blocks), "+&r"(value) : : "memory"); \
+    return value; \
+}
+
+CPU_TIMING_ALU_FN(cpu_timing_alu, "addu %1,%1,$zero\n\t")
+CPU_TIMING_ALU_FN(cpu_timing_shift, "sll %1,%1,1\n\t")
+CPU_TIMING_ALU_FN(cpu_timing_logic, "xor %1,%1,$zero\n\t")
+
+static uint32_t cpu_timing_mul_pair(uint32_t blocks) {
+    const uint32_t operand = 0x12345u;
+    uint32_t product = 0;
+    __asm__ volatile(".set push\n\t.set noreorder\n\t1:\n\t"
+        CPU_TIMING_REPEAT_8("multu %2,%2\n\tmflo %1\n\t")
+        "addiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\t.set pop\n\t"
+        : "+&r"(blocks), "=&r"(product) : "r"(operand) : "memory");
+    return product;
+}
+
+static uint32_t cpu_timing_div_pair(uint32_t blocks) {
+    const uint32_t operand = 0x12345u;
+    uint32_t quotient = 0;
+    __asm__ volatile(".set push\n\t.set noreorder\n\t1:\n\t"
+        CPU_TIMING_REPEAT_8("divu %2,%2\n\tmflo %1\n\t")
+        "addiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\t.set pop\n\t"
+        : "+&r"(blocks), "=&r"(quotient) : "r"(operand) : "memory");
+    return quotient;
+}
+
+static uint32_t cpu_timing_load_hit(uint32_t blocks) {
+    uint32_t value = 0;
+    const uint32_t address = (uint32_t)(uintptr_t)s_cpu_timing_memory;
+    __asm__ volatile(".set push\n\t.set noreorder\n\t1:\n\t"
+        CPU_TIMING_REPEAT_8("lw %1,0(%2)\n\t")
+        "addiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\t.set pop\n\t"
+        : "+&r"(blocks), "=&r"(value) : "r"(address) : "memory");
+    return value;
+}
+
+static uint32_t cpu_timing_store_hit(uint32_t blocks) {
+    const uint32_t address = (uint32_t)(uintptr_t)s_cpu_timing_memory;
+    const uint32_t value = 0x5a5aa5a5u;
+    __asm__ volatile(".set push\n\t.set noreorder\n\t1:\n\t"
+        CPU_TIMING_REPEAT_8("sw %2,0(%1)\n\t")
+        "addiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\t.set pop\n\t"
+        : "+&r"(blocks) : "r"(address), "r"(value) : "memory");
+    return blocks;
+}
+
+static uint32_t cpu_timing_load_miss(uint32_t blocks) {
+    uint32_t address = (uint32_t)(uintptr_t)s_cpu_timing_memory;
+    uint32_t value = 0;
+    __asm__ volatile(".set push\n\t.set noreorder\n\t1:\n\t"
+        "lw %1,0(%2)\n\tlw %1,64(%2)\n\tlw %1,128(%2)\n\tlw %1,192(%2)\n\t"
+        "lw %1,256(%2)\n\tlw %1,320(%2)\n\tlw %1,384(%2)\n\tlw %1,448(%2)\n\t"
+        "addiu %2,%2,512\n\taddiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\t.set pop\n\t"
+        : "+&r"(blocks), "=&r"(value), "+&r"(address) : : "memory");
+    return value;
+}
+
+static uint32_t cpu_timing_store_miss(uint32_t blocks) {
+    uint32_t address = (uint32_t)(uintptr_t)s_cpu_timing_memory;
+    const uint32_t value = 0x5a5aa5a5u;
+    __asm__ volatile(".set push\n\t.set noreorder\n\t1:\n\t"
+        "sw %2,0(%1)\n\tsw %2,64(%1)\n\tsw %2,128(%1)\n\tsw %2,192(%1)\n\t"
+        "sw %2,256(%1)\n\tsw %2,320(%1)\n\tsw %2,384(%1)\n\tsw %2,448(%1)\n\t"
+        "addiu %1,%1,512\n\taddiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\t.set pop\n\t"
+        : "+&r"(blocks), "+&r"(address) : "r"(value) : "memory");
+    return address;
+}
+
+static uint32_t cpu_timing_branch_taken(uint32_t blocks) {
+    uint32_t value = 0;
+    __asm__ volatile(".set push\n\t.set noreorder\n\t1:\n\t"
+        CPU_TIMING_REPEAT_8("beq $zero,$zero,2f\n\tnop\n\t2:\n\t")
+        "addiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\t.set pop\n\t"
+        : "+&r"(blocks), "+&r"(value) : : "memory");
+    return value;
+}
+
+static uint32_t cpu_timing_branch_not_taken(uint32_t blocks) {
+    uint32_t value = 0;
+    __asm__ volatile(".set push\n\t.set noreorder\n\t1:\n\t"
+        CPU_TIMING_REPEAT_8("bne $zero,$zero,2f\n\tnop\n\t2:\n\t")
+        "addiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\t.set pop\n\t"
+        : "+&r"(blocks), "+&r"(value) : : "memory");
+    return value;
+}
+
+static uint32_t cpu_timing_branch_delay(uint32_t blocks) {
+    uint32_t value = 0;
+    __asm__ volatile(".set push\n\t.set noreorder\n\t1:\n\t"
+        CPU_TIMING_REPEAT_8("beq $zero,$zero,2f\n\taddiu %1,%1,1\n\t2:\n\t")
+        "addiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\t.set pop\n\t"
+        : "+&r"(blocks), "+&r"(value) : : "memory");
+    return value;
+}
+
+#define CPU_TIMING_FP_FN(NAME, OP) \
+static uint32_t NAME(uint32_t blocks) { \
+    const uint32_t one = 0x3f800000u; \
+    uint32_t result = 0; \
+    __asm__ volatile(".set push\n\t.set noreorder\n\tmtc1 %2,$f0\n\tmtc1 %2,$f2\n\t1:\n\t" \
+        CPU_TIMING_REPEAT_8(OP) \
+        "addiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\tmfc1 %1,$f0\n\t.set pop\n\t" \
+        : "+&r"(blocks), "=&r"(result) : "r"(one) : "memory"); \
+    return result; \
+}
+
+CPU_TIMING_FP_FN(cpu_timing_fpu_add, "add.s $f0,$f0,$f2\n\t")
+CPU_TIMING_FP_FN(cpu_timing_fpu_mul, "mul.s $f0,$f0,$f2\n\t")
+CPU_TIMING_FP_FN(cpu_timing_fpu_div, "div.s $f0,$f0,$f2\n\t")
+
+#define CPU_TIMING_VFPU_FN(NAME, OP) \
+static uint32_t NAME(uint32_t blocks) { \
+    const uint32_t one = 0x3f800000u; \
+    uint32_t result = 0; \
+    __asm__ volatile(".set push\n\t.set noreorder\n\tmtv %2,S000\n\tmtv %2,S001\n\t1:\n\t" \
+        CPU_TIMING_REPEAT_8(OP) \
+        "addiu %0,%0,-1\n\tbnez %0,1b\n\tnop\n\tmfv %1,S000\n\t.set pop\n\t" \
+        : "+&r"(blocks), "=&r"(result) : "r"(one) : "memory"); \
+    return result; \
+}
+
+CPU_TIMING_VFPU_FN(cpu_timing_vfpu_add, "vadd.s S000,S000,S001\n\t")
+CPU_TIMING_VFPU_FN(cpu_timing_vfpu_mul, "vmul.s S000,S000,S001\n\t")
+
+static void cpu_timing_sort(uint32_t *values) {
+    for (uint32_t i = 1; i < CPU_TIMING_TRIALS; i++) {
+        const uint32_t value = values[i];
+        uint32_t j = i;
+        while (j > 0u && values[j - 1u] > value) {
+            values[j] = values[j - 1u];
+            j--;
+        }
+        values[j] = value;
+    }
+}
+
+static uint32_t cpu_timing_elapsed(CpuTimingLoop fn, uint32_t blocks,
+                                   uint32_t cold_cache) {
+    if (cold_cache) sceKernelDcacheWritebackInvalidateAll();
+    const uint64_t start = (uint64_t)sceKernelGetSystemTimeWide();
+    for (uint32_t round = 0; round < CPU_TIMING_ROUNDS; round++)
+        s_cpu_timing_sink ^= fn(blocks);
+    return (uint32_t)((uint64_t)sceKernelGetSystemTimeWide() - start);
+}
+
+static void cpu_timing_emit_instruction(int emulated, const char *name,
+                                        CpuTimingLoop fn, CpuTimingLoop control,
+                                        uint32_t blocks, uint32_t ops_per_block,
+                                        uint32_t cpu_mhz, int cold_cache) {
+    uint32_t elapsed[CPU_TIMING_TRIALS], baseline[CPU_TIMING_TRIALS];
+    (void)fn(1u);
+    (void)control(1u);
+    for (uint32_t trial = 0; trial < CPU_TIMING_TRIALS; trial++) {
+        elapsed[trial] = cpu_timing_elapsed(fn, blocks, (uint32_t)cold_cache);
+        baseline[trial] = cpu_timing_elapsed(control, blocks, 0u);
+    }
+    cpu_timing_sort(elapsed);
+    cpu_timing_sort(baseline);
+    const uint32_t measured_us = elapsed[CPU_TIMING_TRIALS / 2u];
+    const uint32_t control_us = baseline[CPU_TIMING_TRIALS / 2u];
+    const uint32_t operations = blocks * CPU_TIMING_ROUNDS * ops_per_block;
+    const uint32_t delta_us = measured_us >= control_us ? measured_us - control_us : 0u;
+    const uint32_t cycles_x100 = operations == 0u ? 0u :
+        (uint32_t)(((uint64_t)delta_us * cpu_mhz * 100u + operations / 2u) / operations);
+    uint32_t out[4] = {operations, measured_us, control_us, cpu_mhz};
+    char case_id[48];
+    snprintf(case_id, sizeof(case_id), "%s-%u", name, (unsigned int)blocks);
+    emit_record_extended(emulated, "PSP-CPU-TIMING-001", case_id,
+                         measured_us >= control_us ? "PASS" : "INCONCLUSIVE",
+                         cycles_x100, out, 4);
+}
+
+static int cpu_timing_noop_call(void) { return 0; }
+static int cpu_timing_call_hcount(void) { return sceDisplayGetAccumulatedHcount(); }
+static int cpu_timing_call_setframebuf(void) {
+    return sceDisplaySetFrameBuf(s_cpu_timing_framebuffer, s_cpu_timing_stride,
+                                 s_cpu_timing_format, PSP_DISPLAY_SETBUF_IMMEDIATE);
+}
+static int cpu_timing_call_sema_pair(void) {
+    const int signal = sceKernelSignalSema(s_cpu_timing_sema, 1);
+    SceUInt timeout = 1000u;
+    return signal < 0 ? signal : sceKernelWaitSema(s_cpu_timing_sema, 1, &timeout);
+}
+static int cpu_timing_call_lwmutex_pair(void) {
+    const int lock = sceKernelLockLwMutex(&s_cpu_timing_lwmutex, 1, NULL);
+    return lock < 0 ? lock : sceKernelUnlockLwMutex(&s_cpu_timing_lwmutex, 1);
+}
+static int cpu_timing_call_vblank_start(void) { return sceDisplayWaitVblankStart(); }
+static int cpu_timing_call_ge_enqueue(void) {
+    if (s_cpu_timing_ge_count >= CPU_TIMING_GE_BATCH) return -1;
+    const int qid = sceGeListEnQueue(s_cpu_timing_ge_list,
+                                     s_cpu_timing_ge_list, -1, NULL);
+    if (qid < 0) return qid;
+    s_cpu_timing_ge_qids[s_cpu_timing_ge_count++] = qid;
+    return 0;
+}
+static int cpu_timing_call_ge_update_stall(void) {
+    if (s_cpu_timing_ge_index >= s_cpu_timing_ge_count) return -1;
+    const int qid = s_cpu_timing_ge_qids[s_cpu_timing_ge_index++];
+    return sceGeListUpdateStallAddr(qid, s_cpu_timing_ge_list + 2);
+}
+
+static uint32_t cpu_timing_call_batch(CpuTimingCall fn, uint32_t calls, int *error) {
+    const uint64_t start = (uint64_t)sceKernelGetSystemTimeWide();
+    for (uint32_t i = 0; i < calls; i++) {
+        const int rc = fn();
+        if (rc < 0) { *error = rc; break; }
+    }
+    return (uint32_t)((uint64_t)sceKernelGetSystemTimeWide() - start);
+}
+
+static volatile CpuTimingDrawSyncJob s_cpu_timing_drawsync_job;
+
+static int cpu_timing_drawsync_worker(SceSize args, void *argp) {
+    (void)args;
+    volatile CpuTimingDrawSyncJob *job = (volatile CpuTimingDrawSyncJob *)argp;
+    for (uint32_t trial = 0; trial < CPU_TIMING_TRIALS; trial++) {
+        const uint64_t start = (uint64_t)sceKernelGetSystemTimeWide();
+        for (uint32_t i = 0; i < job->calls; i++) {
+            const int rc = sceGeDrawSync(0);
+            if (rc < 0) { job->error = rc; break; }
+        }
+        job->elapsed[trial] = (uint32_t)((uint64_t)sceKernelGetSystemTimeWide() - start);
+        const uint64_t control_start = (uint64_t)sceKernelGetSystemTimeWide();
+        for (uint32_t i = 0; i < job->calls; i++) (void)cpu_timing_noop_call();
+        job->control[trial] =
+            (uint32_t)((uint64_t)sceKernelGetSystemTimeWide() - control_start);
+    }
+    return 0;
+}
+
+static void cpu_timing_measure_drawsync(int emulated, uint32_t cpu_mhz) {
+    memset((void *)&s_cpu_timing_drawsync_job, 0, sizeof(s_cpu_timing_drawsync_job));
+    s_cpu_timing_drawsync_job.calls = CPU_TIMING_SYSCALL_CALLS;
+    const SceUID thread = sceKernelCreateThread("cpu-ge-sync", cpu_timing_drawsync_worker,
+                                               32, 0x1000, THREAD_ATTR_USER, NULL);
+    if (thread < 0) {
+        uint32_t out[2] = {(uint32_t)thread, 0u};
+        emit_record_extended(emulated, "PSP-CPU-TIMING-001", "syscall-ge-drawsync-done",
+                             "FAIL", (uint32_t)thread, out, 2);
+        return;
+    }
+    const int start_rc = sceKernelStartThread(thread, sizeof(s_cpu_timing_drawsync_job),
+                                              (void *)&s_cpu_timing_drawsync_job);
+    SceUInt timeout = 100000u;
+    const int wait_rc = start_rc < 0 ? start_rc :
+        sceKernelWaitThreadEnd(thread, &timeout);
+    if (wait_rc < 0) {
+        (void)sceKernelTerminateDeleteThread(thread);
+        uint32_t out[3] = {(uint32_t)thread, (uint32_t)start_rc, (uint32_t)wait_rc};
+        emit_record_extended(emulated, "PSP-CPU-TIMING-001", "syscall-ge-drawsync-done",
+                             "TIMEOUT", (uint32_t)wait_rc, out, 3);
+        return;
+    }
+    (void)sceKernelDeleteThread(thread);
+    uint32_t elapsed[CPU_TIMING_TRIALS], control[CPU_TIMING_TRIALS];
+    for (uint32_t i = 0; i < CPU_TIMING_TRIALS; i++) {
+        elapsed[i] = s_cpu_timing_drawsync_job.elapsed[i];
+        control[i] = s_cpu_timing_drawsync_job.control[i];
+    }
+    cpu_timing_sort(elapsed);
+    cpu_timing_sort(control);
+    const uint32_t measured_us = elapsed[CPU_TIMING_TRIALS / 2u];
+    const uint32_t control_us = control[CPU_TIMING_TRIALS / 2u];
+    const uint32_t calls = CPU_TIMING_SYSCALL_CALLS;
+    const uint32_t delta_us = measured_us >= control_us ? measured_us - control_us : 0u;
+    const uint32_t cycles_x100 =
+        (uint32_t)(((uint64_t)delta_us * cpu_mhz * 100u + calls / 2u) / calls);
+    uint32_t out[4] = {calls, measured_us, control_us, cpu_mhz};
+    emit_record_extended(emulated, "PSP-CPU-TIMING-001", "syscall-ge-drawsync-done",
+                         s_cpu_timing_drawsync_job.error == 0 && measured_us >= control_us
+                             ? "PASS" : "FAIL",
+                         cycles_x100, out, 4);
+}
+
+static void cpu_timing_emit_syscall(int emulated, const char *case_id,
+                                    CpuTimingCall fn, uint32_t calls,
+                                    uint32_t syscalls_per_call, uint32_t cpu_mhz) {
+    uint32_t elapsed[CPU_TIMING_TRIALS], baseline[CPU_TIMING_TRIALS];
+    int error = 0;
+    for (uint32_t trial = 0; trial < CPU_TIMING_TRIALS; trial++) {
+        elapsed[trial] = cpu_timing_call_batch(fn, calls, &error);
+        baseline[trial] = cpu_timing_call_batch(cpu_timing_noop_call, calls, &error);
+    }
+    cpu_timing_sort(elapsed);
+    cpu_timing_sort(baseline);
+    const uint32_t measured_us = elapsed[CPU_TIMING_TRIALS / 2u];
+    const uint32_t control_us = baseline[CPU_TIMING_TRIALS / 2u];
+    const uint32_t total_calls = calls * syscalls_per_call;
+    const uint32_t delta_us = measured_us >= control_us ? measured_us - control_us : 0u;
+    const uint32_t cycles_x100 = total_calls == 0u ? 0u :
+        (uint32_t)(((uint64_t)delta_us * cpu_mhz * 100u + total_calls / 2u) / total_calls);
+    uint32_t out[4] = {total_calls, measured_us, control_us, cpu_mhz};
+    emit_record_extended(emulated, "PSP-CPU-TIMING-001", case_id,
+                         error == 0 && measured_us >= control_us ? "PASS" : "FAIL",
+                         cycles_x100, out, 4);
+}
+
+static int cpu_timing_ge_wait_idle(void) {
+    const uint64_t start = (uint64_t)sceKernelGetSystemTimeWide();
+    for (uint32_t polls = 0; polls < 10000u; polls++) {
+        if (sceGeDrawSync(1) == 0) return 1;
+        if ((uint64_t)sceKernelGetSystemTimeWide() - start >= 250000u) return 0;
+        sceKernelDelayThread(100u);
+    }
+    return 0;
+}
+
+static void cpu_timing_emit_vblank(int emulated) {
+    uint32_t elapsed[CPU_TIMING_TRIALS];
+    int error = 0;
+    for (uint32_t trial = 0; trial < CPU_TIMING_TRIALS; trial++)
+        elapsed[trial] = cpu_timing_call_batch(cpu_timing_call_vblank_start, 1u, &error);
+    cpu_timing_sort(elapsed);
+    const uint32_t median_us = elapsed[CPU_TIMING_TRIALS / 2u];
+    uint32_t out[4] = {CPU_TIMING_TRIALS, median_us, elapsed[0],
+                       elapsed[CPU_TIMING_TRIALS - 1u]};
+    emit_record_extended(emulated, "PSP-CPU-TIMING-001", "syscall-vblank-start-latency",
+                         error == 0 ? "PASS" : "FAIL", median_us, out, 4);
+}
+
+static void cpu_timing_emit_ge_cell(int emulated, const char *case_id,
+                                    uint32_t *elapsed, uint32_t *baseline,
+                                    uint32_t valid_trials, uint32_t cpu_mhz,
+                                    int pass) {
+    cpu_timing_sort(elapsed);
+    cpu_timing_sort(baseline);
+    const uint32_t measured_us = elapsed[CPU_TIMING_TRIALS / 2u];
+    const uint32_t control_us = baseline[CPU_TIMING_TRIALS / 2u];
+    const uint32_t delta_us = measured_us >= control_us ? measured_us - control_us : 0u;
+    const uint32_t cycles_x100 = ((uint64_t)delta_us * cpu_mhz * 100u +
+                                  CPU_TIMING_GE_BATCH / 2u) / CPU_TIMING_GE_BATCH;
+    uint32_t out[4] = {CPU_TIMING_GE_BATCH, measured_us, control_us, valid_trials};
+    emit_record_extended(emulated, "PSP-CPU-TIMING-001", case_id,
+                         pass && measured_us >= control_us ? "PASS" : "FAIL",
+                         cycles_x100, out, 4);
+}
+
+static void cpu_timing_emit_ge_skip(int emulated, const char *case_id,
+                                    uint32_t cpu_mhz) {
+    uint32_t out[2] = {cpu_mhz, 0u};
+    emit_record_extended(emulated, "PSP-CPU-TIMING-001", case_id,
+                         "SKIP", 0u, out, 2);
+}
+
+static int cpu_timing_measure_ge_calls(int emulated, uint32_t cpu_mhz) {
+    uint32_t enqueue[CPU_TIMING_TRIALS] = {0};
+    uint32_t enqueue_base[CPU_TIMING_TRIALS] = {0};
+    uint32_t update[CPU_TIMING_TRIALS] = {0};
+    uint32_t update_base[CPU_TIMING_TRIALS] = {0};
+    uint32_t valid = 0;
+    if (!cpu_timing_ge_wait_idle()) {
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-enqueue", cpu_mhz);
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-update-stall", cpu_mhz);
+        return 0;
+    }
+    const int gu_rc = sceGuInit();
+    if (gu_rc < 0) {
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-enqueue", cpu_mhz);
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-update-stall", cpu_mhz);
+        return 0;
+    }
+    int pass = 1;
+    sceGuStart(GU_DIRECT, s_cpu_timing_ge_list);
+    sceGuFinish();
+    sceKernelDcacheWritebackAll();
+    probe_step(emulated, "cpu-timing", "ge-enqueue-stall-update");
+    for (uint32_t trial = 0; pass && trial < CPU_TIMING_TRIALS; trial++) {
+        int error = 0;
+        s_cpu_timing_ge_count = 0;
+        s_cpu_timing_ge_index = 0;
+        enqueue[trial] = cpu_timing_call_batch(cpu_timing_call_ge_enqueue,
+                                               CPU_TIMING_GE_BATCH, &error);
+        enqueue_base[trial] = cpu_timing_call_batch(cpu_timing_noop_call,
+                                                    CPU_TIMING_GE_BATCH, &error);
+        if (error == 0 && s_cpu_timing_ge_count == CPU_TIMING_GE_BATCH) {
+            update[trial] = cpu_timing_call_batch(cpu_timing_call_ge_update_stall,
+                                                  CPU_TIMING_GE_BATCH, &error);
+            update_base[trial] = cpu_timing_call_batch(cpu_timing_noop_call,
+                                                       CPU_TIMING_GE_BATCH, &error);
+        } else {
+            pass = 0;
+        }
+        if (error != 0 || !cpu_timing_ge_wait_idle()) pass = 0;
+        if (pass) valid++;
+        else break;
+    }
+    int idle = cpu_timing_ge_wait_idle();
+    if (!pass && s_cpu_timing_ge_count != 0u && !idle) {
+        PspGeBreakParam param;
+        memset(&param, 0, sizeof(param));
+        (void)sceGeBreak(1, &param);
+        idle = cpu_timing_ge_wait_idle();
+    }
+    cpu_timing_emit_ge_cell(emulated, "syscall-ge-list-enqueue",
+                            enqueue, enqueue_base, valid, cpu_mhz, pass && idle);
+    cpu_timing_emit_ge_cell(emulated, "syscall-ge-list-update-stall",
+                            update, update_base, valid, cpu_mhz, pass && idle);
+    return pass && idle;
+}
+
+static void run_cpu_timing(int emulated) {
+    static const uint32_t normal_blocks[] = {2048u, 8192u, 32768u};
+    static const uint32_t miss_blocks[] = {32u, 128u, CPU_TIMING_MISS_MAX_BLOCKS};
+    const int boot_cpu = scePowerGetCpuClockFrequencyInt();
+    const int boot_bus = scePowerGetBusClockFrequencyInt();
+    const int clock_rc = scePowerSetClockFrequency(333, 333, 166);
+    const int cpu_mhz = scePowerGetCpuClockFrequencyInt();
+    const int bus_mhz = scePowerGetBusClockFrequencyInt();
+    uint32_t clock_out[4] = {(uint32_t)boot_cpu, (uint32_t)boot_bus,
+                             (uint32_t)cpu_mhz, (uint32_t)bus_mhz};
+    emit_record_extended(emulated, "PSP-CPU-TIMING-001", "cpu-timing-clock",
+                         clock_rc >= 0 && cpu_mhz == 333 && bus_mhz == 166 ? "PASS" : "FAIL",
+                         (uint32_t)clock_rc, clock_out, 4);
+    if (clock_rc < 0 || cpu_mhz != 333 || bus_mhz != 166) goto restore_clock;
+
+    __asm__ volatile("ctc1 $0,$31" ::: "memory");
+    for (uint32_t i = 0; i < CPU_TIMING_MISS_BYTES / sizeof(uint32_t); i++)
+        s_cpu_timing_memory[i] = 0x5a5aa5a5u ^ i;
+    sceKernelDcacheWritebackAll();
+
+    for (size_t i = 0; i < sizeof(normal_blocks) / sizeof(normal_blocks[0]); i++) {
+        const uint32_t blocks = normal_blocks[i];
+        cpu_timing_emit_instruction(emulated, "alu-addu", cpu_timing_alu,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "alu-shift", cpu_timing_shift,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "alu-logic", cpu_timing_logic,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "multu-mflo-pair", cpu_timing_mul_pair,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS * 2u,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "divu-mflo-pair", cpu_timing_div_pair,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS * 2u,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "load-cache-hit", cpu_timing_load_hit,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "store-cache-hit", cpu_timing_store_hit,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "branch-taken-delay", cpu_timing_branch_taken,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS * 2u,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "branch-not-taken-delay", cpu_timing_branch_not_taken,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS * 2u,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "branch-useful-delay", cpu_timing_branch_delay,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS * 2u,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "fpu-add-s", cpu_timing_fpu_add,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "fpu-mul-s", cpu_timing_fpu_mul,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "fpu-div-s", cpu_timing_fpu_div,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "vfpu-add-s", cpu_timing_vfpu_add,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS,
+                                    (uint32_t)cpu_mhz, 0);
+        cpu_timing_emit_instruction(emulated, "vfpu-mul-s", cpu_timing_vfpu_mul,
+                                    cpu_timing_loop_empty, blocks, CPU_TIMING_OPS,
+                                    (uint32_t)cpu_mhz, 0);
+    }
+    for (size_t i = 0; i < sizeof(miss_blocks) / sizeof(miss_blocks[0]); i++) {
+        const uint32_t blocks = miss_blocks[i];
+        cpu_timing_emit_instruction(emulated, "load-cache-miss", cpu_timing_load_miss,
+                                    cpu_timing_loop_walk, blocks, CPU_TIMING_OPS,
+                                    (uint32_t)cpu_mhz, 1);
+        cpu_timing_emit_instruction(emulated, "store-cache-miss", cpu_timing_store_miss,
+                                    cpu_timing_loop_walk, blocks, CPU_TIMING_OPS,
+                                    (uint32_t)cpu_mhz, 1);
+    }
+
+    const int frame_rc = sceDisplayGetFrameBuf(&s_cpu_timing_framebuffer,
+                                               &s_cpu_timing_stride,
+                                               &s_cpu_timing_format,
+                                               PSP_DISPLAY_SETBUF_IMMEDIATE);
+    uint32_t frame_out[4] = {(uint32_t)frame_rc,
+                             (uint32_t)(uintptr_t)s_cpu_timing_framebuffer,
+                             (uint32_t)s_cpu_timing_stride,
+                             (uint32_t)s_cpu_timing_format};
+    emit_record_extended(emulated, "PSP-CPU-TIMING-001", "cpu-timing-framebuffer",
+                         frame_rc >= 0 && s_cpu_timing_framebuffer != NULL ? "PASS" : "SKIP",
+                         (uint32_t)frame_rc, frame_out, 4);
+    if (frame_rc >= 0 && s_cpu_timing_framebuffer != NULL)
+        cpu_timing_emit_syscall(emulated, "syscall-display-setframebuf",
+                                cpu_timing_call_setframebuf, CPU_TIMING_SYSCALL_CALLS,
+                                1u, (uint32_t)cpu_mhz);
+    cpu_timing_emit_syscall(emulated, "syscall-display-accumulated-hcount",
+                            cpu_timing_call_hcount, CPU_TIMING_SYSCALL_CALLS,
+                            1u, (uint32_t)cpu_mhz);
+    probe_step(emulated, "cpu-timing", "ge-idle-precondition");
+    const int ge_idle = cpu_timing_ge_wait_idle();
+    uint32_t ge_idle_out[2] = {(uint32_t)ge_idle, (uint32_t)cpu_mhz};
+    emit_record_extended(emulated, "PSP-CPU-TIMING-001", "cpu-timing-ge-idle",
+                         ge_idle ? "PASS" : "SKIP", (uint32_t)ge_idle,
+                         ge_idle_out, 2);
+    if (ge_idle) {
+        cpu_timing_measure_drawsync(emulated, (uint32_t)cpu_mhz);
+        (void)cpu_timing_measure_ge_calls(emulated, (uint32_t)cpu_mhz);
+    } else {
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-drawsync-done", (uint32_t)cpu_mhz);
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-enqueue", (uint32_t)cpu_mhz);
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-update-stall", (uint32_t)cpu_mhz);
+    }
+    cpu_timing_emit_vblank(emulated);
+
+    s_cpu_timing_sema = sceKernelCreateSema("cpu-time", 0, 0, 1, NULL);
+    const int lw_create = sceKernelCreateLwMutex(&s_cpu_timing_lwmutex,
+                                                "cpu-time", 0, 0, NULL);
+    uint32_t sync_out[2] = {(uint32_t)s_cpu_timing_sema, (uint32_t)lw_create};
+    emit_record_extended(emulated, "PSP-CPU-TIMING-001", "cpu-timing-sync-setup",
+                         s_cpu_timing_sema >= 0 && lw_create >= 0 ? "PASS" : "FAIL",
+                         (uint32_t)lw_create, sync_out, 2);
+    if (s_cpu_timing_sema >= 0 && lw_create >= 0) {
+        cpu_timing_emit_syscall(emulated, "syscall-sema-signal-wait",
+                                cpu_timing_call_sema_pair, CPU_TIMING_SYSCALL_CALLS,
+                                2u, (uint32_t)cpu_mhz);
+        cpu_timing_emit_syscall(emulated, "syscall-lwmutex-lock-unlock",
+                                cpu_timing_call_lwmutex_pair, CPU_TIMING_SYSCALL_CALLS,
+                                2u, (uint32_t)cpu_mhz);
+    }
+    if (lw_create >= 0) (void)sceKernelDeleteLwMutex(&s_cpu_timing_lwmutex);
+
+restore_clock:
+    {
+        const int restore_rc = scePowerSetClockFrequency(boot_cpu, boot_cpu, boot_bus);
+        uint32_t done_out[3] = {(uint32_t)restore_rc,
+                                (uint32_t)scePowerGetCpuClockFrequencyInt(),
+                                (uint32_t)scePowerGetBusClockFrequencyInt()};
+        emit_record_extended(emulated, "PSP-CPU-TIMING-001", "cpu-timing-done",
+                             restore_rc >= 0 ? "PASS" : "FAIL",
+                             (uint32_t)restore_rc, done_out, 3);
+    }
+}
+#undef CPU_TIMING_REPEAT_8
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -9663,6 +10270,8 @@ int main(int argc, char *argv[]) {
     run_fake_success(emulated); /* ends in probe_teardown, which parks until modstop */
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_USERPGF
     run_font_userpgf(emulated); /* probe_teardown below parks until modstop */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
+    run_cpu_timing(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
