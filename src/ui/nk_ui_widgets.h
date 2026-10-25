@@ -148,6 +148,9 @@ bool nk_ui_dialog_begin(NkUi *ui, NkUiId id, float width);
    negative fraction is indeterminate, a sweeping segment driven by phase_s
    (pass 0 under reduced motion to hold it still). */
 void nk_ui_progress_bar(NkUi *ui, NkUiId id, float width, float fraction, double phase_s);
+/* Where the indeterminate segment starts, 0..travel px: it goes out and back
+   every 2.4 s, slowing at both ends. A phase of 0 holds it at the start. */
+float nk_ui_progress_sweep_offset(float travel, double phase_s);
 
 /* ---- Game card ------------------------------------------------------------------- */
 typedef struct {

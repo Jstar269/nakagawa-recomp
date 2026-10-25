@@ -666,6 +666,19 @@ bool nk_ui_dialog_begin(NkUi *ui, NkUiId id, float width) {
     return nk_ui_begin_container(ui, id, &layout, &style);
 }
 
+float nk_ui_progress_sweep_offset(float travel, double phase_s) {
+    /* Out and back every 2.4 s, eased at both ends, so the segment never
+       jumps from the right edge to the left. */
+    double cycle;
+    double t;
+    double tri;
+    if (!(travel > 0.0f) || !(phase_s > 0.0)) return 0.0f;
+    cycle = phase_s / 2.4;
+    t = cycle - (double)(long long)cycle;
+    tri = t < 0.5 ? t * 2.0 : (1.0 - t) * 2.0;
+    return (float)(tri * tri * (3.0 - 2.0 * tri)) * travel;
+}
+
 void nk_ui_progress_bar(NkUi *ui, NkUiId id, float width, float fraction, double phase_s) {
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiLayout track = nk_ui_row(nk_ui_fixed(width), nk_ui_fixed(6.0f), 0.0f);
@@ -679,11 +692,8 @@ void nk_ui_progress_bar(NkUi *ui, NkUiId id, float width, float fraction, double
     if (fraction >= 0.0f) {
         span = width * (fraction > 1.0f ? 1.0f : fraction);
     } else {
-        /* Indeterminate: a third of the track sweeps across every 1.6 s; a
-           phase of 0 (reduced motion) holds it at the start. */
-        double cycle = phase_s / 1.6;
         span = width * 0.32f;
-        start = (float)(cycle - (double)(long long)cycle) * (width - span);
+        start = nk_ui_progress_sweep_offset(width - span, phase_s);
     }
     if (start > 0.0f) {
         nk_ui_spacer(ui, nk_ui_child_id(id, 1u), nk_ui_fixed(start), nk_ui_fixed(6.0f));
