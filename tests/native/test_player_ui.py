@@ -1279,10 +1279,12 @@ class NativePlayerUiTests(unittest.TestCase):
                          ["settings", "prereq_about"])
         self.assertEqual(self.focus_trail(notices)[-1], focus["back"])
 
+        # Right comes straight after the card opens, before its buttons are laid
+        # out; nk_ui holds it a frame instead of losing it (a slow CI runner did).
         removal = self.next_ui_run(
             "settings",
             ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS +
-            ("KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100", "KEY_RIGHT", "KEY_RETURN"),
+            ("KEY_RIGHT", "KEY_RETURN", "WAIT_MS=1", "KEY_RIGHT", "KEY_RETURN"),
             downloaded_tool_payload=True,
         )
         self.assertEqual([view for view, _ in self.screens(removal)],

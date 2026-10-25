@@ -9354,7 +9354,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "69701e1bb5c0b9cbdb0a31363652b6e54b776ff973b507faec2a145c547f81eb"
+      "sha256": "5f83b06b559240ba6efdd0a18b8ec8911b047e2403499d1ba3f85bb6d677b27c"
     },
     {
       "path": "src/ui/nk_ui.h",
@@ -9930,7 +9930,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6da6e686c465e3a99f8605ca8d62318d6c67043ea37a828adee9c4859603b150"
+      "sha256": "067902d4ff5584b071b3b2a91d582abcef1d0f2b522d051cb42e4fa26319a75b"
     },
     {
       "path": "tests/native/test_nk_ui_focus.c",
@@ -10062,7 +10062,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c62c5eb142293e7ceb1420c04ee7e1829839631374c9f9b21d07009cb869e8cf"
+      "sha256": "cb34fa930f9735f9bb3de59738a16113e86824f2e7006fd188c255d1303e3140"
     },
     {
       "path": "tests/native/test_player_ui_art.c",
