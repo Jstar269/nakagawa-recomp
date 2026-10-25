@@ -653,11 +653,16 @@ class CompileObjectReuseTests(unittest.TestCase):
     MAKEFILE = (
         "OBJS := $(BUILD_DIR)/a.o $(BUILD_DIR)/b.o $(EXTRA)\n"
         "compile: $(BUILD_DIR)/out.txt\n"
+        "compile-inputs: $(BUILD_DIR)/gen.h\n"
+        "$(BUILD_DIR)/gen.h:\n"
+        "\t@mkdir -p $(BUILD_DIR)\n"
+        "\t@echo '#define GENERATED 2' > $@\n"
         "$(BUILD_DIR)/out.txt: $(OBJS)\n"
         "\t@echo linked > $@\n"
+        "$(BUILD_DIR)/b.o: $(BUILD_DIR)/gen.h\n"
         "$(BUILD_DIR)/%.o: %.c\n"
         "\t@mkdir -p $(BUILD_DIR)\n"
-        "\tgcc $(OPT) -MMD -MP -MF $(@:.o=.d) -MT $@ -c $< -o $@\n"
+        "\tgcc $(OPT) -I$(BUILD_DIR) -MMD -MP -MF $(@:.o=.d) -MT $@ -c $< -o $@\n"
         "-include $(OBJS:.o=.d)\n"
     )
 
@@ -672,7 +677,9 @@ class CompileObjectReuseTests(unittest.TestCase):
         (self.root / "shared.h").write_text("#define VALUE 1\n", encoding="utf-8")
         (self.root / "a.c").write_text('#include "shared.h"\nint a(void) { return VALUE; }\n',
                                        encoding="utf-8")
-        (self.root / "b.c").write_text("int b(void) { return 2; }\n", encoding="utf-8")
+        # b.c reads a header the build generates, which compile-inputs writes first.
+        (self.root / "b.c").write_text('#include "gen.h"\nint b(void) { return GENERATED; }\n',
+                                       encoding="utf-8")
         self.cache = package_cache.ObjectCache(self.root / "cache")
 
     def compile(self, build: str, opt: str = "-O0", *, extra: str = "",

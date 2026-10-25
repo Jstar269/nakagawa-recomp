@@ -326,10 +326,12 @@ written as a placeholder (so the optimization level and every flag count), and t
 preprocessed source. A cached object with that key is copied into place, and the
 compile writes the object's dependency file as Make would, so a later header change
 still rebuilds it. An object that is compiled is stored only when its key, taken
-again after the build, has not changed. A key that cannot be taken, for a source
-whose header the build generates, is a miss, never a guess. The runtime therefore
-compiles once and serves every game, and a rebuild of an unchanged game compiles
-nothing; an object that embeds its build folder (`SR_BUILD_DIR`) keys per folder.
+again after the build, has not changed. The headers the build generates
+(`make compile-inputs`) are written before any key is taken, and a key that still
+cannot be taken is a miss, never a guess. No compile carries the build folder: the
+runtime finds its own folder at run time for its exit diagnostics. The runtime
+therefore compiles once and serves every game, and a rebuild of an unchanged game
+compiles nothing.
 
 * `<user data>/cache/objects/` holds runtime and game objects.
   `NK_OBJECT_CACHE_MAX_BYTES` bounds it (default 2 GiB, least recently used first).

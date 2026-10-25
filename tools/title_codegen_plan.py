@@ -497,6 +497,16 @@ def _run_compile_phase(
     from nk_core import package_cache
 
     command = _make_build_command(make_executable, "compile", jobs=jobs)
+    if object_cache is not None:
+        # Generated headers first, so every object can be keyed before Make compiles it.
+        prepared = subprocess.run(
+            _make_build_command(make_executable, "compile-inputs", jobs=jobs),
+            cwd=cwd,
+            env=env,
+            check=False,
+        )
+        if prepared.returncode != 0:
+            return prepared.returncode
     planned = subprocess.run(
         _make_build_command(make_executable, "compile", jobs=jobs, dry_run=True),
         cwd=cwd,

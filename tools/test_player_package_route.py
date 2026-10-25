@@ -1338,17 +1338,20 @@ class TestPlayerPackageRoute(unittest.TestCase):
         timings = []
 
         def build() -> tuple[int, int, list[str]]:
-            started = time.perf_counter()
-            built = self.run_build_action(self.user_root)
-            timings.append(time.perf_counter() - started)
-            self.assertEqual(built.returncode, 0, built.stdout[-4000:] + built.stderr[-4000:])
-            log = log_path.read_text(encoding="utf-8", errors="replace")
+            log = run()
             reuse = re.search(r"^OBJECT_CACHE: reused (\d+) of (\d+) objects$", log, re.M)
             self.assertIsNotNone(reuse, log[-4000:])
             compiled = re.search(r"^OBJECT_CACHE: compiling (.+)$", log, re.M)
             return int(reuse.group(1)), int(reuse.group(2)), (
                 compiled.group(1).split() if compiled else []
             )
+
+        def run() -> str:
+            started = time.perf_counter()
+            built = self.run_build_action(self.user_root)
+            timings.append(time.perf_counter() - started)
+            self.assertEqual(built.returncode, 0, built.stdout[-4000:] + built.stderr[-4000:])
+            return log_path.read_text(encoding="utf-8", errors="replace")
 
         reused, planned, compiled = build()
         self.assertEqual(reused, 0)
@@ -1357,7 +1360,15 @@ class TestPlayerPackageRoute(unittest.TestCase):
         cache = package_cache.ObjectCache(package_cache.object_cache_root(self.user_root))
         self.assertEqual(len(cache.entries()), planned)
 
-        # The same title again: every object comes from the cache.
+        # The same title again reuses its whole package: nothing compiles.
+        log = run()
+        self.assertIn("PACKAGE_REUSED:", log)
+        self.assertNotIn("OBJECT_CACHE:", log)
+
+        # With the package and its cache entries gone, as after an update that changes the
+        # package key, every object still comes from the object cache.
+        shutil.rmtree(self.user_root / "packages" / DISC_ID)
+        shutil.rmtree(self.user_root.joinpath(*package_cache.CACHE_ROOT_PARTS))
         reused, planned_again, compiled = build()
         self.assertEqual((reused, compiled), (planned_again, []))
 
@@ -1369,9 +1380,8 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertTrue(all("_recomp" in name for name in compiled), compiled)
         self.assertEqual(reused + len(compiled), planned_other)
         sys.stderr.write(
-            "OBJECT_CACHE_TIMINGS cold={:.1f}s rebuild={:.1f}s second_title={:.1f}s\n".format(
-                *timings
-            )
+            "OBJECT_CACHE_TIMINGS cold={:.1f}s package_reused={:.1f}s "
+            "objects_reused={:.1f}s second_title={:.1f}s\n".format(*timings)
         )
 
     def test_missing_prerequisites_fail_closed_with_documented_codes(self):

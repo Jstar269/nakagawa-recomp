@@ -434,16 +434,9 @@ endif
 ifneq ($(subst $(SPACE),,$(BUILD_DIR)),$(BUILD_DIR))
 $(error BUILD_DIR '$(BUILD_DIR)' contains a space, which GNU Make cannot represent in a target or prerequisite name. Use a relative BUILD_DIR under the repository root (the default `build/<game>`), or set NK_BUILD_ROOT to a folder without spaces so tools/title_codegen_plan.py can pick a Make-safe build root (issue #296).)
 endif
-# The runtime's diagnostic exit artifacts (crash dump, exit flag) belong to the build
-# that produced them, not to a fixed title. Without this the runtime wrote them to a
-# literal build/hst/, so every non-HST build either scribbled into another title's
-# output directory or silently dropped the dump when that directory did not exist.
-# Deferred on purpose: a recursive $(MAKE) BUILD_DIR=... override retargets it too.
-# `override` on purpose as well: a plain += is discarded when a caller passes CFLAGS on the
-# command line, and hle.c would then fall back to a literal build/hst/ and silently restore
-# the cross-title overwrite this define exists to prevent. Failing quietly there is worse
-# than ignoring a custom flag, so this one define is not caller-overridable.
-override CFLAGS += -DSR_BUILD_DIR=\"$(subst \,/,$(BUILD_DIR))\"
+# No compile carries the build directory: the runtime writes its diagnostic exit artifacts
+# (crash dump, exit flag) beside its own executable, found at run time, so one compiled
+# object serves every build folder and the shared object cache can reuse it (#1306).
 FUNCS_PER_CHUNK ?= 2000
 # Optional deterministic size-aware chunking: greedy contiguous fill toward a
 # per-chunk emitted-byte budget (function order preserved, FUNCS_PER_CHUNK still
@@ -586,10 +579,10 @@ PGD_BACKEND_SRC := src/rt/pgd_unavailable.c
 ISO_BACKEND_SRC := src/rt/iso_public.c
 AUDIO_BACKEND_SRC := src/rt/audio_unavailable.c
 ASSET_COPY_ARGS := -ExcludeOptionalFonts
-# override for the same reason as SR_BUILD_DIR above, and because it is now required:
-# once any append to CFLAGS uses override, GNU make ignores later ordinary assignments to
-# it. Losing this define is the worse failure of the two -- the build would stop
-# declaring itself public-safe, and the production-smoke evidence check fails on exactly that.
+# `override` on purpose: a plain += is discarded when a caller passes CFLAGS on the command
+# line, and once any append to CFLAGS uses override, GNU make ignores later ordinary
+# assignments to it. Losing this define would make the build stop declaring itself
+# public-safe, and the production-smoke evidence check fails on exactly that.
 override CFLAGS += -DSR_PUBLIC_SAFE
 
 include mk/build_common.mk
@@ -928,7 +921,7 @@ override PORTABLE_CORE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 # __DATE__/__TIME__ stamp was the one project-owned difference between two
 # builds of the same package from identical inputs; it is gone. The identity is
 # transported the way this Makefile already passes build identity into the
-# compile: a -D define (compare -DSR_BUILD_DIR above).
+# compile: a -D define.
 #   * SOURCE_DATE_EPOCH, when the build sets it, is honoured as-is (the
 #     reproducible-builds.org convention) and recorded as build.source_date_epoch.
 #   * The source commit is recorded as build.build_id, resolved exactly like
@@ -937,8 +930,8 @@ override PORTABLE_CORE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 #     git and without SOURCE_DATE_EPOCH records no identity and tools/flight_diff.py
 #     refuses such a bundle fail closed; it never falls back to a clock.
 # The runtime profile hash is deliberately NOT the identity here: it hashes
-# CFLAGS, which carries -DSR_BUILD_DIR and the SDK paths, so it varies with the
-# output root and would reintroduce per-root variation into every binary. The
+# CFLAGS, which carries the SDK paths, so it varies with the host's toolchain
+# layout and would reintroduce that variation into every binary. The
 # identity defines are kept out of the global CFLAGS (and so out of
 # RUNTIME_PROFILE_HASH): only flight_recorder.o embeds them, so a new commit
 # rebuilds that one object instead of every runtime object (see
@@ -1097,7 +1090,7 @@ PUBLIC_TARGETS := \
 	gpu-selftest-status
 
 PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-korean-font
-INTERNAL_TARGETS := FORCE project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -2142,6 +2135,10 @@ project-fonts: $(PROJECT_FONT_SLOT_TARGETS)
 # Project PGFs are generated before compile but are not link inputs, so keep the
 # dependency order-only and preserve the link set below.
 compile: | project-fonts
+
+# The generated headers a compile reads, built on their own first so
+# tools/title_codegen_plan.py can key every object before Make compiles it (#1306).
+compile-inputs: $(TITLE_CONFIG_HEADER)
 compile: shader-verify $(CHUNK_OBJS) $(LIBRARY_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
 	$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT) \

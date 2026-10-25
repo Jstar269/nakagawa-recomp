@@ -427,7 +427,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b5e923d752f4f9b94f78a4b964f321d8661ceb441dd882ac3643a08e6632402e"
+      "sha256": "fe460b73d7d012040adf0ab769d387a08fbb180d5e22aa53b0c3319df2a4d697"
     },
     {
       "path": "NOTICE.md",
@@ -1675,7 +1675,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "edef049f5cf150744385c14359ac047f065a75532b07dc1db6df78ddbcd71732"
+      "sha256": "a9cc2a859001c3700e389b9098885b4c689c56da02122fba980c0e234832cf75"
     },
     {
       "path": "docs/SETUP.md",
@@ -5039,7 +5039,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fafcaf9346b9c9c033207cb7e9f19e8dfda944aff6e09972e29107c0fa8f5981"
+      "sha256": "8a5741b231542ce7de6d38ca9f8e171a458bdafef7ad93a878ee87cf256ddb23"
     },
     {
       "path": "src/rt/flight_recorder.h",
@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "db7e0e24d81555c3d1771b8df58ff79bba48cd0199b8ec3cbb9e438552da0261"
+      "sha256": "5279e57edbd4c730887dcc12dd3bd366bb406e1e52dae8c187de1e5a846f9d53"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -13298,7 +13298,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3c838518869bcdad93dd48f28936c501c197a8a525939b48347f092376ee4ae2"
+      "sha256": "f90e8dcf9006346014ab3faf40284247033f06692d20acb4afb2417bb144b71d"
     },
     {
       "path": "tools/test_flight_diff.py",
@@ -14091,7 +14091,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "edc360bf0add1751e7448c30633a857394e5e81229fb35faf7f74031a2abd709"
+      "sha256": "2a39801fc0136db913464eb9d38e809c2c98257f077fccf5867f7828b6c36e83"
     },
     {
       "path": "tools/test_player_package_route.py",
@@ -14103,7 +14103,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9c2c0c0d6422eea4152cecf468dbba12bded353ace1c606124b0545ae46295a6"
+      "sha256": "c5f76fabcdcdad7175f8042d57cdfc693a0c572a71bf989f35a1a3a93b52377f"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -14824,7 +14824,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e82339899ddcf3357015452e1703d1f3af77580d92416b8a432197d94532b244"
+      "sha256": "fd36ec24d485707bf94ad4668ee0e90716c2fcbd80fbb013dbd554ab79990d08"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
@@ -15256,7 +15256,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d4381e1d96af2214074a1058d0a3f45964c0908517b4f38ca43e5868bd15ca5b"
+      "sha256": "3bddb9f110eb4cd23dc1bf65dfd2114526e7fc5edf09c4add28f7501222aa94b"
     },
     {
       "path": "tools/title_manager_plan.ps1",
