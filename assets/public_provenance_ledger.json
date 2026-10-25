@@ -2276,7 +2276,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce0122017653b008af699e8b2853ce8061859fd58bfc60367f2ccee9e5271a54"
+      "sha256": "430384e415c960eaed5c028e2e4c9ed391fc8aced6ff7af86b1ae9eaf08d8ef1"
     },
     {
       "path": "fixtures/production_smoke/README.md",
