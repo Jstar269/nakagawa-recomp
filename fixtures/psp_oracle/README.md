@@ -532,6 +532,14 @@ it is not charged as CPU service time. Blocking GE sync runs in a helper thread
 with a 100 ms caller timeout and termination path. GE list completion is polled
 for at most 250 ms and reset on timeout.
 
+The 64 semantic rows end with `cpu-timing-done` (clock restoration), followed
+by `cpu-timing-complete` with `out0=64`. The runner checks their exact order and
+field counts. Framebuffer, GE-idle, or sync setup refusals emit `SKIP` rows in
+the same shape; any non-`PASS` measurement makes the capture ineligible. The
+GE enqueue and stall-update rows also report `out4` as the first negative PSP
+return code, `out5` as successful enqueues in the last trial, and `out6` as
+stall-update attempts in the last trial.
+
 ## Pending PSP-3000 campaign
 
 The cases below are synthetic probes. A case's hardware status is `NOT_RUN` until a run is cited; a complete parser only proves that the record stream is

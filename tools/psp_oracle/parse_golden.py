@@ -1421,8 +1421,14 @@ def _register_campaign_probe(
     test_id: str,
     semantic_cases: tuple[str, ...],
     out_counts: dict[str, int],
+    *,
+    terminal_case: str | None = None,
 ) -> None:
-    spec = StreamSpec(test_id, semantic_cases, f"{campaign_case}-done")
+    spec = StreamSpec(
+        test_id,
+        semantic_cases,
+        terminal_case or f"{campaign_case}-done",
+    )
     counts = dict(out_counts)
     counts[spec.terminal_case] = 1
     CAMPAIGN_PROBE_CASES[campaign_case] = (spec, counts)
@@ -1781,6 +1787,48 @@ _register_campaign_probe(
     "fpu-cc", "PSP-FPU-CC-001", _FPU_CC_CELLS,
     {cell: (2 if cell == "fpu-cc-fcr31-bits" else 1 if cell.endswith("-ceq") else 4)
      for cell in _FPU_CC_CELLS},
+)
+
+# cpu-timing (probe.c, run_cpu_timing): the 64 measured/restore records are
+# followed by a stream-completion record whose out0 is the semantic record count.
+_CPU_TIMING_NORMAL_BLOCKS = (2048, 8192, 32768)
+_CPU_TIMING_NORMAL_OPS = (
+    "alu-addu", "alu-shift", "alu-logic", "multu-mflo-pair", "divu-mflo-pair",
+    "load-cache-hit", "store-cache-hit", "branch-taken-delay",
+    "branch-not-taken-delay", "branch-useful-delay", "fpu-add-s", "fpu-mul-s",
+    "fpu-div-s", "vfpu-add-s", "vfpu-mul-s",
+)
+_CPU_TIMING_SEMANTIC_CASES = (
+    "cpu-timing-clock",
+    *(f"{op}-{blocks}" for blocks in _CPU_TIMING_NORMAL_BLOCKS for op in _CPU_TIMING_NORMAL_OPS),
+    *(f"{op}-{blocks}" for blocks in (32, 128, 256)
+      for op in ("load-cache-miss", "store-cache-miss")),
+    "cpu-timing-framebuffer",
+    "syscall-display-setframebuf",
+    "syscall-display-accumulated-hcount",
+    "cpu-timing-ge-idle",
+    "syscall-ge-drawsync-done",
+    "syscall-ge-list-enqueue",
+    "syscall-ge-list-update-stall",
+    "syscall-vblank-start-latency",
+    "cpu-timing-sync-setup",
+    "syscall-sema-signal-wait",
+    "syscall-lwmutex-lock-unlock",
+    "cpu-timing-done",
+)
+_CPU_TIMING_OUT_COUNTS = {case_id: 4 for case_id in _CPU_TIMING_SEMANTIC_CASES}
+_CPU_TIMING_OUT_COUNTS.update({
+    "cpu-timing-ge-idle": 2,
+    "syscall-ge-list-enqueue": 7,
+    "syscall-ge-list-update-stall": 7,
+    "cpu-timing-sync-setup": 2,
+    "cpu-timing-done": 3,
+})
+_register_campaign_probe(
+    "cpu-timing", "PSP-CPU-TIMING-001",
+    _CPU_TIMING_SEMANTIC_CASES,
+    _CPU_TIMING_OUT_COUNTS,
+    terminal_case="cpu-timing-complete",
 )
 
 
