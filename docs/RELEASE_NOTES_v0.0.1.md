@@ -122,6 +122,7 @@ When reporting a problem:
 
 1. Note the specific step in [`docs/SMOKE_TEST.md`](SMOKE_TEST.md) that failed and the exact error code or message displayed on the card (e.g. `ISO_CORRUPT`).
 2. Attach build logs from `%LOCALAPPDATA%\Nakagawa\data\logs` (`build_<DISC_ID>_progress.jsonl` and `build_<DISC_ID>.log`) and console output from the terminal.
+   For a problem during play, attach `game-<DISC_ID>-last.txt` from the player's logs folder (`%LOCALAPPDATA%\Nakagawa\logs`): the last game session's output, kept after the game exits. The run before it is `game-<DISC_ID>-prev.txt`. **Copy details** on the error card names the file.
 3. Check all logs before attaching to ensure they contain nothing private: no disc images, no game files, no decryption keys, and no personal paths you do not want to share.
 
 ## Thanks
