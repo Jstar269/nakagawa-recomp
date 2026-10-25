@@ -32,6 +32,16 @@ static uint64_t s_package_build_session_generation;
 
 static inline void safe_str_copy(char *dest, size_t dest_size, const char *src);
 
+static bool package_builder_developer_log_path(char *out_path, size_t out_size) {
+    char log_dir[NK_MAX_PATH];
+    if (!out_path || out_size == 0 ||
+        !nk_platform_get_path(NK_PATH_LOGS, log_dir, sizeof(log_dir)) ||
+        !nk_platform_mkdir_p(log_dir)) return false;
+    int written = snprintf(out_path, out_size, "%s%cdeveloper-log.txt", log_dir,
+                           nk_platform_path_separator());
+    return written > 0 && (size_t)written < out_size;
+}
+
 static bool copy_json_string(const NkJsonNode *object, const char *key,
                              char *out, size_t out_size) {
     NkJsonNode *node = nk_json_obj_get(object, key);
@@ -756,25 +766,26 @@ static bool bootstrap_report_progress(void *context, uint64_t received,
 }
 
 static bool bootstrap_expand_python(PackageBootstrapSession *session) {
-    char system_directory[MAX_PATH];
-    char powershell[NK_MAX_PATH];
-    DWORD len = GetSystemDirectoryA(system_directory, sizeof(system_directory));
-    if (!len || len >= sizeof(system_directory)) return false;
-    int n = snprintf(powershell, sizeof(powershell),
-                     "%s\\WindowsPowerShell\\v1.0\\powershell.exe", system_directory);
-    if (n < 0 || (size_t)n >= sizeof(powershell)) return false;
+    WCHAR system_directory_w[MAX_PATH];
+    char system_directory[NK_MAX_PATH];
+    char tar_exe[NK_MAX_PATH];
+    char log_path[NK_MAX_PATH];
+    DWORD len = GetSystemDirectoryW(system_directory_w,
+                                    sizeof(system_directory_w) / sizeof(system_directory_w[0]));
+    if (!len || len >= sizeof(system_directory_w) / sizeof(system_directory_w[0]) ||
+        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, system_directory_w, -1,
+                            system_directory, sizeof(system_directory), NULL, NULL) <= 0) {
+        return false;
+    }
+    int n = snprintf(tar_exe, sizeof(tar_exe), "%s\\tar.exe", system_directory);
+    if (n < 0 || (size_t)n >= sizeof(tar_exe) ||
+        !package_builder_developer_log_path(log_path, sizeof(log_path))) return false;
     const char *argv[] = {
-        powershell, "-NoProfile", "-NonInteractive", "-Command",
-        "try { Expand-Archive -LiteralPath $env:NK_PREREQ_ARCHIVE -DestinationPath $env:NK_PREREQ_STAGE -Force -ErrorAction Stop; exit 0 } catch { exit 1 }",
+        tar_exe, "-xf", session->archive_path, "-C", session->staging_path,
         NULL
     };
-    char archive_env[NK_MAX_PATH + 32];
-    char stage_env[NK_MAX_PATH + 32];
-    snprintf(archive_env, sizeof(archive_env), "NK_PREREQ_ARCHIVE=%s", session->archive_path);
-    snprintf(stage_env, sizeof(stage_env), "NK_PREREQ_STAGE=%s", session->staging_path);
-    const char *envp[] = { archive_env, stage_env, NULL };
     NkProcessHandle process;
-    if (!nk_platform_spawn_process(powershell, argv, envp, NULL, &process)) return false;
+    if (!nk_platform_spawn_process(tar_exe, argv, NULL, NULL, log_path, &process)) return false;
     while (process.is_active && nk_platform_is_process_running(&process)) {
         if (bootstrap_cancel_requested(session)) {
             nk_platform_terminate_process(&process);
@@ -1087,12 +1098,15 @@ NkResult package_builder_start_prerequisite_fetch(
     n = snprintf(session->cancel_file_path, sizeof(session->cancel_file_path),
                  "%s%cinstall-cancel.signal", prereq_root, nk_platform_path_separator());
     if (n < 0 || (size_t)n >= sizeof(session->cancel_file_path)) return NK_ERROR_GENERIC;
-    nk_remove_utf8(session->progress_file_path);
-    nk_remove_utf8(session->cancel_file_path);
-    session->progress_file_offset = 0;
-    session->log_file_path[0] = '\0';
     const char *ldir = (log_dir && log_dir[0]) ? log_dir : prereq_root;
     if (!nk_platform_mkdir_p(ldir)) return NK_ERROR_IO;
+    n = snprintf(session->log_file_path, sizeof(session->log_file_path),
+                 "%s%cprerequisite-fetch.log", ldir, nk_platform_path_separator());
+    if (n < 0 || (size_t)n >= sizeof(session->log_file_path)) return NK_ERROR_GENERIC;
+    nk_remove_utf8(session->progress_file_path);
+    nk_remove_utf8(session->cancel_file_path);
+    nk_remove_utf8(session->log_file_path);
+    session->progress_file_offset = 0;
 
     uint64_t progress_base = 0;
     char base_env[80];
@@ -1123,7 +1137,8 @@ NkResult package_builder_start_prerequisite_fetch(
         "'--total-bytes',os.environ['NK_PREREQ_TOTAL_BYTES']]; "
         "runpy.run_module('tools.nk_core.prereq_fetcher',run_name='__main__')";
     const char *argv[] = { python_path, "-c", code, NULL };
-    if (!nk_platform_spawn_process(python_path, argv, envp, source_root, &session->process)) {
+    if (!nk_platform_spawn_process(python_path, argv, envp, source_root,
+                                   session->log_file_path, &session->process)) {
         safe_str_copy(session->failure_code, sizeof(session->failure_code), "SPAWN_FAILED");
         safe_str_copy(session->failure_boundary, sizeof(session->failure_boundary),
                       "Could not start the verified Python prerequisite fetcher.");
@@ -1439,9 +1454,12 @@ static bool python_candidate_runs_required_version(const char *executable_path,
         "not ((3, 14) <= sys.version_info[:2] <= (3, 15)))";
     const char *probe = only_315 ? probe_315 : probe_314_or_315;
     NkProcessHandle process;
+    char log_path[NK_MAX_PATH];
     const char *argv[] = { executable_path, "-c", probe, NULL };
     if (!executable_path || !executable_path[0] ||
-        !nk_platform_spawn_process(executable_path, argv, NULL, NULL, &process)) {
+        !package_builder_developer_log_path(log_path, sizeof(log_path)) ||
+        !nk_platform_spawn_process(executable_path, argv, NULL, NULL,
+                                   log_path, &process)) {
         return false;
     }
 
@@ -1851,6 +1869,7 @@ NkResult package_builder_start(
         argv,
         envp[0] ? envp : NULL,
         NULL,
+        session->log_file_path,
         &session->process
     );
 

@@ -825,6 +825,27 @@ static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
     }
 }
 
+/* Copy details: the error card's report goes to the clipboard and nowhere else. */
+static void player_ui_copy_error_details(PlayerApp *app) {
+    char report[PLAYER_ERROR_DETAILS_MAX + 4096];
+    (void)player_app_format_error_report(app, "v" NK_PLAYER_VERSION, report, sizeof(report));
+    bool copied = report[0] && SDL_SetClipboardText(report);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* The test reads the report from stdout, one line: newlines become " | ". */
+    printf("[PLAYER_UI_TEST] copied_details clipboard=%d report=", copied ? 1 : 0);
+    for (const char *c = report; *c; c++) {
+        if (*c == '\n') fputs(c[1] ? " | " : "", stdout);
+        else putchar(*c);
+    }
+    putchar('\n');
+#endif
+    app->last_error.details_copied = copied;
+    if (!copied) {
+        player_dev_log_add(app, "error", "Copy details: the clipboard did not take the report (%s)",
+                           SDL_GetError());
+    }
+}
+
 static void player_ui_nk_apply_action(PlayerApp *app,
                                      const PlayerUiAction *action) {
     int index;
@@ -876,6 +897,16 @@ static void player_ui_nk_apply_action(PlayerApp *app,
                 app->request_file_picker = true;
             }
         }
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_ERROR_RETRY) {
+        /* Restart game or Try again: the same launch and build the Library
+           runs. A game that has left the library returns there. */
+        if (!player_app_retry_from_error(app)) player_app_set_view(app, VIEW_LIBRARY);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_ERROR_COPY) {
+        player_ui_copy_error_details(app);
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_OPEN_NOTICES) {
@@ -1497,6 +1528,18 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
             for (char *q = next_detail; *q; q++) if (*q == ' ') *q = '_';
         }
     }
+    /* The error card's words as single tokens (spaces become underscores). */
+    char error_title[sizeof(app->last_error.title)];
+    char error_badge[64];
+    char error_retry[32];
+    const char *retry_label = player_error_retry_label(&app->last_error);
+    snprintf(error_title, sizeof(error_title), "%s",
+             app->last_error.title[0] ? app->last_error.title : "none");
+    snprintf(error_badge, sizeof(error_badge), "%s", player_error_badge(&app->last_error));
+    snprintf(error_retry, sizeof(error_retry), "%s", retry_label ? retry_label : "none");
+    for (char *q = error_title; *q; q++) if (*q == ' ') *q = '_';
+    for (char *q = error_badge; *q; q++) if (*q == ' ') *q = '_';
+    for (char *q = error_retry; *q; q++) if (*q == ' ') *q = '_';
     char incompatible_reason[256];
     snprintf(incompatible_reason, sizeof(incompatible_reason), "%s",
              ui_test_last_incompatible_reason()[0] ? ui_test_last_incompatible_reason() : "none");
@@ -1532,7 +1575,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "badge=%d,%d,%d,%d running=%d pixels=%016llx "
            "render_ns=%llu package_validations=%llu online_mode=%d developer_mode=%d "
            "dev_log_lines=%zu next_primary=%d next_primary_label=%s next_detail=%s "
-           "incompatible_reason=%s next_at_root=%d\n",
+           "incompatible_reason=%s next_at_root=%d "
+           "error_title=%s error_badge=%s error_retry=%s error_copied=%d\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -1590,7 +1634,9 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->settings.online_mode ? 1 : 0, app->settings.developer_mode ? 1 : 0,
            player_dev_log_count(app), next_primary, next_primary_label, next_detail,
            incompatible_reason,
-           s_ui_test_next_ui != NULL ? (player_ui_nk_at_library_root(s_ui_test_next_ui) ? 1 : 0) : -1);
+           s_ui_test_next_ui != NULL ? (player_ui_nk_at_library_root(s_ui_test_next_ui) ? 1 : 0) : -1,
+           error_title, error_badge, error_retry,
+           app->last_error.details_copied ? 1 : 0);
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {
@@ -3496,6 +3542,30 @@ int main(int argc, char *argv[]) {
             player_app_set_error(&app, ui_test_error_code,
                                  "Synthetic Long Error", long_error_message,
                                  "Return to Library", VIEW_LIBRARY);
+        } else if (strcmp(ui_test_error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0 ||
+                   strcmp(ui_test_error_code, "RUNTIME_PREMATURE_EXIT") == 0 ||
+                   strcmp(ui_test_error_code, "RUNTIME_ERROR_EXIT") == 0) {
+            /* The cards a finished game session shows (#1282), from a synthetic
+               stop of the first library game. */
+            const char *disc = app.game_count > 0 ? app.games[0].disc_id : "";
+            player_dev_log_add(&app, "runtime",
+                               "BOOT_EVENT phase=stop reason=semantic-boundary "
+                               "boundary=unsupported-import-scenetadhocinit issue=308");
+            player_app_set_game_stop_error(&app, ui_test_error_code,
+                                           "unsupported-import-scenetadhocinit", 308u,
+                                           strcmp(ui_test_error_code, "RUNTIME_ERROR_EXIT") == 0
+                                               ? 3 : 9,
+                                           strcmp(ui_test_error_code,
+                                                  "RUNTIME_PREMATURE_EXIT") == 0 ? 120u : 9000u,
+                                           disc, NULL);
+        } else if (strcmp(ui_test_error_code, "PACKAGE_BUILD_REFUSED") == 0) {
+            /* A preflight refusal (#1286): the build never started. */
+            const char *disc = app.game_count > 0 ? app.games[0].disc_id : "TEST80001";
+            package_builder_init_session(&app.build_session, disc, "Synthetic Package Fixture");
+            player_app_set_build_error(&app, "preflight",
+                                       "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa "
+                                       "does not decrypt games.",
+                                       NULL);
         } else {
             player_app_set_error(&app, ui_test_error_code, ui_test_error_code,
                                  "Synthetic UI regression error state.",

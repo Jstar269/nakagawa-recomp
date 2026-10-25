@@ -651,10 +651,23 @@ PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model)
                              NK_UI_BUTTON_PRIMARY)) {
                 result = action(PLAYER_UI_ACTION_ERROR_RECOVER, 0u, PLAYER_UI_PRIMARY_NONE);
             }
+            if (model->retry_label != NULL && model->retry_label[0] != '\0' &&
+                nk_ui_button(ui, PLAYER_UI_ID_ERROR_RETRY, model->retry_label, 0u)) {
+                result = action(PLAYER_UI_ACTION_ERROR_RETRY, 0u, PLAYER_UI_PRIMARY_NONE);
+            }
+            if (model->copy_available &&
+                nk_ui_button(ui, PLAYER_UI_ID_ERROR_COPY,
+                             model->copied ? "Details copied" : "Copy details", 0u)) {
+                result = action(PLAYER_UI_ACTION_ERROR_COPY, 0u, PLAYER_UI_PRIMARY_NONE);
+            }
             nk_ui_end_container(ui);
         }
     }
-    flow_end(ui, "", prompts, 2u);
+    flow_end(ui, model->copy_available
+                     ? "Copy details puts a short report on the clipboard. Nothing is sent "
+                       "anywhere."
+                     : "",
+             prompts, 2u);
     return result;
 }
 
@@ -1052,10 +1065,14 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         break;
     }
     case 3: {
-        const char *badge = model->experimental ? "Experimental"
-            : (model->supported ? "Title profiled" : "Profile missing");
-        uint32_t tone = model->experimental ? theme->warning
-            : (model->supported ? theme->ready : theme->error);
+        bool blocked = model->experimental && model->blocked_reason != NULL &&
+                       model->blocked_reason[0] != '\0';
+        const char *badge = blocked ? "Not playable yet"
+            : (model->experimental ? "Not tested yet"
+               : (model->supported ? "Title profiled" : "Profile missing"));
+        uint32_t tone = blocked ? theme->error
+            : (model->experimental ? theme->warning
+               : (model->supported ? theme->ready : theme->error));
         const char *note;
         uint32_t note_tone = theme->muted;
         if (model->extracting) {
@@ -1069,8 +1086,17 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         }
         if (model->extracting) {
             note = "The disc's files are being copied into a local staging folder.";
+        } else if (model->extraction_failed && model->extraction_error != NULL &&
+                   model->extraction_error[0] != '\0') {
+            /* Why the copy failed and what to do next, in place of the catalog note. */
+            note = model->extraction_error;
+            note_tone = theme->error;
+        } else if (blocked) {
+            note = "This game can't be played in this version of Nakagawa yet.";
+            note_tone = theme->error;
         } else if (model->experimental) {
-            note = "Experimental: this game has not been verified. Compatibility is unknown.";
+            note = "Nakagawa hasn't been tested with this game, so it may not start or may "
+                   "stop early. You can add it and try.";
             note_tone = theme->warning;
         } else if (model->supported) {
             note = "This disc is listed in the native title catalog.";
@@ -1091,6 +1117,9 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             wizard_text(ui, 1u, safe_text(model->title_name, "PlayStation Portable title"),
                         NK_UI_TYPE_TITLE, theme->paper);
             wizard_text(ui, 2u, note, NK_UI_TYPE_BODY_S, note_tone);
+            if (blocked && !model->extracting) {
+                wizard_text(ui, 6u, model->blocked_reason, NK_UI_TYPE_BODY_S, theme->paper);
+            }
             if (model->extracting) {
                 (void)snprintf(line, sizeof(line), "Copied %d of %d files" FLOW_MIDDOT "%d%%",
                                model->files_extracted, model->total_files,
@@ -1141,6 +1170,14 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                  PLAYER_UI_WIZARD_CANCEL}
             };
             wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 1u, &result);
+        } else if (blocked) {
+            /* Adding it would only fail later, at build time (#1280). */
+            static const WizardButton buttons[] = {
+                {PLAYER_UI_ID_WIZARD_PRIMARY, "Choose a different one", NK_UI_BUTTON_PRIMARY,
+                 PLAYER_UI_WIZARD_CHOOSE_DIFFERENT},
+                {PLAYER_UI_ID_WIZARD_CANCEL, "Cancel", 0u, PLAYER_UI_WIZARD_CANCEL}
+            };
+            wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 2u, &result);
         } else if (model->experimental) {
             static const WizardButton buttons[] = {
                 {PLAYER_UI_ID_WIZARD_PRIMARY, "Add to library", NK_UI_BUTTON_PRIMARY,

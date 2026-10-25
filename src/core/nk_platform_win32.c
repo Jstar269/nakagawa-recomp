@@ -506,6 +506,7 @@ bool nk_platform_spawn_process(
     const char * const *argv,
     const char * const *envp,
     const char *working_directory,
+    const char *output_log_path,
     NkProcessHandle *out_process
 ) {
     if (!executable_path || !out_process) return false;
@@ -545,12 +546,87 @@ bool nk_platform_spawn_process(
     /* A NULL block would make CreateProcessW inherit the parent environment. */
     WCHAR *wenv_block = build_controlled_unicode_environment(envp);
     if (!wenv_block) return false;
-    DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
 
-    STARTUPINFOW si;
+    SECURITY_ATTRIBUTES handle_security;
+    memset(&handle_security, 0, sizeof(handle_security));
+    handle_security.nLength = sizeof(handle_security);
+    handle_security.bInheritHandle = TRUE;
+
+    HANDLE h_null = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                &handle_security, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h_null == INVALID_HANDLE_VALUE) {
+        free(wenv_block);
+        return false;
+    }
+
+    HANDLE h_output = h_null;
+    if (output_log_path && output_log_path[0]) {
+        WCHAR wlog[32768];
+        if (!utf8_to_wide(output_log_path, wlog,
+                          sizeof(wlog) / sizeof(WCHAR))) {
+            CloseHandle(h_null);
+            free(wenv_block);
+            return false;
+        }
+        h_output = CreateFileW(wlog, GENERIC_WRITE | FILE_APPEND_DATA,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               &handle_security, OPEN_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h_output == INVALID_HANDLE_VALUE) {
+            CloseHandle(h_null);
+            free(wenv_block);
+            return false;
+        }
+    }
+
+    HANDLE inherited_handles[2] = { h_null, h_output };
+    DWORD inherited_handle_count = h_output == h_null ? 1u : 2u;
+    SIZE_T attribute_list_size = 0;
+    (void)InitializeProcThreadAttributeList(NULL, 1, 0, &attribute_list_size);
+    if (attribute_list_size == 0) {
+        if (h_output != h_null) CloseHandle(h_output);
+        CloseHandle(h_null);
+        free(wenv_block);
+        return false;
+    }
+    LPPROC_THREAD_ATTRIBUTE_LIST attribute_list =
+        (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attribute_list_size);
+    if (!attribute_list ||
+        !InitializeProcThreadAttributeList(attribute_list, 1, 0,
+                                           &attribute_list_size)) {
+        free(attribute_list);
+        if (h_output != h_null) CloseHandle(h_output);
+        CloseHandle(h_null);
+        free(wenv_block);
+        return false;
+    }
+    if (!UpdateProcThreadAttribute(attribute_list, 0,
+                                   PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                   inherited_handles,
+                                   inherited_handle_count * sizeof(HANDLE),
+                                   NULL, NULL)) {
+        DeleteProcThreadAttributeList(attribute_list);
+        free(attribute_list);
+        if (h_output != h_null) CloseHandle(h_output);
+        CloseHandle(h_null);
+        free(wenv_block);
+        return false;
+    }
+
+    DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED |
+                           CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT;
+
+    STARTUPINFOEXW si;
     PROCESS_INFORMATION pi;
     memset(&si, 0, sizeof(si));
-    si.cb = sizeof(si);
+    si.StartupInfo.cb = sizeof(si);
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput = h_null;
+    si.StartupInfo.hStdOutput = h_output;
+    si.StartupInfo.hStdError = h_output;
+    si.lpAttributeList = attribute_list;
     memset(&pi, 0, sizeof(pi));
 
     BOOL success = CreateProcessW(
@@ -558,13 +634,18 @@ bool nk_platform_spawn_process(
         wcmd,
         NULL,
         NULL,
-        FALSE,
+        TRUE,
         creation_flags,
         wenv_block,
         wwd,
-        &si,
+        &si.StartupInfo,
         &pi
     );
+
+    DeleteProcThreadAttributeList(attribute_list);
+    free(attribute_list);
+    if (h_output != h_null) CloseHandle(h_output);
+    CloseHandle(h_null);
 
     if (wenv_block) {
         free(wenv_block);

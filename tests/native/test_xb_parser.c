@@ -1468,6 +1468,13 @@ static NkResult run_title_stage(const PlayerStageTitleRequest *request,
     return result;
 }
 
+static void count_stage_progress(const char *current_path, int percent,
+                                 size_t files_extracted, size_t total_files,
+                                 void *userdata) {
+    (void)current_path; (void)percent; (void)files_extracted; (void)total_files;
+    ++*(size_t *)userdata;
+}
+
 #if !defined(_WIN32) && !defined(_WIN64)
 /* fcntl record locks never conflict inside one process, so a second process
  * holds the title's lock for the busy case. */
@@ -1674,11 +1681,21 @@ static void test_title_staging_transaction(void) {
     missing.disc_id = "TEST90002";
     TitleStagePaths missing_paths;
     title_stage_paths(user_data_root, missing.disc_id, &missing_paths);
-    assert(run_title_stage(&missing, NULL, &summary, &outcome, prepared_root,
+    size_t missing_progress_calls = 0;
+    PlayerStageCallbacks counting = { NULL, count_stage_progress, &missing_progress_calls };
+    assert(run_title_stage(&missing, &counting, &summary, &outcome, prepared_root,
                            sizeof(prepared_root), message, sizeof(message)) ==
            NK_ERROR_INVALID_ISO);
     assert(strstr(message, "[STAGE_DATA_FOLDER_MISSING]") != NULL);
     assert(strstr(message, "'xbdata'") != NULL);
+    /* #1278: the refusal comes before the copy and names the manifest, not a
+       bad disc copy, and leaves no lock file in the games folder. */
+    assert(strstr(message, "title manifest") != NULL);
+    assert(strstr(message, "fresh copy") == NULL);
+    assert(missing_progress_calls == 0);
+#if defined(_WIN32) || defined(_WIN64)
+    assert(!nk_platform_file_exists(missing_paths.lock_path));
+#endif
     assert(!nk_platform_dir_exists(missing_paths.final_root));
     assert(!nk_platform_dir_exists(missing_paths.staging_root));
     assert(summary.extracted_asset_count == 0);

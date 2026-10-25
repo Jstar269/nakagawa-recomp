@@ -532,7 +532,7 @@ static void test_clean_exit_without_completion_is_a_failure(void) {
     session.is_building = true;
     session.start_time_ms = 0;
     bool spawned = nk_platform_spawn_process(s_self_executable, child_argv, NULL, NULL,
-                                             &session.process);
+                                             NULL, &session.process);
     assert(spawned);
 
     uint64_t deadline = route_now_ms() + 30000u;

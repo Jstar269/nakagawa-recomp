@@ -24,6 +24,8 @@
 #define PLAYER_UI_INFO 0x6CB6FFFFu
 #define PLAYER_UI_TITLE_CAP MAX_LIBRARY_GAMES
 #define PLAYER_UI_PREREQ_CAP PACKAGE_BUILDER_MAX_PREREQUISITES
+/* A blocking check's reason (up to its 2048-byte message) and the next step. */
+#define PLAYER_UI_BLOCKED_REASON_MAX 2304
 
 /* Build identity for the About page, injected by the Makefile and CMake:
    SOURCE_DATE_EPOCH when the build sets it, else the source commit's time. */
@@ -72,6 +74,7 @@ struct PlayerUiNk {
     PlayerUiPrereqItem prereq_items[PLAYER_UI_PREREQ_CAP];
     char version_line[64];
     char wizard_detail[160];
+    char wizard_blocked[PLAYER_UI_BLOCKED_REASON_MAX];
     char wizard_resolution[96];
     char wizard_controller[160];
     char wizard_summary[224];
@@ -278,16 +281,6 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
             player_ui_nk_flow_view(app->active_view));
 }
 
-/* The error card's badge, as the existing renderer words it. */
-static const char *player_ui_error_badge(const ErrorState *error) {
-    if (strcmp(error->error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0) return "Game stopped";
-    if (strcmp(error->error_code, "TITLE_DATA_MISSING") == 0) return "Game data needed";
-    if (strcmp(error->error_code, "RUNTIME_PACKAGE_NOT_READY") == 0) return "Game not ready";
-    if (strcmp(error->error_code, "TITLE_PROFILE_INVALID") == 0) return "Title settings needed";
-    if (strcmp(error->error_code, "PACKAGE_REVALIDATION_FAILED") == 0) return "Package check";
-    return error->error_code;
-}
-
 static void player_ui_format_size(char *out, size_t out_size, uint64_t bytes) {
     if (bytes >= 1024ULL * 1024ULL * 1024ULL) {
         snprintf(out, out_size, "%.2f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
@@ -349,43 +342,37 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
             model.total_files = app->wizard.total_files;
             model.extraction_percent = app->wizard.extraction_percent;
             model.current_file = app->wizard.extraction_current_file;
-            for (size_t i = 0u; i < app->wizard.preflight.count && i < PLAYER_UI_WIZARD_CHECKS;
-                 ++i) {
+            model.extraction_error = player_plain_reason(app->wizard.extraction_error);
+            if (game->is_experimental) {
+                const PlayerPreflightCheck *blocking =
+                    player_preflight_blocking_check(&app->wizard.preflight);
+                if (blocking != NULL) {
+                    snprintf(player->wizard_blocked, sizeof(player->wizard_blocked),
+                             "%s Then open the disc again. The compatibility list on the "
+                             "project page shows which games work.",
+                             player_preflight_plain_message(blocking));
+                    model.blocked_reason = player->wizard_blocked;
+                }
+            }
+            /* Plain names and reasons; the codes stay in the developer log (#1280).
+               The experimental row is what the card's badge and note already say. */
+            for (size_t i = 0u; i < app->wizard.preflight.count &&
+                                model.check_count < PLAYER_UI_WIZARD_CHECKS; ++i) {
                 const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
+                if (strcmp(check->code, "EXPERIMENTAL") == 0) continue;
                 PlayerUiCheckRow *row = &model.checks[model.check_count++];
-                row->code = check->code;
-                row->message = check->message;
-                row->status = "Unknown";
-                row->rgba = theme->dim;
+                row->code = player_preflight_label(check);
+                row->message = player_preflight_plain_message(check);
+                row->status = player_preflight_status_word(check);
                 switch (check->status) {
-                    case PREFLIGHT_OK:
-                        row->status = "OK";
-                        row->rgba = theme->ready;
-                        break;
+                    case PREFLIGHT_OK: row->rgba = theme->ready; break;
                     case PREFLIGHT_MISSING:
-                        row->status = "Missing";
-                        row->rgba = theme->warning;
-                        break;
-                    case PREFLIGHT_INCOMPATIBLE:
-                        row->status = "Incompatible";
-                        row->rgba = theme->error;
-                        break;
                     case PREFLIGHT_STALE:
-                        row->status = "Stale";
-                        row->rgba = theme->warning;
-                        break;
+                    case PREFLIGHT_IN_PROGRESS: row->rgba = theme->warning; break;
+                    case PREFLIGHT_INCOMPATIBLE:
                     case PREFLIGHT_UNSUPPORTED:
-                        row->status = "Unsupported";
-                        row->rgba = theme->error;
-                        break;
-                    case PREFLIGHT_IN_PROGRESS:
-                        row->status = "In progress";
-                        row->rgba = theme->warning;
-                        break;
-                    case PREFLIGHT_INVALID:
-                        row->status = "Invalid";
-                        row->rgba = theme->error;
-                        break;
+                    case PREFLIGHT_INVALID: row->rgba = theme->error; break;
+                    default: row->rgba = theme->dim; break;
                 }
             }
             break;
@@ -494,18 +481,18 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
     }
     if (app->active_view == VIEW_ERROR) {
         const ErrorState *error = &app->last_error;
-        bool launch_readiness =
-            strcmp(error->error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0 ||
-            strcmp(error->error_code, "TITLE_DATA_MISSING") == 0 ||
-            strcmp(error->error_code, "TITLE_PROFILE_INVALID") == 0 ||
-            strcmp(error->error_code, "RUNTIME_PACKAGE_NOT_READY") == 0;
+        bool launch_readiness = player_error_leads_with_message(error);
         PlayerUiErrorModel model;
         memset(&model, 0, sizeof(model));
-        model.badge = player_ui_error_badge(error);
+        model.badge = player_error_badge(error);
         model.title = error->title;
-        model.failed_stage = error->failed_stage;
-        /* As the existing card: launch-readiness errors lead with the plain
-           sentence and show the technical boundary as details. */
+        /* The failed stage is in the copied details, not on the card (#1286). */
+        model.failed_stage = NULL;
+        model.retry_label = player_error_retry_label(error);
+        model.copy_available = true;
+        model.copied = error->details_copied;
+        /* Plain errors lead with the sentence and show the technical boundary
+           as details. */
         model.message = launch_readiness ? error->message
             : (error->boundary_text[0] != '\0' ? error->boundary_text : error->message);
         model.details = error->details[0] != '\0' ? error->details

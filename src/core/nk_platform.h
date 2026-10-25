@@ -128,12 +128,15 @@ typedef struct {
  * argv: NULL-terminated array of arguments (argv[0] is program path)
  * envp: NULL-terminated array of "KEY=VAL" strings, or NULL to inherit current environment
  * working_directory: working directory path, or NULL to inherit current
+ * output_log_path: optional append-only destination for stdout and stderr; when
+ *                  absent, Windows sends those streams to NUL and creates no console
  */
 bool nk_platform_spawn_process(
     const char *executable_path,
     const char * const *argv,
     const char * const *envp,
     const char *working_directory,
+    const char *output_log_path,
     NkProcessHandle *out_process
 );
 

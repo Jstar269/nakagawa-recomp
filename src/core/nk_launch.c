@@ -1550,6 +1550,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         argv,
         envp,
         session->working_directory[0] ? session->working_directory : NULL,
+        boot_event_path && *boot_event_path ? boot_event_path : NULL,
         &session->process
     );
 
