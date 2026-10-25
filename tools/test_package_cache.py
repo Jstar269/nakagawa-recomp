@@ -878,7 +878,7 @@ class PackageCacheTests(unittest.TestCase):
         )
         self.assertEqual(package_cache.validate_title_input_identity(identity), identity)
         environment = dict(os.environ)
-        for mode in (None, True, False):
+        for mode in (True, False):
             with mock.patch.object(
                 nk_cli, "_runtime_build_environment", return_value=environment
             ):

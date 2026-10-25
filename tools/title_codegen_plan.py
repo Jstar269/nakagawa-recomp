@@ -1652,11 +1652,9 @@ def _cache_key_for_build(
     plan: dict[str, Any],
     selected_optional: set[str],
     funcs_per_chunk: int,
-    public_safe: bool | None = None,
+    public_safe: bool = True,
     compiler_name: str,
 ) -> dict[str, Any]:
-    if public_safe is None:
-        public_safe = not has_private_backends(ROOT)
     # Imported lazily: planning (--manager-plan) must not depend on the package cache.
     from nk_core import package_cache
 
@@ -1680,10 +1678,6 @@ def _cache_key_for_build(
         compile_flags=package_cache.native_compile_flags(public_safe=public_safe),
         link_flags=os.environ.get("LDFLAGS", ""),
     )
-
-
-def has_private_backends(root: Path = ROOT) -> bool:
-    return (root / "src" / "rt" / "pgf.c").is_file() and (root / "src" / "rt" / "pgd.c").is_file()
 
 
 def _build_report_text(report: dict[str, Any]) -> str:
@@ -1736,7 +1730,6 @@ def build_package(
     funcs_per_chunk: int = 2000,
     python_command: str = "python",
     make_command: str | None = None,
-    public_safe: bool | None = None,
     reuse_aot_from: Path | None = None,
     native_only: bool = False,
     title_input_identity_file: Path | None = None,
@@ -1754,9 +1747,6 @@ def build_package(
     Make runs.
     """
     from nk_core import package_cache
-
-    if public_safe is None:
-        public_safe = not has_private_backends(ROOT)
 
     try:
         normalized = title_manifest.validate_manifest(manifest)
@@ -1984,7 +1974,6 @@ def build_package(
             plan=plan,
             selected_optional=selected_optional,
             funcs_per_chunk=funcs_per_chunk,
-            public_safe=public_safe,
             compiler_name=cc_name,
         )
         if reuse_aot_from is not None:
@@ -2043,7 +2032,7 @@ def build_package(
             ),
             "CODEGEN_USER_ARGS": os.environ.get("CODEGEN_USER_ARGS", ""),
             "LINK_MAP": link_map.as_posix(),
-            "PUBLIC_SAFE": "1" if public_safe else "0",
+            "PUBLIC_SAFE": "1",
             "NK_AOT_PREGENERATED": "1" if pregenerated else "0",
         })
         build_jobs, build_jobs_reason = _host_package_build_jobs()
@@ -2167,15 +2156,11 @@ def build_package(
             ROOT / "tools" / "title_codegen_plan.py"
         )
         cache = package_cache.cache_metadata(cache_key, cache_options)
-        backends_mode = "public" if public_safe else "private"
-        backend_limits = (
-            [
-                "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
-                "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
-            ]
-            if public_safe
-            else []
-        )
+        backends_mode = "public"
+        backend_limits = [
+            "fonts: import your own PSP fonts; the public PGF reader is available for supported inputs (#474)",
+            "PGD-protected data: unavailable; broader ISO-to-Play support is in the works (#308)",
+        ]
         report = {
             "format": BUILD_REPORT_FORMAT,
             "schema_version": BUILD_REPORT_SCHEMA_VERSION,
@@ -2276,7 +2261,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--psp-header", type=Path)
     parser.add_argument("--title-input-identity-file", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--make-command", help="Make executable (default: mingw32-make on Windows, make elsewhere)")
-    parser.add_argument("--public-safe", action="store_true", help="build with the public-safe runtime backends")
+    parser.add_argument("--public-safe", action="store_true", help="accepted for compatibility: packages always build with the public runtime backends")
     parser.add_argument("--reuse-aot-from", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--native-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--aot-stage", action="store_true", help=argparse.SUPPRESS)
@@ -2332,7 +2317,6 @@ def main(argv: list[str] | None = None) -> int:
                 funcs_per_chunk=args.funcs_per_chunk,
                 python_command=args.python_command,
                 make_command=args.make_command,
-                public_safe=True if args.public_safe else None,
                 reuse_aot_from=args.reuse_aot_from,
                 native_only=args.native_only,
                 title_input_identity_file=args.title_input_identity_file,
