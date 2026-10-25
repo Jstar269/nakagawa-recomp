@@ -686,7 +686,8 @@ def _copy_decrypted_elf(source: Path, destination: Path) -> str:
             temporary.unlink(missing_ok=True)
             raise PackageBuildError(
                 "User-supplied decrypted EBOOT.elf is not a usable MIPS ELF32; "
-                "replace it with a valid decrypted executable or remove it to try the local-key boundary."
+                "replace it with a valid decrypted EBOOT.elf from your own copy. "
+                "Nakagawa does not decrypt games."
             )
         if os.name != "nt":
             temporary.chmod(0o600)

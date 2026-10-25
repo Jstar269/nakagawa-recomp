@@ -7,6 +7,7 @@
 #include "nk_platform.h"
 #include <SDL3/SDL_misc.h>
 #include <SDL3/SDL_version.h>
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2641,43 +2642,60 @@ static void render_experimental_title(SDL_Renderer *ren, PlayerApp *app,
                              ? app->inspecting_game.title_name
                              : "PlayStation Portable Title",
                          2.0f, card_w - 64.0f, COLOR_TEXT_WHITE);
+    /* Plain words, no raw codes (#1280); a disc this version cannot use is
+       not offered to the library. */
+    const PlayerPreflightCheck *blocking =
+        player_preflight_blocking_check(&app->wizard.preflight);
     float rows_y = draw_text_wrapped(
         ren, card_x + 32.0f, card_y + 106.0f, card_w - 64.0f,
-        "Experimental: this game has not been verified. Compatibility is unknown.",
-        1.05f, COLOR_AMBER, 2);
+        blocking ? "This game can't be played in this version of Nakagawa yet."
+                 : "Nakagawa hasn't been tested with this game, so it may not start or may "
+                   "stop early. You can add it and try.",
+        1.05f, blocking ? COLOR_RED : COLOR_AMBER, 2);
     rows_y += 8.0f;
+    if (blocking) {
+        rows_y = draw_text_wrapped(ren, card_x + 32.0f, rows_y, card_w - 64.0f,
+                                   player_preflight_plain_message(blocking), 0.9f,
+                                   COLOR_TEXT_WHITE, 3) + 8.0f;
+    }
 
+    size_t row = 0;
     for (size_t i = 0; i < app->wizard.preflight.count; i++) {
         const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
         if (strcmp(check->code, "DISC_SFO") == 0 ||
-            strcmp(check->code, "EXPERIMENTAL") == 0) continue;
-        const char *status_text = "UNKNOWN";
+            strcmp(check->code, "EXPERIMENTAL") == 0 || check == blocking) continue;
         SDL_Color status_color = COLOR_TEXT_DIM;
         switch (check->status) {
-            case PREFLIGHT_OK: status_text = "OK"; status_color = COLOR_EMERALD; break;
-            case PREFLIGHT_MISSING: status_text = "MISSING"; status_color = COLOR_AMBER; break;
-            case PREFLIGHT_INCOMPATIBLE: status_text = "INCOMPATIBLE"; status_color = COLOR_RED; break;
-            case PREFLIGHT_STALE: status_text = "STALE"; status_color = COLOR_AMBER; break;
-            case PREFLIGHT_UNSUPPORTED: status_text = "UNSUPPORTED"; status_color = COLOR_RED; break;
-            case PREFLIGHT_IN_PROGRESS: status_text = "IN PROGRESS"; status_color = COLOR_AMBER; break;
-            case PREFLIGHT_INVALID: status_text = "INVALID"; status_color = COLOR_RED; break;
+            case PREFLIGHT_OK: status_color = COLOR_EMERALD; break;
+            case PREFLIGHT_MISSING:
+            case PREFLIGHT_STALE:
+            case PREFLIGHT_IN_PROGRESS: status_color = COLOR_AMBER; break;
+            case PREFLIGHT_INCOMPATIBLE:
+            case PREFLIGHT_UNSUPPORTED:
+            case PREFLIGHT_INVALID: status_color = COLOR_RED; break;
         }
-        float row_y = rows_y + 27.0f * (float)i;
+        float row_y = rows_y + 27.0f * (float)row++;
+        if (row_y > card_y + card_h - 92.0f) break;
         draw_text_ellipsized(ren, card_x + 32.0f, row_y,
-                             status_text, 0.82f, 82.0f, status_color);
-        draw_text_ellipsized(ren, card_x + 120.0f, row_y,
-                             check->code, 0.82f, 116.0f, COLOR_TEXT_WHITE);
+                             player_preflight_status_word(check), 0.82f, 100.0f, status_color);
+        draw_text_ellipsized(ren, card_x + 140.0f, row_y,
+                             player_preflight_label(check), 0.82f, 110.0f, COLOR_TEXT_WHITE);
         float message_width = card_w - 300.0f;
         if (message_width < 120.0f) message_width = 120.0f;
-        draw_text_ellipsized(ren, card_x + 244.0f, row_y,
-                             check->message, 0.78f, message_width,
+        draw_text_ellipsized(ren, card_x + 256.0f, row_y,
+                             player_preflight_plain_message(check), 0.78f, message_width,
                              COLOR_TEXT_MUTED);
     }
 
     float button_y = card_y + card_h - 60.0f;
     bool add_focused = app->focus_index == 0;
-    if (draw_button_focused(ren, card_x + 32.0f, button_y, 250.0f, 46.0f,
-                            "ADD TO LIBRARY", true, in, add_focused)) {
+    if (blocking) {
+        if (draw_button_focused(ren, card_x + 32.0f, button_y, 250.0f, 46.0f,
+                                "CHOOSE ANOTHER DISC", true, in, add_focused)) {
+            app->request_file_picker = true;
+        }
+    } else if (draw_button_focused(ren, card_x + 32.0f, button_y, 250.0f, 46.0f,
+                                   "ADD TO LIBRARY", true, in, add_focused)) {
         if (player_app_add_game(app, &app->inspecting_game)) {
             player_app_set_view(app, VIEW_LIBRARY);
         } else {
@@ -4315,12 +4333,7 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     float h = (float)app->window_height;
     float cx = w * 0.5f;
     float card_w = dialog_card_w(w, 680.0f);
-    bool runtime_stop = strcmp(app->last_error.error_code,
-                               "RUNTIME_SEMANTIC_BOUNDARY") == 0;
-    bool launch_readiness_error = runtime_stop ||
-        strcmp(app->last_error.error_code, "TITLE_DATA_MISSING") == 0 ||
-        strcmp(app->last_error.error_code, "TITLE_PROFILE_INVALID") == 0 ||
-        strcmp(app->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0;
+    bool launch_readiness_error = player_error_leads_with_message(&app->last_error);
     bool has_build_details = (app->last_error.failed_stage[0] != '\0' ||
                               app->last_error.log_file_path[0] != '\0');
     char log_str[NK_MAX_PATH + 32] = "";
@@ -4381,15 +4394,9 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
     draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_RED);
 
-    const char *badge = runtime_stop ? "GAME STOPPED"
-        : (strcmp(app->last_error.error_code, "TITLE_DATA_MISSING") == 0
-            ? "GAME DATA NEEDED"
-            : (strcmp(app->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0
-                ? "GAME NOT READY"
-                : (strcmp(app->last_error.error_code, "TITLE_PROFILE_INVALID") == 0
-                    ? "TITLE SETTINGS NEEDED"
-                    : (strcmp(app->last_error.error_code, "PACKAGE_REVALIDATION_FAILED") == 0
-                        ? "PACKAGE CHECK" : app->last_error.error_code))));
+    char badge[64];
+    snprintf(badge, sizeof(badge), "%s", player_error_badge(&app->last_error));
+    for (char *c = badge; *c; c++) *c = (char)toupper((unsigned char)*c);
     draw_badge(ren, card_x + 32.0f, card_y + 28.0f, badge, COLOR_RED);
     draw_text_ellipsized(ren, card_x + 32.0f, card_y + 66.0f, app->last_error.title,
                          2.0f, card_w - 64.0f, COLOR_TEXT_WHITE);
@@ -4643,9 +4650,16 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                 draw_text(ren, card_x + 48.0f, panel_y + 76.0f,
                           "The ISO is being copied into an isolated local staging tree.",
                           1.0f, COLOR_TEXT_MUTED);
+            } else if (app->wizard.extraction_failed && app->wizard.extraction_error[0]) {
+                /* Why the copy failed and what to do next (#1278). */
+                draw_text_ellipsized(ren, card_x + 48.0f, panel_y + 76.0f,
+                                     player_plain_reason(app->wizard.extraction_error), 0.85f,
+                                     card_w - 96.0f, COLOR_RED);
             } else if (experimental) {
                 draw_text(ren, card_x + 48.0f, panel_y + 76.0f,
-                          "Experimental: this game has not been verified. Compatibility is unknown.",
+                          player_preflight_blocking_check(&app->wizard.preflight)
+                              ? "This game can't be played in this version of Nakagawa yet."
+                              : "Not tested yet: this game may not start, or may stop early.",
                           0.95f, COLOR_AMBER);
             } else if (supported) {
                 draw_text(ren, card_x + 48.0f, panel_y + 76.0f,
@@ -4660,46 +4674,41 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             if (!app->wizard.is_extracting) {
                 for (size_t i = 0; i < app->wizard.preflight.count; i++) {
                     const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
-                    const char *status_text = "UNKNOWN";
                     SDL_Color status_color = COLOR_TEXT_DIM;
                     switch (check->status) {
                         case PREFLIGHT_OK:
-                            status_text = "OK";
                             status_color = COLOR_EMERALD;
                             break;
                         case PREFLIGHT_MISSING:
-                            status_text = "MISSING";
                             status_color = COLOR_AMBER;
                             break;
                         case PREFLIGHT_INCOMPATIBLE:
-                            status_text = "INCOMPATIBLE";
                             status_color = COLOR_RED;
                             break;
                         case PREFLIGHT_STALE:
-                            status_text = "STALE";
                             status_color = COLOR_AMBER;
                             break;
                         case PREFLIGHT_UNSUPPORTED:
-                            status_text = "UNSUPPORTED";
                             status_color = COLOR_RED;
                             break;
                         case PREFLIGHT_IN_PROGRESS:
-                            status_text = "IN PROGRESS";
                             status_color = COLOR_AMBER;
                             break;
                         case PREFLIGHT_INVALID:
-                            status_text = "INVALID";
                             status_color = COLOR_RED;
                             break;
                     }
+                    /* Plain words, no raw codes (#1280). */
                     float row_y = panel_y + 100.0f + (float)i * 25.0f;
                     draw_text_ellipsized(ren, card_x + 48.0f, row_y,
-                                         status_text, 0.8f, 80.0f, status_color);
+                                         player_preflight_status_word(check), 0.8f, 80.0f,
+                                         status_color);
                     draw_text_ellipsized(ren, card_x + 132.0f, row_y,
-                                         check->code, 0.8f, 122.0f, COLOR_TEXT_WHITE);
+                                         player_preflight_label(check), 0.8f, 122.0f,
+                                         COLOR_TEXT_WHITE);
                     draw_text_ellipsized(ren, card_x + 260.0f, row_y,
-                                         check->message, 0.78f, card_w - 308.0f,
-                                         COLOR_TEXT_MUTED);
+                                         player_preflight_plain_message(check), 0.78f,
+                                         card_w - 308.0f, COLOR_TEXT_MUTED);
                 }
             }
 
@@ -4722,6 +4731,25 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                 bool cancel_foc = (app->focus_index == focus++);
                 if (draw_button_focused(ren, card_x + 32.0f, btn_y, 140.0f, 44.0f,
                                         "CANCEL EXTRACTION", false, in, cancel_foc)) {
+                    player_app_wizard_cancel(app);
+                }
+            } else if (experimental &&
+                       player_preflight_blocking_check(&app->wizard.preflight)) {
+                /* Adding it would only fail later, at build time (#1280). */
+                bool add_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 32.0f, btn_y, 220.0f, 44.0f,
+                                        "CHOOSE DIFFERENT ISO", true, in, add_foc)) {
+                    app->wizard.step = WIZARD_STEP_SELECT_GAME;
+                    app->request_file_picker = true;
+                }
+                bool back_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 268.0f, btn_y, 100.0f, 44.0f,
+                                        "BACK", false, in, back_foc)) {
+                    app->wizard.step = WIZARD_STEP_SELECT_GAME;
+                }
+                bool cancel_foc = (app->focus_index == focus++);
+                if (draw_button_focused(ren, card_x + 384.0f, btn_y, 100.0f, 44.0f,
+                                        "CANCEL", false, in, cancel_foc)) {
                     player_app_wizard_cancel(app);
                 }
             } else if (experimental) {

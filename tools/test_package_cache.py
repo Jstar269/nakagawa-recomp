@@ -1754,5 +1754,21 @@ class NanTrapCacheKeyTests(unittest.TestCase):
         self.assertEqual(decision.action, "aot-regenerate")
 
 
+class DecryptedElfRefusalTests(unittest.TestCase):
+    def test_unusable_eboot_elf_points_at_the_users_own_copy(self) -> None:
+        """Nakagawa never decrypts and reads no key file, so the refusal of an
+        unusable EBOOT.elf names the only next step: a valid one from the
+        user's own copy (it used to suggest removing it for a key route)."""
+        with tempfile.TemporaryDirectory() as scratch:
+            source = Path(scratch) / "EBOOT.elf"
+            source.write_bytes(b"not an ELF executable\n")
+            with self.assertRaises(nk_cli.PackageBuildError) as raised:
+                nk_cli._copy_decrypted_elf(source, Path(scratch) / "cache" / "EBOOT.elf")
+        message = str(raised.exception)
+        self.assertIn("valid decrypted EBOOT.elf from your own copy", message)
+        self.assertIn("does not decrypt games", message)
+        self.assertNotIn("key", message.lower())
+
+
 if __name__ == "__main__":
     unittest.main()
