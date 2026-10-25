@@ -390,6 +390,31 @@ static void test_metadata_guardrails(void) {
     CHECK(after != 0u && after != a, "cyclic free-list did not fall back safely");
     CHECK(s_heap_free_list == 0u, "cyclic free-list was not cleared");
 
+    /* A cycle behind a tail, which no single node check sees: eleven free blocks kept apart by
+     * live ones, so none coalesce. All eleven linked in order are a valid list; relinking the
+     * last to the third makes a cycle of nine behind a tail of two. The walk must reject it,
+     * and an allocation that fits no free block must quarantine it rather than loop. */
+    heap_reset();
+    enum { CYCLE_NODES = 11 };
+    uint32_t node[CYCLE_NODES];
+    int cycle_setup = 1;
+    for (unsigned i = 0; i < CYCLE_NODES; i++) {
+        node[i] = sr_newlib_malloc(64u, 0u);
+        cycle_setup &= node[i] != 0u && sr_newlib_malloc(64u, 0u) != 0u;
+    }
+    CHECK(cycle_setup, "tail-cycle setup mallocs failed");
+    if (!cycle_setup) return;
+    for (unsigned i = 0; i < CYCLE_NODES; i++) sr_newlib_free(node[i], 0u);
+    for (unsigned i = 0; i < CYCLE_NODES; i++)
+        MEM_W32(node[i] - 8u, i + 1u < CYCLE_NODES ? node[i + 1u] - 8u : 0u);
+    s_heap_free_list = node[0] - 8u;
+    CHECK(sr_heap_free_list_valid(), "an acyclic eleven-node free list was rejected");
+    MEM_W32(node[CYCLE_NODES - 1u] - 8u, node[2] - 8u);
+    CHECK(!sr_heap_free_list_valid(), "a free-list cycle behind a tail was accepted");
+    after = sr_newlib_malloc(4096u, 0u);
+    CHECK(after != 0u, "a tail-cycle free list did not fall back to the bump allocator");
+    CHECK(s_heap_free_list == 0u, "a tail-cycle free list was not cleared");
+
     heap_reset();
     a = sr_newlib_malloc(64u, 0u);
     live = sr_newlib_malloc(64u, 0u);
