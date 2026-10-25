@@ -34,6 +34,7 @@ HST PROFILE (isolated, not in generic planner):
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -64,7 +65,19 @@ PACKAGE_SCHEMA_VERSION = 2
 BUILD_REPORT_SCHEMA_VERSION = 1
 PACKAGE_FORMAT = "nakagawa-aot-package"
 BUILD_REPORT_FORMAT = "nakagawa-build-report"
-PACKAGE_BUILD_JOBS = 2
+#: Package builds never run more than this many Make jobs.
+PACKAGE_BUILD_MAX_JOBS = 8
+#: Memory one compile job may need: one cc1 compiling a large generated chunk peaked
+#: at about 2.9 GB working set on the measured Hot Shots Tennis build.
+PACKAGE_BUILD_JOB_BYTES = 3 * 1024**3
+#: Memory left for the player, the OS and everything else while a package builds.
+PACKAGE_BUILD_RESERVED_BYTES = 4 * 1024**3
+#: Overrides the computed job count (still clamped to 1..PACKAGE_BUILD_MAX_JOBS).
+PACKAGE_BUILD_JOBS_ENV = "NK_PACKAGE_JOBS"
+#: When set, the package build appends ``{"completed": N, "total": M}`` lines to this
+#: file while it compiles, one line each time another object finishes.
+COMPILE_PROGRESS_FILE_ENV = "NK_COMPILE_PROGRESS_FILE"
+COMPILE_PROGRESS_POLL_SECONDS = 0.5
 ROOT = Path(__file__).resolve().parents[1]
 
 #: Manifest fields that carry no operational meaning and are therefore excluded
@@ -84,19 +97,214 @@ class PackageRouteError(Exception):
         self.code = code
 
 
-def _make_build_command(
-    make_executable: str, *, native_only: bool, aot_stage: bool = False
-) -> list[str]:
-    """Bound package builds to two jobs for independent runtime and AOT objects.
+class _MemoryStatusEx(ctypes.Structure):
+    _fields_ = [
+        ("dwLength", ctypes.c_uint32),
+        ("dwMemoryLoad", ctypes.c_uint32),
+        ("ullTotalPhys", ctypes.c_uint64),
+        ("ullAvailPhys", ctypes.c_uint64),
+        ("ullTotalPageFile", ctypes.c_uint64),
+        ("ullAvailPageFile", ctypes.c_uint64),
+        ("ullTotalVirtual", ctypes.c_uint64),
+        ("ullAvailVirtual", ctypes.c_uint64),
+        ("ullAvailExtendedVirtual", ctypes.c_uint64),
+    ]
+
+
+def available_physical_memory() -> int | None:
+    """Return the physical memory available to a new process in bytes, or None if unknown.
+
+    Windows reports it through ``GlobalMemoryStatusEx``; Linux through ``MemAvailable``
+    (which counts reclaimable cache); other POSIX systems through free pages.
+    """
+    if os.name == "nt":
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        try:
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullAvailPhys)
+        except (AttributeError, OSError):
+            pass
+        return None
+    try:
+        with open("/proc/meminfo", encoding="ascii") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def package_build_jobs(
+    *,
+    cpu_count: int | None,
+    available_bytes: int | None,
+    override: str | None = None,
+) -> tuple[int, str]:
+    """Choose the Make job count for a package build and say why.
+
+    Each job compiles one object, and the largest objects are generated chunks of
+    translated game code: one cc1 compiling such a chunk peaked at about 2.9 GB, and the
+    whole toolchain at about 3.1 GB at ``-j2``. Running out of memory would page or fail
+    the build, so the count is what the available physical memory allows after keeping
+    ``PACKAGE_BUILD_RESERVED_BYTES`` for everything else, at
+    ``PACKAGE_BUILD_JOB_BYTES`` per job, bounded by the logical CPUs and by
+    ``PACKAGE_BUILD_MAX_JOBS``, and never below one job. Unknown memory keeps the
+    earlier fixed count of two. ``override`` (``NK_PACKAGE_JOBS``) replaces the computed
+    count but is still clamped to the same range.
+    """
+    if override is not None and override.strip():
+        try:
+            requested = int(override.strip())
+        except ValueError:
+            requested = None
+        if requested is not None:
+            jobs = max(1, min(requested, PACKAGE_BUILD_MAX_JOBS))
+            return jobs, f"{PACKAGE_BUILD_JOBS_ENV}={override.strip()}"
+        override_note = f"; ignored {PACKAGE_BUILD_JOBS_ENV}={override.strip()!r}"
+    else:
+        override_note = ""
+    cpus = cpu_count if cpu_count and cpu_count > 0 else 1
+    if available_bytes is None:
+        jobs = max(1, min(cpus, 2, PACKAGE_BUILD_MAX_JOBS))
+        return jobs, f"{cpus} logical CPUs, available memory unknown{override_note}"
+    by_memory = (available_bytes - PACKAGE_BUILD_RESERVED_BYTES) // PACKAGE_BUILD_JOB_BYTES
+    jobs = max(1, min(cpus, by_memory, PACKAGE_BUILD_MAX_JOBS))
+    return jobs, (
+        f"{cpus} logical CPUs, {available_bytes / 1024**3:.1f} GB memory available"
+        f"{override_note}"
+    )
+
+
+def _host_package_build_jobs() -> tuple[int, str]:
+    return package_build_jobs(
+        cpu_count=os.process_cpu_count(),
+        available_bytes=available_physical_memory(),
+        override=os.environ.get(PACKAGE_BUILD_JOBS_ENV),
+    )
+
+
+def _make_build_targets(*, native_only: bool, aot_stage: bool = False) -> tuple[str, ...]:
+    """Return the Make targets a package build runs, in order.
 
     A generated-code stage runs only the generation phase (``pipeline``); a build of
-    already generated C runs only the compile phase; any other build runs both.
+    already generated C runs only the compile phase; any other build runs both, one
+    after the other as ``make all`` would, so the compile phase starts with every
+    generated chunk on disk and its object count known.
     """
     if aot_stage:
-        target = "pipeline"
-    else:
-        target = "compile" if native_only else "all"
-    return [make_executable, "--no-print-directory", f"-j{PACKAGE_BUILD_JOBS}", target]
+        return ("pipeline",)
+    if native_only:
+        return ("compile",)
+    return ("pipeline", "compile")
+
+
+def _make_build_command(
+    make_executable: str, target: str, *, jobs: int, dry_run: bool = False
+) -> list[str]:
+    command = [make_executable, "--no-print-directory", f"-j{jobs}"]
+    if dry_run:
+        command.append("-n")
+    command.append(target)
+    return command
+
+
+_COMPILE_OBJECT_RE = re.compile(r"(?:^|\s)-c\s(?:.*\s)?-o\s+\"?([^\s\"]+\.o)\"?(?:\s|$)")
+
+
+def planned_compile_objects(dry_run_output: str, cwd: Path) -> list[Path]:
+    """Return the objects a ``make -n`` listing compiles, in order and without repeats."""
+    objects: list[Path] = []
+    seen: set[Path] = set()
+    for line in dry_run_output.splitlines():
+        match = _COMPILE_OBJECT_RE.search(line)
+        if match is None:
+            continue
+        path = Path(match.group(1))
+        if not path.is_absolute():
+            path = cwd / path
+        if path not in seen:
+            seen.add(path)
+            objects.append(path)
+    return objects
+
+
+def _object_state(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+class CompileProgressCounter:
+    """Count the planned objects that have been written since the counter started.
+
+    An object counts once it differs from its state at the start and is not empty: the
+    assembler creates an object only after the compiler proper finishes, and fills it
+    when it closes it, so an empty or unchanged object is still in flight.
+    """
+
+    def __init__(self, objects: list[Path]):
+        self.objects = list(objects)
+        self._initial = {path: _object_state(path) for path in self.objects}
+
+    @property
+    def total(self) -> int:
+        return len(self.objects)
+
+    def completed(self) -> int:
+        count = 0
+        for path in self.objects:
+            state = _object_state(path)
+            if state is not None and state[1] > 0 and state != self._initial[path]:
+                count += 1
+        return count
+
+
+def _write_compile_progress(
+    progress_file: Path, completed: int, total: int, load: dict[str, int]
+) -> None:
+    row = {"completed": completed, "total": total, **load}
+    with progress_file.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(row) + "\n")
+
+
+def _run_make_with_progress(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    counter: CompileProgressCounter,
+    progress_file: Path,
+    jobs: int,
+    cpus: int,
+    poll_seconds: float = COMPILE_PROGRESS_POLL_SECONDS,
+) -> int:
+    """Run Make, appending a progress line each time the finished-object count changes.
+
+    Each line also carries the job count and the logical CPUs, so the player can say
+    how much of the PC the build is using.
+    """
+    load = {"jobs": jobs, "cpus": cpus}
+    last = 0
+    _write_compile_progress(progress_file, 0, counter.total, load)
+    process = subprocess.Popen(command, cwd=cwd, env=env)
+    while True:
+        try:
+            returncode = process.wait(timeout=poll_seconds)
+        except subprocess.TimeoutExpired:
+            returncode = None
+        completed = counter.completed()
+        if completed != last:
+            last = completed
+            _write_compile_progress(progress_file, completed, counter.total, load)
+        if returncode is not None:
+            return returncode
 
 
 def compute_protected_digest(manifest: dict[str, Any]) -> str:
@@ -1226,7 +1434,13 @@ def _cache_key_for_build(
         compiler=package_cache.compiler_identity(compiler_name, repository_root=ROOT),
         target=package_cache.compiler_target(repository_root=ROOT),
         runtime_source_digest=package_cache.source_tree_digest(ROOT),
-        compile_flags=package_cache.native_compile_flags(public_safe=public_safe),
+        compile_flags=package_cache.native_compile_flags(
+            public_safe=public_safe,
+            environment={
+                **os.environ,
+                **package_cache.package_optimization(plan["codegen_profile"]),
+            },
+        ),
         link_flags=os.environ.get("LDFLAGS", ""),
     )
 
@@ -1563,6 +1777,10 @@ def build_package(
         ]
         link_map = build_workspace / f"{selected_name}.map"
         build_environment = os.environ.copy()
+        # The optimization the cache key above names is what Make compiles with.
+        build_environment.update(
+            package_cache.package_optimization(plan["codegen_profile"], build_environment)
+        )
         build_environment.update({
             "PYTHON": python_command,
             "GAME_NAME": selected_name,
@@ -1586,21 +1804,52 @@ def build_package(
             "PUBLIC_SAFE": "1",
             "NK_AOT_PREGENERATED": "1" if pregenerated else "0",
         })
-        try:
-            built = subprocess.run(
-                _make_build_command(
-                    make_executable, native_only=pregenerated, aot_stage=aot_stage
-                ),
-                cwd=ROOT,
-                env=build_environment,
-                check=False,
-            )
-        except OSError as exc:
-            raise PackageRouteError("PACKAGE_BUILD_FAILED", str(exc)) from exc
-        if built.returncode != 0:
-            raise PackageRouteError(
-                "PACKAGE_BUILD_FAILED", f"{make_display_name} exited with status {built.returncode}"
-            )
+        build_jobs, build_jobs_reason = _host_package_build_jobs()
+        print(f"PACKAGE_BUILD_JOBS: {build_jobs} ({build_jobs_reason})", flush=True)
+        progress_text = os.environ.get(COMPILE_PROGRESS_FILE_ENV, "")
+        progress_file = Path(progress_text) if progress_text else None
+        build_environment.pop(COMPILE_PROGRESS_FILE_ENV, None)
+        for target in _make_build_targets(native_only=pregenerated, aot_stage=aot_stage):
+            command = _make_build_command(make_executable, target, jobs=build_jobs)
+            try:
+                if target == "compile" and progress_file is not None:
+                    planned = subprocess.run(
+                        _make_build_command(make_executable, target, jobs=build_jobs, dry_run=True),
+                        cwd=ROOT,
+                        env=build_environment,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    objects = (
+                        planned_compile_objects(planned.stdout, ROOT)
+                        if planned.returncode == 0
+                        else []
+                    )
+                    if objects:
+                        returncode = _run_make_with_progress(
+                            command,
+                            cwd=ROOT,
+                            env=build_environment,
+                            counter=CompileProgressCounter(objects),
+                            progress_file=progress_file,
+                            jobs=build_jobs,
+                            cpus=os.process_cpu_count() or 1,
+                        )
+                    else:
+                        returncode = subprocess.run(
+                            command, cwd=ROOT, env=build_environment, check=False
+                        ).returncode
+                else:
+                    returncode = subprocess.run(
+                        command, cwd=ROOT, env=build_environment, check=False
+                    ).returncode
+            except OSError as exc:
+                raise PackageRouteError("PACKAGE_BUILD_FAILED", str(exc)) from exc
+            if returncode != 0:
+                raise PackageRouteError(
+                    "PACKAGE_BUILD_FAILED", f"{make_display_name} exited with status {returncode}"
+                )
 
         current_input_hashes = _hash_package_inputs(
             manifest_path, game_elf, selected_modules, module_input_paths, psp_header

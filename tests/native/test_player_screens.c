@@ -57,37 +57,59 @@ static void set_test_viewport(NkUi *ui, int width, int height) {
 
 static const PlayerUiTitle k_titles[] = {
     {"Synthetic Showcase Scene", "TEST00007", "Ready", "",
-     "Partially works", "Showcase profile-zero acceptance remains open.", "",
+     "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
-     NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL},
+     NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PLAYABLE, false},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
-     "Partially works", "Showcase profile-zero acceptance remains open.", "",
+     "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
-     NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL},
+     NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
+     PLAYER_UI_TIER_PLAYABLE, false},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
-     "Experimental", "Source-owned compatibility fixture.", "", "RETRY PACKAGE CHECK",
-     "◆", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true, 0u, NULL, NULL, NULL},
+     "Source-owned compatibility fixture.", "", NULL, "", "RETRY PACKAGE CHECK",
+     "◆", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
+     PLAYER_UI_TIER_NONE, true},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
-     "Untested", "No compatibility record exists.", "", "BUILD PACKAGE",
-     "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true, 0u, NULL, NULL, NULL},
+     "No compatibility record exists.", "", NULL, "", "BUILD PACKAGE",
+     "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true,
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
+     PLAYER_UI_TIER_NONE, true},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
-     "Boots to a named boundary", "Player launch stops at the package boundary.", "",
-     "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true, 0u, NULL, NULL, NULL},
+     "Player launch stops at the package boundary.", "", NULL, "",
+     "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
+     PLAYER_UI_TIER_WONT_BOOT, true},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
-     "Works", "Source-owned runtime fixture.", "", "BUILD PACKAGE",
-     "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true, 0u, NULL, NULL, NULL},
+     "Source-owned runtime fixture.", "", NULL, "", "BUILD PACKAGE",
+     "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
+     PLAYER_UI_TIER_PERFECT, true},
     {"Synthetic Profile", "TEST00001", "Ready", "",
-     "Works", "Source-owned runtime fixture.", "", "PLAY",
-     "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true, 0u, NULL, NULL, NULL}
+     "Source-owned runtime fixture.", "", NULL, "", "PLAY",
+     "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PERFECT, true}
 };
 
-static const char *const k_compatibility_words[] = {
-    "Works",
-    "Partially works",
-    "Boots to a named boundary",
-    "Not started",
-    "Experimental",
-    "Untested"
+/* What-to-expect cards: a player tier with plain words, with known issues, the
+   developer view's category, and the screen's own fallback with no tier. */
+static const struct {
+    PlayerUiTier tier;
+    const char *expect;
+    const char *known_issues;
+    const char *category;
+} k_compatibility_cases[] = {
+    {PLAYER_UI_TIER_PERFECT, "Plays a full synthetic match.", "", NULL},
+    {PLAYER_UI_TIER_PLAYABLE, "Plays a full synthetic match.",
+     "Known issues: low frame rate, sound drops out, and movies show black.", NULL},
+    {PLAYER_UI_TIER_TITLE_SCREEN, "Plays a full synthetic match.", "",
+     "Boots to a named boundary"},
+    {PLAYER_UI_TIER_IN_GAME, "Plays a synthetic stage.", "", NULL},
+    {PLAYER_UI_TIER_MENU, "Reaches the synthetic menu.", "", NULL},
+    {PLAYER_UI_TIER_WONT_BOOT, "Does not start yet.", "", NULL},
+    {PLAYER_UI_TIER_NONE, NULL, NULL, NULL}
 };
 
 /* Synthetic flow states: a build, the build tool download, an error. */
@@ -97,8 +119,8 @@ static const PlayerUiPrereqItem k_prereqs[] = {
     {"synthetic-headers", "0.9", "example.invalid", "NOASSERTION", 4096ull}
 };
 
-typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_CONSENT, FLOW_PROGRESS,
-               FLOW_ERROR, FLOW_WIZ_WELCOME, FLOW_WIZ_CHOOSE, FLOW_WIZ_CHOSEN,
+typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CONSENT,
+               FLOW_PROGRESS, FLOW_ERROR, FLOW_WIZ_WELCOME, FLOW_WIZ_CHOOSE, FLOW_WIZ_CHOSEN,
                FLOW_WIZ_COPYING, FLOW_WIZ_VERIFY, FLOW_WIZ_EXPERIMENTAL, FLOW_WIZ_FONTS,
                FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_BLOCKED,
                FLOW_WIZ_COPY_FAILED, FLOW_ERROR_STOP, FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
@@ -334,13 +356,20 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
     if (which >= FLOW_SETTINGS) return draw_settings_case(ui, which);
     if (which >= FLOW_DISC_CHECKING) return draw_disc_case(ui, which);
     if (which >= FLOW_WIZ_WELCOME) return draw_wizard_case(ui, which);
-    if (which == FLOW_BUILD || which == FLOW_BUILT) {
+    if (which == FLOW_BUILD || which == FLOW_BUILT || which == FLOW_BUILD_PARTS) {
         PlayerUiBuildModel build;
         memset(&build, 0, sizeof(build));
         build.title_line = "Synthetic Showcase Scene (TEST00007)";
         build.stage = which == FLOW_BUILT ? 4 : 2;
         build.built = which == FLOW_BUILT;
-        build.message = "Compiling the translated game for this PC.";
+        build.fraction = which == FLOW_BUILD_PARTS ? 0.25f : -1.0f;
+        build.message = which == FLOW_BUILD_PARTS
+            ? "Compiling part 4 of 12"
+            : "Compiling the translated game for this PC.";
+        build.notice = which == FLOW_BUILD_PARTS
+            ? "Building uses most of your PC's power for a few minutes, so other apps "
+              "may feel slower until it finishes."
+            : NULL;
         build.elapsed_ms = 83400u;
         build.lines[0] = "[compile] 1204 of 3311 functions";
         build.lines[1] = "[compile] chunk 12 of 31";
@@ -430,6 +459,104 @@ static bool append_case(char *out, size_t cap, size_t *used,
         return false;
     }
     return true;
+}
+
+/* Return the x extent of the dump row for element id, or false if it is absent. */
+static bool dump_row_x_extent(const char *dump, NkUiId id, int *out_x0, int *out_x1) {
+    char prefix[16];
+    const char *row = dump;
+    (void)snprintf(prefix, sizeof(prefix), "%08X RECT ", (unsigned)id);
+    while (row != NULL && *row != '\0') {
+        if (strncmp(row, prefix, strlen(prefix)) == 0) {
+            int x0 = 0, y0 = 0, x1 = 0;
+            if (sscanf(row + strlen(prefix), "%d %d %d", &x0, &y0, &x1) == 3) {
+                *out_x0 = x0;
+                *out_x1 = x1;
+                return true;
+            }
+        }
+        row = strchr(row, '\n');
+        if (row != NULL) ++row;
+    }
+    return false;
+}
+
+/* While the compile stage counts its parts, the build card's bar is filled to the
+   compiled share instead of sweeping. */
+static void test_build_bar_shows_compiled_parts(void) {
+    static char out[CASE_DUMP_CAP];
+    size_t used = 0u;
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    int track_x0 = 0, track_x1 = 0, fill_x0 = 0, fill_x1 = 0;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the build-card UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    g_flow_case = FLOW_BUILD_PARTS;
+    CHECK(append_case(out, sizeof(out), &used, "flow-build-parts", ui, NULL, NULL),
+          "draw the build card with a part count");
+    g_flow_case = FLOW_NONE;
+    nk_ui_destroy(ui);
+    CHECK(dump_row_x_extent(out, 0x60000040u, &track_x0, &track_x1),
+          "the build card draws its progress track");
+    CHECK(dump_row_x_extent(out, nk_ui_child_id(0x60000040u, 2u), &fill_x0, &fill_x1),
+          "the build card fills its progress track");
+    CHECK(fill_x0 == track_x0, "the compiled share starts at the track's left edge");
+    {
+        int expected = (track_x1 - track_x0) / 4;
+        int width = fill_x1 - fill_x0;
+        CHECK(width >= expected - 1 && width <= expected + 1,
+              "a quarter of the parts fills a quarter of the track");
+    }
+    CHECK(strstr(out, "\"Compiling part 4 of 12\"") != NULL,
+          "the build card names the part being compiled");
+    {
+        /* The note sits under the bar in the same muted colour as the elapsed time:
+           body text, not a warning. */
+        const char *notice = strstr(out, "60000044 TEXT ");
+        const char *elapsed = strstr(out, "60000043 TEXT ");
+        CHECK(notice != NULL && strstr(notice, "other apps may feel slower") != NULL,
+              "the build card notes that other apps may feel slower");
+        if (notice != NULL && elapsed != NULL) {
+            int notice_y = 0, bar_y = 0, x0 = 0, x1 = 0;
+            char notice_rgba[9] = "", elapsed_rgba[9] = "";
+            CHECK(sscanf(notice + 14, "%*d %d %*d %*d %8s", &notice_y, notice_rgba) == 2 &&
+                  sscanf(elapsed + 14, "%*d %*d %*d %*d %8s", elapsed_rgba) == 1,
+                  "read the note's and the elapsed time's rows");
+            CHECK(strcmp(notice_rgba, elapsed_rgba) == 0,
+                  "the note is drawn in the muted colour");
+            {
+                char prefix[16];
+                const char *row;
+                (void)snprintf(prefix, sizeof(prefix), "%08X RECT ", 0x60000040u);
+                row = strstr(out, prefix);
+                CHECK(row != NULL && sscanf(row + strlen(prefix), "%d %d %d", &x0, &bar_y, &x1) == 3,
+                      "read the progress track's row");
+            }
+            CHECK(notice_y > bar_y, "the note sits under the progress bar");
+        }
+    }
+    used = 0u;
+    out[0] = '\0';
+    {
+        NkUi *plain = nk_ui_create(&config);
+        CHECK(plain != NULL, "create the plain build-card UI");
+        if (plain != NULL) {
+            set_test_viewport(plain, 1280, 800);
+            g_flow_case = FLOW_BUILD;
+            CHECK(append_case(out, sizeof(out), &used, "flow-build-running", plain, NULL, NULL),
+                  "draw the build card without a part count");
+            g_flow_case = FLOW_NONE;
+            nk_ui_destroy(plain);
+            CHECK(strstr(out, "60000044 TEXT ") == NULL,
+                  "a build without a note draws none");
+        }
+    }
 }
 
 static bool build_library_golden(char *out, size_t cap, size_t *used) {
@@ -546,15 +673,37 @@ static bool build_title_golden(char *out, size_t cap, size_t *used) {
     model.title = &fixture;
     model.title_index = 0u;
     for (size_t i = 0u;
-         i < sizeof(k_compatibility_words) / sizeof(k_compatibility_words[0]);
+         i < sizeof(k_compatibility_cases) / sizeof(k_compatibility_cases[0]);
          ++i) {
         char name[96];
-        fixture.compatibility_word = k_compatibility_words[i];
-        fixture.compatibility_detail = "Compatibility text is supplied as data.";
+        fixture.compatibility_tier = k_compatibility_cases[i].tier;
+        fixture.compatibility_expect = k_compatibility_cases[i].expect;
+        fixture.compatibility_known_issues = k_compatibility_cases[i].known_issues;
+        fixture.compatibility_category = k_compatibility_cases[i].category;
         snprintf(name, sizeof(name), "title-compatibility-%zu", i);
         if (!append_case(out, cap, used, name, ui, NULL, &model)) {
             nk_ui_destroy(ui);
             return false;
+        }
+    }
+    fixture = k_titles[0];
+    {
+        /* The package card while a game starts and while it runs (#1297, #1298). */
+        static const struct { PlayerUiPackageState state; const char *name; } live[] = {
+            {PLAYER_UI_PACKAGE_STARTING, "title-game-starting"},
+            {PLAYER_UI_PACKAGE_RUNNING, "title-game-running"}
+        };
+        for (size_t i = 0u; i < sizeof(live) / sizeof(live[0]); ++i) {
+            PlayerUiTitle running = k_titles[0];
+            PlayerUiTitleModel running_model = model;
+            running.package_state = live[i].state;
+            running.primary_action_label = "STOP GAME";
+            running.primary_action = PLAYER_UI_PRIMARY_STOP_GAME;
+            running_model.title = &running;
+            if (!append_case(out, cap, used, live[i].name, ui, NULL, &running_model)) {
+                nk_ui_destroy(ui);
+                return false;
+            }
         }
     }
     nk_ui_focus(ui, PLAYER_UI_ID_TITLE_SAVE_FOLDER);
@@ -728,8 +877,8 @@ static void test_router(void) {
           "router replaces the root screen with About");
     CHECK(!nk_ui_router_replace(router, (PlayerUiRoute)0) &&
           !nk_ui_router_push(router, (PlayerUiRoute)0) &&
-          !nk_ui_router_replace(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_ABOUT + 1)) &&
-          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_ABOUT + 1)),
+          !nk_ui_router_replace(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)) &&
+          !nk_ui_router_push(router, (PlayerUiRoute)(PLAYER_UI_ROUTE_REMOVE + 1)),
           "router refuses routes it does not draw");
     CHECK(nk_ui_router_current(router) == PLAYER_UI_ROUTE_ABOUT &&
           nk_ui_router_depth(router) == 1u, "a refused route leaves the stack alone");
@@ -1686,9 +1835,9 @@ static int capture_screens(const char *directory) {
     }
 
     memset(&title, 0, sizeof(title));
-    title_fixture.compatibility_word = "Partially works";
-    title_fixture.compatibility_detail =
-        "Showcase profile-zero acceptance remains open.";
+    title_fixture.compatibility_expect =
+        "Shows a lit, rotating cube that answers the stick and buttons, with sound.";
+    title_fixture.compatibility_known_issues = "";
     title.title = &title_fixture;
     title.title_index = 0u;
     title.logical_width = 1280.0f;
@@ -1721,6 +1870,19 @@ static int capture_screens(const char *directory) {
         "Nakagawa does not decrypt games; it uses decrypted files from your own copy.";
     nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
     if (!capture_one(&rig, "title-needs-setup", NULL, &title)) goto done;
+    {
+        /* The showcase demo's title page while it runs (#1297). */
+        PlayerUiTitle running = title_fixture;
+        PlayerUiTitleModel running_title = title;
+        running.library_status = "Running";
+        running.package_state = PLAYER_UI_PACKAGE_RUNNING;
+        running.primary_action_label = "STOP GAME";
+        running.primary_action = PLAYER_UI_PRIMARY_STOP_GAME;
+        running_title.title = &running;
+        running_title.title_index = 0u;
+        nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
+        if (!capture_one(&rig, "title-game-running", NULL, &running_title)) goto done;
+    }
     {
         static const struct { FlowCase which; const char *name; NkUiId focus; } flows[] = {
             {FLOW_BUILD, "flow-build-running", PLAYER_UI_ID_BUILD_ACTION},
@@ -1813,6 +1975,284 @@ static int capture_screens(const char *directory) {
 }
 #endif
 
+/* #1297: the title page of a game that runs now. Failing before: the package
+   card said "not ready yet" under a READY pill (its text followed the primary
+   action, STOP GAME), the decryption note showed on a built package, and the
+   compatibility card carried a "Boots to a named boundary" chip. */
+static void test_title_with_a_running_game(void) {
+    static char dump[CASE_DUMP_CAP];
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    PlayerUiTitle running = k_titles[0];
+    PlayerUiTitleModel model;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the running-game title UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    running.library_status = "Running";
+    running.package_state = PLAYER_UI_PACKAGE_RUNNING;
+    running.primary_action_label = "STOP GAME";
+    running.primary_action = PLAYER_UI_PRIMARY_STOP_GAME;
+    running.input_note =
+        "Nakagawa does not decrypt games; it uses decrypted files from your own copy.";
+    running.compatibility_expect = "Plays full matches and Story Mode.";
+    running.compatibility_known_issues =
+        "Known issues: low frame rate, sound drops out, and movies show black.";
+    running.compatibility_category = NULL;
+    running.compatibility_tier = PLAYER_UI_TIER_PLAYABLE;
+    memset(&model, 0, sizeof(model));
+    model.title = &running;
+    model.logical_width = 1280.0f;
+    model.logical_height = 800.0f;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_title(ui, &model);
+    CHECK(nk_ui_end(ui) != NULL, "draw the running-game title");
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "Running now. Stop the game to rebuild or change settings.") != NULL,
+          "the package card says the game runs now");
+    CHECK(strstr(dump, "not ready yet") == NULL,
+          "a running game's ready package is never called not ready");
+    CHECK(strstr(dump, "does not decrypt") == NULL,
+          "the decryption note stays off a running game's built package");
+    CHECK(strstr(dump, "Plays full matches and Story Mode.") != NULL &&
+              strstr(dump, "Known issues: low frame rate") != NULL,
+          "the compatibility card says what to expect and the known issues");
+    CHECK(strstr(dump, "PLAYABLE") != NULL || strstr(dump, "Playable") != NULL,
+          "the compatibility card carries the player tier chip");
+    CHECK(strstr(dump, "named boundary") == NULL && strstr(dump, "NAMED BOUNDARY") == NULL &&
+              strstr(dump, "COMPATIBILITY.md") == NULL,
+          "the compatibility card names no docs category outside the developer view");
+    running.compatibility_tier = PLAYER_UI_TIER_NONE;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_title(ui, &model);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "PLAYABLE") == NULL && strstr(dump, "Playable") == NULL,
+          "a title with no tier draws no tier chip");
+    running.compatibility_tier = PLAYER_UI_TIER_PLAYABLE;
+    /* The same game while its window is not up yet, then with its package
+       missing: the note comes back only where decrypted files are needed. */
+    running.package_state = PLAYER_UI_PACKAGE_STARTING;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_title(ui, &model);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "Starting the game. Its window opens when it is ready.") != NULL &&
+              strstr(dump, "does not decrypt") == NULL,
+          "a starting game gets the starting card and no decryption note");
+    running.package_state = PLAYER_UI_PACKAGE_MISSING;
+    running.library_status = "Needs setup";
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_title(ui, &model);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "not ready yet") != NULL && strstr(dump, "does not decrypt") != NULL,
+          "a missing package keeps its text and the decryption note");
+    running.compatibility_category = "Boots to a named boundary";
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_title(ui, &model);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "Developer view: \\\"Boots to a named boundary\\\"") != NULL ||
+              strstr(dump, "Developer view: \"Boots to a named boundary\"") != NULL,
+          "the developer view still names the category");
+    nk_ui_destroy(ui);
+}
+
+static PlayerUiAction activate_remove_button(NkUiId id, const PlayerUiRemoveModel *model) {
+    NkUiConfig config;
+    NkUiEvent activate;
+    NkUi *ui;
+    PlayerUiAction result = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    ui = nk_ui_create(&config);
+    if (ui == NULL) return result;
+    set_test_viewport(ui, 1280, 800);
+    nk_ui_focus(ui, id);
+    memset(&activate, 0, sizeof(activate));
+    activate.type = NK_UI_EV_ACTIVATE;
+    activate.down = true;
+    nk_ui_push_event(ui, &activate);
+    nk_ui_begin(ui, 0.0);
+    result = player_ui_screen_remove(ui, model);
+    (void)nk_ui_end(ui);
+    nk_ui_destroy(ui);
+    return result;
+}
+
+/* #1304: Remove from library sits on a disc's title page, never a showcase
+   demo's, and asks first: the dialog lists what Nakagawa built with sizes,
+   says the disc image stays, and keeps the saves unless their box is ticked. */
+static void test_remove_from_library(void) {
+    static char dump[CASE_DUMP_CAP];
+    static const PlayerUiRemoveItem items[] = {
+        {"Built package", 3u * 1024u * 1024u}, {"Build cache", 512u * 1024u},
+        {"Disc files Nakagawa copied", 40u * 1024u * 1024u}
+    };
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    PlayerUiTitleModel title;
+    PlayerUiRemoveModel remove;
+    PlayerUiAction action;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the remove-from-library UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    memset(&title, 0, sizeof(title));
+    title.title = &k_titles[3];
+    title.title_index = 3u;
+    title.logical_width = 1280.0f;
+    title.logical_height = 800.0f;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_title(ui, &title);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "REMOVE FROM LIBRARY") != NULL, "a disc's title page offers removal");
+    action = activate_title_button(PLAYER_UI_ID_TITLE_REMOVE, &title);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_TITLE && action.title_index == 3u,
+          "Remove from library asks for the dialog for that title");
+    title.title = &k_titles[0];
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_title(ui, &title);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "REMOVE FROM LIBRARY") == NULL,
+          "a showcase demo's title page offers no removal");
+
+    memset(&remove, 0, sizeof(remove));
+    remove.title = "Synthetic Untested Fixture";
+    remove.disc_id = "TEST00005";
+    remove.title_index = 3u;
+    remove.items = items;
+    remove.item_count = sizeof(items) / sizeof(items[0]);
+    remove.has_saves = true;
+    remove.saves_bytes = 2048u;
+    remove.logical_width = 1280.0f;
+    remove.logical_height = 800.0f;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_remove(ui, &remove);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "Remove Synthetic Untested Fixture?") != NULL,
+          "the dialog names the game");
+    CHECK(strstr(dump, "Built package") != NULL && strstr(dump, "3.0 MB") != NULL &&
+              strstr(dump, "Build cache") != NULL && strstr(dump, "512.0 KB") != NULL &&
+              strstr(dump, "Disc files Nakagawa copied") != NULL &&
+              strstr(dump, "40.0 MB") != NULL,
+          "the dialog lists each item with its size");
+    CHECK(strstr(dump, "FREES 43.5 MB") != NULL, "the dialog says how much it frees");
+    CHECK(strstr(dump, "The disc image on your PC is not touched.") != NULL,
+          "the dialog says the disc image stays");
+    CHECK(strstr(dump, "Your saves stay.") != NULL &&
+              strstr(dump, "will be deleted too") == NULL,
+          "the saves box starts unticked and the saves stay");
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_CONFIRM, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM && action.title_index == 3u &&
+              action.primary == PLAYER_UI_PRIMARY_NONE,
+          "Remove without the box keeps the saves");
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_SAVES, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES, "the saves box toggles");
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_CANCEL, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_BACK, "Cancel leaves the dialog");
+    remove.delete_saves = true;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_remove(ui, &remove);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "Your saves for this game will be deleted too.") != NULL,
+          "a ticked box says the saves go too");
+    action = activate_remove_button(PLAYER_UI_ID_REMOVE_CONFIRM, &remove);
+    CHECK(action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM && action.primary == 1,
+          "Remove with the box ticked deletes the saves");
+    remove.item_count = 0u;
+    remove.has_saves = false;
+    remove.delete_saves = false;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_remove(ui, &remove);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "Nakagawa has not built anything for it yet.") != NULL &&
+              strstr(dump, "This game has no saves.") != NULL &&
+              strstr(dump, "The disc image on your PC is not touched.") != NULL,
+          "a game with nothing built says so and still promises the disc image");
+    nk_ui_destroy(ui);
+}
+
+/* The category -> player tier table in scr_title.c and the "Status words"
+   table in docs/COMPATIBILITY.md say the same thing, row for row (#1297). */
+static void test_tier_table_matches_the_docs(void) {
+    static const struct { const char *category; const char *tier; } expected[] = {
+        {"Works", "Perfect"},
+        {"Partially works", "In-game"},
+        {"Boots to a named boundary", "Title screen"},
+        {"Not started", "Won't boot"},
+        {"Not supported", "Won't boot"},
+        {"Experimental", NULL},
+        {"Untested", NULL},
+        {"A word the docs never use", NULL},
+        {NULL, NULL}
+    };
+    for (size_t i = 0u; i < sizeof(expected) / sizeof(expected[0]); ++i) {
+        const char *word = player_ui_tier_word(player_ui_tier_for_category(expected[i].category));
+        CHECK((word == NULL && expected[i].tier == NULL) ||
+                  (word != NULL && expected[i].tier != NULL &&
+                   strcmp(word, expected[i].tier) == 0),
+              "a docs category maps to its player tier");
+    }
+    CHECK(player_ui_tier_word(PLAYER_UI_TIER_PLAYABLE) != NULL &&
+              strcmp(player_ui_tier_word(PLAYER_UI_TIER_PLAYABLE), "Playable") == 0 &&
+              strcmp(player_ui_tier_word(PLAYER_UI_TIER_MENU), "Menu") == 0 &&
+              player_ui_tier_word(PLAYER_UI_TIER_NONE) == NULL,
+          "every tier has its word, and no tier has none");
+
+    FILE *docs = fopen("docs/COMPATIBILITY.md", "rb");
+    CHECK(docs != NULL, "open docs/COMPATIBILITY.md from the repository root");
+    if (docs == NULL) return;
+    char line[1024];
+    bool in_table = false;
+    size_t rows = 0u;
+    while (fgets(line, sizeof(line), docs) != NULL) {
+        if (strncmp(line, "| Status | Player tier | Meaning |", 34u) == 0) {
+            in_table = true;
+            continue;
+        }
+        if (!in_table) continue;
+        if (line[0] != '|') break;
+        if (strncmp(line, "| :---", 6u) == 0) continue;
+        char category[96];
+        char tier[64];
+        const char *a = line + 2;
+        const char *b = strstr(a, " | ");
+        if (b == NULL || (size_t)(b - a) >= sizeof(category)) break;
+        memcpy(category, a, (size_t)(b - a));
+        category[b - a] = '\0';
+        const char *c = b + 3;
+        const char *d = strstr(c, " | ");
+        if (d == NULL || (size_t)(d - c) >= sizeof(tier)) break;
+        memcpy(tier, c, (size_t)(d - c));
+        tier[d - c] = '\0';
+        const char *word = player_ui_tier_word(player_ui_tier_for_category(category));
+        if (strcmp(tier, "No tier") == 0) {
+            CHECK(word == NULL, "a docs row with no tier maps to no tier");
+        } else {
+            CHECK(word != NULL && strcmp(word, tier) == 0,
+                  "a docs row's player tier matches scr_title.c");
+        }
+        ++rows;
+    }
+    fclose(docs);
+    CHECK(rows == 6u, "the docs Status words table has its six rows");
+}
+
 int main(int argc, char **argv) {
     static char library[DUMP_CAP];
     static char title[DUMP_CAP];
@@ -1836,6 +2276,10 @@ int main(int argc, char **argv) {
     test_settings_pages();
     test_version_line();
     test_design_system_layout();
+    test_title_with_a_running_game();
+    test_tier_table_matches_the_docs();
+    test_remove_from_library();
+    test_build_bar_shows_compiled_parts();
     CHECK(build_library_golden(library, sizeof(library), &library_size),
           "build Library screen dumps");
     CHECK(build_title_golden(title, sizeof(title), &title_size),

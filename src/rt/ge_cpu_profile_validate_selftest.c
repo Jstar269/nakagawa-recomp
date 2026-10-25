@@ -472,6 +472,46 @@ static void test_ge_vram_depth_bit13_absolute_xor(void) {
     }
 }
 
+/* The depth-surface span is cached per (base, stride) because every CPU VRAM access asks for it
+ * (#1296). Six surfaces cycled through a smaller cache must keep returning their own bounds, each
+ * the exact XOR image of the surface's even addresses (widened by at most one byte per end), and an
+ * unsupported stride must stay refused after a cached success for the same base. */
+static void test_ge_zbuf_span_bounds_cache(void) {
+    static const struct { uint32_t base, stride; } surfaces[] = {
+        { 0x040CE000u, 512u }, { 0x04088000u, 480u }, { 0x04000000u, 512u },
+        { 0x04044000u, 256u }, { 0x04110000u, 512u }, { 0x040CC000u, 64u },
+    };
+    enum { N = sizeof surfaces / sizeof surfaces[0] };
+    uint32_t want_first[N], want_end[N];
+    for (unsigned i = 0; i < N; i++) {
+        uint32_t lo = UINT32_MAX, hi = 0u;
+        for (uint32_t p = 0; p < surfaces[i].stride * 272u; p++) {
+            uint32_t a = (surfaces[i].base + 2u * p) ^ 0x2040u;
+            if (a < lo) lo = a;
+            if (a > hi) hi = a;
+        }
+        uint32_t first = 0u, end = 0u;
+        expect(ge_zbuf_guest_span_bounds(surfaces[i].base, surfaces[i].stride, &first, &end),
+               "zbuf_span_cache", "a supported depth surface had no span");
+        expect(first <= lo && lo - first <= 1u && end >= hi + 2u && end - (hi + 2u) <= 1u,
+               "zbuf_span_cache", "the span is not the XOR image of the surface");
+        want_first[i] = first;
+        want_end[i] = end;
+    }
+    for (unsigned round = 0; round < 5u; round++) {
+        for (unsigned k = 0; k < N; k++) {
+            unsigned i = (k * 5u + round) % N;
+            uint32_t first = 0u, end = 0u;
+            int ok = ge_zbuf_guest_span_bounds(surfaces[i].base, surfaces[i].stride, &first, &end);
+            expect(ok && first == want_first[i] && end == want_end[i], "zbuf_span_cache",
+                   "a repeated query returned another surface's span");
+            uint32_t ignored_first, ignored_end;
+            expect(!ge_zbuf_guest_span_bounds(surfaces[i].base, 513u, &ignored_first, &ignored_end),
+                   "zbuf_span_cache", "a stride above 512 was accepted after a cached query");
+        }
+    }
+}
+
 static void test_ge_vram_cpu_visibility(void) {
     build_vram_depth_list_at(0x0CC000u);
     expect(ge_run_list(LIST_VRAM_DEPTH, 0) == 0, "vram_depth", "depth list did not reach END");
@@ -1089,6 +1129,7 @@ int main(int argc, char **argv) {
     }
     g_mem = arena + 0x08000000u;
     test_vram_mirror_cpu_stores();
+    test_ge_zbuf_span_bounds_cache();
     build_lists();
     expect_api_contract();
 

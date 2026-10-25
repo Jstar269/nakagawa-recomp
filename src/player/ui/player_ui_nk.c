@@ -38,24 +38,43 @@
 
 typedef struct {
     const char *key;
-    const char *word;
-    const char *detail;
+    const char *category;
+    /* The player tier when a player's own run says more (or less) than the
+       category's tier; NONE takes player_ui_tier_for_category(category). */
+    PlayerUiTier tier;
+    const char *expect;
+    const char *known_issues;
 } PlayerUiCompatibilityRecord;
 
-/* These labels mirror the current public compatibility table. Lookup is data
-   driven so the screen never assigns a compatibility claim from layout code. */
+/* What a player can expect from each title in the public compatibility table,
+   in plain words, and its player tier (#1297). The category is the table's own
+   word, kept for the developer view: it describes the project's test route,
+   not this PC. Lookup is data driven so the screen never assigns a
+   compatibility claim from layout code. */
 static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
-    {"display-smoke-v1", "Works", "Source-owned display fixture."},
-    {"synthetic-allegrex-v1", "Works", "Source-owned runtime fixture."},
-    {"pspdev-phase5-v1", "Boots to a named boundary",
-     "Player launch stops at the unbuilt package boundary."},
-    {"synthetic-title2-v1", "Works", "Source-owned runtime fixture."},
-    {"showcase-scene-v1", "Partially works", "Showcase profile-zero acceptance remains open."},
-    {"showcase-breakout-v1", "Partially works", "Showcase profile-zero acceptance remains open."},
-    {"UCUS98701", "Boots to a named boundary", "The public route stops at a named boundary."},
-    {"UCUS-98701", "Boots to a named boundary", "The public route stops at a named boundary."},
-    {"PAC-MAN Championship Edition", "Partially works",
-     "The documented route reaches the title screen and plays a stage."}
+    {"display-smoke-v1", "Works", PLAYER_UI_TIER_NONE,
+     "Draws the project's moving test pattern. There is nothing to play.", ""},
+    {"synthetic-allegrex-v1", "Works", PLAYER_UI_TIER_NONE,
+     "Runs the project's test program, then closes.", ""},
+    {"pspdev-phase5-v1", "Boots to a named boundary", PLAYER_UI_TIER_WONT_BOOT,
+     "A project test module. It does not start from the player yet.", ""},
+    {"synthetic-title2-v1", "Works", PLAYER_UI_TIER_NONE,
+     "Runs the project's test program, then closes.", ""},
+    {"showcase-scene-v1", "Partially works", PLAYER_UI_TIER_PLAYABLE,
+     "Shows a lit, rotating cube that answers the stick and buttons, with sound.", ""},
+    {"showcase-breakout-v1", "Partially works", PLAYER_UI_TIER_PLAYABLE,
+     "Plays a full game of Breakout with sound and keeps your high score.", ""},
+    /* Playable: the owner played full matches and Story Mode on 2026-10-24
+       (#1297). */
+    {"UCUS98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
+     "Plays full matches and Story Mode.",
+     "Known issues: low frame rate, sound drops out, and movies show black."},
+    {"UCUS-98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
+     "Plays full matches and Story Mode.",
+     "Known issues: low frame rate, sound drops out, and movies show black."},
+    {"PAC-MAN Championship Edition", "Partially works", PLAYER_UI_TIER_NONE,
+     "Reaches the title screen and plays a stage. The rest of the game has not been tried yet.",
+     ""}
 };
 
 struct PlayerUiNk {
@@ -91,6 +110,18 @@ struct PlayerUiNk {
     PlayerUiSounds *sounds;          /* optional launcher sounds (ui_sounds) */
     int pending_sound;               /* a PlayerUiSound for this frame, or -1 */
     NkUiId sound_focus;              /* focus after the last frame, for the move sound */
+    /* Remove from library (#1304): the title the dialog is for, what it lists,
+       and the saves box, which every dialog opens unticked. */
+    PlayerRemovalPlan remove_plan;
+    PlayerUiRemoveItem remove_items[PLAYER_UI_REMOVE_ITEM_CAP];
+    size_t remove_item_count;
+    int remove_index;
+    char remove_disc[NK_MAX_DISC_ID_LEN];
+    bool remove_delete_saves;
+    bool remove_focus_pending;
+    /* After a removal the library focuses the tile that took its place. */
+    bool library_focus_pending;
+    size_t library_focus_index;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     bool icon_reported[PLAYER_UI_TITLE_CAP];
     int disc_reported_view;  /* the game-found card whose rows were printed, or -1 */
@@ -600,6 +631,8 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
             case PACKAGE_BUILD_STAGE_PREFLIGHT:
             default: model.stage = 0; break;
         }
+        model.fraction = package_builder_compile_fraction(build);
+        model.notice = package_builder_compile_notice(build);
         model.message = build->current_message;
         model.elapsed_ms = build->elapsed_ms;
         for (int i = first; i < count && model.line_count < 4u; ++i) {
@@ -725,9 +758,35 @@ int player_ui_nk_test_route(const PlayerUiNk *player) {
 }
 
 unsigned player_ui_nk_test_focus(const PlayerUiNk *player) {
-    return player != NULL ? (unsigned)nk_ui_focused(player->ui) : 0u;
+    return player != NULL && player->ui != NULL ? (unsigned)nk_ui_focused(player->ui) : 0u;
 }
 #endif
+
+/* Opens the Remove from library dialog for a title, listing what Nakagawa
+   built for it as it is on disk now. */
+static bool player_ui_open_remove(PlayerUiNk *player, const PlayerApp *app, int index) {
+    static const char *const labels[PLAYER_REMOVAL_KIND_COUNT] = {
+        "Built package", "Build cache", "Disc files Nakagawa copied"
+    };
+    if (!player_app_plan_game_removal(app, index, &player->remove_plan)) return false;
+    player->remove_item_count = 0u;
+    for (int kind = 0; kind < PLAYER_REMOVAL_KIND_COUNT; ++kind) {
+        if (!player->remove_plan.kind_present[kind] ||
+            player->remove_item_count >= PLAYER_UI_REMOVE_ITEM_CAP) {
+            continue;
+        }
+        player->remove_items[player->remove_item_count].label = labels[kind];
+        player->remove_items[player->remove_item_count].bytes =
+            player->remove_plan.kind_bytes[kind];
+        ++player->remove_item_count;
+    }
+    player->remove_index = index;
+    snprintf(player->remove_disc, sizeof(player->remove_disc), "%s",
+             app->games[index].disc_id);
+    player->remove_delete_saves = false;
+    player->remove_focus_pending = true;
+    return true;
+}
 
 bool player_ui_nk_at_library_root(const PlayerUiNk *player) {
     return player != NULL && player->ready &&
@@ -770,9 +829,21 @@ void player_ui_nk_note_gamepad(PlayerUiNk *player, uint32_t which, bool connecte
     (void)player_ui_nk_handle_event(player, &event);
 }
 
-static const char *player_ui_compatibility_word(const GameRecord *game,
-                                               const char **detail) {
-    if (detail != NULL) *detail = "";
+static PlayerUiTier player_ui_record_tier(const PlayerUiCompatibilityRecord *record) {
+    return record->tier != PLAYER_UI_TIER_NONE ? record->tier
+                                               : player_ui_tier_for_category(record->category);
+}
+
+/* The title's compatibility record: its player tier, what to expect and its
+   known issues, in plain words. Returns the docs/COMPATIBILITY.md category for
+   the developer view. A title with no record gets a sentence for its general
+   state and the tier its category maps to. */
+static const char *player_ui_compatibility_words(const GameRecord *game, const char **expect,
+                                                 const char **known_issues,
+                                                 PlayerUiTier *record_tier) {
+    *expect = "No one has tried this game in Nakagawa yet.";
+    *known_issues = "";
+    *record_tier = PLAYER_UI_TIER_NONE;
     if (game == NULL) return "Untested";
     for (size_t i = 0u;
          i < sizeof(s_compatibility_records) / sizeof(s_compatibility_records[0]);
@@ -783,27 +854,66 @@ static const char *player_ui_compatibility_word(const GameRecord *game,
              strcmp(game->disc_id, s_compatibility_records[i].key) == 0) ||
             (game->title_name[0] != '\0' &&
              strcmp(game->title_name, s_compatibility_records[i].key) == 0)) {
-            if (detail != NULL) *detail = s_compatibility_records[i].detail;
-            return s_compatibility_records[i].word;
+            *expect = s_compatibility_records[i].expect;
+            *known_issues = s_compatibility_records[i].known_issues;
+            *record_tier = player_ui_record_tier(&s_compatibility_records[i]);
+            return s_compatibility_records[i].category;
         }
     }
     if (game->is_experimental) {
         if (game->status == NK_STATUS_BOOTS || game->status == NK_STATUS_PLAYABLE) {
+            *expect = "This game has started in Nakagawa, but no one has checked how "
+                      "far it plays. It may stop early.";
             return "Experimental";
         }
+        *expect = "No one has tried this game in Nakagawa yet. It may not start.";
         return "Untested";
     }
     switch (game->status) {
-        case NK_STATUS_BOOTS: return "Boots to a named boundary";
-        case NK_STATUS_PLAYABLE: return "Partially works";
+        case NK_STATUS_BOOTS:
+            *expect = "Starts, then stops at a part Nakagawa does not support yet.";
+            return "Boots to a named boundary";
+        case NK_STATUS_PLAYABLE:
+            *expect = "Plays, but some parts may not work yet.";
+            return "Partially works";
         case NK_STATUS_UNIDENTIFIED:
         case NK_STATUS_IDENTIFIED: return "Untested";
         case NK_STATUS_SUPPORTED_PREPARATION:
         case NK_STATUS_PREPARED:
         case NK_STATUS_VERIFIED:
-        default: return "Not started";
+        default:
+            *expect = "This game does not run in Nakagawa yet.";
+            return "Not started";
     }
 }
+
+static const char *player_ui_compatibility(const GameRecord *game, const char **expect,
+                                           const char **known_issues, PlayerUiTier *tier) {
+    PlayerUiTier record_tier;
+    const char *category =
+        player_ui_compatibility_words(game, expect, known_issues, &record_tier);
+    *tier = record_tier != PLAYER_UI_TIER_NONE ? record_tier
+                                               : player_ui_tier_for_category(category);
+    return category;
+}
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+void player_ui_nk_test_report_compatibility(void) {
+    for (size_t i = 0u;
+         i < sizeof(s_compatibility_records) / sizeof(s_compatibility_records[0]);
+         ++i) {
+        const PlayerUiCompatibilityRecord *record = &s_compatibility_records[i];
+        const char *tier = player_ui_tier_word(player_ui_record_tier(record));
+        const char *category_tier =
+            player_ui_tier_word(player_ui_tier_for_category(record->category));
+        char key[96];
+        snprintf(key, sizeof(key), "%s", record->key);
+        for (char *q = key; *q; q++) if (*q == ' ') *q = '_';
+        printf("[PLAYER_UI_TEST] compatibility key=%s category_tier=%s tier=%s\n", key,
+               category_tier ? category_tier : "none", tier ? tier : "none");
+    }
+}
+#endif
 
 static bool player_ui_has_seen_boot(const GameRecord *game) {
     return game != NULL && (game->status == NK_STATUS_BOOTS ||
@@ -855,6 +965,8 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     bool package_ready;
     bool checking;
     bool check_failed;
+    bool starting;
+    bool running;
     PlayerUiPrimaryAction primary = PLAYER_UI_PRIMARY_NONE;
     if (player == NULL || app == NULL || out == NULL || index < 0 ||
         index >= app->game_count || index >= (int)PLAYER_UI_TITLE_CAP) {
@@ -866,6 +978,15 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     checking = player_app_runtime_package_check_pending(app, game);
     check_failed = player_app_runtime_package_check_failed(app, game);
     reason = player_app_runtime_package_reason(app, game);
+    /* This title is the game being started or the one that runs now. A game
+       whose window is not up yet is still starting. */
+    starting = game->disc_id[0] != '\0' &&
+        ((app->launch_pending &&
+          strcmp(app->launch_pending_disc_id, game->disc_id) == 0) ||
+         (app->is_game_running && !app->child_window_ready &&
+          strcmp(app->launch_session.disc_id, game->disc_id) == 0));
+    running = !starting && game->disc_id[0] != '\0' && app->is_game_running &&
+              strcmp(app->launch_session.disc_id, game->disc_id) == 0;
     player_library_status_text(package_ready, checking, check_failed,
                                game->assets_staged,
                                game->extracted_asset_count, reason,
@@ -876,8 +997,30 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     out->library_status = player_ui_library_status_word(game, package_ready);
     out->library_status_detail = package_ready || checking
         ? "" : player->status_text[index];
-    out->compatibility_word = player_ui_compatibility_word(game,
-                                                           &out->compatibility_detail);
+    /* The package card's text follows the package, not the primary action
+       (#1297): a ready package stays ready while its game runs. */
+    if (starting) {
+        out->package_state = PLAYER_UI_PACKAGE_STARTING;
+    } else if (running) {
+        out->package_state = PLAYER_UI_PACKAGE_RUNNING;
+    } else if (app->build_session.is_building &&
+               strcmp(app->build_session.disc_id, game->disc_id) == 0) {
+        out->package_state = PLAYER_UI_PACKAGE_BUILDING;
+    } else if (package_ready) {
+        out->package_state = PLAYER_UI_PACKAGE_READY;
+    } else if (checking || package_status == NK_RUNTIME_PACKAGE_UNKNOWN) {
+        out->package_state = PLAYER_UI_PACKAGE_CHECKING;
+    } else if (check_failed) {
+        out->package_state = PLAYER_UI_PACKAGE_CHECK_FAILED;
+    } else {
+        out->package_state = PLAYER_UI_PACKAGE_MISSING;
+    }
+    out->compatibility_category = player_ui_compatibility(
+        game, &out->compatibility_expect, &out->compatibility_known_issues,
+        &out->compatibility_tier);
+    if (!app->settings.developer_mode) out->compatibility_category = NULL;
+    /* The disc's executable is encrypted and no decrypted copy was found. The
+       title screen shows this only while the package still needs it. */
     out->input_note =
         game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
         game->executable_selection == NK_ISO_EXEC_SELECTION_NONE
@@ -885,6 +1028,15 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
             : "";
     out->status_rgba = player_ui_library_status_color(game, package_ready);
     out->status_marker = player_ui_library_status_marker(game, package_ready);
+    if (starting) {
+        out->library_status = "Starting";
+        out->status_rgba = PLAYER_UI_INFO;
+        out->status_marker = "◆";
+    } else if (running) {
+        out->library_status = "Running";
+        out->status_rgba = PLAYER_UI_READY;
+        out->status_marker = "●";
+    }
     out->art_kind = player_ui_art_kind(game);
     out->badge = out->art_kind != NK_UI_ART_NONE ? "Showcase demo" : "Your disc";
     out->icon = NULL;
@@ -900,9 +1052,13 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     }
 #endif
     out->save_folder_enabled = game->disc_id[0] != '\0';
+    out->can_remove = player_app_removal_blocker(app, index) == NULL;
     out->primary_action_enabled = false;
     out->primary_action = PLAYER_UI_PRIMARY_NONE;
-    if (app->is_game_running) {
+    if (app->launch_pending) {
+        /* The launch worker hands back STOP GAME or an error card. */
+        out->primary_action_label = "STARTING...";
+    } else if (app->is_game_running) {
         out->primary_action_label = "STOP GAME";
         out->primary_action_enabled = true;
         primary = PLAYER_UI_PRIMARY_STOP_GAME;
@@ -1068,6 +1224,19 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         if (nk_ui_focused(player->ui) == PLAYER_UI_ID_LIBRARY_ADD && slots > 0u) {
             player->library_page = (slots - 1u) / page_size;
         }
+        if (player->library_focus_pending) {
+            player->library_focus_pending = false;
+            if (player->library_focus_index < count) {
+                nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ITEM(player->library_focus_index));
+                app->selected_game_index = (int)player->library_focus_index;
+                player->library_page = player->library_focus_index / page_size;
+            } else if (count > 0u) {
+                nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ADD);
+                player->library_page = (slots - 1u) / page_size;
+            } else {
+                nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_EMPTY_ADD);
+            }
+        }
         if (slots == 0u) player->library_page = 0u;
         else if (player->library_page > (slots - 1u) / page_size) {
             player->library_page = (slots - 1u) / page_size;
@@ -1133,9 +1302,59 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
                 (void)nk_ui_router_pop(player->router);
                 action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TITLE) {
+                if (player_ui_open_remove(player, app, index)) {
+                    nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
+                    (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_REMOVE);
+                }
+                action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_PRIMARY ||
                        action.kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER) {
                 if (out_action != NULL) *out_action = action;
+            }
+        }
+    } else if (route == PLAYER_UI_ROUTE_REMOVE) {
+        int index = player->remove_index;
+        /* The dialog closes if its title left the library or can no longer
+           be removed (a build or a launch started under it). */
+        if (index < 0 || index >= app->game_count ||
+            strcmp(app->games[index].disc_id, player->remove_disc) != 0 ||
+            player_app_removal_blocker(app, index) != NULL) {
+            (void)nk_ui_router_pop(player->router);
+        } else {
+            PlayerUiRemoveModel model;
+            if (player->remove_focus_pending) {
+                nk_ui_focus(player->ui, PLAYER_UI_ID_REMOVE_CANCEL);
+                player->remove_focus_pending = false;
+            }
+            memset(&model, 0, sizeof(model));
+            model.title = app->games[index].title_name;
+            model.disc_id = app->games[index].disc_id;
+            model.title_index = (size_t)index;
+            model.items = player->remove_items;
+            model.item_count = player->remove_item_count;
+            model.has_saves = player->remove_plan.has_saves;
+            model.saves_bytes = player->remove_plan.saves_bytes;
+            model.delete_saves = player->remove_delete_saves;
+            model.logical_width = scale.logical_w;
+            model.logical_height = scale.logical_h;
+            action = player_ui_screen_remove(player->ui, &model);
+            if (action.kind == PLAYER_UI_ACTION_BACK) {
+                (void)nk_ui_router_pop(player->router);
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES) {
+                player->remove_delete_saves = !player->remove_delete_saves;
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_REMOVE_CONFIRM) {
+                /* The removal runs after this frame; the library then
+                   focuses the tile that takes this one's place. */
+                if (out_action != NULL) *out_action = action;
+                while (nk_ui_router_depth(player->router) > 1u) {
+                    (void)nk_ui_router_pop(player->router);
+                }
+                player->library_focus_pending = true;
+                player->library_focus_index = (size_t)index;
+                action.kind = PLAYER_UI_ACTION_NONE;
             }
         }
     } else if (route == PLAYER_UI_ROUTE_ABOUT) {

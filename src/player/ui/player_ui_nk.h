@@ -26,9 +26,10 @@ typedef enum {
     PLAYER_UI_ROUTE_LIBRARY = 1,
     PLAYER_UI_ROUTE_TITLE = 2,
     PLAYER_UI_ROUTE_ABOUT = 3,
+    PLAYER_UI_ROUTE_REMOVE = 4,    /* confirm Remove from library (#1304) */
     /* Settings is a view over the routes, never pushed; the top bar takes it to
        show the SETTINGS tab as the active one. */
-    PLAYER_UI_ROUTE_SETTINGS = 4
+    PLAYER_UI_ROUTE_SETTINGS = 5
 } PlayerUiRoute;
 
 /* The player's version: the one place it is written. The About page shows
@@ -44,6 +45,39 @@ typedef enum {
     PLAYER_UI_PRIMARY_STOP_GAME,
     PLAYER_UI_PRIMARY_REBUILD   /* an INCOMPATIBLE package: check, then build again */
 } PlayerUiPrimaryAction;
+
+/* Where this title's package stands, which picks the package card's text
+   (#1297). The primary action does not: while a game runs, it is STOP GAME
+   whatever the package is. */
+typedef enum {
+    PLAYER_UI_PACKAGE_MISSING = 0, /* not built, stale or incompatible */
+    PLAYER_UI_PACKAGE_READY,
+    PLAYER_UI_PACKAGE_CHECKING,
+    PLAYER_UI_PACKAGE_BUILDING,
+    PLAYER_UI_PACKAGE_CHECK_FAILED,
+    PLAYER_UI_PACKAGE_STARTING,    /* PLAY was pressed; the game window is not up yet */
+    PLAYER_UI_PACKAGE_RUNNING      /* this title is the game that runs now */
+} PlayerUiPackageState;
+
+/* The player tier on the title page's compatibility chip (#1297): the words
+   players know from other compatibility lists. NONE draws no chip, for a
+   title no one has tried. */
+typedef enum {
+    PLAYER_UI_TIER_NONE = 0,
+    PLAYER_UI_TIER_WONT_BOOT,
+    PLAYER_UI_TIER_TITLE_SCREEN,
+    PLAYER_UI_TIER_MENU,
+    PLAYER_UI_TIER_IN_GAME,
+    PLAYER_UI_TIER_PLAYABLE,
+    PLAYER_UI_TIER_PERFECT
+} PlayerUiTier;
+
+/* The chip word for a tier ("Perfect" ... "Won't boot"); NULL for NONE. */
+const char *player_ui_tier_word(PlayerUiTier tier);
+/* The tier a docs/COMPATIBILITY.md category gives a title that has no
+   player record of its own; NONE for Experimental, Untested and an unknown
+   word. This is the one mapping table (scr_title.c). */
+PlayerUiTier player_ui_tier_for_category(const char *category);
 
 typedef enum {
     PLAYER_UI_ACTION_NONE = 0,
@@ -67,6 +101,9 @@ typedef enum {
     PLAYER_UI_ACTION_OPEN_LIBRARY,
     PLAYER_UI_ACTION_OPEN_ABOUT,
     PLAYER_UI_ACTION_OPEN_NOTICES,
+    PLAYER_UI_ACTION_REMOVE_TITLE,         /* the title page asks to remove it (#1304) */
+    PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES,  /* the confirm screen's saves box */
+    PLAYER_UI_ACTION_REMOVE_CONFIRM,       /* remove it; .primary is 1 to delete saves */
     PLAYER_UI_ACTION_DISC,             /* a game-found card control; .primary carries the op */
     PLAYER_UI_ACTION_SETTINGS          /* a Settings control; .primary carries the op */
 } PlayerUiActionKind;
@@ -82,8 +119,13 @@ typedef struct {
     const char *disc_id;
     const char *library_status;
     const char *library_status_detail;
-    const char *compatibility_word;
-    const char *compatibility_detail;
+    /* What to expect on this PC, in plain words, and the known issues as one
+       sentence (empty when there are none) (#1297). */
+    const char *compatibility_expect;
+    const char *compatibility_known_issues;
+    /* The docs/COMPATIBILITY.md category, for the developer view only: NULL
+       or empty hides it. */
+    const char *compatibility_category;
     const char *input_note;
     const char *primary_action_label;
     const char *status_marker;
@@ -100,6 +142,11 @@ typedef struct {
        user's disc image (never stored); NULL until read or when absent. */
     const struct NkUiImage *icon;
     const struct NkUiImage *picture;
+    PlayerUiPackageState package_state;
+    PlayerUiTier compatibility_tier;
+    /* REMOVE FROM LIBRARY is offered: not for a showcase demo, and not while a
+       game starts or runs, a package builds or a disc is copied (#1304). */
+    bool can_remove;
 } PlayerUiTitle;
 
 typedef struct {
@@ -305,6 +352,8 @@ typedef struct {
     const char *title_line;        /* "Game name (DISC-ID)" */
     int stage;
     bool built;                    /* written; being checked before PLAY */
+    float fraction;                /* compiled share of the parts, -1 when unknown */
+    const char *notice;            /* compile-stage "other apps may feel slower" note */
     const char *message;
     unsigned elapsed_ms;
     const char *lines[4];          /* the last output lines, oldest first */
@@ -391,12 +440,16 @@ enum {
     PLAYER_UI_ID_TITLE_BACK = 0x2001u,
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,
     PLAYER_UI_ID_TITLE_SAVE_FOLDER = 0x2003u,
+    PLAYER_UI_ID_TITLE_REMOVE = 0x2004u,
+    PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
+    PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
+    PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
     PLAYER_UI_ID_TAB_LIBRARY = 0x0F01u,
     PLAYER_UI_ID_TAB_ABOUT = 0x0F02u,
     PLAYER_UI_ID_TAB_SETTINGS = 0x0F03u,
     PLAYER_UI_ID_ABOUT_NOTICES = 0x3001u,
-    PLAYER_UI_ID_DISC_PRIMARY = 0x4401u,
-    PLAYER_UI_ID_DISC_SECOND = 0x4402u,
+    PLAYER_UI_ID_DISC_PRIMARY = 0x4601u,
+    PLAYER_UI_ID_DISC_SECOND = 0x4602u,
     PLAYER_UI_ID_SETTINGS_RESOLUTION = 0x4501u,
     PLAYER_UI_ID_SETTINGS_PACING = 0x4502u,
     PLAYER_UI_ID_SETTINGS_VSYNC = 0x4503u,
@@ -448,6 +501,28 @@ PlayerUiAction player_ui_screen_library(NkUi *ui,
 PlayerUiAction player_ui_screen_title(NkUi *ui,
                                       const PlayerUiTitleModel *model);
 PlayerUiAction player_ui_screen_build(NkUi *ui, const PlayerUiBuildModel *model);
+
+/* Remove from library (#1304): what goes, with sizes, and the saves box. */
+#define PLAYER_UI_REMOVE_ITEM_CAP 4u
+typedef struct {
+    const char *label;          /* "Built package" */
+    uint64_t bytes;
+} PlayerUiRemoveItem;
+
+typedef struct {
+    const char *title;
+    const char *disc_id;
+    size_t title_index;
+    const PlayerUiRemoveItem *items;   /* what Nakagawa built; may be empty */
+    size_t item_count;
+    bool has_saves;             /* the game has saves; false hides the saves box */
+    uint64_t saves_bytes;
+    bool delete_saves;          /* the saves box; off until the user ticks it */
+    float logical_width;
+    float logical_height;
+} PlayerUiRemoveModel;
+
+PlayerUiAction player_ui_screen_remove(NkUi *ui, const PlayerUiRemoveModel *model);
 PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *model);
 PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model);
 PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *model);
@@ -483,8 +558,10 @@ bool player_ui_nk_at_library_root(const PlayerUiNk *player);
 const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t index);
 /* Test only: the route the next UI shows, or 0 when it has none. */
 int player_ui_nk_test_route(const PlayerUiNk *player);
-/* Test only: the control the next UI has focused, or 0. */
+/* Test only: the control the next UI focuses, or 0. */
 unsigned player_ui_nk_test_focus(const PlayerUiNk *player);
+/* Test only: print each compatibility record's category tier and tier. */
+void player_ui_nk_test_report_compatibility(void);
 #endif
 bool player_ui_nk_handle_event(PlayerUiNk *player,
                                const union SDL_Event *event);

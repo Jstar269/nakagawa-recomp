@@ -156,6 +156,10 @@ static UiFont g_font;
 static unsigned s_ui_test_bitmap_text_draws;
 /* Badge text of the package build screen as last drawn. */
 static const char *s_ui_test_build_badge;
+/* Fill of the package build screen's bar as last drawn, -1 for the sweep. */
+static float s_ui_test_build_bar_fraction = -1.0f;
+/* Whether the package build screen drew its "other apps may feel slower" note. */
+static bool s_ui_test_build_notice_drawn;
 #endif
 
 static uint32_t ui_color_key(SDL_Color c) {
@@ -1803,6 +1807,14 @@ unsigned ui_test_bitmap_text_draws(void) {
 const char *ui_test_build_badge(void) {
     return s_ui_test_build_badge ? s_ui_test_build_badge : "none";
 }
+
+float ui_test_build_bar_fraction(void) {
+    return s_ui_test_build_bar_fraction;
+}
+
+bool ui_test_build_notice_drawn(void) {
+    return s_ui_test_build_notice_drawn;
+}
 #endif
 
 bool ui_last_status_badge_rect(SDL_FRect *out_rect) {
@@ -2125,8 +2137,11 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                          2.5f, hero_w - 64.0f, COLOR_TEXT_WHITE);
     if (game->is_experimental) {
         char experimental_reason[224];
+        /* The decrypted-files step matters only while there is no package
+           built from them (#1297). */
         if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
-            game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
+            game->executable_selection == NK_ISO_EXEC_SELECTION_NONE &&
+            !package_ready) {
             snprintf(experimental_reason, sizeof(experimental_reason),
                      "ENCRYPTED_EXECUTABLE: Nakagawa does not decrypt games. Add a decrypted EBOOT.elf from your own copy. Build the runtime package from the library.");
         } else if (game->selected_executable[0]) {
@@ -2262,7 +2277,13 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
      * stay clear of them.) */
     int focus = 0;
     bool primary_focused = (app->focus_index == focus);
-    if (app->is_game_running) {
+    if (app->launch_pending) {
+        /* The launch worker is checking the package or starting the game
+           (#1298); the button comes back as STOP GAME or with the error. */
+        draw_status_pill_focused(ren, hero_x + 32.0f, btn_y, 220.0f,
+                                 54.0f, "STARTING...", primary_focused);
+        focus++;
+    } else if (app->is_game_running) {
         char run_str[64];
         snprintf(run_str, sizeof(run_str), "STOP GAME (PID %d)", app->launch_session.process.process_id);
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f, run_str, true, in, primary_focused)) {
@@ -2272,7 +2293,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     } else if (package_ready) {
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                                 "PLAY NOW", true, in, primary_focused)) {
-            player_app_launch_game(app, app->selected_game_index);
+            player_app_request_launch(app, app->selected_game_index);
         }
         focus++;
     } else if (package_checking) {
@@ -3911,13 +3932,21 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
                   stages[i], 1.0f, text_col);
     }
 
-    /* Progress bar */
+    /* Progress bar: the compiled share of the parts while the compile stage
+     * counts them; otherwise an indeterminate sweep that claims no percentage. */
     float bar_y = stage_y + 40.0f;
+    float compile_fraction = package_builder_compile_fraction(&app->build_session);
     if (built) {
         draw_progress_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, 100.0f);
+    } else if (compile_fraction >= 0.0f) {
+        draw_progress_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f,
+                          compile_fraction * 100.0f);
     } else {
         draw_indeterminate_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, g_reduce_motion);
     }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_build_bar_fraction = built ? 1.0f : compile_fraction;
+#endif
 
     /* Current status message & elapsed time */
     float info_y = bar_y + 24.0f;
@@ -3933,8 +3962,20 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
     snprintf(elapsed_str, sizeof(elapsed_str), "Elapsed: %u.%u s", sec, tenths);
     draw_text(ren, card_x + card_w - 150.0f, info_y, elapsed_str, 1.0f, COLOR_TEXT_MUTED);
 
-    /* Output log box */
+    /* While the compile stage runs several jobs, a calm note in muted body text that
+     * other apps may feel slower. No warning colour or icon: nothing is wrong. */
     float log_y = info_y + 28.0f;
+    const char *notice = built ? NULL : package_builder_compile_notice(&app->build_session);
+    if (notice) {
+        float after = draw_text_wrapped(ren, card_x + 32.0f, info_y + 26.0f, card_w - 64.0f,
+                                        notice, 1.0f, COLOR_TEXT_MUTED, 2);
+        log_y = after + 8.0f;
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_build_notice_drawn = notice != NULL;
+#endif
+
+    /* Output log box */
     float log_h = 100.0f;
     draw_rounded_fill(ren, card_x + 32.0f, log_y, card_w - 64.0f, log_h, 6.0f, (SDL_Color){ 14, 18, 22, 255 });
     draw_rounded_outline(ren, card_x + 32.0f, log_y, card_w - 64.0f, log_h, 6.0f, COLOR_CARD_BORDER);
@@ -4939,7 +4980,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                     int idx = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
                     if (idx >= 0) {
                         app->selected_game_index = idx;
-                        if (runtime_ready) player_app_launch_game(app, idx);
+                        if (runtime_ready) player_app_request_launch(app, idx);
                     }
                 }
                 player_app_set_view(app, VIEW_LIBRARY);
