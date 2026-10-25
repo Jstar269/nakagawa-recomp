@@ -2528,7 +2528,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5783473855989beba0620f3d903dfd4654d4b57d75af8a2662fb0275c90c1572"
+      "sha256": "5b3b77e3dc7efa4c1aea192ca3e4e05a614123960ef0e9d94284329d38e5faaf"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",

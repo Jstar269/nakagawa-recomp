@@ -5469,7 +5469,7 @@ static void gt_cells_round2(int emulated) {
     for (int wi = 0; wi < 6; wi++) {
         for (int hi = 0; hi < 6; hi++) {
             const uint32_t n = gt_prepare_tiles((GtFlatV *)s_gt_vtx, dims[wi], dims[hi], 0);
-            char name[32];
+            char name[48];
             snprintf(name, sizeof(name), "s1-sprite-%dx%d", dims[wi], dims[hi]);
             gt_setup_base(GU_PSM_8888);
             gt_cell_draw(emulated, name, n / 2u, 65536u, GU_SPRITES, vt, n, NULL);
@@ -5477,7 +5477,7 @@ static void gt_cells_round2(int emulated) {
     }
     for (int d = 0; d < 6; d++) {
         const uint32_t n = gt_prepare_tiles((GtFlatV *)s_gt_vtx, dims[d], dims[d], 1);
-        char name[32];
+        char name[48];
         snprintf(name, sizeof(name), "s2-triquad-%d", dims[d]);
         gt_setup_base(GU_PSM_8888);
         gt_cell_draw(emulated, name, n / 3u, 65536u, GU_TRIANGLES, vt, n, NULL);
