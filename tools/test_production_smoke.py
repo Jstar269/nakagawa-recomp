@@ -752,7 +752,6 @@ class TestProductionSmokePackage(unittest.TestCase):
                         game_elf=self.fixture_dir / "guest.prx",
                         psp_header=self.fixture_dir / "guest.psp",
                         output_dir=self.root / "out dir",
-                        public_safe=True,
                     )
                 self.assertEqual(caught.exception.code, "PACKAGE_UNSUPPORTED_PATH")
                 self.assertIn("contains spaces", str(caught.exception))
@@ -767,7 +766,6 @@ class TestProductionSmokePackage(unittest.TestCase):
                 game_elf=self.fixture_dir / "guest.prx",
                 psp_header=self.fixture_dir / "guest.psp",
                 output_dir=self.root / "out#dir",
-                public_safe=True,
             )
         self.assertEqual(caught.exception.code, "PACKAGE_UNSUPPORTED_PATH")
         self.assertIn("characters the Make recipes cannot quote", str(caught.exception))
@@ -787,7 +785,6 @@ class TestProductionSmokePackage(unittest.TestCase):
                 game_elf=self.fixture_dir / "guest.prx",
                 psp_header=self.fixture_dir / "guest.psp",
                 output_dir=spaced_dest,
-                public_safe=True,
             )
         self.assertTrue((spaced_dest / "package.json").is_file())
         self.assertTrue((spaced_dest / "build-report.json").is_file())
@@ -818,7 +815,6 @@ class TestProductionSmokePackage(unittest.TestCase):
                     game_elf=self.fixture_dir / "guest.prx",
                     psp_header=self.fixture_dir / "guest.psp",
                     output_dir=spaced_dest,
-                    public_safe=True,
                 )
         self.assertTrue((spaced_dest / "package.json").is_file())
         self.assertTrue((spaced_dest / "build-report.json").is_file())
@@ -852,7 +848,6 @@ class TestProductionSmokePackage(unittest.TestCase):
                 game_elf=self.fixture_dir / "guest.prx",
                 psp_header=self.fixture_dir / "guest.psp",
                 output_dir=spaced_dest,
-                public_safe=True,
             )
         self.assertTrue((spaced_dest / "package.json").is_file())
         self.assertTrue((spaced_dest / "production_smoke.exe").is_file())
@@ -1186,7 +1181,6 @@ class TestCodegenStageReuse(unittest.TestCase):
                 psp_header=self.fixture_dir / "guest.psp",
                 output_dir=output_dir,
                 funcs_per_chunk=1,
-                public_safe=True,
                 **options,
             )
         return result, stdout.getvalue()
