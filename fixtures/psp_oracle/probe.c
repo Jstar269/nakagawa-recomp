@@ -5282,7 +5282,7 @@ static void gt_cell_peeks(int emulated, uint32_t bytes) {
             if (d != pd && nd < 2u) { out[6 + 2 * nd] = (uint32_t)d; out[7 + 2 * nd] = t; nd++; }
             pl = l;
             pd = d;
-            if (!out[10] && *pix == GT_COLOR_B) out[10] = t;
+            if (!out[10] && (*pix & 0x00ffffffu) == (GT_COLOR_B & 0x00ffffffu)) out[10] = t;
             if (!seen_fin && s_gt_fin_count) {
                 seen_fin = 1;
                 out[11] = s_gt_fin_time[0] - t0;
@@ -5433,6 +5433,102 @@ static void gt_cell_blocking_sync(int emulated) {
     }
 }
 
+
+/* Sprites or two-triangle quads of w x h px tiling a 256 x 256 region from the
+   origin; returns the vertex count. */
+static uint32_t gt_prepare_tiles(GtFlatV *v, int w, int h, int quads) {
+    uint32_t n = 0;
+    for (int y = 0; y < 256; y += h) {
+        for (int x = 0; x < 256; x += w) {
+            const int16_t x0 = (int16_t)x, y0 = (int16_t)y, x1 = (int16_t)(x + w), y1 = (int16_t)(y + h);
+            if (quads) {
+                v[n++] = (GtFlatV){GT_COLOR_A, x0, y0, 0, 0};
+                v[n++] = (GtFlatV){GT_COLOR_A, x1, y0, 0, 0};
+                v[n++] = (GtFlatV){GT_COLOR_A, x0, y1, 0, 0};
+                v[n++] = (GtFlatV){GT_COLOR_A, x1, y0, 0, 0};
+                v[n++] = (GtFlatV){GT_COLOR_A, x1, y1, 0, 0};
+                v[n++] = (GtFlatV){GT_COLOR_A, x0, y1, 0, 0};
+            } else {
+                v[n++] = (GtFlatV){GT_COLOR_A, x0, y0, 0, 0};
+                v[n++] = (GtFlatV){GT_COLOR_A, x1, y1, 0, 0};
+            }
+        }
+    }
+    return n;
+}
+
+/* S1-S4, the second round: how fill cost depends on primitive shape, how
+   vertex and raster work combine in mid-sized triangles, where the texture
+   cache stops holding a texture, and whether a vertex-bound draw and a
+   fill-bound draw in one list add.  The size word is the primitive count
+   (S4: 0); units are pixels (S4: transformed vertices + cleared pixels). */
+static void gt_cells_round2(int emulated) {
+    probe_step(emulated, "ge-timing", "s1-s4");
+    static const int dims[6] = {8, 16, 32, 64, 128, 256};
+    const uint32_t vt = GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D;
+    for (int wi = 0; wi < 6; wi++) {
+        for (int hi = 0; hi < 6; hi++) {
+            const uint32_t n = gt_prepare_tiles((GtFlatV *)s_gt_vtx, dims[wi], dims[hi], 0);
+            char name[32];
+            snprintf(name, sizeof(name), "s1-sprite-%dx%d", dims[wi], dims[hi]);
+            gt_setup_base(GU_PSM_8888);
+            gt_cell_draw(emulated, name, n / 2u, 65536u, GU_SPRITES, vt, n, NULL);
+        }
+    }
+    for (int d = 0; d < 6; d++) {
+        const uint32_t n = gt_prepare_tiles((GtFlatV *)s_gt_vtx, dims[d], dims[d], 1);
+        char name[32];
+        snprintf(name, sizeof(name), "s2-triquad-%d", dims[d]);
+        gt_setup_base(GU_PSM_8888);
+        gt_cell_draw(emulated, name, n / 3u, 65536u, GU_TRIANGLES, vt, n, NULL);
+    }
+    static const struct { const char *name; int psm; int swizzle; } formats[5] = {
+        {"8888", GU_PSM_8888, 0}, {"8888s", GU_PSM_8888, 1}, {"5650", GU_PSM_5650, 0},
+        {"t8", GU_PSM_T8, 0}, {"dxt1", GU_PSM_DXT1, 0},
+    };
+    static const int sizes[2] = {128, 256};
+    for (int f = 0; f < 5; f++) {
+        for (int z = 0; z < 2; z++) {
+            for (int c = 0; c < 3; c++) {
+                const uint32_t count = s_gt_counts[c];
+                gt_begin(s_gt_setup);
+                gt_base_state(GU_PSM_8888);
+                sceGuEnable(GU_TEXTURE_2D);
+                sceGuTexMode(formats[f].psm, 0, 0, formats[f].swizzle);
+                sceGuTexImage(0, sizes[z], sizes[z], sizes[z], s_gt_tex);
+                sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+                sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+                sceGuTexWrap(GU_REPEAT, GU_REPEAT);
+                if (formats[f].psm == GU_PSM_T8) {
+                    sceGuClutMode(GU_PSM_8888, 0, 0xff, 0);
+                    sceGuClutLoad(32, s_gt_clut);
+                }
+                sceGuTexFlush();
+                (void)gt_end();
+                gt_begin(s_gt_list);
+                for (uint32_t k = 0; k < count; k++)
+                    sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                                   16, NULL, s_gt_tex_strips);
+                char name[40];
+                snprintf(name, sizeof(name), "s3-tex-%s-%d", formats[f].name, sizes[z]);
+                gt_measure_built(emulated, name, count, count * GT_W * GT_H, gt_end(), GT_REPS);
+            }
+        }
+    }
+    /* S4: 6144 tiny transformed vertices, then four 8888 colour clears, in one list. */
+    const uint32_t xf = GU_VERTEX_32BITF | GU_TRANSFORM_3D;
+    (void)gt_pack_tiny(xf, 6144u);
+    gt_setup_base(GU_PSM_8888);
+    gt_begin(s_gt_list);
+    sceGuDrawArray(GU_TRIANGLES, (int)xf, 6144, NULL, s_gt_vtx);
+    for (int k = 0; k < 4; k++) {
+        sceGuSendCommandi(211, (GU_COLOR_BUFFER_BIT << 8) | 1);
+        sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 16, NULL, s_gt_strips);
+        sceGuSendCommandi(211, 0);
+    }
+    gt_measure_built(emulated, "s4-mix-vertex-fill", 0u, 6144u + 4u * GT_W * GT_H, gt_end(), GT_REPS);
+}
+
 static void gt_pass(int emulated, int pll, int cpu, int bus) {
     const int rc = scePowerSetClockFrequency(pll, cpu, bus);
     s_gt_cpu_mhz = (uint32_t)scePowerGetCpuClockFrequencyInt();
@@ -5453,6 +5549,7 @@ static void gt_pass(int emulated, int pll, int cpu, int bus) {
     gt_cells_fill(emulated);
     gt_cells_upload(emulated);
     gt_cell_two_lists(emulated);
+    gt_cells_round2(emulated);
     gt_setup_base(GU_PSM_8888);
     {
         GtStats setup;
