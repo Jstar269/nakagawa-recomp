@@ -34,9 +34,15 @@ void nk_ui_router_destroy(NkUiRouter *router) {
     free(router);
 }
 
+/* Every route the player draws. A route missing here is refused by replace and
+   push, and its screen can never open (#1281: About was missing). */
+static bool nk_ui_router_known(PlayerUiRoute route) {
+    return route == PLAYER_UI_ROUTE_LIBRARY || route == PLAYER_UI_ROUTE_TITLE ||
+           route == PLAYER_UI_ROUTE_ABOUT;
+}
+
 bool nk_ui_router_replace(NkUiRouter *router, PlayerUiRoute route) {
-    if (router == NULL || (route != PLAYER_UI_ROUTE_LIBRARY &&
-                           route != PLAYER_UI_ROUTE_TITLE)) {
+    if (router == NULL || !nk_ui_router_known(route)) {
         return false;
     }
     router->entries[0].route = route;
@@ -49,9 +55,8 @@ bool nk_ui_router_replace(NkUiRouter *router, PlayerUiRoute route) {
 
 bool nk_ui_router_push(NkUiRouter *router, PlayerUiRoute route) {
     PlayerUiRouteEntry *entry;
-    if (router == NULL || (route != PLAYER_UI_ROUTE_LIBRARY &&
-                           route != PLAYER_UI_ROUTE_TITLE) ||
-        router->depth == 0u || router->depth >= PLAYER_UI_ROUTE_DEPTH_MAX) {
+    if (router == NULL || !nk_ui_router_known(route) || router->depth == 0u ||
+        router->depth >= PLAYER_UI_ROUTE_DEPTH_MAX) {
         return false;
     }
     entry = &router->entries[router->depth++];
@@ -155,7 +160,7 @@ void player_ui_version_line(const char *version, long long epoch, char *out, siz
 }
 
 PlayerUiActionKind player_ui_top_bar(NkUi *ui, NkUiId id, PlayerUiRoute active) {
-    NkUiSection sections[2];
+    NkUiSection sections[3];
     int chosen;
     sections[0].label = "Library";
     sections[0].active = active != PLAYER_UI_ROUTE_ABOUT;
@@ -163,10 +168,17 @@ PlayerUiActionKind player_ui_top_bar(NkUi *ui, NkUiId id, PlayerUiRoute active) 
     sections[1].label = "About";
     sections[1].active = active == PLAYER_UI_ROUTE_ABOUT;
     sections[1].id = PLAYER_UI_ID_TAB_ABOUT;
-    chosen = nk_ui_top_bar(ui, id, sections, 2u,
+    /* Settings is its own view, so its tab is never the active one. */
+    sections[2].label = "Settings";
+    sections[2].active = false;
+    sections[2].id = PLAYER_UI_ID_TAB_SETTINGS;
+    chosen = nk_ui_top_bar(ui, id, sections, 3u,
                            nk_ui_input_label(nk_ui_prompt_style(ui)),
                            nk_ui_prompt_style(ui) != NK_UI_PROMPT_KEYCAPS);
     if (chosen == 0 && !sections[0].active) return PLAYER_UI_ACTION_OPEN_LIBRARY;
     if (chosen == 1 && !sections[1].active) return PLAYER_UI_ACTION_OPEN_ABOUT;
+    if (chosen == 2 || (chosen < 0 && nk_ui_take_event(ui, NK_UI_EV_MENU, NULL))) {
+        return PLAYER_UI_ACTION_OPEN_SETTINGS;
+    }
     return PLAYER_UI_ACTION_NONE;
 }

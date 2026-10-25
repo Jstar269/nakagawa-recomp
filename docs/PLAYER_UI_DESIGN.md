@@ -189,10 +189,11 @@ Only actions the screen handles appear in its prompt bar.
 
 ### Library (C5, built)
 
-Top bar; `LIBRARY` in `DISPLAY` with the count in `CAPTION` beside it ("7 titles · 2 showcase demos"); a pager
+Top bar with LIBRARY, ABOUT and SETTINGS tabs (SETTINGS opens the Settings view, so it is never the active tab;
+Start or F1, the menu prompt, opens it too); `LIBRARY` in `DISPLAY` with the count in `CAPTION` beside it ("7 titles · 2 showcase demos"); a pager
 (small PREVIOUS and NEXT buttons around "PAGE 1 OF 2") on the right of that row when the grid spans pages; the card
-grid, ending with the add card ("Add a disc image you own", "Choose an .iso file"); prompt bar with MOVE and OPEN
-and no corner text. Empty library: one centred 640 px card with a disc icon, `TITLE` "Add your first game", a `BODY`
+grid, ending with the add card ("Add a disc image you own", "Choose an .iso file"); prompt bar with MOVE, OPEN and
+SETTINGS and no corner text. Empty library: one centred 640 px card with a disc icon, `TITLE` "Add your first game", a `BODY`
 line, the primary START SETUP WIZARD button (the default focus), CHOOSE A DISC IMAGE, and a caption about dropping an
 .iso onto the window.
 
@@ -207,7 +208,7 @@ Partially works and Experimental `info`, Boots to a named boundary `warning`, ot
 
 ### About (built)
 
-Reached from the top bar's ABOUT tab (L / R or Q / E switch tabs; Back returns to the Library). A centred
+Reached from the top bar's ABOUT tab (L / R or Q / E switch tabs; Back returns to the screen it was opened from). A centred
 880 px column:
 
 - the N1 mark at 72 px beside `NAKAGAWA RECOMP` in `DISPLAY_XL`, with the version line under it in `LABEL_L`
