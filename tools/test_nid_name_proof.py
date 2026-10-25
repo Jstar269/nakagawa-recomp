@@ -32,14 +32,14 @@ def make_header(pairs: list[tuple[int, str]]) -> str:
 class NidDerivationTest(unittest.TestCase):
     def test_rule_is_little_endian_sha1_prefix(self) -> None:
         name = "sceKernelSetCompiledSdkVersion"
-        digest = hashlib.sha1(name.encode()).digest()
+        digest = hashlib.sha1(name.encode(), usedforsecurity=False).digest()
         self.assertEqual(proof.nid_of(name), int.from_bytes(digest[:4], "little"))
 
     def test_rule_is_not_big_endian(self) -> None:
         """Guards against a byte-order regression that would silently pass most
         entries only if the table were also regenerated wrongly."""
         name = "sceIoOpen"
-        digest = hashlib.sha1(name.encode()).digest()
+        digest = hashlib.sha1(name.encode(), usedforsecurity=False).digest()
         self.assertNotEqual(proof.nid_of(name), int.from_bytes(digest[:4], "big"))
 
     def test_distinct_names_do_not_collide(self) -> None:
