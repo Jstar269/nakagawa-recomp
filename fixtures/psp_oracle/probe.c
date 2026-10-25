@@ -9463,7 +9463,7 @@ static void run_fake_success(int emulated) {
 #define CPU_TIMING_MISS_STRIDE 512u
 #define CPU_TIMING_MISS_BYTES (CPU_TIMING_MISS_MAX_BLOCKS * CPU_TIMING_MISS_STRIDE)
 #define CPU_TIMING_SYSCALL_CALLS 2048u
-#define CPU_TIMING_DRAW_SYNC_CALLS 32u
+#define CPU_TIMING_DRAW_SYNC_CALLS 4u
 #define CPU_TIMING_GE_CALLS_PER_TRIAL 1u
 #define CPU_TIMING_RESULT_COUNT 64u
 #define CPU_TIMING_REPEAT_8(OP) OP OP OP OP OP OP OP OP
@@ -9891,7 +9891,8 @@ static int cpu_timing_measure_ge_calls(int emulated, uint32_t cpu_mhz) {
         return 0;
     }
     int pass = 1;
-    sceGuStart(GU_DIRECT, s_cpu_timing_ge_list);
+    /* This buffer is enqueued below, so libpspgu must emit a queued list to memory. */
+    sceGuStart(GU_SEND, s_cpu_timing_ge_list);
     sceGuFinish();
     sceKernelDcacheWritebackAll();
     probe_step(emulated, "cpu-timing", "ge-enqueue-stall-update");
