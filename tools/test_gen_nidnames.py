@@ -38,7 +38,7 @@ class ResolveTest(unittest.TestCase):
         name = "sceIoOpen"
         nid, got = gen.resolve({"class": "hash-verified", "name": name})
         self.assertEqual(got, name)
-        self.assertEqual(nid, int.from_bytes(hashlib.sha1(name.encode()).digest()[:4], "little"))
+        self.assertEqual(nid, int.from_bytes(hashlib.sha1(name.encode(), usedforsecurity=False).digest()[:4], "little"))
 
     def test_derivable_entry_may_not_store_a_nid(self) -> None:
         """Storing it would defeat the whole point: the constant must be absent."""

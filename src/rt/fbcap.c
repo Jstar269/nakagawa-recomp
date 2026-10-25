@@ -179,7 +179,7 @@ int sr_capture_arm(const char *path) {
     s_result = 0;
     if (s_state == CAP_ARMED || s_state == CAP_RECORDED) return 0;
     if (!path || !path[0] || strlen(path) >= sizeof s_path) return 0;
-    strcpy(s_path, path);
+    snprintf(s_path, sizeof s_path, "%s", path);
     s_src = SR_CAP_SRC_NONE;
     s_w = s_h = 0;
     s_state = CAP_ARMED;
