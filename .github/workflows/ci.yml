@@ -521,7 +521,7 @@ jobs:
             # Both halves are capped per attempt so a slow mirror cannot spend the whole step budget
             # before the fallback runs: 3 minutes for the index update, 8 for the install.
             if sudo timeout 180 apt-get update && sudo timeout 480 apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
-                git libavcodec-dev libavutil-dev libc6-dev-i386 libvulkan-dev \
+                git libc6-dev-i386 libvulkan-dev \
                 libxcursor-dev libxext-dev libxfixes-dev libxi-dev libxinerama-dev \
                 libxkbcommon-dev libx11-dev libxrandr-dev libxss-dev libxtst-dev \
                 mesa-vulkan-drivers ninja-build pkg-config vulkan-tools \
@@ -680,10 +680,11 @@ jobs:
           printf 'SDL3_ttf %s; ' "$ttf_version"
           "$RUNNER_TEMP/sdl3-ttf-features"
 
-      - name: Build and run the opt-in FFmpeg H.264 media selftest
-        # Exercise the real libavcodec route, including guest-VRAM coherence, explicit backend
-        # selection, native-format reporting, and the source-authored final-AU fixture. Use an
-        # isolated build root so non-FFmpeg objects from earlier steps cannot be reused.
+      - name: Build and run the vendored FFmpeg H.264 media selftest
+        # Exercise the pinned, vendored FFmpeg H.264 subset (src/rt/h264_ffmpeg_sub, no system
+        # FFmpeg installed), including guest-VRAM coherence, explicit backend selection,
+        # native-format reporting, and the source-authored final-AU fixture. Use an isolated build
+        # root so non-FFmpeg objects from earlier steps cannot be reused.
         run: make CC=gcc H264_FFMPEG=1 BUILD_ROOT="$RUNNER_TEMP/ffmpeg-h264-build" psmf-media-selftest
 
       - name: Install PSPDEV from the checked-in lock
@@ -895,6 +896,38 @@ jobs:
           printf '%s\n' "$stage_output"
           grep -Fq "STAGING_RESULT status=PASS" <<<"$stage_output"
 
+      - name: Stage the installed Linux player and smoke the installed binary
+        run: |
+          set -euo pipefail
+          player_build="$RUNNER_TEMP/nakagawa-cmake-player"
+          install_dir="$RUNNER_TEMP/nk-install"
+          iso="$RUNNER_TEMP/showcase-build/showcase-scene-v1/TEST00007.iso"
+          test -f "$iso"
+          # Redirect all four XDG roots, so the .desktop entry and icon land under
+          # RUNNER_TEMP and never under the runner's HOME.
+          xdg_root="$RUNNER_TEMP/nk-install-xdg"
+          mkdir -p "$xdg_root/data" "$xdg_root/config" "$xdg_root/cache" "$xdg_root/state"
+          export XDG_DATA_HOME="$xdg_root/data" XDG_CONFIG_HOME="$xdg_root/config" \
+            XDG_CACHE_HOME="$xdg_root/cache" XDG_STATE_HOME="$xdg_root/state"
+          python tools/stage_install.py --dest "$install_dir" \
+            --player "$player_build/nakagawa_player" --desktop-shortcut
+          test -x "$install_dir/bin/nakagawa_player"
+          test -f "$install_dir/source/tools/nk_cli.py"
+          test -f "$XDG_DATA_HOME/applications/nakagawa-recomp.desktop"
+          test -f "$XDG_DATA_HOME/icons/hicolor/256x256/apps/nakagawa-recomp.png"
+          help_output=$(SDL_VIDEODRIVER=offscreen "$install_dir/bin/nakagawa_player" --help)
+          printf '%s\n' "$help_output"
+          grep -Fq "Usage: nakagawa_player" <<<"$help_output"
+          # Run the installed binary from outside the checkout, so nothing resolves
+          # against the source tree's working directory.
+          smoke_cwd="$RUNNER_TEMP/nk-install-cwd"
+          mkdir -p "$smoke_cwd"
+          cd "$smoke_cwd"
+          stage_output=$(SDL_VIDEODRIVER=offscreen timeout 60s \
+            "$install_dir/bin/nakagawa_player" "--iso=$iso" --stage-only)
+          printf '%s\n' "$stage_output"
+          grep -Fq "STAGING_RESULT status=PASS" <<<"$stage_output"
+
       - name: Run selftest (C++ interpreter unit tests under UBSan)
         run: |
           g++ -std=c++17 -O1 -Isrc/ref -Isrc/rt -o build/selftest \
@@ -998,12 +1031,12 @@ jobs:
             src/rt/atrac3p/libavcodec/sinewin.c src/rt/atrac3p/libavutil/float_dsp.c \
             src/rt/atrac3p/libavutil/intmath.c src/rt/atrac3p/libavutil/log2_tab.c \
             src/rt/atrac3p/libavutil/mem.c src/rt/atrac3p/libavutil/reverse.c"
-          INC="-Isrc/rt -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/libavutil"
+          INC="-Isrc/rt -Itests/native -Isrc/rt/atrac3p -Isrc/rt/atrac3p/libavcodec -Isrc/rt/atrac3p/libavutil"
           gcc -std=c11 -O1 $INC -o build/atrac3p_selftest \
             src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_selftest
           gcc -std=c11 -O1 $INC -o build/atrac3p_bridge_selftest \
-            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c \
+            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c tests/native/pcm_wav_dump.c \
             $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_bridge_selftest
           SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
@@ -1011,7 +1044,7 @@ jobs:
             src/rt/atrac3p_selftest.c $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_selftest_san
           gcc -std=c11 -O1 $SAN $INC -o build/atrac3p_bridge_selftest_san \
-            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c \
+            src/rt/atrac3p_bridge_selftest.c src/rt/atrac3p_bridge.c src/rt/perf.c tests/native/pcm_wav_dump.c \
             $ATRAC3P_SRCS src/rt/vfpu_tables.c -lm
           ./build/atrac3p_bridge_selftest_san
 

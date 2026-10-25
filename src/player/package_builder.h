@@ -147,7 +147,7 @@ const char *package_builder_get_output_line(
     int index
 );
 
-/* Locate runnable CPython 3.15.x from PYTHON, UCRT64, or PATH. Candidates must
+/* Locate runnable CPython 3.14.x or 3.15.x from PYTHON, UCRT64, or PATH. Candidates must
  * pass a bounded version probe before their paths are returned. */
 bool package_builder_find_python(char *out_path, size_t out_size);
 /* Prefer the installed pinned prerequisite under data_root, then use host search. */

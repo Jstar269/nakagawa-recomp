@@ -631,6 +631,13 @@ int sr_title_config_is_callback_terminator(uint32_t sentinel,
 int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr) {
     (void)from; (void)to_addr; return 0;
 }
+const SrTitleRuntimeConfig *sr_title_config(void) {
+    static const SrTitleRuntimeConfig unconfigured;
+    return &unconfigured;
+}
+void sr_compat_fired(const char *collection, uint32_t anchor, const char *name) {
+    (void)collection; (void)anchor; (void)name;
+}
 
 '''
 

@@ -188,4 +188,27 @@ int sr_title_config_frame_latch_addr(uint32_t *out);
  * (generic build, or manifest without census), otherwise the exact count. */
 uint32_t sr_title_config_expected_data_file_count(void);
 
+/* Fired-patch report (#1274). Every site that applies a temporary compatibility patch
+ * from `python tools/compat_overrides.py --debt-census` calls sr_compat_fired with the
+ * three parts of that entry's census id: its manifest collection, its anchor address
+ * and its name. The report prints them as "<collection>:0x%08x:<name>", which is the
+ * census id itself, so tools/test_compat_manifest.py can hold the two lists equal.
+ *
+ * A site passes the anchor it already has -- a configured binding or, in generated
+ * code, the patched address -- so this adds no title address to generic code. Only the
+ * run log sees the report; nothing reaches the player's screen. Guest code runs on one
+ * host thread, so the table is not locked. */
+void sr_compat_fired(const char *collection, uint32_t anchor, const char *name);
+
+/* Distinct entries that fired so far, in first-hit order. sr_compat_fired_at fills the
+ * census id (truncated to id_size) and the hit count of the index-th one, returning 0
+ * past the end. */
+unsigned sr_compat_fired_count(void);
+int sr_compat_fired_at(unsigned index, char *id, unsigned id_size, unsigned long long *hits);
+
+/* End-of-run report to stderr: one COMPAT_PATCH_FIRED line per entry, then a
+ * COMPAT_PATCH_REPORT summary that says "none" outright when nothing fired. Runs once
+ * per process however many exit paths reach it. */
+void sr_compat_report(void);
+
 #endif /* SR_TITLE_CONFIG_H */

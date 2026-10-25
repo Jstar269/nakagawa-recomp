@@ -1224,10 +1224,22 @@ def private_key_assignment_lines(text: str, filename: str = "") -> list[int]:
 SPDX_BYTE_EXACT_IMPORT_TREES = (
     "src/rt/atrac3p/libavcodec/",
     "src/rt/atrac3p/libavutil/",
+    "src/rt/h264_ffmpeg_sub/libavcodec/",
+    "src/rt/h264_ffmpeg_sub/libavutil/",
+    "src/rt/h264_ffmpeg_sub/compat/",
 )
 
 SPDX_BYTE_EXACT_IMPORT_PATHS = frozenset({
     "third_party/clay/clay.h",
+    "src/rt/minimp3/minimp3.h",
+    "third_party/dr_libs/dr_wav.h",
+    "third_party/portable-snippets/safe-math/safe-math.h",
+    "third_party/stb/stb_image.h",
+    # Monocypher declares its SPDX line below the 8-line header window.
+    "third_party/monocypher/monocypher-ed25519.c",
+    "third_party/monocypher/monocypher-ed25519.h",
+    "third_party/monocypher/monocypher.c",
+    "third_party/monocypher/monocypher.h",
 })
 
 # A small set of byte-exact FFmpeg headers already carry an SPDX identifier.
@@ -1243,6 +1255,10 @@ SPDX_BYTE_EXACT_IMPORT_HEADER_PATHS = frozenset({
     "src/rt/atrac3p/libavutil/libm.h",
     "src/rt/atrac3p/libavutil/mathematics.h",
     "src/rt/atrac3p/libavutil/thread.h",
+    "src/rt/h264_ffmpeg_sub/libavcodec/bsf_list.c",
+    "src/rt/h264_ffmpeg_sub/libavcodec/codec_list.c",
+    "src/rt/h264_ffmpeg_sub/libavutil/avconfig.h",
+    "src/rt/h264_ffmpeg_sub/libavutil/ffversion.h",
 })
 
 PROJECT_SPDX_IDENTIFIER = "GPL-3.0-or-later"
@@ -1533,6 +1549,9 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
     excluded_prefixes = (
         "third_party/",
         "src/rt/atrac3p/libavcodec/",
+        "src/rt/h264_ffmpeg_sub/libavcodec/",
+        "src/rt/h264_ffmpeg_sub/libavutil/",
+        "src/rt/minimp3/minimp3.h",
         "build/",
         "fs/",
     )

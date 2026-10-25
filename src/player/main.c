@@ -191,8 +191,6 @@ static void trigger_font_folder_picker(SDL_Window *window, PlayerApp *app) {
     SDL_ShowOpenFolderDialog(on_font_folder_dialog_callback, app, window, NULL, false);
 }
 
-#define PLAYER_UI_LOGICAL_WIDTH 1280
-#define PLAYER_UI_LOGICAL_HEIGHT 720
 #define PLAYER_WINDOW_MIN_LOGICAL_WIDTH 960
 #define PLAYER_WINDOW_MIN_LOGICAL_HEIGHT 540
 
@@ -241,8 +239,8 @@ static PlayerWindowRect player_requested_window(const PlayerSettings *settings,
         requested.width = settings->launcher_window_width;
         requested.height = settings->launcher_window_height;
     } else {
-        requested.width = (int)(PLAYER_UI_LOGICAL_WIDTH * content_scale + 0.5f);
-        requested.height = (int)(PLAYER_UI_LOGICAL_HEIGHT * content_scale + 0.5f);
+        requested.width = (int)(PLAYER_UI_DESIGN_WIDTH * content_scale + 0.5f);
+        requested.height = (int)(PLAYER_UI_DESIGN_HEIGHT * content_scale + 0.5f);
     }
     return requested;
 }
@@ -898,6 +896,9 @@ static void player_ui_nk_apply_action(PlayerApp *app,
             case PLAYER_UI_PRIMARY_BUILD:
                 (void)player_app_start_package_build(app, index);
                 break;
+            case PLAYER_UI_PRIMARY_REBUILD:
+                (void)player_app_rebuild_package(app, index);
+                break;
             case PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK:
                 app->request_package_status_retry = true;
                 break;
@@ -911,40 +912,57 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     }
 }
 
+/* The screens ui_renderer.c draws are laid out on a PlayerUiCanvas and drawn
+   with a render scale straight into the output's pixels, so text, icons and
+   card edges are rasterised at the size they are shown (#1129). SDL's logical
+   presentation stays off: it stretched a fixed 1280x720 canvas to the window.
+   An interactive launcher refits to the window every frame; a capture draws
+   its fixed --width x --height layout at --render-scale. */
+static bool s_ui_canvas_from_window = false;
+static PlayerUiCanvas s_ui_capture_canvas = {
+    PLAYER_UI_DESIGN_WIDTH, PLAYER_UI_DESIGN_HEIGHT, 1.0f
+};
+
+static void player_fit_ui_canvas(PlayerApp *app, SDL_Renderer *renderer) {
+    PlayerUiCanvas canvas = s_ui_capture_canvas;
+    if (s_ui_canvas_from_window) {
+        int pixel_width = 0;
+        int pixel_height = 0;
+        /* A failed fit (a minimized window has no pixels) keeps the last
+           canvas, so layout and hit-testing still agree with the screen. */
+        if (!SDL_GetRenderOutputSize(renderer, &pixel_width, &pixel_height) ||
+            !player_ui_canvas_fit(pixel_width, pixel_height, &canvas)) {
+            return;
+        }
+    }
+    if (!SDL_SetRenderScale(renderer, canvas.scale, canvas.scale)) return;
+    app->window_width = canvas.width;
+    app->window_height = canvas.height;
+    app->dpi_scale = canvas.scale;
+}
+
 /* With the next UI on, the launcher switches presentation with the renderer
    that draws the frame: nk_ui lays out at the window's real size, and the
    screens still drawn by ui_renderer.c (setup wizard, settings, build progress,
-   dialogs) keep the 1280x720 letterbox they were designed for. */
+   dialogs) use the fitted canvas above. */
 static bool s_switch_presentation = false;
-static int s_presentation = -1; /* 0 letterboxed, 1 native */
+static int s_presentation = -1; /* 0 fitted canvas, 1 native */
 
-static void player_use_presentation(PlayerApp *app, SDL_Renderer *renderer,
-                                    SDL_Window *window, bool native) {
+static void player_use_presentation(PlayerApp *app, SDL_Window *window,
+                                    bool native) {
     int want = native ? 1 : 0;
     if (!s_switch_presentation || s_presentation == want) return;
-    /* The app's sizes change only when SDL took the new presentation; a failed
-       switch keeps the old one, and the next frame tries again. */
     if (native) {
         int w = 0;
         int h = 0;
-        if (!SDL_SetRenderLogicalPresentation(renderer, 0, 0,
-                                              SDL_LOGICAL_PRESENTATION_DISABLED)) {
-            return;
-        }
         if (SDL_GetWindowSize(window, &w, &h) && w > 0 && h > 0) {
             app->window_width = w;
             app->window_height = h;
         }
         app->logical_ui = false;
     } else {
-        if (!SDL_SetRenderLogicalPresentation(renderer, PLAYER_UI_LOGICAL_WIDTH,
-                                              PLAYER_UI_LOGICAL_HEIGHT,
-                                              SDL_LOGICAL_PRESENTATION_LETTERBOX)) {
-            return;
-        }
+        /* player_fit_ui_canvas sets the sizes before the frame is drawn. */
         app->logical_ui = true;
-        app->window_width = PLAYER_UI_LOGICAL_WIDTH;
-        app->window_height = PLAYER_UI_LOGICAL_HEIGHT;
     }
     s_presentation = want;
 }
@@ -954,11 +972,15 @@ static void player_render_active_ui(PlayerUiNk *next_ui, PlayerApp *app,
                                     UiInput *input) {
     PlayerUiAction action;
     bool next = player_ui_nk_view_active(next_ui, app);
-    player_use_presentation(app, renderer, window, next);
+    player_use_presentation(app, window, next);
+    /* nk_ui sizes itself from the output's pixels; the canvas scale of the
+       screens below must not apply to it. */
+    if (next) (void)SDL_SetRenderScale(renderer, 1.0f, 1.0f);
     if (next && player_ui_nk_render(next_ui, app, renderer, window, &action)) {
         player_ui_nk_apply_action(app, &action);
     } else {
-        player_use_presentation(app, renderer, window, false);
+        player_use_presentation(app, window, false);
+        player_fit_ui_canvas(app, renderer);
         ui_render_frame(renderer, app, input);
     }
 }
@@ -981,6 +1003,7 @@ enum {
 };
 
 static unsigned s_ui_test_package_status_thread_create_attempts;
+static const PlayerUiNk *s_ui_test_next_ui;
 #define UI_TEST_MAX_PACKAGE_STATUS_THREAD_CREATE_FAILURES 8
 static unsigned s_ui_test_fail_package_status_thread_create_on_attempts[
     UI_TEST_MAX_PACKAGE_STATUS_THREAD_CREATE_FAILURES];
@@ -1453,6 +1476,31 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     int settings_two_col = app->active_view == VIEW_SETTINGS
         ? (player_settings_uses_two_columns(app->window_width,
                                              app->window_height) ? 1 : 0) : -1;
+    /* The selected title's primary action as the next UI's model holds it
+     * (spaces become underscores): -1 and "none" with the existing UI. */
+    int next_primary = -1;
+    char next_primary_label[64] = "none";
+    char next_detail[256] = "none";
+    {
+        const PlayerUiTitle *model = selected != NULL
+            ? player_ui_nk_test_title(s_ui_test_next_ui, (size_t)app->selected_game_index)
+            : NULL;
+        if (model != NULL && model->primary_action_label != NULL) {
+            next_primary = (int)model->primary_action;
+            snprintf(next_primary_label, sizeof(next_primary_label), "%s%s",
+                     model->primary_action_enabled ? "" : "disabled:",
+                     model->primary_action_label);
+            snprintf(next_detail, sizeof(next_detail), "%s",
+                     model->library_status_detail != NULL && model->library_status_detail[0]
+                         ? model->library_status_detail : "none");
+            for (char *q = next_primary_label; *q; q++) if (*q == ' ') *q = '_';
+            for (char *q = next_detail; *q; q++) if (*q == ' ') *q = '_';
+        }
+    }
+    char incompatible_reason[256];
+    snprintf(incompatible_reason, sizeof(incompatible_reason), "%s",
+             ui_test_last_incompatible_reason()[0] ? ui_test_last_incompatible_reason() : "none");
+    for (char *q = incompatible_reason; *q; q++) if (*q == ' ') *q = '_';
     /* The build badge as a single token (spaces become underscores), so the
      * frame record stays parseable. "none" outside the build screen. */
     char build_badge[64];
@@ -1483,7 +1531,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "font=%s font_reason=%s bitmap_text_draws=%u build_badge=%s "
            "badge=%d,%d,%d,%d running=%d pixels=%016llx "
            "render_ns=%llu package_validations=%llu online_mode=%d developer_mode=%d "
-           "dev_log_lines=%zu\n",
+           "dev_log_lines=%zu next_primary=%d next_primary_label=%s next_detail=%s "
+           "incompatible_reason=%s next_at_root=%d\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -1539,7 +1588,9 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            (unsigned long long)render_elapsed_ns,
            (unsigned long long)validation_calls,
            app->settings.online_mode ? 1 : 0, app->settings.developer_mode ? 1 : 0,
-           player_dev_log_count(app));
+           player_dev_log_count(app), next_primary, next_primary_label, next_detail,
+           incompatible_reason,
+           s_ui_test_next_ui != NULL ? (player_ui_nk_at_library_root(s_ui_test_next_ui) ? 1 : 0) : -1);
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {
@@ -2029,20 +2080,21 @@ static void player_package_status_finish(PlayerApp *app,
             }
             player_app_set_view(app, PLAYER_VIEW_READY_LIBRARY);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+            /* runtime= is what makes the title's card offer PLAY. */
             printf("[PLAYER_UI_TEST] post_build_transition view=ready_library "
-                   "disc=%s found=%d prepared=%d status=%d\n",
+                   "disc=%s found=%d prepared=%d status=%d runtime=%d\n",
                    job->game.disc_id, current_index >= 0,
                    current_index >= 0
                        ? app->games[current_index].is_prepared : 0,
                    current_index >= 0
-                       ? (int)app->games[current_index].status : -1);
+                       ? (int)app->games[current_index].status : -1,
+                   current_index >= 0
+                       ? (int)player_app_cached_game_has_runtime(
+                             app, &app->games[current_index]) : 0);
 #endif
         } else {
-            player_app_set_build_error(
-                app, "package",
-                job->reason[0] ? job->reason
-                               : "Package re-validation failed after build completed.",
-                app->build_session.log_file_path);
+            player_app_set_package_revalidation_error(
+                app, job->reason, app->build_session.log_file_path);
         }
     }
     free(job);
@@ -2628,6 +2680,7 @@ static void player_start_prerequisite_operation(PlayerApp *app) {
             "The app-data log folder could not be created. Free disk space or check permissions, then retry.");
         return;
     }
+    app->prerequisite_session_generation = app->build_session.session_generation;
     NkResult result = package_builder_start_prerequisite_fetch(
         &app->build_session, python_path, cli_path, data_root, log_dir,
         app->prerequisite_bootstrap_ready);
@@ -2823,6 +2876,7 @@ int main(int argc, char *argv[]) {
     int launch_index = -1;
     int override_w = 1280;
     int override_h = 720;
+    float capture_render_scale = 1.0f;
     /* Demo fixtures are opt-in. Defaulting them on meant a normal first
        launch with an empty library populated TEST00005 and, through
        player_app_add_game, PERSISTED it: a new user's first sight of the
@@ -2845,6 +2899,7 @@ int main(int argc, char *argv[]) {
                    "[--ui=next|--ui=legacy] "
                    "[--iso=<path> [--stage|--stage-only|--launch-now]] "
                    "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>] "
+                   "[--width=W --height=H [--render-scale=S]] "
                    "[--launch-index=N] [--headless-launch] "
                    "[--headless-accept-presented-frames=N] "
                    "[--headless-timeout-ms=N]\n");
@@ -2919,6 +2974,15 @@ int main(int argc, char *argv[]) {
             override_w = atoi(argv[i] + 8);
         } else if (strncmp(argv[i], "--height=", 9) == 0) {
             override_h = atoi(argv[i] + 9);
+        } else if (strncmp(argv[i], "--render-scale=", 15) == 0) {
+            char *end = NULL;
+            float value = strtof(argv[i] + 15, &end);
+            if (end == argv[i] + 15 || *end != '\0' ||
+                !(value >= PLAYER_UI_MIN_SCALE && value <= PLAYER_UI_MAX_SCALE)) {
+                fprintf(stderr, "[PLAYER] --render-scale must be a number from 0.25 to 8.\n");
+                return 2;
+            }
+            capture_render_scale = value;
         } else if (strcmp(argv[i], "--demo") == 0) {
             populate_sample = true;
         } else if (strcmp(argv[i], "--headless-launch") == 0) {
@@ -3035,6 +3099,11 @@ int main(int argc, char *argv[]) {
             if (loaded > 0) printf("[PLAYER] Loaded %d title manifest(s) from %s\n", loaded, manifest_dir);
             if (report[0]) fprintf(stderr, "[PLAYER] Title manifests not loaded:\n%s", report);
         }
+    }
+    /* An experimental entry saved with no selected executable recovers the
+       one its profile binds, without a hand edit of library.json (#1276). */
+    for (int i = 0; i < app.game_count; i++) {
+        (void)player_app_adopt_profile_executable(&app, i);
     }
 
     /* Load external manifest overlay if requested */
@@ -3211,6 +3280,29 @@ int main(int argc, char *argv[]) {
             app.game_count = 1;
             app.selected_game_index = 0;
             player_app_set_view(&app, VIEW_LIBRARY);
+        } else if (strcmp(test_view, "build-ready-experimental") == 0) {
+            /* #1276: an experimental entry imported while its EBOOT.BIN was
+               encrypted has no selected executable; its build has just bound
+               EBOOT.BIN in the profile and passed. In memory only. */
+            app.game_count = 0;
+            app.selected_game_index = -1;
+            GameRecord experimental;
+            memset(&experimental, 0, sizeof(experimental));
+            snprintf(experimental.disc_id, sizeof(experimental.disc_id), "TEST00009");
+            snprintf(experimental.title_name, sizeof(experimental.title_name),
+                     "Nakagawa Synthetic Experimental Fixture");
+            snprintf(experimental.disc_version, sizeof(experimental.disc_version), "1.00");
+            snprintf(experimental.title_id, sizeof(experimental.title_id),
+                     "experimental-test00009");
+            experimental.status = NK_STATUS_IDENTIFIED;
+            experimental.is_experimental = true;
+            app.games[0] = experimental;
+            app.game_count = 1;
+            app.selected_game_index = 0;
+            player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
+            package_builder_init_session(&app.build_session, experimental.disc_id,
+                                         experimental.title_name);
+            app.build_session.is_complete = true;
         } else if (strcmp(test_view, "ready-library") == 0 ||
                    strcmp(test_view, "ready") == 0 ||
                    strcmp(test_view, "build-ready") == 0) {
@@ -3341,6 +3433,18 @@ int main(int argc, char *argv[]) {
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "UCUS98701");
             snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Hot Shots Tennis: Get a Grip");
             app.wizard.step = WIZARD_STEP_READY_LAUNCH;
+        } else if (strcmp(test_view, "build-failed") == 0) {
+            /* A build session that has ended in failure (#1277). */
+            player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
+            package_builder_init_session(&app.build_session, "TEST80001",
+                                         "Synthetic Package Fixture");
+            app.build_session.is_failed = true;
+            app.build_session.current_stage = PACKAGE_BUILD_STAGE_FAILED;
+            snprintf(app.build_session.current_stage_name,
+                     sizeof(app.build_session.current_stage_name), "compile");
+            snprintf(app.build_session.failure_boundary,
+                     sizeof(app.build_session.failure_boundary),
+                     "Synthetic compile failure.");
         } else if (strcmp(test_view, "building") == 0 || strcmp(test_view, "building_package") == 0) {
             player_app_set_view(&app, VIEW_BUILDING_PACKAGE);
             const char *disc = (app.selected_game_index >= 0 && app.selected_game_index < app.game_count)
@@ -3596,6 +3700,9 @@ int main(int argc, char *argv[]) {
         char ui_error[256] = "";
         next_ui = player_ui_nk_create(renderer, window,
                                       ui_error, sizeof(ui_error));
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        s_ui_test_next_ui = next_ui;
+#endif
         if (next_ui == NULL) {
             fprintf(stderr,
                     "[PLAYER] The next UI could not start: %s. Using the existing player UI.\n",
@@ -3609,14 +3716,18 @@ int main(int argc, char *argv[]) {
     }
 #endif
     s_switch_presentation = interactive_window && next_ui != NULL;
-    bool logical_presentation_set = interactive_window && next_ui == NULL &&
-        SDL_SetRenderLogicalPresentation(
-            renderer, PLAYER_UI_LOGICAL_WIDTH, PLAYER_UI_LOGICAL_HEIGHT,
-            SDL_LOGICAL_PRESENTATION_LETTERBOX);
-    if (logical_presentation_set) {
+    s_ui_canvas_from_window = interactive_window;
+    /* A capture lays out --width x --height units, as before, and draws each
+       as --render-scale pixels; a window at the scale player_ui_canvas_fit
+       picks for it shows the same picture. */
+    s_ui_capture_canvas.width = override_w;
+    s_ui_capture_canvas.height = override_h;
+    s_ui_capture_canvas.scale = capture_render_scale;
+    int capture_pixel_width = (int)(override_w * capture_render_scale + 0.5f);
+    int capture_pixel_height = (int)(override_h * capture_render_scale + 0.5f);
+    if (interactive_window && next_ui == NULL) {
         app.logical_ui = true;
-        app.window_width = PLAYER_UI_LOGICAL_WIDTH;
-        app.window_height = PLAYER_UI_LOGICAL_HEIGHT;
+        player_fit_ui_canvas(&app, renderer);
     } else if (interactive_window) {
         int actual_width = startup_window.width;
         int actual_height = startup_window.height;
@@ -3624,8 +3735,8 @@ int main(int argc, char *argv[]) {
             actual_width = startup_window.width;
             actual_height = startup_window.height;
         }
-        app.window_width = actual_width > 0 ? actual_width : PLAYER_UI_LOGICAL_WIDTH;
-        app.window_height = actual_height > 0 ? actual_height : PLAYER_UI_LOGICAL_HEIGHT;
+        app.window_width = actual_width > 0 ? actual_width : PLAYER_UI_DESIGN_WIDTH;
+        app.window_height = actual_height > 0 ? actual_height : PLAYER_UI_DESIGN_HEIGHT;
     }
 
     UiInput input;
@@ -3636,7 +3747,8 @@ int main(int argc, char *argv[]) {
     if (ui_test_mode) {
         ui_test_target = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
                                            SDL_TEXTUREACCESS_TARGET,
-                                           app.window_width, app.window_height);
+                                           capture_pixel_width,
+                                           capture_pixel_height);
         if (!ui_test_target || !SDL_SetRenderTarget(renderer, ui_test_target)) {
             fprintf(stderr, "[PLAYER_UI_TEST] Could not create SDL render target: %s\n",
                     SDL_GetError());
@@ -3653,13 +3765,16 @@ int main(int argc, char *argv[]) {
 
     /* Headless Screenshot Mode */
     if (screenshot_path != NULL) {
-        SDL_Texture *target = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, app.window_width, app.window_height);
+        SDL_Texture *target = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET,
+                                                capture_pixel_width, capture_pixel_height);
         if (target) {
             SDL_SetRenderTarget(renderer, target);
         }
         player_render_active_ui(next_ui, &app, renderer, window, &input);
         if (ui_capture_screenshot(renderer, screenshot_path)) {
-            printf("[PLAYER] Screenshot saved to %s (%dx%d)\n", screenshot_path, app.window_width, app.window_height);
+            printf("[PLAYER] Screenshot saved to %s (%dx%d pixels, %dx%d layout)\n", screenshot_path,
+                   capture_pixel_width, capture_pixel_height,
+                   app.window_width, app.window_height);
         } else {
             fprintf(stderr, "[PLAYER] Failed saving screenshot to %s: %s\n", screenshot_path, SDL_GetError());
         }
@@ -4246,6 +4361,9 @@ int main(int argc, char *argv[]) {
             int build_game_index = player_app_find_game_by_disc_id(
                 &app, app.build_session.disc_id);
             if (build_game_index >= 0 && build_game_index < app.game_count) {
+                /* The build may have bound the executable this entry was
+                   saved without; the check validates against that one. */
+                (void)player_app_adopt_profile_executable(&app, build_game_index);
                 snprintf(build_check_disc_id, sizeof(build_check_disc_id),
                          "%s", app.build_session.disc_id);
                 build_check_session_generation =
@@ -4268,13 +4386,9 @@ int main(int argc, char *argv[]) {
                     "Package completed without its library title.",
                     app.build_session.log_file_path);
             }
-        } else if (app.build_session.is_failed) {
-            player_app_set_build_error(&app,
-                                       app.build_session.current_stage_name[0] ? app.build_session.current_stage_name : "build",
-                                       app.build_session.failure_boundary[0] ? app.build_session.failure_boundary : "Package build failed.",
-                                       app.build_session.log_file_path);
-        } else if (app.build_session.is_cancelled) {
-            player_app_set_view(&app, VIEW_LIBRARY);
+        } else {
+            /* Once per session, like the completion branch above (#1277). */
+            (void)player_app_apply_build_outcome(&app);
         }
 
         (void)player_package_status_start_next(

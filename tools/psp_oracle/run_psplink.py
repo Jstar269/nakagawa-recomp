@@ -75,6 +75,7 @@ try:
         parse_dmac_invalid_tail_output,
         parse_fpu_vector_output,
         parse_ge_nan_output,
+        parse_hle_intr_cells_output,
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
         parse_font_files_output,
@@ -97,6 +98,7 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
         parse_dmac_invalid_tail_output,
         parse_fpu_vector_output,
         parse_ge_nan_output,
+        parse_hle_intr_cells_output,
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
         parse_font_files_output,
@@ -963,6 +965,7 @@ _COMPLETE_CAMPAIGN_PARSERS = {
     "vram-mirror": parse_vram_mirror_output,
     "dma-cells": parse_dmac_cells_output,
     "delay-zero": parse_delay_zero_output,
+    "hle-intr-cells": parse_hle_intr_cells_output,
 }
 _SINGLE_RECORD_CAMPAIGN_CASES = {
     "transport-write": ("PSP-TRANSPORT-001", "host0-write-readback"),
@@ -1065,7 +1068,7 @@ def _campaign_completeness_contract(case_id: str) -> str:
         return "strict-dmac-sequence"
     if case_id in {"audio-query", "fpu-vector", "cache-alias", "io-matrix",
                    "mbx-delete-wait", "ge-nan", "vram-mirror", "dma-cells",
-                   "delay-zero"}:
+                   "delay-zero", "hle-intr-cells"}:
         return "strict-golden-sequence"
     if case_id in DMAC_INVALID_CASES:
         return "strict-dmac-invalid-cell-records"

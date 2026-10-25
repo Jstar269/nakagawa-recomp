@@ -117,23 +117,29 @@ static int sched_status_is_negative(int32_t status) {
     return status < 0;
 }
 
-#define SR_STACK_ARENA_FLOOR 0x05000000u
+/* Thread stacks come out of the PSP user partition [0x08800000, 0x0a000000), as on a PSP,
+ * descending from its top. The runtime's own guest-visible stacks (the VBLANK interrupt
+ * stack below and the nested host->guest frames, nested_frames.h) live in kernel RAM below
+ * the volatile partition, so none of the user partition is withheld from the game: a
+ * fixed 21 MB request that fits on a PSP used to be refused here because the arena ended
+ * 1.06 MiB early, at 0x09ef0000. */
+#define SR_STACK_ARENA_FLOOR 0x08800000u
+#define SR_STACK_ARENA_CEIL  0x0a000000u
 /* Dedicated VBLANK interrupt stack reservation (Issue #98 / PORTING.md Section C-6).
- * 64 KiB region [0x09ef0000, 0x09f00000) structurally reserved between the
- * thread-stack arena ceiling and the nested host->guest frame region.
- * The thread-stack arena ceiling is derived from this base, ensuring that
- * thread stack allocation can never hand out or collide with the VBLANK interrupt stack. */
+ * 64 KiB region [0x082f0000, 0x08300000) in kernel RAM, directly below the nested
+ * host->guest frame region and outside the thread-stack arena, so thread stack
+ * allocation can never hand out or collide with the VBLANK interrupt stack. */
 #define SR_VBLANK_STACK_SIZE 0x00010000u
 #define SR_VBLANK_STACK_TOP  SR_NESTED_FRAME_BASE
 #define SR_VBLANK_STACK_BASE (SR_VBLANK_STACK_TOP - SR_VBLANK_STACK_SIZE)
 
-#define SR_STACK_ARENA_CEIL  SR_VBLANK_STACK_BASE
-_Static_assert(SR_STACK_ARENA_CEIL == 0x09ef0000u,
-               "deriving the ceiling from the VBLANK reservation must set expected floor");
 _Static_assert(SR_STACK_ARENA_FLOOR < SR_STACK_ARENA_CEIL,
-               "the thread-stack arena must be non-empty and below the VBLANK reservation");
-_Static_assert(SR_STACK_ARENA_CEIL == SR_VBLANK_STACK_BASE,
-               "the thread-stack arena must end exactly at the VBLANK reservation base");
+               "the thread-stack arena must be non-empty");
+_Static_assert(SR_VBLANK_STACK_BASE >= 0x08000000u && SR_NESTED_FRAME_END <= 0x08400000u,
+               "the runtime's VBLANK stack and nested frames must stay in kernel RAM, "
+               "below the volatile partition");
+_Static_assert(SR_NESTED_FRAME_END <= SR_STACK_ARENA_FLOOR,
+               "the runtime's stacks must lie below the thread-stack arena");
 _Static_assert(SR_VBLANK_STACK_TOP == SR_NESTED_FRAME_BASE,
                "the VBLANK reservation must end exactly at the nested-frame region base");
 #define SR_STACK_RANGE_MAX   (MAXTHREADS + 1)
@@ -1746,6 +1752,8 @@ static void deliver_vblank(void) {
                  * be held forever, presenting only frame 0. Re-arm whenever the worker is
                  * dormant; the relaunch is the surrogate for the GE callback. */
                 fprintf(stderr, "RELAUNCH: worker 0x%x dormant, restarting to entry 0x%08x\n", wuid, w->entry);
+                sr_compat_fired("SCHEDULER_HOOKS", sr_title_config()->worker_thread_entry,
+                                "worker relaunch trampoline");
                 sched_start_thread(wuid, 0, 0);
             }
         }
@@ -2137,6 +2145,8 @@ static void guest_reent_register(uint32_t uid, uint32_t state_ptr) {
     /* Layout: { next(+0x00), state_ptr[32](+0x04..+0x80), uid[32](+0x84..+0x100) }.
      * Bucket = uid % 32 (signed-safe for positive PSP thread UIDs). */
     uint32_t node_addr = bindings.guest_thread_table_addr;
+    sr_compat_fired("TITLE_CONFIGURED_SCHEDULER_COMPAT", bindings.guest_thread_table_addr,
+                    "guest thread reent table root");
 
     if (getenv("SR_REENT_TRACE")) {
         fprintf(stderr, "REENT_TRACE guest_register: uid=0x%x state_ptr=0x%x bucket=%u\n",
@@ -2204,8 +2214,11 @@ static void guest_reent_unregister(uint32_t state_ptr) {
 static void init_guest_reent(uint32_t state_ptr, uint32_t uid) {
     SrTitleReentBindings bindings;
     int has_bindings = sr_title_config_reent_bindings(&bindings);
-    if (has_bindings && g_master_reent == 0u)
+    if (has_bindings && g_master_reent == 0u) {
         g_master_reent = bindings.master_reent_addr;
+        sr_compat_fired("TITLE_CONFIGURED_SCHEDULER_COMPAT", bindings.master_reent_addr,
+                        "master reent fallback address");
+    }
     /* Copy master thread's reent structure to initialize the new thread's reent.
      * This inherits the initialized allocator context. A thread holding the ROOT or
      * LAUNCHER role keeps its own independently-initialized reent: root has the
@@ -2282,6 +2295,8 @@ static int register_libc_thread(uint32_t k0, uint32_t state_ptr, uint32_t uid) {
      * master reent for every later thread. */
     if (sched_uid_is_launcher(uid)) {
         g_master_reent = state_ptr;
+        sr_compat_fired("SCHEDULER_HOOKS", sr_title_config()->launcher_thread_entry,
+                        "launcher reent ownership");
     }
 
     init_guest_reent(state_ptr, uid);
@@ -2378,6 +2393,7 @@ uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_siz
                         existing->uid, entry, existing->state, existing->started);
                 n_reuse_log++;
             }
+            sr_compat_fired("SCHEDULER_HOOKS", entry, "worker thread reuse");
             return existing->uid;
         }
     }
@@ -2538,6 +2554,7 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     if (!getenv("SR_NO_LAUNCHER_DEMOTE") && sr_title_config_is_launcher_entry(entry)) {
         const int demoted_priority = 50;
         t->priority = demoted_priority;
+        sr_compat_fired("SCHEDULER_HOOKS", entry, "launcher priority demotion");
         if (getenv("SR_THLOG")) fprintf(stderr, "LAUNCHER_DEMOTE: launcher uid=0x%x -> priority=%d\n",
                                         t->uid, demoted_priority);
     }
@@ -2563,7 +2580,7 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
     t->saved.r[28] = s_cpu && s_cpu->r[28] ? s_cpu->r[28] : s_gp;
     t->gp_init = t->saved.r[28];
     t->saved.pc = entry;                         /* BUG1 fix: must seed pc=entry; otherwise dispatch target=entry sees s->pc=0 */
-    t->saved.vfpuCtrl[0] = 0xe4; t->saved.vfpuCtrl[1] = 0xe4; t->saved.vfpuCtrl[2] = 0;
+    sr_vfpu_thread_ctrl_init(&t->saved);
 
     /* Seed the thread's TLS region (k0 + 4) to point to its own private reentrancy
      * structure space (allocated within the k0 region at k0 + 0x10) to prevent cross-thread
@@ -2622,7 +2639,7 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
         t->saved.r[26] = t->k0_init;
         t->saved.r[29] = t->sp_init;
         t->saved.r[28] = t->gp_init;
-        t->saved.vfpuCtrl[0] = 0xe4; t->saved.vfpuCtrl[1] = 0xe4; t->saved.vfpuCtrl[2] = 0;
+        sr_vfpu_thread_ctrl_init(&t->saved);
         t->saved.pc = t->entry;
     }
     /* sceKernelStartThread copies the caller-supplied argument block onto the new
@@ -4579,6 +4596,8 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         sr_inrange(reent_bindings.guest_thread_table_addr) &&
         sr_inrange(reent_bindings.guest_thread_table_addr + 4u)) {
         MEM_W32(reent_bindings.guest_thread_table_addr, 0u);
+        sr_compat_fired("TITLE_CONFIGURED_SCHEDULER_COMPAT", reent_bindings.guest_thread_table_addr,
+                        "guest thread reent table root");
     }
     sched_start_thread(uid, arglen, argp);
 

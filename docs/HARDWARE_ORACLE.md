@@ -718,6 +718,52 @@ One console is one data point; see §11. Nothing here closes issue #70
     the band-limited converter in `src/rt/audio_resample.c` and keep their source-rate pacing. The
     values listed as not cited are unmeasured; the handler metadata names the choices made for them.
   - *Transcendental words (`PSP-VFPU-TRANSCENDENTAL-001`, issue #347).* The eleven scalar operations returned 693 result words over the probe's fixed inputs: 20 special encodings (signed zeros, the smallest signed denormals, plus and minus one, two and one half, the smallest signed normals, plus and minus 2^127, the infinities, and quiet and signalling NaN encodings) and 43 evenly spaced domain constants per operation. The raw words stay private. Compared with the runtime (the generated code and `sr_vfpu_interp`), ten operations matched on all 63 inputs: `vsin.s`, `vcos.s`, `vexp2.s`, `vlog2.s`, `vrsq.s`, `vrcp.s`, `vsqrt.s`, `vasin.s`, `vnrcp.s` and `vnsin.s`. `vrexp2.s` matched on none: the runtime computed the negated `exp2(x)` (`0xBF800000` for an input of zero) where the console returned `exp2(-x)` (`0x3F800000` for zero, `0x40000000` for -1.0 and `0x3EFFFFFC` for +1.0). Both paths now compute `exp2(-x)`, and the 63 measured words are pinned in `src/rt/vfpu_interp_selftest.c`. The same opcode group still decodes five more negated forms (optypes 25, 27, 29, 30 and 31) as the negation of the positive operation; no probe covers them, so they are unmeasured.
+  - *VFPU9 forms and RCX at thread entry (2026-10-24 PSP-3000 PSPLink session, issue #326).* 159 cells over `vsgn.s`, `vbfy1.p`, `vbfy1.q`, `vbfy2.q` and `vt4444.q`, each under no S prefix, negate-all and a `wzyx` swizzle, plus `mfvc` of controls 8-15 on a fresh thread. The runtime rejected all five forms before this entry and zero-filled RCX0-7. The cells fix these rules: an arithmetic NaN result is the canonical `0x7F800001`; a denormal operand counts as a zero of its own sign; `vsgn` takes +1 or -1 from the raw sign bit of any non-zero word, NaN and Inf included, and +0 for either zero; `vbfy1`/`vbfy2` add the user-prefixed S operand, with a forced negate on lanes (0,1,0,1)/(0,0,1,1), to the raw `vs` swizzled (y,x,w,z)/(z,w,x,y), and a user swizzle lane outside the width writes +0; `vt4444.q` packs the high nibble of each byte into a pair. None of them writes VFPU_CC. RCX0-7 read `0x3F800001`, `0x3F800002`, `0x3F800004`, `0x3F800008` and then `0x3F800000` four times. `sr_vfpu_interp` implements the five forms (the generated code routes them there) and `sr_vfpu_thread_ctrl_init` in `src/rt/recomp.h` seeds RCX at every thread entry; `check_psp_measured_vfpu9` in `src/rt/vfpu_interp_selftest.c` pins the cells quoted here. An off-tree replay of the production interpreter against the private log matched all 159 cells and the RCX row. Unmeasured: the T and D prefixes, constant S lanes, other widths (rejected), the sign of a NaN from a negative NaN, denormal results, and the `vrnd*` draws, which stay fail-closed.
+
+- **Observed, not acceptance-eligible: `hle-issues-batch` and `hle-intr-cells` from `da97b2c0` (2026-10-24)**:
+  PSP-3000, firmware 6.6.1, PSPLink v3.2.1, operator-declared model PSP-3000, Nakagawa Link resident
+  watchdog armed around each launch. Each case was one `ldstart` of the PRX built from `da97b2c0` (the
+  pre-merge head of the change that added `probe_hle_issues.c`), after a PSPLink soft reset, through a
+  private PSPLink driver rather than `run_psplink.py`. There is no runner envelope and no
+  `transport-write` preflight, so neither stream is acceptance-eligible and both manifest rows stay
+  `NOT_RUN`. Both host0 logs pass the runner's own completeness contract for their case
+  (`strict-golden-sequence`). The same cells ran earlier that night from private pre-PR revisions
+  of the same code, with the same results except where noted. Raw logs stay in the private campaign
+  directory. A `run_psplink.py` campaign launch of each PRX would promote the cited cells.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-24, `da97b2c0`, not acceptance-eligible) |
+  | --- | --- | --- | --- |
+  | `PSP-HLE-ISSUES-001` | `model-*`, `vscmp-p0-*`, `vscmp-p1-*`, `rcar-p0-*`, `rcar-p1-*`, `rcbig-p0-*`, `rcbig-p1-*`, `hle-issues-batch-done` | The import stub's syscall word (a per-boot number) | 1858 records and the done record, all PASS; 1855 records are word-identical to the private pre-PR launch, and the other 4 differ only in the `kuKernelGetModel` stub's syscall word |
+  | `PSP-HLE-INTR-001` | `vtimer-ret-*`, `alarm-ret-*`, `vbl-register`, `vbl-free`, `vbl-masked-*`, `vbl-hold-25ms`, `vbl-release`, `hle-intr-cells-done` | Absolute system-time words; the slot number (0 in standalone PSPLink, while slot 0 answered `0x80020067` in the XMB) | 43 records and the done record, all PASS; the timer and VBLANK series repeat the earlier launch to within a few microseconds |
+
+  - *Model getters (#356).* `kuKernelGetModel` returned 3; its stub was linked (`jr $ra`, then a
+    `syscall`). The `SysMemUserForUser` `sceKernelGetModel` import (NID `0x6373995D`) stayed
+    unlinked (stub word `0x0000054C`) and the call returned `0x8002013A`, so 6.6.1 does not export it
+    to user mode. Through `kuKernelCall`, the `SysMemForKernel` getter (NIDs `0x07C586A1` and
+    `0x6373995D` both resolve to the same address) returned 3, with a `kuKernelCall` return of 0.
+    The firmware word was `0x06060110`. Each getter was called twice, with the same values.
+  - *Random-unit step (#326).* With Ck = ((RCX(k+4) & 0xffff) << 16) | (RCXk & 0xffff) for
+    k = 0..3, and the carry c taken from the nibbles in bits 16-19 of RCX0-7, one `vrndi.s` step
+    computes C0' = 69069 C0 + 1, C1' = xorshift32(C1; 13, 17, 5), C2' = C3,
+    C3' = (2 C3 + C2 + c) mod 2^32, c' = ((C2 >> 2) + (C3 >> 3) + (c >> 2)) >> 30, and returns
+    C0' + C1' + C3'. This reproduces all 1792 `rcar` and `rcbig` rows, and both passes are identical.
+  - *`vscmp` (#326).* Per lane, at every width, the result is -1, 0 or +1 in sign-magnitude
+    integer order of the bit patterns. Denormals are flushed to zero, +0 equals -0, and NaNs order
+    above infinity by bit pattern. `VFPU_CC` was not written.
+  - *VTimer and alarm handler returns (#325).* A non-zero return reschedules relative to the
+    *scheduled* time, not the call time. A 20000 us return gave scheduled times of 10000, 30000 and
+    so on to 110000 us, with calls 13 to 22 us late and no accumulated drift. Returns below 100 us
+    are raised to 100 us: a return of 1 gave scheduled steps of 100 us, though the calls land about
+    212 us apart. Mixed returns (5000, 30000, 1000) follow the same rule. Alarms behave the same,
+    each call about 55 us after its scheduled time. A return of 0 stops the series, and no further
+    call came within 150 ms.
+  - *VBLANK (#325).* Free-running entries are 16683 us apart. While `sceKernelCpuSuspendIntr` held
+    interrupts for 20 ms, 50 ms (about three frames) and 20 ms again, no entry ran. Exactly one
+    entry ran 35 to 106 us after the resume, and the free-running phase was unchanged afterwards:
+    pending is a latch, not a counter. In another test, the first handler entry busy-waited for
+    25 ms. The frame that fell inside it was delivered once, 132 to 143 us after the handler
+    returned, and the next entry came on the original 16.68 ms grid. `DisableSubIntr` and
+    `ReleaseSubIntrHandler` returned 0.
 
 - **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.
   - `PSP-HLE-AUDIO-SRC-001`, case `hle-audio-src`: the stream was complete, with 16 records PASS and 2 SKIP (`src-final-cleanup` and `out2-final-cleanup`). Both SKIP records were the probe's own gate for "nothing left to release", a pass-rule flaw that `7fc1641e` fixed, and a SKIP record makes the envelope ineligible. The 16 other records carry the same words as the eligible re-run above.
@@ -1557,7 +1603,7 @@ vram-mirror-done
 
 ## Pending PSP-3000 measurement campaign
 
-The following twenty-one source-owned cases are in the PSP-3000 / 6.61 measurement
+The following twenty-three source-owned cases are in the PSP-3000 / 6.61 measurement
 registry; the status column distinguishes measured, captured-only and pending evidence.
 Six were measured by the 2026-10-10 campaign on `f6ccfb33`; `ge-break-continue`
 was measured by its acceptance-eligible 2026-10-15 re-run on `c642039a` after two
@@ -1569,7 +1615,10 @@ form has not run), and null-out was captured incomplete. The added HLE timer-ord
 case (103) and the VFPU transcendental corpus were measured on 2026-10-15 from
 `22b027f6`, and the HLE audio case (102) from `7fc1641e` after a first run from
 `22b027f6` was captured only.
-These eight probes run as single launches outside the campaign queue
+The HLE issue cells `hle-issues-batch` (106) and `hle-intr-cells` (107),
+built from `probe_hle_issues.c`, were observed from `da97b2c0` on 2026-10-24
+without a runner envelope, so they are not acceptance-eligible and stay `NOT_RUN`.
+These ten probes run as single launches outside the campaign queue
 (`CAMPAIGN_QUEUE_CASES`); the manifest distinguishes measured, captured and
 not-run states. Their parsers check record order, scalar fields and completion,
 not expected PSP values.
@@ -1598,6 +1647,8 @@ not expected PSP values.
 | `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | `CAPTURED` (2026-10-15, `b5d6fc5b`; incomplete, not measured; retired, never to be scheduled) | The existing capture stopped at the first mandatory NULL output, `sceKernelReferSystemStatus(NULL)`, and the console needed a power cycle. The kernel pointer check rejects kernel-space addresses but not address 0, so that call writes through NULL and faults; the VTimer getters also write through their output pointers. No game can rely on these results. |
 | `hle-audio-src` | `PSP-HLE-AUDIO-SRC-001` | `MEASURED` (2026-10-15, `7fc1641e`; the earlier run of `22b027f6` was captured only; single launch, not in the campaign queue) | Unreserved SRC release and silent output; reserve 1024 samples at 44100 Hz stereo; second reserve; one silent blocking output; release after the blocking drain and release again; six invalid reserve shapes, immediately releasing any unexpected success; Output2-then-SRC and SRC-then-Output2 reservation attempts with cleanup. 18 result records. No SRC rest-sample query exists in the public NID corpus. Risk high: two silent blocking SRC calls, at most one block per call; schedule after the other new probes. |
 | `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Two equal-delay alarms set A then B; long-delay then short-delay alarm; nominally equal VTimer handler and alarm; SetAlarm(0). Each callback stores a shared sequence number and system-time low/high words. Every wait has an elapsed-time deadline; cancel all alarms and stop/delete the VTimer. Ordering only, no absolute-time claim; 18 result records. |
+| `hle-issues-batch` | `PSP-HLE-ISSUES-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #356 model getters: `kuKernelGetModel` and the `SysMemUserForUser` `sceKernelGetModel` import (NID `0x6373995d`), each twice with `$v0` preset to `0xA5A5A5A5`, with the import stub's words after loading; the `SysMemForKernel` getter through `sctrlHENFindFunction` and `kuKernelCall` (only for a kernel-RAM address). #326, two passes: `vscmp.s/p/t/q` and the same-register form over six NaN/infinity/signed-zero/denormal operand sets (C200 lanes, VFPU_CC, changed-word census), and one `vrndi.s` step from each of 2 x 448 written RCX states (RCX0-7 after the write and after the step). 1858 result records; register-only VFPU cells and read-only getters. |
+| `hle-intr-cells` | `PSP-HLE-INTR-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #325: VTimer and alarm handlers returning a reschedule interval then 0 (20 ms series, 1 us series, mixed series): the sequence number, scheduled and actual VTimer time and system time of every call, and whether a call follows a return of 0; a VBLANK sub-interrupt handler in the first free slot of 0..15, counted while free, across 20 ms, 50 ms and 20 ms `sceKernelCpuSuspendIntr` windows, and while one entry holds for 25 ms. Every VTimer is stopped and deleted, every alarm cancelled, every suspension resumed, and the handler disabled and released whenever a slot was registered. Risk medium: interrupts suspended for at most 50 ms. |
 
 ### PSP-UMDIO-001 measured run 2026-10-17
 

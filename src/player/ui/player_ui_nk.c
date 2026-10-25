@@ -4,6 +4,9 @@
 #include "player_ui_nk.h"
 
 #include "player_state.h"
+#include "player_ui_art.h"
+#include "player_ui_sound.h"
+#include "iso_reader.h"
 #include "nk_platform.h"
 #include "nk_ui_input.h"
 #include "nk_ui_theme.h"
@@ -74,8 +77,35 @@ struct PlayerUiNk {
     char wizard_summary[224];
     unsigned flow_screen;   /* which flow screen drew last; 0 outside them */
     NkUiId pre_flow_focus;  /* the library focus to give back on leaving */
+    NkUiPromptImages prompt_images;  /* Kenney glyphs; empty ones keep the geometry */
+    PlayerUiArt *art;                /* disc ICON0 / PIC1, decoded at run time */
+    PlayerUiSounds *sounds;          /* optional launcher sounds (ui_sounds) */
+    int pending_sound;               /* a PlayerUiSound for this frame, or -1 */
+    NkUiId sound_focus;              /* focus after the last frame, for the move sound */
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    bool icon_reported[PLAYER_UI_TITLE_CAP];
+#endif
     bool ready;
 };
+
+/* The player's art reader: ICON0.PNG and PIC1.PNG from the user's disc image,
+   through the ISO reader's own size and header checks. */
+static void player_ui_read_disc_art(const char *iso_path, unsigned wanted,
+                                    uint8_t **icon, size_t *icon_size,
+                                    uint8_t **picture, size_t *picture_size) {
+    NkIsoImageData icon_data;
+    NkIsoImageData picture_data;
+    unsigned iso_wanted = 0u;
+    if ((wanted & PLAYER_UI_ART_ICON) != 0u) iso_wanted |= NK_ISO_ART_ICON;
+    if ((wanted & PLAYER_UI_ART_PICTURE) != 0u) iso_wanted |= NK_ISO_ART_PICTURE;
+    nk_iso_read_game_art(iso_path, iso_wanted, &icon_data, &picture_data);
+    *icon = icon_data.status == NK_ICON_OK ? icon_data.data : NULL;
+    *icon_size = icon_data.status == NK_ICON_OK ? icon_data.size : 0u;
+    if (icon_data.status != NK_ICON_OK) free(icon_data.data);
+    *picture = picture_data.status == NK_ICON_OK ? picture_data.data : NULL;
+    *picture_size = picture_data.status == NK_ICON_OK ? picture_data.size : 0u;
+    if (picture_data.status != NK_ICON_OK) free(picture_data.data);
+}
 
 static void player_ui_set_error(char *out, size_t out_size, const char *message) {
     if (out == NULL || out_size == 0u) return;
@@ -205,6 +235,13 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window,
         player_ui_nk_destroy(player);
         return NULL;
     }
+    /* Glyphs, art and sounds are extras: a failure leaves the geometric
+       prompts, the placeholders and silence. */
+    (void)nk_ui_prompt_images_load(&player->prompt_images);
+    nk_ui_set_prompt_images(player->ui, &player->prompt_images);
+    player->art = player_ui_art_create(player_ui_read_disc_art);
+    player->sounds = player_ui_sounds_create();
+    player->pending_sound = -1;
     nk_ui_sdl_input_init(&player->input);
     player_ui_version_line(NK_PLAYER_VERSION, (long long)NK_PLAYER_BUILD_EPOCH,
                            player->version_line, sizeof(player->version_line));
@@ -215,8 +252,11 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window,
 
 void player_ui_nk_destroy(PlayerUiNk *player) {
     if (player == NULL) return;
+    player_ui_sounds_destroy(player->sounds);
+    player_ui_art_destroy(player->art);
     nk_ui_sdlr_destroy(player->backend);
     nk_ui_destroy(player->ui);
+    nk_ui_prompt_images_free(&player->prompt_images);
     nk_ui_ttf_destroy(player->ttf);
     nk_ui_router_destroy(player->router);
     free(player);
@@ -244,6 +284,7 @@ static const char *player_ui_error_badge(const ErrorState *error) {
     if (strcmp(error->error_code, "TITLE_DATA_MISSING") == 0) return "Game data needed";
     if (strcmp(error->error_code, "RUNTIME_PACKAGE_NOT_READY") == 0) return "Game not ready";
     if (strcmp(error->error_code, "TITLE_PROFILE_INVALID") == 0) return "Title settings needed";
+    if (strcmp(error->error_code, "PACKAGE_REVALIDATION_FAILED") == 0) return "Package check";
     return error->error_code;
 }
 
@@ -513,6 +554,12 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
     player->flow_screen = screen;
 }
 
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t index) {
+    return player != NULL && index < PLAYER_UI_TITLE_CAP ? &player->titles[index] : NULL;
+}
+#endif
+
 bool player_ui_nk_at_library_root(const PlayerUiNk *player) {
     return player != NULL && player->ready &&
            nk_ui_router_current(player->router) == PLAYER_UI_ROUTE_LIBRARY &&
@@ -529,6 +576,12 @@ bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
                                      translated,
                                      sizeof(translated) / sizeof(translated[0]));
     for (size_t i = 0u; i < count; ++i) {
+        if (translated[i].type == NK_UI_EV_BACK && translated[i].down) {
+            player->pending_sound = PLAYER_UI_SOUND_BACK;
+        } else if (translated[i].type == NK_UI_EV_ACTIVATE && translated[i].down &&
+                   !translated[i].repeat && player->pending_sound < 0) {
+            player->pending_sound = PLAYER_UI_SOUND_CONFIRM;
+        }
         if (translated[i].type == NK_UI_EV_BACK &&
             nk_ui_router_current(player->router) == PLAYER_UI_ROUTE_ABOUT) {
             /* About is a top-level section: Back returns to the Library. */
@@ -670,6 +723,18 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     out->status_marker = player_ui_library_status_marker(game, package_ready);
     out->art_kind = player_ui_art_kind(game);
     out->badge = out->art_kind != NK_UI_ART_NONE ? "Showcase demo" : "Your disc";
+    out->icon = NULL;
+    out->picture = NULL;
+    if (out->art_kind == NK_UI_ART_NONE) {
+        player_ui_art_get(player->art, game->iso_path, false, &out->icon, NULL);
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (out->icon != NULL && !player->icon_reported[index]) {
+        player->icon_reported[index] = true;
+        printf("[PLAYER_UI_TEST] next_ui_disc_icon index=%d width=%u height=%u\n", index,
+               (unsigned)out->icon->width, (unsigned)out->icon->height);
+    }
+#endif
     out->save_folder_enabled = game->disc_id[0] != '\0';
     out->primary_action_enabled = false;
     out->primary_action = PLAYER_UI_PRIMARY_NONE;
@@ -696,7 +761,11 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->primary_action_enabled = true;
         primary = PLAYER_UI_PRIMARY_BUILD;
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
-        out->primary_action_label = "PACKAGE INCOMPATIBLE";
+        out->primary_action_label = "REBUILD PACKAGE";
+        out->primary_action_enabled = true;
+        primary = PLAYER_UI_PRIMARY_REBUILD;
+        (void)player_incompatible_reason_line(reason, player->status_text[index],
+                                              sizeof(player->status_text[index]));
     } else if (game->assets_staged) {
         out->primary_action_label = "RUNTIME REQUIRED";
     } else {
@@ -778,6 +847,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     for (size_t i = 0u; i < repeat_count; ++i) {
         nk_ui_push_event(player->ui, &repeats[i]);
     }
+    player_ui_art_pump(player->art);
+    /* Sounds follow the setting, and stay closed while a game runs so its own
+       audio is left alone. */
+    player_ui_sounds_set_enabled(player->sounds,
+                                 app->settings.ui_sounds && !app->is_game_running);
     nk_ui_begin(player->ui, now_s);
     {
         NkUiId restore = nk_ui_router_take_focus_restore(player->router);
@@ -861,6 +935,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             player_ui_fill_titles(player, app, (size_t)app->game_count >
                                   PLAYER_UI_TITLE_CAP ? PLAYER_UI_TITLE_CAP :
                                   (size_t)app->game_count);
+            if (player->titles[index].art_kind == NK_UI_ART_NONE) {
+                player_ui_art_get(player->art, app->games[index].iso_path, true,
+                                  &player->titles[index].icon,
+                                  &player->titles[index].picture);
+            }
             memset(&model, 0, sizeof(model));
             model.title = &player->titles[index];
             model.title_index = (size_t)index;
@@ -898,6 +977,18 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
     draw_list = nk_ui_end(player->ui);
     if (draw_list == NULL) return false;
+    {
+        NkUiId focus_now = nk_ui_focused(player->ui);
+        if (player->pending_sound < 0 && player->sound_focus != 0u && focus_now != 0u &&
+            focus_now != player->sound_focus) {
+            player->pending_sound = PLAYER_UI_SOUND_MOVE;
+        }
+        player->sound_focus = focus_now;
+        if (player->pending_sound >= 0) {
+            player_ui_sounds_play(player->sounds, (PlayerUiSound)player->pending_sound);
+            player->pending_sound = -1;
+        }
+    }
     (void)SDL_SetRenderDrawColor(renderer, 11u, 15u, 20u, 255u);
     (void)SDL_RenderClear(renderer);
     if (!nk_ui_sdlr_render(player->backend, draw_list)) return false;

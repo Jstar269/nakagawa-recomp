@@ -120,6 +120,51 @@ static float vscmp_lane(float a, float b) {
     return (a < b) ? -1.0f : ((a > b) ? 1.0f : 0.0f);
 }
 
+/* Arithmetic conventions measured on a PSP-3000 for vsgn, vbfy1 and vbfy2
+ * (2026-10-24, issue #326; vectors in vfpu_interp_selftest.c check_psp_measured_vfpu9):
+ * a denormal operand counts as a zero of the same sign, and a NaN result
+ * (inf - inf, or a NaN operand) is written as the canonical 0x7f800001 -- neither
+ * the operand payload nor the host default NaN survives. Flushing a denormal
+ * RESULT is applied for symmetry but no measured cell produced one. */
+static uint32_t vfpu_daz(uint32_t b) {
+    return (b & 0x7f800000u) == 0u ? (b & 0x80000000u) : b;
+}
+
+static uint32_t vfpu_add_bits(uint32_t a, uint32_t b) {
+    float fa, fb, fr;
+    uint32_t r;
+    a = vfpu_daz(a);
+    b = vfpu_daz(b);
+    memcpy(&fa, &a, 4);
+    memcpy(&fb, &b, 4);
+    fr = fa + fb;
+    memcpy(&r, &fr, 4);
+    if ((r & 0x7fffffffu) > 0x7f800000u) return 0x7f800001u;
+    return vfpu_daz(r);
+}
+
+/* Write raw result words through the D prefix: saturation clamps a non-NaN lane
+ * (the D prefix is UNMEASURED for these forms), then the write mask applies. Raw
+ * words keep the canonical NaN bit-exact where a float store might quiet it. */
+static void vwrite_bits(CpuState *s, const uint8_t *di, uint32_t *d, int n, uint32_t dprefix) {
+    for (int i = 0; i < n; i++) {
+        int sat = (dprefix >> (i * 2)) & 3;
+        if ((sat == 1 || sat == 3) && (d[i] & 0x7fffffffu) <= 0x7f800000u) {
+            float f, lo = sat == 1 ? 0.0f : -1.0f;
+            memcpy(&f, &d[i], 4);
+            f = f < lo ? lo : (f > 1.0f ? 1.0f : f);
+            memcpy(&d[i], &f, 4);
+        }
+        if (!((dprefix >> (8 + i)) & 1u)) s->vi[di[i]] = d[i];
+    }
+}
+
+/* vt4444 lane packing: the high nibble of each byte, in byte order. */
+static uint32_t vt4444_pack(uint32_t x) {
+    return ((x >> 4) & 0xfu) | (((x >> 12) & 0xfu) << 4)
+         | (((x >> 20) & 0xfu) << 8) | (((x >> 28) & 0xfu) << 12);
+}
+
 /* vcst constant table, computed with the same float expressions as PPSSPP (MIPS.cpp). */
 static float sr_cst[32];
 static int sr_cst_init = 0;
@@ -412,6 +457,67 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                 vreg_idx(vd, n, di);
                 VFPU_NAN("vocp.s", d, n, sv, n, tv, n);
                 sr_vwrite(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
+            }
+            /* vsgn, vbfy1, vbfy2 and vt4444 follow a PSP-3000 measurement (2026-10-24,
+             * issue #326): 159 cells over vsgn.s, vbfy1.p/.q, vbfy2.q and vt4444.q, with
+             * no prefix, negate-all and wzyx S prefixes. None of them writes VFPU_CC.
+             * The T and D prefixes and constant S lanes are UNMEASURED here. */
+            if (op9 == 0x0a) {  /* vsgn: +1 or -1 from the raw sign bit of any non-zero
+                                 * word, NaN and Inf included; +-0 and denormals give +0 */
+                float sv[4];
+                uint32_t d[4];
+                vreg_idx(vs, n, si);
+                sr_vread(sv, s, si, n, s->vfpuCtrl[0]);
+                for (int i = 0; i < n; i++) {
+                    uint32_t b;
+                    memcpy(&b, &sv[i], 4);
+                    b = vfpu_daz(b);
+                    d[i] = (b & 0x7fffffffu) == 0u ? 0u : ((b >> 31) ? 0xbf800000u : 0x3f800000u);
+                }
+                vreg_idx(vd, n, di);
+                vwrite_bits(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
+            }
+            if ((op9 == 2 && (n == 2 || n == 4)) || (op9 == 3 && n == 4)) {
+                /* vbfy1 (.p/.q) and vbfy2 (.q): d = S + T. S is vs under the user S prefix
+                 * with a forced negate OR-ed in, on lanes (0,1,0,1) for vbfy1 and (0,0,1,1)
+                 * for vbfy2. T is the raw vs re-swizzled (y,x,w,z) / (z,w,x,y); the user
+                 * T prefix is not applied (UNMEASURED: the probe kept it identity). A
+                 * user S swizzle that selects a lane outside the width writes +0 to that
+                 * lane, not 0 + T. Applying the user prefix and then a textbook butterfly
+                 * disagrees with every prefixed cell measured. */
+                static const uint8_t tsw1[4] = {1, 0, 3, 2}, tsw2[4] = {2, 3, 0, 1};
+                const uint8_t *tsw = op9 == 2 ? tsw1 : tsw2;
+                uint32_t sp = s->vfpuCtrl[0], fneg = op9 == 2 ? 0xAu : 0xCu, d[4];
+                float sv[4];
+                vreg_idx(vs, n, si);
+                sr_vread(sv, s, si, n, sp | (fneg << 16));
+                for (int i = 0; i < n; i++) {
+                    uint32_t b;
+                    if (!((sp >> (12 + i)) & 1u) && (int)((sp >> (2 * i)) & 3u) >= n) {
+                        d[i] = 0u;
+                        continue;
+                    }
+                    memcpy(&b, &sv[i], 4);
+                    d[i] = vfpu_add_bits(b, s->vi[si[tsw[i]]]);
+                }
+                vreg_idx(vd, n, di);
+                VFPU_NAN1(op9 == 2 ? "vbfy1" : "vbfy2", (const float *)d, n, sv, n);
+                vwrite_bits(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
+            }
+            if (op9 == 0x19 && n == 4) {  /* vt4444.q: four 32-bit colours -> a pair of
+                                           * 16-bit ones, d[j] = c(s[2j]) | c(s[2j+1]) << 16.
+                                           * The S prefix acts on the raw words; the D
+                                           * prefix applies only its write mask, as for
+                                           * the other integer results. */
+                uint32_t sv[4], d[2];
+                vreg_idx(vs, 4, si);
+                sr_vread((float *)sv, s, si, 4, s->vfpuCtrl[0]);
+                for (int j = 0; j < 2; j++)
+                    d[j] = vt4444_pack(sv[2 * j]) | (vt4444_pack(sv[2 * j + 1]) << 16);
+                vreg_idx(vd, 2, di);
+                for (int j = 0; j < 2; j++)
+                    if (!((s->vfpuCtrl[2] >> (8 + j)) & 1u)) s->vi[di[j]] = d[j];
+                eat_prefix(s); return SR_VFPU_COMPUTE;
             }
             return SR_VFPU_OTHER;
         }

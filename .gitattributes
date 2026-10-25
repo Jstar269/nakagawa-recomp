@@ -70,3 +70,11 @@ src/ui/shaders/*.inc                  linguist-generated
 assets/public_provenance_ledger.json  linguist-generated
 PUBLIC_EXPORT.json                    linguist-generated
 third_party/**                        linguist-vendored
+
+# Byte-exact upstream FFmpeg import (src/rt/h264_ffmpeg_sub/PROVENANCE.md): this file ends in a blank
+# line upstream, and the blob hash in the manifest must not change.
+src/rt/h264_ffmpeg_sub/libavcodec/h264_mc_template.c -whitespace
+# Byte-identical upstream import whose two whitespace-only lines end in spaces
+# (third_party/dr_libs/PROVENANCE.md): exempt it from the trailing-space check
+# so `git diff --check` and the staged-whitespace hook keep its bytes intact.
+third_party/dr_libs/dr_wav.h          whitespace=-blank-at-eol

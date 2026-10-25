@@ -150,24 +150,28 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("$(CC) $(GE_CFLAGS)", makefile)
 
     def test_ffmpeg_h264_media_selftest_is_wired_in_linux_ci(self) -> None:
-        """The optional H.264 backend must build and execute its real media fixture in CI."""
+        """The vendored H.264 subset must build and execute its real media fixture in CI.
+
+        H264_FFMPEG=1 builds src/rt/h264_ffmpeg_sub (#283), so the job must not install a system
+        libavcodec that the build could pick up instead.
+        """
         native_tools = _ci_job_blocks()["native_tools"]
         self.assertIn("    runs-on: ubuntu-24.04", "\n".join(native_tools))
+        step_name = "Build and run the vendored FFmpeg H.264 media selftest"
         dependencies = _ci_step(native_tools, "Install native test dependencies")
-        ffmpeg_test = _ci_step(native_tools, "Build and run the opt-in FFmpeg H.264 media selftest")
+        ffmpeg_test = _ci_step(native_tools, step_name)
         self.assertIsNotNone(dependencies)
         self.assertIsNotNone(ffmpeg_test)
         assert dependencies is not None and ffmpeg_test is not None
         dependency_text = "\n".join(dependencies)
-        self.assertIn("libavcodec-dev", dependency_text)
-        self.assertIn("libavutil-dev", dependency_text)
-        self.assertIn("pkg-config", dependency_text)
+        self.assertNotIn("libavcodec-dev", dependency_text)
+        self.assertNotIn("libavutil-dev", dependency_text)
         test_text = "\n".join(ffmpeg_test)
         self.assertIn("H264_FFMPEG=1 BUILD_ROOT=\"$RUNNER_TEMP/ffmpeg-h264-build\"", test_text)
         self.assertIn("psmf-media-selftest", test_text)
         self.assertLess(
             _ci_step_index(native_tools, "Install the pinned SDL3 into the Linux prefix"),
-            _ci_step_index(native_tools, "Build and run the opt-in FFmpeg H.264 media selftest"),
+            _ci_step_index(native_tools, step_name),
         )
 
     def test_failed_linux_showcase_smoke_uploads_its_runtime_log(self) -> None:

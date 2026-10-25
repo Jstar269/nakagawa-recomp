@@ -9,8 +9,9 @@
    This header holds three things that share the same logical-button vocabulary:
    1. the SDL-free input model (nk_ui_input.c): repeat timing, stick hysteresis,
       last-device tracking and NkUiEvent construction;
-   2. the prompt glyphs (nk_ui_prompts.c): the label-to-glyph-set table and the
-      geometry of the four neutral prompt styles, drawn with the draw list;
+   2. the prompt glyphs (nk_ui_prompts.c): the label-to-glyph-set table, the
+      geometry of the project-drawn prompt styles, and the embedded Kenney glyph
+      images a host may use instead, drawn with the draw list;
    3. the SDL translation (nk_ui_sdl_input.c), declared here with forward
       declarations only so this header includes no SDL header. Without
       NK_UI_WITH_SDL3 the translation compiles to inert stubs and
@@ -174,8 +175,8 @@ typedef enum {
 } NkUiButtonLabel;
 
 /* The label-to-glyph-set table: A on the south button means "letters, A south"; B on
-   the south button means "letters, A east"; anything else, including unknown, gets the
-   neutral position set. Pad names are never matched. */
+   the south button means "letters, A east"; a cross means "shapes"; anything else,
+   including unknown, gets the neutral position set. Pad names are never matched. */
 NkUiPadFamily nk_ui_pad_family_for_south_label(NkUiButtonLabel label);
 /* A family picks its default prompt style (the "Match input" behaviour). */
 NkUiPromptStyle nk_ui_prompt_style_for_family(NkUiPadFamily family);
@@ -201,11 +202,28 @@ float nk_ui_prompt_width(NkUiPromptStyle style, NkUiPromptAction action, float h
 typedef struct {
     NkUiPromptStyle style;
     NkUiPromptAction action;
-    uint32_t fg_rgba;     /* active dot, label text, cross, menu bars */
+    uint32_t fg_rgba;     /* active dot, label text, cross, menu bars; image tint */
     uint32_t dim_rgba;    /* inactive dots, keycap edge */
     uint32_t face_rgba;   /* letter circle, keycap face, pill */
     int font;             /* font index for the label text */
+    const NkUiImage *image; /* when set, drawn tinted instead of the geometry */
 } NkUiPromptSpec;
+
+/* The embedded Kenney glyph (nk_ui_assets.h name, "input-prompts/<file>.png")
+   for a style and action, or NULL for NK_UI_PROMPT_NEUTRAL, which keeps its
+   project-drawn dots. Confirm and back follow the button position, as the
+   input model does: confirm is the south button, so a pad with A east shows B. */
+const char *nk_ui_prompt_asset_name(NkUiPromptStyle style, NkUiPromptAction action);
+
+/* Every glyph image a host can hand nk_ui_set_prompt_images. */
+typedef struct NkUiPromptImages {
+    NkUiImage image[NK_UI_PROMPT_STYLE_COUNT][NK_UI_PROMPT_ACT_COUNT];
+} NkUiPromptImages;
+
+/* Decodes every embedded prompt glyph into *set. Returns how many decoded; a
+   glyph that fails stays empty, and its prompt keeps the geometric form. */
+size_t nk_ui_prompt_images_load(NkUiPromptImages *set);
+void nk_ui_prompt_images_free(NkUiPromptImages *set);
 
 /* Draws one glyph into the buffer, fitted into rect (logical UI pixels, whole-pixel
    rounded through density like every other primitive). Returns false only when the

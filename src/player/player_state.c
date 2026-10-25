@@ -435,6 +435,29 @@ size_t player_library_status_text(bool has_runtime, bool checking, bool check_fa
     return (size_t)written < out_size ? (size_t)written : out_size - 1;
 }
 
+size_t player_incompatible_reason_line(const char *reason, char *out, size_t out_size) {
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+    /* Only a whole sentence is a reason worth showing. A parser message or the
+     * ABI note arrives without one, ahead of the validator's cache boilerplate
+     * (package_rebuild_reason), so those get the plain line; the log keeps the
+     * detail. */
+    char first[200] = "";
+    const char *boiler = reason ? strstr(reason, " Cache component/epoch mismatch") : NULL;
+    const char *dot = reason ? strchr(reason, '.') : NULL;
+    if (dot != NULL && boiler != NULL && dot > boiler) dot = NULL;
+    if (dot != NULL && (size_t)(dot - reason) < sizeof(first)) {
+        memcpy(first, reason, (size_t)(dot - reason));
+        first[dot - reason] = '\0';
+    }
+    int written = first[0]
+        ? snprintf(out, out_size, "No longer fits this player: %s.", first)
+        : snprintf(out, out_size,
+                   "Built for another player version, or its package file is unreadable.");
+    if (written < 0) return 0;
+    return (size_t)written < out_size ? (size_t)written : out_size - 1;
+}
+
 NkRuntimePackageStatus player_app_validate_runtime_package(
     const PlayerApp *app,
     const GameRecord *game,
@@ -895,7 +918,8 @@ int player_app_focus_count(const PlayerApp *app) {
                 bool can_build = game && !game_ready && !checking &&
                                  !check_failed &&
                                  (pkg_status == NK_RUNTIME_PACKAGE_MISSING ||
-                                  pkg_status == NK_RUNTIME_PACKAGE_STALE);
+                                  pkg_status == NK_RUNTIME_PACKAGE_STALE ||
+                                  pkg_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE);
                 if (game && (game_ready || app->is_game_running || can_build ||
                              check_failed || checking)) count++;
                 count += player_game_is_showcase(game) ? 1 : 2; /* add + optional remove */
@@ -925,9 +949,10 @@ int player_app_focus_count(const PlayerApp *app) {
             /* Resolution (3) + presentation pacing (2) + game display toggles (4: vsync,
              * fullscreen, scaling, reduce-motion) + launcher fullscreen (1) + volume stepper (2) +
              * controller settings (1) + notices and remove-tools controls (2) + close (1),
-             * then online and developer options (1), in draw order. The 8x preset is
-             * not offered (GPU scale caps at 4x). */
-            return 17;
+             * then online and developer options (1), in draw order, and last the
+             * launcher sounds toggle (1), so the earlier stops keep their places.
+             * The 8x preset is not offered (GPU scale caps at 4x). */
+            return 18;
         case VIEW_ONLINE_SETTINGS:
             /* online switch (+ updates, news, reports while it is on), developer
                switch (+ open log while it is on), back */
@@ -1009,6 +1034,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->fps_cap = -1;
     settings->master_volume = 80;
     settings->reduce_motion = false;
+    settings->ui_sounds = false;
     settings->launcher_window_maximized = false;
     settings->launcher_window_position_valid = false;
     settings->launcher_window_x = 0;
@@ -1240,6 +1266,12 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         app->settings.reduce_motion = rm_val;
     }
 
+    NkJsonNode *sounds_node = nk_json_obj_get(root, "ui_sounds");
+    bool sounds_val = false;
+    if (sounds_node && nk_json_get_bool(sounds_node, &sounds_val)) {
+        app->settings.ui_sounds = sounds_val;
+    }
+
     NkJsonNode *vol_node = nk_json_obj_get(root, "master_volume");
     int64_t vol_val = 0;
     if (vol_node && nk_json_get_int64(vol_node, &vol_val)) {
@@ -1323,6 +1355,7 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"online_reports\": %s,\n", app->settings.online_reports ? "true" : "false");
     fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
     fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
+    fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
 
@@ -1605,6 +1638,28 @@ bool player_window_fit_to_display(PlayerWindowRect requested,
     return true;
 }
 
+bool player_ui_canvas_fit(int pixel_width, int pixel_height,
+                          PlayerUiCanvas *out) {
+    if (!out || pixel_width <= 0 || pixel_height <= 0) return false;
+    double fit_x = (double)pixel_width / PLAYER_UI_DESIGN_WIDTH;
+    double fit_y = (double)pixel_height / PLAYER_UI_DESIGN_HEIGHT;
+    double scale = fit_x < fit_y ? fit_x : fit_y;
+    if (scale < PLAYER_UI_MIN_SCALE) scale = PLAYER_UI_MIN_SCALE;
+    if (scale > PLAYER_UI_MAX_SCALE) scale = PLAYER_UI_MAX_SCALE;
+    /* Round down so the canvas never extends past the output; the slack
+       absorbs division error, so 800 px at 800/720 is 720 units, not 719.
+       What is left at the right and bottom edges is under one unit wide and
+       shows the cleared background. */
+    int width = (int)((double)pixel_width / scale + 1e-6);
+    int height = (int)((double)pixel_height / scale + 1e-6);
+    if (width < 1) width = 1;
+    if (height < 1) height = 1;
+    out->width = width;
+    out->height = height;
+    out->scale = (float)scale;
+    return true;
+}
+
 void player_app_toggle_vsync(PlayerApp *app) {
     if (!app) return;
     app->settings.vsync = !app->settings.vsync;
@@ -1614,6 +1669,12 @@ void player_app_toggle_vsync(PlayerApp *app) {
 void player_app_toggle_reduce_motion(PlayerApp *app) {
     if (!app) return;
     app->settings.reduce_motion = !app->settings.reduce_motion;
+    maybe_persist_settings(app);
+}
+
+void player_app_toggle_ui_sounds(PlayerApp *app) {
+    if (!app) return;
+    app->settings.ui_sounds = !app->settings.ui_sounds;
     maybe_persist_settings(app);
 }
 
@@ -2599,7 +2660,7 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 
     if (!have_python) {
         player_app_set_error(app, "PYTHON_NOT_FOUND", "Python 3 Interpreter Not Found",
-                             "Python 3.15 was not found and the pinned bootstrap is unavailable.",
+                             "Python 3.14 or 3.15 was not found and the pinned bootstrap is unavailable.",
                              "Return to Library", VIEW_LIBRARY);
         return false;
     }
@@ -2863,6 +2924,79 @@ void player_app_set_build_error(
     if (log_file_path) {
         snprintf(app->last_error.log_file_path, sizeof(app->last_error.log_file_path), "%s", log_file_path);
     }
+}
+
+void player_app_set_package_revalidation_error(PlayerApp *app, const char *reason,
+                                               const char *log_file_path) {
+    if (!app) return;
+    const char *detail = reason && reason[0]
+        ? reason : "The new package could not be checked.";
+    char msg[512];
+    snprintf(msg, sizeof(msg),
+             "The package was built, but the check that follows the build did not pass: %.380s "
+             "Build the package again from the Library.", detail);
+    player_app_set_error(app, "PACKAGE_REVALIDATION_FAILED", "Package Check Failed",
+                         msg, "Return to Library", VIEW_LIBRARY);
+    player_dev_log_add(app, "build", "PACKAGE_REVALIDATION_FAILED: %s", detail);
+    if (log_file_path) {
+        snprintf(app->last_error.log_file_path, sizeof(app->last_error.log_file_path),
+                 "%s", log_file_path);
+    }
+}
+
+bool player_app_apply_build_outcome(PlayerApp *app) {
+    if (!app) return false;
+    const PackageBuildSession *session = &app->build_session;
+    if (!session->is_failed && !session->is_cancelled) return false;
+    if (session->session_generation == 0 ||
+        session->session_generation == app->build_outcome_handled_generation) {
+        return false;
+    }
+    app->build_outcome_handled_generation = session->session_generation;
+    /* The prerequisite fetcher reuses the session; its own card already
+       reported the outcome. */
+    if (session->session_generation == app->prerequisite_session_generation) {
+        return false;
+    }
+    if (session->is_failed) {
+        player_app_set_build_error(
+            app,
+            session->current_stage_name[0] ? session->current_stage_name : "build",
+            session->failure_boundary[0] ? session->failure_boundary
+                                         : "Package build failed.",
+            session->log_file_path);
+    } else {
+        player_app_set_view(app, VIEW_LIBRARY);
+    }
+    return true;
+}
+
+bool player_app_adopt_profile_executable(PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    GameRecord *game = &app->games[game_index];
+    if (!game->is_experimental || game->selected_executable[0] || game->is_sample) {
+        return false;
+    }
+    char root[NK_MAX_PATH];
+    const char *package_root = player_package_root(app, game);
+    if (package_root) {
+        snprintf(root, sizeof(root), "%s", package_root);
+    } else if (!nk_platform_get_app_data_dir(root, sizeof(root))) {
+        return false;
+    }
+    char leaf[sizeof(game->selected_executable)];
+    if (!nk_title_manifest_experimental_profile_executable(
+            root, game->disc_id, game->title_id, leaf, sizeof(leaf))) {
+        return false;
+    }
+    snprintf(game->selected_executable, sizeof(game->selected_executable), "%s", leaf);
+    player_dev_log_add(app, "library", "%s: selected executable %s taken from its profile",
+                       game->disc_id, leaf);
+    if (nk_library_add_or_update(&app->library, game) == NK_OK &&
+        app->library.library_path[0]) {
+        (void)nk_library_save(&app->library, app->library.library_path);
+    }
+    return true;
 }
 
 void player_app_start_setup_wizard(PlayerApp *app) {

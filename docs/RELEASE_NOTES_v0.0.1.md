@@ -86,6 +86,10 @@ loader and a Vulkan-capable graphics driver remain host-provided:
 
 The exact package command and its fail-closed scan are in [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md).
 
+## Title-specific compatibility patches
+
+Hot Shots Tennis runs with 23 title-specific compatibility patches: the forced branches, success stubs and scheduler or display surrogates that `python tools/compat_overrides.py --debt-census` lists. They fire only for that title. The recompiler emits its patches only under that title's profile, and the runtime applies the rest only through that title's validated configuration, so generic runtime code outside the configuration layer carries no title address. They are not fail-closed, so a missing behaviour can look like success on that route. Each run's log names every patch that fired, or says that none did, in its `COMPAT_PATCH_REPORT` lines. Retiring them is v0.0.2 work, tracked in [#363](https://github.com/Jstar269/nakagawa-recomp/issues/363).
+
 ## Known issues
 
 - **Second-title scope**: PAC-MAN Championship Edition reaches its menu and plays a stage on the maintainer's copy, through generic fixes with no title-specific branches ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556)). This is not full-game compatibility; other candidates stop at named unsupported imports and further title bring-up is in the works under [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).
@@ -95,14 +99,12 @@ The exact package command and its fail-closed scan are in [`PREVIEW_RELEASE.md`]
 - **Controller remapping is global by default**: Controller settings save host input configuration and calibration to `input_profile.json`. A custom mapping for one disc is optional. Controller setup from a running game's pause overlay is not available yet.
 - **In-game Latin text can drop, clip or overflow**: The public build serves one Latin font file for all Latin font indices, so some in-game Latin dialog text loses letters, clips, or overflows its box until each index has its own file ([#1142](https://github.com/Jstar269/nakagawa-recomp/issues/1142)).
 - **Project-font dashes and a full-width YES/NO band**: A title that runs its own `sceFont` can draw the project's PGF fonts as one-pixel dashes, and its YES/NO confirmation prompt can draw as a full-width band ([#1055](https://github.com/Jstar269/nakagawa-recomp/issues/1055), [#821](https://github.com/Jstar269/nakagawa-recomp/issues/821)).
-- **Compatibility entries on the Hot Shots Tennis route**: That route keeps 23 temporary compatibility entries (forced branches, success stubs and surrogates). They are not fail-closed, so a missing behaviour can look like success there. [#363](https://github.com/Jstar269/nakagawa-recomp/issues/363) tracks their retirement.
 - **Launcher UI is soft at most window sizes**: The player draws its UI on a fixed 1280x720 canvas, so the UI looks blurry at any window size other than the starting one, and worst in fullscreen. Game frames are sharp at any size ([#1131](https://github.com/Jstar269/nakagawa-recomp/pull/1131)). The UI part is tracked in [#1129](https://github.com/Jstar269/nakagawa-recomp/issues/1129).
 - **H.264 video is Windows-only for now**: H.264 decoding runs through Windows Media Foundation. The portable decoder backend in [#283](https://github.com/Jstar269/nakagawa-recomp/issues/283) is not merged (PR [#888](https://github.com/Jstar269/nakagawa-recomp/pull/888) is open), so video decoding is Windows-only for now.
 - **CPU reads of GPU-rendered VRAM**: A CPU read of depth data through a VRAM mirror is still wrong for some depth-buffer settings ([#1049](https://github.com/Jstar269/nakagawa-recomp/issues/1049)).
 - **ATRAC3 sound effects**: A private replay still reports ATRAC3 decode failures for some sound effects, and the decode contract is not yet matched to PSP hardware ([#1096](https://github.com/Jstar269/nakagawa-recomp/issues/1096)).
 - **Video cutscene timing**: The decoded-picture count and the audio offset are not yet fully accounted for ([#279](https://github.com/Jstar269/nakagawa-recomp/issues/279)).
 - **Console window**: The player is a console-subsystem app, so opening it by double-clicking also opens a console window beside it ([#1146](https://github.com/Jstar269/nakagawa-recomp/issues/1146)).
-- **PACKAGE INCOMPATIBLE has no rebuild action**: A package that the player marks PACKAGE INCOMPATIBLE offers no rebuild button, so the package folder `<user data>/packages/<DISC_ID>/` must be deleted by hand before the title can be built again ([#1147](https://github.com/Jstar269/nakagawa-recomp/issues/1147)).
 - **Resolved: one-frame skinned-character corruption**: The corruption at the title-to-main-menu transition was traced to a VFPU3 compare-decode error, fixed in [#822](https://github.com/Jstar269/nakagawa-recomp/pull/822). The maintainer confirmed on 2026-10-19 that it no longer appears on the GPU presenter, and [#69](https://github.com/Jstar269/nakagawa-recomp/issues/69) closed on 2026-10-20. Reopen #69 if it returns.
 
 ## How to report

@@ -34,11 +34,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import struct
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -368,6 +370,9 @@ class TestReleaseDocumentation(unittest.TestCase):
     def test_release_docs_match_current_player_boundaries(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         preview = (ROOT / "docs" / "PREVIEW_RELEASE.md").read_text(encoding="utf-8")
+        workflow = (
+            ROOT / ".github" / "workflows" / "provenance-attestation.yml"
+        ).read_text(encoding="utf-8")
         smoke = (ROOT / "docs" / "SMOKE_TEST.md").read_text(encoding="utf-8")
         release_notes = (ROOT / "docs" / "RELEASE_NOTES_v0.0.1.md").read_text(encoding="utf-8")
 
@@ -394,8 +399,10 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertIn("#547", preview)
         self.assertNotIn("automatic prerequisite installation is in the works", preview.lower())
         self.assertIn("-ExcludeOptionalFonts", preview)
-        self.assertIn("tools/stage_runtime_dlls.py --target $Bin", preview)
-        self.assertIn("stage_runtime_dlls.py failed with exit code", preview)
+        self.assertIn("python tools/stage_runtime_dlls.py --target dist/bin", workflow)
+        self.assertIn("set -euo pipefail", workflow)
+        self.assertIn("a nonzero exit aborts the job before artifact upload", preview)
+        self.assertIn("does not run the stager again", preview)
         self.assertIn("SDL3.dll", release_notes)
         self.assertIn("SDL3_ttf", release_notes)
         self.assertIn("#556", release_notes)
@@ -1733,6 +1740,44 @@ class TestRuntimeDllStaging(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(nk_cli.PackageBuildError, "SDL3_ttf.dll staging collision"):
                     nk_cli._stage_runtime_assets(package)
+
+
+def _builder_probe(name: str) -> str:
+    source = (ROOT / "src" / "player" / "package_builder.c").read_text(encoding="utf-8")
+    match = re.search(rf"static const char \*{name} =\s*((?:\"[^\"]*\"\s*)+);", source)
+    if not match:
+        raise AssertionError(f"probe {name} not found in package_builder.c")
+    return "".join(re.findall(r"\"([^\"]*)\"", match.group(1)))
+
+
+def _probe_exit(code: str) -> int:
+    return subprocess.run([sys.executable, "-c", code], check=False,
+                          capture_output=True, timeout=60).returncode
+
+
+def _with_platform(probe: str, platform: str) -> str:
+    return (f"import sysconfig\nsysconfig.get_platform = lambda: {platform!r}\n"
+            + probe)
+
+
+class TestPackageBuilderPythonProbe(unittest.TestCase):
+    def test_wide_probe_accepts_cpython_314_or_315_only(self):
+        native = not sysconfig.get_platform().startswith("mingw")
+        in_range = sys.version_info[:2] in ((3, 14), (3, 15))
+        accepted = _probe_exit(_builder_probe("probe_314_or_315")) == 0
+        self.assertEqual(accepted, native and in_range)
+
+    def test_315_probe_accepts_only_native_cpython_315(self):
+        native = not sysconfig.get_platform().startswith("mingw")
+        is_315 = sys.version_info[:2] == (3, 15)
+        accepted = _probe_exit(_builder_probe("probe_315")) == 0
+        self.assertEqual(accepted, native and is_315)
+
+    def test_both_probes_refuse_mingw_builds(self):
+        for name in ("probe_315", "probe_314_or_315"):
+            with self.subTest(probe=name):
+                code = _probe_exit(_with_platform(_builder_probe(name), "mingw_x86_64_ucrt_gnu"))
+                self.assertNotEqual(code, 0)
 
 
 if __name__ == "__main__":

@@ -302,9 +302,9 @@ void sr_load_segment(uint32_t vaddr, const void *data, uint32_t len) {
  * SR_PHYS masks this whole range into the calloc-zeroed arena. */
 #define SR_HEAP_BASE UINT32_C(0x0a000008)
 #define SR_HEAP_END  UINT32_C(0x0c000000)  /* exclusive: end of the guest arena */
-/* The nested host->guest call frames (src/rt/nested_frames.c) reserve the 1 MiB
- * hole between the thread-stack arena ceiling and this heap.  Pin the adjacency
- * so growing either region downward/upward cannot silently alias the other. */
+/* The nested host->guest call frames (src/rt/nested_frames.c) reserve 1 MiB of
+ * kernel RAM, far below this heap.  Pin the ordering so moving either region
+ * cannot silently alias the other. */
 _Static_assert(SR_NESTED_FRAME_END <= SR_HEAP_BASE,
                "the reserved nested-frame region must end at or below the guest heap arena");
 static uint32_t s_heap_bump_ptr = SR_HEAP_BASE;

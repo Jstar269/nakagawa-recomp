@@ -366,6 +366,41 @@
         ]
       },
       {
+        "id": "portable-snippets-safe-math",
+        "name": "Portable Snippets safe-math",
+        "spdx_id": "CC0-1.0",
+        "upstream_origin": "https://github.com/nemequ/portable-snippets",
+        "upstream_revision": "84abba93ff3d52c87e08ba81de1cc6615a42b72e",
+        "disposition": "statically_linked_subset",
+        "notice_file": "portable-snippets-safe-math.txt",
+        "note": "The byte-identical header third_party/portable-snippets/safe-math/safe-math.h (third_party/portable-snippets/PROVENANCE.md), compiled into the native player through src/core/nk_iso.c and src/core/nk_xb.c. CC0 1.0 asks for no notice; the dedication text travels with the package for clarity.",
+        "license_texts": [
+          {
+            "file": "third_party/portable-snippets/COPYING.md",
+            "copied_from": "Portable Snippets upstream COPYING.md at commit 84abba93ff3d52c87e08ba81de1cc6615a42b72e, imported byte-identical",
+            "sha256": "ff5ac505f6fd6dd3c841f210db469a5dd2fc00a81559b0487c15357f6e2bd331"
+          }
+        ]
+      },
+      {
+        "id": "ffmpeg-h264",
+        "name": "FFmpeg H.264 decoder subset",
+        "spdx_id": "LGPL-2.1-or-later",
+        "upstream_origin": "https://github.com/FFmpeg/FFmpeg",
+        "upstream_revision": "n4.4 / dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1",
+        "disposition": "statically_linked_subset",
+        "notice_file": "FFmpeg-H264.txt",
+        "object_glob": "build/*/h264sub_*.o",
+        "relink_doc": "RELINK.md",
+        "license_texts": [
+          {
+            "file": "src/rt/h264_ffmpeg_sub/LICENSE.LGPLv2.1.txt",
+            "copied_from": "FFmpeg n4.4 upstream COPYING.LGPLv2.1 as imported into src/rt/h264_ffmpeg_sub/",
+            "sha256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe"
+          }
+        ]
+      },
+      {
         "id": "sal063-ppsspp-lineage",
         "name": "sal063 / PPSSPP lineage runtime code",
         "spdx_id": "GPL-2.0-or-later",

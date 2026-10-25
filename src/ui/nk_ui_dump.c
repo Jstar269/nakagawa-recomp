@@ -51,7 +51,8 @@ static const char *nk_ui_dump_kind(int kind, uint32_t custom_kind) {
     case NK_UI_DRAW_SCISSOR_START: return "CLIP+";
     case NK_UI_DRAW_SCISSOR_END: return "CLIP-";
     case NK_UI_DRAW_CUSTOM:
-        return custom_kind == NK_UI_CUSTOM_WAVES ? "WAVES" : "CUSTOM";
+        return custom_kind == NK_UI_CUSTOM_WAVES ? "WAVES"
+             : custom_kind == NK_UI_CUSTOM_IMAGE ? "IMAGE" : "CUSTOM";
     default: return "NONE";
     }
 }
@@ -69,6 +70,16 @@ size_t nk_ui_dump_draw_list(const NkUiDrawList *list, char *out, size_t cap) {
         const NkUiDrawCmd *command = &list->cmd[i];
         const char *text = "";
         size_t text_length = 0u;
+        char image_size[32];
+        if (command->kind == NK_UI_DRAW_CUSTOM && command->custom_kind == NK_UI_CUSTOM_IMAGE &&
+            command->custom != NULL) {
+            /* The image's size stands in for its pixels, which are not dumped. */
+            const NkUiImage *image = (const NkUiImage *)command->custom;
+            int n = snprintf(image_size, sizeof(image_size), "%ux%u",
+                             (unsigned)image->width, (unsigned)image->height);
+            text = image_size;
+            text_length = n > 0 && (size_t)n < sizeof(image_size) ? (size_t)n : 0u;
+        }
         if (command->kind == NK_UI_DRAW_TEXT && command->custom != NULL) {
             const NkUiTextRun *run = (const NkUiTextRun *)command->custom;
             text = run->text != NULL ? run->text : "";

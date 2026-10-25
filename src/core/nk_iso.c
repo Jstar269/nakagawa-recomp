@@ -20,6 +20,18 @@
 #include <strings.h>
 #endif
 
+/* Overflow-checked size arithmetic from portable-snippets (CC0, pinned in
+   third_party/portable-snippets/PROVENANCE.md). The header declares
+   __int128 helpers, which -Wpedantic reports, so it is included quietly. */
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
+#include "../../third_party/portable-snippets/safe-math/safe-math.h"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #endif
@@ -1210,10 +1222,12 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
     return NK_OK;
 }
 
+/* On overflow *out_sum is left unchanged. */
 static bool nk_iso_checked_add_u64(uint64_t left, uint64_t right,
                                    uint64_t *out_sum) {
-    if (!out_sum || right > UINT64_MAX - left) return false;
-    *out_sum = left + right;
+    uint64_t sum;
+    if (!out_sum || !psnip_safe_uint64_add(&sum, left, right)) return false;
+    *out_sum = sum;
     return true;
 }
 

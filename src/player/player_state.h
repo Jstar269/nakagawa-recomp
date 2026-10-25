@@ -87,6 +87,21 @@ typedef struct {
     int right;
 } PlayerWindowFrame;
 
+/* The launcher's design size, and the range of output pixels per layout unit
+   the UI (and its font rasteriser) is drawn at. */
+#define PLAYER_UI_DESIGN_WIDTH 1280
+#define PLAYER_UI_DESIGN_HEIGHT 720
+#define PLAYER_UI_MIN_SCALE 0.25f
+#define PLAYER_UI_MAX_SCALE 8.0f
+
+/* Where the launcher UI is laid out and how it reaches the output: `width` by
+   `height` layout units, each drawn as `scale` output pixels. */
+typedef struct {
+    int width;
+    int height;
+    float scale;
+} PlayerUiCanvas;
+
 typedef enum {
     PLAYER_CLOSE_QUIT = 0,
     PLAYER_CLOSE_CONFIRM_REQUIRED
@@ -151,6 +166,7 @@ typedef struct {
     int fps_cap;          /* -1 = PSP scanout, 0 = uncapped host presentation */
     int master_volume;    /* 0..100 */
     bool reduce_motion;   /* freeze pulses/sweeps for motion sensitivity */
+    bool ui_sounds;       /* launcher move/confirm/back sounds; off by default */
     bool launcher_window_maximized;
     bool launcher_window_position_valid;
     int launcher_window_x;
@@ -305,6 +321,12 @@ typedef struct PlayerApp {
     ErrorState last_error;
     SetupWizardState wizard;
     PackageBuildSession build_session;
+    /* The build session whose failure or cancellation has been shown, so the
+       main loop shows it once and the user can leave the card (#1277). */
+    uint64_t build_outcome_handled_generation;
+    /* The build session the prerequisite fetcher ran in. Its outcome belongs
+       to the prerequisite card, not the package build card. */
+    uint64_t prerequisite_session_generation;
     PlayerPrerequisiteState prerequisites;
     PackageBootstrapSession bootstrap_session;
     bool prerequisite_job_started;
@@ -516,6 +538,10 @@ const char *player_app_runtime_package_reason(const PlayerApp *app,
 size_t player_library_status_text(bool has_runtime, bool checking, bool check_failed,
                                   bool assets_staged, uint32_t staged_asset_count,
                                   const char *reason, char *out, size_t out_size);
+/* The one line an INCOMPATIBLE card gives for why its package no longer fits
+ * this player: the validator's first sentence when it gave one, or a plain
+ * fallback. Both title cards show it beside REBUILD PACKAGE. */
+size_t player_incompatible_reason_line(const char *reason, char *out, size_t out_size);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 uint64_t player_app_ui_test_validation_calls(void);
 #endif
@@ -562,8 +588,20 @@ bool player_window_fit_to_display(PlayerWindowRect requested,
                                   PlayerWindowFrame frame,
                                   bool requested_position_valid,
                                   PlayerWindowRect *out);
+/* Fit the launcher UI to a window whose drawable area is `pixel_width` x
+ * `pixel_height` output pixels (#1129). The design keeps the proportions the
+ * letterboxed 1280x720 canvas gave it: the scale is the one the letterbox
+ * used, so the screens never lay out smaller than the design. Instead of
+ * leaving bars, the canvas grows along the window's longer axis, and instead
+ * of stretching a finished picture, the UI is drawn straight into the output
+ * pixels with a uniform scale and no offset, so text is rasterised at exactly
+ * `scale` and lands on whole pixels. A high-DPI window has more pixels and
+ * therefore a larger scale. */
+bool player_ui_canvas_fit(int pixel_width, int pixel_height,
+                          PlayerUiCanvas *out);
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
+void player_app_toggle_ui_sounds(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
 void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
 
@@ -620,7 +658,7 @@ void player_app_stop_game(PlayerApp *app);
 
 /* Copy the launch-relevant player settings into a prepared session's runtime
  * configuration (resolution, frame cap, vsync, fullscreen, master volume).
- * reduce_motion is launcher-UI state and deliberately not copied. Kept as a
+ * reduce_motion and ui_sounds are launcher-UI state and deliberately not copied. Kept as a
  * named seam so tests can pin the settings -> session mapping without
  * spawning a child. */
 void player_app_apply_settings_to_session(const PlayerSettings *settings,
@@ -719,6 +757,20 @@ bool player_app_start_package_build(PlayerApp *app, int game_index);
 /* Rebuild an existing package only when validation marks it incompatible.
    Uses the same prerequisite consent and package-builder transaction as a new build. */
 bool player_app_rebuild_package(PlayerApp *app, int game_index);
+/* An experimental entry saved without a selected executable (its EBOOT.BIN was
+   encrypted at import) takes the one its validated profile binds, and the
+   library is saved. Returns true when the entry changed (#1276). */
+bool player_app_adopt_profile_executable(PlayerApp *app, int game_index);
+/* Show a failed or cancelled build session once per session: a failure opens
+   the build error card, a cancel returns to the Library. Later calls for the
+   same session do nothing, so the card can be dismissed and the Library left
+   (#1277). Returns true when it changed the view. */
+bool player_app_apply_build_outcome(PlayerApp *app);
+/* The package passed its build but not the check that follows it. The internal
+   code PACKAGE_REVALIDATION_FAILED goes to the developer log; the card does
+   not claim the build failed (#1276). */
+void player_app_set_package_revalidation_error(PlayerApp *app, const char *reason,
+                                               const char *log_file_path);
 /* Poll the active package builder once per player-loop iteration, independent
    of which view is currently visible. */
 void player_app_poll_package_build(PlayerApp *app, uint64_t current_time_ms);

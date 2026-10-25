@@ -468,7 +468,7 @@ static void assert_python_probe_case(const char *case_name, const char *stub_mod
 }
 
 static void test_python_candidate_validation(void) {
-    printf("[PACKAGE_BUILDER_TEST] Subtest: Python candidates must run CPython 3.15\n");
+    printf("[PACKAGE_BUILDER_TEST] Subtest: Python candidates must run CPython 3.14 or 3.15\n");
     char *saved_path = copy_env_value("PATH");
     char *saved_python = copy_env_value("PYTHON");
     char *saved_isolation = copy_env_value("NAKAGAWA_PLAYER_UI_TEST_NO_HOST_PYTHON");
@@ -476,6 +476,7 @@ static void test_python_candidate_validation(void) {
 
     assert_python_probe_case("python-probe-store-stub", "store-stub", false);
     assert_python_probe_case("python-probe-wrong-version", "wrong-version", false);
+    assert_python_probe_case("python-probe-cpython-314", "cpython-314", true);
     assert_python_probe_case("python-probe-cpython-315", "cpython-315", true);
     assert_python_probe_case("python-probe-timeout", "timeout", false);
 
@@ -490,16 +491,23 @@ static void test_python_candidate_validation(void) {
 }
 
 static int run_python_probe_stub(int argc, char *argv[]) {
-    static const char *probe =
-        "import sys; sys.exit(sys.implementation.name != 'cpython' or "
+    static const char *probe_315 =
+        "import sys, sysconfig; sys.exit(sys.implementation.name != 'cpython' or "
+        "sysconfig.get_platform().startswith('mingw') or "
         "sys.version_info[:2] != (3, 15))";
-    if (argc != 3 || strcmp(argv[1], "-c") != 0 || strcmp(argv[2], probe) != 0) {
-        return 97;
-    }
+    static const char *probe_314_or_315 =
+        "import sys, sysconfig; sys.exit(sys.implementation.name != 'cpython' or "
+        "sysconfig.get_platform().startswith('mingw') or "
+        "not ((3, 14) <= sys.version_info[:2] <= (3, 15)))";
+    if (argc != 3 || strcmp(argv[1], "-c") != 0) return 97;
+    bool is_315_probe = strcmp(argv[2], probe_315) == 0;
+    if (!is_315_probe && strcmp(argv[2], probe_314_or_315) != 0) return 97;
     const char *mode = getenv("NAKAGAWA_TEST_PYTHON_STUB_MODE");
     if (!mode) return 98;
     if (strcmp(mode, "store-stub") == 0) return 9009;
     if (strcmp(mode, "wrong-version") == 0) return 1;
+    /* A 3.14 stub fails the 3.15-only probe that the search runs first. */
+    if (strcmp(mode, "cpython-314") == 0) return is_315_probe ? 1 : 0;
     if (strcmp(mode, "cpython-315") == 0) return 0;
     if (strcmp(mode, "timeout") == 0) {
         for (;;) {

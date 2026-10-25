@@ -141,6 +141,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `hle_manifest.py` | Generate the authoritative HLE registration manifest from the runtime HLE table, plus the semantic-status census artifact (`--census-json` / `--census-markdown`). |
 | `hle_registry_meta.py` | Curated classification metadata for the HLE registration manifest. |
 | `gen_nidnames.py` | Generate the NID name header from the tracked NID corpus. |
+| `gen_ui_assets.py` | Embed the vendored Kenney prompt glyphs and UI sounds (`third_party/kenney/`) in `src/ui/nk_ui_assets.c`; `--check` reports a stale file. |
 | `nid_name_proof.py` | Independently verify and classify the entries of the generated NID name header. |
 | `nid_auditor.py` | NID compliance audit: report which guest imports remain unclassified. |
 | `nidseq.py` | Extract a trace's import sequence and verify it against an oracle trace. |
@@ -317,6 +318,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_analyze_tailcall.py` | Regression tests for the analyzer's tail-call promotion. |
 | `test_analyze_import_stub_entries.py` | Import-table stubs outside the named code sections are owned function entries, with codegen bodies. |
 | `test_analyze_toml_emit.py` | Locks the analyzer TOML emitter's fail-closed string contract. |
+| `test_gen_ui_assets.py` | `src/ui/nk_ui_assets.c` embeds every vendored Kenney asset byte for byte and is current. |
 | `test_analyzer_span_scope.py` | Regression tests for analyzer executable-span ownership. |
 | `test_codegen_continuations.py` | Linked transfers carry a resume boundary; unlinked ones stay tail dispatches. |
 | `test_codegen_entry_semantics.py` | End-to-end regressions for callable versus resume-entry codegen semantics. |
@@ -367,6 +369,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_dmac_semantics.py` | Source-shape gates for the measured DMAC copy path. |
 | `test_evf_c.py` | Regression coverage for PSP event-flag semantics. |
 | `test_guestmem_c.py` | Behavioral and wiring coverage for the guest-memory bounds contract. |
+| `test_mp3_tone_fixture.py` | The sceMp3 tone fixture header matches its source-authored generator. |
 | `test_mpeg_h264_bounds.py` | Static contracts and arithmetic fixtures for the MPEG bounds work. |
 | `test_native_driver_hardening.py` | Malformed-input regression tests for the native runtime driver. |
 | `test_native_gate_stub_link.py` | Keep the headless gate link surface synchronized with the runtime. |
