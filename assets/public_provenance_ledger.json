@@ -5101,7 +5101,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "9c702bf139b996e3530ebdd17d93594fa7ed1dbd81fca1c52b16bad436116e1c"
+      "sha256": "c2c765f829eab07526a4afae7ff2f8afa6be7bd06616bb138e6cc747703ac546"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -5149,7 +5149,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6cd2b8f3b2f1c4930005f4547f246f23d53feeeaa0c2adc19e4ccae5d78cceca"
+      "sha256": "c52cd692a92b983258ae5b1b85bc42e5305d00c039c55eda33d94609ada8f2c5"
     },
     {
       "path": "src/rt/ge_float24.c",
@@ -8392,7 +8392,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "04c8df2bafc604b32a93dd0056a22559f3e7352a54c1ff7fee79267a3dfb29fe"
+      "sha256": "55bde1abb395c658e401656fbc7e347cd54a2ab6d1434e4f6521f610ccd34117"
     },
     {
       "path": "src/rt/hle.c",
@@ -8893,7 +8893,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0327ae2f7afb057874529dae6c5f38d176883fbf2acc3dfd23c1bf39bcbaa59d"
+      "sha256": "3c8f28f7a7e1fb3dcfb6ded9ce6c01ce3871a3bc9ce7c58e23f38ca793bdd57b"
     },
     {
       "path": "src/rt/recomp.h",

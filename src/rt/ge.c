@@ -775,9 +775,8 @@ static void ge_xor_range_extremes(uint64_t lo, uint64_t hi, uint64_t mask,
 
 /* The GE XORs bits 6 and 13 of the absolute address of each depth pixel (PSP-3000 6.6.1, measured
  * 2026-10-21 with zbp 0x0ce000). The span is therefore the XOR image of the surface's absolute range. */
-int ge_zbuf_guest_span_bounds(uint32_t base, uint32_t stride,
-                              uint32_t *first, uint32_t *end) {
-    if (stride == 0u || stride > 512u || !first || !end) return 0;
+static int ge_zbuf_guest_span_bounds_uncached(uint32_t base, uint32_t stride,
+                                              uint32_t *first, uint32_t *end) {
     uint32_t pixels = stride * 272u;
     if (pixels == 0u) return 0;
     uint64_t lo = base;
@@ -789,6 +788,42 @@ int ge_zbuf_guest_span_bounds(uint32_t base, uint32_t stride,
     *first = (uint32_t)min_addr;
     *end = (uint32_t)end64;
     return *first < *end;
+}
+
+/* Every CPU load and store that reaches VRAM asks whether it overlaps a depth surface, so this
+ * runs per access while the answer depends only on (base, stride). A few recent pairs are kept per
+ * thread (one per live depth surface is typical); before this cache the block walk above was ~6%
+ * of a measured title's busy thread (#1296). */
+#define GE_ZBUF_SPAN_CACHE 4u
+typedef struct {
+    uint32_t base, stride, first, end;
+    int ok, used;
+} GeZbufSpanCacheEntry;
+static _Thread_local GeZbufSpanCacheEntry s_zbuf_span_cache[GE_ZBUF_SPAN_CACHE];
+static _Thread_local unsigned s_zbuf_span_cache_next;
+
+int ge_zbuf_guest_span_bounds(uint32_t base, uint32_t stride,
+                              uint32_t *first, uint32_t *end) {
+    if (stride == 0u || stride > 512u || !first || !end) return 0;
+    for (unsigned i = 0; i < GE_ZBUF_SPAN_CACHE; i++) {
+        const GeZbufSpanCacheEntry *e = &s_zbuf_span_cache[i];
+        if (e->used && e->base == base && e->stride == stride) {
+            if (!e->ok) return 0;
+            *first = e->first;
+            *end = e->end;
+            return 1;
+        }
+    }
+    GeZbufSpanCacheEntry *e = &s_zbuf_span_cache[s_zbuf_span_cache_next++ % GE_ZBUF_SPAN_CACHE];
+    e->base = base;
+    e->stride = stride;
+    e->first = e->end = 0u;
+    e->ok = ge_zbuf_guest_span_bounds_uncached(base, stride, &e->first, &e->end);
+    e->used = 1;
+    if (!e->ok) return 0;
+    *first = e->first;
+    *end = e->end;
+    return 1;
 }
 
 static void ge_zbuf_boundary(const char *code, const char *sentence) {
