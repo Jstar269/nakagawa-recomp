@@ -14,6 +14,8 @@ extern "C" {
 #endif
 
 typedef bool (*PlayerStageCancelCallback)(void *userdata);
+/* File counts track the stable inventory copied from the disc. They exclude
+ * files materialized from XB archives and optional local support PRXs. */
 typedef void (*PlayerStageProgressCallback)(const char *current_path,
                                             int percent,
                                             size_t files_extracted,
