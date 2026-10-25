@@ -2379,16 +2379,16 @@ static void removal_fixture_make(RemovalFixture *f, const char *disc) {
 static PlayerApp *removal_test_app(const RemovalFixture *f, const char *disc) {
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
     NkGameEntry entry;
-    char library[NK_MAX_PATH * 2];
+    size_t root_length = strlen(f->build_root);
     assert(app != NULL);
     nk_library_init(&app->library);
-    removal_test_path(library, sizeof(library), f->build_root, "library1304.json", NULL,
-                      NULL);
-    assert(strlen(library) < sizeof(app->library.library_path));
-    snprintf(app->library.library_path, sizeof(app->library.library_path), "%s", library);
+    /* Joined straight into the field: a snprintf from a larger buffer fails
+       -Wformat-truncation in optimized builds. */
+    removal_test_path(app->library.library_path, sizeof(app->library.library_path),
+                      f->build_root, "library1304.json", NULL, NULL);
     remove(app->library.library_path);
-    assert(strlen(f->build_root) < sizeof(app->runtime_root));
-    snprintf(app->runtime_root, sizeof(app->runtime_root), "%s", f->build_root);
+    assert(root_length < sizeof(app->runtime_root));
+    memcpy(app->runtime_root, f->build_root, root_length + 1);
     seed_entry(&entry, disc, "Removal Fixture");
     snprintf(entry.iso_path, sizeof(entry.iso_path), "%s", f->iso);
     assert(nk_library_add_or_update(&app->library, &entry) == NK_OK);
