@@ -906,6 +906,32 @@ def compiler_target(
     return machine
 
 
+# What a package build compiles with when its caller sets no optimization (#1296). The
+# Makefile's -O0 default is for ad-hoc and selftest builds; a package is what a player runs.
+# The runtime is project code and builds at -O2 for every title. Generated guest code stays
+# at -O0 unless the title's codegen profile has a measured, qualified level, because gcc at
+# higher levels on 2,000-function chunks can exhaust memory on an unqualified title.
+PACKAGE_RUNTIME_OPT = "-O2"
+PACKAGE_RECOMP_OPT_BY_PROFILE = {"hst": "-O1"}
+
+
+def package_optimization(
+    codegen_profile: str,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """``RUNTIME_OPT`` and ``RECOMP_OPT`` for a package build; a value the caller set wins.
+
+    Both package routes (the planner and the player's CLI) apply this before deriving the
+    cache key, so the key names the flags the objects were really compiled with.
+    """
+    env = os.environ if environment is None else environment
+    return {
+        "RUNTIME_OPT": env.get("RUNTIME_OPT") or PACKAGE_RUNTIME_OPT,
+        "RECOMP_OPT": env.get("RECOMP_OPT")
+        or PACKAGE_RECOMP_OPT_BY_PROFILE.get(codegen_profile, "-O0"),
+    }
+
+
 def native_compile_flags(
     *,
     public_safe: bool = False,

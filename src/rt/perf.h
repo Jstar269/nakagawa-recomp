@@ -209,6 +209,14 @@ void     sr_perf_h264(uint64_t started_ns, int result);
 void     sr_perf_atrac(uint64_t started_ns, int result);
 void     sr_perf_audio_mix(uint64_t started_ns);
 void     sr_perf_audio_output(uint64_t started_ns, uint32_t frames);
+/* One host-queue observation per accepted push on host audio channel `channel`:
+ * `queued_frames` is the channel's queue depth just before the push. `starved_ns` is how
+ * long that queue had been empty (the device played silence on the channel) when the push
+ * arrived; 0 when it was not empty. `underrun` is nonzero when that empty spell counts as an
+ * underrun of a playing stream rather than a stream that stopped and started again. */
+#define SR_PERF_AUDIO_CHANNELS 9
+void     sr_perf_audio_queue(int channel, uint32_t queued_frames, uint64_t starved_ns,
+                             int underrun);
 
 /* In-game HUD metrics query (reuses SR_PERF counters, zero overhead when inactive) */
 void     sr_perf_enable_counters(void);

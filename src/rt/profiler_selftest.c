@@ -87,8 +87,45 @@ static void test_telemetry_lines_are_emitted_whole(void) {
           "the GE frontend profile lost sampled timing or eligibility counts");
 }
 
+/* PERF_AUDIO (#1296): the host-queue depth seen before each push and the silence of each
+ * underrun, per channel, so an audio gap can be told apart from a guest that is merely slow.
+ * Channel 8 gets a full queue, a nearly drained one, and an underrun after 20 ms of silence;
+ * channel 0 gets one push; the other channels are silent and print nothing. */
+static void test_audio_queue_line(void) {
+    sr_perf_init();
+    sr_perf_test_set_report_sink(capture_report_line);
+    s_report_count = 0;
+    sr_perf_audio_queue(8, 4410u, 0u, 0);
+    sr_perf_audio_queue(8, 441u, 0u, 0);
+    sr_perf_audio_queue(8, 0u, 20000000u, 1);
+    sr_perf_audio_queue(0, 2205u, 0u, 0);
+    sr_perf_audio_queue(SR_PERF_AUDIO_CHANNELS, 1u, 1u, 1);
+    sr_perf_test_force_report();
+    sr_perf_test_set_report_sink(NULL);
+    CHECK(s_report_count == 4,
+          "one interval with two pushed channels emitted %d line units (expected PERF, "
+          "PERF_ATTRIB and two PERF_AUDIO)", s_report_count);
+    CHECK(whole_line(2, "PERF_AUDIO ch=0 ") &&
+              strcmp(s_report_lines[2], "PERF_AUDIO ch=0 pushes=1 q_min_ms=50.0 q_max_ms=50.0 "
+                                        "underruns=0 starved_ms=0.000\n") == 0,
+          "channel 0 audio line was '%s'", s_report_count > 2 ? s_report_lines[2] : "");
+    CHECK(whole_line(3, "PERF_AUDIO ch=8 ") &&
+              strcmp(s_report_lines[3], "PERF_AUDIO ch=8 pushes=3 q_min_ms=0.0 q_max_ms=100.0 "
+                                        "underruns=1 starved_ms=20.000\n") == 0,
+          "channel 8 audio line was '%s'", s_report_count > 3 ? s_report_lines[3] : "");
+
+    /* The next interval starts empty: no push, no PERF_AUDIO line. */
+    s_report_count = 0;
+    sr_perf_test_set_report_sink(capture_report_line);
+    sr_perf_test_force_report();
+    sr_perf_test_set_report_sink(NULL);
+    CHECK(s_report_count == 2, "an interval without pushes emitted %d line units (expected 2)",
+          s_report_count);
+}
+
 int main(void) {
     test_telemetry_lines_are_emitted_whole();
+    test_audio_queue_line();
     sr_profile_test_reset();
 
     /* HST and other zero-based PSP images can legitimately execute PC zero. It must be a

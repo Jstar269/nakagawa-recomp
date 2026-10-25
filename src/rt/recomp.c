@@ -361,36 +361,34 @@ static int sr_heap_free_node_valid(uint32_t hdr, uint32_t *size_out, uint32_t *n
 }
 
 /* The free list is guest-visible metadata and can be damaged by a foreign
- * pointer write. Validate every reachable node and use Floyd's tortoise/hare
- * walk so a cycle cannot spin allocation forever. The interval check rejects a
- * link into another node's payload, which would otherwise create overlapping
- * free blocks even though both addresses happen to be marked headers. */
+ * pointer write. Validate every reachable node and use Brent's cycle walk so a
+ * cycle cannot spin allocation forever. The interval check rejects a link into
+ * another node's payload, which would otherwise create overlapping free blocks
+ * even though both addresses happen to be marked headers. This runs on every
+ * allocation, so each node is read and validated once: the earlier Floyd walk
+ * validated each node about three times and was ~17% of a measured title's busy
+ * thread during play (#1296). */
 static int sr_heap_free_list_valid(void) {
-    uint32_t slow = s_heap_free_list, fast = s_heap_free_list;
-    while (slow != 0u || fast != 0u) {
-        if (slow != 0u) {
-            uint32_t slow_size, slow_next;
-            if (!sr_heap_free_node_valid(slow, &slow_size, &slow_next)) return 0;
-            if (slow_next != 0u) {
-                uint32_t next_size;
-                if (!sr_heap_free_node_valid(slow_next, &next_size, NULL)) return 0;
-                uint64_t slow_end = (uint64_t)slow + slow_size;
-                uint64_t next_end = (uint64_t)slow_next + next_size;
-                if (((uint64_t)slow_next > slow && (uint64_t)slow_next < slow_end) ||
-                    ((uint64_t)slow > slow_next && (uint64_t)slow < next_end)) return 0;
-            }
-            slow = slow_next;
+    uint32_t cur = s_heap_free_list, prev = 0u, prev_size = 0u;
+    uint32_t tortoise = cur, power = 1u, steps = 0u;
+    while (cur != 0u) {
+        uint32_t size, next;
+        if (!sr_heap_free_node_valid(cur, &size, &next)) return 0;
+        if (prev != 0u) {
+            uint64_t prev_end = (uint64_t)prev + prev_size;
+            uint64_t cur_end = (uint64_t)cur + size;
+            if (((uint64_t)cur > prev && (uint64_t)cur < prev_end) ||
+                ((uint64_t)prev > cur && (uint64_t)prev < cur_end)) return 0;
         }
-        if (fast != 0u) {
-            uint32_t fast_next;
-            if (!sr_heap_free_node_valid(fast, NULL, &fast_next)) return 0;
-            fast = fast_next;
-            if (fast != 0u) {
-                if (!sr_heap_free_node_valid(fast, NULL, &fast_next)) return 0;
-                fast = fast_next;
-            }
+        if (next != 0u && next == tortoise) return 0;
+        if (++steps == power) {
+            tortoise = next;
+            power <<= 1;
+            steps = 0u;
         }
-        if (slow != 0u && slow == fast) return 0;
+        prev = cur;
+        prev_size = size;
+        cur = next;
     }
     return 1;
 }

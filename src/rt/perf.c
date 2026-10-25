@@ -119,6 +119,12 @@ typedef struct SrPerfMetrics {
     uint64_t audio_output_ns;
     uint64_t audio_output_calls;
     uint64_t audio_output_frames;
+    uint64_t audio_queue_pushes[SR_PERF_AUDIO_CHANNELS];
+    uint64_t audio_queue_underruns[SR_PERF_AUDIO_CHANNELS];
+    uint64_t audio_queue_starved_ns[SR_PERF_AUDIO_CHANNELS];
+    /* Shallowest and deepest pre-push queue this interval; min is valid only with pushes. */
+    uint64_t audio_queue_min_frames[SR_PERF_AUDIO_CHANNELS];
+    uint64_t audio_queue_max_frames[SR_PERF_AUDIO_CHANNELS];
     uint64_t gpu_replay[SR_PERF_GPU_REPLAY_COUNT];
 } SrPerfMetrics;
 
@@ -698,6 +704,24 @@ static void sample_gpu_replay(void) {
     }
 }
 
+/* PERF_AUDIO: one line per host audio channel that was pushed this interval. The queue
+ * depths are taken just before each push, in milliseconds of 44.1 kHz audio, so a q_min_ms
+ * near zero is a channel about to run dry. starved_ms is the silence the device played on
+ * the channel's underruns; a gap with no push at all is reported at the push that ends it. */
+static void perf_emit_audio_queue(const SrPerfMetrics *m) {
+    for (int ch = 0; ch < SR_PERF_AUDIO_CHANNELS; ch++) {
+        if (!m->audio_queue_pushes[ch]) continue;
+        perf_emit_format(
+            "PERF_AUDIO ch=%d pushes=%llu q_min_ms=%.1f q_max_ms=%.1f underruns=%llu "
+            "starved_ms=%.3f\n",
+            ch, (unsigned long long)m->audio_queue_pushes[ch],
+            (double)m->audio_queue_min_frames[ch] * 1000.0 / 44100.0,
+            (double)m->audio_queue_max_frames[ch] * 1000.0 / 44100.0,
+            (unsigned long long)m->audio_queue_underruns[ch],
+            ms(m->audio_queue_starved_ns[ch]));
+    }
+}
+
 static void report_if_due(uint64_t now) {
     if (!s_perf.enabled || s_perf.shutdown) return;
     if (!s_perf.interval_start_ns) {
@@ -749,6 +773,7 @@ static void report_if_due(uint64_t now) {
             ms(m.storage_ns[SR_PERF_STORAGE_VFS]), ms(m.h264_ns), ms(m.atrac_ns),
             ms(m.audio_mix_ns), ms(m.audio_output_ns));
     perf_emit_ge_frontend(&m);
+    perf_emit_audio_queue(&m);
     }
     if (s_perf.csv) {
         csv_row(s_perf.csv, &m, s_perf.total_vblanks, wall_ns);
@@ -1361,6 +1386,26 @@ void sr_perf_audio_output(uint64_t started_ns, uint32_t frames) {
     ADD(audio_output_ns, elapsed_ns(started_ns));
     ADD(audio_output_calls, 1);
     ADD(audio_output_frames, frames);
+}
+
+static void audio_queue_extent(SrPerfMetrics *m, int channel, uint32_t queued_frames) {
+    if (m->audio_queue_pushes[channel] == 0 || queued_frames < m->audio_queue_min_frames[channel])
+        m->audio_queue_min_frames[channel] = queued_frames;
+    if (queued_frames > m->audio_queue_max_frames[channel])
+        m->audio_queue_max_frames[channel] = queued_frames;
+    m->audio_queue_pushes[channel]++;
+}
+
+void sr_perf_audio_queue(int channel, uint32_t queued_frames, uint64_t starved_ns,
+                         int underrun) {
+    if (!s_perf.enabled || s_perf.shutdown || channel < 0 ||
+        channel >= SR_PERF_AUDIO_CHANNELS) return;
+    audio_queue_extent(&s_perf.interval, channel, queued_frames);
+    audio_queue_extent(&s_perf.total, channel, queued_frames);
+    if (underrun) {
+        ADD_ARRAY(audio_queue_underruns, channel, 1);
+        ADD_ARRAY(audio_queue_starved_ns, channel, starved_ns);
+    }
 }
 
 void sr_perf_enable_counters(void) {

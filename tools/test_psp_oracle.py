@@ -1475,7 +1475,7 @@ class PspOracleRunnerTests(unittest.TestCase):
                 ),
             ), patch(
                 "psp_oracle.run_psplink._read_hardware_lock",
-                return_value=(True, "HELD_AND_CONFIRMED"),
+                return_value=(True, "HELD_AND_QUALIFIED", {"boot_number": 42}),
             ):
                 self.assertEqual(
                     run_psplink_main(
