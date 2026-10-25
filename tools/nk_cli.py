@@ -1351,15 +1351,25 @@ def _current_package_cache_key(
 PACKAGE_PROMOTION_RETRY_DELAYS_S = (0.1, 0.25, 0.5, 1.0, 2.0, 2.0, 2.0, 2.0)
 
 
-def _replace_package_folder(source: Path, target: Path, *, sleeper=time.sleep,
+def _is_transient_folder_lock(exc: OSError) -> bool:
+    # [WinError 5] access denied and [WinError 32] sharing violation: another
+    # process (an antivirus scan, an indexer) has a file inside the folder open.
+    return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in (5, 32)
+
+
+def _replace_package_folder(source: Path, target: Path, *, sleeper=None,
                             delays=None) -> None:
+    if sleeper is None:
+        sleeper = time.sleep
     if delays is None:
         delays = PACKAGE_PROMOTION_RETRY_DELAYS_S if os.name == "nt" else ()
     for delay in (*delays, None):
         try:
             os.replace(source, target)
             return
-        except PermissionError as exc:
+        except OSError as exc:
+            if not _is_transient_folder_lock(exc):
+                raise
             if delay is None:
                 raise PackageBuildError(
                     "PACKAGE_FOLDER_LOCKED: Windows kept the new package folder in use, so it "
@@ -1367,6 +1377,27 @@ def _replace_package_folder(source: Path, target: Path, *, sleeper=time.sleep,
                     f"this). Wait a moment, then build again. Detail: {exc}"
                 ) from exc
             sleeper(delay)
+
+
+def _swap_in_package_folder(staging: Path, target_dir: Path, cache_dir: Path) -> Path | None:
+    """Move a verified staging folder into place and return the previous package.
+
+    The previous package moves aside to a backup the caller removes once the new
+    one is committed; if the staging folder cannot be moved, it is put back.
+    Both renames ride out a transient Windows file lock.
+    """
+    if target_dir.exists() and target_dir.is_symlink():
+        raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
+    backup = cache_dir / f"previous-{time.time_ns()}" if target_dir.exists() else None
+    if backup is not None:
+        _replace_package_folder(target_dir, backup)
+    try:
+        _replace_package_folder(staging, target_dir)
+    except (OSError, PackageBuildError):
+        if backup is not None and not target_dir.exists():
+            os.replace(backup, target_dir)
+        raise
+    return backup
 
 
 def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
@@ -1387,17 +1418,7 @@ def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
             raise PackageBuildError(
                 f"Copied package cache entry failed validation ({staged_reason}); refusing to promote it."
             )
-        if target_dir.exists() and target_dir.is_symlink():
-            raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
-        backup = cache_dir / f"previous-{time.time_ns()}" if target_dir.exists() else None
-        if backup is not None:
-            _replace_package_folder(target_dir, backup)
-        try:
-            _replace_package_folder(staging, target_dir)
-        except (OSError, PackageBuildError):
-            if backup is not None and not target_dir.exists():
-                os.replace(backup, target_dir)
-            raise
+        backup = _swap_in_package_folder(staging, target_dir, cache_dir)
         if backup is not None:
             shutil.rmtree(backup, ignore_errors=True)
     finally:
@@ -1537,11 +1558,83 @@ def _record_aot_stage_decision(args: argparse.Namespace, planner_output: str) ->
         _record_aot_stage_result(args, "UNKNOWN", "AOT_STAGE_DECISION_MISSING")
 
 
+PACKAGE_BUILD_LOCKED_MESSAGE = (
+    "BUILD_ALREADY_RUNNING: {disc_id} is already being built. Wait for that build "
+    "to finish, then build again."
+)
+
+
+@contextlib.contextmanager
+def _package_build_lock(user_root: Path, disc_id: str):
+    """Hold the per-title build lock; yields False when another build holds it.
+
+    Two builds of one title promote into the same package folder, so the second
+    is refused before it starts. The OS releases the lock with its process, so a
+    crashed build never leaves the title locked.
+    """
+    lock_dir = user_root / "locks"
+    if lock_dir.is_symlink():
+        raise PackageBuildError("The build lock folder is a symlink; refusing to write outside per-user data.")
+    lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_dir = _require_child(user_root, lock_dir, "Build lock folder")
+    handle = open(lock_dir / f"build-package-{disc_id}.lock", "a+b")
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                with contextlib.suppress(OSError):
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
 def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
     reporter = _BuildProgressReporter(getattr(args, "progress_json", None),
                                       getattr(args, "log_file", None))
     try:
-        return _build_package(args, stage_observer, reporter)
+        disc_id = str(args.disc_id).upper()
+        try:
+            user_root = _user_data_root(args.user_data_root)
+        except PackageBuildError:
+            user_root = None
+        if user_root is None or not re.fullmatch(r"[A-Z]{4}[0-9]{5}", disc_id):
+            # _build_package refuses these with its own message.
+            return _build_package(args, stage_observer, reporter)
+        with contextlib.ExitStack() as stack:
+            try:
+                acquired = stack.enter_context(_package_build_lock(user_root, disc_id))
+            except (OSError, PackageBuildError) as exc:
+                msg = f"Build refused: the build lock could not be taken ({exc})."
+                reporter.report("preflight", "FAIL", msg)
+                sys.stderr.write(msg + "\n")
+                return 2
+            if not acquired:
+                msg = PACKAGE_BUILD_LOCKED_MESSAGE.format(disc_id=disc_id)
+                reporter.report("preflight", "FAIL", msg)
+                sys.stderr.write(msg + "\n")
+                return 2
+            return _build_package(args, stage_observer, reporter)
     finally:
         # Restores stdout even on an unexpected exception; close() is idempotent.
         reporter.close()
@@ -2104,18 +2197,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             )
             if not valid_staging:
                 raise PackageBuildError(f"Package staging verification failed: {staging_reason}")
-            backup = None
-            if target_dir.exists():
-                if target_dir.is_symlink():
-                    raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
-                backup = cache_dir / f"previous-{time.time_ns()}"
-                os.replace(target_dir, backup)
-            try:
-                os.replace(staging, target_dir)
-            except OSError:
-                if backup is not None and not target_dir.exists():
-                    os.replace(backup, target_dir)
-                raise
+            backup = _swap_in_package_folder(staging, target_dir, cache_dir)
             package_cache.write_local_title_input_identity(user_root, title_input_identity)
             if backup is not None:
                 shutil.rmtree(backup, ignore_errors=True)
