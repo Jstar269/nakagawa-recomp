@@ -2628,7 +2628,15 @@ void player_app_stop_game(PlayerApp *app) {
     app->is_game_running = false;
     app->close_confirmation_pending = false;
     app->child_window_ready = false;
-    if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
+    if (app->boot_event_file_path[0]) {
+        /* The run's output stays in the logs folder (#1303). */
+        char kept_log[NK_MAX_PATH];
+        if (nk_launch_keep_run_log(app->boot_event_file_path, app->launch_session.disc_id,
+                                   kept_log, sizeof(kept_log))) {
+            player_dev_log_add(app, "runtime", "game output kept in %s", kept_log);
+        }
+        remove(app->boot_event_file_path);
+    }
 }
 
 void player_app_apply_settings_to_session(const PlayerSettings *settings,
@@ -2779,24 +2787,35 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
         }
         if (events) fclose(events);
     }
-    if (app->boot_event_file_path[0] && !runtime_failed) {
+    /* The whole run's output stays in the logs folder as game-<disc>-last.txt
+       (#1303); the error card and Copy details name that file. Without it, a
+       failed run keeps its cache file as before. */
+    char kept_log[NK_MAX_PATH] = "";
+    if (app->boot_event_file_path[0]) {
+        if (nk_launch_keep_run_log(app->boot_event_file_path, stopped_disc_id,
+                                   kept_log, sizeof(kept_log))) {
+            player_dev_log_add(app, "runtime", "game output kept in %s", kept_log);
+        } else {
+            player_dev_log_add(app, "runtime", "game output could not be kept in the logs folder");
+        }
+    }
+    if (app->boot_event_file_path[0] && (kept_log[0] || !runtime_failed)) {
         remove(app->boot_event_file_path);
     }
+    const char *run_log = kept_log[0] ? kept_log : app->boot_event_file_path;
     printf("[PLAYER] Game process exited with code %d (ran for %llu ms)\n", code,
            (unsigned long long)elapsed_ms);
 
     if (has_semantic_stop) {
         player_app_set_game_stop_error(app, "RUNTIME_SEMANTIC_BOUNDARY", stopped_boundary,
                                        stopped_issue, code, elapsed_ms, stopped_disc_id,
-                                       app->boot_event_file_path);
+                                       run_log);
     } else if (elapsed_ms < 500) {
         player_app_set_game_stop_error(app, "RUNTIME_PREMATURE_EXIT", NULL, 0, code,
-                                       elapsed_ms, stopped_disc_id,
-                                       app->boot_event_file_path);
+                                       elapsed_ms, stopped_disc_id, run_log);
     } else if (code != 0) {
         player_app_set_game_stop_error(app, "RUNTIME_ERROR_EXIT", NULL, 0, code, elapsed_ms,
-                                       stopped_disc_id,
-                                       app->boot_event_file_path);
+                                       stopped_disc_id, run_log);
     }
     return true;
 }
