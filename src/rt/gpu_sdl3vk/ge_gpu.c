@@ -379,6 +379,28 @@ static uint32_t find_mem(uint32_t bits, VkMemoryPropertyFlags want) {
     return UINT32_MAX;
 }
 
+/* Host-mapped buffers must be HOST_VISIBLE and HOST_COHERENT: nothing here flushes or
+ * invalidates mapped ranges. A buffer the GPU copies into for the CPU to read (a readback)
+ * also prefers HOST_CACHED. The first visible+coherent type is usually uncached
+ * write-combined memory, where every CPU read goes to memory: on an RTX 3080 that made the
+ * per-frame framebuffer readback the largest single CPU cost of a measured title (#1296).
+ * Without a cached+coherent type the plain visible+coherent choice is kept. */
+uint32_t gegpu_pick_host_mem_type(const uint32_t *type_flags, uint32_t type_count,
+                                  uint32_t allowed_bits, int cpu_reads) {
+    const uint32_t visible = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    const uint32_t cached = visible | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    uint32_t fallback = UINT32_MAX;
+    for (uint32_t i = 0; i < type_count && i < 32u; i++) {
+        if (!(allowed_bits & (1u << i))) continue;
+        if (cpu_reads && (type_flags[i] & cached) == cached) return i;
+        if ((type_flags[i] & visible) == visible && fallback == UINT32_MAX) {
+            if (!cpu_reads) return i;
+            fallback = i;
+        }
+    }
+    return fallback;
+}
+
 static int make_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer *buf,
                        VkDeviceMemory *mem, void **map) {
     VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -387,8 +409,12 @@ static int make_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer *bu
     VkMemoryRequirements mr; vkGetBufferMemoryRequirements(s_dev, *buf, &mr);
     VkMemoryAllocateInfo mai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
     mai.allocationSize = mr.size;
-    mai.memoryTypeIndex = find_mem(mr.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(s_pdev, &mp);
+    uint32_t type_flags[VK_MAX_MEMORY_TYPES];
+    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) type_flags[i] = mp.memoryTypes[i].propertyFlags;
+    mai.memoryTypeIndex = gegpu_pick_host_mem_type(type_flags, mp.memoryTypeCount,
+        mr.memoryTypeBits, (usage & VK_BUFFER_USAGE_TRANSFER_DST_BIT) != 0);
     VKC(vkAllocateMemory(s_dev, &mai, NULL, mem));
     VKC(vkBindBufferMemory(s_dev, *buf, *mem, 0));
     if (map) VKC(vkMapMemory(s_dev, *mem, 0, VK_WHOLE_SIZE, 0, map));
