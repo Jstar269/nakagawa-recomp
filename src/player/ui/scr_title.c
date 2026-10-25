@@ -1802,8 +1802,10 @@ static bool settings_row(NkUi *ui, uint32_t k, NkUiId button, const char *name,
             nk_ui_end_container(ui);
         }
     }
+    /* Left and Right stay in the row, so Right from a GAME row reaches the
+       LAUNCHER AND SOUND row beside it (Controls among them), not the top bar. */
     pressed = nk_ui_button(ui, button, value,
-                           NK_UI_BUTTON_SMALL | NK_UI_BUTTON_GROW |
+                           NK_UI_BUTTON_SMALL | NK_UI_BUTTON_GROW | NK_UI_BUTTON_ROW |
                                (on ? NK_UI_BUTTON_PRIMARY : 0u));
     nk_ui_end_container(ui);
     return pressed;
@@ -2149,6 +2151,479 @@ PlayerUiAction player_ui_screen_settings(NkUi *ui, const PlayerUiSettingsModel *
         nk_ui_end_container(ui);
     }
     nk_ui_prompt_bar(ui, SET_ID_PROMPTS, "", prompts, sizeof(prompts) / sizeof(prompts[0]));
+    nk_ui_end_container(ui);
+    return result;
+}
+
+/* ---- Controller settings ------------------------------------------------------------
+   The PSP buttons in two columns of named rows, each binding on the button that
+   rebinds it, beside the stick and trigger card with the live input. The
+   mapping being edited is named on the buttons card, so the scope is stated,
+   never implied (#520). While a guided calibration runs, its step replaces the
+   cards. Under a top bar with SETTINGS active, as the Settings page. */
+
+#define PAD_ID_ROOT 0x64000001u
+#define PAD_ID_TOP 0x64000010u
+#define PAD_ID_BODY 0x64000020u
+#define PAD_ID_COLUMN 0x64000021u
+#define PAD_ID_HEAD 0x64000022u
+#define PAD_ID_CARDS 0x64000023u
+#define PAD_ID_BUTTONS 0x64000024u
+#define PAD_ID_STICK 0x64000025u
+#define PAD_ID_ACTIONS 0x64000026u
+#define PAD_ID_GRID 0x64000027u
+#define PAD_ID_LIVE 0x64000030u
+#define PAD_ID_SPACER 0x64000031u
+#define PAD_ID_PROMPTS 0x64000040u
+#define PAD_ID_WAVES 0x64000050u
+#define PAD_ID_ROWS 0x64000100u
+#define PAD_ID_TEXT 0x64001000u
+
+static PlayerUiAction controller_op(PlayerUiControllerOp op, size_t control) {
+    PlayerUiAction result;
+    result.kind = PLAYER_UI_ACTION_CONTROLLER;
+    result.primary = (PlayerUiPrimaryAction)op;
+    result.title_index = control;
+    return result;
+}
+
+/* A label cut to the room a small button of `width` has for it. */
+static const char *controller_button_label(NkUi *ui, const char *label, float width) {
+    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_LABEL_S, 0u);
+    return nk_ui_text_clamp(ui, nk_ui_caps(ui, label), &text,
+                            width - 2.0f * NK_UI_SPACE_3 - 2.0f, 1);
+}
+
+/* One PSP control: its name, then its binding on the button that rebinds it. */
+static void controller_row(NkUi *ui, const PlayerUiControllerModel *model, size_t control,
+                           float name_width, float button_width, PlayerUiAction *result) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_2);
+    NkUiId base = (NkUiId)(PAD_ID_ROWS + (NkUiId)control * 4u);
+    bool capturing = model->capturing == (int)control;
+    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, model->conflicted[control] ? theme->error
+                                                                                  : theme->paper);
+    row.align_y = NK_UI_ALIGN_CENTER;
+    if (!nk_ui_begin_container(ui, base, &row, NULL)) return;
+    {
+        NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(name_width), sizing_fit(),
+                                      0.0f);
+        if (nk_ui_begin_container(ui, base + 1u, &cell, NULL)) {
+            nk_ui_text(ui, base + 2u,
+                       nk_ui_text_clamp(ui, safe_text(model->names[control], "Button"), &text,
+                                        name_width, 1), &text);
+            nk_ui_end_container(ui);
+        }
+    }
+    if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_BUTTON(control),
+                     controller_button_label(ui, capturing ? "Press a button..."
+                                                           : safe_text(model->bindings[control],
+                                                                       "None"),
+                                             button_width),
+                     NK_UI_BUTTON_SMALL | NK_UI_BUTTON_GROW |
+                         (capturing ? NK_UI_BUTTON_PRIMARY : 0u))) {
+        *result = controller_op(PLAYER_UI_CONTROLLER_REBIND, control);
+    }
+    nk_ui_end_container(ui);
+}
+
+/* A value in words with the - and + steps that change it. */
+static void controller_stepper(NkUi *ui, uint32_t k, const char *value, float width,
+                               NkUiId down, NkUiId up, PlayerUiControllerOp down_op,
+                               PlayerUiControllerOp up_op, PlayerUiAction *result) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_2);
+    NkUiId base = (NkUiId)(PAD_ID_ROWS + 0x80u + k * 4u);
+    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->paper);
+    row.align_y = NK_UI_ALIGN_CENTER;
+    if (!nk_ui_begin_container(ui, base, &row, NULL)) return;
+    {
+        /* Each step is its sign and the small button's padding. */
+        float text_width = width - 2.0f * (2.0f * NK_UI_SPACE_3 + 10.0f) - 2.0f * NK_UI_SPACE_2;
+        NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), 0.0f);
+        if (nk_ui_begin_container(ui, base + 1u, &cell, NULL)) {
+            nk_ui_text(ui, base + 2u, nk_ui_text_clamp(ui, safe_text(value, ""), &text,
+                                                       text_width, 1), &text);
+            nk_ui_end_container(ui);
+        }
+    }
+    if (nk_ui_button(ui, down, "-", NK_UI_BUTTON_SMALL)) *result = controller_op(down_op, 0u);
+    if (nk_ui_button(ui, up, "+", NK_UI_BUTTON_SMALL)) *result = controller_op(up_op, 0u);
+    nk_ui_end_container(ui);
+}
+
+static void controller_live(NkUi *ui, const PlayerUiControllerModel *model, float width) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    NkUiLayout lines = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fit(), 2.0f);
+    NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_DATA, theme->muted);
+    if (!nk_ui_begin_container(ui, PAD_ID_LIVE, &lines, NULL)) return;
+    for (size_t i = 0u; i < model->live_count && i < PLAYER_UI_CONTROLLER_LIVE_LINES; ++i) {
+        nk_ui_text(ui, (NkUiId)(PAD_ID_TEXT + 0x40u + (NkUiId)i),
+                   nk_ui_text_clamp(ui, safe_text(model->live[i], " "), &text, width, 1), &text);
+    }
+    nk_ui_end_container(ui);
+}
+
+static void controller_mapping(NkUi *ui, const PlayerUiControllerModel *model, float width,
+                               float height, PlayerUiAction *result) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    bool tall = height >= 680.0f;
+    float column = width - 2.0f * (width < NK_UI_NARROW_WIDTH ? NK_UI_GUTTER_NARROW
+                                                              : NK_UI_GUTTER);
+    float stick_card;
+    float buttons_inner;
+    float half;
+    float name_width;
+    char eyebrow[160];
+    NkUiLayout layout;
+    if (column > 1120.0f) column = 1120.0f;
+    stick_card = column >= 1000.0f ? 320.0f : 260.0f;
+    /* Cards pad 20 px either side; the two columns of rows have 16 px between. */
+    buttons_inner = column - NK_UI_SPACE_4 - stick_card - 2.0f * NK_UI_SPACE_5;
+    half = (buttons_inner - NK_UI_SPACE_4) * 0.5f;
+    name_width = half * 0.36f;
+    if (name_width > 132.0f) name_width = 132.0f;
+    layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_fixed(column), sizing_fit(),
+                         tall ? NK_UI_SPACE_4 : NK_UI_SPACE_2);
+    if (!nk_ui_begin_container(ui, PAD_ID_COLUMN, &layout, NULL)) return;
+    {
+        NkUiLayout head = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fit(),
+                                      NK_UI_SPACE_1);
+        if (nk_ui_begin_container(ui, PAD_ID_HEAD, &head, NULL)) {
+            NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S,
+                                            model->status_error ? theme->error : theme->muted);
+            /* The SETTINGS tab names the area, so a short window drops the
+               heading to keep every row on screen. */
+            if (tall) {
+                nk_ui_text_role(ui, PAD_ID_TEXT + 0u, "CONTROLLER", NK_UI_TYPE_DISPLAY,
+                                theme->paper);
+            }
+            nk_ui_text(ui, PAD_ID_TEXT + 1u,
+                       nk_ui_text_clamp(ui, safe_text(model->status,
+                                                      "Choose a button to change it, then press "
+                                                      "the controller button to use."),
+                                        &text, column, 1), &text);
+            nk_ui_end_container(ui);
+        }
+    }
+    layout = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_4);
+    if (nk_ui_begin_container(ui, PAD_ID_CARDS, &layout, NULL)) {
+        if (nk_ui_card_begin(ui, PAD_ID_BUTTONS, sizing_grow(), sizing_grow(), NK_UI_SPACE_2)) {
+            NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_EYEBROW,
+                                            model->scope_title ? theme->ready : theme->muted);
+            (void)snprintf(eyebrow, sizeof(eyebrow), "Buttons" FLOW_MIDDOT "%s",
+                           safe_text(model->scope, "global mapping"));
+            nk_ui_text(ui, PAD_ID_TEXT + 0x10u,
+                       nk_ui_text_clamp(ui, nk_ui_caps(ui, eyebrow), &text, buttons_inner, 1),
+                       &text);
+            layout = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_4);
+            if (nk_ui_begin_container(ui, PAD_ID_GRID, &layout, NULL)) {
+                for (size_t col = 0u; col < 2u; ++col) {
+                    NkUiLayout list = layout_make(NK_UI_LAYOUT_COLUMN, sizing_fixed(half),
+                                                  sizing_fit(),
+                                                  tall ? NK_UI_SPACE_2 : NK_UI_SPACE_1);
+                    if (!nk_ui_begin_container(ui, (NkUiId)(PAD_ID_GRID + 1u + (NkUiId)col),
+                                               &list, NULL)) {
+                        continue;
+                    }
+                    for (size_t row = 0u; row < PLAYER_UI_CONTROLLER_BUTTONS / 2u; ++row) {
+                        controller_row(ui, model, col * (PLAYER_UI_CONTROLLER_BUTTONS / 2u) + row,
+                                       name_width, half - name_width - NK_UI_SPACE_2, result);
+                    }
+                    nk_ui_end_container(ui);
+                }
+                nk_ui_end_container(ui);
+            }
+            nk_ui_end_container(ui);
+        }
+        if (nk_ui_card_begin(ui, PAD_ID_STICK, sizing_fixed(stick_card), sizing_grow(),
+                             NK_UI_SPACE_2)) {
+            float inner = stick_card - 2.0f * NK_UI_SPACE_5;
+            nk_ui_eyebrow(ui, PAD_ID_TEXT + 0x20u, "Stick and triggers");
+            controller_stepper(ui, 0u, model->deadzone, inner,
+                               PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN,
+                               PLAYER_UI_ID_CONTROLLER_DEADZONE_UP,
+                               PLAYER_UI_CONTROLLER_DEADZONE_DOWN,
+                               PLAYER_UI_CONTROLLER_DEADZONE_UP, result);
+            controller_stepper(ui, 1u, model->trigger, inner,
+                               PLAYER_UI_ID_CONTROLLER_TRIGGER_DOWN,
+                               PLAYER_UI_ID_CONTROLLER_TRIGGER_UP,
+                               PLAYER_UI_CONTROLLER_TRIGGER_DOWN,
+                               PLAYER_UI_CONTROLLER_TRIGGER_UP, result);
+            if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_CALIBRATE, "Calibrate stick",
+                             NK_UI_BUTTON_SMALL | NK_UI_BUTTON_GROW)) {
+                *result = controller_op(PLAYER_UI_CONTROLLER_CALIBRATE, 0u);
+            }
+            nk_ui_eyebrow(ui, PAD_ID_TEXT + 0x21u, "Live input");
+            controller_live(ui, model, inner);
+            nk_ui_end_container(ui);
+        }
+        nk_ui_end_container(ui);
+    }
+    /* Back sits at the right end, under the stick card, so Down from Calibrate
+       reaches it rather than a binding in the grid; Left and Right stay in the row. */
+    layout = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_3);
+    if (nk_ui_begin_container(ui, PAD_ID_ACTIONS, &layout, NULL)) {
+        if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_SAVE, "Save profile",
+                         NK_UI_BUTTON_PRIMARY | NK_UI_BUTTON_ROW)) {
+            *result = controller_op(PLAYER_UI_CONTROLLER_SAVE, 0u);
+        }
+        if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_RESET, "Reset to defaults",
+                         NK_UI_BUTTON_ROW)) {
+            *result = controller_op(PLAYER_UI_CONTROLLER_RESET, 0u);
+        }
+        /* Global or this game's own, offered only with a game selected (#520). */
+        if (model->offer_scope &&
+            nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_SCOPE,
+                         model->scope_title ? "Use the global mapping"
+                                            : "Use this game's own mapping",
+                         NK_UI_BUTTON_ROW)) {
+            *result = controller_op(PLAYER_UI_CONTROLLER_TOGGLE_SCOPE, 0u);
+        }
+        nk_ui_spacer(ui, PAD_ID_SPACER, sizing_grow(), sizing_fixed(1.0f));
+        if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_BACK, "Back", NK_UI_BUTTON_ROW)) {
+            *result = controller_op(PLAYER_UI_CONTROLLER_BACK, 0u);
+        }
+        nk_ui_end_container(ui);
+    }
+    nk_ui_end_container(ui);
+}
+
+/* A calibration step: what to do, its numbers, and its buttons. */
+static void controller_calibration(NkUi *ui, const PlayerUiControllerModel *model, float width,
+                                   PlayerUiAction *result) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    const char *step;
+    const char *title;
+    const char *lead;
+    const char *primary = NULL;
+    PlayerUiControllerOp primary_op = PLAYER_UI_CONTROLLER_NONE;
+    float card = width - 2.0f * NK_UI_GUTTER_NARROW;
+    float inner;
+    NkUiLayout row;
+    if (card > 720.0f) card = 720.0f;
+    inner = card - 56.0f;
+    switch (model->page) {
+        case PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_REST:
+            step = "Step 1 of 3: rest";
+            title = "Leave the stick and triggers alone";
+            lead = "Don't touch the stick or the triggers for about a second while Nakagawa "
+                   "reads where they rest.";
+            break;
+        case PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_EXTREMES:
+            step = "Step 2 of 3: full range";
+            title = "Move the stick and press the triggers";
+            lead = "Turn the stick round its edge a few times and press both triggers all the "
+                   "way, then choose Finish.";
+            primary = "Finish";
+            primary_op = PLAYER_UI_CONTROLLER_CALIBRATION_FINISH;
+            break;
+        case PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_RESULT:
+        default:
+            step = "Step 3 of 3: check";
+            title = "Use this calibration?";
+            lead = "These are the resting points and ranges Nakagawa read. Accept uses them for "
+                   "the mapping you are editing.";
+            primary = "Accept";
+            primary_op = PLAYER_UI_CONTROLLER_CALIBRATION_ACCEPT;
+            break;
+    }
+    if (!nk_ui_dialog_begin(ui, FLOW_ID_CARD, card)) return;
+    flow_eyebrow(ui, FLOW_MARK_DIAMOND, step, theme->accent_dark);
+    nk_ui_text_role(ui, FLOW_ID_TITLE, title, NK_UI_TYPE_TITLE, theme->paper);
+    {
+        NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY, theme->muted);
+        nk_ui_text(ui, FLOW_ID_LEAD, nk_ui_text_clamp(ui, lead, &text, inner, 3), &text);
+    }
+    if (model->page == PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_REST) {
+        nk_ui_progress_bar(ui, FLOW_ID_BAR, inner, model->calibration_fraction, 0.0);
+    }
+    if (wizard_box_begin(ui, 0u)) {
+        controller_live(ui, model, inner - 32.0f);
+        nk_ui_end_container(ui);
+    }
+    row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+    row.padding_top = NK_UI_SPACE_1;
+    if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+        if (primary != NULL &&
+            nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_CALIBRATION_PRIMARY, primary,
+                         NK_UI_BUTTON_PRIMARY)) {
+            *result = controller_op(primary_op, 0u);
+        }
+        if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL, "Cancel",
+                         primary == NULL ? NK_UI_BUTTON_PRIMARY : 0u)) {
+            *result = controller_op(PLAYER_UI_CONTROLLER_CALIBRATION_CANCEL, 0u);
+        }
+        nk_ui_end_container(ui);
+    }
+    nk_ui_end_container(ui);
+}
+
+PlayerUiAction player_ui_screen_controller(NkUi *ui, const PlayerUiControllerModel *model) {
+    static const NkUiPromptItem prompts[] = {
+        {NK_UI_PROMPT_ACT_MOVE, "Move"}, {NK_UI_PROMPT_ACT_CONFIRM, "Change"},
+        {NK_UI_PROMPT_ACT_BACK, "Back to settings"}
+    };
+    static const NkUiPromptItem prompts_calibrating[] = {
+        {NK_UI_PROMPT_ACT_CONFIRM, "Select"}, {NK_UI_PROMPT_ACT_BACK, "Cancel"}
+    };
+    PlayerUiAction result = action(PLAYER_UI_ACTION_NONE, 0u, PLAYER_UI_PRIMARY_NONE);
+    bool calibrating;
+    NkUiLayout layout;
+    float width;
+    float height;
+    if (ui == NULL || model == NULL) return result;
+    width = model->logical_width > 80.0f ? model->logical_width : 1280.0f;
+    height = model->logical_height > 80.0f ? model->logical_height : 800.0f;
+    calibrating = model->page != PLAYER_UI_CONTROLLER_PAGE_MAPPING;
+    (void)nk_ui_waves_element(ui, PAD_ID_WAVES, (NkUiRect){0.0f, 0.0f, width, height}, 0u);
+    layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_grow(), 0.0f);
+    if (!nk_ui_begin_container(ui, PAD_ID_ROOT, &layout, NULL)) return result;
+    {
+        PlayerUiActionKind tab = player_ui_top_bar(ui, PAD_ID_TOP, PLAYER_UI_ROUTE_SETTINGS);
+        if (tab != PLAYER_UI_ACTION_NONE) result = action(tab, 0u, PLAYER_UI_PRIMARY_NONE);
+    }
+    layout = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_grow(), 0.0f);
+    layout.align_x = NK_UI_ALIGN_CENTER;
+    if (calibrating) {
+        layout.align_y = NK_UI_ALIGN_CENTER;
+        layout.padding_top = layout.padding_bottom = NK_UI_SPACE_4;
+    } else {
+        layout.padding_top = height >= 680.0f ? NK_UI_SPACE_7 : NK_UI_SPACE_4;
+    }
+    if (nk_ui_begin_container(ui, PAD_ID_BODY, &layout, NULL)) {
+        if (calibrating) controller_calibration(ui, model, width, &result);
+        else controller_mapping(ui, model, width, height, &result);
+        nk_ui_end_container(ui);
+    }
+    nk_ui_prompt_bar(ui, PAD_ID_PROMPTS, "", calibrating ? prompts_calibrating : prompts,
+                     calibrating ? 2u : 3u);
+    nk_ui_end_container(ui);
+    return result;
+}
+
+/* ---- Developer log --------------------------------------------------------------------
+   The newest lines the window has room for, in the data face on a dark inset,
+   with Copy, Save and Close under them. player_state.c has already written the
+   user's folders in the lines as %USERPROFILE%. */
+
+#define DEV_ID_ROOT 0x65000001u
+#define DEV_ID_TOP 0x65000010u
+#define DEV_ID_BODY 0x65000020u
+#define DEV_ID_CARD 0x65000021u
+#define DEV_ID_BOX 0x65000022u
+#define DEV_ID_ACTIONS 0x65000023u
+#define DEV_ID_PROMPTS 0x65000040u
+#define DEV_ID_WAVES 0x65000050u
+#define DEV_ID_TEXT 0x65000100u
+#define DEV_ID_LINES 0x65001000u
+
+#define DEV_LINE_HEIGHT 16.0f
+/* The card around the log box: its padding, the eyebrow, the sentence, the
+   buttons, the gaps between them and the box's own padding. */
+#define DEV_CARD_CHROME (34.0f + 14.0f + 21.0f + NK_UI_CONTROL_HEIGHT + 3.0f * NK_UI_SPACE_3 + \
+                         20.0f)
+
+static PlayerUiAction developer_log_op(PlayerUiDeveloperLogOp op) {
+    PlayerUiAction result;
+    result.kind = PLAYER_UI_ACTION_DEVELOPER_LOG;
+    result.primary = (PlayerUiPrimaryAction)op;
+    result.title_index = 0u;
+    return result;
+}
+
+PlayerUiAction player_ui_screen_developer_log(NkUi *ui, const PlayerUiDeveloperLogModel *model) {
+    static const NkUiPromptItem prompts[] = {
+        {NK_UI_PROMPT_ACT_MOVE, "Move"}, {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
+        {NK_UI_PROMPT_ACT_BACK, "Close"}
+    };
+    PlayerUiAction result = action(PLAYER_UI_ACTION_NONE, 0u, PLAYER_UI_PRIMARY_NONE);
+    const NkUiTheme *theme;
+    NkUiLayout layout;
+    float width;
+    float height;
+    float column;
+    float inner;
+    float lines_height;
+    size_t rows;
+    size_t first;
+    if (ui == NULL || model == NULL) return result;
+    theme = nk_ui_theme(ui);
+    width = model->logical_width > 80.0f ? model->logical_width : 1280.0f;
+    height = model->logical_height > 80.0f ? model->logical_height : 800.0f;
+    column = width - 2.0f * (width < NK_UI_NARROW_WIDTH ? NK_UI_GUTTER_NARROW : NK_UI_GUTTER);
+    inner = column - 2.0f * NK_UI_SPACE_5;
+    lines_height = height - NK_UI_TOP_BAR_HEIGHT - NK_UI_PROMPT_BAR_HEIGHT -
+                   2.0f * NK_UI_SPACE_4 - DEV_CARD_CHROME;
+    if (lines_height < 4.0f * DEV_LINE_HEIGHT) lines_height = 4.0f * DEV_LINE_HEIGHT;
+    rows = (size_t)(lines_height / DEV_LINE_HEIGHT);
+    first = model->line_count > rows ? model->line_count - rows : 0u;
+    (void)nk_ui_waves_element(ui, DEV_ID_WAVES, (NkUiRect){0.0f, 0.0f, width, height}, 0u);
+    layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_grow(), 0.0f);
+    if (!nk_ui_begin_container(ui, DEV_ID_ROOT, &layout, NULL)) return result;
+    (void)nk_ui_top_bar(ui, DEV_ID_TOP, NULL, 0u, nk_ui_input_label(nk_ui_prompt_style(ui)),
+                        nk_ui_prompt_style(ui) != NK_UI_PROMPT_KEYCAPS);
+    layout = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_grow(), 0.0f);
+    layout.align_x = NK_UI_ALIGN_CENTER;
+    layout.padding_top = layout.padding_bottom = NK_UI_SPACE_4;
+    if (nk_ui_begin_container(ui, DEV_ID_BODY, &layout, NULL)) {
+        if (nk_ui_card_begin(ui, DEV_ID_CARD, sizing_fixed(column), sizing_fit(),
+                             NK_UI_SPACE_3)) {
+            NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->paper);
+            NkUiTextStyle eyebrow = nk_ui_type(NK_UI_TYPE_EYEBROW, theme->warning);
+            nk_ui_text(ui, DEV_ID_TEXT + 0u, nk_ui_caps(ui, FLOW_MARK_TRIANGLE " Developer mode"),
+                       &eyebrow);
+            nk_ui_text(ui, DEV_ID_TEXT + 1u,
+                       nk_ui_text_clamp(ui, "Developer log: on this PC only. Paths show as "
+                                            "%USERPROFILE%.", &text, inner, 1), &text);
+            {
+                NkUiLayout box = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(),
+                                             sizing_fixed(lines_height + 20.0f), 0.0f);
+                NkUiStyle style = flow_box_style(theme, 0x080B0FFFu);
+                box.padding_top = box.padding_bottom = 10.0f;
+                box.padding_left = box.padding_right = 14.0f;
+                if (nk_ui_begin_container(ui, DEV_ID_BOX, &box, &style)) {
+                    NkUiTextStyle data = nk_ui_type(NK_UI_TYPE_DATA, theme->muted);
+                    data.line_height = DEV_LINE_HEIGHT;
+                    for (size_t i = first; i < model->line_count &&
+                                           i < PLAYER_UI_DEVELOPER_LOG_LINES; ++i) {
+                        nk_ui_text(ui, (NkUiId)(DEV_ID_LINES + (NkUiId)(i - first)),
+                                   nk_ui_text_clamp(ui, safe_text(model->lines[i], " "), &data,
+                                                    inner - 28.0f, 1), &data);
+                    }
+                    if (model->line_count == 0u) {
+                        nk_ui_text(ui, DEV_ID_TEXT + 2u, "Nothing logged yet.", &data);
+                    }
+                    nk_ui_end_container(ui);
+                }
+            }
+            layout = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_3);
+            layout.align_y = NK_UI_ALIGN_CENTER;
+            if (nk_ui_begin_container(ui, DEV_ID_ACTIONS, &layout, NULL)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_DEVELOPER_LOG_COPY, "Copy", 0u)) {
+                    result = developer_log_op(PLAYER_UI_DEVELOPER_LOG_COPY);
+                }
+                if (nk_ui_button(ui, PLAYER_UI_ID_DEVELOPER_LOG_SAVE, "Save", 0u)) {
+                    result = developer_log_op(PLAYER_UI_DEVELOPER_LOG_SAVE);
+                }
+                if (nk_ui_button(ui, PLAYER_UI_ID_DEVELOPER_LOG_CLOSE, "Close",
+                                 NK_UI_BUTTON_PRIMARY)) {
+                    result = developer_log_op(PLAYER_UI_DEVELOPER_LOG_CLOSE);
+                }
+                if (model->notice != NULL && model->notice[0] != '\0') {
+                    NkUiTextStyle note = nk_ui_type(NK_UI_TYPE_BODY_S, theme->muted);
+                    /* The three buttons take about 300 px of the row. */
+                    nk_ui_text(ui, DEV_ID_TEXT + 3u,
+                               nk_ui_text_clamp(ui, model->notice, &note, inner - 320.0f, 1),
+                               &note);
+                }
+                nk_ui_end_container(ui);
+            }
+            nk_ui_end_container(ui);
+        }
+        nk_ui_end_container(ui);
+    }
+    nk_ui_prompt_bar(ui, DEV_ID_PROMPTS, "", prompts, sizeof(prompts) / sizeof(prompts[0]));
     nk_ui_end_container(ui);
     return result;
 }

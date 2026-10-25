@@ -587,6 +587,7 @@ class NativePlayerUiTests(unittest.TestCase):
         "test_cli_not_found_error_text_fits_at_minimum_window",
         "test_long_error_text_fits_at_minimum_window",
         "test_completed_retry_clears_failure_when_cache_generation_changes",
+        "test_controller_bind_conflict_calibration_and_profile_save",
         "test_corrupt_art_is_failed_after_bounded_retries",
         "test_decoder_rejection_is_failed_after_bounded_retries",
         "test_exit_path_joins_iso_art_workers_and_tears_down_textures",
@@ -984,7 +985,7 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["developer_mode"], "0")
 
     def test_developer_log_panel_needs_developer_mode(self) -> None:
-        # The panel is drawn by the existing renderer in both launchers.
+        # The next UI draws its own panel; --ui=legacy keeps the existing one.
         for ui_mode in ("next", "legacy"):
             with self.subTest(ui_mode=ui_mode):
                 panel = self.run_player("developer-log", ("KEY_F12",), ui_mode=ui_mode)
@@ -1211,6 +1212,8 @@ class NativePlayerUiTests(unittest.TestCase):
         "resolution": str(0x4501), "pacing": str(0x4502), "done": str(0x450C),
         "online": str(0x450D), "notices": str(0x450E), "remove_tools": str(0x450F),
         "online_mode": str(0x4511), "back": str(0x4517), "confirm_remove": str(0x4519),
+        "controller": str(0x450B), "scaling": str(0x4505),
+        "launcher_fullscreen": str(0x450A),
     }
     # From Resolution, Down runs through the Game card's five rows to the button
     # row, which it enters at Third-party notices.
@@ -1300,6 +1303,142 @@ class NativePlayerUiTests(unittest.TestCase):
         )
         self.assertTrue(kept["downloaded_tool_marker_exists"],
                         "the removal card opens on the choice that keeps the tools")
+
+    # The next UI's controller page (player_ui_nk.h), as the frame line prints it.
+    CONTROLLER_FOCUS = {
+        "select": str(0x4600), "start": str(0x4601), "calibrate": str(0x4625),
+        "back": str(0x4628), "scope": str(0x4629), "calibration_cancel": str(0x462B),
+    }
+    # From the first binding, two steps right and two down reach Calibrate stick.
+    TO_CALIBRATE = ("KEY_RIGHT", "KEY_RIGHT", "KEY_DOWN", "KEY_DOWN")
+
+    def test_next_ui_controller_rebind_calibrate_save_and_back(self) -> None:
+        """Controller settings in the next UI run the same handlers as the existing renderer."""
+        focus = self.CONTROLLER_FOCUS
+        bind = self.next_ui_run(
+            "controller", ("WAIT_MS=100", "KEY_DOWN", "KEY_RETURN", "PAD_SOUTH", "WAIT_MS=100"),
+        )
+        frames = bind["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(self.focus_trail(bind)[:2], [focus["select"], focus["start"]],
+                         "the page opens on the first binding")
+        self.assertIn("1", [frame["controller_capturing"] for frame in frames],
+                      "choosing a binding waits for a button")
+        self.assertEqual(frames[-1]["controller_capturing"], "0",
+                         "the controller's button is taken, not routed to the page")
+        self.assertEqual(frames[-1]["controller_conflicts"], "1")
+        self.assertNotEqual(frames[0]["start_binding"], frames[-1]["start_binding"])
+
+        cancel = self.next_ui_run(
+            "controller", ("WAIT_MS=100", "KEY_RETURN", "KEY_ESCAPE", "WAIT_MS=100"),
+        )
+        frames = cancel["frames"]
+        assert isinstance(frames, list)
+        self.assertIn("1", [frame["controller_capturing"] for frame in frames])
+        self.assertEqual(frames[-1]["view"], "controller", "Esc while waiting only cancels")
+        self.assertEqual(frames[-1]["controller_capturing"], "0")
+        self.assertEqual(frames[-1]["select_binding"], frames[0]["select_binding"])
+
+        calibrate = self.next_ui_run(
+            "controller",
+            ("WAIT_MS=100",) + self.TO_CALIBRATE +
+            ("KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE", "WAIT_MS=100"),
+        )
+        frames = calibrate["frames"]
+        assert isinstance(frames, list)
+        self.assertIn("1", [frame["calibrating"] for frame in frames])
+        self.assertEqual(frames[-1]["calibrating"], "0")
+        self.assertEqual(frames[-1]["view"], "controller")
+        self.assertEqual(self.focus_trail(calibrate)[-3:],
+                         [focus["calibrate"], focus["calibration_cancel"], focus["calibrate"]],
+                         "the rest step opens on Cancel and Esc returns to Calibrate stick")
+
+        # Down from Calibrate stick reaches Back, at the right end of the button
+        # row; the mapping choice is next to it and Save profile is first.
+        scope = self.next_ui_run(
+            "controller",
+            ("WAIT_MS=100",) + self.TO_CALIBRATE + ("KEY_DOWN", "KEY_LEFT", "KEY_RETURN",
+                                                     "WAIT_MS=100"),
+        )
+        frames = scope["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(self.focus_trail(scope)[-3:],
+                         [focus["calibrate"], focus["back"], focus["scope"]])
+        self.assertEqual(frames[0]["input_scope"], "global")
+        self.assertEqual(frames[-1]["input_scope"], "TEST00005")
+
+        save = self.next_ui_run(
+            "controller",
+            ("WAIT_MS=100",) + self.TO_CALIBRATE + ("KEY_DOWN",) + ("KEY_LEFT",) * 3 +
+            ("KEY_RETURN", "WAIT_MS=100"),
+        )
+        frames = save["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["profile_save_notice"], "1")
+        self.assertTrue(save["profile_exists"])
+
+        back = self.next_ui_run(
+            "controller",
+            ("WAIT_MS=100",) + self.TO_CALIBRATE + ("KEY_DOWN", "KEY_RETURN", "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(back)], ["controller", "settings"])
+        self.assertEqual(self.focus_trail(back)[-1], self.SETTINGS_FOCUS["controller"],
+                         "Back returns to Settings on Controls")
+
+    def test_next_ui_settings_opens_controls_and_esc_returns(self) -> None:
+        """Settings > Controls opens the next UI's controller page; Esc comes back.
+
+        Right from Scaling, the last GAME row, is Controls beside it: a settings
+        row keeps Left and Right in its row (it reached the button row before)."""
+        focus = self.SETTINGS_FOCUS
+        run = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + ("KEY_DOWN",) * 4 +
+            ("KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE", "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(run)],
+                         ["settings", "controller", "settings"])
+        self.assertEqual(self.focus_trail(run)[-4:],
+                         [focus["scaling"], focus["controller"], self.CONTROLLER_FOCUS["select"],
+                          focus["controller"]])
+        pacing = self.next_ui_run("settings", ("WAIT_MS=100", "KEY_DOWN", "KEY_RIGHT"))
+        self.assertEqual(self.focus_trail(pacing)[-1], focus["launcher_fullscreen"],
+                         "Right from Frame pacing is Fullscreen (F11) beside it, not the top bar")
+        mouse = self.next_ui_run(
+            "settings", ("WAIT_MS=100", "MOUSE_MOVE=1010,392", "MOUSE_DOWN", "MOUSE_UP",
+                         "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(mouse)], ["settings", "controller"])
+
+    def test_next_ui_developer_log_buttons(self) -> None:
+        """The developer log opens on Close; Copy keeps it open."""
+        closed = self.next_ui_run("developer-log", ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100"))
+        self.assertEqual(self.focus_trail(closed)[0], str(0x4703))
+        self.assertEqual([view for view, _ in self.screens(closed)], ["developer_log", "library"])
+        copied = self.next_ui_run(
+            "developer-log", ("WAIT_MS=100", "KEY_LEFT", "KEY_LEFT", "KEY_RETURN", "WAIT_MS=100"),
+        )
+        self.assertEqual(self.focus_trail(copied)[-1], str(0x4701))
+        self.assertEqual([view for view, _ in self.screens(copied)], ["developer_log"])
+
+    def test_next_ui_title_detail_and_mapping_follow_the_chosen_title(self) -> None:
+        """The second card's Title detail, and the game's own mapping chosen from
+        there, are the second title's (#1301: a frame without an action no
+        longer reselects the first title)."""
+        run = self.next_ui_run(
+            "library",
+            ("WAIT_MS=100", "KEY_RIGHT", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=200",
+             "MOUSE_MOVE=483,31", "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=200",
+             "MOUSE_MOVE=1010,392", "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=200") +
+            self.TO_CALIBRATE + ("KEY_DOWN", "KEY_LEFT", "KEY_RETURN", "WAIT_MS=200"),
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        title = [frame for frame in frames if frame["next_route"] == "2"]
+        self.assertTrue(title, "the Title detail page opened")
+        self.assertEqual({frame["selected_disc"] for frame in title}, {"TEST00006"})
+        self.assertEqual([view for view, _ in self.screens(run)][-1], "controller")
+        self.assertEqual(frames[-1]["input_scope"], "TEST00006")
 
     def test_library_keyboard_gamepad_navigation_and_picker(self) -> None:
         run = self.run_player("library", ("KEY_RIGHT", "PAD_DPAD_RIGHT", "KEY_TAB", "KEY_RETURN"))

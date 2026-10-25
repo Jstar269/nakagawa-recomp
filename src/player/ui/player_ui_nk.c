@@ -102,6 +102,12 @@ struct PlayerUiNk {
     char settings_controller[160];
     char settings_saves[NK_MAX_PATH];
     char settings_tools[PLAYER_UI_SETTINGS_TOOLS][192];
+    char pad_bindings[PLAYER_UI_CONTROLLER_BUTTONS][128];
+    char pad_scope[96];
+    char pad_status[400];
+    char pad_deadzone[48];
+    char pad_trigger[48];
+    char pad_live[PLAYER_UI_CONTROLLER_LIVE_LINES][96];
     PlayerView last_view;   /* the view drawn last, for the focus a Settings page returns to */
     unsigned flow_screen;   /* which flow screen drew last; 0 outside them */
     NkUiId pre_flow_focus;  /* the library focus to give back on leaving */
@@ -319,13 +325,14 @@ static bool player_ui_settings_view(PlayerView view) {
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
    build, build tool download and error screens a first run passes through, the
-   card a disc gets when it is added, and Settings. The controller settings and
-   the developer log stay with ui_renderer.c. */
+   card a disc gets when it is added, Settings with the controller settings, and
+   the developer log. */
 static bool player_ui_nk_flow_view(PlayerView view) {
     return view == VIEW_SETUP_WIZARD || view == VIEW_BUILDING_PACKAGE ||
            view == VIEW_PREREQ_CONSENT ||
            view == VIEW_PREREQ_PROGRESS || view == VIEW_ERROR ||
-           player_ui_disc_view(view) || player_ui_settings_view(view);
+           player_ui_disc_view(view) || player_ui_settings_view(view) ||
+           view == VIEW_CONTROLLER_SETTINGS || view == VIEW_DEVELOPER_LOG;
 }
 
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
@@ -596,11 +603,175 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     return player_ui_screen_settings(player->ui, &model);
 }
 
+/* A share of the full axis range, as a whole percent. */
+static int player_ui_axis_percent(int value) {
+    return (value * 100) / 32767;
+}
+
+/* The controller settings model, from the same input_settings state the
+   existing renderer reads. */
+static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp *app,
+                                                  NkUiScale scale) {
+    const InputSettingsState *input = &app->input_settings;
+    const int16_t *axes = app->host_axes_live;
+    PlayerUiControllerModel model;
+    memset(&model, 0, sizeof(model));
+    model.capturing = input->capturing ? input->capture_control : -1;
+    for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_BUTTONS; ++i) {
+        model.names[i] = input_settings_control_name((int)i);
+        input_settings_format_binding(input, (int)i, player->pad_bindings[i],
+                                      sizeof(player->pad_bindings[i]));
+        model.bindings[i] = player->pad_bindings[i];
+        model.conflicted[i] = input_settings_is_control_conflicted(input, (int)i);
+    }
+    model.scope_title = input_settings_is_title_scope(input);
+    model.offer_scope = player_app_selected_disc_id(app) != NULL;
+    if (model.scope_title) {
+        snprintf(player->pad_scope, sizeof(player->pad_scope), "%s only",
+                 input_settings_scope_label(input));
+    } else {
+        snprintf(player->pad_scope, sizeof(player->pad_scope), "global mapping");
+    }
+    model.scope = player->pad_scope;
+    if (input_settings_has_conflicts(input)) {
+        model.status = input_settings_get_conflict_summary(input);
+        model.status_error = true;
+    } else if (input->has_load_diagnostic) {
+        snprintf(player->pad_status, sizeof(player->pad_status), "%s", input->load_diagnostic);
+        model.status = player->pad_status;
+    } else if (input->has_save_diagnostic) {
+        snprintf(player->pad_status, sizeof(player->pad_status), "%s", input->save_diagnostic);
+        model.status = player->pad_status;
+    } else if (model.capturing >= 0) {
+        snprintf(player->pad_status, sizeof(player->pad_status),
+                 "Press the controller button or trigger for %s. %d s left; Esc stops.",
+                 input_settings_control_name(model.capturing),
+                 (input_settings_get_capture_remaining_ms(input) + 999) / 1000);
+        model.status = player->pad_status;
+    } else if (app->settings.controller_connected) {
+        snprintf(player->pad_status, sizeof(player->pad_status),
+                 "Connected: %s. Choose a button to change it.",
+                 app->settings.controller_name[0] != '\0' ? app->settings.controller_name
+                                                          : "controller");
+        model.status = player->pad_status;
+    } else {
+        model.status = "No controller connected. The keyboard works, and these are the "
+                       "controller defaults.";
+    }
+    snprintf(player->pad_deadzone, sizeof(player->pad_deadzone), "Dead zone %d%%",
+             player_ui_axis_percent(input->profile.axes[NK_PSP_AXIS_ANALOG_X].deadzone_inner));
+    snprintf(player->pad_trigger, sizeof(player->pad_trigger), "Triggers at %d%%",
+             player_ui_axis_percent(input->profile.trigger_threshold));
+    model.deadzone = player->pad_deadzone;
+    model.trigger = player->pad_trigger;
+    switch (input_settings_is_calibrating(input) ? input_settings_get_calibration_stage(input)
+                                                 : CALIBRATION_STAGE_INACTIVE) {
+        case CALIBRATION_STAGE_REST: {
+            int ms = input->calib.elapsed_ms > 1000 ? 1000 : input->calib.elapsed_ms;
+            model.page = PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_REST;
+            model.calibration_fraction = ms > 0 ? (float)ms / 1000.0f : 0.0f;
+            snprintf(player->pad_live[0], sizeof(player->pad_live[0]),
+                     "Stick at rest   %6d, %6d", input->calib.sampled_rest_x,
+                     input->calib.sampled_rest_y);
+            snprintf(player->pad_live[1], sizeof(player->pad_live[1]),
+                     "Triggers at rest L %d  R %d", input->calib.sampled_rest_lt,
+                     input->calib.sampled_rest_rt);
+            model.live_count = 2u;
+            break;
+        }
+        case CALIBRATION_STAGE_EXTREMES:
+            model.page = PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_EXTREMES;
+            snprintf(player->pad_live[0], sizeof(player->pad_live[0]),
+                     "Stick X  %6d to %6d  now %6d", input->calib.sampled_min_x,
+                     input->calib.sampled_max_x, axes[NK_HOST_AXIS_LEFTX]);
+            snprintf(player->pad_live[1], sizeof(player->pad_live[1]),
+                     "Stick Y  %6d to %6d  now %6d", input->calib.sampled_min_y,
+                     input->calib.sampled_max_y, axes[NK_HOST_AXIS_LEFTY]);
+            snprintf(player->pad_live[2], sizeof(player->pad_live[2]),
+                     "Left trigger   %6d to %6d", input->calib.sampled_rest_lt,
+                     input->calib.sampled_max_lt);
+            snprintf(player->pad_live[3], sizeof(player->pad_live[3]),
+                     "Right trigger  %6d to %6d", input->calib.sampled_rest_rt,
+                     input->calib.sampled_max_rt);
+            model.live_count = 4u;
+            break;
+        case CALIBRATION_STAGE_RESULT:
+            model.page = PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_RESULT;
+            snprintf(player->pad_live[0], sizeof(player->pad_live[0]),
+                     "Stick X  rest %6d  %6d to %6d", input->calib.result_rest_x,
+                     input->calib.result_min_x, input->calib.result_max_x);
+            snprintf(player->pad_live[1], sizeof(player->pad_live[1]),
+                     "Stick Y  rest %6d  %6d to %6d", input->calib.result_rest_y,
+                     input->calib.result_min_y, input->calib.result_max_y);
+            snprintf(player->pad_live[2], sizeof(player->pad_live[2]),
+                     "Triggers rest %6d  full %6d", input->calib.result_trigger_rest,
+                     input->calib.result_trigger_extreme);
+            model.live_count = 3u;
+            break;
+        default: {
+            uint8_t psp_x = 128u;
+            uint8_t psp_y = 128u;
+            size_t used;
+            int pressed = 0;
+            nk_input_profile_eval_analog(&input->profile, axes, &psp_x, &psp_y);
+            snprintf(player->pad_live[0], sizeof(player->pad_live[0]), "Stick  %6d, %6d",
+                     axes[NK_HOST_AXIS_LEFTX], axes[NK_HOST_AXIS_LEFTY]);
+            snprintf(player->pad_live[1], sizeof(player->pad_live[1]), "PSP    %3u, %3u  %s",
+                     (unsigned)psp_x, (unsigned)psp_y,
+                     psp_x != 128u || psp_y != 128u ? "moving" : "in dead zone");
+            snprintf(player->pad_live[2], sizeof(player->pad_live[2]), "Triggers L %d  R %d",
+                     axes[NK_HOST_AXIS_LEFT_TRIGGER], axes[NK_HOST_AXIS_RIGHT_TRIGGER]);
+            used = (size_t)snprintf(player->pad_live[3], sizeof(player->pad_live[3]),
+                                    "Pressed ");
+            for (int b = 0; b < NK_HOST_BUTTON_COUNT && pressed < 4 &&
+                            used < sizeof(player->pad_live[3]); ++b) {
+                if (!app->host_buttons_live[b]) continue;
+                used += (size_t)snprintf(player->pad_live[3] + used,
+                                         sizeof(player->pad_live[3]) - used, "%s%s",
+                                         pressed > 0 ? ", " : "",
+                                         nk_host_button_name((NkHostGamepadButton)b));
+                ++pressed;
+            }
+            if (pressed == 0) {
+                snprintf(player->pad_live[3] + used, sizeof(player->pad_live[3]) - used,
+                         "nothing");
+            }
+            model.live_count = 4u;
+            break;
+        }
+    }
+    for (size_t i = 0u; i < model.live_count; ++i) model.live[i] = player->pad_live[i];
+    model.logical_width = scale.logical_w;
+    model.logical_height = scale.logical_h;
+    return player_ui_screen_controller(player->ui, &model);
+}
+
+/* The developer log panel's model: the log lines player_state.c keeps. */
+static PlayerUiAction player_ui_render_developer_log(PlayerUiNk *player, PlayerApp *app,
+                                                     NkUiScale scale) {
+    PlayerUiDeveloperLogModel model;
+    size_t count = player_dev_log_count(app);
+    memset(&model, 0, sizeof(model));
+    if (count > PLAYER_UI_DEVELOPER_LOG_LINES) count = PLAYER_UI_DEVELOPER_LOG_LINES;
+    for (size_t i = 0u; i < count; ++i) model.lines[i] = player_dev_log_line(app, i);
+    model.line_count = count;
+    model.notice = app->dev_log.notice;
+    model.logical_width = scale.logical_w;
+    model.logical_height = scale.logical_h;
+    return player_ui_screen_developer_log(player->ui, &model);
+}
+
 static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
                                             NkUiScale scale, double now_s) {
     PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
     if (app->active_view == VIEW_SETUP_WIZARD) {
         return player_ui_render_wizard(player, app, scale);
+    }
+    if (app->active_view == VIEW_CONTROLLER_SETTINGS) {
+        return player_ui_render_controller(player, app, scale);
+    }
+    if (app->active_view == VIEW_DEVELOPER_LOG) {
+        return player_ui_render_developer_log(player, app, scale);
     }
     if (player_ui_disc_view(app->active_view)) {
         return player_ui_render_disc(player, app, scale, now_s);
@@ -727,8 +898,27 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                     : player->last_view == VIEW_PREREQ_ABOUT ? PLAYER_UI_ID_SETTINGS_NOTICES
                     : player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
                         ? PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS
+                    : player->last_view == VIEW_CONTROLLER_SETTINGS
+                        ? PLAYER_UI_ID_SETTINGS_CONTROLLER
                         : PLAYER_UI_ID_SETTINGS_RESOLUTION;
                 break;
+            case VIEW_CONTROLLER_SETTINGS: {
+                /* Each calibration step is a screen of its own; the mapping
+                   opens on the first button, or on Calibrate after a step. */
+                GuidedCalibrationStage stage =
+                    input_settings_is_calibrating(&app->input_settings)
+                        ? input_settings_get_calibration_stage(&app->input_settings)
+                        : CALIBRATION_STAGE_INACTIVE;
+                screen += (unsigned)stage;
+                focus = stage == CALIBRATION_STAGE_REST ? PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL
+                    : stage != CALIBRATION_STAGE_INACTIVE
+                        ? PLAYER_UI_ID_CONTROLLER_CALIBRATION_PRIMARY
+                    : player->flow_screen > screen && player->flow_screen < screen + 4u
+                        ? PLAYER_UI_ID_CONTROLLER_CALIBRATE
+                        : PLAYER_UI_ID_CONTROLLER_BUTTON(0u);
+                break;
+            }
+            case VIEW_DEVELOPER_LOG: focus = PLAYER_UI_ID_DEVELOPER_LOG_CLOSE; break;
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
             case VIEW_PREREQ_ABOUT:
             case VIEW_CONFIRM_REMOVE_TOOLS: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
@@ -1181,7 +1371,8 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     player_ui_flow_focus(player, app);
     if (player_ui_nk_flow_view(app->active_view)) {
         action = player_ui_render_flow(player, app, scale, now_s);
-        if (player_ui_settings_view(app->active_view) &&
+        if ((player_ui_settings_view(app->active_view) ||
+             app->active_view == VIEW_CONTROLLER_SETTINGS) &&
             (action.kind == PLAYER_UI_ACTION_OPEN_LIBRARY ||
              action.kind == PLAYER_UI_ACTION_OPEN_ABOUT ||
              action.kind == PLAYER_UI_ACTION_OPEN_SETTINGS)) {
@@ -1197,8 +1388,13 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 (void)nk_ui_router_replace(player->router, PLAYER_UI_ROUTE_LIBRARY);
                 player->pre_flow_focus = PLAYER_UI_ID_TAB_LIBRARY;
             }
-            action.kind = PLAYER_UI_ACTION_SETTINGS;
-            action.primary = (PlayerUiPrimaryAction)PLAYER_UI_SETTINGS_DONE;
+            if (app->active_view == VIEW_CONTROLLER_SETTINGS) {
+                action.kind = PLAYER_UI_ACTION_CONTROLLER;
+                action.primary = (PlayerUiPrimaryAction)PLAYER_UI_CONTROLLER_CLOSE;
+            } else {
+                action.kind = PLAYER_UI_ACTION_SETTINGS;
+                action.primary = (PlayerUiPrimaryAction)PLAYER_UI_SETTINGS_DONE;
+            }
         }
         if (action.kind != PLAYER_UI_ACTION_NONE && out_action != NULL) {
             *out_action = action;

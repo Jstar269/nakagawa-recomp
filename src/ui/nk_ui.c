@@ -1046,7 +1046,10 @@ void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
     entry.rect = rect;
     entry.flags = (flags & NK_UI_BUTTON_DISABLED) != 0u
         ? NK_UI_FOCUS_DISABLED : 0u;
-    if (entry.flags == 0u && ui->focus_entry_count == 0u &&
+    if ((flags & NK_UI_BUTTON_ROW) != 0u) {
+        entry.flags |= NK_UI_FOCUS_ROW_MEMBER;
+    }
+    if ((entry.flags & NK_UI_FOCUS_DISABLED) == 0u && ui->focus_entry_count == 0u &&
         ui->focused == 0u && (flags & NK_UI_BUTTON_NOT_DEFAULT) == 0u) {
         entry.flags |= NK_UI_FOCUS_DEFAULT;
     }
