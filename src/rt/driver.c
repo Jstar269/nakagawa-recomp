@@ -471,6 +471,9 @@ int main(int argc, char **argv) {
 #endif
         }
     }
+    /* With the player attaching stdout to the per-session log, keep each
+       diagnostic line durable even if the player later stops the child. */
+    (void)setvbuf(stdout, NULL, _IOLBF, 0);
 
     /* Initialize debug framework from SR_DEBUG env var (or legacy SR_* vars) */
     g_sr_debug = sr_debug_init();

@@ -2519,6 +2519,7 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
     bool has_semantic_stop = player_read_semantic_stop(
         app->boot_event_file_path, stopped_boundary, sizeof(stopped_boundary),
         &stopped_issue);
+    bool runtime_failed = elapsed_ms < 500 || code != 0 || has_semantic_stop;
     app->is_game_running = false;
     app->close_confirmation_pending = false;
     /* The child has exited and been reaped: release its process and job
@@ -2531,8 +2532,8 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
     player_dev_log_add(app, "runtime", "game exited with code %d after %llu ms", code,
                        (unsigned long long)elapsed_ms);
     if (app->boot_event_file_path[0]) {
-        /* The runtime's boot events: the phases reached, the named stop
-           boundary and missing imports. At most 48 lines. */
+        /* Runtime stdout/stderr share this session log with boot events. At
+           most 48 lines are copied into the in-memory developer log. */
         FILE *events = nk_fopen_utf8(app->boot_event_file_path, "rb");
         char event_line[PLAYER_DEV_LOG_LINE_MAX];
         int shown = 0;
@@ -2547,7 +2548,7 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
         }
         if (events) fclose(events);
     }
-    if (app->boot_event_file_path[0] && !has_semantic_stop) {
+    if (app->boot_event_file_path[0] && !runtime_failed) {
         remove(app->boot_event_file_path);
     }
     printf("[PLAYER] Game process exited with code %d (ran for %llu ms)\n", code,
@@ -2573,6 +2574,9 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
                  (unsigned long long)elapsed_ms, code);
         player_app_set_error(app, "RUNTIME_PREMATURE_EXIT", "Child Process Terminated Early",
                              err_msg, "Return to Library", VIEW_LIBRARY);
+        snprintf(app->last_error.log_file_path,
+                 sizeof(app->last_error.log_file_path), "%s",
+                 app->boot_event_file_path);
     } else if (code != 0) {
         char err_msg[512];
         snprintf(err_msg, sizeof(err_msg),
@@ -2581,6 +2585,9 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
                  code);
         player_app_set_error(app, "RUNTIME_ERROR_EXIT", "Child Process Error Exit",
                              err_msg, "Return to Library", VIEW_LIBRARY);
+        snprintf(app->last_error.log_file_path,
+                 sizeof(app->last_error.log_file_path), "%s",
+                 app->boot_event_file_path);
     }
     return true;
 }

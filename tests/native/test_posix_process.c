@@ -61,7 +61,7 @@ int main(void) {
     NkProcessHandle slow;
     memset(&slow, 0, sizeof(slow));
     const char *slow_argv[] = { "/bin/sleep", "30", NULL };
-    assert(nk_platform_spawn_process("/bin/sleep", slow_argv, NULL, NULL, &slow));
+    assert(nk_platform_spawn_process("/bin/sleep", slow_argv, NULL, NULL, NULL, &slow));
 
     assert(clock_gettime(CLOCK_MONOTONIC, &t0) == 0);
     int timed_out = nk_platform_wait_process(&slow, 300);
@@ -82,7 +82,7 @@ int main(void) {
     NkProcessHandle quick;
     memset(&quick, 0, sizeof(quick));
     const char *quick_argv[] = { "/bin/sh", "-c", "exit 7", NULL };
-    assert(nk_platform_spawn_process("/bin/sh", quick_argv, NULL, NULL, &quick));
+    assert(nk_platform_spawn_process("/bin/sh", quick_argv, NULL, NULL, NULL, &quick));
     assert(nk_platform_wait_process(&quick, 10000) == 7);
     nk_platform_close_process(&quick);
 
@@ -93,7 +93,7 @@ int main(void) {
     NkProcessHandle blocking;
     memset(&blocking, 0, sizeof(blocking));
     const char *blocking_argv[] = { "/bin/sh", "-c", "exit 5", NULL };
-    assert(nk_platform_spawn_process("/bin/sh", blocking_argv, NULL, NULL, &blocking));
+    assert(nk_platform_spawn_process("/bin/sh", blocking_argv, NULL, NULL, NULL, &blocking));
     assert(nk_platform_wait_process(&blocking, -1) == 5);
     nk_platform_close_process(&blocking);
 
@@ -110,7 +110,7 @@ int main(void) {
     NkProcessHandle polled;
     memset(&polled, 0, sizeof(polled));
     const char *polled_argv[] = { "/bin/sh", "-c", "exit 3", NULL };
-    assert(nk_platform_spawn_process("/bin/sh", polled_argv, NULL, NULL, &polled));
+    assert(nk_platform_spawn_process("/bin/sh", polled_argv, NULL, NULL, NULL, &polled));
 
     bool observed_exit = false;
     for (int i = 0; i < 2000; i++) {
@@ -140,7 +140,7 @@ int main(void) {
     NkLaunchSession session;
     memset(&session, 0, sizeof(session));
     const char *session_argv[] = { "/bin/sleep", "30", NULL };
-    assert(nk_platform_spawn_process("/bin/sleep", session_argv, NULL, NULL, &session.process));
+    assert(nk_platform_spawn_process("/bin/sleep", session_argv, NULL, NULL, NULL, &session.process));
     session.is_running = true;
     pid_t session_pid = (pid_t)session.process.process_id;
 
@@ -163,7 +163,7 @@ int main(void) {
 
     memset(&session, 0, sizeof(session));
     const char *code_argv[] = { "/bin/sh", "-c", "exit 9", NULL };
-    assert(nk_platform_spawn_process("/bin/sh", code_argv, NULL, NULL, &session.process));
+    assert(nk_platform_spawn_process("/bin/sh", code_argv, NULL, NULL, NULL, &session.process));
     session.is_running = true;
 
     bool session_exited = false;
@@ -199,7 +199,7 @@ int main(void) {
         "sleep 60 & echo $! > " SR_SELFTEST_BUILD_ROOT "/test_posix_grandchild.pid; wait",
         NULL
     };
-    assert(nk_platform_spawn_process("/bin/sh", tree_argv, NULL, NULL, &tree_proc));
+    assert(nk_platform_spawn_process("/bin/sh", tree_argv, NULL, NULL, NULL, &tree_proc));
     assert(tree_proc.is_active);
 
     pid_t grandchild_pid = 0;
