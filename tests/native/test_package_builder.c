@@ -121,6 +121,15 @@ static void test_compile_part_count(void) {
     assert(package_builder_compile_fraction(&session) == 0.25f);
     assert(strcmp(session.current_message, "Compiling part 11 of 40") == 0);
     assert(session.output_line_count == lines_before);
+    assert(package_builder_compile_notice(&session) == NULL);
+
+    /* A count with a load note keeps the note for the compile stage. */
+    const char *noted = "{\"stage\": \"compile\", \"status\": \"RUNNING\", \"message\": \"Compiling part 12 of 40\", \"completed\": 11, \"total\": 40, \"notice\": \"Other apps may feel slower.\"}";
+    assert(package_builder_parse_progress_line(noted, strlen(noted), &ev));
+    assert(strcmp(ev.notice, "Other apps may feel slower.") == 0);
+    package_builder_apply_event(&session, &ev);
+    assert(package_builder_compile_notice(&session) != NULL);
+    assert(strcmp(package_builder_compile_notice(&session), "Other apps may feel slower.") == 0);
 
     /* An inconsistent or malformed count is ignored; the line still applies. */
     const char *over = "{\"stage\": \"compile\", \"status\": \"RUNNING\", \"message\": \"m\", \"completed\": 41, \"total\": 40}";
@@ -141,11 +150,14 @@ static void test_compile_part_count(void) {
     assert(package_builder_parse_progress_line(package, strlen(package), &ev));
     package_builder_apply_event(&session, &ev);
     assert(package_builder_compile_fraction(&session) < 0.0f);
+    assert(package_builder_compile_notice(&session) == NULL);
 
-    /* A new compile phase starts without a count. */
+    /* A new compile phase starts without a count or a note. */
     assert(package_builder_parse_progress_line(start, strlen(start), &ev));
     package_builder_apply_event(&session, &ev);
     assert(session.parts_total == 0);
+    assert(session.compile_notice[0] == '\0');
+    assert(package_builder_compile_notice(NULL) == NULL);
     assert(package_builder_compile_fraction(&session) < 0.0f);
     assert(package_builder_compile_fraction(NULL) < 0.0f);
 }

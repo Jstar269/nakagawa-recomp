@@ -1466,7 +1466,7 @@ class _BuildProgressReporter:
 
     def report(self, stage: str, status: str, message: str,
                detail: str | None = None, *, completed: int | None = None,
-               total: int | None = None) -> None:
+               total: int | None = None, notice: str | None = None) -> None:
         self.current_stage = stage
         if status == "FAIL":
             self._failed = True
@@ -1476,6 +1476,8 @@ class _BuildProgressReporter:
         if completed is not None and total is not None:
             payload["completed"] = completed
             payload["total"] = total
+        if notice:
+            payload["notice"] = notice
         line = json.dumps(payload, ensure_ascii=False) + "\n"
         if self._out_stream is not None:
             self._out_stream.write(line)
@@ -1525,6 +1527,20 @@ def compile_progress_message(completed: int, total: int) -> str:
     if completed >= total:
         return f"Linking the package ({total} of {total} parts compiled)"
     return f"Compiling part {completed + 1} of {total}"
+
+
+def compile_load_notice(jobs: int | None, cpus: int | None) -> str | None:
+    """A calm note that other apps may slow down, sized to the share of the PC in use.
+
+    One job leaves most of the PC free, so it gets no notice.
+    """
+    if not jobs or jobs <= 1:
+        return None
+    if not cpus or jobs * 2 >= cpus:
+        return ("Building uses most of your PC's power for a few minutes, "
+                "so other apps may feel slower until it finishes.")
+    return ("Building uses some of your PC's power for a few minutes, "
+            "so other apps may feel a little slower until it finishes.")
 
 
 class _CompileProgressRelay:
@@ -1577,9 +1593,13 @@ class _CompileProgressRelay:
             if total <= 0 or not 0 <= completed <= total or (completed, total) == self.last:
                 continue
             self.last = (completed, total)
+            jobs, cpus = row.get("jobs"), row.get("cpus")
             self.reporter.report("compile", "RUNNING",
                                  compile_progress_message(completed, total),
-                                 completed=completed, total=total)
+                                 completed=completed, total=total,
+                                 notice=compile_load_notice(
+                                     jobs if isinstance(jobs, int) else None,
+                                     cpus if isinstance(cpus, int) else None))
 
 
 _BUILD_DIAGNOSTIC_MARKERS = ("error:", "cannot find", "undefined reference")

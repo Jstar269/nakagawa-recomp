@@ -1291,6 +1291,8 @@ bool package_builder_parse_progress_line(
             out_event->parts_completed = (uint32_t)completed;
             out_event->parts_total = (uint32_t)total;
         }
+        const char *notice = nk_json_get_string(nk_json_obj_get(root, "notice"));
+        if (notice) safe_str_copy(out_event->notice, sizeof(out_event->notice), notice);
     }
     nk_json_free(root);
 
@@ -1373,6 +1375,14 @@ float package_builder_compile_fraction(const PackageBuildSession *session) {
     return (float)session->parts_completed / (float)session->parts_total;
 }
 
+const char *package_builder_compile_notice(const PackageBuildSession *session) {
+    if (!session || session->compile_notice[0] == '\0' ||
+        session->current_stage != PACKAGE_BUILD_STAGE_COMPILE) {
+        return NULL;
+    }
+    return session->compile_notice;
+}
+
 void package_builder_apply_event(
     PackageBuildSession *session,
     const PackageProgressEvent *event
@@ -1398,11 +1408,13 @@ void package_builder_apply_event(
     if (event->parts_total > 0) {
         session->parts_completed = event->parts_completed;
         session->parts_total = event->parts_total;
+        safe_str_copy(session->compile_notice, sizeof(session->compile_notice), event->notice);
     } else if (event->stage_enum == PACKAGE_BUILD_STAGE_COMPILE &&
                event->status_enum == PACKAGE_PROGRESS_STATUS_START) {
         /* A new compile phase has not counted its parts yet. */
         session->parts_completed = 0;
         session->parts_total = 0;
+        session->compile_notice[0] = '\0';
     }
 
     /* A part count arrives once per finished object; the card's bar and message

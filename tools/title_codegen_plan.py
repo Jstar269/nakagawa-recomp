@@ -266,9 +266,12 @@ class CompileProgressCounter:
         return count
 
 
-def _write_compile_progress(progress_file: Path, completed: int, total: int) -> None:
+def _write_compile_progress(
+    progress_file: Path, completed: int, total: int, load: dict[str, int]
+) -> None:
+    row = {"completed": completed, "total": total, **load}
     with progress_file.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps({"completed": completed, "total": total}) + "\n")
+        stream.write(json.dumps(row) + "\n")
 
 
 def _run_make_with_progress(
@@ -278,11 +281,18 @@ def _run_make_with_progress(
     env: dict[str, str],
     counter: CompileProgressCounter,
     progress_file: Path,
+    jobs: int,
+    cpus: int,
     poll_seconds: float = COMPILE_PROGRESS_POLL_SECONDS,
 ) -> int:
-    """Run Make, appending a progress line each time the finished-object count changes."""
+    """Run Make, appending a progress line each time the finished-object count changes.
+
+    Each line also carries the job count and the logical CPUs, so the player can say
+    how much of the PC the build is using.
+    """
+    load = {"jobs": jobs, "cpus": cpus}
     last = 0
-    _write_compile_progress(progress_file, 0, counter.total)
+    _write_compile_progress(progress_file, 0, counter.total, load)
     process = subprocess.Popen(command, cwd=cwd, env=env)
     while True:
         try:
@@ -292,7 +302,7 @@ def _run_make_with_progress(
         completed = counter.completed()
         if completed != last:
             last = completed
-            _write_compile_progress(progress_file, completed, counter.total)
+            _write_compile_progress(progress_file, completed, counter.total, load)
         if returncode is not None:
             return returncode
 
@@ -1824,6 +1834,8 @@ def build_package(
                             env=build_environment,
                             counter=CompileProgressCounter(objects),
                             progress_file=progress_file,
+                            jobs=build_jobs,
+                            cpus=os.process_cpu_count() or 1,
                         )
                     else:
                         returncode = subprocess.run(

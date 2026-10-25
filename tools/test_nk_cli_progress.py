@@ -198,6 +198,41 @@ class NkCliProgressTests(unittest.TestCase):
         self.assertEqual(rows[1]["message"], "Compiling part 3 of 4")
         self.assertEqual(rows[2]["message"], "Linking the package (4 of 4 parts compiled)")
 
+    def test_compile_load_notice_scales_with_the_share_of_the_pc(self) -> None:
+        import nk_cli
+
+        most = nk_cli.compile_load_notice(8, 8)
+        some = nk_cli.compile_load_notice(3, 24)
+        self.assertIsNone(nk_cli.compile_load_notice(1, 24))
+        self.assertIsNone(nk_cli.compile_load_notice(None, 24))
+        self.assertEqual(most, "Building uses most of your PC's power for a few minutes, "
+                               "so other apps may feel slower until it finishes.")
+        self.assertEqual(nk_cli.compile_load_notice(6, 12), most)
+        self.assertEqual(nk_cli.compile_load_notice(2, None), most)
+        self.assertIn("some of your PC's power", some)
+        self.assertIn("a little slower", some)
+        for text in (most, some):
+            for alarm in ("!", "warning", "WARNING", "danger", "overheat", "crash"):
+                self.assertNotIn(alarm, text)
+
+    def test_compile_progress_relay_passes_the_load_notice(self) -> None:
+        import nk_cli
+
+        with tempfile.TemporaryDirectory(prefix="nk_cli_compile_notice_") as temp:
+            events_path = Path(temp) / "events.jsonl"
+            progress_path = Path(temp) / "compile-progress.jsonl"
+            reporter = nk_cli._BuildProgressReporter(events_path)
+            progress_path.write_text(
+                '{"completed": 0, "total": 4, "jobs": 6, "cpus": 24}\n'
+                '{"completed": 1, "total": 4, "jobs": 1, "cpus": 24}\n',
+                encoding="utf-8",
+            )
+            nk_cli._CompileProgressRelay(reporter, progress_path).drain()
+            reporter.close()
+            rows = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(rows[0]["notice"], nk_cli.compile_load_notice(6, 24))
+        self.assertNotIn("notice", rows[1])
+
     def test_progress_events_without_a_count_carry_no_count_fields(self) -> None:
         import nk_cli
 

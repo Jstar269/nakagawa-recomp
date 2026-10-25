@@ -233,6 +233,10 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         build.message = which == FLOW_BUILD_PARTS
             ? "Compiling part 4 of 12"
             : "Compiling the translated game for this PC.";
+        build.notice = which == FLOW_BUILD_PARTS
+            ? "Building uses most of your PC's power for a few minutes, so other apps "
+              "may feel slower until it finishes."
+            : NULL;
         build.elapsed_ms = 83400u;
         build.lines[0] = "[compile] 1204 of 3311 functions";
         build.lines[1] = "[compile] chunk 12 of 31";
@@ -378,6 +382,48 @@ static void test_build_bar_shows_compiled_parts(void) {
     }
     CHECK(strstr(out, "\"Compiling part 4 of 12\"") != NULL,
           "the build card names the part being compiled");
+    {
+        /* The note sits under the bar in the same muted colour as the elapsed time:
+           body text, not a warning. */
+        const char *notice = strstr(out, "60000044 TEXT ");
+        const char *elapsed = strstr(out, "60000043 TEXT ");
+        CHECK(notice != NULL && strstr(notice, "other apps may feel slower") != NULL,
+              "the build card notes that other apps may feel slower");
+        if (notice != NULL && elapsed != NULL) {
+            int notice_y = 0, bar_y = 0, x0 = 0, x1 = 0;
+            char notice_rgba[9] = "", elapsed_rgba[9] = "";
+            CHECK(sscanf(notice + 14, "%*d %d %*d %*d %8s", &notice_y, notice_rgba) == 2 &&
+                  sscanf(elapsed + 14, "%*d %*d %*d %*d %8s", elapsed_rgba) == 1,
+                  "read the note's and the elapsed time's rows");
+            CHECK(strcmp(notice_rgba, elapsed_rgba) == 0,
+                  "the note is drawn in the muted colour");
+            {
+                char prefix[16];
+                const char *row;
+                (void)snprintf(prefix, sizeof(prefix), "%08X RECT ", 0x60000040u);
+                row = strstr(out, prefix);
+                CHECK(row != NULL && sscanf(row + strlen(prefix), "%d %d %d", &x0, &bar_y, &x1) == 3,
+                      "read the progress track's row");
+            }
+            CHECK(notice_y > bar_y, "the note sits under the progress bar");
+        }
+    }
+    used = 0u;
+    out[0] = '\0';
+    {
+        NkUi *plain = nk_ui_create(&config);
+        CHECK(plain != NULL, "create the plain build-card UI");
+        if (plain != NULL) {
+            set_test_viewport(plain, 1280, 800);
+            g_flow_case = FLOW_BUILD;
+            CHECK(append_case(out, sizeof(out), &used, "flow-build-running", plain, NULL, NULL),
+                  "draw the build card without a part count");
+            g_flow_case = FLOW_NONE;
+            nk_ui_destroy(plain);
+            CHECK(strstr(out, "60000044 TEXT ") == NULL,
+                  "a build without a note draws none");
+        }
+    }
 }
 
 static bool build_library_golden(char *out, size_t cap, size_t *used) {

@@ -158,6 +158,8 @@ static unsigned s_ui_test_bitmap_text_draws;
 static const char *s_ui_test_build_badge;
 /* Fill of the package build screen's bar as last drawn, -1 for the sweep. */
 static float s_ui_test_build_bar_fraction = -1.0f;
+/* Whether the package build screen drew its "other apps may feel slower" note. */
+static bool s_ui_test_build_notice_drawn;
 #endif
 
 static uint32_t ui_color_key(SDL_Color c) {
@@ -1808,6 +1810,10 @@ const char *ui_test_build_badge(void) {
 
 float ui_test_build_bar_fraction(void) {
     return s_ui_test_build_bar_fraction;
+}
+
+bool ui_test_build_notice_drawn(void) {
+    return s_ui_test_build_notice_drawn;
 }
 #endif
 
@@ -3949,8 +3955,20 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
     snprintf(elapsed_str, sizeof(elapsed_str), "Elapsed: %u.%u s", sec, tenths);
     draw_text(ren, card_x + card_w - 150.0f, info_y, elapsed_str, 1.0f, COLOR_TEXT_MUTED);
 
-    /* Output log box */
+    /* While the compile stage runs several jobs, a calm note in muted body text that
+     * other apps may feel slower. No warning colour or icon: nothing is wrong. */
     float log_y = info_y + 28.0f;
+    const char *notice = built ? NULL : package_builder_compile_notice(&app->build_session);
+    if (notice) {
+        float after = draw_text_wrapped(ren, card_x + 32.0f, info_y + 26.0f, card_w - 64.0f,
+                                        notice, 1.0f, COLOR_TEXT_MUTED, 2);
+        log_y = after + 8.0f;
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_build_notice_drawn = notice != NULL;
+#endif
+
+    /* Output log box */
     float log_h = 100.0f;
     draw_rounded_fill(ren, card_x + 32.0f, log_y, card_w - 64.0f, log_h, 6.0f, (SDL_Color){ 14, 18, 22, 255 });
     draw_rounded_outline(ren, card_x + 32.0f, log_y, card_w - 64.0f, log_h, 6.0f, COLOR_CARD_BORDER);

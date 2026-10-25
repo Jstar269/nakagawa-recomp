@@ -186,12 +186,14 @@ class TitleCodegenPlanTests(unittest.TestCase):
                 env=os.environ.copy(),
                 counter=title_codegen_plan.CompileProgressCounter(objects),
                 progress_file=progress,
+                jobs=4,
+                cpus=24,
                 poll_seconds=0.05,
             )
             rows = [json.loads(line) for line in progress.read_text(encoding="utf-8").splitlines()]
         self.assertEqual(returncode, 0)
-        self.assertEqual(rows[0], {"completed": 0, "total": 3})
-        self.assertEqual(rows[-1], {"completed": 3, "total": 3})
+        self.assertEqual(rows[0], {"completed": 0, "total": 3, "jobs": 4, "cpus": 24})
+        self.assertEqual(rows[-1], {"completed": 3, "total": 3, "jobs": 4, "cpus": 24})
         completed = [row["completed"] for row in rows]
         self.assertEqual(completed, sorted(set(completed)), "each count is written once, in order")
         self.assertTrue(all(row["total"] == 3 for row in rows))

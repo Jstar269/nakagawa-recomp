@@ -48,6 +48,9 @@ typedef struct {
        event carries no part count. */
     uint32_t parts_completed;
     uint32_t parts_total;
+    /* A calm note that other apps may feel slower while the build runs ("notice"),
+       empty when the event carries none. */
+    char notice[192];
     PackageBuildStage stage_enum;
     PackageProgressStatus status_enum;
 } PackageProgressEvent;
@@ -100,6 +103,9 @@ typedef struct {
        stage reports a count, and the build card then shows an indeterminate bar. */
     uint32_t parts_completed;
     uint32_t parts_total;
+    /* The compile stage's note that other apps may feel slower; empty when the
+       build runs a single job. */
+    char compile_notice[192];
     char log_file_path[NK_MAX_PATH];
     char progress_file_path[NK_MAX_PATH];
     char cancel_file_path[NK_MAX_PATH];
@@ -141,6 +147,10 @@ void package_builder_init_session(
 /* Fraction of the compile parts finished, or -1 when no part count is known
  * (the build card then shows an indeterminate bar). */
 float package_builder_compile_fraction(const PackageBuildSession *session);
+
+/* The note the build card shows under its bar while the compile stage runs, or
+ * NULL outside that stage or when the build gave none. */
+const char *package_builder_compile_notice(const PackageBuildSession *session);
 
 /* Apply a progress event to the session state machine. */
 void package_builder_apply_event(

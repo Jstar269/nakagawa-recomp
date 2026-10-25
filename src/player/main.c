@@ -1577,6 +1577,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "titles_pending=%d titles_failed=%d titles_unclaimed=%d "
            "prereq_items=%zu prereq_bytes=%llu game_running=%d build_stage=%d "
            "font=%s font_reason=%s bitmap_text_draws=%u build_badge=%s build_bar_permille=%d "
+           "build_notice=%d "
            "badge=%d,%d,%d,%d running=%d pixels=%016llx "
            "render_ns=%llu package_validations=%llu online_mode=%d developer_mode=%d "
            "dev_log_lines=%zu next_primary=%d next_primary_label=%s next_detail=%s "
@@ -1630,6 +1631,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            (int)app->build_session.current_stage,
            ui_font_mode(), ui_font_fallback_reason(),
            ui_test_bitmap_text_draws(), build_badge, build_bar_permille,
+           app->active_view == VIEW_BUILDING_PACKAGE && ui_test_build_notice_drawn() ? 1 : 0,
            badge_valid ? (int)badge.x : -1, badge_valid ? (int)badge.y : -1,
            badge_valid ? (int)badge.w : 0, badge_valid ? (int)badge.h : 0,
            running ? 1 : 0,
@@ -3518,7 +3520,9 @@ int main(int argc, char *argv[]) {
                    machine as a line nk_cli writes. */
                 static const char parts_line[] =
                     "{\"stage\":\"compile\",\"status\":\"RUNNING\","
-                    "\"message\":\"Compiling part 13 of 40\",\"completed\":12,\"total\":40}";
+                    "\"message\":\"Compiling part 13 of 40\",\"completed\":12,\"total\":40,"
+                    "\"notice\":\"Building uses most of your PC's power for a few minutes, "
+                    "so other apps may feel slower until it finishes.\"}";
                 PackageProgressEvent parts_event;
                 if (package_builder_parse_progress_line(parts_line, sizeof(parts_line) - 1u,
                                                         &parts_event)) {
