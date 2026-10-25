@@ -4163,13 +4163,7 @@ static void render_prerequisite_about(SDL_Renderer *ren, PlayerApp *app,
     bool open_focused = app->focus_index == 0;
     if (shown > 0 && draw_button_focused(ren, card_x + 30.0f, buttons_y,
             230.0f, 42.0f, "OPEN LICENSE TEXTS", false, in, open_focused)) {
-        char data_root[NK_MAX_PATH];
-        if (app->runtime_root[0]) snprintf(data_root, sizeof(data_root), "%s", app->runtime_root);
-        else nk_platform_get_app_data_dir(data_root, sizeof(data_root));
-        int n = snprintf(app->requested_open_path, sizeof(app->requested_open_path),
-                         "%s%cprerequisites%cnotices", data_root,
-                         nk_platform_path_separator(), nk_platform_path_separator());
-        app->request_open_license_folder = n > 0 && (size_t)n < sizeof(app->requested_open_path);
+        (void)player_app_request_license_folder(app);
     }
     bool back_focused = app->focus_index == (shown > 0 ? 1 : 0);
     if (draw_button_focused(ren, card_x + card_w - 216.0f, buttons_y,

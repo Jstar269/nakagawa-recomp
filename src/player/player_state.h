@@ -955,6 +955,9 @@ void player_app_prereq_cancel(PlayerApp *app);
 void player_app_prereq_finish_cancel(PlayerApp *app);
 bool player_app_prereq_take_resume(PlayerApp *app);
 bool player_app_open_prerequisite_about(PlayerApp *app);
+/* Asks the main loop to open the downloaded tools' licence texts folder. Asks
+   nothing, and returns false, when the per-user data folder can't be found. */
+bool player_app_request_license_folder(PlayerApp *app);
 void player_app_remove_prerequisites(PlayerApp *app);
 void player_app_set_build_error(
     PlayerApp *app,

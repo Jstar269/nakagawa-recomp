@@ -1604,6 +1604,22 @@ static void test_bitmap_font_text_fallback(void) {
  * "~" (the stored path is untouched). The profile folder is matched on whole
  * path components only, so a profile name that is a prefix of another folder
  * name is left alone. */
+/* Open licence texts asks for <data root>/prerequisites/notices, from the same
+   data root the rest of the player uses, and asks for nothing without an app. */
+static void test_license_folder_request(void) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    char expected[NK_MAX_PATH];
+    char sep = nk_platform_path_separator();
+    assert(app != NULL);
+    assert(!player_app_request_license_folder(NULL));
+    snprintf(app->runtime_root, sizeof(app->runtime_root), "synthetic-data-root");
+    assert(player_app_request_license_folder(app));
+    assert(app->request_open_license_folder);
+    snprintf(expected, sizeof(expected), "synthetic-data-root%cprerequisites%cnotices", sep, sep);
+    assert(strcmp(app->requested_open_path, expected) == 0);
+    free(app);
+}
+
 static void test_display_path_hides_profile_folder(void) {
     /* Each platform's own path spelling: the profile folder and its separator. */
 #if defined(_WIN32) || defined(_WIN64)
@@ -2677,6 +2693,7 @@ int main(int argc, char **argv) {
     test_build_outcome_is_shown_once_per_session();
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
+    test_license_folder_request();
     test_library_card_status_text();
     /* Saves a library file under the cache root, so it runs only once that
      * root is the temporary one. */

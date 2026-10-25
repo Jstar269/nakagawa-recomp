@@ -3342,6 +3342,19 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
     return true;
 }
 
+bool player_app_request_license_folder(PlayerApp *app) {
+    char data_root[NK_MAX_PATH];
+    int n;
+    if (!app) return false;
+    app->request_open_license_folder = false;
+    if (!player_app_data_root(app, data_root, sizeof(data_root)) || !data_root[0]) return false;
+    n = snprintf(app->requested_open_path, sizeof(app->requested_open_path),
+                 "%s%cprerequisites%cnotices", data_root,
+                 nk_platform_path_separator(), nk_platform_path_separator());
+    app->request_open_license_folder = n > 0 && (size_t)n < sizeof(app->requested_open_path);
+    return app->request_open_license_folder;
+}
+
 void player_app_remove_prerequisites(PlayerApp *app) {
     if (!app) return;
     if (app->prerequisite_job_started || app->prerequisite_fetcher_started ||

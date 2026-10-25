@@ -927,17 +927,9 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             player_app_set_developer_mode(app, !app->settings.developer_mode);
             break;
         case PLAYER_UI_SETTINGS_OPEN_DEVELOPER_LOG: (void)player_app_open_developer_log(app); break;
-        case PLAYER_UI_SETTINGS_OPEN_LICENSE_TEXTS: {
-            char data_root[NK_MAX_PATH];
-            int n;
-            if (app->runtime_root[0]) snprintf(data_root, sizeof(data_root), "%s", app->runtime_root);
-            else nk_platform_get_app_data_dir(data_root, sizeof(data_root));
-            n = snprintf(app->requested_open_path, sizeof(app->requested_open_path),
-                         "%s%cprerequisites%cnotices", data_root,
-                         nk_platform_path_separator(), nk_platform_path_separator());
-            app->request_open_license_folder = n > 0 && (size_t)n < sizeof(app->requested_open_path);
+        case PLAYER_UI_SETTINGS_OPEN_LICENSE_TEXTS:
+            (void)player_app_request_license_folder(app);
             break;
-        }
         case PLAYER_UI_SETTINGS_REMOVE_TOOLS: player_app_remove_prerequisites(app); break;
         case PLAYER_UI_SETTINGS_NONE:
         default:
