@@ -1657,7 +1657,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "f6c7e2920502c934eb01a6a4c0c98ad96e404754771714b30e112ee49d8c3de0"
+      "sha256": "e454b1350ccaa5671a345a8c6f167601fa89ce8209abe50b00570567c5c70b21"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -3275,7 +3275,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8ed6974bbef45e2debb2422e2760735de4253f9027a45b25a8ada61ea6d385b6"
+      "sha256": "ccd3b61e1d3151bb1868c0899d614a477bfdd072aacd34bdc84204a39d803b7b"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -3287,7 +3287,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d6f98c38692c8bb2cf3065c8ac2428e91066c4b89bf16bbaa50504586a5f7081"
+      "sha256": "f59f3d7b31c3858dc17f7d790d59fffa7208dce839fed105184041d8c4146b2c"
     },
     {
       "path": "src/core/nk_library.c",
@@ -4917,7 +4917,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "95129f635dd2ff84571d3cf4414dce608a57838d36f3fa0958518c46081febc1"
+      "sha256": "3c2f7ddb19a23fe52d6354b06a71b9119256f57bdd87034d0e61a43268eb87bd"
     },
     {
       "path": "src/rt/evf.h",
@@ -8906,7 +8906,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0d49aed6192ada22dc89e273d6088eb639b319f0acef6e50d7ab01760a40b35f"
+      "sha256": "f44b472c8feaf53e0acd72ca70bce44aa4534325f57f6555de604be7c3a9f009"
     },
     {
       "path": "src/rt/savedata.c",
@@ -12709,7 +12709,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7de1798e45e44ddcba0fbe214fbcd716b66e698420cdace1e2fa1682b22d83d7"
+      "sha256": "6aba045f45565554afb481dc1dabc513dc3ca0819b380e38243c3cba8f025bf3"
     },
     {
       "path": "tools/test_audit_public_issue_links.py",
