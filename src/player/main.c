@@ -455,7 +455,8 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             /* The library's shortcuts work the same in the next UI: O adds a
                disc image, S opens Settings, Esc at the library asks to quit. */
             app->request_file_picker = true;
-        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_S) {
+        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_S &&
+                   player_view_is_library(app->active_view)) {
             player_app_set_view(app, VIEW_SETTINGS);
         } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_ESCAPE &&
                    player_view_is_library(app->active_view) &&
@@ -846,12 +847,118 @@ static void player_ui_copy_error_details(PlayerApp *app) {
     }
 }
 
+/* The game-found card's controls: the same handlers the existing renderer's
+   buttons call. */
+static void player_ui_disc_apply(PlayerApp *app, PlayerUiDiscOp op) {
+    switch (op) {
+        case PLAYER_UI_DISC_ADD:
+            if (app->active_view == VIEW_SUPPORTED_TITLE) {
+                /* A title that takes its data from the disc has its files set
+                   up first by the wizard's staging worker; any other title is
+                   saved directly. */
+                if (!player_app_add_inspected_game(app)) {
+                    player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                         "The title could not be stored. The library may be full, "
+                                         "or the user data directory is not writable.",
+                                         "Return to Library", VIEW_LIBRARY);
+                }
+            } else if (app->active_view == VIEW_EXPERIMENTAL_TITLE &&
+                       player_preflight_blocking_check(&app->wizard.preflight) == NULL) {
+                if (player_app_add_game(app, &app->inspecting_game)) {
+                    player_app_set_view(app, VIEW_LIBRARY);
+                } else {
+                    player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                         "The experimental title could not be stored. The library "
+                                         "may be full, or the user data directory is not writable.",
+                                         "Return to Library", VIEW_LIBRARY);
+                }
+            }
+            break;
+        case PLAYER_UI_DISC_BACK:
+            player_app_set_view(app, VIEW_LIBRARY);
+            break;
+        case PLAYER_UI_DISC_CHOOSE_ANOTHER:
+            app->request_file_picker = true;
+            break;
+        case PLAYER_UI_DISC_NONE:
+        default:
+            break;
+    }
+}
+
+/* The Settings controls: the same handlers the existing renderer's Settings
+   buttons call. Each change is saved as it is made. */
+static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
+    switch (op) {
+        case PLAYER_UI_SETTINGS_CYCLE_RESOLUTION: player_app_cycle_resolution_scale(app, 1); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_PACING:
+            player_app_set_fps_cap(app, app->settings.fps_cap < 0 ? 0 : -1);
+            break;
+        case PLAYER_UI_SETTINGS_TOGGLE_VSYNC: player_app_toggle_vsync(app); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_FULLSCREEN: player_app_toggle_fullscreen(app); break;
+        case PLAYER_UI_SETTINGS_CYCLE_SCALING: player_app_cycle_present_scaling(app, 1); break;
+        case PLAYER_UI_SETTINGS_VOLUME_DOWN: player_app_adjust_volume(app, -5); break;
+        case PLAYER_UI_SETTINGS_VOLUME_UP: player_app_adjust_volume(app, 5); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_UI_SOUNDS: player_app_toggle_ui_sounds(app); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_REDUCE_MOTION: player_app_toggle_reduce_motion(app); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN:
+            player_app_toggle_launcher_fullscreen(app);
+            break;
+        case PLAYER_UI_SETTINGS_OPEN_CONTROLLER:
+            player_app_set_view(app, VIEW_CONTROLLER_SETTINGS);
+            break;
+        case PLAYER_UI_SETTINGS_OPEN_ONLINE: player_app_set_view(app, VIEW_ONLINE_SETTINGS); break;
+        case PLAYER_UI_SETTINGS_OPEN_NOTICES: (void)player_app_open_prerequisite_about(app); break;
+        case PLAYER_UI_SETTINGS_OPEN_REMOVE_TOOLS:
+            player_app_set_view(app, VIEW_CONFIRM_REMOVE_TOOLS);
+            break;
+        case PLAYER_UI_SETTINGS_DONE:
+            player_app_save_settings(app, NULL);
+            player_app_set_view(app, VIEW_LIBRARY);
+            break;
+        case PLAYER_UI_SETTINGS_BACK: player_app_set_view(app, VIEW_SETTINGS); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_ONLINE:
+            player_app_set_online_mode(app, !app->settings.online_mode);
+            break;
+        case PLAYER_UI_SETTINGS_TOGGLE_UPDATES: player_app_toggle_online_feature(app, 0); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_NEWS: player_app_toggle_online_feature(app, 1); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_REPORTS: player_app_toggle_online_feature(app, 2); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_DEVELOPER:
+            player_app_set_developer_mode(app, !app->settings.developer_mode);
+            break;
+        case PLAYER_UI_SETTINGS_OPEN_DEVELOPER_LOG: (void)player_app_open_developer_log(app); break;
+        case PLAYER_UI_SETTINGS_OPEN_LICENSE_TEXTS: {
+            char data_root[NK_MAX_PATH];
+            int n;
+            if (app->runtime_root[0]) snprintf(data_root, sizeof(data_root), "%s", app->runtime_root);
+            else nk_platform_get_app_data_dir(data_root, sizeof(data_root));
+            n = snprintf(app->requested_open_path, sizeof(app->requested_open_path),
+                         "%s%cprerequisites%cnotices", data_root,
+                         nk_platform_path_separator(), nk_platform_path_separator());
+            app->request_open_license_folder = n > 0 && (size_t)n < sizeof(app->requested_open_path);
+            break;
+        }
+        case PLAYER_UI_SETTINGS_REMOVE_TOOLS: player_app_remove_prerequisites(app); break;
+        case PLAYER_UI_SETTINGS_NONE:
+        default:
+            break;
+    }
+}
+
 static void player_ui_nk_apply_action(PlayerApp *app,
                                      const PlayerUiAction *action) {
     int index;
     if (app == NULL || action == NULL) return;
     if (action->kind == PLAYER_UI_ACTION_WIZARD) {
         player_ui_wizard_apply(app, (PlayerUiWizardOp)action->primary);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_DISC) {
+        player_ui_disc_apply(app, (PlayerUiDiscOp)action->primary);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_SETTINGS) {
+        player_ui_settings_apply(app, (PlayerUiSettingsOp)action->primary);
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_ADD_DISC) {
@@ -1577,7 +1684,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "badge=%d,%d,%d,%d running=%d pixels=%016llx "
            "render_ns=%llu package_validations=%llu online_mode=%d developer_mode=%d "
            "dev_log_lines=%zu next_primary=%d next_primary_label=%s next_detail=%s "
-           "incompatible_reason=%s next_at_root=%d next_route=%d "
+           "incompatible_reason=%s next_at_root=%d next_route=%d next_focus=%x "
            "error_title=%s error_badge=%s error_retry=%s error_copied=%d\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
@@ -1638,6 +1745,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            incompatible_reason,
            s_ui_test_next_ui != NULL ? (player_ui_nk_at_library_root(s_ui_test_next_ui) ? 1 : 0) : -1,
            s_ui_test_next_ui != NULL ? player_ui_nk_test_route(s_ui_test_next_ui) : -1,
+           s_ui_test_next_ui != NULL ? player_ui_nk_test_focus(s_ui_test_next_ui) : 0u,
            error_title, error_badge, error_retry,
            app->last_error.details_copied ? 1 : 0);
 
@@ -2863,6 +2971,21 @@ static void player_setup_standard_streams(void) {
 }
 #endif
 
+/* The game-found test views' checks: the real preflight for a disc with a
+   readable PARAM.SFO and a plain or an encrypted EBOOT.BIN. */
+static void player_test_view_preflight(PlayerApp *app, bool encrypted) {
+    NkIsoExecutableReport executables;
+    memset(&executables, 0, sizeof(executables));
+    executables.eboot.present = true;
+    executables.eboot.size_bytes = 4096u;
+    executables.eboot.kind = encrypted ? NK_ISO_EXEC_PSP_ENCRYPTED : NK_ISO_EXEC_MIPS_ELF32;
+    if (!encrypted) {
+        executables.selected = NK_ISO_EXEC_SELECTION_EBOOT;
+        snprintf(executables.selected_path, sizeof(executables.selected_path), "EBOOT.BIN");
+    }
+    player_app_build_compatibility_preflight(app, true, true, &executables);
+}
+
 int main(int argc, char *argv[]) {
 #if defined(_WIN32) || defined(_WIN64)
     SetConsoleOutputCP(CP_UTF8);
@@ -3397,8 +3520,12 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(test_view, "supported") == 0) {
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "TEST00001");
             snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Nakagawa Synthetic Allegrex Fixture");
+            snprintf(app.inspecting_game.title_id, sizeof(app.inspecting_game.title_id),
+                     "synthetic-allegrex-v1");
+            player_test_view_preflight(&app, false);
             player_app_set_view(&app, VIEW_SUPPORTED_TITLE);
-        } else if (strcmp(test_view, "experimental") == 0) {
+        } else if (strcmp(test_view, "experimental") == 0 ||
+                   strcmp(test_view, "experimental-blocked") == 0) {
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "TEST00007");
             snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name),
                      "Nakagawa Synthetic Experimental Fixture");
@@ -3408,6 +3535,7 @@ int main(int argc, char *argv[]) {
                      sizeof(app.inspecting_game.selected_executable), "EBOOT.BIN");
             app.inspecting_game.status = NK_STATUS_IDENTIFIED;
             app.inspecting_game.is_experimental = true;
+            player_test_view_preflight(&app, strcmp(test_view, "experimental-blocked") == 0);
             player_app_set_view(&app, VIEW_EXPERIMENTAL_TITLE);
         } else if (strcmp(test_view, "unsupported") == 0) {
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "ULES99999");

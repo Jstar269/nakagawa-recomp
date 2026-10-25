@@ -2589,10 +2589,15 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
         note_y = card_y + 254.0f;
     }
 
-    /* Honesty warning */
-    draw_text_wrapped(ren, card_x + 32.0f, note_y, card_w - 64.0f,
-                      "NOTE: Full LLE font fidelity requires jpn0.pgf in system font directory.",
-                      1.0f, COLOR_AMBER, 2);
+    /* Missing PSP fonts, in the Fonts check's own words (#1302). */
+    for (size_t i = 0; i < app->wizard.preflight.count; i++) {
+        const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
+        if (strcmp(check->code, "SYSTEM_FONTS") == 0 && check->status != PREFLIGHT_OK) {
+            draw_text_wrapped(ren, card_x + 32.0f, note_y, card_w - 64.0f,
+                              player_preflight_plain_message(check), 1.0f, COLOR_AMBER, 2);
+            break;
+        }
+    }
 
     bool add_focused = (app->focus_index == 0);
     if (draw_button_focused(ren, card_x + 32.0f, card_y + 300.0f, 260.0f, 50.0f, "ADD TO LIBRARY", true, in, add_focused)) {
@@ -2664,16 +2669,9 @@ static void render_experimental_title(SDL_Renderer *ren, PlayerApp *app,
         const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
         if (strcmp(check->code, "DISC_SFO") == 0 ||
             strcmp(check->code, "EXPERIMENTAL") == 0 || check == blocking) continue;
-        SDL_Color status_color = COLOR_TEXT_DIM;
-        switch (check->status) {
-            case PREFLIGHT_OK: status_color = COLOR_EMERALD; break;
-            case PREFLIGHT_MISSING:
-            case PREFLIGHT_STALE:
-            case PREFLIGHT_IN_PROGRESS: status_color = COLOR_AMBER; break;
-            case PREFLIGHT_INCOMPATIBLE:
-            case PREFLIGHT_UNSUPPORTED:
-            case PREFLIGHT_INVALID: status_color = COLOR_RED; break;
-        }
+        /* Only a check that keeps the disc out is red (#1302). */
+        SDL_Color status_color = check->status == PREFLIGHT_OK ? COLOR_EMERALD
+            : player_preflight_check_blocks(check) ? COLOR_RED : COLOR_AMBER;
         float row_y = rows_y + 27.0f * (float)row++;
         if (row_y > card_y + card_h - 92.0f) break;
         draw_text_ellipsized(ren, card_x + 32.0f, row_y,
@@ -4674,30 +4672,9 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             if (!app->wizard.is_extracting) {
                 for (size_t i = 0; i < app->wizard.preflight.count; i++) {
                     const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
-                    SDL_Color status_color = COLOR_TEXT_DIM;
-                    switch (check->status) {
-                        case PREFLIGHT_OK:
-                            status_color = COLOR_EMERALD;
-                            break;
-                        case PREFLIGHT_MISSING:
-                            status_color = COLOR_AMBER;
-                            break;
-                        case PREFLIGHT_INCOMPATIBLE:
-                            status_color = COLOR_RED;
-                            break;
-                        case PREFLIGHT_STALE:
-                            status_color = COLOR_AMBER;
-                            break;
-                        case PREFLIGHT_UNSUPPORTED:
-                            status_color = COLOR_RED;
-                            break;
-                        case PREFLIGHT_IN_PROGRESS:
-                            status_color = COLOR_AMBER;
-                            break;
-                        case PREFLIGHT_INVALID:
-                            status_color = COLOR_RED;
-                            break;
-                    }
+                    /* Only a check that keeps the disc out is red (#1302). */
+                    SDL_Color status_color = check->status == PREFLIGHT_OK ? COLOR_EMERALD
+                        : player_preflight_check_blocks(check) ? COLOR_RED : COLOR_AMBER;
                     /* Plain words, no raw codes (#1280). */
                     float row_y = panel_y + 100.0f + (float)i * 25.0f;
                     draw_text_ellipsized(ren, card_x + 48.0f, row_y,

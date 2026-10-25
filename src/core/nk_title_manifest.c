@@ -4669,7 +4669,7 @@ bool nk_title_manifest_read_experimental_profile(
     if (!valid && error_buf && error_buf_len && !error_buf[0]) {
         snprintf(error_buf, error_buf_len,
                  "Experimental profile is stale or does not match disc %s and selected executable %s.",
-                 normalized, selected_leaf ? selected_leaf : "(none)");
+                 normalized, selected_leaf && selected_leaf[0] ? selected_leaf : "(none)");
     }
     free(validated);
     if (valid) snprintf(out_executable_sha256, 65, "%s", profile_hash);

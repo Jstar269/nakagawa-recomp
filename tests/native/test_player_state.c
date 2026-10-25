@@ -1940,10 +1940,50 @@ static void test_error_cards_are_plain(void) {
     snprintf(check->message, sizeof(check->message),
              "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.");
     assert(strcmp(player_preflight_label(check), "Game program") == 0);
-    assert(strcmp(player_preflight_status_word(check), "Not supported") == 0);
+    assert(strcmp(player_preflight_status_word(check), "Can't use") == 0);
     assert(strcmp(player_preflight_plain_message(check),
-                  "EBOOT.BIN is encrypted. Nakagawa does not decrypt games.") == 0);
+                  "Nakagawa can't use the game's program on this disc.") == 0);
     assert(player_preflight_blocking_check(&preflight) == check);
+    /* A check with its own facts (the folder to put a file in) says them. */
+    snprintf(check->plain, sizeof(check->plain), "Put a decrypted EBOOT.elf in C:/synthetic.");
+    assert(strcmp(player_preflight_plain_message(check),
+                  "Put a decrypted EBOOT.elf in C:/synthetic.") == 0);
+
+    /* #1302: every code and status reads as a player sentence: no developer
+       code, no empty name, and "Can't use" only where the disc is kept out. */
+    {
+        static const char *const codes[] = {
+            "EXPERIMENTAL", "DISC_SFO", "EXECUTABLE", "GUEST_MODULES", "RUNTIME_PACKAGE",
+            "DATA_ROOT", "SYSTEM_FONTS", "AUDIO_OUTPUT", "SOMETHING_NEW"
+        };
+        static const PlayerPreflightStatus statuses[] = {
+            PREFLIGHT_OK, PREFLIGHT_MISSING, PREFLIGHT_INCOMPATIBLE, PREFLIGHT_STALE,
+            PREFLIGHT_UNSUPPORTED, PREFLIGHT_IN_PROGRESS, PREFLIGHT_INVALID
+        };
+        PlayerPreflightCheck row;
+        for (size_t c = 0; c < sizeof(codes) / sizeof(codes[0]); c++) {
+            for (size_t s = 0; s < sizeof(statuses) / sizeof(statuses[0]); s++) {
+                const char *message;
+                const char *word;
+                size_t length;
+                memset(&row, 0, sizeof(row));
+                snprintf(row.code, sizeof(row.code), "%s", codes[c]);
+                row.status = statuses[s];
+                snprintf(row.message, sizeof(row.message),
+                         "SYNTHETIC_CODE: developer text with an empty name .");
+                message = player_preflight_plain_message(&row);
+                word = player_preflight_status_word(&row);
+                length = strlen(message);
+                assert(length > 1u && message[length - 1u] == '.');
+                assert(strstr(message, "SYNTHETIC_CODE") == NULL);
+                assert(strstr(message, "developer text") == NULL);
+                assert(strstr(message, " .") == NULL);
+                assert(strcmp(word, "Not supported") != 0);
+                assert(player_preflight_label(&row)[0] != '\0');
+                assert((strcmp(word, "Can't use") == 0) == player_preflight_check_blocks(&row));
+            }
+        }
+    }
 
     free(app);
     printf("[PLAYER_STATE_TEST] error cards are plain, with their codes in the details PASS\n");

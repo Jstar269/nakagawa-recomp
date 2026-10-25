@@ -78,6 +78,12 @@ struct PlayerUiNk {
     char wizard_resolution[96];
     char wizard_controller[160];
     char wizard_summary[224];
+    char disc_reason[PLAYER_UI_BLOCKED_REASON_MAX];
+    char disc_profile[512];
+    char settings_controller[160];
+    char settings_saves[NK_MAX_PATH];
+    char settings_tools[PLAYER_UI_SETTINGS_TOOLS][192];
+    PlayerView last_view;   /* the view drawn last, for the focus a Settings page returns to */
     unsigned flow_screen;   /* which flow screen drew last; 0 outside them */
     NkUiId pre_flow_focus;  /* the library focus to give back on leaving */
     NkUiPromptImages prompt_images;  /* Kenney glyphs; empty ones keep the geometry */
@@ -87,6 +93,7 @@ struct PlayerUiNk {
     NkUiId sound_focus;              /* focus after the last frame, for the move sound */
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     bool icon_reported[PLAYER_UI_TITLE_CAP];
+    int disc_reported_view;  /* the game-found card whose rows were printed, or -1 */
 #endif
     bool ready;
 };
@@ -245,6 +252,10 @@ PlayerUiNk *player_ui_nk_create(SDL_Renderer *renderer, SDL_Window *window,
     player->art = player_ui_art_create(player_ui_read_disc_art);
     player->sounds = player_ui_sounds_create();
     player->pending_sound = -1;
+    player->last_view = VIEW_LIBRARY;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    player->disc_reported_view = -1;
+#endif
     nk_ui_sdl_input_init(&player->input);
     player_ui_version_line(NK_PLAYER_VERSION, (long long)NK_PLAYER_BUILD_EPOCH,
                            player->version_line, sizeof(player->version_line));
@@ -265,13 +276,25 @@ void player_ui_nk_destroy(PlayerUiNk *player) {
     free(player);
 }
 
-/* The views the next UI draws: the library (router screens), and the setup
-   wizard, build, build tool download and error screens a first run passes
-   through. The rest (settings, inspector, game found) stay with ui_renderer.c. */
+static bool player_ui_disc_view(PlayerView view) {
+    return view == VIEW_INSPECTING || view == VIEW_SUPPORTED_TITLE ||
+           view == VIEW_EXPERIMENTAL_TITLE || view == VIEW_UNSUPPORTED_TITLE;
+}
+
+static bool player_ui_settings_view(PlayerView view) {
+    return view == VIEW_SETTINGS || view == VIEW_ONLINE_SETTINGS ||
+           view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS;
+}
+
+/* The views the next UI draws: the library (router screens), the setup wizard,
+   build, build tool download and error screens a first run passes through, the
+   card a disc gets when it is added, and Settings. The controller settings and
+   the developer log stay with ui_renderer.c. */
 static bool player_ui_nk_flow_view(PlayerView view) {
     return view == VIEW_SETUP_WIZARD || view == VIEW_BUILDING_PACKAGE ||
            view == VIEW_PREREQ_CONSENT ||
-           view == VIEW_PREREQ_PROGRESS || view == VIEW_ERROR;
+           view == VIEW_PREREQ_PROGRESS || view == VIEW_ERROR ||
+           player_ui_disc_view(view) || player_ui_settings_view(view);
 }
 
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
@@ -300,6 +323,21 @@ static const char *player_ui_resolution_word(int scale) {
         case 8: return "8x (3840x2176)";
         default: return "Custom";
     }
+}
+
+/* A check's status word colour: only a check that keeps the disc out of the
+   library is an error; anything else still to do is a warning (#1302). */
+static uint32_t player_ui_check_rgba(const NkUiTheme *theme, const PlayerPreflightCheck *check) {
+    if (check->status == PREFLIGHT_OK) return theme->ready;
+    return player_preflight_check_blocks(check) ? theme->error : theme->warning;
+}
+
+static void player_ui_check_row(PlayerUiCheckRow *row, const NkUiTheme *theme,
+                                const PlayerPreflightCheck *check) {
+    row->code = player_preflight_label(check);
+    row->message = player_preflight_plain_message(check);
+    row->status = player_preflight_status_word(check);
+    row->rgba = player_ui_check_rgba(theme, check);
 }
 
 /* The setup wizard's model, from the same wizard state the existing renderer
@@ -360,20 +398,7 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
                                 model.check_count < PLAYER_UI_WIZARD_CHECKS; ++i) {
                 const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
                 if (strcmp(check->code, "EXPERIMENTAL") == 0) continue;
-                PlayerUiCheckRow *row = &model.checks[model.check_count++];
-                row->code = player_preflight_label(check);
-                row->message = player_preflight_plain_message(check);
-                row->status = player_preflight_status_word(check);
-                switch (check->status) {
-                    case PREFLIGHT_OK: row->rgba = theme->ready; break;
-                    case PREFLIGHT_MISSING:
-                    case PREFLIGHT_STALE:
-                    case PREFLIGHT_IN_PROGRESS: row->rgba = theme->warning; break;
-                    case PREFLIGHT_INCOMPATIBLE:
-                    case PREFLIGHT_UNSUPPORTED:
-                    case PREFLIGHT_INVALID: row->rgba = theme->error; break;
-                    default: row->rgba = theme->dim; break;
-                }
+                player_ui_check_row(&model.checks[model.check_count++], theme, check);
             }
             break;
         case WIZARD_STEP_SYSTEM_FONTS:
@@ -413,11 +438,144 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
     return player_ui_screen_wizard(player->ui, &model);
 }
 
+/* The game-found card's model: the inspected disc and its checks. The check
+   that keeps a disc out is the card's reason, not one of its rows. */
+static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
+                                            NkUiScale scale, double now_s) {
+    const NkUiTheme *theme = nk_ui_theme(player->ui);
+    const GameRecord *game = &app->inspecting_game;
+    const PlayerCompatibilityPreflight *preflight = &app->wizard.preflight;
+    const PlayerPreflightCheck *blocking = player_preflight_blocking_check(preflight);
+    PlayerUiDiscModel model;
+    memset(&model, 0, sizeof(model));
+    switch (app->active_view) {
+        case VIEW_INSPECTING: model.kind = PLAYER_UI_DISC_CHECKING; break;
+        case VIEW_SUPPORTED_TITLE: model.kind = PLAYER_UI_DISC_SUPPORTED; break;
+        case VIEW_EXPERIMENTAL_TITLE:
+            model.kind = blocking != NULL ? PLAYER_UI_DISC_BLOCKED : PLAYER_UI_DISC_UNTESTED;
+            break;
+        case VIEW_UNSUPPORTED_TITLE:
+        default: model.kind = PLAYER_UI_DISC_UNSUPPORTED; break;
+    }
+    model.title_name = game->title_name;
+    model.disc_id = game->disc_id;
+    model.iso_path = game->iso_path;
+    if (model.kind == PLAYER_UI_DISC_BLOCKED) {
+        snprintf(player->disc_reason, sizeof(player->disc_reason),
+                 "%s Then open the disc again.", player_preflight_plain_message(blocking));
+        model.reason = player->disc_reason;
+    }
+    if ((model.kind == PLAYER_UI_DISC_SUPPORTED || model.kind == PLAYER_UI_DISC_UNSUPPORTED) &&
+        player_app_title_profile_refusal_for_disc(app, game->disc_id, player->disc_profile,
+                                                  sizeof(player->disc_profile))) {
+        model.profile_details = player->disc_profile;
+        if (model.kind == PLAYER_UI_DISC_SUPPORTED) {
+            model.profile_note = "A title profile on this PC couldn't be used, so Nakagawa uses "
+                                 "its own entry for this game.";
+        }
+    }
+    if (model.kind != PLAYER_UI_DISC_CHECKING) {
+        for (size_t i = 0u; i < preflight->count && model.check_count < PLAYER_UI_DISC_CHECKS;
+             ++i) {
+            const PlayerPreflightCheck *check = &preflight->checks[i];
+            /* The badge says whether the game was tested, and a disc read is
+               only worth a row when it went wrong. */
+            if (check == blocking || strcmp(check->code, "EXPERIMENTAL") == 0 ||
+                (strcmp(check->code, "DISC_SFO") == 0 && check->status == PREFLIGHT_OK)) {
+                continue;
+            }
+            player_ui_check_row(&model.checks[model.check_count++], theme, check);
+        }
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (player->disc_reported_view != (int)app->active_view) {
+        player->disc_reported_view = (int)app->active_view;
+        printf("[PLAYER_UI_TEST] next_ui_disc kind=%d rows=%zu add=%d\n", (int)model.kind,
+               model.check_count,
+               model.kind == PLAYER_UI_DISC_SUPPORTED || model.kind == PLAYER_UI_DISC_UNTESTED);
+        for (size_t i = 0u; i < model.check_count; ++i) {
+            printf("[PLAYER_UI_TEST] next_ui_disc_row status=%s tone=%s label=%s message=%s\n",
+                   model.checks[i].status,
+                   model.checks[i].rgba == theme->error ? "error"
+                       : model.checks[i].rgba == theme->ready ? "ready" : "warning",
+                   model.checks[i].code, model.checks[i].message);
+        }
+        fflush(stdout);
+    }
+#endif
+    model.now_s = app->settings.reduce_motion ? 0.0 : now_s;
+    model.logical_width = scale.logical_w;
+    model.logical_height = scale.logical_h;
+    return player_ui_screen_disc(player->ui, &model);
+}
+
+/* The Settings pages' model, from the settings the existing renderer shows. */
+static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *app,
+                                                NkUiScale scale) {
+    PlayerUiSettingsModel model;
+    memset(&model, 0, sizeof(model));
+    switch (app->active_view) {
+        case VIEW_ONLINE_SETTINGS: model.page = PLAYER_UI_SETTINGS_PAGE_ONLINE; break;
+        case VIEW_PREREQ_ABOUT: model.page = PLAYER_UI_SETTINGS_PAGE_NOTICES; break;
+        case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
+        case VIEW_SETTINGS:
+        default: model.page = PLAYER_UI_SETTINGS_PAGE_MAIN; break;
+    }
+    model.resolution = player_ui_resolution_word(app->settings.resolution_scale);
+    model.pacing = app->settings.fps_cap < 0 ? "PSP timing" : "No extra cap";
+    model.scaling = player_present_scaling_label(app->settings.present_scaling);
+    model.vsync = app->settings.vsync;
+    model.fullscreen = app->settings.fullscreen;
+    model.volume = app->settings.master_volume;
+    model.ui_sounds = app->settings.ui_sounds;
+    model.reduce_motion = app->settings.reduce_motion;
+    model.launcher_fullscreen = app->settings.launcher_fullscreen;
+    snprintf(player->settings_controller, sizeof(player->settings_controller), "%s",
+             app->settings.controller_connected
+                 ? (app->settings.controller_name[0] != '\0' ? app->settings.controller_name
+                                                             : "controller connected")
+                 : "keyboard and mouse");
+    model.controller_line = player->settings_controller;
+    /* nk_platform_get_path creates the folder, and it cannot change while the
+       player runs, so it is looked up once. */
+    if (player->settings_saves[0] == '\0' &&
+        !nk_platform_get_path(NK_PATH_SAVES, player->settings_saves,
+                              sizeof(player->settings_saves))) {
+        player->settings_saves[0] = '\0';
+    }
+    model.saves_folder = player->settings_saves;
+    model.online_mode = app->settings.online_mode;
+    model.online_updates = app->settings.online_updates;
+    model.online_news = app->settings.online_news;
+    model.online_reports = app->settings.online_reports;
+    model.developer_mode = app->settings.developer_mode;
+    for (size_t i = 0u; i < app->prerequisites.items.count &&
+                        model.tool_count < PLAYER_UI_SETTINGS_TOOLS; ++i) {
+        const PackagePrerequisite *item = &app->prerequisites.items.items[i];
+        char *line = player->settings_tools[model.tool_count];
+        if (!item->installed) continue;
+        snprintf(line, sizeof(player->settings_tools[0]), "%.64s %.32s \xC2\xB7 %.80s", item->name,
+                 item->version,
+                 strcmp(item->license, "NOASSERTION") == 0 ? "licence review in the works"
+                                                            : item->license);
+        model.tools[model.tool_count++] = line;
+    }
+    model.logical_width = scale.logical_w;
+    model.logical_height = scale.logical_h;
+    return player_ui_screen_settings(player->ui, &model);
+}
+
 static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
                                             NkUiScale scale, double now_s) {
     PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
     if (app->active_view == VIEW_SETUP_WIZARD) {
         return player_ui_render_wizard(player, app, scale);
+    }
+    if (player_ui_disc_view(app->active_view)) {
+        return player_ui_render_disc(player, app, scale, now_s);
+    }
+    if (player_ui_settings_view(app->active_view)) {
+        return player_ui_render_settings(player, app, scale);
     }
     if (app->active_view == VIEW_BUILDING_PACKAGE) {
         const PackageBuildSession *build = &app->build_session;
@@ -526,9 +684,25 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
             case VIEW_PREREQ_CONSENT: focus = PLAYER_UI_ID_PREREQ_ACCEPT; break;
             case VIEW_PREREQ_PROGRESS: focus = PLAYER_UI_ID_PREREQ_CANCEL; break;
             case VIEW_ERROR: focus = PLAYER_UI_ID_ERROR_RECOVER; break;
+            case VIEW_INSPECTING:
+            case VIEW_SUPPORTED_TITLE:
+            case VIEW_EXPERIMENTAL_TITLE:
+            case VIEW_UNSUPPORTED_TITLE: focus = PLAYER_UI_ID_DISC_PRIMARY; break;
+            case VIEW_SETTINGS:
+                /* Back from one of its pages, focus the button that opened it. */
+                focus = player->last_view == VIEW_ONLINE_SETTINGS ? PLAYER_UI_ID_SETTINGS_ONLINE
+                    : player->last_view == VIEW_PREREQ_ABOUT ? PLAYER_UI_ID_SETTINGS_NOTICES
+                    : player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
+                        ? PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS
+                        : PLAYER_UI_ID_SETTINGS_RESOLUTION;
+                break;
+            case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
+            case VIEW_PREREQ_ABOUT:
+            case VIEW_CONFIRM_REMOVE_TOOLS: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
             default: break;
         }
     }
+    player->last_view = app->active_view;
     if (screen == player->flow_screen) return;
     if (player->flow_screen == 0u) {
         player->pre_flow_focus = nk_ui_focused(player->ui);
@@ -548,6 +722,10 @@ const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t in
 
 int player_ui_nk_test_route(const PlayerUiNk *player) {
     return player != NULL ? (int)nk_ui_router_current(player->router) : 0;
+}
+
+unsigned player_ui_nk_test_focus(const PlayerUiNk *player) {
+    return player != NULL ? (unsigned)nk_ui_focused(player->ui) : 0u;
 }
 #endif
 
@@ -847,6 +1025,25 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     player_ui_flow_focus(player, app);
     if (player_ui_nk_flow_view(app->active_view)) {
         action = player_ui_render_flow(player, app, scale, now_s);
+        if (player_ui_settings_view(app->active_view) &&
+            (action.kind == PLAYER_UI_ACTION_OPEN_LIBRARY ||
+             action.kind == PLAYER_UI_ACTION_OPEN_ABOUT ||
+             action.kind == PLAYER_UI_ACTION_OPEN_SETTINGS)) {
+            /* A top-bar section closes Settings and opens that screen; the
+               SETTINGS tab and Start close it, as Done does. */
+            if (action.kind == PLAYER_UI_ACTION_OPEN_ABOUT) {
+                if (route != PLAYER_UI_ROUTE_ABOUT) {
+                    nk_ui_router_set_focus(player->router, PLAYER_UI_ID_TAB_ABOUT);
+                    (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_ABOUT);
+                }
+                player->pre_flow_focus = PLAYER_UI_ID_TAB_ABOUT;
+            } else if (action.kind == PLAYER_UI_ACTION_OPEN_LIBRARY) {
+                (void)nk_ui_router_replace(player->router, PLAYER_UI_ROUTE_LIBRARY);
+                player->pre_flow_focus = PLAYER_UI_ID_TAB_LIBRARY;
+            }
+            action.kind = PLAYER_UI_ACTION_SETTINGS;
+            action.primary = (PlayerUiPrimaryAction)PLAYER_UI_SETTINGS_DONE;
+        }
         if (action.kind != PLAYER_UI_ACTION_NONE && out_action != NULL) {
             *out_action = action;
         }
