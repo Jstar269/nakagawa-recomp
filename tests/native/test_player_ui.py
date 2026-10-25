@@ -2479,9 +2479,9 @@ class NativePlayerUiTests(unittest.TestCase):
     PACKAGE_STARTING = "5"
     PACKAGE_RUNNING = "6"
 
-    # Open the ready title, then Tab past the two top-bar tabs to its PLAY.
+    # Open the ready title, then Tab past the three top-bar tabs to its PLAY.
     PLAY_READY_TITLE = ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", "KEY_TAB",
-                        "WAIT_MS=100", "KEY_TAB", "WAIT_MS=100")
+                        "WAIT_MS=100", "KEY_TAB", "WAIT_MS=100", "KEY_TAB", "WAIT_MS=100")
 
     def test_play_keeps_drawing_through_a_slow_start(self) -> None:
         """#1298: PLAY answers at once and the launcher keeps drawing while the game starts.
