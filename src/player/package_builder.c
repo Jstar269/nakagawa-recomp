@@ -1882,11 +1882,14 @@ NkResult package_builder_start(
     char path_environment[32784];
     const char *envp[2] = { NULL, NULL };
     char downloaded_bin[NK_MAX_PATH];
-    int path_len = snprintf(downloaded_bin, sizeof(downloaded_bin),
+    int path_len = 0;
+    if (user_data_root && user_data_root[0]) {
+        path_len = snprintf(downloaded_bin, sizeof(downloaded_bin),
                             "%s%cprerequisites%cmsys64%cucrt64%cbin",
                             user_data_root, nk_platform_path_separator(),
                             nk_platform_path_separator(), nk_platform_path_separator(),
                             nk_platform_path_separator());
+    }
     const char *old_path = getenv("PATH");
     if (path_len > 0 && (size_t)path_len < sizeof(downloaded_bin)) {
         char downloaded_gcc[NK_MAX_PATH];

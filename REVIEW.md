@@ -46,6 +46,10 @@ runtime, an interpreter floor, and HLE, moving toward low-level emulation.
   entries for paths the commit does not change, a refresh commit that changes anything
   else, or a head whose "Trusted provenance attestation" check failed or did not run (it
   is currently observation-only, not required).
+  Before flagging a ledger entry, attribute the hunk correctly. A unified diff's trailing
+  context lines show the *next* entry's `path`, while the changed `sha256` belongs to the
+  entry above the hunk. Compare that entry's path with the files the commit changes, not
+  the path that follows it.
 - New `assets/public_source_profile.json` entries for files the same PR adds, provided
   the attestation check passed on the head. Otherwise flag them as unauthorized public
   paths.
@@ -89,7 +93,7 @@ Authors, human or agent, check these before requesting review; reviewers flag th
 - **Native test order.** A binary added to `native-core-tests` joins `EXPECTED_RUNS` in
   `tools/test_native_core_build.py` at the position the target runs it.
 - **Markdown tables.** A blank line before and after, and one column style in every row, such as `| a | b |` over
-  `| --- | --- |` (markdownlint MD058 and MD060; `npx --yes markdownlint-cli2@0.23.3 <file>`).
+  `| --- | --- |` (markdownlint MD058 and MD060; `npx --yes markdownlint-cli2@0.24.0 <file>`).
 - **Local-path words.** `tools/publish_audit.py` reports `LOCAL_PATH` for user-profile and temporary-directory
   paths and for the cloud-folder product name anywhere in tracked text, docstrings and comments included. Describe
   them in words, or split the literal the way `publish_audit.py` does.
