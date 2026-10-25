@@ -195,7 +195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c32ab91fbbeb4549a7786826444b779245deed42a0e66e67a53dce301062d2b"
+      "sha256": "25c634254b1b0666e00ec33b767621022b4b062c30b62e7ca8d3b0208a1872e6"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -279,7 +279,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d046785c7ea1fd871d67f79635b2f93518944134d4f7e4e5a43a0e6bd66e68aa"
+      "sha256": "78baccdfd5e56d9891eece435b5b80a6f2dfc44226017829908d534102b6b9e3"
     },
     {
       "path": ".github/workflows/scorecards.yml",
@@ -348,7 +348,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b509933bc0b7b1dc8ccf5479dbf15f7ecc80d0c2e4a879c67f35a8baceb857e2"
+      "sha256": "20f67ee6ededd9a604fe4baab0192b8f9d06adac9fdc6ca49cafe3eaf01c5c0c"
     },
     {
       "path": "CLAUDE.md",
@@ -387,7 +387,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "680800f84dc59d497ac804e5c2dad314431ce827c500883dd28657cf5efcf838"
+      "sha256": "6a4fb689ab3ef1688e6a5ee7e3687473ef4c5e26f38a1de836cdce5666b11b54"
     },
     {
       "path": "CREDITS.md",
@@ -462,7 +462,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1618ed899b135ad149a4ccfaa9707c4e3f40a0dc823a467d2a054d495695113a"
+      "sha256": "04ec8bf02e77fe66ec6846711a9d688fd529f8ddf74e226aab27761c94a1072e"
     },
     {
       "path": "SECURITY.md",
