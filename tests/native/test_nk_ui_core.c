@@ -8,6 +8,7 @@
 #include "nk_ui_text.h"
 #include "nk_ui_theme.h"
 #include "nk_ui_waves.h"
+#include "nk_ui_widgets.h"
 #include "backend/nk_ui_sdlr.h"
 #include "backend/nk_ui_vk.h"
 
@@ -431,6 +432,24 @@ static int test_rounding_edges(void) {
     return 1;
 }
 
+static int test_progress_sweep(void) {
+    const float travel = 300.0f;
+    float previous = nk_ui_progress_sweep_offset(travel, 0.0);
+    int step;
+    CHECK(previous == 0.0f, "a zero phase holds the sweep at the start");
+    CHECK(fabsf(nk_ui_progress_sweep_offset(travel, 1.2) - travel) < 0.5f,
+          "the sweep reaches the far end half way through its cycle");
+    CHECK(nk_ui_progress_sweep_offset(0.0f, 1.0) == 0.0f, "no travel, no movement");
+    /* Three cycles at 120 Hz: the segment never jumps back to the start. */
+    for (step = 1; step <= 3 * 288; ++step) {
+        float offset = nk_ui_progress_sweep_offset(travel, step / 120.0);
+        CHECK(offset >= 0.0f && offset <= travel, "the sweep stays on the track");
+        CHECK(fabsf(offset - previous) < 0.02f * travel, "the sweep moves without a jump");
+        previous = offset;
+    }
+    return 1;
+}
+
 static int test_focused_button_activation(void) {
     NkUiTextBackend fixed = nk_ui_text_fixed();
     NkUiConfig config;
@@ -608,7 +627,7 @@ int main(int argc, char **argv) {
         !test_explicit_ui_scale_values() || !test_typed_prefs_and_events() ||
         !test_theme_access() || !test_overlay_rejects_waves() ||
         !test_container_return_contract() || !test_backend_declarations() ||
-        !test_rounding_edges() || !test_focused_button_activation() || !test_wave_caps() ||
+        !test_rounding_edges() || !test_progress_sweep() || !test_focused_button_activation() || !test_wave_caps() ||
         !test_image_decode() || !test_image_command()) {
         return 1;
     }

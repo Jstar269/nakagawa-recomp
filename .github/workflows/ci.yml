@@ -200,7 +200,7 @@ jobs:
           node-version: "26.12.1"
 
       - name: Lint repository Markdown
-        run: npx --yes markdownlint-cli2@0.23.3
+        run: npx --yes markdownlint-cli2@0.24.0
 
   # Public-export candidate audit (#293/#294), in its own job so it overlaps the all-files
   # hygiene checks instead of running after them (#735 item 5). It is a separate required
