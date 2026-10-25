@@ -2444,13 +2444,13 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 97)
+        self.assertEqual(len(routes), 98)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107}
-                         | {110, 111, 112, 113}, set(ids))
+                         | {110, 111, 112, 113, 114}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -3741,11 +3741,23 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
             self.assertEqual(int(done.group(1)), len(spec.ordered_cases) - 1, case)
 
     def test_no_probe_blocks_on_the_ge_without_a_bound(self) -> None:
+        # A blocking sync is allowed only where it is the measurement (ge-timing's C2/C6):
+        # inside a helper-thread entry whose creator waits for it with a timeout and
+        # terminates it when the wait fails, so a sync that never returns costs one cell.
         for source in sorted(self.fixture.glob("*.c")):
             text = re.sub(r"/\*.*?\*/|//[^\n]*", "", source.read_text(encoding="utf-8"),
                           flags=re.DOTALL)
-            self.assertIsNone(re.search(r"sceGeListSync\([^;]*,\s*0\s*\)", text), source.name)
-            self.assertIsNone(re.search(r"sceGeDrawSync\(\s*0\s*\)", text), source.name)
+            for call in re.finditer(r"sceGeListSync\([^;]*,\s*0\s*\)|sceGeDrawSync\(\s*0\s*\)", text):
+                head = text.rfind("\nstatic ", 0, call.start())
+                entry = re.match(r"\nstatic int (\w+)\(SceSize \w+, void \*\w+\) \{",
+                                 text[head:text.index("{", head) + 1])
+                self.assertIsNotNone(entry, f"{source.name}: {call.group(0)} outside a helper thread")
+                create = re.search(r"sceKernelCreateThread\([^;]*\b%s\b" % entry.group(1), text)
+                self.assertIsNotNone(create, f"{source.name}: {entry.group(1)} is never started")
+                caller_head = text.rfind("\nstatic ", 0, create.start())
+                caller = text[caller_head:text.index("\n}\n", create.start())]
+                self.assertRegex(caller, r"sceKernelWaitThreadEnd\(\s*\w+\s*,\s*&\w+\s*\)", source.name)
+                self.assertIn("sceKernelTerminateDeleteThread(", caller, source.name)
             self.assertNotIn("sceGuSync(", text, source.name)
 
     def test_ge_break_continue_writes_the_list_back_before_enqueueing_it(self) -> None:

@@ -141,6 +141,8 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_FAKE_SUCCESS 112
 /* #1055: project and console PGFs opened in the resident font library; see run_font_userpgf. */
 #define PSP_ORACLE_CASE_FONT_USERPGF 113
+/* #1296: GE execution time by command mix and CPU-visible completion; see run_ge_timing. */
+#define PSP_ORACLE_CASE_GE_TIMING 114
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -367,6 +369,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/fake_success_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_USERPGF
 #define PROBE_HOST0_LOG "host0:/font_userpgf_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_TIMING
+#define PROBE_HOST0_LOG "host0:/ge_timing_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -2842,7 +2846,8 @@ static void run_display_mask_duty(int emulated) {
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_TIMING
 /* Bounded GE waits.  A probe never blocks on the GE without a bound: on a
  * PSP-3000 a blocking sceGeListSync(qid, 0) after sceGeBreak/sceGeContinue
  * never returned, and the rest of the case and its completion record were
@@ -4553,6 +4558,951 @@ static void run_ge_nan(int emulated) {
     const uint32_t done_out[1] = {20u};
     defer_record("ge-nan-done", "PASS", 0u, done_out, 1);
     flush_deferred(emulated, "PSP-GE-001");
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_TIMING
+/* GE execution time and CPU-visible completion, for the GE timing model of #1296.
+ *
+ * Each cell builds its display list with libpspgu in GU_SEND mode (built, not
+ * enqueued), runs an untimed setup list for its GE state, then enqueues the
+ * work list GT_REPS times with no stall address and the probe's own callback
+ * ID.  A rep timestamps on the 1 us system timer, from just before
+ * sceGeListEnQueue:
+ *   - enq:  sceGeListEnQueue returned;
+ *   - fin:  the finish callback ran (the callback stores its own time);
+ *   - idle: the first sceGeDrawSync(1) poll that read PSP_GE_LIST_DONE.
+ * The thread polls without sleeping until it has both or GT_DEADLINE_US has
+ * passed.  A timeout resets the queues and is counted in the record.
+ *
+ * Records are emitted after each cell, outside every timed window: each rep
+ * starts from an idle GE, so a host0 write never overlaps a measurement, and
+ * a launch that stops part-way keeps the cells already run.
+ *
+ * Lists, vertices, indices, textures and the CLUT live in cached main RAM and
+ * are written back before the reps; the colour and depth buffers are in eDRAM.
+ * The matrix runs at 222/111 MHz and again at 333/166 MHz (CPU/bus); the boot
+ * clocks are restored after the last pass.  Nothing here touches retail code
+ * or data. */
+#define GT_REPS 8u
+#define GT_EMPTY_REPS 32u
+#define GT_C_REPS 8u
+#define GT_MAX_REPS 32u
+#define GT_DEADLINE_US 250000u
+#define GT_W 480
+#define GT_H 272
+#define GT_STRIDE 512
+#define GT_FBP ((void *)0)
+#define GT_ZBP ((void *)0x88000)
+#define GT_VRAM_DST ((void *)0x04000000)
+#define GT_VRAM_SRC ((void *)0x04100000)  /* 512 x 272 x 4 bytes, above the depth buffer */
+#define GT_LIST_WORDS (128u * 1024u)
+#define GT_SMALL_WORDS 8192u
+#define GT_VTX_BYTES (1024u * 1024u)
+#define GT_MAX_VERTS 18432u
+#define GT_GRID_W 384  /* sprite grid: 384 x 256 px, divisible by 8, 32 and 128 */
+#define GT_GRID_H 256
+#define GT_LONG_PASSES 16u
+#define GT_SENTINEL 0x12345678u
+#define GT_COLOR_A 0xff00ff00u
+#define GT_COLOR_B 0xffff0000u
+#define GT_BEHAVIOUR_CONTINUE 2u  /* SIGNAL behaviour in bits 16..23 */
+#define GT_SIGNAL_ID 0x5a5u
+
+_Static_assert(GT_MAX_VERTS * 44u <= GT_VTX_BYTES,
+               "eight float weights plus a float position must fit the vertex buffer");
+_Static_assert(16384u * 3u * 12u <= GT_VTX_BYTES, "t6 one-pixel triangles must fit the vertex buffer");
+
+typedef struct { uint32_t color; int16_t x, y, z, pad; } GtFlatV;     /* stride 12 */
+typedef struct { int16_t u, v, x, y, z; } GtTexV;                    /* stride 10 */
+typedef struct { uint32_t color; float x, y, z; } GtXfV;             /* stride 16 */
+
+static uint32_t s_gt_list[GT_LIST_WORDS] __attribute__((aligned(64)));
+static uint32_t s_gt_list_b[GT_SMALL_WORDS] __attribute__((aligned(64)));
+static uint32_t s_gt_setup[GT_SMALL_WORDS] __attribute__((aligned(64)));
+static uint8_t s_gt_vtx[GT_VTX_BYTES] __attribute__((aligned(64)));
+static GtFlatV s_gt_strips[16] __attribute__((aligned(64)));
+static GtFlatV s_gt_grid_b[2u * (GT_GRID_W / 8) * (GT_GRID_H / 8)] __attribute__((aligned(64)));
+static GtTexV s_gt_tex_strips[16] __attribute__((aligned(64)));
+static GtXfV s_gt_xf_strips[16] __attribute__((aligned(64)));
+static uint16_t s_gt_idx[GT_MAX_VERTS] __attribute__((aligned(64)));
+static uint32_t s_gt_tex[512u * 512u] __attribute__((aligned(64)));
+static uint32_t s_gt_clut[256] __attribute__((aligned(64)));
+static const ScePspFMatrix4 s_gt_identity = {
+    {1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f},
+    {0.0f, 0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 1.0f},
+};
+
+static int s_gt_cbid = -1;
+static volatile uint32_t s_gt_fin_count;
+static volatile uint32_t s_gt_fin_time[4];
+static volatile uint32_t s_gt_fin_id[4];
+static volatile uint32_t s_gt_sig_count;
+static volatile uint32_t s_gt_sig_time;
+static volatile uint32_t s_gt_sig_id;
+static uint32_t s_gt_last_t0;  /* t0 of the latest gt_run */
+static uint32_t s_gt_cpu_mhz;
+static uint32_t s_gt_bus_mhz;
+static char s_gt_clk[8];
+
+static void gt_finish_cb(int id, void *arg) {
+    (void)arg;
+    const uint32_t n = s_gt_fin_count;
+    if (n < 4u) {
+        s_gt_fin_time[n] = sceKernelGetSystemTimeLow();
+        s_gt_fin_id[n] = (uint32_t)id;
+    }
+    s_gt_fin_count = n + 1u;
+}
+
+static void gt_signal_cb(int id, void *arg) {
+    (void)arg;
+    if (!s_gt_sig_count) {
+        s_gt_sig_time = sceKernelGetSystemTimeLow();
+        s_gt_sig_id = (uint32_t)id;
+    }
+    s_gt_sig_count++;
+}
+
+typedef struct {
+    uint32_t fin[GT_MAX_REPS], idle[GT_MAX_REPS], enq[GT_MAX_REPS];
+    uint32_t fin2[GT_MAX_REPS];  /* second list (t15) */
+    uint32_t n, timeouts, errors;
+    int last_error;
+} GtStats;
+
+/* Run lists[0..count) back to back once and wait, bounded, for every finish
+   callback and an idle GE.  Returns 1 on a timeout, -1 on an enqueue error. */
+static int gt_run(void *const *lists, uint32_t count, uint32_t *fin, uint32_t *fin2,
+                  uint32_t *idle, uint32_t *enq, int *err) {
+    s_gt_fin_count = 0;
+    const uint32_t t0 = sceKernelGetSystemTimeLow();
+    s_gt_last_t0 = t0;
+    for (uint32_t i = 0; i < count; i++) {
+        const int qid = sceGeListEnQueue(lists[i], NULL, s_gt_cbid, NULL);
+        if (qid < 0) {
+            *err = qid;
+            GeIdleWait after;
+            (void)ge_reset_queues(&after);
+            return -1;
+        }
+    }
+    const uint32_t t1 = sceKernelGetSystemTimeLow();
+    uint32_t t_idle = 0;
+    for (;;) {
+        const int ds = sceGeDrawSync(1);
+        const uint32_t t = sceKernelGetSystemTimeLow();
+        if (!t_idle && ds == PSP_GE_LIST_DONE) t_idle = t;
+        if (t_idle && s_gt_fin_count >= count) break;
+        if (t - t0 >= GT_DEADLINE_US) {
+            GeIdleWait after;
+            (void)ge_reset_queues(&after);
+            return 1;
+        }
+    }
+    *fin = s_gt_fin_time[0] - t0;
+    if (fin2) *fin2 = count > 1u ? s_gt_fin_time[1] - t0 : 0u;
+    *idle = t_idle - t0;
+    *enq = t1 - t0;
+    return 0;
+}
+
+static void gt_measure(void *const *lists, uint32_t count, uint32_t reps, GtStats *st) {
+    memset(st, 0, sizeof(*st));
+    sceKernelDcacheWritebackAll();
+    for (uint32_t r = 0; r < reps; r++) {
+        uint32_t fin = 0, fin2 = 0, idle = 0, enq = 0;
+        int err = 0;
+        const int rc = gt_run(lists, count, &fin, &fin2, &idle, &enq, &err);
+        if (rc > 0) { st->timeouts++; continue; }
+        if (rc < 0) { st->errors++; st->last_error = err; continue; }
+        st->fin[st->n] = fin;
+        st->fin2[st->n] = fin2;
+        st->idle[st->n] = idle;
+        st->enq[st->n] = enq;
+        st->n++;
+    }
+}
+
+static void gt_sort(uint32_t *v, uint32_t n) {
+    for (uint32_t i = 1; i < n; i++) {
+        const uint32_t x = v[i];
+        uint32_t j = i;
+        while (j > 0 && v[j - 1] > x) { v[j] = v[j - 1]; j--; }
+        v[j] = x;
+    }
+}
+
+/* min, median (mean of the middle pair for an even count) and max, in place. */
+static void gt_summary(uint32_t *v, uint32_t n, uint32_t out[3]) {
+    if (!n) { out[0] = out[1] = out[2] = 0xffffffffu; return; }
+    gt_sort(v, n);
+    out[0] = v[0];
+    out[1] = (n & 1u) ? v[n / 2u] : (v[n / 2u - 1u] + v[n / 2u] + 1u) / 2u;
+    out[2] = v[n - 1u];
+}
+
+/* Record layout (PSP-GE-TIMING-001 timing cells):
+   out0 size parameter, out1 work units (words, vertices, pixels, bytes or
+   entries; the case README names the unit per cell), out2 list bytes, out3
+   reps completed, out4 timeouts, out5 enqueue errors, out6-8 fin min/med/max,
+   out9-11 idle min/med/max, out12 enqueue med, out13 CPU MHz, out14 bus MHz,
+   out15 last enqueue error.  All times are microseconds from just before the
+   first enqueue.  The result word is the fin median. */
+static void gt_emit(int emulated, const char *cell, uint32_t size, uint32_t units,
+                    uint32_t list_bytes, GtStats *st) {
+    uint32_t fin[3], idle[3], enq[3];
+    gt_summary(st->fin, st->n, fin);
+    gt_summary(st->idle, st->n, idle);
+    gt_summary(st->enq, st->n, enq);
+    const uint32_t out[16] = {
+        size, units, list_bytes, st->n, st->timeouts, st->errors,
+        fin[0], fin[1], fin[2], idle[0], idle[1], idle[2], enq[1],
+        s_gt_cpu_mhz, s_gt_bus_mhz, (uint32_t)st->last_error,
+    };
+    char case_id[64];
+    snprintf(case_id, sizeof(case_id), "gt-%s-%s-%u", s_gt_clk, cell, (unsigned int)size);
+    emit_record_extended(emulated, "PSP-GE-TIMING-001", case_id,
+                         st->errors ? "FAIL" : st->timeouts ? "TIMEOUT" : "PASS",
+                         fin[1], out, 16);
+}
+
+static void gt_begin(uint32_t *list) { (void)sceGuStart(GU_SEND, list); }
+static uint32_t gt_end(void) { return (uint32_t)sceGuFinish(); }
+
+/* The state every cell starts from: 8888 (or 5650) colour buffer at eDRAM 0,
+   16-bit depth buffer after it, full-screen viewport and scissor, identity
+   matrices, and every per-pixel test, texturing and lighting off. */
+static void gt_base_state(int psm) {
+    sceGuDrawBuffer(psm, GT_FBP, GT_STRIDE);
+    sceGuDepthBuffer(GT_ZBP, GT_STRIDE);
+    sceGuOffset(2048 - (GT_W / 2), 2048 - (GT_H / 2));
+    sceGuViewport(2048, 2048, GT_W, GT_H);
+    sceGuDepthRange(65535, 0);
+    sceGuScissor(0, 0, GT_W, GT_H);
+    sceGuEnable(GU_SCISSOR_TEST);
+    sceGuEnable(GU_CLIP_PLANES);
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_ALPHA_TEST);
+    sceGuDisable(GU_BLEND);
+    sceGuDisable(GU_CULL_FACE);
+    sceGuDisable(GU_DITHER);
+    sceGuDisable(GU_FOG);
+    sceGuDisable(GU_TEXTURE_2D);
+    sceGuDisable(GU_LIGHTING);
+    for (int l = 0; l < 4; l++) sceGuDisable(GU_LIGHT0 + l);
+    sceGuDepthMask(GU_TRUE);
+    sceGuShadeModel(GU_SMOOTH);
+    sceGuSetMatrix(GU_PROJECTION, &s_gt_identity);
+    sceGuSetMatrix(GU_VIEW, &s_gt_identity);
+    sceGuSetMatrix(GU_MODEL, &s_gt_identity);
+    sceGuColor(0xffffffffu);
+    sceGuSendCommandi(211, 0);  /* clear mode off */
+}
+
+/* Run the setup list once, untimed; a failure is folded into the cell's record. */
+static void gt_apply_setup(GtStats *setup) {
+    void *lists[1] = {s_gt_setup};
+    gt_measure(lists, 1, 1, setup);
+}
+
+/* Through-mode 64-px-wide strips covering the screen (8 sprites, 16 vertices). */
+static void gt_prepare_strips(void) {
+    for (int k = 0; k < 8; k++) {
+        const int16_t x0 = (int16_t)(k * 64), x1 = (int16_t)(k == 7 ? GT_W : (k + 1) * 64);
+        s_gt_strips[2 * k] = (GtFlatV){0x80ffffffu, x0, 0, 0x7fff, 0};
+        s_gt_strips[2 * k + 1] = (GtFlatV){0x80ffffffu, x1, GT_H, 0x7fff, 0};
+        s_gt_tex_strips[2 * k] = (GtTexV){x0, 0, x0, 0, 0};
+        s_gt_tex_strips[2 * k + 1] = (GtTexV){x1, GT_H, x1, GT_H, 0};
+        const float fx0 = -1.0f + 2.0f * (float)x0 / (float)GT_W;
+        const float fx1 = -1.0f + 2.0f * (float)x1 / (float)GT_W;
+        s_gt_xf_strips[2 * k] = (GtXfV){0xffffffffu, fx0, 1.0f, 0.0f};
+        s_gt_xf_strips[2 * k + 1] = (GtXfV){0xffffffffu, fx1, -1.0f, 0.0f};
+    }
+}
+
+/* Sprites of edge s px tiling the 384 x 256 grid; returns the vertex count. */
+static uint32_t gt_prepare_grid(GtFlatV *v, int s, uint32_t color) {
+    uint32_t n = 0;
+    for (int y = 0; y < GT_GRID_H; y += s) {
+        for (int x = 0; x < GT_GRID_W; x += s) {
+            v[n++] = (GtFlatV){color, (int16_t)x, (int16_t)y, 0, 0};
+            v[n++] = (GtFlatV){color, (int16_t)(x + s), (int16_t)(y + s), 0, 0};
+        }
+    }
+    return n;
+}
+
+static uint32_t gt_align(uint32_t v, uint32_t a) { return (v + a - 1u) & ~(a - 1u); }
+static uint32_t gt_fmt_size(uint32_t fmt) { return fmt == 1u ? 1u : fmt == 2u ? 2u : fmt == 3u ? 4u : 0u; }
+
+static void gt_put(uint8_t *p, uint32_t size, float value) {
+    if (size == 4u) { memcpy(p, &value, 4); return; }
+    if (size == 2u) { const int16_t q = (int16_t)(value * 32767.0f + (value >= 0 ? 0.5f : -0.5f)); memcpy(p, &q, 2); return; }
+    *(int8_t *)p = (int8_t)(value * 127.0f + (value >= 0 ? 0.5f : -0.5f));
+}
+
+/* Pack `count` transformed vertices of type vtype at the screen centre for
+   tiny triangles: vertex i sits at x = (i & 1) * d, y = ((i >> 1) & 1) * d, so
+   any three consecutive vertices span a non-degenerate triangle of about two
+   pixels, in a list or a strip.  d is 1.5 px, or one quantum for 8-bit
+   positions.  Weights are 1/n, texture coordinates 0, colour opaque white,
+   normals +z.  Field order and alignment follow the GE vertex layout. */
+static uint32_t gt_pack_tiny(uint32_t vtype, uint32_t count) {
+    const uint32_t tf = vtype & 3u, cf = (vtype >> 2) & 7u, nf = (vtype >> 5) & 3u;
+    const uint32_t pf = (vtype >> 7) & 3u, wf = (vtype >> 9) & 3u;
+    const uint32_t nw = wf ? ((vtype >> 14) & 7u) + 1u : 0u;
+    const uint32_t ts = gt_fmt_size(tf), ns = gt_fmt_size(nf), ps = gt_fmt_size(pf), ws = gt_fmt_size(wf);
+    const uint32_t cs = cf == 7u ? 4u : cf ? 2u : 0u;
+    uint32_t off = 0, align = 1;
+    uint32_t ow = 0, ot = 0, oc = 0, on = 0, op = 0;
+    if (ws) { off = gt_align(off, ws); ow = off; off += nw * ws; if (ws > align) align = ws; }
+    if (ts) { off = gt_align(off, ts); ot = off; off += 2u * ts; if (ts > align) align = ts; }
+    if (cs) { off = gt_align(off, cs); oc = off; off += cs; if (cs > align) align = cs; }
+    if (ns) { off = gt_align(off, ns); on = off; off += 3u * ns; if (ns > align) align = ns; }
+    off = gt_align(off, ps); op = off; off += 3u * ps; if (ps > align) align = ps;
+    const uint32_t stride = gt_align(off, align);
+    if (stride * count > GT_VTX_BYTES) return 0;
+    const float d = ps == 1u ? 1.0f / 127.0f : 3.0f / (float)GT_W;
+    memset(s_gt_vtx, 0, stride * count);
+    for (uint32_t i = 0; i < count; i++) {
+        uint8_t *v = s_gt_vtx + i * stride;
+        for (uint32_t w = 0; w < nw; w++) gt_put(v + ow + w * ws, ws, 1.0f / (float)nw);
+        if (ts) { gt_put(v + ot, ts, 0.0f); gt_put(v + ot + ts, ts, 0.0f); }
+        if (cs == 4u) memset(v + oc, 0xff, 4);
+        if (ns) { gt_put(v + on, ns, 0.0f); gt_put(v + on + ns, ns, 0.0f); gt_put(v + on + 2u * ns, ns, 1.0f); }
+        gt_put(v + op, ps, (i & 1u) ? d : 0.0f);
+        gt_put(v + op + ps, ps, ((i >> 1) & 1u) ? d : 0.0f);
+        gt_put(v + op + 2u * ps, ps, 0.0f);
+    }
+    return stride;
+}
+
+/* One-PRIM timing cell over the shared vertex buffer: setup, build, measure, emit. */
+static void gt_cell_draw(int emulated, const char *cell, uint32_t size, uint32_t units,
+                         int prim, uint32_t vtype, uint32_t count, const void *indices) {
+    GtStats setup, st;
+    gt_apply_setup(&setup);
+    gt_begin(s_gt_list);
+    sceGuDrawArray(prim, (int)vtype, (int)count, indices, s_gt_vtx);
+    const uint32_t bytes = gt_end();
+    void *lists[1] = {s_gt_list};
+    gt_measure(lists, 1, GT_REPS, &st);
+    st.timeouts += setup.timeouts;
+    st.errors += setup.errors;
+    gt_emit(emulated, cell, size, units, bytes, &st);
+}
+
+static void gt_setup_base(int psm) {
+    gt_begin(s_gt_setup);
+    gt_base_state(psm);
+    (void)gt_end();
+}
+
+static void gt_measure_built(int emulated, const char *cell, uint32_t size, uint32_t units,
+                             uint32_t bytes, uint32_t reps) {
+    GtStats setup, st;
+    gt_apply_setup(&setup);
+    void *lists[1] = {s_gt_list};
+    gt_measure(lists, 1, reps, &st);
+    st.timeouts += setup.timeouts;
+    st.errors += setup.errors;
+    gt_emit(emulated, cell, size, units, bytes, &st);
+}
+
+static const uint32_t s_gt_word_sizes[3] = {1024u, 4096u, 16384u};
+static const uint32_t s_gt_vert_sizes[3] = {1536u, 6144u, 18432u};
+static const uint32_t s_gt_counts[3] = {1u, 4u, 16u};
+
+/* T0-T3: list overhead and non-draw command runs. */
+static void gt_cells_commands(int emulated) {
+    probe_step(emulated, "ge-timing", "t0-t3");
+    gt_setup_base(GU_PSM_8888);
+    gt_begin(s_gt_list);
+    gt_measure_built(emulated, "t0-empty", 0u, 0u, gt_end(), GT_EMPTY_REPS);
+    for (int s = 0; s < 3; s++) {
+        const uint32_t n = s_gt_word_sizes[s];
+        gt_begin(s_gt_list);
+        for (uint32_t i = 0; i < n; i++) sceGuSendCommandi(0, 0);
+        gt_measure_built(emulated, "t1-nop", n, n, gt_end(), GT_REPS);
+        /* Material ambient, diffuse, specular and the ambient light colour:
+           state writes that start no GE work. */
+        static const int state_cmds[4] = {0x55, 0x56, 0x57, 0x5c};
+        gt_begin(s_gt_list);
+        for (uint32_t i = 0; i < n; i++) sceGuSendCommandi(state_cmds[i & 3u], 0x808080);
+        gt_measure_built(emulated, "t2-state", n, n, gt_end(), GT_REPS);
+        /* World-matrix uploads: one select word and twelve data words each. */
+        gt_begin(s_gt_list);
+        const uint32_t uploads = n / 13u;
+        for (uint32_t i = 0; i < uploads; i++) sceGuSetMatrix(GU_MODEL, &s_gt_identity);
+        gt_measure_built(emulated, "t3-matrix", n, uploads * 13u, gt_end(), GT_REPS);
+    }
+}
+
+/* T4: clear-mode full-screen strips, colour or colour+depth, 8888 or 5650. */
+static void gt_cells_clear(int emulated) {
+    probe_step(emulated, "ge-timing", "t4");
+    static const struct { const char *name; int psm; int flags; } variants[4] = {
+        {"t4-clear-c8888", GU_PSM_8888, GU_COLOR_BUFFER_BIT},
+        {"t4-clear-cz8888", GU_PSM_8888, GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT},
+        {"t4-clear-c5650", GU_PSM_5650, GU_COLOR_BUFFER_BIT},
+        {"t4-clear-cz5650", GU_PSM_5650, GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT},
+    };
+    for (int v = 0; v < 4; v++) {
+        for (int s = 0; s < 3; s++) {
+            const uint32_t count = s_gt_counts[s];
+            gt_setup_base(variants[v].psm);
+            gt_begin(s_gt_list);
+            for (uint32_t k = 0; k < count; k++) {
+                sceGuSendCommandi(211, (variants[v].flags << 8) | 1);
+                sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                               16, NULL, s_gt_strips);
+                sceGuSendCommandi(211, 0);
+            }
+            gt_measure_built(emulated, variants[v].name, count, count * GT_W * GT_H, gt_end(), GT_REPS);
+        }
+    }
+}
+
+/* T5/T6: through-mode flat sprites and one-pixel triangles, one PRIM or one per primitive. */
+static void gt_cells_through(int emulated) {
+    probe_step(emulated, "ge-timing", "t5-t6");
+    static const int edges[3] = {8, 32, 128};
+    const uint32_t vt = GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D;
+    for (int s = 0; s < 3; s++) {
+        const uint32_t n = gt_prepare_grid((GtFlatV *)s_gt_vtx, edges[s], GT_COLOR_A);
+        gt_setup_base(GU_PSM_8888);
+        gt_cell_draw(emulated, "t5-sprite", (uint32_t)edges[s], GT_GRID_W * GT_GRID_H,
+                     GU_SPRITES, vt, n, NULL);
+        gt_setup_base(GU_PSM_8888);
+        gt_begin(s_gt_list);
+        for (uint32_t i = 0; i < n; i += 2u)
+            sceGuDrawArray(GU_SPRITES, (int)vt, 2, NULL, (GtFlatV *)s_gt_vtx + i);
+        gt_measure_built(emulated, "t5-sprite-perprim", (uint32_t)edges[s], GT_GRID_W * GT_GRID_H,
+                         gt_end(), GT_REPS);
+    }
+    for (int s = 0; s < 3; s++) {
+        const uint32_t tris = s_gt_word_sizes[s];
+        GtFlatV *v = (GtFlatV *)s_gt_vtx;
+        for (uint32_t i = 0; i < tris; i++) {
+            v[3 * i] = (GtFlatV){GT_COLOR_A, 240, 136, 0, 0};
+            v[3 * i + 1] = (GtFlatV){GT_COLOR_A, 241, 136, 0, 0};
+            v[3 * i + 2] = (GtFlatV){GT_COLOR_A, 240, 137, 0, 0};
+        }
+        gt_setup_base(GU_PSM_8888);
+        gt_cell_draw(emulated, "t6-tri1px", tris, tris, GU_TRIANGLES, vt, 3u * tris, NULL);
+        gt_setup_base(GU_PSM_8888);
+        gt_begin(s_gt_list);
+        for (uint32_t i = 0; i < tris; i++)
+            sceGuDrawArray(GU_TRIANGLES, (int)vt, 3, NULL, v + 3u * i);
+        gt_measure_built(emulated, "t6-tri1px-perprim", tris, tris, gt_end(), GT_REPS);
+    }
+}
+
+/* T7-T10: transformed tiny triangles by primitive form, vertex format, lights, weights. */
+static void gt_cells_transform(int emulated) {
+    probe_step(emulated, "ge-timing", "t7-t10");
+    const uint32_t xf = GU_VERTEX_32BITF | GU_TRANSFORM_3D;
+    for (uint32_t i = 0; i < GT_MAX_VERTS; i++) s_gt_idx[i] = (uint16_t)i;
+    static const struct { const char *name; uint32_t vtype; } formats[6] = {
+        {"t8-pos16", GU_VERTEX_16BIT | GU_TRANSFORM_3D},
+        {"t8-pos8", GU_VERTEX_8BIT | GU_TRANSFORM_3D},
+        {"t8-color", GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D},
+        {"t8-uv", GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_3D},
+        {"t8-normal", GU_NORMAL_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_3D},
+        {"t8-full", GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_NORMAL_32BITF | GU_VERTEX_32BITF |
+                        GU_TRANSFORM_3D},
+    };
+    for (int s = 0; s < 3; s++) {
+        const uint32_t n = s_gt_vert_sizes[s];
+        (void)gt_pack_tiny(xf, n);
+        gt_setup_base(GU_PSM_8888);
+        gt_cell_draw(emulated, "t7-list", n, n, GU_TRIANGLES, xf, n, NULL);
+        gt_setup_base(GU_PSM_8888);
+        gt_cell_draw(emulated, "t7-strip", n, n, GU_TRIANGLE_STRIP, xf, n, NULL);
+        gt_setup_base(GU_PSM_8888);
+        gt_cell_draw(emulated, "t7-indexed", n, n, GU_TRIANGLES, xf | GU_INDEX_16BIT, n, s_gt_idx);
+        for (int f = 0; f < 6; f++) {
+            (void)gt_pack_tiny(formats[f].vtype, n);
+            gt_setup_base(GU_PSM_8888);
+            gt_cell_draw(emulated, formats[f].name, n, n, GU_TRIANGLES, formats[f].vtype, n, NULL);
+        }
+        static const int lights[3] = {0, 1, 4};
+        const uint32_t lit = GU_NORMAL_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_3D;
+        (void)gt_pack_tiny(lit, n);
+        for (int l = 0; l < 3; l++) {
+            gt_begin(s_gt_setup);
+            gt_base_state(GU_PSM_8888);
+            sceGuEnable(GU_LIGHTING);
+            sceGuAmbient(0xff202020u);
+            for (int k = 0; k < lights[l]; k++) {
+                const ScePspFVector3 dir = {-0.25f, -0.5f, -1.0f};
+                sceGuEnable(GU_LIGHT0 + k);
+                sceGuLight(k, GU_DIRECTIONAL, GU_DIFFUSE, &dir);
+                sceGuLightColor(k, GU_DIFFUSE, 0xffffffffu);
+            }
+            (void)gt_end();
+            char name[24];
+            snprintf(name, sizeof(name), "t9-lights%d", lights[l]);
+            gt_cell_draw(emulated, name, n, n, GU_TRIANGLES, lit, n, NULL);
+        }
+        static const uint32_t weights[3] = {1u, 4u, 8u};
+        for (int w = 0; w < 3; w++) {
+            const uint32_t vt = GU_WEIGHTS(weights[w]) | GU_WEIGHT_32BITF | xf;
+            (void)gt_pack_tiny(vt, n);
+            gt_begin(s_gt_setup);
+            gt_base_state(GU_PSM_8888);
+            for (uint32_t b = 0; b < weights[w]; b++) sceGuBoneMatrix(b, &s_gt_identity);
+            (void)gt_end();
+            char name[24];
+            snprintf(name, sizeof(name), "t10-weights%u", (unsigned int)weights[w]);
+            gt_cell_draw(emulated, name, n, n, GU_TRIANGLES, vt, n, NULL);
+        }
+    }
+}
+
+/* T11: textured full-screen strips by format, swizzle, texture size and filter. */
+static void gt_cells_texture(int emulated) {
+    probe_step(emulated, "ge-timing", "t11");
+    static const struct { const char *name; int psm; int swizzle; } formats[9] = {
+        {"5650", GU_PSM_5650, 0}, {"5650s", GU_PSM_5650, 1},
+        {"8888", GU_PSM_8888, 0}, {"8888s", GU_PSM_8888, 1},
+        {"t4", GU_PSM_T4, 0}, {"t4s", GU_PSM_T4, 1},
+        {"t8", GU_PSM_T8, 0}, {"t8s", GU_PSM_T8, 1},
+        {"dxt1", GU_PSM_DXT1, 0},
+    };
+    static const int sizes[2] = {64, 512};
+    for (int f = 0; f < 9; f++) {
+        for (int z = 0; z < 2; z++) {
+            for (int filt = 0; filt < 2; filt++) {
+                for (int s = 0; s < 3; s++) {
+                    const uint32_t count = s_gt_counts[s];
+                    gt_begin(s_gt_setup);
+                    gt_base_state(GU_PSM_8888);
+                    sceGuEnable(GU_TEXTURE_2D);
+                    sceGuTexMode(formats[f].psm, 0, 0, formats[f].swizzle);
+                    sceGuTexImage(0, sizes[z], sizes[z], sizes[z], s_gt_tex);
+                    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+                    sceGuTexFilter(filt ? GU_LINEAR : GU_NEAREST, filt ? GU_LINEAR : GU_NEAREST);
+                    sceGuTexWrap(GU_REPEAT, GU_REPEAT);
+                    if (formats[f].psm == GU_PSM_T4 || formats[f].psm == GU_PSM_T8) {
+                        sceGuClutMode(GU_PSM_8888, 0, 0xff, 0);
+                        sceGuClutLoad(formats[f].psm == GU_PSM_T4 ? 2 : 32, s_gt_clut);
+                    }
+                    sceGuTexFlush();
+                    (void)gt_end();
+                    gt_begin(s_gt_list);
+                    for (uint32_t k = 0; k < count; k++)
+                        sceGuDrawArray(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                                       16, NULL, s_gt_tex_strips);
+                    char name[40];
+                    snprintf(name, sizeof(name), "t11-%s-%d-%s", formats[f].name, sizes[z],
+                             filt ? "linear" : "nearest");
+                    gt_measure_built(emulated, name, count, count * GT_W * GT_H, gt_end(), GT_REPS);
+                }
+            }
+        }
+    }
+}
+
+/* T12: per-pixel state on full-screen strips. */
+static void gt_cells_fill(int emulated) {
+    probe_step(emulated, "ge-timing", "t12");
+    for (int v = 0; v < 7; v++) {
+        static const char *const names[7] = {
+            "t12-base", "t12-blend", "t12-alphatest", "t12-depth", "t12-dither",
+            "t12-xfbase", "t12-fog",
+        };
+        for (int s = 0; s < 3; s++) {
+            const uint32_t count = s_gt_counts[s];
+            gt_begin(s_gt_setup);
+            gt_base_state(GU_PSM_8888);
+            if (v == 1) {
+                sceGuEnable(GU_BLEND);
+                sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+            } else if (v == 2) {
+                sceGuEnable(GU_ALPHA_TEST);
+                sceGuAlphaFunc(GU_GREATER, 0x10, 0xff);
+            } else if (v == 3) {
+                /* Depth 0 everywhere first, so GEQUAL against z 0x7fff always passes and writes. */
+                sceGuSendCommandi(211, (GU_DEPTH_BUFFER_BIT << 8) | 1);
+                static GtFlatV zero[16];
+                for (int i = 0; i < 16; i++) { zero[i] = s_gt_strips[i]; zero[i].z = 0; }
+                sceKernelDcacheWritebackRange(zero, sizeof(zero));
+                sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                               16, NULL, zero);
+                sceGuSendCommandi(211, 0);
+                sceGuEnable(GU_DEPTH_TEST);
+                sceGuDepthFunc(GU_GEQUAL);
+                sceGuDepthMask(GU_FALSE);
+            } else if (v == 4) {
+                sceGuEnable(GU_DITHER);
+            } else if (v == 6) {
+                sceGuEnable(GU_FOG);
+                sceGuFog(0.0f, 1.0f, 0xff808080u);
+            }
+            (void)gt_end();
+            gt_begin(s_gt_list);
+            for (uint32_t k = 0; k < count; k++) {
+                if (v >= 5)
+                    sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
+                                   16, NULL, s_gt_xf_strips);
+                else
+                    sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                                   16, NULL, s_gt_strips);
+            }
+            gt_measure_built(emulated, names[v], count, count * GT_W * GT_H, gt_end(), GT_REPS);
+        }
+    }
+}
+
+/* T13/T14: CLUT loads and block transfers. */
+static void gt_cells_upload(int emulated) {
+    probe_step(emulated, "ge-timing", "t13-t14");
+    static const uint32_t loads[3] = {64u, 256u, 1024u};
+    for (int e = 0; e < 2; e++) {
+        const int blocks = e ? 32 : 2;
+        for (int s = 0; s < 3; s++) {
+            gt_begin(s_gt_setup);
+            gt_base_state(GU_PSM_8888);
+            sceGuClutMode(GU_PSM_8888, 0, 0xff, 0);
+            (void)gt_end();
+            gt_begin(s_gt_list);
+            for (uint32_t i = 0; i < loads[s]; i++) sceGuClutLoad(blocks, s_gt_clut);
+            gt_measure_built(emulated, e ? "t13-clut256" : "t13-clut16", loads[s],
+                             loads[s] * (uint32_t)blocks * 8u, gt_end(), GT_REPS);
+        }
+    }
+    static const int w[3] = {64, 256, 480}, h[3] = {64, 256, 272};
+    for (int src = 0; src < 2; src++) {
+        for (int s = 0; s < 3; s++) {
+            gt_setup_base(GU_PSM_8888);
+            gt_begin(s_gt_list);
+            sceGuCopyImage(GU_PSM_8888, 0, 0, w[s], h[s], 512, src ? GT_VRAM_SRC : (void *)s_gt_tex,
+                           0, 0, 512, GT_VRAM_DST);
+            gt_measure_built(emulated, src ? "t14-copy-vram" : "t14-copy-ram", (uint32_t)w[s],
+                             (uint32_t)(w[s] * h[s] * 4), gt_end(), GT_REPS);
+        }
+    }
+}
+
+/* T15: two T5 32-px lists enqueued back to back.  out6-8 are the first list's
+   finish, out9-11 the second's (in place of idle), out12 the idle median. */
+static void gt_cell_two_lists(int emulated) {
+    probe_step(emulated, "ge-timing", "t15");
+    const uint32_t n = gt_prepare_grid((GtFlatV *)s_gt_vtx, 32, GT_COLOR_A);
+    const uint32_t vt = GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D;
+    gt_setup_base(GU_PSM_8888);
+    GtStats setup, st;
+    gt_apply_setup(&setup);
+    gt_begin(s_gt_list);
+    sceGuDrawArray(GU_SPRITES, (int)vt, (int)n, NULL, s_gt_vtx);
+    const uint32_t bytes = gt_end();
+    gt_begin(s_gt_list_b);
+    sceGuDrawArray(GU_SPRITES, (int)vt, (int)n, NULL, s_gt_vtx);
+    (void)gt_end();
+    void *lists[2] = {s_gt_list, s_gt_list_b};
+    gt_measure(lists, 2, GT_REPS, &st);
+    uint32_t fin[3], fin2[3], idle[3];
+    gt_summary(st.fin, st.n, fin);
+    gt_summary(st.fin2, st.n, fin2);
+    gt_summary(st.idle, st.n, idle);
+    const uint32_t out[16] = {
+        32u, 2u * GT_GRID_W * GT_GRID_H, bytes, st.n, st.timeouts + setup.timeouts,
+        st.errors + setup.errors, fin[0], fin[1], fin[2], fin2[0], fin2[1], fin2[2], idle[1],
+        s_gt_cpu_mhz, s_gt_bus_mhz, (uint32_t)st.last_error,
+    };
+    char case_id[64];
+    snprintf(case_id, sizeof(case_id), "gt-%s-t15-twolists-32", s_gt_clk);
+    emit_record_extended(emulated, "PSP-GE-TIMING-001", case_id,
+                         st.errors ? "FAIL" : st.timeouts ? "TIMEOUT" : "PASS", fin2[1], out, 16);
+}
+
+/* The long list the completion cells share: GT_LONG_PASSES passes over the
+   8-px sprite grid, the last pass in a second colour so its final pixel can be
+   told from the earlier passes'.  Returns the list bytes. */
+static uint32_t gt_build_long(int with_signal) {
+    const uint32_t n = gt_prepare_grid((GtFlatV *)s_gt_vtx, 8, GT_COLOR_A);
+    (void)gt_prepare_grid(s_gt_grid_b, 8, GT_COLOR_B);
+    const uint32_t vt = GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D;
+    gt_begin(s_gt_list);
+    for (uint32_t p = 0; p < GT_LONG_PASSES; p++) {
+        if (with_signal && p == GT_LONG_PASSES / 2u) {
+            sceGuSendCommandi(14, (int)((GT_BEHAVIOUR_CONTINUE << 16) | GT_SIGNAL_ID));
+            sceGuSendCommandi(12, 0);
+        }
+        sceGuDrawArray(GU_SPRITES, (int)vt, (int)n, NULL,
+                       p + 1u == GT_LONG_PASSES ? (void *)s_gt_grid_b : (void *)s_gt_vtx);
+    }
+    return gt_end();
+}
+
+static void gt_emit_rep(int emulated, const char *cell, uint32_t rep, const char *status,
+                        uint32_t result, const uint32_t *out, size_t count) {
+    char case_id[64];
+    snprintf(case_id, sizeof(case_id), "gt-%s-%s-r%u", s_gt_clk, cell, (unsigned int)rep);
+    emit_record_extended(emulated, "PSP-GE-TIMING-001", case_id, status, result, out, count);
+}
+
+/* C1+C3: on the long list, the time the last pass's final pixel reaches eDRAM
+   (read through the uncached mirror), the finish callback, and the
+   sceGeListSync(qid, 1) / sceGeDrawSync(1) values from the enqueue to idle.
+   out0/1 first list/draw state, out2-5 the next two list-state changes
+   (value, us), out6-9 the next two draw-state changes, out10 pixel us, out11
+   fin us, out12/13 list/draw state at the first poll after the callback ran,
+   out14 enqueue us, out15 timed out, out16 list bytes. */
+static void gt_cell_peeks(int emulated, uint32_t bytes) {
+    probe_step(emulated, "ge-timing", "c1-c3");
+    volatile uint32_t *pix = (volatile uint32_t *)(0x44000000u +
+        (uint32_t)(((GT_GRID_H - 1) * GT_STRIDE + (GT_GRID_W - 1)) * 4));
+    for (uint32_t r = 0; r < GT_C_REPS; r++) {
+        uint32_t out[17];
+        memset(out, 0, sizeof(out));
+        out[16] = bytes;
+        *pix = GT_SENTINEL;
+        sceKernelDcacheWritebackAll();
+        s_gt_fin_count = 0;
+        const uint32_t t0 = sceKernelGetSystemTimeLow();
+        const int qid = sceGeListEnQueue(s_gt_list, NULL, s_gt_cbid, NULL);
+        out[14] = sceKernelGetSystemTimeLow() - t0;
+        if (qid < 0) {
+            out[0] = (uint32_t)qid;
+            gt_emit_rep(emulated, "c13-peeks", r, "FAIL", (uint32_t)qid, out, 17);
+            continue;
+        }
+        int pl = sceGeListSync(qid, 1), pd = sceGeDrawSync(1);
+        out[0] = (uint32_t)pl;
+        out[1] = (uint32_t)pd;
+        uint32_t nl = 0, nd = 0, seen_fin = 0;
+        for (;;) {
+            const int l = sceGeListSync(qid, 1);
+            const int d = sceGeDrawSync(1);
+            const uint32_t t = sceKernelGetSystemTimeLow() - t0;
+            if (l != pl && nl < 2u) { out[2 + 2 * nl] = (uint32_t)l; out[3 + 2 * nl] = t; nl++; }
+            if (d != pd && nd < 2u) { out[6 + 2 * nd] = (uint32_t)d; out[7 + 2 * nd] = t; nd++; }
+            pl = l;
+            pd = d;
+            if (!out[10] && *pix == GT_COLOR_B) out[10] = t;
+            if (!seen_fin && s_gt_fin_count) {
+                seen_fin = 1;
+                out[11] = s_gt_fin_time[0] - t0;
+                out[12] = (uint32_t)l;
+                out[13] = (uint32_t)d;
+            }
+            if (out[10] && seen_fin && d == PSP_GE_LIST_DONE) break;
+            if (t >= GT_DEADLINE_US) {
+                GeIdleWait after;
+                out[15] = 1;
+                (void)ge_reset_queues(&after);
+                break;
+            }
+        }
+        gt_emit_rep(emulated, "c13-peeks", r, out[15] ? "TIMEOUT" : "PASS", out[11], out, 17);
+    }
+}
+
+/* C4: a SIGNAL (behaviour CONTINUE) halfway through the long list.  out0
+   signal count, out1 signal id, out2 signal us, out3 fin us, out4 fin count,
+   out5 timed out. */
+static void gt_cell_signal(int emulated) {
+    probe_step(emulated, "ge-timing", "c4");
+    const uint32_t bytes = gt_build_long(1);
+    for (uint32_t r = 0; r < GT_C_REPS; r++) {
+        uint32_t out[7];
+        memset(out, 0, sizeof(out));
+        out[6] = bytes;
+        s_gt_sig_count = 0;
+        uint32_t fin = 0, idle = 0, enq = 0;
+        int err = 0;
+        void *lists[1] = {s_gt_list};
+        const int rc = gt_run(lists, 1, &fin, NULL, &idle, &enq, &err);
+        const uint32_t t0 = s_gt_last_t0;
+        out[0] = s_gt_sig_count;
+        out[1] = s_gt_sig_id;
+        out[2] = s_gt_sig_count ? s_gt_sig_time - t0 : 0u;
+        out[3] = fin;
+        out[4] = s_gt_fin_count;
+        out[5] = rc > 0;
+        gt_emit_rep(emulated, "c4-signal", r, rc < 0 ? "FAIL" : rc ? "TIMEOUT" : "PASS",
+                    out[2], out, 7);
+    }
+}
+
+/* C5: an empty list enqueued while the long list runs.  out0 first enqueue
+   us, out1 second enqueue return us, out2/3 first/second finish us, out4 idle
+   us, out5 finish count, out6 timed out. */
+static void gt_cell_busy_enqueue(int emulated) {
+    probe_step(emulated, "ge-timing", "c5");
+    (void)gt_build_long(0);
+    gt_begin(s_gt_list_b);
+    (void)gt_end();
+    for (uint32_t r = 0; r < GT_C_REPS; r++) {
+        uint32_t out[7];
+        memset(out, 0, sizeof(out));
+        s_gt_fin_count = 0;
+        const uint32_t t0 = sceKernelGetSystemTimeLow();
+        const int qa = sceGeListEnQueue(s_gt_list, NULL, s_gt_cbid, NULL);
+        out[0] = sceKernelGetSystemTimeLow() - t0;
+        const int qb = qa >= 0 ? sceGeListEnQueue(s_gt_list_b, NULL, s_gt_cbid, NULL) : qa;
+        out[1] = sceKernelGetSystemTimeLow() - t0;
+        if (qa < 0 || qb < 0) {
+            GeIdleWait after;
+            (void)ge_reset_queues(&after);
+            out[6] = (uint32_t)(qa < 0 ? qa : qb);
+            gt_emit_rep(emulated, "c5-busyenq", r, "FAIL", out[6], out, 7);
+            continue;
+        }
+        uint32_t t_idle = 0;
+        for (;;) {
+            const int d = sceGeDrawSync(1);
+            const uint32_t t = sceKernelGetSystemTimeLow() - t0;
+            if (!t_idle && d == PSP_GE_LIST_DONE) t_idle = t;
+            if (t_idle && s_gt_fin_count >= 2u) break;
+            if (t >= GT_DEADLINE_US) {
+                GeIdleWait after;
+                out[6] = 1;
+                (void)ge_reset_queues(&after);
+                break;
+            }
+        }
+        out[2] = s_gt_fin_count > 0u ? s_gt_fin_time[0] - t0 : 0u;
+        out[3] = s_gt_fin_count > 1u ? s_gt_fin_time[1] - t0 : 0u;
+        out[4] = t_idle;
+        out[5] = s_gt_fin_count;
+        gt_emit_rep(emulated, "c5-busyenq", r, out[6] ? "TIMEOUT" : "PASS", out[1], out, 7);
+    }
+}
+
+static volatile uint32_t s_gt_sync_mode;
+static volatile uint32_t s_gt_sync_out[5];
+
+/* Helper for C2/C6: enqueue the long list, then block in sceGeDrawSync(0)
+   (mode 0) or sceGeListSync(qid, 0) (mode 1).  The main thread bounds the
+   whole helper with sceKernelWaitThreadEnd. */
+static int gt_sync_thread(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    s_gt_fin_count = 0;
+    const uint32_t t0 = sceKernelGetSystemTimeLow();
+    const int qid = sceGeListEnQueue(s_gt_list, NULL, s_gt_cbid, NULL);
+    s_gt_sync_out[1] = sceKernelGetSystemTimeLow() - t0;
+    int rc = qid;
+    if (qid >= 0) rc = s_gt_sync_mode ? sceGeListSync(qid, 0) : sceGeDrawSync(0);
+    s_gt_sync_out[2] = sceKernelGetSystemTimeLow() - t0;
+    s_gt_sync_out[3] = s_gt_fin_count;
+    s_gt_sync_out[4] = s_gt_fin_count ? s_gt_fin_time[0] - t0 : 0u;
+    s_gt_sync_out[0] = (uint32_t)rc;
+    return 0;
+}
+
+/* C2 (DrawSync(0)) and C6 (ListSync(qid, 0)) on the long list.  out0 sync
+   result, out1 enqueue us, out2 sync return us, out3 finish count at return,
+   out4 fin us, out5 sceKernelWaitThreadEnd result, out6 fin count after idle. */
+static void gt_cell_blocking_sync(int emulated) {
+    probe_step(emulated, "ge-timing", "c2-c6");
+    (void)gt_build_long(0);
+    for (uint32_t mode = 0; mode < 2u; mode++) {
+        for (uint32_t r = 0; r < GT_C_REPS; r++) {
+            uint32_t out[7];
+            memset(out, 0, sizeof(out));
+            memset((void *)s_gt_sync_out, 0, sizeof(s_gt_sync_out));
+            s_gt_sync_mode = mode;
+            sceKernelDcacheWritebackAll();
+            const SceUID th = sceKernelCreateThread("gt-sync", gt_sync_thread, 0x18, 0x4000,
+                                                    PSP_THREAD_ATTR_USER, NULL);
+            int wrc = th;
+            if (th >= 0 && sceKernelStartThread(th, 0, NULL) >= 0) {
+                SceUInt timeout = 500000u;
+                wrc = sceKernelWaitThreadEnd(th, &timeout);
+            }
+            if (wrc < 0) {
+                GeIdleWait after;
+                (void)ge_reset_queues(&after);
+            }
+            if (th >= 0) {
+                if (wrc >= 0) (void)sceKernelDeleteThread(th);
+                else (void)sceKernelTerminateDeleteThread(th);
+            }
+            const GeIdleWait idle = ge_wait_idle(-1, GE_IDLE_DEADLINE_US);
+            for (int i = 0; i < 5; i++) out[i] = s_gt_sync_out[i];
+            out[5] = (uint32_t)wrc;
+            out[6] = s_gt_fin_count;
+            gt_emit_rep(emulated, mode ? "c6-listsync" : "c2-drawsync", r,
+                        wrc < 0 || !idle.idle ? "TIMEOUT" : "PASS", out[2], out, 7);
+        }
+    }
+}
+
+static void gt_pass(int emulated, int pll, int cpu, int bus) {
+    const int rc = scePowerSetClockFrequency(pll, cpu, bus);
+    s_gt_cpu_mhz = (uint32_t)scePowerGetCpuClockFrequencyInt();
+    s_gt_bus_mhz = (uint32_t)scePowerGetBusClockFrequencyInt();
+    snprintf(s_gt_clk, sizeof(s_gt_clk), "b%u", (unsigned int)bus);
+    if (rc < 0 || s_gt_bus_mhz != (uint32_t)bus) {
+        const uint32_t out[3] = {(uint32_t)rc, s_gt_cpu_mhz, s_gt_bus_mhz};
+        char case_id[32];
+        snprintf(case_id, sizeof(case_id), "gt-%s-clock", s_gt_clk);
+        emit_record_extended(emulated, "PSP-GE-TIMING-001", case_id, "SKIP", (uint32_t)rc, out, 3);
+        return;
+    }
+    gt_cells_commands(emulated);
+    gt_cells_clear(emulated);
+    gt_cells_through(emulated);
+    gt_cells_transform(emulated);
+    gt_cells_texture(emulated);
+    gt_cells_fill(emulated);
+    gt_cells_upload(emulated);
+    gt_cell_two_lists(emulated);
+    gt_setup_base(GU_PSM_8888);
+    {
+        GtStats setup;
+        gt_apply_setup(&setup);
+    }
+    gt_cell_peeks(emulated, gt_build_long(0));
+    gt_cell_signal(emulated);
+    gt_cell_busy_enqueue(emulated);
+    gt_cell_blocking_sync(emulated);
+}
+
+static void run_ge_timing(int emulated) {
+    const int boot_cpu = scePowerGetCpuClockFrequencyInt();
+    const int boot_bus = scePowerGetBusClockFrequencyInt();
+    /* Static buffers were zeroed through the cache; write those lines back and
+       drop them so no later eviction lands on a list libpspgu writes. */
+    sceKernelDcacheWritebackInvalidateAll();
+    const int init_rc = sceGuInit();
+    PspGeCallbackData cb;
+    memset(&cb, 0, sizeof(cb));
+    cb.signal_func = gt_signal_cb;
+    cb.finish_func = gt_finish_cb;
+    s_gt_cbid = sceGeSetCallback(&cb);
+    {
+        const uint32_t out[4] = {(uint32_t)init_rc, (uint32_t)s_gt_cbid, (uint32_t)boot_cpu,
+                                 (uint32_t)boot_bus};
+        emit_record_extended(emulated, "PSP-GE-TIMING-001", "gt-setup",
+                             init_rc >= 0 && s_gt_cbid >= 0 ? "PASS" : "FAIL", 0u, out, 4);
+    }
+    uint32_t passes = 0;
+    if (init_rc >= 0 && s_gt_cbid >= 0) {
+        for (uint32_t i = 0; i < 512u * 512u; i++) s_gt_tex[i] = i * 2654435761u;
+        for (uint32_t i = 0; i < 256u; i++) s_gt_clut[i] = 0xff000000u | (i * 0x010203u);
+        gt_prepare_strips();
+        /* VRAM-to-VRAM transfer source: fill it once through the uncached mirror. */
+        volatile uint32_t *src = (volatile uint32_t *)((uintptr_t)GT_VRAM_SRC | 0x40000000u);
+        for (uint32_t i = 0; i < 512u * 272u; i++) src[i] = i;
+        sceKernelDcacheWritebackAll();
+        gt_pass(emulated, 222, 222, 111);
+        passes++;
+        gt_pass(emulated, 333, 333, 166);
+        passes++;
+        (void)sceGeUnsetCallback(s_gt_cbid);
+    }
+    const int restore_rc = scePowerSetClockFrequency(boot_cpu, boot_cpu, boot_bus);
+    const uint32_t done_out[4] = {passes, (uint32_t)restore_rc,
+                                  (uint32_t)scePowerGetCpuClockFrequencyInt(),
+                                  (uint32_t)scePowerGetBusClockFrequencyInt()};
+    emit_record_extended(emulated, "PSP-GE-TIMING-001", "gt-done",
+                         restore_rc >= 0 ? "PASS" : "FAIL", passes, done_out, 4);
 }
 #endif
 
@@ -9663,6 +10613,8 @@ int main(int argc, char *argv[]) {
     run_fake_success(emulated); /* ends in probe_teardown, which parks until modstop */
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_USERPGF
     run_font_userpgf(emulated); /* probe_teardown below parks until modstop */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_TIMING
+    run_ge_timing(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
