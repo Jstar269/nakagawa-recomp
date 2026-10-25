@@ -216,7 +216,7 @@ void sr_debug_init_watches(void) {
     // 2. Fallback/override: parse from environment variables SR_WATCH_0 ... SR_WATCH_15
     for (int i = 0; i < SR_MAX_MEM_WATCHES; i++) {
         char env_name[32];
-        sprintf(env_name, "SR_WATCH_%d", i);
+        snprintf(env_name, sizeof env_name, "SR_WATCH_%d", i);
         char *env_val = getenv(env_name);
         if (env_val) {
             uint32_t st_val = 0, end_val = 0;
@@ -235,7 +235,7 @@ void sr_debug_init_watches(void) {
     // transient vertex arenas. Syntax: SR_VALUE_WATCH_N=0xVALUE,label.
     for (int i = 0; i < SR_MAX_MEM_WATCHES; i++) {
         char env_name[32];
-        sprintf(env_name, "SR_VALUE_WATCH_%d", i);
+        snprintf(env_name, sizeof env_name, "SR_VALUE_WATCH_%d", i);
         char *env_val = getenv(env_name);
         if (env_val) {
             uint32_t value = 0;
