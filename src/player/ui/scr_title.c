@@ -34,6 +34,7 @@
 #define TITLE_ID_COMPAT 0x20000005u
 #define TITLE_ID_COMPAT_HEAD 0x2000002Cu
 #define TITLE_ID_COMPAT_EYEBROW 0x20000006u
+#define TITLE_ID_COMPAT_TIER 0x20000007u
 #define TITLE_ID_COMPAT_EXPECT 0x20000008u
 #define TITLE_ID_COMPAT_ISSUES 0x2000002Eu
 #define TITLE_ID_COMPAT_CATEGORY 0x2000002Du
@@ -77,6 +78,63 @@ static PlayerUiAction action(PlayerUiActionKind kind, size_t title_index,
 
 static const char *safe_text(const char *text, const char *fallback) {
     return text != NULL && text[0] != '\0' ? text : fallback;
+}
+
+/* docs/COMPATIBILITY.md category -> player tier, for a title with no player
+   record of its own (#1297). The same table is in the "Status words" section
+   of docs/COMPATIBILITY.md; test_player_screens.c pins both. A category
+   describes the project's test route, so each maps to the most a player can
+   count on: a title that only boots to a named boundary is not promised more
+   than its title screen. Experimental and Untested have no tier. */
+static const struct {
+    const char *category;
+    PlayerUiTier tier;
+} s_tier_by_category[] = {
+    {"Works", PLAYER_UI_TIER_PERFECT},
+    {"Partially works", PLAYER_UI_TIER_IN_GAME},
+    {"Boots to a named boundary", PLAYER_UI_TIER_TITLE_SCREEN},
+    {"Not started", PLAYER_UI_TIER_WONT_BOOT},
+    {"Not supported", PLAYER_UI_TIER_WONT_BOOT},
+    {"Experimental", PLAYER_UI_TIER_NONE},
+    {"Untested", PLAYER_UI_TIER_NONE}
+};
+
+PlayerUiTier player_ui_tier_for_category(const char *category) {
+    if (category == NULL) return PLAYER_UI_TIER_NONE;
+    for (size_t i = 0u; i < sizeof(s_tier_by_category) / sizeof(s_tier_by_category[0]);
+         ++i) {
+        if (strcmp(category, s_tier_by_category[i].category) == 0) {
+            return s_tier_by_category[i].tier;
+        }
+    }
+    return PLAYER_UI_TIER_NONE;
+}
+
+const char *player_ui_tier_word(PlayerUiTier tier) {
+    switch (tier) {
+        case PLAYER_UI_TIER_PERFECT: return "Perfect";
+        case PLAYER_UI_TIER_PLAYABLE: return "Playable";
+        case PLAYER_UI_TIER_IN_GAME: return "In-game";
+        case PLAYER_UI_TIER_MENU: return "Menu";
+        case PLAYER_UI_TIER_TITLE_SCREEN: return "Title screen";
+        case PLAYER_UI_TIER_WONT_BOOT: return "Won't boot";
+        case PLAYER_UI_TIER_NONE:
+        default: return NULL;
+    }
+}
+
+/* How a tier chip is drawn; the word itself comes from the host's data. */
+static uint32_t tier_rgba(const NkUiTheme *theme, PlayerUiTier tier) {
+    switch (tier) {
+        case PLAYER_UI_TIER_PERFECT:
+        case PLAYER_UI_TIER_PLAYABLE: return theme->ready;
+        case PLAYER_UI_TIER_IN_GAME:
+        case PLAYER_UI_TIER_MENU: return theme->info;
+        case PLAYER_UI_TIER_TITLE_SCREEN: return theme->warning;
+        case PLAYER_UI_TIER_WONT_BOOT: return theme->error;
+        case PLAYER_UI_TIER_NONE:
+        default: return theme->muted;
+    }
 }
 
 /* The package card's sentence for each package state (#1297). */
@@ -242,10 +300,9 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 }
                 nk_ui_end_container(ui);
             }
-            /* What to expect, in plain words, with no category chip: the
-               category describes the project's test route, and read as a
-               claim about this game on this PC (#1297). The developer view
-               still names it. */
+            /* The player tier, then what to expect in plain words and any
+               known issues (#1297). The docs category describes the
+               project's test route, so only the developer view names it. */
             if (nk_ui_card_begin(ui, TITLE_ID_COMPAT, sizing_grow(), sizing_fit(),
                                  NK_UI_SPACE_3)) {
                 NkUiLayout head = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
@@ -253,6 +310,11 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 head.align_y = NK_UI_ALIGN_CENTER;
                 if (nk_ui_begin_container(ui, TITLE_ID_COMPAT_HEAD, &head, NULL)) {
                     nk_ui_eyebrow(ui, TITLE_ID_COMPAT_EYEBROW, "What to expect");
+                    const char *tier = player_ui_tier_word(title->compatibility_tier);
+                    if (tier != NULL) {
+                        nk_ui_status_pill(ui, TITLE_ID_COMPAT_TIER, NULL, tier,
+                                          tier_rgba(theme, title->compatibility_tier));
+                    }
                     nk_ui_end_container(ui);
                 }
                 nk_ui_text_role(ui, TITLE_ID_COMPAT_EXPECT,

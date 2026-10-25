@@ -2543,6 +2543,35 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertTrue(titled, run["stdout"])
         return titled[-1]
 
+    def test_compatibility_records_carry_a_player_tier(self) -> None:
+        """#1297: every title record maps to a player tier; Hot Shots Tennis is Playable.
+
+        The category -> tier table itself is pinned against docs/COMPATIBILITY.md
+        by test_player_screens.c; this checks the per-title records the
+        launcher really uses."""
+        run = self.run_player(
+            "library", ("WAIT_MS=100",),
+            env_extra={"NK_UI_TEST_REPORT_COMPATIBILITY": "1"},
+        )
+        records = {}
+        for line in str(run["stdout"]).splitlines():
+            match = re.match(
+                r"\[PLAYER_UI_TEST\] compatibility key=(\S+) category_tier=(.+?) tier=(.+)$",
+                line,
+            )
+            if match:
+                records[match.group(1)] = (match.group(2), match.group(3))
+        self.assertIn("UCUS98701", records, run["stdout"])
+        tiers = {"Perfect", "Playable", "In-game", "Menu", "Title screen", "Won't boot"}
+        for key, (category_tier, tier) in records.items():
+            with self.subTest(key=key):
+                self.assertIn(category_tier, tiers, "the record's docs category has a tier")
+                self.assertIn(tier, tiers)
+        self.assertEqual(records["UCUS98701"], ("Title screen", "Playable"))
+        self.assertEqual(records["UCUS-98701"], ("Title screen", "Playable"))
+        self.assertEqual(records["PAC-MAN_Championship_Edition"][1], "In-game")
+        self.assertEqual(records["pspdev-phase5-v1"][1], "Won't boot")
+
     def test_title_page_while_the_game_runs(self) -> None:
         """#1297: the running game's title page follows the package, not the STOP GAME action.
 

@@ -59,45 +59,57 @@ static const PlayerUiTitle k_titles[] = {
     {"Synthetic Showcase Scene", "TEST00007", "Ready", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
-     NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY},
+     NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PLAYABLE},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
-     NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING},
+     NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
+     PLAYER_UI_TIER_PLAYABLE},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "RETRY PACKAGE CHECK",
      "◆", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
-     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING},
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
+     PLAYER_UI_TIER_NONE},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "BUILD PACKAGE",
      "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true,
-     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING},
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
+     PLAYER_UI_TIER_NONE},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
-     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING},
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
+     PLAYER_UI_TIER_WONT_BOOT},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "BUILD PACKAGE",
      "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
-     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING},
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
+     PLAYER_UI_TIER_PERFECT},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "PLAY",
      "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
-     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY}
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PERFECT}
 };
 
-/* What-to-expect cards: plain words, with known issues, the developer view's
-   category, and the screen's own fallback. */
+/* What-to-expect cards: a player tier with plain words, with known issues, the
+   developer view's category, and the screen's own fallback with no tier. */
 static const struct {
+    PlayerUiTier tier;
     const char *expect;
     const char *known_issues;
     const char *category;
 } k_compatibility_cases[] = {
-    {"Plays a full synthetic match.", "", NULL},
-    {"Plays a full synthetic match.",
+    {PLAYER_UI_TIER_PERFECT, "Plays a full synthetic match.", "", NULL},
+    {PLAYER_UI_TIER_PLAYABLE, "Plays a full synthetic match.",
      "Known issues: low frame rate, sound drops out, and movies show black.", NULL},
-    {"Plays a full synthetic match.", "", "Boots to a named boundary"},
-    {NULL, NULL, NULL}
+    {PLAYER_UI_TIER_TITLE_SCREEN, "Plays a full synthetic match.", "",
+     "Boots to a named boundary"},
+    {PLAYER_UI_TIER_IN_GAME, "Plays a synthetic stage.", "", NULL},
+    {PLAYER_UI_TIER_MENU, "Reaches the synthetic menu.", "", NULL},
+    {PLAYER_UI_TIER_WONT_BOOT, "Does not start yet.", "", NULL},
+    {PLAYER_UI_TIER_NONE, NULL, NULL, NULL}
 };
 
 /* Synthetic flow states: a build, the build tool download, an error. */
@@ -448,6 +460,7 @@ static bool build_title_golden(char *out, size_t cap, size_t *used) {
          i < sizeof(k_compatibility_cases) / sizeof(k_compatibility_cases[0]);
          ++i) {
         char name[96];
+        fixture.compatibility_tier = k_compatibility_cases[i].tier;
         fixture.compatibility_expect = k_compatibility_cases[i].expect;
         fixture.compatibility_known_issues = k_compatibility_cases[i].known_issues;
         fixture.compatibility_category = k_compatibility_cases[i].category;
@@ -1535,6 +1548,7 @@ static void test_title_with_a_running_game(void) {
     running.compatibility_known_issues =
         "Known issues: low frame rate, sound drops out, and movies show black.";
     running.compatibility_category = NULL;
+    running.compatibility_tier = PLAYER_UI_TIER_PLAYABLE;
     memset(&model, 0, sizeof(model));
     model.title = &running;
     model.logical_width = 1280.0f;
@@ -1552,9 +1566,19 @@ static void test_title_with_a_running_game(void) {
     CHECK(strstr(dump, "Plays full matches and Story Mode.") != NULL &&
               strstr(dump, "Known issues: low frame rate") != NULL,
           "the compatibility card says what to expect and the known issues");
+    CHECK(strstr(dump, "PLAYABLE") != NULL || strstr(dump, "Playable") != NULL,
+          "the compatibility card carries the player tier chip");
     CHECK(strstr(dump, "named boundary") == NULL && strstr(dump, "NAMED BOUNDARY") == NULL &&
               strstr(dump, "COMPATIBILITY.md") == NULL,
-          "the compatibility card has no category chip outside the developer view");
+          "the compatibility card names no docs category outside the developer view");
+    running.compatibility_tier = PLAYER_UI_TIER_NONE;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_title(ui, &model);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "PLAYABLE") == NULL && strstr(dump, "Playable") == NULL,
+          "a title with no tier draws no tier chip");
+    running.compatibility_tier = PLAYER_UI_TIER_PLAYABLE;
     /* The same game while its window is not up yet, then with its package
        missing: the note comes back only where decrypted files are needed. */
     running.package_state = PLAYER_UI_PACKAGE_STARTING;
@@ -1584,6 +1608,72 @@ static void test_title_with_a_running_game(void) {
     nk_ui_destroy(ui);
 }
 
+/* The category -> player tier table in scr_title.c and the "Status words"
+   table in docs/COMPATIBILITY.md say the same thing, row for row (#1297). */
+static void test_tier_table_matches_the_docs(void) {
+    static const struct { const char *category; const char *tier; } expected[] = {
+        {"Works", "Perfect"},
+        {"Partially works", "In-game"},
+        {"Boots to a named boundary", "Title screen"},
+        {"Not started", "Won't boot"},
+        {"Not supported", "Won't boot"},
+        {"Experimental", NULL},
+        {"Untested", NULL},
+        {"A word the docs never use", NULL},
+        {NULL, NULL}
+    };
+    for (size_t i = 0u; i < sizeof(expected) / sizeof(expected[0]); ++i) {
+        const char *word = player_ui_tier_word(player_ui_tier_for_category(expected[i].category));
+        CHECK((word == NULL && expected[i].tier == NULL) ||
+                  (word != NULL && expected[i].tier != NULL &&
+                   strcmp(word, expected[i].tier) == 0),
+              "a docs category maps to its player tier");
+    }
+    CHECK(player_ui_tier_word(PLAYER_UI_TIER_PLAYABLE) != NULL &&
+              strcmp(player_ui_tier_word(PLAYER_UI_TIER_PLAYABLE), "Playable") == 0 &&
+              strcmp(player_ui_tier_word(PLAYER_UI_TIER_MENU), "Menu") == 0 &&
+              player_ui_tier_word(PLAYER_UI_TIER_NONE) == NULL,
+          "every tier has its word, and no tier has none");
+
+    FILE *docs = fopen("docs/COMPATIBILITY.md", "rb");
+    CHECK(docs != NULL, "open docs/COMPATIBILITY.md from the repository root");
+    if (docs == NULL) return;
+    char line[1024];
+    bool in_table = false;
+    size_t rows = 0u;
+    while (fgets(line, sizeof(line), docs) != NULL) {
+        if (strncmp(line, "| Status | Player tier | Meaning |", 34u) == 0) {
+            in_table = true;
+            continue;
+        }
+        if (!in_table) continue;
+        if (line[0] != '|') break;
+        if (strncmp(line, "| :---", 6u) == 0) continue;
+        char category[96];
+        char tier[64];
+        const char *a = line + 2;
+        const char *b = strstr(a, " | ");
+        if (b == NULL || (size_t)(b - a) >= sizeof(category)) break;
+        memcpy(category, a, (size_t)(b - a));
+        category[b - a] = '\0';
+        const char *c = b + 3;
+        const char *d = strstr(c, " | ");
+        if (d == NULL || (size_t)(d - c) >= sizeof(tier)) break;
+        memcpy(tier, c, (size_t)(d - c));
+        tier[d - c] = '\0';
+        const char *word = player_ui_tier_word(player_ui_tier_for_category(category));
+        if (strcmp(tier, "No tier") == 0) {
+            CHECK(word == NULL, "a docs row with no tier maps to no tier");
+        } else {
+            CHECK(word != NULL && strcmp(word, tier) == 0,
+                  "a docs row's player tier matches scr_title.c");
+        }
+        ++rows;
+    }
+    fclose(docs);
+    CHECK(rows == 6u, "the docs Status words table has its six rows");
+}
+
 int main(int argc, char **argv) {
     static char library[DUMP_CAP];
     static char title[DUMP_CAP];
@@ -1606,6 +1696,7 @@ int main(int argc, char **argv) {
     test_version_line();
     test_design_system_layout();
     test_title_with_a_running_game();
+    test_tier_table_matches_the_docs();
     CHECK(build_library_golden(library, sizeof(library), &library_size),
           "build Library screen dumps");
     CHECK(build_title_golden(title, sizeof(title), &title_size),

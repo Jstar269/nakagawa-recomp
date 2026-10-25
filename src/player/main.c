@@ -3886,6 +3886,9 @@ int main(int argc, char *argv[]) {
     if (next_ui != NULL && ui_test_mode) {
         puts("[PLAYER_UI_TEST] UI_NEXT_ACTIVE");
     }
+    if (ui_test_mode && getenv("NK_UI_TEST_REPORT_COMPATIBILITY") != NULL) {
+        player_ui_nk_test_report_compatibility();
+    }
 #endif
     s_switch_presentation = interactive_window && next_ui != NULL;
     s_ui_canvas_from_window = interactive_window;

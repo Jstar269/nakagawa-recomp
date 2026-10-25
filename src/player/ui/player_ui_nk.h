@@ -55,6 +55,26 @@ typedef enum {
     PLAYER_UI_PACKAGE_RUNNING      /* this title is the game that runs now */
 } PlayerUiPackageState;
 
+/* The player tier on the title page's compatibility chip (#1297): the words
+   players know from other compatibility lists. NONE draws no chip, for a
+   title no one has tried. */
+typedef enum {
+    PLAYER_UI_TIER_NONE = 0,
+    PLAYER_UI_TIER_WONT_BOOT,
+    PLAYER_UI_TIER_TITLE_SCREEN,
+    PLAYER_UI_TIER_MENU,
+    PLAYER_UI_TIER_IN_GAME,
+    PLAYER_UI_TIER_PLAYABLE,
+    PLAYER_UI_TIER_PERFECT
+} PlayerUiTier;
+
+/* The chip word for a tier ("Perfect" ... "Won't boot"); NULL for NONE. */
+const char *player_ui_tier_word(PlayerUiTier tier);
+/* The tier a docs/COMPATIBILITY.md category gives a title that has no
+   player record of its own; NONE for Experimental, Untested and an unknown
+   word. This is the one mapping table (scr_title.c). */
+PlayerUiTier player_ui_tier_for_category(const char *category);
+
 typedef enum {
     PLAYER_UI_ACTION_NONE = 0,
     PLAYER_UI_ACTION_OPEN_TITLE,
@@ -114,6 +134,7 @@ typedef struct {
     const struct NkUiImage *icon;
     const struct NkUiImage *picture;
     PlayerUiPackageState package_state;
+    PlayerUiTier compatibility_tier;
 } PlayerUiTitle;
 
 typedef struct {
@@ -360,6 +381,8 @@ bool player_ui_nk_at_library_root(const PlayerUiNk *player);
 const PlayerUiTitle *player_ui_nk_test_title(const PlayerUiNk *player, size_t index);
 /* Test only: the route the next UI shows, or 0 when it has none. */
 int player_ui_nk_test_route(const PlayerUiNk *player);
+/* Test only: print each compatibility record's category tier and tier. */
+void player_ui_nk_test_report_compatibility(void);
 #endif
 bool player_ui_nk_handle_event(PlayerUiNk *player,
                                const union SDL_Event *event);

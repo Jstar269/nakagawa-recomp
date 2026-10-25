@@ -206,10 +206,13 @@ Stop the game to rebuild or change settings." The input note about decrypted fil
 still needs them. Main column: eyebrow LIBRARY › TITLE, the name in `TITLE_XL`, the disc ID in `DATA`, the status
 pill and tag, one action row on the column's left edge with every button 52 px (the primary action, PLAY when
 the package is ready, STARTING... while the launch starts, STOP GAME while a game runs, then OPEN SAVE FOLDER and
-BACK), and the WHAT TO EXPECT card: one or two plain sentences on what to expect on this PC in `BODY_S` `paper`,
-then the known issues in `muted` when there are any. It has no category chip: the `docs/COMPATIBILITY.md`
-category describes the project's test route and read as a claim about the user's game (#1297), so only developer
-mode names it, in a `FOOTNOTE`. Prompt bar: MOVE, SELECT, BACK.
+BACK), and the WHAT TO EXPECT card. Its eyebrow carries a player tier chip (PERFECT and PLAYABLE `ready`, IN-GAME
+and MENU `info`, TITLE SCREEN `warning`, WON'T BOOT `error`; no chip for a title no one has tried). Below it come
+one or two plain sentences on what to expect on this PC in `BODY_S` `paper`, then the known issues in `muted`
+when there are any. The tier comes from the title's own player record, or else from its `docs/COMPATIBILITY.md`
+status word through the table in [Status words](COMPATIBILITY.md#status-words). The status word itself describes
+the project's test route and read as a claim about the user's game (#1297), so only developer mode names it, in a
+`FOOTNOTE`. Prompt bar: MOVE, SELECT, BACK.
 
 ### About (built)
 

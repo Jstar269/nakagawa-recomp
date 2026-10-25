@@ -39,34 +39,40 @@
 typedef struct {
     const char *key;
     const char *category;
+    /* The player tier when a player's own run says more (or less) than the
+       category's tier; NONE takes player_ui_tier_for_category(category). */
+    PlayerUiTier tier;
     const char *expect;
     const char *known_issues;
 } PlayerUiCompatibilityRecord;
 
 /* What a player can expect from each title in the public compatibility table,
-   in plain words (#1297). The category is the table's own word, kept for the
-   developer view: it describes the project's test route, not this PC. Lookup
-   is data driven so the screen never assigns a compatibility claim from
-   layout code. */
+   in plain words, and its player tier (#1297). The category is the table's own
+   word, kept for the developer view: it describes the project's test route,
+   not this PC. Lookup is data driven so the screen never assigns a
+   compatibility claim from layout code. */
 static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
-    {"display-smoke-v1", "Works",
+    {"display-smoke-v1", "Works", PLAYER_UI_TIER_NONE,
      "Draws the project's moving test pattern. There is nothing to play.", ""},
-    {"synthetic-allegrex-v1", "Works",
+    {"synthetic-allegrex-v1", "Works", PLAYER_UI_TIER_NONE,
      "Runs the project's test program, then closes.", ""},
-    {"pspdev-phase5-v1", "Boots to a named boundary",
+    {"pspdev-phase5-v1", "Boots to a named boundary", PLAYER_UI_TIER_WONT_BOOT,
      "A project test module. It does not start from the player yet.", ""},
-    {"synthetic-title2-v1", "Works",
+    {"synthetic-title2-v1", "Works", PLAYER_UI_TIER_NONE,
      "Runs the project's test program, then closes.", ""},
-    {"showcase-scene-v1", "Partially works",
+    {"showcase-scene-v1", "Partially works", PLAYER_UI_TIER_PLAYABLE,
      "Shows a lit, rotating cube that answers the stick and buttons, with sound.", ""},
-    {"showcase-breakout-v1", "Partially works",
+    {"showcase-breakout-v1", "Partially works", PLAYER_UI_TIER_PLAYABLE,
      "Plays a full game of Breakout with sound and keeps your high score.", ""},
-    /* The owner's own play on 2026-10-24 (#1297). */
-    {"UCUS98701", "Boots to a named boundary", "Plays full matches and Story Mode.",
+    /* Playable: the owner played full matches and Story Mode on 2026-10-24
+       (#1297). */
+    {"UCUS98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
+     "Plays full matches and Story Mode.",
      "Known issues: low frame rate, sound drops out, and movies show black."},
-    {"UCUS-98701", "Boots to a named boundary", "Plays full matches and Story Mode.",
+    {"UCUS-98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
+     "Plays full matches and Story Mode.",
      "Known issues: low frame rate, sound drops out, and movies show black."},
-    {"PAC-MAN Championship Edition", "Partially works",
+    {"PAC-MAN Championship Edition", "Partially works", PLAYER_UI_TIER_NONE,
      "Reaches the title screen and plays a stage. The rest of the game has not been tried yet.",
      ""}
 };
@@ -605,13 +611,21 @@ void player_ui_nk_note_gamepad(PlayerUiNk *player, uint32_t which, bool connecte
     (void)player_ui_nk_handle_event(player, &event);
 }
 
-/* The title's compatibility record: what to expect and its known issues, in
-   plain words. Returns the docs/COMPATIBILITY.md category for the developer
-   view. A title with no record gets a sentence for its general state. */
-static const char *player_ui_compatibility(const GameRecord *game, const char **expect,
-                                           const char **known_issues) {
+static PlayerUiTier player_ui_record_tier(const PlayerUiCompatibilityRecord *record) {
+    return record->tier != PLAYER_UI_TIER_NONE ? record->tier
+                                               : player_ui_tier_for_category(record->category);
+}
+
+/* The title's compatibility record: its player tier, what to expect and its
+   known issues, in plain words. Returns the docs/COMPATIBILITY.md category for
+   the developer view. A title with no record gets a sentence for its general
+   state and the tier its category maps to. */
+static const char *player_ui_compatibility_words(const GameRecord *game, const char **expect,
+                                                 const char **known_issues,
+                                                 PlayerUiTier *record_tier) {
     *expect = "No one has tried this game in Nakagawa yet.";
     *known_issues = "";
+    *record_tier = PLAYER_UI_TIER_NONE;
     if (game == NULL) return "Untested";
     for (size_t i = 0u;
          i < sizeof(s_compatibility_records) / sizeof(s_compatibility_records[0]);
@@ -624,6 +638,7 @@ static const char *player_ui_compatibility(const GameRecord *game, const char **
              strcmp(game->title_name, s_compatibility_records[i].key) == 0)) {
             *expect = s_compatibility_records[i].expect;
             *known_issues = s_compatibility_records[i].known_issues;
+            *record_tier = player_ui_record_tier(&s_compatibility_records[i]);
             return s_compatibility_records[i].category;
         }
     }
@@ -653,6 +668,34 @@ static const char *player_ui_compatibility(const GameRecord *game, const char **
             return "Not started";
     }
 }
+
+static const char *player_ui_compatibility(const GameRecord *game, const char **expect,
+                                           const char **known_issues, PlayerUiTier *tier) {
+    PlayerUiTier record_tier;
+    const char *category =
+        player_ui_compatibility_words(game, expect, known_issues, &record_tier);
+    *tier = record_tier != PLAYER_UI_TIER_NONE ? record_tier
+                                               : player_ui_tier_for_category(category);
+    return category;
+}
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+void player_ui_nk_test_report_compatibility(void) {
+    for (size_t i = 0u;
+         i < sizeof(s_compatibility_records) / sizeof(s_compatibility_records[0]);
+         ++i) {
+        const PlayerUiCompatibilityRecord *record = &s_compatibility_records[i];
+        const char *tier = player_ui_tier_word(player_ui_record_tier(record));
+        const char *category_tier =
+            player_ui_tier_word(player_ui_tier_for_category(record->category));
+        char key[96];
+        snprintf(key, sizeof(key), "%s", record->key);
+        for (char *q = key; *q; q++) if (*q == ' ') *q = '_';
+        printf("[PLAYER_UI_TEST] compatibility key=%s category_tier=%s tier=%s\n", key,
+               category_tier ? category_tier : "none", tier ? tier : "none");
+    }
+}
+#endif
 
 static bool player_ui_has_seen_boot(const GameRecord *game) {
     return game != NULL && (game->status == NK_STATUS_BOOTS ||
@@ -755,7 +798,8 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->package_state = PLAYER_UI_PACKAGE_MISSING;
     }
     out->compatibility_category = player_ui_compatibility(
-        game, &out->compatibility_expect, &out->compatibility_known_issues);
+        game, &out->compatibility_expect, &out->compatibility_known_issues,
+        &out->compatibility_tier);
     if (!app->settings.developer_mode) out->compatibility_category = NULL;
     /* The disc's executable is encrypted and no decrypted copy was found. The
        title screen shows this only while the package still needs it. */

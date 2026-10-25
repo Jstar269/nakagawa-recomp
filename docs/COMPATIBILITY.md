@@ -10,14 +10,22 @@ fails cleanly at a named boundary and is never faked.
 Every state in the tables below uses one of these words. A row's status is only
 what its recorded evidence supports, and no later document raises it.
 
-| Status | Meaning |
-| :--- | :--- |
-| Works | The maintainer verified the behaviour on a documented route; the row says what that route covers. |
-| Partially works | Some named parts are verified; the row names what is missing or refused. |
-| Boots to a named boundary | On the documented route the title or fixture starts, then stops at a named, fail-closed boundary. |
-| Not started | No implementation yet. |
-| Experimental | A retail title that has been seen to boot or run, with no maintainer qualification. |
-| Untested | A retail title with no record at all. |
+The player does not show these words. Its title page shows a player tier instead: **Perfect**, **Playable**,
+**In-game**, **Menu**, **Title screen** or **Won't boot**, with a plain sentence on what to expect
+([#1297](https://github.com/Jstar269/nakagawa-recomp/issues/1297)). A status word describes the project's test
+route, so it gives a title only the tier below. A title whose own run was recorded in the player carries that
+tier instead; Hot Shots Tennis is **Playable**. The developer view still names the status word.
+`src/player/ui/scr_title.c` holds the same mapping, and `mingw32-make nk-ui-player-screens-selftest` checks that
+the two agree.
+
+| Status | Player tier | Meaning |
+| :--- | :--- | :--- |
+| Works | Perfect | The maintainer verified the behaviour on a documented route; the row says what that route covers. |
+| Partially works | In-game | Some named parts are verified; the row names what is missing or refused. |
+| Boots to a named boundary | Title screen | On the documented route the title or fixture starts, then stops at a named, fail-closed boundary. |
+| Not started | Won't boot | No implementation yet. |
+| Experimental | No tier | A retail title that has been seen to boot or run, with no maintainer qualification. |
+| Untested | No tier | A retail title with no record at all. |
 
 Retail titles follow one rule. A title the maintainer has tested on a documented
 route keeps exactly the status its recorded evidence supports. Any other retail
