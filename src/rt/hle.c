@@ -28,13 +28,6 @@
 #ifndef _MSC_EXTENSIONS
 #define _MSC_EXTENSIONS  /* for _Exit on MSVC; harmless under MinGW */
 #endif
-/* Output directory of THIS build, supplied by the Makefile as -DSR_BUILD_DIR. It is
- * only ever used to place host-side diagnostic artifacts (the ExitGame crash dump and
- * exit flag) next to the executable that produced them. It carries no title identity
- * and no PSP semantics. The fallback keeps a direct compile of this file working. */
-#ifndef SR_BUILD_DIR
-#define SR_BUILD_DIR "build/hst"
-#endif
 #ifndef _WIN32
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
@@ -6318,6 +6311,10 @@ static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psm
     return 0;}
 static uint32_t h_PsmfAudioOutSize(CpuState *s){return psmf_find(A0,0)?8192u:PSMF_ERR_STATUS;}
 
+/* Host path helpers defined with the rest of the host-path layer below. */
+static int sr_exit_artifact_path_alloc(const wchar_t *name, char **out);
+static FILE *sr_fopen_utf8(const char *path, const wchar_t *mode);
+
 /* sceKernelExitGame: real PSP terminates the process. Three callers observed so far:
  *  (1) the guest's libc _exit path (call site already inside the engine shutdown decision)
  *  (2) the launcher thread (uid 0x110 / 0x111) after the worker dissolves
@@ -6359,14 +6356,15 @@ static uint32_t h_ExitGame(CpuState *s) {
      * runtime observable; that legacy diagnostic path allowed execution after ExitGame. */
     sr_trace_close();
 
-    /* Write crash dump and exit flag for tools/mem_debug.py to trap and trace.
-     * SR_BUILD_DIR is the build's own output directory (Makefile: BUILD_DIR), so a
-     * generic or second title writes its own dump instead of a literal build/hst/.
-     * The fallback keeps a hand-rolled compile that does not define it working. */
-    char sr_dump_path[512], sr_flag_path[512];
-    snprintf(sr_dump_path, sizeof sr_dump_path, "%s/crash_dump.bin", SR_BUILD_DIR);
-    snprintf(sr_flag_path, sizeof sr_flag_path, "%s/exited.flag", SR_BUILD_DIR);
-    FILE *f_dump = fopen(sr_dump_path, "wb");
+    /* Write crash dump and exit flag for tools/mem_debug.py to trap and trace. They go
+     * beside the executable that produced them, where tools/mem_debug.py
+     * build_artifact_dir looks, so each title writes its own dump. The folder is
+     * resolved at run time, never compiled in: a packaged game writes beside its own
+     * executable, and the compiled object carries no build path (#1306). */
+    char *sr_dump_path = NULL, *sr_flag_path = NULL;
+    sr_exit_artifact_path_alloc(L"crash_dump.bin", &sr_dump_path);
+    sr_exit_artifact_path_alloc(L"exited.flag", &sr_flag_path);
+    FILE *f_dump = sr_dump_path ? sr_fopen_utf8(sr_dump_path, L"wb") : NULL;
     if (f_dump) {
         /* Versioned header so tools/mem_debug.py can reject dumps written by a
          * different CpuState ABI instead of misreading them:
@@ -6382,11 +6380,13 @@ static uint32_t h_ExitGame(CpuState *s) {
         }
         fclose(f_dump);
     }
-    FILE *f_flag = fopen(sr_flag_path, "w");
+    FILE *f_flag = sr_flag_path ? sr_fopen_utf8(sr_flag_path, L"w") : NULL;
     if (f_flag) {
         fprintf(f_flag, "1\n");
         fclose(f_flag);
     }
+    free(sr_dump_path);
+    free(sr_flag_path);
 
     fflush(NULL);
     if (cur == 0) {
@@ -8115,6 +8115,18 @@ static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
     return ms0_fopen_rel_utf8(rel, mode, NULL);
 }
 #endif /* _WIN32 */
+
+/* UTF-8 path of the file NAME beside this executable, for the ExitGame diagnostics.
+ * Returns 0 and leaves *out NULL when the executable's folder cannot be resolved. */
+static int sr_exit_artifact_path_alloc(const wchar_t *name, char **out) {
+    wchar_t *dir = NULL, *joined = NULL;
+    *out = NULL;
+    int ok = sr_wide_module_dir_alloc(&dir) && sr_wide_join_alloc(dir, name, &joined) &&
+             sr_wide_to_utf8_alloc(joined, out);
+    free(dir);
+    free(joined);
+    return ok;
+}
 
 /* The three helpers below name no host primitive: the unified Memory Stick
  * root resolution, the byte-path join and the directory-root resolution are
