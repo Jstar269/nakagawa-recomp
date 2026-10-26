@@ -2806,7 +2806,10 @@ static uint32_t h_CtrlGetIdleCancelThreshold(CpuState *s) {
 }
 /* sceCtrlSetSamplingMode(mode): store the mode (0 digital, 1 analog), returning
  * the previous one. Any other mode, 2 and -1 included, is refused with
- * INVALID_MODE and leaves the stored mode unchanged (PSPAutotests ctrl/sampling). */
+ * INVALID_MODE and leaves the stored mode unchanged (PSPAutotests ctrl/sampling).
+ * The whole register is range-checked; whether firmware first truncates the
+ * argument to 8 bits (uOFW src/kd/ctrl/ctrl.c reconstructs a u8 parameter) is
+ * UNMEASURED, so a value such as 0x101 is refused here. */
 static uint32_t h_CtrlSetSamplingMode(CpuState *s) {
     if (A0 > 1u) return SCE_CTRL_ERROR_INVALID_MODE;
     uint32_t prev = s_ctrl_sampling_mode;
@@ -2859,7 +2862,9 @@ static uint32_t h_CtrlGetSamplingMode(CpuState *s) {
 /* sceCtrlGetSamplingCycle(int *pcycle): report the cycle retained by
  * sceCtrlSetSamplingCycle (power-on default 0) and return 0, the round trip
  * PSPAutotests ctrl/sampling records. The out-pointer is checked like the mode
- * getter above; that refusal code is UNMEASURED on hardware. */
+ * getter above. PSPAutotests leaves the NULL call out because it crashes the PSP,
+ * so there is no PSP return code to match: the ILLEGAL_ADDR refusal is this
+ * runtime's fail-closed choice, not a measured code. */
 static uint32_t h_CtrlGetSamplingCycle(CpuState *s) {
     (void)s;
     if (!A0 || !sr_guest_span_writable(A0, 4u)) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
@@ -19065,8 +19070,9 @@ static uint32_t ctrl_fill_n(uint32_t buf, uint32_t nbufs, int negate, int peek) 
      * the guest asked for something the API cannot do and was told it worked. */
     if (nbufs > CTRL_RING) return SCE_CTRL_ERROR_INVALID_SIZE;
     /* A zero count is refused with the same code (issue #1390 acceptance, from the
-     * project's PSP-3000 measurement cited there; not yet a public oracle case, and
-     * PPSSPP returns 0 here). Refusing writes nothing and consumes nothing. */
+     * project's PSP-3000 measurement cited there; not yet a public oracle cell,
+     * which #311 tracks for PSP-SYSTEM-001). PPSSPP and the uOFW reconstruction
+     * return 0 here instead. Refusing writes nothing and consumes nothing. */
     if (nbufs == 0) return SCE_CTRL_ERROR_INVALID_SIZE;
     int avail = (s_ctrl_w - s_ctrl_r + CTRL_RING) % CTRL_RING;
     /* Blocking ReadBuffer waits for at least one fresh sample (delivered each VBLANK). */

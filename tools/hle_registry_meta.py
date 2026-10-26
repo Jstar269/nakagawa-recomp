@@ -142,6 +142,33 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured",
     },
+    # The sampling setters' accepted ranges and error codes follow PSPAutotests
+    # tests/ctrl/sampling and tests/ctrl/sampling2 (.expected files recorded on a PSP);
+    # the stored values do not yet drive sampling (#1390).
+    "h_CtrlSetSamplingMode": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix",
+            "PSPAutotests tests/ctrl/sampling (modes 2 and -1 refused with 0x80000107, mode kept)",
+        ],
+        "limitation": "validates and stores the mode, but digital mode does not yet centre the sampled analog axes (#1390); whether firmware truncates the argument to 8 bits before the range check is not measured",
+    },
+    "h_CtrlSetSamplingCycle": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix",
+            "PSPAutotests tests/ctrl/sampling2 (0 and 5555..20000 accepted, other cycles refused with 0x800001FE, cycle kept)",
+        ],
+        "limitation": "validates and stores the cycle, but samples are still latched once per VBLANK whatever the cycle (#1390)",
+    },
+    "h_CtrlGetSamplingCycle": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix",
+            "PSPAutotests tests/ctrl/sampling (power-on cycle 0, set/get round trip)",
+        ],
+        "limitation": "reports the cycle retained by sceCtrlSetSamplingCycle; PSPAutotests leaves the NULL out-pointer call out as crashing a PSP, so the ILLEGAL_ADDR refusal used here instead is the runtime's fail-closed choice, not a measured code",
+    },
     # Kernel alarms are guest-time timers whose handlers run in interrupt context from the
     # scheduler's interrupt-service step.  The only measured cells are the unknown-alarm-id
     # code and "a non-zero handler return reschedules"; the rest is project-defined.

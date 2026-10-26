@@ -35,7 +35,7 @@
     "classification": "dedicated",
     "handler": "h_CtrlGetSamplingCycle",
     "name": "sceCtrlGetSamplingCycle",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x03444eb4": {
     "classification": "dedicated",
@@ -463,7 +463,7 @@
     "classification": "dedicated",
     "handler": "h_CtrlSetSamplingMode",
     "name": "sceCtrlSetSamplingMode",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x1f6752ad": {
     "classification": "dedicated",
@@ -1677,7 +1677,7 @@
     "classification": "dedicated",
     "handler": "h_CtrlSetSamplingCycle",
     "name": "sceCtrlSetSamplingCycle",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x6a638d83": {
     "classification": "dedicated",

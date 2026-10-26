@@ -15314,8 +15314,9 @@ static void test_delay_thread_zero_loop_still_preempts_at_timeslice(void) {
  *    for nBufs == 0; issue #1390 specifies INVALID_SIZE from the project's PSP-3000
  *    measurement (not yet a public oracle case), and that is what is asserted.
  *  - pspautotests tests/ctrl/ctrl.expected records that the blocking read really
- *    does wait and that the peek form does not.  Only the blocking form is
- *    registered by this runtime, so that is background, not an assertion here.
+ *    does wait and that the peek form does not.  The peek and Negative forms are
+ *    registered too; which of them consume history is asserted below, the wait
+ *    itself is not.
  *
  * The whole-span requirement does not depend on the PSP contract at all.  The
  * scalar accessors reject an out-of-range store one word at a time, so with no
