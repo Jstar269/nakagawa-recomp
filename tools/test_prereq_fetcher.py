@@ -672,8 +672,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Offline by default (AGENTS.md section 5): the shipped player, runtime and
 # their Python helpers reach the network only through these files, both of
-# them the consented, pinned prerequisite download. A new egress needs a
-# maintainer decision, a "Network use" entry in docs/SETUP.md, and a line here.
+# them the consented, pinned prerequisite download. prereq_fetcher.py also
+# serves the maintainer's release staging (--bundle-dest, #1285) from the same
+# pinned hosts; the player never passes that option, and a release that carries
+# prereqs/ makes no download at all. A new egress needs a maintainer decision,
+# a "Network use" entry in docs/SETUP.md, and a line here.
 NETWORK_EGRESS_ALLOWLIST = frozenset({
     "src/player/package_builder.c",
     "tools/nk_core/prereq_fetcher.py",
