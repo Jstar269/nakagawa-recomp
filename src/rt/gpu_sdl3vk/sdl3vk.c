@@ -612,6 +612,14 @@ _Static_assert((int)SDL_GAMEPAD_AXIS_RIGHTY == (int)NK_HOST_AXIS_RIGHTY, "host a
 _Static_assert((int)SDL_GAMEPAD_AXIS_LEFT_TRIGGER == (int)NK_HOST_AXIS_LEFT_TRIGGER, "host axis enum drift: LEFT_TRIGGER");
 _Static_assert((int)SDL_GAMEPAD_AXIS_RIGHT_TRIGGER == (int)NK_HOST_AXIS_RIGHT_TRIGGER, "host axis enum drift: RIGHT_TRIGGER");
 
+/* Profile key codes are USB HID keyboard usages, which SDL_Scancode shares; the input-profile
+ * selftest checks every default key's name against its SDL scancode. */
+_Static_assert((int)SDL_SCANCODE_A == 4, "SDL scancode drift from HID usage: A");
+_Static_assert((int)SDL_SCANCODE_RETURN == 40, "SDL scancode drift from HID usage: RETURN");
+_Static_assert((int)SDL_SCANCODE_UP == 82, "SDL scancode drift from HID usage: UP");
+_Static_assert((int)SDL_SCANCODE_KP_0 == 98, "SDL scancode drift from HID usage: KP_0");
+_Static_assert((int)SDL_SCANCODE_RALT == 230, "SDL scancode drift from HID usage: RALT");
+
 /* Versioned host input profile state (#357). */
 static NkInputProfile s_input_profile;
 static bool s_input_profile_loaded;
@@ -739,23 +747,29 @@ static void queue_text_utf8(const char *s) {
     }
 }
 
-static uint32_t keyboard_button(SDL_Scancode sc) {
-    switch (sc) {
-    case SDL_SCANCODE_RETURN: return 0x0008;
-    case SDL_SCANCODE_LSHIFT:
-    case SDL_SCANCODE_RSHIFT: return 0x0001;
-    case SDL_SCANCODE_X:      return 0x4000;
-    case SDL_SCANCODE_Z:      return 0x2000;
-    case SDL_SCANCODE_A:      return 0x8000;
-    case SDL_SCANCODE_S:      return 0x1000;
-    case SDL_SCANCODE_Q:      return 0x0100;
-    case SDL_SCANCODE_W:      return 0x0200;
-    case SDL_SCANCODE_UP:     return 0x0010;
-    case SDL_SCANCODE_DOWN:   return 0x0040;
-    case SDL_SCANCODE_LEFT:   return 0x0080;
-    case SDL_SCANCODE_RIGHT:  return 0x0020;
-    default:                  return 0;
+uint32_t sdl3vk_map_keyboard(const NkInputProfile *profile, const bool *key_state, int key_count) {
+    NkInputProfile def_profile;
+    const NkInputProfile *p = profile;
+    if (!p) {
+        nk_input_profile_init_default(&def_profile);
+        p = &def_profile;
     }
+    return nk_input_profile_eval_keys(p, key_state, key_count);
+}
+
+uint32_t sdl3vk_map_key(const NkInputProfile *profile, int scancode) {
+    NkInputProfile def_profile;
+    const NkInputProfile *p = profile;
+    if (!p) {
+        nk_input_profile_init_default(&def_profile);
+        p = &def_profile;
+    }
+    return nk_input_profile_key_buttons(p, scancode);
+}
+
+static uint32_t keyboard_button(SDL_Scancode sc) {
+    const NkInputProfile *prof = padscript_active() ? NULL : sdl3vk_get_input_profile();
+    return sdl3vk_map_key(prof, (int)sc);
 }
 
 static uint32_t gamepad_button(Uint8 button) {
@@ -811,22 +825,12 @@ static void poll_input(int *quit) {
         }
     }
 
-    uint32_t b = 0;
-    const bool *k = SDL_GetKeyboardState(NULL);
-    /* Same bindings as the GDI front-end (gui.c read_keys), from the same table
-     * (src/core/nk_input_profile.h). */
-    if (k[SDL_SCANCODE_RETURN]) b |= NK_PSP_BTN_START_BIT;         /* START   */
-    if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]) b |= NK_PSP_BTN_SELECT_BIT; /* SELECT */
-    if (k[SDL_SCANCODE_X]) b |= NK_PSP_BTN_CROSS_BIT;              /* CROSS   */
-    if (k[SDL_SCANCODE_Z]) b |= NK_PSP_BTN_CIRCLE_BIT;             /* CIRCLE  */
-    if (k[SDL_SCANCODE_A]) b |= NK_PSP_BTN_SQUARE_BIT;             /* SQUARE  */
-    if (k[SDL_SCANCODE_S]) b |= NK_PSP_BTN_TRIANGLE_BIT;           /* TRIANGLE*/
-    if (k[SDL_SCANCODE_Q]) b |= NK_PSP_BTN_LTRIGGER_BIT;           /* L       */
-    if (k[SDL_SCANCODE_W]) b |= NK_PSP_BTN_RTRIGGER_BIT;           /* R       */
-    if (k[SDL_SCANCODE_UP])    b |= NK_PSP_BTN_UP_BIT;
-    if (k[SDL_SCANCODE_DOWN])  b |= NK_PSP_BTN_DOWN_BIT;
-    if (k[SDL_SCANCODE_LEFT])  b |= NK_PSP_BTN_LEFT_BIT;
-    if (k[SDL_SCANCODE_RIGHT]) b |= NK_PSP_BTN_RIGHT_BIT;
+    int key_count = 0;
+    const bool *k = SDL_GetKeyboardState(&key_count);
+    /* The profile's keyboard keys (#1299). Its defaults are the GDI front-end's map
+     * (gui.c read_keys); SR_PADSCRIPT keeps the defaults, as it does for the gamepad. */
+    const NkInputProfile *key_prof = padscript_active() ? NULL : sdl3vk_get_input_profile();
+    uint32_t b = sdl3vk_map_keyboard(key_prof, k, key_count);
 
     uint8_t lx = 128, ly = 128;
     s_pad_present = s_pad != NULL;
@@ -2025,6 +2029,109 @@ int sdl3vk_input_profile_selftest(void) {
         profile_test_setenv("SR_PADSCRIPT", NULL);
         profile_test_setenv("NK_INPUT_PROFILE", NULL);
         remove(tmp_custom);
+        sdl3vk_reset_input_profile();
+    }
+
+    /* ---- 5(e) Keyboard keys come from the profile (#1299) ---- */
+    {
+        /* The default profile reproduces the map hard-coded before schema 3, key name and
+         * SDL scancode alike. */
+        static const struct {
+            SDL_Scancode sc;
+            const char *name;
+            uint32_t expected_bit;
+        } kKeyTable[] = {
+            { SDL_SCANCODE_RETURN, "return", 0x0008 }, /* START */
+            { SDL_SCANCODE_LSHIFT, "lshift", 0x0001 }, /* SELECT */
+            { SDL_SCANCODE_RSHIFT, "rshift", 0x0001 }, /* SELECT */
+            { SDL_SCANCODE_X,      "x",      0x4000 }, /* CROSS */
+            { SDL_SCANCODE_Z,      "z",      0x2000 }, /* CIRCLE */
+            { SDL_SCANCODE_A,      "a",      0x8000 }, /* SQUARE */
+            { SDL_SCANCODE_S,      "s",      0x1000 }, /* TRIANGLE */
+            { SDL_SCANCODE_Q,      "q",      0x0100 }, /* LTRIGGER */
+            { SDL_SCANCODE_W,      "w",      0x0200 }, /* RTRIGGER */
+            { SDL_SCANCODE_UP,     "up",     0x0010 },
+            { SDL_SCANCODE_DOWN,   "down",   0x0040 },
+            { SDL_SCANCODE_LEFT,   "left",   0x0080 },
+            { SDL_SCANCODE_RIGHT,  "right",  0x0020 },
+        };
+        for (size_t i = 0; i < sizeof(kKeyTable) / sizeof(kKeyTable[0]); i++) {
+            bool keys[SDL_SCANCODE_COUNT] = {false};
+            keys[kKeyTable[i].sc] = true;
+            uint32_t held = sdl3vk_map_keyboard(NULL, keys, SDL_SCANCODE_COUNT);
+            uint32_t pressed = sdl3vk_map_key(NULL, (int)kKeyTable[i].sc);
+            if (held != kKeyTable[i].expected_bit || pressed != kKeyTable[i].expected_bit) {
+                fprintf(stderr, "input_profile_selftest: default key %s: held 0x%04x pressed 0x%04x "
+                        "expected 0x%04x\n", kKeyTable[i].name, held, pressed,
+                        kKeyTable[i].expected_bit);
+                ok = 0;
+            }
+            if (nk_host_key_from_name(kKeyTable[i].name) != (int)kKeyTable[i].sc) {
+                fprintf(stderr, "input_profile_selftest: key name '%s' is not SDL scancode %d\n",
+                        kKeyTable[i].name, (int)kKeyTable[i].sc);
+                ok = 0;
+            }
+        }
+        {
+            bool keys[SDL_SCANCODE_COUNT] = {false};
+            keys[SDL_SCANCODE_C] = true;
+            if (sdl3vk_map_keyboard(NULL, keys, SDL_SCANCODE_COUNT) != 0 ||
+                sdl3vk_map_key(NULL, SDL_SCANCODE_C) != 0) {
+                fprintf(stderr, "input_profile_selftest: unbound default key C produced a button\n");
+                ok = 0;
+            }
+            /* A key past the host's reported state array reads as released. */
+            keys[SDL_SCANCODE_X] = true;
+            if (sdl3vk_map_keyboard(NULL, keys, SDL_SCANCODE_X) != 0) {
+                fprintf(stderr, "input_profile_selftest: key beyond key_count read as held\n");
+                ok = 0;
+            }
+        }
+
+        /* A saved profile that moves CROSS from X to C: the runtime loads it and the
+         * production key paths set CROSS for C and nothing for X. */
+        const char *tmp_keys = "selftest_keyboard_profile.json";
+        NkInputProfile custom;
+        nk_input_profile_init_default(&custom);
+        custom.psp_keys[NK_PSP_BTN_CROSS].primary = nk_host_key_from_name("c");
+        char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN] = {0};
+        if (nk_input_profile_save(&custom, tmp_keys, diag, sizeof(diag)) != NK_OK) {
+            fprintf(stderr, "input_profile_selftest: keyboard profile save failed: %s\n", diag);
+            ok = 0;
+        }
+        profile_test_setenv("NK_INPUT_PROFILE", tmp_keys);
+        sdl3vk_reset_input_profile();
+        sdl3vk_init_input_profile();
+        const NkInputProfile *prof = sdl3vk_get_input_profile();
+        bool keys[SDL_SCANCODE_COUNT] = {false};
+        keys[SDL_SCANCODE_C] = true;
+        uint32_t held_c = sdl3vk_map_keyboard(prof, keys, SDL_SCANCODE_COUNT);
+        keys[SDL_SCANCODE_C] = false;
+        keys[SDL_SCANCODE_X] = true;
+        uint32_t held_x = sdl3vk_map_keyboard(prof, keys, SDL_SCANCODE_COUNT);
+        uint32_t pulse_c = keyboard_button(SDL_SCANCODE_C);
+        uint32_t pulse_x = keyboard_button(SDL_SCANCODE_X);
+        if (held_c != NK_PSP_BTN_CROSS_BIT || pulse_c != NK_PSP_BTN_CROSS_BIT ||
+            held_x != 0 || pulse_x != 0) {
+            fprintf(stderr, "input_profile_selftest: remapped key: C held 0x%04x pressed 0x%04x, "
+                    "X held 0x%04x pressed 0x%04x; expected C -> 0x4000 and X -> 0\n",
+                    held_c, pulse_c, held_x, pulse_x);
+            ok = 0;
+        }
+
+        /* SR_PADSCRIPT keeps the default keys even with the remap on disk. */
+        profile_test_setenv("SR_PADSCRIPT", "synthetic_script_active");
+        sdl3vk_reset_input_profile();
+        sdl3vk_init_input_profile();
+        if (keyboard_button(SDL_SCANCODE_X) != NK_PSP_BTN_CROSS_BIT ||
+            keyboard_button(SDL_SCANCODE_C) != 0) {
+            fprintf(stderr, "input_profile_selftest: SR_PADSCRIPT active did not keep default keys\n");
+            ok = 0;
+        }
+
+        profile_test_setenv("SR_PADSCRIPT", NULL);
+        profile_test_setenv("NK_INPUT_PROFILE", NULL);
+        remove(tmp_keys);
         sdl3vk_reset_input_profile();
     }
 

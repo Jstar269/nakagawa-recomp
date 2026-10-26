@@ -180,6 +180,11 @@ void sdl3vk_map_gamepad(
     uint8_t *out_lx,
     uint8_t *out_ly
 );
+/* Host keyboard (#1299): PSP button bits for the held keys (`key_state` indexed by
+ * SDL_Scancode, `key_count` entries) and for one key-down event. A NULL profile means
+ * the default mapping. */
+uint32_t sdl3vk_map_keyboard(const NkInputProfile *profile, const bool *key_state, int key_count);
+uint32_t sdl3vk_map_key(const NkInputProfile *profile, int scancode);
 void sdl3vk_init_input_profile(void);
 void sdl3vk_reset_input_profile(void);
 const NkInputProfile *sdl3vk_get_input_profile(void);
