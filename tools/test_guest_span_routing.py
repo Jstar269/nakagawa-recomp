@@ -49,21 +49,31 @@ class TestGuestSpanRouting(unittest.TestCase):
         # The stubs' bodies live in recomp.h (#1170): whole-span checks, the
         # VRAM read-back before the source pointer, and the write notification.
         header = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        # #1049: the bodies copy through sr_guest_memmove/sr_guest_fill, which
+        # split swizzled VRAM mirror spans into measured-contiguous pieces.
         memmove = _body(header, "sr_native_memmove")
-        self.assertIn("sr_guest_span_writable(dest, size) && sr_guest_span_readable_current(src, size)", memmove)
+        self.assertIn("sr_inrange_n(dest, size) && sr_inrange_n(src, size)", memmove)
         self.assertIn("sr_oor(dest, 0u, 1); sr_oor(src, 0u, 0);", memmove)
-        self.assertIn("sr_guest_vram_write_prepare_bytes(dest, size)", memmove)
-        self.assertLess(memmove.find("sr_guest_vram_write_prepare_bytes(dest, size)"),
-                        memmove.find("memmove(SR_HOST(dest), SR_HOST(src), size)"))
-        self.assertGreater(memmove.find("sr_guest_vram_write_commit_bytes(dest, size)"),
-                           memmove.find("memmove(SR_HOST(dest), SR_HOST(src), size)"))
+        self.assertLess(memmove.find("sr_heap_note_bulk_write(dest, size, pc)"),
+                        memmove.find("sr_guest_memmove(dest, src, size)"))
         memset = _body(header, "sr_native_memset")
-        self.assertIn("sr_guest_span_writable(dest, size)", memset)
-        self.assertIn("sr_guest_vram_write_prepare_bytes(dest, size)", memset)
-        self.assertLess(memset.find("sr_guest_vram_write_prepare_bytes(dest, size)"),
-                        memset.find("memset(SR_HOST(dest), val, size)"))
-        self.assertGreater(memset.find("sr_guest_vram_write_commit_bytes(dest, size)"),
-                           memset.find("memset(SR_HOST(dest), val, size)"))
+        self.assertIn("sr_inrange_n(dest, size)", memset)
+        self.assertLess(memset.find("sr_heap_note_bulk_write(dest, size, pc)"),
+                        memset.find("sr_guest_fill(dest, val, size)"))
+        guest_memmove = _body(header, "sr_guest_memmove")
+        self.assertIn("sr_ge_vram_read_prepare(sr_vram_cpu_address(src), size)", guest_memmove)
+        self.assertLess(guest_memmove.find("sr_guest_vram_write_prepare_bytes(dst, size)"),
+                        guest_memmove.find("memmove(SR_HOST(dst), SR_HOST(src), size)"))
+        self.assertGreater(guest_memmove.find("sr_guest_vram_write_commit_bytes(dst, size)"),
+                           guest_memmove.find("memmove(SR_HOST(dst), SR_HOST(src), size)"))
+        for name, store in (("sr_guest_copy_out", "memcpy(SR_HOST(dst), in, run)"),
+                            ("sr_guest_fill", "memset(SR_HOST(dst), value, run)")):
+            body = _body(header, name)
+            self.assertLess(body.find("sr_guest_vram_write_prepare_bytes(dst, run)"), body.find(store))
+            self.assertGreater(body.find("sr_guest_vram_write_commit_bytes(dst, run)"), body.find(store))
+        copy_in = _body(header, "sr_guest_copy_in")
+        self.assertLess(copy_in.find("sr_guest_vram_read_prepare_bytes(src, run)"),
+                        copy_in.find("memcpy(out, SR_HOST(src), run)"))
 
     def test_generic_memcpy_memset_preflight_before_sr_host(self) -> None:
         text = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
@@ -78,12 +88,11 @@ class TestGuestSpanRouting(unittest.TestCase):
         memcpy_start = text.find("static uint32_t h_Memcpy")
         memcpy_end = text.find("static uint32_t", memcpy_start + 1)
         memcpy = text[memcpy_start:memcpy_end]
-        self.assertIn("sr_guest_span_readable_current(src, n)", memcpy)
-        self.assertIn("sr_guest_span_writable(dst, n)", memcpy)
-        self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), n)", memcpy)
+        self.assertIn("sr_guest_memmove(dst, src, n)", memcpy)
+        self.assertNotIn("SR_HOST", memcpy)
         memset = text[text.find("static uint32_t h_Memset"):text.find("static uint32_t h_Memcpy")]
-        self.assertIn("sr_guest_span_writable(dst, n)", memset)
-        self.assertIn("memset(SR_HOST(dst)", memset)
+        self.assertIn("sr_guest_fill(dst, (uint8_t)val, n)", memset)
+        self.assertNotIn("SR_HOST", memset)
         registration = text[text.find("static void hle_register_bulk_memory_handlers") : text.find("void sr_hle_init")]
         self.assertIn("sceKernelMemcpy", registration)
         self.assertIn("sceKernelMemset", registration)
