@@ -1127,6 +1127,98 @@ static void test_timestamp_flags(void) {
     }
 }
 
+/* A PES packet's PTS (and DTS) refer only to the first access unit that commences in that
+ * packet (ISO/IEC 13818-1 2.4.3.7).  A PSP movie's audio packets each carry several ATRAC
+ * frames under one PTS, and a video packet can carry two small pictures: before the producer
+ * consumed a packet's timestamps, every unit commencing in the packet was handed the same
+ * time, so the second and later units repeated the first one's PTS (issue #279).  Here one
+ * video packet carries two complete pictures and one audio packet three complete frames;
+ * only the first unit of each may carry the packet's time, and the next timestamped packet
+ * anchors again. */
+static void test_pts_belongs_to_first_au_in_packet(void) {
+    Buf b;
+    b.cap = 8192u;
+    b.d = (uint8_t *)calloc(1, b.cap);
+    b.at = 2048u;
+    b.overflow = 0;
+    if (!b.d) { CHECK(0, "first-AU timestamp fixture allocated"); return; }
+    b.d[0]='P'; b.d[1]='S'; b.d[2]='M'; b.d[3]='F';
+    be32(b.d + 8, 2048);
+
+    uint8_t es[64];
+    Buf v = { es, 0, sizeof(es), 0 };
+    raw(&v, k_aud, 4); raw(&v, k_picture1_body, sizeof(k_picture1_body));   /* picture 1 */
+    raw(&v, k_aud, 4); raw(&v, k_picture2_body, sizeof(k_picture2_body));   /* picture 2 */
+    uint32_t two_pictures = v.at;
+    raw(&v, k_aud, 4); raw(&v, k_picture3_body, sizeof(k_picture3_body));   /* picture 3 */
+    CHECK(!v.overflow, "first-AU video ES fits its buffer");
+
+    uint8_t abuf[512];
+    Buf a = { abuf, 0, sizeof(abuf), 0 };
+    audio_frame(&a, 0x28, 6, 0xa1);                  /* frames 1-3: 64 bytes each */
+    audio_frame(&a, 0x28, 6, 0xa2);
+    audio_frame(&a, 0x28, 6, 0xa3);
+    uint32_t three_frames = a.at;
+    audio_frame(&a, 0x28, 6, 0xa4);                  /* frame 4 */
+    CHECK(!a.overflow && three_frames == 192u, "first-AU audio ES fits its buffer");
+
+    add_pack(&b);
+    add_pes_ex(&b, 0xe0, PES_TS_BOTH, 10u, 90000, 86997, 1, es, two_pictures);
+    add_audio_pes(&b, 1, 85069, abuf, three_frames);
+    add_pack(&b);
+    add_pes_ex(&b, 0xe0, PES_TS_BOTH, 10u, 96006, 93003, 1, es + two_pictures,
+               v.at - two_pictures);
+    add_audio_pes(&b, 1, 97357, abuf + three_frames, a.at - three_frames);
+    be32(b.d + 12, b.at - 2048u);
+    CHECK(!b.overflow, "first-AU timestamp fixture fits its buffer");
+
+    MemSource mem = {b.d, b.at, 3, 0};                 /* fragmented reads: nothing whole */
+    SrPsmfSource source = {mem_read, &mem, b.at};
+    SrPsmfProducer *p = sr_psmf_producer_open(&source, 90000);
+    CHECK(p != NULL, "first-AU timestamp fixture opens");
+    if (!p) { free(b.d); return; }
+    for (int i = 0; i < 256 && !sr_psmf_producer_eof(p); i++) sr_psmf_producer_pump(p, 1);
+    SrPsmfProducerStats st; sr_psmf_producer_stats(p, &st);
+    CHECK(st.eof && !st.failed && st.video_aus == 3 && st.audio_aus == 4,
+          "first-AU fixture forms three pictures and four frames");
+    CHECK(st.pes_with_dts == 2, "two video packets declared a decode time");
+
+    SrPsmfAu au;
+    CHECK(sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au) && au.size == 4u + 3u,
+          "picture 1 is formed");
+    CHECK(au.has_pts && au.raw_pts == 90000 && au.has_dts && au.raw_dts == 86997,
+          "the first picture commencing in a packet takes the packet's PTS and DTS");
+    sr_psmf_au_release(&au);
+    CHECK(sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au) && au.size == 4u + 5u,
+          "picture 2 is formed");
+    CHECK(!au.has_pts && !au.has_dts,
+          "a second picture commencing in the same packet carries no timestamp of its own");
+    sr_psmf_au_release(&au);
+    CHECK(sr_psmf_producer_pop(p, SR_PSMF_AU_VIDEO, &au) && au.size == 4u + 2u,
+          "picture 3 is formed");
+    CHECK(au.has_pts && au.raw_pts == 96006 && au.has_dts && au.raw_dts == 93003,
+          "the next timestamped packet anchors its first picture again");
+    sr_psmf_au_release(&au);
+
+    static const int64_t want_audio_pts[4] = { 85069, -1, -1, 97357 };
+    for (int i = 0; i < 4; i++) {
+        int got = sr_psmf_producer_pop(p, SR_PSMF_AU_AUDIO, &au);
+        CHECK(got && au.size == 64u && au.data && au.data[8] == (uint8_t)(0xa1 + i),
+              "every ATRAC frame is formed in order");
+        if (want_audio_pts[i] < 0)
+            CHECK(got && !au.has_pts,
+                  "a later ATRAC frame commencing in a timestamped packet carries no PTS");
+        else
+            CHECK(got && au.has_pts && au.raw_pts == want_audio_pts[i],
+                  "the first ATRAC frame commencing in a packet takes the packet's PTS");
+        if (got) sr_psmf_au_release(&au);
+    }
+    CHECK(st.aus_without_pts == 3,
+          "exactly the units that commenced after a packet's first unit are left untimed");
+    sr_psmf_producer_close(p);
+    free(b.d);
+}
+
 /* ISO/IEC 13818-1 offsets: 0-3 pack_start_code; 4-13 MPEG-2 pack_header; 14-22 PES_header; 23-29 payload. */
 static const uint8_t corpus_pack_zero[] = {
     0x00, 0x00, 0x01, 0xBA,
@@ -1856,6 +1948,7 @@ int main(int argc, char **argv) {
     test_rejection_reason_contract();
     test_rejects_bad_containers();
     test_timestamp_flags();
+    test_pts_belongs_to_first_au_in_packet();
     test_mpeg1_pack_does_not_read_past_stream();
     test_reserved_pack_prefix_fails_closed();
     test_presentation_base_bounds();
