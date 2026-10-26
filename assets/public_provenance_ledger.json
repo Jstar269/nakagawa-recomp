@@ -1666,7 +1666,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9eea8db73fce59198b09c6ab79fcef0eb23e4b3a6f126cff371883766eae32b1"
+      "sha256": "5f7c4a0e72d5de8e6876d30edc74dee6ad15a34105984f15b5b8836086ee9c9b"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1720,7 +1720,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "51c1b340efd28b0e953f22ef5c85d15dac41b4395d63c8b592906df435a093a5"
+      "sha256": "b61ef877b5d8992105ba9b0d3c2dd4b9901ab63db0125a7106db3f176cacc02f"
     },
     {
       "path": "docs/TITLE_PROFILE_ARCHITECTURE.md",
@@ -8893,7 +8893,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3c8f28f7a7e1fb3dcfb6ded9ce6c01ce3871a3bc9ce7c58e23f38ca793bdd57b"
+      "sha256": "3a2449cd0d245671f09d93d7ef98e021edf9671dd39e96d5df26a2b1692742ee"
     },
     {
       "path": "src/rt/recomp.h",
@@ -8932,7 +8932,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c452d79f7f39d3edcf5793f574cd8123412a53fcbe6b0e815906a098931f9574"
+      "sha256": "d0a90a617d5d9f1caa20444144b669ce63cce2ea182e2e42dec90122f08af15b"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -8944,7 +8944,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6f0a0f188719688a0b99e7c079fa6bf4993f278f117d489bff2e097a63c77ad8"
+      "sha256": "783438a164dfcf71357f006543449b09ac9b365b4f6fd372334dcdfe8ef51b1f"
     },
     {
       "path": "src/rt/scripted_input.h",
@@ -11153,7 +11153,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "75c3f4ea093dca52557a27a0f563e689958a2d94c83f53602337a6e31990c316"
+      "sha256": "3692c03e67c4f89a4c7d2c929f4e8a8156a385b5b033e8b27f38bf83739949b9"
     },
     {
       "path": "tools/compiler_compare.py",
