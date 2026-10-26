@@ -172,6 +172,14 @@ typedef struct {
 
 typedef struct { PipeKey key; VkPipeline pipe; int used; } PipeEnt;
 
+#define TEX_FILTER_VARIANTS 4u
+#define FIXED_FILTER_DESCRIPTOR_SETS (TEX_FILTER_VARIANTS * (MAX_TGT + 1u) + 1u)
+
+/* TFLT stores independent min and mag base filters in bits 0 and 8. */
+static unsigned tex_filter_variant(uint32_t tflt) {
+    return ((tflt & 1u) ? 2u : 0u) | ((tflt & 0x100u) ? 1u : 0u);
+}
+
 /* shared depth buffer, keyed by guest zbuf placement */
 typedef struct {
     int used;
@@ -188,7 +196,7 @@ typedef struct {
     uint32_t fba, stride, fmt;             /* key: framebuffer addr (masked), stride px, psm */
     VkImage img; VkDeviceMemory mem; VkImageView view;
     VkImageLayout layout;
-    VkDescriptorSet set_n, set_l;          /* sampled (nearest / linear) for RTT + blit src */
+    VkDescriptorSet set[TEX_FILTER_VARIANTS]; /* sampled by TFLT min/mag pair for RTT + blit src */
     DepthEnt *dep;
     VkFramebuffer fb;                      /* for (this color, this->dep) */
     int gpu_valid;                         /* GPU contents are the truth (newer than VRAM) */
@@ -275,8 +283,8 @@ static VkDescriptorSet s_white_set;
 /* snapshot copy of a target for self-sampling (feedback) draws */
 static VkImage s_snapimg; static VkDeviceMemory s_snapimg_mem;
 static VkImageView s_snap_view; static VkImageLayout s_snap_layout;
-static VkSampler s_smp_n, s_smp_l;         /* shared nearest/linear samplers (clamp) */
-static VkDescriptorSet s_snap_n, s_snap_l;
+static VkSampler s_smp[TEX_FILTER_VARIANTS]; /* shared clamp samplers indexed by TFLT pair */
+static VkDescriptorSet s_snap_set[TEX_FILTER_VARIANTS];
 static Target *s_snap_src = NULL;          /* what the snapshot currently holds */
 static uint64_t s_snap_srcgen = 0;
 
@@ -1035,7 +1043,7 @@ static VkDescriptorSet make_descriptor(VkImageView view, VkSampler smp, VkDescri
     }
     if (alloc_result != VK_SUCCESS) return VK_NULL_HANDLE;
     VkDescriptorImageInfo dii = { smp, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    VkDescriptorImageInfo dds = { s_smp_n, s_snap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkDescriptorImageInfo dds = { s_smp[0], s_snap_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkWriteDescriptorSet wr[2] = {
         { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
         { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
@@ -1568,8 +1576,8 @@ static void target_destroy(Target *t) {
     (void)sdl3vk_wait_image((void *)t->img);
     if (s_snap_src == t) s_snap_src = NULL;
     if (t->fb) vkDestroyFramebuffer(s_dev, t->fb, NULL);
-    if (t->set_n) vkFreeDescriptorSets(s_dev, s_dpool_fix, 1, &t->set_n);
-    if (t->set_l) vkFreeDescriptorSets(s_dev, s_dpool_fix, 1, &t->set_l);
+    for (unsigned i = 0; i < TEX_FILTER_VARIANTS; i++)
+        if (t->set[i]) vkFreeDescriptorSets(s_dev, s_dpool_fix, 1, &t->set[i]);
     if (t->view) vkDestroyImageView(s_dev, t->view, NULL);
     if (t->img) vkDestroyImage(s_dev, t->img, NULL);
     if (t->mem) vkFreeMemory(s_dev, t->mem, NULL);
@@ -1632,9 +1640,10 @@ static Target *target_color_acquire(uint32_t fba, uint32_t stride, uint32_t fmt,
         if (!make_view(t->img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, &t->view)) {
             target_destroy(t); return NULL;
         }
-        t->set_n = make_descriptor(t->view, s_smp_n, s_dpool_fix);
-        t->set_l = make_descriptor(t->view, s_smp_l, s_dpool_fix);
-        if (!t->set_n || !t->set_l) { target_destroy(t); return NULL; }
+        for (unsigned i = 0; i < TEX_FILTER_VARIANTS; i++) {
+            t->set[i] = make_descriptor(t->view, s_smp[i], s_dpool_fix);
+            if (!t->set[i]) { target_destroy(t); return NULL; }
+        }
     }
 
     if (seed_from_vram && !t->gpu_valid) {
@@ -2053,7 +2062,8 @@ static int tex_upload(VkImage img, const uint32_t *px, int w, int h) {
     return upload_finish(&upload, SR_PERF_GE_TEXTURE_UPLOAD);
 }
 
-static int tex_make(const uint32_t *px, int w, int h, int linear, int clamp_u, int clamp_v,
+static int tex_make(const uint32_t *px, int w, int h, int min_linear, int mag_linear,
+                    int clamp_u, int clamp_v,
                     VkImage *img, VkDeviceMemory *mem, VkImageView *view, VkSampler *smp) {
     if (!make_image((uint32_t)w, (uint32_t)h, VK_FORMAT_R8G8B8A8_UNORM,
                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, img, mem))
@@ -2061,9 +2071,12 @@ static int tex_make(const uint32_t *px, int w, int h, int linear, int clamp_u, i
     if (!tex_upload(*img, px, w, h)) return 0;
     if (!make_view(*img, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, view)) return 0;
     VkSamplerCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-    sci.magFilter = linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
-    sci.minFilter = sci.magFilter;
+    sci.magFilter = mag_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    sci.minFilter = min_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    /* maxLod=0 forces Vulkan's magnification filter even while minifying. Keep lambda
+     * nonzero for minFilter selection while nearest mipmap mode remains at base level 0. */
+    sci.maxLod = 0.25f;
     sci.addressModeU = clamp_u ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sci.addressModeV = clamp_v ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
@@ -2074,12 +2087,13 @@ static int tex_make(const uint32_t *px, int w, int h, int linear, int clamp_u, i
 static VkDescriptorSet tex_get(void) {
     int w = s_ge->tex_w, h = s_ge->tex_h;
     if (w <= 0 || h <= 0 || w > 512 || h > 512) return s_white_set;
-    int linear  = (s_ge->tex_filter & 1) || ((s_ge->tex_filter >> 8) & 1);
+    unsigned filter = tex_filter_variant(s_ge->tex_filter);
+    int min_linear = (filter & 2u) != 0, mag_linear = (filter & 1u) != 0;
     int clamp_u = s_ge->tex_wrap & 1, clamp_v = (s_ge->tex_wrap >> 8) & 1;
     uint64_t key = (uint64_t)s_ge->tex_addr | ((uint64_t)s_ge->tex_fmt << 32)
                  | ((uint64_t)(uint32_t)w << 36) | ((uint64_t)(uint32_t)h << 46)
-                 | ((uint64_t)s_ge->tex_swizzle << 56) | ((uint64_t)(unsigned)linear << 57)
-                 | ((uint64_t)(unsigned)clamp_u << 58) | ((uint64_t)(unsigned)clamp_v << 59);
+                 | ((uint64_t)s_ge->tex_swizzle << 56) | ((uint64_t)filter << 57)
+                 | ((uint64_t)(unsigned)clamp_u << 59) | ((uint64_t)(unsigned)clamp_v << 60);
     key ^= (uint64_t)s_ge->tex_bufw << 16;
     if (s_ge->tex_fmt >= 4 && s_ge->tex_fmt <= 7)
         key ^= clut_hash() | 1;        /* distinct entry per (texture, palette) pair */
@@ -2136,7 +2150,8 @@ static VkDescriptorSet tex_get(void) {
     cpu_profile_add(GEGPU_CPU_TEXTURE_DECODE, decode_started);
     TexEnt *e = &s_tex[s_tex_n];
     memset(e, 0, sizeof(*e));
-    if (!tex_make(s_texscratch, w, h, linear, clamp_u, clamp_v, &e->img, &e->mem, &e->view, &e->smp))
+    if (!tex_make(s_texscratch, w, h, min_linear, mag_linear, clamp_u, clamp_v,
+                  &e->img, &e->mem, &e->view, &e->smp))
         return s_white_set;
     e->set = make_descriptor(e->view, e->smp, s_dpool_tex);
     if (!e->set) return s_white_set;
@@ -2393,6 +2408,7 @@ static void build_state(int persp, int sprite, Batch *b) {
 
     /* fragment config */
     int textured = g->tex_enable && !clear && g->tex_addr;
+    unsigned filter_variant = tex_filter_variant(g->tex_filter);
     int flags = premul;
     if (clear) flags |= F_CLEAR;
     if (persp && !(clear && sprite)) flags |= F_PERSP;   /* minz/maxz discard */
@@ -2402,8 +2418,7 @@ static void build_state(int persp, int sprite, Batch *b) {
         flags |= F_TEX;
         if (g->tex_func & 0x100)   flags |= F_RGBA;
         if (g->tex_func & 0x10000) flags |= F_DBL;
-        int linear = (g->tex_filter & 1) || ((g->tex_filter >> 8) & 1);
-        if (!linear) flags |= F_NEAREST;
+        if (filter_variant == 0u) flags |= F_NEAREST;
         b->pc.texsize[0] = (float)g->tex_w;
         b->pc.texsize[1] = (float)g->tex_h;
     }
@@ -2453,7 +2468,6 @@ static void build_state(int persp, int sprite, Batch *b) {
             static int nortt = -1;
             if (nortt < 0) { const char *nv = getenv("SR_GPU_NORTT");
                              nortt = (nv && nv[0] && strcmp(nv, "0") != 0) ? 1 : 0; }
-            int linear = (g->tex_filter & 1) || ((g->tex_filter >> 8) & 1);
             uint32_t bpp_s = src->fmt == 3 ? 4 : 2;
             uint32_t toff = vram_off(g->tex_addr) - src->fba;
             s_cnt_rtt++;
@@ -2469,7 +2483,7 @@ static void build_state(int persp, int sprite, Batch *b) {
                     /* feedback loop: sample a snapshot copy; reuse the previous snapshot
                      * while nothing new has rendered into the target */
                     snapshot_refresh(src);
-                    b->dset = linear ? s_snap_l : s_snap_n;
+                    b->dset = s_snap_set[filter_variant];
                 } else {
                     if (s_nbatch && src->layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                         submit_pending();
@@ -2478,7 +2492,7 @@ static void build_state(int persp, int sprite, Batch *b) {
                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                         cmd_submit_wait(SR_PERF_GE_TARGET_READBACK_TRANSITION);
                     }
-                    b->dset = linear ? src->set_l : src->set_n;
+                    b->dset = src->set[filter_variant];
                 }
                 /* texel coords map 1:1 onto the 512x272 image, shifted by the sub-rect */
                 b->pc.texsize[0] = (float)FB_W;
@@ -3688,6 +3702,35 @@ static int coherence_run_overlap_case(void) {
     return ok;
 }
 
+static int coherence_run_tflt_descriptor_capacity(void) {
+    const uint32_t stride = FB_W;
+    coherence_reset_targets();
+    for (unsigned i = 0; i < MAX_TGT; i++) {
+        uint32_t fba = 0x00020000u + i * 0x00010000u;
+        Target *target = target_color_acquire(fba, stride, 3u, 1);
+        if (!target) {
+            fprintf(stderr,
+                    "gpu coherence selftest [TFLT-descriptors]: target %u/%u exhausted the fixed sampler pool\n",
+                    i + 1u, MAX_TGT);
+            coherence_reset_targets();
+            return 0;
+        }
+        for (unsigned filter = 0; filter < TEX_FILTER_VARIANTS; filter++) {
+            if (!target->set[filter]) {
+                fprintf(stderr,
+                        "gpu coherence selftest [TFLT-descriptors]: target %u lacks sampler variant %u\n",
+                        i, filter);
+                coherence_reset_targets();
+                return 0;
+            }
+        }
+    }
+    coherence_reset_targets();
+    printf("gpu coherence selftest: PASS TFLT descriptor-capacity targets=%u variants=%u sets=%u\n",
+           MAX_TGT, TEX_FILTER_VARIANTS, FIXED_FILTER_DESCRIPTOR_SETS);
+    return 1;
+}
+
 typedef struct SpriteEndpoint {
     float x, y, u, v;
 } SpriteEndpoint;
@@ -4098,6 +4141,245 @@ static int coherence_run_linear_sprite(void) {
     printf("gpu coherence selftest: PASS %-22s fmt=3 stride=%u scale=%d\n",
            "linear-no-region-bleed", stride, s_scale);
     return 1;
+}
+
+/* Distinct GE minification/magnification filters must survive the production sampler path.
+ * The two cases deliberately render at 2x magnification and 2x minification; the selected
+ * filter is NEAREST in each case, so an alternating texture must contain no blended colors. */
+#define COH_TFLT_RECT_X 120
+#define COH_TFLT_RECT_Y 120
+
+static uint32_t coherence_tflt_texel(unsigned u, unsigned v) {
+    (void)v;
+    return (u & 1u) ? 0xFFFFFFFFu : 0xFF000000u;
+}
+
+static uint32_t coherence_prepare_tflt_fixture(uint32_t tex_base, uint32_t tflt, int primitive_type,
+                                               int rect_w, int rect_h,
+                                               float u0, float v0, float u_span, float v_span) {
+    uint32_t *tex = (uint32_t *)SR_HOST(tex_base);
+    for (unsigned v = 0; v < 8u; v++)
+        for (unsigned u = 0; u < 8u; u++)
+            tex[v * 8u + u] = coherence_tflt_texel(u, v);
+    sr_gpu_vram_dirty(tex_base, 8u * 8u * 4u);
+
+    const uint32_t vaddr = 0x00101000u;
+    RawSpriteVtx *vtx = (RawSpriteVtx *)SR_HOST(vaddr);
+    vtx[0] = (RawSpriteVtx){ u0, v0, (float)COH_TFLT_RECT_X,
+                             (float)COH_TFLT_RECT_Y, 0.0f };
+    vtx[1] = (RawSpriteVtx){ u0 + u_span, v0 + v_span,
+                             (float)(COH_TFLT_RECT_X + rect_w),
+                             (float)(COH_TFLT_RECT_Y + rect_h), 0.0f };
+    if (primitive_type == 3) {
+        vtx[2] = (RawSpriteVtx){ u0, v0 + v_span,
+                                 (float)COH_TFLT_RECT_X,
+                                 (float)(COH_TFLT_RECT_Y + rect_h), 0.0f };
+    }
+
+    const uint32_t list_addr = 0x00100000u;
+    uint32_t *dl = (uint32_t *)SR_HOST(list_addr);
+    int p = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x4C, 0);
+    DL_EMIT(0x9C, 0x00160000u);
+    DL_EMIT(0x9D, 512u | (0x04000000u >> 8));
+    DL_EMIT(0xD2, 3);
+    DL_EMIT(0xD3, 0);
+    DL_EMIT(0x23, 0);
+    DL_EMIT(0x22, 0);
+    DL_EMIT(0x21, 0);
+    DL_EMIT(0x15, 0);
+    DL_EMIT(0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xD4, 0);
+    DL_EMIT(0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    DL_EMIT(0xA0, tex_base & 0x00FFFFFFu);
+    DL_EMIT(0xA8, 8u | ((tex_base & 0xFF000000u) >> 8));
+    DL_EMIT(0xB8, (3u << 8) | 3u);
+    DL_EMIT(0xC0, 0);
+    DL_EMIT(0xC3, 3);
+    DL_EMIT(0xC6, tflt);
+    DL_EMIT(0xC7, 0);
+    DL_EMIT(0xC9, 3u | (1u << 8));
+    DL_EMIT(0x1E, 1);
+    DL_EMIT(0x12, (3u << 0) | (3u << 7) | (1u << 23));
+    DL_EMIT(0x01, vaddr & 0x00FFFFFFu);
+    DL_EMIT(0x04, ((uint32_t)primitive_type << 16) | (primitive_type == 3 ? 3u : 2u));
+    DL_EMIT(0x0F, 0);
+    DL_EMIT(0x0C, 0);
+    #undef DL_EMIT
+    return list_addr;
+}
+
+static int coherence_verify_tflt(const char *path, const uint32_t *fb, uint32_t stride,
+                                 int rect_w, int rect_h, int expect_linear) {
+    int found_blended = 0;
+    for (int y = 0; y < rect_h; y++) {
+        for (int x = 0; x < rect_w; x++) {
+            uint32_t rgb = fb[(COH_TFLT_RECT_Y + y) * stride + COH_TFLT_RECT_X + x] & 0x00FFFFFFu;
+            if (rgb != 0x000000u && rgb != 0xFFFFFFu) found_blended = 1;
+            if (!expect_linear && rgb != 0x000000u && rgb != 0xFFFFFFu) {
+                fprintf(stderr,
+                        "gpu coherence selftest [TFLT-%s]: pixel=(%d,%d) unexpectedly blended: %06x\n",
+                        path, COH_TFLT_RECT_X + x, COH_TFLT_RECT_Y + y, rgb);
+                return 0;
+            }
+        }
+    }
+    if (expect_linear && !found_blended) {
+        fprintf(stderr, "gpu coherence selftest [TFLT-%s]: expected linear filtering, found only texels\n",
+                path);
+        return 0;
+    }
+    return 1;
+}
+
+static int coherence_run_tflt_case(const char *name, int primitive_type, uint32_t tflt,
+                                   int rect_w, int rect_h,
+                                   float u0, float v0, float u_span, float v_span,
+                                   int expect_linear) {
+    const uint32_t base = 0x04000000u | 0x00160000u;
+    const uint32_t tex_base = 0x04040000u;
+    const uint32_t stride = 512u;
+    coherence_reset_targets();
+    uint8_t *guest = (uint8_t *)SR_HOST(base);
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    uint32_t list_addr = coherence_prepare_tflt_fixture(tex_base, tflt, primitive_type,
+                                                        rect_w, rect_h,
+                                                        u0, v0, u_span, v_span);
+    ge_set_gpu_hooks(&k_hooks);
+    ge_run_list(list_addr, 0);
+    GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                               .width = 480, .height = 272 };
+    if (!gegpu_sync_guest_fb(&desc)) {
+        fprintf(stderr, "gpu coherence selftest [TFLT-%s]: GPU readback failed\n", name);
+        coherence_reset_targets();
+        return 0;
+    }
+    uint32_t *fb = (uint32_t *)guest;
+    if (!coherence_verify_tflt("gpu", fb, stride, rect_w, rect_h, expect_linear)) {
+        coherence_reset_targets();
+        return 0;
+    }
+    size_t bytes = stride * FB_H * sizeof(*fb);
+    uint8_t *reference = (uint8_t *)malloc(bytes);
+    if (!reference) {
+        fprintf(stderr, "gpu coherence selftest [TFLT-%s]: no reference buffer\n", name);
+        coherence_reset_targets();
+        return 0;
+    }
+    memcpy(reference, guest, bytes);
+    memset(guest, 0, stride * FB_H * 4u);
+    ge_set_gpu_hooks(NULL);
+    ge_run_list(list_addr, 0);
+    ge_set_gpu_hooks(&k_hooks);
+    if (!coherence_verify_tflt("software", fb, stride, rect_w, rect_h, expect_linear)) {
+        free(reference);
+        coherence_reset_targets();
+        return 0;
+    }
+    size_t pixel_count = bytes / sizeof(*fb);
+    size_t mismatch = pixel_count;
+    const uint32_t *gpu = (const uint32_t *)reference;
+    for (size_t pixel = 0; pixel < pixel_count; pixel++) {
+        int differs = 0;
+        if (!expect_linear) {
+            differs = gpu[pixel] != fb[pixel];
+        } else {
+            /* Vulkan filtering and the integer software lerp can round by one U8 step. */
+            for (unsigned shift = 0; shift < 32; shift += 8) {
+                int gpu_channel = (int)((gpu[pixel] >> shift) & 0xFFu);
+                int sw_channel = (int)((fb[pixel] >> shift) & 0xFFu);
+                int delta = gpu_channel - sw_channel;
+                if (delta < -1 || delta > 1) differs = 1;
+            }
+        }
+        if (differs) { mismatch = pixel; break; }
+    }
+    if (mismatch != pixel_count) {
+        fprintf(stderr,
+                "gpu coherence selftest [TFLT-%s]: GPU/software mismatch at byte=%zu pixel=(%zu,%zu) gpu=%08x software=%08x\n",
+                name, mismatch * sizeof(*fb), mismatch % stride, mismatch / stride,
+                gpu[mismatch], fb[mismatch]);
+        free(reference);
+        coherence_reset_targets();
+        return 0;
+    }
+    free(reference);
+    coherence_reset_targets();
+    printf("gpu coherence selftest: PASS TFLT %-22s mode=0x%03x\n", name, tflt);
+    return 1;
+}
+
+static int coherence_run_tflt_software_line(const char *name, uint32_t tflt,
+                                            int rect_w, int rect_h,
+                                            float u0, float u_span, int expect_linear) {
+    const uint32_t base = 0x04000000u | 0x00160000u;
+    const uint32_t tex_base = 0x04040000u;
+    const uint32_t stride = 512u;
+    coherence_reset_targets();
+    uint8_t *guest = (uint8_t *)SR_HOST(base);
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    uint32_t list_addr = coherence_prepare_tflt_fixture(tex_base, tflt, 1,
+                                                        rect_w, rect_h,
+                                                        u0, 0.0f, u_span, 0.0f);
+    ge_set_gpu_hooks(NULL);
+    ge_run_list(list_addr, 0);
+    int ok = coherence_verify_tflt("software-line", (const uint32_t *)guest, stride,
+                                   rect_w, rect_h, expect_linear);
+    ge_set_gpu_hooks(&k_hooks);
+    coherence_reset_targets();
+    if (!ok) return 0;
+    printf("gpu coherence selftest: PASS TFLT %-22s mode=0x%03x\n", name, tflt);
+    return 1;
+}
+
+static int coherence_run_tflt_filters(void) {
+    int ok = 1;
+    /* min=linear, mag=nearest; this sprite is magnified, so nearest must win. */
+    if (!coherence_run_tflt_case("mag-nearest", 6, 0x001u, 16, 16,
+                                 0.0f, 0.0f, 8.0f, 8.0f, 0))
+        ok = 0;
+    /* min=nearest, mag=linear; this sprite is minified, so nearest must win. */
+    if (!coherence_run_tflt_case("min-nearest", 6, 0x100u, 4, 4,
+                                 0.25f, 0.25f, 8.0f, 8.0f, 0))
+        ok = 0;
+    /* The complementary cases prove linear filtering still wins when its field is selected. */
+    if (!coherence_run_tflt_case("mag-linear", 6, 0x100u, 16, 16,
+                                 0.0f, 0.0f, 8.0f, 8.0f, 1))
+        ok = 0;
+    if (!coherence_run_tflt_case("min-linear", 6, 0x001u, 4, 4,
+                                 0.25f, 0.25f, 8.0f, 8.0f, 1))
+        ok = 0;
+    /* The triangle path uses the per-pixel texture planes rather than sprite steps. */
+    if (!coherence_run_tflt_case("triangle-mag-nearest", 3, 0x001u, 16, 16,
+                                 0.0f, 0.0f, 8.0f, 8.0f, 0))
+        ok = 0;
+    if (!coherence_run_tflt_case("triangle-min-nearest", 3, 0x100u, 4, 4,
+                                 0.25f, 0.25f, 8.0f, 8.0f, 0))
+        ok = 0;
+    if (!coherence_run_tflt_case("triangle-mag-linear", 3, 0x100u, 16, 16,
+                                 0.0f, 0.0f, 8.0f, 8.0f, 1))
+        ok = 0;
+    if (!coherence_run_tflt_case("triangle-min-linear", 3, 0x001u, 4, 4,
+                                 0.25f, 0.25f, 8.0f, 8.0f, 1))
+        ok = 0;
+    /* Lines are software-rasterized for this fixture; exercise their DDA footprint too. */
+    if (!coherence_run_tflt_software_line("line-mag-nearest", 0x001u, 16, 2,
+                                          0.0f, 8.0f, 0))
+        ok = 0;
+    if (!coherence_run_tflt_software_line("line-min-nearest", 0x100u, 4, 2,
+                                          0.25f, 8.0f, 0))
+        ok = 0;
+    if (!coherence_run_tflt_software_line("line-mag-linear", 0x100u, 16, 2,
+                                          0.0f, 8.0f, 1))
+        ok = 0;
+    if (!coherence_run_tflt_software_line("line-min-linear", 0x001u, 4, 2,
+                                          0.25f, 8.0f, 1))
+        ok = 0;
+    return ok;
 }
 
 /* ---- ring wrap and blend colour parity (issue #697) -----------------------------------
@@ -5024,9 +5306,11 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_clean_case("clean-unaligned", 3, 512, (51u * 512u + 21u) * 4u + 1u, 5)) ok = 0;
     if (!coherence_run_full_cover_case()) ok = 0;
     if (!coherence_run_overlap_case()) ok = 0;
+    if (!coherence_run_tflt_descriptor_capacity()) ok = 0;
     if (!coherence_run_sprite_semantics()) ok = 0;
     if (!coherence_run_software_sprite_semantics()) ok = 0;
     if (!coherence_run_linear_sprite()) ok = 0;
+    if (!coherence_run_tflt_filters()) ok = 0;
     if (!coherence_run_ring_wrap()) ok = 0;
     if (!coherence_run_submit_batch()) ok = 0;
     if (!coherence_run_upload_sequence()) ok = 0;
@@ -5346,8 +5630,9 @@ int gegpu_init(void) {
     dpc.maxSets = MAX_TEX; dpc.poolSizeCount = 1; dpc.pPoolSizes = &dps;
     dpc.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;   /* LRU eviction */
     VKC(vkCreateDescriptorPool(s_dev, &dpc, NULL, &s_dpool_tex));
-    VkDescriptorPoolSize dpsf = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * (2 * MAX_TGT + 3) };
-    dpc.maxSets = 2 * MAX_TGT + 3; dpc.pPoolSizes = &dpsf;
+    VkDescriptorPoolSize dpsf = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                  2u * FIXED_FILTER_DESCRIPTOR_SETS };
+    dpc.maxSets = FIXED_FILTER_DESCRIPTOR_SETS; dpc.pPoolSizes = &dpsf;
     dpc.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     VKC(vkCreateDescriptorPool(s_dev, &dpc, NULL, &s_dpool_fix));
 
@@ -5363,17 +5648,21 @@ int gegpu_init(void) {
     smc.codeSize = sizeof(k_frag_spv); smc.pCode = k_frag_spv;
     VKC(vkCreateShaderModule(s_dev, &smc, NULL, &s_fs));
 
-    /* shared clamp samplers (render-target sampling + snapshot) */
+    /* Shared clamp samplers for render-target and snapshot sampling. The min and mag
+     * fields stay independent so Vulkan selects the PSP TFLT field from the footprint. */
     {
         VkSamplerCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-        sci.magFilter = VK_FILTER_NEAREST; sci.minFilter = VK_FILTER_NEAREST;
         sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        /* Preserve minification selection without exposing any mip level beyond level 0. */
+        sci.maxLod = 0.25f;
         sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        VKC(vkCreateSampler(s_dev, &sci, NULL, &s_smp_n));
-        sci.magFilter = VK_FILTER_LINEAR; sci.minFilter = VK_FILTER_LINEAR;
-        VKC(vkCreateSampler(s_dev, &sci, NULL, &s_smp_l));
+        for (unsigned i = 0; i < TEX_FILTER_VARIANTS; i++) {
+            sci.magFilter = (i & 1u) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+            sci.minFilter = (i & 2u) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+            VKC(vkCreateSampler(s_dev, &sci, NULL, &s_smp[i]));
+        }
     }
 
     /* snapshot image for feedback (self-sampling) draws and the shader-blend dst read.
@@ -5390,14 +5679,16 @@ int gegpu_init(void) {
     to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout,
               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (!cmd_submit_wait(SR_PERF_GE_INIT)) return 0;
-    s_snap_n = make_descriptor(s_snap_view, s_smp_n, s_dpool_fix);
-    s_snap_l = make_descriptor(s_snap_view, s_smp_l, s_dpool_fix);
-    if (!s_snap_n || !s_snap_l) return 0;
+    for (unsigned i = 0; i < TEX_FILTER_VARIANTS; i++) {
+        s_snap_set[i] = make_descriptor(s_snap_view, s_smp[i], s_dpool_fix);
+        if (!s_snap_set[i]) return 0;
+    }
 
     /* 1x1 white texture for untextured draws */
     {
         uint32_t white = 0xFFFFFFFFu;
-        if (!tex_make(&white, 1, 1, 0, 1, 1, &s_white, &s_white_mem, &s_white_view, &s_white_smp))
+        if (!tex_make(&white, 1, 1, 0, 0, 1, 1,
+                      &s_white, &s_white_mem, &s_white_view, &s_white_smp))
             return 0;
         s_white_set = make_descriptor(s_white_view, s_white_smp, s_dpool_fix);
         if (!s_white_set) return 0;
@@ -5465,8 +5756,8 @@ void gegpu_shutdown(void) {
     s_pipe_cap = 0;
 
     if (s_white_set) vkFreeDescriptorSets(s_dev, s_dpool_fix, 1, &s_white_set);
-    if (s_snap_n) vkFreeDescriptorSets(s_dev, s_dpool_fix, 1, &s_snap_n);
-    if (s_snap_l) vkFreeDescriptorSets(s_dev, s_dpool_fix, 1, &s_snap_l);
+    for (unsigned i = 0; i < TEX_FILTER_VARIANTS; i++)
+        if (s_snap_set[i]) vkFreeDescriptorSets(s_dev, s_dpool_fix, 1, &s_snap_set[i]);
     if (s_dpool_tex) vkDestroyDescriptorPool(s_dev, s_dpool_tex, NULL);
     if (s_dpool_fix) vkDestroyDescriptorPool(s_dev, s_dpool_fix, NULL);
 
@@ -5477,8 +5768,8 @@ void gegpu_shutdown(void) {
     if (s_snap_view) vkDestroyImageView(s_dev, s_snap_view, NULL);
     if (s_snapimg) vkDestroyImage(s_dev, s_snapimg, NULL);
     if (s_snapimg_mem) vkFreeMemory(s_dev, s_snapimg_mem, NULL);
-    if (s_smp_n) vkDestroySampler(s_dev, s_smp_n, NULL);
-    if (s_smp_l) vkDestroySampler(s_dev, s_smp_l, NULL);
+    for (unsigned i = 0; i < TEX_FILTER_VARIANTS; i++)
+        if (s_smp[i]) vkDestroySampler(s_dev, s_smp[i], NULL);
 
     if (s_xfer_map) vkUnmapMemory(s_dev, s_xfer_m);
     if (s_xfer) vkDestroyBuffer(s_dev, s_xfer, NULL);
