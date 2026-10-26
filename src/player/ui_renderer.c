@@ -2044,7 +2044,6 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         app->selected_game_index = app->game_count - 1;
     }
     GameRecord *game = &app->games[app->selected_game_index];
-    const PlayerPreflightCheck *build_blocker = NULL;
 
     /* Hero Banner Card. Shrinks on short windows so the strip below never
      * falls off screen; wide enough on narrow windows to avoid clipping. */
@@ -2090,15 +2089,6 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         player_app_runtime_package_check_pending(app, game);
     bool package_check_failed =
         player_app_runtime_package_check_failed(app, game);
-    if (!package_ready && !package_checking && !package_check_failed &&
-        (package_status == NK_RUNTIME_PACKAGE_MISSING ||
-         package_status == NK_RUNTIME_PACKAGE_STALE ||
-         package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE)) {
-        (void)player_app_build_package_preflight(
-            app, app->selected_game_index, false);
-        build_blocker = player_app_package_build_preflight_blocker(
-            app, app->selected_game_index);
-    }
     bool runtime_required = game->assets_staged && !package_ready &&
                             !package_check_failed &&
                             package_status == NK_RUNTIME_PACKAGE_MISSING;
@@ -2149,10 +2139,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         char experimental_reason[224];
         /* The decrypted-files step matters only while there is no package
            built from them (#1297). */
-        if (build_blocker) {
-            snprintf(experimental_reason, sizeof(experimental_reason), "%s",
-                     player_preflight_plain_message(build_blocker));
-        } else if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
+        if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
             game->executable_selection == NK_ISO_EXEC_SELECTION_NONE &&
             !package_ready) {
             snprintf(experimental_reason, sizeof(experimental_reason),
@@ -2182,10 +2169,6 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                                  experimental_reason, 0.95f, hero_w - 64.0f,
                                  COLOR_TEXT_MUTED);
         }
-    } else if (build_blocker) {
-        draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 120.0f,
-                             player_preflight_plain_message(build_blocker),
-                             0.95f, hero_w - 64.0f, COLOR_AMBER);
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE &&
                !package_ready && !package_checking && !package_check_failed) {
         char why[256];
@@ -2328,36 +2311,21 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                          "PACKAGE STATUS UNKNOWN");
     } else if (package_status == NK_RUNTIME_PACKAGE_STALE) {
-        if (build_blocker) {
-            draw_status_pill_focused(ren, hero_x + 32.0f, btn_y, 220.0f,
-                                     54.0f, "REBUILD PACKAGE", primary_focused);
-        } else {
-            if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                                    "REBUILD PACKAGE", true, in, primary_focused)) {
-                player_app_start_package_build(app, app->selected_game_index);
-            }
+        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                "REBUILD PACKAGE", true, in, primary_focused)) {
+            player_app_start_package_build(app, app->selected_game_index);
         }
         focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_MISSING) {
-        if (build_blocker) {
-            draw_status_pill_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                                     "BUILD PACKAGE", primary_focused);
-        } else {
-            if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                                    "BUILD PACKAGE", true, in, primary_focused)) {
-                player_app_start_package_build(app, app->selected_game_index);
-            }
+        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                "BUILD PACKAGE", true, in, primary_focused)) {
+            player_app_start_package_build(app, app->selected_game_index);
         }
         focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
-        if (build_blocker) {
-            draw_status_pill_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                                     "REBUILD PACKAGE", primary_focused);
-        } else {
-            if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                                    "REBUILD PACKAGE", true, in, primary_focused)) {
-                player_app_rebuild_package(app, app->selected_game_index);
-            }
+        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                "REBUILD PACKAGE", true, in, primary_focused)) {
+            player_app_rebuild_package(app, app->selected_game_index);
         }
         focus++;
     } else if (game->assets_staged) {

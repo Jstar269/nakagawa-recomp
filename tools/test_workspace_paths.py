@@ -23,7 +23,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -52,25 +51,6 @@ def _make_workspace(base: Path) -> Path:
     for marker in nk_clean.WORKSPACE_ANCHORS:
         _write(root / marker)
     return root
-
-
-def _git(cwd: Path, *args: str) -> None:
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=doctor test",
-            "-c",
-            "user.email=doctor@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            *args,
-        ],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
 
 
 class PackageRouteMakeSafetyTests(unittest.TestCase):
@@ -176,110 +156,6 @@ class DoctorWorkspacePathTests(unittest.TestCase):
             count, error = nk_doctor_core._bounded_nonempty_directory(base)
             self.assertIsNone(error)
             self.assertEqual(count, 3)
-
-
-@unittest.skipUnless(shutil.which("git"), "git is required to create worktrees")
-class DoctorWorktreeAccumulationTests(unittest.TestCase):
-    """The advisory inventory for linked worktrees and regenerable build output (#368)."""
-
-    def _repo(self, base: Path) -> Path:
-        repo = base / "repo"
-        repo.mkdir()
-        _git(repo, "init", "-b", "main")
-        _write(repo / "tracked.txt")
-        _git(repo, "add", "tracked.txt")
-        _git(repo, "commit", "-m", "init")
-        return repo
-
-    def _report(self, repo: Path, **kwargs: object) -> nk_doctor.Report:
-        report = nk_doctor.Report(repo, "repo")
-        nk_doctor_checks.check_worktree_accumulation(report, repo, **kwargs)
-        return report
-
-    @staticmethod
-    def _warnings(report: nk_doctor.Report) -> dict[str, nk_doctor_core.Result]:
-        return {r.code: r for r in report.results if r.status == "WARN"}
-
-    def test_single_checkout_passes_without_warning(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = self._repo(Path(tmp))
-            report = self._report(repo)
-            self.assertFalse(self._warnings(report))
-            passes = [r for r in report.results if r.code == "WORKTREES" and r.status == "PASS"]
-            self.assertEqual(len(passes), 1)
-            self.assertIn("1 worktree", passes[0].summary)
-
-    def test_nested_worktree_is_reported(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = self._repo(Path(tmp))
-            _git(repo, "worktree", "add", "--detach", str(repo / ".agents" / "lane"))
-            warnings = self._warnings(self._report(repo))
-            self.assertIn("WORKTREES_NESTED", warnings)
-            self.assertIn("lane", warnings["WORKTREES_NESTED"].detail or "")
-
-    def test_unregistered_directory_beside_registered_worktrees_is_reported(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            repo = self._repo(base)
-            sibling = base / "worktrees"
-            _git(repo, "worktree", "add", "--detach", str(sibling / "registered"))
-            (sibling / "stray copy").mkdir()
-            warnings = self._warnings(self._report(repo))
-            self.assertIn("WORKTREES_UNREGISTERED", warnings)
-            self.assertIn("stray copy", warnings["WORKTREES_UNREGISTERED"].detail or "")
-            self.assertNotIn("WORKTREES_NESTED", warnings)
-
-    def test_unrelated_neighbouring_worktrees_directory_is_ignored(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            repo = self._repo(base)
-            (base / "worktrees" / "unrelated project").mkdir(parents=True)
-            self.assertNotIn("WORKTREES_UNREGISTERED", self._warnings(self._report(repo)))
-
-    def test_missing_worktree_is_reported_stale(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            repo = self._repo(base)
-            target = base / "worktrees" / "gone"
-            _git(repo, "worktree", "add", "--detach", str(target))
-            shutil.rmtree(target)
-            warnings = self._warnings(self._report(repo))
-            self.assertIn("WORKTREES_STALE", warnings)
-            self.assertIn("gone", warnings["WORKTREES_STALE"].detail or "")
-
-    def test_count_and_build_size_bounds_warn(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            repo = self._repo(base)
-            lane = base / "worktrees" / "lane"
-            _git(repo, "worktree", "add", "--detach", str(lane))
-            _write(repo / "build" / "artifact.bin", b"x" * 2048)
-            _write(lane / "build" / "artifact.bin", b"x" * 2048)
-            warnings = self._warnings(
-                self._report(
-                    repo,
-                    count_limit=0,
-                    total_build_limit=1,
-                    single_build_limit=1,
-                    time_budget=30.0,
-                )
-            )
-            self.assertIn("WORKTREES_COUNT", warnings)
-            self.assertIn("WORKTREES_BUILD_SIZE", warnings)
-            detail = warnings["WORKTREES_BUILD_SIZE"].detail or ""
-            self.assertIn("4.0 KiB", detail)
-            self.assertIn("advisory limits", detail)
-
-    def test_bounded_directory_walk_reports_truncation(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            build = Path(tmp) / "build"
-            _write(build / "a.bin", b"x" * 16)
-            _write(build / "b.bin", b"x" * 16)
-            measured, truncated = nk_doctor_checks._bounded_directory_bytes(
-                build, deadline=time.monotonic() + 30.0, file_limit=1
-            )
-            self.assertTrue(truncated)
-            self.assertGreater(measured, 0)
 
 
 class ExtractXbPathUtilityTests(unittest.TestCase):

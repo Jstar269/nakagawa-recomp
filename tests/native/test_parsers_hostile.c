@@ -2202,7 +2202,7 @@ static void test_nk_json_utf8_encode(void) {
     assert((uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
-    /* U+D7FF (last scalar before surrogate area) */
+    /* U+D7FF (last scalar before surrogate gap) */
     memset(out, 0xCC, sizeof(out));
     len = nk_json_utf8_encode(0xD7FF, out);
     assert(len == 3);

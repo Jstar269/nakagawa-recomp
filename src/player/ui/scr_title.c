@@ -31,8 +31,6 @@
 #define TITLE_ID_CHIP_STATUS 0x20000028u
 #define TITLE_ID_CHIP_BADGE 0x20000029u
 #define TITLE_ID_ACTIONS 0x2000002Au
-#define TITLE_ID_BUILD_PREFLIGHT 0x20000030u
-#define TITLE_ID_BUILD_FOLDER 0x20000031u
 #define TITLE_ID_COMPAT 0x20000005u
 #define TITLE_ID_COMPAT_HEAD 0x2000002Cu
 #define TITLE_ID_COMPAT_EYEBROW 0x20000006u
@@ -302,18 +300,6 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                                     PLAYER_UI_PRIMARY_NONE);
                 }
                 nk_ui_end_container(ui);
-            }
-            if (title->build_preflight_message != NULL &&
-                title->build_preflight_message[0] != '\0') {
-                nk_ui_text_role(ui, TITLE_ID_BUILD_PREFLIGHT,
-                                title->build_preflight_message,
-                                NK_UI_TYPE_BODY_S, theme->error);
-                if (title->build_preflight_folder != NULL &&
-                    title->build_preflight_folder[0] != '\0' &&
-                    nk_ui_button(ui, TITLE_ID_BUILD_FOLDER, "Open folder", 0u)) {
-                    result = action(PLAYER_UI_ACTION_OPEN_BUILD_INPUT_FOLDER,
-                                    model->title_index, PLAYER_UI_PRIMARY_NONE);
-                }
             }
             /* The player tier, then what to expect in plain words and any
                known issues (#1297). The docs category describes the

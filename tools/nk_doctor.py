@@ -39,7 +39,6 @@ from nk_doctor_checks import (
     check_save_root,
     check_toolchain,
     check_vfpu_assets,
-    check_worktree_accumulation,
     title_diagnostic_context,
 )
 
@@ -205,7 +204,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         check_repository_contract(report)
         check_agent_identity(report)
         check_long_paths(report, root)
-        check_worktree_accumulation(report, root)
     if args.scope in {"build", "run", "all"}:
         check_platform(report)
     if args.scope == "build":

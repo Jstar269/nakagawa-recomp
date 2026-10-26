@@ -10,8 +10,6 @@
 #include "nk_font.h"
 #include "nk_json.h"
 #include "nk_platform.h"
-#include "iso_reader.h"
-#include "nk_title_manifest.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -3073,16 +3071,6 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
         return false;
     }
     if (game_index < 0 || game_index >= app->game_count) return false;
-    if (!player_app_build_package_preflight(app, game_index, true)) {
-        const PlayerPreflightCheck *blocker =
-            player_app_package_build_preflight_blocker(app, game_index);
-        if (blocker) {
-            player_app_set_build_error(app, "preflight", blocker->message, "");
-            snprintf(app->last_error.message, sizeof(app->last_error.message), "%s",
-                     player_preflight_plain_message(blocker));
-        }
-        return false;
-    }
     const GameRecord *game = &app->games[game_index];
 
     package_builder_init_session(&app->build_session, game->disc_id, game->title_name);
@@ -3354,29 +3342,17 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
     return true;
 }
 
-bool player_app_request_open_folder(PlayerApp *app, const char *path) {
-    int n;
-    if (!app) return false;
-    app->request_open_folder = false;
-    app->requested_open_path[0] = '\0';
-    if (!path || !path[0]) return false;
-    n = snprintf(app->requested_open_path, sizeof(app->requested_open_path), "%s", path);
-    app->request_open_folder = n > 0 && (size_t)n < sizeof(app->requested_open_path);
-    return app->request_open_folder;
-}
-
 bool player_app_request_license_folder(PlayerApp *app) {
     char data_root[NK_MAX_PATH];
-    char path[NK_MAX_PATH];
     int n;
     if (!app) return false;
-    app->request_open_folder = false;
+    app->request_open_license_folder = false;
     if (!player_app_data_root(app, data_root, sizeof(data_root)) || !data_root[0]) return false;
-    n = snprintf(path, sizeof(path),
+    n = snprintf(app->requested_open_path, sizeof(app->requested_open_path),
                  "%s%cprerequisites%cnotices", data_root,
                  nk_platform_path_separator(), nk_platform_path_separator());
-    if (n < 0 || (size_t)n >= sizeof(path)) return false;
-    return player_app_request_open_folder(app, path);
+    app->request_open_license_folder = n > 0 && (size_t)n < sizeof(app->requested_open_path);
+    return app->request_open_license_folder;
 }
 
 void player_app_remove_prerequisites(PlayerApp *app) {
@@ -3423,8 +3399,7 @@ void player_app_set_build_error(
     /* A preflight refusal is not a failed build: the build never started and
        the reason says what the user needs to do (#1286). */
     bool refused = failed_stage && strcmp(failed_stage, "preflight") == 0;
-    bool disk_full = reason && strstr(reason, "PACKAGE_DISK_FULL:") != NULL;
-    bool compile_disk_full = reason &&
+    bool disk_full = reason &&
         (strstr(reason, "No space left") != NULL || strstr(reason, "[Errno 28]") != NULL ||
          strstr(reason, "[WinError 112]") != NULL ||
          strstr(reason, "not enough space on the disk") != NULL);
@@ -3435,29 +3410,16 @@ void player_app_set_build_error(
         player_app_set_error(app, "PACKAGE_BUILD_REFUSED", "Build Not Started",
                              msg, "Return to Library", VIEW_LIBRARY);
     } else if (disk_full) {
-        const char *disk_detail = reason ? strstr(reason, "PACKAGE_DISK_FULL: ") : NULL;
-        if (disk_detail) {
-            disk_detail += strlen("PACKAGE_DISK_FULL: ");
-            snprintf(msg, sizeof(msg), "%.300s Free space on the drive that holds Nakagawa's "
-                     "data folder, then press Try again.", disk_detail);
-        } else {
-            snprintf(msg, sizeof(msg), "The build ran out of disk space. Free some space on "
-                     "the drive that holds Nakagawa's data folder, then press Try again.");
-        }
         player_app_set_error(app, "PACKAGE_DISK_FULL", "Not Enough Disk Space",
-                             msg, "Return to Library", VIEW_LIBRARY);
+                             "The build ran out of disk space. Free some space on the drive "
+                             "that holds Nakagawa's data folder, then press Try again.",
+                             "Return to Library", VIEW_LIBRARY);
     } else {
-        if (compile_disk_full) {
-            snprintf(msg, sizeof(msg), "Compilation ran out of disk space before the package "
-                     "size could be measured. Free space, then press Try again. If it stops "
-                     "again, use Copy details and include the report when you ask for help.");
-        } else {
-            snprintf(msg, sizeof(msg), "The build stopped before the game was ready. Press Try "
-                     "again. If it stops again, use Copy details and include the report when "
-                     "you ask for help.");
-        }
         player_app_set_error(app, "PACKAGE_BUILD_FAILED", "Couldn't Finish Building",
-                             msg, "Return to Library", VIEW_LIBRARY);
+                             "The build stopped before the game was ready. Press Try again. If "
+                             "it stops again, use Copy details and include the report when you "
+                             "ask for help.",
+                             "Return to Library", VIEW_LIBRARY);
     }
     player_dev_log_add(app, "build", "%s at %s: %s", app->last_error.error_code,
                        failed_stage && failed_stage[0] ? failed_stage : "build",
@@ -3803,7 +3765,6 @@ const char *player_preflight_label(const PlayerPreflightCheck *check) {
     static const struct { const char *code; const char *label; } labels[] = {
         {"EXPERIMENTAL", "Compatibility"}, {"DISC_SFO", "Disc"},
         {"EXECUTABLE", "Game program"}, {"GUEST_MODULES", "Game modules"},
-        {"TITLE_PROFILE", "Title settings"},
         {"RUNTIME_PACKAGE", "Game build"}, {"DATA_ROOT", "Game data"},
         {"SYSTEM_FONTS", "Fonts"}, {"AUDIO_OUTPUT", "Sound"},
     };
@@ -3816,8 +3777,7 @@ const char *player_preflight_label(const PlayerPreflightCheck *check) {
 
 bool player_preflight_check_blocks(const PlayerPreflightCheck *check) {
     return check && check->status == PREFLIGHT_UNSUPPORTED &&
-           (strcmp(check->code, "EXECUTABLE") == 0 ||
-            strcmp(check->code, "DISC_SFO") == 0);
+           (strcmp(check->code, "EXECUTABLE") == 0 || strcmp(check->code, "DISC_SFO") == 0);
 }
 
 const char *player_preflight_status_word(const PlayerPreflightCheck *check) {
@@ -3866,9 +3826,6 @@ const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
     } else if (strcmp(check->code, "EXECUTABLE") == 0) {
         return ok ? "Found the game's program."
                   : "Nakagawa can't use the game's program on this disc.";
-    } else if (strcmp(check->code, "TITLE_PROFILE") == 0) {
-        return ok ? "The title settings match this disc."
-                  : "The title settings for this disc are missing or out of date. Add the disc again.";
     } else if (strcmp(check->code, "GUEST_MODULES") == 0) {
         return ok ? "Found the game's other program files."
                   : "Some of the game's program files are encrypted, and Nakagawa doesn't "
@@ -3941,77 +3898,6 @@ static void player_preflight_set_plain(PlayerCompatibilityPreflight *preflight,
     va_start(args, format);
     vsnprintf(check->plain, sizeof(check->plain), format, args);
     va_end(args);
-}
-
-static bool player_title_profile_is_valid(const GameRecord *game,
-                                          const char *runtime_root,
-                                          const NkIsoExecutableReport *executables,
-                                          char *reason, size_t reason_size) {
-    if (reason && reason_size) reason[0] = '\0';
-    if (!game || !runtime_root || !runtime_root[0] || !game->disc_id[0] ||
-        !game->title_id[0]) {
-        if (reason && reason_size) {
-            snprintf(reason, reason_size,
-                     "TITLE_PROFILE_MISSING: library identity has no title manifest.");
-        }
-        return false;
-    }
-    if (game->is_experimental) {
-        NkTitleEntrySnapshot snapshot = {0};
-        char executable_sha256[65] = "";
-        char error[512] = "";
-        const char *selected = game->selected_executable;
-        bool valid = false;
-        if (!selected[0] && executables &&
-            executables->selected != NK_ISO_EXEC_SELECTION_NONE) {
-            selected = executables->selected_path;
-        } else if (!selected[0] && executables &&
-                   (executables->eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED ||
-                    executables->eboot.kind == NK_ISO_EXEC_SCE_WRAPPER ||
-                    executables->eboot.kind == NK_ISO_EXEC_PBP)) {
-            selected = "EBOOT.BIN";
-        }
-        if (selected[0]) {
-            valid = nk_title_manifest_read_experimental_profile(
-                runtime_root, game->disc_id, game->title_id, selected,
-                &snapshot, executable_sha256, error, sizeof(error));
-            if (!valid && !game->selected_executable[0]) {
-                error[0] = '\0';
-                valid = nk_title_manifest_read_unbound_experimental_profile(
-                    runtime_root, game->disc_id, game->title_id, &snapshot,
-                    error, sizeof(error));
-            }
-        } else {
-            valid = nk_title_manifest_read_unbound_experimental_profile(
-                runtime_root, game->disc_id, game->title_id, &snapshot,
-                error, sizeof(error));
-        }
-        if (valid) {
-            valid = snapshot.entry.id && snapshot.entry.primary_disc_id &&
-                    strcmp(snapshot.entry.id, game->title_id) == 0 &&
-                    strcmp(snapshot.entry.primary_disc_id, game->disc_id) == 0;
-        }
-        nk_title_catalog_snapshot_release(&snapshot);
-        if (!valid && reason && reason_size) {
-            snprintf(reason, reason_size, "TITLE_PROFILE_INVALID: %.430s",
-                     error[0] ? error : "experimental profile identity does not match the library entry");
-        }
-        return valid;
-    }
-
-    NkTitleEntrySnapshot snapshot = {0};
-    bool valid = nk_title_catalog_find_by_id(game->title_id, &snapshot);
-    if (valid) {
-        valid = snapshot.entry.id &&
-                strcmp(snapshot.entry.id, game->title_id) == 0;
-    }
-    nk_title_catalog_snapshot_release(&snapshot);
-    if (!valid && reason && reason_size) {
-        snprintf(reason, reason_size,
-                 "TITLE_PROFILE_MISSING: no title manifest matches library identity %.96s.",
-                 game->title_id);
-    }
-    return valid;
 }
 
 typedef enum {
@@ -4356,7 +4242,7 @@ static PlayerModuleScanStatus player_scan_disc_modules(
     return PLAYER_MODULE_SCAN_INVALID_TREE;
 }
 
-static void player_check_guest_modules(const GameRecord *game,
+static void player_check_guest_modules(PlayerApp *app,
                                        PlayerCompatibilityPreflight *preflight,
                                        const char *runtime_root) {
     PlayerModuleCandidate *modules = NULL;
@@ -4370,10 +4256,10 @@ static void player_check_guest_modules(const GameRecord *game,
     size_t total = 0, ready = 0, not_ready = 0;
     bool first_encrypted = false;
     PlayerModuleScanStatus scan_status;
-    if (!game || !game->iso_path[0] || !game->disc_id[0]) {
+    if (!app->inspecting_game.iso_path[0] || !app->inspecting_game.disc_id[0]) {
         return;
     }
-    if (!player_decrypted_eboot_paths(runtime_root, game->disc_id,
+    if (!player_decrypted_eboot_paths(runtime_root, app->inspecting_game.disc_id,
                                       decrypted_dir, sizeof(decrypted_dir),
                                       decrypted_elf, sizeof(decrypted_elf))) {
         return;
@@ -4389,7 +4275,7 @@ static void player_check_guest_modules(const GameRecord *game,
         return;
     }
     scan_status = player_scan_disc_modules(
-        game->iso_path, game->selected_executable,
+        app->inspecting_game.iso_path, app->inspecting_game.selected_executable,
         modules, PLAYER_MAX_GUEST_MODULES, &total, discovery_message,
         sizeof(discovery_message));
     if (scan_status != PLAYER_MODULE_SCAN_OK) {
@@ -4601,11 +4487,11 @@ bool player_app_fonts_remove_imports(PlayerApp *app) {
     return removed >= 0;
 }
 
-static void player_build_compatibility_preflight_for_game(
-    PlayerApp *app, const GameRecord *game,
-    PlayerCompatibilityPreflight *preflight, bool disc_readable,
-    bool param_sfo_parsed, const NkIsoExecutableReport *executables) {
-    if (!app || !game || !preflight) return;
+void player_app_build_compatibility_preflight(
+    PlayerApp *app, bool disc_readable, bool param_sfo_parsed,
+    const NkIsoExecutableReport *executables) {
+    if (!app) return;
+    PlayerCompatibilityPreflight *preflight = &app->wizard.preflight;
     memset(preflight, 0, sizeof(*preflight));
     char runtime_root[NK_MAX_PATH];
     if (!player_app_data_root(app, runtime_root, sizeof(runtime_root))) {
@@ -4616,7 +4502,7 @@ static void player_build_compatibility_preflight_for_game(
     char font_root[NK_MAX_PATH];
     if (!player_app_font_root(font_root, sizeof(font_root))) font_root[0] = '\0';
 
-    if (game->is_experimental) {
+    if (app->inspecting_game.is_experimental) {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "EXPERIMENTAL", PREFLIGHT_IN_PROGRESS,
                              "Experimental: this game has not been verified. Compatibility is unknown. Verification for additional titles and generic title intake are in the works.",
@@ -4651,7 +4537,7 @@ static void player_build_compatibility_preflight_for_game(
         char decrypted_dir[NK_MAX_PATH * 2];
         char decrypted_elf[NK_MAX_PATH * 2];
         PlayerDecryptedEbootState decrypted_state = player_find_decrypted_eboot(
-            runtime_root, game->disc_id, decrypted_dir,
+            runtime_root, app->inspecting_game.disc_id, decrypted_dir,
             sizeof(decrypted_dir), decrypted_elf, sizeof(decrypted_elf));
         if (decrypted_state == PLAYER_DECRYPTED_EBOOT_VALID) {
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
@@ -4711,34 +4597,11 @@ static void player_build_compatibility_preflight_for_game(
                                    "disc.");
     }
 
-    {
-        static const unsigned int issues[] = { 308 };
-        char profile_reason[512] = "";
-        bool profile_valid = player_title_profile_is_valid(
-            game, runtime_root, executables, profile_reason,
-            sizeof(profile_reason));
-        PlayerPreflightStatus profile_status = profile_valid ? PREFLIGHT_OK
-            : (strncmp(profile_reason, "TITLE_PROFILE_MISSING", 21) == 0
-                   ? PREFLIGHT_MISSING : PREFLIGHT_UNSUPPORTED);
-        player_preflight_add(preflight, "TITLE_PROFILE",
-                             profile_status,
-                             profile_valid
-                                 ? "The current title manifest matches the library identity."
-                                 : (profile_reason[0] ? profile_reason
-                                     : "TITLE_PROFILE_INVALID: title manifest validation failed."),
-                             profile_valid ? NULL : issues,
-                             profile_valid ? 0u : 1u);
-        if (!profile_valid) {
-            player_preflight_set_plain(preflight,
-                "The title settings for this disc are missing or out of date. Add the disc again.");
-        }
-    }
-
     if (disc_readable) {
-        player_check_guest_modules(game, preflight, runtime_root);
+        player_check_guest_modules(app, preflight, runtime_root);
     }
 
-    if (!game->title_id[0]) {
+    if (!app->inspecting_game.title_id[0]) {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "RUNTIME_PACKAGE", PREFLIGHT_UNSUPPORTED,
                              "Title profile missing; generic title support is in the works.",
@@ -4746,7 +4609,7 @@ static void player_build_compatibility_preflight_for_game(
     } else {
         char package_reason[2048] = "";
         NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
-            app, game, NULL, package_reason,
+            app, &app->inspecting_game, NULL, package_reason,
             sizeof(package_reason));
         static const unsigned int issues[] = { 308 };
         PlayerPreflightStatus status = PREFLIGHT_MISSING;
@@ -4759,11 +4622,11 @@ static void player_build_compatibility_preflight_for_game(
             status == PREFLIGHT_OK ? 0 : 1);
     }
 
-    if (game->title_id[0]) {
+    if (app->inspecting_game.title_id[0]) {
         char data_root_path[NK_MAX_PATH] = "";
         char data_root_reason[1024] = "";
         NkLaunchDataRootStatus data_root_status = player_app_game_data_root_status(
-            app, game, data_root_path, sizeof(data_root_path),
+            app, &app->inspecting_game, data_root_path, sizeof(data_root_path),
             data_root_reason, sizeof(data_root_reason));
         static const unsigned int issues[] = { 308 };
         if (data_root_status == NK_LAUNCH_DATA_ROOT_READY ||
@@ -4821,322 +4684,4 @@ static void player_build_compatibility_preflight_for_game(
     player_preflight_add(preflight, "AUDIO_OUTPUT", PREFLIGHT_OK,
                          "Sound plays through your default audio device. With no device, the game runs silently.",
                          NULL, 0);
-}
-
-void player_app_build_compatibility_preflight(
-    PlayerApp *app, bool disc_readable, bool param_sfo_parsed,
-    const NkIsoExecutableReport *executables) {
-    if (!app) return;
-    player_build_compatibility_preflight_for_game(
-        app, &app->inspecting_game, &app->wizard.preflight,
-        disc_readable, param_sfo_parsed, executables);
-}
-
-static void player_package_preflight_set_blocker(
-    PlayerPackageBuildPreflight *preflight, const char *code,
-    const char *message, const char *plain) {
-    if (!preflight) return;
-    memset(&preflight->blocker, 0, sizeof(preflight->blocker));
-    snprintf(preflight->blocker.code, sizeof(preflight->blocker.code), "%s",
-             code ? code : "DISC_SFO");
-    preflight->blocker.status = PREFLIGHT_UNSUPPORTED;
-    snprintf(preflight->blocker.message, sizeof(preflight->blocker.message), "%s",
-             message ? message : "Package build preflight refused the current inputs.");
-    snprintf(preflight->blocker.plain, sizeof(preflight->blocker.plain), "%s",
-             plain ? plain : "Nakagawa can't build this game with the current inputs.");
-    preflight->passed = false;
-}
-
-static void player_package_preflight_source_folder(
-    const char *source_path, char *out, size_t out_size) {
-    char *slash;
-    char *backslash;
-    if (!out || out_size == 0) return;
-    out[0] = '\0';
-    if (!source_path || !source_path[0]) return;
-    if (snprintf(out, out_size, "%s", source_path) < 0 ||
-        strlen(source_path) >= out_size) {
-        out[0] = '\0';
-        return;
-    }
-    slash = strrchr(out, '/');
-    backslash = strrchr(out, '\\');
-    if (!slash || (backslash && backslash > slash)) slash = backslash;
-    if (!slash) {
-        out[0] = '\0';
-    } else if (slash == out ||
-               (slash == out + 2 && out[1] == ':')) {
-        slash[1] = '\0';
-    } else {
-        *slash = '\0';
-    }
-}
-
-static void player_package_preflight_action_folder(
-    PlayerPackageBuildPreflight *preflight, const GameRecord *game,
-    const char *runtime_root) {
-    char decrypted_elf[NK_MAX_PATH * 2];
-    int written;
-    if (!preflight || !game || !runtime_root) return;
-    if (strcmp(preflight->blocker.code, "EXECUTABLE") == 0 ||
-        strcmp(preflight->blocker.code, "GUEST_MODULES") == 0) {
-        if (player_decrypted_eboot_paths(runtime_root, game->disc_id,
-                                         preflight->action_folder,
-                                         sizeof(preflight->action_folder),
-                                         decrypted_elf, sizeof(decrypted_elf))) {
-            return;
-        }
-        preflight->action_folder[0] = '\0';
-        return;
-    }
-    if (strcmp(preflight->blocker.code, "TITLE_PROFILE") == 0) {
-        const char *subdir = game->is_experimental ? "experimental" : "manifests";
-        if (game->is_experimental) {
-            written = snprintf(preflight->action_folder,
-                               sizeof(preflight->action_folder), "%s%c%s%c%s",
-                               runtime_root, nk_platform_path_separator(), subdir,
-                               nk_platform_path_separator(), game->disc_id);
-        } else {
-            written = snprintf(preflight->action_folder,
-                               sizeof(preflight->action_folder), "%s%c%s",
-                               runtime_root, nk_platform_path_separator(), subdir);
-        }
-        if (written < 0 || (size_t)written >= sizeof(preflight->action_folder)) {
-            preflight->action_folder[0] = '\0';
-        }
-        return;
-    }
-    if (strcmp(preflight->blocker.code, "DISC_SFO") == 0) {
-        player_package_preflight_source_folder(
-            game->iso_path, preflight->action_folder,
-            sizeof(preflight->action_folder));
-    }
-}
-
-static bool player_package_preflight_cache_matches(
-    const PlayerPackageBuildPreflight *preflight, const GameRecord *game,
-    const char *runtime_root, int64_t source_size, int64_t profile_size,
-    int64_t decrypted_size) {
-    return preflight && game && preflight->checked &&
-           preflight->is_experimental == game->is_experimental &&
-           strcmp(preflight->disc_id, game->disc_id) == 0 &&
-           strcmp(preflight->title_id, game->title_id) == 0 &&
-           strcmp(preflight->iso_path, game->iso_path) == 0 &&
-           strcmp(preflight->runtime_root, runtime_root ? runtime_root : "") == 0 &&
-           strcmp(preflight->selected_executable, game->selected_executable) == 0 &&
-           preflight->source_size_bytes == source_size &&
-           preflight->profile_size_bytes == profile_size &&
-           preflight->decrypted_executable_size_bytes == decrypted_size;
-}
-
-static void player_package_preflight_remember_identity(
-    PlayerPackageBuildPreflight *preflight, const GameRecord *game,
-    const char *runtime_root, int64_t source_size, int64_t profile_size,
-    int64_t decrypted_size) {
-    if (!preflight || !game) return;
-    preflight->checked = true;
-    preflight->is_experimental = game->is_experimental;
-    snprintf(preflight->disc_id, sizeof(preflight->disc_id), "%s", game->disc_id);
-    snprintf(preflight->title_id, sizeof(preflight->title_id), "%s", game->title_id);
-    snprintf(preflight->iso_path, sizeof(preflight->iso_path), "%s", game->iso_path);
-    snprintf(preflight->runtime_root, sizeof(preflight->runtime_root), "%s",
-             runtime_root ? runtime_root : "");
-    snprintf(preflight->selected_executable, sizeof(preflight->selected_executable),
-             "%s", game->selected_executable);
-    preflight->source_size_bytes = source_size;
-    preflight->profile_size_bytes = profile_size;
-    preflight->decrypted_executable_size_bytes = decrypted_size;
-}
-
-bool player_app_build_package_preflight(PlayerApp *app, int game_index,
-                                         bool force) {
-    PlayerPackageBuildPreflight *preflight;
-    const GameRecord *game;
-    IsoInspectResult inspected;
-    PlayerCompatibilityPreflight checks;
-    char runtime_root[NK_MAX_PATH] = "";
-    char profile_path[NK_MAX_PATH * 2] = "";
-    char decrypted_dir[NK_MAX_PATH * 2] = "";
-    char decrypted_elf[NK_MAX_PATH * 2] = "";
-    char message[1024];
-    int64_t source_size;
-    int64_t profile_size = -1;
-    int64_t decrypted_size = -1;
-    bool have_runtime_root;
-    const PlayerPreflightCheck *blocking;
-
-    if (!app || game_index < 0 || game_index >= app->game_count) return false;
-    game = &app->games[game_index];
-    preflight = &app->package_build_preflight;
-    have_runtime_root = player_app_data_root(app, runtime_root, sizeof(runtime_root));
-    source_size = game->iso_path[0]
-        ? nk_platform_get_file_size(game->iso_path) : -1;
-    if (have_runtime_root && game->is_experimental && game->disc_id[0]) {
-        int written = snprintf(profile_path, sizeof(profile_path),
-                               "%s%cexperimental%c%s%cprofile.json",
-                               runtime_root, nk_platform_path_separator(),
-                               nk_platform_path_separator(), game->disc_id,
-                               nk_platform_path_separator());
-        if (written >= 0 && (size_t)written < sizeof(profile_path)) {
-            profile_size = nk_platform_get_file_size(profile_path);
-        }
-    }
-    if (have_runtime_root && game->disc_id[0] &&
-        player_decrypted_eboot_paths(runtime_root, game->disc_id,
-                                     decrypted_dir, sizeof(decrypted_dir),
-                                     decrypted_elf, sizeof(decrypted_elf))) {
-        decrypted_size = nk_platform_get_file_size(decrypted_elf);
-    }
-    if (!force && player_package_preflight_cache_matches(
-                      preflight, game, have_runtime_root ? runtime_root : "",
-                      source_size, profile_size, decrypted_size)) {
-        return preflight->passed;
-    }
-
-    memset(preflight, 0, sizeof(*preflight));
-    player_package_preflight_remember_identity(
-        preflight, game, have_runtime_root ? runtime_root : "",
-        source_size, profile_size, decrypted_size);
-    if (!have_runtime_root) {
-        player_package_preflight_set_blocker(
-            preflight, "TITLE_PROFILE",
-            "TITLE_PROFILE_DATA_ROOT_UNAVAILABLE: per-user data folder could not be resolved.",
-            "Nakagawa couldn't find a safe folder for this game's files. Check that your user folder is available.");
-        return false;
-    }
-    if (!game->disc_id[0] || !game->title_id[0]) {
-        player_package_preflight_set_blocker(
-            preflight, "TITLE_PROFILE",
-            "TITLE_PROFILE_IDENTITY_MISSING: the library entry has no title identity.",
-            "The title settings for this disc are missing. Add the disc again.");
-        player_package_preflight_action_folder(preflight, game, runtime_root);
-        return false;
-    }
-    if (!game->iso_path[0] || source_size < 0 ||
-        !nk_platform_file_exists(game->iso_path)) {
-        snprintf(message, sizeof(message),
-                 "SOURCE_ISO_MISSING: the library source ISO is unavailable at %.700s.",
-                 game->iso_path[0] ? game->iso_path : "the saved library path");
-        player_package_preflight_set_blocker(
-            preflight, "DISC_SFO", message,
-            "The original disc image is missing. Put it back or add the disc again.");
-        player_package_preflight_action_folder(preflight, game, runtime_root);
-        return false;
-    }
-    memset(&inspected, 0, sizeof(inspected));
-    if (!iso_inspect_file(game->iso_path, &inspected) || !inspected.success) {
-        snprintf(message, sizeof(message), "SOURCE_ISO_UNREADABLE: %.700s",
-                 inspected.error_message[0] ? inspected.error_message
-                                            : "the library source ISO could not be inspected");
-        player_package_preflight_set_blocker(
-            preflight, "DISC_SFO", message,
-            "Nakagawa couldn't read the original disc image. Check it or add the disc again.");
-        player_package_preflight_action_folder(preflight, game, runtime_root);
-        return false;
-    }
-    if (!inspected.param_sfo_parsed) {
-        player_package_preflight_set_blocker(
-            preflight, "DISC_SFO",
-            "SOURCE_ISO_SFO_MISSING: PARAM.SFO could not be read from the library source ISO.",
-            "The disc's game information is missing. Add the correct disc image again.");
-        player_package_preflight_action_folder(preflight, game, runtime_root);
-        return false;
-    }
-    if (strcmp(inspected.disc_id, game->disc_id) != 0) {
-        snprintf(message, sizeof(message),
-                 "SOURCE_ISO_IDENTITY_MISMATCH: ISO has disc ID %.32s; library entry expects %.32s.",
-                 inspected.disc_id, game->disc_id);
-        player_package_preflight_set_blocker(
-            preflight, "DISC_SFO", message,
-            "The disc image at the saved location is a different game. Put back the original disc image or add the correct disc again.");
-        player_package_preflight_action_folder(preflight, game, runtime_root);
-        return false;
-    }
-    if (!game->is_experimental &&
-        (!inspected.matched_title_id[0] ||
-         strcmp(inspected.matched_title_id, game->title_id) != 0)) {
-        snprintf(message, sizeof(message),
-                 "TITLE_PROFILE_IDENTITY_MISMATCH: ISO title %.96s does not match library identity %.96s.",
-                 inspected.matched_title_id, game->title_id);
-        player_package_preflight_set_blocker(
-            preflight, "TITLE_PROFILE", message,
-            "The disc image no longer matches this game's title settings. Add the correct disc again.");
-        player_package_preflight_action_folder(preflight, game, runtime_root);
-        return false;
-    }
-    if (inspected.executables.selected != NK_ISO_EXEC_SELECTION_NONE) {
-        const char *library_leaf = strrchr(game->selected_executable, '/');
-        const char *library_backslash = strrchr(game->selected_executable, '\\');
-        if (!library_leaf || (library_backslash && library_backslash > library_leaf)) {
-            library_leaf = library_backslash;
-        }
-        if (library_leaf) library_leaf++;
-        else library_leaf = game->selected_executable;
-        if (!library_leaf[0] ||
-            !player_name_equals_ignore_case(library_leaf,
-                                            inspected.executables.selected_path)) {
-            snprintf(message, sizeof(message),
-                     "SELECTED_EXECUTABLE_CHANGED: ISO selects %.16s; library entry selects %.96s.",
-                     inspected.executables.selected_path,
-                     game->selected_executable[0] ? game->selected_executable : "none");
-            player_package_preflight_set_blocker(
-                preflight, "EXECUTABLE", message,
-                "The game's program on this disc has changed. Add the disc again before building.");
-            player_package_preflight_action_folder(preflight, game, runtime_root);
-            return false;
-        }
-    } else if (inspected.executables.eboot.kind == NK_ISO_EXEC_MIPS_ELF32) {
-        player_package_preflight_set_blocker(
-            preflight, "EXECUTABLE",
-            "SELECTED_EXECUTABLE_MISSING: the disc has a usable executable but the library did not bind it.",
-            "The game's program changed after it was added. Add the disc again before building.");
-        player_package_preflight_action_folder(preflight, game, runtime_root);
-        return false;
-    }
-
-    player_build_compatibility_preflight_for_game(
-        app, game, &checks, inspected.success, inspected.param_sfo_parsed,
-        &inspected.executables);
-    blocking = player_preflight_blocking_check(&checks);
-    if (!blocking) {
-        for (size_t i = 0; i < checks.count; ++i) {
-            const PlayerPreflightCheck *check = &checks.checks[i];
-            if ((strcmp(check->code, "GUEST_MODULES") == 0 ||
-                 strcmp(check->code, "TITLE_PROFILE") == 0) &&
-                check->status != PREFLIGHT_OK) {
-                blocking = check;
-                break;
-            }
-        }
-    }
-    if (blocking) {
-        preflight->blocker = *blocking;
-        preflight->passed = false;
-        player_package_preflight_action_folder(preflight, game, runtime_root);
-        player_dev_log_add(app, "build preflight", "refused %s: %.160s",
-                           blocking->code, blocking->message);
-        return false;
-    }
-    preflight->passed = true;
-    player_dev_log_add(app, "build preflight", "%s: input checks passed",
-                       game->disc_id);
-    return true;
-}
-
-const PlayerPreflightCheck *player_app_package_build_preflight_blocker(
-    const PlayerApp *app, int game_index) {
-    const PlayerPackageBuildPreflight *preflight;
-    const GameRecord *game;
-    if (!app || game_index < 0 || game_index >= app->game_count) return NULL;
-    preflight = &app->package_build_preflight;
-    game = &app->games[game_index];
-    if (!preflight->checked ||
-        preflight->is_experimental != game->is_experimental ||
-        strcmp(preflight->disc_id, game->disc_id) != 0 ||
-        strcmp(preflight->title_id, game->title_id) != 0 ||
-        strcmp(preflight->iso_path, game->iso_path) != 0 ||
-        strcmp(preflight->selected_executable, game->selected_executable) != 0) {
-        return NULL;
-    }
-    return preflight->passed ? NULL : &preflight->blocker;
 }

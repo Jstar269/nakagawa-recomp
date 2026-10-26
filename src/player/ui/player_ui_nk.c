@@ -1157,7 +1157,6 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     bool check_failed;
     bool starting;
     bool running;
-    const PlayerPreflightCheck *build_blocker;
     PlayerUiPrimaryAction primary = PLAYER_UI_PRIMARY_NONE;
     if (player == NULL || app == NULL || out == NULL || index < 0 ||
         index >= app->game_count || index >= (int)PLAYER_UI_TITLE_CAP) {
@@ -1206,12 +1205,6 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     } else {
         out->package_state = PLAYER_UI_PACKAGE_MISSING;
     }
-    build_blocker = (package_ready || checking || check_failed || starting || running)
-        ? NULL : player_app_package_build_preflight_blocker(app, index);
-    out->build_preflight_message = build_blocker
-        ? player_preflight_plain_message(build_blocker) : "";
-    out->build_preflight_folder = build_blocker
-        ? app->package_build_preflight.action_folder : "";
     out->compatibility_category = player_ui_compatibility(
         game, &out->compatibility_expect, &out->compatibility_known_issues,
         &out->compatibility_tier);
@@ -1271,16 +1264,12 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         primary = PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK;
     } else if (package_status == NK_RUNTIME_PACKAGE_STALE) {
         out->primary_action_label = "REBUILD PACKAGE";
-        if (!build_blocker) {
-            out->primary_action_enabled = true;
-            primary = PLAYER_UI_PRIMARY_BUILD;
-        }
+        out->primary_action_enabled = true;
+        primary = PLAYER_UI_PRIMARY_BUILD;
     } else if (package_status == NK_RUNTIME_PACKAGE_MISSING) {
         out->primary_action_label = "BUILD PACKAGE";
-        if (!build_blocker) {
-            out->primary_action_enabled = true;
-            primary = PLAYER_UI_PRIMARY_BUILD;
-        }
+        out->primary_action_enabled = true;
+        primary = PLAYER_UI_PRIMARY_BUILD;
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
         out->primary_action_label = "REBUILD PACKAGE";
         out->primary_action_enabled = true;
@@ -1491,13 +1480,6 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             nk_ui_router_replace(player->router, PLAYER_UI_ROUTE_LIBRARY);
         } else {
             PlayerUiTitleModel model;
-            const GameRecord *game = &app->games[index];
-            if (!app->launch_pending && !app->is_game_running &&
-                !player_app_cached_game_has_runtime(app, game) &&
-                !player_app_runtime_package_check_pending(app, game) &&
-                !player_app_runtime_package_check_failed(app, game)) {
-                (void)player_app_build_package_preflight(app, index, false);
-            }
             player_ui_fill_titles(player, app, (size_t)app->game_count >
                                   PLAYER_UI_TITLE_CAP ? PLAYER_UI_TITLE_CAP :
                                   (size_t)app->game_count);

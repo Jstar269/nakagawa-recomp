@@ -40,7 +40,7 @@ checks depend on the selected manifest.
 
 | Scope | Checks |
 | --- | --- |
-| `repo` | Required public-facing documents, root GPLv3 text, project-metadata transition warnings, core disclaimers, tracked-private-path hygiene when a local Git checkout is available, and linked-worktree/build-output accumulation |
+| `repo` | Required public-facing documents, root GPLv3 text, project-metadata transition warnings, core disclaimers, and tracked-private-path hygiene when a local Git checkout is available |
 | `inputs` | Decrypted MIPS ELF/PRXs, original `~PSP` header, ISO selection/format/disc-ID signal, populated XB extraction tree or configured `SR_DATAROOT`, and save/memstick storage (`SAVE_ROOT`) |
 | `build` | Windows 11/x64, PowerShell/Python, UCRT64 compiler and Make tools, SDL3/Vulkan link inputs, and private code-generation inputs |
 | `products` | Built `<game>.exe`, `<game>_image.bin`, and recorded build profile (`BUILD_PROFILE`) |
@@ -237,27 +237,6 @@ Two boundaries remain, and both fail closed with a named message instead of a my
 - guest input pathnames keep travelling through the process environment rather than through recipe
   text, for the same reason; see [SETUP.md](SETUP.md) and the transport note in the Makefile.
 
-## Linked-worktree and build-output accumulation
-
-A long-lived checkout accumulates Git worktrees, and each worktree accumulates its own
-`build/` tree. Neither is visible from inside a single checkout, so `Doctor -Scope repo`
-inventories both without writing anything:
-
-| Result | Reported when |
-| --- | --- |
-| `WORKTREES_COUNT` | more than 16 linked worktrees are registered |
-| `WORKTREES_NESTED` | a linked worktree sits inside a checkout of the repository |
-| `WORKTREES_UNREGISTERED` | a directory in the sibling `worktrees/` layout is not a Git worktree |
-| `WORKTREES_STALE` | a registered worktree path is gone or prunable |
-| `WORKTREES_BUILD_SIZE` | regenerable build output exceeds 10 GiB in total, or 5 GiB in one worktree |
-
-These are advisory `WARN` results, never `FAIL`: carrying several lanes is legitimate, and a
-diagnostic must not stop a build. The size scan is bounded (20 seconds and 200,000 files by
-default) and says so when it stops early, so a reported figure is a lower bound, not a
-promise. The remedy is always the same order: export the working-tree diff and a bundle of
-the branch, remove the regenerable build output, then remove and prune the worktree. Doctor
-never removes, prunes or writes anything itself.
-
 ## Deferred build and workspace ergonomics
 
 The governance work intentionally leaves these as separate, evidence-backed follow-ups:
@@ -280,13 +259,8 @@ The governance work intentionally leaves these as separate, evidence-backed foll
 6. [PARTIAL - #368] stop root-level artifact pollution and document the intended output roots: the
    `build` lifecycle tests no longer take their `BUILD_DIR` from the repository root, so they cannot
    make Make write `spaces/` litter into a checkout, and a whitespace-bearing `BUILD_DIR` is refused
-   outright; `clean-preview` still reports only the roots listed above, and linked-worktree build
-   output is now surfaced by `WORKTREES_BUILD_SIZE`, but a non-build route that writes outside the
-   listed roots is not yet surfaced by a single inventory;
+   outright; `clean-preview` still reports only the roots listed above, so a route that writes outside
+   them is not yet surfaced by a single inventory;
 7. eliminate absolute paths from generated `compile_commands.json` where tooling permits;
-8. [DONE - #368] audit and bound agent database/worktree accumulation:
-   `check_worktree_accumulation` in `tools/nk_doctor_checks.py` inventories every registered
-   worktree (count, nesting inside a checkout, unregistered directories in the sibling
-   `worktrees/` layout, and stale paths) and the regenerable `build/` output under each one, with
-   advisory bounds and a bounded scan; `tools/test_workspace_paths.py` covers every result;
+8. audit and bound agent database/worktree accumulation;
 9. consider build-cache research only after the correctness and ownership contracts are stable.

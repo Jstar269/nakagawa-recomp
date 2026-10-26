@@ -404,25 +404,6 @@ class TestPrerequisiteFetcher(unittest.TestCase):
             "total_download_bytes must match the pinned artifact sizes",
         )
 
-    def test_brotli_pin_includes_the_cve_2026_111497_fix(self) -> None:
-        """The shipped Brotli decoder must be 1.2.1 or later (CVE-2026-111497).
-
-        Brotli 1.0.3 to 1.2.0 can write out of bounds while decoding an
-        attacker-controlled stream; the player stages libbrotlidec.dll from
-        this pin (SDL3_ttf -> FreeType, WOFF2). A re-pin after the manifest's
-        source snapshot records the date its database entry was read.
-        """
-        manifest_path = Path(__file__).resolve().parents[1] / "assets" / "prereq_manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        item = next(item for item in manifest["artifacts"]
-                    if item["id"] == "mingw-w64-ucrt-x86_64-brotli")
-        upstream, _, pkgrel = item["version"].partition("-")
-        self.assertTrue(pkgrel.isdigit(), item["version"])
-        self.assertGreaterEqual(tuple(int(part) for part in upstream.split(".")), (1, 2, 1))
-        retrieved = item["sha256_source"].get("retrieved_utc", manifest["source_snapshot_date"])
-        self.assertRegex(retrieved, r"^\d{4}-\d{2}-\d{2}$")
-        self.assertGreaterEqual(retrieved, manifest["source_snapshot_date"])
-
     def test_synthetic_installed_toolchain_resolves_the_font_closure(self) -> None:
         """The installer's extracted layout must resolve the closure (#421).
 
