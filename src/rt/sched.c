@@ -108,6 +108,7 @@ enum { PSP_WAIT_NONE = 0, PSP_WAIT_SLEEP = 1, PSP_WAIT_DELAY = 2, PSP_WAIT_OBJEC
 #define SCE_KERNEL_ERROR_WAIT_DELETE       0x800201b5u
 #define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT   0x80020064u
 #define SCE_KERNEL_ERROR_ILLEGAL_ATTR      0x80020191u
+#define SCE_KERNEL_ERROR_ILLEGAL_PRIORITY  0x80020193u
 
 /* PSP hardware treats a signed-negative status as an error-shaped non-delete
  * exit and latches SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT.  The boundary probe
@@ -4005,15 +4006,33 @@ void sched_unwind_current(void) {
 
 int sched_current_priority(void) { return s_cur >= 0 ? s_tcb[s_cur].priority : 32; }
 
-/* sceKernelChangeThreadPriority: uid 0 = current thread. */
+/* sceKernelChangeThreadPriority(thid, priority); thid 0 = the calling thread.
+ *
+ * Results follow the PSPAutotests threads/threads/change.expected cells (#1388):
+ *   - an unknown, -1 or deleted UID answers UNKNOWN_THID;
+ *   - a dormant (never-started or finished) target answers DORMANT, as PSP-B3-01
+ *     (psp-hw-20260917) also measured;
+ *   - user priorities 0x08..0x77 are accepted; -2, -1, 0x01..0x07, 0x78 and 0x79 answer
+ *     ILLEGAL_PRIORITY (0x80020193, the code the thread-rotate-range cell measured for an
+ *     out-of-range ready-queue priority) and leave the priority unchanged;
+ *   - priority 0 gives the target the CALLER's current priority, not the target's.
+ * The precedence of DORMANT over ILLEGAL_PRIORITY for a dormant target with an illegal
+ * priority is not covered by that evidence; the existing DORMANT check stays first.
+ * Without a calling thread, priority 0 names no priority and fails closed with
+ * ILLEGAL_PRIORITY.  The caller applies the scheduling boundary (h_ChangeThreadPriority). */
+#define SCHED_USER_PRIORITY_MIN 0x08
+#define SCHED_USER_PRIORITY_MAX 0x77
 uint32_t sched_set_priority(uint32_t uid, int priority) {
-    if (uid == 0 && s_cur >= 0) uid = s_tcb[s_cur].uid;
-    else uid = resolve_thread_uid(uid);
+    uid = resolve_thread_uid(uid);
     TCB *t = tcb_by_uid(uid);
     if (!t) return SCE_KERNEL_ERROR_UNKNOWN_THID;
-    /* PSP-B3-01 (psp-hw-20260917): a dormant (never-started or terminated)
-     * target answers DORMANT (0x800201A2). */
     if (t->state == TH_DORMANT) return SCE_KERNEL_ERROR_DORMANT;
+    if (priority == 0) {
+        if (s_cur < 0) return SCE_KERNEL_ERROR_ILLEGAL_PRIORITY;
+        priority = s_tcb[s_cur].priority;
+    }
+    if (priority < SCHED_USER_PRIORITY_MIN || priority > SCHED_USER_PRIORITY_MAX)
+        return SCE_KERNEL_ERROR_ILLEGAL_PRIORITY;
     t->priority = priority;
     t->rot_head = 0;   /* a queue position belongs to the old priority */
     return 0;
