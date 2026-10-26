@@ -959,7 +959,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25b5bb1d855fc6a05155f40f0417c2cfee92dd47fca3c651f063898f8f817e14"
+      "sha256": "a17611e54b9bbf29e9e143fb0ee6c5927171ff634c83adaeec1e088a7e1bd905"
     },
     {
       "path": "assets/public_provenance_ledger.json",
@@ -1684,7 +1684,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "05f742034657fb52616320c9e27344f19169d1b1d51efa4cd37fbe286fc26f0a"
+      "sha256": "b3d3249cdb2488badd295e74a7cf7bb630ce8a56a0a79c13330a136be583245e"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -14151,7 +14151,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0888f9bc1e246a1a226c24f256332b7338754c7f80a20f5b54a36489502bbd36"
+      "sha256": "f4d9e43655519ae26918f9b8763b1bcc0b2569ab727333e47031bdd3b50899c6"
     },
     {
       "path": "tools/test_production_smoke.py",
