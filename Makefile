@@ -434,16 +434,9 @@ endif
 ifneq ($(subst $(SPACE),,$(BUILD_DIR)),$(BUILD_DIR))
 $(error BUILD_DIR '$(BUILD_DIR)' contains a space, which GNU Make cannot represent in a target or prerequisite name. Use a relative BUILD_DIR under the repository root (the default `build/<game>`), or set NK_BUILD_ROOT to a folder without spaces so tools/title_codegen_plan.py can pick a Make-safe build root (issue #296).)
 endif
-# The runtime's diagnostic exit artifacts (crash dump, exit flag) belong to the build
-# that produced them, not to a fixed title. Without this the runtime wrote them to a
-# literal build/hst/, so every non-HST build either scribbled into another title's
-# output directory or silently dropped the dump when that directory did not exist.
-# Deferred on purpose: a recursive $(MAKE) BUILD_DIR=... override retargets it too.
-# `override` on purpose as well: a plain += is discarded when a caller passes CFLAGS on the
-# command line, and hle.c would then fall back to a literal build/hst/ and silently restore
-# the cross-title overwrite this define exists to prevent. Failing quietly there is worse
-# than ignoring a custom flag, so this one define is not caller-overridable.
-override CFLAGS += -DSR_BUILD_DIR=\"$(subst \,/,$(BUILD_DIR))\"
+# No compile carries the build directory: the runtime writes its diagnostic exit artifacts
+# (crash dump, exit flag) beside its own executable, found at run time, so one compiled
+# object serves every build folder and the shared object cache can reuse it (#1306).
 FUNCS_PER_CHUNK ?= 2000
 # Optional deterministic size-aware chunking: greedy contiguous fill toward a
 # per-chunk emitted-byte budget (function order preserved, FUNCS_PER_CHUNK still
@@ -586,10 +579,10 @@ PGD_BACKEND_SRC := src/rt/pgd_unavailable.c
 ISO_BACKEND_SRC := src/rt/iso_public.c
 AUDIO_BACKEND_SRC := src/rt/audio_unavailable.c
 ASSET_COPY_ARGS := -ExcludeOptionalFonts
-# override for the same reason as SR_BUILD_DIR above, and because it is now required:
-# once any append to CFLAGS uses override, GNU make ignores later ordinary assignments to
-# it. Losing this define is the worse failure of the two -- the build would stop
-# declaring itself public-safe, and the production-smoke evidence check fails on exactly that.
+# `override` on purpose: a plain += is discarded when a caller passes CFLAGS on the command
+# line, and once any append to CFLAGS uses override, GNU make ignores later ordinary
+# assignments to it. Losing this define would make the build stop declaring itself
+# public-safe, and the production-smoke evidence check fails on exactly that.
 override CFLAGS += -DSR_PUBLIC_SAFE
 
 include mk/build_common.mk
@@ -929,7 +922,7 @@ override PORTABLE_CORE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 # __DATE__/__TIME__ stamp was the one project-owned difference between two
 # builds of the same package from identical inputs; it is gone. The identity is
 # transported the way this Makefile already passes build identity into the
-# compile: a -D define (compare -DSR_BUILD_DIR above).
+# compile: a -D define.
 #   * SOURCE_DATE_EPOCH, when the build sets it, is honoured as-is (the
 #     reproducible-builds.org convention) and recorded as build.source_date_epoch.
 #   * The source commit is recorded as build.build_id, resolved exactly like
@@ -938,8 +931,8 @@ override PORTABLE_CORE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
 #     git and without SOURCE_DATE_EPOCH records no identity and tools/flight_diff.py
 #     refuses such a bundle fail closed; it never falls back to a clock.
 # The runtime profile hash is deliberately NOT the identity here: it hashes
-# CFLAGS, which carries -DSR_BUILD_DIR and the SDK paths, so it varies with the
-# output root and would reintroduce per-root variation into every binary. The
+# CFLAGS, which carries the SDK paths, so it varies with the host's toolchain
+# layout and would reintroduce that variation into every binary. The
 # identity defines are kept out of the global CFLAGS (and so out of
 # RUNTIME_PROFILE_HASH): only flight_recorder.o embeds them, so a new commit
 # rebuilds that one object instead of every runtime object (see
@@ -1098,7 +1091,7 @@ PUBLIC_TARGETS := \
 	gpu-selftest-status
 
 PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-korean-font
-INTERNAL_TARGETS := FORCE project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+INTERNAL_TARGETS := FORCE compile-inputs project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1824,7 +1817,7 @@ endif
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entries-env NK_CODEGEN_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(CODEGEN_PROFILE_MANIFEST)" --section codegen --compiler "$(PYTHON)" --entries-env NK_CODEGEN_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".codegen-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o" --invalidate-glob "$(BUILD_DIR)/nk_lib_*.o"
 
 # Re-checked on every invocation that needs a guest input (hence FORCE), but rewritten
 # only when an input's identity actually changed, so dependents do not rebuild spuriously.
@@ -1878,7 +1871,7 @@ RECOMP_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler
 endif
 RECOMP_PROFILE_STAMP := $(BUILD_DIR)/.recomp-profile-$(RECOMP_PROFILE_HASH)
 $(RECOMP_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
+	"$(PYTHON)" $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o" --invalidate-glob "$(BUILD_DIR)/nk_lib_*.o"
 
 # Compile the chunked generated C code.
 
@@ -1887,6 +1880,13 @@ $(BUILD_DIR)/$(GAME_NAME)_recomp_%.o: $(BUILD_DIR)/$(GAME_NAME)_recomp_%.c src/r
 
 $(BUILD_DIR)/$(GAME_NAME)_recomp.o: $(BUILD_DIR)/$(GAME_NAME)_recomp.c src/rt/recomp.h $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h $(TRACE_STAMP) $(RECOMP_PROFILE_STAMP)
 	$(CC) $(RECOMP_FLAGS) -I$(BUILD_DIR) -Isrc/rt -DSR_SDL3VK $(DEPFLAGS) -c $< -o $@
+
+# A system library carried once is its own translation unit (tools/codegen.py
+# shared_library_source_text), named by the module's bytes and including only the
+# runtime header, so every game's build compiles the identical file and a package
+# build reuses its object (#1306).
+$(BUILD_DIR)/nk_lib_%.o: $(BUILD_DIR)/nk_lib_%.c src/rt/recomp.h $(TRACE_STAMP) $(RECOMP_PROFILE_STAMP)
+	$(CC) $(RECOMP_FLAGS) -Isrc/rt -DSR_SDL3VK $(DEPFLAGS) -c $< -o $@
 
 # Compile runtime sources.
 $(BUILD_DIR)/%.o: src/rt/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
@@ -2012,15 +2012,16 @@ player-ui-regressions: $(PLAYER_UI_TEST_EXE)
 	"$(PYTHON)" -m unittest discover -s tests/native -p "test_player_ui.py" -v
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
+LIBRARY_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/nk_lib_*.c))
 # The title link passes its objects through a GCC response file. A package build
 # under the player's user-data folder has long object paths, and the expanded list
 # overran the Windows command-line limit: the command was cut mid-path and ld
 # reported a missing ".../atrac3p" input. GCC reads backslashes in a response file
 # as escapes, so the paths are written with forward slashes; BUILD_DIR is already
 # refused when it contains whitespace, so each object stays one argument.
-LINK_OBJECTS = $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
+LINK_OBJECTS = $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(CHUNK_OBJS) $(LIBRARY_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
 LINK_OBJECTS_RSP = $(BUILD_DIR)/link-objects.rsp
-DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
+DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
 
 # ---- AOT <-> interpreter cosimulation gate ---------------------------------------
 #
@@ -2083,11 +2084,11 @@ cosim-selftest:
 # the comparison links with neither SDL3 nor Vulkan. Keeping it that way is
 # deliberate -- this gate should stay runnable anywhere the toolchain is,
 # not inherit the graphics stack's environment requirements.
-cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
+cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o
 	$(CC) $(CFLAGS) $(COSIM_FP_CONVERT_PRELUDE_FLAG) -DSR_INSTRUCTION_TRACE \
 		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
 		-o $(BUILD_DIR)/cosim_selftest.exe \
-		$(COSIM_HARNESS) $(COSIM_FPU_REFERENCE_SRC) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
+		$(COSIM_HARNESS) $(COSIM_FPU_REFERENCE_SRC) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
 		$(COSIM_INTERP_SRC) src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c -lm
 	$(BUILD_DIR)/cosim_selftest.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin \
 		$(COSIM_BASE_ADDR) $(COSIM_TRACES)
@@ -2143,7 +2144,11 @@ project-fonts: $(PROJECT_FONT_SLOT_TARGETS)
 # Project PGFs are generated before compile but are not link inputs, so keep the
 # dependency order-only and preserve the link set below.
 compile: | project-fonts
-compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
+
+# The generated headers a compile reads, built on their own first so
+# tools/title_codegen_plan.py can key every object before Make compiles it (#1306).
+compile-inputs: $(TITLE_CONFIG_HEADER)
+compile: shader-verify $(CHUNK_OBJS) $(LIBRARY_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
 	$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT) \
 		@$(LINK_OBJECTS_RSP) \
