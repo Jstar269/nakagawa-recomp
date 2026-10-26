@@ -4639,7 +4639,13 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                 draw_text(ren, card_x + 48.0f, box_y + 70.0f, app->wizard.status_message[0] ? app->wizard.status_message : "Ready to verify title.", 1.0f, COLOR_EMERALD);
             } else {
                 draw_badge(ren, card_x + 48.0f, box_y + 16.0f, "NO FILE CHOSEN", COLOR_AMBER);
-                draw_text(ren, card_x + 48.0f, box_y + 50.0f, "Click 'Choose PSP Game ISO' or drag & drop an ISO file onto this window.", 1.1f, COLOR_TEXT_MUTED);
+                if (app->wizard.status_message[0]) {
+                    draw_text_wrapped(ren, card_x + 48.0f, box_y + 50.0f,
+                                      card_w - 96.0f, app->wizard.status_message,
+                                      1.0f, COLOR_AMBER, 2);
+                } else {
+                    draw_text(ren, card_x + 48.0f, box_y + 50.0f, "Click 'Choose PSP Game ISO' or drag & drop an ISO file onto this window.", 1.1f, COLOR_TEXT_MUTED);
+                }
             }
 
             if (!app->wizard.iso_selected) {
