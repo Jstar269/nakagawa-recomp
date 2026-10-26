@@ -11563,17 +11563,45 @@ int sr_callback_is_valid(uint32_t uid) {
     return sr_callback_find_in_table(uid) >= 0;
 }
 
+/* Memory Stick insert/eject callback registrations made through sceIoDevctl
+ * 0x02415821 on ms0:/fatms0:. The 32-entry bound, duplicate registrations each
+ * taking an entry, and unregister removing only the first match follow PPSSPP's
+ * sceIo.cpp model (PSP-IO-001, #311, has not measured them). Dropping a deleted
+ * callback's registrations is a project model: hardware behaviour for a deleted
+ * registered callback is unmeasured, and dropping it means it can never fire. */
+enum { MEMSTICK_CALLBACK_MAX = 32 };
+static uint32_t s_memstick_callbacks[MEMSTICK_CALLBACK_MAX];
+static uint32_t s_memstick_callback_count;
+
+static int memstick_callback_remove_first(uint32_t uid) {
+    for (uint32_t i = 0; i < s_memstick_callback_count; i++) {
+        if (s_memstick_callbacks[i] != uid) continue;
+        memmove(&s_memstick_callbacks[i], &s_memstick_callbacks[i + 1u],
+                (s_memstick_callback_count - i - 1u) * sizeof(s_memstick_callbacks[0]));
+        s_memstick_callbacks[--s_memstick_callback_count] = 0u;
+        return 1;
+    }
+    return 0;
+}
+
+static void memstick_callback_forget(uint32_t uid) {
+    while (memstick_callback_remove_first(uid)) { }
+}
+
 int sr_callback_table_unregister(uint32_t uid) {
     int idx = sr_callback_find_in_table(uid);
     if (idx < 0) return 0;
     memset(&s_callbacks[idx], 0, sizeof(s_callbacks[idx]));
+    memstick_callback_forget(uid);
     return 1;
 }
 
 void sr_callback_unregister_owner(uint32_t thread_uid) {
     for (size_t i = 0; i < s_callbacks_len; i++) {
-        if (s_callbacks[i].used && s_callbacks[i].owner_thread_uid == thread_uid)
+        if (s_callbacks[i].used && s_callbacks[i].owner_thread_uid == thread_uid) {
+            memstick_callback_forget(s_callbacks[i].uid);
             memset(&s_callbacks[i], 0, sizeof(s_callbacks[i]));
+        }
     }
     if (s_exit_cb_uid && !sr_callback_is_valid(s_exit_cb_uid))
         s_exit_cb_uid = 0;
@@ -16084,8 +16112,6 @@ static int io_memstick_capacity(uint32_t info[5]) {
 }
 #endif /* _WIN32 */
 
-static atomic_uint s_memstick_insert_eject_callback_uid;
-
 static uint32_t h_IoDevctl(CpuState *s) {
     enum {
         IO_DEVCTL_GET_CAPACITY = 0x02425818u,
@@ -16138,20 +16164,20 @@ static uint32_t h_IoDevctl(CpuState *s) {
             if (!A2 || !sr_guest_span_readable(A2, 4u))
                 return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
             uint32_t callback_uid = MEM_R32(A2);
-            if (A1 == IO_DEVCTL_REGISTER_CALLBACK) {
-                atomic_store_explicit(&s_memstick_insert_eject_callback_uid, callback_uid,
-                                      memory_order_release);
-            } else {
-                uint32_t registered = atomic_load_explicit(
-                    &s_memstick_insert_eject_callback_uid, memory_order_acquire);
-                while (registered == callback_uid &&
-                       !atomic_compare_exchange_weak_explicit(
-                           &s_memstick_insert_eject_callback_uid, &registered, 0u,
-                           memory_order_acq_rel, memory_order_acquire)) { }
-            }
-            /* Storage is recorded for lifecycle parity only; callbacks are never
-             * dispatched until the runtime can model insertion/ejection events. */
-            return 0;
+            if (A1 == IO_DEVCTL_UNREGISTER_CALLBACK)
+                return memstick_callback_remove_first(callback_uid)
+                           ? 0u : IO_DEVCTL_ERROR_INVALID_ARGUMENT;
+            if (sr_callback_find_in_table(callback_uid) < 0 ||
+                s_memstick_callback_count >= MEMSTICK_CALLBACK_MAX)
+                return IO_DEVCTL_ERROR_INVALID_ARGUMENT;
+            s_memstick_callbacks[s_memstick_callback_count++] = callback_uid;
+            /* The runtime's Memory Stick is always inserted and assigned (the
+             * inserted query above answers 1), so registering queues one
+             * notification with argument 1 (inserted). sr_callback_notify only
+             * marks it pending and wakes the owner; the body runs on the owning
+             * thread at its next callback point. No later insert or eject event
+             * exists in this runtime. */
+            return sr_callback_notify(callback_uid, 1u);
         }
         default:
             hle_note_devctl_refusal(device, A1, IO_DEVCTL_ERROR_UNSUPPORTED);
@@ -16849,9 +16875,11 @@ uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found) {
 }
 uint32_t sr_hle_test_io_ioctl(CpuState *s) { return h_IoIoctl(s); }
 void sr_hle_test_register_iofilemgr(void) { hle_register_iofilemgr_handlers(); }
-uint32_t sr_hle_test_io_devctl_callback_uid(void) {
-    return atomic_load_explicit(&s_memstick_insert_eject_callback_uid,
-                                memory_order_acquire);
+uint32_t sr_hle_test_io_devctl_callback_count(void) {
+    return s_memstick_callback_count;
+}
+uint32_t sr_hle_test_io_devctl_callback_at(uint32_t index) {
+    return index < s_memstick_callback_count ? s_memstick_callbacks[index] : 0u;
 }
 uint32_t sr_hle_test_io_devctl_refusal_log_count(void) {
     return atomic_load_explicit(&s_hle_devctl_refusal_log_count,
@@ -25636,6 +25664,8 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_callbacks = NULL;
     s_callbacks_len = 0u;
     s_callbacks_cap = 0u;
+    memset(s_memstick_callbacks, 0, sizeof(s_memstick_callbacks));
+    s_memstick_callback_count = 0u;
     s_exit_cb_uid = 0u;
     s_utility_av_loaded = 0u;
     s_volatile_locked = 0;

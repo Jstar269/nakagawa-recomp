@@ -167,7 +167,8 @@ extern uint32_t sr_hle_test_io_dclose(CpuState *s);
 extern uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found);
 extern uint32_t sr_hle_test_io_ioctl(CpuState *s);
 extern void sr_hle_test_register_iofilemgr(void);
-extern uint32_t sr_hle_test_io_devctl_callback_uid(void);
+extern uint32_t sr_hle_test_io_devctl_callback_count(void);
+extern uint32_t sr_hle_test_io_devctl_callback_at(uint32_t index);
 extern uint32_t sr_hle_test_io_devctl_refusal_log_count(void);
 extern uint32_t sr_hle_test_io_close(CpuState *s);
 extern uint32_t sr_hle_test_io_open_async(CpuState *s);
@@ -5909,13 +5910,13 @@ static void test_io_devctl_memory_stick(void) {
 
     MEM_W32(indata_addr, 0x1234u);
     expect(io_devctl_call(&cpu, second_device_addr, 0x02415821u,
-                          indata_addr, 4u, 0u, 0u) == 0u &&
-               sr_hle_test_io_devctl_callback_uid() == 0x1234u,
-           "sceIoDevctl callback registration stores its input UID without invoking it");
+                          indata_addr, 4u, 0u, 0u) == 0x80010016u &&
+               sr_hle_test_io_devctl_callback_count() == 0u,
+           "sceIoDevctl callback registration refuses a UID that is not a live callback");
     expect(io_devctl_call(&cpu, second_device_addr, 0x02415822u,
-                          indata_addr, 4u, 0u, 0u) == 0u &&
-               sr_hle_test_io_devctl_callback_uid() == 0u,
-           "sceIoDevctl callback unregistration clears the stored UID");
+                          indata_addr, 4u, 0u, 0u) == 0x80010016u &&
+               sr_hle_test_io_devctl_callback_count() == 0u,
+           "sceIoDevctl callback unregistration refuses a UID that is not registered");
 
     MEM_W32(indata_addr, 0xdeadbeefu);
     expect(io_devctl_call(&cpu, device_addr, 0x02425818u,
@@ -14997,6 +14998,102 @@ static void test_callback_check_pump_services_pending_in_slot_order(void) {
 
     wakeup_delete_callback(first);
     wakeup_delete_callback(second);
+    sr_test_guest_fn_reset();
+}
+
+static uint32_t memstick_check_callback(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    return sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback"));
+}
+
+/* Issue #1378: Memory Stick insert/eject callbacks registered through the production
+ * sceIoDevctl dispatch on fatms0:. PSPAutotests tests/mstick/mstick.expected: registering
+ * on an inserted, ready stick queues one notification, the body runs with notifyCount 1 and
+ * notifyArg 1, and the following sceKernelCheckCallback returns 1. The 32-entry bound,
+ * duplicate entries, the 0x80010016 refusals and deleted-callback cleanup follow PPSSPP's
+ * model or the project model in hle.c; none of them is hardware-measured. */
+static void test_io_devctl_memstick_callback_notify(void) {
+    enum {
+        MS_DEVICE = 0x09020400u,
+        MS_INDATA = 0x09020440u,
+        MS_REGISTER = 0x02415821u,
+        MS_UNREGISTER = 0x02415822u,
+        MS_EINVAL = 0x80010016u,
+    };
+    static const char fatms0[] = "fatms0:";
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    sr_test_register_guest_fn(WAKEUP_SECOND_ENTRY, wakeup_second_guest_fn);
+    s_wakeup_log_len = 0u;
+    TCB *owner = fixture_thread(0x3420u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    fd_guest_copy(MS_DEVICE, fatms0, sizeof(fatms0));
+    CpuState cpu;
+
+    uint32_t first = wakeup_create_callback(WAKEUP_FIRST_NAME, "ms-first",
+                                            WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    uint32_t second = wakeup_create_callback(WAKEUP_SECOND_NAME, "ms-second",
+                                             WAKEUP_SECOND_ENTRY, WAKEUP_SECOND_COMMON);
+    expect(first != 0u && second != 0u,
+           "mstick callbacks: both callbacks are created through sceKernelCreateCallback");
+
+    MEM_W32(MS_INDATA, first);
+    expect(io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == 0u &&
+               sr_hle_test_io_devctl_callback_count() == 1u &&
+               sr_hle_test_io_devctl_callback_at(0u) == first,
+           "mstick callbacks: registration appends the live callback UID");
+    expect(s_wakeup_log_len == 0u && sr_thread_has_pending_callbacks(owner->uid),
+           "mstick callbacks: registration queues a notification without running the body");
+    expect(memstick_check_callback() == 1u && s_wakeup_log_len == 1u &&
+               wakeup_log_is(0u, 1u, 1u, WAKEUP_FIRST_COMMON),
+           "mstick callbacks: sceKernelCheckCallback returns 1 and runs notifyCount 1, notifyArg 1");
+    expect(memstick_check_callback() == 0u && s_wakeup_log_len == 1u,
+           "mstick callbacks: the initial notification is delivered once");
+
+    expect(io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == 0u &&
+               sr_hle_test_io_devctl_callback_count() == 2u &&
+               memstick_check_callback() == 1u && wakeup_log_is(1u, 1u, 1u, WAKEUP_FIRST_COMMON),
+           "mstick callbacks: a duplicate registration takes a second entry and notifies again");
+    expect(io_devctl_call(&cpu, MS_DEVICE, MS_UNREGISTER, MS_INDATA, 4u, 0u, 0u) == 0u &&
+               sr_hle_test_io_devctl_callback_count() == 1u &&
+               io_devctl_call(&cpu, MS_DEVICE, MS_UNREGISTER, MS_INDATA, 4u, 0u, 0u) == 0u &&
+               sr_hle_test_io_devctl_callback_count() == 0u,
+           "mstick callbacks: each unregister removes one matching entry");
+    expect(io_devctl_call(&cpu, MS_DEVICE, MS_UNREGISTER, MS_INDATA, 4u, 0u, 0u) == MS_EINVAL,
+           "mstick callbacks: unregistering a UID that is no longer registered is refused");
+
+    MEM_W32(MS_INDATA, second);
+    uint32_t accepted = 0u;
+    for (uint32_t i = 0; i < 32u; i++)
+        accepted += io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == 0u;
+    expect(accepted == 32u &&
+               io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == MS_EINVAL &&
+               sr_hle_test_io_devctl_callback_count() == 32u,
+           "mstick callbacks: the list holds 32 entries and refuses the 33rd");
+    expect(memstick_check_callback() == 1u && s_wakeup_log_len == 3u &&
+               s_wakeup_log[2].id == 2u && s_wakeup_log[2].count == 32u &&
+               s_wakeup_log[2].notify_arg == 1u,
+           "mstick callbacks: the refused registration queues no notification");
+
+    wakeup_delete_callback(second);
+    expect(sr_hle_test_io_devctl_callback_count() == 0u,
+           "mstick callbacks: deleting a callback drops all of its registrations");
+    MEM_W32(MS_INDATA, first);
+    expect(io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == 0u &&
+               sr_thread_has_pending_callbacks(owner->uid),
+           "mstick callbacks: a registration after cleanup queues its notification");
+    wakeup_delete_callback(first);
+    expect(sr_hle_test_io_devctl_callback_count() == 0u &&
+               memstick_check_callback() == 0u && s_wakeup_log_len == 3u,
+           "mstick callbacks: a callback deleted with a notification pending never fires");
+    expect(io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == MS_EINVAL &&
+               io_devctl_call(&cpu, MS_DEVICE, MS_UNREGISTER, MS_INDATA, 4u, 0u, 0u) == MS_EINVAL,
+           "mstick callbacks: a deleted callback can be neither registered nor unregistered");
     sr_test_guest_fn_reset();
 }
 
@@ -31760,6 +31857,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_delay_thread_zero_loop_still_preempts_at_timeslice();
     test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
     test_callback_check_pump_services_pending_in_slot_order();
+    test_io_devctl_memstick_callback_notify();
     test_callback_wakeup_resumes_delay_wait_in_slot_order();
     test_display_frame_per_sec_float_return();
     test_rtc_conversion_errors_and_full_range();
