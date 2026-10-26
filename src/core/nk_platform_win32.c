@@ -848,7 +848,20 @@ bool nk_platform_spawn_process(
        The grant needs the launcher to be the foreground process now, which it
        is only while its own window keeps responding (#1298). */
     AllowSetForegroundWindow(pi.dwProcessId);
-    ResumeThread(pi.hThread);
+    /* The child was created suspended. If its thread cannot be resumed it
+       never runs a single instruction, yet its handle still reads as running:
+       the player would report a started game that never starts (#1290). */
+    if (ResumeThread(pi.hThread) == (DWORD)-1) {
+        DWORD error = GetLastError();
+        fprintf(stderr, "[PLATFORM] ResumeThread failed for process %lu (error %lu); "
+                        "the process was stopped\n",
+                (unsigned long)pi.dwProcessId, (unsigned long)error);
+        TerminateJobObject(hJob, 1);
+        CloseHandle(hJob);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return false;
+    }
     CloseHandle(pi.hThread);
     out_process->native_handle = (void *)pi.hProcess;
     out_process->job_handle = (void *)hJob;

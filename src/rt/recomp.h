@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "fp_convert.h"
 #ifdef __cplusplus
@@ -200,13 +201,17 @@ static inline int sr_guest_span_hits_swizzled_vram_mirror(uint32_t address,
     return 1;
 }
 
-static inline void sr_guest_span_report_vram_mirror_boundary(void) {
+/* `caller` names the function that asked for the refused span (the span
+ * predicates below pass their caller's __func__), so a log line identifies the
+ * bulk path that still forms one host pointer over a swizzled mirror. */
+static inline void sr_guest_span_report_vram_mirror_boundary(const char *caller) {
     static int reported;
     if (!reported) {
         reported = 1;
         fprintf(stderr,
                 "SEMANTIC_BOUNDARY: VRAM_MIRROR_BULK_UNSUPPORTED; bulk access through "
-                "a swizzled VRAM mirror is not supported yet.\n");
+                "a swizzled VRAM mirror is not supported yet (caller: %s).\n",
+                caller ? caller : "unknown");
     }
 }
 
@@ -251,33 +256,44 @@ static inline void sr_guest_vram_read_prepare_bytes(uint32_t addr, uint32_t widt
  * in range). readable/writable are identical today because the guest arena is one
  * uniformly read/write region; they are kept distinct so a call site states intent
  * and a future read-only region only changes one of them. */
-static inline int sr_guest_span_readable(uint32_t addr, uint32_t size) {
+static inline int sr_guest_span_readable_at(uint32_t addr, uint32_t size,
+                                            const char *caller) {
     if (size == 0u) return 1;
     if (!sr_inrange_n(addr, size)) return 0;
     if (sr_guest_span_hits_swizzled_vram_mirror(addr, size)) {
-        sr_guest_span_report_vram_mirror_boundary();
+        sr_guest_span_report_vram_mirror_boundary(caller);
         return 0;
     }
     return 1;
 }
-static inline int sr_guest_span_writable(uint32_t addr, uint32_t size) {
+static inline int sr_guest_span_writable_at(uint32_t addr, uint32_t size,
+                                            const char *caller) {
     if (size == 0u) return 1;
     if (!sr_inrange_n(addr, size)) return 0;
     if (sr_guest_span_hits_swizzled_vram_mirror(addr, size)) {
-        sr_guest_span_report_vram_mirror_boundary();
+        sr_guest_span_report_vram_mirror_boundary(caller);
         return 0;
     }
     return 1;
 }
 
 /* Bulk readers call this immediately before forming their host pointer. */
-static inline int sr_guest_span_readable_current(uint32_t addr, uint32_t size) {
-    if (!sr_guest_span_readable(addr, size)) return 0;
+static inline int sr_guest_span_readable_current_at(uint32_t addr, uint32_t size,
+                                                    const char *caller) {
+    if (!sr_guest_span_readable_at(addr, size, caller)) return 0;
     if (__builtin_expect(g_sr_vram_read_pending, 0) &&
         sr_vram_cpu_span_touches(addr, size))
         sr_ge_vram_read_prepare(sr_vram_cpu_address(addr), size);
     return 1;
 }
+
+/* Call sites keep the short names; the boundary report names the calling function. */
+#define sr_guest_span_readable(addr, size) \
+    sr_guest_span_readable_at((addr), (size), __func__)
+#define sr_guest_span_writable(addr, size) \
+    sr_guest_span_writable_at((addr), (size), __func__)
+#define sr_guest_span_readable_current(addr, size) \
+    sr_guest_span_readable_current_at((addr), (size), __func__)
 
 /* Return the largest prefix of [addr, addr + size) that remains inside the
  * flat guest arena.  This is intentionally a prefix calculation, not a
@@ -530,6 +546,149 @@ static inline void sr_guest_vram_write_commit_bytes(uint32_t addr, uint32_t widt
     }
 }
 
+/* --- Bulk guest copies through the swizzled VRAM mirrors (#1049) -------------
+ * sr_vram_cpu_address() applies the CPU-view transforms measured on a PSP-3000
+ * (docs/HARDWARE_ORACLE.md, PSP-VRAM-MIRROR-001). The 0x04200000 view XORs the
+ * offset with 0x2040 (bits 6 and 13), so each aligned 64-byte block stays
+ * contiguous in physical VRAM. The 0x04600000 view also rotates bits 5..9, so
+ * only each aligned 32-byte block does. The base and 0x04400000 views, RAM and
+ * the rest of the arena are linear. One host pointer therefore covers at most
+ * one such block of a swizzled view; sr_guest_host_run() returns how many
+ * leading bytes of a span one host pointer covers. The helpers below walk a
+ * span in those pieces with the per-piece VRAM read preparation and write
+ * prepare/commit of the scalar accessors, so a bulk CPU copy lands where the
+ * same copy made of scalar stores would. Each checks its whole span first and
+ * touches no guest byte when the span leaves the arena. */
+#define SR_VRAM_MIRROR_XOR_RUN    0x40u  /* 0x04200000 view: offset ^ 0x2040 */
+#define SR_VRAM_MIRROR_ROTATE_RUN 0x20u  /* 0x04600000 view: bits 5..9 rotated */
+
+static inline uint32_t sr_guest_host_run(uint32_t addr, uint32_t size) {
+    const uint32_t phys = (uint32_t)SR_PHYS(addr);
+    uint32_t run;
+    if (phys < 0x04200000u) {
+        run = 0x04200000u - phys;
+    } else if (phys < 0x04400000u) {
+        run = SR_VRAM_MIRROR_XOR_RUN - (phys & (SR_VRAM_MIRROR_XOR_RUN - 1u));
+    } else if (phys < 0x04600000u) {
+        run = 0x04600000u - phys;
+    } else if (phys < 0x04800000u) {
+        run = SR_VRAM_MIRROR_ROTATE_RUN - (phys & (SR_VRAM_MIRROR_ROTATE_RUN - 1u));
+    } else {
+        return size;
+    }
+    return run < size ? run : size;
+}
+
+/* Guest [src, src + size) to host memory. */
+static inline int sr_guest_copy_in(void *host, uint32_t src, uint32_t size) {
+    if (size == 0u) return 1;
+    if (!host || !sr_inrange_n(src, size)) return 0;
+    uint8_t *out = (uint8_t *)host;
+    while (size != 0u) {
+        const uint32_t run = sr_guest_host_run(src, size);
+        sr_guest_vram_read_prepare_bytes(src, run);
+        memcpy(out, SR_HOST(src), run);
+        out += run;
+        src += run;
+        size -= run;
+    }
+    return 1;
+}
+
+/* Host memory to guest [dst, dst + size). */
+static inline int sr_guest_copy_out(uint32_t dst, const void *host, uint32_t size) {
+    if (size == 0u) return 1;
+    if (!host || !sr_inrange_n(dst, size)) return 0;
+    const uint8_t *in = (const uint8_t *)host;
+    while (size != 0u) {
+        const uint32_t run = sr_guest_host_run(dst, size);
+        sr_guest_vram_write_prepare_bytes(dst, run);
+        memcpy(SR_HOST(dst), in, run);
+        sr_guest_vram_write_commit_bytes(dst, run);
+        in += run;
+        dst += run;
+        size -= run;
+    }
+    return 1;
+}
+
+/* Fill guest [dst, dst + size) with one byte value. */
+static inline int sr_guest_fill(uint32_t dst, uint8_t value, uint32_t size) {
+    if (size == 0u) return 1;
+    if (!sr_inrange_n(dst, size)) return 0;
+    while (size != 0u) {
+        const uint32_t run = sr_guest_host_run(dst, size);
+        sr_guest_vram_write_prepare_bytes(dst, run);
+        memset(SR_HOST(dst), value, run);
+        sr_guest_vram_write_commit_bytes(dst, run);
+        dst += run;
+        size -= run;
+    }
+    return 1;
+}
+
+/* Physical arena bytes a span can reach, as one conservative interval: its own
+ * linear range, widened to all of VRAM when any byte lies in the VRAM CPU
+ * window (every view there maps into the 2 MiB at SR_VRAM_CPU_BASE). */
+static inline void sr_guest_span_physical_hull(uint32_t addr, uint32_t size,
+                                               uint32_t *lo, uint32_t *hi) {
+    uint32_t first = (uint32_t)SR_PHYS(addr);
+    uint32_t last = first + (size - 1u);
+    if (sr_vram_cpu_span_touches(addr, size)) {
+        if (first > SR_VRAM_CPU_BASE) first = SR_VRAM_CPU_BASE;
+        if (last < SR_VRAM_CPU_BASE + 0x001FFFFFu) last = SR_VRAM_CPU_BASE + 0x001FFFFFu;
+    }
+    *lo = first;
+    *hi = last;
+}
+
+/* Guest-to-guest copy with memmove semantics: the result equals reading the
+ * whole source before writing any destination byte. Spans that avoid the
+ * swizzled views keep the single host memmove. A span through a swizzled view
+ * is copied piece by piece, each piece no longer than one host pointer covers
+ * on either side; when the two spans cannot share a physical byte the pieces
+ * are copied directly. Otherwise a swizzled view permutes bytes within VRAM,
+ * so the spans' physical bytes can overlap in any order, and the source is
+ * staged through host memory first. Returns 0, touching nothing, when a span
+ * leaves the arena or the staging buffer cannot be allocated. */
+static inline int sr_guest_memmove(uint32_t dst, uint32_t src, uint32_t size) {
+    if (size == 0u) return 1;
+    if (!sr_inrange_n(dst, size) || !sr_inrange_n(src, size)) return 0;
+    if (!sr_guest_span_hits_swizzled_vram_mirror(dst, size) &&
+        !sr_guest_span_hits_swizzled_vram_mirror(src, size)) {
+        if (__builtin_expect(g_sr_vram_read_pending, 0) &&
+            sr_vram_cpu_span_touches(src, size))
+            sr_ge_vram_read_prepare(sr_vram_cpu_address(src), size);
+        sr_guest_vram_write_prepare_bytes(dst, size);
+        memmove(SR_HOST(dst), SR_HOST(src), size);
+        sr_guest_vram_write_commit_bytes(dst, size);
+        return 1;
+    }
+    uint32_t src_lo, src_hi, dst_lo, dst_hi;
+    sr_guest_span_physical_hull(src, size, &src_lo, &src_hi);
+    sr_guest_span_physical_hull(dst, size, &dst_lo, &dst_hi);
+    if (src_hi < dst_lo || dst_hi < src_lo) {
+        while (size != 0u) {
+            uint32_t run = sr_guest_host_run(src, size);
+            run = sr_guest_host_run(dst, run);
+            sr_guest_vram_read_prepare_bytes(src, run);
+            sr_guest_vram_write_prepare_bytes(dst, run);
+            memcpy(SR_HOST(dst), SR_HOST(src), run);
+            sr_guest_vram_write_commit_bytes(dst, run);
+            src += run;
+            dst += run;
+            size -= run;
+        }
+        return 1;
+    }
+    uint8_t *staged = (uint8_t *)malloc(size);
+    if (!staged) return 0;
+    const int ok = sr_guest_copy_in(staged, src, size) &&
+                   sr_guest_copy_out(dst, staged, size);
+    free(staged);
+    return ok;
+}
+
 static inline uint8_t  sr_r8 (uint32_t a) {
     if (sr_inrange(a)) {
         uint8_t v;
@@ -636,24 +795,24 @@ static inline void sr_w32(uint32_t a, uint32_t v) { sr_w32_pc(a, v, 0); }
  * memmove/memset (#1170).  They keep the same VRAM coherence contract as the
  * MEM_* accessors and h_Memcpy/h_Memset: a renderer-owned source is read back
  * before the host pointer is formed, and the destination is prepared and
- * committed so GPU targets and cached textures observe the store. */
+ * committed so GPU targets and cached textures observe the store.  A span
+ * through a swizzled VRAM mirror is copied in measured-contiguous pieces
+ * (sr_guest_memmove/sr_guest_fill, #1049), as the translated body's scalar
+ * stores would land it. */
 static inline void sr_native_memmove(uint32_t dest, uint32_t src, uint32_t size, uint32_t pc) {
     if (size > 0u && size < 0x04000000u &&
-        sr_guest_span_writable(dest, size) && sr_guest_span_readable_current(src, size)) {
-        sr_guest_vram_write_prepare_bytes(dest, size);
+        sr_inrange_n(dest, size) && sr_inrange_n(src, size)) {
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dest, size, pc);
-        memmove(SR_HOST(dest), SR_HOST(src), size);
-        sr_guest_vram_write_commit_bytes(dest, size);
-    } else if (size) {
+        if (sr_guest_memmove(dest, src, size)) return;
+    }
+    if (size) {
         sr_oor(dest, 0u, 1); sr_oor(src, 0u, 0);
     }
 }
 static inline void sr_native_memset(uint32_t dest, uint8_t val, uint32_t size, uint32_t pc) {
-    if (size > 0u && size < 0x04000000u && sr_guest_span_writable(dest, size)) {
-        sr_guest_vram_write_prepare_bytes(dest, size);
+    if (size > 0u && size < 0x04000000u && sr_inrange_n(dest, size)) {
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dest, size, pc);
-        memset(SR_HOST(dest), val, size);
-        sr_guest_vram_write_commit_bytes(dest, size);
+        sr_guest_fill(dest, val, size);
     } else if (size) {
         sr_oor(dest, val, 1);
     }
