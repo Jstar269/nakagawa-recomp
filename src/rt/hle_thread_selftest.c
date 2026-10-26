@@ -3804,6 +3804,32 @@ static void test_ms0_unified_namespace(void) {
             cpu.r[4] = sfd;
             sr_hle_test_io_close(&cpu);
         }
+
+        /* Issue #1387 on the Windows handle route: a shorter overwrite is
+         * renamed over the old file whole, no temporary is left, and a load
+         * whose buffer is too small is refused instead of truncated. */
+        static const char shorter[] = "NEW\n";
+        fd_guest_copy(DATA_ADDR, shorter, sizeof(shorter) - 1u);
+        MEM_W32(PARAM_ADDR + 0x30, 3u); /* SD_SAVE */
+        MEM_W32(PARAM_ADDR + 0x7c, (uint32_t)(sizeof(shorter) - 1u));
+        expect(sr_savedata_execute(PARAM_ADDR) == 0u,
+               "savedata overwrite through the temporary rename succeeds");
+        char save_host[512], partial_host[600];
+        fd_host_path(save_host, sizeof save_host, guest_open);
+        snprintf(partial_host, sizeof partial_host, "%s.nakagawa-partial", save_host);
+        WIN32_FILE_ATTRIBUTE_DATA fad;
+        expect(GetFileAttributesExA(save_host, GetFileExInfoStandard, &fad) &&
+                   fad.nFileSizeHigh == 0u && fad.nFileSizeLow == sizeof(shorter) - 1u,
+               "savedata overwrite replaces the whole file, no stale tail");
+        expect(GetFileAttributesA(partial_host) == INVALID_FILE_ATTRIBUTES,
+               "savedata overwrite leaves no temporary file behind");
+        MEM_W32(PARAM_ADDR + 0x30, 2u); /* SD_LOAD */
+        MEM_W32(PARAM_ADDR + 0x78, 2u);
+        MEM_W32(PARAM_ADDR + 0x7c, 0x1234u);
+        MEM_W8(DATA_ADDR, 0xEEu);
+        expect(sr_savedata_execute(PARAM_ADDR) == 0x80110308u &&
+                   MEM_R32(PARAM_ADDR + 0x7c) == 0u && MEM_R8(DATA_ADDR) == 0xEEu,
+               "savedata load refuses data larger than the guest buffer");
     }
 
     /* --- junction rejection: open through a planted link fails closed --- */

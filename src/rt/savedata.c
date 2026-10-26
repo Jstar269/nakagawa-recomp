@@ -301,24 +301,39 @@ static int host_tmp_name(char *out, size_t cap, const char *name) {
 }
 
 #ifdef _WIN32
-/* Rename the verified temporary THROUGH its own handle.  A bare leaf name with
- * no RootDirectory renames within the directory that already holds the handle's
- * object, so no directory path is resolved again after verification. */
-static int host_replace_by_handle(HANDLE h, const char *leaf_utf8) {
+/* Rename the verified temporary THROUGH its own handle to `leaf` in the
+ * directory that holds it.  Win32 resolves a bare leaf against the process's
+ * current directory and refuses a RootDirectory handle (ERROR_INVALID_PARAMETER,
+ * observed on Windows 11), so the destination is the handle's own verified
+ * final directory path plus `leaf`.  The object is re-verified through the
+ * handle after the rename; a directory swapped between the two steps fails the
+ * save (the residual window is the one sceIoRename's MoveFileExW route has). */
+static int host_replace_by_handle(HANDLE h, const char *leaf_utf8,
+                                  const wchar_t *canonical_root) {
+    wchar_t final_path[MAX_PATH * 2];
+    const size_t cap = sizeof(final_path) / sizeof(final_path[0]);
+    DWORD len = GetFinalPathNameByHandleW(h, final_path, (DWORD)cap,
+                                          FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (len == 0 || len >= cap) return 0;
+    wchar_t *slash = wcsrchr(final_path, L'\\');
+    if (!slash) return 0;
+    size_t dir_chars = (size_t)(slash - final_path) + 1u;
     int need = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, leaf_utf8, -1, NULL, 0);
-    if (need <= 1) return 0;
-    size_t name_bytes = (size_t)(need - 1) * sizeof(wchar_t);
-    size_t total = offsetof(FILE_RENAME_INFO, FileName) + name_bytes + sizeof(wchar_t);
+    if (need <= 1 || dir_chars + (size_t)need > cap) return 0;
+    size_t name_chars = dir_chars + (size_t)(need - 1);
+    size_t total = offsetof(FILE_RENAME_INFO, FileName) + (name_chars + 1u) * sizeof(wchar_t);
     FILE_RENAME_INFO *info = (FILE_RENAME_INFO *)malloc(total);
     if (!info) return 0;
     memset(info, 0, total);
     info->ReplaceIfExists = TRUE;
     info->RootDirectory = NULL;
-    info->FileNameLength = (DWORD)name_bytes;
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, leaf_utf8, -1, info->FileName, need);
+    info->FileNameLength = (DWORD)(name_chars * sizeof(wchar_t));
+    memcpy(info->FileName, final_path, dir_chars * sizeof(wchar_t));
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, leaf_utf8, -1,
+                        info->FileName + dir_chars, need);
     BOOL ok = SetFileInformationByHandle(h, FileRenameInfo, info, (DWORD)total);
     free(info);
-    return ok ? 1 : 0;
+    return ok && sr_vfs_handle_is_contained(h, canonical_root);
 }
 #elif defined(SR_CD_BACKEND_POSIX_AT)
 static int host_rel_join(char *out, size_t cap, const char *rel, const char *leaf) {
@@ -353,7 +368,7 @@ static int host_write_file(const char *dir, const char *name, const uint8_t *dat
         ok = WriteFile(h, data, (DWORD)n, &written, NULL) && written == (DWORD)n;
     }
     if (ok) ok = FlushFileBuffers(h) != 0;
-    if (ok) ok = host_replace_by_handle(h, name);
+    if (ok) ok = host_replace_by_handle(h, name, canonical_root);
     if (!ok) (void)sr_vfs_dispose_by_handle(h);
     CloseHandle(h);
     return ok ? 1 : 0;
