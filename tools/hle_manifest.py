@@ -19,21 +19,25 @@ The manifest is deterministic (sorted, ASCII, LF) and carries per-NID
 classification so downstream consumers never re-derive policy:
 
     {"nid": "0x1b4217bc", "name": …, "handler": …, "origin": "static",
-     "owner_file": "src/rt/hle.c", "classification": "fake_success", "status": "stub"}
+     "owner_file": "src/rt/hle.c", "subsystem": "kernel_memory",
+     "classification": "fake_success", "status": "stub"}
 
 `owner_file` is the runtime source file whose registration call registers the
-NID (hle.c or hle_power.c; see runtime_hle_sources).
+NID (hle.c or hle_power.c; see runtime_hle_sources). `subsystem` is the
+runtime subsystem that owns the NID for the HLE split (issue #307), from
+tools/hle_registry_meta.py SUBSYSTEM_BY_PREFIX; see subsystem_for.
 
 CLI:
     python tools/hle_manifest.py [--out build/hle_manifest.json]
                                  [--write-baseline tools/import_audit_baseline.json]
+                                 [--imports <manifest or PSP module> [--check-profile-zero-imports]]
 """
 
 from __future__ import annotations
 
 import argparse
 import bisect
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -41,6 +45,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hle_registry_meta as meta  # noqa: E402
+import psp_import_table  # noqa: E402
 import publication_policy  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -528,6 +533,22 @@ def validate_meta(regs: list[dict]) -> None:
             raise ManifestError(f"FLOAT_RETURN_NIDS lists 0x{nid:08x}, which hle.c does not register")
         if not info.get("issue"):
             raise ManifestError(f"FLOAT_RETURN_NIDS entry 0x{nid:08x} has no issue link")
+    by_nid = {r["nid"]: r for r in regs}
+    for nid, entry in meta.PROFILE_ZERO_UNREVIEWED_IMPORTS.items():
+        where = f"PROFILE_ZERO_UNREVIEWED_IMPORTS entry 0x{nid:08x}"
+        if entry.get("issue") != meta.PROFILE_ZERO_ISSUE:
+            raise ManifestError(f"{where} does not name its tracking issue {meta.PROFILE_ZERO_ISSUE}")
+        reg = by_nid.get(nid)
+        if reg is None:
+            raise ManifestError(f"{where} names a NID hle.c does not register (stale)")
+        if reg["name"] != entry.get("name"):
+            raise ManifestError(f"{where} names {entry.get('name')!r}, but hle.c registers {reg['name']!r}")
+        status = meta.HANDLER_STATUS.get(reg["handler"], "unreviewed")
+        if reg["handler"] in meta.GENERIC_SUCCESS_HANDLERS or status != "unreviewed":
+            raise ManifestError(
+                f"{where} ({reg['name']}) is stale: {reg['handler']} is no longer a dedicated "
+                f"unreviewed handler (status {status!r}); remove the entry (#341)"
+            )
     stale_float_handlers = sorted(meta.FLOAT_RETURN_HANDLERS - handlers)
     if stale_float_handlers:
         raise ManifestError(
@@ -581,6 +602,7 @@ def validate_meta(regs: list[dict]) -> None:
                     "every partial and compatibility entry must carry a non-empty limitation "
                     "(state a factual limitation from code or 'limitation not yet reviewed (#341)')"
                 )
+    validate_subsystems(regs)
 
 
 def _evidence_anchor_present(path: Path, anchor: str) -> bool:
@@ -654,6 +676,45 @@ def unwaived_and_stale(findings: list[dict]) -> tuple[list[dict], list[dict]]:
     return unwaived, stale
 
 
+def subsystem_for(name: str) -> str | None:
+    """The runtime subsystem that owns a registered name, or None when no prefix claims it.
+
+    The longest `meta.SUBSYSTEM_BY_PREFIX` key that prefixes the name (leading
+    underscores stripped) decides. Distinct keys of equal length cannot both
+    prefix one name, so the answer is unique whenever it exists.
+    """
+    prefix = subsystem_prefix(name)
+    return None if prefix is None else meta.SUBSYSTEM_BY_PREFIX[prefix]
+
+
+def subsystem_prefix(name: str) -> str | None:
+    """The `meta.SUBSYSTEM_BY_PREFIX` key that decides `name`'s subsystem (see subsystem_for)."""
+    bare = name.lstrip("_")
+    matches = [p for p in meta.SUBSYSTEM_BY_PREFIX if bare.startswith(p)]
+    return max(matches, key=len) if matches else None
+
+
+def validate_subsystems(regs: list[dict]) -> None:
+    """Fail closed unless every registration has one subsystem and every prefix still decides one.
+
+    An unclaimed name is a NID with no owner for the runtime split (#307); a
+    prefix that decides no registration is stale; a value outside
+    `meta.SUBSYSTEMS` is a typo that would mint a new subsystem.
+    """
+    unknown = sorted({v for v in meta.SUBSYSTEM_BY_PREFIX.values() if v not in meta.SUBSYSTEMS})
+    if unknown:
+        raise ManifestError(f"SUBSYSTEM_BY_PREFIX uses subsystems missing from SUBSYSTEMS: {unknown}")
+    unowned = sorted({r["name"] for r in regs if subsystem_for(r["name"]) is None})
+    if unowned:
+        raise ManifestError(
+            f"registrations no SUBSYSTEM_BY_PREFIX key claims (add an owner in tools/hle_registry_meta.py): {unowned}"
+        )
+    deciding = {subsystem_prefix(r["name"]) for r in regs}
+    stale = sorted(set(meta.SUBSYSTEM_BY_PREFIX) - deciding)
+    if stale:
+        raise ManifestError(f"SUBSYSTEM_BY_PREFIX keys that decide no registration (stale): {stale}")
+
+
 def runtime_hle_sources() -> list[tuple[str, str]]:
     """The runtime HLE units the manifest is extracted from, as (path, text) in join order.
 
@@ -719,6 +780,7 @@ def build_manifest(source: str | None = None) -> dict:
                 "handler": r["handler"],
                 "origin": r["origin"],
                 "owner_file": r["owner_file"],
+                "subsystem": subsystem_for(r["name"]),
                 "classification": classification,
                 "status": status,
                 **({"refusal_error": f"0x{r['refusal_error']:08x}"}
@@ -1138,23 +1200,87 @@ def evidence_tier(entry: dict) -> tuple[str, str]:
     return "STATICALLY_SUPPORTED", "dedicated handler registered; no executable coverage"
 
 
-def load_imports(path: Path | None) -> dict[int, str]:
+def load_imports(path: Path | None) -> dict[int, dict[str, str]]:
     """Optional imported-NID side of the chain.
 
     The retail import manifest is a private input, so this is opt-in and absent
     by default; the chain then records the imported link as unknown rather than
     claiming the NID is unimported.
+
+    A text manifest names each NID: ``{"name": ...}``. A PSP module (an ELF or
+    PRX, such as the public profile-zero guest) is read through its import
+    table with tools/psp_import_table.py, which carries NIDs but no function
+    names; the link is ``{"source": "psp module import table"}`` and no name is
+    invented. No library is claimed either: the parser reports stub-pairing
+    findings for some linker layouts, so only the NID itself is relied on.
     """
     if path is None:
         return {}
-    text = path.read_text(encoding="utf-8")
-    found: dict[int, str] = {}
+    data = path.read_bytes()
+    if data[:4] == b"\x7fELF":
+        try:
+            table = psp_import_table.parse_import_table(data)
+        except psp_import_table.ImportTableError as e:
+            raise ManifestError(f"{path}: unreadable PSP import table: {e}") from e
+        return {f.nid: {"source": "psp module import table"} for f in table.funcs}
+    text = data.decode("utf-8")
+    found: dict[int, dict[str, str]] = {}
     for m in re.finditer(r'nid\s*=\s*0x([0-9a-fA-F]{1,8}).*?name\s*=\s*"([^"]+)"', text, re.DOTALL):
-        found[int(m.group(1), 16)] = m.group(2)
+        found[int(m.group(1), 16)] = {"name": m.group(2)}
     if not found:
         for m in _LITERAL_RE.finditer(text):
-            found[int(m.group(1), 16)] = m.group(2)
+            found[int(m.group(1), 16)] = {"name": m.group(2)}
     return found
+
+
+def is_dedicated_unreviewed(reg: dict) -> bool:
+    """A manifest registration whose dedicated handler nobody has reviewed (#341)."""
+    return reg["classification"] == "dedicated" and reg["status"] == "unreviewed"
+
+
+def unreviewed_import_gate(
+    manifest: dict,
+    imported: Collection[int],
+    allowlist: Mapping[int, dict] | None = None,
+) -> dict:
+    """Check one module's imported NIDs against HLE review status (#341).
+
+    An imported NID that routes to a dedicated `unreviewed` handler must be on
+    `allowlist` (by default hle_registry_meta.PROFILE_ZERO_UNREVIEWED_IMPORTS),
+    and every allowlist entry must still be both imported and unreviewed, so
+    the list can only shrink. An empty import set cannot pass: it would prove
+    nothing about the module.
+    """
+    if allowlist is None:
+        allowlist = meta.PROFILE_ZERO_UNREVIEWED_IMPORTS
+    imported = set(imported)
+    if not imported:
+        raise ManifestError("no imported NIDs were read; the import gate cannot pass on an empty import set")
+    regs = {int(r["nid"], 16): r for r in manifest["registrations"]}
+
+    def row(nid: int) -> dict:
+        reg = regs[nid]
+        return {"nid": f"0x{nid:08x}", "name": reg["name"], "handler": reg["handler"]}
+
+    imported_unreviewed = sorted(n for n in imported if n in regs and is_dedicated_unreviewed(regs[n]))
+    stale = []
+    for nid, entry in sorted(allowlist.items()):
+        if nid not in imported:
+            reason = "not imported by the module"
+        elif nid not in regs:
+            reason = "not registered by hle.c"
+        elif not is_dedicated_unreviewed(regs[nid]):
+            reg = regs[nid]
+            reason = f"no longer unreviewed ({reg['classification']}, status {reg['status']})"
+        else:
+            continue
+        stale.append({"nid": f"0x{nid:08x}", "name": entry.get("name"), "reason": reason})
+    return {
+        "imported": len(imported),
+        "imported_unreviewed": [row(n) for n in imported_unreviewed],
+        "unallowed": [row(n) for n in imported_unreviewed if n not in allowlist],
+        "stale": stale,
+    }
 
 
 
@@ -1301,7 +1427,7 @@ def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None
                 ),
             },
             "imported": (
-                {"name": imports[nid]} if nid in imports
+                imports[nid] if nid in imports
                 else (None if imports else "unknown: no import manifest supplied")
             ),
             "registration": {
@@ -1347,6 +1473,15 @@ def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None
                 {"nid": e["nid"], "name": e["canonical_name"], "handler": e["registration"]["handler"]}
                 for e in entries if e["exercised_stub"]
             ],
+            # #341: dedicated handlers nobody has reviewed that the supplied module imports.
+            "imported_unreviewed": (
+                [
+                    {"nid": e["nid"], "name": e["canonical_name"], "handler": e["registration"]["handler"]}
+                    for e in entries
+                    if isinstance(e["imported"], dict) and is_dedicated_unreviewed(e["registration"])
+                ]
+                if imports else "unknown: no import manifest supplied"
+            ),
         },
         "triage": triage_candidates(entries, top),
         "entries": entries,
@@ -1658,10 +1793,21 @@ def main(argv: list[str]) -> int:
         "--imports",
         type=Path,
         default=None,
-        help="optional import manifest supplying the imported-NID link; retail "
-             "manifests are private inputs, so the link is unknown without it",
+        help="optional import manifest, or a PSP module (ELF/PRX) whose import table is "
+             "read, supplying the imported-NID link; retail manifests are private "
+             "inputs, so the link is unknown without it",
+    )
+    ap.add_argument(
+        "--check-profile-zero-imports",
+        action="store_true",
+        help="fail when a NID the --imports module (the profile-zero guest) imports routes "
+             "to a dedicated unreviewed handler missing from "
+             "hle_registry_meta.PROFILE_ZERO_UNREVIEWED_IMPORTS, or when an entry there is "
+             "stale (#341)",
     )
     args = ap.parse_args(argv)
+    if args.check_profile_zero_imports and args.imports is None:
+        ap.error("--check-profile-zero-imports needs --imports <profile-zero guest module>")
     try:
         manifest = build_manifest()
         chain = (
@@ -1669,7 +1815,12 @@ def main(argv: list[str]) -> int:
             if args.evidence_chain is not None
             else None
         )
-    except ManifestError as e:
+        gate = (
+            unreviewed_import_gate(manifest, load_imports(args.imports))
+            if args.check_profile_zero_imports
+            else None
+        )
+    except (ManifestError, OSError, UnicodeDecodeError) as e:
         print(f"hle_manifest: {e}", file=sys.stderr)
         return 1
     dump_json(manifest, args.out)
@@ -1692,6 +1843,27 @@ def main(argv: list[str]) -> int:
     if args.write_baseline is not None:
         dump_json(manifest_to_baseline(manifest), args.write_baseline)
         print(f"hle_manifest: baseline -> {args.write_baseline}")
+    if gate is not None:
+        for row in gate["unallowed"]:
+            print(
+                f"hle_manifest: {args.imports} imports {row['nid']} {row['name']}, routed to the "
+                f"unreviewed handler {row['handler']} and not on PROFILE_ZERO_UNREVIEWED_IMPORTS; "
+                "review the handler (#341)",
+                file=sys.stderr,
+            )
+        for row in gate["stale"]:
+            print(
+                f"hle_manifest: stale PROFILE_ZERO_UNREVIEWED_IMPORTS entry {row['nid']} "
+                f"{row['name']}: {row['reason']}; remove it (#341)",
+                file=sys.stderr,
+            )
+        print(
+            f"hle_manifest: profile-zero import gate: {gate['imported']} imported NIDs, "
+            f"{len(gate['imported_unreviewed'])} routed to unreviewed handlers (#341), "
+            f"{len(gate['unallowed'])} not allowlisted, {len(gate['stale'])} stale allowlist entries"
+        )
+        if gate["unallowed"] or gate["stale"]:
+            return 1
     return 0
 
 
