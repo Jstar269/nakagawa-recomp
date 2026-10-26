@@ -42,6 +42,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -436,6 +437,63 @@ class TestSourceMediaIdentity(unittest.TestCase):
                 nk_cli._source_media_identity(
                     Path("synthetic.iso"), "EBOOT.BIN", manifest
                 )
+
+
+class TestPackageDiskSpace(unittest.TestCase):
+    def test_package_staging_preflight_reports_file_bytes_and_available_space(self):
+        with tempfile.TemporaryDirectory(prefix="nk-package-space-") as temporary:
+            root = Path(temporary)
+            package = root / "package"
+            package.mkdir()
+            (package / "game.bin").write_bytes(b"12345")
+            nested = package / "assets"
+            nested.mkdir()
+            (nested / "icon.bin").write_bytes(b"abc")
+            destination = root / "packages"
+            destination.mkdir()
+
+            with patch.object(
+                nk_cli.shutil, "disk_usage", return_value=SimpleNamespace(free=7)
+            ):
+                with self.assertRaises(nk_cli.PackageBuildError) as raised:
+                    nk_cli._require_package_staging_space(package, destination)
+
+            self.assertEqual(
+                str(raised.exception),
+                "PACKAGE_DISK_FULL: The package needs at least 8 bytes for its files; "
+                "7 bytes are free.",
+            )
+
+    def test_package_copy_race_reports_remaining_file_bytes_and_free_space(self):
+        with tempfile.TemporaryDirectory(prefix="nk-package-copy-space-") as temporary:
+            root = Path(temporary)
+            package = root / "package"
+            package.mkdir()
+            (package / "game.bin").write_bytes(b"12345")
+            destination = root / "packages"
+            destination.mkdir()
+            staging = destination / ".TEST00001.staging"
+
+            def copy_partial(_source, target):
+                target_path = Path(target)
+                target_path.mkdir()
+                (target_path / "game.bin").write_bytes(b"12")
+                raise OSError(28, "No space left on device")
+
+            with patch.object(nk_cli.shutil, "copytree", side_effect=copy_partial):
+                with patch.object(
+                    nk_cli.shutil, "disk_usage", return_value=SimpleNamespace(free=3)
+                ):
+                    with self.assertRaises(nk_cli.PackageBuildError) as raised:
+                        nk_cli._copy_package_tree_with_space_diagnostics(
+                            package, staging, destination, needed_bytes=5
+                        )
+
+            self.assertEqual(
+                str(raised.exception),
+                "PACKAGE_DISK_FULL: At least 3 more bytes of package files remain to copy; "
+                "3 bytes are free.",
+            )
 
 
 class TestPlayerPackageRoute(unittest.TestCase):
@@ -1114,6 +1172,22 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertIn("title_codegen_plan.py", build_log)
         self.assertIn("gcc", build_log)
         self.assertIn("Build finished:", build_log)
+        # The planner logs the job count it chose, and the player's progress stream
+        # counted the compiled parts up to every planned part.
+        self.assertRegex(build_log, r"PACKAGE_BUILD_JOBS: [1-8] \(")
+        progress_line = re.search(r"^PACKAGE_BUILD_ROUTE progress=(.+)$", built.stdout, re.M)
+        self.assertIsNotNone(progress_line, built.stdout[-4000:])
+        events = [
+            json.loads(line)
+            for line in Path(progress_line.group(1).strip()).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        parts = [event for event in events if "total" in event]
+        self.assertTrue(parts, events)
+        self.assertTrue(all(event["stage"] == "compile" for event in parts), parts)
+        self.assertEqual(parts[0]["completed"], 0, parts)
+        self.assertEqual(parts[-1]["completed"], parts[-1]["total"], parts)
+        self.assertGreater(parts[-1]["total"], 1, parts)
         package_dir = self.user_root / "packages" / DISC_ID
         self.assertTrue((package_dir / "package.json").is_file())
         self.assertTrue((package_dir / "build-report.json").is_file())
@@ -1312,6 +1386,59 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertIn("PLAY NOW is unavailable", refused.stdout + refused.stderr)
         self.assertEqual(self.player_boot_event_files(), boot_logs_before_refusal,
                          "a stale package must not create guest boot evidence")
+        self.assertEqual(tracked_status(), before)
+
+    def test_synthetic_package_reliability_ten_builds_rebuild_and_reuse(self):
+        """#1286/#278: ten BUILD sessions, one stale-package rebuild, then reuse."""
+        self.skip_if_toolchain_unavailable()
+        before = tracked_status()
+        package_dir = self.user_root / "packages" / DISC_ID
+        executable = package_dir / "display_smoke.exe"
+        log_path = self.user_root / "logs" / f"build_{DISC_ID}.log"
+
+        for run_number in range(10):
+            built = self.run_build_action(self.user_root)
+            output = built.stdout + built.stderr
+            self.assertEqual(built.returncode, 0, output[-4000:])
+            self.assertIn("PACKAGE_BUILD_ROUTE status=PASS", output)
+            self.assertIn("complete=1 failed=0", output)
+            self.assertNotIn("PACKAGE_BUILD_ROUTE status=FAIL", output)
+            validated = self.run_validator()
+            self.assertEqual(validated.returncode, 0,
+                             validated.stdout + validated.stderr)
+            self.assertIn("PACKAGE_STATUS=OK", validated.stdout)
+            log = log_path.read_text(encoding="utf-8", errors="replace")
+            if run_number == 0:
+                self.assertNotIn("PACKAGE_REUSED:", log)
+            else:
+                self.assertIn("PACKAGE_REUSED:", log)
+
+        # A damaged promoted package reads as stale, the state is the same one
+        # for which the Library offers REBUILD PACKAGE. The cached, verified
+        # synthetic output restores it without another package failure.
+        executable.write_bytes(executable.read_bytes() + b"reliability mutation")
+        stale = self.run_validator()
+        self.assertEqual(stale.returncode, 0, stale.stdout + stale.stderr)
+        self.assertIn("PACKAGE_STATUS=STALE", stale.stdout)
+        rebuilt = self.run_build_action(self.user_root)
+        rebuild_output = rebuilt.stdout + rebuilt.stderr
+        self.assertEqual(rebuilt.returncode, 0, rebuild_output[-4000:])
+        self.assertIn("PACKAGE_BUILD_ROUTE status=PASS", rebuild_output)
+        self.assertIn("complete=1 failed=0", rebuild_output)
+        self.assertNotIn("PACKAGE_BUILD_ROUTE status=FAIL", rebuild_output)
+        self.assertIn("CACHE: content-addressed entry reused",
+                      log_path.read_text(encoding="utf-8", errors="replace"))
+
+        reused = self.run_build_action(self.user_root)
+        reuse_output = reused.stdout + reused.stderr
+        self.assertEqual(reused.returncode, 0, reuse_output[-4000:])
+        self.assertIn("PACKAGE_BUILD_ROUTE status=PASS", reuse_output)
+        self.assertIn("PACKAGE_REUSED:",
+                      log_path.read_text(encoding="utf-8", errors="replace"))
+        validated = self.run_validator()
+        self.assertEqual(validated.returncode, 0,
+                         validated.stdout + validated.stderr)
+        self.assertIn("PACKAGE_STATUS=OK", validated.stdout)
         self.assertEqual(tracked_status(), before)
 
     def test_missing_prerequisites_fail_closed_with_documented_codes(self):

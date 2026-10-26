@@ -225,6 +225,24 @@ int nk_launch_wait(NkLaunchSession *session, int timeout_ms);
 /* Terminate child process cleanly if running */
 void nk_launch_stop(NkLaunchSession *session);
 
+/* Keep a finished run's output after its session ends (#1303). The boot-event
+ * file holds the runtime's stdout and stderr as well as its BOOT_EVENT lines;
+ * it is copied, unchanged, to <log_dir>/game-<disc id>-last.txt. An existing
+ * -last file first becomes game-<disc id>-prev.txt, replacing the older -prev.
+ * A run longer than max_bytes keeps its tail from the first whole line, after
+ * one line saying how many bytes were cut. The disc ID must be 1-32 letters,
+ * digits, '-' or '_'. Returns true and writes the kept path to out_path; on
+ * failure out_path is empty and no partial copy is left. The events file
+ * itself is never changed. */
+#define NK_LAUNCH_RUN_LOG_MAX_BYTES (16u * 1024u * 1024u)
+bool nk_launch_keep_run_log_in(const char *events_path, const char *log_dir,
+                               const char *disc_id, uint64_t max_bytes,
+                               char *out_path, size_t out_size);
+/* The same in the player's logs folder (NK_PATH_LOGS, beside the developer
+ * log), capped at NK_LAUNCH_RUN_LOG_MAX_BYTES. */
+bool nk_launch_keep_run_log(const char *events_path, const char *disc_id,
+                            char *out_path, size_t out_size);
+
 #ifdef __cplusplus
 }
 #endif

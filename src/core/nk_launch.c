@@ -1640,3 +1640,87 @@ void nk_launch_stop(NkLaunchSession *session) {
     }
     nk_platform_close_process(&session->process);
 }
+
+static bool launch_run_log_disc_id_ok(const char *disc_id) {
+    if (!disc_id) return false;
+    size_t len = strlen(disc_id);
+    if (len == 0 || len > 32u) return false;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)disc_id[i];
+        if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+              (ch >= '0' && ch <= '9') || ch == '-' || ch == '_')) return false;
+    }
+    return true;
+}
+
+bool nk_launch_keep_run_log_in(const char *events_path, const char *log_dir,
+                               const char *disc_id, uint64_t max_bytes,
+                               char *out_path, size_t out_size) {
+    if (out_path && out_size) out_path[0] = '\0';
+    if (!events_path || !events_path[0] || !log_dir || !log_dir[0] ||
+        !launch_run_log_disc_id_ok(disc_id) || max_bytes == 0 ||
+        !out_path || out_size == 0) return false;
+
+    char last[NK_MAX_PATH];
+    char prev[NK_MAX_PATH];
+    char part[NK_MAX_PATH];
+    char sep = nk_platform_path_separator();
+    int w_last = snprintf(last, sizeof(last), "%s%cgame-%s-last.txt", log_dir, sep, disc_id);
+    int w_prev = snprintf(prev, sizeof(prev), "%s%cgame-%s-prev.txt", log_dir, sep, disc_id);
+    int w_part = snprintf(part, sizeof(part), "%s%cgame-%s-last.txt.part", log_dir, sep, disc_id);
+    if (w_last <= 0 || (size_t)w_last >= sizeof(last) || (size_t)w_last >= out_size ||
+        w_prev <= 0 || (size_t)w_prev >= sizeof(prev) ||
+        w_part <= 0 || (size_t)w_part >= sizeof(part)) return false;
+    if (!nk_platform_mkdir_p(log_dir)) return false;
+
+    FILE *in = nk_fopen_utf8(events_path, "rb");
+    if (!in) return false;
+    int64_t size = -1;
+    if (nk_fseek64(in, 0, SEEK_END) == 0) size = nk_ftell64(in);
+    uint64_t cut = size > 0 && (uint64_t)size > max_bytes ? (uint64_t)size - max_bytes : 0;
+    if (size < 0 || nk_fseek64(in, (int64_t)cut, SEEK_SET) != 0) {
+        fclose(in);
+        return false;
+    }
+    /* A cut run starts at its first whole line, so the kept lines read as the
+       runtime wrote them. */
+    if (cut > 0) {
+        int ch;
+        while ((ch = fgetc(in)) != EOF) {
+            ++cut;
+            if (ch == '\n') break;
+        }
+    }
+    FILE *out = nk_fopen_utf8(part, "wb");
+    bool ok = out != NULL;
+    if (ok && cut > 0) {
+        ok = fprintf(out, "[nakagawa] the first %llu bytes of this run were cut; "
+                          "the last %llu bytes are kept\n",
+                     (unsigned long long)cut, (unsigned long long)max_bytes) > 0;
+    }
+    char buffer[16384];
+    size_t got;
+    while (ok && (got = fread(buffer, 1, sizeof(buffer), in)) > 0) {
+        if (fwrite(buffer, 1, got, out) != got) ok = false;
+    }
+    if (ferror(in)) ok = false;
+    fclose(in);
+    if (out && fclose(out) != 0) ok = false;
+    if (ok && nk_platform_file_exists(last) && nk_rename_utf8(last, prev) != 0) ok = false;
+    if (ok && nk_rename_utf8(part, last) != 0) ok = false;
+    if (!ok) {
+        nk_remove_utf8(part);
+        return false;
+    }
+    snprintf(out_path, out_size, "%s", last);
+    return true;
+}
+
+bool nk_launch_keep_run_log(const char *events_path, const char *disc_id,
+                            char *out_path, size_t out_size) {
+    char log_dir[NK_MAX_PATH];
+    if (out_path && out_size) out_path[0] = '\0';
+    if (!nk_platform_get_path(NK_PATH_LOGS, log_dir, sizeof(log_dir))) return false;
+    return nk_launch_keep_run_log_in(events_path, log_dir, disc_id,
+                                     NK_LAUNCH_RUN_LOG_MAX_BYTES, out_path, out_size);
+}

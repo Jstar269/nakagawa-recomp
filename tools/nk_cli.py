@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -20,6 +21,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
 import time
 import zlib
@@ -1319,6 +1321,10 @@ def _current_package_cache_key(
         ),
     }
     environment = _runtime_build_environment(instruction_trace=instruction_trace)
+    # The planner compiles with these when the environment sets none; the key must agree.
+    environment.update(package_cache.package_optimization(
+        manifest.get("codegen_profile", "none"), environment
+    ))
     options = _package_codegen_options(manifest, environment)
     return package_cache.build_cache_key(
         input_hashes=input_hashes,
@@ -1395,6 +1401,74 @@ def _swap_in_package_folder(staging: Path, target_dir: Path, cache_dir: Path) ->
     return backup
 
 
+def _package_tree_file_bytes(root: Path) -> int:
+    """Count package file bytes without following links or overflowing uint64."""
+    max_bytes = (1 << 64) - 1
+    if root.is_symlink() or not root.is_dir():
+        raise PackageBuildError("Package output is not a safe directory for disk-space checks.")
+    total = 0
+    def fail_walk(error: OSError) -> None:
+        raise error
+
+    for parent_text, directories, filenames in os.walk(
+        root, followlinks=False, onerror=fail_walk
+    ):
+        parent = Path(parent_text)
+        for name in directories:
+            if (parent / name).is_symlink():
+                raise PackageBuildError("Package output contains a symlink; disk-space check refused.")
+        for name in filenames:
+            path = parent / name
+            if path.is_symlink() or not path.is_file():
+                raise PackageBuildError("Package output contains a non-regular file; disk-space check refused.")
+            size = path.stat(follow_symlinks=False).st_size
+            if size < 0 or size > max_bytes - total:
+                raise PackageBuildError("Package output exceeds the supported disk-space check bound.")
+            total += size
+    return total
+
+
+def _package_disk_space_message(needed_bytes: int, free_bytes: int, *, remaining: bool = False) -> str:
+    if remaining:
+        detail = (
+            f"At least {needed_bytes:,} more bytes of package files remain to copy"
+            if needed_bytes
+            else "The package file data was copied, but staging metadata needs more space"
+        )
+    else:
+        detail = f"The package needs at least {needed_bytes:,} bytes for its files"
+    return f"PACKAGE_DISK_FULL: {detail}; {free_bytes:,} bytes are free."
+
+
+def _is_disk_full_error(exc: OSError) -> bool:
+    return exc.errno == errno.ENOSPC or getattr(exc, "winerror", None) in {39, 112}
+
+
+def _require_package_staging_space(package_dir: Path, destination_dir: Path) -> int:
+    """Fail before package promotion when known file data exceeds destination free space."""
+    needed_bytes = _package_tree_file_bytes(package_dir)
+    free_bytes = shutil.disk_usage(destination_dir).free
+    if needed_bytes > free_bytes:
+        raise PackageBuildError(_package_disk_space_message(needed_bytes, free_bytes))
+    return needed_bytes
+
+
+def _copy_package_tree_with_space_diagnostics(
+    package_dir: Path, staging_dir: Path, destination_dir: Path, needed_bytes: int
+) -> None:
+    try:
+        shutil.copytree(package_dir, staging_dir)
+    except OSError as exc:
+        if not _is_disk_full_error(exc):
+            raise
+        copied_bytes = _package_tree_file_bytes(staging_dir) if staging_dir.exists() else 0
+        remaining_bytes = max(0, needed_bytes - copied_bytes)
+        free_bytes = shutil.disk_usage(destination_dir).free
+        raise PackageBuildError(
+            _package_disk_space_message(remaining_bytes, free_bytes, remaining=True)
+        ) from exc
+
+
 def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
                          cache_key: dict, user_root: Path, disc_id: str) -> None:
     """Copy a validated cache entry into place, re-validating the copy before promotion."""
@@ -1402,10 +1476,21 @@ def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
         raise PackageBuildError("Package destination root is a symlink; refusing to write outside per-user data.")
     target_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     _require_child(user_root, target_dir.parent, "Package destination root")
-    staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=target_dir.parent))
+    needed_bytes = _require_package_staging_space(entry_package, target_dir.parent)
+    try:
+        staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=target_dir.parent))
+    except OSError as exc:
+        if not _is_disk_full_error(exc):
+            raise
+        free_bytes = shutil.disk_usage(target_dir.parent).free
+        raise PackageBuildError(
+            _package_disk_space_message(needed_bytes, free_bytes)
+        ) from exc
     shutil.rmtree(staging)
     try:
-        shutil.copytree(entry_package, staging)
+        _copy_package_tree_with_space_diagnostics(
+            entry_package, staging, target_dir.parent, needed_bytes
+        )
         staged_valid, staged_reason = package_cache.validate_package_cache(
             staging, expected_key=cache_key
         )
@@ -1458,13 +1543,19 @@ class _BuildProgressReporter:
                 self._out_stream = p.open("a", encoding="utf-8")
 
     def report(self, stage: str, status: str, message: str,
-               detail: str | None = None) -> None:
+               detail: str | None = None, *, completed: int | None = None,
+               total: int | None = None, notice: str | None = None) -> None:
         self.current_stage = stage
         if status == "FAIL":
             self._failed = True
         payload = {"stage": stage, "status": status, "message": message}
         if detail:
             payload["detail"] = detail
+        if completed is not None and total is not None:
+            payload["completed"] = completed
+            payload["total"] = total
+        if notice:
+            payload["notice"] = notice
         line = json.dumps(payload, ensure_ascii=False) + "\n"
         if self._out_stream is not None:
             self._out_stream.write(line)
@@ -1502,6 +1593,91 @@ class _BuildProgressReporter:
             except OSError:
                 pass
             self._log_stream = None
+
+
+# The planner appends {"completed": N, "total": M} lines here while Make compiles
+# (title_codegen_plan.COMPILE_PROGRESS_FILE_ENV).
+_COMPILE_PROGRESS_FILE_ENV = "NK_COMPILE_PROGRESS_FILE"
+
+
+def compile_progress_message(completed: int, total: int) -> str:
+    """Name the part being compiled, or the link once every part is compiled."""
+    if completed >= total:
+        return f"Linking the package ({total} of {total} parts compiled)"
+    return f"Compiling part {completed + 1} of {total}"
+
+
+def compile_load_notice(jobs: int | None, cpus: int | None) -> str | None:
+    """A calm note that other apps may slow down, sized to the share of the PC in use.
+
+    One job leaves most of the PC free, so it gets no notice.
+    """
+    if not jobs or jobs <= 1:
+        return None
+    if not cpus or jobs * 2 >= cpus:
+        return ("Building uses most of your PC's power for a few minutes, "
+                "so other apps may feel slower until it finishes.")
+    return ("Building uses some of your PC's power for a few minutes, "
+            "so other apps may feel a little slower until it finishes.")
+
+
+class _CompileProgressRelay:
+    """Report the planner's compile progress file as ``compile`` RUNNING events.
+
+    A thread reads complete lines as the planner appends them, so the player sees
+    "Compiling part N of M" while the planner process is still running.
+    """
+
+    def __init__(self, reporter: _BuildProgressReporter, path: Path,
+                 poll_seconds: float = 0.5):
+        self.reporter = reporter
+        self.path = path
+        self.poll_seconds = poll_seconds
+        self.last: tuple[int, int] | None = None
+        self._offset = 0
+        self._partial = ""
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="compile-progress", daemon=True)
+
+    def __enter__(self) -> "_CompileProgressRelay":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._stop.set()
+        self._thread.join()
+        self.drain()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.poll_seconds):
+            self.drain()
+
+    def drain(self) -> None:
+        try:
+            with self.path.open("r", encoding="utf-8") as stream:
+                stream.seek(self._offset)
+                text = stream.read()
+                self._offset = stream.tell()
+        except OSError:
+            return
+        lines = (self._partial + text).split("\n")
+        self._partial = lines.pop()
+        for line in lines:
+            try:
+                row = json.loads(line)
+                completed, total = int(row["completed"]), int(row["total"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if total <= 0 or not 0 <= completed <= total or (completed, total) == self.last:
+                continue
+            self.last = (completed, total)
+            jobs, cpus = row.get("jobs"), row.get("cpus")
+            self.reporter.report("compile", "RUNNING",
+                                 compile_progress_message(completed, total),
+                                 completed=completed, total=total,
+                                 notice=compile_load_notice(
+                                     jobs if isinstance(jobs, int) else None,
+                                     cpus if isinstance(cpus, int) else None))
 
 
 _BUILD_DIAGNOSTIC_MARKERS = ("error:", "cannot find", "undefined reference")
@@ -2058,14 +2234,19 @@ def _build_package(args: argparse.Namespace, stage_observer,
             stage_observer("compile", "START", 0)
         log_command(command)
         compile_started = time.perf_counter()
-        completed = subprocess.run(
-            command,
-            cwd=ROOT,
-            env=build_environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory(prefix="nk-compile-progress-") as progress_dir:
+            progress_path = Path(progress_dir) / "compile-progress.jsonl"
+            compile_environment = dict(build_environment)
+            compile_environment[_COMPILE_PROGRESS_FILE_ENV] = str(progress_path)
+            with _CompileProgressRelay(reporter, progress_path):
+                completed = subprocess.run(
+                    command,
+                    cwd=ROOT,
+                    env=compile_environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
         if completed.stdout:
             reporter.log(completed.stdout)
             if not reporter.is_json_stdout:
@@ -2172,12 +2353,32 @@ def _build_package(args: argparse.Namespace, stage_observer,
         packages_root = user_root / "packages"
         if packages_root.is_symlink():
             raise PackageBuildError("Package destination root is a symlink; refusing to write outside per-user data.")
-        packages_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        packages_root = _require_child(user_root, packages_root, "Package destination root")
-        staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=packages_root))
-        shutil.rmtree(staging)
         try:
-            shutil.copytree(build_dir, staging)
+            packages_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError as exc:
+            if _is_disk_full_error(exc):
+                needed_bytes = _package_tree_file_bytes(build_dir)
+                free_bytes = shutil.disk_usage(user_root).free
+                raise PackageBuildError(
+                    _package_disk_space_message(needed_bytes, free_bytes)
+                ) from exc
+            raise
+        packages_root = _require_child(user_root, packages_root, "Package destination root")
+        needed_bytes = _require_package_staging_space(build_dir, packages_root)
+        try:
+            staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=packages_root))
+            shutil.rmtree(staging)
+        except OSError as exc:
+            if _is_disk_full_error(exc):
+                free_bytes = shutil.disk_usage(packages_root).free
+                raise PackageBuildError(
+                    _package_disk_space_message(needed_bytes, free_bytes)
+                ) from exc
+            raise
+        try:
+            _copy_package_tree_with_space_diagnostics(
+                build_dir, staging, packages_root, needed_bytes
+            )
             _require_child(user_root, staging, "Package staging directory")
             valid_staging, staging_reason = package_cache.validate_package_cache(
                 staging,
