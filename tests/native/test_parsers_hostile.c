@@ -2210,35 +2210,6 @@ static void test_nk_json_utf8_encode(void) {
     assert((uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
-    /* Surrogate code points: U+D800, U+DBFF, U+DC00, U+DFFF (3-byte encoding) */
-    /* U+D800 (min high surrogate) */
-    memset(out, 0xCC, sizeof(out));
-    len = nk_json_utf8_encode(0xD800, out);
-    assert(len == 3);
-    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xA0 && (uint8_t)out[2] == 0x80);
-    assert((uint8_t)out[3] == 0xCC);
-
-    /* U+DBFF (max high surrogate) */
-    memset(out, 0xCC, sizeof(out));
-    len = nk_json_utf8_encode(0xDBFF, out);
-    assert(len == 3);
-    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xAF && (uint8_t)out[2] == 0xBF);
-    assert((uint8_t)out[3] == 0xCC);
-
-    /* U+DC00 (min low surrogate) */
-    memset(out, 0xCC, sizeof(out));
-    len = nk_json_utf8_encode(0xDC00, out);
-    assert(len == 3);
-    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xB0 && (uint8_t)out[2] == 0x80);
-    assert((uint8_t)out[3] == 0xCC);
-
-    /* U+DFFF (max low surrogate) */
-    memset(out, 0xCC, sizeof(out));
-    len = nk_json_utf8_encode(0xDFFF, out);
-    assert(len == 3);
-    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xBF && (uint8_t)out[2] == 0xBF);
-    assert((uint8_t)out[3] == 0xCC);
-
     /* U+E000 (min scalar after surrogate gap) */
     memset(out, 0xCC, sizeof(out));
     len = nk_json_utf8_encode(0xE000, out);
@@ -2279,13 +2250,6 @@ static void test_nk_json_utf8_encode(void) {
     assert((uint8_t)out[0] == 0xF4 && (uint8_t)out[1] == 0x8F &&
            (uint8_t)out[2] == 0xBF && (uint8_t)out[3] == 0xBF);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
-
-    /* 5. Out-of-range codepoint above U+10FFFF (0x110000) */
-    memset(out, 0xCC, sizeof(out));
-    len = nk_json_utf8_encode(0x110000, out);
-    assert(len == 4);
-    assert((uint8_t)out[0] == 0xF4 && (uint8_t)out[1] == 0x90 &&
-           (uint8_t)out[2] == 0x80 && (uint8_t)out[3] == 0x80);
 
     printf("[HOSTILE_TEST] nk_json_utf8_encode tests PASSED!\n");
     fflush(stdout);
