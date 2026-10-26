@@ -690,8 +690,12 @@ current user's Nakagawa data folder in `prerequisites/`. **Settings → About &
 Licenses** lists installed components, versions, and licence identifiers and
 opens the notice folder. **Settings → Remove Downloaded Build Tools** removes
 that prerequisites folder after confirmation; it does not remove the game
-library, ISO files, saves, or built packages. The consent card marks unresolved
-`NOASSERTION` licence entries as under review in [#304](https://github.com/Jstar269/nakagawa-recomp/issues/304).
+library, ISO files, saves, or built packages. Every pinned entry carries a resolved
+SPDX licence expression ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)): the
+public-domain tzdata and windows-default-manifest packages use `LicenseRef-` identifiers, and
+their `notice_location` names the notice. `test_every_pinned_license_is_a_resolved_spdx_expression`
+in `tools/test_prereq_fetcher.py` refuses `NOASSERTION`; the consent card would still mark such an
+entry as under review in [#304](https://github.com/Jstar269/nakagawa-recomp/issues/304).
 
 This automatic prerequisite flow currently targets Windows x64 with the
 UCRT64 package set. Linux prerequisite installation is in the works
