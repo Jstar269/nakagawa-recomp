@@ -79,7 +79,7 @@ typedef struct {
  * beyond it falls back to one linear blit. */
 Sdl3VkPresentPlan sdl3vk_present_plan(int mode, int srcw, int srch, int dw, int dh, int max_dim);
 
-/* In-game performance HUD control (F1 / SR_HUD=1) */
+/* In-game performance HUD control (F3 / SR_HUD=1) */
 int  sdl3vk_hud_is_enabled(void);
 void sdl3vk_hud_set_enabled(int enabled);
 void sdl3vk_set_audio_active_cb(int (*cb)(void));
@@ -171,6 +171,49 @@ int  sdl3vk_take_key_events(Sdl3VkKeyEvent *out, int max);
  * input: a press between two samples is not lost the way a held state would be. */
 uint32_t sdl3vk_take_pad_pulses(void);
 
+/* ---- in-game pause (#1159) ----------------------------------------------------------
+ * Esc, F1 and the pad's Guide button ask for the pause overlay. They are consumed: none of
+ * them reaches the game, and Esc no longer closes the window. Losing the open pad asks for
+ * a pause too. The request is latched until taken; it is not latched while the input is
+ * claimed (the overlay is already open). */
+enum {
+    SDL3VK_PAUSE_REQUEST_NONE = 0,
+    SDL3VK_PAUSE_REQUEST_USER = 1,      /* Esc, F1 or Guide */
+    SDL3VK_PAUSE_REQUEST_PAD_LOST = 2   /* the open gamepad was disconnected */
+};
+int sdl3vk_take_pause_request(void);
+
+/* Input claim. While a sink is set every input and window event goes to it (sdl_event is a
+ * const SDL_Event *), and the game reads every button released with the stick centred.
+ * Clearing the sink ends the claim: a button or stick still held then stays hidden from
+ * the game until it is let go (nk_input_gate_*), so the press that closed the overlay never
+ * reaches the game. Presses the game had not sampled when the claim began are kept for it,
+ * except for a button still held at the end. */
+typedef void (*Sdl3VkInputSink)(const void *sdl_event, void *user);
+void sdl3vk_set_input_claim(Sdl3VkInputSink sink, void *user);
+int  sdl3vk_input_claimed(void);
+
+/* The pause presenter draws the window itself while the game is stopped: one image at the
+ * swapchain's pixel size, composed by the caller. sdl3vk_overlay_extent gives that size and
+ * its byte order (rgba 1: R,G,B,A in memory; 0: B,G,R,A); it returns 0 when no image can be
+ * shown now (minimised, no swapchain, or a surface format with another layout). */
+int  sdl3vk_overlay_extent(int *w, int *h, int *rgba);
+/* Shows the overlay image. px (w*h pixels of `pitch` bytes per row, at the current extent)
+ * replaces the uploaded image; NULL shows the last one again. These presents are not game
+ * frames: no frame capture, perf count or HUD. Returns 1 when presented, 2 when the extent
+ * changed and the image must be composed again, 0 when the window was closed and -1 on a
+ * presentation failure. */
+int  sdl3vk_present_overlay(const void *px, int pitch);
+/* Frees the overlay image when the pause ends. */
+void sdl3vk_overlay_release(void);
+int  sdl3vk_window_minimized(void);
+/* Waits until an event is queued or timeout_ms passes, without taking the event. */
+void sdl3vk_wait_events(uint32_t timeout_ms);
+/* The SR_PRESENT_SCALING mode in use (SDL3VK_SCALING_*). */
+int  sdl3vk_present_scaling(void);
+/* The refresh period of the display the window is on, in ns; 0 when SDL does not know it. */
+uint64_t sdl3vk_display_period_ns(void);
+
 /* Host input profile mapping and evaluation (#357). */
 void sdl3vk_map_gamepad(
     const NkInputProfile *profile,
@@ -184,6 +227,9 @@ void sdl3vk_init_input_profile(void);
 void sdl3vk_reset_input_profile(void);
 const NkInputProfile *sdl3vk_get_input_profile(void);
 int  sdl3vk_input_profile_selftest(void);
+/* The pause keys, the overlay's input claim and the release mask, driven through the real
+ * event path with a virtual gamepad (gpu-capture-selftest). Returns 1 on success. */
+int  sdl3vk_pause_input_selftest(void);
 
 /* Vulkan objects shared with the Phase-1 GPU rasterizer (ge_gpu.c). Handles are typed
  * void* here so this header stays vulkan.h-free; they are the real VkInstance etc.
