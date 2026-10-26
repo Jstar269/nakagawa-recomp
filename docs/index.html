@@ -2,185 +2,336 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!--
   Project website for Nakagawa Recomp, published to GitHub Pages by .github/workflows/pages.yml.
-  One self-contained page: no scripts, no web fonts and no third-party requests. The image paths are
-  relative to docs/, so opening this file from a checkout shows the same page the workflow publishes.
-  Keep the status text in step with README.md, docs/COMPATIBILITY.md and docs/RELEASE_NOTES_v0.0.1.md.
+  One self-contained page: no scripts, no web fonts and no third-party requests. All artwork on the page is
+  the project's own (the Nakagawa mark, and the court, net and ball drawn below in CSS and inline SVG); the only
+  game image is the published presentation screenshot, shown with its notice. Image paths are relative to
+  docs/, so opening this file from a checkout shows the same page the workflow publishes.
+  Keep the status text in step with docs/COMPATIBILITY.md, README.md and docs/RELEASE_NOTES_v0.0.1.md.
 -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Nakagawa Recomp</title>
-  <meta name="description" content="Nakagawa Recomp is a static recompiler that turns a PSP game you own into a native Windows program. Pre-release: v0.0.1 is being prepared. Bring your own game; no game data is included.">
+  <title>Nakagawa Recomp: your PSP games as native PC programs</title>
+  <meta name="description" content="Nakagawa Recomp turns a PSP game you own into a native Windows program. It is early, honest about what works, and there is no download yet: v0.0.1 is on its way. No game data is included.">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0B0F14" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#123A68">
   <link rel="canonical" href="https://jstar269.github.io/nakagawa-recomp/">
-  <link rel="icon" type="image/svg+xml" href="images/brand/nakagawa-mark-light.svg">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='29' fill='%23D7F24A' stroke='%230B1A2B' stroke-width='3'/%3E%3Cpath d='M12 13c11 9 11 29 0 38M52 13c-11 9-11 29 0 38' fill='none' stroke='%23FFFFFF' stroke-width='4.5' stroke-linecap='round'/%3E%3C/svg%3E">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Nakagawa Recomp">
-  <meta property="og:description" content="A static recompiler that turns a PSP game you own into a native Windows program. Pre-release; bring your own game.">
+  <meta property="og:description" content="Your PSP games, served as native PC programs. Early and honest about it: no download yet, v0.0.1 is on its way. Bring your own game.">
   <meta property="og:url" content="https://jstar269.github.io/nakagawa-recomp/">
   <style>
+    /* ---- Tokens: one set, two themes (day session = light, night session = dark) ---- */
     :root {
       color-scheme: light dark;
-      --bg: #FFFFFF;
-      --surface: #F5F7FA;
-      --surface-2: #EBEFF4;
-      --line: #D5DCE4;
-      --line-strong: #A9B4C1;
-      --text: #10151C;
-      --muted: #4A5563;
-      --accent: #4D6900;
-      --accent-fill: #4D6900;
-      --on-accent: #FFFFFF;
-      --accent-soft: #EEF5D6;
-      --ok: #0F766E;
-      --warn: #7A5A00;
-      --info: #0B5CAD;
-      --radius: 12px;
+      --s1: 0.25rem; --s2: 0.5rem; --s3: 0.75rem; --s4: 1rem; --s5: 1.5rem; --s6: 2rem; --s7: 3rem; --s8: 4.5rem; --s9: 6.5rem;
+      --radius: 14px;
+      --radius-sm: 9px;
       --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      --mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, "Liberation Mono", monospace;
+      --display: "Segoe UI Variable Display", "SF Pro Display", system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+      --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, "Liberation Mono", monospace;
+
+      /* Court colours: the same in both themes, so the hero always reads as a court. */
+      --court: #1B5394;
+      --court-deep: #102F57;
+      --court-surround: #2C6E46;
+      --chalk: #FFFFFF;
+      --ball: #D7F24A;
+      --on-ball: #0B1A10;
+      --on-court: #FFFFFF;
+      --on-court-muted: #D3E1F0;
+
+      /* Day session (light). */
+      --bg: #F5F7F3;
+      --bg-alt: #FFFFFF;
+      --surface: #FFFFFF;
+      --surface-2: #EDF2F7;
+      --line: #D5DDE5;
+      --line-strong: #9FB0C2;
+      --text: #0B1B2B;
+      --muted: #44566B;
+      --link: #164C8C;
+      --eyebrow: #1D5A9E;
+      --focus: #164C8C;
+      --mark-ok: #0D7149;
+      --mark-no: #A1452B;
+      --pill-progress-bg: #FFF1C9; --pill-progress-fg: #6B4A00;
+      --pill-early-bg: #DCEBFF;    --pill-early-fg: #134478;
+      --pill-runs-bg: #D6F3E3;     --pill-runs-fg: #0B5A39;
+      --pill-unknown-bg: #E6EAEF;  --pill-unknown-fg: #3A4757;
+      --callout-bg: #F3F9DC;
+      --callout-line: #8DA61C;
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #0B0F14;
-        --surface: #121821;
-        --surface-2: #18202B;
-        --line: #1C232D;
-        --line-strong: #2E3846;
-        --text: #F5F7FA;
-        --muted: #9AA4B2;
-        --accent: #D7F24A;
-        --accent-fill: #D7F24A;
-        --on-accent: #10151C;
-        --accent-soft: #1F2613;
-        --ok: #2DD4BF;
-        --warn: #DBB024;
-        --info: #6CB6FF;
+        /* Night session (dark). */
+        --bg: #08131F;
+        --bg-alt: #0C1A2B;
+        --surface: #10223A;
+        --surface-2: #15304F;
+        --line: #1E3956;
+        --line-strong: #345B83;
+        --text: #F2F6FA;
+        --muted: #A9BBCD;
+        --link: #D7F24A;
+        --eyebrow: #D7F24A;
+        --focus: #D7F24A;
+        --mark-ok: #6EE7A8;
+        --mark-no: #FF9B85;
+        --pill-progress-bg: #3A2F0A; --pill-progress-fg: #F8D66B;
+        --pill-early-bg: #13355C;    --pill-early-fg: #9FD0FF;
+        --pill-runs-bg: #0E3B2A;     --pill-runs-fg: #7EECB4;
+        --pill-unknown-bg: #1D2C3D;  --pill-unknown-fg: #C3CFDB;
+        --callout-bg: #10223A;
+        --callout-line: #D7F24A;
       }
     }
+
+    /* ---- Base ---- */
     *, *::before, *::after { box-sizing: border-box; }
-    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-padding-top: var(--s4); }
+    @media (min-width: 48rem) { html { scroll-padding-top: 5rem; } }
     @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 1.0625rem/1.65 var(--font);
-      overflow-wrap: break-word;
-    }
-    img { max-width: 100%; height: auto; display: block; }
-    a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 1.0625rem/1.65 var(--font); overflow-wrap: break-word; }
+    img, svg { display: block; max-width: 100%; }
+    img { height: auto; }
+    a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 0.2em; }
     a:hover { text-decoration-thickness: 2px; }
-    :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
-    code { font-family: var(--mono); font-size: 0.92em; background: var(--surface-2); padding: 0.1em 0.35em; border-radius: 5px; }
-    h1, h2, h3 { line-height: 1.2; letter-spacing: -0.01em; margin: 0 0 0.6em; }
-    h1 { font-size: clamp(2rem, 5.5vw, 3.25rem); letter-spacing: -0.02em; }
-    h2 { font-size: clamp(1.5rem, 3.6vw, 2.1rem); }
-    h3 { font-size: 1.15rem; }
-    p, ul, ol { margin: 0 0 1em; }
-    .wrap { max-width: 70rem; margin: 0 auto; padding: 0 1rem; }
-    @media (min-width: 48rem) { .wrap { padding: 0 2rem; } }
+    :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 6px; }
+    h1, h2, h3 { font-family: var(--display); line-height: 1.1; margin: 0; text-wrap: balance; }
+    h1 { font-size: clamp(2.4rem, 6vw, 4.1rem); font-weight: 800; letter-spacing: -0.03em; }
+    h2 { font-size: clamp(1.9rem, 4.2vw, 2.9rem); font-weight: 800; letter-spacing: -0.025em; }
+    h3 { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.01em; }
+    p, ul, ol { margin: 0 0 var(--s4); }
+    p { text-wrap: pretty; }
+    code { font-family: var(--mono); font-size: 0.9em; background: var(--surface-2); padding: 0.08em 0.36em; border-radius: 5px; }
+    .wrap { width: 100%; max-width: 72rem; margin: 0 auto; padding: 0 var(--s4); }
+    @media (min-width: 48rem) { .wrap { padding: 0 var(--s6); } }
+    .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .skip { position: absolute; left: var(--s4); top: -5rem; z-index: 50; padding: var(--s2) var(--s4); background: var(--ball); color: var(--on-ball); border-radius: var(--radius-sm); font-weight: 700; }
+    .skip:focus { top: var(--s4); }
 
-    .skip { position: absolute; left: 1rem; top: -4rem; z-index: 10; padding: 0.6rem 1rem; background: var(--accent-fill); color: var(--on-accent); border-radius: 8px; font-weight: 600; }
-    .skip:focus { top: 1rem; }
+    /* ---- Header ---- */
+    .site-header { background: var(--court-deep); color: var(--on-court); border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+    @media (min-width: 48rem) { .site-header { position: sticky; top: 0; z-index: 20; } }
+    .bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s5); padding-top: var(--s3); padding-bottom: var(--s3); }
+    .brand { display: inline-flex; align-items: center; gap: var(--s3); color: inherit; text-decoration: none; font-family: var(--display); font-weight: 800; font-size: 1.08rem; letter-spacing: -0.01em; }
+    .brand img { width: 30px; height: 30px; }
+    .site-nav ul { list-style: none; display: flex; flex-wrap: wrap; gap: var(--s1) var(--s5); margin: 0; padding: 0; }
+    .site-nav a { color: var(--on-court-muted); text-decoration: none; font-size: 0.94rem; font-weight: 600; display: inline-block; padding: var(--s1) 0; }
+    .site-nav a:hover { color: var(--on-court); text-decoration: underline; text-decoration-color: var(--ball); }
+    .site-header :focus-visible, .hero :focus-visible, .community :focus-visible, .site-footer :focus-visible { outline-color: var(--ball); }
 
-    .site-header { border-bottom: 1px solid var(--line); }
-    .bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1.5rem; padding-top: 0.85rem; padding-bottom: 0.85rem; }
-    .brand { display: inline-flex; align-items: center; gap: 0.6rem; color: var(--text); text-decoration: none; font-weight: 700; font-size: 1.05rem; }
-    .brand img { width: 32px; height: 32px; }
-    .site-nav ul { list-style: none; display: flex; flex-wrap: wrap; gap: 0.25rem 1.1rem; margin: 0; padding: 0; }
-    .site-nav a { color: var(--muted); text-decoration: none; font-size: 0.95rem; padding: 0.35rem 0; display: inline-block; }
-    .site-nav a:hover { color: var(--text); text-decoration: underline; }
+    /* ---- Hero: the court ---- */
+    .hero {
+      --link: var(--ball);
+      position: relative; overflow: hidden; color: var(--on-court);
+      background:
+        radial-gradient(120% 90% at 85% 10%, #2563A8 0%, transparent 60%),
+        linear-gradient(160deg, var(--court) 0%, var(--court-deep) 100%);
+      padding: var(--s8) 0;
+    }
+    .hero-grid { position: relative; display: grid; gap: var(--s7); align-items: center; }
+    @media (min-width: 62rem) { .hero-grid { grid-template-columns: 1.15fr 0.85fr; } }
+    .kicker { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); margin-bottom: var(--s5); font-size: 0.92rem; color: var(--on-court-muted); }
+    .chip { display: inline-flex; align-items: center; gap: var(--s2); padding: 0.2rem 0.75rem; border-radius: 999px; font-size: 0.8rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; background: var(--ball); color: var(--on-ball); }
+    .hero h1 { max-width: 15ch; }
+    .hero h1 em { font-style: normal; color: var(--ball); }
+    .value { font-size: clamp(1.1rem, 2.1vw, 1.3rem); line-height: 1.55; color: var(--on-court-muted); max-width: 36rem; margin: var(--s5) 0 var(--s6); }
+    .value strong { color: var(--on-court); font-weight: 650; }
+    .actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); min-height: 3rem; padding: 0.65rem 1.25rem; border-radius: 999px; font-weight: 700; text-decoration: none; border: 2px solid transparent; }
+    .btn-ball { background: var(--ball); color: var(--on-ball); border-color: var(--ball); }
+    .btn-ball:hover { background: #E4FA74; border-color: #E4FA74; }
+    .btn-line { color: var(--on-court); border-color: rgba(255, 255, 255, 0.7); }
+    .btn-line:hover { background: rgba(255, 255, 255, 0.1); border-color: #fff; }
+    .kicker .soon { font-weight: 600; color: var(--on-court); }
+    .platforms { margin: var(--s5) 0 0; font-size: 0.93rem; color: var(--on-court-muted); }
 
-    section { padding: 3.5rem 0; border-bottom: 1px solid var(--line); scroll-margin-top: 1rem; }
-    .hero { padding: 4rem 0 3.5rem; }
-    .hero-grid { display: grid; gap: 2rem; align-items: center; }
-    @media (min-width: 60rem) { .hero-grid { grid-template-columns: 1.15fr 0.85fr; gap: 3rem; } }
-    .hero-mark { justify-self: center; width: min(55vw, 15rem); }
-    .eyebrow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; color: var(--muted); font-size: 0.95rem; margin-bottom: 1.1rem; }
-    .pill { display: inline-block; padding: 0.15rem 0.7rem; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); font-weight: 600; font-size: 0.85rem; letter-spacing: 0.02em; }
-    .lead { font-size: clamp(1.1rem, 2.2vw, 1.3rem); color: var(--muted); max-width: 40rem; }
-    .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.75rem 0 1.25rem; }
-    .btn { display: inline-flex; align-items: center; min-height: 2.9rem; padding: 0.6rem 1.15rem; border-radius: 10px; font-weight: 600; text-decoration: none; border: 1px solid var(--line-strong); color: var(--text); background: var(--surface); }
-    .btn:hover { border-color: var(--accent); }
-    .btn-primary { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--on-accent); }
-    .no-download { display: inline-flex; align-items: center; min-height: 2.9rem; margin: 0; padding: 0.6rem 1.15rem; border-radius: 10px; border: 1px dashed var(--line-strong); color: var(--muted); font-weight: 600; }
-    .fine { color: var(--muted); font-size: 0.95rem; }
+    .court-art { justify-self: center; width: min(50vw, 13rem); }
+    @media (min-width: 40rem) { .court-art { width: min(60vw, 18rem); } }
+    @media (min-width: 62rem) { .court-art { width: 22rem; } }
+    .court-art svg { width: 100%; height: auto; filter: drop-shadow(0 24px 40px rgba(0, 0, 0, 0.35)); transform: rotate(-7deg); }
+    .c-surround { fill: var(--court-surround); }
+    .c-court { fill: #2B6CB0; }
+    .c-lines { fill: none; stroke: var(--chalk); stroke-width: 2.6; }
+    .c-net-tape { stroke: var(--chalk); stroke-width: 3.2; }
+    .c-net-mesh { fill: url(#mesh); }
+    .c-post { fill: #E7EDF4; }
+    .c-path { fill: none; stroke: var(--ball); stroke-width: 2.2; stroke-dasharray: 1 7; stroke-linecap: round; opacity: 0.9; }
+    .c-ring { fill: none; stroke: var(--chalk); stroke-width: 1.6; opacity: 0; }
+    .c-shadow { fill: rgba(0, 0, 0, 0.35); }
+    .c-ball { fill: var(--ball); }
+    .c-seam { fill: none; stroke: #fff; stroke-width: 1.5; stroke-linecap: round; }
+    .bounce, .c-ring, .c-shadow { transform-box: fill-box; transform-origin: center; }
+    @media (prefers-reduced-motion: no-preference) {
+      .bounce { animation: bounce 2.8s infinite; }
+      .c-shadow { animation: shadow 2.8s infinite; }
+      .c-ring { animation: ring 2.8s infinite; }
+    }
+    @keyframes bounce {
+      0% { transform: translate(0, 0) scale(1); animation-timing-function: cubic-bezier(0.2, 0.7, 0.4, 1); }
+      45% { transform: translate(-7px, -12px) scale(1.32); animation-timing-function: cubic-bezier(0.6, 0, 0.8, 0.3); }
+      90%, 100% { transform: translate(0, 0) scale(1); }
+    }
+    @keyframes shadow { 0%, 90%, 100% { transform: scale(1); opacity: 1; } 45% { transform: scale(0.7); opacity: 0.45; } }
+    @keyframes ring { 0%, 2% { transform: scale(0.5); opacity: 0.9; } 35%, 100% { transform: scale(2.1); opacity: 0; } }
 
-    .section-intro { color: var(--muted); max-width: 46rem; font-size: 1.08rem; }
-    .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); }
-    .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.25rem 1.35rem; }
-    .card > :last-child { margin-bottom: 0; }
-    .card h3 { margin-bottom: 0.45em; }
+    /* The net: a band between the hero and the rest of the page. */
+    .net { height: 18px; background: repeating-linear-gradient(45deg, transparent 0 5px, rgba(255, 255, 255, 0.16) 5px 6px), repeating-linear-gradient(-45deg, transparent 0 5px, rgba(255, 255, 255, 0.16) 5px 6px), #0A1A2C; border-top: 4px solid var(--chalk); }
 
-    figure { margin: 0; }
-    .shot img { border-radius: var(--radius); border: 1px solid var(--line); background: #000; width: 100%; }
-    .shot figcaption { margin-top: 0.75rem; color: var(--muted); font-size: 0.95rem; }
-    .demos { margin-top: 1.5rem; }
-    .demos img { image-rendering: pixelated; }
-    .grid + p { margin-top: 1rem; }
-    .game-notice { display: block; margin-top: 0.35rem; }
+    /* Highlights strip under the net. */
+    .highlights { background: var(--court-deep); color: var(--on-court); padding: 0 0 var(--s6); }
+    .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); border: 1px solid rgba(255, 255, 255, 0.16); border-top: 0; border-radius: 0 0 var(--radius) var(--radius); }
+    .strip > div { padding: var(--s5); }
+    .strip > div + div { border-left: 1px solid rgba(255, 255, 255, 0.16); }
+    @media (max-width: 47.99rem) { .strip > div + div { border-left: 0; border-top: 1px solid rgba(255, 255, 255, 0.16); } }
+    .strip strong { display: block; font-family: var(--display); font-size: 1.08rem; color: var(--ball); margin-bottom: var(--s1); }
+    .strip span { color: var(--on-court-muted); font-size: 0.95rem; }
 
-    .grid-2 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); }
-    .titles { margin: 1.75rem 0 2.25rem; }
-    .state { display: inline-flex; align-items: center; gap: 0.45rem; font-size: 0.9rem; font-weight: 600; margin-bottom: 0.6rem; }
-    .state::before { content: ""; width: 0.65rem; height: 0.65rem; border-radius: 50%; background: currentColor; flex: none; }
-    .state-boundary { color: var(--warn); }
-    .state-partial { color: var(--ok); }
-    .state-untested { color: var(--info); }
-    .two-col { display: grid; gap: 1rem 2.5rem; }
-    @media (min-width: 52rem) { .two-col { grid-template-columns: 1fr 1fr; } }
-    .two-col ul { padding-left: 1.2rem; }
-    .two-col li { margin-bottom: 0.45rem; }
+    /* ---- Sections ---- */
+    section { padding: var(--s8) 0; }
+    @media (min-width: 48rem) { section { padding: var(--s9) 0; } }
+    section.alt { background: var(--bg-alt); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .eyebrow { display: inline-flex; align-items: center; gap: var(--s2); margin: 0 0 var(--s3); color: var(--eyebrow); font-size: 0.78rem; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; }
+    .eyebrow::before { content: ""; width: 1.6rem; height: 2px; background: currentColor; }
+    .sec-head { display: grid; gap: var(--s4) var(--s7); margin-bottom: var(--s7); }
+    @media (min-width: 60rem) { .sec-head { grid-template-columns: 1fr 1fr; align-items: end; } }
+    .sec-head .lede { margin: 0; color: var(--muted); font-size: 1.08rem; max-width: 38rem; }
 
-    .steps { list-style: none; padding: 0; counter-reset: step; }
-    .steps li { counter-increment: step; position: relative; padding-left: 3.4rem; }
-    .steps li::before { content: counter(step); position: absolute; left: 1.25rem; top: 1.15rem; width: 1.9rem; height: 1.9rem; display: grid; place-items: center; border-radius: 50%; background: var(--accent-fill); color: var(--on-accent); font-weight: 700; font-size: 0.95rem; }
-    .steps li.card { padding-left: 3.9rem; }
+    /* Shared-border tile grids. */
+    .tiles { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15.5rem), 1fr)); }
+    .tile { background: var(--surface); padding: var(--s6) var(--s5); }
+    .tile h3 { margin-bottom: var(--s2); }
+    .tile p { color: var(--muted); margin: 0; }
+    .icon { display: inline-grid; place-items: center; width: 2.75rem; height: 2.75rem; margin-bottom: var(--s4); border-radius: var(--radius-sm); background: var(--court-deep); color: var(--ball); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18); }
+    .icon svg { width: 1.45rem; height: 1.45rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
-    .callout { margin-top: 2rem; border: 1px solid var(--line); border-left: 4px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius); padding: 1.25rem 1.35rem; }
-    .callout > :last-child { margin-bottom: 0; }
-    .needs { padding-left: 1.2rem; }
-    .needs li { margin-bottom: 0.5rem; }
+    /* Screenshots. */
+    .frame { margin: 0; }
+    .frame .shot { padding: 6px; border-radius: var(--radius); background: var(--court); box-shadow: inset 0 0 0 2px var(--chalk), 0 18px 40px rgba(4, 16, 32, 0.25); }
+    .frame img { width: 100%; border-radius: calc(var(--radius) - 5px); background: #000; }
+    .frame figcaption { margin-top: var(--s3); font-size: 0.95rem; color: var(--muted); }
+    .frame figcaption strong { color: var(--text); }
+    .notice { display: block; margin-top: var(--s1); font-size: 0.88rem; }
+    .gallery { display: grid; gap: var(--s5); }
+    @media (min-width: 56rem) { .gallery { grid-template-columns: 1.85fr 1fr; } .gallery .main-shot { grid-row: span 2; } }
+    .demo img { image-rendering: pixelated; }
 
-    details { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 0 1.25rem; margin-bottom: 0.75rem; }
-    summary { cursor: pointer; font-weight: 600; padding: 1rem 0; }
-    details[open] summary { border-bottom: 1px solid var(--line); margin-bottom: 0.9rem; }
-    details > p:last-child { margin-bottom: 1rem; }
+    /* Status. */
+    .flagship { display: grid; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line); margin-bottom: var(--s5); overflow: hidden; }
+    @media (min-width: 52rem) { .flagship { grid-template-columns: 0.85fr 1.15fr; } }
+    .flagship-court {
+      padding: var(--s6) var(--s5) calc(var(--s6) + 1.6rem); color: var(--on-court);
+      background:
+        linear-gradient(90deg, transparent calc(50% - 1px), rgba(255, 255, 255, 0.3) calc(50% - 1px), rgba(255, 255, 255, 0.3) calc(50% + 1px), transparent calc(50% + 1px)) 0 100% / 100% 1.6rem no-repeat,
+        linear-gradient(rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.3)) 0 calc(100% - 1.6rem) / 100% 2px no-repeat,
+        linear-gradient(160deg, var(--court) 0%, var(--court-deep) 100%);
+    }
+    .flagship-court h3 { font-size: clamp(1.4rem, 2.6vw, 1.75rem); margin: var(--s4) 0 var(--s2); }
+    .flagship-court p { margin: 0; color: var(--on-court-muted); font-size: 0.97rem; }
+    .flagship-text { padding: var(--s6) var(--s5); }
+    .flagship-text p:last-child { margin-bottom: 0; }
+    .pill { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.22rem 0.7rem; border-radius: 999px; font-size: 0.82rem; font-weight: 700; }
+    .pill::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
+    .p-progress { background: var(--pill-progress-bg); color: var(--pill-progress-fg); }
+    .p-early { background: var(--pill-early-bg); color: var(--pill-early-fg); }
+    .p-runs { background: var(--pill-runs-bg); color: var(--pill-runs-fg); }
+    .p-unknown { background: var(--pill-unknown-bg); color: var(--pill-unknown-fg); }
+    .tile .pill { margin-bottom: var(--s3); }
+    .ledger { display: grid; gap: var(--s5); margin-top: var(--s7); }
+    @media (min-width: 52rem) { .ledger { grid-template-columns: 1fr 1fr; } }
+    .ledger > div { padding: var(--s6) var(--s5); border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line); }
+    .ledger h3 { margin-bottom: var(--s4); }
+    .marks { list-style: none; padding: 0; margin: 0; }
+    .marks li { position: relative; padding-left: 1.9rem; margin-bottom: var(--s3); }
+    .marks li:last-child { margin-bottom: 0; }
+    .marks li::before { position: absolute; left: 0; top: 0.05em; width: 1.3rem; text-align: center; font-weight: 800; }
+    .marks.yes li::before { content: "\2713"; color: var(--mark-ok); }
+    .marks.not li::before { content: "\2013"; color: var(--mark-no); }
+    .asof { margin: var(--s5) 0 0; color: var(--muted); font-size: 0.95rem; }
 
-    .links a.card { display: block; color: var(--text); text-decoration: none; }
-    .links a.card:hover { border-color: var(--accent); }
-    .links a.card strong { display: block; color: var(--accent); margin-bottom: 0.2rem; }
-    .links a.card span { color: var(--muted); font-size: 0.95rem; }
+    /* How it works: steps scored like a tennis game. */
+    .steps { list-style: none; margin: 0; padding: 0; }
+    .score { display: inline-grid; place-items: center; min-width: 3.4rem; height: 2.3rem; padding: 0 var(--s3); margin-bottom: var(--s4); border-radius: var(--radius-sm); background: var(--court-deep); color: var(--ball); font-family: var(--mono); font-weight: 800; font-size: 1.05rem; letter-spacing: 0.04em; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18); }
+    .row-link { display: flex; justify-content: space-between; align-items: center; gap: var(--s4); margin-top: var(--s5); padding: var(--s4) var(--s2); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-weight: 700; text-decoration: none; }
+    .row-link span:last-child { transition: transform 0.15s; }
+    .row-link:hover span:last-child { transform: translate(2px, -2px); }
 
-    .legal p { max-width: 50rem; }
-    .site-footer { padding: 2.25rem 0 3rem; color: var(--muted); font-size: 0.92rem; }
-    .site-footer .brand { font-size: 0.98rem; margin-bottom: 0.75rem; }
-    .site-footer .brand img { width: 24px; height: 24px; }
-    .site-footer ul { list-style: none; display: flex; flex-wrap: wrap; gap: 0.25rem 1.1rem; padding: 0; }
+    /* Bring your own game. */
+    .byo { display: grid; gap: var(--s6); align-items: start; }
+    @media (min-width: 60rem) { .byo { grid-template-columns: 1fr 1fr; } }
+    .needs { list-style: none; padding: 0; margin: 0; display: grid; gap: var(--s3); }
+    .needs li { padding: var(--s4) var(--s5); border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--line); }
+    .needs strong { display: block; }
+    .needs span { color: var(--muted); font-size: 0.96rem; }
+    .callout { padding: var(--s6) var(--s5); border-radius: var(--radius); background: var(--callout-bg); border: 1px solid var(--line); border-left: 5px solid var(--callout-line); }
+    .callout h3 { margin-bottom: var(--s3); }
+    .callout p:last-child { margin-bottom: 0; }
+    .tagline { display: flex; align-items: center; gap: var(--s3); margin: var(--s5) 0 0; padding: var(--s4) var(--s5); border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--line); font-weight: 650; }
+    .tagline svg { flex: none; width: 1.6rem; height: 1.6rem; }
+
+    /* Questions. */
+    .split { display: grid; gap: var(--s6); align-items: start; }
+    @media (min-width: 60rem) { .split { grid-template-columns: 0.8fr 1.2fr; gap: var(--s8); } }
+    .split .lede { color: var(--muted); font-size: 1.08rem; margin: var(--s4) 0 0; }
+    .faq { display: grid; gap: var(--s3); }
+    .faq details { border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--line); }
+    .faq summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: var(--s4); padding: var(--s4) var(--s5); font-weight: 700; }
+    .faq summary::-webkit-details-marker { display: none; }
+    .faq summary::after { content: "+"; flex: none; display: grid; place-items: center; width: 1.7rem; height: 1.7rem; border-radius: 50%; background: var(--surface-2); color: var(--text); font-weight: 800; }
+    .faq details[open] summary::after { content: "\2212"; }
+    .faq details > p { margin: 0; padding: 0 var(--s5) var(--s5); color: var(--muted); }
+
+    /* Community. */
+    .community { --link: var(--ball); display: grid; gap: var(--s6); padding: var(--s7) var(--s5); border-radius: calc(var(--radius) + 6px); color: var(--on-court); background: linear-gradient(150deg, var(--court) 0%, var(--court-deep) 75%); position: relative; overflow: hidden; }
+    .community::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 14px; pointer-events: none; border-top: 3px solid var(--chalk); background: repeating-linear-gradient(45deg, transparent 0 5px, rgba(255, 255, 255, 0.2) 5px 6px), repeating-linear-gradient(-45deg, transparent 0 5px, rgba(255, 255, 255, 0.2) 5px 6px); }
+    @media (min-width: 60rem) { .community { grid-template-columns: 1.1fr 0.9fr; align-items: center; padding: var(--s8) var(--s7); } }
+    .community > * { position: relative; }
+    .community .eyebrow { color: var(--ball); }
+    .community p { color: var(--on-court-muted); max-width: 32rem; margin: var(--s4) 0 0; }
+    .community ul { list-style: none; margin: 0; padding: 0; }
+    .community li + li { border-top: 1px solid rgba(255, 255, 255, 0.18); }
+    .community li a { display: flex; justify-content: space-between; align-items: center; gap: var(--s4); padding: var(--s4) var(--s1); color: var(--on-court); text-decoration: none; }
+    .community li a small { display: block; color: var(--on-court-muted); font-size: 0.9rem; }
+    .community li a b { font-weight: 700; }
+    .community li a:hover b { text-decoration: underline; text-decoration-color: var(--ball); }
+    .arrow { flex: none; color: var(--ball); font-weight: 800; }
+
+    /* Fine print and footer. */
+    .fineprint { padding: var(--s7) 0; border-top: 1px solid var(--line); }
+    .fineprint .cols { display: grid; gap: var(--s5); }
+    @media (min-width: 52rem) { .fineprint .cols { grid-template-columns: repeat(3, 1fr); } }
+    .fineprint h3 { font-size: 1rem; margin-bottom: var(--s2); }
+    .fineprint p { color: var(--muted); font-size: 0.95rem; margin: 0; }
+    .site-footer { background: var(--court-deep); color: var(--on-court-muted); padding: var(--s6) 0; font-size: 0.92rem; }
+    .foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s4) var(--s6); }
+    .foot .brand { color: var(--on-court); }
+    .foot ul { list-style: none; display: flex; flex-wrap: wrap; gap: var(--s1) var(--s5); margin: 0; padding: 0; }
+    .foot p { margin: 0; width: 100%; }
+    .site-footer a { color: var(--on-court); text-decoration-color: rgba(255, 255, 255, 0.35); }
+    .foot ul a { text-decoration: none; }
+    .foot ul a:hover { text-decoration: underline; text-decoration-color: var(--ball); }
   </style>
 </head>
-<body id="top">
+<body>
   <a class="skip" href="#main">Skip to content</a>
 
   <header class="site-header">
     <div class="wrap bar">
       <a class="brand" href="#top">
-        <picture>
-          <source srcset="images/brand/nakagawa-mark-dark.svg" media="(prefers-color-scheme: dark)">
-          <img src="images/brand/nakagawa-mark-light.svg" width="32" height="32" alt="">
-        </picture>
+        <img src="images/brand/nakagawa-mark-dark.svg" width="30" height="30" alt="">
         <span>Nakagawa Recomp</span>
       </a>
-      <nav class="site-nav" aria-label="Sections">
+      <nav class="site-nav" aria-label="Main">
         <ul>
           <li><a href="#status">Status</a></li>
           <li><a href="#how">How it works</a></li>
-          <li><a href="#your-games">Your games</a></li>
+          <li><a href="#your-game">Your game</a></li>
           <li><a href="#questions">Questions</a></li>
-          <li><a href="#involved">Get involved</a></li>
+          <li><a href="#community">Community</a></li>
           <li><a href="https://github.com/Jstar269/nakagawa-recomp">GitHub</a></li>
         </ul>
       </nav>
@@ -188,81 +339,141 @@
   </header>
 
   <main id="main">
-    <section class="hero" aria-labelledby="hero-title">
+    <div class="hero" id="top">
       <div class="wrap hero-grid">
         <div>
-          <p class="eyebrow"><span class="pill">Pre-release</span> Version 0.0.1 is being prepared</p>
-          <h1 id="hero-title">Your PSP games, rebuilt as native PC programs.</h1>
-          <p class="lead">Nakagawa Recomp is a static recompiler. It takes the program code of a PSP game you own and
-            translates it, once and ahead of time, into a real Windows program. Nothing pretends to be a PSP while you
+          <p class="kicker"><span class="chip">In development</span> <span class="soon">Download: coming with v0.0.1</span></p>
+          <h1>Your PSP games, <em>served</em> as real PC programs.</h1>
+          <p class="value">Nakagawa Recomp takes a PSP game you own and rebuilds it as a <strong>native Windows
+            program</strong>. The game’s code is translated once, ahead of time, instead of being emulated while you
             play.</p>
           <div class="actions">
-            <p class="no-download">Download: coming with v0.0.1</p>
-            <a class="btn btn-primary" href="https://github.com/Jstar269/nakagawa-recomp/issues/278">Follow the v0.0.1 release</a>
-            <a class="btn" href="https://github.com/Jstar269/nakagawa-recomp">View the source</a>
+            <a class="btn btn-ball" href="https://github.com/Jstar269/nakagawa-recomp/issues/278">Follow the first release</a>
+            <a class="btn btn-line" href="https://github.com/Jstar269/nakagawa-recomp">View on GitHub</a>
           </div>
-          <p class="fine">Windows 11 (64-bit) today; Linux, macOS and Android are planned. Free and open source under
-            GPL-3.0-or-later. You bring your own game: none is included, and nothing here downloads one.</p>
+          <p class="platforms">No download yet. Windows 11 comes first, with Linux, macOS and Android planned. Free and
+            open source.</p>
         </div>
-        <picture class="hero-mark">
-          <source srcset="images/brand/nakagawa-mark-dark.svg" media="(prefers-color-scheme: dark)">
-          <img src="images/brand/nakagawa-mark-light.svg" width="240" height="240" alt="">
-        </picture>
+        <div class="court-art" aria-hidden="true">
+          <svg viewBox="0 0 280 500" focusable="false">
+            <defs>
+              <pattern id="mesh" width="5" height="5" patternUnits="userSpaceOnUse">
+                <path d="M0 0L5 5M5 0L0 5" stroke="rgba(255,255,255,0.5)" stroke-width="0.7"/>
+              </pattern>
+            </defs>
+            <rect class="c-surround" width="280" height="500" rx="20"/>
+            <rect class="c-court" x="52" y="60" width="176" height="380"/>
+            <g class="c-lines">
+              <rect x="52" y="60" width="176" height="380"/>
+              <path d="M74 60V440M206 60V440M74 147.6H206M74 352.4H206M140 147.6V352.4M140 60V68M140 432V440"/>
+            </g>
+            <rect class="c-net-mesh" x="36" y="247" width="208" height="9"/>
+            <line class="c-net-tape" x1="36" y1="247" x2="244" y2="247"/>
+            <circle class="c-post" cx="36" cy="251" r="4.5"/>
+            <circle class="c-post" cx="244" cy="251" r="4.5"/>
+            <path class="c-path" d="M172 452C164 360 150 270 110 200"/>
+            <g transform="translate(108 196)">
+              <circle class="c-ring" r="10"/>
+              <ellipse class="c-shadow" cx="3" cy="9" rx="8" ry="3"/>
+              <g class="bounce">
+                <circle class="c-ball" r="8.5"/>
+                <path class="c-seam" d="M-6.3-5.2C-2.4-1.6-2.4 1.6-6.3 5.2M6.3-5.2C2.4-1.6 2.4 1.6 6.3 5.2"/>
+              </g>
+            </g>
+          </svg>
+        </div>
       </div>
-    </section>
-
-    <section id="seen" aria-labelledby="seen-title">
+    </div>
+    <div class="net" aria-hidden="true"></div>
+    <div class="highlights">
       <div class="wrap">
-        <h2 id="seen-title">See it running</h2>
-        <figure class="shot">
-          <img src="media/hst-title-screen.png" width="1280" height="720" loading="lazy" decoding="async"
-            alt="The title screen of Hot Shots Tennis: Get a Grip, running as a native Windows program built by Nakagawa Recomp.">
-          <figcaption>Hot Shots Tennis: Get a Grip, the first title, at its title screen.
-            <span class="game-notice">Hot Shots Tennis: Get a Grip belongs to its publisher and is shown only to
-              identify the game. This site and the repository contain no game data; to play, you need your own copy of
-              the game.</span></figcaption>
+        <div class="strip">
+          <div><strong>A real PC program</strong><span>Not an emulator. The game runs as Windows code.</span></div>
+          <div><strong>Straight answers</strong><span>If something isn’t supported yet, it tells you.</span></div>
+          <div><strong>Your game stays yours</strong><span>No game files included, nothing uploaded.</span></div>
+        </div>
+      </div>
+    </div>
+
+    <section id="see" aria-labelledby="see-title">
+      <div class="wrap">
+        <div class="sec-head">
+          <div>
+            <p class="eyebrow">On court</p>
+            <h2 id="see-title">See it running.</h2>
+          </div>
+          <p class="lede">Hot Shots Tennis: Get a Grip is the first game Nakagawa is built around. Here it is, running as
+            a Windows program on a PC.</p>
+        </div>
+        <div class="gallery">
+        <figure class="frame main-shot">
+          <div class="shot">
+            <img src="media/hst-title-screen.png" width="1280" height="720" loading="lazy" decoding="async"
+              alt="The title screen of Hot Shots Tennis: Get a Grip, running as a Windows program built by Nakagawa Recomp.">
+          </div>
+          <figcaption><strong>Hot Shots Tennis: Get a Grip</strong> at its title screen, running in Nakagawa.
+            <span class="notice">The game belongs to its publisher and is shown only to identify it. This site and the
+              repository contain no game data. To play, you need your own copy of the game.</span></figcaption>
         </figure>
-        <div class="grid demos">
-          <figure class="shot">
-            <picture>
-              <source srcset="images/showcase-ge-scene-v240.png" media="(prefers-reduced-motion: reduce)">
-              <img src="images/showcase-ge-scene.gif" width="480" height="272" loading="lazy" decoding="async"
-                alt="The 3D Showcase demo: a brightly textured cube turning against a dark background.">
-            </picture>
-            <figcaption>3D Showcase: a lit, textured cube with sound and controller input.</figcaption>
+          <figure class="frame demo">
+            <div class="shot">
+              <picture>
+                <source srcset="images/showcase-ge-scene-v240.png" media="(prefers-reduced-motion: reduce)">
+                <img src="images/showcase-ge-scene.gif" width="480" height="272" loading="lazy" decoding="async"
+                  alt="The 3D Showcase demo: a brightly checkered cube turning in the dark.">
+              </picture>
+            </div>
+            <figcaption><strong>3D Showcase.</strong> A lit, spinning cube with sound and controls.</figcaption>
           </figure>
-          <figure class="shot">
-            <picture>
-              <source srcset="images/showcase-breakout-v180.png" media="(prefers-reduced-motion: reduce)">
-              <img src="images/showcase-breakout.gif" width="480" height="272" loading="lazy" decoding="async"
-                alt="The Breakout Showcase demo: a ball moving through a field of coloured bricks above the paddle and score.">
-            </picture>
-            <figcaption>Breakout Showcase: paddle, sound effects and a saved high score.</figcaption>
+          <figure class="frame demo">
+            <div class="shot">
+              <picture>
+                <source srcset="images/showcase-breakout-v180.png" media="(prefers-reduced-motion: reduce)">
+                <img src="images/showcase-breakout.gif" width="480" height="272" loading="lazy" decoding="async"
+                  alt="The Breakout Showcase demo: a ball bouncing through rows of coloured bricks above a paddle.">
+              </picture>
+            </div>
+            <figcaption><strong>Breakout Showcase.</strong> Paddle, sound effects and a saved high score. Both demos
+              are tiny PSP programs we wrote ourselves, so they run with no game files at all.</figcaption>
           </figure>
         </div>
-        <p class="fine">The two demos are PSP programs the project wrote itself, shown at the PSP's own 480&times;272.
-          They contain no commercial game and run without any game files.</p>
       </div>
     </section>
 
-    <section id="why" aria-labelledby="why-title">
+    <section class="alt" id="why" aria-labelledby="why-title">
       <div class="wrap">
-        <h2 id="why-title">Why it is different</h2>
-        <div class="grid">
-          <div class="card">
-            <h3>A PC program, not an emulator</h3>
-            <p>An emulator imitates a PSP while the game runs. Nakagawa translates the game's code once, before you
-              play, and builds it into a program your PC runs directly.</p>
+        <div class="sec-head">
+          <div>
+            <p class="eyebrow">Why Nakagawa</p>
+            <h2 id="why-title">The goal: a real PC version of games you own.</h2>
           </div>
-          <div class="card">
-            <h3>Honest when something is missing</h3>
-            <p>If a game needs something that is not supported yet, the player stops and names the missing piece in a
-              plain message. It never pretends that something worked.</p>
+          <p class="lede">It’s the same idea behind Zelda 64: Recompiled and Unleashed Recompiled, brought to the
+            PlayStation Portable.</p>
+        </div>
+        <div class="tiles">
+          <div class="tile">
+            <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>
+            <h3>Runs natively</h3>
+            <p>An emulator pretends to be a PSP while you play. Nakagawa turns the game into a program your PC runs
+              directly.</p>
           </div>
-          <div class="card">
-            <h3>Your game stays yours</h3>
-            <p>No games, keys, firmware or system fonts are included or downloaded. The player is offline by default,
-              uploads nothing built from your game, and has no telemetry.</p>
+          <div class="tile">
+            <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M4 5h16v11H10l-6 4z"/><path d="M12 8.5v3M12 13.6v.1"/></svg></span>
+            <h3>Honest by design</h3>
+            <p>When a game needs something Nakagawa can’t do yet, it stops and says what’s missing. It never fakes
+              it.</p>
+          </div>
+          <div class="tile">
+            <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span>
+            <h3>Private and offline</h3>
+            <p>No games, firmware or keys are included or downloaded. Nothing made from your game leaves your PC, and
+              there’s no tracking.</p>
+          </div>
+          <div class="tile">
+            <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4M13.2 6l-2.4 12"/></svg></span>
+            <h3>Open source</h3>
+            <p>All the code is public under the GPL, and every change has to pass a large set of automatic checks
+              before it’s accepted.</p>
           </div>
         </div>
       </div>
@@ -270,244 +481,281 @@
 
     <section id="status" aria-labelledby="status-title">
       <div class="wrap">
-        <h2 id="status-title">Where things stand</h2>
-        <p class="section-intro">Nakagawa Recomp is early, work-in-progress software. There is no release to download
-          yet: the first one, v0.0.1, is being prepared and has no date. Until then the only way to try it is to build
-          it from source, which the <a href="https://github.com/Jstar269/nakagawa-recomp#build-it-yourself">README</a>
-          walks through.</p>
+        <div class="sec-head">
+          <div>
+            <p class="eyebrow">Scoreboard</p>
+            <h2 id="status-title">Where things stand.</h2>
+          </div>
+          <p class="lede">Nakagawa is young, and we’d rather tell you straight. There’s no download yet, and the first
+            release, v0.0.1, doesn’t have a date. Here’s what works today and what doesn’t.</p>
+        </div>
 
-        <div class="grid grid-2 titles">
-          <article class="card">
-            <h3>Hot Shots Tennis: Get a Grip</h3>
-            <p class="state state-boundary">Boots to a named boundary</p>
-            <p>The first title, and the game the project is built around. On the maintainer's development setup it
-              reaches in-game 3D matches with sound. In the public player it starts, then stops at a named point that is
-              not supported yet. It still relies on 23 workarounds written for this game alone; removing them is planned
-              for v0.0.2 (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/363">#363</a>).</p>
-          </article>
-          <article class="card">
+        <article class="flagship" aria-labelledby="hst-title">
+          <div class="flagship-court">
+            <span class="pill p-progress">In progress</span>
+            <h3 id="hst-title">Hot Shots Tennis: Get a Grip</h3>
+            <p>The game Nakagawa is built around.</p>
+          </div>
+          <div class="flagship-text">
+            <p>On the developer’s PC it reaches the menus and plays full 3D matches with sound. It isn’t finished yet:
+              it runs at about 15 to 20 frames per second, slower than it should, and some sound effects drop out
+              (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/1296">#1296</a>).</p>
+            <p>It also still leans on 23 workarounds written for this one game, which we’re working to replace with
+              general fixes (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/363">#363</a>). Getting it
+              running today takes some technical setup and files from your own copy.</p>
+          </div>
+        </article>
+
+        <div class="tiles">
+          <article class="tile">
+            <span class="pill p-early">Early days</span>
             <h3>PAC-MAN Championship Edition</h3>
-            <p class="state state-partial">Partially works</p>
-            <p>Reaches its menu and plays a stage on the maintainer's own copy, through general fixes with no code
-              written for this game. It is not the whole game yet; the next goal is saving, closing and resuming
-              (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/1126">#1126</a>).</p>
+            <p>Reaches its menu and plays a stage on the developer’s own copy, without any code written just for it.
+              The rest of the game hasn’t been checked yet.</p>
           </article>
-          <article class="card">
-            <h3>Any other PSP game</h3>
-            <p class="state state-untested">Untested or Experimental</p>
-            <p>Untested if there is no record, Experimental if someone has seen it boot. The player imports it, says
-              that compatibility is unknown, and lists what it still needs.</p>
+          <article class="tile">
+            <span class="pill p-unknown">Not tried yet</span>
+            <h3>Every other PSP game</h3>
+            <p>Most haven’t been tested. Add one and the player shows what it still needs, rather than pretending it
+              works.</p>
           </article>
-          <article class="card">
-            <h3>The two showcase demos</h3>
-            <p class="state state-partial">Partially works</p>
-            <p>The project's own PSP programs. They build and run without any game files, so anyone can check the
-              pipeline from start to finish.</p>
+          <article class="tile">
+            <span class="pill p-runs">Runs</span>
+            <h3>Our two demo programs</h3>
+            <p>Small PSP programs we wrote ourselves. They build and run without any game files, so anyone can try
+              Nakagawa from start to finish.</p>
           </article>
         </div>
 
-        <div class="two-col">
+        <div class="ledger">
           <div>
-            <h3>What works today</h3>
-            <ul>
-              <li>Drag in a disc image and the player reads the disc's own information to show the game's name and
-                disc ID.</li>
-              <li>One button, <strong>Build package</strong>, recompiles the game with live progress and a cancel
-                button, and turns on <strong>Play</strong> once the result checks out.</li>
-              <li>If build tools are missing, the player can fetch them after you agree once, showing each tool's
-                version, size and licence first.</li>
-              <li>Controllers can be remapped and calibrated, with an optional mapping for each game.</li>
-              <li>Sound plays through your default audio device, video cutscenes play, and saves are kept in a local
-                folder.</li>
+            <h3>Works today</h3>
+            <ul class="marks yes">
+              <li>Drag in a disc image and the player recognises the game.</li>
+              <li>One button turns the game into a PC program, with a progress bar and a cancel button.</li>
+              <li>Missing tools? The player can fetch them for you, after showing exactly what it will download.</li>
+              <li>Gamepads and keyboards, with button remapping and calibration, even per game.</li>
+              <li>Sound, video cutscenes and save files.</li>
             </ul>
           </div>
           <div>
-            <h3>Not there yet</h3>
-            <ul>
-              <li>No download: building from source is the only route until v0.0.1
+            <h3>Not yet</h3>
+            <ul class="marks not">
+              <li>A download. For now you build Nakagawa yourself
                 (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/278">#278</a>).</li>
-              <li>Windows 11 only. Linux (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/306">#306</a>),
-                macOS (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/329">#329</a>) and Android
-                (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/360">#360</a>) are planned.</li>
-              <li>Playing straight from a disc image with no setup is in the works
-                (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/308">#308</a>). Most retail games also need
-                decrypted files from your own copy, as explained <a href="#your-games">below</a>.</li>
-              <li>No online or ad hoc play: networking is not implemented
+              <li>Anything but Windows 11. Linux, macOS and Android come later.</li>
+              <li>Playing straight from a disc image with no setup
+                (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/308">#308</a>).</li>
+              <li>Online or local wireless multiplayer
                 (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/1139">#1139</a>).</li>
-              <li>Some sound effects still fail to decode
-                (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/1096">#1096</a>), and cutscene timing is
-                not fully matched yet (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/279">#279</a>).</li>
-              <li>The first release will not be code-signed, so Windows SmartScreen will warn the first time you run
-                it.</li>
+              <li>Smooth speed and complete sound in Hot Shots Tennis
+                (<a href="https://github.com/Jstar269/nakagawa-recomp/issues/1296">#1296</a>).</li>
             </ul>
           </div>
         </div>
-        <p class="fine">Status as of October 2026. The full, always-current detail is in the
-          <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/COMPATIBILITY.md">compatibility list</a>
-          and the <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/RELEASE_NOTES_v0.0.1.md">draft
-          v0.0.1 release notes</a>.</p>
+        <p class="asof">Updated October 2026. For the full, always-current picture, see the
+          <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/COMPATIBILITY.md">compatibility list</a>.</p>
       </div>
     </section>
 
-    <section id="how" aria-labelledby="how-title">
+    <section class="alt" id="how" aria-labelledby="how-title">
       <div class="wrap">
-        <h2 id="how-title">How it works</h2>
-        <p class="section-intro">The same approach is behind Zelda 64: Recompiled (built with N64Recomp) and Unleashed
-          Recompiled (built with XenonRecomp). Nakagawa brings it to the PlayStation Portable.</p>
-        <ol class="steps grid grid-2">
-          <li class="card">
-            <h3>Add your disc image</h3>
-            <p>Drag the <code>.iso</code> of a game you own into the player. It reads the disc's own information file
-              to identify the game, and checks whether the game's program code is readable.</p>
+        <div class="sec-head">
+          <div>
+            <p class="eyebrow">Under the hood</p>
+            <h2 id="how-title">Translated once. Played natively.</h2>
+          </div>
+          <p class="lede">Nakagawa is a static recompiler: instead of imitating a PSP while you play, it rewrites the
+            game for your PC before you start. Four steps, scored like a tennis game.</p>
+        </div>
+        <ol class="steps tiles">
+          <li class="tile">
+            <span class="score" aria-hidden="true">15</span>
+            <h3>Add your game</h3>
+            <p>Drop in the disc image of a game you own. Nakagawa reads the game’s name from the disc and checks that
+              it can read the game’s code.</p>
           </li>
-          <li class="card">
-            <h3>Translate it, once</h3>
-            <p>The recompiler reads the game's program, written for the PSP's MIPS processor, finds its functions and
-              translates each one into C source code. This happens before you play, not while you play.</p>
+          <li class="tile">
+            <span class="score" aria-hidden="true">30</span>
+            <h3>Translate it</h3>
+            <p>The game was written for the PSP’s own processor. Nakagawa translates every part of it into C, a
+              common programming language, just once.</p>
           </li>
-          <li class="card">
-            <h3>Build a PC program</h3>
-            <p>A C compiler turns that code, together with Nakagawa's runtime, into a native program. The runtime
-              stands in for the PSP: its system software, graphics through Vulkan, and sound and controls through
-              SDL3.</p>
+          <li class="tile">
+            <span class="score" aria-hidden="true">40</span>
+            <h3>Build it</h3>
+            <p>A compiler turns that C into a Windows program, together with Nakagawa’s stand-in for the PSP’s
+              system, graphics, sound and controls.</p>
           </li>
-          <li class="card">
-            <h3>Play, or get a straight answer</h3>
-            <p>Press Play. If the game reaches something Nakagawa does not support yet, it stops and names what is
-              missing instead of guessing.</p>
+          <li class="tile">
+            <span class="score" aria-hidden="true">Game</span>
+            <h3>Play</h3>
+            <p>Press Play. If the game reaches something Nakagawa can’t do yet, it stops and tells you what’s missing
+              instead of guessing.</p>
           </li>
         </ol>
-        <p>Curious about the details? Read the
-          <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/ARCHITECTURE.md">architecture overview</a>
-          and <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/YOUR_OWN_GAMES.md">playing your own
-          games</a>.</p>
+        <a class="row-link" href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/ARCHITECTURE.md"><span>Read the
+          technical guide</span><span aria-hidden="true">&#8599;</span></a>
       </div>
     </section>
 
-    <section id="your-games" aria-labelledby="games-title">
+    <section id="your-game" aria-labelledby="game-title">
       <div class="wrap">
-        <h2 id="games-title">Bring your own game</h2>
-        <p class="section-intro">Here is what you need to play a PSP game with Nakagawa.</p>
-        <ul class="needs">
-          <li><strong>A Windows 11 PC</strong> (64-bit) with a graphics card that supports Vulkan, 8&nbsp;GB of memory
-            (16&nbsp;GB recommended) and 5&nbsp;GB of free disk space, ideally on an SSD.</li>
-          <li><strong>Your own copy of the game</strong>, as an uncompressed <code>.iso</code> disc image. Whether you
-            may make an image of a disc or of a digital purchase depends on where you live and on the terms you
-            accepted, so check both.</li>
-          <li><strong>Decrypted files from your own copy</strong>, for most retail games (see below).</li>
-          <li><strong>Optional:</strong> the system fonts from your own PSP, for the console's original lettering.
-            Without them, the project's own open fonts are used.</li>
-        </ul>
-        <aside class="callout" aria-labelledby="decrypt-title">
-          <h3 id="decrypt-title">Public builds do not decrypt games</h3>
-          <p>Most retail PSP games keep their program code encrypted. Public builds of Nakagawa do not decrypt games:
-            they contain no decryption keys and never look for a key file.</p>
-          <p>Instead, you supply unencrypted copies of those files, made from your own copy of the game, in the folder
-            the player shows on the game's card. If a file is still encrypted, the player names it and stops.</p>
-          <p>Laws on decrypting and copying games differ from country to country, so check the rules where you live.
-            This is not legal advice. The
-            <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/YOUR_OWN_GAMES.md#supplying-unencrypted-files">guide
-            to supplying unencrypted files</a> shows what goes where.</p>
-        </aside>
-      </div>
-    </section>
-
-    <section id="questions" aria-labelledby="questions-title">
-      <div class="wrap">
-        <h2 id="questions-title">Questions</h2>
-        <details>
-          <summary>Is this an emulator?</summary>
-          <p>No. An emulator runs the original game code by imitating PSP hardware as you play. Nakagawa translates the
-            game's code into a Windows program ahead of time, the way a PC port would be made.</p>
-        </details>
-        <details>
-          <summary>Can I download it now?</summary>
-          <p>Not yet. The first release, v0.0.1, is being prepared and has no date. You can follow it in
-            <a href="https://github.com/Jstar269/nakagawa-recomp/issues/278">issue #278</a>, or build the player from
-            source by following the <a href="https://github.com/Jstar269/nakagawa-recomp#build-it-yourself">README</a>.</p>
-        </details>
-        <details>
-          <summary>Will my favourite game work?</summary>
-          <p>Probably not yet. One game is far along, one plays a stage, and the rest are untested. When you add a game,
-            the player tells you what it still needs instead of guessing.</p>
-        </details>
-        <details>
-          <summary>Does Nakagawa give me games, firmware or keys?</summary>
-          <p>No. Nothing here includes or downloads games, firmware, keys or system fonts. You use your own copy of a
-            game you own.</p>
-        </details>
-        <details>
-          <summary>Does it go online?</summary>
-          <p>Only if you agree. The player is offline by default; today the one exception is an optional download of
-            build tools, which you approve first. Nothing built from your game is uploaded or shared, and there is no
-            telemetry.</p>
-        </details>
-        <details>
-          <summary>How is it made?</summary>
-          <p>Nakagawa is developed with AI coding agents directed by the maintainer. Their work is treated like any
-            other untrusted contribution: it must pass the same automated checks before it lands, and every commit made
-            with AI help says so. The rules are in the
-            <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/AI_USAGE.md">AI usage policy</a>.</p>
-        </details>
-      </div>
-    </section>
-
-    <section id="involved" aria-labelledby="involved-title">
-      <div class="wrap">
-        <h2 id="involved-title">Learn more and get involved</h2>
-        <div class="grid links">
-          <a class="card" href="https://github.com/Jstar269/nakagawa-recomp#readme"><strong>README</strong>
-            <span>The project at a glance, and how to build it yourself.</span></a>
-          <a class="card" href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/README.md"><strong>Documentation</strong>
-            <span>Setup, compatibility, architecture and more.</span></a>
-          <a class="card" href="https://github.com/Jstar269/nakagawa-recomp/wiki"><strong>Wiki</strong>
-            <span>Friendly summaries that point to the maintained docs.</span></a>
-          <a class="card" href="https://github.com/Jstar269/nakagawa-recomp/issues"><strong>Issues</strong>
-            <span>Report a problem or follow the work in progress.</span></a>
-          <a class="card" href="https://github.com/Jstar269/nakagawa-recomp/blob/main/CONTRIBUTING.md"><strong>Contributing</strong>
-            <span>How to help with code, testing or documentation.</span></a>
-          <a class="card" href="https://github.com/Jstar269/nakagawa-recomp/discussions"><strong>Discussions</strong>
-            <span>Questions and ideas that are not bug reports.</span></a>
+        <div class="sec-head">
+          <div>
+            <p class="eyebrow">Before you play</p>
+            <h2 id="game-title">Bring your own game.</h2>
+          </div>
+          <p class="lede">Nakagawa is the software, not the game. Here’s what you’ll need once you can play.</p>
         </div>
-        <p class="fine">Part of the Nakagawa family, with <a href="https://github.com/Jstar269/hst-decomp">hst-decomp</a>,
-          the matching decompilation of Hot Shots Tennis: Get a Grip.</p>
+        <div class="byo">
+          <div>
+            <ul class="needs">
+              <li><strong>A Windows 11 PC</strong><span>64-bit, with a graphics card that supports Vulkan, 8 GB of
+                memory (16 GB is better) and 5 GB of free space.</span></li>
+              <li><strong>Your own copy of the game</strong><span>As a disc image (<code>.iso</code>). Whether you may
+                make one depends on where you live and the terms you agreed to, so check both.</span></li>
+              <li><strong>Unlocked game files, for most games</strong><span>Most store-bought games need these. See
+                the note about unlocking.</span></li>
+              <li><strong>Your PSP’s system fonts (optional)</strong><span>For the original lettering. Without them,
+                Nakagawa uses its own open fonts.</span></li>
+            </ul>
+            <p class="tagline">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10.5" fill="#D7F24A" stroke="#0B1A2B" stroke-width="1"/><path d="M4.4 5.2c3.6 3 3.6 10.6 0 13.6M19.6 5.2c-3.6 3-3.6 10.6 0 13.6" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>
+              We bring the court. You bring the game.
+            </p>
+          </div>
+          <aside class="callout" aria-labelledby="unlock-title">
+            <h3 id="unlock-title">Nakagawa doesn’t unlock games</h3>
+            <p>Most store-bought PSP games keep their code encrypted, which means locked. Public builds of Nakagawa
+              can’t unlock it: they contain no keys and never go looking for any.</p>
+            <p>Instead, you supply unlocked copies of those files, made from your own game. The player shows you
+              exactly where they go, and if a file is still locked, it tells you which one.</p>
+            <p>Rules about unlocking and copying games differ from country to country, so check yours. This isn’t legal
+              advice. The <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/YOUR_OWN_GAMES.md">guide to
+              playing your own games</a> has the details.</p>
+          </aside>
+        </div>
       </div>
     </section>
 
-    <section id="legal" class="legal" aria-labelledby="legal-title">
+    <section class="alt" id="questions" aria-labelledby="questions-title">
       <div class="wrap">
-        <h2 id="legal-title">Legal</h2>
-        <p>Nakagawa Recomp is an independent fan project. It is not affiliated with or endorsed by Sony Interactive
-          Entertainment, Clap Hanz, or any game publisher. PlayStation and PSP are trademarks of Sony Interactive
-          Entertainment Inc., and game titles are trademarks of their owners; they are named here only to say what the
-          project works with.</p>
-        <p>The repository and this site contain no game data: no game code, game assets, firmware, keys or system fonts,
-          and nothing here downloads them. Games belong to their publishers. To play one, you need your own copy.</p>
-        <p>The source code is licensed GPL-3.0-or-later; some files keep GPL-2.0-or-later or their upstream terms, as
-          listed in <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/NOTICE.md">NOTICE.md</a> and
-          <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/CREDITS.md">CREDITS.md</a>. Rights holders with
-          a concern can contact the maintainer privately through
-          <a href="https://github.com/Jstar269/nakagawa-recomp/security/advisories/new">GitHub private reporting</a>.</p>
+        <div class="split">
+          <div>
+            <p class="eyebrow">Questions</p>
+            <h2 id="questions-title">Good questions.</h2>
+            <p class="lede">Can’t find yours? Ask in
+              <a href="https://github.com/Jstar269/nakagawa-recomp/discussions">Discussions</a>.</p>
+          </div>
+        <div class="faq">
+          <details>
+            <summary>Is this an emulator?</summary>
+            <p>No. An emulator imitates PSP hardware while the game runs. Nakagawa rewrites the game as a Windows
+              program before you play, much like a PC port.</p>
+          </details>
+          <details>
+            <summary>When can I download it?</summary>
+            <p>Not yet, and there’s no date. The first release, v0.0.1, is being prepared, and you can follow it in
+              <a href="https://github.com/Jstar269/nakagawa-recomp/issues/278">issue #278</a>. If you’re comfortable
+              with developer tools, the <a href="https://github.com/Jstar269/nakagawa-recomp#build-it-yourself">README</a>
+              explains how to build it yourself.</p>
+          </details>
+          <details>
+            <summary>Will my favourite game work?</summary>
+            <p>Probably not yet. One game is far along, one plays a stage, and the rest haven’t been tried. When you add
+              a game, the player tells you what it still needs.</p>
+          </details>
+          <details>
+            <summary>Do you provide games, firmware or keys?</summary>
+            <p>No. Nothing here includes or downloads games, firmware, keys or system fonts. You play your own copy of
+              a game you own.</p>
+          </details>
+          <details>
+            <summary>Does it go online?</summary>
+            <p>Only if you say yes. The player works offline. The one exception today is an optional download of build
+              tools, which it asks about first. Nothing made from your game is uploaded or shared, and there’s no
+              tracking.</p>
+          </details>
+          <details>
+            <summary>Who makes Nakagawa?</summary>
+            <p>One maintainer, working with AI coding assistants. Every change is checked by people and by automatic
+              tests before it’s accepted, and changes made with AI help say so. The
+              <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/AI_USAGE.md">AI usage policy</a>
+              has the rules.</p>
+          </details>
+        </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="community" aria-labelledby="community-title">
+      <div class="wrap">
+        <div class="community">
+          <div>
+            <p class="eyebrow">Built in the open</p>
+            <h2 id="community-title">Help us get to match point.</h2>
+            <p>Ask a question, share an idea, report what you find, or help with code and docs. Every bit of useful
+              feedback moves Nakagawa forward.</p>
+          </div>
+          <ul>
+            <li><a href="https://github.com/Jstar269/nakagawa-recomp/discussions"><span><b>Discussions</b><small>Questions,
+              ideas and show-and-tell</small></span><span class="arrow" aria-hidden="true">&#8599;</span></a></li>
+            <li><a href="https://github.com/Jstar269/nakagawa-recomp/wiki"><span><b>Wiki</b><small>Friendly guides to
+              the project</small></span><span class="arrow" aria-hidden="true">&#8599;</span></a></li>
+            <li><a href="https://github.com/Jstar269/nakagawa-recomp/issues"><span><b>Issues</b><small>Report a problem
+              or follow the work</small></span><span class="arrow" aria-hidden="true">&#8599;</span></a></li>
+            <li><a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/CONTRIBUTING.md"><span><b>Contribute</b><small>How
+              to help with code, testing or docs</small></span><span class="arrow" aria-hidden="true">&#8599;</span></a></li>
+            <li><a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/README.md"><span><b>Documentation</b><small>Setup,
+              compatibility and how it all works</small></span><span class="arrow" aria-hidden="true">&#8599;</span></a></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="fineprint" aria-labelledby="legal-title">
+      <div class="wrap">
+        <h2 id="legal-title" class="sr-only">Legal</h2>
+        <div class="cols">
+          <div>
+            <h3>An independent fan project</h3>
+            <p>Nakagawa Recomp isn’t affiliated with or endorsed by Sony Interactive Entertainment, Clap Hanz or any
+              game publisher. PlayStation and PSP are trademarks of Sony Interactive Entertainment Inc. Game titles
+              belong to their owners and are named here only to say what Nakagawa works with.</p>
+          </div>
+          <div>
+            <h3>No game data included</h3>
+            <p>This site and the repository contain no game code, game assets, firmware, keys or system fonts, and
+              nothing here downloads them. Games belong to their publishers. To play one, you need your own copy.</p>
+          </div>
+          <div>
+            <h3>Licence and contact</h3>
+            <p>The code is GPL-3.0-or-later, with some files under their original terms (see
+              <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/NOTICE.md">NOTICE</a>). Rights holders can
+              reach the maintainer privately through
+              <a href="https://github.com/Jstar269/nakagawa-recomp/security/advisories/new">GitHub</a>.</p>
+          </div>
+        </div>
       </div>
     </section>
   </main>
 
   <footer class="site-footer">
-    <div class="wrap">
-      <p class="brand">
-        <picture>
-          <source srcset="images/brand/nakagawa-mark-dark.svg" media="(prefers-color-scheme: dark)">
-          <img src="images/brand/nakagawa-mark-light.svg" width="24" height="24" alt="">
-        </picture>
+    <div class="wrap foot">
+      <a class="brand" href="#top">
+        <img src="images/brand/nakagawa-mark-dark.svg" width="26" height="26" alt="">
         <span>Nakagawa Recomp</span>
-      </p>
+      </a>
       <ul>
-        <li><a href="https://github.com/Jstar269/nakagawa-recomp">Source on GitHub</a></li>
-        <li><a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/LICENSE">License</a></li>
+        <li><a href="https://github.com/Jstar269/nakagawa-recomp">Source</a></li>
+        <li><a href="https://github.com/Jstar269/nakagawa-recomp/discussions">Discussions</a></li>
+        <li><a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/LICENSE">Licence</a></li>
         <li><a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/SECURITY.md">Security</a></li>
         <li><a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a></li>
       </ul>
-      <p>Not affiliated with Sony Interactive Entertainment or any game publisher. No game data is included.</p>
+      <p>Part of the Nakagawa family, with <a href="https://github.com/Jstar269/hst-decomp">hst-decomp</a>. Not affiliated
+        with Sony Interactive Entertainment or any game publisher. No game data is included.</p>
     </div>
   </footer>
 </body>
