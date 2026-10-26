@@ -34,6 +34,15 @@ or labelled historical/capture-time. The evidence-tier view
 (`HOST_TESTED`, `HARDWARE_MEASURED`, and related tiers) remains available from
 `tools/hle_manifest.py --evidence-chain` as a separate evidence dimension.
 
+The public profile-zero guest may not import a dedicated `unreviewed` handler silently
+([#341](https://github.com/Jstar269/nakagawa-recomp/issues/341)). The hosted
+`profile_zero_fixture` job runs
+`python3 tools/hle_manifest.py --imports fixtures/profile_zero/prebuilt/profile_zero_guest.prx --check-profile-zero-imports`
+on the digest-checked guest. It fails when an imported NID routes to an `unreviewed`
+handler that `PROFILE_ZERO_UNREVIEWED_IMPORTS` in `tools/hle_registry_meta.py` does not
+list, and when an entry there is no longer imported or no longer `unreviewed`. That list
+names #341 on every entry and only shrinks: reviewing a handler retires its entries.
+
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
