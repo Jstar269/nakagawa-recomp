@@ -14980,7 +14980,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "38396ea87ac0646a32e05105c96f9f8ede3d17869458a19d35e97a11b3a41033"
+      "sha256": "db40017e1c82f068fa60163ffe343c1b3983bb5172c3227e3a56a0c74323d202"
     },
     {
       "path": "tools/test_ui_font_assets.py",
@@ -15353,7 +15353,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6173f4810816dcff10f916d8082f9a242e0c2626c97efe439badf1a59272672c"
+      "sha256": "9580332edb7442e8f3159770d94a7da30e26693ff8f4a98769038a254dee7eda"
     },
     {
       "path": "tools/validate_assets.py",
