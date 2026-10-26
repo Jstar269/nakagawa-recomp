@@ -101,6 +101,175 @@ bool nk_platform_path_missing(const char *path) {
     return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
 }
 
+#define TREE_PATH_CAP 32768u
+
+/* A tree walk keeps one path buffer: each level appends "\name", works on it
+ * and cuts it back, so a deep tree costs a find record per level, not a path. */
+typedef struct {
+    WCHAR *path;
+    size_t length;
+} TreePath;
+
+static bool tree_path_push(TreePath *tree, const WCHAR *name, size_t *saved) {
+    size_t name_length = wcslen(name);
+    if (tree->length + 1u + name_length >= TREE_PATH_CAP) return false;
+    *saved = tree->length;
+    tree->path[tree->length++] = L'\\';
+    memcpy(tree->path + tree->length, name, (name_length + 1u) * sizeof(WCHAR));
+    tree->length += name_length;
+    return true;
+}
+
+static void tree_path_pop(TreePath *tree, size_t saved) {
+    tree->length = saved;
+    tree->path[saved] = L'\0';
+}
+
+static bool tree_name_is_dot(const WCHAR *name) {
+    return wcscmp(name, L".") == 0 || wcscmp(name, L"..") == 0;
+}
+
+/* Lists the directory at tree->path; GetLastError() holds the failure. */
+static HANDLE tree_find_first(TreePath *tree, WIN32_FIND_DATAW *data) {
+    size_t saved;
+    if (!tree_path_push(tree, L"*", &saved)) {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return INVALID_HANDLE_VALUE;
+    }
+    HANDLE find = FindFirstFileW(tree->path, data);
+    DWORD error = GetLastError();
+    tree_path_pop(tree, saved);
+    SetLastError(error);
+    return find;
+}
+
+static bool tree_size_at(TreePath *tree, void *ctx) {
+    uint64_t *bytes = (uint64_t *)ctx;
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExW(tree->path, GetFileExInfoStandard, &info)) {
+        DWORD error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+    }
+    if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) return true;
+    if (!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        *bytes += ((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+        return true;
+    }
+    WIN32_FIND_DATAW data;
+    HANDLE find = tree_find_first(tree, &data);
+    if (find == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
+    bool ok = true;
+    do {
+        size_t saved;
+        if (tree_name_is_dot(data.cFileName)) continue;
+        if (!tree_path_push(tree, data.cFileName, &saved)) {
+            ok = false;
+            break;
+        }
+        ok = tree_size_at(tree, ctx);
+        tree_path_pop(tree, saved);
+    } while (ok && FindNextFileW(find, &data));
+    FindClose(find);
+    return ok;
+}
+
+static bool tree_remove_at(TreePath *tree, void *ctx) {
+    (void)ctx;
+    DWORD attributes = GetFileAttributesW(tree->path);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        DWORD error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+    }
+    if (attributes & FILE_ATTRIBUTE_READONLY) {
+        (void)SetFileAttributesW(tree->path, attributes & ~(DWORD)FILE_ATTRIBUTE_READONLY);
+    }
+    /* A junction or directory symlink goes as itself; its target stays. */
+    if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        return (attributes & FILE_ATTRIBUTE_DIRECTORY) ? RemoveDirectoryW(tree->path) != 0
+                                                       : DeleteFileW(tree->path) != 0;
+    }
+    if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) return DeleteFileW(tree->path) != 0;
+    WIN32_FIND_DATAW data;
+    HANDLE find = tree_find_first(tree, &data);
+    if (find != INVALID_HANDLE_VALUE) {
+        bool ok = true;
+        do {
+            size_t saved;
+            if (tree_name_is_dot(data.cFileName)) continue;
+            if (!tree_path_push(tree, data.cFileName, &saved)) {
+                ok = false;
+                break;
+            }
+            ok = tree_remove_at(tree, NULL);
+            tree_path_pop(tree, saved);
+        } while (ok && FindNextFileW(find, &data));
+        FindClose(find);
+        if (!ok) return false;
+    }
+    return RemoveDirectoryW(tree->path) != 0;
+}
+
+/* Runs fn on path, or with skip_child set on each top-level child but that one. */
+static bool tree_walk_top(const char *path, const char *skip_child,
+                          bool (*fn)(TreePath *, void *), void *ctx, bool *kept) {
+    if (kept) *kept = false;
+    if (!path || !*path) return false;
+    TreePath tree;
+    tree.path = (WCHAR *)malloc(TREE_PATH_CAP * sizeof(WCHAR));
+    if (!tree.path) return false;
+    bool ok = utf8_to_wide(path, tree.path, TREE_PATH_CAP);
+    if (ok) {
+        tree.length = wcslen(tree.path);
+        DWORD attributes = GetFileAttributesW(tree.path);
+        WCHAR wskip[1024];
+        if (!skip_child || attributes == INVALID_FILE_ATTRIBUTES ||
+            !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            ok = fn(&tree, ctx);
+        } else if (!utf8_to_wide(skip_child, wskip, sizeof(wskip) / sizeof(wskip[0]))) {
+            ok = false;
+        } else {
+            WIN32_FIND_DATAW data;
+            HANDLE find = tree_find_first(&tree, &data);
+            if (find == INVALID_HANDLE_VALUE) {
+                ok = GetLastError() == ERROR_FILE_NOT_FOUND;
+            } else {
+                do {
+                    size_t saved;
+                    if (tree_name_is_dot(data.cFileName)) continue;
+                    if (_wcsicmp(data.cFileName, wskip) == 0) {
+                        if (kept) *kept = true;
+                        continue;
+                    }
+                    if (!tree_path_push(&tree, data.cFileName, &saved)) {
+                        ok = false;
+                        break;
+                    }
+                    ok = fn(&tree, ctx);
+                    tree_path_pop(&tree, saved);
+                } while (ok && FindNextFileW(find, &data));
+                FindClose(find);
+            }
+        }
+    }
+    free(tree.path);
+    return ok;
+}
+
+bool nk_platform_tree_size(const char *path, const char *skip_child, uint64_t *out_bytes) {
+    if (!out_bytes) return false;
+    *out_bytes = 0;
+    return tree_walk_top(path, skip_child, tree_size_at, out_bytes, NULL);
+}
+
+bool nk_platform_remove_tree(const char *path, const char *skip_child) {
+    bool kept = false;
+    if (!tree_walk_top(path, skip_child, tree_remove_at, NULL, &kept)) return false;
+    if (!skip_child || kept) return true;
+    /* Nothing was kept: the emptied directory goes too. */
+    return tree_walk_top(path, NULL, tree_remove_at, NULL, NULL);
+}
+
 bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
     if (!dir || !*dir || !fn) return false;
     char pattern[32768];
@@ -675,8 +844,9 @@ bool nk_platform_spawn_process(
         return false;
     }
 
-    /* The player may minimize itself after the runtime reports its first GUI
-       window. Allow that user-launched child to claim the foreground then. */
+    /* Let this user-launched child claim the foreground when its window opens.
+       The grant needs the launcher to be the foreground process now, which it
+       is only while its own window keeps responding (#1298). */
     AllowSetForegroundWindow(pi.dwProcessId);
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
@@ -695,6 +865,33 @@ bool nk_platform_is_process_running(NkProcessHandle *process) {
     }
     process->is_active = false;
     return false;
+}
+
+typedef struct {
+    DWORD process_id;
+    HWND window;
+} NkProcessWindowSearch;
+
+static BOOL CALLBACK nk_find_process_window(HWND window, LPARAM data) {
+    NkProcessWindowSearch *search = (NkProcessWindowSearch *)data;
+    DWORD owner = 0;
+    GetWindowThreadProcessId(window, &owner);
+    if (owner != search->process_id || !IsWindowVisible(window) ||
+        GetWindow(window, GW_OWNER) != NULL) {
+        return TRUE;
+    }
+    search->window = window;
+    return FALSE;
+}
+
+bool nk_platform_bring_process_window_to_front(const NkProcessHandle *process) {
+    if (!process || !process->is_active || process->process_id <= 0) return false;
+    NkProcessWindowSearch search = {(DWORD)process->process_id, NULL};
+    EnumWindows(nk_find_process_window, (LPARAM)&search);
+    if (!search.window) return false;
+    if (GetForegroundWindow() == search.window) return true;
+    if (IsIconic(search.window)) ShowWindow(search.window, SW_RESTORE);
+    return SetForegroundWindow(search.window) != 0;
 }
 
 int nk_platform_wait_process(NkProcessHandle *process, int timeout_ms) {

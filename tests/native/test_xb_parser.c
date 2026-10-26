@@ -1475,6 +1475,36 @@ static void count_stage_progress(const char *current_path, int percent,
     ++*(size_t *)userdata;
 }
 
+typedef struct {
+    size_t calls;
+    size_t total_files;
+    size_t last_files_extracted;
+    bool saw_progress;
+    bool total_is_stable;
+    bool files_are_monotonic;
+    bool files_fit_total;
+} TitleStageProgressCapture;
+
+static void capture_title_stage_progress(const char *current_path, int percent,
+                                         size_t files_extracted,
+                                         size_t total_files, void *userdata) {
+    (void)current_path;
+    (void)percent;
+    TitleStageProgressCapture *capture = (TitleStageProgressCapture *)userdata;
+    assert(capture != NULL);
+    if (!capture->saw_progress) {
+        capture->saw_progress = true;
+        capture->total_files = total_files;
+    } else {
+        if (capture->total_files != total_files) capture->total_is_stable = false;
+        if (files_extracted < capture->last_files_extracted)
+            capture->files_are_monotonic = false;
+    }
+    if (files_extracted > total_files) capture->files_fit_total = false;
+    capture->last_files_extracted = files_extracted;
+    capture->calls++;
+}
+
 #if !defined(_WIN32) && !defined(_WIN64)
 /* fcntl record locks never conflict inside one process, so a second process
  * holds the title's lock for the busy case. */
@@ -1557,9 +1587,26 @@ static void test_title_staging_transaction(void) {
     char path[NATIVE_TEST_PATH_MAX];
 
     /* 1. First staging extracts, validates and promotes in one step. */
-    assert(run_title_stage(&request, NULL, &summary, &outcome, prepared_root,
+    TitleStageProgressCapture progress = { 0 };
+    progress.total_is_stable = true;
+    progress.files_are_monotonic = true;
+    progress.files_fit_total = true;
+    PlayerStageCallbacks progress_callbacks = {
+        NULL, capture_title_stage_progress, &progress
+    };
+    assert(run_title_stage(&request, &progress_callbacks, &summary, &outcome, prepared_root,
                            sizeof(prepared_root), message, sizeof(message)) == NK_OK);
     assert(outcome == PLAYER_STAGE_TITLE_STAGED);
+    bool lock_remains_after_success = nk_platform_file_exists(paths.lock_path);
+    if (!progress.total_is_stable)
+        fprintf(stderr, "[XB_TEST] staging progress total changed during one ISO copy\n");
+    if (lock_remains_after_success)
+        fprintf(stderr, "[XB_TEST] successful POSIX staging left its lock file behind\n");
+    assert(progress.calls > 0 && progress.saw_progress);
+    assert(progress.total_is_stable);
+    assert(progress.files_are_monotonic && progress.files_fit_total);
+    assert(progress.total_files == 2 && progress.last_files_extracted == 2);
+    assert(!lock_remains_after_success);
     assert(strcmp(prepared_root, paths.final_root) == 0);
     assert(summary.extracted_asset_count == 2 && summary.extracted_audio_count == 1);
     title_join(path, sizeof(path), paths.final_root, "EBOOT.BIN");
@@ -1693,9 +1740,7 @@ static void test_title_staging_transaction(void) {
     assert(strstr(message, "title manifest") != NULL);
     assert(strstr(message, "fresh copy") == NULL);
     assert(missing_progress_calls == 0);
-#if defined(_WIN32) || defined(_WIN64)
     assert(!nk_platform_file_exists(missing_paths.lock_path));
-#endif
     assert(!nk_platform_dir_exists(missing_paths.final_root));
     assert(!nk_platform_dir_exists(missing_paths.staging_root));
     assert(summary.extracted_asset_count == 0);
@@ -1724,6 +1769,7 @@ static void test_title_staging_transaction(void) {
     assert(strstr(message, "[STAGE_CANCELLED]") != NULL);
     assert(!nk_platform_dir_exists(cancelled_paths.final_root));
     assert(!nk_platform_dir_exists(cancelled_paths.staging_root));
+    assert(!nk_platform_file_exists(cancelled_paths.lock_path));
 
     /* 8. A disc ID that could name another directory is refused outright. */
     PlayerStageTitleRequest unsafe = request;
