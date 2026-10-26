@@ -115,12 +115,15 @@ typedef SDL_Surface *(SDLCALL *UiTtfRenderTextFn)(TTF_Font *font, const char *te
 
 #define UI_FONT_CACHE_ENTRIES 96
 #define UI_FONT_CACHE_TEXT 160
+#define UI_FONT_HASH_BUCKETS 128
 
 typedef struct {
     char text[UI_FONT_CACHE_TEXT];
     int size_bucket;    /* (int)(scale * 10): distinct raster per bucket */
     uint32_t color_key; /* packed RGBA */
     float density;      /* pixel-density multiplier the raster was made for */
+    uint32_t hash;
+    int next_hash;
     SDL_Texture *tex;
     int w;
     int h;
@@ -143,6 +146,7 @@ typedef struct {
     TTF_Font *font;
     int active_bucket;  /* size bucket the font object is currently set to */
     float density;
+    int hash_head[UI_FONT_HASH_BUCKETS];
     UiFontCacheEntry entries[UI_FONT_CACHE_ENTRIES];
     uint64_t tick;
 } UiFont;
@@ -292,6 +296,13 @@ static void ui_font_ensure(void) {
     if (g_font.attempted) return;
     g_font.attempted = true;
     g_font.active_bucket = -1;
+    for (int i = 0; i < UI_FONT_HASH_BUCKETS; i++) {
+        g_font.hash_head[i] = -1;
+    }
+    for (int i = 0; i < UI_FONT_CACHE_ENTRIES; i++) {
+        g_font.entries[i].next_hash = -1;
+        g_font.entries[i].hash = 0;
+    }
     /* The frame that first draws text has already set its density; keep it,
        or that frame (the only one a --screenshot keeps) is drawn at 1x. */
     if (!(g_font.density > 0.0f)) g_font.density = 1.0f;
@@ -733,6 +744,11 @@ void ui_font_shutdown(void) {
             g_font.entries[i].tex = NULL;
         }
         g_font.entries[i].text[0] = '\0';
+        g_font.entries[i].hash = 0;
+        g_font.entries[i].next_hash = -1;
+    }
+    for (int i = 0; i < UI_FONT_HASH_BUCKETS; i++) {
+        g_font.hash_head[i] = -1;
     }
     if (g_font.font && g_font.f_close) {
         g_font.f_close(g_font.font);
@@ -1107,27 +1123,70 @@ static size_t ui_font_fit_prefix(const char *str, float scale, float max_width) 
     return measured_len;
 }
 
+static uint32_t ui_font_hash_key(const char *str, int bucket, uint32_t color_key, float density) {
+    uint32_t hash = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)str; *p; p++) {
+        hash = (hash ^ *p) * 16777619u;
+    }
+    hash = (hash ^ (uint32_t)bucket) * 16777619u;
+    hash = (hash ^ color_key) * 16777619u;
+    uint32_t dbits;
+    memcpy(&dbits, &density, sizeof(dbits));
+    hash = (hash ^ dbits) * 16777619u;
+    return hash;
+}
+
 static UiFontCacheEntry *ui_font_cache_lookup(const char *str, int bucket, uint32_t color_key, float density) {
-    UiFontCacheEntry *free_slot = NULL;
-    UiFontCacheEntry *oldest = &g_font.entries[0];
-    for (int i = 0; i < UI_FONT_CACHE_ENTRIES; i++) {
-        UiFontCacheEntry *e = &g_font.entries[i];
-        if (!e->tex) {
-            if (!free_slot) free_slot = e;
-            continue;
-        }
-        if (e->size_bucket == bucket && e->color_key == color_key && e->density == density &&
+    uint32_t h = ui_font_hash_key(str, bucket, color_key, density);
+    int b = (int)(h & (UI_FONT_HASH_BUCKETS - 1));
+
+    for (int idx = g_font.hash_head[b]; idx != -1; idx = g_font.entries[idx].next_hash) {
+        UiFontCacheEntry *e = &g_font.entries[idx];
+        if (e->tex && e->hash == h && e->size_bucket == bucket &&
+            e->color_key == color_key && e->density == density &&
             strcmp(e->text, str) == 0) {
             e->last_used = ++g_font.tick;
             return e;
         }
-        if (e->last_used < oldest->last_used) oldest = e;
     }
-    UiFontCacheEntry *slot = free_slot ? free_slot : oldest;
+
+    UiFontCacheEntry *free_slot = NULL;
+    int free_idx = -1;
+    int oldest_idx = 0;
+    for (int i = 0; i < UI_FONT_CACHE_ENTRIES; i++) {
+        UiFontCacheEntry *e = &g_font.entries[i];
+        if (!e->tex) {
+            if (!free_slot) {
+                free_slot = e;
+                free_idx = i;
+            }
+            continue;
+        }
+        if (e->last_used < g_font.entries[oldest_idx].last_used) oldest_idx = i;
+    }
+
+    int slot_idx = free_slot ? free_idx : oldest_idx;
+    UiFontCacheEntry *slot = &g_font.entries[slot_idx];
+
+    int old_b = (int)(slot->hash & (UI_FONT_HASH_BUCKETS - 1));
+    int *prev = &g_font.hash_head[old_b];
+    while (*prev != -1) {
+        if (*prev == slot_idx) {
+            *prev = slot->next_hash;
+            break;
+        }
+        prev = &g_font.entries[*prev].next_hash;
+    }
+
     if (slot->tex) {
         SDL_DestroyTexture(slot->tex);
         slot->tex = NULL;
     }
+
+    slot->text[0] = '\0';
+    slot->hash = h;
+    slot->next_hash = g_font.hash_head[b];
+    g_font.hash_head[b] = slot_idx;
     return slot;
 }
 
@@ -1814,6 +1873,36 @@ float ui_test_build_bar_fraction(void) {
 
 bool ui_test_build_notice_drawn(void) {
     return s_ui_test_build_notice_drawn;
+}
+
+bool ui_test_benchmark_font_cache(void) {
+    uint64_t start_ns = SDL_GetTicksNS();
+    const int iterations = 1000000;
+    static const char *test_strings[] = {
+        "PLAY NOW", "SETTINGS", "BUILD PACKAGE", "EXPERIMENTAL",
+        "PSP GAME LIBRARY", "NAKAGAWA RECOMP", "KEYBOARD READY",
+        "GAMEPAD CONNECTED", "FULLSCREEN", "MASTER VOLUME"
+    };
+    const int num_strings = (int)(sizeof(test_strings) / sizeof(test_strings[0]));
+
+    for (int i = 0; i < num_strings; i++) {
+        UiFontCacheEntry *e = ui_font_cache_lookup(test_strings[i], i * 10, 0xFFFFFFFFu, 1.0f);
+        if (!e) return false;
+        e->tex = (SDL_Texture *)(uintptr_t)(i + 1);
+    }
+
+    for (int i = 0; i < iterations; i++) {
+        int idx = i % num_strings;
+        UiFontCacheEntry *e = ui_font_cache_lookup(test_strings[idx], idx * 10, 0xFFFFFFFFu, 1.0f);
+        if (!e || strcmp(e->text, test_strings[idx]) != 0) {
+            return false;
+        }
+    }
+    uint64_t elapsed_ns = SDL_GetTicksNS() - start_ns;
+    double ops_per_sec = ((double)iterations / ((double)elapsed_ns / 1e9));
+    printf("[PLAYER_UI_TEST] font_cache_benchmark iterations=%d elapsed_ms=%.2f Mops_sec=%.2f\n",
+           iterations, (double)elapsed_ns / 1e6, ops_per_sec / 1e6);
+    return true;
 }
 #endif
 

@@ -3707,7 +3707,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e51b6c90eb1860b90bbb27dfb79417a82491227fd9fd934182d1d0aab02aeaa8"
+      "sha256": "71d7cb2ef56cdf911ed23adf27aa93ceeedfc8a433c96c376fc4bc9bd75edab8"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -3719,7 +3719,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c3012bceace7184e466dc345fa9cc7ca8f70034ba5bdf90530d4718249949a57"
+      "sha256": "d35d4001eee64eaab949770b94c7e71db3cd174395f34c38d27eaabc64460445"
     },
     {
       "path": "src/ref/cpu.h",
