@@ -17168,6 +17168,113 @@ static void test_ge_guest_sentinel(void) {
            "resumed list rendered purple rectangle to completion");
 }
 
+/* #1374: a blocking sceGeListSync / sceGeDrawSync on a stalled list waits until a
+ * producer thread advances the stall address (or a sceGeBreak(1) reset removes the
+ * list); the producer first sleeps longer than any one scheduler yield, so a sync
+ * that reports completion before the list completes is caught. */
+enum {
+    GSW_MAIN_ENTRY = 0x08a60000u,
+    GSW_PRODUCER_ENTRY = 0x08a60040u,
+    GSW_NAME = 0x08a60080u,
+    GSW_LIST = 0x08a61000u,
+    GSW_PRODUCER_DELAY_US = 5000u,
+};
+static uint32_t s_gsw_qid;
+static int s_gsw_reset;              /* producer resets the queue instead of advancing it */
+static unsigned s_gsw_producer_done;  /* producer finished advancing or resetting */
+static uint32_t s_gsw_list_rc, s_gsw_list_poll, s_gsw_draw_rc, s_gsw_draw_poll, s_gsw_reset_rc;
+static unsigned s_gsw_list_done_at_return, s_gsw_draw_done_at_return, s_gsw_reset_done_at_return;
+void sr_hle_test_ge_lists_reset(void);
+
+static uint32_t gsw_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    CpuState c;
+    memset(&c, 0, sizeof c);
+    c.r[4] = a0; c.r[5] = a1; c.r[6] = a2; c.r[7] = a3;
+    return sr_syscall(&c, nid);
+}
+
+static void gsw_producer_fn(CpuState *cpu) {
+    (void)gsw_call(NID_SCE_KERNEL_DELAY_THREAD, GSW_PRODUCER_DELAY_US, 0u, 0u, 0u);
+    if (s_gsw_reset) {
+        (void)gsw_call(NID_SCE_GE_BREAK, 1u, 0u, 0u, 0u);
+    } else {
+        /* The guest writes the rest of the list, then moves the stall past it. */
+        MEM_W32(GSW_LIST, 0x0f000000u);       /* FINISH */
+        MEM_W32(GSW_LIST + 4u, 0x0c000000u);  /* END */
+        (void)gsw_call(NID_SCE_GE_LIST_UPDATE_STALL_ADDR, s_gsw_qid, GSW_LIST + 8u, 0u, 0u);
+    }
+    s_gsw_producer_done = 1u;
+    cpu->r[2] = 0u;
+}
+
+/* Enqueue an empty ring (stall == list) and start a producer that is less urgent
+ * than the caller, so it runs only once the caller blocks. */
+static void gsw_arm(int reset) {
+    MEM_W32(GSW_LIST, 0u);
+    MEM_W32(GSW_LIST + 4u, 0u);
+    s_gsw_reset = reset;
+    s_gsw_producer_done = 0u;
+    s_gsw_qid = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GSW_LIST, GSW_LIST, 0xffffffffu, 0u);
+    uint32_t thid = gsw_call(NID_SCE_KERNEL_CREATE_THREAD, GSW_NAME, GSW_PRODUCER_ENTRY, 48u, 0x1000u);
+    (void)gsw_call(NID_SCE_KERNEL_START_THREAD, thid, 0u, 0u, 0u);
+}
+
+static void gsw_main_fn(CpuState *cpu) {
+    gsw_arm(0);
+    s_gsw_list_rc = gsw_call(NID_SCE_GE_LIST_SYNC, s_gsw_qid, 0u, 0u, 0u);
+    s_gsw_list_done_at_return = s_gsw_producer_done;
+    s_gsw_list_poll = gsw_call(NID_SCE_GE_LIST_SYNC, s_gsw_qid, 1u, 0u, 0u);
+
+    gsw_arm(0);
+    s_gsw_draw_rc = gsw_call(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u);
+    s_gsw_draw_done_at_return = s_gsw_producer_done;
+    s_gsw_draw_poll = gsw_call(NID_SCE_GE_DRAW_SYNC, 1u, 0u, 0u, 0u);
+
+    gsw_arm(1);
+    s_gsw_reset_rc = gsw_call(NID_SCE_GE_LIST_SYNC, s_gsw_qid, 0u, 0u, 0u);
+    s_gsw_reset_done_at_return = s_gsw_producer_done;
+    cpu->r[2] = 0u;
+}
+
+static void test_ge_blocking_sync_waits_for_stalled_list(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_lists_reset();
+    sr_test_guest_fn_reset();
+    title_hle_write_cstr(GSW_NAME, "ge-producer");
+    sr_test_register_guest_fn(GSW_MAIN_ENTRY, gsw_main_fn);
+    sr_test_register_guest_fn(GSW_PRODUCER_ENTRY, gsw_producer_fn);
+    s_gsw_list_rc = s_gsw_list_poll = s_gsw_draw_rc = s_gsw_draw_poll = s_gsw_reset_rc = 0xdeadbeefu;
+    s_gsw_list_done_at_return = s_gsw_draw_done_at_return = s_gsw_reset_done_at_return = 0u;
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+
+    sched_run(GSW_MAIN_ENTRY, 0u, 0u);
+
+    expect(s_gsw_list_rc == 0u && s_gsw_list_done_at_return == 1u,
+           "blocking sceGeListSync returns 0 only after the producer thread advanced the stall");
+    expect(s_gsw_list_poll == 0u,
+           "sceGeListSync(syncType=1) after the blocking return reads the list completed");
+    expect(s_gsw_draw_rc == 0u && s_gsw_draw_done_at_return == 1u,
+           "blocking sceGeDrawSync returns 0 only after the producer thread advanced the stall");
+    expect(s_gsw_draw_poll == 0u,
+           "sceGeDrawSync(1) after the blocking return reads no list busy");
+    expect(s_gsw_reset_rc == 0x80000100u && s_gsw_reset_done_at_return == 1u,
+           "blocking sceGeListSync wakes on a sceGeBreak(1) reset with the removed-list code");
+
+    /* Outside a waitable guest thread nothing can advance the list: refused, not completed. */
+    MEM_W32(GSW_LIST, 0u);
+    uint32_t qid = gsw_call(NID_SCE_GE_LIST_ENQUEUE, GSW_LIST, GSW_LIST, 0xffffffffu, 0u);
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, qid, 0u, 0u, 0u) == 0x80020002u,
+           "blocking sceGeListSync with no guest thread to park is refused, not reported complete");
+    expect(gsw_call(NID_SCE_GE_DRAW_SYNC, 0u, 0u, 0u, 0u) == 0x80020002u,
+           "blocking sceGeDrawSync with no guest thread to park is refused, not reported complete");
+    expect(gsw_call(NID_SCE_GE_LIST_SYNC, qid, 1u, 0u, 0u) == 3u,
+           "the refused blocking sync leaves the list stalled");
+    sr_hle_test_ge_lists_reset();
+    sr_test_guest_fn_reset();
+}
+
 static void test_kernel_import_sweep_ge_head(void) {
     const uint32_t list = 0x08918000u;
     const uint32_t second_list = list + 0x100u;
@@ -31675,6 +31782,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_unregistered_batch_refusals();
     test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
+    test_ge_blocking_sync_waits_for_stalled_list();
     test_ge_break_continue();
     test_volatile_mem_output_preflight();
     test_osk_update_and_shutdown_init_states();

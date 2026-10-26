@@ -20830,6 +20830,37 @@ enum {
     GE_LIST_CANCELLED = 4,
 };
 
+/* Blocking sceGeListSync/sceGeDrawSync park the caller on this object and
+ * re-read the list table each time it is woken (#1374). Every transition that can
+ * end such a wait wakes it: a list reaching its END, a sceGeBreak(1) reset, and an
+ * enqueue that reuses a slot. */
+#define GE_SYNC_WAIT_OBJ 0x47455359u /* "GESY" */
+
+static void ge_sync_wake(void) { sched_wake(GE_SYNC_WAIT_OBJ); }
+
+/* Park the calling thread until the next GE list transition. Returns 1 to re-read the
+ * list table; 0 with *result set when the wait ended without one (a released or
+ * deleted wait) or cannot happen. A blocking sync that has no waitable guest thread,
+ * or runs with interrupts or dispatch disabled, can never be completed by a producer
+ * thread; the PSP result there is UNMEASURED, so it is refused visibly rather than
+ * reported as complete. */
+static int ge_sync_block(const char *api, uint32_t *result) {
+    if (!sched_guest_thread_running() || !sched_wait_permitted()) {
+        fprintf(stderr,
+                "UNSUPPORTED_IMPORT: %s blocking wait outside a waitable guest thread has no measured result; refused.\n",
+                api);
+        *result = HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        return 0;
+    }
+    sched_block_on(GE_SYNC_WAIT_OBJ);
+    uint32_t woken = 0;
+    if (sched_take_wake_result(&woken)) {
+        *result = woken;
+        return 0;
+    }
+    return 1;
+}
+
 typedef struct {
     uint32_t uid;
     uint32_t start_pc;
@@ -20874,6 +20905,8 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     }
     if (slot == -1) {
         slot = 0;
+        /* The reused slot drops a list a blocking sync may be waiting on. */
+        ge_sync_wake();
     }
 
     s_ge_lists[slot].uid = list_id;
@@ -21020,6 +21053,7 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
                                s_ge_lists[slot].stall_addr, next_pc);
         if (ge_log_on())
             fprintf(stderr, "GE_UPDATE_STALL: list DONE, firing finish callback cbid=%u\n", s_ge_lists[slot].cbid);
+        ge_sync_wake();
         ge_finish_callback(s, s_ge_lists[slot].cbid, list_id, s_ge_lists[slot].cbarg);
     } else {
         s_ge_lists[slot].current_pc = next_pc;
@@ -21035,11 +21069,16 @@ unsigned sr_hle_test_ge_late_stall_ignored(void) { return s_ge_late_stall_ignore
 static uint32_t h_GeListSync(CpuState *s) {
     uint32_t qid = A0;
     uint32_t syncType = A1;
+    int recorded = 0;
+rescan:
     for (int i = 0; i < GE_LIST_MAX; i++) {
         if (s_ge_lists[i].uid == qid) {
-            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
-                                   qid, s_ge_lists[i].start_pc,
-                                   s_ge_lists[i].stall_addr, syncType);
+            if (!recorded) {
+                SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
+                                       qid, s_ge_lists[i].start_pc,
+                                       s_ge_lists[i].stall_addr, syncType);
+                recorded = 1;
+            }
             if (ge_log_on())
                 fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
                         qid, syncType, s_ge_lists[i].status, s_ge_lists[i].current_pc);
@@ -21047,18 +21086,17 @@ static uint32_t h_GeListSync(CpuState *s) {
                 ge_transition_trace_check("listsync", s_vcount);
                 return 0;
             }
-            if (s_ge_lists[i].status == GE_LIST_STALLED) {
-                if (syncType == 1) return GE_LIST_SYNC_STALLED;
-                sched_delay_current(1000);
-                return 0;
-            }
-            if (s_ge_lists[i].status == GE_LIST_PAUSED) {
-                /* The blocking form (syncType 0) has no measured return value: probe.c
-                 * records that a blocking sync on a paused list did not return on
-                 * PSP-3000, so its value is left as it was. */
-                if (syncType == 1) return GE_LIST_SYNC_PAUSED;
-                sched_delay_current(1000);
-                return 2;
+            if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
+                if (syncType == 1)
+                    return s_ge_lists[i].status == GE_LIST_STALLED ? GE_LIST_SYNC_STALLED
+                                                                   : GE_LIST_SYNC_PAUSED;
+                /* The blocking form (PSPSDK pspge.h) returns once the list completes, so
+                 * the caller waits until a producer thread advances the stall address or
+                 * resumes the pause, or a reset removes the list. probe.c records that a
+                 * blocking sync on a paused list did not return on PSP-3000. */
+                uint32_t result = 0;
+                if (!ge_sync_block("sceGeListSync", &result)) return result;
+                goto rescan;
             }
             if (s_ge_lists[i].status == GE_LIST_CANCELLED) {
                 /* A sceGeBreak(1) reset removes the list, so its id is no longer valid:
@@ -21116,6 +21154,9 @@ static uint32_t h_GeEdramSetAddrTranslation(CpuState *s) {
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test-build-only reset to the measured boot width. */
 void sr_hle_test_ge_edram_reset(void) { s_ge_edram_width = GE_EDRAM_WIDTH_BOOT; }
+/* Test-build-only: empty the GE list table, so a blocking-sync test does not wait
+ * on a list an earlier test left stalled. */
+void sr_hle_test_ge_lists_reset(void) { memset(s_ge_lists, 0, sizeof(s_ge_lists)); }
 #endif
 static uint32_t h_GeDrawSync(CpuState *s) {
     /* sceGeDrawSync(mode): wait for (mode 0) or peek at (mode 1) the
@@ -21126,26 +21167,34 @@ static uint32_t h_GeDrawSync(CpuState *s) {
      * completed, status 3 is paused. Peek reports the measured sync status
      * (2 while any list is paused, 3 while any list is stalled, else 0;
      * PSP-GE-CONTROL-001, measured in the eligible 2026-10-15 re-run);
-     * wait yields once through the scheduler -- the same pacing h_GeListSync's
-     * mode-0 path uses -- and reports completion, because a stalled list advances
-     * only on the game's UpdateStallAddr, never on time, so blocking here could
-     * never complete it. Which non-{0,1} modes firmware accepts is UNMEASURED:
-     * anything but the documented peek takes the wait path. */
+     * wait parks the caller until no list is stalled or paused (#1374): a stalled
+     * list advances only when a guest thread calls sceGeListUpdateStallAddr, so the
+     * waiter blocks through the scheduler and lets that producer run. Which
+     * non-{0,1} modes firmware accepts is UNMEASURED: anything but the documented
+     * peek takes the wait path. */
     uint32_t mode = A0;
-    int busy = 0;
-    int paused = 0;
-    for (int i = 0; i < GE_LIST_MAX; i++) {
-        if (s_ge_lists[i].status == GE_LIST_STALLED) busy = 1;
-        if (s_ge_lists[i].status == GE_LIST_PAUSED) paused = 1;
-    }
-    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW_SYNC,
-                           mode, (uint32_t)(busy || paused), 0u, 0u);
-    if (mode == 1u) {
-        if (paused) return GE_DRAW_SYNC_PAUSED;
-        return busy ? GE_DRAW_SYNC_STALLED : 0u;
+    int recorded = 0;
+    for (;;) {
+        int busy = 0;
+        int paused = 0;
+        for (int i = 0; i < GE_LIST_MAX; i++) {
+            if (s_ge_lists[i].status == GE_LIST_STALLED) busy = 1;
+            if (s_ge_lists[i].status == GE_LIST_PAUSED) paused = 1;
+        }
+        if (!recorded) {
+            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW_SYNC,
+                                   mode, (uint32_t)(busy || paused), 0u, 0u);
+            recorded = 1;
+        }
+        if (mode == 1u) {
+            if (paused) return GE_DRAW_SYNC_PAUSED;
+            return busy ? GE_DRAW_SYNC_STALLED : 0u;
+        }
+        if (!busy && !paused) break;
+        uint32_t result = 0;
+        if (!ge_sync_block("sceGeDrawSync", &result)) return result;
     }
     ge_transition_trace_check("drawsync", s_vcount);
-    if (busy || paused) sched_delay_current(1000);
     return 0;
 }
 
@@ -21202,6 +21251,7 @@ static uint32_t h_GeBreak(CpuState *s) {
                     fprintf(stderr, "GE_BREAK: cancelled queue list_id=0x%08x\n", s_ge_lists[i].uid);
             }
         }
+        ge_sync_wake();
         return 0u;
     }
 }
@@ -21237,6 +21287,7 @@ static uint32_t h_GeContinue(CpuState *s) {
             SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
                                    s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].start_pc,
                                    s_ge_lists[paused_slot].stall_addr, next_pc);
+            ge_sync_wake();
             ge_finish_callback(s, s_ge_lists[paused_slot].cbid,
                                s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].cbarg);
         } else {
