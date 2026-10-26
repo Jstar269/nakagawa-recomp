@@ -12649,7 +12649,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57a880cbff9a1c1e5bb415b453e650599d1d34556e0635e1e14e0f205ded34db"
+      "sha256": "9b71be2b5705877742f7a5205f333a8f64c1d5e156430539f217e52cff1dcea4"
     },
     {
       "path": "tools/test_analyze_import_stub_entries.py",
