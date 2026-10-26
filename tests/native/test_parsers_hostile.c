@@ -2119,12 +2119,13 @@ static void test_nk_json_utf8_encode(void) {
     char out[4];
     size_t len;
 
-    /* 1. 1-byte ASCII range (0x00 .. 0x7F) */
+    /* 1. 1-byte ASCII range (0x00 .. 0x7F) with buffer sentinel verification */
     /* U+0000 NUL */
     memset(out, 0xCC, sizeof(out));
     len = nk_json_utf8_encode(0x00, out);
     assert(len == 1);
     assert(out[0] == 0x00);
+    assert((uint8_t)out[1] == 0xCC && (uint8_t)out[2] == 0xCC && (uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
     /* U+0041 'A' */
@@ -2132,6 +2133,7 @@ static void test_nk_json_utf8_encode(void) {
     len = nk_json_utf8_encode(0x41, out);
     assert(len == 1);
     assert(out[0] == 'A');
+    assert((uint8_t)out[1] == 0xCC && (uint8_t)out[2] == 0xCC && (uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
     /* U+007F DEL (max 1-byte) */
@@ -2139,14 +2141,16 @@ static void test_nk_json_utf8_encode(void) {
     len = nk_json_utf8_encode(0x7F, out);
     assert(len == 1);
     assert(out[0] == 0x7F);
+    assert((uint8_t)out[1] == 0xCC && (uint8_t)out[2] == 0xCC && (uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
-    /* 2. 2-byte range (0x80 .. 0x7FF) */
+    /* 2. 2-byte range (0x80 .. 0x7FF) with buffer sentinel verification */
     /* U+0080 (min 2-byte) */
     memset(out, 0xCC, sizeof(out));
     len = nk_json_utf8_encode(0x80, out);
     assert(len == 2);
     assert((uint8_t)out[0] == 0xC2 && (uint8_t)out[1] == 0x80);
+    assert((uint8_t)out[2] == 0xCC && (uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
     /* U+00A9 '©' */
@@ -2154,6 +2158,7 @@ static void test_nk_json_utf8_encode(void) {
     len = nk_json_utf8_encode(0x00A9, out);
     assert(len == 2);
     assert((uint8_t)out[0] == 0xC2 && (uint8_t)out[1] == 0xA9);
+    assert((uint8_t)out[2] == 0xCC && (uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
     /* U+03B1 'α' */
@@ -2161,6 +2166,7 @@ static void test_nk_json_utf8_encode(void) {
     len = nk_json_utf8_encode(0x03B1, out);
     assert(len == 2);
     assert((uint8_t)out[0] == 0xCE && (uint8_t)out[1] == 0xB1);
+    assert((uint8_t)out[2] == 0xCC && (uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
     /* U+07FF (max 2-byte) */
@@ -2168,14 +2174,16 @@ static void test_nk_json_utf8_encode(void) {
     len = nk_json_utf8_encode(0x07FF, out);
     assert(len == 2);
     assert((uint8_t)out[0] == 0xDF && (uint8_t)out[1] == 0xBF);
+    assert((uint8_t)out[2] == 0xCC && (uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
-    /* 3. 3-byte range (0x800 .. 0xFFFF) */
+    /* 3. 3-byte range (0x800 .. 0xFFFF) with buffer sentinel verification */
     /* U+0800 (min 3-byte) */
     memset(out, 0xCC, sizeof(out));
     len = nk_json_utf8_encode(0x0800, out);
     assert(len == 3);
     assert((uint8_t)out[0] == 0xE0 && (uint8_t)out[1] == 0xA0 && (uint8_t)out[2] == 0x80);
+    assert((uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
     /* U+20AC '€' */
@@ -2183,6 +2191,7 @@ static void test_nk_json_utf8_encode(void) {
     len = nk_json_utf8_encode(0x20AC, out);
     assert(len == 3);
     assert((uint8_t)out[0] == 0xE2 && (uint8_t)out[1] == 0x82 && (uint8_t)out[2] == 0xAC);
+    assert((uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
     /* U+65E5 '日' */
@@ -2190,6 +2199,7 @@ static void test_nk_json_utf8_encode(void) {
     len = nk_json_utf8_encode(0x65E5, out);
     assert(len == 3);
     assert((uint8_t)out[0] == 0xE6 && (uint8_t)out[1] == 0x97 && (uint8_t)out[2] == 0xA5);
+    assert((uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
     /* U+D7FF (last scalar before surrogate area) */
@@ -2197,13 +2207,52 @@ static void test_nk_json_utf8_encode(void) {
     len = nk_json_utf8_encode(0xD7FF, out);
     assert(len == 3);
     assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0x9F && (uint8_t)out[2] == 0xBF);
+    assert((uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
-    /* U+FFFF (max 3-byte) */
+    /* Surrogate code points: U+D800, U+DBFF, U+DC00, U+DFFF (3-byte encoding) */
+    /* U+D800 (min high surrogate) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xD800, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xA0 && (uint8_t)out[2] == 0x80);
+    assert((uint8_t)out[3] == 0xCC);
+
+    /* U+DBFF (max high surrogate) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xDBFF, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xAF && (uint8_t)out[2] == 0xBF);
+    assert((uint8_t)out[3] == 0xCC);
+
+    /* U+DC00 (min low surrogate) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xDC00, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xB0 && (uint8_t)out[2] == 0x80);
+    assert((uint8_t)out[3] == 0xCC);
+
+    /* U+DFFF (max low surrogate) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xDFFF, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xBF && (uint8_t)out[2] == 0xBF);
+    assert((uint8_t)out[3] == 0xCC);
+
+    /* U+E000 (min scalar after surrogate gap) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xE000, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xEE && (uint8_t)out[1] == 0x80 && (uint8_t)out[2] == 0x80);
+    assert((uint8_t)out[3] == 0xCC);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+FFFF (max 3-byte / BMP) */
     memset(out, 0xCC, sizeof(out));
     len = nk_json_utf8_encode(0xFFFF, out);
     assert(len == 3);
     assert((uint8_t)out[0] == 0xEF && (uint8_t)out[1] == 0xBF && (uint8_t)out[2] == 0xBF);
+    assert((uint8_t)out[3] == 0xCC);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
     /* 4. 4-byte range (0x10000 .. 0x10FFFF) */
@@ -2230,6 +2279,13 @@ static void test_nk_json_utf8_encode(void) {
     assert((uint8_t)out[0] == 0xF4 && (uint8_t)out[1] == 0x8F &&
            (uint8_t)out[2] == 0xBF && (uint8_t)out[3] == 0xBF);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* 5. Out-of-range codepoint above U+10FFFF (0x110000) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x110000, out);
+    assert(len == 4);
+    assert((uint8_t)out[0] == 0xF4 && (uint8_t)out[1] == 0x90 &&
+           (uint8_t)out[2] == 0x80 && (uint8_t)out[3] == 0x80);
 
     printf("[HOSTILE_TEST] nk_json_utf8_encode tests PASSED!\n");
     fflush(stdout);
