@@ -12,6 +12,7 @@
  *   - sr_guest_span_prefix (bounded partial-tail arithmetic)
  *   - sr_size_add_ok / sr_size_mul_ok (overflow-safe size arithmetic)
  *   - sr_guest_rect_readable/writable (pitched whole-rectangle validation)
+ *   - sr_native_memmove/memset through the swizzled VRAM mirrors (#1049)
  *
  * The core guarantee is overflow safety: a (base, size) pair whose naive sum wraps
  * uint32_t must be REJECTED, never accepted. A deterministic differential fuzz
@@ -20,6 +21,8 @@
  */
 
 #include "recomp.h"
+
+#include <stdlib.h>
 
 /* Must match SR_PHYS()/the arena end in recomp.h. tools/test_guestmem_c.py asserts
  * these constants still match the header so the reference cannot silently drift. */
@@ -182,6 +185,159 @@ static void test_rect_bounds(void) {
           "one byte past the arena must be rejected for writes as well as reads");
 }
 
+/* ---- Bulk CPU copies through the swizzled VRAM mirrors (#1049) ----------------
+ * The generated stubs that replace a title's own memmove/memset call
+ * sr_native_memmove/sr_native_memset (#1170); sceKernelMemcpy/Memset share the
+ * same helpers. A CPU copy through a mirror must land where the same scalar
+ * stores would. The expected physical offsets below come from the PSP-3000
+ * measurement (docs/HARDWARE_ORACLE.md, PSP-VRAM-MIRROR-001), written out here
+ * independently of sr_vram_cpu_address(). */
+
+uint8_t *g_mem;
+int g_sr_heap_watch;
+volatile int g_sr_vram_read_pending;
+static int g_oor_calls;
+static uint8_t *g_committed;   /* one flag per physical VRAM byte */
+
+void sr_oor(uint32_t a, uint32_t v, int store) {
+    (void)a; (void)v; (void)store;
+    g_oor_calls++;
+}
+void sr_heap_note_bulk_write(uint32_t addr, uint32_t width, uint32_t pc) {
+    (void)addr; (void)width; (void)pc;
+}
+void sr_ge_vram_read_prepare(uint32_t physical_addr, uint32_t width) {
+    (void)physical_addr; (void)width;
+}
+void sr_ge_vram_write_prepare(uint32_t physical_addr, uint32_t width) {
+    (void)physical_addr; (void)width;
+}
+
+#define VRAM_BYTES 0x00200000u
+
+/* Physical VRAM offset reached through view `view` (0..3) at offset `o`. */
+static uint32_t measured_vram_offset(uint32_t view, uint32_t o) {
+    if (view == 1u) return o ^ 0x2040u;
+    if (view == 3u) {
+        uint32_t bits = (o >> 5) & 0x1Fu;          /* bits 5..9 */
+        bits = ((bits << 1) | (bits >> 4)) & 0x1Fu; /* rotate left one: bit 9 -> bit 5 */
+        return ((o & ~0x3E0u) | (bits << 5)) ^ 0x2040u;
+    }
+    return o;
+}
+
+/* Commit reports carry the CPU address of a piece that one host pointer covers;
+ * record the physical bytes it names so the test can require a commit for
+ * every byte the copy stored. */
+void sr_ge_vram_write_commit(uint32_t physical_addr, uint32_t width) {
+    uint32_t phys = physical_addr & PHYS_MASK;
+    if (!g_committed || phys < 0x04000000u || phys >= 0x04800000u) return;
+    uint32_t view = (phys >> 21) & 3u;
+    uint32_t first = measured_vram_offset(view, phys & 0x001FFFFFu);
+    for (uint32_t i = 0; i < width && first + i < VRAM_BYTES; i++)
+        g_committed[first + i] = 1u;
+}
+
+static uint8_t *vram_phys(void) {
+    return g_mem - 0x08000000u + 0x04000000u;
+}
+
+static void test_vram_mirror_bulk_copy(void) {
+    static const uint32_t views[] = {
+        0x04200000u, 0x04600000u, 0x44200000u, 0x44600000u,
+    };
+    /* 4 KiB starting mid-block: a partial first piece, then whole 32/64-byte
+     * pieces, crossing the 8 KiB boundary at offset 0x12000 (bit 13). */
+    const uint32_t offset = 0x00011F90u;
+    const uint32_t size = 0x1000u;
+    const uint32_t ram_src = 0x08100000u, ram_dst = 0x08200000u;
+    uint8_t *vram = vram_phys();
+    uint8_t *ram = g_mem;
+    static uint8_t pattern[0x1000u];
+    for (uint32_t i = 0; i < size; i++) pattern[i] = (uint8_t)(1u + (i * 7u + (i >> 8)) % 251u);
+
+    for (size_t v = 0; v < sizeof views / sizeof views[0]; v++) {
+        const uint32_t base = views[v];
+        const uint32_t view = ((base & PHYS_MASK) >> 21) & 3u;
+        const uint32_t guest = base + offset;
+
+        memset(vram, 0, VRAM_BYTES);
+        memset(g_committed, 0, VRAM_BYTES);
+        memcpy(ram + (ram_src - 0x08000000u), pattern, size);
+        memset(ram + (ram_dst - 0x08000000u), 0, size);
+        g_oor_calls = 0;
+
+        /* RAM -> mirror: each byte at its measured physical offset. */
+        sr_native_memmove(guest, ram_src, size, 0u);
+        CHECK(g_oor_calls == 0, "view %08x: memmove into the mirror was refused", (unsigned)base);
+        uint32_t misplaced = 0, uncommitted = 0, stray = 0;
+        for (uint32_t i = 0; i < size; i++) {
+            uint32_t phys = measured_vram_offset(view, offset + i);
+            if (vram[phys] != pattern[i]) misplaced++;
+            if (!g_committed[phys]) uncommitted++;
+        }
+        for (uint32_t p = 0; p < VRAM_BYTES; p++)
+            if (vram[p] != 0u) stray++;
+        CHECK(misplaced == 0, "view %08x: %u of 4096 bytes not at the measured offset",
+              (unsigned)base, (unsigned)misplaced);
+        CHECK(uncommitted == 0, "view %08x: %u stored bytes were never committed",
+              (unsigned)base, (unsigned)uncommitted);
+        CHECK(stray == size, "view %08x: %u nonzero VRAM bytes, expected exactly 4096",
+              (unsigned)base, (unsigned)stray);
+
+        /* Mirror -> RAM: reading back through the same view returns the pattern. */
+        sr_native_memmove(ram_dst, guest, size, 0u);
+        CHECK(g_oor_calls == 0, "view %08x: memmove out of the mirror was refused", (unsigned)base);
+        CHECK(memcmp(ram + (ram_dst - 0x08000000u), pattern, size) == 0,
+              "view %08x: read back through the mirror differs", (unsigned)base);
+
+        /* Fill through the mirror touches exactly the measured bytes. */
+        memset(vram, 0, VRAM_BYTES);
+        sr_native_memset(guest, 0xA5u, size, 0u);
+        CHECK(g_oor_calls == 0, "view %08x: memset into the mirror was refused", (unsigned)base);
+        misplaced = 0;
+        stray = 0;
+        for (uint32_t i = 0; i < size; i++)
+            if (vram[measured_vram_offset(view, offset + i)] != 0xA5u) misplaced++;
+        for (uint32_t p = 0; p < VRAM_BYTES; p++)
+            if (vram[p] != 0u) stray++;
+        CHECK(misplaced == 0 && stray == size,
+              "view %08x: memset placed %u bytes wrongly, %u nonzero bytes",
+              (unsigned)base, (unsigned)misplaced, (unsigned)stray);
+    }
+
+    /* The measured example: a store to 0x04200100 lands at physical 0x002140. */
+    memset(vram, 0, VRAM_BYTES);
+    sr_native_memset(0x04200100u, 0x5Au, 1u, 0u);
+    CHECK(vram[0x2140u] == 0x5Au, "a store to 0x04200100 must land at physical 0x002140");
+
+    /* Overlapping physical bytes: the base view copied onto the 0x042 view of
+     * the same VRAM keeps memmove semantics (every source byte read first). */
+    static uint8_t before[0x4000u], expect_vram[0x4000u], staged[0x1000u];
+    const uint32_t window = 0x00010000u;
+    for (uint32_t p = 0; p < sizeof before; p++) before[p] = (uint8_t)(p * 13u + 5u);
+    memcpy(vram + window, before, sizeof before);
+    memcpy(expect_vram, before, sizeof before);
+    /* dst offsets 0x12120.. have bit 13 set, so the 0x042 view maps them back
+     * onto physical 0x10160.., inside the source bytes still to be read. */
+    const uint32_t src_off = window + 0x100u, dst_off = window + 0x2120u;
+    for (uint32_t i = 0; i < size; i++) staged[i] = before[src_off + i - window];
+    for (uint32_t i = 0; i < size; i++)
+        expect_vram[measured_vram_offset(1u, dst_off + i) - window] = staged[i];
+    g_oor_calls = 0;
+    sr_native_memmove(0x04200000u + dst_off, 0x04000000u + src_off, size, 0u);
+    CHECK(g_oor_calls == 0, "overlapping base-to-mirror memmove was refused");
+    CHECK(memcmp(vram + window, expect_vram, sizeof expect_vram) == 0,
+          "overlapping base-to-mirror memmove must read every source byte first");
+
+    /* Arena bounds still fail closed without touching memory. */
+    memset(vram, 0, VRAM_BYTES);
+    g_oor_calls = 0;
+    sr_native_memmove(0x0bfff800u, 0x04200000u, size, 0u);
+    CHECK(g_oor_calls == 2, "a destination past the arena end must be refused");
+    CHECK(ram[0x03fff800u] == 0u, "a refused copy must not store its first byte");
+}
+
 static void fuzz_differential(void) {
     /* Deterministic LCG; no host RNG, so the run is reproducible. Covers the full
      * 32-bit range for both base and size, hitting near-boundary and huge values. */
@@ -229,6 +385,16 @@ int main(void) {
     test_checked_arith();
     test_rect_bounds();
     fuzz_differential();
+    uint8_t *arena = (uint8_t *)calloc((size_t)ARENA_END, 1);
+    g_committed = (uint8_t *)calloc(VRAM_BYTES, 1);
+    if (!arena || !g_committed) {
+        printf("guestmem selftest: no guest arena\n");
+        return 2;
+    }
+    g_mem = arena + 0x08000000u;
+    test_vram_mirror_bulk_copy();
+    free(g_committed);
+    free(arena);
     if (g_fail == 0) {
         printf("guestmem selftest: OK\n");
         return 0;
