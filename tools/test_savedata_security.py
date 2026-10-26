@@ -26,6 +26,21 @@ SEAM_H = ROOT / "src" / "rt" / "vfs_contained.h"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 POSIX_PROFILE = [] if os.name == "nt" else ["-D_POSIX_C_SOURCE=200809L"]
 
+# The production write opens a sibling temporary through the contained seam and
+# renames it over the member afterwards (issue #1387).  The by-name mutant swaps
+# only that open for an fopen of the published member, so the rest of the
+# function still compiles and the mutant fails for its semantic reason.
+WRITE_OPEN_BLOCK = (
+    "    FILE *f = NULL;\n"
+    "    sr_cd_status st = sr_cd_open_file(&root, rel, tmp, SR_CD_FILE_WRITE_TRUNCATE, &f);\n"
+)
+UNSAFE_WRITE_OPEN = (
+    "    char path[PATH_MAX];\n"
+    "    if (!path_join(path, sizeof(path), dir, name)) return 0;\n"
+    "    FILE *f = fopen(path, \"wb\");\n"
+    "    sr_cd_status st = f ? SR_CD_OK : SR_CD_IO_ERROR;\n"
+)
+
 
 SECURITY_HARNESS = r"""
 #include <errno.h>
@@ -509,18 +524,89 @@ static void check_write_order_cases(const char *base) {
 
     /* fdopen failure occurs after the descriptor has been validated and
      * truncated; the untransferred descriptor still must be closed and the
-     * production SAVE must report failure without writing payload bytes. */
+     * production SAVE must report failure.  Issue #1387: the truncated object
+     * is the temporary file, never the published save, so the previous save
+     * survives whole and no temporary is left behind. */
     order_reset();
     g_fail_fdopen = 1;
     CHECK(run_save(root, "DATA.BIN", "ATTACK") != 0,
           "fdopen failure must fail the SAVE");
     CHECK(g_write_fd_close_count == 1,
           "fdopen failure must close the untransferred descriptor");
-    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, ""),
-          "fdopen failure must not write payload bytes");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "KEEP"),
+          "a failed SAVE must keep the previous save intact");
+    char partial[600];
+    snprintf(partial, sizeof(partial), "%s.nakagawa-partial", path);
+    CHECK(!exists_no_follow(partial),
+          "a failed SAVE must not leave its temporary file behind");
 #else
     (void)base;
     printf("SKIP: write-order instrumentation requires the POSIX descriptor backend\n");
+#endif
+}
+
+/* Issue #1387: first save, overwrite, and oversized load over the production
+ * entry point.  Each save member is published by renaming a fully written
+ * temporary over it, and a load whose data does not fit the guest buffer is
+ * refused instead of being cut short. */
+static uint32_t run_oversized_load(const char *root, uint32_t mode, uint32_t cap) {
+    set_save_request(root, mode, "DATA.BIN");
+    for (uint32_t i = 0; i < 16u; i++) sr_w8(DATA + i, 0xEE);
+    sr_w32(PARAM + SDP_dataBufSize, cap);
+    sr_w32(PARAM + SDP_dataSize, 0x1234u);
+    return sr_savedata_execute(PARAM);
+}
+
+static int guest_data_untouched(void) {
+    for (uint32_t i = 0; i < 16u; i++)
+        if (MEM_R8(DATA + i) != 0xEE) return 0;
+    return 1;
+}
+
+static void check_atomic_cases(const char *base) {
+#if defined(SR_CD_BACKEND_POSIX_AT)
+    char root[512], path[512], partial[600], content[64];
+    snprintf(root, sizeof(root), "%s/atomic", base);
+    snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/ULUS99999SLOT00/DATA.BIN", root);
+    snprintf(partial, sizeof(partial), "%s.nakagawa-partial", path);
+
+    /* First save and overwrite publish whole files and leave no temporary. */
+    CHECK(run_save(root, "DATA.BIN", "FIRST-SAVE-LONG") == 0, "first SAVE must succeed");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "FIRST-SAVE-LONG"),
+          "first SAVE must publish its bytes");
+    CHECK(run_save(root, "DATA.BIN", "SECOND") == 0, "overwrite SAVE must succeed");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "SECOND"),
+          "overwrite SAVE must replace the whole file");
+    CHECK(!exists_no_follow(partial), "a completed SAVE must not leave a temporary file");
+
+    /* A stale temporary from an interrupted run is replaced, not appended to. */
+    CHECK(write_file(partial, "STALE-TEMPORARY-CONTENT"), "stale temporary setup");
+    CHECK(run_save(root, "DATA.BIN", "THIRD") == 0, "SAVE over a stale temporary must succeed");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "THIRD"),
+          "SAVE over a stale temporary must publish exactly its own bytes");
+    CHECK(!exists_no_follow(partial), "the stale temporary must be consumed");
+
+    /* A buffer that fits exactly still loads. */
+    memset(content, 0, sizeof(content));
+    CHECK(run_load(root, "DATA.BIN", content, 6) == 0 && MEM_R32(PARAM + SDP_dataSize) == 5u,
+          "a LOAD whose buffer holds the whole file must succeed");
+
+    /* Oversized data: LOAD and READDATA report the bad-parameter error of their
+     * family, write no guest data bytes and report no data size. */
+    uint32_t result = run_oversized_load(root, SD_LOAD, 4u);
+    CHECK(result == 0x80110308u, "oversized LOAD must report 0x80110308, got 0x%08x",
+          (unsigned)result);
+    CHECK(guest_data_untouched(), "oversized LOAD must not write a truncated prefix");
+    CHECK(MEM_R32(PARAM + SDP_dataSize) == 0u, "oversized LOAD must report no data size");
+    result = run_oversized_load(root, SD_READDATA, 4u);
+    CHECK(result == 0x80110328u, "oversized READDATA must report 0x80110328, got 0x%08x",
+          (unsigned)result);
+    CHECK(guest_data_untouched(), "oversized READDATA must not write a truncated prefix");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "THIRD"),
+          "an oversized LOAD must leave the save untouched");
+#else
+    (void)base;
+    printf("SKIP: atomic savedata cases require the POSIX descriptor backend\n");
 #endif
 }
 
@@ -631,6 +717,7 @@ int main(int argc, char **argv) {
     g_mem = arena + 0x08000000u;
     if (!strcmp(argv[1], "open") && argc == 3) check_open_cases(argv[2]);
     else if (!strcmp(argv[1], "order") && argc == 3) check_write_order_cases(argv[2]);
+    else if (!strcmp(argv[1], "atomic") && argc == 3) check_atomic_cases(argv[2]);
     else if (!strcmp(argv[1], "getsize")) check_getsize_cases();
     else if (!strcmp(argv[1], "unsupported")) check_unsupported_host();
     else { free(arena); return 2; }
@@ -730,6 +817,15 @@ class TestSavedataSecurityProduction(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("security_selftest: OK", run.stdout)
 
+    @unittest.skipIf(os.name == "nt", "atomic-save production harness runs in the WSL POSIX lane")
+    def test_atomic_save_and_oversized_load_regressions(self):
+        with scratch_dir.TemporaryDirectory(prefix="savedata_atomic_") as tmp:
+            exe = _build(tmp)
+            run = _run(exe, "atomic", tmp)
+            self.assertIsNotNone(run, "atomic-save selftest timed out")
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn("security_selftest: OK", run.stdout)
+
     @unittest.skipIf(os.name == "nt", "GETSIZE production harness runs in the WSL POSIX lane")
     def test_getsize_regressions(self):
         with scratch_dir.TemporaryDirectory(prefix="savedata_getsize_") as tmp:
@@ -753,24 +849,24 @@ class TestSavedataSecurityProduction(unittest.TestCase):
             self.skipTest("mutant matrix is executed in the WSL POSIX lane")
         original_savedata = SAVEDATA_C.read_text(encoding="utf-8")
         original_seam = SEAM_H.read_text(encoding="utf-8")
-        write_block = (
+        read_block = (
             "    char rel[SR_CD_REL_MAX];\n"
             "    if (!savedata_root_relative(dir, rel, sizeof(rel))) return 0;\n"
             "    sr_cd_root root;\n"
             "    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;\n"
             "    FILE *f = NULL;\n"
-            "    sr_cd_status st = sr_cd_open_file(&root, rel, name, SR_CD_FILE_WRITE_TRUNCATE, &f);\n"
+            "    sr_cd_status st = sr_cd_open_file(&root, rel, name, SR_CD_FILE_READ, &f);\n"
             "    sr_cd_root_close(&root);\n"
             "    if (st != SR_CD_OK || !f) return 0;\n"
         )
-        read_block = write_block.replace("SR_CD_FILE_WRITE_TRUNCATE", "SR_CD_FILE_READ")
-        unsafe_write = (
+        unsafe_read = (
             "    char path[PATH_MAX];\n"
             "    if (!path_join(path, sizeof(path), dir, name)) return 0;\n"
-            "    FILE *f = fopen(path, \"wb\");\n"
+            "    FILE *f = fopen(path, \"rb\");\n"
             "    if (!f) return 0;\n"
         )
-        unsafe_read = unsafe_write.replace("\"wb\"", "\"rb\"")
+        write_block = WRITE_OPEN_BLOCK
+        unsafe_write = UNSAFE_WRITE_OPEN
         self.assertIn(write_block, original_savedata)
         self.assertIn(read_block, original_savedata)
 
@@ -834,22 +930,8 @@ class TestSavedataSecurityProduction(unittest.TestCase):
         self.assertIn(ftruncate_block, original_seam)
         self.assertIn(regular_check + ftruncate_block, original_seam)
 
-        write_block = (
-            "    char rel[SR_CD_REL_MAX];\n"
-            "    if (!savedata_root_relative(dir, rel, sizeof(rel))) return 0;\n"
-            "    sr_cd_root root;\n"
-            "    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;\n"
-            "    FILE *f = NULL;\n"
-            "    sr_cd_status st = sr_cd_open_file(&root, rel, name, SR_CD_FILE_WRITE_TRUNCATE, &f);\n"
-            "    sr_cd_root_close(&root);\n"
-            "    if (st != SR_CD_OK || !f) return 0;\n"
-        )
-        unsafe_write = (
-            "    char path[PATH_MAX];\n"
-            "    if (!path_join(path, sizeof(path), dir, name)) return 0;\n"
-            "    FILE *f = fopen(path, \"wb\");\n"
-            "    if (!f) return 0;\n"
-        )
+        write_block = WRITE_OPEN_BLOCK
+        unsafe_write = UNSAFE_WRITE_OPEN
         self.assertIn(write_block, original_savedata)
 
         mutants = [

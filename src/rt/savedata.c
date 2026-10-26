@@ -121,6 +121,11 @@ enum { SD_AUTOLOAD=0, SD_AUTOSAVE=1, SD_LOAD=2, SD_SAVE=3, SD_LISTLOAD=4, SD_LIS
 #define ERR_RW_NOT_FOUND    0x80110329u
 #define ERR_RW_MS_FULL      0x80110323u
 #define ERR_SIZES_NO_DATA   0x801103C7u   /* SIZES on a save that doesn't exist yet (PPSSPP) */
+/* LOAD_PARAM / RW_BAD_PARAMS (PPSSPP ErrorCodes.h), returned when the save data is
+ * larger than the guest buffer.  UNMEASURED: no PSP capture shows which code
+ * firmware returns for that case. */
+#define ERR_LOAD_PARAM_UNMEASURED 0x80110308u
+#define ERR_RW_PARAM_UNMEASURED   0x80110328u
 
 /* SceUtilitySavedataParam: bind result (offset 0x34, after mode). PPSSPP sets 1021 on every
  * successful load -- "PSP always responds this and this unlocks some games". */
@@ -281,21 +286,65 @@ static int save_rel(char *out, size_t cap, const char *game, const char *save) {
 
 static int sdlog(void) { static int v = -1; if (v < 0) v = getenv("SR_DLGLOG") ? 1 : 0; return v; }
 
+/* Issue #1387: a save member is never truncated in place.  Its bytes go to a
+ * sibling temporary that is renamed over the member only after every byte is
+ * written and flushed, so a write that fails part-way leaves the previous file
+ * whole.  The suffix is 17 bytes, longer than any guest-chosen name can be
+ * (rd_cstr caps fileName at 15 bytes), so a temporary never collides with a
+ * save member.  A temporary left by an interrupted run is replaced by the next
+ * save of that member. */
+#define SAVEDATA_TMP_SUFFIX ".nakagawa-partial"
+
+static int host_tmp_name(char *out, size_t cap, const char *name) {
+    int n = snprintf(out, cap, "%s" SAVEDATA_TMP_SUFFIX, name);
+    return n > 0 && (size_t)n < cap && path_sanitize(out);
+}
+
+#ifdef _WIN32
+/* Rename the verified temporary THROUGH its own handle.  A bare leaf name with
+ * no RootDirectory renames within the directory that already holds the handle's
+ * object, so no directory path is resolved again after verification. */
+static int host_replace_by_handle(HANDLE h, const char *leaf_utf8) {
+    int need = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, leaf_utf8, -1, NULL, 0);
+    if (need <= 1) return 0;
+    size_t name_bytes = (size_t)(need - 1) * sizeof(wchar_t);
+    size_t total = offsetof(FILE_RENAME_INFO, FileName) + name_bytes + sizeof(wchar_t);
+    FILE_RENAME_INFO *info = (FILE_RENAME_INFO *)malloc(total);
+    if (!info) return 0;
+    memset(info, 0, total);
+    info->ReplaceIfExists = TRUE;
+    info->RootDirectory = NULL;
+    info->FileNameLength = (DWORD)name_bytes;
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, leaf_utf8, -1, info->FileName, need);
+    BOOL ok = SetFileInformationByHandle(h, FileRenameInfo, info, (DWORD)total);
+    free(info);
+    return ok ? 1 : 0;
+}
+#elif defined(SR_CD_BACKEND_POSIX_AT)
+static int host_rel_join(char *out, size_t cap, const char *rel, const char *leaf) {
+    int n = snprintf(out, cap, "%s/%s", rel, leaf);
+    return n > 0 && (size_t)n < cap;
+}
+#endif
+
 static int host_write_file(const char *dir, const char *name, const uint8_t *data, uint32_t n) {
+    char tmp[SR_CD_NAME_MAX];
     if (!path_sanitize(name)) { errno = EINVAL; return 0; }
+    if (!host_tmp_name(tmp, sizeof(tmp), name)) { errno = ENAMETOOLONG; return 0; }
 #ifdef _WIN32
     char path[PATH_MAX];
-    if (!path_join(path, sizeof(path), dir, name)) return 0;
+    if (!path_join(path, sizeof(path), dir, tmp)) return 0;
     /* OPEN -> HANDLE -> FINAL PATH VERIFY -> OPERATION. The write lands through
      * the very handle whose final path was verified, so a swap after the check
-     * cannot redirect the bytes. OPEN_ALWAYS + SetEndOfFile reproduces the old
-     * "wb" truncate-or-create semantics. */
+     * cannot redirect the bytes. OPEN_ALWAYS + SetEndOfFile truncates only
+     * after verification, so a planted temporary link never truncates its
+     * target.  DELETE access lets the same handle rename or discard it. */
     wchar_t canonical_root[MAX_PATH * 2];
     if (!ms_canonical_root(canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
         return 0;
     HANDLE h;
-    if (!sr_vfs_open_contained_utf8(path, GENERIC_READ | GENERIC_WRITE, FILE_ATTRIBUTE_NORMAL,
-                                    OPEN_ALWAYS, canonical_root, &h))
+    if (!sr_vfs_open_contained_utf8(path, GENERIC_READ | GENERIC_WRITE | DELETE,
+                                    FILE_ATTRIBUTE_NORMAL, OPEN_ALWAYS, canonical_root, &h))
         return 0;
     int ok = SetFilePointer(h, 0, NULL, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
              SetEndOfFile(h);
@@ -303,20 +352,33 @@ static int host_write_file(const char *dir, const char *name, const uint8_t *dat
     if (ok && n > 0 && data) {
         ok = WriteFile(h, data, (DWORD)n, &written, NULL) && written == (DWORD)n;
     }
+    if (ok) ok = FlushFileBuffers(h) != 0;
+    if (ok) ok = host_replace_by_handle(h, name);
+    if (!ok) (void)sr_vfs_dispose_by_handle(h);
     CloseHandle(h);
     return ok ? 1 : 0;
 #else
 #if defined(SR_CD_BACKEND_POSIX_AT)
-    char rel[SR_CD_REL_MAX];
+    char rel[SR_CD_REL_MAX], tmp_rel[SR_CD_REL_MAX], dst_rel[SR_CD_REL_MAX];
     if (!savedata_root_relative(dir, rel, sizeof(rel))) return 0;
+    if (!host_rel_join(tmp_rel, sizeof(tmp_rel), rel, tmp) ||
+        !host_rel_join(dst_rel, sizeof(dst_rel), rel, name)) return 0;
     sr_cd_root root;
     if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;
     FILE *f = NULL;
-    sr_cd_status st = sr_cd_open_file(&root, rel, name, SR_CD_FILE_WRITE_TRUNCATE, &f);
+    sr_cd_status st = sr_cd_open_file(&root, rel, tmp, SR_CD_FILE_WRITE_TRUNCATE, &f);
+    int ok = st == SR_CD_OK && f;
+    if (ok) {
+        ok = !n || fwrite(data, 1, n, f) == n;
+        if (ok && fflush(f) != 0) ok = 0;
+        if (ok && fsync(fileno(f)) != 0) ok = 0;
+        if (fclose(f) != 0) ok = 0;
+    }
+    /* sr_cd_rename_file refuses a destination that is a link, directory or
+     * special file, and renameat never follows either final component. */
+    if (ok) ok = sr_cd_rename_file(&root, tmp_rel, dst_rel) == SR_CD_OK;
+    if (!ok) (void)sr_cd_delete_leaf(&root, rel, tmp);
     sr_cd_root_close(&root);
-    if (st != SR_CD_OK || !f) return 0;
-    int ok = !n || fwrite(data, 1, n, f) == n;
-    if (fclose(f) != 0) ok = 0;
     return ok;
 #else
     return 0;
@@ -705,12 +767,15 @@ static uint32_t do_load(uint32_t param, const char *game, const char *save) {
             if (sdlog()) fprintf(stderr, "savedata: LOAD %s -> file not found\n", dir);
             return ERR_LOAD_NOT_FOUND;
         }
-        size_t to_read = 0;
-        if (n > 0) {
-            uint64_t sz = (uint64_t)n;
-            if (sz > (uint64_t)cap) sz = (uint64_t)cap;
-            to_read = (size_t)sz;
+        /* Issue #1387: data that does not fit the guest buffer is refused, not
+         * cut to the buffer size and reported as a success.  The error name
+         * follows PPSSPP's table; the code a PSP returns here is UNMEASURED. */
+        if (dataBuf && (uint64_t)n > (uint64_t)cap) {
+            if (sdlog()) fprintf(stderr, "savedata: LOAD %s -> %u bytes exceed buffer %" PRIu32 "\n",
+                                 dir, (unsigned)n, cap);
+            return ERR_LOAD_PARAM_UNMEASURED;
         }
+        size_t to_read = (size_t)n;
         uint32_t rd = 0;
         if (dataBuf && to_read > 0) {
             sr_guest_vram_write_prepare_bytes(dataBuf, (uint32_t)to_read);
@@ -1086,6 +1151,7 @@ uint32_t sr_savedata_execute(uint32_t param) {
             uint32_t r = do_load(param, game, save);             /* PPSSPP error remap */
             if (r == ERR_LOAD_NO_DATA) r = ERR_RW_NO_DATA;
             if (r == ERR_LOAD_NOT_FOUND) r = ERR_RW_NOT_FOUND;
+            if (r == ERR_LOAD_PARAM_UNMEASURED) r = ERR_RW_PARAM_UNMEASURED;
             return r;
         }
         case SD_LISTDELETE: case SD_DELETE: case SD_AUTODELETE:
