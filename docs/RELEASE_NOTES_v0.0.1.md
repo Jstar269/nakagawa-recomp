@@ -14,7 +14,7 @@ Nakagawa Recomp is an experimental static recompiler that translates user-suppli
 - **Play source-owned showcase demos**: Run project-authored PSPDEV demos (a lit, textured 3D scene and Breakout with paddle input, sound effects, and savedata high score) built from source into deterministic plaintext ISOs and packages, discovered automatically with authentic icons in the player ([#477](https://github.com/Jstar269/nakagawa-recomp/pull/477)).
 - **Configure and calibrate controllers in the player**: Open Controller Settings (`VIEW_CONTROLLER_SETTINGS`) from Settings to remap 14 digital PSP controls and the analog stick with conflict detection, deadzone and trigger threshold calibration, live input monitoring, and atomic profile persistence to `input_profile.json` ([#455](https://github.com/Jstar269/nakagawa-recomp/pull/455)).
 - **Build runtime packages with live progress and cancel**: Click **BUILD PACKAGE** (or **REBUILD PACKAGE**) in the player to recompile a title via `tools/nk_cli.py build-package`, with real-time 4-stage progress (Preflight, Extract, Compile, Package), elapsed time display, in-app cancellation ending the child process tree, and an in-game performance HUD overlay toggled via `F3` ([#465](https://github.com/Jstar269/nakagawa-recomp/pull/465), [#469](https://github.com/Jstar269/nakagawa-recomp/pull/469)).
-- **Install missing build prerequisites after one consent**: On a clean `PATH`, the player offers one consent card for the pinned tools needed by **BUILD PACKAGE**, shows each tool's version, host, size, licence and the total, then downloads and verifies the declared artifacts before resuming the build ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)). You can also install Python, GNU Make and the MSYS2 UCRT64 compiler yourself.
+- **Build packages with no download**: The release ZIP carries the pinned build tools that **BUILD PACKAGE** needs (CPython 3.15.1 and the MSYS2 UCRT64 compiler, GNU Make, SDL3 and their libraries) in `prereqs/`. The player checks that folder against the pinned manifest and uses it with no consent card and no network connection ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). Without that folder, as in a source checkout, the player offers one consent card for the same pinned tools, showing each tool's version, host, size, licence and the total, then downloads and verifies them before resuming the build ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)). You can also install Python, GNU Make and the MSYS2 UCRT64 compiler yourself.
 - **Display real disc icons and persist settings**: Library cards show the disc's authentic `ICON0.PNG` and dimmed `PIC1.PNG` background loaded safely at runtime from the ISO with fallback to monogram badges; settings (resolution scale, frame cap, VSync, reduce motion) persist atomically to `settings.json` across restarts, alongside truthful status text ([#458](https://github.com/Jstar269/nakagawa-recomp/pull/458)).
 - **Supply plain executables**: Nakagawa does not decrypt games; it uses decrypted files from your own copy. Place `EBOOT.elf` and the required PRXs in `<user data>/titles/<DISC_ID>/decrypted/`; an encrypted executable or module without a plain copy fails closed by name. Built-in decryption was removed ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550), [#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)).
 - **Serve game assets directly through archive-backed VFS**: The runtime serves game data directly from validated `.xb` archives using a read-only archive-backed virtual filesystem (`sceIoOpen`, `sceIoGetstat`, `sceIoDopen`), eliminating the need to pre-extract loose files before running ([#475](https://github.com/Jstar269/nakagawa-recomp/pull/475)).
@@ -47,7 +47,7 @@ The commands generate their synthetic inputs beneath the ignored `build/` tree.
 
 ## What v0.0.1 is not
 
-- **No bundled games**: This repository does not include game binaries, proprietary game assets, firmware modules, decryption keys, or private oracle traces. Nakagawa Recomp never downloads games or game data. With your consent, it downloads only the build tools declared in the prerequisite manifest. Users must supply their own PSP game disc image, of a game they own, in uncompressed standard `.iso` format ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+- **No bundled games**: This repository does not include game binaries, proprietary game assets, firmware modules, decryption keys, or private oracle traces. Nakagawa Recomp never downloads games or game data. The release ZIP already contains the build tools; only without them, as in a source checkout, does the player offer to download the build tools declared in the prerequisite manifest, with your consent. Users must supply their own PSP game disc image, of a game they own, in uncompressed standard `.iso` format ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 - **Encrypted executables need decrypted files from your own copy**: Nakagawa Recomp is an experimental static recompiler, not a finished consumer emulator. No commercial PSP game is claimed playable end-to-end from an ISO alone. Most retail PSP executables (`EBOOT.BIN` and `.prx` modules) are encrypted. Nakagawa does not decrypt games; it uses decrypted files from your own copy, placed in `<user data>/titles/<DISC_ID>/decrypted/`. An encrypted executable or module without a plain copy is named and fails closed. PGD-protected content is unsupported; broader ISO-to-Play support is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Built-in decryption ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550)) was removed.
 - **Experimental titles**: A valid PSP disc that has no profile yet is imported as **Experimental**. The card notes that compatibility is unknown, checklist items indicate what is missing, and Play stays unavailable until a matching runtime package exists. PAC-MAN Championship Edition reaches its menu and plays a stage on the maintainer's copy through generic fixes with no title-specific branch ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556)); full-game compatibility and other title candidates are in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Non-PSP images are refused.
 - **Fonts need the user's own firmware fonts**: Authentic in-game typography requires Sony firmware font files (`jpn0.pgf`, `ltn0.pgf`) dumped from a real PSP console (`flash0:/font/`). The project does not include or distribute these proprietary files; you provide them from your own PSP and import them into the validated local cache via `python tools/nk_cli.py fonts import <folder>` ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300)). Public builds read these fonts with the project-authored PGF reader ([#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). The project's own built-in fonts are generated from open font files by the project-authored converter in `tools/ttf2pgf.py` ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
@@ -77,6 +77,13 @@ v0.0.1 is not code-signed. The first time you run `nakagawa_player.exe`, Windows
 
 If any check fails, don't run the file; report it as described under [How to report](#how-to-report).
 
+The source of the bundled build tools is published next to the ZIP as
+`nakagawa-recomp-0.0.1-prerequisite-sources.zip`, with its own `.sha256`: the MSYS2 source package of
+each MSYS2 package and the CPython source release. `prereqs/notices/SOURCES.txt` in the ZIP names each
+file in it with its SHA-256, and `prereqs/notices` holds every bundled package's licence files. The
+bundled tools leave out their manuals (`share/doc`, `share/info`, `share/man`), which a build never
+reads; the source archive has them.
+
 ## Requirements when running the packaged player
 
 The v0.0.1 package layout (defined in [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md)) is
@@ -92,9 +99,15 @@ loader and a Vulkan-capable graphics driver remain host-provided:
 - **Typography:** the package stages `SDL3_ttf.dll` and its resolved runtime closure
   beside the executable when available, so the readable UI font loads from the package
   without a toolchain `PATH`. The notices and SBOM list each shipped library.
-- **BUILD PACKAGE:** recompiling a title needs the full developer toolchain, which the
-  player can install after one consent on a clean `PATH`. The consent lists each pinned
-  prerequisite and downloads from the manifest's declared official hosts ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)). The
+- **BUILD PACKAGE:** recompiling a title needs Python, GCC and GNU Make. The package
+  carries the pinned ones in `prereqs/` beside `bin/` and `source/`; the player checks
+  them against `source/assets/prereq_manifest.json` before each build and uses them with
+  no consent card and no download ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)).
+  If that folder is damaged, the player names the first missing or changed file
+  (`PREREQUISITE_BUNDLE_INVALID`) instead of downloading a replacement: extract the ZIP
+  again. Without `prereqs/`, the player can install the pinned tools after one consent on
+  a clean `PATH`; the consent lists each pinned prerequisite and downloads from the
+  manifest's declared official hosts ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)). The
   player looks for `tools/nk_cli.py` in this order: the `NK_INSTALL_ROOT` environment
   variable (a folder containing `tools/`), beside the executable,
   `<exe dir>/../tools`, `<exe dir>/../source/tools` (this release's layout), the
@@ -103,7 +116,7 @@ loader and a Vulkan-capable graphics driver remain host-provided:
   in [`SETUP.md`](SETUP.md). Missing pieces are named, never silent: `CLI_NOT_FOUND`
   lists every searched location and the `NK_INSTALL_ROOT` fix,
   `BUILD_TOOLCHAIN_MISSING` names the missing tool, and `PYTHON_NOT_FOUND` names the
-  interpreter. With the package, these lead to the consent path; prerequisite installation
+  interpreter. Without `prereqs/`, these lead to the consent path; prerequisite installation
   landed in #547. In an unpackaged run, set `NK_INSTALL_ROOT` to the unzipped
   `source/` folder so the player uses this package's CLI.
 
