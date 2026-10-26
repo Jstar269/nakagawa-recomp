@@ -167,7 +167,7 @@ typedef struct {
  * key position, independent of the keyboard layout. SDL_Scancode uses the same
  * values, which src/rt/gpu_sdl3vk/sdl3vk.c checks. Only the keys
  * named in the profile's key table can be bound; Escape and the function keys are
- * left out because the runtime keeps them for quitting and its own overlays.
+ * left out because the runtime keeps them for the pause and its own overlays.
  */
 #define NK_HOST_KEY_NONE 0
 #define NK_HOST_KEY_LIMIT 512 /* every bindable key code is below this */

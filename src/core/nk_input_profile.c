@@ -153,7 +153,7 @@ static const struct {
 
 /* Bindable host keys by USB HID keyboard usage ID (HID Usage Tables, Keyboard/Keypad
  * page 0x07), which SDL_Scancode shares. Escape (41) and the function keys are absent
- * on purpose: the runtime keeps Escape for quit and F1 for its HUD, and a key that is
+ * on purpose: the runtime keeps Escape and F1 for its pause and F3 for its HUD, and a key that is
  * not in this table cannot be bound. */
 static const struct {
     int key;
