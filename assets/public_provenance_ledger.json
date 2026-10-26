@@ -1357,7 +1357,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5a2bd252f384056934f5f7a1cf5923c8a4956366724d2dbc678b190c6a60b9a0"
+      "sha256": "ee8648f4d1272ab870092c67928c0ee0a38f3aad6be99445fccd21547da79dc8"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -4832,7 +4832,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "51784afe16269eefc936e3492b58c8579b39bf7a953ee1b09b8f745ea9aae26a"
+      "sha256": "47de6f5755ffdc7e5899622ad12bf80658532cfb559859e62eca1e984630eca0"
     },
     {
       "path": "src/rt/dispatch_isolation_selftest.c",
@@ -11346,7 +11346,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "06906a3671c9fcd2c3a326fbebfd0429da164fa24b427cc51f3aa0fc597584b7"
+      "sha256": "fe378659b01c9761d8d4ab524d77d6db308b541b80513c155484aaff14de9e7f"
     },
     {
       "path": "tools/ge_replay_metrics.py",
@@ -13082,7 +13082,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "68a8549355a334c9fe38c1aa7e22bdb4b67af35aa4ee630803797ed7618d0d04"
+      "sha256": "196034b24d2e265baa459ca81c2104800ece57f5684d652379327c9490a69375"
     },
     {
       "path": "tools/test_decompme_export.py",
@@ -13887,7 +13887,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "65215b6d67129f8b6bd32ae00e6a7ebf1d3d3380eab863a05d35861e09387881"
+      "sha256": "b4b00dc6d204c27310452e1335c1999a967b9d03a1650b3d9a5a4907034b84f0"
     },
     {
       "path": "tools/test_native_gate_stub_link.py",
@@ -14644,7 +14644,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3ce566a452046578081be58a6973116b65335aae0d0157093e85965ea7e8cec7"
+      "sha256": "9c0acb4f38f0fabe4119c5f8488135073f8bb9916c0995639f264329d6b28267"
     },
     {
       "path": "tools/test_scratch_dir.py",
