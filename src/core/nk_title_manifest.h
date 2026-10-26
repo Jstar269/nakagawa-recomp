@@ -137,6 +137,18 @@ bool nk_title_manifest_read_experimental_profile(
     size_t error_buf_len
 );
 
+/* Validate an experimental profile created before an executable was selected.
+ * This accepts only the identity-bound profile form with an empty executable
+ * and null executable hashes; it never treats a bound profile as a match. */
+bool nk_title_manifest_read_unbound_experimental_profile(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    NkTitleEntrySnapshot *out_title,
+    char *error_buf,
+    size_t error_buf_len
+);
+
 /* The executable leaf ("EBOOT.BIN" or "BOOT.BIN") that an experimental
  * profile binds, returned only when the whole profile validates for that leaf.
  * A disc imported while its EBOOT.BIN was encrypted has a library entry with

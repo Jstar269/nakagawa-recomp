@@ -42,6 +42,8 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -436,6 +438,63 @@ class TestSourceMediaIdentity(unittest.TestCase):
                 nk_cli._source_media_identity(
                     Path("synthetic.iso"), "EBOOT.BIN", manifest
                 )
+
+
+class TestPackageDiskSpace(unittest.TestCase):
+    def test_package_staging_preflight_reports_file_bytes_and_available_space(self):
+        with tempfile.TemporaryDirectory(prefix="nk-package-space-") as temporary:
+            root = Path(temporary)
+            package = root / "package"
+            package.mkdir()
+            (package / "game.bin").write_bytes(b"12345")
+            nested = package / "assets"
+            nested.mkdir()
+            (nested / "icon.bin").write_bytes(b"abc")
+            destination = root / "packages"
+            destination.mkdir()
+
+            with patch.object(
+                nk_cli.shutil, "disk_usage", return_value=SimpleNamespace(free=7)
+            ):
+                with self.assertRaises(nk_cli.PackageBuildError) as raised:
+                    nk_cli._require_package_staging_space(package, destination)
+
+            self.assertEqual(
+                str(raised.exception),
+                "PACKAGE_DISK_FULL: The package needs at least 8 bytes for its files; "
+                "7 bytes are free.",
+            )
+
+    def test_package_copy_race_reports_remaining_file_bytes_and_free_space(self):
+        with tempfile.TemporaryDirectory(prefix="nk-package-copy-space-") as temporary:
+            root = Path(temporary)
+            package = root / "package"
+            package.mkdir()
+            (package / "game.bin").write_bytes(b"12345")
+            destination = root / "packages"
+            destination.mkdir()
+            staging = destination / ".TEST00001.staging"
+
+            def copy_partial(_source, target):
+                target_path = Path(target)
+                target_path.mkdir()
+                (target_path / "game.bin").write_bytes(b"12")
+                raise OSError(28, "No space left on device")
+
+            with patch.object(nk_cli.shutil, "copytree", side_effect=copy_partial):
+                with patch.object(
+                    nk_cli.shutil, "disk_usage", return_value=SimpleNamespace(free=3)
+                ):
+                    with self.assertRaises(nk_cli.PackageBuildError) as raised:
+                        nk_cli._copy_package_tree_with_space_diagnostics(
+                            package, staging, destination, needed_bytes=5
+                        )
+
+            self.assertEqual(
+                str(raised.exception),
+                "PACKAGE_DISK_FULL: At least 3 more bytes of package files remain to copy; "
+                "3 bytes are free.",
+            )
 
 
 class TestPlayerPackageRoute(unittest.TestCase):
@@ -1328,6 +1387,112 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertIn("PLAY NOW is unavailable", refused.stdout + refused.stderr)
         self.assertEqual(self.player_boot_event_files(), boot_logs_before_refusal,
                          "a stale package must not create guest boot evidence")
+        self.assertEqual(tracked_status(), before)
+
+    def test_builds_share_compiled_objects_through_the_data_folder(self):
+        """#1306: a rebuild compiles nothing, and another title compiles no runtime file."""
+        self.skip_if_toolchain_unavailable()
+        log_path = self.user_root / "logs" / f"build_{DISC_ID}.log"
+        timings = []
+
+        def build() -> tuple[int, int, list[str]]:
+            log = run()
+            reuse = re.search(r"^OBJECT_CACHE: reused (\d+) of (\d+) objects$", log, re.M)
+            self.assertIsNotNone(reuse, log[-4000:])
+            compiled = re.search(r"^OBJECT_CACHE: compiling (.+)$", log, re.M)
+            return int(reuse.group(1)), int(reuse.group(2)), (
+                compiled.group(1).split() if compiled else []
+            )
+
+        def run() -> str:
+            started = time.perf_counter()
+            built = self.run_build_action(self.user_root)
+            timings.append(time.perf_counter() - started)
+            self.assertEqual(built.returncode, 0, built.stdout[-4000:] + built.stderr[-4000:])
+            return log_path.read_text(encoding="utf-8", errors="replace")
+
+        reused, planned, compiled = build()
+        self.assertEqual(reused, 0)
+        self.assertGreater(planned, 1)
+        self.assertEqual(len(compiled), planned)
+        cache = package_cache.ObjectCache(package_cache.object_cache_root(self.user_root))
+        self.assertEqual(len(cache.entries()), planned)
+
+        # The same title again reuses its whole package: nothing compiles.
+        log = run()
+        self.assertIn("PACKAGE_REUSED:", log)
+        self.assertNotIn("OBJECT_CACHE:", log)
+
+        # With the package and its cache entries gone, as after an update that changes the
+        # package key, every object still comes from the object cache.
+        shutil.rmtree(self.user_root / "packages" / DISC_ID)
+        shutil.rmtree(self.user_root.joinpath(*package_cache.CACHE_ROOT_PARTS))
+        reused, planned_again, compiled = build()
+        self.assertEqual((reused, compiled), (planned_again, []))
+
+        # A different executable stands in for a second title: only its generated
+        # chunks compile, and every runtime object is reused.
+        self._bind_fixed_address_main(LOW_FIXED_ADDRESS_BASE)
+        reused, planned_other, compiled = build()
+        self.assertTrue(compiled, "the second title's generated code must compile")
+        self.assertTrue(all("_recomp" in name for name in compiled), compiled)
+        self.assertEqual(reused + len(compiled), planned_other)
+        sys.stderr.write(
+            "OBJECT_CACHE_TIMINGS cold={:.1f}s package_reused={:.1f}s "
+            "objects_reused={:.1f}s second_title={:.1f}s\n".format(*timings)
+        )
+
+    def test_synthetic_package_reliability_ten_builds_rebuild_and_reuse(self):
+        """#1286/#278: ten BUILD sessions, one stale-package rebuild, then reuse."""
+        self.skip_if_toolchain_unavailable()
+        before = tracked_status()
+        package_dir = self.user_root / "packages" / DISC_ID
+        executable = package_dir / "display_smoke.exe"
+        log_path = self.user_root / "logs" / f"build_{DISC_ID}.log"
+
+        for run_number in range(10):
+            built = self.run_build_action(self.user_root)
+            output = built.stdout + built.stderr
+            self.assertEqual(built.returncode, 0, output[-4000:])
+            self.assertIn("PACKAGE_BUILD_ROUTE status=PASS", output)
+            self.assertIn("complete=1 failed=0", output)
+            self.assertNotIn("PACKAGE_BUILD_ROUTE status=FAIL", output)
+            validated = self.run_validator()
+            self.assertEqual(validated.returncode, 0,
+                             validated.stdout + validated.stderr)
+            self.assertIn("PACKAGE_STATUS=OK", validated.stdout)
+            log = log_path.read_text(encoding="utf-8", errors="replace")
+            if run_number == 0:
+                self.assertNotIn("PACKAGE_REUSED:", log)
+            else:
+                self.assertIn("PACKAGE_REUSED:", log)
+
+        # A damaged promoted package reads as stale, the state is the same one
+        # for which the Library offers REBUILD PACKAGE. The cached, verified
+        # synthetic output restores it without another package failure.
+        executable.write_bytes(executable.read_bytes() + b"reliability mutation")
+        stale = self.run_validator()
+        self.assertEqual(stale.returncode, 0, stale.stdout + stale.stderr)
+        self.assertIn("PACKAGE_STATUS=STALE", stale.stdout)
+        rebuilt = self.run_build_action(self.user_root)
+        rebuild_output = rebuilt.stdout + rebuilt.stderr
+        self.assertEqual(rebuilt.returncode, 0, rebuild_output[-4000:])
+        self.assertIn("PACKAGE_BUILD_ROUTE status=PASS", rebuild_output)
+        self.assertIn("complete=1 failed=0", rebuild_output)
+        self.assertNotIn("PACKAGE_BUILD_ROUTE status=FAIL", rebuild_output)
+        self.assertIn("CACHE: content-addressed entry reused",
+                      log_path.read_text(encoding="utf-8", errors="replace"))
+
+        reused = self.run_build_action(self.user_root)
+        reuse_output = reused.stdout + reused.stderr
+        self.assertEqual(reused.returncode, 0, reuse_output[-4000:])
+        self.assertIn("PACKAGE_BUILD_ROUTE status=PASS", reuse_output)
+        self.assertIn("PACKAGE_REUSED:",
+                      log_path.read_text(encoding="utf-8", errors="replace"))
+        validated = self.run_validator()
+        self.assertEqual(validated.returncode, 0,
+                         validated.stdout + validated.stderr)
+        self.assertIn("PACKAGE_STATUS=OK", validated.stdout)
         self.assertEqual(tracked_status(), before)
 
     def test_missing_prerequisites_fail_closed_with_documented_codes(self):

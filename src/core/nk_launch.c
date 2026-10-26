@@ -1005,6 +1005,7 @@ NkResult nk_launch_prepare_session(
         session->user_data_root[0] = '\0';
     snprintf(session->title_id, sizeof(session->title_id), "%s", game->title_id);
     snprintf(session->disc_id, sizeof(session->disc_id), "%s", game->disc_id);
+    snprintf(session->game_title, sizeof(session->game_title), "%s", game->title_name);
     int boot_written = snprintf(session->boot_executable,
                                 sizeof(session->boot_executable), "%s",
                                 boot_executable);
@@ -1358,6 +1359,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_loose_content_roots[NK_LAUNCH_LOOSE_ROOTS_ENV_CAPACITY + 32];
     char env_font[NK_MAX_PATH + 16];
     char env_user_data_root[NK_MAX_PATH + 32];
+    char env_game_title[NK_MAX_TITLE_LEN + 20];
     char env_fs[32];
     char env_memstick[NK_MAX_PATH + 16];
     char env_modules[NK_MAX_PATH * 2 + 32];
@@ -1454,6 +1456,12 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     snprintf(env_user_data_root, sizeof(env_user_data_root), "SR_USER_DATA_ROOT=%s",
              session->user_data_root);
     envp[env_count++] = env_user_data_root;
+
+    /* The user's own disc title (PARAM.SFO TITLE) for the window caption; the runtime sanitises it
+     * (sr_window_title_format in src/rt/recomp.h). Always exported so an inherited value cannot
+     * name another game. */
+    snprintf(env_game_title, sizeof(env_game_title), "SR_GAME_TITLE=%s", session->game_title);
+    envp[env_count++] = env_game_title;
 
     /* A setup transaction promotes already-decrypted support modules below
      * the selected game's private root. Tell the runtime's late-import loader
