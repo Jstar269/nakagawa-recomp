@@ -5101,7 +5101,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6f90abf319e42724acb5b292ea404ece1b48d67333773680333a131c491e74d1"
+      "sha256": "8cd853cdddf8729d8648295df1b2adda42f198152ccb36fa90e82c517ac3b598"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -5332,7 +5332,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1b07a1a2b96618e49d8b08c73035a3e8e5e9026a85c3802a673d0f2e94b4b6eb"
+      "sha256": "2209028b3857881de4dda7ace8cede3a8026e02c387974bfcc428b2f9bdac3ad"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -9990,7 +9990,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "444f8b7551af25e99b700b5e1f8032dc01fdc8f7961a01e61ec65e93da4da050"
+      "sha256": "8411ee2315127dd589ff846c458c6ce883b41b231038185a96b45d30f6387f05"
     },
     {
       "path": "tests/native/test_pcm_wav_dump.c",
