@@ -40,6 +40,14 @@ typedef enum {
 } InputControlIndex;
 
 /**
+ * The device whose bindings the Controls page shows and edits (#1299).
+ */
+typedef enum {
+    INPUT_DEVICE_CONTROLLER = 0,
+    INPUT_DEVICE_KEYBOARD
+} InputSettingsDevice;
+
+/**
  * A detected duplicate binding conflict between two PSP controls.
  */
 typedef struct {
@@ -121,11 +129,14 @@ typedef struct {
     InputBindingConflict conflicts[INPUT_SETTINGS_MAX_CONFLICTS];
     int conflict_count;
 
-    /* Capture state */
+    /* Capture state: a capture binds the device being edited */
     bool capturing;
     int capture_control; /* InputControlIndex (0..13) */
     int capture_elapsed_ms;
     int capture_timeout_ms;
+    InputSettingsDevice device;
+    /* Why the last key was refused, in plain words, or empty */
+    char key_note[160];
 
     /* Guided calibration state (#357) */
     GuidedCalibrationState calib;
@@ -238,7 +249,8 @@ const char *input_settings_control_name(int control_idx);
 void input_settings_format_binding(const InputSettingsState *state, int control_idx, char *buf, size_t buf_sz);
 
 /**
- * @brief Start a "press a button to bind" capture for a digital control (0..13).
+ * @brief Start a "press a button to bind" capture for a digital control (0..13),
+ * on the device being edited: a controller button, or a key.
  */
 bool input_settings_start_capture(InputSettingsState *state, int control_idx);
 
@@ -270,7 +282,8 @@ bool input_settings_update_capture(InputSettingsState *state, int delta_ms);
 
 /**
  * @brief Supply a binding source to the active capture, assigning it and ending capture.
- * @return true if successfully assigned, false if not capturing or invalid source.
+ * @return true if successfully assigned, false if not capturing, capturing a key,
+ *         or invalid source.
  */
 bool input_settings_feed_capture_source(InputSettingsState *state, NkBindingSource source);
 
@@ -309,6 +322,46 @@ bool input_settings_is_control_conflicted(const InputSettingsState *state, int c
  * @brief Get first conflict description string in plain words, or empty string if none.
  */
 const char *input_settings_get_conflict_summary(const InputSettingsState *state);
+
+/**
+ * @brief Choose the device whose bindings are shown and edited. Cancels a capture.
+ */
+void input_settings_set_device(InputSettingsState *state, InputSettingsDevice device);
+
+/**
+ * @brief Name of a bindable host key in plain words ("X", "Left Shift", "Enter"),
+ * by its position on a US keyboard; "None" for NK_HOST_KEY_NONE or a key that
+ * cannot be bound.
+ */
+void input_settings_format_key(int key, char *buf, size_t buf_sz);
+
+/**
+ * @brief Format a PSP control's keyboard keys: "Left Shift / Right Shift", or "None".
+ */
+void input_settings_format_key_binding(const InputSettingsState *state, int control_idx,
+                                       char *buf, size_t buf_sz);
+
+/**
+ * @brief Make `key` a digital control's (0..13) keyboard key, keeping its second key.
+ *
+ * A key that cannot be bound, or that another PSP control already uses, is
+ * refused: the mapping is left as it was and key_note says why. The profile
+ * validator refuses a key bound to two controls, so the refusal keeps every
+ * mapping the user can save one the runtime will load.
+ */
+bool input_settings_assign_key(InputSettingsState *state, int control_idx, int key);
+
+/**
+ * @brief Supply the pressed key (a USB HID usage, as SDL_Scancode) to an active
+ * keyboard capture, ending it. Returns true when the key was assigned.
+ */
+bool input_settings_feed_capture_key(InputSettingsState *state, int key);
+
+/**
+ * @brief Reset the bindings of the device being edited to defaults, keeping the
+ * other device's: the keyboard keys, or the controller mapping and calibration.
+ */
+void input_settings_reset_device_to_defaults(InputSettingsState *state);
 
 /**
  * @brief Adjust inner deadzone within validated bounds [0, 32766].
