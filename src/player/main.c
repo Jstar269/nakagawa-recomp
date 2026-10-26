@@ -480,8 +480,10 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             } else if (app->active_view == VIEW_PREREQ_CONSENT ||
                        app->active_view == VIEW_PREREQ_PROGRESS) {
                 player_app_prereq_cancel(app);
+            } else if (app->active_view == VIEW_CONFIRM_REMOVE_TOOLS) {
+                player_app_set_view(app, VIEW_BUILD_CACHE);
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
-                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS ||
+                       app->active_view == VIEW_BUILD_CACHE ||
                        app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -634,8 +636,10 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             } else if (app->active_view == VIEW_PREREQ_CONSENT ||
                        app->active_view == VIEW_PREREQ_PROGRESS) {
                 player_app_prereq_cancel(app);
+            } else if (app->active_view == VIEW_CONFIRM_REMOVE_TOOLS) {
+                player_app_set_view(app, VIEW_BUILD_CACHE);
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
-                       app->active_view == VIEW_CONFIRM_REMOVE_TOOLS ||
+                       app->active_view == VIEW_BUILD_CACHE ||
                        app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -938,6 +942,14 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             (void)player_app_request_license_folder(app);
             break;
         case PLAYER_UI_SETTINGS_REMOVE_TOOLS: player_app_remove_prerequisites(app); break;
+        case PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE: player_app_set_view(app, VIEW_BUILD_CACHE); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_SHARE_LIBRARIES:
+            player_app_toggle_share_system_libraries(app);
+            break;
+        case PLAYER_UI_SETTINGS_CLEAR_SHARED_LIBRARIES:
+            player_app_clear_shared_library_cache(app);
+            break;
+        case PLAYER_UI_SETTINGS_KEEP_TOOLS: player_app_set_view(app, VIEW_BUILD_CACHE); break;
         case PLAYER_UI_SETTINGS_NONE:
         default:
             break;
@@ -1287,7 +1299,8 @@ static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
         { "prereq_consent", VIEW_PREREQ_CONSENT },
         { "prereq_progress", VIEW_PREREQ_PROGRESS },
         { "prereq_about", VIEW_PREREQ_ABOUT },
-        { "confirm_remove_tools", VIEW_CONFIRM_REMOVE_TOOLS }
+        { "confirm_remove_tools", VIEW_CONFIRM_REMOVE_TOOLS },
+        { "build_cache", VIEW_BUILD_CACHE }
     };
     if (!names || !names[0] || !mask) return false;
     uint32_t parsed_mask = 0;
@@ -1698,6 +1711,7 @@ static const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_PREREQ_PROGRESS: return "prereq_progress";
     case VIEW_PREREQ_ABOUT: return "prereq_about";
     case VIEW_CONFIRM_REMOVE_TOOLS: return "confirm_remove_tools";
+    case VIEW_BUILD_CACHE: return "build_cache";
     case VIEW_ONLINE_SETTINGS: return "online_settings";
     case VIEW_DEVELOPER_LOG: return "developer_log";
     default: return "unknown";
@@ -3951,6 +3965,8 @@ int main(int argc, char *argv[]) {
             app.wizard.step = WIZARD_STEP_ONLINE_OPTIONS;
         } else if (strcmp(test_view, "online-settings") == 0) {
             player_app_set_view(&app, VIEW_ONLINE_SETTINGS);
+        } else if (strcmp(test_view, "build-cache") == 0) {
+            player_app_set_view(&app, VIEW_BUILD_CACHE);
         } else if (strcmp(test_view, "developer-log") == 0) {
             app.settings.developer_mode = true;
             player_dev_log_add(&app, "test", "synthetic developer log line");

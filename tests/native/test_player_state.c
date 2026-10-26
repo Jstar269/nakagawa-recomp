@@ -4973,6 +4973,9 @@ int main(int argc, char **argv) {
         s_app->settings.fullscreen = true;
         s_app->settings.launcher_fullscreen = true;
         s_app->settings.reduce_motion = true;
+        /* #1306: shared system libraries are on by default and persist when turned off. */
+        assert(s_app->settings.share_system_libraries == true);
+        player_app_toggle_share_system_libraries(s_app);
         s_app->settings.master_volume = 55;
         s_app->settings.launcher_window_maximized = true;
         s_app->settings.launcher_window_position_valid = true;
@@ -4993,6 +4996,7 @@ int main(int argc, char **argv) {
         assert(s_app2->settings.fullscreen == true);
         assert(s_app2->settings.launcher_fullscreen == true);
         assert(s_app2->settings.reduce_motion == true);
+        assert(s_app2->settings.share_system_libraries == false);
         assert(s_app2->settings.master_volume == 55);
         assert(s_app2->settings.launcher_window_maximized == true);
         assert(s_app2->settings.launcher_window_position_valid == true);
@@ -6913,7 +6917,7 @@ int main(int argc, char **argv) {
         assert(capp->active_view == VIEW_PREREQ_CONSENT);
         assert(capp->prerequisites.phase == PLAYER_PREREQ_CONSENT);
         assert(capp->prerequisites.item_count == 35);
-        assert(capp->prerequisites.total_bytes == UINT64_C(101853260));
+        assert(capp->prerequisites.total_bytes == UINT64_C(101848305));
         assert(capp->build_session.is_building == false);
         /* Consent cancellation has no side effects. */
         player_app_prereq_cancel(capp);
@@ -6936,7 +6940,7 @@ int main(int argc, char **argv) {
         assert(capp->prerequisites.phase == PLAYER_PREREQ_BOOTSTRAP);
         assert(capp->active_view == VIEW_PREREQ_PROGRESS);
         player_app_prereq_update_progress(capp, "cpython-embed-amd64", 64, 128,
-                                          64, UINT64_C(101853260));
+                                          64, UINT64_C(101848305));
         assert(strcmp(capp->prerequisites.current_item, "cpython-embed-amd64") == 0);
         assert(capp->prerequisites.item_received_bytes == 64);
         assert(capp->prerequisites.total_received_bytes == 64);

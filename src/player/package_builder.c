@@ -971,6 +971,35 @@ bool package_builder_remove_downloaded_tools(const char *data_root,
     return true;
 }
 
+bool package_builder_clear_shared_library_cache(const char *data_root,
+                                                char *error_code, size_t error_code_size,
+                                                char *error_message, size_t error_message_size) {
+    if (error_code && error_code_size) error_code[0] = '\0';
+    if (error_message && error_message_size) error_message[0] = '\0';
+    if (!data_root || !data_root[0]) {
+        if (error_code && error_code_size) snprintf(error_code, error_code_size, "DATA_DIR_UNAVAILABLE");
+        if (error_message && error_message_size) snprintf(error_message, error_message_size,
+            "The app-data folder is unavailable. No files were removed.");
+        return false;
+    }
+    char path[NK_MAX_PATH];
+    char sep = nk_platform_path_separator();
+    int n = snprintf(path, sizeof(path), "%s%ccache%cshared-libraries", data_root, sep, sep);
+    if (n < 0 || (size_t)n >= sizeof(path)) {
+        if (error_code && error_code_size) snprintf(error_code, error_code_size, "PATH_TOO_LONG");
+        if (error_message && error_message_size) snprintf(error_message, error_message_size,
+            "The shared library cache path is too long. No files were removed.");
+        return false;
+    }
+    if (!bootstrap_remove_tree(path)) {
+        if (error_code && error_code_size) snprintf(error_code, error_code_size, "CACHE_CLEAR_FAILED");
+        if (error_message && error_message_size) snprintf(error_message, error_message_size,
+            "Some shared libraries could not be removed. Wait for any build to finish, then retry.");
+        return false;
+    }
+    return true;
+}
+
 bool package_builder_bootstrap_python_start(
     PackageBootstrapSession *session, const PackagePrerequisite *python_item,
     const char *data_root) {
@@ -1876,6 +1905,7 @@ NkResult package_builder_start(
         argv[argc++] = "--user-data-root";
         argv[argc++] = user_data_root;
     }
+    if (session->no_shared_libraries) argv[argc++] = "--no-shared-libraries";
     argv[argc] = NULL;
 
     char path_override[32768];

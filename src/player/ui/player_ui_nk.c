@@ -320,7 +320,8 @@ static bool player_ui_disc_view(PlayerView view) {
 
 static bool player_ui_settings_view(PlayerView view) {
     return view == VIEW_SETTINGS || view == VIEW_ONLINE_SETTINGS ||
-           view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS;
+           view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
+           view == VIEW_BUILD_CACHE;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -556,6 +557,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         case VIEW_ONLINE_SETTINGS: model.page = PLAYER_UI_SETTINGS_PAGE_ONLINE; break;
         case VIEW_PREREQ_ABOUT: model.page = PLAYER_UI_SETTINGS_PAGE_NOTICES; break;
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
+        case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
         case VIEW_SETTINGS:
         default: model.page = PLAYER_UI_SETTINGS_PAGE_MAIN; break;
     }
@@ -587,6 +589,12 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     model.online_news = app->settings.online_news;
     model.online_reports = app->settings.online_reports;
     model.developer_mode = app->settings.developer_mode;
+    model.share_system_libraries = app->settings.share_system_libraries;
+    /* The build tools and cache page says what its clear button did, as the
+       existing renderer's page does. */
+    if (model.page == PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE && app->settings_notice[0] != '\0') {
+        model.notice = app->settings_notice;
+    }
     for (size_t i = 0u; i < app->prerequisites.items.count &&
                         model.tool_count < PLAYER_UI_SETTINGS_TOOLS; ++i) {
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
@@ -896,8 +904,9 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 /* Back from one of its pages, focus the button that opened it. */
                 focus = player->last_view == VIEW_ONLINE_SETTINGS ? PLAYER_UI_ID_SETTINGS_ONLINE
                     : player->last_view == VIEW_PREREQ_ABOUT ? PLAYER_UI_ID_SETTINGS_NOTICES
-                    : player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
-                        ? PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS
+                    : player->last_view == VIEW_BUILD_CACHE ||
+                            player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
+                        ? PLAYER_UI_ID_SETTINGS_BUILD_CACHE
                     : player->last_view == VIEW_CONTROLLER_SETTINGS
                         ? PLAYER_UI_ID_SETTINGS_CONTROLLER
                         : PLAYER_UI_ID_SETTINGS_RESOLUTION;
@@ -922,6 +931,11 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
             case VIEW_PREREQ_ABOUT:
             case VIEW_CONFIRM_REMOVE_TOOLS: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
+            case VIEW_BUILD_CACHE:
+                /* Back from the removal check, focus the button that opened it. */
+                focus = player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
+                    ? PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS : PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES;
+                break;
             default: break;
         }
     }
