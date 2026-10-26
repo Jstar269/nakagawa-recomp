@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import unittest
@@ -21,12 +22,16 @@ from unittest.mock import patch
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+REPOSITORY_ROOT_FOR_TESTS = Path(__file__).resolve().parent.parent
 
 from nk_core.prereq_fetcher import (
     PrerequisiteFetchError,
     default_data_root,
     download_verified_item,
     install_items,
+    main as fetcher_main,
+    stage_bundle,
+    verify_bundle,
 )
 
 
@@ -51,6 +56,7 @@ class _MockPosixPath(PurePosixPath):
 
 class _PayloadHandler(BaseHTTPRequestHandler):
     payload = b""
+    payloads: dict[str, bytes] = {}
     mode = "ok"
     requests = 0
 
@@ -61,15 +67,16 @@ class _PayloadHandler(BaseHTTPRequestHandler):
             self.send_header("Location", f"http://localhost:{self.server.server_port}/payload")
             self.end_headers()
             return
+        body = type(self).payloads.get(self.path, type(self).payload)
         self.send_response(200)
-        self.send_header("Content-Length", str(len(type(self).payload)))
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if type(self).mode == "interrupt" and type(self).requests == 1:
-            self.wfile.write(type(self).payload[: max(1, len(type(self).payload) // 2)])
+            self.wfile.write(body[: max(1, len(body) // 2)])
             self.wfile.flush()
             self.close_connection = True
             return
-        self.wfile.write(type(self).payload)
+        self.wfile.write(body)
 
     def log_message(self, _format: str, *_args: object) -> None:
         return
@@ -78,6 +85,7 @@ class _PayloadHandler(BaseHTTPRequestHandler):
 class TestPrerequisiteFetcher(unittest.TestCase):
     def setUp(self) -> None:
         _PayloadHandler.payload = _zip_payload()
+        _PayloadHandler.payloads = {}
         _PayloadHandler.mode = "ok"
         _PayloadHandler.requests = 0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _PayloadHandler)
@@ -335,6 +343,177 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         self.assertFalse((install_root / "installed.json").exists())
         staging_root = install_root / ".staging"
         self.assertTrue(not staging_root.exists() or not any(staging_root.iterdir()))
+
+    def test_installed_record_names_notices_relative_to_the_install_root(self) -> None:
+        # The notices were recorded at their temporary staging paths, which are
+        # deleted after the merge and would put the packaging machine's folders
+        # into a release bundle's installed.json (#1285).
+        records = install_items({"artifacts": [self.item()]}, self.root, allow_http=True)
+        self.assertEqual(records["python-test"]["notices"], ["notices/python-test/python314/LICENSE.txt"])
+        install_root = self.root / "prerequisites"
+        self.assertTrue((install_root / records["python-test"]["notices"][0]).is_file())
+
+    # ---- Release bundle (#1285) ----------------------------------------------
+
+    def bundle_manifest(self, *, msys_members: dict[str, bytes] | None = None) -> Path:
+        python_zip = io.BytesIO()
+        with zipfile.ZipFile(python_zip, "w") as archive:
+            archive.writestr("python.exe", b"synthetic python\n")
+            archive.writestr("LICENSE.txt", "Python license text\n")
+        members = msys_members if msys_members is not None else {
+            "ucrt64/bin/gcc.exe": b"synthetic gcc\n",
+            "ucrt64/bin/mingw32-make.exe": b"synthetic make\n",
+            "ucrt64/share/licenses/gcc/COPYING": b"GPL text\n",
+        }
+        msys_tar = io.BytesIO()
+        with tarfile.open(fileobj=msys_tar, mode="w:gz") as archive:
+            for name, data in members.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+            if "ucrt64/bin/gcc.exe" in members:
+                link = tarfile.TarInfo("ucrt64/bin/cc.exe")
+                link.type = tarfile.SYMTYPE
+                link.linkname = "gcc.exe"
+                archive.addfile(link)
+        artifacts = []
+        for item_id, path, body, fmt, subdir in (
+            ("cpython-embed-amd64", "/python.zip", python_zip.getvalue(), "zip", "python"),
+            ("mingw-w64-ucrt-x86_64-gcc", "/gcc.pkg.tar.gz", msys_tar.getvalue(), "tar.gz", "msys64"),
+        ):
+            _PayloadHandler.payloads[path] = body
+            artifacts.append({
+                "id": item_id, "name": item_id, "version": "1.0-test",
+                "url": f"http://127.0.0.1:{self.server.server_port}{path}",
+                "allowed_hosts": ["127.0.0.1"], "filename": path.lstrip("/"),
+                "size_bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(),
+                "license": "GPL-3.0-or-later", "archive_format": fmt, "install_subdir": subdir,
+                "status": "ready",
+            })
+        manifest = self.root / f"prereq_manifest_{len(list(self.root.glob('prereq_manifest_*')))}.json"
+        manifest.write_text(json.dumps({"schema_version": 1, "artifacts": artifacts}), encoding="utf-8")
+        return manifest
+
+    def test_bundle_stages_the_per_user_layout_with_a_full_inventory(self) -> None:
+        manifest = self.bundle_manifest()
+        dest = self.root / "release" / "prereqs"
+        bundle = stage_bundle(manifest, dest, self.root / "cache", allow_http=True)
+        self.assertEqual((dest / "python" / "python.exe").read_bytes(), b"synthetic python\n")
+        self.assertEqual((dest / "msys64" / "ucrt64" / "bin" / "gcc.exe").read_bytes(), b"synthetic gcc\n")
+        # A zip cannot carry links: the package's link is a regular copy of its target.
+        cc = dest / "msys64" / "ucrt64" / "bin" / "cc.exe"
+        self.assertFalse(cc.is_symlink())
+        self.assertEqual(cc.read_bytes(), b"synthetic gcc\n")
+        self.assertFalse((dest / ".staging").exists())
+        self.assertFalse((dest / "downloads").exists())
+        lines = (dest / "bundle-inventory.txt").read_text(encoding="utf-8").splitlines()
+        listed = {}
+        for line in lines:
+            digest, size, relative = line.split(" ", 2)
+            listed[relative] = (digest, int(size))
+        self.assertEqual(sorted(listed), [
+            "msys64/ucrt64/bin/cc.exe", "msys64/ucrt64/bin/gcc.exe",
+            "msys64/ucrt64/bin/mingw32-make.exe", "msys64/ucrt64/share/licenses/gcc/COPYING",
+            "notices/cpython-embed-amd64/LICENSE.txt",
+            "notices/mingw-w64-ucrt-x86_64-gcc/ucrt64/share/licenses/gcc/COPYING",
+            "python/LICENSE.txt", "python/python.exe",
+        ])
+        for relative, (digest, size) in listed.items():
+            data = (dest / relative).read_bytes()
+            self.assertEqual((hashlib.sha256(data).hexdigest(), len(data)), (digest, size), relative)
+        record = json.loads((dest / "installed.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["bundle"], bundle)
+        self.assertEqual(bundle["file_count"], len(lines))
+        self.assertEqual(bundle["unpacked_bytes"], sum(size for _, size in listed.values()))
+        self.assertEqual(bundle["manifest_sha256"], hashlib.sha256(manifest.read_bytes()).hexdigest())
+        self.assertEqual(record["installed"]["mingw-w64-ucrt-x86_64-gcc"]["notices"],
+                         ["notices/mingw-w64-ucrt-x86_64-gcc/ucrt64/share/licenses/gcc/COPYING"])
+        self.assertEqual(record["installed"]["mingw-w64-ucrt-x86_64-gcc"]["archive"], "gcc.pkg.tar.gz")
+        # Nothing in the records names the packaging machine's folders.
+        for name in ("installed.json", "bundle-inventory.txt"):
+            text = (dest / name).read_text(encoding="utf-8")
+            self.assertNotIn(self.root.as_posix(), text)
+            self.assertNotIn(str(self.root), text)
+        self.assertEqual(verify_bundle(manifest, dest), bundle)
+
+    def test_bundle_restages_from_the_verified_cache_without_network(self) -> None:
+        manifest = self.bundle_manifest()
+        stage_bundle(manifest, self.root / "first", self.root / "cache", allow_http=True)
+        requests = _PayloadHandler.requests
+        self.server.shutdown()
+        bundle = stage_bundle(manifest, self.root / "second", self.root / "cache", allow_http=True)
+        self.assertEqual(_PayloadHandler.requests, requests)
+        self.assertEqual(verify_bundle(manifest, self.root / "second"), bundle)
+
+    def test_bundle_verification_refuses_changed_trees(self) -> None:
+        manifest = self.bundle_manifest()
+        cache = self.root / "cache"
+
+        def fresh(name: str) -> Path:
+            dest = self.root / name
+            stage_bundle(manifest, dest, cache, allow_http=True)
+            return dest
+
+        dest = fresh("same-size")
+        gcc = dest / "msys64" / "ucrt64" / "bin" / "gcc.exe"
+        gcc.write_bytes(b"tampered gcc\n\n")
+        self.assertEqual(len(gcc.read_bytes()), len(b"synthetic gcc\n"))
+        with self.assertRaisesRegex(PrerequisiteFetchError, "gcc.exe does not match its recorded size and SHA-256"):
+            verify_bundle(manifest, dest)
+        dest = fresh("missing")
+        (dest / "python" / "python.exe").unlink()
+        with self.assertRaisesRegex(PrerequisiteFetchError, "python/python.exe is missing"):
+            verify_bundle(manifest, dest)
+        dest = fresh("unlisted")
+        (dest / "msys64" / "ucrt64" / "bin" / "extra.exe").write_bytes(b"x")
+        with self.assertRaisesRegex(PrerequisiteFetchError, "extra.exe is not in the file inventory"):
+            verify_bundle(manifest, dest)
+        dest = fresh("record")
+        record = json.loads((dest / "installed.json").read_text(encoding="utf-8"))
+        record["installed"]["mingw-w64-ucrt-x86_64-gcc"]["version"] = "0.9-test"
+        (dest / "installed.json").write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaisesRegex(PrerequisiteFetchError,
+                                    "mingw-w64-ucrt-x86_64-gcc differs from the pinned manifest"):
+            verify_bundle(manifest, dest)
+        other_manifest = self.root / "other_manifest.json"
+        other_manifest.write_bytes(manifest.read_bytes() + b"\n")
+        with self.assertRaisesRegex(PrerequisiteFetchError, "staged from a different manifest"):
+            verify_bundle(other_manifest, fresh("manifest"))
+        dest = fresh("escape")
+        with (dest / "bundle-inventory.txt").open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(f"{'0' * 64} 1 msys64/../../outside.txt\n")
+        with self.assertRaisesRegex(PrerequisiteFetchError, "BUNDLE_PATH_REJECTED"):
+            verify_bundle(manifest, dest)
+
+    def test_bundle_refuses_unsafe_destinations_and_incomplete_toolchains(self) -> None:
+        manifest = self.bundle_manifest()
+        occupied = self.root / "occupied"
+        occupied.mkdir()
+        (occupied / "old.txt").write_text("x", encoding="utf-8")
+        with self.assertRaisesRegex(PrerequisiteFetchError, "BUNDLE_DESTINATION_NOT_EMPTY"):
+            stage_bundle(manifest, occupied, self.root / "cache", allow_http=True)
+        with self.assertRaisesRegex(PrerequisiteFetchError, "BUNDLE_CACHE_REJECTED"):
+            stage_bundle(manifest, self.root / "dest", self.root / "dest" / "cache", allow_http=True)
+        with self.assertRaisesRegex(PrerequisiteFetchError, "INSTALL_ROOT_REJECTED"):
+            stage_bundle(manifest, REPOSITORY_ROOT_FOR_TESTS / "build" / "prereqs-test",
+                         self.root / "cache", allow_http=True)
+        self.assertFalse((REPOSITORY_ROOT_FOR_TESTS / "build" / "prereqs-test").exists())
+        without_make = self.bundle_manifest(msys_members={"ucrt64/bin/gcc.exe": b"synthetic gcc\n"})
+        with self.assertRaisesRegex(PrerequisiteFetchError, "BUNDLE_INCOMPLETE: .*mingw32-make.exe"):
+            stage_bundle(without_make, self.root / "incomplete", self.root / "cache2", allow_http=True)
+
+    def test_bundle_command_line_reports_json_and_refuses_a_missing_cache(self) -> None:
+        manifest = self.bundle_manifest()
+        dest = self.root / "cli"
+        bundle = stage_bundle(manifest, dest, self.root / "cache", allow_http=True)
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.assertEqual(fetcher_main(["--manifest", str(manifest), "--verify-bundle", str(dest)]), 0)
+        self.assertEqual(json.loads(out.getvalue()), {"event": "bundle-verified", **bundle})
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.assertEqual(fetcher_main(["--manifest", str(manifest), "--bundle-dest", str(self.root / "x")]), 2)
+        self.assertEqual(json.loads(out.getvalue())["code"], "BUNDLE_CACHE_REJECTED")
 
     def test_offline_failure_names_network_boundary(self) -> None:
         self.server.shutdown()
