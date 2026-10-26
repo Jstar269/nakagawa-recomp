@@ -24,7 +24,7 @@
  * and __TIME__, which made two compiles of identical inputs differ in the
  * compile clock -- the one project-owned source of variation between two builds
  * of the same package. The build now forwards a stable identity instead (the
- * Makefile passes these alongside -DSR_BUILD_DIR): SR_SOURCE_DATE_EPOCH, the
+ * Makefile passes these as -D defines): SR_SOURCE_DATE_EPOCH, the
  * reproducible-builds.org epoch, and SR_BUILD_ID, the source commit. Neither is
  * a clock reading, so binaries stay byte-for-byte reproducible. A compile that
  * forwards neither records nulls, and tools/flight_diff.py refuses such a
