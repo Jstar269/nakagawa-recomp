@@ -8525,7 +8525,7 @@ static int fontlib_snapshot(uint32_t handle, SrFontLib *out) {
     if (!handle) return 0;
     hle_lock();
     for (size_t i = 0; i < sizeof(s_fontlibs) / sizeof(s_fontlibs[0]); i++)
-        if (s_fontlibs[i].used && s_fontlibs[i].handle == handle) {
+        if (s_fontlibs[i].used == 1 && s_fontlibs[i].handle == handle) {
             if (out) *out = s_fontlibs[i];
             found = 1; break;
         }
@@ -8538,7 +8538,7 @@ static const PGF *font_acquire(uint32_t handle, SrFont **record) {
     if (!handle) return NULL;
     hle_lock();
     for (size_t i = 0; i < sizeof(s_fonts) / sizeof(s_fonts[0]); i++)
-        if (s_fonts[i].used && !s_fonts[i].closing && s_fonts[i].handle == handle) {
+        if (s_fonts[i].used == 1 && !s_fonts[i].closing && s_fonts[i].handle == handle) {
             s_fonts[i].refs++;
             pgf = s_fonts[i].pgf;
             if (record) *record = &s_fonts[i];
@@ -8574,6 +8574,26 @@ static const PGF *font_pgf_for(uint32_t handle, int cc, SrFont **record) {
 static uint32_t font_call_alloc(CpuState *s, uint32_t allocFn, uint32_t userData, uint32_t size) {
     if (allocFn) return ge_call_guest_rv(s, allocFn, userData, size, 0);
     return 0;
+}
+/* A guest allocator result is usable only when its whole span is guest-writable and it overlaps
+ * no live or reserved library or font object; a duplicate or overlapping return would alias one
+ * handle's state onto another's. Rejected blocks are not passed to freeFunc: an out-of-range
+ * block is not the guest's, and an overlapping one belongs to a live object. Host policy: what
+ * the PSP's libfont does with such a block is UNMEASURED, so this fails closed. Holds hle_lock. */
+static int font_alloc_span_free_locked(uint32_t addr, uint32_t size) {
+    if (!addr || !sr_guest_span_writable(addr, size)) return 0;
+    uint64_t lo = addr, hi = (uint64_t)addr + size;
+    for (size_t i = 0; i < sizeof(s_fontlibs) / sizeof(s_fontlibs[0]); i++) {
+        const SrFontLib *L = &s_fontlibs[i];
+        if (L->used && L->handle && lo < (uint64_t)L->handle + L->allocSize && L->handle < hi)
+            return 0;
+    }
+    for (size_t i = 0; i < sizeof(s_fonts) / sizeof(s_fonts[0]); i++) {
+        const SrFont *f = &s_fonts[i];
+        if (f->used && f->handle && lo < (uint64_t)f->handle + SR_FONT_SIZE && f->handle < hi)
+            return 0;
+    }
+    return 1;
 }
 static void font_zero(uint32_t addr, uint32_t size) {
     if (!addr) return;
@@ -8653,6 +8673,12 @@ static uint32_t h_FontNewLib(CpuState *s) {
     uint32_t params = A0, errPtr = A1;
     uint32_t userData = 0, allocFn = 0, freeFn = 0; int numFonts = 0;
     uint32_t paramsCopy[11] = {0};
+    if (params && !sr_guest_span_readable(params, (uint32_t)sizeof(paramsCopy))) {
+        /* The whole 0x2c-byte FontNewLibParams block is retained, so all of it must be guest
+         * memory before any word is read or the allocator is called. */
+        if (errPtr) MEM_W32(errPtr, SR_FONT_ERROR_INVALID_ARG);
+        return 0;
+    }
     if (params) {
         for (int i = 0; i < 11; i++) paramsCopy[i] = MEM_R32(params + (uint32_t)i * 4);
         userData = MEM_R32(params + 0x00);
@@ -8675,6 +8701,13 @@ static uint32_t h_FontNewLib(CpuState *s) {
     hle_unlock();
     if (slot < 0) { if (errPtr) MEM_W32(errPtr, SR_FONT_ERROR_TOO_MANY); return 0; }
     uint32_t lib = font_call_alloc(s, allocFn, userData, allocSize);
+    /* Validate the allocator's block and reserve its span before writing to it or publishing. */
+    hle_lock();
+    int lib_ok = font_alloc_span_free_locked(lib, allocSize);
+    if (lib_ok) { s_fontlibs[slot].handle = lib; s_fontlibs[slot].allocSize = allocSize; }
+    else memset(&s_fontlibs[slot], 0, sizeof(s_fontlibs[slot]));
+    hle_unlock();
+    if (!lib_ok) lib = 0;
     if (lib) {
         font_zero(lib, allocSize);
         MEM_W32(lib + 0x00, SR_FONTLIB_MAGIC);
@@ -8682,17 +8715,14 @@ static uint32_t h_FontNewLib(CpuState *s) {
         MEM_W32(lib + 0x08, userData);
         MEM_W32(lib + 0x0c, allocFn);
         MEM_W32(lib + 0x10, freeFn);
-    }
-    hle_lock();
-    if (lib) {
-        s_fontlibs[slot].used = 1; s_fontlibs[slot].handle = lib;
+        hle_lock();
+        s_fontlibs[slot].used = 1;
         s_fontlibs[slot].allocFn = allocFn; s_fontlibs[slot].freeFn = freeFn;
         s_fontlibs[slot].userData = userData; s_fontlibs[slot].numFonts = numFonts;
         s_fontlibs[slot].openCount = 0;
         memcpy(s_fontlibs[slot].params, paramsCopy, sizeof(paramsCopy));
-        s_fontlibs[slot].allocSize = allocSize;
-    } else memset(&s_fontlibs[slot], 0, sizeof(s_fontlibs[slot]));
-    hle_unlock();
+        hle_unlock();
+    }
     if (errPtr) MEM_W32(errPtr, lib ? 0 : SR_FONT_ERROR_OOM);
     if (getenv("SR_FONTLOG"))
         fprintf(stderr, "h_FontNewLib: params=0x%08x numFonts=%d alloc=0x%08x free=0x%08x -> lib=0x%08x\n",
@@ -8735,6 +8765,11 @@ static uint32_t font_open_common(CpuState *s, uint32_t lib, uint32_t index, uint
     }
     uint32_t allocFn = L.allocFn, userData = L.userData;
     uint32_t fh = font_call_alloc(s, allocFn, userData, SR_FONT_SIZE);
+    /* Validate the allocator's block and reserve its span before writing to it or publishing. */
+    hle_lock();
+    if (font_alloc_span_free_locked(fh, SR_FONT_SIZE)) s_fonts[slot].handle = fh;
+    else fh = 0;
+    hle_unlock();
     if (fh) {
         font_zero(fh, SR_FONT_SIZE);
         MEM_W32(fh + 0x00, SR_FONT_MAGIC);
@@ -8782,7 +8817,7 @@ static uint32_t h_FontOpenUserMemory(CpuState *s) {
     /* sceFontOpenUserMemory(a0=lib, a1=memAddr, a2=memLen, a3=u32* errorCode). */
     font_load();
     PGF *owned = NULL;
-    if (A1 && A2 >= 16 && A2 <= 16u * 1024u * 1024u) {
+    if (A1 && A2 >= 16 && A2 <= 16u * 1024u * 1024u && sr_guest_span_readable(A1, A2)) {
         uint8_t *copy = (uint8_t *)malloc(A2);
         if (copy) {
             for (uint32_t i = 0; i < A2; i++) copy[i] = MEM_R8(A1 + i);
@@ -8856,7 +8891,11 @@ static uint32_t h_FontDoneLib(CpuState *s) {
 static uint32_t h_FontGetFontInfo(CpuState *s) {
     font_load();
     SrFont *f = NULL; const PGF *p = font_acquire(A0, &f);
-    if (!p || !A1) { font_release(f); return SR_FONT_ERROR_INVALID_ARG; }
+    /* FontInfo is 0x108 bytes; the whole output span must be guest memory before any write. */
+    if (!p || !A1 || !sr_guest_span_writable(A1, 0x108u)) {
+        font_release(f);
+        return SR_FONT_ERROR_INVALID_ARG;
+    }
     font_write_info(A1, p, f && f->has_registry_info ? &f->registry_info : NULL,
                     f ? (f->ownedPgf != NULL) : 1);
     font_release(f);
@@ -8874,7 +8913,8 @@ uint32_t sr_font_test_info_for_index(uint32_t index, uint32_t info_addr) {
 }
 #endif
 uint32_t h_FontGetCharInfo(CpuState *s) {
-    uint32_t ci = A2; if (!ci) return SR_FONT_ERROR_INVALID_ARG;
+    /* CharInfo is 0x3c bytes; the whole output span must be guest memory before any write. */
+    uint32_t ci = A2; if (!ci || !sr_guest_span_writable(ci, 0x3cu)) return SR_FONT_ERROR_INVALID_ARG;
     uint32_t cc = A1 & 0xffff;
     SrFont *f = NULL; const PGF *p = font_pgf_for(A0, (int)cc, &f);
     if (p) { pgf_get_char_info(p, (int)cc, 0x5f, ci); font_release(f); return 0; }
@@ -24957,6 +24997,20 @@ static void hle_register_impose_handlers(void) {
  * implemented here; decoder output remains a separate fail-closed stage.  One definition,
  * called by both registry branches, so the executable harness dispatches the production
  * mapping and the named media boundaries are reachable from a production-path test. */
+/* sceLibFont: one mapping for the production registry and the executable harness, so the
+ * harness dispatches the production handlers (issue #1384). */
+static void hle_register_font_handlers(void) {
+    sr_hle_register(0x67f17ed7, "sceFontNewLib", h_FontNewLib);
+    sr_hle_register(0xa834319d, "sceFontOpen", h_FontOpen);
+    sr_hle_register(0x574b6fbc, "sceFontDoneLib", h_FontDoneLib);
+    sr_hle_register(0x0da7535e, "sceFontGetFontInfo", h_FontGetFontInfo);
+    sr_hle_register(0xdcc80c2f, "sceFontGetCharInfo", h_FontGetCharInfo);
+    sr_hle_register(0x980f4895, "sceFontGetCharGlyphImage", h_FontGetCharGlyphImage);
+    sr_hle_register(0x099ef33c, "sceFontFindOptimumFont", h_FontFindOptimumFont);
+    sr_hle_register(0x3aea8cb6, "sceFontClose", h_FontClose);
+    sr_hle_register(0xbb8e7fe6, "sceFontOpenUserMemory", h_FontOpenUserMemory);
+}
+
 static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0x1078c008, "scePsmfPlayerStop", h_PsmfStop);
     sr_hle_register(0x1e57a8e7, "scePsmfPlayerConfigPlayer", h_PsmfConfig);
@@ -25192,6 +25246,7 @@ void sr_hle_init(void) {
      * test mapping from becoming a duplicate implementation. */
     hle_register_utility_module_handlers();
     hle_register_kernel_module_handlers();
+    hle_register_font_handlers();
     hle_register_msgpipe_handlers();
     hle_register_mbx_handlers();
     /* PSP-B2-01 / PSP-B3-01 cancel/release family: one definition for both
@@ -25328,15 +25383,7 @@ void sr_hle_init(void) {
      * implemented here; decoder output remains a separate fail-closed stage. */
     hle_register_psmf_player_handlers();
     /* sceLibFont: synchronized handles backed by parsed firmware/user PGFs. */
-    sr_hle_register(0x67f17ed7, "sceFontNewLib", h_FontNewLib);
-    sr_hle_register(0xa834319d, "sceFontOpen", h_FontOpen);
-    sr_hle_register(0x574b6fbc, "sceFontDoneLib", h_FontDoneLib);
-    sr_hle_register(0x0da7535e, "sceFontGetFontInfo", h_FontGetFontInfo);
-    sr_hle_register(0xdcc80c2f, "sceFontGetCharInfo", h_FontGetCharInfo);
-    sr_hle_register(0x980f4895, "sceFontGetCharGlyphImage", h_FontGetCharGlyphImage);
-    sr_hle_register(0x099ef33c, "sceFontFindOptimumFont", h_FontFindOptimumFont);
-    sr_hle_register(0x3aea8cb6, "sceFontClose", h_FontClose);
-    sr_hle_register(0xbb8e7fe6, "sceFontOpenUserMemory", h_FontOpenUserMemory);
+    hle_register_font_handlers();
     sr_hle_register_unsupported(0x6af9b50a, "sceUmdCancelWaitDriveStat", 0x80010086u); /* SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED */
     sr_hle_register(0x20628e6f, "sceUmdGetErrorStat", h_UmdGetErrorStat);
     /* Callback-aware UMD wait consumes callbacks while preserving the drive wait. */
