@@ -7092,10 +7092,9 @@ static uint32_t h_DmacTryMemcpy(CpuState *s) {
 static uint32_t h_Memset(CpuState *s) {
     /* a0=dst, a1=byte_val, a2=size */
     uint32_t dst = A0, val = A1 & 0xff, n = A2;
-    if (n && sr_guest_span_writable(dst, n)) {
-        sr_guest_vram_write_prepare_bytes(dst, n);
-        memset(SR_HOST(dst), (int)val, n);
-        sr_guest_vram_write_commit_bytes(dst, n);
+    /* A CPU fill: a span through a swizzled VRAM mirror lands where the
+     * same scalar stores would (sr_guest_fill, #1049). */
+    if (n && sr_guest_fill(dst, (uint8_t)val, n)) {
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, n, 0u);
     } else if (n) {
         sr_oor(dst, val, 1);
@@ -7122,10 +7121,9 @@ static uint32_t h_Strlen(CpuState *s) {
 static uint32_t h_Memcpy(CpuState *s) {
     /* a0=dst, a1=src, a2=size */
     uint32_t dst = A0, src = A1, n = A2;
-    if (n && sr_guest_span_readable_current(src, n) && sr_guest_span_writable(dst, n)) {
-        sr_guest_vram_write_prepare_bytes(dst, n);
-        memmove(SR_HOST(dst), SR_HOST(src), n);
-        sr_guest_vram_write_commit_bytes(dst, n);
+    /* A CPU copy with memmove semantics; spans through a swizzled VRAM
+     * mirror are copied in measured-contiguous pieces (sr_guest_memmove, #1049). */
+    if (n && sr_guest_memmove(dst, src, n)) {
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, n, 0u);
     } else if (n) {
         sr_oor(dst, 0u, 1);
