@@ -413,6 +413,52 @@ static void test_file_backed_duplicate_validation(void) {
     printf("[XB_TEST] file-backed duplicate-path validation PASSED\n");
 }
 
+
+static void test_file_backed_benchmark(void) {
+    const size_t member_count = 1000u;
+    const size_t iterations = 5u;
+    FixtureEntry *entries = (FixtureEntry *)calloc(member_count, sizeof(*entries));
+    uint8_t *payload = (uint8_t *)malloc(member_count);
+    char (*paths)[32] = (char (*)[32])calloc(member_count, sizeof(*paths));
+    assert(entries != NULL && payload != NULL && paths != NULL);
+    for (size_t i = 0; i < member_count; i++) {
+        snprintf(paths[i], sizeof(paths[i]), "data/bench/file%04zu.bin", i);
+        payload[i] = (uint8_t)(i & 0xffu);
+        entries[i].path = paths[i];
+        entries[i].data = payload + i;
+        entries[i].size = 1u;
+        entries[i].compression = NK_XB_COMPRESSION_NONE;
+    }
+    ByteBuffer bytes = make_archive(entries, member_count, false);
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_xb_bench.xb";
+    write_file_bytes(path, bytes.data, bytes.size);
+
+    NkXbArchive archive;
+    char error[256];
+    assert(nk_xb_open_file_lazy(path, false, NULL, &archive, error, sizeof(error)) == NK_OK);
+
+    clock_t started = clock();
+    for (size_t it = 0; it < iterations; it++) {
+        for (size_t i = 0; i < member_count; i++) {
+            uint8_t out[16];
+            size_t out_sz = 0;
+            assert(nk_xb_read_entry(&archive, i, out, sizeof(out), &out_sz, error, sizeof(error)) == NK_OK);
+            assert(out_sz == 1u && out[0] == (uint8_t)(i & 0xffu));
+        }
+    }
+    clock_t finished = clock();
+    double elapsed = (double)(finished - started) / CLOCKS_PER_SEC;
+    printf("[XB_BENCHMARK] Read %zu members x %zu iterations in %.6f seconds\n",
+           member_count, iterations, elapsed);
+
+    nk_xb_close(&archive);
+    remove(path);
+    free(bytes.data);
+    free(paths);
+    free(payload);
+    free(entries);
+}
+
 static void test_lazy_payload_failure_is_deferred(void) {
     static const uint8_t data[] = "lazy payload";
     const FixtureEntry entry = {
@@ -1788,6 +1834,7 @@ int main(void) {
     test_file_backed_archive_is_lazy();
     test_file_backed_duplicate_validation();
     test_lazy_payload_failure_is_deferred();
+    test_file_backed_benchmark();
     test_huffman_final_buffered_bits();
     test_big_endian_fields();
     test_truncated_header();

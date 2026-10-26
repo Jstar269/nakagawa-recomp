@@ -7,6 +7,7 @@
 #include "nk_types.h"
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -64,6 +65,7 @@ typedef struct {
     bool owns_data;
     bool file_backed;
     char *file_path;
+    FILE *cached_file;
     uint64_t source_size;
     NkXbEntry *entries;
     size_t entry_count;
