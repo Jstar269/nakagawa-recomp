@@ -2184,6 +2184,123 @@ static void test_psp_button_bitmask(void) {
 }
 
 /* -----------------------------------------------------------------------------
+ * Subtest 14: Overlay input gate (#1159). The claim hides everything; a button
+ * or stick held when it ends stays hidden until let go.
+ * -------------------------------------------------------------------------- */
+
+static void gate_sample(NkInputGate *gate, uint32_t held, uint32_t pressed, uint8_t lx, uint8_t ly,
+                        uint32_t *out_held, uint32_t *out_pressed, uint8_t *out_lx, uint8_t *out_ly) {
+    *out_held = held;
+    *out_pressed = pressed;
+    *out_lx = lx;
+    *out_ly = ly;
+    nk_input_gate_apply(gate, out_held, out_pressed, out_lx, out_ly);
+}
+
+static void test_overlay_input_gate(void) {
+    printf("[INPUT_PROFILE_TEST] Running Subtest 14: Overlay input gate...\n");
+    const uint32_t cross = NK_PSP_BTN_CROSS_BIT;
+    const uint32_t tri = NK_PSP_BTN_TRIANGLE_BIT;
+    const uint32_t start = NK_PSP_BTN_START_BIT;
+    NkInputGate gate;
+    uint32_t held, pressed;
+    uint8_t lx, ly;
+
+    /* Unclaimed and nothing hidden: the sample passes unchanged. */
+    nk_input_gate_init(&gate);
+    gate_sample(&gate, cross | start, start, 200, 40, &held, &pressed, &lx, &ly);
+    assert(held == (cross | start) && pressed == start && lx == 200 && ly == 40);
+
+    /* Claimed: every button reads released and the stick centred. */
+    nk_input_gate_claim(&gate);
+    gate_sample(&gate, cross | start, start, 255, 0, &held, &pressed, &lx, &ly);
+    assert(held == 0u && pressed == 0u && lx == 128 && ly == 128);
+
+    /* Cross and the stick are held when the claim ends: both stay hidden while held. */
+    nk_input_gate_release(&gate, cross, 255, 128);
+    for (int i = 0; i < 3; i++) {
+        gate_sample(&gate, cross, 0u, 255, 128, &held, &pressed, &lx, &ly);
+        assert(held == 0u && pressed == 0u && lx == 128 && ly == 128);
+    }
+    /* A button pressed after the claim shows at once, beside the hidden one. */
+    gate_sample(&gate, cross | tri, tri, 255, 128, &held, &pressed, &lx, &ly);
+    assert(held == tri && pressed == tri);
+    /* Moving the stick without passing the centre keeps it hidden; the centre shows it again. */
+    gate_sample(&gate, cross | tri, 0u, 0, 128, &held, &pressed, &lx, &ly);
+    assert(held == tri && lx == 128 && ly == 128);
+    gate_sample(&gate, cross | tri, 0u, 128, 128, &held, &pressed, &lx, &ly);
+    assert(lx == 128 && ly == 128);
+    gate_sample(&gate, cross | tri, 0u, 0, 255, &held, &pressed, &lx, &ly);
+    assert(lx == 0 && ly == 255);
+    /* Cross released: nothing changes for the game, it never saw it down. */
+    gate_sample(&gate, tri, 0u, 128, 128, &held, &pressed, &lx, &ly);
+    assert(held == tri && pressed == 0u);
+    /* Pressed again: now it is a fresh press the game sees. */
+    gate_sample(&gate, cross | tri, cross, 128, 128, &held, &pressed, &lx, &ly);
+    assert(held == (cross | tri) && pressed == cross);
+
+    /* A release and a press between two samples: the held state never dropped, but the
+       press event the host saw after the claim proves the button went up and down. */
+    nk_input_gate_claim(&gate);
+    nk_input_gate_release(&gate, cross, 128, 128);
+    gate_sample(&gate, cross, 0u, 128, 128, &held, &pressed, &lx, &ly);
+    assert(held == 0u);
+    gate_sample(&gate, cross, cross, 128, 128, &held, &pressed, &lx, &ly);
+    assert(held == cross && pressed == cross);
+
+    /* Nothing held when the claim ends: nothing is hidden. */
+    nk_input_gate_claim(&gate);
+    nk_input_gate_release(&gate, 0u, 128, 128);
+    gate_sample(&gate, cross, cross, 10, 20, &held, &pressed, &lx, &ly);
+    assert(held == cross && pressed == cross && lx == 10 && ly == 20);
+
+    /* A release without a claim changes nothing. */
+    nk_input_gate_init(&gate);
+    nk_input_gate_release(&gate, cross, 255, 255);
+    gate_sample(&gate, cross, 0u, 255, 255, &held, &pressed, &lx, &ly);
+    assert(held == cross && lx == 255 && ly == 255);
+
+    /* The resume sequence end to end (P8): Cross held through the pause, the press that
+       chose RESUME, and every sample after it. The game first sees Cross on the sample
+       after it was released and pressed again, never before. */
+    {
+        static const struct { uint32_t held, pressed; } host[] = {
+            { cross, cross },  /* pressed before the pause opens */
+            { cross, 0u },     /* overlay open: claimed */
+            { cross, 0u },     /* overlay open: claimed */
+            { cross, 0u },     /* resumed, still held */
+            { cross, 0u },
+            { 0u, 0u },        /* released */
+            { 0u, 0u },
+            { cross, cross },  /* pressed again */
+        };
+        int first_seen = -1;
+        nk_input_gate_init(&gate);
+        for (int i = 0; i < (int)(sizeof(host) / sizeof(host[0])); i++) {
+            if (i == 1) nk_input_gate_claim(&gate);
+            if (i == 3) nk_input_gate_release(&gate, host[i].held, 128, 128);
+            gate_sample(&gate, host[i].held, host[i].pressed, 128, 128, &held, &pressed, &lx, &ly);
+            if (i == 0) {
+                assert(held == cross);
+                continue;
+            }
+            if (first_seen < 0 && (held & cross)) first_seen = i;
+        }
+        assert(first_seen == 7);
+    }
+
+    /* NULL pointers are ignored. */
+    nk_input_gate_init(NULL);
+    nk_input_gate_claim(NULL);
+    nk_input_gate_release(NULL, cross, 0, 0);
+    nk_input_gate_apply(NULL, &held, &pressed, &lx, &ly);
+    nk_input_gate_init(&gate);
+    nk_input_gate_apply(&gate, NULL, NULL, NULL, NULL);
+
+    printf("[INPUT_PROFILE_TEST] Subtest 14 PASSED!\n");
+}
+
+/* -----------------------------------------------------------------------------
  * Main Runner
  * -------------------------------------------------------------------------- */
 
@@ -2209,6 +2326,7 @@ int main(void) {
     test_hostile_profile_file_loader();
     test_unbound_control_fails_closed();
     test_psp_button_bitmask();
+    test_overlay_input_gate();
 
     printf("=================================================================\n");
     printf("ALL HOST INPUT PROFILE TESTS PASSED SUCCESSFULLY!\n");

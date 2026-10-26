@@ -841,9 +841,10 @@ RT_SRCS    := src/rt/recomp.c \
               src/core/nk_input_profile.c \
               src/core/nk_font.c \
               src/core/nk_json.c \
+              src/ui/nk_ui_theme.c \
               $(PLAYER_PLATFORM_SRC)
 
-RT_OBJS    := $(addprefix $(BUILD_DIR)/,$(notdir $(RT_SRCS:.c=.o)))
+RT_OBJS   := $(addprefix $(BUILD_DIR)/,$(notdir $(RT_SRCS:.c=.o)))
 RT_OBJS    += $(H264_SUB_OBJS)
 
 # Everything needed to COMPILE src/rt/hle.c, in one place. hle.c reaches into
@@ -1896,6 +1897,14 @@ $(BUILD_DIR)/%.o: src/rt/gpu_sdl3vk/%.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 
 $(BUILD_DIR)/%.o: src/core/%.c $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
+
+# The pause overlay draws with the player's design tokens (src/ui/nk_ui_theme.c); only the
+# window presenter and the token table see the UI include path.
+$(BUILD_DIR)/%.o: src/ui/%.c $(RUNTIME_PROFILE_STAMP)
+	$(CC) $(CFLAGS) -Isrc/ui $(DEPFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/gui.o: src/rt/gui.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
+	$(CC) $(CFLAGS) -Isrc/ui $(DEPFLAGS) -c $< -o $@
 
 # The one translation unit that reads the build-local generated configuration. Every
 # other runtime source consumes the generic accessors in src/rt/title_config.h, so the
