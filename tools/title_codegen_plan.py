@@ -74,6 +74,11 @@ PACKAGE_BUILD_JOB_BYTES = 3 * 1024**3
 PACKAGE_BUILD_RESERVED_BYTES = 4 * 1024**3
 #: Overrides the computed job count (still clamped to 1..PACKAGE_BUILD_MAX_JOBS).
 PACKAGE_BUILD_JOBS_ENV = "NK_PACKAGE_JOBS"
+#: Object-cache keys are taken by preprocessing each object's source, which peaked at
+#: about 80 MB for the largest generated Hot Shots Tennis chunk: keying is bounded by
+#: CPUs, not by the compile memory that limits Make jobs, and never runs more workers
+#: than this.
+OBJECT_KEY_MAX_WORKERS = 16
 #: When set, the package build appends ``{"completed": N, "total": M}`` lines to this
 #: file while it compiles, one line each time another object finishes.
 COMPILE_PROGRESS_FILE_ENV = "NK_COMPILE_PROGRESS_FILE"
@@ -181,6 +186,17 @@ def package_build_jobs(
         f"{cpus} logical CPUs, {available_bytes / 1024**3:.1f} GB memory available"
         f"{override_note}"
     )
+
+
+def object_key_workers(cpu_count: int | None) -> int:
+    """Workers that take object-cache keys: one per logical CPU, up to OBJECT_KEY_MAX_WORKERS.
+
+    A key preprocesses one source file, which needs a small fraction of the memory a
+    compile of that file needs, so a build that memory limits to one Make job still keys
+    its objects on every CPU.
+    """
+    cpus = cpu_count if cpu_count and cpu_count > 0 else 1
+    return max(1, min(cpus, OBJECT_KEY_MAX_WORKERS))
 
 
 def _host_package_build_jobs() -> tuple[int, str]:
@@ -338,6 +354,7 @@ class CompiledObjectReuse:
         build_dir: str,
         jobs: int,
         library_cache: Any = None,
+        key_workers: int | None = None,
     ):
         self.cache = cache
         self.library_cache = library_cache
@@ -347,6 +364,8 @@ class CompiledObjectReuse:
         self.env = env
         self.build_dir = build_dir
         self.jobs = max(1, jobs)
+        # Keys preprocess, they do not compile: their worker count is not the Make job count.
+        self.key_workers = max(1, key_workers if key_workers is not None else self.jobs)
         self.keys: dict[Path, str] = {}
         self.reused: list[Path] = []
         self._identities: dict[str, str | None] = {}
@@ -428,7 +447,7 @@ class CompiledObjectReuse:
                 self._identities[compiler] = package_cache.object_compiler_identity(
                     compiler, environment=self.env
                 )
-        with ThreadPoolExecutor(max_workers=self.jobs) as pool:
+        with ThreadPoolExecutor(max_workers=self.key_workers) as pool:
             return list(pool.map(self._key, commands))
 
     def fetch(self) -> list[Path]:
@@ -522,6 +541,7 @@ def _run_compile_phase(
         reuse = CompiledObjectReuse.from_dry_run(
             object_cache, listing, cwd=cwd, env=env, build_dir=build_dir, jobs=jobs,
             library_cache=library_cache,
+            key_workers=object_key_workers(os.process_cpu_count()),
         )
         reused = set(reuse.fetch())
         print(f"OBJECT_CACHE: reused {len(reused)} of {len(objects)} objects", flush=True)
