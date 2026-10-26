@@ -393,6 +393,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define ATRAC_ERROR_INVALID_CODECTYPE 0x80630004u
 #define ATRAC_ERROR_BAD_ATRACID 0x80630005u
 #define ATRAC_ERROR_UNKNOWN_FORMAT 0x80630006u
+#define ATRAC_ERROR_BUFFER_IS_EMPTY 0x80630023u
 #define ATRAC_ERROR_DECODE_DATA_AFTER_END 0x80630024u
 #define ATRAC_ERROR_SIZE_TOO_SMALL 0x80630011u
 #define NID_SCE_UTILITY_LOAD_MODULE 0x2a2b3de0u
@@ -18743,10 +18744,16 @@ static void td24c_build_track(uint32_t base, uint32_t fileSize, uint32_t avgByte
     td24c_wr32(base + 52u, fileSize - 56u);
 }
 
-/* One-frame, all-zero AT3 data is a synthetic silent frame. It exercises the
- * real FFmpeg decoder and HLE bookkeeping without title/game bytes. */
-static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
-    enum { FILE_SIZE = 380u, FRAME_SIZE = 304u };
+/* All-zero AT3 data with valid sound-unit headers is a synthetic silent
+ * frame. It exercises the real FFmpeg decoder and HLE bookkeeping without
+ * title/game bytes. `frames` such frames follow a 76-byte header; the 8-byte
+ * fact chunk carries `factSamples` and the delay word `factDelay`. */
+enum { TD1096_HEADER = 76u, TD1096_FRAME = 304u };
+static void td1096_build_at3_frames(uint32_t base, uint16_t formatTag,
+                                    uint32_t frames, uint32_t factSamples,
+                                    uint32_t factDelay) {
+    const uint32_t FRAME_SIZE = TD1096_FRAME;
+    const uint32_t FILE_SIZE = TD1096_HEADER + frames * TD1096_FRAME;
     for (uint32_t i = 0; i < FILE_SIZE; i++)
         g_mem[base - 0x08000000u + i] = 0;
     td24c_wr32(base + 0u, 0x46464952u);           /* RIFF */
@@ -18769,14 +18776,35 @@ static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
     td24c_wr16(base + 50u, 0u);                   /* reserved */
     td24c_wr32(base + 52u, 0x74636166u);          /* fact */
     td24c_wr32(base + 56u, 8u);
-    td24c_wr32(base + 60u, ATRAC3_FRAME_SAMPLES);
-    td24c_wr32(base + 64u, 0u);                   /* synthetic, NOT_MEASURED */
+    td24c_wr32(base + 60u, factSamples);
+    td24c_wr32(base + 64u, factDelay);            /* fact delay word */
     td24c_wr32(base + 68u, 0x61746164u);          /* data */
-    td24c_wr32(base + 72u, FRAME_SIZE);
+    td24c_wr32(base + 72u, frames * FRAME_SIZE);
     /* Valid silent joint-stereo sound-unit headers: channel 1 starts with
      * 0x28; reverse-ordered channel 2 carries id 3 at the end of the frame. */
-    g_mem[base - 0x08000000u + 76u] = 0xa0u;
-    g_mem[base - 0x08000000u + 76u + FRAME_SIZE - 2u] = 0x0cu;
+    for (uint32_t f = 0; f < frames; f++) {
+        uint32_t frame = base - 0x08000000u + TD1096_HEADER + f * FRAME_SIZE;
+        g_mem[frame] = 0xa0u;
+        g_mem[frame + FRAME_SIZE - 2u] = 0x0cu;
+    }
+}
+static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
+    td1096_build_at3_frames(base, formatTag, 1u, ATRAC3_FRAME_SAMPLES, 0u);
+}
+/* One sceAtracDecodeData through the production NID with sentinel outputs. */
+static uint32_t td1096_decode(uint32_t id, uint32_t pcm, uint32_t outN,
+                              uint32_t outEnd, uint32_t outRemain) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = id;
+    cpu.r[5] = pcm;
+    cpu.r[6] = outN;
+    cpu.r[7] = outEnd;
+    cpu.r[8] = outRemain;
+    MEM_W32(outN, 0xdeadbeefu);
+    MEM_W32(outEnd, 0xdeadbeefu);
+    MEM_W32(outRemain, 0xdeadbeefu);
+    return sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA);
 }
 
 static void test_at3_synthetic_decode_bookkeeping(void) {
@@ -18838,12 +18866,20 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
     MEM_W32(OUT_N, 0xdeadbeefu);
     MEM_W32(OUT_END, 0xdeadbeefu);
     MEM_W32(OUT_REMAIN, 0xdeadbeefu);
+    /* Sentinel the whole stereo frame so the trimmed write extent is visible. */
+    for (uint32_t i = 0; i < ATRAC3_FRAME_SAMPLES * 2u; i++)
+        MEM_W16(PCM_OUT + i * 2u, 0xa5a5u);
     uint32_t decode_ret = sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA);
+    /* PSP-3000 measurement (fixtures/psp_oracle/README.md `at3-decode`, #1096):
+     * fact delay 0 gives a first call of 955 samples. */
     expect(decode_ret == 0u &&
-               MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+               MEM_R32(OUT_N) == 955u &&
                MEM_R32(OUT_END) == 1u &&
                MEM_R32(OUT_REMAIN) == 0xffffffffu,
-           "AT3 DecodeData returns 1024 samples, final-frame flag, and all-data remain=-1");
+           "AT3 first DecodeData with fact delay 0 returns the measured 955 samples, final-frame flag, and all-data remain=-1");
+    expect(MEM_R16(PCM_OUT + (955u * 2u - 1u) * 2u) != 0xa5a5u &&
+               MEM_R16(PCM_OUT + 955u * 2u * 2u) == 0xa5a5u,
+           "AT3 first DecodeData writes exactly 955 stereo samples of PCM");
 
     cpu.r[4] = id;
     cpu.r[5] = PCM_OUT;
@@ -18860,6 +18896,91 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
            "AT3 DecodeData after the final frame returns 0x80630024 with outN=0");
     expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u) == 0u,
            "AT3 fixture releases its decoder context");
+
+    /* First-call length against the 8-byte fact chunk's delay word, measured
+     * on a PSP-3000 on 2026-10-24 (#1096; fixtures/psp_oracle/README.md
+     * `at3-decode`): delay 0 and 1024 give 955 samples, delay 955 gives 1024,
+     * delay 500 is refused by the first decode with 0x80630002 and 0 samples.
+     * Delay 100 is unmeasured: the complete decoder frame is kept. */
+    {
+        static const struct { uint32_t delay, ret, samples; const char *what; } rows[] = {
+            {0u, 0u, 955u, "AT3 fact delay 0 gives a 955-sample first call"},
+            {1024u, 0u, 955u, "AT3 fact delay 1024 gives a 955-sample first call"},
+            {955u, 0u, 1024u, "AT3 fact delay 955 gives a 1024-sample first call"},
+            {500u, 0x80630002u, 0u, "AT3 fact delay 500 is refused by the first decode with 0x80630002"},
+            {100u, 0u, 1024u, "AT3 unmeasured fact delay 100 keeps the complete decoder frame"},
+        };
+        for (unsigned r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
+            uint32_t rid = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
+                                           0u, 0u, 0u);
+            expect(rid < 8u, "AT3 fact-delay leg allocates a context");
+            if (rid >= 8u) return;
+            td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES,
+                                    rows[r].delay);
+            expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, rid, TRACK, 380u, 0u) == 0u,
+                   "AT3 SetData accepts the fact-delay leg's track");
+            uint32_t ret = td1096_decode(rid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+            expect(ret == rows[r].ret && MEM_R32(OUT_N) == rows[r].samples,
+                   rows[r].what);
+            (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, rid, 0u, 0u, 0u);
+        }
+    }
+
+    /* Buffer exhaustion, measured on a PSP-3000 on 2026-10-22 and 2026-10-24
+     * (#1096; fixtures/psp_oracle/README.md `at3-decode`): with more file data
+     * still to stream, the call after the last buffered frame returns
+     * 0x80630023 with 0 samples and end flag 0. The synthetic file has eight
+     * frames; SetData receives a four-frame prefix, leaving three decodable
+     * frames after the streamed ring's first-frame offset. */
+    {
+        enum { SRC = 0x08006000u, FRAMES = 8u, PREFIX_FRAMES = 4u,
+               WP = 0x08004200u, WB = 0x08004204u, RO = 0x08004208u };
+        const uint32_t prefix = TD1096_HEADER + PREFIX_FRAMES * TD1096_FRAME;
+        uint32_t sid = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
+                                       0u, 0u, 0u);
+        expect(sid < 8u, "AT3 streamed leg allocates a context");
+        if (sid >= 8u) return;
+        td1096_build_at3_frames(SRC, 0x0270u, FRAMES,
+                                FRAMES * ATRAC3_FRAME_SAMPLES, 0u);
+        for (uint32_t b = 0; b < prefix; b++)
+            MEM_W8(TRACK + b, MEM_R8(SRC + b));
+        expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, sid, TRACK, prefix, 0u) == 0u,
+               "AT3 SetData accepts a streamed prefix shorter than the file");
+
+        uint32_t ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+        expect(ret == 0u && MEM_R32(OUT_N) == 955u && MEM_R32(OUT_END) == 0u &&
+                   MEM_R32(OUT_REMAIN) == 2u,
+               "streamed AT3 first decode returns 955 samples with two frames remaining");
+        for (uint32_t left = 1u; left <= 2u; left++) {
+            ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+            expect(ret == 0u && MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+                       MEM_R32(OUT_END) == 0u && MEM_R32(OUT_REMAIN) == 2u - left,
+                   "streamed AT3 later decodes return 1024 samples and count frames down");
+        }
+        ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+        expect(ret == ATRAC_ERROR_BUFFER_IS_EMPTY && MEM_R32(OUT_N) == 0u &&
+                   MEM_R32(OUT_END) == 0u,
+               "streamed AT3 decode after the last buffered frame returns 0x80630023 with 0 samples and end 0");
+
+        /* The exhaustion is not terminal: feeding the next frame resumes. */
+        CpuState cpu2;
+        memset(&cpu2, 0, sizeof(cpu2));
+        cpu2.r[4] = sid; cpu2.r[5] = WP; cpu2.r[6] = WB; cpu2.r[7] = RO;
+        expect(sr_syscall(&cpu2, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0u &&
+                   MEM_R32(WB) >= TD1096_FRAME && MEM_R32(RO) == prefix,
+               "streamed AT3 ring offers room for the next file frame");
+        uint32_t wp = MEM_R32(WP), ro = MEM_R32(RO);
+        for (uint32_t b = 0; b < TD1096_FRAME; b++)
+            MEM_W8(wp + b, MEM_R8(SRC + ro + b));
+        expect(td24b_dispatch4(0x7db31251u, sid, TD1096_FRAME, 0u, 0u) == 0u,
+               "sceAtracAddStreamData accepts the next AT3 frame");
+        ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+        expect(ret == 0u && MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+                   MEM_R32(OUT_END) == 0u,
+               "streamed AT3 decode resumes after the ring is refilled");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, sid, 0u, 0u, 0u) == 0u,
+               "AT3 streamed leg releases its context");
+    }
 }
 
 static void test_td24c_atrac_info_batch(void) {
