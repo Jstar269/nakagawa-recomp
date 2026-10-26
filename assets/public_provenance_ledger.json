@@ -1675,7 +1675,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fc55757062fd9aa8b2b8f63f0e03c212112ea030cbb234900f497a0b8b4e536f"
+      "sha256": "6bb3d84fea617e06168437b5bed49317dd83801971b85335a726e744d4f16a87"
     },
     {
       "path": "docs/SETUP.md",
@@ -11890,7 +11890,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e6e1a0fa8f69804969e8cf47a458a82960a0c63bd60c445f0406a34573ce1208"
+      "sha256": "456c5defc2d61ea3559edf3035498221433ca8664f343f28aff8f07b73de64bd"
     },
     {
       "path": "tools/nk_core/prep_engine.py",
