@@ -1675,7 +1675,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1618778823486b9ad79f16a7a66a62fc3ad7ea541cad7dea864aa4167b43f044"
+      "sha256": "fc55757062fd9aa8b2b8f63f0e03c212112ea030cbb234900f497a0b8b4e536f"
     },
     {
       "path": "docs/SETUP.md",
@@ -1684,7 +1684,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b3d3249cdb2488badd295e74a7cf7bb630ce8a56a0a79c13330a136be583245e"
+      "sha256": "2bcb3cbf4d5c05a4457a7e9f209a3be18a3aa87017b7b8363040249c4b19c324"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -11806,7 +11806,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ca7687fcf995c122def4e4c1a525e69fc238ab4070f567620abcbd91a76e991f"
+      "sha256": "72eaa284c78f002b66eeac1e462f2ee776f4f38854ad92f58f2341f08804fb42"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -11890,7 +11890,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "396cd705988479e28d22f9312d8349437160874c8fedf12bef35406f5db8559c"
+      "sha256": "e6e1a0fa8f69804969e8cf47a458a82960a0c63bd60c445f0406a34573ce1208"
     },
     {
       "path": "tools/nk_core/prep_engine.py",
@@ -13983,7 +13983,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0d16cf85046976805c3e51e81ba0e22f2676f8c6f4542f68f1715ff790200fbb"
+      "sha256": "d4fb46a583015d1281001a593ad43645c40a0a686ae06c16d63171575c7239b0"
     },
     {
       "path": "tools/test_package_notices.py",
@@ -14824,7 +14824,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fd36ec24d485707bf94ad4668ee0e90716c2fcbd80fbb013dbd554ab79990d08"
+      "sha256": "fbd818d0a9881b493cbfa9114952bdfcfb74a2c3fe489f45f70923ecc38ffeab"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
@@ -15256,7 +15256,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fd4f1616d7e337d07e500b4645c5887322d51799ee955f7d92e1064072da8455"
+      "sha256": "33407a91254f5fb5dfa6fa02bf60e2632c32f4b4f8999fab2119362d76e9b339"
     },
     {
       "path": "tools/title_manager_plan.ps1",
