@@ -1709,6 +1709,18 @@ void player_app_toggle_experimental_60hz(PlayerApp *app) {
     player_app_set_experimental_60hz(app, !app->settings.experimental_60hz);
 }
 
+void player_app_set_experimental_60hz_session(PlayerApp *app, bool on) {
+    if (!app) return;
+    app->experimental_60hz_session = on;
+    player_dev_log_add(app, "settings",
+                       "experimental 60 Hz logic rescale %s for this session only",
+                       on ? "on" : "off");
+}
+
+bool player_app_experimental_60hz_active(const PlayerApp *app) {
+    return app && (app->settings.experimental_60hz || app->experimental_60hz_session);
+}
+
 void player_app_toggle_share_system_libraries(PlayerApp *app) {
     if (!app) return;
     app->settings.share_system_libraries = !app->settings.share_system_libraries;
@@ -2552,6 +2564,9 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
         work->has_package_root = true;
     }
     work->settings = app->settings;
+    /* The launch copy carries the session override; app->settings, which is saved,
+       does not. */
+    work->settings.experimental_60hz = player_app_experimental_60hz_active(app);
     work->launch_headless = app->launch_headless;
     work->headless_accept_presented_frames = app->headless_accept_presented_frames;
     /* The boot-event marker and the input mapping are written here, on the

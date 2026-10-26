@@ -20,6 +20,7 @@ import copy
 import hashlib
 from io import StringIO
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -27,6 +28,7 @@ import sys
 import tempfile
 from typing import Any
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -120,6 +122,12 @@ class TestEnhancementPackageSchema(unittest.TestCase):
         # Speculative category payload objects must NOT exist in schema
         for speculative in ("assets", "presentation", "timing", "camera", "save_data"):
             self.assertNotIn(speculative, schema.get("properties", {}))
+
+        # Site descriptors: insn_offset is a byte offset the validator requires to be 4-aligned.
+        site_props = schema["properties"]["sites"]["items"]["properties"]
+        self.assertEqual(site_props["insn_offset"].get("multipleOf"), 4)
+        self.assertIn("Byte offset", site_props["insn_offset"]["description"])
+        self.assertEqual(set(site_props["transform"]["enum"]), SITE_TRANSFORMS)
 
     def test_load_package_from_disk(self) -> None:
         """load_package must correctly read and parse JSON packages."""
@@ -449,12 +457,12 @@ class TestEnhancementPackageSchema(unittest.TestCase):
         # Address-literal and FUN_/sub_/loc_/func_ rejection in site function names
         bad_functions = [
             "0x08804000",
-            "FUN_00048258",
-            "fun_00048258",
+            "FUN_12345678",
+            "fun_1234abcd",
             "sub_08804000",
             "loc_08804000",
             "func_08804000",
-            "00048258",
+            "12345678",
             "deadbeef",
         ]
         for bad_fn in bad_functions:
@@ -838,6 +846,186 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
                 hashlib.sha256(package_cache.canonical_json(opts_authentic).encode("utf-8")).hexdigest(),
                 hashlib.sha256(package_cache.canonical_json(opts_enhanced).encode("utf-8")).hexdigest(),
             )
+
+    def test_a_site_that_is_never_emitted_refuses_the_package(self) -> None:
+        """Every verified site must be emitted; a site whose function is stubbed refuses."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            elf_path = tmp / "synth.elf"
+            elf_bytes = _write_synthetic_mips_elf(elf_path, self.words, self.entry)
+            pkg, symbols = self._make_package_and_symbols(elf_bytes)
+            pkg_path = tmp / "synth-60hz.json"
+            pkg_path.write_text(json.dumps(pkg), encoding="utf-8")
+            (tmp / "synth-60hz.symbols.json").write_text(json.dumps(symbols), encoding="utf-8")
+            real_emit = codegen.emit_function
+
+            def emit_or_stub(elf, start, *args, **kwargs):
+                lines = real_emit(elf, start, *args, **kwargs)
+                if start == self.fn_addrs["synth_velocity_step"]:
+                    # The site was already rewritten when the function failed late.
+                    raise codegen.Unsupported("synthetic late failure")
+                return lines
+
+            out_dir = tmp / "stubbed"
+            out_dir.mkdir()
+            with mock.patch.object(codegen, "emit_function", side_effect=emit_or_stub):
+                rc, output, files = self._run_codegen(
+                    elf_path, out_dir / "out.c", [f"--enhancement-package={pkg_path}"]
+                )
+            self.assertEqual(rc, 1, output)
+            self.assertIn("SYNTH_STEP", output)
+            self.assertIn("not emitted", output)
+            self.assertEqual(files, {})
+
+    def test_lle_scaled_store_never_writes_the_fpr(self) -> None:
+        """Under --lle-cpu a faulting swc1 returns early, so the rewrite must not touch s->f."""
+        swc1 = 0xE4A40010  # swc1 $f4, 0x10($a1)
+        saved = (codegen.ENHANCEMENT_SITES, codegen.LLE_CPU)
+        try:
+            codegen.ENHANCEMENT_SITES = {
+                0x1300: {"rewrite": {"kind": "scale_f_store", "reg": 4, "factor": 0.5}}
+            }
+            codegen.ENHANCEMENT_APPLIED.clear()
+            for lle in (False, True):
+                with self.subTest(lle_cpu=lle):
+                    line = codegen.normal_line(0x1300, swc1, lle_cpu=lle)
+                    enhanced = line.split("else", 1)[0]
+                    self.assertNotIn("s->f[4] =", enhanced)
+                    self.assertNotIn("s->f[4] *=", enhanced)
+                    self.assertNotIn("s->fi[4]", enhanced)
+                    self.assertIn("s->f[4] * 0.5f", enhanced)
+                    if lle:
+                        self.assertIn("return;", enhanced)
+        finally:
+            codegen.ENHANCEMENT_SITES, codegen.LLE_CPU = saved
+            codegen.ENHANCEMENT_APPLIED.clear()
+
+
+class TestEnhancementBuildPackageWiring(unittest.TestCase):
+    """White-box tests of the build-package refusals and the package directory choice."""
+
+    DISC = "ULUS99999"
+    TITLE = "synthetic-title"
+    EXE_SHA = "ab" * 32
+
+    def setUp(self) -> None:
+        import nk_cli
+        import title_codegen_plan
+
+        self.nk_cli = nk_cli
+        self.plan = title_codegen_plan
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.pkg = {
+            "schema_version": 1,
+            "id": "synth.timing.60hz",
+            "display_name": "Synthetic 60 Hz Logic Rescale",
+            "version": "1.0.0",
+            "category": "timing_frame_presentation",
+            "target_title_id": self.TITLE,
+            "game_version": "1.00",
+            "executable_sha256": self.EXE_SHA,
+            "capabilities": ["count_x2"],
+            "rng_policy": {"mode": "rescale_probability", "reason": "Synthetic."},
+            "sites": [{
+                "id": "SYNTH_COUNT",
+                "function": "synth_timer_duration",
+                "insn_offset": 0,
+                "stock_digest": compute_stock_words_digest([0x2404001E]),
+                "transform": "count_x2",
+            }],
+        }
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_pkg(self, name: str, **changes: Any) -> Path:
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(self.pkg, **changes)), encoding="utf-8")
+        return path
+
+    def _select(self, package: Path | None = None, experimental_60hz: bool = False,
+                environment: dict[str, str] | None = None):
+        return self.nk_cli._select_enhancement_package(
+            self.root,
+            self.DISC,
+            title_id=self.TITLE,
+            executable_sha256=self.EXE_SHA,
+            enhancement_package=package,
+            experimental_60hz=experimental_60hz,
+            environment={} if environment is None else environment,
+        )
+
+    def test_no_package_builds_the_authentic_directory(self) -> None:
+        self.assertEqual(self._select(), (None, self.root / "packages" / self.DISC))
+
+    def test_explicit_package_builds_its_own_directory(self) -> None:
+        path = self._write_pkg("pkg.json")
+        selected, target = self._select(path)
+        self.assertEqual(selected, path.resolve())
+        self.assertEqual(target, self.root / "packages" / f"{self.DISC}-enhanced-synth.timing.60hz")
+
+    def test_target_title_mismatch_refuses(self) -> None:
+        path = self._write_pkg("pkg.json", target_title_id="other-title")
+        with self.assertRaisesRegex(self.nk_cli.PackageBuildError, "target_title_id"):
+            self._select(path)
+
+    def test_executable_digest_mismatch_refuses(self) -> None:
+        path = self._write_pkg("pkg.json", executable_sha256="cd" * 32)
+        with self.assertRaisesRegex(self.nk_cli.PackageBuildError, "executable_sha256"):
+            self._select(path)
+
+    def test_experimental_60hz_without_a_package_refuses(self) -> None:
+        with self.assertRaisesRegex(self.nk_cli.PackageBuildError, "requires an enhancement package"):
+            self._select(experimental_60hz=True)
+
+    def test_experimental_60hz_finds_the_lowercase_package(self) -> None:
+        path = self._write_pkg(f"enhancements/{self.DISC.lower()}-60hz.json")
+        selected, target = self._select(experimental_60hz=True)
+        self.assertEqual(selected, path.resolve())
+        self.assertEqual(target.name, f"{self.DISC}-enhanced-synth.timing.60hz")
+
+    def test_ambient_package_never_enhances_a_build(self) -> None:
+        path = self._write_pkg("pkg.json")
+        for environment in (
+            {"ENHANCEMENT_PACKAGE": str(path)},
+            {"CODEGEN_USER_ARGS": f"--static-verify --enhancement-package={path}"},
+            {"MAKEFLAGS": f"-j3 ENHANCEMENT_PACKAGE={path}"},
+        ):
+            for explicit in (None, path):
+                with self.subTest(environment=environment, explicit=explicit):
+                    with self.assertRaisesRegex(self.nk_cli.PackageBuildError, "environment"):
+                        self._select(explicit, environment=environment)
+        # Empty values name no package.
+        self.assertEqual(
+            self._select(environment={"ENHANCEMENT_PACKAGE": " ", "CODEGEN_USER_ARGS": "--static-verify"}),
+            (None, self.root / "packages" / self.DISC),
+        )
+
+    def test_planner_refuses_an_ambient_package(self) -> None:
+        path = self._write_pkg("pkg.json")
+        for environment in (
+            {"ENHANCEMENT_PACKAGE": str(path)},
+            {"CODEGEN_USER_ARGS": f"--enhancement-package={path}"},
+        ):
+            for explicit in (None, path):
+                with self.subTest(environment=environment, explicit=explicit):
+                    with mock.patch.dict(os.environ, environment):
+                        with self.assertRaises(self.plan.PackageRouteError) as ctx:
+                            self.plan.build_package(
+                                {},
+                                manifest_path=self.root / "manifest.json",
+                                game_elf=self.root / "game.elf",
+                                output_dir=self.root / "out",
+                                enhancement_package_path=explicit,
+                            )
+                    self.assertEqual(ctx.exception.code, "PACKAGE_AMBIENT_ENHANCEMENT")
+
+    def test_invalid_explicit_package_refuses_the_cache_key(self) -> None:
+        path = self._write_pkg("pkg.json", sites=[])
+        with self.assertRaises(package_cache.PackageCacheError):
+            package_cache.enhancement_package_options({"ENHANCEMENT_PACKAGE": str(path)})
 
 
 if __name__ == "__main__":

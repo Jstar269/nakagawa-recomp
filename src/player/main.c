@@ -3383,7 +3383,7 @@ int main(int argc, char *argv[]) {
                    "[--experimental-60hz]\n");
             return 0;
         } else if (strcmp(argv[i], "--experimental-60hz") == 0) {
-            player_app_set_experimental_60hz(&app, true);
+            player_app_set_experimental_60hz_session(&app, true);
         } else if (strcmp(argv[i], "--ui=next") == 0) {
             ui_next_requested = true;
         } else if (strcmp(argv[i], "--ui=legacy") == 0) {

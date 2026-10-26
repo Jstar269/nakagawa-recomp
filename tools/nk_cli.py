@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from collections.abc import Mapping
 import contextlib
 import errno
 import hashlib
@@ -1828,6 +1829,63 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
         reporter.close()
 
 
+def _select_enhancement_package(
+    user_root: Path,
+    disc_id: str,
+    *,
+    title_id: str,
+    executable_sha256: str,
+    enhancement_package: Path | None,
+    experimental_60hz: bool,
+    environment: Mapping[str, str],
+) -> tuple[Path | None, Path]:
+    """The enhancement package a build applies and the package directory it writes.
+
+    A package is applied only when the command names it (`--enhancement-package`, or
+    `--experimental-60hz` with `<user data>/enhancements/<disc id, lowercase>-60hz.json`).
+    An environment that names one on its own is refused, explicit package or not: the
+    Makefile would read it, and it would otherwise enhance the authentic package or
+    override the package checked here. An enhanced build gets its own directory, never
+    the authentic `packages/<disc_id>`.
+    """
+    ambient = package_cache.ambient_enhancement_package(environment)
+    if ambient is not None:
+        raise PackageBuildError(
+            f"Build refused: the environment names an enhancement package ({ambient}). "
+            "Unset it; build-package applies a package only through --enhancement-package "
+            "or --experimental-60hz."
+        )
+    package_path = enhancement_package
+    if experimental_60hz and package_path is None:
+        candidate = user_root / "enhancements" / f"{disc_id.lower()}-60hz.json"
+        if not candidate.is_file():
+            raise PackageBuildError(
+                f"--experimental-60hz requires an enhancement package at {candidate} "
+                "or an explicit --enhancement-package <path>."
+            )
+        package_path = candidate
+    if package_path is None:
+        return None, user_root / "packages" / disc_id
+    import enhancement_package as enhancement_package_module
+
+    package_path = Path(package_path).expanduser().resolve(strict=False)
+    try:
+        package = enhancement_package_module.load_and_validate_package(package_path)
+    except (OSError, ValueError) as exc:
+        raise PackageBuildError(f"Enhancement package rejected: {exc}") from exc
+    if package["target_title_id"] != title_id:
+        raise PackageBuildError(
+            f"Enhancement package target_title_id {package['target_title_id']!r} "
+            f"does not match library title_id {title_id!r}."
+        )
+    if "executable_sha256" in package and package["executable_sha256"] != executable_sha256:
+        raise PackageBuildError(
+            f"Enhancement package executable_sha256 {package['executable_sha256']} "
+            f"does not match selected executable SHA-256 {executable_sha256}."
+        )
+    return package_path, user_root / "packages" / f"{disc_id}-enhanced-{package['id']}"
+
+
 def _build_package(args: argparse.Namespace, stage_observer,
                    reporter: _BuildProgressReporter) -> int:
     _record_aot_stage_result(args, "NOT_RUN", "NONE")
@@ -2075,37 +2133,15 @@ def _build_package(args: argparse.Namespace, stage_observer,
             package_cache.canonical_json(title_input_identity).encode("utf-8"),
         )
 
-        enhancement_package_path = getattr(args, "enhancement_package", None)
-        experimental_60hz = bool(getattr(args, "experimental_60hz", False))
-        if experimental_60hz and enhancement_package_path is None:
-            candidate_pkg = user_root / "enhancements" / f"{disc_id.lower()}-60hz.json"
-            if not candidate_pkg.is_file():
-                raise PackageBuildError(
-                    f"--experimental-60hz requires an enhancement package at {candidate_pkg} "
-                    "or an explicit --enhancement-package <path>."
-                )
-            enhancement_package_path = candidate_pkg
-        if enhancement_package_path is not None:
-            import enhancement_package
-
-            enhancement_package_path = Path(enhancement_package_path).expanduser().resolve(strict=False)
-            try:
-                enh_pkg = enhancement_package.load_and_validate_package(enhancement_package_path)
-            except (OSError, ValueError) as exc:
-                raise PackageBuildError(f"Enhancement package rejected: {exc}") from exc
-            if enh_pkg["target_title_id"] != entry["title_id"]:
-                raise PackageBuildError(
-                    f"Enhancement package target_title_id {enh_pkg['target_title_id']!r} "
-                    f"does not match library title_id {entry['title_id']!r}."
-                )
-            if "executable_sha256" in enh_pkg and enh_pkg["executable_sha256"] != actual_hash:
-                raise PackageBuildError(
-                    f"Enhancement package executable_sha256 {enh_pkg['executable_sha256']} "
-                    f"does not match selected executable SHA-256 {actual_hash}."
-                )
-            target_dir = user_root / "packages" / f"{disc_id}-enhanced-{enh_pkg['id']}"
-        else:
-            target_dir = user_root / "packages" / disc_id
+        enhancement_package_path, target_dir = _select_enhancement_package(
+            user_root,
+            disc_id,
+            title_id=entry["title_id"],
+            executable_sha256=actual_hash,
+            enhancement_package=getattr(args, "enhancement_package", None),
+            experimental_60hz=bool(getattr(args, "experimental_60hz", False)),
+            environment=os.environ,
+        )
         _require_child(user_root, target_dir, "Package destination")
         if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
             raise PackageBuildError("Package destination is not a safe directory; refusing to replace it.")

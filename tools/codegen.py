@@ -82,14 +82,37 @@ NAN_TRAP = False
 # Empty (the default) keeps authentic emission byte-identical.
 ENHANCEMENT_SITES: dict[int, dict] = {}
 ENHANCEMENT_PKG_META: dict | None = None
+# The sites whose rewrite has been emitted. A package is refused unless every
+# verified site is in it when the translation is written.
+ENHANCEMENT_APPLIED: set[int] = set()
 
 
 def _enhancement_rewrite(addr: int) -> dict | None:
-    """The planned rewrite for a verified main-executable site, or None."""
+    """The planned rewrite for a verified main-executable site, or None.
+
+    Callers emit the rewrite they are given, so the site is recorded as applied.
+    """
     if not ENHANCEMENT_SITES or ADDRESS_SPACE.runtime_module:
         return None
     site = ENHANCEMENT_SITES.get(addr)
-    return None if site is None else site["rewrite"]
+    if site is None:
+        return None
+    ENHANCEMENT_APPLIED.add(addr)
+    return site["rewrite"]
+
+
+def _scaled_store_line(rw: dict, stock_line: str) -> str:
+    """A swc1 site that stores its FPR scaled: the store reads a scaled copy, and the
+    register is never written, so an access fault that leaves the statement early
+    (--lle-cpu) cannot leave it scaled."""
+    r = rw["reg"]
+    stored = f"s->fi[{r}]"
+    stock = stock_line.strip()
+    if stock.count(stored) != 1:
+        raise ValueError(f"scale_f_store: expected one read of {stored} in {stock!r}")
+    return (f"{{ float _nk_f = s->f[{r}] * {rw['factor']!r}f; uint32_t _nk_bits; "
+            f"memcpy(&_nk_bits, &_nk_f, sizeof _nk_bits); "
+            f"{stock.replace(stored, '_nk_bits')} }}")
 
 
 def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
@@ -104,7 +127,9 @@ def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
         enh = f"{stock_line.strip()} s->r[{rw['reg']}] <<= 1;"
     elif kind == "scale_f_reg":
         enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
-    elif kind in ("scale_f_store", "scale_f_addend"):
+    elif kind == "scale_f_store":
+        enh = _scaled_store_line(rw, stock_line)
+    elif kind == "scale_f_addend":
         r = rw["reg"]
         enh = (f"{{ float _nk_keep = s->f[{r}]; s->f[{r}] *= {rw['factor']!r}f; "
                f"{stock_line.strip()} s->f[{r}] = _nk_keep; }}")
@@ -3435,6 +3460,7 @@ def main(argv):
     global ENHANCEMENT_SITES, ENHANCEMENT_PKG_META
     ENHANCEMENT_SITES = {}
     ENHANCEMENT_PKG_META = None
+    ENHANCEMENT_APPLIED.clear()
     if enhancement_pkg_path is not None:
         import hashlib
         from pathlib import Path
@@ -3774,6 +3800,7 @@ def main(argv):
             func_texts.append(text)
             emitted.append(a)
             continue
+        applied_before = set(ENHANCEMENT_APPLIED) if ENHANCEMENT_SITES else None
         try:
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
@@ -3784,6 +3811,9 @@ def main(argv):
             if STALE_DETECT:
                 stale_funcs.append(a)
         except Unsupported as e:
+            if applied_before is not None:
+                # The stub replaces the body, so its rewrites were not emitted.
+                ENHANCEMENT_APPLIED.intersection_update(applied_before)
             reason = str(e).replace('"', "'")
             text = f"void {entry_symbol(a, resume_owners)}(CpuState *s) {{  /* untranslatable: {reason} */\n"
             text += "    (void)s;  /* a stub never reads the state; keeps -Werror builds clean */\n"
@@ -3937,6 +3967,22 @@ def main(argv):
         ]
     num_files = len(boundaries)
     base_name = os.path.splitext(out_c)[0]
+
+    if ENHANCEMENT_PKG_META is not None:
+        missing = sorted(
+            site["id"] for addr, site in ENHANCEMENT_SITES.items()
+            if addr not in ENHANCEMENT_APPLIED
+        )
+        if missing:
+            # A verified site that no emitted statement rewrites (an unreached address, a
+            # stubbed function, a fused fast path) would leave the epoch stamp claiming
+            # it: refuse before anything is written.
+            sys.stderr.write(
+                "codegen: enhancement package refused (fail-closed): "
+                f"{len(missing)} of {len(ENHANCEMENT_SITES)} sites were not emitted: "
+                + ", ".join(missing) + "\n"
+            )
+            return 1
 
     # Write the codegen gap report
     with open(f"{base_name}_stubs.txt", "w", encoding="ascii", newline="\n") as f:

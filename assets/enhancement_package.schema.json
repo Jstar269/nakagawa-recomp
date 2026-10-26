@@ -156,7 +156,8 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 65536,
-            "description": "Word offset (in 32-bit instructions) from the function entry."
+            "multipleOf": 4,
+            "description": "Byte offset of the site's first instruction word from the function entry; a multiple of 4."
           },
           "stock_digest": {
             "type": "string",

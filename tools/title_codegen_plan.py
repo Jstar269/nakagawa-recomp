@@ -1772,6 +1772,16 @@ def build_package(
     """
     from nk_core import package_cache
 
+    # The Makefile reads ENHANCEMENT_PACKAGE and CODEGEN_USER_ARGS from the environment,
+    # so an inherited one would enhance an authentic package or override the explicit
+    # package. A package build names its package with enhancement_package_path only.
+    ambient = package_cache.ambient_enhancement_package(os.environ)
+    if ambient is not None:
+        raise PackageRouteError(
+            "PACKAGE_AMBIENT_ENHANCEMENT",
+            f"the environment names an enhancement package ({ambient}); unset it and pass "
+            "--enhancement-package instead",
+        )
     try:
         normalized = title_manifest.validate_manifest(manifest)
     except ValueError as exc:

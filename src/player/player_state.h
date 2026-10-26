@@ -460,6 +460,9 @@ typedef struct PlayerApp {
 
     /* Settings persistence */
     char settings_path[MAX_PATH_LEN];
+    /* --experimental-60hz on the command line: launches of this session opt in to
+       an enhancement-package build's 60 Hz logic. Never saved with the settings. */
+    bool experimental_60hz_session;
     char settings_notice[128];
 
     /* Window & layout metrics */
@@ -749,6 +752,12 @@ void player_app_toggle_reduce_motion(PlayerApp *app);
 void player_app_toggle_ui_sounds(PlayerApp *app);
 void player_app_toggle_experimental_60hz(PlayerApp *app);
 void player_app_set_experimental_60hz(PlayerApp *app, bool on);
+/* A session-only opt-in (the --experimental-60hz flag): unlike the setter above it
+   is not written to the settings file. */
+void player_app_set_experimental_60hz_session(PlayerApp *app, bool on);
+/* Whether a launch now exports SR_EXPERIMENTAL_60HZ=1: the saved setting or the
+   session override. */
+bool player_app_experimental_60hz_active(const PlayerApp *app);
 void player_app_toggle_share_system_libraries(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
 void player_app_move_focus(PlayerApp *app, int delta, int focus_count);

@@ -971,6 +971,27 @@ def nan_trap_enabled(environment: Mapping[str, str] | None = None) -> bool:
 AOT_ENHANCEMENT_PACKAGE_EPOCH = "aot-enhancement-package-v1"
 
 
+def ambient_enhancement_package(environment: Mapping[str, str] | None = None) -> str | None:
+    """Where an environment names an enhancement package on its own, or None.
+
+    `ENHANCEMENT_PACKAGE` (read by the Makefile, also through `MAKEFLAGS`) and an
+    `--enhancement-package` codegen option in `CODEGEN_USER_ARGS` apply a package to every
+    Make build that inherits them. A package build names its package explicitly, so
+    `nk_cli.py build-package` and `title_codegen_plan.py --package` refuse an environment
+    for which this returns a value: an inherited variable never enhances a build.
+    """
+    env = os.environ if environment is None else environment
+    if env.get("ENHANCEMENT_PACKAGE", "").strip():
+        return "ENHANCEMENT_PACKAGE"
+    for token in env.get("MAKEFLAGS", "").split():
+        if token.startswith("ENHANCEMENT_PACKAGE=") and token.split("=", 1)[1].strip():
+            return "MAKEFLAGS ENHANCEMENT_PACKAGE"
+    for token in env.get("CODEGEN_USER_ARGS", "").split():
+        if token.startswith("--enhancement-package"):
+            return "CODEGEN_USER_ARGS --enhancement-package"
+    return None
+
+
 def enhancement_package_options(environment: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Return AOT cache-key options for an active enhancement package, or empty dict when off.
 
