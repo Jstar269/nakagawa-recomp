@@ -3431,7 +3431,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "609f2a2222f863fd05501f4882e59d69a9cd4840bb03d5cbad36aae8d72f0b4d"
+      "sha256": "3bf87dcea98737a15eb2c4f08050434dea2bc1d2160b393305b4bedb0f173242"
     },
     {
       "path": "src/core/nk_xb.h",
@@ -3443,7 +3443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "179eced5d75e42800af3e9b2ba6571b98912fc8adfafe2c0d55878b5a74ae4b9"
+      "sha256": "78806491e1460e2b27103d17d3ef0bb8e330a140cf7a47d88cabac8af40df263"
     },
     {
       "path": "src/player/input_settings.c",
@@ -3808,7 +3808,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9dc6d61a1aced9a4a74885a40756db1f4f7594d67454f3152e830f1ced6caaf1"
+      "sha256": "ad28b9e94155a9260a388f278e7627cbe7dedd6642190519653b9b557c852c60"
     },
     {
       "path": "src/rt/archive_vfs.h",
@@ -3820,7 +3820,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c7bc18b442f247019703db96d64724e99fb1c6e250a98a9487668220ef38e6c"
+      "sha256": "3421761ef3d2d3cbedd090bbd6244af071f8dcde69828561b6e5d9a8a20343c4"
     },
     {
       "path": "src/rt/asset_index.h",
@@ -10146,7 +10146,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "281a74738e2ccc67caa71813ac77f03e37303e19266545b7d9a749ebd582e806"
+      "sha256": "f3a991ac876c04781dbbc42a2db061e2bce8d901954fc92739a4a80f5029d478"
     },
     {
       "path": "third_party/clay/LICENSE.md",
