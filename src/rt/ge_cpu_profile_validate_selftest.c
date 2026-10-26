@@ -1118,9 +1118,9 @@ static void test_vram_mirror_cpu_stores(void) {
  * The sceGuBeginObject/sceGuEndObject shape inside a CALLed sublist: OFFSETADDR (VADDR and the
  * BJUMP target are offset-relative, like JUMP's), BASE and VADDR, BOUNDINGBOX, BASE and a BJUMP
  * past the object, then the object itself (a red sprite at (10,10) and a FRAMEBUFPTR switch)
- * and RET.  After the RET the main list draws a green sprite at (30,10) through a VADDR that
- * needs the caller's offset, and reaches END only if the PC, the call stack and the offset
- * came back intact.  A skipped object leaves no red pixel and no framebuffer switch, so green
+ * and RET.  After the RET the main list JUMPs to a tail that draws a green sprite at (30,10);
+ * the JUMP target and the sprite's VADDR need the caller's offset, so the list reaches END and
+ * draws green only if the PC, the call stack and the offset came back intact.  A skipped object leaves no red pixel and no framebuffer switch, so green
  * lands in framebuffer A; an object that runs draws red and moves green to framebuffer B.
  * Each case runs on the software rasterizer and again through the GPU hook seam the Vulkan
  * backend fills, and both must execute the same PRIM commands. */
@@ -1129,6 +1129,7 @@ extern unsigned long g_ge_prim_count;
 
 #define LIST_BBOX       0x08118000u
 #define LIST_BBOX_SUB   0x0811A000u
+#define LIST_BBOX_TAIL  0x0811C000u
 #define BBOX_VERTS      0x08320000u
 #define BBOX_INDICES    0x08328000u
 #define BBOX_SPRITES    0x08329000u
@@ -1183,6 +1184,12 @@ static uint32_t build_bbox_list(const BboxCase *c, uint32_t sprite_a, uint32_t s
     W(0x09, bbox_sub_rel(after_object));
     s_pc = end_pc;
 
+    s_pc = LIST_BBOX_TAIL;
+    W(0x12, BBOX_THROUGH16);
+    prim(6u, 2u, sprite_b);                            /* sprite B */
+    W(0x0F, 0);                                        /* FINISH */
+    W(0x0C, 0);                                        /* END */
+
     s_pc = LIST_BBOX;
     emit_setup();
     W(0x9C, BBOX_FB_A & 0xFFFFFFu); W(0x9D, 512u); W(0xD2, 3u);
@@ -1193,10 +1200,7 @@ static uint32_t build_bbox_list(const BboxCase *c, uint32_t sprite_a, uint32_t s
     W(0x12, c->vtype);
     W(0x02, BBOX_INDICES & 0xFFFFFFu);                 /* IADDR */
     W(0x0A, LIST_BBOX_SUB & 0xFFFFFFu);                /* CALL */
-    W(0x12, BBOX_THROUGH16);
-    prim(6u, 2u, sprite_b);                            /* sprite B */
-    W(0x0F, 0);                                        /* FINISH */
-    W(0x0C, 0);                                        /* END */
+    W(0x08, LIST_BBOX_TAIL & 0xFFFFFFu);               /* JUMP */
     return bjump;
 }
 
