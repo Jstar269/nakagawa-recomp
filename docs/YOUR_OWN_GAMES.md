@@ -1,19 +1,18 @@
 # Playing your own games
 
-Status: CURRENT. This guide explains what the native player needs in order to
-play a PSP game you own, what it does for you automatically, and what is still
-in the works.
+Status: CURRENT. This guide explains what the native player needs to play a PSP
+game you own, what it does for you, and what is still in the works.
 
 ## Status of retail games
 
 Nakagawa Recomp never downloads games, keys, firmware or fonts. You bring your own.
 
-A title the maintainer has tested on a documented route keeps exactly the status its recorded evidence supports, as listed in [`COMPATIBILITY.md`](COMPATIBILITY.md). Any other retail game is:
+A game the maintainer has tested on a documented route keeps exactly the status its recorded evidence supports, as listed in [`COMPATIBILITY.md`](COMPATIBILITY.md). Any other retail game is:
 
-- **Experimental**, if it has been seen to boot or run, with no maintainer qualification; or
-- **Untested**, if there is no record at all.
+- **Experimental**, if someone has seen it start or run but the maintainer hasn't checked it; or
+- **Untested**, if no one has reported on it.
 
-Importing a disc does not change its status. The **EXPERIMENTAL** badge on the game card says only that compatibility is unknown.
+Importing a disc doesn't change its status. The **EXPERIMENTAL** badge on the game card only means no one knows yet how well it runs.
 
 ## What you need
 
@@ -21,71 +20,67 @@ Importing a disc does not change its status. The **EXPERIMENTAL** badge on the g
   drivers. Windows is the only supported player platform today; other platforms
   are in the works ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306), [#329](https://github.com/Jstar269/nakagawa-recomp/issues/329), [#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)).
 - **A disc image of a game you own, in uncompressed standard `.iso` format.**
-  The project does not make or supply images. Whether you may make an image of
+  The project doesn't make or supply images. Whether you may make an image of
   a disc, or of a digital purchase, depends on where you live and on the terms
   you accepted. Check both. Nakagawa Recomp never downloads games and contains no
   game data. Don't use copies you don't own.
-- **The game's executable in unencrypted form, for most commercial games.**
-  Nakagawa recompiles the game's own program code into a native program on your
-  computer, so it has to be able to read that code. Most retail PSP executables
+- **The game's program in unencrypted form, for most commercial games.**
+  Nakagawa turns the game's own program code into a native program on your
+  computer, so it has to be able to read that code. Most retail PSP programs
   (`EBOOT.BIN` and some `.prx` modules) are encrypted. Nakagawa does not
   decrypt games; it uses decrypted files from your own copy, placed in
-  the per-title folder (see [Supplying unencrypted files](#supplying-unencrypted-files)).
-- **PSP system fonts (optional, recommended for text).** In-game typography
-  uses Sony firmware font files (`.pgf`) copied from your own PSP's
-  `flash0:/font/`. The project does not include or distribute them. Copy them
-  to a folder and run `python tools/nk_cli.py fonts import <folder>`. If two
-  files cover the same slot, pick one with `--choose <slot>=<file>` (slots:
-  `japanese`, `latin`, `korean`). Check the result with `python tools/nk_cli.py
-  fonts status`. A title's own font library may still draw project fonts as
-  dashes ([#1055](https://github.com/Jstar269/nakagawa-recomp/issues/1055)).
-  The project-authored open-font converter (`tools/ttf2pgf.py`,
-  [#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)) builds open
-  replacement fonts.
+  the game's own folder (see [Supplying unencrypted files](#supplying-unencrypted-files)).
+- **PSP system fonts (optional, recommended for in-game text).** To see a
+  game's text in the PSP's own lettering, copy the Sony font files (`.pgf`)
+  from your own PSP's `flash0:/font/`. The project doesn't include or share
+  them. Copy them to a folder and run `python tools/nk_cli.py fonts import <folder>`.
+  If two files cover the same slot, pick one with `--choose <slot>=<file>`
+  (slots: `japanese`, `latin`, `korean`). Check the result with
+  `python tools/nk_cli.py fonts status`. Without them, Nakagawa uses open
+  replacement fonts that the project builds with its own converter
+  (`tools/ttf2pgf.py`, [#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
 
-Expectation: adding an ISO identifies the disc and shows a compatibility
-checklist of what will and will not work. **BUILD PACKAGE** recompiles the
-title in front of you, and **PLAY NOW** starts it once the package validates.
-For most retail discs you also need an unencrypted executable made from your
-own copy. Building needs a C toolchain (Python, GCC and GNU
-Make). The player can fetch pinned build tools after you approve each item, or
-you can install them yourself ([`SETUP.md`](SETUP.md)). Playing straight from
-an ISO with no local toolchain is in the works
-([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+What to expect: adding an ISO identifies the disc and shows a checklist of what
+will and won't work. **BUILD PACKAGE** recompiles the game while you watch, and
+**PLAY** starts it once the package checks out. For most retail discs you
+also need an unencrypted program file made from your own copy. Building needs a
+C toolchain (Python, GCC and GNU Make). The player can download the exact
+versions it needs after you agree once, or you can install them yourself
+([`SETUP.md`](SETUP.md)). Playing straight from an ISO with no local toolchain
+is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
 ## What the player does automatically
 
 1. Add the ISO: drag it into the player window, or click **START SETUP WIZARD**
-   (on an empty library) or **ADD ANOTHER ISO**. If the
-   disc is already in your library, re-adding it keeps its completed extraction
-   and staged files as long as the disc ID, version, and image size match.
-2. The player reads the disc's own `PARAM.SFO` to identify the title and disc ID.
-   At start-up, the player also loads every title manifest in `<user data>/manifests`
-   (up to 8, in alphabetical order), so any title recognized from a user-supplied
-   manifest is identified without extra options.
-3. It checks the executable:
-   - An **unencrypted** executable, including discs that carry an unencrypted
-     `BOOT.BIN`, is selected automatically. Homebrew and the project's showcase
+   (on an empty library) or the **Add a disc image you own** tile. If the disc is already in your
+   library, adding it again keeps the files already unpacked from it, as long as
+   the disc ID, version and image size match.
+2. The player reads the disc's own `PARAM.SFO` to find the game's title and disc ID.
+   When it starts, the player also loads every title manifest in `<user data>/manifests`
+   (up to 8, in alphabetical order), so a game described by a manifest you added
+   is recognized without extra options.
+3. It checks the game's program file:
+   - An **unencrypted** program, including a disc that carries an unencrypted
+     `BOOT.BIN`, is picked automatically. Homebrew and the project's showcase
      demos are in this group.
-   - For an **encrypted** executable, the game card says so and names the
-     folder where the player looks for your unencrypted files (`<user data>/titles/<DISC_ID>/decrypted/`).
-     If an experimental profile was created while the executable was still
-     encrypted, supplying `EBOOT.elf` in that folder is picked up automatically
-     when building.
-4. Once an unencrypted executable is available, click **BUILD PACKAGE**
-   (or **REBUILD PACKAGE** when the package is stale).
-   - If the manifest reads BSS metadata from the disc's `~PSP` executable
-     header, `build-package` extracts it directly from the disc image; you do
-     not need to provide a separate header file.
-   - The compiled package ships the decrypted modules it compiled against in
-     `<package>/modules`, and the launcher sets `SR_MODULE_DIR` to point there
-     so launches are self-contained.
-   - A run starts at the title's declared fallback entry when one is defined
-     (`runtime_bindings.fallback_entry`), or at the executable entry point.
-   - The player recompiles the game, shows each stage, and turns on **PLAY NOW** when the
-     package is ready. Anything it can't handle yet stops the build with a message
-     naming what is missing and its tracking issue. It never pretends a build
-     succeeded.
+   - For an **encrypted** program, the game card says so and names the folder
+     where the player looks for your unencrypted files (`<user data>/titles/<DISC_ID>/decrypted/`).
+     If the game was added while its program was still encrypted, an `EBOOT.elf`
+     you put in that folder later is picked up automatically when you build.
+4. Once an unencrypted program is available, click **BUILD PACKAGE**
+   (or **REBUILD PACKAGE** when the package is out of date).
+   - If the manifest reads BSS metadata from the disc's `~PSP` program header,
+     `build-package` takes it straight from the disc image; you don't need to
+     provide a separate header file.
+   - The finished package carries the decrypted modules it was built against in
+     `<package>/modules`, and the launcher sets `SR_MODULE_DIR` to point there,
+     so the package has everything it needs to start.
+   - A run starts at the game's declared fallback entry when it has one
+     (`runtime_bindings.fallback_entry`), or else at the program's entry point.
+   - The player recompiles the game, shows each stage, and turns on **PLAY** when the
+     package is ready. If it meets something it can't handle yet, the build stops
+     with a message that says what is missing and which issue tracks it. It never
+     pretends a build succeeded.
 
 ## Supplying unencrypted files
 
@@ -95,7 +90,7 @@ copy. It contains no decryption keys and never looks for a key file.
 This is not legal advice. Laws on decrypting and copying games differ by
 country. Check the rules where you live.
 
-Put the unencrypted files in the per-title folder the player shows on the game
+Put the unencrypted files in the game's folder that the player shows on the game
 card:
 
 ```text
@@ -104,24 +99,24 @@ card:
 └── <module>.prx     (only modules the player or build says are required)
 ```
 
-On Windows, `<user data>` normally is `%LOCALAPPDATA%\Nakagawa\data`. The
-player resolves `%LOCALAPPDATA%` first, then Windows `FOLDERID_LocalAppData`,
-then `%APPDATA%`; it never falls back to the profile root. If the old
-`%USERPROFILE%\Nakagawa\data` exists and the current root does not, the player
-and Doctor report its exact path so you can move it manually. A usable file
-is a 32-bit little-endian MIPS ELF. It starts with `7F 45 4C 46`, and the
+On Windows, `<user data>` is normally `%LOCALAPPDATA%\Nakagawa\data`. The
+player looks at `%LOCALAPPDATA%` first, then Windows `FOLDERID_LocalAppData`,
+then `%APPDATA%`; it never falls back to the top of your user profile. If the old
+`%USERPROFILE%\Nakagawa\data` exists and the current folder doesn't, the player
+and Doctor show its exact path so you can move it yourself. A usable file
+is a 32-bit little-endian MIPS ELF. It starts with the bytes `7F 45 4C 46`, and the
 build tools check that it is a MIPS ELF before using it. A file that starts with
 `~PSP` or `~SCE` is still encrypted, and the player will say so. The player
-picks up the folder automatically the next time it checks the game.
+notices the folder on its own the next time it checks the game.
 
-Decrypted guest modules can be named either after their file name on the disc
+Decrypted game modules can be named either after their file name on the disc
 (for example `psmf.prx`) or after their manifest module name (for example
-`scePsmf_library.prx`). If a module is missing or not a plain decrypted ELF, the
-build error message displays both names.
+`scePsmf_library.prx`). If a module is missing or isn't a plain decrypted ELF, the
+build error message shows both names.
 
 ### What an encrypted file reports
 
-An encrypted `EBOOT.BIN` with no valid `EBOOT.elf` in the per-title folder
+An encrypted `EBOOT.BIN` with no valid `EBOOT.elf` in the game's folder
 stops with:
 
 ```text
@@ -129,22 +124,22 @@ ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games. P
 ```
 
 An encrypted module with no plain copy there stops with
-`ENCRYPTED_MODULE: <name> is encrypted.` and the same guidance. A plain copy you
+`ENCRYPTED_MODULE: <name> is encrypted.` and the same advice. A plain copy you
 put in the folder yourself is always used and never overwritten.
 
 ### Supplying title manifests
 
-If your game requires an external title manifest overlay, place the `.json` manifest in:
+If your game needs a title manifest of its own (a file that describes the game to Nakagawa), put the `.json` file in:
 
 ```text
 <user data>/manifests/
 └── <manifest_name>.json
 ```
 
-The player loads every `.json` manifest in this directory on start-up (sorted
-alphabetically, up to 8 manifests). The command-line tool `tools/nk_cli.py
-build-package` also inspects this folder after checking repository titles,
-resolving the title identically.
+The player loads every `.json` manifest in this folder when it starts (in
+alphabetical order, up to 8 manifests). The command-line tool `tools/nk_cli.py
+build-package` also looks in this folder, after the titles in the repository, and
+finds the same title the player does.
 
 ## Keep it to your own games
 
@@ -156,88 +151,86 @@ resolving the title identically.
 
 ## When something is not supported yet
 
-The software follows a **fail-closed** policy: when something is unsupported,
-missing, or unimplemented, it halts cleanly at a named semantic boundary and
-tells you why. It never fakes success, simulates a phantom state, or silently
-crashes.
+Nakagawa never fakes what it can't do. When something is unsupported, missing
+or not built yet, it stops cleanly, names the missing piece and tells you why,
+instead of pretending it worked or crashing without a word.
 
-- **Game not in the built-in list:** a valid PSP disc that has no profile yet is
+- **Game not in the built-in list:** a valid PSP disc with no profile yet is
   imported with the **EXPERIMENTAL** badge (see [Status of retail games](#status-of-retail-games)).
-  The card notes that compatibility is unknown,
-  checklist items indicate what is missing, and **PLAY NOW** stays unavailable until a
-  matching runtime package exists. Bring-up of further titles and generic
-  title intake are in the works
+  The card says compatibility is unknown, the checklist shows what is missing,
+  and **PLAY** stays unavailable until a matching runtime package exists.
+  Support for more games, and for games in general, is in the works
   ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Images that
-  are not PSP game discs are refused.
-- **PlayStation Store package:** a file whose first bytes are the `PBP` package
-  magic (a store download renamed to `.iso`, for example) is not a disc image,
-  however it is named. It is refused before any disc reading with the boundary
-  `PBP_PACKAGE_UNSUPPORTED` and a sentence naming the title and disc ID the
-  package carries. Only the package's own `PARAM.SFO` entry is read to form that
-  sentence; no other package section is opened, installed, or executed.
-- **Encrypted executable:** Nakagawa does not decrypt games (built-in decryption
+  aren't PSP game discs are refused.
+- **PlayStation Store package:** a file that starts with the `PBP` package
+  signature (a store download renamed to `.iso`, for example) isn't a disc image,
+  whatever it is called. The player refuses it before reading any disc data, with
+  the code `PBP_PACKAGE_UNSUPPORTED` and a sentence naming the title and disc ID
+  the package carries. Only the package's own `PARAM.SFO` entry is read to write
+  that sentence; nothing else in the package is opened, installed or run.
+- **Encrypted program:** Nakagawa does not decrypt games (built-in decryption
   was removed, [#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
   The checklist reports `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` and names the
-  per-title folder; if an unencrypted `BOOT.BIN` is present on disc or a valid
-  user-supplied `EBOOT.elf` is found in that folder, it is selected automatically.
-  PGD/amctrl remains unsupported.
-- **Missing compiled runtime:** if a game has been identified and staged but no
-  matching valid package exists in `<user data>/packages/<DISC_ID>/`, the
-  preflight checklist reports `RUNTIME_PACKAGE` as missing and the card offers
-  **BUILD PACKAGE**; Play stays disabled until a valid package is built
+  game's folder. If the disc has an unencrypted `BOOT.BIN`, or a valid
+  `EBOOT.elf` you supplied is in that folder, it is picked automatically.
+  PGD/amctrl protection is not supported.
+- **No package built yet:** if a game has been identified and set up but there
+  is no valid package for it in `<user data>/packages/<DISC_ID>/`, the
+  checklist marks `RUNTIME_PACKAGE` as missing and the card offers
+  **BUILD PACKAGE**. Play stays off until a valid package is built
   ([#465](https://github.com/Jstar269/nakagawa-recomp/pull/465)). The one
-  exception is a non-experimental catalog title whose developer runtime the
-  launcher resolves, which is playable without a package
-  ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)); a stale
-  package, or one the player can no longer use (for example after an upgrade),
-  shows **REBUILD PACKAGE** with one line saying why; a rebuild asks for the
-  same consent, shows the same progress and restores the old package if it
-  fails, exactly like a first build
-  ([#1147](https://github.com/Jstar269/nakagawa-recomp/issues/1147)). If the package-check worker cannot start, the card
-  shows `PACKAGE CHECK FAILED` with a `RETRY PACKAGE CHECK` action; background
-  rescans retry after a bounded backoff.
+  exception is a non-experimental catalogued game whose developer runtime the
+  launcher can find, which plays without a package
+  ([#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)). A package that
+  is out of date, or one the player can no longer use (for example after an
+  upgrade), shows **REBUILD PACKAGE** with one line saying why. A rebuild asks
+  for the same consent and shows the same progress as a first build, and puts
+  the old package back if it fails
+  ([#1147](https://github.com/Jstar269/nakagawa-recomp/issues/1147)). If the
+  package check can't start, the card shows `PACKAGE CHECK FAILED` with a
+  `RETRY PACKAGE CHECK` button; background checks try again after a short,
+  limited wait.
 - **Missing firmware fonts:** if the player reports a missing system font, use
   the import step in [What you need](#what-you-need) and the font notes there.
-  Guest translated `libfont` startup runs through its guest entry; when that startup is
-  unavailable (an untranslated entry, or `SR_REAL_MODULE_START=0`), the runtime
-  reports `LIBFONT_STARTUP_UNAVAILABLE`, fails closed, and leaves readiness
-  unchanged. Manifests that still set `libfont_ready_flag_addr` fail with
-  `LIBFONT_READY_FLAG_RETIRED`; remove the field and use translated guest startup.
-  Real-title validation of startup dependencies remains in the works
+  A game's translated `libfont` starts through its own entry point. When that
+  can't run (an untranslated entry, or `SR_REAL_MODULE_START=0`), the runtime
+  reports `LIBFONT_STARTUP_UNAVAILABLE`, returns an error instead of pretending,
+  and leaves the library's ready state unchanged. Manifests that still set `libfont_ready_flag_addr`
+  fail with `LIBFONT_READY_FLAG_RETIRED`; remove the field and let the game's
+  own startup run. Checking that startup with real games is in the works
   ([#299](https://github.com/Jstar269/nakagawa-recomp/issues/299)). The
-  project-authored open-font converter is complete
+  project's open-font converter is finished
   ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
 
-[`COMPATIBILITY.md`](COMPATIBILITY.md) carries the full per-title and
-subsystem breakdown with tracking issues.
+[`COMPATIBILITY.md`](COMPATIBILITY.md) has the full breakdown for every game and
+every part of the PSP, with the issues that track them.
 
 ## What is still in the works
 
 | Area | Today | Tracking |
 | --- | --- | --- |
-| Encrypted executables and PRX modules | Built-in decryption was removed. Plain `BOOT.BIN`, or `EBOOT.elf` and decrypted modules from your own copy, are used. PGD/amctrl is unsupported. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
-| Commercial-game packages in public builds | Packages build with the public runtime, and public builds render imported PGF fonts through the project-authored reader for supported inputs (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the supported revision and shadow-map variants render too ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521)); a revision-3 font's compressed character-map subtables and any other shadow-map width are still refused by name. | [PGF_SPEC.md §4](cleanroom/PGF_SPEC.md#4-non-requirements-and-named-boundaries) |
-| Title font libraries | A title's own font library may draw project fonts as dashes; see [What you need](#what-you-need). | [#1055](https://github.com/Jstar269/nakagawa-recomp/issues/1055) |
-| Games other than the maintainer-tested titles | Other games import with the **EXPERIMENTAL** badge and stay Untested unless someone has seen them boot; bring-up of further titles is ongoing. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
+| Encrypted programs and PRX modules | Built-in decryption was removed. A plain `BOOT.BIN`, or an `EBOOT.elf` and decrypted modules from your own copy, are used. PGD/amctrl protection is not supported. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
+| Commercial-game packages in public builds | Packages build with the public runtime, and public builds draw imported PGF fonts through the project-authored reader for supported inputs (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the supported revision and shadow-map variants draw too ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521)); a revision-3 font's compressed character-map subtables, and any other shadow-map width, are still refused by name. | [PGF_SPEC.md §4](cleanroom/PGF_SPEC.md#4-non-requirements-and-named-boundaries) |
+| Games other than the maintainer-tested ones | Other games import with the **EXPERIMENTAL** badge and stay Untested unless someone has seen them start; work on more games goes on. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 
 See [`SETUP.md`](SETUP.md) for developer setup and the command-line tools.
 
 ## Command-line reference (`nk_cli`)
 
-`python tools/nk_cli.py` is the headless interface to everything the player does, plus a few diagnostic tools. Run any
-command with `--help` for its exact options; this section describes what each command reads, what it writes and how
-it reports the result. The runtime's environment switches are in [`DEBUGGING.md`](DEBUGGING.md).
+`python tools/nk_cli.py` can do everything the player does without a window, plus a few diagnostic tools. Run any
+command with `--help` for its exact options; this section says what each command reads, what it writes and how it
+reports the result. The runtime's environment switches are in [`DEBUGGING.md`](DEBUGGING.md).
 
 ### Common conventions
 
-- **Player data directory.** Commands that touch the library, packages or fonts use the player's per-user data
-  directory. Override it with `--user-data-root <dir>` (named `--root` on `inspect`).
+- **Player data folder.** Commands that touch the library, packages or fonts use the player's per-user data
+  folder. Choose another with `--user-data-root <dir>` (named `--root` on `inspect`).
 - **Machine-readable output.** `--json` (or `--progress-json` on `build-package`) prints JSON instead of text, so
-  scripts never parse prose.
+  scripts never have to parse sentences.
 - **Exit status.** `0` means success. `1` means the command ran and refused or failed, with the reason on stderr.
   `2` means the arguments were invalid (argparse usage errors, or a disc ID that is not nine characters).
-- **Fail closed.** A step that cannot be done correctly stops with a named reason; nothing reports success it did
-  not achieve.
+- **Fail closed.** A step that can't be done correctly stops with a named reason; nothing reports a success it
+  didn't achieve.
 
 ### Commands
 
@@ -250,11 +243,11 @@ it reports the result. The runtime's environment switches are in [`DEBUGGING.md`
 | `fonts import <folder> [--choose SLOT=FILE] [--json]` | `.pgf` font files you dumped from your own PSP | Copies them into the player data for the `japanese`, `latin` and `korean` slots |
 | `fonts status [--project-root DIR] [--json]` | The player data and project `font/` folder | The source of each font slot |
 | `fonts remove (--slot SLOT \| --all)` | The player data | Removes fonts this tool imported |
-| `bringup <iso> --work-dir DIR --report FILE [--launch-timeout S] [--instruction-trace]` | A PSP `.iso` | Runs a bounded bring-up in a private work directory and writes a public-safe JSON report |
+| `bringup <iso> --work-dir DIR --report FILE [--launch-timeout S] [--instruction-trace]` | A PSP `.iso` | Runs a time-limited bring-up in a private work folder and writes a JSON report that is safe to share |
 | `vram <image> --addr A --width W --height H --format F [...] --output PNG` | A 2 MiB raw VRAM capture | Decodes one surface to PNG; `--from-sidecar FILE --out-dir DIR` exports every surface a runtime capture describes |
 
 ### Privacy boundary
 
-Game files, keys, decrypted modules and work directories stay on your machine. The only outputs meant for sharing are
-the public-safe `bringup` report and VRAM PNGs you choose to export; the private inputs behind them are never copied
-into the repository.
+Game files, keys, decrypted modules and work folders stay on your machine. The only outputs meant for sharing are
+the `bringup` report, which is safe to share, and VRAM PNGs you choose to export; the private inputs behind them are
+never copied into the repository.

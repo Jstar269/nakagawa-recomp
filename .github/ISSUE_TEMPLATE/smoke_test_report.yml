@@ -53,18 +53,19 @@ body:
       label: Smoke test steps (docs/SMOKE_TEST.md)
       description: Check every step that passed. Leave failing or skipped steps unchecked and explain in Notes below.
       options:
-        - label: Step 1 — Fresh profile (clean user-data folder)
-        - label: Step 2 — Start the player (smooth window creation at 1280x720)
-        - label: Step 3 — Empty-library first run (CTA banner and Add Game button)
+        - label: Step 1 — Fresh isolated profile (empty user-data folder)
+        - label: Step 2 — Start the player (window opens at 1280x720, or larger with display scaling)
+        - label: Step 3 — Empty-library first run (Add your first game, START SETUP WIZARD)
         - label: Step 4 — Settings persist across a restart
-        - label: Step 5 — Controller settings open (gamepad mapping & calibration)
-        - label: Step 6 — Add a disc image (ISO9660 PVD/SFO parsed in C)
-        - label: Step 7 — Encrypted-executable message names per-title folder
-        - label: Step 8 — Build package with progress, and cancel
-        - label: Step 9 — Error card wording (fail-closed boundary text)
-        - label: Step 10 — F1 overlay in a running package (HUD telemetry toggle)
-        - label: Step 11 — Quit (clean exit with return code 0)
-        - label: Step 12 — Log and report locations to attach
+        - label: Step 5 — Controller settings open (button mapping and calibration)
+        - label: Step 6 — Add a disc image (PARAM.SFO read in C)
+        - label: Step 7 — Encrypted executables are refused by name (or NOT RUN)
+        - label: Step 8 — BUILD PACKAGE and prerequisite consent, with a cancel
+        - label: Step 9 — Play the generated package
+        - label: Step 10 — Error card wording
+        - label: Step 11 — F3 overlay and pause in a running package
+        - label: Step 12 — Quit (clean exit with return code 0)
+        - label: Step 13 — Log and report locations to attach
 
   - type: textarea
     id: notes
@@ -73,7 +74,7 @@ body:
       description: Describe any failed or skipped steps, console output, or performance observations.
       placeholder: |
         - Step 8 was skipped because...
-        - Step 10 observed FPS: ...
+        - Step 11 observed FPS: ...
 
   - type: textarea
     id: logs
