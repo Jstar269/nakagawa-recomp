@@ -6899,8 +6899,10 @@ static void test_time_domains_are_coherent(void) {
     uint32_t libc_time = sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_TIME);
     expect(libc_time == MEM_R32(libc_time_out) && libc_time == tv_sec,
            "libc time and gettimeofday share the RTC/Unix epoch");
-    expect(tv_usec < 1000000u && MEM_R32(TZ_OUT) == 0u && MEM_R32(TZ_OUT + 4u) == 0u,
-           "gettimeofday emits a valid deterministic UTC timezone record");
+    uint32_t profile_zone = sysreg_sysparam_int(6u), profile_daylight = sysreg_sysparam_int(7u);
+    int64_t profile_local_minutes = (int64_t)(int32_t)profile_zone + (profile_daylight ? 60 : 0);
+    expect(tv_usec < 1000000u && MEM_R32(TZ_OUT) == 0u - profile_zone && MEM_R32(TZ_OUT + 4u) == profile_daylight,
+           "gettimeofday's timezone record carries the system profile's TIMEZONE and DAYLIGHTSAVINGS (#1382)");
 
     cpu.r[4] = DATE_EXPLICIT;
     cpu.r[5] = 60u; /* explicit PSP timezone offset in minutes */
@@ -6915,8 +6917,9 @@ static void test_time_domains_are_coherent(void) {
     cpu.r[4] = DATE_LOCAL; cpu.r[5] = DATE_TICK_LOCAL;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
            "local current-clock output is a valid RTC datetime");
-    expect(selftest_guest_u64(DATE_TICK_EXPLICIT) - selftest_guest_u64(DATE_TICK_LOCAL) == 3600000000ull,
-           "explicit RTC offset is applied in checked microseconds");
+    expect(selftest_guest_u64(DATE_TICK_EXPLICIT) - selftest_guest_u64(DATE_TICK_LOCAL) ==
+               (uint64_t)((60 - profile_local_minutes) * 60000000ll),
+           "explicit RTC offset and the system profile's local offset are applied in checked microseconds");
 
     expect(s_vtime_us == before,
            "all repeated clock queries leave the scheduler timeline unchanged");
@@ -7953,22 +7956,25 @@ static void test_rtc_pointer_validation_and_measured_conversions(void) {
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "GetCurrentClock rejects an unwritable datetime span");
 
-    /* sceRtcGetCurrentClockLocalTime runs on the fixed UTC console profile
-     * until #77; the local output must equal the explicit tz=0 baseline. */
-    cpu.r[4] = DATE_A; cpu.r[5] = 0u;
+    /* sceRtcGetCurrentClockLocalTime applies the system profile's time zone
+     * and daylight saving (#1382); the local output must equal the explicit
+     * clock at that offset. */
+    uint32_t profile_daylight = sysreg_sysparam_int(7u);
+    int64_t profile_local_minutes = (int64_t)(int32_t)sysreg_sysparam_int(6u) + (profile_daylight ? 60 : 0);
+    cpu.r[4] = DATE_A; cpu.r[5] = (uint32_t)(int32_t)profile_local_minutes;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u,
-           "refreshes the explicit UTC baseline for the LocalTime comparison");
+           "refreshes the explicit baseline at the profile's offset for the LocalTime comparison");
     cpu.r[4] = DATE_B;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == 0u,
-           "GetCurrentClockLocalTime succeeds on the pinned UTC profile");
+           "GetCurrentClockLocalTime succeeds on the system profile");
     cpu.r[4] = DATE_A; cpu.r[5] = TICK_A;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
-           "the refreshed UTC baseline is a valid datetime");
+           "the refreshed explicit baseline is a valid datetime");
     cpu.r[4] = DATE_B; cpu.r[5] = TICK_B;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
            "the LocalTime output is a valid datetime");
     expect(selftest_guest_u64(TICK_A) == selftest_guest_u64(TICK_B),
-           "LocalTime equals the UTC baseline while the console profile is pinned to UTC (#77)");
+           "LocalTime equals the explicit clock at the system profile's offset (#1382)");
     cpu.r[4] = 0u;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "GetCurrentClockLocalTime rejects a NULL datetime pointer fail-closed");
@@ -7981,22 +7987,22 @@ static void test_rtc_pointer_validation_and_measured_conversions(void) {
            "GetCurrentTick rejects a NULL output pointer fail-closed");
     /* ---- sceRtcConvertUtcToLocalTime / sceRtcConvertLocalTimeToUTC ---- */
     /* psprtc.h declares both directions (UTC<->local tick pointers, 0 on
-     * success, <0 on error).  With the console timezone pinned to UTC (#77)
-     * the conversion is the identity; the pointer edges fail closed and never
-     * touch the output. */
+     * success, <0 on error).  The conversion applies the system profile's
+     * local offset (#1382); the pointer edges fail closed and never touch the
+     * output. */
     MEM_W32(TICK_B, (uint32_t)tick_2012);
     MEM_W32(TICK_B + 4u, (uint32_t)(tick_2012 >> 32));
     MEM_W32(TICK_A, 0xDEADBEEFu); MEM_W32(TICK_A + 4u, 0xDEADBEEFu);
     cpu.r[4] = TICK_B; cpu.r[5] = TICK_A;
     expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == 0u,
-           "ConvertUtcToLocalTime succeeds on the pinned UTC profile");
-    expect(selftest_guest_u64(TICK_A) == tick_2012,
-           "ConvertUtcToLocalTime is the identity while the console timezone is UTC (#77)");
+           "ConvertUtcToLocalTime succeeds on the system profile");
+    expect(selftest_guest_u64(TICK_A) == tick_2012 + (uint64_t)(profile_local_minutes * 60000000ll),
+           "ConvertUtcToLocalTime adds the system profile's local offset (#1382)");
     cpu.r[4] = TICK_A; cpu.r[5] = TICK_B;
     expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == 0u,
-           "ConvertLocalTimeToUTC succeeds on the pinned UTC profile");
+           "ConvertLocalTimeToUTC succeeds on the system profile");
     expect(selftest_guest_u64(TICK_B) == tick_2012,
-           "ConvertLocalTimeToUTC inverts the identity on the pinned UTC profile");
+           "ConvertLocalTimeToUTC inverts the system profile's local offset");
 
     MEM_W32(TICK_A, 0xDEADBEEFu); MEM_W32(TICK_A + 4u, 0xDEADBEEFu);
     cpu.r[4] = 0u; cpu.r[5] = TICK_A;
@@ -8026,6 +8032,103 @@ static void test_rtc_pointer_validation_and_measured_conversions(void) {
     cpu.r[4] = TICK_B; cpu.r[5] = BAD_U64;
     expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "ConvertLocalTimeToUTC rejects an unwritable output span fail-closed");
+}
+
+/* Every local-time API agrees with the system profile the guest reads through
+ * sceUtilityGetSystemParamInt: TIMEZONE zone minutes from UTC and
+ * DAYLIGHTSAVINGS daylight, which give a local offset of local_minutes. */
+static void rtc_expect_profile(int32_t zone, uint32_t daylight, int64_t local_minutes, const char *setting) {
+    enum {
+        DATE_LOCAL = 0x00200500u,
+        DATE_EXPLICIT = 0x00200520u,
+        TICK_LOCAL = 0x00200540u,
+        TICK_EXPLICIT = 0x00200548u,
+        TICK_IN = 0x00200550u,
+        TICK_OUT = 0x00200558u,
+        TZ_OUT = 0x00200560u,
+    };
+    const uint64_t tick_2012 = 63483721935000500ull; /* 2012-09-20 07:12:15.500 UTC */
+    const uint64_t local_2012 = tick_2012 + (uint64_t)(local_minutes * 60000000ll);
+    char what[192];
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    snprintf(what, sizeof(what), "%s: sceUtilityGetSystemParamInt reports TIMEZONE %d and DAYLIGHTSAVINGS %u",
+             setting, (int)zone, (unsigned)daylight);
+    expect(sysreg_sysparam_int(6u) == (uint32_t)zone && sysreg_sysparam_int(7u) == daylight, what);
+
+    MEM_W32(TICK_IN, (uint32_t)tick_2012);
+    MEM_W32(TICK_IN + 4u, (uint32_t)(tick_2012 >> 32));
+    cpu.r[4] = TICK_IN; cpu.r[5] = TICK_OUT;
+    snprintf(what, sizeof(what), "%s: sceRtcConvertUtcToLocalTime adds %lld minutes", setting,
+             (long long)local_minutes);
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == 0u && selftest_guest_u64(TICK_OUT) == local_2012,
+           what);
+    cpu.r[4] = TICK_OUT; cpu.r[5] = TICK_IN;
+    snprintf(what, sizeof(what), "%s: sceRtcConvertLocalTimeToUTC takes the same %lld minutes off", setting,
+             (long long)local_minutes);
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == 0u && selftest_guest_u64(TICK_IN) == tick_2012,
+           what);
+
+    cpu.r[4] = DATE_EXPLICIT; cpu.r[5] = (uint32_t)(int32_t)local_minutes;
+    int clocks = sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u;
+    cpu.r[4] = DATE_LOCAL;
+    clocks = clocks && sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == 0u;
+    cpu.r[4] = DATE_EXPLICIT; cpu.r[5] = TICK_EXPLICIT;
+    clocks = clocks && sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u;
+    cpu.r[4] = DATE_LOCAL; cpu.r[5] = TICK_LOCAL;
+    clocks = clocks && sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u;
+    snprintf(what, sizeof(what), "%s: sceRtcGetCurrentClockLocalTime equals sceRtcGetCurrentClock at %lld minutes",
+             setting, (long long)local_minutes);
+    expect(clocks && selftest_guest_u64(TICK_LOCAL) == selftest_guest_u64(TICK_EXPLICIT), what);
+
+    MEM_W32(TZ_OUT, 0xdeadbeefu);
+    MEM_W32(TZ_OUT + 4u, 0xdeadbeefu);
+    cpu.r[4] = 0u; cpu.r[5] = TZ_OUT;
+    snprintf(what, sizeof(what), "%s: gettimeofday reports %d minutes west and dsttime %u", setting,
+             (int)(0u - (uint32_t)zone), (unsigned)daylight);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_GETTIMEOFDAY) == 0u && MEM_R32(TZ_OUT) == 0u - (uint32_t)zone &&
+               MEM_R32(TZ_OUT + 4u) == daylight,
+           what);
+}
+
+/* #1382: the RTC local-time APIs and gettimeofday read the time zone and
+ * daylight-saving setting from the registry keys sceUtilityGetSystemParamInt
+ * reports, so the two can never disagree, and a setting a game writes through
+ * sceReg moves local time at once. Production dispatch only; nothing is
+ * flushed, so the build-scoped overlay file stays absent. */
+static void test_rtc_local_time_follows_the_system_profile(void) {
+    uint32_t r = 0u, reg, cat;
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 0;
+    sysreg_scratch_clean();
+    sysreg_restart();
+
+    /* The seed: TIMEZONE -300 and DAYLIGHTSAVINGS 1, both measured on the oracle console. */
+    rtc_expect_profile(-300, 1u, -240, "the measured seed");
+
+    reg = sysreg_open_registry(2u, &r);
+    expect(r == 0u && reg != 0u, "sceRegOpenRegistry opens the system registry in mode 2");
+    cat = sysreg_open_category(reg, "/CONFIG/DATE", 2u, &r);
+    expect(r == 0u && cat != 0u, "sceRegOpenCategory opens /CONFIG/DATE in mode 2");
+    expect(sysreg_set_int(cat, "time_zone_offset", 540u) == 0u && sysreg_set_int(cat, "summer_time", 0u) == 0u,
+           "sceRegSetKeyValue sets a +540-minute zone with daylight saving off");
+    rtc_expect_profile(540, 0u, 540, "a +540-minute zone written through sceReg");
+    expect(sysreg_set_int(cat, "summer_time", 1u) == 0u, "sceRegSetKeyValue turns daylight saving on");
+    rtc_expect_profile(540, 1u, 600, "the +540-minute zone with daylight saving on");
+    expect(sysreg_set_int(cat, "time_zone_offset", 0u - 210u) == 0u && sysreg_set_int(cat, "summer_time", 0u) == 0u,
+           "sceRegSetKeyValue sets a -210-minute zone with daylight saving off");
+    rtc_expect_profile(-210, 0u, -210, "a -210-minute zone written through sceReg");
+    expect(sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, cat, 0u, 0u, 0u, 0u) == 0u &&
+               sysreg_call(NID_SCE_REG_CLOSE_REGISTRY, reg, 0u, 0u, 0u, 0u) == 0u,
+           "the category and registry handles close");
+
+    /* A new process without a flush serves the seed again. */
+    sysreg_restart();
+    rtc_expect_profile(-300, 1u, -240, "the seed after a restart without a flush");
+    sysreg_scratch_clean();
 }
 
 static void test_unix_time_to_filetime_ticks(void) {
@@ -31850,6 +31953,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_display_frame_per_sec_float_return();
     test_rtc_conversion_errors_and_full_range();
     test_rtc_pointer_validation_and_measured_conversions();
+    test_rtc_local_time_follows_the_system_profile();
     test_unix_time_to_filetime_ticks();
     test_bulk_clock_reads_are_side_effect_free();
     test_display_queries_do_not_progress_display();
