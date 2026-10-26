@@ -26,6 +26,8 @@
 #include <io.h>
 #endif
 
+static const char k_invalid_disc_message[] = "This file isn't a PSP disc image.";
+
 static bool player_view_is_library(PlayerView view) {
     return view == VIEW_LIBRARY || view == PLAYER_VIEW_READY_LIBRARY;
 }
@@ -155,15 +157,14 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
                          "%.48s: %.200s", res.boundary_code, message);
             } else {
                 snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                         "Selected file is not a valid PSP disc image: %.190s",
-                         res.error_message[0] ? res.error_message : "Not a valid ISO9660 image.");
+                         "%s", k_invalid_disc_message);
             }
         } else {
             player_app_set_error(
                 app,
                 named_boundary ? res.boundary_code : "ISO_CORRUPT",
-                named_boundary ? "Not a Disc Image" : "Unreadable PSP Disc Image",
-                message,
+                named_boundary ? "Not a Disc Image" : "Not a PSP Disc Image",
+                named_boundary ? message : k_invalid_disc_message,
                 "Try Another File", VIEW_LIBRARY);
         }
     }
@@ -455,7 +456,8 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             /* The library's shortcuts work the same in the next UI: O adds a
                disc image, S opens Settings, Esc at the library asks to quit. */
             app->request_file_picker = true;
-        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_S) {
+        } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_S &&
+                   player_view_is_library(app->active_view)) {
             player_app_set_view(app, VIEW_SETTINGS);
         } else if (use_next_ui && !event->key.repeat && event->key.key == SDLK_ESCAPE &&
                    player_view_is_library(app->active_view) &&
@@ -543,7 +545,11 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         }
         return true;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
-        if (use_next_ui) return player_ui_nk_handle_event(next_ui, event);
+        /* A trigger waiting to be bound is the binding in both launchers. */
+        if (use_next_ui && !(app->active_view == VIEW_CONTROLLER_SETTINGS &&
+                             input_settings_is_capturing(&app->input_settings))) {
+            return player_ui_nk_handle_event(next_ui, event);
+        }
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings) &&
             (event->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ||
@@ -573,10 +579,8 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             player_app_set_view(app, VIEW_SETTINGS);
             return true;
         }
-        if (use_next_ui && !(event->gbutton.button == SDL_GAMEPAD_BUTTON_EAST &&
-                             !player_view_is_library(app->active_view))) {
-            return player_ui_nk_handle_event(next_ui, event);
-        }
+        /* While a control waits to be bound, the next press is its binding, in
+           both launchers. */
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings)) {
             NkBindingSource src;
@@ -584,6 +588,10 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             src.index = event->gbutton.button;
             input_settings_feed_capture_source(&app->input_settings, src);
             return true;
+        }
+        if (use_next_ui && !(event->gbutton.button == SDL_GAMEPAD_BUTTON_EAST &&
+                             !player_view_is_library(app->active_view))) {
+            return player_ui_nk_handle_event(next_ui, event);
         }
         if (player_view_is_library(app->active_view)) {
             switch (event->gbutton.button) {
@@ -802,7 +810,7 @@ static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
         case PLAYER_UI_WIZARD_FINISH: {
             bool runtime_ready = app->inspecting_game.is_prepared;
             int idx = player_ui_wizard_save_title(app);
-            if (idx >= 0 && runtime_ready) (void)player_app_launch_game(app, idx);
+            if (idx >= 0 && runtime_ready) player_app_request_launch(app, idx);
             player_app_set_view(app, VIEW_LIBRARY);
             break;
         }
@@ -846,12 +854,206 @@ static void player_ui_copy_error_details(PlayerApp *app) {
     }
 }
 
+/* The game-found card's controls: the same handlers the existing renderer's
+   buttons call. */
+static void player_ui_disc_apply(PlayerApp *app, PlayerUiDiscOp op) {
+    switch (op) {
+        case PLAYER_UI_DISC_ADD:
+            if (app->active_view == VIEW_SUPPORTED_TITLE) {
+                /* A title that takes its data from the disc has its files set
+                   up first by the wizard's staging worker; any other title is
+                   saved directly. */
+                if (!player_app_add_inspected_game(app)) {
+                    player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                         "The title could not be stored. The library may be full, "
+                                         "or the user data directory is not writable.",
+                                         "Return to Library", VIEW_LIBRARY);
+                }
+            } else if (app->active_view == VIEW_EXPERIMENTAL_TITLE &&
+                       player_preflight_blocking_check(&app->wizard.preflight) == NULL) {
+                if (player_app_add_game(app, &app->inspecting_game)) {
+                    player_app_set_view(app, VIEW_LIBRARY);
+                } else {
+                    player_app_set_error(app, "LIBRARY_WRITE_FAILED", "Could Not Save to Library",
+                                         "The experimental title could not be stored. The library "
+                                         "may be full, or the user data directory is not writable.",
+                                         "Return to Library", VIEW_LIBRARY);
+                }
+            }
+            break;
+        case PLAYER_UI_DISC_BACK:
+            player_app_set_view(app, VIEW_LIBRARY);
+            break;
+        case PLAYER_UI_DISC_CHOOSE_ANOTHER:
+            app->request_file_picker = true;
+            break;
+        case PLAYER_UI_DISC_NONE:
+        default:
+            break;
+    }
+}
+
+/* The Settings controls: the same handlers the existing renderer's Settings
+   buttons call. Each change is saved as it is made. */
+static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
+    switch (op) {
+        case PLAYER_UI_SETTINGS_CYCLE_RESOLUTION: player_app_cycle_resolution_scale(app, 1); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_PACING:
+            player_app_set_fps_cap(app, app->settings.fps_cap < 0 ? 0 : -1);
+            break;
+        case PLAYER_UI_SETTINGS_TOGGLE_VSYNC: player_app_toggle_vsync(app); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_FULLSCREEN: player_app_toggle_fullscreen(app); break;
+        case PLAYER_UI_SETTINGS_CYCLE_SCALING: player_app_cycle_present_scaling(app, 1); break;
+        case PLAYER_UI_SETTINGS_VOLUME_DOWN: player_app_adjust_volume(app, -5); break;
+        case PLAYER_UI_SETTINGS_VOLUME_UP: player_app_adjust_volume(app, 5); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_UI_SOUNDS: player_app_toggle_ui_sounds(app); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_REDUCE_MOTION: player_app_toggle_reduce_motion(app); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN:
+            player_app_toggle_launcher_fullscreen(app);
+            break;
+        case PLAYER_UI_SETTINGS_OPEN_CONTROLLER:
+            player_app_set_view(app, VIEW_CONTROLLER_SETTINGS);
+            break;
+        case PLAYER_UI_SETTINGS_OPEN_ONLINE: player_app_set_view(app, VIEW_ONLINE_SETTINGS); break;
+        case PLAYER_UI_SETTINGS_OPEN_NOTICES: (void)player_app_open_prerequisite_about(app); break;
+        case PLAYER_UI_SETTINGS_OPEN_REMOVE_TOOLS:
+            player_app_set_view(app, VIEW_CONFIRM_REMOVE_TOOLS);
+            break;
+        case PLAYER_UI_SETTINGS_DONE:
+            player_app_save_settings(app, NULL);
+            player_app_set_view(app, VIEW_LIBRARY);
+            break;
+        case PLAYER_UI_SETTINGS_BACK: player_app_set_view(app, VIEW_SETTINGS); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_ONLINE:
+            player_app_set_online_mode(app, !app->settings.online_mode);
+            break;
+        case PLAYER_UI_SETTINGS_TOGGLE_UPDATES: player_app_toggle_online_feature(app, 0); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_NEWS: player_app_toggle_online_feature(app, 1); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_REPORTS: player_app_toggle_online_feature(app, 2); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_DEVELOPER:
+            player_app_set_developer_mode(app, !app->settings.developer_mode);
+            break;
+        case PLAYER_UI_SETTINGS_OPEN_DEVELOPER_LOG: (void)player_app_open_developer_log(app); break;
+        case PLAYER_UI_SETTINGS_OPEN_LICENSE_TEXTS:
+            (void)player_app_request_license_folder(app);
+            break;
+        case PLAYER_UI_SETTINGS_REMOVE_TOOLS: player_app_remove_prerequisites(app); break;
+        case PLAYER_UI_SETTINGS_NONE:
+        default:
+            break;
+    }
+}
+
+/* The controller settings controls: the same input_settings handlers the
+   existing renderer's controller buttons call. */
+static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
+                                       size_t control) {
+    InputSettingsState *input = &app->input_settings;
+    switch (op) {
+        case PLAYER_UI_CONTROLLER_REBIND:
+            if (control >= (size_t)INPUT_CONTROL_DIGITAL_COUNT) break;
+            /* Choosing the button that is waiting stops the wait. */
+            if (input->capturing && input->capture_control == (int)control) {
+                input_settings_cancel_capture(input);
+            } else {
+                (void)input_settings_start_capture(input, (int)control);
+            }
+            break;
+        case PLAYER_UI_CONTROLLER_DEADZONE_DOWN:
+            (void)input_settings_adjust_deadzone(input, -1, -1000);
+            break;
+        case PLAYER_UI_CONTROLLER_DEADZONE_UP:
+            (void)input_settings_adjust_deadzone(input, -1, 1000);
+            break;
+        case PLAYER_UI_CONTROLLER_TRIGGER_DOWN:
+            (void)input_settings_adjust_trigger_threshold(input, -1000);
+            break;
+        case PLAYER_UI_CONTROLLER_TRIGGER_UP:
+            (void)input_settings_adjust_trigger_threshold(input, 1000);
+            break;
+        case PLAYER_UI_CONTROLLER_CALIBRATE: (void)input_settings_start_calibration(input); break;
+        case PLAYER_UI_CONTROLLER_SAVE:
+            if (input_settings_save(input, NULL) == NK_OK) {
+                snprintf(input->save_diagnostic, sizeof(input->save_diagnostic),
+                         "Profile successfully saved to disk");
+                input->has_save_diagnostic = true;
+            }
+            break;
+        case PLAYER_UI_CONTROLLER_RESET: input_settings_reset_to_defaults(input); break;
+        case PLAYER_UI_CONTROLLER_BACK:
+        case PLAYER_UI_CONTROLLER_CLOSE:
+            if (input_settings_is_capturing(input)) input_settings_cancel_capture(input);
+            if (input_settings_is_calibrating(input)) input_settings_cancel_calibration(input);
+            player_app_set_view(app, op == PLAYER_UI_CONTROLLER_BACK ? VIEW_SETTINGS
+                                                                     : VIEW_LIBRARY);
+            break;
+        case PLAYER_UI_CONTROLLER_TOGGLE_SCOPE:
+            if (player_app_selected_disc_id(app) != NULL) {
+                (void)input_settings_toggle_scope(input, player_app_selected_disc_id(app));
+            }
+            break;
+        case PLAYER_UI_CONTROLLER_CALIBRATION_FINISH:
+            (void)input_settings_finish_calibration_extremes(input);
+            break;
+        case PLAYER_UI_CONTROLLER_CALIBRATION_ACCEPT:
+            (void)input_settings_accept_calibration(input);
+            break;
+        case PLAYER_UI_CONTROLLER_CALIBRATION_CANCEL:
+            input_settings_cancel_calibration(input);
+            break;
+        case PLAYER_UI_CONTROLLER_NONE:
+        default:
+            break;
+    }
+}
+
+/* The developer log controls, as the existing renderer's log buttons. */
+static void player_ui_developer_log_apply(PlayerApp *app, PlayerUiDeveloperLogOp op) {
+    static char clip[PLAYER_DEV_LOG_LINES * PLAYER_DEV_LOG_LINE_MAX + 1];
+    switch (op) {
+        case PLAYER_UI_DEVELOPER_LOG_COPY:
+            (void)player_dev_log_text(app, clip, sizeof(clip));
+            if (SDL_SetClipboardText(clip)) {
+                snprintf(app->dev_log.notice, sizeof(app->dev_log.notice), "Copied %zu lines.",
+                         player_dev_log_count(app));
+            } else {
+                snprintf(app->dev_log.notice, sizeof(app->dev_log.notice),
+                         "The log could not be copied.");
+            }
+            break;
+        case PLAYER_UI_DEVELOPER_LOG_SAVE: (void)player_dev_log_save(app); break;
+        case PLAYER_UI_DEVELOPER_LOG_CLOSE: player_app_close_developer_log(app); break;
+        case PLAYER_UI_DEVELOPER_LOG_NONE:
+        default:
+            break;
+    }
+}
+
 static void player_ui_nk_apply_action(PlayerApp *app,
                                      const PlayerUiAction *action) {
     int index;
-    if (app == NULL || action == NULL) return;
+    /* Most frames carry no action, and its title_index is 0: selecting that
+       index here made every open title page show the first game (#1301). */
+    if (app == NULL || action == NULL || action->kind == PLAYER_UI_ACTION_NONE) return;
     if (action->kind == PLAYER_UI_ACTION_WIZARD) {
         player_ui_wizard_apply(app, (PlayerUiWizardOp)action->primary);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_DISC) {
+        player_ui_disc_apply(app, (PlayerUiDiscOp)action->primary);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_SETTINGS) {
+        player_ui_settings_apply(app, (PlayerUiSettingsOp)action->primary);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_CONTROLLER) {
+        player_ui_controller_apply(app, (PlayerUiControllerOp)action->primary,
+                                   action->title_index);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_DEVELOPER_LOG) {
+        player_ui_developer_log_apply(app, (PlayerUiDeveloperLogOp)action->primary);
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_ADD_DISC) {
@@ -919,10 +1121,19 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     app->selected_game_index = index;
     if (action->kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER) {
         player_ui_open_save_folder(app, action->title_index);
+    } else if (action->kind == PLAYER_UI_ACTION_REMOVE_CONFIRM) {
+        /* Remove from library (#1304): what Nakagawa built goes with it, the
+           saves only when the dialog's box was ticked. */
+        char reason[NK_MAX_PATH + 96];
+        if (!player_app_remove_game_and_data(app, index, action->primary == 1,
+                                             reason, sizeof(reason))) {
+            player_app_set_error(app, "REMOVE_FAILED", "The game was not removed", reason,
+                                 "Back to library", VIEW_LIBRARY);
+        }
     } else if (action->kind == PLAYER_UI_ACTION_PRIMARY) {
         switch (action->primary) {
             case PLAYER_UI_PRIMARY_PLAY:
-                (void)player_app_launch_game(app, index);
+                player_app_request_launch(app, index);
                 break;
             case PLAYER_UI_PRIMARY_BUILD:
                 (void)player_app_start_package_build(app, index);
@@ -1514,6 +1725,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     int next_primary = -1;
     char next_primary_label[64] = "none";
     char next_detail[256] = "none";
+    int next_package = -1;
+    char next_expect[256] = "none";
     {
         const PlayerUiTitle *model = selected != NULL
             ? player_ui_nk_test_title(s_ui_test_next_ui, (size_t)app->selected_game_index)
@@ -1526,8 +1739,13 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
             snprintf(next_detail, sizeof(next_detail), "%s",
                      model->library_status_detail != NULL && model->library_status_detail[0]
                          ? model->library_status_detail : "none");
+            next_package = (int)model->package_state;
+            snprintf(next_expect, sizeof(next_expect), "%s",
+                     model->compatibility_expect != NULL && model->compatibility_expect[0]
+                         ? model->compatibility_expect : "none");
             for (char *q = next_primary_label; *q; q++) if (*q == ' ') *q = '_';
             for (char *q = next_detail; *q; q++) if (*q == ' ') *q = '_';
+            for (char *q = next_expect; *q; q++) if (*q == ' ') *q = '_';
         }
     }
     /* The error card's words as single tokens (spaces become underscores). */
@@ -1542,6 +1760,11 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     for (char *q = error_title; *q; q++) if (*q == ' ') *q = '_';
     for (char *q = error_badge; *q; q++) if (*q == ' ') *q = '_';
     for (char *q = error_retry; *q; q++) if (*q == ' ') *q = '_';
+    const bool bad_disc_notice =
+        (app->active_view == VIEW_SETUP_WIZARD &&
+         strcmp(app->wizard.status_message, k_invalid_disc_message) == 0) ||
+        (app->active_view == VIEW_ERROR &&
+         strcmp(app->last_error.message, k_invalid_disc_message) == 0);
     char incompatible_reason[256];
     snprintf(incompatible_reason, sizeof(incompatible_reason), "%s",
              ui_test_last_incompatible_reason()[0] ? ui_test_last_incompatible_reason() : "none");
@@ -1566,6 +1789,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "selected=%d selected_disc=%s selected_title_id=%s "
            "focus=%d focus_count=%d settings_two_col=%d wizard_step=%s "
            "font_confirmed=%d extracting=%d extraction_percent=%d extraction_cancel=%d error=%s "
+           "bad_disc_notice=%d "
            "picker=%d package_building=%d package_cancelled=%d profile_fallback=%d "
            "controller_capturing=%d controller_conflicts=%d calibrating=%d "
            "error_text_complete=%d error_text_lines=%d "
@@ -1584,7 +1808,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "render_ns=%llu package_validations=%llu online_mode=%d developer_mode=%d "
            "dev_log_lines=%zu next_primary=%d next_primary_label=%s next_detail=%s "
            "incompatible_reason=%s next_at_root=%d next_route=%d "
-           "error_title=%s error_badge=%s error_retry=%s error_copied=%d\n",
+           "error_title=%s error_badge=%s error_retry=%s error_copied=%d "
+           "next_package=%d next_expect=%s launch_pending=%d next_focus=%u\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -1596,6 +1821,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->wizard.is_extracting ? 1 : 0, app->wizard.extraction_percent,
            player_app_wizard_cancel_requested(app) ? 1 : 0,
            app->last_error.error_code[0] ? app->last_error.error_code : "NONE",
+           bad_disc_notice ? 1 : 0,
            app->request_file_picker ? 1 : 0,
            app->build_session.is_building ? 1 : 0,
            app->build_session.is_cancelled ? 1 : 0,
@@ -1646,7 +1872,9 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            s_ui_test_next_ui != NULL ? (player_ui_nk_at_library_root(s_ui_test_next_ui) ? 1 : 0) : -1,
            s_ui_test_next_ui != NULL ? player_ui_nk_test_route(s_ui_test_next_ui) : -1,
            error_title, error_badge, error_retry,
-           app->last_error.details_copied ? 1 : 0);
+           app->last_error.details_copied ? 1 : 0,
+           next_package, next_expect, app->launch_pending ? 1 : 0,
+           s_ui_test_next_ui != NULL ? player_ui_nk_test_focus(s_ui_test_next_ui) : 0u);
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {
@@ -2544,6 +2772,85 @@ static bool player_parse_positive_u32(const char *text, uint32_t maximum,
     return true;
 }
 
+/* PLAY's package check and process start, on a worker so the launcher keeps
+ * drawing (#1298). Checking a retail package hashes every artifact it lists,
+ * several hundred MB, and the launch used to do that up to three times on the
+ * UI thread: the window stopped responding for about 20 s, Windows replaced it
+ * with a ghost, and the runtime's foreground request was refused. The app is
+ * touched only by player_app_launch_begin and _finish, on this thread. */
+typedef struct {
+    SDL_Thread *thread;
+    SDL_AtomicInt done;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    uint32_t test_slow_start_ms;
+#endif
+    PlayerLaunchWork work;
+} PlayerLaunchJob;
+
+static void player_launch_job_run(PlayerLaunchJob *job) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* A synthetic slow start: the launch takes this long before its checks. */
+    if (job->test_slow_start_ms > 0u) SDL_Delay(job->test_slow_start_ms);
+#endif
+    player_launch_work_run(&job->work);
+    SDL_SetAtomicInt(&job->done, 1);
+}
+
+static int SDLCALL player_launch_thread_main(void *data) {
+    player_launch_job_run((PlayerLaunchJob *)data);
+    return 0;
+}
+
+static PlayerLaunchJob *player_launch_job_start(PlayerApp *app, int game_index) {
+    if (!app || app->launch_pending || app->is_game_running ||
+        game_index < 0 || game_index >= app->game_count) {
+        return NULL;
+    }
+    PlayerLaunchJob *job = (PlayerLaunchJob *)calloc(1, sizeof(*job));
+    if (!job) {
+        (void)player_app_launch_game(app, game_index);
+        return NULL;
+    }
+    if (!player_app_launch_begin(app, game_index, &job->work)) {
+        free(job);
+        return NULL;
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    {
+        const char *slow = getenv("NK_UI_TEST_SLOW_START_MS");
+        uint32_t slow_ms = 0u;
+        if (slow && player_parse_positive_u32(slow, 60000u, &slow_ms)) {
+            job->test_slow_start_ms = slow_ms;
+        }
+    }
+#endif
+    app->launch_pending = true;
+    snprintf(app->launch_pending_disc_id, sizeof(app->launch_pending_disc_id), "%s",
+             job->work.game.disc_id);
+    job->thread = SDL_CreateThread(player_launch_thread_main, "nakagawa-launch", job);
+    if (!job->thread) {
+        /* No worker: run the launch here, as the launcher always did. */
+        fprintf(stderr, "[PLAYER] Launch worker could not start (%s); launching inline.\n",
+                SDL_GetError());
+        player_launch_job_run(job);
+    }
+    return job;
+}
+
+/* Hands a finished launch to the app. Returns the job while it still runs and
+ * NULL once it is handed back; `wait` blocks until then (shutdown only). */
+static PlayerLaunchJob *player_launch_job_poll(PlayerApp *app, PlayerLaunchJob *job,
+                                               bool wait) {
+    if (!job) return NULL;
+    if (!wait && SDL_GetAtomicInt(&job->done) == 0) return job;
+    if (job->thread) SDL_WaitThread(job->thread, NULL);
+    app->launch_pending = false;
+    app->launch_pending_disc_id[0] = '\0';
+    (void)player_app_launch_finish(app, &job->work);
+    free(job);
+    return NULL;
+}
+
 /* PLAY for one library entry from the command line, shared by --launch-index
  * and `--launch-now --headless-launch`: the launcher's own player_app_launch_game,
  * then a wait for the child. A headless run is bounded by the timeout above. */
@@ -2868,6 +3175,21 @@ static void player_setup_standard_streams(void) {
     fclose(log);
 }
 #endif
+
+/* The game-found test views' checks: the real preflight for a disc with a
+   readable PARAM.SFO and a plain or an encrypted EBOOT.BIN. */
+static void player_test_view_preflight(PlayerApp *app, bool encrypted) {
+    NkIsoExecutableReport executables;
+    memset(&executables, 0, sizeof(executables));
+    executables.eboot.present = true;
+    executables.eboot.size_bytes = 4096u;
+    executables.eboot.kind = encrypted ? NK_ISO_EXEC_PSP_ENCRYPTED : NK_ISO_EXEC_MIPS_ELF32;
+    if (!encrypted) {
+        executables.selected = NK_ISO_EXEC_SELECTION_EBOOT;
+        snprintf(executables.selected_path, sizeof(executables.selected_path), "EBOOT.BIN");
+    }
+    player_app_build_compatibility_preflight(app, true, true, &executables);
+}
 
 int main(int argc, char *argv[]) {
 #if defined(_WIN32) || defined(_WIN64)
@@ -3302,7 +3624,17 @@ int main(int argc, char *argv[]) {
             }
         } else {
             fprintf(stderr, "[PLAYER] Failed to inspect ISO: %s\n", initial_iso_path);
-            return 1;
+            if (stage_only || app.launch_headless) return 1;
+            const bool named_boundary = res.boundary_code[0] != '\0';
+            const char *message = res.error_message[0]
+                ? res.error_message
+                : "The selected file is not a valid ISO9660 disc image.";
+            player_app_set_error(
+                &app,
+                named_boundary ? res.boundary_code : "ISO_CORRUPT",
+                named_boundary ? "Not a Disc Image" : "Not a PSP Disc Image",
+                named_boundary ? message : k_invalid_disc_message,
+                "Try Another File", VIEW_LIBRARY);
         }
     }
 
@@ -3408,8 +3740,12 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(test_view, "supported") == 0) {
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "TEST00001");
             snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name), "Nakagawa Synthetic Allegrex Fixture");
+            snprintf(app.inspecting_game.title_id, sizeof(app.inspecting_game.title_id),
+                     "synthetic-allegrex-v1");
+            player_test_view_preflight(&app, false);
             player_app_set_view(&app, VIEW_SUPPORTED_TITLE);
-        } else if (strcmp(test_view, "experimental") == 0) {
+        } else if (strcmp(test_view, "experimental") == 0 ||
+                   strcmp(test_view, "experimental-blocked") == 0) {
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "TEST00007");
             snprintf(app.inspecting_game.title_name, sizeof(app.inspecting_game.title_name),
                      "Nakagawa Synthetic Experimental Fixture");
@@ -3419,6 +3755,7 @@ int main(int argc, char *argv[]) {
                      sizeof(app.inspecting_game.selected_executable), "EBOOT.BIN");
             app.inspecting_game.status = NK_STATUS_IDENTIFIED;
             app.inspecting_game.is_experimental = true;
+            player_test_view_preflight(&app, strcmp(test_view, "experimental-blocked") == 0);
             player_app_set_view(&app, VIEW_EXPERIMENTAL_TITLE);
         } else if (strcmp(test_view, "unsupported") == 0) {
             snprintf(app.inspecting_game.disc_id, sizeof(app.inspecting_game.disc_id), "ULES99999");
@@ -3554,7 +3891,19 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-    if (ui_test_fake_game_running) app.is_game_running = true;
+    if (ui_test_fake_game_running) {
+        /* "1": some game runs. A disc ID names the running game, whose window
+           is up; "starting:<disc ID>" is that game before its window opens. */
+        const char *fake = getenv("NK_UI_TEST_GAME_RUNNING");
+        bool starting = strncmp(fake, "starting:", 9) == 0;
+        const char *disc = starting ? fake + 9 : fake;
+        app.is_game_running = true;
+        if (strcmp(disc, "1") != 0) {
+            snprintf(app.launch_session.disc_id, sizeof(app.launch_session.disc_id),
+                     "%s", disc);
+            app.child_window_ready = !starting;
+        }
+    }
     if (ui_test_error_code) {
         if (strcmp(ui_test_error_code, "CLI_NOT_FOUND") == 0) {
             player_app_set_cli_not_found_error(&app, "Return to Library",
@@ -3771,9 +4120,8 @@ int main(int argc, char *argv[]) {
     }
 
     bool applied_launcher_fullscreen = false;
-    bool launcher_minimized_for_game = false;
     bool launcher_handoff_attempted = false;
-    Uint32 launcher_restore_flags = 0;
+    PlayerLaunchJob *launch_job = NULL;
     if (interactive_window && app.settings.launcher_fullscreen) {
         applied_launcher_fullscreen = SDL_SetWindowFullscreen(window, true);
         if (!applied_launcher_fullscreen) {
@@ -3812,6 +4160,9 @@ int main(int argc, char *argv[]) {
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     if (next_ui != NULL && ui_test_mode) {
         puts("[PLAYER_UI_TEST] UI_NEXT_ACTIVE");
+    }
+    if (ui_test_mode && getenv("NK_UI_TEST_REPORT_COMPATIBILITY") != NULL) {
+        player_ui_nk_test_report_compatibility();
     }
 #endif
     s_switch_presentation = interactive_window && next_ui != NULL;
@@ -4516,6 +4867,9 @@ int main(int argc, char *argv[]) {
         }
 #endif
 
+        /* A launch the worker finished becomes the running game, or its card. */
+        launch_job = player_launch_job_poll(&app, launch_job, false);
+
         /* Monitor running game process */
         bool child_exited = false;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -4526,43 +4880,36 @@ int main(int argc, char *argv[]) {
         }
 #endif
         (void)child_exited;
-        if (interactive_window && launcher_minimized_for_game &&
+        /* The launcher stays open behind the game (#1298): minimizing it
+           unasked surprised users. When the game ends, it comes back to the
+           front, and a later launch gets its own handoff. */
+        if (interactive_window && launcher_handoff_attempted &&
             !app.is_game_running) {
-            SDL_RestoreWindow(window);
-            if (app.settings.launcher_fullscreen) {
-                SDL_SetWindowFullscreen(window, true);
-            } else if (launcher_restore_flags & SDL_WINDOW_FULLSCREEN) {
-                SDL_SetWindowFullscreen(window, false);
-            }
-            if (!app.settings.launcher_fullscreen &&
-                (app.settings.launcher_window_maximized ||
-                 (launcher_restore_flags & SDL_WINDOW_MAXIMIZED))) {
-                SDL_MaximizeWindow(window);
-            }
             SDL_RaiseWindow(window);
-            launcher_minimized_for_game = false;
-        }
-        /* A later launch gets its own handoff attempt, including after a
-           minimize that failed and left the launcher visible. */
-        if (interactive_window && !app.is_game_running) {
             launcher_handoff_attempted = false;
         }
-        /* Interactive launches must have a boot-event path and a real
-           window_ready/first_frame marker before the launcher yields focus.
-           Missing evidence keeps the launcher visible. The attempt is latched
-           so a failed SDL_MinimizeWindow leaves the launcher visible without
-           recapturing and rewriting the launcher settings on every frame. */
+        /* The game reports its window through the boot-event marker; the
+           launcher, still the foreground process because it kept drawing,
+           then hands that window the foreground once. The runtime asks for it
+           as well, with the permission AllowSetForegroundWindow gave its
+           process at spawn. Missing evidence keeps the launcher in front. */
+        bool child_window_ready = app.is_game_running &&
+            app.launch_session.boot_event_file_path[0] &&
+            player_app_child_window_ready(&app);
         if (player_app_should_attempt_window_handoff(
                 interactive_window, app.is_game_running,
-                launcher_handoff_attempted,
-                app.launch_session.boot_event_file_path[0]
-                    ? player_app_child_window_ready(&app)
-                    : false)) {
+                launcher_handoff_attempted, child_window_ready)) {
             launcher_handoff_attempted = true;
-            player_capture_window_settings(&app, window);
-            player_app_save_settings(&app, NULL);
-            launcher_restore_flags = SDL_GetWindowFlags(window);
-            launcher_minimized_for_game = SDL_MinimizeWindow(window);
+            bool fronted = nk_platform_bring_process_window_to_front(
+                &app.launch_session.process);
+#ifdef _WIN32
+            if (!fronted) {
+                fprintf(stderr, "[PLAYER] The game window could not be brought to the front; "
+                                "it stays where Windows put it.\n");
+            }
+#else
+            (void)fronted;
+#endif
         }
         if (interactive_window) {
             player_apply_launcher_fullscreen(&app, window,
@@ -4604,6 +4951,12 @@ int main(int argc, char *argv[]) {
         /* Consume renderer requests in the same frame that created them. A
            later event batch may change the selected title before the next
            loop iteration, which must not redirect this retry. */
+        if (app.request_launch) {
+            app.request_launch = false;
+            if (!launch_job) {
+                launch_job = player_launch_job_start(&app, app.request_launch_index);
+            }
+        }
         if (app.request_package_status_retry) {
             app.request_package_status_retry = false;
             player_app_runtime_package_cache_mark_explicit_retry(
@@ -4637,6 +4990,8 @@ int main(int argc, char *argv[]) {
 #endif
     }
 
+    /* A launch still on its worker finishes first, so its game is stopped. */
+    launch_job = player_launch_job_poll(&app, launch_job, true);
     if (app.is_game_running) {
         player_app_stop_game(&app);
     }

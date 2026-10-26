@@ -2137,8 +2137,11 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                          2.5f, hero_w - 64.0f, COLOR_TEXT_WHITE);
     if (game->is_experimental) {
         char experimental_reason[224];
+        /* The decrypted-files step matters only while there is no package
+           built from them (#1297). */
         if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
-            game->executable_selection == NK_ISO_EXEC_SELECTION_NONE) {
+            game->executable_selection == NK_ISO_EXEC_SELECTION_NONE &&
+            !package_ready) {
             snprintf(experimental_reason, sizeof(experimental_reason),
                      "ENCRYPTED_EXECUTABLE: Nakagawa does not decrypt games. Add a decrypted EBOOT.elf from your own copy. Build the runtime package from the library.");
         } else if (game->selected_executable[0]) {
@@ -2274,7 +2277,13 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
      * stay clear of them.) */
     int focus = 0;
     bool primary_focused = (app->focus_index == focus);
-    if (app->is_game_running) {
+    if (app->launch_pending) {
+        /* The launch worker is checking the package or starting the game
+           (#1298); the button comes back as STOP GAME or with the error. */
+        draw_status_pill_focused(ren, hero_x + 32.0f, btn_y, 220.0f,
+                                 54.0f, "STARTING...", primary_focused);
+        focus++;
+    } else if (app->is_game_running) {
         char run_str[64];
         snprintf(run_str, sizeof(run_str), "STOP GAME (PID %d)", app->launch_session.process.process_id);
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f, run_str, true, in, primary_focused)) {
@@ -2284,7 +2293,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
     } else if (package_ready) {
         if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                                 "PLAY NOW", true, in, primary_focused)) {
-            player_app_launch_game(app, app->selected_game_index);
+            player_app_request_launch(app, app->selected_game_index);
         }
         focus++;
     } else if (package_checking) {
@@ -2601,10 +2610,15 @@ static void render_supported_title(SDL_Renderer *ren, PlayerApp *app, const UiIn
         note_y = card_y + 254.0f;
     }
 
-    /* Honesty warning */
-    draw_text_wrapped(ren, card_x + 32.0f, note_y, card_w - 64.0f,
-                      "NOTE: Full LLE font fidelity requires jpn0.pgf in system font directory.",
-                      1.0f, COLOR_AMBER, 2);
+    /* Missing PSP fonts, in the Fonts check's own words (#1302). */
+    for (size_t i = 0; i < app->wizard.preflight.count; i++) {
+        const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
+        if (strcmp(check->code, "SYSTEM_FONTS") == 0 && check->status != PREFLIGHT_OK) {
+            draw_text_wrapped(ren, card_x + 32.0f, note_y, card_w - 64.0f,
+                              player_preflight_plain_message(check), 1.0f, COLOR_AMBER, 2);
+            break;
+        }
+    }
 
     bool add_focused = (app->focus_index == 0);
     if (draw_button_focused(ren, card_x + 32.0f, card_y + 300.0f, 260.0f, 50.0f, "ADD TO LIBRARY", true, in, add_focused)) {
@@ -2676,16 +2690,9 @@ static void render_experimental_title(SDL_Renderer *ren, PlayerApp *app,
         const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
         if (strcmp(check->code, "DISC_SFO") == 0 ||
             strcmp(check->code, "EXPERIMENTAL") == 0 || check == blocking) continue;
-        SDL_Color status_color = COLOR_TEXT_DIM;
-        switch (check->status) {
-            case PREFLIGHT_OK: status_color = COLOR_EMERALD; break;
-            case PREFLIGHT_MISSING:
-            case PREFLIGHT_STALE:
-            case PREFLIGHT_IN_PROGRESS: status_color = COLOR_AMBER; break;
-            case PREFLIGHT_INCOMPATIBLE:
-            case PREFLIGHT_UNSUPPORTED:
-            case PREFLIGHT_INVALID: status_color = COLOR_RED; break;
-        }
+        /* Only a check that keeps the disc out is red (#1302). */
+        SDL_Color status_color = check->status == PREFLIGHT_OK ? COLOR_EMERALD
+            : player_preflight_check_blocks(check) ? COLOR_RED : COLOR_AMBER;
         float row_y = rows_y + 27.0f * (float)row++;
         if (row_y > card_y + card_h - 92.0f) break;
         draw_text_ellipsized(ren, card_x + 32.0f, row_y,
@@ -4156,13 +4163,7 @@ static void render_prerequisite_about(SDL_Renderer *ren, PlayerApp *app,
     bool open_focused = app->focus_index == 0;
     if (shown > 0 && draw_button_focused(ren, card_x + 30.0f, buttons_y,
             230.0f, 42.0f, "OPEN LICENSE TEXTS", false, in, open_focused)) {
-        char data_root[NK_MAX_PATH];
-        if (app->runtime_root[0]) snprintf(data_root, sizeof(data_root), "%s", app->runtime_root);
-        else nk_platform_get_app_data_dir(data_root, sizeof(data_root));
-        int n = snprintf(app->requested_open_path, sizeof(app->requested_open_path),
-                         "%s%cprerequisites%cnotices", data_root,
-                         nk_platform_path_separator(), nk_platform_path_separator());
-        app->request_open_license_folder = n > 0 && (size_t)n < sizeof(app->requested_open_path);
+        (void)player_app_request_license_folder(app);
     }
     bool back_focused = app->focus_index == (shown > 0 ? 1 : 0);
     if (draw_button_focused(ren, card_x + card_w - 216.0f, buttons_y,
@@ -4606,7 +4607,13 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                 draw_text(ren, card_x + 48.0f, box_y + 70.0f, app->wizard.status_message[0] ? app->wizard.status_message : "Ready to verify title.", 1.0f, COLOR_EMERALD);
             } else {
                 draw_badge(ren, card_x + 48.0f, box_y + 16.0f, "NO FILE CHOSEN", COLOR_AMBER);
-                draw_text(ren, card_x + 48.0f, box_y + 50.0f, "Click 'Choose PSP Game ISO' or drag & drop an ISO file onto this window.", 1.1f, COLOR_TEXT_MUTED);
+                if (app->wizard.status_message[0]) {
+                    draw_text_wrapped(ren, card_x + 48.0f, box_y + 50.0f,
+                                      card_w - 96.0f, app->wizard.status_message,
+                                      1.0f, COLOR_AMBER, 2);
+                } else {
+                    draw_text(ren, card_x + 48.0f, box_y + 50.0f, "Click 'Choose PSP Game ISO' or drag & drop an ISO file onto this window.", 1.1f, COLOR_TEXT_MUTED);
+                }
             }
 
             if (!app->wizard.iso_selected) {
@@ -4706,30 +4713,9 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             if (!app->wizard.is_extracting) {
                 for (size_t i = 0; i < app->wizard.preflight.count; i++) {
                     const PlayerPreflightCheck *check = &app->wizard.preflight.checks[i];
-                    SDL_Color status_color = COLOR_TEXT_DIM;
-                    switch (check->status) {
-                        case PREFLIGHT_OK:
-                            status_color = COLOR_EMERALD;
-                            break;
-                        case PREFLIGHT_MISSING:
-                            status_color = COLOR_AMBER;
-                            break;
-                        case PREFLIGHT_INCOMPATIBLE:
-                            status_color = COLOR_RED;
-                            break;
-                        case PREFLIGHT_STALE:
-                            status_color = COLOR_AMBER;
-                            break;
-                        case PREFLIGHT_UNSUPPORTED:
-                            status_color = COLOR_RED;
-                            break;
-                        case PREFLIGHT_IN_PROGRESS:
-                            status_color = COLOR_AMBER;
-                            break;
-                        case PREFLIGHT_INVALID:
-                            status_color = COLOR_RED;
-                            break;
-                    }
+                    /* Only a check that keeps the disc out is red (#1302). */
+                    SDL_Color status_color = check->status == PREFLIGHT_OK ? COLOR_EMERALD
+                        : player_preflight_check_blocks(check) ? COLOR_RED : COLOR_AMBER;
                     /* Plain words, no raw codes (#1280). */
                     float row_y = panel_y + 100.0f + (float)i * 25.0f;
                     draw_text_ellipsized(ren, card_x + 48.0f, row_y,
@@ -4994,7 +4980,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                     int idx = player_app_find_game_by_disc_id(app, app->inspecting_game.disc_id);
                     if (idx >= 0) {
                         app->selected_game_index = idx;
-                        if (runtime_ready) player_app_launch_game(app, idx);
+                        if (runtime_ready) player_app_request_launch(app, idx);
                     }
                 }
                 player_app_set_view(app, VIEW_LIBRARY);

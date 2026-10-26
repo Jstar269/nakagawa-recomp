@@ -25,6 +25,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -42,8 +43,6 @@ typedef struct {
     size_t iso_files_complete;
     size_t iso_total_files;
     size_t last_iso_files_complete;
-    size_t current_xb_complete;
-    size_t current_xb_total;
     char current_archive[4096];
     int last_percent;
     NkResult callback_result;
@@ -636,8 +635,8 @@ static bool discover_prx_for_stage(PlayerStageContext *context) {
         if (context->callbacks.on_progress) {
             int percent = 95 + (int)((discovered * 5u) / 3u);
             context->callbacks.on_progress(relative_destination, percent,
-                                           context->iso_files_complete + discovered,
-                                           context->iso_total_files + 3u,
+                                           context->iso_files_complete,
+                                           context->iso_total_files,
                                            context->callbacks.userdata);
         }
     }
@@ -649,17 +648,16 @@ static bool xb_progress(const NkXbEntry *entry, size_t completed_entries,
     PlayerStageContext *context = (PlayerStageContext *)userdata;
     if (!context || !entry || total_entries == 0) return false;
     if (stage_cancelled(context)) return false;
-    context->current_xb_complete = completed_entries;
-    context->current_xb_total = total_entries;
-    size_t total = context->iso_total_files + total_entries;
-    size_t files = context->iso_files_complete + completed_entries;
-    /* The archive's bytes are already counted, so unpacking it holds the
-     * overall percentage and advances only the file count. */
+    (void)completed_entries;
+    /* File counts describe the stable source-disc inventory. XB members are
+     * derived files, so including each current archive's count would make the
+     * denominator change as archives are unpacked. */
     char current_path[4096];
     /* A progress label only: a very long name is shortened, never an error. */
     snprintf(current_path, sizeof(current_path), "%.2048s.d/%s",
              context->current_archive, entry->path);
-    stage_emit(context, current_path, context->last_percent, files, total);
+    stage_emit(context, current_path, context->last_percent,
+               context->iso_files_complete, context->iso_total_files);
     stage_note_asset(context, entry);
     if (context->callback_result != NK_OK) return false;
     return true;
@@ -678,8 +676,7 @@ static bool iso_progress(const char *relative_path, uint64_t bytes_complete,
      * copy finishes the last 5%. */
     int percent = bytes_total == 0 ? 0 : (int)((bytes_complete * 95u) / bytes_total);
     if (percent > 95) percent = 95;
-    stage_emit(context, relative_path, percent, files_complete,
-               total_files + context->current_xb_total);
+    stage_emit(context, relative_path, percent, files_complete, total_files);
 
     /* NkIsoProgressCallback's final callback is the only one whose completed
      * file count advances. Decode an archive only after its bytes have been
@@ -716,8 +713,6 @@ static bool iso_progress(const char *relative_path, uint64_t bytes_complete,
     }
     snprintf(context->current_archive, sizeof(context->current_archive), "%s",
              relative_path);
-    context->current_xb_complete = 0;
-    context->current_xb_total = 0;
     char xb_error[256];
     NkResult result = nk_xb_unpack(archive_path, unpack_root, xb_progress,
                                    context, xb_error, sizeof(xb_error));
@@ -826,6 +821,8 @@ typedef struct {
     HANDLE handle;
 #else
     int fd;
+    int games_fd;
+    const char *path;
 #endif
     bool held;
 } PlayerStageLock;
@@ -902,9 +899,11 @@ static bool stage_title_paths(const char *user_data_root, const char *disc_id,
 /* 1 = acquired, 0 = held by another staging of this title, -1 = error. The
  * operating system releases the lock when its holder exits, so a crashed or
  * killed staging never blocks the next attempt. */
-static int stage_lock_acquire(const char *path, PlayerStageLock *lock) {
+static int stage_lock_acquire(const char *games_root, const char *path,
+                              PlayerStageLock *lock) {
     memset(lock, 0, sizeof(*lock));
 #if defined(_WIN32) || defined(_WIN64)
+    (void)games_root;
     WCHAR wide[32768];
     if (!stage_utf8_to_wide(path, wide, (int)(sizeof(wide) / sizeof(wide[0])))) return -1;
     /* No sharing: a second open of the same lock file fails while this handle
@@ -920,8 +919,21 @@ static int stage_lock_acquire(const char *path, PlayerStageLock *lock) {
     }
     lock->handle = handle;
 #else
+    /* Hold the games-directory flock only while opening or removing the
+     * per-title lock. Without this short guard, unlinking a held fcntl lock
+     * would let another process lock a new inode at the same pathname. */
+    int games_fd = open(games_root, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (games_fd < 0) return -1;
+    if (flock(games_fd, LOCK_EX) != 0) {
+        close(games_fd);
+        return -1;
+    }
     int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        flock(games_fd, LOCK_UN);
+        close(games_fd);
+        return -1;
+    }
     struct flock region;
     memset(&region, 0, sizeof(region));
     region.l_type = F_WRLCK;
@@ -931,9 +943,18 @@ static int stage_lock_acquire(const char *path, PlayerStageLock *lock) {
     if (fcntl(fd, F_SETLK, &region) != 0) {
         int error = errno;
         close(fd);
+        flock(games_fd, LOCK_UN);
+        close(games_fd);
         return (error == EACCES || error == EAGAIN) ? 0 : -1;
     }
+    if (flock(games_fd, LOCK_UN) != 0) {
+        close(fd);
+        close(games_fd);
+        return -1;
+    }
     lock->fd = fd;
+    lock->games_fd = games_fd;
+    lock->path = path;
 #endif
     lock->held = true;
     return 1;
@@ -944,7 +965,14 @@ static void stage_lock_release(PlayerStageLock *lock) {
 #if defined(_WIN32) || defined(_WIN64)
     CloseHandle(lock->handle);
 #else
-    close(lock->fd);
+    if (flock(lock->games_fd, LOCK_EX) == 0) {
+        if (lock->path) (void)unlink(lock->path);
+        close(lock->fd);
+        flock(lock->games_fd, LOCK_UN);
+    } else {
+        close(lock->fd);
+    }
+    close(lock->games_fd);
 #endif
     lock->held = false;
 }
@@ -1249,7 +1277,7 @@ NkResult player_stage_title(const PlayerStageTitleRequest *request,
         return NK_ERROR_IO;
     }
     PlayerStageLock lock;
-    int lock_state = stage_lock_acquire(paths.lock_path, &lock);
+    int lock_state = stage_lock_acquire(paths.games_root, paths.lock_path, &lock);
     if (lock_state == 0) {
         stage_title_message(message, message_size, "%s",
             "[STAGE_BUSY] This game is already being set up by another Nakagawa window or command. Let that finish, then try again.");

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import hashlib
 import math
 import os
@@ -2628,7 +2629,7 @@ class PsplinkCampaignRunner:
         ):
             self._physical_intervention(
                 f"campaign stopped after incomplete or uncertain case {case.case_id}; "
-                "maintainer power-cycle confirmation is required before continuing"
+                "a newer qualified device boot is required before continuing"
             )
             self.intervention_case_id = case.case_id
             self.resume_case_index = case_index + 1
@@ -2742,7 +2743,7 @@ class PsplinkCampaignRunner:
             if stop_on_incomplete:
                 self._physical_intervention(
                     f"campaign stopped after teardown check failed for {case.case_id}; "
-                    "maintainer power-cycle confirmation is required before continuing"
+                    "a newer qualified device boot is required before continuing"
                 )
                 self.intervention_case_id = case.case_id
                 self.resume_case_index = case_index + 1
@@ -2867,7 +2868,7 @@ class PsplinkCampaignRunner:
         else:
             self._physical_intervention(
                 f"host-side error during {case.case_id} and its teardown was not verified "
-                "clean; maintainer power-cycle confirmation is required before continuing"
+                "clean; a newer qualified device boot is required before continuing"
             )
         envelope: dict[str, object] = {
             "CASE_ID": case.case_id,
@@ -2916,6 +2917,78 @@ HARDWARE_LOCK_ROOT = (
     ROOT.parent.parent if ROOT.parent.name.casefold() == "worktrees" else ROOT.parent
 )
 HARDWARE_LOCK_PATH = HARDWARE_LOCK_ROOT / "HARDWARE_LOCK.json"
+DEVICE_STATE_ATTESTATION_MAX_AGE = timedelta(minutes=30)
+
+
+def _utc_timestamp(value: object) -> datetime | None:
+    """Parse an RFC 3339 timestamp with an explicit UTC offset."""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _validate_device_state_attestation(
+    lock: dict[str, object], session_id: str, *, now: datetime | None = None
+) -> tuple[dict[str, object] | None, str]:
+    """Return a fresh, session-bound device-state record or a fail-closed status."""
+
+    attestation = lock.get("device_state_attestation")
+    if not isinstance(attestation, dict):
+        return None, "HARDWARE_LOCK_DEVICE_STATE_MISSING"
+    if attestation.get("session_id") != session_id:
+        return None, "HARDWARE_LOCK_DEVICE_STATE_SESSION_MISMATCH"
+    boot_number = attestation.get("boot_number")
+    if (
+        not isinstance(attestation.get("schema"), int)
+        or isinstance(attestation.get("schema"), bool)
+        or attestation.get("schema") != 1
+        or not isinstance(boot_number, int)
+        or isinstance(boot_number, bool)
+        or boot_number < 0
+    ):
+        return None, "HARDWARE_LOCK_DEVICE_STATE_INVALID"
+    if attestation.get("qualification_result") != "QUALIFIED":
+        return None, "HARDWARE_LOCK_DEVICE_STATE_NOT_QUALIFIED"
+
+    qualified_at = _utc_timestamp(attestation.get("qualified_at_utc"))
+    acquired_at = _utc_timestamp(lock.get("acquired_utc"))
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None or current_time.utcoffset() is None:
+        return None, "HARDWARE_LOCK_DEVICE_STATE_INVALID"
+    current_time = current_time.astimezone(timezone.utc)
+    if qualified_at is None or acquired_at is None:
+        return None, "HARDWARE_LOCK_DEVICE_STATE_INVALID"
+    age = current_time - qualified_at
+    if (
+        qualified_at < acquired_at
+        or age < timedelta(seconds=-5)
+        or age > DEVICE_STATE_ATTESTATION_MAX_AGE
+    ):
+        return None, "HARDWARE_LOCK_DEVICE_STATE_STALE"
+
+    watchdog = attestation.get("watchdog_state")
+    if not isinstance(watchdog, dict) or watchdog.get("healthy") is not True:
+        return None, "HARDWARE_LOCK_DEVICE_STATE_WATCHDOG_UNHEALTHY"
+    armed = watchdog.get("armed")
+    remaining = watchdog.get("remaining_s")
+    if (
+        not isinstance(watchdog.get("boot_number"), int)
+        or isinstance(watchdog.get("boot_number"), bool)
+        or watchdog.get("boot_number") != boot_number
+        or not isinstance(armed, bool)
+        or not isinstance(remaining, int)
+        or isinstance(remaining, bool)
+        or remaining < 0
+    ):
+        return None, "HARDWARE_LOCK_DEVICE_STATE_INVALID"
+    return attestation, "HELD_AND_QUALIFIED"
 
 
 def _read_campaign_plan(path: Path) -> dict[str, object]:
@@ -3036,18 +3109,21 @@ def _write_campaign_json(path: Path, value: dict[str, object]) -> None:
     os.replace(temporary, path)
 
 
-def _read_hardware_lock(session_id: str) -> tuple[bool, str]:
+def _read_hardware_lock(
+    session_id: str,
+) -> tuple[bool, str, dict[str, object] | None]:
     try:
         lock = json.loads(HARDWARE_LOCK_PATH.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return False, f"HARDWARE_LOCK_UNAVAILABLE:{type(exc).__name__}"
+        return False, f"HARDWARE_LOCK_UNAVAILABLE:{type(exc).__name__}", None
     if not isinstance(lock, dict) or lock.get("state") != "HELD":
-        return False, "HARDWARE_LOCK_NOT_HELD"
-    if lock.get("power_cycle_confirmed") is not True:
-        return False, "HARDWARE_LOCK_POWER_CYCLE_NOT_CONFIRMED"
+        return False, "HARDWARE_LOCK_NOT_HELD", None
     if lock.get("holder_session") != session_id:
-        return False, "HARDWARE_LOCK_SESSION_MISMATCH"
-    return True, "HELD_AND_CONFIRMED"
+        return False, "HARDWARE_LOCK_SESSION_MISMATCH", None
+    device_state, status = _validate_device_state_attestation(lock, session_id)
+    if device_state is None:
+        return False, status, None
+    return True, status, device_state
 
 
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
@@ -3061,38 +3137,43 @@ class HardwareLockError(RuntimeError):
         self.status = status
 
 
-def require_hardware_lock(session_id: object) -> None:
+def require_hardware_lock(session_id: object) -> dict[str, object]:
     """The one gate every PSP-touching path passes, re-read from disk on each call.
 
     Callers: transport start (and so every L1 restart), each case before its
     soft reset and again before its launch, every PSPLink ``reset``, a raw
     ``--command`` capture, and the campaign plan before it writes a checkpoint.
-    The lock must be HELD with a confirmed power cycle by exactly this session.
+    The lock must be HELD by this session with a fresh qualification for a
+    known boot and a healthy watchdog state.
     """
 
     if not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
         raise HardwareLockError("HARDWARE_LOCK_SESSION_REQUIRED")
-    held, status = _read_hardware_lock(session_id)
+    held, status, device_state = _read_hardware_lock(session_id)
     if not held:
         raise HardwareLockError(status)
+    assert device_state is not None
+    return device_state
 
 
 def _checkpoint_waiting(
     state: dict[str, object], failed_case_id: str | None, resume_case_index: int
 ) -> dict[str, object]:
-    """Return ``state`` stopped for a maintainer power cycle at a known position."""
+    """Return ``state`` stopped until a newer qualified device boot is recorded."""
 
     interrupted = [str(item) for item in state.get("interrupted_cases", [])]
     if failed_case_id is not None and failed_case_id not in interrupted:
         interrupted.append(failed_case_id)
     return {
         **state,
-        "state": "WAITING_FOR_POWER_CYCLE",
+        "state": "WAITING_FOR_NEW_QUALIFIED_BOOT",
         "failed_case_id": failed_case_id,
         "interrupted_cases": interrupted,
+        "interrupted_boot_number": state.get("active_case_boot_number"),
         "next_case_index": resume_case_index,
         "active_case_index": None,
         "active_case_id": None,
+        "active_case_boot_number": None,
         "phase": None,
     }
 
@@ -3104,7 +3185,8 @@ def _checkpoint_preflight_position(state: dict[str, object], resume_case_index: 
 
 
 def _checkpoint_case_started(
-    state: dict[str, object], index: int, case_id: str, phase: str
+    state: dict[str, object], index: int, case_id: str, phase: str,
+    *, device_boot_number: int | None = None,
 ) -> dict[str, object]:
     """Durable record written before a reset (RESET_BEFORE_CASE) or a launch (CASE_ACTIVE)."""
 
@@ -3115,6 +3197,11 @@ def _checkpoint_case_started(
         "state": "RUNNING",
         "active_case_index": index,
         "active_case_id": case_id,
+        "active_case_boot_number": (
+            device_boot_number
+            if device_boot_number is not None
+            else state.get("active_case_boot_number")
+        ),
         "phase": phase,
         "next_case_index": index,
     }
@@ -3166,6 +3253,7 @@ def _checkpoint_case_finished(
         "next_case_index": index + 1,
         "active_case_index": None,
         "active_case_id": None,
+        "active_case_boot_number": None,
         "phase": None,
     }
 
@@ -3187,7 +3275,7 @@ def _checkpoint_after_run(
     transport start failure, keeps ``IN_PROGRESS`` at that case.
     """
 
-    if state.get("state") == "WAITING_FOR_POWER_CYCLE":
+    if state.get("state") == "WAITING_FOR_NEW_QUALIFIED_BOOT":
         return dict(state)  # the per-case record already holds the resume position
     running = state.get("state") == "RUNNING"
     active_index = state.get("active_case_index") if running else None
@@ -3230,7 +3318,7 @@ def _checkpoint_after_run(
 def _checkpoint_resume(
     checkpoint: dict[str, object] | None,
     *,
-    confirm_power_cycle: bool,
+    device_state: dict[str, object] | None = None,
     case_count: int,
 ) -> tuple[int, dict[str, object]] | dict[str, object]:
     """Return ``(start_index, carried fields)`` for a run, or a refusal/status report."""
@@ -3241,8 +3329,6 @@ def _checkpoint_resume(
         "host0_qualified": False,
     }
     if checkpoint is None:
-        if confirm_power_cycle:
-            return {"status": "REFUSED", "reason": "no interrupted campaign needs confirmation"}
         return 0, carried
 
     carried = {
@@ -3254,37 +3340,38 @@ def _checkpoint_resume(
     if state == "COMPLETE":
         return {"status": "COMPLETE", "case_count": case_count}
     if state == "RUNNING":
-        if not confirm_power_cycle:
-            return {
-                "status": "WAITING_FOR_POWER_CYCLE_CONFIRMATION",
-                "reason": "previous launch stopped before a durable case completion",
-                "active_case_id": checkpoint.get("active_case_id"),
-            }
         phase = checkpoint.get("phase")
         active_index = checkpoint.get("active_case_index")
         if not isinstance(active_index, int) or not 0 <= active_index < case_count:
             return {"status": "REFUSED", "reason": "invalid active case index"}
         if phase not in {"RESET_BEFORE_CASE", "CASE_ACTIVE"}:
             return {"status": "REFUSED", "reason": "invalid active case phase"}
-        start_index = active_index + 1 if phase == "CASE_ACTIVE" else active_index
-    elif state == "WAITING_FOR_POWER_CYCLE":
-        if not confirm_power_cycle:
+        interrupted_boot = checkpoint.get("active_case_boot_number")
+        if not _valid_boot_number(interrupted_boot):
+            return {"status": "REFUSED", "reason": "interrupted boot identity is missing or invalid"}
+        if not _has_newer_qualified_boot(device_state, interrupted_boot):
             return {
-                "status": "WAITING_FOR_POWER_CYCLE_CONFIRMATION",
+                "status": "WAITING_FOR_NEW_QUALIFIED_BOOT",
+                "reason": "the held session has not qualified a boot newer than the interrupted case",
+                "active_case_id": checkpoint.get("active_case_id"),
+                "interrupted_boot_number": interrupted_boot,
+                "qualified_boot_number": _attested_boot_number(device_state),
+            }
+        start_index = active_index + 1 if phase == "CASE_ACTIVE" else active_index
+    elif state == "WAITING_FOR_NEW_QUALIFIED_BOOT":
+        interrupted_boot = checkpoint.get("interrupted_boot_number")
+        if not _valid_boot_number(interrupted_boot):
+            return {"status": "REFUSED", "reason": "interrupted boot identity is missing or invalid"}
+        if not _has_newer_qualified_boot(device_state, interrupted_boot):
+            return {
+                "status": "WAITING_FOR_NEW_QUALIFIED_BOOT",
                 "failed_case_id": checkpoint.get("failed_case_id"),
                 "resume_case_index": checkpoint.get("next_case_index"),
+                "interrupted_boot_number": interrupted_boot,
+                "qualified_boot_number": _attested_boot_number(device_state),
             }
         start_index = checkpoint.get("next_case_index")
     elif state == "IN_PROGRESS":
-        if confirm_power_cycle:
-            return {
-                "status": "REFUSED",
-                "reason": (
-                    "power-cycle confirmation is only accepted after an interrupted case; "
-                    "this checkpoint resumes without it at case index "
-                    f"{checkpoint.get('next_case_index')}"
-                ),
-            }
         start_index = checkpoint.get("next_case_index")
     else:
         return {"status": "REFUSED", "reason": "unknown checkpoint state"}
@@ -3304,11 +3391,33 @@ def _checkpoint_resume(
     return start_index, carried
 
 
+def _valid_boot_number(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _attested_boot_number(device_state: dict[str, object] | None) -> int | None:
+    if not isinstance(device_state, dict):
+        return None
+    boot = device_state.get("boot_number")
+    return boot if _valid_boot_number(boot) else None
+
+
+def _has_newer_qualified_boot(
+    device_state: dict[str, object] | None, interrupted_boot: int
+) -> bool:
+    current_boot = _attested_boot_number(device_state)
+    return (
+        current_boot is not None
+        and device_state is not None
+        and device_state.get("qualification_result") == "QUALIFIED"
+        and current_boot > interrupted_boot
+    )
+
+
 def run_campaign_plan(
     plan_path: Path,
     *,
     dry_run: bool,
-    confirm_power_cycle: bool,
     pspsh_argv: list[str],
     usbhostfs_argv: list[str],
     transport_factory: Callable[..., object] | None = None,
@@ -3336,7 +3445,7 @@ def run_campaign_plan(
         }
 
     try:
-        require_hardware_lock(plan["session_id"])
+        device_state = require_hardware_lock(plan["session_id"])
     except HardwareLockError as exc:
         return 2, {"status": "REFUSED", "reason": exc.status, **summary}
 
@@ -3363,7 +3472,7 @@ def run_campaign_plan(
             return 2, {"status": "REFUSED", "reason": "checkpoint identity mismatch", **summary}
 
     resume = _checkpoint_resume(
-        checkpoint, confirm_power_cycle=confirm_power_cycle, case_count=len(cases)
+        checkpoint, device_state=device_state, case_count=len(cases)
     )
     if isinstance(resume, dict):
         return (0 if resume.get("status") == "COMPLETE" else 2), {**resume, **summary}
@@ -3372,7 +3481,7 @@ def run_campaign_plan(
         return 0, {"status": "COMPLETE", "case_count": len(cases), **summary}
 
     state: dict[str, object] = {
-        "schema": 1,
+        "schema": 2,
         "campaign_id": plan["campaign_id"],
         "source_commit": plan["source_commit"],
         "session_id": plan["session_id"],
@@ -3403,7 +3512,14 @@ def run_campaign_plan(
     remaining = cases[start_index:]
 
     def record_start(index: int, case: CampaignCase, phase: str) -> None:
-        state.update(_checkpoint_case_started(state, index, case.case_id, phase))
+        current_device_state = require_hardware_lock(plan["session_id"])
+        state.update(_checkpoint_case_started(
+            state,
+            index,
+            case.case_id,
+            phase,
+            device_boot_number=int(current_device_state["boot_number"]),
+        ))
         _write_campaign_json(checkpoint_path, state)
 
     def record_complete(index: int, envelope: dict[str, object]) -> None:
@@ -3971,11 +4087,6 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="execute or validate a private, resumable complete oracle campaign plan",
     )
-    parser.add_argument(
-        "--confirm-power-cycle",
-        action="store_true",
-        help="confirm a maintainer power cycle before resuming after an interrupted case",
-    )
     parser.add_argument("--host0-root", type=Path, help="scratch directory shared by usbhostfs_pc")
     parser.add_argument(
         "--session-id",
@@ -4012,7 +4123,7 @@ def main(argv: list[str] | None = None) -> int:
             args.prx, args.remote_command, args.command, args.psp_output, args.nakagawa_output,
             args.host0_output, args.validate_dmac_size_matrix, args.binary, args.source_commit,
             args.model, args.model_code is not None, args.firmware, args.campaign_case,
-            args.campaign_plan, args.confirm_power_cycle,
+            args.campaign_plan,
             args.host0_root, args.out, args.annotate_report, args.observed_terminal_outcome,
             args.dry_run,
         )):
@@ -4067,8 +4178,6 @@ def main(argv: list[str] | None = None) -> int:
             args.annotate_report, args.observed_terminal_outcome, args.session_id,
         )):
             parser.error("campaign-plan mode cannot be combined with single-run or manual campaign options")
-        if args.confirm_power_cycle and args.dry_run:
-            parser.error("--confirm-power-cycle cannot be combined with --dry-run")
         try:
             pspsh_argv = _argv_json(parser, args.pspsh_argv_json, "--pspsh-argv-json")
             usbhostfs_argv = _argv_json(
@@ -4079,15 +4188,11 @@ def main(argv: list[str] | None = None) -> int:
         code, report = run_campaign_plan(
             args.campaign_plan.resolve(),
             dry_run=args.dry_run,
-            confirm_power_cycle=args.confirm_power_cycle,
             pspsh_argv=pspsh_argv,
             usbhostfs_argv=usbhostfs_argv,
         )
         sys.stdout.write(dump_json(report))
         return code
-    if args.confirm_power_cycle:
-        parser.error("--confirm-power-cycle requires --campaign-plan")
-
     args.results_directory = args.results_directory.resolve()
     try:
         args.results_directory.relative_to(ROOT.resolve())
