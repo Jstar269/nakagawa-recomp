@@ -1325,6 +1325,7 @@ def _current_package_cache_key(
     environment.update(package_cache.package_optimization(
         manifest.get("codegen_profile", "none"), environment
     ))
+    environment.update(package_cache.package_chunking(environment))
     options = _package_codegen_options(manifest, environment)
     return package_cache.build_cache_key(
         input_hashes=input_hashes,

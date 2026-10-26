@@ -119,6 +119,25 @@ class TitleCodegenPlanTests(unittest.TestCase):
         self.assertEqual(chosen, 6)
         self.assertIn("ignored NK_PACKAGE_JOBS='many'", reason)
 
+    def test_package_job_bytes_follow_the_chunk_target(self) -> None:
+        job_bytes = title_codegen_plan.package_job_bytes
+        gib = 1024**3
+        self.assertEqual(job_bytes("4000000"), gib)            # floor
+        self.assertEqual(job_bytes("8000000"), 8_000_000 * 256)
+        self.assertEqual(job_bytes("50000000"), 3 * gib)       # ceiling
+        for unbounded in (None, "", "0", "-1", "many"):
+            with self.subTest(target=unbounded):
+                self.assertEqual(job_bytes(unbounded), title_codegen_plan.PACKAGE_BUILD_JOB_BYTES)
+
+    def test_size_bounded_chunks_let_a_loaded_host_run_more_jobs(self) -> None:
+        # 7.6 GB free (measured on a busy host): one 3 GB job for count-based chunks, three
+        # 1 GB jobs for 4 MB chunks.
+        jobs = title_codegen_plan.package_build_jobs
+        free = int(7.6 * 1024**3)
+        self.assertEqual(jobs(cpu_count=24, available_bytes=free)[0], 1)
+        self.assertEqual(jobs(cpu_count=24, available_bytes=free,
+                              job_bytes=title_codegen_plan.package_job_bytes("4000000"))[0], 3)
+
     def test_host_package_build_jobs_reads_the_environment(self) -> None:
         with mock.patch.dict(os.environ, {"NK_PACKAGE_JOBS": "3"}):
             self.assertEqual(title_codegen_plan._host_package_build_jobs()[0], 3)

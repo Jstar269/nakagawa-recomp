@@ -471,7 +471,8 @@ verifies the presented framebuffer, builds the native player, and exercises its 
 route without private input. Use `mingw32-make --no-print-directory display-smoke` for
 the headless build/verification without opening a window. Generated C is split into a
 dynamic number of translation units based on the discovered function count and
-`FUNCS_PER_CHUNK`.
+`FUNCS_PER_CHUNK`, and on `CHUNK_TARGET_BYTES` when it is set (package builds set it to
+4,000,000 bytes).
 
 For a validated local title manifest, use the manager so every title-derived value
 comes from that manifest:

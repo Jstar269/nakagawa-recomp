@@ -932,6 +932,27 @@ def package_optimization(
     }
 
 
+# A package build splits generated C into chunks of about this many bytes (#1296). The
+# function count alone made Hot Shots Tennis chunks of 0.8 to 52 MB of C; one cc1 compiling
+# the 52 MB chunk at -O1 peaked at 2.7 GB, so a host with little free memory compiled one
+# chunk at a time. The same functions in chunks of at most 4 MB peaked at 440 MB each, with
+# the same total compile time and the same machine code for every function: chunking keeps
+# function order and only moves the boundaries between translation units.
+PACKAGE_CHUNK_TARGET_BYTES = 4_000_000
+
+
+def package_chunking(environment: Mapping[str, str] | None = None) -> dict[str, str]:
+    """``CHUNK_TARGET_BYTES`` for a package build; a value the caller set wins.
+
+    Both package routes apply this before deriving the cache key, as they do
+    ``package_optimization``, so the key names the chunking codegen really used.
+    """
+    env = os.environ if environment is None else environment
+    return {
+        "CHUNK_TARGET_BYTES": env.get("CHUNK_TARGET_BYTES") or str(PACKAGE_CHUNK_TARGET_BYTES),
+    }
+
+
 def native_compile_flags(
     *,
     public_safe: bool = False,
