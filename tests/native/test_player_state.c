@@ -851,8 +851,8 @@ static void fixture_sha_file(const char *path, char out[65]) {
     fixture_sha_finish(&ctx, out);
 }
 
-static void write_synthetic_mips_elf(const char *path) {
-    unsigned char elf[88] = { 0 };
+static void build_synthetic_mips_elf(unsigned char elf[88]) {
+    memset(elf, 0, 88);
     memcpy(elf, "\x7f" "ELF", 4);
     elf[4] = 1; /* ELF32 */
     elf[5] = 1; /* little-endian */
@@ -874,9 +874,147 @@ static void write_synthetic_mips_elf(const char *path) {
     elf[76] = 5;  /* readable + executable */
     elf[80] = 4;  /* alignment */
     elf[84] = 0x34; elf[85] = 0x12;
+}
+
+static void write_synthetic_mips_elf(const char *path) {
+    unsigned char elf[88];
+    build_synthetic_mips_elf(elf);
     FILE *file = fopen(path, "wb");
     assert(file != NULL);
     assert(fwrite(elf, 1, sizeof(elf), file) == sizeof(elf));
+    assert(fclose(file) == 0);
+}
+
+static void test_put_le16(uint8_t *out, uint16_t value) {
+    out[0] = (uint8_t)value;
+    out[1] = (uint8_t)(value >> 8);
+}
+
+static void test_put_le32(uint8_t *out, uint32_t value) {
+    out[0] = (uint8_t)value;
+    out[1] = (uint8_t)(value >> 8);
+    out[2] = (uint8_t)(value >> 16);
+    out[3] = (uint8_t)(value >> 24);
+}
+
+static size_t build_player_test_param_sfo(uint8_t *out, size_t out_size,
+                                          const char *disc_id,
+                                          const char *title) {
+    static const char *const keys[] = { "DISC_ID", "DISC_VERSION", "TITLE" };
+    const char *const values[] = { disc_id, "1.00", title };
+    uint8_t key_table[64] = { 0 };
+    uint8_t data_table[256] = { 0 };
+    size_t key_offsets[3];
+    size_t data_offsets[3];
+    size_t value_lengths[3];
+    size_t key_bytes = 0;
+    size_t data_bytes = 0;
+    const size_t key_table_start = 20u + 3u * 16u;
+    size_t data_table_start;
+
+    for (size_t i = 0; i < 3; ++i) {
+        size_t key_length = strlen(keys[i]) + 1u;
+        size_t value_length = strlen(values[i]) + 1u;
+        assert(key_bytes + key_length <= sizeof(key_table));
+        assert(data_bytes + value_length <= sizeof(data_table));
+        key_offsets[i] = key_bytes;
+        memcpy(key_table + key_bytes, keys[i], key_length);
+        key_bytes += key_length;
+        data_offsets[i] = data_bytes;
+        value_lengths[i] = value_length;
+        memcpy(data_table + data_bytes, values[i], value_length);
+        data_bytes = (data_bytes + value_length + 3u) & ~(size_t)3u;
+    }
+    data_table_start = (key_table_start + key_bytes + 3u) & ~(size_t)3u;
+    assert(data_table_start + data_bytes <= out_size);
+    memset(out, 0, data_table_start + data_bytes);
+    out[0] = 0;
+    memcpy(out + 1, "PSF", 3);
+    out[4] = 1;
+    out[5] = 1;
+    test_put_le32(out + 8, (uint32_t)key_table_start);
+    test_put_le32(out + 12, (uint32_t)data_table_start);
+    test_put_le32(out + 16, 3u);
+    for (size_t i = 0; i < 3; ++i) {
+        uint8_t *entry = out + 20u + i * 16u;
+        test_put_le16(entry, (uint16_t)key_offsets[i]);
+        test_put_le16(entry + 2, 0x0204u);
+        test_put_le32(entry + 4, (uint32_t)value_lengths[i]);
+        test_put_le32(entry + 8, (uint32_t)value_lengths[i]);
+        test_put_le32(entry + 12, (uint32_t)data_offsets[i]);
+    }
+    memcpy(out + key_table_start, key_table, key_bytes);
+    memcpy(out + data_table_start, data_table, data_bytes);
+    return data_table_start + data_bytes;
+}
+
+static void write_player_package_preflight_iso(const char *path,
+                                               const char *disc_id,
+                                               const char *title,
+                                               bool encrypted_eboot) {
+    enum { SECTOR = 2048, SECTORS = 23, ROOT_LBA = 17, GAME_LBA = 18,
+           SYSDIR_LBA = 19, USRDIR_LBA = 20, SFO_LBA = 21, EBOOT_LBA = 22 };
+    static const uint8_t dot[] = { 0 };
+    static const uint8_t dotdot[] = { 1 };
+    static const uint8_t game_name[] = "PSP_GAME";
+    static const uint8_t sysdir_name[] = "SYSDIR";
+    static const uint8_t usrdir_name[] = "USRDIR";
+    static const uint8_t sfo_name[] = "PARAM.SFO;1";
+    static const uint8_t eboot_name[] = "EBOOT.BIN;1";
+    uint8_t image[SECTORS * SECTOR] = { 0 };
+    uint8_t sfo[256];
+    uint8_t eboot[0x100];
+    size_t eboot_size;
+    size_t sfo_size = build_player_test_param_sfo(
+        sfo, sizeof(sfo), disc_id, title);
+    uint8_t *pvd = image + 16u * SECTOR;
+    pvd[0] = 1;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    put_iso_both32(pvd + 80, SECTORS);
+    put_iso_both32(pvd + 158, ROOT_LBA);
+    put_iso_both32(pvd + 166, SECTOR);
+
+    uint8_t *root = image + ROOT_LBA * SECTOR;
+    write_iso_record(root, 0, dot, sizeof(dot), ROOT_LBA, SECTOR, true);
+    write_iso_record(root, 34, dotdot, sizeof(dotdot), ROOT_LBA, SECTOR, true);
+    write_iso_record(root, 68, game_name, sizeof(game_name) - 1u,
+                     GAME_LBA, SECTOR, true);
+
+    uint8_t *game = image + GAME_LBA * SECTOR;
+    write_iso_record(game, 0, dot, sizeof(dot), GAME_LBA, SECTOR, true);
+    write_iso_record(game, 34, dotdot, sizeof(dotdot), ROOT_LBA, SECTOR, true);
+    write_iso_record(game, 68, sfo_name, sizeof(sfo_name) - 1u,
+                     SFO_LBA, (uint32_t)sfo_size, false);
+    write_iso_record(game, 112, sysdir_name, sizeof(sysdir_name) - 1u,
+                     SYSDIR_LBA, SECTOR, true);
+    write_iso_record(game, 152, usrdir_name, sizeof(usrdir_name) - 1u,
+                     USRDIR_LBA, SECTOR, true);
+
+    uint8_t *sysdir = image + SYSDIR_LBA * SECTOR;
+    write_iso_record(sysdir, 0, dot, sizeof(dot), SYSDIR_LBA, SECTOR, true);
+    write_iso_record(sysdir, 34, dotdot, sizeof(dotdot), GAME_LBA, SECTOR, true);
+    if (encrypted_eboot) {
+        memset(eboot, 0, sizeof(eboot));
+        memcpy(eboot, "~PSP", 4);
+        eboot[0x27] = 1;
+        eboot[0x55] = 0x10; /* one nonzero encrypted segment of size 0x1000 */
+        eboot_size = sizeof(eboot);
+    } else {
+        build_synthetic_mips_elf(eboot);
+        eboot_size = 88u;
+    }
+    write_iso_record(sysdir, 68, eboot_name, sizeof(eboot_name) - 1u,
+                     EBOOT_LBA, (uint32_t)eboot_size, false);
+    uint8_t *usrdir = image + USRDIR_LBA * SECTOR;
+    write_iso_record(usrdir, 0, dot, sizeof(dot), USRDIR_LBA, SECTOR, true);
+    write_iso_record(usrdir, 34, dotdot, sizeof(dotdot), GAME_LBA, SECTOR, true);
+    memcpy(image + SFO_LBA * SECTOR, sfo, sfo_size);
+    memcpy(image + EBOOT_LBA * SECTOR, eboot, eboot_size);
+
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(image, 1, sizeof(image), file) == sizeof(image));
     assert(fclose(file) == 0);
 }
 
@@ -1638,7 +1776,7 @@ static void test_license_folder_request(void) {
     assert(!player_app_request_license_folder(NULL));
     snprintf(app->runtime_root, sizeof(app->runtime_root), "synthetic-data-root");
     assert(player_app_request_license_folder(app));
-    assert(app->request_open_license_folder);
+    assert(app->request_open_folder);
     snprintf(expected, sizeof(expected), "synthetic-data-root%cprerequisites%cnotices", sep, sep);
     assert(strcmp(app->requested_open_path, expected) == 0);
     free(app);
@@ -1813,15 +1951,28 @@ static int player_state_package_builder_child(int argc, char **argv) {
     const char *mode = getenv("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE");
     if (mode && strcmp(mode, "success") == 0) {
         const char *title_id = getenv("NAKAGAWA_TEST_PACKAGE_REBUILD_TITLE_ID");
+        const char *source_media = getenv("NAKAGAWA_TEST_PACKAGE_REBUILD_SOURCE_MEDIA");
         if (!title_id || !title_id[0]) return 92;
         char executable[128];
         snprintf(executable, sizeof(executable), "%s.exe", title_id);
-        write_runtime_package_fixture(user_root, disc_id, title_id,
-                                      SR_CPUSTATE_ABI_VERSION, executable,
-                                      FIXTURE_SHA256, NULL);
+        if (source_media && source_media[0]) {
+            write_runtime_package_fixture_with_source_media(
+                user_root, disc_id, title_id, SR_CPUSTATE_ABI_VERSION,
+                executable, FIXTURE_SHA256, NULL, source_media);
+        } else {
+            write_runtime_package_fixture(user_root, disc_id, title_id,
+                                          SR_CPUSTATE_ABI_VERSION, executable,
+                                          FIXTURE_SHA256, NULL);
+        }
         write_text_file(progress_path,
             "{\"stage\":\"package\",\"status\":\"PASS\","
             "\"message\":\"Synthetic rebuild completed.\"}\n");
+        return 0;
+    }
+    if (mode && strcmp(mode, "reuse") == 0) {
+        write_text_file(progress_path,
+            "{\"stage\":\"package\",\"status\":\"PASS\","
+            "\"message\":\"Package reused.\"}\n");
         return 0;
     }
     if (mode && strcmp(mode, "failure") == 0) {
@@ -1976,9 +2127,20 @@ static void test_error_cards_are_plain(void) {
     assert(strcmp(player_error_retry_label(&app->last_error), "Try again") == 0);
     assert(player_error_leads_with_message(&app->last_error));
     player_app_set_build_error(app, "package",
-                               "[Errno 28] No space left on device: 'package.staging'", NULL);
+                               "PACKAGE_DISK_FULL: At least 1,234 bytes are needed for "
+                               "the package files; 56 bytes are free.", NULL);
     assert(strcmp(app->last_error.error_code, "PACKAGE_DISK_FULL") == 0);
     assert(strcmp(app->last_error.title, "Not Enough Disk Space") == 0);
+    assert(strstr(app->last_error.message, "1,234 bytes") != NULL);
+    assert(strstr(app->last_error.message, "56 bytes") != NULL);
+    assert(strstr(app->last_error.message, "PACKAGE_DISK_FULL") == NULL);
+    player_app_set_build_error(app, "package",
+                               "[Errno 28] No space left on device: 'package.staging'", NULL);
+    assert(strcmp(app->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
+    assert(strcmp(app->last_error.title, "Couldn't Finish Building") == 0);
+    assert(strstr(app->last_error.message, "Compilation ran out of disk space") != NULL);
+    assert(strstr(app->last_error.message, "package size could be measured") != NULL);
+    assert(strcmp(player_error_retry_label(&app->last_error), "Try again") == 0);
     player_app_set_build_error(app, "preflight",
                                "Build refused: TEST00042 is already being built by another "
                                "Nakagawa window.", NULL);
@@ -2163,6 +2325,12 @@ static void test_package_build_lifecycle(const char *self_executable) {
     char rebuild_root[NATIVE_TEST_PATH_MAX + 64];
     char user_root[NATIVE_TEST_PATH_MAX + 96];
     char install_root[NATIVE_TEST_PATH_MAX + 96];
+    char source_iso_path[NATIVE_TEST_PATH_MAX + 96];
+    char decrypted_dir[NATIVE_TEST_PATH_MAX + 128];
+    char decrypted_elf[NATIVE_TEST_PATH_MAX + 160];
+    char source_media_json[512];
+    char source_media_sha256[65];
+    unsigned char encrypted_eboot[0x100] = { 0 };
     char install_tools[NATIVE_TEST_PATH_MAX + 128];
     char cli_path[NATIVE_TEST_PATH_MAX + 160];
     char prereq_bin[NATIVE_TEST_PATH_MAX + 160];
@@ -2176,6 +2344,12 @@ static void test_package_build_lifecycle(const char *self_executable) {
              cache_root, sep);
     snprintf(user_root, sizeof(user_root), "%s%cuser", rebuild_root, sep);
     snprintf(install_root, sizeof(install_root), "%s%cinstall", rebuild_root, sep);
+    snprintf(source_iso_path, sizeof(source_iso_path), "%s%csource.iso",
+             rebuild_root, sep);
+    snprintf(decrypted_dir, sizeof(decrypted_dir), "%s%ctitles%cULUS99998%cdecrypted",
+             user_root, sep, sep, sep);
+    snprintf(decrypted_elf, sizeof(decrypted_elf), "%s%cEBOOT.elf",
+             decrypted_dir, sep);
     snprintf(install_tools, sizeof(install_tools), "%s%ctools", install_root, sep);
     snprintf(cli_path, sizeof(cli_path), "%s%cnk_cli.py", install_tools, sep);
     snprintf(prereq_bin, sizeof(prereq_bin),
@@ -2213,22 +2387,50 @@ static void test_package_build_lifecycle(const char *self_executable) {
     snprintf(rebuild_app->games[0].selected_executable,
              sizeof(rebuild_app->games[0].selected_executable),
              "EBOOT.BIN");
+    snprintf(rebuild_app->games[0].disc_version,
+             sizeof(rebuild_app->games[0].disc_version), "1.00");
+    assert(strlen(source_iso_path) < sizeof(rebuild_app->games[0].iso_path));
+    memcpy(rebuild_app->games[0].iso_path, source_iso_path,
+           strlen(source_iso_path) + 1u);
+    write_player_package_preflight_iso(source_iso_path, "ULUS99998",
+                                       "Rebuild fixture", true);
+    memcpy(encrypted_eboot, "~PSP", 4);
+    encrypted_eboot[0x27] = 1;
+    encrypted_eboot[0x55] = 0x10;
+    fixture_sha_bytes(encrypted_eboot, sizeof(encrypted_eboot),
+                      source_media_sha256);
+    int source_media_length = snprintf(source_media_json, sizeof(source_media_json),
+        "{\"executable\":{\"path\":\"PSP_GAME/SYSDIR/EBOOT.BIN\","
+        "\"sha256\":\"%s\"},\"modules\":[]}", source_media_sha256);
+    assert(source_media_length > 0 &&
+           (size_t)source_media_length < sizeof(source_media_json));
+    rebuild_app->games[0].iso_size_bytes =
+        (uint64_t)nk_platform_get_file_size(source_iso_path);
+    rebuild_app->games[0].executable_eboot_kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+    rebuild_app->games[0].executable_selection = NK_ISO_EXEC_SELECTION_NONE;
     rebuild_app->games[0].is_experimental = true;
+    assert(nk_platform_mkdir_p(decrypted_dir));
+    write_synthetic_mips_elf(decrypted_elf);
 
     bool had_python = false;
     bool had_build_mode = false;
     bool had_title_id = false;
+    bool had_source_media = false;
     bool had_install_override = false;
     char *saved_python = capture_environment_value("PYTHON", &had_python);
     char *saved_build_mode = capture_environment_value(
         "NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", &had_build_mode);
     char *saved_title_id = capture_environment_value(
         "NAKAGAWA_TEST_PACKAGE_REBUILD_TITLE_ID", &had_title_id);
+    char *saved_source_media = capture_environment_value(
+        "NAKAGAWA_TEST_PACKAGE_REBUILD_SOURCE_MEDIA", &had_source_media);
     char *saved_install_override = capture_environment_value(
         "NK_INSTALL_ROOT", &had_install_override);
     nk_ps_set_env("PYTHON", self_executable);
     nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_TITLE_ID",
                   rebuild_app->games[0].title_id);
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_SOURCE_MEDIA",
+                  source_media_json);
     nk_ps_set_env("NK_INSTALL_ROOT", NULL);
 
     uint32_t incompatible_abi = SR_CPUSTATE_ABI_VERSION + 100u;
@@ -2236,11 +2438,11 @@ static void test_package_build_lifecycle(const char *self_executable) {
         user_root, rebuild_app->games[0].disc_id,
         rebuild_app->games[0].title_id,
         rebuild_app->games[0].selected_executable, FIXTURE_SHA256);
-    write_runtime_package_fixture(user_root, rebuild_app->games[0].disc_id,
-                                  rebuild_app->games[0].title_id,
-                                  incompatible_abi,
-                                  "experimental-ulus99998.exe",
-                                  FIXTURE_SHA256, NULL);
+    write_runtime_package_fixture_with_source_media(
+        user_root, rebuild_app->games[0].disc_id,
+        rebuild_app->games[0].title_id, incompatible_abi,
+        "experimental-ulus99998.exe", FIXTURE_SHA256, NULL,
+        source_media_json);
     NkRuntimePackageStatus rebuild_status = player_app_validate_runtime_package(
         rebuild_app, &rebuild_app->games[0], NULL,
         incompatible_reason, sizeof(incompatible_reason));
@@ -2250,7 +2452,13 @@ static void test_package_build_lifecycle(const char *self_executable) {
     }
     assert(rebuild_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE);
     nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "success");
-    assert(player_app_rebuild_package(rebuild_app, 0));
+    bool rebuild_started = player_app_rebuild_package(rebuild_app, 0);
+    if (!rebuild_started) {
+        fprintf(stderr, "rebuild action refused: %s: %s\n",
+                rebuild_app->last_error.error_code,
+                rebuild_app->last_error.message);
+    }
+    assert(rebuild_started);
     assert(rebuild_app->active_view == VIEW_BUILDING_PACKAGE);
     poll_player_package_build_to_terminal(rebuild_app);
     assert(rebuild_app->build_session.is_complete);
@@ -2260,11 +2468,11 @@ static void test_package_build_lifecycle(const char *self_executable) {
                incompatible_reason, sizeof(incompatible_reason)) ==
            NK_RUNTIME_PACKAGE_OK);
 
-    write_runtime_package_fixture(user_root, rebuild_app->games[0].disc_id,
-                                  rebuild_app->games[0].title_id,
-                                  incompatible_abi,
-                                  "experimental-ulus99998.exe",
-                                  FIXTURE_SHA256, NULL);
+    write_runtime_package_fixture_with_source_media(
+        user_root, rebuild_app->games[0].disc_id,
+        rebuild_app->games[0].title_id, incompatible_abi,
+        "experimental-ulus99998.exe", FIXTURE_SHA256, NULL,
+        source_media_json);
     player_app_runtime_package_cache_invalidate(rebuild_app);
     assert(player_app_validate_runtime_package(
                rebuild_app, &rebuild_app->games[0], NULL,
@@ -2330,6 +2538,68 @@ static void test_package_build_lifecycle(const char *self_executable) {
     assert(reloaded->count == 1);
     assert(strcmp(reloaded->entries[0].selected_executable, "EBOOT.BIN") == 0);
     free(reloaded);
+
+    /* Public synthetic reliability gate: ten BUILD PACKAGE sessions from a
+       fresh per-run profile, then an incompatible-package REBUILD, then one
+       more build that the package layer reports as reuse. Every run must
+       finish without a failure card and leave a package the native validator
+       accepts. Hosted native-core-tests runs this same source-owned sequence. */
+    for (unsigned int run = 0; run < 10; ++run) {
+        nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE",
+                      run == 0 ? "success" : "reuse");
+        rebuild_app->last_error.error_code[0] = '\0';
+        rebuild_app->active_view = VIEW_LIBRARY;
+        assert(player_app_start_package_build(rebuild_app, 0));
+        poll_player_package_build_to_terminal(rebuild_app);
+        assert(rebuild_app->build_session.is_complete);
+        assert(!rebuild_app->build_session.is_failed);
+        assert(rebuild_app->active_view != VIEW_ERROR);
+        player_app_runtime_package_cache_invalidate(rebuild_app);
+        assert(player_app_validate_runtime_package(
+                   rebuild_app, &rebuild_app->games[0], NULL,
+                   incompatible_reason, sizeof(incompatible_reason)) ==
+               NK_RUNTIME_PACKAGE_OK);
+    }
+
+    write_runtime_package_fixture_with_source_media(
+        user_root, rebuild_app->games[0].disc_id,
+        rebuild_app->games[0].title_id, incompatible_abi,
+        "experimental-ulus99998.exe", FIXTURE_SHA256, NULL,
+        source_media_json);
+    player_app_runtime_package_cache_invalidate(rebuild_app);
+    assert(player_app_validate_runtime_package(
+               rebuild_app, &rebuild_app->games[0], NULL,
+               incompatible_reason, sizeof(incompatible_reason)) ==
+           NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "success");
+    rebuild_app->last_error.error_code[0] = '\0';
+    rebuild_app->active_view = VIEW_LIBRARY;
+    assert(player_app_rebuild_package(rebuild_app, 0));
+    poll_player_package_build_to_terminal(rebuild_app);
+    assert(rebuild_app->build_session.is_complete);
+    assert(!rebuild_app->build_session.is_failed);
+    assert(rebuild_app->active_view != VIEW_ERROR);
+    player_app_runtime_package_cache_invalidate(rebuild_app);
+    assert(player_app_validate_runtime_package(
+               rebuild_app, &rebuild_app->games[0], NULL,
+               incompatible_reason, sizeof(incompatible_reason)) ==
+           NK_RUNTIME_PACKAGE_OK);
+
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "reuse");
+    rebuild_app->last_error.error_code[0] = '\0';
+    rebuild_app->active_view = VIEW_LIBRARY;
+    assert(player_app_start_package_build(rebuild_app, 0));
+    poll_player_package_build_to_terminal(rebuild_app);
+    assert(rebuild_app->build_session.is_complete);
+    assert(!rebuild_app->build_session.is_failed);
+    assert(rebuild_app->active_view != VIEW_ERROR);
+    player_app_runtime_package_cache_invalidate(rebuild_app);
+    assert(player_app_validate_runtime_package(
+               rebuild_app, &rebuild_app->games[0], NULL,
+               incompatible_reason, sizeof(incompatible_reason)) ==
+           NK_RUNTIME_PACKAGE_OK);
+    printf("[PLAYER_STATE_TEST] synthetic package reliability 10 builds, rebuild, reuse PASS\n");
+
     /* A profile that binds no executable gives the entry nothing to adopt. */
     write_experimental_profile_fixture(
         user_root, rebuild_app->games[0].disc_id,
@@ -2369,11 +2639,14 @@ static void test_package_build_lifecycle(const char *self_executable) {
                               saved_build_mode, had_build_mode);
     restore_environment_value("NAKAGAWA_TEST_PACKAGE_REBUILD_TITLE_ID",
                               saved_title_id, had_title_id);
+    restore_environment_value("NAKAGAWA_TEST_PACKAGE_REBUILD_SOURCE_MEDIA",
+                              saved_source_media, had_source_media);
     restore_environment_value("NK_INSTALL_ROOT", saved_install_override,
                               had_install_override);
     free(saved_python);
     free(saved_build_mode);
     free(saved_title_id);
+    free(saved_source_media);
     free(saved_install_override);
     printf("[PLAYER_STATE_TEST] incompatible package rebuild success and failed-build preservation PASS\n");
 }
@@ -3527,7 +3800,7 @@ int main(int argc, char **argv) {
         snprintf(executable_report.selected_path, sizeof(executable_report.selected_path),
                  "BOOT.BIN");
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
-        assert(wiz->wizard.preflight.count == 6);
+        assert(wiz->wizard.preflight.count == 7);
         const PlayerPreflightCheck *check = find_preflight_check(
             &wiz->wizard.preflight, "DISC_SFO");
         assert(check && check->status == PREFLIGHT_OK);
@@ -3868,7 +4141,7 @@ int main(int argc, char **argv) {
         remove_runtime_package_fixture(preflight_root, "ULUS99998",
                                        "experimental-ulus99998");
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
-        assert(wiz->wizard.preflight.count == 7);
+        assert(wiz->wizard.preflight.count == 8);
         check = find_preflight_check(&wiz->wizard.preflight, "EXPERIMENTAL");
         assert(check && check->status == PREFLIGHT_IN_PROGRESS);
         assert(strstr(check->message,
@@ -6547,8 +6820,6 @@ int main(int argc, char **argv) {
         PlayerApp *capp = (PlayerApp *)calloc(1, sizeof(PlayerApp));
         assert(capp != NULL);
         nk_library_init(&capp->library);
-        player_app_populate_sample_games(capp);
-        assert(capp->game_count > 0);
 
         char saved_cwd[NK_MAX_PATH];
         assert(nk_ps_getcwd(saved_cwd, sizeof(saved_cwd)) != NULL);
@@ -6558,6 +6829,42 @@ int main(int argc, char **argv) {
         snprintf(probe + probe_len, sizeof(probe) - probe_len, "%ccli_card_probe",
                  nk_platform_path_separator());
         assert(nk_platform_mkdir_p(probe));
+
+        char preflight_user[NK_MAX_PATH + 128];
+        char preflight_iso[NK_MAX_PATH + 128];
+        snprintf(preflight_user, sizeof(preflight_user), "%s%cpreflight-user",
+                 probe, nk_platform_path_separator());
+        snprintf(preflight_iso, sizeof(preflight_iso), "%s%cpreflight.iso",
+                 probe, nk_platform_path_separator());
+        assert(nk_platform_mkdir_p(preflight_user));
+        write_player_package_preflight_iso(preflight_iso, "TEST00009",
+                                           "Build preflight fixture", false);
+        capp->game_count = 1;
+        capp->selected_game_index = 0;
+        snprintf(capp->games[0].disc_id, sizeof(capp->games[0].disc_id),
+                 "TEST00009");
+        snprintf(capp->games[0].title_id, sizeof(capp->games[0].title_id),
+                 "experimental-test00009");
+        snprintf(capp->games[0].title_name, sizeof(capp->games[0].title_name),
+                 "Build preflight fixture");
+        snprintf(capp->games[0].disc_version, sizeof(capp->games[0].disc_version),
+                 "1.00");
+        snprintf(capp->games[0].selected_executable,
+                 sizeof(capp->games[0].selected_executable), "EBOOT.BIN");
+        assert(strlen(preflight_iso) < sizeof(capp->games[0].iso_path));
+        memcpy(capp->games[0].iso_path, preflight_iso,
+               strlen(preflight_iso) + 1u);
+        capp->games[0].iso_size_bytes =
+            (uint64_t)nk_platform_get_file_size(preflight_iso);
+        capp->games[0].is_experimental = true;
+        capp->games[0].executable_eboot_kind = NK_ISO_EXEC_MIPS_ELF32;
+        capp->games[0].executable_selection = NK_ISO_EXEC_SELECTION_EBOOT;
+        assert(strlen(preflight_user) < sizeof(capp->runtime_root));
+        memcpy(capp->runtime_root, preflight_user,
+               strlen(preflight_user) + 1u);
+        write_experimental_profile_fixture(
+            preflight_user, capp->games[0].disc_id, capp->games[0].title_id,
+            capp->games[0].selected_executable, FIXTURE_SHA256);
 
         char prior_override[1024];
         nk_ps_copy_env("NK_INSTALL_ROOT", prior_override, sizeof(prior_override));
@@ -6700,6 +7007,8 @@ int main(int argc, char **argv) {
         if (prior_override[0]) nk_ps_set_env("NK_INSTALL_ROOT", prior_override);
         else nk_ps_set_env("NK_INSTALL_ROOT", NULL);
 
+        assert(native_test_remove_tree(preflight_user));
+        assert(remove(preflight_iso) == 0);
         free(capp);
     }
 
