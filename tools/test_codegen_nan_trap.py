@@ -1260,15 +1260,20 @@ class Vfpu3CompareDecodeTests(unittest.TestCase):
 
     def test_sub5_is_vscmp(self):
         body = self._effect((0x6f1e6040 & ~(7 << 23)) | (5 << 23))
-        self.assertIn("(_a[_i]<_b[_i])?-1.0f:((_a[_i]>_b[_i])?1.0f:0.0f)", body)
-
-    def test_vscmp_orders_a_nan_lane_by_sign_and_magnitude(self):
-        # PSP-VFPU-CMP-001: a PSP-3000 writes +1.0 for NaN vs 1.5, -1.0 for 1.5 vs NaN and
-        # -1.0 for -NaN vs 1.5. A lane with a NaN takes the raw-word branch; vsge and vslt
-        # keep the plain compare, which writes 0.0 for a NaN as the console does.
-        body = self._effect((0x6f1e6040 & ~(7 << 23)) | (5 << 23))
-        self.assertIn("if((_ab&0x7fffffffu)>0x7f800000u||(_bb&0x7fffffffu)>0x7f800000u)", body)
         self.assertIn("_d[_i]=(_ka<_kb)?-1.0f:((_ka>_kb)?1.0f:0.0f);", body)
+        self.assertNotIn("vfpuCtrl[3]", body, "vscmp does not write the condition code")
+
+    def test_vscmp_orders_denormal_flushed_raw_words_by_sign_and_magnitude(self):
+        # PSP-VFPU-CMP-001: a PSP-3000 writes +1.0 for NaN vs 1.5, -1.0 for 1.5 vs NaN and
+        # -1.0 for -NaN vs 1.5. PSP-HLE-ISSUES-001 (captured): every lane compares the raw
+        # words in sign-magnitude order after flushing a denormal to a zero of its sign, so
+        # 0x00000001 vs 0 writes 0.0; no lane falls back to the host float compare. vsge and
+        # vslt keep the plain compare, which writes 0.0 for a NaN as the console does.
+        body = self._effect((0x6f1e6040 & ~(7 << 23)) | (5 << 23))
+        self.assertIn("if((_ab&0x7f800000u)==0u) _ab&=0x80000000u;", body)
+        self.assertIn("if((_bb&0x7f800000u)==0u) _bb&=0x80000000u;", body)
+        self.assertIn("_d[_i]=(_ka<_kb)?-1.0f:((_ka>_kb)?1.0f:0.0f);", body)
+        self.assertNotIn("(_a[_i]<_b[_i])", body)
         for sub in (6, 7):
             self.assertNotIn("0x7f800000u", self._effect((0x6f1e6040 & ~(7 << 23)) | (sub << 23)))
 
