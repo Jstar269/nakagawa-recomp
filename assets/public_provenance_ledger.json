@@ -3707,7 +3707,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e51b6c90eb1860b90bbb27dfb79417a82491227fd9fd934182d1d0aab02aeaa8"
+      "sha256": "c1fbd9f4d6fb2374d6161800c4c0e6248fd177349afa8129217487914263613f"
     },
     {
       "path": "src/player/ui_renderer.h",

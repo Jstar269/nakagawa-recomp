@@ -115,6 +115,7 @@ typedef SDL_Surface *(SDLCALL *UiTtfRenderTextFn)(TTF_Font *font, const char *te
 
 #define UI_FONT_CACHE_ENTRIES 96
 #define UI_FONT_CACHE_TEXT 160
+#define UI_FONT_CACHE_HASH_SLOTS 256
 
 typedef struct {
     char text[UI_FONT_CACHE_TEXT];
@@ -144,6 +145,7 @@ typedef struct {
     int active_bucket;  /* size bucket the font object is currently set to */
     float density;
     UiFontCacheEntry entries[UI_FONT_CACHE_ENTRIES];
+    int hash_table[UI_FONT_CACHE_HASH_SLOTS];
     uint64_t tick;
 } UiFont;
 
@@ -292,6 +294,7 @@ static void ui_font_ensure(void) {
     if (g_font.attempted) return;
     g_font.attempted = true;
     g_font.active_bucket = -1;
+    memset(g_font.hash_table, -1, sizeof(g_font.hash_table));
     /* The frame that first draws text has already set its density; keep it,
        or that frame (the only one a --screenshot keeps) is drawn at 1x. */
     if (!(g_font.density > 0.0f)) g_font.density = 1.0f;
@@ -734,6 +737,7 @@ void ui_font_shutdown(void) {
         }
         g_font.entries[i].text[0] = '\0';
     }
+    memset(g_font.hash_table, -1, sizeof(g_font.hash_table));
     if (g_font.font && g_font.f_close) {
         g_font.f_close(g_font.font);
         g_font.font = NULL;
@@ -1107,28 +1111,95 @@ static size_t ui_font_fit_prefix(const char *str, float scale, float max_width) 
     return measured_len;
 }
 
+static uint32_t ui_font_hash_key(const char *str, int bucket, uint32_t color_key, float density) {
+    uint32_t h = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)str; *p; p++) {
+        h = (h ^ *p) * 16777619u;
+    }
+    h = (h ^ (uint32_t)bucket) * 16777619u;
+    h = (h ^ color_key) * 16777619u;
+    uint32_t d_bits = 0;
+    memcpy(&d_bits, &density, sizeof(d_bits));
+    h = (h ^ d_bits) * 16777619u;
+    h ^= h >> 15;
+    return h;
+}
+
 static UiFontCacheEntry *ui_font_cache_lookup(const char *str, int bucket, uint32_t color_key, float density) {
-    UiFontCacheEntry *free_slot = NULL;
-    UiFontCacheEntry *oldest = &g_font.entries[0];
-    for (int i = 0; i < UI_FONT_CACHE_ENTRIES; i++) {
-        UiFontCacheEntry *e = &g_font.entries[i];
-        if (!e->tex) {
-            if (!free_slot) free_slot = e;
-            continue;
-        }
-        if (e->size_bucket == bucket && e->color_key == color_key && e->density == density &&
-            strcmp(e->text, str) == 0) {
+    uint32_t h = ui_font_hash_key(str, bucket, color_key, density);
+    uint32_t slot = h & (UI_FONT_CACHE_HASH_SLOTS - 1);
+    uint32_t start_slot = slot;
+
+    while (g_font.hash_table[slot] != -1) {
+        int idx = g_font.hash_table[slot];
+        UiFontCacheEntry *e = &g_font.entries[idx];
+        if (e->tex && e->size_bucket == bucket && e->color_key == color_key &&
+            e->density == density && strcmp(e->text, str) == 0) {
             e->last_used = ++g_font.tick;
             return e;
         }
-        if (e->last_used < oldest->last_used) oldest = e;
+        slot = (slot + 1) & (UI_FONT_CACHE_HASH_SLOTS - 1);
+        if (slot == start_slot) break;
     }
-    UiFontCacheEntry *slot = free_slot ? free_slot : oldest;
-    if (slot->tex) {
-        SDL_DestroyTexture(slot->tex);
-        slot->tex = NULL;
+
+    UiFontCacheEntry *free_slot = NULL;
+    UiFontCacheEntry *oldest = &g_font.entries[0];
+    int oldest_idx = 0;
+    int free_idx = -1;
+
+    for (int i = 0; i < UI_FONT_CACHE_ENTRIES; i++) {
+        UiFontCacheEntry *e = &g_font.entries[i];
+        if (!e->tex) {
+            if (!free_slot) {
+                free_slot = e;
+                free_idx = i;
+            }
+        } else {
+            if (e->last_used < oldest->last_used) {
+                oldest = e;
+                oldest_idx = i;
+            }
+        }
     }
-    return slot;
+
+    int target_idx = free_slot ? free_idx : oldest_idx;
+    UiFontCacheEntry *slot_entry = &g_font.entries[target_idx];
+
+    if (slot_entry->tex) {
+        SDL_DestroyTexture(slot_entry->tex);
+        slot_entry->tex = NULL;
+
+        uint32_t old_h = ui_font_hash_key(slot_entry->text, slot_entry->size_bucket, slot_entry->color_key, slot_entry->density);
+        uint32_t s = old_h & (UI_FONT_CACHE_HASH_SLOTS - 1);
+        while (g_font.hash_table[s] != -1) {
+            if (g_font.hash_table[s] == target_idx) {
+                g_font.hash_table[s] = -1;
+                uint32_t rehash_s = (s + 1) & (UI_FONT_CACHE_HASH_SLOTS - 1);
+                while (g_font.hash_table[rehash_s] != -1) {
+                    int move_idx = g_font.hash_table[rehash_s];
+                    UiFontCacheEntry *me = &g_font.entries[move_idx];
+                    uint32_t orig_s = ui_font_hash_key(me->text, me->size_bucket, me->color_key, me->density) & (UI_FONT_CACHE_HASH_SLOTS - 1);
+                    g_font.hash_table[rehash_s] = -1;
+                    uint32_t ins = orig_s;
+                    while (g_font.hash_table[ins] != -1) {
+                        ins = (ins + 1) & (UI_FONT_CACHE_HASH_SLOTS - 1);
+                    }
+                    g_font.hash_table[ins] = move_idx;
+                    rehash_s = (rehash_s + 1) & (UI_FONT_CACHE_HASH_SLOTS - 1);
+                }
+                break;
+            }
+            s = (s + 1) & (UI_FONT_CACHE_HASH_SLOTS - 1);
+        }
+    }
+
+    slot = h & (UI_FONT_CACHE_HASH_SLOTS - 1);
+    while (g_font.hash_table[slot] != -1) {
+        slot = (slot + 1) & (UI_FONT_CACHE_HASH_SLOTS - 1);
+    }
+    g_font.hash_table[slot] = target_idx;
+
+    return slot_entry;
 }
 
 /* Render one string through the cache. Returns false when the caller must
