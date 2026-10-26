@@ -1065,6 +1065,24 @@ class NativePlayerUiTests(unittest.TestCase):
                 self.assertEqual(frames[0]["view"], "online_settings")
                 self.assertEqual(frames[1]["view"], "settings")
 
+    def test_build_cache_page_leads_to_tool_removal_and_back(self) -> None:
+        """#1306: Settings > Build tools and cache holds the shared-library switch, the
+        clear button and tool removal; cancelling a removal returns to the page."""
+        for ui_mode in ("next", "legacy"):
+            with self.subTest(ui_mode=ui_mode):
+                run = self.run_player(
+                    "build-cache",
+                    ("KEY_TAB", "KEY_TAB", "KEY_RETURN", "KEY_ESCAPE", "KEY_ESCAPE"),
+                    ui_mode=ui_mode,
+                )
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                views = [frame["view"] for frame in frames]
+                visited = [view for i, view in enumerate(views) if i == 0 or views[i - 1] != view]
+                self.assertEqual(
+                    visited, ["build_cache", "confirm_remove_tools", "build_cache", "settings"], views
+                )
+
     def test_next_ui_library_card_shows_the_disc_icon_once_read(self) -> None:
         """The next UI reads ICON0.PNG from the disc in the background and shows
         it on the card; a disc that cannot be read keeps the placeholder."""
@@ -1263,6 +1281,7 @@ class NativePlayerUiTests(unittest.TestCase):
     SETTINGS_FOCUS = {
         "resolution": str(0x4501), "pacing": str(0x4502), "done": str(0x450C),
         "online": str(0x450D), "notices": str(0x450E), "remove_tools": str(0x450F),
+        "build_cache": str(0x451A), "share_libraries": str(0x451B),
         "online_mode": str(0x4511), "back": str(0x4517), "confirm_remove": str(0x4519),
         "controller": str(0x450B), "scaling": str(0x4505),
         "launcher_fullscreen": str(0x450A),
@@ -1311,7 +1330,8 @@ class NativePlayerUiTests(unittest.TestCase):
                          "the ABOUT tab on Settings closes it and opens About")
 
     def test_next_ui_settings_pages_open_and_return(self) -> None:
-        """#1302: the online, notices and removal pages are next-UI cards too."""
+        """#1302: the online, notices, build tools and cache (#1306) and removal pages are
+        next-UI cards too."""
         focus = self.SETTINGS_FOCUS
         online = self.next_ui_run(
             "settings",
@@ -1334,27 +1354,53 @@ class NativePlayerUiTests(unittest.TestCase):
                          ["settings", "prereq_about"])
         self.assertEqual(self.focus_trail(notices)[-1], focus["back"])
 
-        # Right comes straight after the card opens, before its buttons are laid
-        # out; nk_ui holds it a frame instead of losing it (a slow CI runner did).
+        # Build tools and cache opens on its switch; Tab reaches Remove build tools.
+        # Right comes straight after the removal card opens, before its buttons are
+        # laid out; nk_ui holds it a frame instead of losing it (a slow CI runner did).
+        to_removal = ("KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100", "KEY_TAB", "KEY_TAB",
+                      "KEY_RETURN")
         removal = self.next_ui_run(
             "settings",
-            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS +
-            ("KEY_RIGHT", "KEY_RETURN", "WAIT_MS=1", "KEY_RIGHT", "KEY_RETURN"),
+            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS + to_removal +
+            ("WAIT_MS=1", "KEY_RIGHT", "KEY_RETURN"),
             downloaded_tool_payload=True,
         )
         self.assertEqual([view for view, _ in self.screens(removal)],
-                         ["settings", "confirm_remove_tools", "settings"])
-        self.assertIn(focus["confirm_remove"], self.focus_trail(removal))
+                         ["settings", "build_cache", "confirm_remove_tools", "settings"])
+        trail = self.focus_trail(removal)
+        self.assertIn(focus["build_cache"], trail)
+        self.assertIn(focus["share_libraries"], trail, "the page opens on its switch")
+        self.assertIn(focus["remove_tools"], trail)
+        self.assertIn(focus["confirm_remove"], trail)
         self.assertFalse(removal["downloaded_tool_marker_exists"])
 
         kept = self.next_ui_run(
             "settings",
-            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS +
-            ("KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100", "KEY_RETURN"),
+            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS + to_removal +
+            ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100"),
             downloaded_tool_payload=True,
         )
         self.assertTrue(kept["downloaded_tool_marker_exists"],
                         "the removal card opens on the choice that keeps the tools")
+        self.assertEqual([view for view, _ in self.screens(kept)],
+                         ["settings", "build_cache", "confirm_remove_tools", "build_cache"],
+                         "keeping the tools returns to build tools and cache")
+        self.assertEqual(self.focus_trail(kept)[-1], focus["remove_tools"],
+                         "and focuses the button that opened the removal card")
+
+        shared = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS +
+            ("KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100", "KEY_RETURN", "KEY_ESCAPE", "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(shared)],
+                         ["settings", "build_cache", "settings"])
+        self.assertEqual(self.focus_trail(shared)[-1], focus["build_cache"],
+                         "Back focuses the button that opened the page")
+        settings = shared["settings"]
+        assert isinstance(settings, dict)
+        self.assertIs(settings.get("share_system_libraries"), False,
+                      "the switch turns library sharing off and saves it")
 
     # The next UI's controller page (player_ui_nk.h), as the frame line prints it.
     CONTROLLER_FOCUS = {
@@ -1626,12 +1672,14 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["view"], "prereq_about")
 
     def test_settings_removal_requires_confirmation_and_keeps_other_app_data(self) -> None:
-        events = ("KEY_TAB",) * 14 + ("KEY_RETURN", "KEY_RETURN")
+        # Settings > BUILD TOOLS AND CACHE, then that page's REMOVE DOWNLOADED BUILD TOOLS.
+        events = ("KEY_TAB",) * 14 + ("KEY_RETURN", "KEY_TAB", "KEY_TAB", "KEY_RETURN", "KEY_RETURN")
         run = self.run_player("settings", events, downloaded_tool_payload=True)
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[14]["focus"], "14")
-        self.assertEqual(frames[15]["view"], "confirm_remove_tools")
+        self.assertEqual(frames[15]["view"], "build_cache")
+        self.assertEqual(frames[18]["view"], "confirm_remove_tools")
         self.assertEqual(frames[-1]["view"], "settings")
         self.assertFalse(run["downloaded_tool_marker_exists"])
 

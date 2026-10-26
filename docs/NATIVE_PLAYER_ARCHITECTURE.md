@@ -86,7 +86,7 @@ The native player uses the existing SDL3 and Vulkan runtime to render its in-win
 **SDL3 with an in-engine retained/immediate UI layer** was decisively chosen because:
 
 1. **Unified Installation Experience (Target)**: The product goal is one install with a coherent launcher and game experience. The current source starts a prepared title as a separate child through `nk_launch_start`; it does not make the launcher and game a single executable.
-2. **Future Outside/Inside Presence**: A shared UI system is intended to drive the launcher outside the game and an eventual in-game settings pause overlay (`F1` / Gamepad `Guide`). In-game overlay parity is not implemented in the current native slice.
+2. **Future Outside/Inside Presence**: A shared UI system is intended to drive the launcher outside the game and an in-game pause overlay (`Esc`, `F1` or the gamepad's `Guide`). The pause itself is implemented (a scheduler stall with the overlay holding all input, [Clocks](ARCHITECTURE.md#clocks)); its screens are not.
 3. **No Web / Server Overhead**: Eliminates Node.js, localhost HTTP listeners, port collisions, browser sandbox restrictions, and security boundary headaches.
 
 ### Layout library and language decision (2026-10-21)
@@ -263,7 +263,8 @@ The native player provides a dedicated Controller Settings screen (`VIEW_CONTROL
   2. *Extremes state*: interactive live sampling where the user presses each trigger fully and rotates analog sticks in circles to capture maximum physical excursions.
   3. *Review & Accept*: visual summary of captured resting and extreme values with Accept or Cancel actions.
   Values are stored in the unified `input_profile.json` (schema 3; schema 1 and 2 files still load) and applied during analog and trigger transform evaluations. Keyboard Escape or gamepad East button safely cancels at any point.
-- **In the Works**: In-game pause overlay controller configuration remains in the works. Its guest-clock contract is tracked by [issue #1171](https://github.com/Jstar269/nakagawa-recomp/issues/1171) and the [Clocks section](ARCHITECTURE.md#clocks); the scheduler/audio half lands before the presenter and input-claim half. Focus loss and window minimization do not auto-pause in v0.0.1.
+- **In-game pause**: `Esc`, `F1` or the gamepad's `Guide` pauses a running game, and so does disconnecting its controller. The scheduler stops the guest ([issue #1171](https://github.com/Jstar269/nakagawa-recomp/issues/1171), the [Clocks section](ARCHITECTURE.md#clocks)); the window shows the last game frame under the scrim and holds all input, and a button held as the pause closes does not reach the game as a press. Focus loss and window minimization do not auto-pause in v0.0.1.
+- **In the Works**: the pause overlay's screens (resume, settings, controller configuration, quit to library) are tracked by [issue #1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159).
 
 ---
 

@@ -2267,3 +2267,56 @@ uint32_t nk_input_profile_eval_navigation(
     }
     return mask;
 }
+
+/* -----------------------------------------------------------------------------
+ * Overlay input gate (#1159)
+ * -------------------------------------------------------------------------- */
+
+#define NK_INPUT_GATE_STICK_CENTRE 128u
+
+void nk_input_gate_init(NkInputGate *gate) {
+    if (!gate) return;
+    gate->claimed = false;
+    gate->hidden = 0u;
+    gate->stick_hidden = false;
+}
+
+void nk_input_gate_claim(NkInputGate *gate) {
+    if (!gate) return;
+    gate->claimed = true;
+    gate->hidden = 0u;
+    gate->stick_hidden = false;
+}
+
+void nk_input_gate_release(NkInputGate *gate, uint32_t held, uint8_t lx, uint8_t ly) {
+    if (!gate || !gate->claimed) return;
+    gate->claimed = false;
+    gate->hidden = held;
+    gate->stick_hidden = lx != NK_INPUT_GATE_STICK_CENTRE || ly != NK_INPUT_GATE_STICK_CENTRE;
+}
+
+void nk_input_gate_apply(NkInputGate *gate, uint32_t *held, uint32_t *pressed,
+                         uint8_t *lx, uint8_t *ly) {
+    if (!gate) return;
+    if (gate->claimed) {
+        if (held) *held = 0u;
+        if (pressed) *pressed = 0u;
+        if (lx) *lx = NK_INPUT_GATE_STICK_CENTRE;
+        if (ly) *ly = NK_INPUT_GATE_STICK_CENTRE;
+        return;
+    }
+    if (held) {
+        /* A hidden button shows again once it is up, or once it went down anew. */
+        gate->hidden &= *held & ~(pressed ? *pressed : 0u);
+        *held &= ~gate->hidden;
+    }
+    if (pressed) *pressed &= ~gate->hidden;
+    if (gate->stick_hidden && lx && ly && *lx == NK_INPUT_GATE_STICK_CENTRE &&
+        *ly == NK_INPUT_GATE_STICK_CENTRE) {
+        gate->stick_hidden = false;
+    }
+    if (gate->stick_hidden) {
+        if (lx) *lx = NK_INPUT_GATE_STICK_CENTRE;
+        if (ly) *ly = NK_INPUT_GATE_STICK_CENTRE;
+    }
+}

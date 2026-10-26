@@ -17,6 +17,38 @@ SELFTEST_C = ROOT / "src" / "rt" / "asset_index_selftest.c"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
 
+CAPTION_HARNESS = r'''
+#include "recomp.h"
+#include <string.h>
+static int fails;
+#define EXPECT(raw, want) do { char o[SR_WINDOW_TITLE_CAP]; sr_window_title_format(raw, o, sizeof o); \
+    if (strcmp(o, want)) { printf("FAIL %s -> [%s]\n", #raw, o); fails++; } } while (0)
+int main(void) {
+    EXPECT("Some Game: Sub", "Nakagawa Recomp - Some Game: Sub");
+    EXPECT(NULL, "Nakagawa Recomp");
+    EXPECT("", "Nakagawa Recomp");
+    EXPECT(" \t\r\n ", "Nakagawa Recomp");
+    EXPECT("\x01\x1b[31m\x7f", "Nakagawa Recomp - [31m");
+    EXPECT("  A \n\t B  ", "Nakagawa Recomp - A B");
+    EXPECT("caf\xc3\xa9 \xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0", "Nakagawa Recomp - caf\xc3\xa9 \xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0");
+    EXPECT("bad\xff\xfe" "ok", "Nakagawa Recomp - badok");
+    EXPECT("a\xc0\xaf" "b", "Nakagawa Recomp - ab");           /* overlong */
+    EXPECT("a\xed\xa0\x80" "b", "Nakagawa Recomp - ab");       /* surrogate */
+    EXPECT("a\xe3\x82", "Nakagawa Recomp - a");                /* truncated */
+    EXPECT("a\xc2\x85" "b", "Nakagawa Recomp - ab");           /* C1 control */
+    char big[400]; memset(big, 'x', sizeof big - 1); big[sizeof big - 1] = 0;
+    char o[SR_WINDOW_TITLE_CAP]; size_t n = sr_window_title_format(big, o, sizeof o);
+    if (n != strlen("Nakagawa Recomp - ") + SR_WINDOW_TITLE_GAME_MAX || strlen(o) != n) { puts("FAIL bound"); fails++; }
+    memset(big, 0, sizeof big);                                /* multibyte never split at the bound */
+    for (int i = 0; i < 60; i++) memcpy(big + i * 3, "\xe3\x82\xb2", 3);
+    sr_window_title_format(big, o, sizeof o);
+    if (sr_window_title_utf8_len((const unsigned char *)o + strlen(o) - 3) != 3) { puts("FAIL split"); fails++; }
+    char tiny[8]; sr_window_title_format("abc", tiny, sizeof tiny);
+    if (strcmp(tiny, "Nakagaw")) { puts("FAIL tiny"); fails++; }
+    return fails;
+}
+'''
+
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestAssetIndexSelftestC(unittest.TestCase):
@@ -259,7 +291,7 @@ class TestProjectFontAssetCopy(unittest.TestCase):
         prepare_idx = driver.find("sr_host_data_prepare()")
         self.assertNotEqual(prepare_idx, -1,
                             "driver.c must call sr_host_data_prepare()")
-        gui_idx = driver.find("gui_init(SR_APP_TITLE)")
+        gui_idx = driver.find("gui_init(caption)")
         sched_idx = driver.find("sched_init(&s)")
         fn_idx = driver.find("sr_call_body(fn, &s);")
         boot_begin = driver.find("BOOT_EVENT phase=index_prepare_begin")
@@ -301,6 +333,26 @@ class TestHleFontSpecTable(unittest.TestCase):
         # Font names reach guest memory only from the served file's header, never from a literal.
         for literal in ("Nakagawa Open Japanese", "Nakagawa Open Latin", "Nakagawa Open Korean"):
             self.assertNotIn(literal, hle)
+
+    @unittest.skipUnless(CC, "no C compiler")
+    def test_window_caption_format_and_sanitisation(self):
+        """Caption is "Nakagawa Recomp - <title>"; no/blank title falls back to the plain name;
+        control characters and malformed UTF-8 are stripped and the title is length-bounded."""
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "caption.c"
+            exe = Path(td) / "caption.exe"
+            src.write_text("#include <stdio.h>\n" + CAPTION_HARNESS, encoding="utf-8")
+            subprocess.run([CC, "-Wall", "-Werror", "-I", str(ROOT / "src" / "rt"), str(src),
+                            "-o", str(exe)], check=True)
+            r = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_window_caption_wiring(self):
+        driver = (ROOT / "src" / "rt" / "driver.c").read_text(encoding="utf-8")
+        self.assertIn('getenv("SR_GAME_TITLE")', driver)
+        launch = (ROOT / "src" / "core" / "nk_launch.c").read_text(encoding="utf-8")
+        self.assertIn('"SR_GAME_TITLE=%s", session->game_title', launch)
+        self.assertIn('"%s", game->title_name', launch)
 
 
 if __name__ == "__main__":
