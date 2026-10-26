@@ -37,7 +37,7 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **572** (dedicated **521**, fake_success **4**, controlled_unsupported **47**).
+Registered NIDs: **631** (dedicated **521**, fake_success **4**, controlled_unsupported **106**).
 Semantic handler census: **491** handlers across **25** API families, covering **527** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
