@@ -184,6 +184,7 @@ typedef struct {
     bool online_news;      /* the news strip, when online mode ships */
     bool online_reports;   /* user-sent reports, when online mode ships */
     bool developer_mode;   /* shows the developer log panel (F12, Select + R) */
+    bool experimental_60hz; /* experimental opt-in: native 60 Hz frame-rate rescaled game logic (default: off) */
     /* Save locations are not a setting: nk_launch_prepare_session resolves a
        writable per-disc Memory Stick root at launch (SR_MEMSTICK). The settings
        screen shows that real root instead of a configurable dead field. */
@@ -721,6 +722,8 @@ bool player_ui_canvas_fit(int pixel_width, int pixel_height,
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
 void player_app_toggle_ui_sounds(PlayerApp *app);
+void player_app_toggle_experimental_60hz(PlayerApp *app);
+void player_app_set_experimental_60hz(PlayerApp *app, bool on);
 void player_app_adjust_volume(PlayerApp *app, int delta);
 void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
 

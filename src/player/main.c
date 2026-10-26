@@ -3284,8 +3284,11 @@ int main(int argc, char *argv[]) {
                    "[--width=W --height=H [--render-scale=S]] "
                    "[--launch-index=N] [--headless-launch] "
                    "[--headless-accept-presented-frames=N] "
-                   "[--headless-timeout-ms=N]\n");
+                   "[--headless-timeout-ms=N] "
+                   "[--experimental-60hz]\n");
             return 0;
+        } else if (strcmp(argv[i], "--experimental-60hz") == 0) {
+            player_app_set_experimental_60hz(&app, true);
         } else if (strcmp(argv[i], "--ui=next") == 0) {
             ui_next_requested = true;
         } else if (strcmp(argv[i], "--ui=legacy") == 0) {

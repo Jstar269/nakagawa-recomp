@@ -33,6 +33,7 @@ from analyze import (
 )
 from host_stubs import HST_SIMPLE_STUBS
 import compat_overrides
+import enhancement_package
 import entry_frame_balance
 from imports import ImportTableError, format_boundary
 
@@ -76,6 +77,93 @@ STALE_DETECT = False
 # The C half of the option (-DSR_NAN_TRAP) makes those checks live; without it
 # they expand to ((void)0) and neither half changes behaviour on its own.
 NAN_TRAP = False
+
+# Active AOT enhancement package sites (addr -> resolved site dict).
+# Default empty dict preserves 100% byte-identical authentic emission.
+ENHANCEMENT_SITES: dict[int, dict] = {}
+ENHANCEMENT_PKG_META: dict | None = None
+
+
+def _enhancement_word(addr: int, w: int | None, elf=None) -> tuple[int | None, dict | None, str | None]:
+    """Return (effective_word, site, override_tag) for an instruction at addr."""
+    if w is None or not ENHANCEMENT_SITES or ADDRESS_SPACE.runtime_module:
+        return w, None, None
+    site = ENHANCEMENT_SITES.get(addr)
+    if site is None:
+        return w, None, None
+    next_w = read32(elf, addr + 4) if elf is not None else None
+    new_w, tag = enhancement_package.apply_site_transform_word(site, int(w), next_w)
+    if isinstance(w, RelocatedWord):
+        return w, site, tag
+    return new_w, site, tag
+
+
+def _emit_enhanced_noncontrol(addr: int, w: int, site: dict, tag: str | None, line: str) -> str:
+    """Wrap or adjust a non-control instruction C line when tag requires statement-level scaling."""
+    if tag is None:
+        return line
+    if tag == "gate_30hz":
+        return (
+            f"    {{ static uint8_t _nk_gate_{addr:08x} = 0u; "
+            f"_nk_gate_{addr:08x} ^= 1u; "
+            f"if (_nk_gate_{addr:08x}) {{\n"
+            f"    {line}\n"
+            f"    }} }}"
+        )
+    op = (w >> 26) & 0x3F
+    fn = w & 0x3F
+    rt_reg = (w >> 16) & 0x1F
+    rd_reg = (w >> 11) & 0x1F
+    fd_reg = (w >> 6) & 0x1F
+    fs_reg = (w >> 11) & 0x1F
+    if tag == "count_x2_stmt":
+        if op == 0x31:  # lwc1 ft, off(base) -> scale loaded float by 2.0f
+            return f"{line} s->f[{rt_reg}] *= 2.0f;"
+        if op in (0x20, 0x21, 0x23, 0x24, 0x25) and rt_reg != 0:  # integer load -> * 2
+            return f"{line} s->r[{rt_reg}] <<= 1;"
+        if op == 0x11 and ((w >> 21) & 0x1F) == 0x10:  # FPU op -> scale fd by 2.0f
+            return f"{line} s->f[{fd_reg}] *= 2.0f;"
+        return line
+    if tag == "step_x0.5_stmt":
+        if op == 0x31:  # lwc1 ft, off(base) -> scale loaded float by 0.5f
+            return f"{line} s->f[{rt_reg}] *= 0.5f;"
+        if op == 0x39:  # swc1 ft, off(base) -> scale stored float by 0.5f before store
+            return (
+                f"    {{ float _nk_saved_f = s->f[{rt_reg}]; s->f[{rt_reg}] *= 0.5f;\n"
+                f"    {line}\n"
+                f"      s->f[{rt_reg}] = _nk_saved_f; }}"
+            )
+        if op == 0x11 and ((w >> 21) & 0x1F) == 0x10 and fn == 0x00:  # add.s fd, fs, ft -> fd = fs + ft * 0.5f
+            ft_reg = (w >> 16) & 0x1F
+            return (
+                f"    {{ float _nk_saved_ft = s->f[{ft_reg}]; s->f[{ft_reg}] *= 0.5f;\n"
+                f"    {line}\n"
+                f"      s->f[{ft_reg}] = _nk_saved_ft; }}"
+            )
+        if op == 0x11 and ((w >> 21) & 0x1F) == 0x10:  # mul.s / mov.s / etc. -> scale fd by 0.5f
+            return f"{line} s->f[{fd_reg}] *= 0.5f;"
+        if op == 0x11 and ((w >> 21) & 0x1F) == 0x14 and fn == 0x20:  # cvt.s.w fd, fs -> scale fd by 0.5f
+            return f"{line} s->f[{fd_reg}] *= 0.5f;"
+        if op == 0 and fn in (0x20, 0x21) and rd_reg != 0:  # addu/add -> gate to 30 Hz
+            return (
+                f"    {{ static uint8_t _nk_gate_{addr:08x} = 0u; "
+                f"_nk_gate_{addr:08x} ^= 1u; "
+                f"if (_nk_gate_{addr:08x}) {{\n"
+                f"    {line}\n"
+                f"    }} }}"
+            )
+        return line
+    if tag == "prob_x0.5_stmt":
+        if op == 0x31:
+            return f"{line} s->f[{rt_reg}] *= 0.5f;"
+        if op == 0x11 and ((w >> 21) & 0x1F) == 0x10:
+            return f"{line} s->f[{fd_reg}] *= 0.5f;"
+        return line
+    if tag == "decay_sqrt_stmt":
+        if op == 0x11 and ((w >> 21) & 0x1F) == 0x10:
+            return f"{line} s->f[{fd_reg}] = sqrtf(fmaxf(0.0f, s->f[{fd_reg}]));"
+        return line
+    return line
 
 
 class RelocatedWord(int):
@@ -2054,7 +2142,10 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
             pc = next_pc
     return insns, labels, continuations
 
-def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
+def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None, elf=None):
+    w_eff, site, tag = _enhancement_word(addr, w, elf=elf)
+    if w_eff is not None:
+        w = w_eff
     try:
         eff, saddr, ssize = effect(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
                                    delay_branch_pc=delay_branch_pc)
@@ -2067,8 +2158,12 @@ def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None)
         eff = _vfpu_interp_stmt(addr, w)
         saddr, ssize = None, 0
     if saddr is SELF_TRACED:
-        return f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff}"
-    return f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
+        line = f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff}"
+    else:
+        line = f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
+    if site is not None and tag is not None:
+        return _emit_enhanced_noncontrol(addr, w, site, tag, line)
+    return line
 
 def _cop0_fields(w):
     """Split a COP0 word into (rs, rt, rd, sel)."""
@@ -2086,7 +2181,7 @@ def _flow_return(resumable=False):
     return "if (s->flow_kind != 0u) { return; }"
 
 def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
-                     resumable=False, indent="    "):
+                     resumable=False, indent="    ", elf=None):
     """Emission for one branch delay slot (spec 3.4).
 
     Ordinary words emit exactly as before. A delay-slot SYSCALL/BREAK in LLE
@@ -2138,7 +2233,7 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
             f"{indent}{_flow_return(resumable)}",
         ]
     return [normal_line(ds, dsw, hst_profile=hst_profile, lle_cpu=lle_cpu,
-                        delay_branch_pc=branch_pc if lle_cpu else None)]
+                        delay_branch_pc=branch_pc if lle_cpu else None, elf=elf)]
 
 # ---------------------------------------------------------------------------
 # Offline static verification trace simulation (--static-verify).
@@ -2311,6 +2406,8 @@ def sv_plan(elf, insns, labels, hst_profile=False):
     if not (insns and SV_ENABLED):
         return {}
     if hst_profile and (insns & _SV_SPECIAL):
+        return {}
+    if ENHANCEMENT_SITES and (insns & set(ENHANCEMENT_SITES.keys())):
         return {}
     points, total = {}, 0
     regs: list[int | None] = [None] * 32
@@ -2666,7 +2763,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             )
 
         if not is_control(w):
-            out.append(normal_line(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu))
+            out.append(normal_line(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu, elf=elf))
             if _is_cop0_move(w):
                 # MFC0/MTC0 can raise (privilege/reserved encoding): propagate
                 # the resulting flow before any native continuation (spec 3.4).
@@ -2694,19 +2791,28 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if op == 3:  # jal
             ADDRESS_SPACE.check_jump(addr, w)
             target = jump_target(addr, w)
+            _, _jal_site, _jal_tag = _enhancement_word(addr, w, elf=elf)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
+            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable, elf=elf))
             if target in known or target in resume_owners:
-                out.append(
-                    f"    {emit_checked_body_call(ADDRESS_SPACE.symbol(target, resume_owners), addr)}"
-                )
+                _call_stmt = f"    {emit_checked_body_call(ADDRESS_SPACE.symbol(target, resume_owners), addr)}"
                 if lle_cpu:
-                    out.append(f"    {_flow_return(resumable)}")
+                    _call_stmt += f"\n    {_flow_return(resumable)}"
             else:
-                out.append(
+                _call_stmt = (
                     f"    dispatch_call(s, {G(target)}, "
                     f"{G((addr + 8) & 0xFFFFFFFF)});"
                 )
+            if _jal_site is not None and _jal_tag == "gate_30hz":
+                out.append(
+                    f"    {{ static uint8_t _nk_gate_{addr:08x} = 0u; "
+                    f"_nk_gate_{addr:08x} ^= 1u; "
+                    f"if (_nk_gate_{addr:08x}) {{\n"
+                    f"    {_call_stmt}\n"
+                    f"    }} }}"
+                )
+            else:
+                out.extend(_call_stmt.split("\n"))
             if addr in continuations:
                 out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
             elif addr in dup_slot_skips:
@@ -2722,7 +2828,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             out.append(f"    {{ uint32_t _t = {R(a)};")
             out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
-                                        indent="      "))
+                                        indent="      ", elf=elf))
             if d != 0:
                 out.append(
                     f"      dispatch_call(s, _t, {G((addr + 8) & 0xFFFFFFFF)}); }}"
@@ -2753,12 +2859,12 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                     out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
                     out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile,
                                                 lle_cpu=lle_cpu, resumable=resumable,
-                                                indent="      "))
+                                                indent="      ", elf=elf))
                 else:
                     out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
                     out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile,
                                                 lle_cpu=lle_cpu, resumable=resumable,
-                                                indent="      "))
+                                                indent="      ", elf=elf))
                 out.append(f"      {emit_host_return(resumable, stack_census=stack_census)} }}")
             elif ds_is_syscall and dsw is not None and not lle_cpu:
                 out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
@@ -2768,21 +2874,21 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             elif ds_is_syscall and dsw is not None:
                 # LLE: the delay-slot syscall raises with BD set (spec 3.4).
                 out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
+                out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable, elf=elf))
             else:
                 # Computed return/tail-call: same contract as jalr above -- the
                 # target register is read at the transfer, not after the slot.
                 out.append(f"    {{ uint32_t _t = {R(a)};")
                 out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
-                                            indent="      "))
+                                            indent="      ", elf=elf))
                 out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             continue
         if op == 2:  # j
             ADDRESS_SPACE.check_jump(addr, w)
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
+            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable, elf=elf))
             if target == addr:
                 # Self-loop (a spin wait): the native call below would recurse on the host
                 # stack once per iteration. Keep it a backward goto with the preemption point.
@@ -2803,6 +2909,9 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         link = f"s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; " if is_link(w) else ""
         cond = cond_expr(w)
         inject_stmt = ""
+        _, _br_site, _br_tag = _enhancement_word(addr, w, elf=elf)
+        if _br_site is not None and _br_tag == "gate_30hz":
+            inject_stmt += f" {{ static uint8_t _nk_gate_{addr:08x} = 0u; _nk_gate_{addr:08x} ^= 1u; if (!_nk_gate_{addr:08x}) _c = 1u; }}"
         if hst_profile and addr in GUEST_PATCHES:
             p = GUEST_PATCHES[addr]
             if p["kind"] == "cond":
@@ -2815,7 +2924,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
 
         out.append(f"    {{ uint32_t _c = {cond};{inject_stmt}")
         out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
-        _delay = delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable)
+        _delay = delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable, elf=elf)
         _delay_inline = " ".join(line.strip() for line in _delay)
         if is_linked_call(elf, addr, w, ranges):
             # bltzal/bgezal (bal = bgezal $zero) to a callable is a CALL (#968), inside
@@ -3122,11 +3231,23 @@ def main(argv):
     cfg_gate = False
     stack_census = False
     omit_aot = _OmitAot()
+    enhancement_pkg_path = None
+    symbol_map_path = None
     extra_elfs = []  # list of (elf_path, base_addr)
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
+        elif o.startswith("--enhancement-package="):
+            enhancement_pkg_path = o.split("=", 1)[1]
+            if not enhancement_pkg_path:
+                sys.stderr.write("--enhancement-package requires a path\n")
+                return 2
+        elif o.startswith("--symbol-map="):
+            symbol_map_path = o.split("=", 1)[1]
+            if not symbol_map_path:
+                sys.stderr.write("--symbol-map requires a path\n")
+                return 2
         elif o.startswith("--extra-span="):
             extra_span_arg = o.split("=", 1)[1]
         elif o.startswith("--cfg-report="):
@@ -3287,6 +3408,54 @@ def main(argv):
     resume_owners = {
         addr: info.owner for addr, info in catalog.items() if info.resumable
     }
+
+    global ENHANCEMENT_SITES, ENHANCEMENT_PKG_META
+    ENHANCEMENT_SITES = {}
+    ENHANCEMENT_PKG_META = None
+    if enhancement_pkg_path is not None:
+        import hashlib
+        from pathlib import Path
+        try:
+            pkg_raw = enhancement_package.load_package(enhancement_pkg_path)
+            pkg_validated = enhancement_package.validate_package(pkg_raw)
+            elf_sha256 = hashlib.sha256(elf.data).hexdigest()
+            sym_map = enhancement_package.extract_elf_func_symbols(elf)
+            if symbol_map_path is not None:
+                sym_map.update(enhancement_package.load_symbol_map(symbol_map_path))
+            else:
+                pkg_p = Path(enhancement_pkg_path)
+                sidecar = pkg_p.with_suffix(".symbols.json")
+                if sidecar.is_file():
+                    sym_map.update(enhancement_package.load_symbol_map(sidecar))
+
+            def _read_words(vaddr: int, count: int):
+                out_w = []
+                for idx_w in range(count):
+                    val = read32(elf, vaddr + idx_w * 4)
+                    if val is None:
+                        return None
+                    out_w.append(val)
+                return out_w
+
+            ENHANCEMENT_SITES = enhancement_package.verify_and_resolve_sites(
+                pkg_validated,
+                executable_sha256=elf_sha256,
+                symbol_to_addr=sym_map,
+                read_words_fn=_read_words,
+                known_functions=sorted(known),
+            )
+            ENHANCEMENT_PKG_META = {
+                "id": pkg_validated["id"],
+                "version": pkg_validated["version"],
+                "epoch": enhancement_package.AOT_ENHANCEMENT_PACKAGE_EPOCH,
+                "digest": enhancement_package.compute_package_digest(pkg_validated),
+                "sites_count": len(ENHANCEMENT_SITES),
+            }
+        except enhancement_package.EnhancementPackageError as exc:
+            sys.stderr.write(
+                f"codegen: enhancement package refused (fail-closed): {exc}\n"
+            )
+            return 1
 
     impmap = {}
     if elf.reloc is not None or elf.sec(".rodata.sceModuleInfo") is not None:
@@ -3765,6 +3934,14 @@ def main(argv):
         "#include <stdio.h>",
         ""
     ]
+    if ENHANCEMENT_PKG_META is not None:
+        main_out.append(
+            f"/* AOT Enhancement Epoch: {ENHANCEMENT_PKG_META['epoch']} "
+            f"id={ENHANCEMENT_PKG_META['id']} v={ENHANCEMENT_PKG_META['version']} "
+            f"sites={ENHANCEMENT_PKG_META['sites_count']} "
+            f"sha256={ENHANCEMENT_PKG_META['digest']} */"
+        )
+        main_out.append("")
     census_entries = sorted({a for a in emitted if a not in resume_owners})
     if stack_census:
         census_values = census_entries or [0]

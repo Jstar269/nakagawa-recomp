@@ -1276,6 +1276,7 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
     # CODEGEN_USER_ARGS above. Named only when on, so untrapped keys are unchanged.
     if package_cache.nan_trap_enabled(environment):
         options["nan_trap"] = True
+    options.update(package_cache.enhancement_package_options(environment))
     return options
 
 
@@ -1289,6 +1290,7 @@ def _current_package_cache_key(
     *,
     public_safe: bool = True,
     instruction_trace: bool = False,
+    enhancement_package_path: Path | None = None,
 ) -> dict:
     import title_codegen_plan
 
@@ -1324,7 +1326,12 @@ def _current_package_cache_key(
     environment.update(package_cache.package_optimization(
         manifest.get("codegen_profile", "none"), environment
     ))
-    options = _package_codegen_options(manifest, environment)
+    if enhancement_package_path is not None:
+        environment["ENHANCEMENT_PACKAGE"] = str(enhancement_package_path)
+    try:
+        options = _package_codegen_options(manifest, environment)
+    except package_cache.PackageCacheError as exc:
+        raise PackageBuildError(str(exc)) from exc
     return package_cache.build_cache_key(
         input_hashes=input_hashes,
         title_input_identity=title_input_identity,
@@ -1978,7 +1985,37 @@ def _build_package(args: argparse.Namespace, stage_observer,
             package_cache.canonical_json(title_input_identity).encode("utf-8"),
         )
 
-        target_dir = user_root / "packages" / disc_id
+        enhancement_package_path = getattr(args, "enhancement_package", None)
+        experimental_60hz = bool(getattr(args, "experimental_60hz", False))
+        if experimental_60hz and enhancement_package_path is None:
+            candidate_pkg = user_root / "enhancements" / f"{disc_id.lower()}-60hz.json"
+            if not candidate_pkg.is_file():
+                raise PackageBuildError(
+                    f"--experimental-60hz requires an enhancement package at {candidate_pkg} "
+                    "or an explicit --enhancement-package <path>."
+                )
+            enhancement_package_path = candidate_pkg
+        if enhancement_package_path is not None:
+            import enhancement_package
+
+            enhancement_package_path = Path(enhancement_package_path).expanduser().resolve(strict=False)
+            try:
+                enh_pkg = enhancement_package.load_and_validate_package(enhancement_package_path)
+            except (OSError, ValueError) as exc:
+                raise PackageBuildError(f"Enhancement package rejected: {exc}") from exc
+            if enh_pkg["target_title_id"] != entry["title_id"]:
+                raise PackageBuildError(
+                    f"Enhancement package target_title_id {enh_pkg['target_title_id']!r} "
+                    f"does not match library title_id {entry['title_id']!r}."
+                )
+            if "executable_sha256" in enh_pkg and enh_pkg["executable_sha256"] != actual_hash:
+                raise PackageBuildError(
+                    f"Enhancement package executable_sha256 {enh_pkg['executable_sha256']} "
+                    f"does not match selected executable SHA-256 {actual_hash}."
+                )
+            target_dir = user_root / "packages" / f"{disc_id}-enhanced-{enh_pkg['id']}"
+        else:
+            target_dir = user_root / "packages" / disc_id
         _require_child(user_root, target_dir, "Package destination")
         if target_dir.is_symlink() or (target_dir.exists() and not target_dir.is_dir()):
             raise PackageBuildError("Package destination is not a safe directory; refusing to replace it.")
@@ -1990,6 +2027,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             cached_header,
             title_input_identity,
             instruction_trace=bool(getattr(args, "instruction_trace", False)),
+            enhancement_package_path=enhancement_package_path,
         )
         previous_key = package_cache.package_cache_key(target_dir) if target_dir.is_dir() else None
         decision = package_cache.compare_cache_keys(previous_key, cache_key)
@@ -2080,6 +2118,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 planner.extend(("--module-dir", str(module_dir)))
             if cached_header is not None:
                 planner.extend(("--psp-header", str(cached_header)))
+            if enhancement_package_path is not None:
+                planner.extend(("--enhancement-package", str(enhancement_package_path)))
             return planner
 
         def log_command(planner: list[str]) -> None:
@@ -4239,6 +4279,10 @@ def main() -> int:
     p_launch.add_argument("--fps-cap", type=int, default=-1,
                           help="Host presentation cap (-1 uses PSP scanout pacing)")
     p_launch.add_argument("--software", action="store_true", help="Use software GE rasterizer")
+    p_launch.add_argument(
+        "--experimental-60hz", action="store_true", default=False,
+        help="Experimental: opt in to native 60 Hz frame-rate rescaled game logic (default: off / authentic 30 Hz)",
+    )
     p_launch.add_argument("--user-data-root", type=Path,
                           help="Override player per-user data directory (the imported fonts live under it)")
     p_launch.set_defaults(func=cmd_launch)
@@ -4253,6 +4297,14 @@ def main() -> int:
                          help="Optional directory containing required guest PRXs")
     p_build.add_argument("--psp-header", type=Path,
                          help="PSP header required by some title manifests")
+    p_build.add_argument(
+        "--enhancement-package", type=Path, default=None,
+        help="Experimental: apply a validated enhancement package (e.g. 60 Hz logic rescale) in a separate AOT epoch",
+    )
+    p_build.add_argument(
+        "--experimental-60hz", action="store_true", default=False,
+        help="Experimental: opt in to building the native 60 Hz enhanced package (default: off / authentic 30 Hz)",
+    )
     p_build.add_argument(
         "--register-local-compatibility-record", action="store_true",
         help="explicitly record this exact local input identity for a manifest that requires it",

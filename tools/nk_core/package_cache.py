@@ -968,6 +968,48 @@ def nan_trap_enabled(environment: Mapping[str, str] | None = None) -> bool:
     return env.get("NAN_TRAP", "").strip() == "1"
 
 
+AOT_ENHANCEMENT_PACKAGE_EPOCH = "aot-enhancement-package-v1"
+
+
+def enhancement_package_options(environment: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Return AOT cache-key options for an active enhancement package, or empty dict when off.
+
+    When no enhancement package is active (`ENHANCEMENT_PACKAGE` is unset/empty and
+    `--enhancement-package=` does not appear in `CODEGEN_USER_ARGS`), returns `{}` so
+    authentic mode's `codegen_options_sha256` and `aot.digest` remain byte-identical.
+    When an enhancement package is active, validates and hashes the package (and any
+    sibling `.symbols.json` map) and returns the explicit AOT instrumentation epoch
+    and digests so enhanced builds get a distinct cache key and fail closed if the
+    package file is unreadable or invalid.
+    """
+    env = os.environ if environment is None else environment
+    pkg_raw = env.get("ENHANCEMENT_PACKAGE", "").strip()
+    if not pkg_raw:
+        user_args = env.get("CODEGEN_USER_ARGS", "")
+        for token in user_args.split():
+            if token.startswith("--enhancement-package="):
+                pkg_raw = token.split("=", 1)[1].strip()
+                break
+    if not pkg_raw:
+        return {}
+    import enhancement_package
+
+    pkg_path = Path(pkg_raw)
+    try:
+        pkg_data = enhancement_package.load_and_validate_package(pkg_path)
+    except (OSError, ValueError) as exc:
+        raise PackageCacheError(f"enhancement package is invalid or unreadable: {exc}") from exc
+    result: dict[str, Any] = {
+        "enhancement_package_epoch": AOT_ENHANCEMENT_PACKAGE_EPOCH,
+        "enhancement_package_id": pkg_data["id"],
+        "enhancement_package_sha256": enhancement_package.compute_package_digest(pkg_data),
+    }
+    sidecar = pkg_path.with_suffix(".symbols.json")
+    if sidecar.is_file():
+        result["enhancement_symbol_map_sha256"] = sha256_file(sidecar)
+    return result
+
+
 def _input_sha(value: Any, label: str) -> str:
     if not isinstance(value, Mapping) or not isinstance(value.get("sha256"), str):
         raise PackageCacheError(f"{label} input digest is missing")

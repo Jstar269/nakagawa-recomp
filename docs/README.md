@@ -74,7 +74,8 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 - [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — portability plan.
 - [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) — Linux/WSL development commands and gate inventory (issue #306).
 - [`ENHANCEMENT_CONTRACT.md`](ENHANCEMENT_CONTRACT.md) — authentic-vs-enhanced
-  boundary and package declarations; no enhancement loader yet (in the works).
+  boundary, declarative frame-rate rescale packages, fail-closed stock-digest verification,
+  and separate AOT cache epochs.
 - [`STATIC_VERIFY.md`](STATIC_VERIFY.md) — oracle-free verification and blocked
   external-input gates.
 - [`HARDWARE_ORACLE.md`](HARDWARE_ORACLE.md) — bounded proposal and limits;
@@ -204,7 +205,7 @@ Every substantial document carries one status.
 | `TITLE_CODEGEN_PLAN.md` | CURRENT | Manifest-to-build ownership chain |
 | `PLATFORM_PORTABILITY.md` | CURRENT | Portability plan; host-neutral gate is not platform support |
 | `LINUX_DEVELOPMENT.md` | CURRENT | Linux/WSL dev commands and gate inventory (issue #306) |
-| `ENHANCEMENT_CONTRACT.md` | CURRENT | Enhancement contract and package validator; loader in the works |
+| `ENHANCEMENT_CONTRACT.md` | CURRENT | Enhancement contract, package validator, and declarative 60 Hz frame-rate rescale AOT epoch |
 | `STATIC_VERIFY.md` | CURRENT | Oracle-free verification and blocked external-input gates |
 | `HARDWARE_ORACLE.md` | CURRENT | Bounded proposal + measured-cells index; trace oracle unbuilt |
 | `HARDWARE_RUNNER_AUTONOMY.md` | CURRENT | Runner autonomy design; simulated-transport conformance suite only, PSP-side runner unbuilt |

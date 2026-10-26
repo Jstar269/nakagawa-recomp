@@ -3021,6 +3021,16 @@ int main(int argc, char **argv) {
     player_app_toggle_reduce_motion(settings);
     assert(settings->settings.reduce_motion == false);
 
+    assert(settings->settings.experimental_60hz == false);
+    player_app_toggle_experimental_60hz(settings);
+    assert(settings->settings.experimental_60hz == true);
+    player_app_toggle_experimental_60hz(settings);
+    assert(settings->settings.experimental_60hz == false);
+    player_app_set_experimental_60hz(settings, true);
+    assert(settings->settings.experimental_60hz == true);
+    player_app_set_experimental_60hz(settings, false);
+    assert(settings->settings.experimental_60hz == false);
+
     player_app_adjust_volume(settings, 5);
     assert(settings->settings.master_volume == 85);
     player_app_adjust_volume(settings, 1000);

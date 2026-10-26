@@ -17,8 +17,11 @@ Tests fail-closed boundaries:
 from __future__ import annotations
 
 import copy
+import hashlib
+from io import StringIO
 import json
 from pathlib import Path
+import struct
 import subprocess
 import sys
 import tempfile
@@ -28,17 +31,23 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+import codegen
 from enhancement_package import (
+    AOT_ENHANCEMENT_PACKAGE_EPOCH,
     HOOK_KEYS,
     HOOK_TYPES,
     REQUIRED_ROOT_KEYS,
+    RNG_POLICY_MODES,
     ROOT_KEYS,
+    SITE_TRANSFORMS,
     SUPPORTED_SCHEMA_VERSION,
     VALID_CATEGORIES,
     EnhancementPackageError,
+    compute_stock_words_digest,
     load_package,
     validate_package,
 )
+from nk_core import package_cache
 
 SCHEMA_PATH = ROOT / "assets" / "enhancement_package.schema.json"
 
@@ -381,6 +390,402 @@ class TestEnhancementPackageSchema(unittest.TestCase):
             )
             self.assertNotEqual(res_bad.returncode, 0)
             self.assertIn("Address-literal hook symbol rejected", res_bad.stderr)
+
+    def test_timing_rescale_package_schema_and_fail_closed_validation(self) -> None:
+        """Declarative 60 Hz frame-rate rescale packages must validate all fields and fail closed."""
+        stock_word = 0x24020002  # li $v0, 2
+        valid_60hz_pkg: dict[str, Any] = {
+            "schema_version": 1,
+            "id": "synth.timing.60hz",
+            "display_name": "Synthetic 60 Hz Logic Package",
+            "version": "1.0.0",
+            "category": "timing_frame_presentation",
+            "target_title_id": "synthetic-allegrex-v1",
+            "game_version": "1.01",
+            "executable_sha256": "a" * 64,
+            "capabilities": ["logic_60hz_rescale", "vblank_wait_2_to_1"],
+            "rng_policy": {
+                "mode": "rescale_probability",
+                "reason": "Halve stateless per-update probability thresholds and gate stateful multi-roll routines at 30 Hz.",
+            },
+            "sites": [
+                {
+                    "id": "S001",
+                    "function": "synth_vblank_sync_loop",
+                    "insn_offset": 0,
+                    "stock_digest": compute_stock_words_digest([stock_word]),
+                    "transform": "vblank_wait_2_to_1",
+                }
+            ],
+        }
+        validated = validate_package(valid_60hz_pkg)
+        self.assertEqual(validated["game_version"], "1.01")
+        self.assertEqual(validated["sites"][0]["word_count"], 1)
+        self.assertEqual(validated["rng_policy"]["mode"], "rescale_probability")
+
+        # Schema must match SITE_TRANSFORMS and RNG_POLICY_MODES
+        with SCHEMA_PATH.open("r", encoding="utf-8") as f:
+            schema = json.load(f)
+        site_schema = schema["properties"]["sites"]["items"]
+        self.assertEqual(set(site_schema["properties"]["transform"]["enum"]), SITE_TRANSFORMS)
+        rng_schema = schema["properties"]["rng_policy"]
+        self.assertEqual(set(rng_schema["properties"]["mode"]["enum"]), RNG_POLICY_MODES)
+
+        # Missing cross-field timing properties must fail closed
+        for missing_key in ("game_version", "executable_sha256", "rng_policy", "sites"):
+            with self.subTest(missing_key=missing_key):
+                incomplete = copy.deepcopy(valid_60hz_pkg)
+                del incomplete[missing_key]
+                with self.assertRaises(EnhancementPackageError):
+                    validate_package(incomplete)
+
+        # Wildcard target_title_id '*' is forbidden when sites are present
+        wildcard_pkg = copy.deepcopy(valid_60hz_pkg)
+        wildcard_pkg["target_title_id"] = "*"
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            validate_package(wildcard_pkg)
+        self.assertIn("Timing rescale package must target a specific title id, not '*'", str(ctx.exception))
+
+        # Address-literal and FUN_/sub_/loc_/func_ rejection in site function names
+        bad_functions = [
+            "0x08804000",
+            "FUN_00048258",
+            "fun_00048258",
+            "sub_08804000",
+            "loc_08804000",
+            "func_08804000",
+            "00048258",
+            "deadbeef",
+        ]
+        for bad_fn in bad_functions:
+            with self.subTest(bad_function=bad_fn):
+                bad_pkg = copy.deepcopy(valid_60hz_pkg)
+                bad_pkg["sites"][0]["function"] = bad_fn
+                with self.assertRaises(EnhancementPackageError) as ctx:
+                    validate_package(bad_pkg)
+                self.assertIn("Address-literal", str(ctx.exception))
+
+        # Non-4-byte-aligned insn_offset rejected
+        misaligned_pkg = copy.deepcopy(valid_60hz_pkg)
+        misaligned_pkg["sites"][0]["insn_offset"] = 2
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            validate_package(misaligned_pkg)
+        self.assertIn("4-byte-aligned", str(ctx.exception))
+
+        # Unknown transform rejected
+        bad_transform_pkg = copy.deepcopy(valid_60hz_pkg)
+        bad_transform_pkg["sites"][0]["transform"] = "accelerate_clock_x2"
+        with self.assertRaises(EnhancementPackageError) as ctx:
+            validate_package(bad_transform_pkg)
+        self.assertIn("Unknown site transform", str(ctx.exception))
+
+
+def _write_synthetic_mips_elf(path: Path, words: dict[int, int], entry: int) -> bytes:
+    """Write a minimal synthetic MIPS32 little-endian ET_EXEC ELF for testing."""
+    filesz = max(max(words) + 8, 0x1000)
+    payload_off = 52 + 32
+    blob = bytearray(payload_off + filesz)
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into(
+        "<HHIIIIIHHHHHH",
+        blob,
+        16,
+        2,  # e_type = ET_EXEC
+        8,  # e_machine = EM_MIPS
+        1,
+        entry,
+        52,
+        0,
+        0,
+        52,
+        32,
+        1,
+        0,
+        0,
+        0,
+    )
+    struct.pack_into("<8I", blob, 52, 1, payload_off, 0, 0, filesz, filesz, 5, 4)
+    for addr, word in words.items():
+        struct.pack_into("<I", blob, payload_off + addr, word)
+    raw = bytes(blob)
+    path.write_bytes(raw)
+    return raw
+
+
+class TestEnhancementAotCodegenAndCache(unittest.TestCase):
+    """Verify authentic byte-identity, all 6 transform classes, fail-closed digest rejection, and AOT cache epoch."""
+
+    def setUp(self) -> None:
+        # Build a synthetic MIPS ELF with 6 functions exercising each of the 6 transform classes:
+        #   0x00001000: synth_main_entry (calls the 6 helper functions)
+        #   0x00001100: synth_vblank_wait     -> vblank_wait_2_to_1: addiu $v0, $zero, 2 (0x24020002)
+        #   0x00001200: synth_timer_duration  -> count_x2:           addiu $a0, $zero, 30 (0x2404001e)
+        #   0x00001300: synth_velocity_step   -> step_x0.5:          lui $a1, 0x3f80 (1.0f -> 0.5f 0x3f00)
+        #   0x00001400: synth_damping_decay   -> decay_k_to_1-sqrt(1-k): lui $a2, 0x3f40 (0.75f -> sqrt(0.75)=0.8660254f 0x3f5db3d7)
+        #   0x00001500: synth_rng_prob_check  -> probability_per_update_x0.5: slti $v1, $a0, 100 (0x28830064 -> 50)
+        #   0x00001600: synth_subtick_gate    -> gate_30hz:          jal 0x00001200 (0x0c000480)
+        self.entry = 0x00001000
+        self.fn_addrs = {
+            "synth_main_entry": 0x00001000,
+            "synth_vblank_wait": 0x00001100,
+            "synth_timer_duration": 0x00001200,
+            "synth_velocity_step": 0x00001300,
+            "synth_damping_decay": 0x00001400,
+            "synth_rng_prob_check": 0x00001500,
+            "synth_subtick_gate": 0x00001600,
+        }
+        jr_ra = 0x03E00008
+        nop = 0x00000000
+
+        def jal(target: int) -> int:
+            return 0x0C000000 | ((target >> 2) & 0x03FFFFFF)
+
+        self.words: dict[int, int] = {
+            # synth_main_entry
+            0x00001000: jal(0x00001100),
+            0x00001004: nop,
+            0x00001008: jal(0x00001200),
+            0x0000100C: nop,
+            0x00001010: jal(0x00001300),
+            0x00001014: nop,
+            0x00001018: jal(0x00001400),
+            0x0000101C: nop,
+            0x00001020: jal(0x00001500),
+            0x00001024: nop,
+            0x00001028: jal(0x00001600),
+            0x0000102C: nop,
+            0x00001030: jr_ra,
+            0x00001034: nop,
+            # synth_vblank_wait: addiu $v0, $zero, 2
+            0x00001100: 0x24020002,
+            0x00001104: jr_ra,
+            0x00001108: nop,
+            # synth_timer_duration: addiu $a0, $zero, 30
+            0x00001200: 0x2404001E,
+            0x00001204: jr_ra,
+            0x00001208: nop,
+            # synth_velocity_step: lui $a1, 0x3f80 (1.0f)
+            0x00001300: 0x3C053F80,
+            0x00001304: jr_ra,
+            0x00001308: nop,
+            # synth_damping_decay: lui $a2, 0x3f40 (0.75f)
+            0x00001400: 0x3C063F40,
+            0x00001404: jr_ra,
+            0x00001408: nop,
+            # synth_rng_prob_check: slti $v1, $a0, 100
+            0x00001500: 0x28830064,
+            0x00001504: jr_ra,
+            0x00001508: nop,
+            # synth_subtick_gate: jal synth_timer_duration
+            0x00001600: jal(0x00001200),
+            0x00001604: nop,
+            0x00001608: jr_ra,
+            0x0000160C: nop,
+        }
+
+    def _run_codegen(self, elf_path: Path, out_c: Path, extra_args: list[str] | None = None) -> tuple[int, str, dict[str, bytes]]:
+        argv = [
+            "codegen.py",
+            str(elf_path),
+            str(out_c),
+            "--base=0",
+            "--profile=none",
+            "--funcs-per-chunk=4000",
+        ]
+        if extra_args:
+            argv.extend(extra_args)
+        orig_out, orig_err = sys.stdout, sys.stderr
+        try:
+            sys.stdout, sys.stderr = StringIO(), StringIO()
+            rc = codegen.main(argv)
+            output = sys.stdout.getvalue() + sys.stderr.getvalue()
+        finally:
+            sys.stdout, sys.stderr = orig_out, orig_err
+        files: dict[str, bytes] = {}
+        if rc == 0:
+            for p in sorted(out_c.parent.glob("out*")):
+                if p.is_file():
+                    files[p.name] = p.read_bytes()
+        return rc, output, files
+
+    def _make_package_and_symbols(self, elf_bytes: bytes) -> tuple[dict[str, Any], dict[str, str]]:
+        elf_sha = hashlib.sha256(elf_bytes).hexdigest()
+        symbols = {name: f"0x{addr:08x}" for name, addr in self.fn_addrs.items()}
+        pkg: dict[str, Any] = {
+            "schema_version": 1,
+            "id": "synth.timing.60hz",
+            "display_name": "Synthetic 60 Hz Logic Rescale",
+            "version": "1.0.0",
+            "category": "timing_frame_presentation",
+            "target_title_id": "synthetic-allegrex-v1",
+            "game_version": "1.00",
+            "executable_sha256": elf_sha,
+            "capabilities": [
+                "vblank_wait_2_to_1",
+                "count_x2",
+                "step_x0_5",
+                "decay_k_to_1_sqrt_1_k",
+                "probability_per_update_x0_5",
+                "gate_30hz",
+            ],
+            "rng_policy": {
+                "mode": "rescale_probability",
+                "reason": "Halve single-roll per-frame thresholds and gate stateful multi-roll routines at 30 Hz.",
+            },
+            "sites": [
+                {
+                    "id": "SYNTH_VBLANK",
+                    "function": "synth_vblank_wait",
+                    "insn_offset": 0,
+                    "stock_digest": compute_stock_words_digest([self.words[0x00001100]]),
+                    "transform": "vblank_wait_2_to_1",
+                },
+                {
+                    "id": "SYNTH_COUNT",
+                    "function": "synth_timer_duration",
+                    "insn_offset": 0,
+                    "stock_digest": compute_stock_words_digest([self.words[0x00001200]]),
+                    "transform": "count_x2",
+                },
+                {
+                    "id": "SYNTH_STEP",
+                    "function": "synth_velocity_step",
+                    "insn_offset": 0,
+                    "stock_digest": compute_stock_words_digest([self.words[0x00001300]]),
+                    "transform": "step_x0.5",
+                },
+                {
+                    "id": "SYNTH_DECAY",
+                    "function": "synth_damping_decay",
+                    "insn_offset": 0,
+                    "stock_digest": compute_stock_words_digest([self.words[0x00001400]]),
+                    "transform": "decay_k_to_1-sqrt(1-k)",
+                },
+                {
+                    "id": "SYNTH_PROB",
+                    "function": "synth_rng_prob_check",
+                    "insn_offset": 0,
+                    "stock_digest": compute_stock_words_digest([self.words[0x00001500]]),
+                    "transform": "probability_per_update_x0.5",
+                },
+                {
+                    "id": "SYNTH_GATE",
+                    "function": "synth_subtick_gate",
+                    "insn_offset": 0,
+                    "stock_digest": compute_stock_words_digest([self.words[0x00001600]]),
+                    "transform": "gate_30hz",
+                },
+            ],
+        }
+        return pkg, symbols
+
+    def test_authentic_mode_output_and_transforms_and_fail_closed_digest(self) -> None:
+        """Verify authentic output stays untouched, all 6 transforms apply when enabled, and 1 wrong digest fails closed."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            elf_path = tmp / "synth.elf"
+            elf_bytes = _write_synthetic_mips_elf(elf_path, self.words, self.entry)
+
+            # 1. Authentic baseline run (package off)
+            auth_dir = tmp / "authentic"
+            auth_dir.mkdir()
+            rc_auth, out_auth, files_auth = self._run_codegen(elf_path, auth_dir / "out.c")
+            self.assertEqual(rc_auth, 0, f"Authentic codegen failed: {out_auth}")
+            self.assertTrue(files_auth)
+            auth_combined = b"\n".join(files_auth.values()).decode("utf-8")
+            self.assertNotIn("AOT Enhancement Epoch", auth_combined)
+            self.assertIn("s->r[2] = (0u + 0x00000002u);", auth_combined)    # vblank wait 2
+            self.assertIn("s->r[4] = (0u + 0x0000001eu);", auth_combined)    # count 30
+            self.assertIn("s->r[5] = (0x3f80u << 16);", auth_combined)       # step 1.0f
+
+            # 2. Enhanced run (package on)
+            pkg, symbols = self._make_package_and_symbols(elf_bytes)
+            pkg_path = tmp / "synth-60hz.json"
+            sym_path = tmp / "synth-60hz.symbols.json"
+            pkg_path.write_text(json.dumps(pkg), encoding="utf-8")
+            sym_path.write_text(json.dumps(symbols), encoding="utf-8")
+
+            enh_dir = tmp / "enhanced"
+            enh_dir.mkdir()
+            rc_enh, out_enh, files_enh = self._run_codegen(
+                elf_path,
+                enh_dir / "out.c",
+                [f"--enhancement-package={pkg_path}"],
+            )
+            self.assertEqual(rc_enh, 0, f"Enhanced codegen failed: {out_enh}")
+            enh_combined = b"\n".join(files_enh.values()).decode("utf-8")
+
+            # Verify epoch stamp and all 6 transforms in generated C
+            self.assertIn(f"AOT Enhancement Epoch: {AOT_ENHANCEMENT_PACKAGE_EPOCH}", enh_combined)
+            self.assertIn("s->r[2] = (0u + 0x00000001u);", enh_combined)          # vblank_wait_2_to_1: 2 -> 1
+            self.assertIn("s->r[4] = (0u + 0x0000003cu);", enh_combined)          # count_x2: 30 (0x1e) -> 60 (0x3c)
+            self.assertIn("s->r[5] = (0x3f00u << 16);", enh_combined)             # step_x0.5: 1.0f (0x3f80) -> 0.5f (0x3f00)
+            self.assertIn("s->r[6] = (0x3f00u << 16);", enh_combined)             # decay: k=0.75 -> 1-sqrt(1-0.75)=0.5f (0x3f00)
+            self.assertIn("(int32_t)0x00000032u ? 1u : 0u", enh_combined)         # probability_per_update_x0.5: 100 (0x64) -> 50 (0x32)
+            self.assertIn("_nk_gate_00001600 ^= 1u; if (_nk_gate_00001600)", enh_combined)  # gate_30hz sub-tick guard
+
+            # 3. Re-running authentic mode after an enhanced run in the same process must stay byte-identical
+            auth2_dir = tmp / "authentic2"
+            auth2_dir.mkdir()
+            rc_auth2, _, files_auth2 = self._run_codegen(elf_path, auth2_dir / "out.c")
+            self.assertEqual(rc_auth2, 0)
+            self.assertEqual(files_auth, files_auth2, "Authentic output changed after enhanced run")
+
+            # 4. Fail-closed check: 1 wrong stock_digest must refuse the whole package
+            bad_pkg = copy.deepcopy(pkg)
+            bad_pkg["sites"][2]["stock_digest"] = compute_stock_words_digest([0x24020099])
+            bad_pkg_path = tmp / "bad-digest.json"
+            bad_sym_path = tmp / "bad-digest.symbols.json"
+            bad_pkg_path.write_text(json.dumps(bad_pkg), encoding="utf-8")
+            bad_sym_path.write_text(json.dumps(symbols), encoding="utf-8")
+
+            bad_dir = tmp / "bad_run"
+            bad_dir.mkdir()
+            rc_bad, out_bad, files_bad = self._run_codegen(
+                elf_path,
+                bad_dir / "out.c",
+                [f"--enhancement-package={bad_pkg_path}"],
+            )
+            self.assertNotEqual(rc_bad, 0, "Codegen must fail closed when a stock_digest mismatches")
+            self.assertIn("Stock instruction digest mismatch", out_bad)
+            self.assertEqual(files_bad, {}, "No partial enhanced output may be emitted on digest failure")
+
+    def test_aot_cache_epoch_separation_and_authentic_invariance(self) -> None:
+        """With package off, AOT cache digest is untouched; with package on, it keys a distinct epoch."""
+        base_opts = {
+            "base": "0x08804000",
+            "codegen_profile": "none",
+            "entry": "0x08804000",
+            "extra_modules": [],
+            "extra_spans": [],
+            "funcs_per_chunk": 500,
+            "game_name": "synthetic",
+            "psp_header_mode": "none",
+            "static_verify": False,
+        }
+        # Authentic options with empty environment must add zero keys
+        enh_off = package_cache.enhancement_package_options({})
+        self.assertEqual(enh_off, {})
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pkg_path = Path(tmp_dir) / "synth-60hz.json"
+            pkg, _ = self._make_package_and_symbols(b"synthetic_elf_bytes")
+            pkg_path.write_text(json.dumps(pkg), encoding="utf-8")
+            enh_on = package_cache.enhancement_package_options({"ENHANCEMENT_PACKAGE": str(pkg_path)})
+            self.assertEqual(enh_on["enhancement_package_epoch"], AOT_ENHANCEMENT_PACKAGE_EPOCH)
+            self.assertEqual(enh_on["enhancement_package_id"], "synth.timing.60hz")
+            self.assertEqual(len(enh_on["enhancement_package_sha256"]), 64)
+
+            opts_authentic = dict(base_opts)
+            opts_authentic.update(enh_off)
+            opts_enhanced = dict(base_opts)
+            opts_enhanced.update(enh_on)
+
+            self.assertEqual(opts_authentic, base_opts)
+            self.assertNotEqual(
+                hashlib.sha256(package_cache.canonical_json(opts_authentic).encode("utf-8")).hexdigest(),
+                hashlib.sha256(package_cache.canonical_json(opts_enhanced).encode("utf-8")).hexdigest(),
+            )
 
 
 if __name__ == "__main__":
