@@ -104,6 +104,7 @@ typedef enum {
     PLAYER_UI_ACTION_REMOVE_TITLE,         /* the title page asks to remove it (#1304) */
     PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES,  /* the confirm screen's saves box */
     PLAYER_UI_ACTION_REMOVE_CONFIRM,       /* remove it; .primary is 1 to delete saves */
+    PLAYER_UI_ACTION_OPEN_BUILD_INPUT_FOLDER, /* fix a package-build preflight blocker */
     PLAYER_UI_ACTION_DISC,             /* a game-found card control; .primary carries the op */
     PLAYER_UI_ACTION_SETTINGS,         /* a Settings control; .primary carries the op */
     PLAYER_UI_ACTION_CONTROLLER,       /* a controller settings control; .primary carries the
@@ -130,6 +131,8 @@ typedef struct {
        or empty hides it. */
     const char *compatibility_category;
     const char *input_note;
+    const char *build_preflight_message;
+    const char *build_preflight_folder;
     const char *primary_action_label;
     const char *status_marker;
     uint32_t status_rgba;
