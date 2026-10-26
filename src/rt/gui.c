@@ -555,9 +555,10 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
 #if defined(SR_SDL3VK) || defined(_WIN32)
 /* The user closed the window. _Exit skips the atexit perf hook, so write the SR_PERF_JSON
  * summary and the final partial CSV row first, as the guest-thread exits in hle.c and ge.c
- * do. No cross-thread handshake is needed: gui_pump and gui_present run on the scheduler's
- * OS thread (guest threads are coroutines on it, sr_coro.h), which owns the perf counters
- * and the CSV handle. The call is idempotent and a no-op without SR_PERF (#1072). */
+ * do. No cross-thread handshake is needed: gui_pump, gui_present and the pause overlay's
+ * frame and leave hooks (called from sched.c) run on the scheduler's OS thread (guest threads
+ * are coroutines on it, sr_coro.h), which owns the perf counters and the CSV handle. The call
+ * is idempotent and a no-op without SR_PERF (#1072). */
 static void gui_window_closed_exit(void) {
     sr_perf_shutdown();
     _Exit(0);
@@ -935,7 +936,7 @@ SrPauseFrame gui_pause_frame(void) {
     if (!sdl3vk_window_minimized())
         wait_ms = s_pause_next_ns > now ? (uint32_t)((s_pause_next_ns - now + 999999u) / 1000000u) : 0u;
     if (wait_ms) sdl3vk_wait_events(wait_ms);
-    if (!sdl3vk_poll()) { _Exit(0); }
+    if (!sdl3vk_poll()) { gui_window_closed_exit(); }
     if (s_pause_resume) return SR_PAUSE_FRAME_RESUME;
     now = SDL_GetTicksNS();
     if (sdl3vk_window_minimized() || now < s_pause_next_ns) return SR_PAUSE_FRAME_CONTINUE;
@@ -960,7 +961,7 @@ SrPauseFrame gui_pause_frame(void) {
         s_pause_dirty = 0;
     }
     int presented = sdl3vk_present_overlay(px, pitch);
-    if (presented == 0) { _Exit(0); }
+    if (presented == 0) { gui_window_closed_exit(); }
     if (presented == 2) {
         s_pause_dirty = 1;
         s_pause_next_ns = 0;
@@ -981,7 +982,7 @@ void gui_pause_leave(void) {
     if (!s_sdl3 || !s_pause_open) return;
     /* Events queued since the last frame are still the overlay's; the held state they leave
      * is what the release mask hides. A window close among them still ends the run. */
-    if (!sdl3vk_poll()) { _Exit(0); }
+    if (!sdl3vk_poll()) { gui_window_closed_exit(); }
     sdl3vk_set_input_claim(NULL, NULL);
     sdl3vk_overlay_release();
     gui_pause_free_canvas();
