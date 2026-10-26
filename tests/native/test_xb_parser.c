@@ -683,6 +683,53 @@ static void test_deterministic_mutation_fuzz(void) {
     printf("[XB_TEST] Deterministic 2048-mutation hostile corpus completed PASSED\n");
 }
 
+
+static void test_file_backed_performance_benchmark(void) {
+    const size_t member_count = 500u;
+    const size_t pass_count = 50u;
+    FixtureEntry *entries = (FixtureEntry *)calloc(member_count, sizeof(*entries));
+    uint8_t *payload = (uint8_t *)malloc(member_count * 16);
+    char (*paths)[32] = (char (*)[32])calloc(member_count, sizeof(*paths));
+    assert(entries != NULL && payload != NULL && paths != NULL);
+    for (size_t i = 0; i < member_count; i++) {
+        snprintf(paths[i], sizeof(paths[i]), "data/bench/file%04zu.bin", i);
+        memset(payload + i * 16, (int)(i & 0xffu), 16);
+        entries[i].path = paths[i];
+        entries[i].data = payload + i * 16;
+        entries[i].size = 16u;
+        entries[i].compression = NK_XB_COMPRESSION_NONE;
+    }
+    ByteBuffer bytes = make_archive(entries, member_count, false);
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_xb_bench.xb";
+    write_file_bytes(path, bytes.data, bytes.size);
+
+    NkXbArchive archive;
+    char error[256];
+    assert(nk_xb_open_file_lazy(path, false, NULL, &archive, error, sizeof(error)) == NK_OK);
+
+    uint8_t output[64];
+    size_t output_size = 0;
+    clock_t started = clock();
+    for (size_t pass = 0; pass < pass_count; pass++) {
+        for (size_t i = 0; i < archive.entry_count; i++) {
+            assert(nk_xb_read_entry(&archive, i, output, sizeof(output), &output_size,
+                                    error, sizeof(error)) == NK_OK);
+            assert(output_size == 16u);
+        }
+    }
+    clock_t finished = clock();
+    double elapsed = (double)(finished - started) / CLOCKS_PER_SEC;
+    printf("[XB_BENCHMARK] File-backed %zu total entry reads (%zu members x %zu passes) in %.6f CPU seconds\n",
+           member_count * pass_count, member_count, pass_count, elapsed);
+
+    nk_xb_close(&archive);
+    remove(path);
+    free(bytes.data);
+    free(paths);
+    free(payload);
+    free(entries);
+}
+
 static void test_staging_cleanup_boundary(void) {
     const char *root = SR_SELFTEST_BUILD_ROOT "/.staging_xb_cleanup";
     const char *nested = SR_SELFTEST_BUILD_ROOT "/.staging_xb_cleanup/nested";
@@ -1803,6 +1850,7 @@ int main(void) {
     test_archive_vfs_provider();
     test_archive_vfs_many_members();
     test_archive_vfs_mount_scaling();
+    test_file_backed_performance_benchmark();
     test_staging_cleanup_boundary();
     test_staging_discard_reparse_boundary();
     test_iso_to_native_staging_pipeline();
