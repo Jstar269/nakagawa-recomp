@@ -1579,6 +1579,86 @@ bool player_app_child_window_ready(PlayerApp *app) {
     return app->child_window_ready;
 }
 
+/* True once the session file holds a line that starts with "BOOT_EVENT ".
+ * The runtime writes its first one at the top of main (driver.c, phase=init);
+ * its ordinary stdout and stderr share the file and do not count. */
+static bool player_session_has_boot_event(const char *path) {
+    static const char prefix[] = "BOOT_EVENT ";
+    if (!path || !path[0]) return false;
+    FILE *events = nk_fopen_utf8(path, "rb");
+    if (!events) return false;
+    char chunk[512];
+    bool at_line_start = true;
+    bool found = false;
+    while (!found && fgets(chunk, sizeof(chunk), events)) {
+        if (at_line_start && strncmp(chunk, prefix, sizeof(prefix) - 1u) == 0) {
+            found = true;
+        }
+        size_t len = strlen(chunk);
+        at_line_start = len > 0 && chunk[len - 1] == '\n';
+    }
+    fclose(events);
+    return found;
+}
+
+/* A running child that never writes a boot event never started: a process
+ * whose first thread did not run, or one stuck before the runtime's main. The
+ * player used to keep such a session as running with nothing on screen
+ * (#1290). Returns true when this tick stopped the child and raised the card. */
+static bool player_monitor_game_start(PlayerApp *app, uint64_t now_ms) {
+    uint64_t elapsed_ms = now_ms >= app->launch_time_ms
+        ? (now_ms - app->launch_time_ms) : 0;
+    if (!app->launch_running_check_logged) {
+        app->launch_running_check_logged = true;
+        player_dev_log_add(app, "runtime", "game process %d is running (first check, %llu ms)",
+                           app->launch_session.process.process_id,
+                           (unsigned long long)elapsed_ms);
+    }
+    if (app->child_boot_event_seen) return false;
+    if (player_session_has_boot_event(app->boot_event_file_path)) {
+        app->child_boot_event_seen = true;
+        player_dev_log_add(app, "runtime", "first boot event seen after %llu ms",
+                           (unsigned long long)elapsed_ms);
+        return false;
+    }
+    if (elapsed_ms >= PLAYER_GAME_START_NOTE_MS && !app->child_boot_wait_noted) {
+        app->child_boot_wait_noted = true;
+        player_dev_log_add(app, "runtime",
+                           "no boot event from game process %d after %llu ms; still waiting",
+                           app->launch_session.process.process_id,
+                           (unsigned long long)elapsed_ms);
+    }
+    if (elapsed_ms < PLAYER_GAME_START_TIMEOUT_MS) return false;
+
+    char disc_id[sizeof(app->last_error.subject_disc_id)];
+    snprintf(disc_id, sizeof(disc_id), "%s", app->launch_session.disc_id);
+    player_dev_log_add(app, "runtime",
+                       "no boot event from game process %d after %llu ms; stopping it",
+                       app->launch_session.process.process_id,
+                       (unsigned long long)elapsed_ms);
+    printf("[PLAYER] Game process %d wrote no boot event in %llu ms; stopping it\n",
+           app->launch_session.process.process_id, (unsigned long long)elapsed_ms);
+    nk_launch_stop(&app->launch_session);
+    app->is_game_running = false;
+    app->close_confirmation_pending = false;
+    app->child_window_ready = false;
+    char kept_log[NK_MAX_PATH] = "";
+    if (app->boot_event_file_path[0]) {
+        /* The run's output stays in the logs folder (#1303). */
+        if (nk_launch_keep_run_log(app->boot_event_file_path, disc_id,
+                                   kept_log, sizeof(kept_log))) {
+            player_dev_log_add(app, "runtime", "game output kept in %s", kept_log);
+            remove(app->boot_event_file_path);
+        } else {
+            player_dev_log_add(app, "runtime", "game output could not be kept in the logs folder");
+        }
+    }
+    player_app_set_game_stop_error(app, "RUNTIME_START_TIMEOUT", NULL, 0, 0, elapsed_ms,
+                                   disc_id,
+                                   kept_log[0] ? kept_log : app->boot_event_file_path);
+    return true;
+}
+
 bool player_window_fit_to_display(PlayerWindowRect requested,
                                   PlayerWindowRect usable,
                                   PlayerWindowFrame frame,
@@ -2150,6 +2230,7 @@ const char *player_error_badge(const ErrorState *error) {
         {"RUNTIME_NO_NEW_FRAMES", "Game stopped"},
         {"RUNTIME_PREMATURE_EXIT", "Game didn't start"},
         {"RUNTIME_ERROR_EXIT", "Game closed"},
+        {"RUNTIME_START_TIMEOUT", "Game didn't start"},
         {"TITLE_DATA_MISSING", "Game data needed"},
         {"RUNTIME_PACKAGE_NOT_READY", "Game not ready"},
         {"TITLE_PROFILE_INVALID", "Title settings needed"},
@@ -2172,7 +2253,7 @@ bool player_error_leads_with_message(const ErrorState *error) {
         "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT",
         "TITLE_DATA_MISSING", "TITLE_PROFILE_INVALID", "RUNTIME_PACKAGE_NOT_READY",
         "PACKAGE_REVALIDATION_FAILED", "PACKAGE_BUILD_FAILED", "PACKAGE_BUILD_REFUSED",
-        "PACKAGE_DISK_FULL",
+        "PACKAGE_DISK_FULL", "RUNTIME_START_TIMEOUT",
     };
     if (!error) return false;
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
@@ -2359,6 +2440,15 @@ void player_app_set_game_stop_error(PlayerApp *app, const char *code,
                              "Return to Library", VIEW_LIBRARY);
         snprintf(app->last_error.details, sizeof(app->last_error.details),
                  "Exit code %d after %llu ms.", exit_code, (unsigned long long)elapsed_ms);
+    } else if (strcmp(code, "RUNTIME_START_TIMEOUT") == 0) {
+        player_app_set_error(app, code, "Game Couldn't Start",
+                             "The game didn't start, so it was stopped. Press Restart game to "
+                             "try again. If it keeps happening, use Copy details and include "
+                             "the report when you ask for help.",
+                             "Return to Library", VIEW_LIBRARY);
+        snprintf(app->last_error.details, sizeof(app->last_error.details),
+                 "No boot event from the game process after %llu ms.",
+                 (unsigned long long)elapsed_ms);
     } else {
         snprintf(message, sizeof(message),
                  "The game stopped running on its own. %s Press Restart game to play again.",
@@ -2571,6 +2661,9 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
     /* The boot-event marker and the input mapping are written here, on the
        thread that owns the app; the work only reads the resulting paths. */
     app->child_window_ready = false;
+    app->launch_running_check_logged = false;
+    app->child_boot_event_seen = false;
+    app->child_boot_wait_noted = false;
     app->launch_session.boot_event_file_path[0] = '\0';
     if (!player_prepare_boot_event_file(app)) {
         player_app_set_error(
@@ -3172,7 +3265,7 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
     }
     player_monitor_stalled_game_events(app);
     if (nk_launch_is_running(&app->launch_session)) {
-        return false;
+        return player_monitor_game_start(app, now_ms);
     }
     uint64_t elapsed_ms = now_ms >= app->launch_time_ms
         ? (now_ms - app->launch_time_ms) : 0;

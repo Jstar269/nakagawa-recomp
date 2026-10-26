@@ -479,6 +479,12 @@ typedef struct PlayerApp {
     bool logical_ui;
     bool enable_focus_handoff;
     bool child_window_ready;
+    /* Start watch for the running launch (#1290): the first running check was
+       logged, the child wrote its first boot event, and the "still no boot
+       event" developer-log note was written. Cleared by each launch. */
+    bool launch_running_check_logged;
+    bool child_boot_event_seen;
+    bool child_boot_wait_noted;
     bool close_confirmation_pending;
     char boot_event_file_path[MAX_PATH_LEN];
     bool should_quit;
@@ -602,8 +608,10 @@ const char *player_plain_reason(const char *text);
 const char *player_runtime_stop_feature(const char *boundary);
 /* The cards for a game that ended on its own: RUNTIME_SEMANTIC_BOUNDARY (the
    runtime stopped at a named boundary, tracked by issue when non-zero),
-   RUNTIME_PREMATURE_EXIT and RUNTIME_ERROR_EXIT. The raw boundary and the exit
-   code go into the details, never the headline. */
+   RUNTIME_PREMATURE_EXIT, RUNTIME_ERROR_EXIT, and RUNTIME_START_TIMEOUT (the
+   launcher stopped a child that wrote no boot event in time; elapsed_ms is how
+   long it waited). The raw boundary and the exit code go into the details,
+   never the headline. */
 void player_app_set_game_stop_error(PlayerApp *app, const char *code,
                                     const char *boundary, unsigned int issue,
                                     int exit_code, uint64_t elapsed_ms,
@@ -884,10 +892,15 @@ NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRec
  * Returns true when this tick observed the child's exit and finalized the
  * session. A child that exits before 500 ms of wall time is reported through
  * the structured RUNTIME_PREMATURE_EXIT error; a later non-zero exit becomes
- * RUNTIME_ERROR_EXIT. Either way the session's process handles are released
- * and is_game_running is false before returning, so a subsequent launch
- * starts from clean state. Pure state logic (no SDL): the caller supplies the
- * clock so tests can drive classification deterministically. */
+ * RUNTIME_ERROR_EXIT. A child still running PLAYER_GAME_START_TIMEOUT_MS
+ * after launch without having written a single boot event never started: the
+ * tick stops it, reports RUNTIME_START_TIMEOUT and returns true (#1290).
+ * Either way the session's process handles are released and is_game_running
+ * is false before returning, so a subsequent launch starts from clean state.
+ * Pure state logic (no SDL): the caller supplies the clock so tests can drive
+ * classification deterministically. */
+#define PLAYER_GAME_START_NOTE_MS 5000u
+#define PLAYER_GAME_START_TIMEOUT_MS 15000u
 bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms);
 
 /* Commit the inspected, successfully staged title to the persistent library
