@@ -472,6 +472,121 @@ static void test_ge_vram_depth_bit13_absolute_xor(void) {
     }
 }
 
+/* ---- Texture mip levels (#1373) ----
+ * A through-mode sprite samples an 8x8 8888 texture whose levels 0-3 are one colour each,
+ * so the colour drawn names the level the sampler chose. Level 1 stores its 4 texels per
+ * row in a buffer 8 wide with magenta beyond them, which only a sampler ignoring that
+ * level's own buffer width reaches. The PSP's nearest-level rounding, slope formula and
+ * between-level weights are unmeasured (ge.c tex_lod); these cases pin the PSPSDK modes and
+ * keep today's level-0 output wherever mip levels are off. */
+#define MIP_LIST  0x08116000u
+#define MIP_VERTS 0x08118000u
+#define MIP_TEX   0x08320000u
+#define MIP_FB    0x04150000u
+#define MIP_X     16u
+#define MIP_Y     16u
+#define MIP_LEVEL(mode, bias16) ((uint32_t)(mode) | (((uint32_t)(bias16) & 0xFFu) << 16))
+
+static const uint32_t k_mip_color[4] = { 0xFF0000FFu, 0xFF00FF00u, 0xFFFF0000u, 0xFFFFFFFFu };
+
+static uint32_t mip_level_addr(unsigned level) { return MIP_TEX + level * 0x1000u; }
+static unsigned mip_level_bufw(unsigned level) { return level == 1u ? 8u : (8u >> level); }
+
+static void mip_fill_texture(void) {
+    for (unsigned level = 0; level < 4u; level++) {
+        unsigned size = 8u >> level, bufw = mip_level_bufw(level);
+        for (unsigned v = 0; v < size; v++)
+            for (unsigned u = 0; u < bufw; u++)
+                MEM_W32(mip_level_addr(level) + (v * bufw + u) * 4u,
+                        u < size ? k_mip_color[level] : 0xFFFF00FFu);
+    }
+}
+
+/* Draw the texture (UV 0-8) onto a size x size sprite; return the one RGB colour the sprite
+ * holds (framebuffer alpha is the stencil, which these draws leave alone), or 0 when it is
+ * not uniform or the list did not end. */
+static uint32_t mip_draw(uint32_t max_level, uint32_t level_word, uint32_t min_filter,
+                         unsigned size) {
+    const float verts[10] = { 0.0f, 0.0f, (float)MIP_X, (float)MIP_Y, 0.0f,
+                              8.0f, 8.0f, (float)(MIP_X + size), (float)(MIP_Y + size), 0.0f };
+    memcpy(SR_HOST(MIP_VERTS), verts, sizeof verts);
+    for (unsigned y = 0; y < 16u; y++)
+        for (unsigned x = 0; x < 16u; x++)
+            MEM_W32(MIP_FB + ((MIP_Y + y) * 512u + MIP_X + x) * 4u, 0u);
+    s_pc = MIP_LIST;
+    W(0x10, 0x080000u);                     /* BASE */
+    W(0x9C, MIP_FB & 0x00FFFFFFu);          /* FRAMEBUFPTR */
+    W(0x9D, 512u);
+    W(0xD2, 3u);                            /* 8888 */
+    W(0xD4, 0u);
+    W(0xD5, (271u << 10) | 479u);
+    W(0xD3, 0u);                            /* not clear mode */
+    W(0x21, 0u); W(0x22, 0u); W(0x23, 0u); W(0x24, 0u); W(0x27, 0u); W(0x28, 0u);
+    for (unsigned level = 0; level < 4u; level++) {
+        uint32_t addr = mip_level_addr(level), size_log2 = 3u - level;
+        W(0xA0 + level, addr & 0x00FFFFFFu);                         /* TEXADDRn */
+        W(0xA8 + level, ((addr >> 8) & 0x00FF0000u) | mip_level_bufw(level));
+        W(0xB8 + level, (size_log2 << 8) | size_log2);              /* TEXSIZEn */
+    }
+    W(0xC2, max_level << 16);               /* TEXMODE: highest level, unswizzled */
+    W(0xC3, 3u);                            /* TEXFORMAT 8888 */
+    W(0xC6, min_filter);                    /* TEXFILTER, magnification nearest */
+    W(0xC7, 0u);                            /* TEXWRAP repeat */
+    W(0xC8, level_word);                    /* TEXLEVEL */
+    W(0xC9, 3u | 0x100u);                   /* TEXFUNC replace, RGBA */
+    W(0x1E, 1u);                            /* TEXTUREMAPENABLE */
+    W(0x12, 3u | (3u << 7) | (1u << 23));   /* float UV and position, through mode */
+    prim(6u, 2u, MIP_VERTS);
+    W(0x0C, 0u);
+    if (ge_run_list(MIP_LIST, 0) != 0) return 0u;
+    uint32_t first = MEM_R32(MIP_FB + (MIP_Y * 512u + MIP_X) * 4u) & 0x00FFFFFFu;
+    for (unsigned y = 0; y < size; y++)
+        for (unsigned x = 0; x < size; x++)
+            if ((MEM_R32(MIP_FB + ((MIP_Y + y) * 512u + MIP_X + x) * 4u) & 0x00FFFFFFu) != first)
+                return 0u;
+    return first;
+}
+
+static void test_ge_texture_mip_levels(void) {
+    enum { RED = 0, GREEN = 1, BLUE = 2 };
+    static const struct {
+        const char *name;
+        uint32_t max_level, level_word, min_filter;
+        unsigned size;
+        int level;            /* expected level, or -1 for the blend below */
+    } cases[] = {
+        /* Mip levels off: level 0 exactly as before. */
+        { "highest_level_0",  0u, MIP_LEVEL(1, 16),  4u, 8u,  RED },
+        { "non_mip_filter",   3u, MIP_LEVEL(1, 32),  1u, 8u,  RED },
+        { "constant_level_0", 3u, MIP_LEVEL(1, 0),   4u, 8u,  RED },
+        /* Constant: the bias names the level, clamped to the highest level. */
+        { "constant_level_1", 3u, MIP_LEVEL(1, 16),  4u, 8u,  GREEN },
+        { "constant_level_2", 3u, MIP_LEVEL(1, 32),  4u, 8u,  BLUE },
+        { "constant_clamped", 1u, MIP_LEVEL(1, 48),  4u, 8u,  GREEN },
+        /* Automatic: log2 of the texel footprint plus the bias. */
+        { "auto_magnified",   3u, MIP_LEVEL(0, 0),   4u, 16u, RED },
+        { "auto_one_to_one",  3u, MIP_LEVEL(0, 0),   4u, 8u,  RED },
+        { "auto_minified",    3u, MIP_LEVEL(0, 0),   4u, 2u,  BLUE },
+        { "auto_biased",      3u, MIP_LEVEL(0, -16), 4u, 2u,  GREEN },
+        { "auto_clamped",     1u, MIP_LEVEL(0, 0),   4u, 1u,  GREEN },
+        /* Slope: no public formula, so level 0 (unmeasured). */
+        { "slope_level_0",    3u, MIP_LEVEL(2, 16),  4u, 2u,  RED },
+        /* GU_NEAREST_MIPMAP_LINEAR at lod 0.5: half of level 0 and half of level 1. */
+        { "linear_between",   3u, MIP_LEVEL(1, 8),   6u, 8u,  -1 },
+    };
+    mip_fill_texture();
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        uint32_t want = (cases[i].level >= 0 ? k_mip_color[cases[i].level] : 0x007F7Fu) & 0x00FFFFFFu;
+        uint32_t got = mip_draw(cases[i].max_level, cases[i].level_word, cases[i].min_filter,
+                                cases[i].size);
+        char detail[128];
+        snprintf(detail, sizeof detail, "sprite colour 0x%08" PRIx32 ", expected 0x%08" PRIx32,
+                 got, want);
+        expect(got == want, cases[i].name, detail);
+    }
+    printf("MIP cases=%u (software rasterizer)\n", (unsigned)(sizeof cases / sizeof cases[0]));
+}
+
 /* The depth-surface span is cached per (base, stride) because every CPU VRAM access asks for it
  * (#1296). Six surfaces cycled through a smaller cache must keep returning their own bounds, each
  * the exact XOR image of the surface's even addresses (widened by at most one byte per end), and an
@@ -1130,6 +1245,7 @@ int main(int argc, char **argv) {
     g_mem = arena + 0x08000000u;
     test_vram_mirror_cpu_stores();
     test_ge_zbuf_span_bounds_cache();
+    test_ge_texture_mip_levels();
     build_lists();
     expect_api_contract();
 

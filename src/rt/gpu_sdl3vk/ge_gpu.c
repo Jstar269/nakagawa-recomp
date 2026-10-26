@@ -35,6 +35,10 @@
  *  - Textures decode through ge.c's own sampler (ge_decode_tex_rgba); CLUT/swizzle is
  *    reference-correct by construction. Render-to-texture binds the target image
  *    directly when the address/stride match (a snapshot copy for feedback loops).
+ *  - Mip levels: only level 0 is uploaded and sampled (mipLevels = 1). The software GE
+ *    samples levels 1-7 in the TEXLEVEL constant and automatic modes (ge.c tex_lod), so a
+ *    draw that selects a higher level diverges here until this backend gains them (#1373);
+ *    the coherence selftest pins that divergence.
  *  - 16-bit precision (5650/5551/4444 framebuffers): the fragment shader snaps its
  *    output to the native lattice (pack-by-truncation + expand-by-bit-replication,
  *    identical to ge.c pack_fb/unpack_color) and applies the GE's 4x4 ordered dither,
@@ -4382,6 +4386,70 @@ static int coherence_run_tflt_filters(void) {
     return ok;
 }
 
+/* Mip levels (#1373) are chosen only by the software sampler (ge.c tex_lod). This backend
+ * still uploads and samples level 0 alone, so a draw that selects level 1 diverges from
+ * the software GE. The case pins that labelled divergence until the Vulkan slice lands:
+ * the GPU must draw the level-0 columns and the software GE the level-1 colour. */
+static int coherence_run_mip_level_divergence(void) {
+    const uint32_t base = 0x04000000u | 0x00160000u;
+    const uint32_t tex_base = 0x04040000u, level1 = tex_base + 0x1000u;
+    const uint32_t stride = 512u, green = 0xFF00FF00u;
+    coherence_reset_targets();
+    uint8_t *guest = (uint8_t *)SR_HOST(base);
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    uint32_t fixture = coherence_prepare_tflt_fixture(tex_base, 0x004u, 6, 16, 16,
+                                                      0.0f, 0.0f, 8.0f, 8.0f);
+    uint32_t *texels = (uint32_t *)SR_HOST(level1);
+    for (unsigned i = 0; i < 16u; i++) texels[i] = green;
+    sr_gpu_vram_dirty(level1, 16u * 4u);
+    /* Highest level 1, constant level 1, level 1 4x4: then jump into the filter fixture. */
+    const uint32_t list_addr = 0x00100400u;
+    uint32_t *dl = (uint32_t *)SR_HOST(list_addr);
+    int p = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x13, 0);
+    DL_EMIT(0xA1, level1 & 0x00FFFFFFu);
+    DL_EMIT(0xA9, 4u | ((level1 & 0xFF000000u) >> 8));
+    DL_EMIT(0xB9, (2u << 8) | 2u);
+    DL_EMIT(0xC2, 1u << 16);
+    DL_EMIT(0xC8, 1u | (16u << 16));
+    DL_EMIT(0x08, fixture);
+    #undef DL_EMIT
+    int ok = 1;
+    for (int software = 0; software < 2 && ok; software++) {
+        ge_set_gpu_hooks(software ? NULL : &k_hooks);
+        ge_run_list(list_addr, 0);
+        GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                                   .width = 480, .height = 272 };
+        if (!software && !gegpu_sync_guest_fb(&desc)) {
+            fprintf(stderr, "gpu coherence selftest [mip-divergence]: GPU readback failed\n");
+            ok = 0;
+            break;
+        }
+        const uint32_t *fb = (const uint32_t *)guest;
+        for (int y = 0; y < 16 && ok; y++)
+            for (int x = 0; x < 16 && ok; x++) {
+                uint32_t rgb = fb[(COH_TFLT_RECT_Y + y) * stride + COH_TFLT_RECT_X + x] & 0x00FFFFFFu;
+                if (software ? rgb != (green & 0x00FFFFFFu) : (rgb != 0u && rgb != 0x00FFFFFFu)) {
+                    fprintf(stderr, "gpu coherence selftest [mip-divergence]: %s pixel=(%d,%d) %06x\n",
+                            software ? "software" : "gpu", x, y, rgb);
+                    ok = 0;
+                }
+            }
+        memset(guest, 0, stride * FB_H * 4u);
+        sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    }
+    ge_set_gpu_hooks(&k_hooks);
+    s_ge->tex_max_level = 0u;
+    s_ge->tex_level_mode = 0u;
+    s_ge->tex_lod_bias = 0.0f;
+    coherence_reset_targets();
+    if (ok) puts("gpu coherence selftest: PASS mip-level divergence pinned (Vulkan level 0, software level 1)");
+    return ok;
+}
+
 /* ---- ring wrap and blend colour parity (issue #697) -----------------------------------
  *
  * The per-slot vertex arena (VERT_ARENA_VERTS) and per-slot transfer ring are the Vulkan
@@ -5311,6 +5379,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_software_sprite_semantics()) ok = 0;
     if (!coherence_run_linear_sprite()) ok = 0;
     if (!coherence_run_tflt_filters()) ok = 0;
+    if (!coherence_run_mip_level_divergence()) ok = 0;
     if (!coherence_run_ring_wrap()) ok = 0;
     if (!coherence_run_submit_batch()) ok = 0;
     if (!coherence_run_upload_sequence()) ok = 0;

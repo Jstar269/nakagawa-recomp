@@ -55,6 +55,14 @@ typedef struct {
     uint32_t tex_addr, tex_bufw, tex_fmt;   /* level-0 texture base / stride(texels) / PSM */
     uint32_t tex_wrap, tex_func, tex_env, tex_filter;
     int tex_w, tex_h;                        /* texture dimensions (from TEXSIZE log2) */
+    /* Mip levels 1-7 (index = level - 1), decoded like level 0's TEXADDR/TEXBUFWIDTH/TEXSIZE.
+     * Sizes stay log2 so a level never written reads as the 1x1 a zero TEXSIZE word gives. */
+    uint32_t tex_mip_addr[7], tex_mip_bufw[7];
+    uint8_t tex_mip_wlog2[7], tex_mip_hlog2[7];
+    uint32_t tex_max_level;                  /* TEXMODE bits 16-18: highest level sampled */
+    uint32_t tex_level_mode;                 /* TEXLEVEL bits 0-1: 0 auto, 1 constant, 2 slope */
+    float tex_lod_bias;                      /* TEXLEVEL bits 16-23: signed 4.4 level bias */
+    float tex_lod_slope;                     /* TEXLODSLOPE */
     uint32_t clut_addr, clut_fmt;            /* palette base and format word */
     /* Internal CLUT RAM, captured at GE_LOADCLUT like the hardware. Games reuse the staging
      * buffer right after LOADCLUT, so sampling the palette live from memory reads garbage. */

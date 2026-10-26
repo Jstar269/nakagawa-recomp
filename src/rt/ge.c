@@ -17,7 +17,8 @@
  * shading. Points, lines, triangles (list/strip/fan) and sprites are rasterised.
  *
  * Per-fragment: texturing (5650/5551/4444/8888/CLUT4/8/16/32/DXT1/3/5, swizzled or linear,
- * bilinear; DXT is inherently block-tiled and never swizzled),
+ * bilinear; DXT is inherently block-tiled and never swizzled; mip levels 0-7 chosen by the
+ * TEXLEVEL constant or automatic level of detail, nearest or blended, in tex_lod),
  * programmable alpha test, colour test, alpha blending (full factor/equation set), stencil
  * test/ops (PSP stencil lives in destination alpha), logic ops, 4x4 ordered dithering,
  * colour/alpha write masks, scissor, and a software 16-bit depth buffer.
@@ -26,7 +27,9 @@
  * morph blending (up to 8 targets, read_pos/read_tc/read_nrm/read_color), plus Bezier and
  * B-spline patch primitives tessellated by the active PATCHDIVISION factors (draw_patch).
  *
- * Not emulated: mipmaps (level 0 only), the BJUMP bounding-box test.
+ * Not emulated: mip levels in the TEXLEVEL slope mode, per-level CLUTs (the TEXMODE multi-CLUT
+ * bit) and mip levels on the Vulkan backend, which samples level 0 (#1373); the BJUMP
+ * bounding-box test.
  */
 
 /*
@@ -1861,10 +1864,11 @@ static void dxt_color_block(uint32_t base, uint32_t x, uint32_t y, int fourcolor
     }
 }
 
-static void sample_dxt(uint32_t stride, uint32_t u, uint32_t v, int *r, int *g, int *b, int *a) {
+static void sample_dxt(uint32_t base, uint32_t stride, uint32_t u, uint32_t v,
+                       int *r, int *g, int *b, int *a) {
     uint32_t bpr = (stride / 4 ? stride / 4 : 1);        /* blocks per row */
     uint32_t bsize = ge.tex_fmt == 8 ? 8u : 16u;
-    uint32_t block = ge.tex_addr + ((v / 4) * bpr + (u / 4)) * bsize;
+    uint32_t block = base + ((v / 4) * bpr + (u / 4)) * bsize;
     uint32_t x = u & 3, y = v & 3;
     dxt_color_block(block, x, y, ge.tex_fmt != 8, r, g, b, a);
     if (ge.tex_fmt == 9) {           /* DXT3: 4-bit explicit alpha, u16 per row */
@@ -1883,50 +1887,118 @@ static void sample_dxt(uint32_t stride, uint32_t u, uint32_t v, int *r, int *g, 
     }
 }
 
-static void sample_tex(int tu, int tv, int *r, int *g, int *b, int *a) {
-    g_tex_samples++;
-    if (ge.tex_w > 0) {
-        tu = tex_coord(tu, ge.tex_w, ge.tex_wrap & 1);
-        tv = tex_coord(tv, ge.tex_h, (ge.tex_wrap >> 8) & 1);
+/* One texture level as the sampler addresses it. Format, swizzle, CLUT and wrap are
+ * shared by every level; address, buffer width and size are per level (#1373). */
+typedef struct TexLevel { uint32_t addr, bufw; int w, h; } TexLevel;
+
+/* Level 0 is the TEXADDR0/TEXBUFWIDTH0/TEXSIZE0 state every other GE path reads. */
+static TexLevel tex_level(uint32_t level) {
+    TexLevel t;
+    if (level == 0u || level > 7u) {
+        t.addr = ge.tex_addr; t.bufw = ge.tex_bufw; t.w = ge.tex_w; t.h = ge.tex_h;
+    } else {
+        t.addr = ge.tex_mip_addr[level - 1u];
+        t.bufw = ge.tex_mip_bufw[level - 1u];
+        t.w = 1 << ge.tex_mip_wlog2[level - 1u];
+        t.h = 1 << ge.tex_mip_hlog2[level - 1u];
     }
-    uint32_t stride = ge.tex_bufw ? ge.tex_bufw : (uint32_t)ge.tex_w;
+    return t;
+}
+
+static void sample_tex_level(const TexLevel *t, int tu, int tv, int *r, int *g, int *b, int *a) {
+    g_tex_samples++;
+    if (t->w > 0) {
+        tu = tex_coord(tu, t->w, ge.tex_wrap & 1);
+        tv = tex_coord(tv, t->h, (ge.tex_wrap >> 8) & 1);
+    }
+    uint32_t stride = t->bufw ? t->bufw : (uint32_t)t->w;
     uint32_t u = (uint32_t)tu, v = (uint32_t)tv;
     switch (ge.tex_fmt) {
         case 0: case 1: case 2:
-            unpack_color(MEM_R16(ge.tex_addr + texel_offset(stride, u, v, 16)), ge.tex_fmt, r, g, b, a); break;
+            unpack_color(MEM_R16(t->addr + texel_offset(stride, u, v, 16)), ge.tex_fmt, r, g, b, a); break;
         case 3:
-            unpack_color(MEM_R32(ge.tex_addr + texel_offset(stride, u, v, 32)), 3, r, g, b, a); break;
+            unpack_color(MEM_R32(t->addr + texel_offset(stride, u, v, 32)), 3, r, g, b, a); break;
         case 4: {
             uint32_t off = texel_offset(stride, u, v, 4);
-            uint8_t byte = MEM_R8(ge.tex_addr + off);
+            uint8_t byte = MEM_R8(t->addr + off);
             int ni = (u & 1) ? (byte >> 4) : (byte & 0xF);
             clut_lookup((uint32_t)ni, r, g, b, a); break;
         }
-        case 5: clut_lookup(MEM_R8(ge.tex_addr + texel_offset(stride, u, v, 8)), r, g, b, a); break;
+        case 5: clut_lookup(MEM_R8(t->addr + texel_offset(stride, u, v, 8)), r, g, b, a); break;
         case 6:  /* CLUT16: 16-bit index through the same shift/mask/start transform */
-            clut_lookup(MEM_R16(ge.tex_addr + texel_offset(stride, u, v, 16)), r, g, b, a); break;
+            clut_lookup(MEM_R16(t->addr + texel_offset(stride, u, v, 16)), r, g, b, a); break;
         case 7:  /* CLUT32 */
-            clut_lookup(MEM_R32(ge.tex_addr + texel_offset(stride, u, v, 32)), r, g, b, a); break;
+            clut_lookup(MEM_R32(t->addr + texel_offset(stride, u, v, 32)), r, g, b, a); break;
         case 8: case 9: case 10:
-            sample_dxt(stride, u, v, r, g, b, a); break;
+            sample_dxt(t->addr, stride, u, v, r, g, b, a); break;
         default: *r=*g=*b=*a=255; break;
     }
     if (*r | *g | *b) g_tex_nonzero++;
     if (s_stat_on > 0 && *a == 0) s_stat.texa0++;
 }
 
-static int tex_footprint_is_minifying(float du_dx, float dv_dx, float du_dy, float dv_dy) {
-    float dx2 = du_dx * du_dx + dv_dx * dv_dx;
-    float dy2 = du_dy * du_dy + dv_dy * dv_dy;
-    return fmaxf(dx2, dy2) > 1.0f;
+static void sample_tex(int tu, int tv, int *r, int *g, int *b, int *a) {
+    TexLevel t = tex_level(0u);
+    sample_tex_level(&t, tu, tv, r, g, b, a);
 }
 
-static void sample_tex_f(float fu, float fv_coord, int minifying,
-                         int *r, int *g, int *b, int *a) {
-    static int nobil = -1; if (nobil < 0) nobil = getenv("SR_NOBILINEAR") ? 1 : 0;
-    int filter_linear = minifying ? (ge.tex_filter & 1) : ((ge.tex_filter >> 8) & 1);
-    int use_linear = !nobil && filter_linear;
-    if (!use_linear) { sample_tex((int)(fu + 0.5f), (int)(fv_coord + 0.5f), r, g, b, a); return; }
+/* Squared texel footprint of one pixel step: the larger squared length of the level-0
+ * texel coordinate's x and y screen derivatives. Above 1 the texture is minified. */
+static float tex_footprint_rho2(float du_dx, float dv_dx, float du_dy, float dv_dy) {
+    float dx2 = du_dx * du_dx + dv_dx * dv_dx;
+    float dy2 = du_dy * du_dy + dv_dy * dv_dy;
+    return fmaxf(dx2, dy2);
+}
+
+/* Texture level of detail of one fragment (#1373): a level with its fraction, in
+ * [0, highest level]. 0 samples level 0 exactly as before mip levels were modelled.
+ *
+ * Contract (PSPSDK): TEXMODE bits 16-18 hold the highest level (sceGuTexMode maxmips),
+ * TEXLEVEL the mode (sceGuTexLevelMode: GU_TEXTURE_AUTO 0, CONST 1, SLOPE 2) and a signed
+ * 4.4 bias, and TEXFILTER's minification field enables mip levels with the GL-named
+ * GU_{NEAREST,LINEAR}_MIPMAP_{NEAREST,LINEAR} filters (4-7, bit 2). Without bit 2, or with a
+ * highest level of 0, the sampler stays on level 0.
+ *   constant:  lod = bias.
+ *   automatic: lod = log2(rho) + bias, rho being the footprint the rasterizer already uses
+ *              for its minification test (the GL scale factor those filter names mirror).
+ *   slope:     no public source gives its formula, so it stays on level 0.
+ * Unmeasured on a PSP: the automatic mode's derivative approximation and whether it is
+ * evaluated per pixel, the slope formula, and the nearest-level rounding and between-level
+ * weights sample_tex_f applies. */
+static float tex_lod(float rho2) {
+    if (!(ge.tex_filter & 4u) || ge.tex_max_level == 0u) return 0.0f;
+    float lod;
+    if (ge.tex_level_mode == 1u) {
+        lod = ge.tex_lod_bias;
+    } else if (ge.tex_level_mode == 0u) {
+        lod = 0.5f * log2f(rho2) + ge.tex_lod_bias;
+    } else {
+        static int s_mode_noted;
+        if (!s_mode_noted) {
+            s_mode_noted = 1;
+            fprintf(stderr, "GE: TEXLEVEL mode %" PRIu32 " samples level 0; its level-of-detail "
+                    "formula is unmeasured (#1373)\n", ge.tex_level_mode);
+        }
+        return 0.0f;
+    }
+    if (!(lod > 0.0f)) return 0.0f;            /* magnified, a negative bias, or NaN */
+    return lod < (float)ge.tex_max_level ? lod : (float)ge.tex_max_level;
+}
+
+/* Filter one level at level-0 texel coordinates. A level's texel coordinate is the
+ * level-0 one scaled by the level's size, so every level spans the same normalised
+ * texture (unmeasured for through-mode UV, which the PSP gives in level-0 texels). */
+static void sample_level_f(uint32_t level, float fu, float fv_coord, int use_linear,
+                           int *r, int *g, int *b, int *a) {
+    TexLevel t = tex_level(level);
+    if (level != 0u && ge.tex_w > 0 && ge.tex_h > 0) {
+        fu *= (float)t.w / (float)ge.tex_w;
+        fv_coord *= (float)t.h / (float)ge.tex_h;
+    }
+    if (!use_linear) {
+        sample_tex_level(&t, (int)(fu + 0.5f), (int)(fv_coord + 0.5f), r, g, b, a);
+        return;
+    }
     /* An integer texel coordinate names that texel's CENTRE -- that is the convention the
      * nearest branch above implements by rounding. The filter window is centred on the
      * same texel: taps are floor(fu) and floor(fu)+1, so a 1:1 sprite reproduces its
@@ -1944,15 +2016,41 @@ static void sample_tex_f(float fu, float fv_coord, int minifying,
     if (fy < 0) fy = 0;
     if (fy > 256) fy = 256;
     int r0,g0,b0,a0, r1,g1,b1,a1, r2,g2,b2,a2, r3,g3,b3,a3;
-    sample_tex(u0,   v0,   &r0,&g0,&b0,&a0);
-    sample_tex(u0+1, v0,   &r1,&g1,&b1,&a1);
-    sample_tex(u0,   v0+1, &r2,&g2,&b2,&a2);
-    sample_tex(u0+1, v0+1, &r3,&g3,&b3,&a3);
+    sample_tex_level(&t, u0,   v0,   &r0,&g0,&b0,&a0);
+    sample_tex_level(&t, u0+1, v0,   &r1,&g1,&b1,&a1);
+    sample_tex_level(&t, u0,   v0+1, &r2,&g2,&b2,&a2);
+    sample_tex_level(&t, u0+1, v0+1, &r3,&g3,&b3,&a3);
 #define LERP1(c0,c1,f) ((c0) + (((c1)-(c0))*(f)>>8))
     int tr=LERP1(r0,r1,fx), tg=LERP1(g0,g1,fx), tb=LERP1(b0,b1,fx), ta=LERP1(a0,a1,fx);
     int br=LERP1(r2,r3,fx), bg=LERP1(g2,g3,fx), bb=LERP1(b2,b3,fx), ba=LERP1(a2,a3,fx);
     *r=LERP1(tr,br,fy); *g=LERP1(tg,bg,fy); *b=LERP1(tb,bb,fy); *a=LERP1(ta,ba,fy);
 #undef LERP1
+}
+
+/* Sample at level-0 texel coordinates. `minifying` picks TEXFILTER's minification or
+ * magnification field for filtering within a level, by the same footprint test as before
+ * mip levels were modelled; `lod` (tex_lod) picks the level. TEXFILTER bit 1 selects
+ * between the nearest level (GL rounding: up only past one half) and a blend of the two
+ * levels around `lod` by its fraction in 1/256 steps. */
+static void sample_tex_f(float fu, float fv_coord, int minifying, float lod,
+                         int *r, int *g, int *b, int *a) {
+    static int nobil = -1; if (nobil < 0) nobil = getenv("SR_NOBILINEAR") ? 1 : 0;
+    int filter_linear = minifying ? (ge.tex_filter & 1) : ((ge.tex_filter >> 8) & 1);
+    int use_linear = !nobil && filter_linear;
+    uint32_t level = lod > 0.0f ? (uint32_t)lod : 0u;
+    float frac = lod > 0.0f ? lod - (float)level : 0.0f;
+    if (!(ge.tex_filter & 2u)) {
+        if (frac > 0.5f) level++;
+        sample_level_f(level, fu, fv_coord, use_linear, r, g, b, a);
+        return;
+    }
+    int weight = (int)(frac * 256.0f);
+    sample_level_f(level, fu, fv_coord, use_linear, r, g, b, a);
+    if (weight <= 0 || level >= ge.tex_max_level) return;
+    int r1, g1, b1, a1;
+    sample_level_f(level + 1u, fu, fv_coord, use_linear, &r1, &g1, &b1, &a1);
+    *r += ((r1 - *r) * weight) >> 8; *g += ((g1 - *g) * weight) >> 8;
+    *b += ((b1 - *b) * weight) >> 8; *a += ((a1 - *a) * weight) >> 8;
 }
 
 /* SR_TEXDUMP=1: write each distinct texture used by a draw once per run as
@@ -2367,8 +2465,9 @@ static int color_test(int r, int g, int b) {
 }
 
 /* Compute final pixel colour from interpolated texcoord+colour+fog.
+ * `rho2` is tex_footprint_rho2() of the texel coordinate (0 for a point).
  * `fog` is fixed-point 0..256 (256 = no fog). Returns 0 if the alpha test rejects. */
-static int shade(float u, float fv, int minifying, int fog,
+static int shade(float u, float fv, float rho2, int fog,
                  int vr, int vg, int vb, int va, int *or_, int *og, int *ob, int *oa) {
     int r, g, b, a;
     int dbg_ta = -1;
@@ -2376,7 +2475,7 @@ static int shade(float u, float fv, int minifying, int fog,
         int tr, tg, tb, ta;
         int rgba = (ge.tex_func & 0x100) != 0;
         int dbl  = (ge.tex_func & 0x10000) != 0;
-        sample_tex_f(u, fv, minifying, &tr, &tg, &tb, &ta);
+        sample_tex_f(u, fv, rho2 > 1.0f, tex_lod(rho2), &tr, &tg, &tb, &ta);
         dbg_ta = ta;
         switch (ge.tex_func & 7) {
             case 1: /* decal */
@@ -2623,7 +2722,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             }
 
             float u = 0, fv = 0;
-            int minifying = 0;
+            float rho2 = 0.0f;
             if (textured) {
                 AT_PIX(iu, u); AT_PIX(iv, v);
                 float iu_dx = w0_dx * iu_ac + w1_dx * iu_bc;
@@ -2640,7 +2739,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
                     iu_dy = (iu_dy - u * irw_dy) * inv_rw;
                     iv_dy = (iv_dy - fv * irw_dy) * inv_rw;
                 } else { u = iu; fv = iv; }
-                minifying = tex_footprint_is_minifying(iu_dx, iv_dx, iu_dy, iv_dy);
+                rho2 = tex_footprint_rho2(iu_dx, iv_dx, iu_dy, iv_dy);
             }
             int r, g, b, a;
             if (gouraud) {
@@ -2651,7 +2750,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             int fog = use_fog ? (int)(clampf01(ifog) * 256.0f) : 256;
 
             int sr,sg,sb,sa;
-            if (!shade(u,fv,minifying,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+            if (!shade(u,fv,rho2,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
 
             /* SR_PIXWHO=x,y: log every triangle that writes the chosen pixel — identifies
              * which draw owns a misrendered region without guessing from geometry. */
@@ -2717,7 +2816,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
         float t=(float)i/(float)steps;
         int x=(int)(A->x+dx*t), y=(int)(A->y+dy*t);
         float u=0, fv=0;
-        int minifying = 0;
+        float rho2 = 0.0f;
         if (textured) {
             float du_dt = B->u - A->u;
             float dv_dt = B->v - A->v;
@@ -2733,7 +2832,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
                 }
             }
             float inv_len = 1.0f / (len > 0.0f ? len : 1.0f);
-            minifying = tex_footprint_is_minifying(du_dt * inv_len, dv_dt * inv_len, 0.0f, 0.0f);
+            rho2 = tex_footprint_rho2(du_dt * inv_len, dv_dt * inv_len, 0.0f, 0.0f);
         }
         int r=(int)(A->r+(B->r-A->r)*t), g=(int)(A->g+(B->g-A->g)*t);
         int b=(int)(A->b+(B->b-A->b)*t), a=(int)(A->a+(B->a-A->a)*t);
@@ -2742,7 +2841,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
         if (!zrange_ok(lz, persp)) { if (s_stat_on > 0) s_stat.zrange++; continue; }
         int fog = use_fog ? (int)(clampf01(A->fog+(B->fog-A->fog)*t)*256.0f) : 256;
         int sr,sg,sb,sa;
-        if (!shade(u,fv,minifying,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+        if (!shade(u,fv,rho2,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
         put_px_rgba_tested(x,y,clamp_z(lz),use_z,sr,sg,sb,sa);
     }
 }
@@ -2766,7 +2865,7 @@ static void draw_point_vtx(const Vtx *A, int persp) {
     int fog = (persp && ge.fog_enable && !ge.clear) ? (int)(clampf01(A->fog)*256.0f) : 256;
     s_in3d = persp;
     int sr,sg,sb,sa;
-    if (!shade(u,fv,0,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
+    if (!shade(u,fv,0.0f,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
     int use_z = persp ? ge.ztest_enable : thru_ztest();
     put_px_rgba_tested((int)A->x,(int)A->y,clamp_z(A->z),use_z,sr,sg,sb,sa);
 }
@@ -3364,7 +3463,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     float v_start = (p0->y <= p1->y) ? v0 : v1 - step_v;
     float u_dir = (p0->x <= p1->x) ? step_u : -step_u;
     float v_dir = (p0->y <= p1->y) ? step_v : -step_v;
-    int minifying = tex_footprint_is_minifying(u_dir, 0.0f, 0.0f, v_dir);
+    float rho2 = tex_footprint_rho2(u_dir, 0.0f, 0.0f, v_dir);
 
     /* SR_PIXWHO probe: the sprite path owned only its clear-mode case, so a misrendered
      * row owned by a textured sprite had no way to name the draw. Name the full sampling
@@ -3390,7 +3489,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
         for (int x = xa; x < xb; x++) {
             float u = u_start + (float)(x - xa) * u_dir;
             int r, g, b, a;
-            if (!shade(u, fv, minifying, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
+            if (!shade(u, fv, rho2, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
             put_px_rgba_tested(x, y, pz, use_z, r, g, b, a);
         }
     }
@@ -4698,15 +4797,29 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             case GE_TEXADDR0:     ge.tex_addr=(ge.tex_addr&0xFF000000)|(data&0x00FFFFFF); break;
             case GE_TEXBUFWIDTH0: ge.tex_bufw=data&0xFFFF; ge.tex_addr=(ge.tex_addr&0x00FFFFFF)|((data&0xFF0000)<<8); break;
             case GE_TEXSIZE0:  ge.tex_w=1<<(data&0xF); ge.tex_h=1<<((data>>8)&0xF); break;
-            /* Mip levels 1-7 (addr/bufwidth/size): only level 0 is sampled. */
+            /* Mip levels 1-7, decoded exactly like level 0 (sceGuTexImage(level, ...)). */
             case GE_TEXADDR0+1: case GE_TEXADDR0+2: case GE_TEXADDR0+3: case GE_TEXADDR0+4:
-            case GE_TEXADDR0+5: case GE_TEXADDR0+6: case GE_TEXADDR0+7:
+            case GE_TEXADDR0+5: case GE_TEXADDR0+6: case GE_TEXADDR0+7: {
+                uint32_t *level_addr = &ge.tex_mip_addr[cmd - GE_TEXADDR0 - 1u];
+                *level_addr = (*level_addr & 0xFF000000u) | (data & 0x00FFFFFFu);
+                break;
+            }
             case GE_TEXBUFWIDTH0+1: case GE_TEXBUFWIDTH0+2: case GE_TEXBUFWIDTH0+3:
             case GE_TEXBUFWIDTH0+4: case GE_TEXBUFWIDTH0+5: case GE_TEXBUFWIDTH0+6:
-            case GE_TEXBUFWIDTH0+7:
+            case GE_TEXBUFWIDTH0+7: {
+                uint32_t level = cmd - GE_TEXBUFWIDTH0 - 1u;
+                ge.tex_mip_bufw[level] = data & 0xFFFFu;
+                ge.tex_mip_addr[level] = (ge.tex_mip_addr[level] & 0x00FFFFFFu) | ((data & 0xFF0000u) << 8);
+                break;
+            }
             case GE_TEXSIZE0+1: case GE_TEXSIZE0+2: case GE_TEXSIZE0+3: case GE_TEXSIZE0+4:
-            case GE_TEXSIZE0+5: case GE_TEXSIZE0+6: case GE_TEXSIZE0+7: break;
-            case GE_TEXMODE:   ge.tex_swizzle=data&1; break;
+            case GE_TEXSIZE0+5: case GE_TEXSIZE0+6: case GE_TEXSIZE0+7:
+                ge.tex_mip_wlog2[cmd - GE_TEXSIZE0 - 1u] = (uint8_t)(data & 0xFu);
+                ge.tex_mip_hlog2[cmd - GE_TEXSIZE0 - 1u] = (uint8_t)((data >> 8) & 0xFu);
+                break;
+            /* sceGuTexMode: maxmips << 16 | multi-CLUT << 8 | swizzle. The multi-CLUT bit is
+             * not applied: every level samples through the one CLUT (#1373). */
+            case GE_TEXMODE:   ge.tex_swizzle=data&1; ge.tex_max_level=(data>>16)&7u; break;
             case GE_TEXFORMAT: ge.tex_fmt=data&0xF; break;
             case GE_TEXFILTER: ge.tex_filter=data; break;
             case GE_TEXWRAP:   ge.tex_wrap=data; break;
@@ -4723,7 +4836,12 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 if (ge.tgen_num < 12) ge.tgen[ge.tgen_num] = decode_float24(data);
                 ge.tgen_num++;
                 break;
-            case GE_TEXLEVEL: case GE_TEXLODSLOPE: break;     /* mipmaps not sampled */
+            /* sceGuTexLevelMode: mode | trunc(bias * 16) << 16, a signed 4.4 level bias. */
+            case GE_TEXLEVEL:
+                ge.tex_level_mode = data & 3u;
+                ge.tex_lod_bias = (float)(int8_t)(uint8_t)(data >> 16) / 16.0f;
+                break;
+            case GE_TEXLODSLOPE: ge.tex_lod_slope = decode_float24(data); break;
             case GE_TEXFLUSH: case GE_TEXSYNC: break;         /* no texture cache to flush */
             case GE_LOADCLUT: {
                 uint64_t profile_started = ge_cpu_profile_begin();
