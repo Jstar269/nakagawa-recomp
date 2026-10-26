@@ -1684,7 +1684,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b3d3249cdb2488badd295e74a7cf7bb630ce8a56a0a79c13330a136be583245e"
+      "sha256": "9288492fa6a409f0e2b79f5af78efb883863ae573a0a3d9261a4b35dad97eac9"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -3167,7 +3167,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c4ddb12b16aec7e0cae4ef283412dd4d53f63eb6b11465b6782d8489090ef0ef"
+      "sha256": "461335c4467b63686b5e0130c9117909839649e190ae1f480f20ae37d46da8b1"
     },
     {
       "path": "src/core/nk_font.h",
@@ -3179,7 +3179,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b7decd9fee1df76193369a1781d684b15d630d5ce7a52af3ad5bb730ed6fbd57"
+      "sha256": "51a448ab2a1f5e8c32ae25b7774361e3def54592b68293658d908bbed4920874"
     },
     {
       "path": "src/core/nk_font_slots.h",
@@ -3539,7 +3539,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8558e643caffce72e0821a5a009aced10a9d527690f3db45193b05ae1e55582f"
+      "sha256": "caea19658435d218832f34a2716f5f807dd71d7d6e10625f74aba3d2d49e7298"
     },
     {
       "path": "src/player/player_state.h",
@@ -5015,7 +5015,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "448a6a055418d0efdc9f706387d796a74f2ab87249ed6593d1361cb94e0ae370"
+      "sha256": "67ddfa7e59177bf5c0c387eb9bdec20bce019fdcb576fb469be147946c0329fb"
     },
     {
       "path": "src/rt/flash0_font.h",
@@ -8443,7 +8443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0d50962098bc3442ea1e8af33d82b33f018f3d03b8d733aee16bc46b3b25bc14"
+      "sha256": "3f7ccffe4b36403591228d4508e6aebcb9d50b7b49cab0e37e1babfebe8ecd3f"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -10050,7 +10050,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "378f2721d89e23094355e8f00bc06b4f58e6fc12d1d1d2b9974e91a95132994f"
+      "sha256": "a9b08ac2e4fcec94d8169ec36393ddaf6f7867af698ba6674800946f5b365782"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -13286,7 +13286,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d178c0f3b4a8aa7935f9ee332371bef4002cd17a4562ce357b29a3c61f7cdaf3"
+      "sha256": "ddf239e90b6dfc96965b83fea5bad025ef0e97dca76c44e810758eeedd6016bd"
     },
     {
       "path": "tools/test_flight_build_identity.py",
