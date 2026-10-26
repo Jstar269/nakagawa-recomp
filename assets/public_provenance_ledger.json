@@ -1570,7 +1570,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "150223ffa16968e38aea2f80d9481de2772824e256ceb66e0dd73698cb2ebbde"
+      "sha256": "84cd3e1b9e2819036542bbc99561a475aae7d214e5f7ba32f6eee40c636d7eda"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -11914,7 +11914,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6af5c7d4b18cb49f38ffef6a1b323a62cd220bec9d474bc61ea7d34b18801bf1"
+      "sha256": "403add85ed8b3351a4972cdf8ce61c2d771186d519293a237b1dac3732b6380f"
     },
     {
       "path": "tools/nk_core/synthetic_disc_ids.py",
@@ -14151,7 +14151,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0888f9bc1e246a1a226c24f256332b7338754c7f80a20f5b54a36489502bbd36"
+      "sha256": "d64d4638b98ca89d4e4c9150cdc6dadafc87742095ef7e3b45f0c3b1173468d4"
     },
     {
       "path": "tools/test_production_smoke.py",
