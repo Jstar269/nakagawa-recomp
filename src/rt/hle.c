@@ -11565,10 +11565,11 @@ int sr_callback_is_valid(uint32_t uid) {
 
 /* Memory Stick insert/eject callback registrations made through sceIoDevctl
  * 0x02415821 on ms0:/fatms0:. The 32-entry bound, duplicate registrations each
- * taking an entry, and unregister removing only the first match follow PPSSPP's
- * sceIo.cpp model (PSP-IO-001, #311, has not measured them). Dropping a deleted
- * callback's registrations is a project model: hardware behaviour for a deleted
- * registered callback is unmeasured, and dropping it means it can never fire. */
+ * taking an entry, unregister removing only the first match, and the 0x80010016
+ * refusals follow PPSSPP's sceIo.cpp fatms0: model, applied here to ms0: as well
+ * (PSP-IO-001, #311, has not measured them). Dropping a deleted callback's
+ * registrations is a project model: hardware behaviour for a deleted registered
+ * callback is unmeasured, and dropping it means it can never fire. */
 enum { MEMSTICK_CALLBACK_MAX = 32 };
 static uint32_t s_memstick_callbacks[MEMSTICK_CALLBACK_MAX];
 static uint32_t s_memstick_callback_count;

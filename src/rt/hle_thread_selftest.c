@@ -15094,6 +15094,29 @@ static void test_io_devctl_memstick_callback_notify(void) {
     expect(io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == MS_EINVAL &&
                io_devctl_call(&cpu, MS_DEVICE, MS_UNREGISTER, MS_INDATA, 4u, 0u, 0u) == MS_EINVAL,
            "mstick callbacks: a deleted callback can be neither registered nor unregistered");
+
+    /* Owner teardown deletes the thread's callbacks, so their registrations go with them. */
+    uint32_t target_uid = sched_create_thread(0x0800db00u, 40, 0x2000u);
+    TCB *target = tcb_by_uid(target_uid);
+    expect(target != NULL, "mstick callbacks: the owning thread is created");
+    if (target) {
+        target->state = TH_READY;
+        target->started = 1;
+        s_cur = (int)(target - s_tcb);
+    }
+    uint32_t owned = wakeup_create_callback(WAKEUP_SECOND_NAME, "ms-owned",
+                                            WAKEUP_SECOND_ENTRY, WAKEUP_SECOND_COMMON);
+    MEM_W32(MS_INDATA, owned);
+    expect(owned != 0u &&
+               io_devctl_call(&cpu, MS_DEVICE, MS_REGISTER, MS_INDATA, 4u, 0u, 0u) == 0u &&
+               sr_hle_test_io_devctl_callback_count() == 1u,
+           "mstick callbacks: the owning thread registers its callback");
+    s_cur = (int)(owner - s_tcb);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = target_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TERMINATE_DELETE_THREAD) == 0u &&
+               !sr_callback_is_valid(owned) && sr_hle_test_io_devctl_callback_count() == 0u,
+           "mstick callbacks: deleting the owning thread drops its registrations");
     sr_test_guest_fn_reset();
 }
 
