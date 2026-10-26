@@ -18,8 +18,8 @@ MEASURED as `PSP-TRANSPORT-001` in the 2026-10-10 PSP-3000 campaign on
 A passing preflight qualifies the transport before a case only. The host0
 round-trip after a case can still fail: the 2026-10-10 single-case HLE runs
 failed their post-unload shell qualification and host0 round-trip, and the
-2026-10-18 raw UMD read run passed the preflight but ended
-`HOST0_ROUNDTRIP_FAILED` after a transport loss
+900-second 2026-10-18 raw UMD read run passed the preflight but ended
+`HOST0_ROUNDTRIP_FAILED` at its host case timeout, followed by a transport loss
 ([PSP-UMDRAW-001](HARDWARE_ORACLE.md#psp-umdraw-001-raw-umd-read-probe)).
 Resident runner candidate: the Nakagawa Link resident PSP agent. Its source is
 not in this repository; this repository records it only as the watchdog armed
