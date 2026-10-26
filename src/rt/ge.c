@@ -26,7 +26,11 @@
  * morph blending (up to 8 targets, read_pos/read_tc/read_nrm/read_color), plus Bezier and
  * B-spline patch primitives tessellated by the active PATCHDIVISION factors (draw_patch).
  *
- * Not emulated: mipmaps (level 0 only), the BJUMP bounding-box test.
+ * Conditional rendering: BOUNDINGBOX records whether its box can be visible and BJUMP skips
+ * the object when it cannot (ge_bounding_box_visible); the exact PSP visibility test is
+ * unmeasured, so only a box wholly beyond one scissor edge is skipped.
+ *
+ * Not emulated: mipmaps (level 0 only).
  */
 
 /*
@@ -694,6 +698,10 @@ uint32_t ge_cpu_profile_validate(const GeCpuProfileStats *s, char *detail, size_
 uint32_t g_ge_stall_addr = 0;
 static uint32_t s_stack_pc[32], s_stack_offset[32];
 static int s_sp = 0;
+/* Result of the last BOUNDINGBOX, read by BJUMP (ge_bounding_box_visible). A list starts
+ * with "visible", so a BJUMP before any BOUNDINGBOX falls through; the PSP's value there is
+ * unmeasured. */
+static int s_bbox_visible = 1;
 
 /* Optional GPU rasterizer hooks (ge_shared.h). NULL = pure software (the GDI build
  * never registers any; the SDL3 build registers them only under SR_GPU_GE=1). */
@@ -1007,6 +1015,7 @@ void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
     if (s_tr_enabled > 0) ge_transition_trace_sync_written();
     s_ge_inited = 1;
     s_sp = 0;
+    s_bbox_visible = 1;
     g_ge_stall_addr = 0;
 }
 
@@ -3144,6 +3153,80 @@ static int transform_vtx_3d(uint32_t addr, const VFmt *vf, Vtx *o) {
     return 1;
 }
 
+/* BOUNDINGBOX (0x07): does the box submitted in the current vertex format possibly reach
+ * the screen?  Returns 0 (not visible: BJUMP takes its branch) or 1 (visible: BJUMP falls
+ * through and the object's commands run).
+ *
+ * Contract (PSPSDK pspgu.h and the sceGuBeginObject/sceGuEndObject sources): the list sets
+ * VERTEXTYPE and VADDR (and IADDR for an indexed box), issues BOUNDINGBOX with the vertex
+ * count, then a BASE/BJUMP pair that sceGuEndObject points past the object's commands.  The
+ * documented outcome is that the object is skipped when none of the submitted vertices lies
+ * inside the scissor region.
+ *
+ * Implemented: the part every reading of that contract agrees on.  The box is not visible
+ * only when every vertex projects (finite, clip w > 0) strictly beyond the same scissor edge,
+ * with a one-pixel guard because the rasterizer's rounding at that edge is unmeasured.  The
+ * vertices go through the same decode (morph, skinning) and world/view/projection/viewport
+ * transform as a draw, and through the index buffer when the vertex type has one.  The
+ * result is state of its own: the scissor is only read, and neither scissor nor region
+ * fragment clipping is changed by the test.
+ *
+ * UNMEASURED, so resolved as "visible" (the commands run, as before BJUMP was emulated):
+ * a box with no vertex inside the scissor that is not wholly beyond one edge (for example a
+ * box enclosing the view), a vertex at or behind the eye (w <= 0) or non-finite, the depth
+ * range and the near/far planes, the drawing region, through-mode vertex types, a zero
+ * count, a vertex or index span outside guest memory, and the PSP's handling of counts
+ * above 0x100 (every vertex is tested here).  Whether BOUNDINGBOX advances VADDR/IADDR as PRIM does is also unmeasured;
+ * it leaves them unchanged. */
+#define GE_BBOX_GUARD_PX 1.0f
+static int ge_bounding_box_visible(uint32_t count) {
+    VFmt vf;
+    decode_vtype(ge.vtype, &vf);
+    if (count == 0u || vf.through) return 1;
+    int idxfmt = (int)((ge.vtype >> 11) & 3u);
+    uint32_t stride = (uint32_t)vf.stride;
+    static unsigned s_bbox_span_reports;   /* each refusal is reported, at most 8 times */
+    if (idxfmt && !sr_inrange_n(ge.iaddr, count << (idxfmt - 1))) {
+        if (s_bbox_span_reports++ < 8u)
+            fprintf(stderr, "GE BOUNDINGBOX: index span iaddr=0x%08" PRIx32 " count=%" PRIu32
+                    " outside guest memory, box treated as visible\n", ge.iaddr, count);
+        return 1;
+    }
+    float vp_xs = decode_float24(ge.viewport_raw[0]), vp_ys = decode_float24(ge.viewport_raw[1]);
+    float vp_xc = decode_float24(ge.viewport_raw[3]), vp_yc = decode_float24(ge.viewport_raw[4]);
+    float off_x = (float)(ge.offsetx & 0xFFFF) / 16.0f, off_y = (float)(ge.offsety & 0xFFFF) / 16.0f;
+    /* Pixel (x, y) is written when scis_x1 <= x <= scis_x2 and scis_y1 <= y <= scis_y2. */
+    float left = (float)ge.scis_x1 - GE_BBOX_GUARD_PX;
+    float right = (float)ge.scis_x2 + 1.0f + GE_BBOX_GUARD_PX;
+    float top = (float)ge.scis_y1 - GE_BBOX_GUARD_PX;
+    float bottom = (float)ge.scis_y2 + 1.0f + GE_BBOX_GUARD_PX;
+    unsigned beyond_all = 0xFu;   /* edges every vertex so far lies beyond */
+    for (uint32_t i = 0; i < count && beyond_all; i++) {
+        uint32_t vi = idxfmt ? index_value(ge.iaddr, idxfmt, (int)i) : i;
+        uint32_t addr = ge.vaddr + vi * stride;
+        if (!sr_inrange_n(addr, stride)) {
+            if (s_bbox_span_reports++ < 8u)
+                fprintf(stderr, "GE BOUNDINGBOX: vertex 0x%08" PRIx32 " (index %" PRIu32
+                        ") outside guest memory, box treated as visible\n", addr, vi);
+            return 1;
+        }
+        ModelVtx m;
+        decode_model_vtx(addr, &vf, &m);
+        float wx, wy, wz, ex, ey, ez, cx, cy, cz, cw;
+        mat43_mul(ge.world, m.x, m.y, m.z, &wx, &wy, &wz);
+        mat43_mul(ge.view, wx, wy, wz, &ex, &ey, &ez);
+        mat44_mul(ge.proj, ex, ey, ez, &cx, &cy, &cz, &cw);
+        if (!(cw > 0.0f) || !isfinite(cw)) return 1;
+        float sx = cx / cw * vp_xs + vp_xc - off_x;
+        float sy = cy / cw * vp_ys + vp_yc - off_y;
+        if (!isfinite(sx) || !isfinite(sy)) return 1;
+        unsigned beyond = (sx < left ? 1u : 0u) | (sx >= right ? 2u : 0u) |
+                          (sy < top ? 4u : 0u) | (sy >= bottom ? 8u : 0u);
+        beyond_all &= beyond;
+    }
+    return beyond_all == 0u;
+}
+
 static void clip_lerp_cvtx(const CVtx *a, const CVtx *b, float t, CVtx *o) {
     o->cx = a->cx + (b->cx - a->cx) * t;
     o->cy = a->cy + (b->cy - a->cy) * t;
@@ -4446,6 +4529,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     if (!s_ge_inited) ge_state_init();
     if (!resume) {
         s_sp = 0;
+        s_bbox_visible = 1;
     }
     static int snap=-1; if(snap<0) snap=(getenv("SR_FBDUMP")||getenv("SR_GEDUMP"))?1:0;
     uint32_t list_addr=addr;
@@ -4801,8 +4885,12 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 break;
             }
             case GE_JUMP: addr=ge_rel_addr(data&0x00FFFFFCu); break;
-            case GE_BJUMP: break;  /* no bounding-box test result kept; draw everything */
-            case GE_BOUNDINGBOX: break;
+            /* Conditional object rendering (sceGuBeginObject/sceGuEndObject): BJUMP branches,
+             * addressed like JUMP, when the last BOUNDINGBOX found its box not visible. */
+            case GE_BJUMP:
+                if (!s_bbox_visible) addr=ge_rel_addr(data&0x00FFFFFCu);
+                break;
+            case GE_BOUNDINGBOX: s_bbox_visible = ge_bounding_box_visible(data & 0xFFFFu); break;
             case GE_CALL:
                 if (s_sp<(int)(sizeof(s_stack_pc)/sizeof(s_stack_pc[0]))) {
                     s_stack_pc[s_sp]=addr; s_stack_offset[s_sp]=ge.offset; s_sp++;
