@@ -1657,7 +1657,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "f6c7e2920502c934eb01a6a4c0c98ad96e404754771714b30e112ee49d8c3de0"
+      "sha256": "36486a87471b6554a8abff8885bff0586a57f23caf35882f596ec5d032ee8655"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -3347,7 +3347,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2d92039659dabd30a7c505a26460033424d1c2940e30d5a1944980555fdbf46b"
+      "sha256": "c78a280b4d167a718081859562535f3f18ae83af78c4f088003c55a2876fada6"
     },
     {
       "path": "src/core/nk_platform_win32.c",
@@ -9894,7 +9894,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "39ae22fd01fb24e162d622829d29891c50e893e84980093974bb18f47f27104c"
+      "sha256": "543a07714d1443b3623ed37ae5ce19a59d11e80ae5375a63aea9b58811c4a703"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
