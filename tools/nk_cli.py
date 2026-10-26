@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -1400,6 +1401,74 @@ def _swap_in_package_folder(staging: Path, target_dir: Path, cache_dir: Path) ->
     return backup
 
 
+def _package_tree_file_bytes(root: Path) -> int:
+    """Count package file bytes without following links or overflowing uint64."""
+    max_bytes = (1 << 64) - 1
+    if root.is_symlink() or not root.is_dir():
+        raise PackageBuildError("Package output is not a safe directory for disk-space checks.")
+    total = 0
+    def fail_walk(error: OSError) -> None:
+        raise error
+
+    for parent_text, directories, filenames in os.walk(
+        root, followlinks=False, onerror=fail_walk
+    ):
+        parent = Path(parent_text)
+        for name in directories:
+            if (parent / name).is_symlink():
+                raise PackageBuildError("Package output contains a symlink; disk-space check refused.")
+        for name in filenames:
+            path = parent / name
+            if path.is_symlink() or not path.is_file():
+                raise PackageBuildError("Package output contains a non-regular file; disk-space check refused.")
+            size = path.stat(follow_symlinks=False).st_size
+            if size < 0 or size > max_bytes - total:
+                raise PackageBuildError("Package output exceeds the supported disk-space check bound.")
+            total += size
+    return total
+
+
+def _package_disk_space_message(needed_bytes: int, free_bytes: int, *, remaining: bool = False) -> str:
+    if remaining:
+        detail = (
+            f"At least {needed_bytes:,} more bytes of package files remain to copy"
+            if needed_bytes
+            else "The package file data was copied, but staging metadata needs more space"
+        )
+    else:
+        detail = f"The package needs at least {needed_bytes:,} bytes for its files"
+    return f"PACKAGE_DISK_FULL: {detail}; {free_bytes:,} bytes are free."
+
+
+def _is_disk_full_error(exc: OSError) -> bool:
+    return exc.errno == errno.ENOSPC or getattr(exc, "winerror", None) in {39, 112}
+
+
+def _require_package_staging_space(package_dir: Path, destination_dir: Path) -> int:
+    """Fail before package promotion when known file data exceeds destination free space."""
+    needed_bytes = _package_tree_file_bytes(package_dir)
+    free_bytes = shutil.disk_usage(destination_dir).free
+    if needed_bytes > free_bytes:
+        raise PackageBuildError(_package_disk_space_message(needed_bytes, free_bytes))
+    return needed_bytes
+
+
+def _copy_package_tree_with_space_diagnostics(
+    package_dir: Path, staging_dir: Path, destination_dir: Path, needed_bytes: int
+) -> None:
+    try:
+        shutil.copytree(package_dir, staging_dir)
+    except OSError as exc:
+        if not _is_disk_full_error(exc):
+            raise
+        copied_bytes = _package_tree_file_bytes(staging_dir) if staging_dir.exists() else 0
+        remaining_bytes = max(0, needed_bytes - copied_bytes)
+        free_bytes = shutil.disk_usage(destination_dir).free
+        raise PackageBuildError(
+            _package_disk_space_message(remaining_bytes, free_bytes, remaining=True)
+        ) from exc
+
+
 def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
                          cache_key: dict, user_root: Path, disc_id: str) -> None:
     """Copy a validated cache entry into place, re-validating the copy before promotion."""
@@ -1407,10 +1476,21 @@ def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
         raise PackageBuildError("Package destination root is a symlink; refusing to write outside per-user data.")
     target_dir.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     _require_child(user_root, target_dir.parent, "Package destination root")
-    staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=target_dir.parent))
+    needed_bytes = _require_package_staging_space(entry_package, target_dir.parent)
+    try:
+        staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=target_dir.parent))
+    except OSError as exc:
+        if not _is_disk_full_error(exc):
+            raise
+        free_bytes = shutil.disk_usage(target_dir.parent).free
+        raise PackageBuildError(
+            _package_disk_space_message(needed_bytes, free_bytes)
+        ) from exc
     shutil.rmtree(staging)
     try:
-        shutil.copytree(entry_package, staging)
+        _copy_package_tree_with_space_diagnostics(
+            entry_package, staging, target_dir.parent, needed_bytes
+        )
         staged_valid, staged_reason = package_cache.validate_package_cache(
             staging, expected_key=cache_key
         )
@@ -2273,12 +2353,32 @@ def _build_package(args: argparse.Namespace, stage_observer,
         packages_root = user_root / "packages"
         if packages_root.is_symlink():
             raise PackageBuildError("Package destination root is a symlink; refusing to write outside per-user data.")
-        packages_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        packages_root = _require_child(user_root, packages_root, "Package destination root")
-        staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=packages_root))
-        shutil.rmtree(staging)
         try:
-            shutil.copytree(build_dir, staging)
+            packages_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError as exc:
+            if _is_disk_full_error(exc):
+                needed_bytes = _package_tree_file_bytes(build_dir)
+                free_bytes = shutil.disk_usage(user_root).free
+                raise PackageBuildError(
+                    _package_disk_space_message(needed_bytes, free_bytes)
+                ) from exc
+            raise
+        packages_root = _require_child(user_root, packages_root, "Package destination root")
+        needed_bytes = _require_package_staging_space(build_dir, packages_root)
+        try:
+            staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=packages_root))
+            shutil.rmtree(staging)
+        except OSError as exc:
+            if _is_disk_full_error(exc):
+                free_bytes = shutil.disk_usage(packages_root).free
+                raise PackageBuildError(
+                    _package_disk_space_message(needed_bytes, free_bytes)
+                ) from exc
+            raise
+        try:
+            _copy_package_tree_with_space_diagnostics(
+                build_dir, staging, packages_root, needed_bytes
+            )
             _require_child(user_root, staging, "Package staging directory")
             valid_staging, staging_reason = package_cache.validate_package_cache(
                 staging,
