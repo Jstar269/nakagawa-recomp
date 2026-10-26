@@ -1163,6 +1163,12 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* Opt-in GE time model (ge.c, SR_GE_TIMING; issue #1296), in GE clocks (the bus clock),
+ * measured on a PSP-3000 with CASE=ge-timing: enable charging, the fixed cost of one list
+ * (enqueue to finish of an empty list), and the work the last ge_run_list call executed. */
+void     ge_timing_set_enabled(int on);
+double   ge_timing_list_clk(void);
+double   ge_timing_run_clk(void);
 /* SR_GE_TRANSITION_TRACE late-write check (issue #69): re-hash the vertex and index bytes of
  * every weighted draw recorded since the last check; a no-op unless the trace is armed. */
 void ge_transition_trace_check(const char *why, uint32_t vcount);

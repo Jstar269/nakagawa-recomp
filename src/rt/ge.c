@@ -2501,21 +2501,294 @@ static int vtx_nonfinite(const Vtx *a, const Vtx *b, const Vtx *c) {
     return 1;
 }
 
-/* Inputs to the opt-in GE completion-time model (hle.c, SR_GE_TIMING): the commands
- * fetched and the screen area submitted for rasterisation by the current ge_run_list
- * call.  Counted before the GPU hook, so both backends feed the model the same work.
- * The area is the submitted primitive's own, clamped to one 480x272 screen; culling,
- * clipping and depth rejection are not modelled. */
-unsigned long g_ge_list_commands = 0;
-double g_ge_list_area_px = 0.0;
-static void ge_timing_note_area(double px) {
-    if (px > 0.0) g_ge_list_area_px += px < 480.0 * 272.0 ? px : 480.0 * 272.0;
+/* ---- GE time model (opt-in, SR_GE_TIMING=1; issue #1296) ---------------------------------
+ *
+ * hle.c owns the GE timeline and list completion.  This block charges the work each
+ * ge_run_list call hands the GE, in GE clocks.  The GE clock is the bus clock (measured: every
+ * cost at 333/166 MHz is 0.665x its 222/111 MHz value), so hle.c converts clocks to guest time
+ * with the emulated bus clock.
+ *
+ * Every coefficient is measured on a PSP-3000 (firmware 6.6x), 2026-10-25, with the PSP oracle
+ * probe case CASE=ge-timing proposed in PR #1321 (record PSP-GE-TIMING-001, probe commits
+ * d8d3d0f2 and e9ad91d9).  The derived table is the third comment on issue #1296; raw logs are
+ * private.  Each constant names the cell of the #1296 measurement matrix (T0..T15) it comes
+ * from, where the table attributes it to one.
+ *
+ * Structure:
+ *   list  = GE_T_LIST_CLK (T0: enqueue to finish of an empty FINISH/END list; hle.c charges it)
+ *         + GE_T_WORD_CLK per other command word (T1-T3: NOP, state and matrix words alike)
+ *         + per PRIM: GE_T_PRIM_CLK beyond its word, plus, for each primitive in it,
+ *           max(its vertex work, its raster work)
+ *         + CLUT loads (T13) and block transfers (T14), serially.
+ *   Vertex and raster work overlap per primitive.  The data supports that and nothing wider:
+ *   a two-triangle quad costs roughly the larger of setup and fill, sprite count and
+ *   height make no difference to a fill (T5), and tiny triangles cost their vertex work alone
+ *   (T6, T7).  No cell shows one large fill hiding the vertex work of other primitives, so the
+ *   overlap is not taken across a whole PRIM.  The quad's measured +5-10% over the larger
+ *   stage is a range, not a coefficient, and is not charged.  The #1296 per-frame totals were
+ *   given between full overlap and none; this per-primitive overlap lies between the two.
+ *   Not modelled: depth-rejected pixels are charged as drawn, clipping adds no work, and the
+ *   CPU-side cost of the enqueue call (measured about 10 us while the GE is busy) is the
+ *   caller's, not the GE's.
+ *
+ * UNMEASURED_NEAREST: a class the matrix did not measure is charged as the structurally
+ * nearest measured class, and every such use carries this tag and names the class it borrows.
+ * It is a stand-in until a cell measures it, never a measured value. */
+#define GE_T_LIST_CLK          1665.0  /* T0: empty list, enqueue to finish interrupt */
+#define GE_T_WORD_CLK          2.03    /* T1-T3: one command word (NOP, state, matrix) */
+#define GE_T_PRIM_CLK          58.0    /* one PRIM beyond its command word */
+#define GE_T_THROUGH_TRI_CLK   18.3    /* T6: one through-mode 1-pixel triangle in a list */
+#define GE_T_VTX_POS_F32_CLK   6.1     /* T7: transformed vertex, position f32, list or strip */
+#define GE_T_VTX_POS_S16_CLK   5.0     /* T8: position 16-bit */
+#define GE_T_VTX_POS_S8_CLK    9.4     /* T8: position 8-bit */
+#define GE_T_VTX_INDEX16_CLK   38.9    /* T7: indexed (u16) transformed vertex, position f32 */
+#define GE_T_VTX_COLOR_CLK     2.0     /* T8: + colour 8888 */
+#define GE_T_VTX_UV_CLK        4.05    /* T8: + uv f32 */
+#define GE_T_VTX_NORMAL_CLK    6.1     /* T8: + normal f32 */
+#define GE_T_VTX_WEIGHT1_CLK   10.6    /* T10: skinning, one f32 weight */
+#define GE_T_VTX_WEIGHTN_CLK   7.0     /* T10: each further f32 weight */
+#define GE_T_VTX_LIGHTS4_CLK   1.2     /* T9: 4 lights (0 or 1 light: +0) */
+#define GE_T_ROW_8888_CLK      1.0     /* T5: 8888 sprite row up to 32 px: 1 + 0.274*w */
+#define GE_T_PX_8888_NARROW    0.274   /* T5 */
+#define GE_T_PX_8888_WIDE      0.52    /* T5: 8888 row from 64 px up, per pixel */
+#define GE_T_PX_5650           0.27    /* 5650 fill, 64-px strips, per pixel */
+#define GE_T_PX_8888_DEPTH     0.76    /* T4/T12: colour+depth clear and depth test+write, 8888 */
+#define GE_T_PX_5650_DEPTH     0.28    /* T4: colour+depth clear, 5650 */
+#define GE_T_LINEAR_FILTER     1.10    /* T11: linear filtering adds 10-20%; charged at the low end */
+#define GE_T_CLUT16_CLK        5.2     /* T13: CLUT load, per entry, 16 entries */
+#define GE_T_CLUT256_CLK       1.07    /* T13: CLUT load, per entry, 256 entries */
+#define GE_T_XFER_RAM_CLK      0.68    /* T14: block transfer per byte, RAM to eDRAM */
+#define GE_T_XFER_EDRAM_CLK    0.44    /* T14: block transfer per byte, eDRAM to eDRAM */
+
+static int s_ge_timing_model;          /* ge_timing_set_enabled(); 0 skips every charge */
+static double s_ge_run_clk;            /* GE clocks of the current ge_run_list call */
+static unsigned long s_ge_run_tail_words; /* FINISH and the terminating END: part of T0 */
+static double s_ge_prim_vtx_share;     /* vertex clocks of one primitive of the current PRIM */
+unsigned long g_ge_list_commands = 0;  /* command words fetched by the current ge_run_list call */
+
+void ge_timing_set_enabled(int on) { s_ge_timing_model = on != 0; }
+double ge_timing_list_clk(void) { return GE_T_LIST_CLK; }
+double ge_timing_run_clk(void) {
+    unsigned long words = g_ge_list_commands > s_ge_run_tail_words
+                              ? g_ge_list_commands - s_ge_run_tail_words : 0ul;
+    return s_ge_run_clk + (double)words * GE_T_WORD_CLK;
+}
+
+/* Vertex work of one submitted vertex in the current state. */
+static double ge_time_vertex_clk(const VFmt *vf, int idxfmt) {
+    /* T6 timed 1-pixel triangles in a list: 18.3 clk each, three vertices.  Transformed lists
+     * and strips cost the same per vertex (T7), so through mode is charged per vertex too.
+     * UNMEASURED_NEAREST: through-mode attribute formats other than T6's, and through-mode
+     * strips, fans, sprites, lines and points, as the T6 per-vertex cost. */
+    if (vf->through) return GE_T_THROUGH_TRI_CLK / 3.0;
+    double c;
+    if (idxfmt)               c = GE_T_VTX_INDEX16_CLK; /* UNMEASURED_NEAREST: index8 and u32, and indexed non-f32 positions, as indexed u16 with f32 */
+    else if (vf->pos_fmt == 2) c = GE_T_VTX_POS_S16_CLK;
+    else if (vf->pos_fmt == 1) c = GE_T_VTX_POS_S8_CLK;
+    else                       c = GE_T_VTX_POS_F32_CLK; /* pos_fmt 0 decodes as f32 (decode_vtype) */
+    if (vf->col_fmt) c += GE_T_VTX_COLOR_CLK;  /* UNMEASURED_NEAREST: 5650/5551/4444 as 8888 */
+    if (vf->tc_fmt)  c += GE_T_VTX_UV_CLK;     /* UNMEASURED_NEAREST: uv 8/16 as f32 */
+    if (vf->nrm_fmt) c += GE_T_VTX_NORMAL_CLK; /* UNMEASURED_NEAREST: normal 8/16 as f32 */
+    if (vf->w_n)     /* UNMEASURED_NEAREST: weights 8/16 as f32 */
+        c += GE_T_VTX_WEIGHT1_CLK + GE_T_VTX_WEIGHTN_CLK * (double)(vf->w_n - 1);
+    if (ge.lighting_enable) {
+        int lights = 0;
+        for (int i = 0; i < 4; i++) lights += ge.light_on[i] != 0;
+        /* UNMEASURED_NEAREST: 2 lights as 1 (+0), 3 lights as 4. */
+        if (lights >= 3) c += GE_T_VTX_LIGHTS4_CLK;
+    }
+    /* UNMEASURED_NEAREST: a morphed vertex (morph_n > 1) as one unmorphed vertex. */
+    return c;
+}
+
+/* Primitives a PRIM of `count` vertices draws, for the per-primitive vertex share. */
+static unsigned long ge_time_prim_count(int type, int count) {
+    switch (type) {
+        case 0: return (unsigned long)count;                        /* points */
+        case 1: case 6: return (unsigned long)(count / 2);          /* lines, sprites */
+        case 2: return count > 1 ? (unsigned long)(count - 1) : 0ul; /* line strip */
+        case 3: return (unsigned long)(count / 3);                  /* triangles */
+        case 4: case 5: return count > 2 ? (unsigned long)(count - 2) : 0ul; /* strip, fan */
+        default: return 0ul;
+    }
+}
+
+/* A PRIM (or a patch, `patch` != 0) is about to run: charge its fixed and vertex work and set
+ * the share that overlaps each primitive's raster work. */
+static void ge_time_prim_begin(uint32_t op, int patch) {
+    VFmt vf; decode_vtype(ge.vtype, &vf);
+    int idxfmt = (int)((ge.vtype >> 11) & 3);
+    int count = patch ? (int)(op & 0xFFu) * (int)((op >> 8) & 0xFFu) : (int)(op & 0xFFFFu);
+    double vtx = ge_time_vertex_clk(&vf, idxfmt) * (double)count;
+    s_ge_run_clk += GE_T_PRIM_CLK + vtx;
+    /* UNMEASURED_NEAREST: bezier/spline patches as a PRIM of their control points, with no
+     * overlap between them and the tessellated triangles' raster work (no cell times patches). */
+    unsigned long prims = patch ? 0ul : ge_time_prim_count((int)((op >> 16) & 7u), count);
+    s_ge_prim_vtx_share = prims ? vtx / (double)prims : 0.0;
+}
+
+/* One primitive's raster work: only what exceeds its overlapping vertex share costs time. */
+static void ge_time_raster(double clk) {
+    if (clk > s_ge_prim_vtx_share) s_ge_run_clk += clk - s_ge_prim_vtx_share;
+}
+
+/* Texel-fetch cost per pixel of the bound texture (T11, nearest filtering), or 0 where the
+ * texture runs at the untextured fill rate.  Rows: 8888, 5650, CLUT8, CLUT4, DXT1; columns:
+ * 64, 128, 256 and 512 square, swizzled 512.  A negative cell was not measured. */
+static double ge_time_texel_clk(void) {
+    static const double cells[5][5] = {
+        { 5.25, 6.3,  6.9,  7.8,  2.1  },   /* 8888 */
+        { 0.0,  3.2,  3.4,  3.6,  1.3  },   /* 5650 (64x64 at fill rate) */
+        { 0.0,  1.07, 1.86, 1.88, 0.88 },   /* CLUT8 (64x64 at fill rate) */
+        { 0.0,  -1.0, -1.0, 1.14, 0.65 },   /* CLUT4 (64x64 at fill rate; 128, 256 not measured) */
+        { 2.2,  2.4,  2.6,  2.43, -1.0 },   /* DXT1 (no swizzled form) */
+    };
+    int row;
+    switch (ge.tex_fmt & 0xFu) {
+        case 3: row = 0; break;
+        case 0: row = 1; break;
+        case 5: row = 2; break;
+        case 4: row = 3; break;
+        case 8: row = 4; break;
+        case 1: case 2: case 6: row = 1; break; /* UNMEASURED_NEAREST: 5551, 4444, CLUT16 as 5650 (16 bpp) */
+        case 7: row = 0; break;                 /* UNMEASURED_NEAREST: CLUT32 as 8888 (32 bpp) */
+        default: row = 4; break;                /* UNMEASURED_NEAREST: DXT3, DXT5 as DXT1 */
+    }
+    /* UNMEASURED_NEAREST: a non-square texture by its larger side; sides under 64 as 64 and
+     * over 512 as 512 (the texture-cache geometry behind the size steps is not measured). */
+    unsigned side = (unsigned)(ge.tex_w > ge.tex_h ? ge.tex_w : ge.tex_h);
+    int col = 0;
+    while (col < 3 && (64u << col) < side) col++;
+    double v;
+    if (ge.tex_swizzle && cells[row][4] >= 0.0) {
+        v = cells[row][4];  /* UNMEASURED_NEAREST: swizzled sizes other than 512 as swizzled 512 */
+    } else {
+        /* UNMEASURED_NEAREST: a size the row did not measure as the nearest measured size by
+         * powers of two, the larger on a tie. */
+        v = cells[row][col];
+        for (int d = 1; v < 0.0 && d < 4; d++) {
+            if (col + d < 4 && cells[row][col + d] >= 0.0) v = cells[row][col + d];
+            else if (col - d >= 0 && cells[row][col - d] >= 0.0) v = cells[row][col - d];
+        }
+    }
+    /* UNMEASURED_NEAREST: linear on only one of the minify/magnify filters as linear. */
+    if ((ge.tex_filter & 1u) || ((ge.tex_filter >> 8) & 1u)) v *= GE_T_LINEAR_FILTER;
+    return v;
+}
+
+/* Raster work of one span `w` pixels wide in the current fill state.  Fill and texel fetch
+ * overlap (T11: a small enough texture runs at the untextured fill rate), so a textured row
+ * costs the larger of the two. */
+static double ge_time_row_clk(int w) {
+    if (w <= 0) return 0.0;
+    /* UNMEASURED_NEAREST: a colour-only clear as a plain fill of the same format. */
+    int depth = ge.clear ? (ge.clear_mode & 0x400u) != 0 : ge.ztest_enable != 0;
+    double fill;
+    if ((ge.fbfmt & 3u) == 3u) {
+        if (depth)        fill = GE_T_PX_8888_DEPTH * w; /* UNMEASURED_NEAREST: depth on spans narrower than the full-screen cells, as full-screen */
+        else if (w <= 32) fill = GE_T_ROW_8888_CLK + GE_T_PX_8888_NARROW * w;
+        else if (w >= 64) fill = GE_T_PX_8888_WIDE * w;
+        else if (w < 48)  fill = GE_T_ROW_8888_CLK + GE_T_PX_8888_NARROW * w; /* UNMEASURED_NEAREST: 33-47 px as the up-to-32 band */
+        else              fill = GE_T_PX_8888_WIDE * w;  /* UNMEASURED_NEAREST: 48-63 px as the from-64 band */
+    } else {
+        /* UNMEASURED_NEAREST: 16-bit fill at other span widths as the 64-px strips; 5551 and
+         * 4444 as 5650; a 16-bit depth test as the 5650 colour+depth clear. */
+        fill = (depth ? GE_T_PX_5650_DEPTH : GE_T_PX_5650) * w;
+    }
+    /* Blend, alpha test, dither and fog add nothing on 8888 (T12).  UNMEASURED_NEAREST: on
+     * 16-bit targets, and stencil, colour test, logic op and masks anywhere, as adding nothing. */
+    if (ge.tex_enable && !ge.clear) {
+        double texel = ge_time_texel_clk() * w;
+        if (texel > fill) fill = texel;
+    }
+    return fill;
+}
+
+/* The scissor rectangle the rasteriser clips to, as inclusive pixel bounds. */
+static void ge_time_scissor(int *x1, int *y1, int *x2, int *y2) {
+    *x1 = ge.scis_x1 > 0 ? (int)ge.scis_x1 : 0;
+    *y1 = ge.scis_y1 > 0 ? (int)ge.scis_y1 : 0;
+    *x2 = ge.scis_x2 < 479 ? (int)ge.scis_x2 : 479;
+    *y2 = ge.scis_y2 < 271 ? (int)ge.scis_y2 : 271;
+}
+
+/* A sprite: its rows, clipped to the scissor, each one span of its width (T5). */
+static void ge_time_sprite(const Vtx *p0, const Vtx *p1) {
+    int xa = (int)fminf(p0->x, p1->x), xb = (int)fmaxf(p0->x, p1->x);
+    int ya = (int)fminf(p0->y, p1->y), yb = (int)fmaxf(p0->y, p1->y);
+    int cx1, cy1, cx2, cy2;
+    ge_time_scissor(&cx1, &cy1, &cx2, &cy2);
+    if (xa < cx1) xa = cx1;
+    if (xb > cx2 + 1) xb = cx2 + 1;
+    if (ya < cy1) ya = cy1;
+    if (yb > cy2 + 1) yb = cy2 + 1;
+    if (xa >= xb || ya >= yb) { ge_time_raster(0.0); return; }
+    ge_time_raster((double)(yb - ya) * ge_time_row_clk(xb - xa));
+}
+
+/* A triangle: each covered row, clipped to the scissor, as one span of its covered width.
+ * UNMEASURED_NEAREST: triangle spans as sprite spans of the same width (T5 timed sprites;
+ * T6/T7 triangles were one pixel). */
+static void ge_time_tri(const Vtx *A, const Vtx *B, const Vtx *C) {
+    double area = (double)(B->x - A->x) * (C->y - A->y) - (double)(C->x - A->x) * (B->y - A->y);
+    if (area == 0.0) return;
+    if (ge.cull_enable && !ge.clear && area < 0.0) return;   /* culled, as raster_tri culls */
+    int cx1, cy1, cx2, cy2;
+    ge_time_scissor(&cx1, &cy1, &cx2, &cy2);
+    int miny = (int)floorf(fminf(A->y, fminf(B->y, C->y)));
+    int maxy = (int)ceilf(fmaxf(A->y, fmaxf(B->y, C->y)));
+    if (miny < cy1) miny = cy1;
+    if (maxy > cy2) maxy = cy2;
+    const Vtx *v[3] = { A, B, C };
+    double clk = 0.0;
+    for (int y = miny; y <= maxy; y++) {
+        double yc = (double)y + 0.5, xl = 1e30, xr = -1e30;
+        for (int e = 0; e < 3; e++) {
+            const Vtx *p = v[e], *q = v[(e + 1) % 3];
+            if ((p->y <= yc) == (q->y <= yc)) continue;   /* this edge does not cross the row */
+            double x = p->x + (yc - p->y) * (q->x - p->x) / (q->y - p->y);
+            if (x < xl) xl = x;
+            if (x > xr) xr = x;
+        }
+        if (xl > xr) continue;
+        int x0 = (int)ceil(xl - 0.5), x1 = (int)ceil(xr - 0.5);   /* pixel centres in [xl, xr) */
+        if (x0 < cx1) x0 = cx1;
+        if (x1 > cx2 + 1) x1 = cx2 + 1;
+        clk += ge_time_row_clk(x1 - x0);
+    }
+    ge_time_raster(clk);
+}
+
+/* UNMEASURED_NEAREST: a line as spans, one per row it crosses, each the line's run per row;
+ * a point as a one-pixel span. */
+static void ge_time_line(const Vtx *A, const Vtx *B) {
+    int rows = (int)fabsf(B->y - A->y) + 1;
+    int w = ((int)fabsf(B->x - A->x) + 1 + rows - 1) / rows;
+    ge_time_raster((double)rows * ge_time_row_clk(w));
+}
+static void ge_time_point(void) { ge_time_raster(ge_time_row_clk(1)); }
+
+/* A CLUT load of `bytes`: T13 measured 16 entries at 5.2 clk each and 256 at 1.07, a fixed
+ * part and a per-entry part; this charges the line through the two cells.
+ * UNMEASURED_NEAREST: entry counts outside 16..256 on the same line. */
+static void ge_time_clut_load(uint32_t bytes) {
+    double e = (double)(bytes / ((ge.clut_fmt & 3u) == 3u ? 4u : 2u));
+    double per = (256.0 * GE_T_CLUT256_CLK - 16.0 * GE_T_CLUT16_CLK) / (256.0 - 16.0);
+    double fixed = 16.0 * GE_T_CLUT16_CLK - 16.0 * per;
+    if (e > 0.0) s_ge_run_clk += fixed + per * e;
+}
+
+/* A block transfer of `bytes` reading from `src` (T14).
+ * UNMEASURED_NEAREST: a destination in main RAM as one in eDRAM (by source only). */
+static void ge_time_transfer(uint32_t src, uint64_t bytes) {
+    uint32_t phys = src & 0x1FFFFFFFu;
+    int edram = phys >= 0x04000000u && phys < 0x04800000u;   /* 2 MiB eDRAM and its mirrors */
+    s_ge_run_clk += (edram ? GE_T_XFER_EDRAM_CLK : GE_T_XFER_RAM_CLK) * (double)bytes;
 }
 
 static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
     if (vtx_nonfinite(A, B, C)) return;
-    ge_timing_note_area(0.5 * fabs((double)(B->x - A->x) * (C->y - A->y) -
-                                   (double)(C->x - A->x) * (B->y - A->y)));
+    if (s_ge_timing_model) ge_time_tri(A, B, C);   /* before the GPU hook: both backends charge alike */
     if ((ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
         !ge_zbuf_prepare_current()) return;
     /* GPU capture seam: a registered backend takes the triangle (and reproduces culling,
@@ -2710,6 +2983,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
 /* Line rasterizer (DDA), used for prim types 1/2 in both modes. */
 static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
     if (vtx_nonfinite(A, B, NULL)) return;
+    if (s_ge_timing_model) ge_time_line(A, B);
     if (s_gpu && s_gpu->line) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->line(A, B, persp);
@@ -2762,6 +3036,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
 
 static void draw_point_vtx(const Vtx *A, int persp) {
     if (vtx_nonfinite(A, NULL, NULL)) return;
+    if (s_ge_timing_model) ge_time_point();
     if (s_gpu && s_gpu->point) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->point(A, persp);
@@ -3322,7 +3597,7 @@ static void fill_rect_clear_fast(int xa, int ya, int xb, int yb, int r, int g, i
  * persp=1 recovers UV from the over-w storage and depth-tests with the second vertex's z. */
 static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     if (vtx_nonfinite(p0, p1, NULL)) return;
-    ge_timing_note_area(fabs((double)(p1->x - p0->x) * (p1->y - p0->y)));
+    if (s_ge_timing_model) ge_time_sprite(p0, p1);
     if ((ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
         !ge_zbuf_prepare_current()) return;
     if (s_gpu && s_gpu->sprite) {
@@ -4441,6 +4716,7 @@ static void ge_block_transfer(uint32_t startdata) {
                 w, h, bpp);
         return;
     }
+    if (s_ge_timing_model) ge_time_transfer(srcBase, (uint64_t)w * h * bpp);
     if (s_gpu && s_gpu->xfer && s_gpu->xfer(startdata)) return;   /* GPU-side blit */
     if (s_gpu && s_gpu->flush) s_gpu->flush("xfersrc");
     for (uint32_t y = 0; y < h; y++) {
@@ -4484,7 +4760,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     g_ge_list_through_cmds=0; g_ge_list_transform_cmds=0;
     g_ge_list_through_vertices=0; g_ge_list_transform_vertices=0;
     g_ge_list_through_sprites=0; g_ge_list_transform_sprites=0;
-    g_ge_list_commands=0; g_ge_list_area_px=0.0;
+    g_ge_list_commands=0; s_ge_run_clk=0.0; s_ge_run_tail_words=0; s_ge_prim_vtx_share=0.0;
     extern unsigned long g_tex_nonzero; unsigned long start_nz=g_tex_nonzero;
     unsigned long sig=0; unsigned long prims=0;
     int pending_signal=0;
@@ -4760,6 +5036,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                     uint32_t w = MEM_R32(ge.clut_addr + i);
                     memcpy(&ge.clutram[i], &w, 4);
                 }
+                if (s_ge_timing_model) ge_time_clut_load(bytes);
                 ge.clut_gen++;
                 if (s_cpu_profile) s_cpu_profile_stats.clut_loads++;
                 ge_cpu_profile_end(GE_CPU_CLUT_LOAD, profile_started);
@@ -4796,7 +5073,9 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 if (flight_ge_enabled)
                     sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW,
                                      list_addr, prim_cmd, (op >> 16) & 7u, op & 0xffffu);
+                if (s_ge_timing_model) ge_time_prim_begin(op, 0);
                 prims++; draw_prim(op, prims, list_addr, prim_cmd);
+                s_ge_prim_vtx_share = 0.0;
                 if (s_cpu_profile) {
                     s_cpu_profile_stats.primitive_commands++;
                     s_cpu_profile_stats.primitive_vertices += op & 0xFFFFu;
@@ -4811,7 +5090,9 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                     s_cpu_profile_stats.primitive_profile_patch_control_vertices +=
                         (uint64_t)(op & 0xFFu) * (uint64_t)((op >> 8) & 0xFFu);
                 }
+                if (s_ge_timing_model) ge_time_prim_begin(op, 1);
                 prims++; draw_patch(op, cmd == GE_SPLINE);
+                s_ge_prim_vtx_share = 0.0;
                 if (s_cpu_profile) s_cpu_profile_stats.primitive_commands++;
                 ge_cpu_profile_end(GE_CPU_PRIMITIVE, profile_started);
                 break;
@@ -4835,6 +5116,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                  * command-flow implementation is being validated against real game lists. */
                 pending_signal=1; pending_signal_op=op; break;
             case GE_FINISH:
+                s_ge_run_tail_words++;   /* FINISH and the END after it are part of T0 */
                 if (flight_ge_enabled)
                     sr_flight_record(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_FINISH_COMMAND,
                                      list_addr, addr - 4u, data, 0u);
@@ -4854,6 +5136,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                     }
                     pending_signal=0; pending_signal_op=0; break;
                 }
+                s_ge_run_tail_words++;
                 if (s_gpu && s_gpu->flush) {
                     uint64_t profile_started = ge_cpu_profile_begin();
                     s_gpu->flush("listend");

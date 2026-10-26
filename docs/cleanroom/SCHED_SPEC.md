@@ -247,8 +247,9 @@ park and never fabricated success [C6], [C3].
 The opt-in GE completion source (`SR_GE_TIMING=1`, issue #1296) is serviced
 the same way: after any owed display episode and before alarms, in interrupt
 context, and only while interrupts are enabled; while a thread waits, its
-deadline is an idle wake source. Its timing model is synthetic and
-unmeasured. Project decision.
+deadline is an idle wake source. Its deadlines come from the GE time
+model in `src/rt/ge.c`, measured on a PSP-3000 (issue #1296,
+`CASE=ge-timing`). Project decision.
 
 ### 3.7 Vblank waits and display observations
 
@@ -492,7 +493,7 @@ rationale, per the reading rule in §0.
 | `sched_thread_set_gp` | §3.1 | Sets the thread's initial `$gp`, which the scheduler installs before the guest entry runs and again when a dormant thread starts. Used for runtime-placed module entry points. Project decision; the register value comes from the loaded image. |
 | `sched_module_range_busy` | §3.1 | Reports whether a READY or RUNNING thread (except `ignored_uid`) has a continuation PC or return address inside `[start, end)`. WAIT threads do not keep a module image alive: PSP-3000 issue #1106 measured that module-owned waiters may remain blocked after unload. Project decision: refusing an executing continuation is a named synthetic safety rule, not measured PSP error behavior. |
 | `sched_set_thread_exit_hook` | §3.1 | Installs the scheduler-owned callback invoked after a thread object is removed. It is used to finish deferred self-stop/unload cleanup after the caller can no longer execute in its module image. Project decision; the callback does not run guest code. |
-| `sched_set_ge_timing_hooks` | §3.6 | Installs the HLE GE completion source: a next-deadline query and a service step the scheduler calls from interrupt service once the deadline is reached. NULL hooks leave the scheduler unchanged; the hooks report nothing unless `SR_GE_TIMING=1`. Project decision (issue #1296); the GE cost model behind the deadline is synthetic and unmeasured. |
+| `sched_set_ge_timing_hooks` | §3.6 | Installs the HLE GE completion source: a next-deadline query and a service step the scheduler calls from interrupt service once the deadline is reached. NULL hooks leave the scheduler unchanged; the hooks report nothing unless `SR_GE_TIMING=1`. Project decision (issue #1296); the deadline comes from the GE time model in `src/rt/ge.c`, measured on a PSP-3000 with `CASE=ge-timing`. |
 | `sched_guest_thread_running` | §3.1 | Returns nonzero while a guest thread is current, and zero when scheduler control is outside a guest thread. Used to refuse LoadExec when no caller continuation can be retired. Project decision. |
 | `sched_request_guest_reset` | §3.1 | Latches a request for the scheduler to stop the current guest dispatch at its next boundary after the requesting thread exits. The driver consumes it before replacing guest state. Project decision; LoadExec reset behavior is documented in `ARCHITECTURE.md`. |
 | `sched_reset_for_loadexec` | §3.1 | Runs only after `sched_run` returns to the host scheduler coroutine. Releases each old TCB's resources, wait handles, AOT return state and host fiber before clearing scheduler-owned guest threads. It refuses calls made while a guest coroutine is current. Project decision; `sched_init` remains process-start-only. |

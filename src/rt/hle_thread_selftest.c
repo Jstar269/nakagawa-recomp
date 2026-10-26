@@ -17424,14 +17424,28 @@ static void test_ge_break_continue(void) {
            "ListSync peek on a paused list the mode 1 break removed returns 0x80000100 (same rule)");
 }
 
-/* Opt-in GE completion timing (SR_GE_TIMING=1, hle.c).  With the model on, a list that
- * reached its END completes -- finish callback, DrawSync, ListSync -- only once the guest
- * clock passes its modelled time.  The cost values the test passes are its own; the
- * production defaults are synthetic and unmeasured and are not what is under test. */
-extern void sr_hle_test_ge_timing(int on, const uint64_t cost[4]);
+/* Opt-in GE completion timing (SR_GE_TIMING=1, hle.c + ge.c).  With the model on, a list that
+ * reached its END completes -- finish callback, DrawSync, ListSync -- only once the guest clock
+ * passes the time ge.c's GE model charges for it.  The expected times below are computed from
+ * the measured cells themselves: PSP-3000 (firmware 6.6x), CASE=ge-timing, PSP-GE-TIMING-001
+ * (PR #1321), issue #1296's third comment, all in bus clocks at the emulated bus clock. */
+extern void sr_hle_test_ge_timing(int on);
+#define GE_TIM_CELL_T0_LIST   1665.0  /* T0: empty list, enqueue to finish */
+#define GE_TIM_CELL_WORD      2.03    /* T1: one command word */
+#define GE_TIM_CELL_PRIM      58.0    /* one PRIM beyond its word */
+#define GE_TIM_CELL_THRU_TRI  18.3    /* T6: through-mode 1-pixel triangle */
+#define GE_TIM_CELL_POS_F32   6.1     /* T7: transformed vertex, position f32 */
+#define GE_TIM_CELL_INDEX16   38.9    /* T7: indexed (u16) transformed vertex */
+#define GE_TIM_CELL_COLOR     2.0     /* T8: + colour 8888 */
+#define GE_TIM_CELL_UV        4.05    /* T8: + uv f32 */
+#define GE_TIM_CELL_NORMAL    6.1     /* T8: + normal f32 */
+#define GE_TIM_CELL_ROW32(w)  (1.0 + 0.274 * (w))  /* T5: 8888 sprite row up to 32 px */
+#define GE_TIM_CELL_PX64      0.52    /* T5: 8888 row from 64 px, per pixel */
 enum {
     GE_TIM_DL = 0x08938000u,
-    GE_TIM_DL2 = 0x08938100u,
+    GE_TIM_DL2 = 0x08940000u,       /* room for long lists */
+    GE_TIM_VTX = 0x08960000u,
+    GE_TIM_IDX = 0x08968000u,
     GE_TIM_INFO = 0x08939000u,
     GE_TIM_FINISH_FN = 0x08a38000u,
     GE_TIM_ENTRY = 0x08a38040u,
@@ -17461,6 +17475,15 @@ static void ge_tim_write_list(uint32_t base, unsigned nops) {
     MEM_W32(base + 4u * nops + 4u, 0x0c000000u);  /* END */
 }
 
+/* The guest time, in us, at which a list enqueued at `enq_us` and charged `run_clk` beyond the
+ * T0 list cost completes at `mhz`: each charge lands on the GE timeline to the nearest ns, and
+ * the completion is the first whole us at or after it. */
+static uint64_t ge_tim_expect_us(uint64_t enq_us, double run_clk, unsigned mhz) {
+    uint64_t ns = enq_us * 1000u + (uint64_t)(GE_TIM_CELL_T0_LIST * 1000.0 / mhz + 0.5);
+    if (run_clk > 0.0) ns += (uint64_t)(run_clk * 1000.0 / mhz + 0.5);
+    return (ns + 999u) / 1000u;
+}
+
 static uint32_t ge_tim_enqueue(CpuState *cpu, uint32_t list) {
     cpu->r[4] = list;
     cpu->r[5] = 0u;            /* no stall: the list runs to its END */
@@ -17475,9 +17498,20 @@ static uint32_t ge_tim_sync(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a
     return sr_syscall(cpu, nid);
 }
 
+/* scePowerSetClockFrequency through the real handler. */
+static void ge_tim_set_clock(uint32_t pll, uint32_t cpu_mhz, uint32_t bus) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = pll;
+    cpu.r[5] = cpu_mhz;
+    cpu.r[6] = bus;
+    expect(sr_syscall(&cpu, NID_SCE_POWER_SET_CLOCK) == 0u, "GE timing: scePowerSetClockFrequency accepted");
+}
+
 static void ge_tim_setup(void) {
     reset_fixture();
     sr_hle_init();
+    sr_hle_test_power_reset();
     sr_test_guest_fn_reset();
     sr_test_register_guest_fn(GE_TIM_FINISH_FN, ge_tim_finish_fn);
     s_ge_tim_calls = 0;
@@ -17500,8 +17534,64 @@ static void ge_tim_teardown(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = s_ge_tim_cbid;
     (void)sr_syscall(&cpu, NID_SCE_GE_UNSET_CALLBACK);
-    sr_hle_test_ge_timing(0, NULL);
+    sr_hle_test_ge_timing(0);
+    sr_hle_test_power_reset();
     sr_test_guest_fn_reset();
+}
+
+/* Enqueue `list` at guest time `enq` with the model on, and check that its finish callback is
+ * delivered at exactly `due`: still drawing one us earlier, complete at `due` itself. */
+static void ge_tim_expect_completion(uint32_t list, uint64_t enq, uint64_t due, const char *what) {
+    CpuState cpu;
+    char msg[256];
+    memset(&cpu, 0, sizeof(cpu));
+    s_ge_tim_calls = 0;
+    s_vtime_us = enq;
+    uint32_t qid = ge_tim_enqueue(&cpu, list);
+    s_vtime_us = due - 1u;
+    scheduler_service_pending();
+    snprintf(msg, sizeof msg, "GE timing: %s is still drawing 1 us before %llu us", what,
+             (unsigned long long)(due - enq));
+    expect(s_ge_tim_calls == 0u && ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 2u, msg);
+    s_vtime_us = due;
+    scheduler_service_pending();
+    snprintf(msg, sizeof msg, "GE timing: %s completes at %llu us", what,
+             (unsigned long long)(due - enq));
+    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == due && s_ge_tim_list[0] == qid, msg);
+}
+
+/* A display-list builder for the measured-cell lists. */
+static uint32_t *s_ge_tim_dl;
+static unsigned s_ge_tim_words;
+static void ge_tim_cmd(uint32_t cmd, uint32_t data) {
+    s_ge_tim_dl[s_ge_tim_words++] = (cmd << 24) | (data & 0x00FFFFFFu);
+}
+/* Common state: framebuffer 0x04000000 / 512 / 8888, full-screen scissor, no clear, depth,
+ * texture, lighting or culling; vertices at GE_TIM_VTX, indices at GE_TIM_IDX. */
+static void ge_tim_begin_list(uint32_t base) {
+    s_ge_tim_dl = (uint32_t *)SR_HOST(base);
+    s_ge_tim_words = 0;
+    ge_tim_cmd(0x13, 0);                                    /* OFFSETADDR */
+    ge_tim_cmd(0x10, (GE_TIM_VTX >> 8) & 0x000F0000u);      /* BASE */
+    ge_tim_cmd(0x9C, 0);                                    /* FBP = 0x04000000 */
+    ge_tim_cmd(0x9D, 512u | (0x04000000u >> 8));            /* FBW = 512 */
+    ge_tim_cmd(0xD2, 3);                                    /* FBFMT = 8888 */
+    ge_tim_cmd(0xD4, 0);                                    /* SCISSOR1 = (0,0) */
+    ge_tim_cmd(0xD5, 479u | (271u << 10));                  /* SCISSOR2 = (479,271) */
+    ge_tim_cmd(0xD3, 0);                                    /* CLEARMODE off */
+    ge_tim_cmd(0x23, 0);                                    /* ZTESTENABLE off */
+    ge_tim_cmd(0x1E, 0);                                    /* TEXTUREMAPENABLE off */
+    ge_tim_cmd(0x17, 0);                                    /* LIGHTINGENABLE off */
+    ge_tim_cmd(0x1D, 0);                                    /* CULLFACEENABLE off */
+    ge_tim_cmd(0x01, GE_TIM_VTX & 0x00FFFFFFu);             /* VADDR */
+    ge_tim_cmd(0x02, GE_TIM_IDX & 0x00FFFFFFu);             /* IADDR */
+}
+/* FINISH and END are part of the T0 list cost; returns the charged words before them. */
+static unsigned ge_tim_end_list(void) {
+    unsigned words = s_ge_tim_words;
+    ge_tim_cmd(0x0F, 0);
+    ge_tim_cmd(0x0C, 0);
+    return words;
 }
 
 /* The thread half: DrawSync(0) and ListSync(qid, 0) delay the caller until the modelled time,
@@ -17525,7 +17615,7 @@ static void ge_tim_entry_fn(CpuState *cpu) {
 
     memset(&sc, 0, sizeof(sc));
     s_ge_tim_t_enq[1] = s_vtime_us;
-    qid = ge_tim_enqueue(&sc, GE_TIM_DL);
+    qid = ge_tim_enqueue(&sc, GE_TIM_DL2);
     s_ge_tim_rc[1] = ge_tim_sync(cpu, NID_SCE_GE_LIST_SYNC, qid, 0u);
     s_ge_tim_t_ret[1] = s_vtime_us;
     s_ge_tim_calls_at_ret[1] = s_ge_tim_calls;
@@ -17533,6 +17623,11 @@ static void ge_tim_entry_fn(CpuState *cpu) {
     cpu->r[2] = 0u;
 }
 
+/* MUTANT: the synthetic placeholder model this replaced (2000 ns per list, 6 ns per word, 30 ns
+ *   per vertex, 1.5 ps per pixel of primitive area) completes every list below early, so the
+ *   "still drawing 1 us before" and "completes at" checks fail; converting clocks at a fixed
+ *   111 MHz instead of the emulated bus clock fails the 166 MHz checks; dropping the T0 list
+ *   cost, the PRIM cost, a vertex term or the span-width fill term fails the matching cell. */
 static void test_ge_completion_timing(void) {
     CpuState cpu;
 
@@ -17548,87 +17643,168 @@ static void test_ge_completion_timing(void) {
            "GE timing off: the syncs read the list as complete at once");
     ge_tim_teardown();
 
-    /* Model on, no thread: the callback is an interrupt delivered at the modelled time. */
+    /* T0 at the boot bus clock (111 MHz): an empty list is 1665 clk = 15 us. */
     ge_tim_setup();
-    const uint64_t list_cost[4] = { 10000u, 0u, 0u, 0u };      /* 10 us per list */
-    sr_hle_test_ge_timing(1, list_cost);
+    sr_hle_test_ge_timing(1);
     ge_tim_write_list(GE_TIM_DL, 0u);
+    expect(ge_tim_expect_us(1000u, 0.0, 111u) == 1015u,
+           "GE timing: an empty list is 1665 bus clk = 15 us at 111 MHz (T0)");
     s_vtime_us = 1000u;
     memset(&cpu, 0, sizeof(cpu));
     qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
     expect((qid & 0xff000000u) == 0x35000000u, "GE timing: the list is queued");
     expect(s_ge_tim_calls == 0u, "GE timing: no finish callback inside sceGeListEnQueue");
     expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 2u,
-           "GE timing: the ListSync peek reads the list as drawing (2)");
+           "GE timing: the ListSync peek reads the list as drawing (2, measured C3)");
     expect(ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 2u,
-           "GE timing: the DrawSync peek reads the GE as busy (2)");
-    s_vtime_us = 1009u;
+           "GE timing: the DrawSync peek reads the GE as drawing (2, measured C3)");
+    s_vtime_us = 1014u;
     scheduler_service_pending();
-    expect(s_ge_tim_calls == 0u, "GE timing: no finish callback before the modelled time");
-    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 2u,
-           "GE timing: still drawing 1 us before the modelled time");
-    s_vtime_us = 1010u;
+    expect(s_ge_tim_calls == 0u, "GE timing: no finish callback 1 us before the T0 time");
+    s_vtime_us = 1015u;
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 2u &&
+           ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 2u,
+           "GE timing: the peeks read 2 until the completion interrupt is handled (C3)");
     scheduler_service_pending();
-    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == 1010u && s_ge_tim_list[0] == qid,
-           "GE timing: the finish callback runs once the modelled time is reached");
+    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == 1015u && s_ge_tim_list[0] == qid,
+           "GE timing: the empty list's finish callback runs at 15 us");
     expect(s_ge_tim_intr_ctx == 1 && s_ge_tim_arg == GE_TIM_FINISH_ARG,
            "GE timing: the callback runs in interrupt context with its registered argument");
     expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 0u &&
            ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
-           "GE timing: both syncs read complete after the modelled time");
+           "GE timing: both peeks read 0 once the interrupt is handled");
     s_vtime_us = 50000u;
     scheduler_service_pending();
     expect(s_ge_tim_calls == 1u, "GE timing: a completed list's callback never runs again");
 
-    /* One serial GE: a list queued behind a busy GE finishes after it. */
+    /* One serial GE (C5, T15): a list queued behind a busy GE finishes after it, no gap. */
     s_ge_tim_calls = 0;
     s_vtime_us = 60000u;
     uint32_t qa = ge_tim_enqueue(&cpu, GE_TIM_DL);
     uint32_t qb = ge_tim_enqueue(&cpu, GE_TIM_DL);
-    s_vtime_us = 60010u;
+    s_vtime_us = 60015u;
     scheduler_service_pending();
     expect(s_ge_tim_calls == 1u && s_ge_tim_list[0] == qa,
-           "GE timing: the first list completes after its own cost");
+           "GE timing: the first list completes after its own 15 us");
     expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qb, 1u) == 2u,
            "GE timing: the second list is still drawing behind it");
-    s_vtime_us = 60020u;
+    s_vtime_us = 60029u;
     scheduler_service_pending();
-    expect(s_ge_tim_calls == 2u && s_ge_tim_list[1] == qb && s_ge_tim_fired_at[1] == 60020u,
-           "GE timing: the second list completes after both costs");
+    expect(s_ge_tim_calls == 1u, "GE timing: the second list is not done 1 us before 30 us");
+    s_vtime_us = 60030u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 2u && s_ge_tim_list[1] == qb && s_ge_tim_fired_at[1] == 60030u,
+           "GE timing: the second list completes 15 us after the first");
 
-    /* The command count is charged: 8 NOPs + FINISH + END at 1 us each. */
-    const uint64_t cmd_cost[4] = { 0u, 1000u, 0u, 0u };
-    sr_hle_test_ge_timing(1, cmd_cost);
-    ge_tim_write_list(GE_TIM_DL2, 8u);
-    s_ge_tim_calls = 0;
-    s_vtime_us = 70000u;
-    qid = ge_tim_enqueue(&cpu, GE_TIM_DL2);
-    s_vtime_us = 70009u;
-    scheduler_service_pending();
-    expect(s_ge_tim_calls == 0u, "GE timing: 10 commands are not done after 9 us");
-    s_vtime_us = 70010u;
-    scheduler_service_pending();
-    expect(s_ge_tim_calls == 1u && s_ge_tim_list[0] == qid,
-           "GE timing: 10 commands at 1 us each are done after 10 us");
+    /* T1: 1000 NOP words cost 2.03 clk each on top of T0. */
+    ge_tim_write_list(GE_TIM_DL2, 1000u);
+    ge_tim_expect_completion(GE_TIM_DL2, 70000u,
+                             ge_tim_expect_us(70000u, 1000.0 * GE_TIM_CELL_WORD, 111u),
+                             "a 1000-word NOP list at 111 MHz");
+
+    /* T7/T8: transformed vertices.  999 vertices that all sit at the origin draw nothing, so
+     * the cost is the words, the PRIM and the vertex work alone. */
+    memset(SR_HOST(GE_TIM_VTX), 0, 0x8000u);
+    memset(SR_HOST(GE_TIM_IDX), 0, 0x1000u);
+    static const struct {
+        uint32_t vtype;
+        uint32_t prim;
+        double per_vertex;
+        const char *what;
+    } vcell[] = {
+        { 3u << 7, 3u, GE_TIM_CELL_POS_F32, "999 transformed f32 vertices as a triangle list" },
+        { 3u << 7, 4u, GE_TIM_CELL_POS_F32, "999 transformed f32 vertices as a strip" },
+        { (3u << 0) | (7u << 2) | (3u << 5) | (3u << 7), 3u,
+          GE_TIM_CELL_POS_F32 + GE_TIM_CELL_COLOR + GE_TIM_CELL_UV + GE_TIM_CELL_NORMAL,
+          "999 vertices with colour 8888, uv f32 and normal f32" },
+        { (3u << 7) | (2u << 11), 3u, GE_TIM_CELL_INDEX16, "999 indexed (u16) f32 vertices" },
+    };
+    for (unsigned c = 0; c < sizeof vcell / sizeof vcell[0]; c++) {
+        ge_tim_begin_list(GE_TIM_DL2);
+        ge_tim_cmd(0x12, vcell[c].vtype);
+        ge_tim_cmd(0x04, (vcell[c].prim << 16) | 999u);
+        unsigned words = ge_tim_end_list();
+        double run = words * GE_TIM_CELL_WORD + GE_TIM_CELL_PRIM + 999.0 * vcell[c].per_vertex;
+        uint64_t enq = 100000u + 10000u * c;
+        ge_tim_expect_completion(GE_TIM_DL2, enq, ge_tim_expect_us(enq, run, 111u), vcell[c].what);
+    }
+
+    /* T6: 300 through-mode one-pixel triangles cost 18.3 clk each. */
+    for (unsigned t = 0; t < 300u; t++) {
+        uint32_t v = GE_TIM_VTX + t * 18u;          /* three s16 xyz vertices, stride 6 */
+        uint16_t x = (uint16_t)(t % 400u), y = (uint16_t)(2u * (t / 400u));
+        MEM_W16(v + 0u, x);       MEM_W16(v + 2u, y);       MEM_W16(v + 4u, 0u);
+        MEM_W16(v + 6u, x + 1u);  MEM_W16(v + 8u, y);       MEM_W16(v + 10u, 0u);
+        MEM_W16(v + 12u, x);      MEM_W16(v + 14u, y + 1u); MEM_W16(v + 16u, 0u);
+    }
+    ge_tim_begin_list(GE_TIM_DL2);
+    ge_tim_cmd(0x12, (2u << 7) | (1u << 23));       /* s16 position, through mode */
+    ge_tim_cmd(0x04, (3u << 16) | 900u);
+    unsigned words = ge_tim_end_list();
+    double run = words * GE_TIM_CELL_WORD + GE_TIM_CELL_PRIM + 300.0 * GE_TIM_CELL_THRU_TRI;
+    ge_tim_expect_completion(GE_TIM_DL2, 200000u, ge_tim_expect_us(200000u, run, 111u),
+                             "300 through-mode one-pixel triangles");
+
+    /* T5: 8888 fill by span width.  256x256 tiled with eight 32x256 sprites is 256 rows of
+     * 1 + 0.274*32 clk per sprite (the measured 180 us at 111 MHz); with four 64x256 sprites
+     * it is 0.52 clk/px (about 305 us).  The two vertices of a sprite overlap its fill. */
+    static const struct { unsigned w; double fill_us; const char *what; } scell[] = {
+        { 32u, 180.0, "256x256 tiled with 32x256 8888 sprites" },
+        { 64u, 305.0, "256x256 tiled with 64x256 8888 sprites" },
+    };
+    for (unsigned c = 0; c < sizeof scell / sizeof scell[0]; c++) {
+        unsigned n = 256u / scell[c].w;
+        for (unsigned i = 0; i < n; i++) {
+            uint32_t v = GE_TIM_VTX + i * 12u;
+            MEM_W16(v + 0u, (uint16_t)(i * scell[c].w));        MEM_W16(v + 2u, 0u);   MEM_W16(v + 4u, 0u);
+            MEM_W16(v + 6u, (uint16_t)((i + 1u) * scell[c].w)); MEM_W16(v + 8u, 256u); MEM_W16(v + 10u, 0u);
+        }
+        ge_tim_begin_list(GE_TIM_DL2);
+        ge_tim_cmd(0x12, (2u << 7) | (1u << 23));   /* s16 position, through mode */
+        ge_tim_cmd(0x04, (6u << 16) | (2u * n));
+        words = ge_tim_end_list();
+        double row = scell[c].w <= 32u ? GE_TIM_CELL_ROW32(scell[c].w) : GE_TIM_CELL_PX64 * scell[c].w;
+        double fill = (double)n * 256.0 * row;
+        expect(fill / 111.0 > scell[c].fill_us - 3.0 && fill / 111.0 < scell[c].fill_us + 3.0,
+               "GE timing: the sprite cell's fill is the measured microseconds at 111 MHz");
+        run = words * GE_TIM_CELL_WORD + GE_TIM_CELL_PRIM + fill;
+        uint64_t enq = 300000u + 10000u * c;
+        ge_tim_expect_completion(GE_TIM_DL2, enq, ge_tim_expect_us(enq, run, 111u), scell[c].what);
+    }
+
+    /* The GE clock is the bus clock: at 333/166 every cost is 0.665x.  An empty list is
+     * 1665 clk = 10.03 us at 166 MHz, and the 1000-word NOP list scales the same way. */
+    ge_tim_set_clock(333u, 333u, 166u);
+    ge_tim_write_list(GE_TIM_DL, 0u);
+    expect(ge_tim_expect_us(400000u, 0.0, 166u) == 400011u,
+           "GE timing: an empty list is 1665 bus clk = 10.03 us at 166 MHz");
+    ge_tim_expect_completion(GE_TIM_DL, 400000u, 400011u, "an empty list at 166 MHz");
+    ge_tim_write_list(GE_TIM_DL2, 1000u);
+    ge_tim_expect_completion(GE_TIM_DL2, 410000u,
+                             ge_tim_expect_us(410000u, 1000.0 * GE_TIM_CELL_WORD, 166u),
+                             "a 1000-word NOP list at 166 MHz");
+    ge_tim_set_clock(222u, 222u, 111u);
 
     /* A reset (sceGeBreak(1)) cancels a drawing list: its callback never runs. */
-    sr_hle_test_ge_timing(1, list_cost);
     s_ge_tim_calls = 0;
-    s_vtime_us = 80000u;
+    s_vtime_us = 500000u;
     qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
     expect(ge_tim_sync(&cpu, NID_SCE_GE_BREAK, 1u, 0u) == 0u, "GE timing: the reset returns 0");
-    s_vtime_us = 90000u;
+    s_vtime_us = 510000u;
     scheduler_service_pending();
     expect(s_ge_tim_calls == 0u, "GE timing: a cancelled drawing list fires no callback");
     expect(ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
            "GE timing: the GE is idle after the reset");
     ge_tim_teardown();
 
-    /* Model on, on a thread: the blocking syncs delay the caller until the modelled time. */
+    /* Model on, on a thread: the blocking syncs delay the caller until the modelled time and
+     * return after the finish callback (C2, C6).  The exact completion times are pinned above;
+     * here an idle turbo scheduler advances by whole VBLANK periods before it reaches a nearer
+     * deadline, so only "not early, and the callback first" is the model's claim. */
     ge_tim_setup();
-    const uint64_t slow_cost[4] = { 5000000u, 0u, 0u, 0u };    /* 5 ms per list */
-    sr_hle_test_ge_timing(1, slow_cost);
+    sr_hle_test_ge_timing(1);
     ge_tim_write_list(GE_TIM_DL, 0u);
+    ge_tim_write_list(GE_TIM_DL2, 1000u);
     memset(s_ge_tim_t_enq, 0, sizeof(s_ge_tim_t_enq));
     memset(s_ge_tim_t_ret, 0, sizeof(s_ge_tim_t_ret));
     memset(s_ge_tim_rc, 0xff, sizeof(s_ge_tim_rc));
@@ -17641,17 +17817,19 @@ static void test_ge_completion_timing(void) {
     memset(s_cpu, 0, sizeof(*s_cpu));
     sched_run(GE_TIM_ENTRY, 0u, 0u);
 
+    uint64_t due0 = ge_tim_expect_us(s_ge_tim_t_enq[0], 0.0, 111u);
+    uint64_t due1 = ge_tim_expect_us(s_ge_tim_t_enq[1], 1000.0 * GE_TIM_CELL_WORD, 111u);
     expect(s_ge_tim_entry_done == 1u, "GE timing: the waiting thread finished");
     expect(s_ge_tim_calls_at_peek == 0u && s_ge_tim_peek_list == 2u && s_ge_tim_peek_draw == 2u,
            "GE timing: on a thread the list is drawing right after the enqueue");
-    expect(s_ge_tim_rc[0] == 0u && s_ge_tim_t_ret[0] >= s_ge_tim_t_enq[0] + 5000u,
-           "GE timing: sceGeDrawSync(0) returns only after the modelled time");
-    expect(s_ge_tim_calls_at_ret[0] == 1u && s_ge_tim_fired_at[0] >= s_ge_tim_t_enq[0] + 5000u,
-           "GE timing: the finish callback ran, at or after the modelled time, before DrawSync returned");
-    expect(s_ge_tim_rc[1] == 0u && s_ge_tim_t_ret[1] >= s_ge_tim_t_enq[1] + 5000u,
-           "GE timing: sceGeListSync(qid, 0) returns only after the modelled time");
-    expect(s_ge_tim_calls_at_ret[1] == 2u && s_ge_tim_fired_at[1] >= s_ge_tim_t_enq[1] + 5000u,
-           "GE timing: the second callback ran before ListSync returned");
+    expect(s_ge_tim_rc[0] == 0u && s_ge_tim_t_ret[0] >= due0,
+           "GE timing: sceGeDrawSync(0) returns only after the T0 time");
+    expect(s_ge_tim_calls_at_ret[0] == 1u && s_ge_tim_fired_at[0] >= due0,
+           "GE timing: the finish callback ran, not before the T0 time, before DrawSync returned");
+    expect(s_ge_tim_rc[1] == 0u && s_ge_tim_t_ret[1] >= due1,
+           "GE timing: sceGeListSync(qid, 0) returns only after the 1000-word list's time");
+    expect(s_ge_tim_calls_at_ret[1] == 2u && s_ge_tim_fired_at[1] >= due1,
+           "GE timing: the second callback ran, not before its modelled time, before ListSync returned");
     ge_tim_teardown();
 }
 

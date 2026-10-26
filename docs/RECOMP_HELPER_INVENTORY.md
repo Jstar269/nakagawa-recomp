@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **333** (declared in `recomp.h`: 275)
-- reach class: emitter-reached 61, production-runtime-only 243, selftest-only 14, address-only 7, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 24, upstream_derived 308
+- helpers: **336** (declared in `recomp.h`: 278)
+- reach class: emitter-reached 61, production-runtime-only 246, selftest-only 14, address-only 7, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 24, upstream_derived 311
 
 ## Helpers
 
@@ -66,6 +66,9 @@ does not make this file stale. `--details` prints them to stdout.
 | `ge_framebuffer` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_get_cmd` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_run_list` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
+| `ge_timing_list_clk` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
+| `ge_timing_run_clk` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
+| `ge_timing_set_enabled` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `ge_transition_trace_check` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `gui_analog` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `gui_buttons` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
