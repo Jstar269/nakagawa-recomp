@@ -423,6 +423,37 @@ class NativeHostBackendTests(unittest.TestCase):
                               f"{name}:{index + 1} exits without the perf shutdown: {line.strip()}")
             self.assertGreater(found, 0, f"{name} has no _Exit site; the pin is stale")
 
+    def test_window_close_exits_write_the_perf_summary_first(self) -> None:
+        """Closing the window (SDL3 quit, a Win32 WM_QUIT, or a presenter that reports the window
+        gone) leaves through _Exit, which skips the atexit perf hook, so an SR_PERF run ended by
+        closing the window lost its SR_PERF_JSON summary and the final partial CSV row (#1072, C3).
+        gui_pump and gui_present run on the scheduler's OS thread: guest threads are coroutines on
+        that one thread (sr_coro.h) and gui.c starts no host thread. That thread owns the counters
+        and the CSV handle, so the shutdown runs there directly, as the hle.c and ge.c exits do. All
+        four window-close sites go through one helper so a new site cannot skip the shutdown."""
+        gui = (ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8")
+        for spawn in ("CreateThread(", "SDL_CreateThread(", "thrd_create(", "pthread_create("):
+            self.assertNotIn(spawn, gui,
+                             "gui.c started a host thread; its exits may no longer run on the "
+                             "thread that owns the perf counters")
+        helper_head = "static void gui_window_closed_exit(void) {"
+        self.assertEqual(gui.count(helper_head), 1, "the window-close exit helper is missing")
+        helper_start = gui.index(helper_head)
+        helper = gui[helper_start:gui.index("\n}\n", helper_start)]
+        shutdown = helper.find("    sr_perf_shutdown();\n")
+        self.assertNotEqual(shutdown, -1, "the window-close exit skips the perf shutdown")
+        self.assertLess(shutdown, helper.index("    _Exit(0);"),
+                        "the perf summary must be written before the process exits")
+        exits = [line for line in gui.splitlines()
+                 if "_Exit(" in line.split("//", 1)[0] and not line.lstrip().startswith("*")]
+        self.assertEqual(exits, ["    _Exit(0);"],
+                         "every gui.c exit must go through gui_window_closed_exit")
+        for site in ("if (!alive) { gui_window_closed_exit(); }",
+                     "if (msg.message == WM_QUIT) { gui_window_closed_exit(); }",
+                     "if (res == 0) { gui_window_closed_exit(); }",
+                     "if (present_result == 0) { gui_window_closed_exit(); }"):
+            self.assertEqual(gui.count(site), 1, f"window-close site missing: {site}")
+
 
 if __name__ == "__main__":
     unittest.main()
