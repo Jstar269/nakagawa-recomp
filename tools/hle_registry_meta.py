@@ -1693,6 +1693,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelGetThreadExitStatus": "kernel_thread",
     "sceKernelGetThreadId": "kernel_thread",
     "sceKernelGetThreadStackFreeSize": "kernel_thread",
+    "sceKernelGetThreadmanIdList": "kernel_thread",
     "sceKernelNotifyCallback": "kernel_thread",
     "sceKernelReferCallbackStatus": "kernel_thread",
     "sceKernelReferGlobalProfiler": "kernel_thread",
