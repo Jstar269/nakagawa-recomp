@@ -69,7 +69,7 @@ Camera overrides operate at the 3D projection interface, transforming guest came
 
 PSP titles commonly lock physics and animation loops to 30 Hz or 60 Hz VBLANK ticks. Enhancing presentation or rescaling frame-counted game logic to run at a true 60 Hz requires strict separation from real-time clocks (see #328):
 
-- **Allowed:** Interpolating host rendering between consecutive guest frames; adjusting presentation swap intervals; multiplying display updates while keeping guest timer tick counts authentic; applying declarative frame-rate rescale transforms (`count_x2`, `step_x0.5`, `decay_k_to_1-sqrt(1-k)`, `probability_per_update_x0.5`, `gate_30hz`, `vblank_wait_2_to_1`) to verified symbolic sites during an explicit AOT enhancement epoch.
+- **Allowed:** Interpolating host rendering between consecutive guest frames; adjusting presentation swap intervals; multiplying display updates while keeping guest timer tick counts authentic; applying declarative frame-rate rescale transforms (`count_x2`, `step_x0.5`, `decay_k_to_1-sqrt(1-k)`, `probability_per_update_x0.5`, `gate_30hz`, `vblank_wait_2_to_1`, `retention_m_to_sqrt(m)`) to verified symbolic sites during an explicit AOT enhancement epoch.
 - **Forbidden:** Speeding up the guest real-time clock (`sceKernelGetSystemTime*`, `sceRtc*`, audio hardware sample clocks) to force higher frame rates, which breaks real-time clocks, physics, and audio synchronization. Only frame-counted logic is rescaled; the game's real-time clock stays 100% authentic.
 - **RNG Policy for 60 Hz Rescaling:** Frame-rate rescale packages must declare an explicit `rng_policy` (`rescale_probability` or `subtick_30hz`) with its rationale. Under `rescale_probability`, stateless per-update probability thresholds use `probability_per_update_x0.5` ($p_{60} = 0.5\,p_{30}$) so expected events per second remain invariant at 60 Hz, while stateful multi-roll PRNG sequences or coupled physics/particle steps use `gate_30hz` to step on alternate 60 Hz ticks (30 Hz cadence) without altering PRNG state evolution.
 
@@ -162,9 +162,9 @@ Implementation of the enhancement subsystem is phased to maintain fidelity at ev
    - Texture dumping and replacement interface at the host GPU backend.
    - Streaming replacement audio handler.
 4. **Phase 4: High-Refresh Frame Pacing and Declarative 60 Hz Logic Rescaling (#328):**
-   - Declarative frame-rate rescale package format (`game_version`, `executable_sha256`, `rng_policy`, symbolic `sites` with `stock_digest` and the 6 transform classes).
+   - Declarative frame-rate rescale package format (`game_version`, `executable_sha256`, `rng_policy`, symbolic `sites` with `stock_digest` and the section 9.2 transforms).
    - Fail-closed loader and stock-word digest verifier in `tools/enhancement_package.py` and `tools/codegen.py`.
-   - Separate AOT instrumentation epoch (`aot-enhancement-package-v1`) in `tools/nk_core/package_cache.py`, `tools/title_codegen_plan.py`, and `tools/nk_cli.py`, plus opt-in experimental 60 Hz setting (`--experimental-60hz`).
+   - Separate AOT instrumentation epoch (`aot-enhancement-package-v1`) in `tools/nk_core/package_cache.py`, `tools/title_codegen_plan.py`, and `tools/nk_cli.py`, plus the run-time opt-in (`SR_EXPERIMENTAL_60HZ`, the player's `experimental_60hz` setting).
    - VBLANK multiplier and display list presentation decoupling.
 5. **Phase 5: Symbolic Guest Hook Dispatch and Cache Epochs (#316):**
    - Symbolic hook resolution via private title profiles and instrumented AOT cache keys.
@@ -173,51 +173,35 @@ Implementation of the enhancement subsystem is phased to maintain fidelity at ev
 
 ## 9. Declarative Frame-Rate Rescale Packages (60 Hz Logic)
 
-### 9.1. Purpose and Authentic-Clock Invariant
+### 9.1. Purpose and Invariants
 
-Many PSP titles run a 30 Hz game-logic loop by waiting 2 VBLANK intervals per tick (`sceDisplayWaitVblankStart` or a 2-VBLANK counter gate) and tuning frame-counted durations, velocities, exponential decays, and per-tick probabilities for $\Delta t = 1/30\text{ s}$.
+Many PSP titles run a 30 Hz game-logic loop by waiting two VBLANK intervals per update and tune frame-counted durations, steps, decays and per-update probabilities for $\Delta t = 1/30\text{ s}$. A frame-rate rescale package lists the instruction sites that make the loop wait two VBLANKs and the sites whose constants assume $1/30\text{ s}$, so the same logic can run once per VBLANK.
 
-A declarative frame-rate rescale package upgrades a 30 Hz title to run its game logic at a true 60 Hz ($\Delta t = 1/60\text{ s}$) when opted in by the user (`--experimental-60hz` or `--enhancement-package <path>`), while obeying two strict invariants:
+1. **Authentic mode is untouched.** Without `--enhancement-package` (the default), `tools/codegen.py` output and the codegen options in the AOT cache key are byte-identical to a build without this feature. A package build records `enhancement_package_epoch` (`aot-enhancement-package-v1`), the package id and digest in its codegen options, and `nk_cli.py build-package` writes it to its own directory (`packages/<disc_id>-enhanced-<pkg_id>`), never over the authentic package.
+2. **Off at run time unless opted in.** Every rewritten site is emitted twice: the stock statement and its rewrite. The rewrite runs only when the process starts with `SR_EXPERIMENTAL_60HZ=1`; any other value runs the stock statements, so a package build with the toggle off executes the authentic instruction stream. The player's `experimental_60hz` setting (off by default; `--experimental-60hz` on the player command line sets it) exports that variable at launch.
+3. **No faster guest clock.** System time, RTC and audio sample clocks are untouched. Only the sites the package lists change.
 
-1. **Authentic mode is untouched:** When the setting is off (the default), generated C code and the `AotPackageManifest` cache digest are byte-for-byte identical to standard compilation. Enhanced builds are stored under a separate package directory (`packages/<disc_id>-enhanced-<pkg_id>`) and keyed under the `aot-enhancement-package-v1` epoch in `codegen_options`, never replacing the authentic package.
-2. **No faster guest clock:** The guest real-time clock (`sceKernelGetSystemTime*`, `sceRtc*`, and audio hardware sample rates) remains 100% authentic. Only frame-counted logic sites are rescaled.
+### 9.2. Site Transforms
 
-### 9.2. Declarative Site Transforms
+Each `sites` entry names a symbolic `function`, a 4-byte-aligned `insn_offset`, the SHA-256 `stock_digest` of the stock little-endian instruction word, and a `transform`. `plan_site_rewrite()` in `tools/enhancement_package.py` gives each (transform, instruction) pair exactly one rewrite, chosen from the transform and the instruction encoding alone; a pair without one refuses the whole package. Only one-word sites have a defined rewrite.
 
-Each entry in `sites` targets a symbolic function name (`function`) and a 4-byte-aligned byte offset (`insn_offset`) within that function, guarded by a SHA-256 digest (`stock_digest`) of the expected stock 32-bit little-endian MIPS instruction word(s) (`word_count`: `1` or `2`):
-
-| Transform Class | Target Pattern | 60 Hz Effect |
+| Transform | Instructions with a defined rewrite | Rewrite |
 | --- | --- | --- |
-| `vblank_wait_2_to_1` | Immediate load `2` or `< 2` VBLANK threshold (`addiu`/`li`/`slti`/`sltiu`) | Changes the 2-VBLANK wait threshold to `1` so the main loop steps once per VBLANK (60 Hz). |
-| `gate_30hz` | Branch (`beq`/`bne`/`bnez`/`beqz`), call (`jal`), or step (`addiu`/`addu`/`subu`) inside a 60 Hz callback | Gates execution on `(s->enh_tick & 1u) == 0` so 30 Hz-only state machines or stateful multi-roll subsystems step on alternate 60 Hz ticks without double-advancing. |
-| `count_x2` | Frame-count immediate load or comparison (`addiu`/`li`/`ori`/`slti`/`sltiu`) | Doubles the frame count ($N \to 2N$) so real-time duration is preserved at 60 Hz. |
-| `step_x0.5` | Per-tick constant step: integer (`addiu`/`li`), float (`lui` or `lui`+`ori` pair), or shift (`sll`/`sra`/`srl`) | Halves the per-tick step ($\Delta x \to 0.5\,\Delta x$) so rate of change per second is preserved at 60 Hz. |
-| `decay_k_to_1-sqrt(1-k)` | Per-tick float multiplier / damping factor (`lui` or `lui`+`ori` loading IEEE-754 float $m \in (0,1)$) | Replaces the 30 Hz multiplier $m_{30} = 1 - k$ with $m_{60} = \sqrt{m_{30}}$ (or damping $k$ with $1 - \sqrt{1 - k}$) so two 60 Hz steps equal one 30 Hz decay step ($m_{60}^2 = m_{30}$). |
-| `probability_per_update_x0.5` | Per-tick probability threshold immediate (`addiu`/`li`/`ori`/`slti`/`sltiu`/`lui`) | Halves the per-tick threshold ($p_{60} = 0.5\,p_{30}$) so expected triggers per second match 30 Hz. |
+| `vblank_wait_2_to_1` | `addi`/`addiu`/`slti`/`sltiu`/`ori` with immediate 2 | immediate 2 becomes 1 |
+| `gate_30hz` | `jal`; accumulating `addiu rt, rt, imm`, `addu`/`subu`/`add`/`sub` with the destination as a source, `add.s`/`sub.s` likewise | the statement runs only on even display VBLANKs (`sr_display_vcount()`), so every instance runs on the same alternate updates |
+| `count_x2` | positive `addi`/`addiu`/`slti`/`sltiu` immediate; `andi` mask $2^n-1$; `lui` of a normal float; `sll`; integer loads; `lwc1`/`swc1`; single-precision arithmetic and `cvt.s.w`; a unit countdown `addiu rt, rt, -1` | the produced value is doubled (a countdown is gated) |
+| `step_x0.5`, `probability_per_update_x0.5` | as `count_x2` except integer loads, plus accumulating `+1`/`-1`/`addu`/`subu` updates | the produced value is halved (exactly, or by gating a unit or register step); `add.s fd, fd, ft` halves the addend `ft` |
+| `decay_k_to_1-sqrt(1-k)` | `lui` of a float $k \in (0, 1)$ | $k \to 1 - \sqrt{1-k}$, rounded to the upper half |
+| `retention_m_to_sqrt(m)` | `lui` of a float $m \in (0, 1)$ | $m \to \sqrt{m}$, rounded to the upper half |
 
-### 9.3. Random-Number Generator (RNG) Policy Decision
+The transforms scale the operand the site produces; they do not guess its role. A constant that multiplies or bounds a random roll (`rand() % 100`, `rand * 100.0f < p`) halves the per-update probability when it is doubled, so its site declares `count_x2`, not `probability_per_update_x0.5`.
 
-When a 30 Hz game loop runs at 60 Hz, code that queries the PRNG on every update tick would double its event frequency and advance the PRNG state twice as fast unless handled explicitly. Every frame-rate rescale package must declare `rng_policy`:
+### 9.3. Random-Number Generator (RNG) Policy
 
-- **Selected primary mode (`rescale_probability`):** Stateless per-update probability comparisons (where a single roll is compared against a constant threshold to trigger a sound, blink, or ambient effect) use `probability_per_update_x0.5` so that checks can run smoothly on every 60 Hz frame while keeping the per-second trigger rate invariant. Stateful multi-roll PRNG consumers (such as particle emitters that draw multiple correlated rolls per spawn or physics/AI routines whose state transitions are tightly coupled to 30 Hz step counts) are paired with `gate_30hz` so they execute on a 30 Hz sub-tick (`(s->enh_tick & 1u) == 0`), preserving exact 30 Hz PRNG consumption and trajectory behavior.
-- **Alternative mode (`subtick_30hz`):** Packages for titles where all PRNG rolls must remain strictly on a 30 Hz sub-tick declare `mode: "subtick_30hz"` and gate the roll sites with `gate_30hz`.
+Every frame-rate rescale package declares `rng_policy`. Under `rescale_probability`, single-roll per-update checks keep running every update with their probability halved; stateful multi-roll consumers are gated with `gate_30hz` so they keep their 30 Hz roll order. Under `subtick_30hz`, every roll site is gated.
 
-### 9.4. Building and Running with an Experimental 60 Hz Package
+### 9.4. Building and Running
 
-1. **Validate a package manifest (and optional symbol map sidecar):**
-   ```powershell
-   python tools/enhancement_package.py path/to/pkg-60hz.json
-   ```
-2. **Build an enhanced title package via `nk_cli.py` (leaves the authentic package untouched):**
-   ```powershell
-   python tools/nk_cli.py build-package <DISC_ID> --experimental-60hz --enhancement-package path/to/pkg-60hz.json
-   ```
-   Or via `title_codegen_plan.py`:
-   ```powershell
-   python tools/title_codegen_plan.py assets/titles/<title>.json --package --game-elf <EBOOT.elf> --enhancement-package path/to/pkg-60hz.json --output-dir <output-dir>
-   ```
-3. **Launch with the experimental 60 Hz toggle:**
-   ```powershell
-   python tools/nk_cli.py launch <DISC_ID> --experimental-60hz --enhancement-package path/to/pkg-60hz.json
-   ```
-   In the native player (`nakagawa_player`), pass `--experimental-60hz` on the command line or toggle `experimental_60hz` in `settings.json` (off by default).
+1. Validate a package: `python tools/enhancement_package.py path/to/pkg-60hz.json`.
+2. Build a package build: `python tools/nk_cli.py build-package <DISC_ID> --enhancement-package path/to/pkg-60hz.json` (or `--experimental-60hz` with the package at `<user data>/enhancements/<disc_id>-60hz.json`), or pass `ENHANCEMENT_PACKAGE=path/to/pkg-60hz.json` to `make`. Codegen resolves function names from the ELF symbol table or a `<package>.symbols.json` sidecar.
+3. Run the built executable with `SR_EXPERIMENTAL_60HZ=1` for 60 Hz logic, or without it for the authentic 30 Hz game. The player does not yet select `packages/<disc_id>-enhanced-<pkg_id>` when launching a library entry.

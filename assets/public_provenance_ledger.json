@@ -713,7 +713,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2d9e0e05104231f1559a0902c7a153209e2716b5b846fa13879845a2a380c8a2"
+      "sha256": "8f79de4316f0fd68a861c1277c6cd965166c34c1c1dbf54151d6737a25f51baf"
     },
     {
       "path": "assets/flight_recorder_schema.json",
@@ -1423,7 +1423,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9acb6471269bd934e12be77fdf4cd29a491159d4594673818a7bc4b20dd808dd"
+      "sha256": "e5d263f0804996bcb1e1628be477e808e838ea670dbbd3cba1f2c1285d16d284"
     },
     {
       "path": "docs/HARDWARE_ORACLE.md",
@@ -3275,7 +3275,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "209d2e0a5e43315a2a774a50fc7e612b96022dffcb13ed0ea7e1b91d12d5c16b"
+      "sha256": "d6a57f30355a602f52f15ecc29e82207228e65213d121538c63935e9023a7039"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -3287,7 +3287,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4e2ec6dd81354919279869756277021629c74d73f246d1679ed28aac54ddc3ca"
+      "sha256": "6b6502f321569dc8ba1829f211df5c4a4ccfb3fa67c741f3e3c0a5edfe88eb14"
     },
     {
       "path": "src/core/nk_library.c",
@@ -3539,7 +3539,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b2d96ce33d5033576a77545d82d81c804fdc730cdb92ae34fc58d9bc4201438"
+      "sha256": "fc3c8b5a4641eae511632262543780a17528ac27804e046ace2387ff98034868"
     },
     {
       "path": "src/player/player_state.h",
@@ -11128,7 +11128,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a3ea748c92f8ef41b9733b23038972b719625332b871abf8cc9b5f9357387293"
+      "sha256": "c545b5eb4dc8c5591a107177428c94f564cedf556c3ae1de9eaf3690a7c2dfd6"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -11249,7 +11249,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "86401d3a1315c308644bbea5316d90f1204c40e9b4544e5bb18363bccda7a336"
+      "sha256": "21b154c95a4c5d47255cf4409f03700e8ab08cf5be669da19dd4ff74c6d74116"
     },
     {
       "path": "tools/entry_frame_balance.py",
@@ -11806,7 +11806,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c444f3e47de44587ebd1d27c85330c708aeb6ca18edc7091dbe6144c2c473daf"
+      "sha256": "4744701fceaf9cf14b4738ac00b5dc2415e040b7e2a6dbaca21469ace4d5204f"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -13202,7 +13202,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6fae23091ea6a948930b9c5db7fc472a4f92fcbd1a563c6265357e8425847ccb"
+      "sha256": "0017cde0a16354e5442087d9905657d0b18c8179f65be92e387de81493665187"
     },
     {
       "path": "tools/test_entry_frame_balance.py",

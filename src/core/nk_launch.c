@@ -1413,6 +1413,8 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     envp[env_count++] = env_fs;
     envp[env_count++] = env_fullscreen;
     envp[env_count++] = env_volume;
+    /* Always set, so an inherited value cannot opt a launch in. */
+    envp[env_count++] = session->config.experimental_60hz ? "SR_EXPERIMENTAL_60HZ=1" : "SR_EXPERIMENTAL_60HZ=0";
     if (session->config.headless_accept_presented_frames > 0u) {
         snprintf(env_headless_accept_frames, sizeof(env_headless_accept_frames),
                  "SR_HEADLESS_ACCEPT_PRESENTED_FRAMES=%u",

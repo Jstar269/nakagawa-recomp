@@ -31,6 +31,7 @@ import argparse
 from collections.abc import Mapping, Sequence
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import struct
@@ -64,6 +65,7 @@ SITE_TRANSFORMS = frozenset({
     "probability_per_update_x0.5",
     "gate_30hz",
     "vblank_wait_2_to_1",
+    "retention_m_to_sqrt(m)",
 })
 
 RNG_POLICY_MODES = frozenset({
@@ -685,163 +687,164 @@ def verify_and_resolve_sites(
                 f"Duplicate resolved instruction address 0x{site_addr:08x} (fail-closed refusal)",
             )
 
+        if word_count != 1:
+            fail(
+                f"{site_path}.word_count",
+                "Multi-word sites have no defined rewrite (fail-closed refusal)",
+            )
         resolved_entry = dict(site)
         resolved_entry["fn_addr"] = fn_addr
         resolved_entry["site_addr"] = site_addr
         resolved_entry["stock_words"] = [int(w) & 0xFFFFFFFF for w in words]
+        resolved_entry["rewrite"] = plan_site_rewrite(site, resolved_entry["stock_words"][0])
         resolved_by_addr[site_addr] = resolved_entry
 
     return resolved_by_addr
 
 
-def _rescale_f32_bits(bits: int, scale: float) -> int:
-    """Multiply an IEEE-754 binary32 word by scale and return the new 32-bit word."""
-    val = struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
-    scaled = val * scale
-    return struct.unpack("<I", struct.pack("<f", scaled))[0]
+# Constant factor each scaling transform applies to the operand the site produces.
+SCALE_FACTORS = {
+    "count_x2": 2.0,
+    "step_x0.5": 0.5,
+    "probability_per_update_x0.5": 0.5,
+}
+
+_IMM_ARITH_OPS = (0x08, 0x09, 0x0A, 0x0B)  # addi, addiu, slti, sltiu
+_INT_LOAD_OPS = (0x20, 0x21, 0x23, 0x24, 0x25)  # lb, lh, lw, lbu, lhu
+_FPU_RESULT_FUNCS = (0x00, 0x01, 0x02, 0x03, 0x05, 0x06, 0x07)  # add sub mul div abs mov neg
 
 
-def _decay_f32_bits(bits: int) -> int:
-    """Rescale a 30 Hz per-frame lerp/decay factor to 60 Hz: k -> 1 - sqrt(1 - k) or m -> sqrt(m)."""
-    import math
-    val = struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
-    if val <= 0.0 or val >= 1.0:
-        raise EnhancementPackageError(f"decay constant out of (0, 1) range: {val}")
-    # Direct multiplicative retention m (e.g. 0.93) vs lerp weight k (e.g. 0.2, 0.3, 0.6)
-    if val > 0.75:
-        res = math.sqrt(val)
-    else:
-        res = 1.0 - math.sqrt(1.0 - val)
-    return struct.unpack("<I", struct.pack("<f", res))[0]
+def _f32(bits: int) -> float:
+    return struct.unpack("<f", struct.pack("<I", bits & 0xFFFFFFFF))[0]
 
 
-def apply_site_transform_word(
-    site: Mapping[str, Any],
-    w: int,
-    next_w: int | None = None,
-) -> tuple[int, str | None]:
-    """Compute a transformed instruction word or C statement override for a verified site.
+def _f32_bits(value: float) -> int:
+    return struct.unpack("<I", struct.pack("<f", value))[0]
 
-    Returns:
-        ``(new_word, c_override)`` where ``new_word`` is the rescaled 32-bit MIPS
-        instruction word when the transform is representable as an immediate/shift
-        change, and ``c_override`` is ``None`` or a special directive tag
-        (e.g. ``"gate_30hz"``, ``"fpu_scale_0.5"``, ``"fpu_decay_sqrt"``).
+
+def _refuse(site: Mapping[str, Any], w: int, why: str) -> NoReturn:
+    raise EnhancementPackageError(
+        f"site {site['id']}: transform {site['transform']!r} has no defined rewrite for "
+        f"instruction 0x{w:08x} ({why}) (fail-closed refusal)"
+    )
+
+
+def _with_imm(w: int, imm: int) -> int:
+    return (w & 0xFFFF0000) | (imm & 0xFFFF)
+
+
+def plan_site_rewrite(site: Mapping[str, Any], w: int) -> dict[str, Any]:
+    """Return the one defined rewrite of a verified stock word for its declared transform.
+
+    The rewrite depends only on the declared transform and the instruction's own
+    encoding; nothing here knows a title. Every (transform, instruction) pair
+    without a defined rewrite raises, so one unsupported site refuses the whole
+    package instead of emitting a silent no-op.
+
+    Returned kinds:
+      ``word``            execute ``word`` instead of the stock word;
+      ``gate``            execute the stock instruction on alternate 60 Hz updates only;
+      ``scale_int_reg``   after the stock load, multiply GPR ``reg`` by 2;
+      ``scale_f_reg``     after the stock instruction, multiply FPR ``reg`` by ``factor``;
+      ``scale_f_store``   store FPR ``reg`` multiplied by ``factor`` (the register is kept);
+      ``scale_f_addend``  run ``fd = fd +/- ft`` with ``ft`` multiplied by ``factor``.
     """
+    w = int(w) & 0xFFFFFFFF
     tf = site["transform"]
     op = (w >> 26) & 0x3F
+    rs = (w >> 21) & 0x1F
+    rt = (w >> 16) & 0x1F
+    rd = (w >> 11) & 0x1F
+    sa = (w >> 6) & 0x1F
     fn = w & 0x3F
     imm16 = w & 0xFFFF
     simm16 = imm16 - 0x10000 if (imm16 & 0x8000) else imm16
+    is_jal = op == 0x03
+    is_jalr = op == 0x00 and fn == 0x09
+    is_fpu_s = op == 0x11 and rs == 0x10
 
     if tf == "vblank_wait_2_to_1":
-        # sltiu / slti / addiu / ori immediate 2 -> 1
-        if op in (0x08, 0x09, 0x0A, 0x0B, 0x0D) and simm16 == 2:
-            return (w & 0xFFFF0000) | 0x0001, None
-        raise EnhancementPackageError(
-            f"Unsupported instruction 0x{w:08x} for vblank_wait_2_to_1 at site {site['id']}"
-        )
+        if op in _IMM_ARITH_OPS + (0x0D,) and simm16 == 2:
+            return {"kind": "word", "word": _with_imm(w, 1)}
+        _refuse(site, w, "expects an immediate of 2")
 
     if tf == "gate_30hz":
-        return w, "gate_30hz"
+        if is_jal or is_jalr:
+            return {"kind": "gate"}
+        if op in (0x08, 0x09) and rt != 0 and rt == rs:
+            return {"kind": "gate"}
+        if op == 0x00 and fn in (0x20, 0x21, 0x22, 0x23) and rd != 0 and rd in (rs, rt):
+            return {"kind": "gate"}
+        if is_fpu_s and fn in (0x00, 0x01) and sa in (rd, rt):
+            return {"kind": "gate"}
+        _refuse(site, w, "gate_30hz needs a call or an accumulating update")
 
-    if tf == "count_x2":
-        # Integer immediate: addi, addiu, slti, sltiu, ori
-        if op in (0x08, 0x09, 0x0A, 0x0B, 0x0D):
-            if simm16 < 0:
-                # Negative offset (e.g. n - 4 sample span -> 2*n + 1 = -7, or -1 decrement gated)
-                if simm16 == -1:
-                    return w, "gate_30hz"
-                new_imm = (2 * simm16 + 1) & 0xFFFF
-            else:
-                new_imm = (simm16 * 2) & 0xFFFF
-            return (w & 0xFFFF0000) | new_imm, None
-        # Bitmask modulo period: andi rt, rs, mask (e.g. 0x1 -> 0x3)
-        if op == 0x0C:
-            new_mask = ((imm16 << 1) | 1) & 0xFFFF
-            return (w & 0xFFFF0000) | new_mask, None
-        # Float upper-half load: lui rt, hi16
-        if op == 0x0F:
-            # Check if upper 16 bits represent a positive IEEE-754 float (exponent in bits 14..7)
-            exp = (imm16 >> 7) & 0xFF
-            if 0 < exp < 254:
-                new_imm = (imm16 + 0x0080) & 0xFFFF
-                return (w & 0xFFFF0000) | new_imm, None
-        # Other instructions (e.g. lw / lwc1 / addu): scale destination register or gate
-        return w, "count_x2_stmt"
+    if tf in ("decay_k_to_1-sqrt(1-k)", "retention_m_to_sqrt(m)"):
+        if op != 0x0F:
+            _refuse(site, w, "expects the lui of a float constant")
+        value = _f32(imm16 << 16)
+        if not 0.0 < value < 1.0:
+            _refuse(site, w, f"float constant {value!r} is outside (0, 1)")
+        if tf == "decay_k_to_1-sqrt(1-k)":
+            new_value = 1.0 - math.sqrt(1.0 - value)
+        else:
+            new_value = math.sqrt(value)
+        bits = _f32_bits(new_value)
+        hi = ((bits + 0x8000) >> 16) & 0xFFFF
+        return {"kind": "word", "word": _with_imm(w, hi)}
 
-    if tf == "step_x0.5":
-        # Float upper-half load: lui rt, hi16
-        if op == 0x0F:
-            exp = (imm16 >> 7) & 0xFF
-            # Check if this is IEEE-754 double upper half (0x3fc9 -> exp11 in bits 14..4)
-            if (imm16 & 0x7FF0) == 0x3FC0:
-                new_imm = (imm16 - 0x0010) & 0xFFFF
-                return (w & 0xFFFF0000) | new_imm, None
-            if 1 < exp < 255:
-                new_imm = (imm16 - 0x0080) & 0xFFFF
-                return (w & 0xFFFF0000) | new_imm, None
-        # ori low half of jump-smash vy0 (-0.3 = 0xbe999999 -> -0.14591666 = 0xbe156b2d)
-        if op == 0x0D and imm16 == 0x9999:
-            return (w & 0xFFFF0000) | 0x6B2D, None
-        # Integer immediate: addiu / addi
-        if op in (0x08, 0x09) and simm16 > 1 and (simm16 % 2) == 0:
-            new_imm = (simm16 // 2) & 0xFFFF
-            return (w & 0xFFFF0000) | new_imm, None
-        if op in (0x08, 0x09) and simm16 == 1:
-            return w, "gate_30hz"
-        # Shift left logical: sll rd, rt, sa -> sa - 1
-        if op == 0 and fn == 0x00:
-            sh = (w >> 6) & 0x1F
-            if sh >= 1:
-                return (w & ~(0x1F << 6)) | ((sh - 1) << 6), None
-        return w, "step_x0.5_stmt"
+    factor = SCALE_FACTORS.get(tf)
+    if factor is None:
+        raise EnhancementPackageError(f"Unknown transform {tf!r} at site {site['id']}")
+    halve = factor == 0.5
 
-    if tf == "probability_per_update_x0.5":
-        # Float upper-half threshold: lui rt, hi16 -> exponent - 1 (* 0.5f)
-        if op == 0x0F:
-            exp = (imm16 >> 7) & 0xFF
-            if 1 < exp < 254:
-                # Special case: when constant is 100.0f (0x42c8) used as rand*100.0 < stat,
-                # doubling the multiplier (200.0f = 0x4348) halves the probability!
-                if imm16 == 0x42C8:
-                    new_imm = (imm16 + 0x0080) & 0xFFFF
-                else:
-                    new_imm = (imm16 - 0x0080) & 0xFFFF
-                return (w & 0xFFFF0000) | new_imm, None
-        # Integer modulus / counter period: addiu/addi (e.g. % 100 < 5 -> % 200 < 5, or period 1 -> 2)
-        if op in (0x08, 0x09) and simm16 > 0:
-            new_imm = (simm16 * 2) & 0xFFFF
-            return (w & 0xFFFF0000) | new_imm, None
-        # Integer threshold compare: slti / sltiu -> imm // 2
-        if op in (0x0A, 0x0B) and simm16 >= 2:
-            new_imm = (simm16 // 2) & 0xFFFF
-            return (w & 0xFFFF0000) | new_imm, None
-        return w, "prob_x0.5_stmt"
-
-    if tf == "decay_k_to_1-sqrt(1-k)":
-        # Float upper-half load: lui rt, hi16 (optionally followed by ori rt, rt, lo16)
-        if op == 0x0F:
-            rt_reg = (w >> 16) & 0x1F
-            lo16 = 0
-            if (
-                next_w is not None
-                and ((next_w >> 26) & 0x3F) == 0x0D
-                and ((next_w >> 21) & 0x1F) == rt_reg
-                and ((next_w >> 16) & 0x1F) == rt_reg
-            ):
-                lo16 = next_w & 0xFFFF
-            full_bits = (imm16 << 16) | lo16
-            new_bits = _decay_f32_bits(full_bits)
-            return (w & 0xFFFF0000) | ((new_bits >> 16) & 0xFFFF), None
-        if op == 0x0D:
-            # ori rt, rs, lo16 low-half of a decay constant (e.g. 0.93 = 0x3f6e147b -> 0x3f76e0a1)
-            if imm16 == 0x147B:
-                new_bits = _decay_f32_bits(0x3F6E147B)
-                return (w & 0xFFFF0000) | (new_bits & 0xFFFF), None
-        return w, "decay_sqrt_stmt"
-
-    raise EnhancementPackageError(f"Unknown transform {tf!r} at site {site['id']}")
+    if op in (0x08, 0x09) and rt != 0 and rt == rs:
+        # Accumulating counter update (x += imm): a unit step under a halved rate
+        # (or a unit countdown under a doubled duration) runs on alternate updates.
+        if simm16 in (1, -1) and (halve or simm16 == -1):
+            return {"kind": "gate"}
+        if halve and simm16 % 2 == 0 and simm16 != 0:
+            return {"kind": "word", "word": _with_imm(w, simm16 // 2)}
+        _refuse(site, w, "accumulating immediate without an exact rescale")
+    if op in _IMM_ARITH_OPS:
+        if simm16 <= 0:
+            _refuse(site, w, "non-positive immediate")
+        scaled = simm16 * factor
+        if scaled != int(scaled) or int(scaled) > 0x7FFF or int(scaled) < 1:
+            _refuse(site, w, f"immediate {simm16} has no exact x{factor:g} rescale")
+        return {"kind": "word", "word": _with_imm(w, int(scaled))}
+    if op == 0x0C:  # andi period mask 2^n - 1
+        if imm16 == 0 or imm16 & (imm16 + 1):
+            _refuse(site, w, "andi mask is not 2^n - 1")
+        mask = (imm16 << 1) | 1 if not halve else imm16 >> 1
+        if mask == 0 or mask > 0xFFFF:
+            _refuse(site, w, "andi mask has no exact rescale")
+        return {"kind": "word", "word": _with_imm(w, mask)}
+    if op == 0x0F:  # lui of a float constant: an exponent step is an exact x2 / x0.5
+        exponent = (imm16 >> 7) & 0xFF
+        if not (2 if halve else 1) <= exponent <= (254 if halve else 253):
+            _refuse(site, w, "lui value is not a normal float constant")
+        return {"kind": "word", "word": _with_imm(w, imm16 + (-0x80 if halve else 0x80))}
+    if op == 0x00 and fn == 0x00 and w != 0:  # sll: shift count is a power-of-two factor
+        new_sa = sa - 1 if halve else sa + 1
+        if not 0 <= new_sa <= 31 or (halve and sa == 0):
+            _refuse(site, w, "sll shift has no exact rescale")
+        return {"kind": "word", "word": (w & ~(0x1F << 6)) | (new_sa << 6)}
+    if op == 0x00 and fn in (0x21, 0x23) and halve and rd != 0 and rd in (rs, rt):
+        return {"kind": "gate"}  # accumulating addu/subu at half rate
+    if op in _INT_LOAD_OPS and not halve and rt != 0:
+        return {"kind": "scale_int_reg", "reg": rt}
+    if op == 0x31:  # lwc1
+        return {"kind": "scale_f_reg", "reg": rt, "factor": factor}
+    if op == 0x39:  # swc1
+        return {"kind": "scale_f_store", "reg": rt, "factor": factor}
+    if is_fpu_s and fn in (0x00, 0x01) and sa == rd and rt != rd:
+        return {"kind": "scale_f_addend", "reg": rt, "factor": factor}
+    if is_fpu_s and fn in _FPU_RESULT_FUNCS:
+        return {"kind": "scale_f_reg", "reg": sa, "factor": factor}
+    if op == 0x11 and rs == 0x14 and fn == 0x20:  # cvt.s.w
+        return {"kind": "scale_f_reg", "reg": sa, "factor": factor}
+    _refuse(site, w, "instruction class has no defined rescale")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -722,7 +722,25 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             self.assertIn("s->r[5] = (0x3f00u << 16);", enh_combined)             # step_x0.5: 1.0f (0x3f80) -> 0.5f (0x3f00)
             self.assertIn("s->r[6] = (0x3f00u << 16);", enh_combined)             # decay: k=0.75 -> 1-sqrt(1-0.75)=0.5f (0x3f00)
             self.assertIn("(int32_t)0x00000032u ? 1u : 0u", enh_combined)         # probability_per_update_x0.5: 100 (0x64) -> 50 (0x32)
-            self.assertIn("_nk_gate_00001600 ^= 1u; if (_nk_gate_00001600)", enh_combined)  # gate_30hz sub-tick guard
+            self.assertIn("if (!nk_enhancement_on() || nk_enhancement_gate_30hz())", enh_combined)  # gated call
+            self.assertIn("int nk_enhancement_on(void) {", enh_combined)  # run-time opt-in, off by default
+            self.assertIn("getenv(\"SR_EXPERIMENTAL_60HZ\")", enh_combined)
+            self.assertNotIn("nk_enhancement", auth_combined)
+
+            # 2b. A (transform, instruction) pair without a defined rewrite refuses the whole package
+            nodef_pkg = copy.deepcopy(pkg)
+            nodef_pkg["sites"][0] = dict(nodef_pkg["sites"][0], transform="gate_30hz")  # gate on addiu v0,zero,2
+            nodef_path = tmp / "no-rewrite.json"
+            nodef_path.write_text(json.dumps(nodef_pkg), encoding="utf-8")
+            (tmp / "no-rewrite.symbols.json").write_text(json.dumps(symbols), encoding="utf-8")
+            nodef_dir = tmp / "no_rewrite"
+            nodef_dir.mkdir()
+            rc_nd, out_nd, files_nd = self._run_codegen(
+                elf_path, nodef_dir / "out.c", [f"--enhancement-package={nodef_path}"]
+            )
+            self.assertNotEqual(rc_nd, 0)
+            self.assertIn("has no defined rewrite", out_nd)
+            self.assertEqual(files_nd, {})
 
             # 3. Re-running authentic mode after an enhanced run in the same process must stay byte-identical
             auth2_dir = tmp / "authentic2"
@@ -749,6 +767,40 @@ class TestEnhancementAotCodegenAndCache(unittest.TestCase):
             self.assertNotEqual(rc_bad, 0, "Codegen must fail closed when a stock_digest mismatches")
             self.assertIn("Stock instruction digest mismatch", out_bad)
             self.assertEqual(files_bad, {}, "No partial enhanced output may be emitted on digest failure")
+
+    def test_rewrite_planner_is_defined_or_refuses(self) -> None:
+        """Each (transform, instruction) pair has one defined rewrite; anything else refuses."""
+        from enhancement_package import EnhancementPackageError, plan_site_rewrite
+
+        def plan(transform: str, word: int) -> dict:
+            return plan_site_rewrite({"id": "S", "transform": transform}, word)
+
+        self.assertEqual(plan("count_x2", 0x2404001E), {"kind": "word", "word": 0x2404003C})
+        self.assertEqual(plan("step_x0.5", 0x3C053F80), {"kind": "word", "word": 0x3C053F00})
+        self.assertEqual(plan("step_x0.5", 0x24840001), {"kind": "gate"})  # addiu a0,a0,1
+        self.assertEqual(plan("count_x2", 0x2484FFFF), {"kind": "gate"})  # addiu a0,a0,-1
+        self.assertEqual(plan("retention_m_to_sqrt(m)", 0x3C023F40)["word"], 0x3C023F5E)
+        self.assertEqual(plan("gate_30hz", 0x0C000480), {"kind": "gate"})  # jal
+        self.assertEqual(plan("count_x2", 0xC4430010), {"kind": "scale_f_reg", "reg": 3, "factor": 2.0})
+        self.assertEqual(
+            plan("step_x0.5", 0x46041080),  # add.s f2,f2,f4 accumulates: the addend is scaled
+            {"kind": "scale_f_addend", "reg": 4, "factor": 0.5},
+        )
+        for transform, word in (
+            ("step_x0.5", 0xAFA40008),  # sw
+            ("count_x2", 0x3C040010),  # lui of a non-float value
+            ("count_x2", 0x0C000480),  # jal
+            ("count_x2", 0x2485FFFA),  # negative immediate
+            ("gate_30hz", 0xC4820008),  # gate on a load
+            ("step_x0.5", 0x4604103C),  # FPU compare
+            ("step_x0.5", 0x34841234),  # ori low half
+            ("count_x2", 0x44841000),  # mtc1
+            ("vblank_wait_2_to_1", 0x24020003),
+            ("decay_k_to_1-sqrt(1-k)", 0x3C023F80),  # 1.0 is outside (0, 1)
+        ):
+            with self.subTest(transform=transform, word=f"{word:08x}"):
+                with self.assertRaises(EnhancementPackageError):
+                    plan(transform, word)
 
     def test_aot_cache_epoch_separation_and_authentic_invariance(self) -> None:
         """With package off, AOT cache digest is untouched; with package on, it keys a distinct epoch."""

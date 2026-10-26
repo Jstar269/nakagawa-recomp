@@ -78,92 +78,40 @@ STALE_DETECT = False
 # they expand to ((void)0) and neither half changes behaviour on its own.
 NAN_TRAP = False
 
-# Active AOT enhancement package sites (addr -> resolved site dict).
-# Default empty dict preserves 100% byte-identical authentic emission.
+# Active AOT enhancement package sites (addr -> resolved site dict with its "rewrite").
+# Empty (the default) keeps authentic emission byte-identical.
 ENHANCEMENT_SITES: dict[int, dict] = {}
 ENHANCEMENT_PKG_META: dict | None = None
 
 
-def _enhancement_word(addr: int, w: int | None, elf=None) -> tuple[int | None, dict | None, str | None]:
-    """Return (effective_word, site, override_tag) for an instruction at addr."""
-    if w is None or not ENHANCEMENT_SITES or ADDRESS_SPACE.runtime_module:
-        return w, None, None
+def _enhancement_rewrite(addr: int) -> dict | None:
+    """The planned rewrite for a verified main-executable site, or None."""
+    if not ENHANCEMENT_SITES or ADDRESS_SPACE.runtime_module:
+        return None
     site = ENHANCEMENT_SITES.get(addr)
-    if site is None:
-        return w, None, None
-    next_w = read32(elf, addr + 4) if elf is not None else None
-    new_w, tag = enhancement_package.apply_site_transform_word(site, int(w), next_w)
-    if isinstance(w, RelocatedWord):
-        return w, site, tag
-    return new_w, site, tag
+    return None if site is None else site["rewrite"]
 
 
-def _emit_enhanced_noncontrol(addr: int, w: int, site: dict, tag: str | None, line: str) -> str:
-    """Wrap or adjust a non-control instruction C line when tag requires statement-level scaling."""
-    if tag is None:
-        return line
-    if tag == "gate_30hz":
-        return (
-            f"    {{ static uint8_t _nk_gate_{addr:08x} = 0u; "
-            f"_nk_gate_{addr:08x} ^= 1u; "
-            f"if (_nk_gate_{addr:08x}) {{\n"
-            f"    {line}\n"
-            f"    }} }}"
-        )
-    op = (w >> 26) & 0x3F
-    fn = w & 0x3F
-    rt_reg = (w >> 16) & 0x1F
-    rd_reg = (w >> 11) & 0x1F
-    fd_reg = (w >> 6) & 0x1F
-    fs_reg = (w >> 11) & 0x1F
-    if tag == "count_x2_stmt":
-        if op == 0x31:  # lwc1 ft, off(base) -> scale loaded float by 2.0f
-            return f"{line} s->f[{rt_reg}] *= 2.0f;"
-        if op in (0x20, 0x21, 0x23, 0x24, 0x25) and rt_reg != 0:  # integer load -> * 2
-            return f"{line} s->r[{rt_reg}] <<= 1;"
-        if op == 0x11 and ((w >> 21) & 0x1F) == 0x10:  # FPU op -> scale fd by 2.0f
-            return f"{line} s->f[{fd_reg}] *= 2.0f;"
-        return line
-    if tag == "step_x0.5_stmt":
-        if op == 0x31:  # lwc1 ft, off(base) -> scale loaded float by 0.5f
-            return f"{line} s->f[{rt_reg}] *= 0.5f;"
-        if op == 0x39:  # swc1 ft, off(base) -> scale stored float by 0.5f before store
-            return (
-                f"    {{ float _nk_saved_f = s->f[{rt_reg}]; s->f[{rt_reg}] *= 0.5f;\n"
-                f"    {line}\n"
-                f"      s->f[{rt_reg}] = _nk_saved_f; }}"
-            )
-        if op == 0x11 and ((w >> 21) & 0x1F) == 0x10 and fn == 0x00:  # add.s fd, fs, ft -> fd = fs + ft * 0.5f
-            ft_reg = (w >> 16) & 0x1F
-            return (
-                f"    {{ float _nk_saved_ft = s->f[{ft_reg}]; s->f[{ft_reg}] *= 0.5f;\n"
-                f"    {line}\n"
-                f"      s->f[{ft_reg}] = _nk_saved_ft; }}"
-            )
-        if op == 0x11 and ((w >> 21) & 0x1F) == 0x10:  # mul.s / mov.s / etc. -> scale fd by 0.5f
-            return f"{line} s->f[{fd_reg}] *= 0.5f;"
-        if op == 0x11 and ((w >> 21) & 0x1F) == 0x14 and fn == 0x20:  # cvt.s.w fd, fs -> scale fd by 0.5f
-            return f"{line} s->f[{fd_reg}] *= 0.5f;"
-        if op == 0 and fn in (0x20, 0x21) and rd_reg != 0:  # addu/add -> gate to 30 Hz
-            return (
-                f"    {{ static uint8_t _nk_gate_{addr:08x} = 0u; "
-                f"_nk_gate_{addr:08x} ^= 1u; "
-                f"if (_nk_gate_{addr:08x}) {{\n"
-                f"    {line}\n"
-                f"    }} }}"
-            )
-        return line
-    if tag == "prob_x0.5_stmt":
-        if op == 0x31:
-            return f"{line} s->f[{rt_reg}] *= 0.5f;"
-        if op == 0x11 and ((w >> 21) & 0x1F) == 0x10:
-            return f"{line} s->f[{fd_reg}] *= 0.5f;"
-        return line
-    if tag == "decay_sqrt_stmt":
-        if op == 0x11 and ((w >> 21) & 0x1F) == 0x10:
-            return f"{line} s->f[{fd_reg}] = sqrtf(fmaxf(0.0f, s->f[{fd_reg}]));"
-        return line
-    return line
+def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
+    """Both forms of one rewritten site: the stock statement runs unless the
+    experimental toggle is on at run time (nk_enhancement_on())."""
+    kind = rw["kind"]
+    if kind == "word":
+        enh = word_line
+    elif kind == "gate":
+        enh = f"if (nk_enhancement_gate_30hz()) {{ {stock_line.strip()} }}"
+    elif kind == "scale_int_reg":
+        enh = f"{stock_line.strip()} s->r[{rw['reg']}] <<= 1;"
+    elif kind == "scale_f_reg":
+        enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
+    elif kind in ("scale_f_store", "scale_f_addend"):
+        r = rw["reg"]
+        enh = (f"{{ float _nk_keep = s->f[{r}]; s->f[{r}] *= {rw['factor']!r}f; "
+               f"{stock_line.strip()} s->f[{r}] = _nk_keep; }}")
+    else:
+        raise ValueError(f"unknown enhancement rewrite kind {kind!r}")
+    return (f"    if (nk_enhancement_on()) {{ {enh.strip()} }}\n"
+            f"    else {{ {stock_line.strip()} }}")
 
 
 class RelocatedWord(int):
@@ -605,7 +553,7 @@ def build_emitted_ownership_map(cfg_report, catalog, emitted):
     }
 
 
-def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=()):
+def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), enhancement=False):
     """Write the shared generated declarations with the runtime ABI contract."""
     if resume_owners is None:
         resume_owners = {}
@@ -626,6 +574,13 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=()):
             f.write(f"extern uint32_t {module.base_symbol};\n")
             for a, _nwords in module.functions:
                 f.write(f"void {module.prefix}_{a:08x}(CpuState *s);\n")
+        if enhancement:
+            # Enhancement-package builds only: rewritten sites run their stock form
+            # unless SR_EXPERIMENTAL_60HZ=1 opts in at launch, and gated sites run on
+            # even display vblanks (alternate updates of a once-per-vblank loop).
+            f.write("\nint nk_enhancement_on(void);\n")
+            f.write("static inline int nk_enhancement_gate_30hz(void) "
+                    "{ return (sr_display_vcount() & 1u) == 0u; }\n")
         f.write("#endif\n")
 
 
@@ -2142,10 +2097,7 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
             pc = next_pc
     return insns, labels, continuations
 
-def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None, elf=None):
-    w_eff, site, tag = _enhancement_word(addr, w, elf=elf)
-    if w_eff is not None:
-        w = w_eff
+def _plain_line(addr, w, trace_w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     try:
         eff, saddr, ssize = effect(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
                                    delay_branch_pc=delay_branch_pc)
@@ -2158,12 +2110,21 @@ def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None,
         eff = _vfpu_interp_stmt(addr, w)
         saddr, ssize = None, 0
     if saddr is SELF_TRACED:
-        line = f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff}"
-    else:
-        line = f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
-    if site is not None and tag is not None:
-        return _emit_enhanced_noncontrol(addr, w, site, tag, line)
-    return line
+        return f"    sr_begin(s, {G(addr)}, 0x{trace_w:08x}u); {eff}"
+    return f"    sr_begin(s, {G(addr)}, 0x{trace_w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
+
+def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
+    line = _plain_line(addr, w, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+                       delay_branch_pc=delay_branch_pc)
+    rw = _enhancement_rewrite(addr) if w is not None else None
+    if rw is None:
+        return line
+    word_line = None
+    if rw["kind"] == "word":
+        # The trace hook keeps the stock word: guest memory still holds it.
+        word_line = _plain_line(addr, rw["word"], w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+                                delay_branch_pc=delay_branch_pc)
+    return _enhanced_line(rw, line, word_line)
 
 def _cop0_fields(w):
     """Split a COP0 word into (rs, rt, rd, sel)."""
@@ -2181,7 +2142,7 @@ def _flow_return(resumable=False):
     return "if (s->flow_kind != 0u) { return; }"
 
 def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
-                     resumable=False, indent="    ", elf=None):
+                     resumable=False, indent="    "):
     """Emission for one branch delay slot (spec 3.4).
 
     Ordinary words emit exactly as before. A delay-slot SYSCALL/BREAK in LLE
@@ -2233,7 +2194,7 @@ def delay_slot_lines(ds, dsw, branch_pc, hst_profile=False, lle_cpu=False,
             f"{indent}{_flow_return(resumable)}",
         ]
     return [normal_line(ds, dsw, hst_profile=hst_profile, lle_cpu=lle_cpu,
-                        delay_branch_pc=branch_pc if lle_cpu else None, elf=elf)]
+                        delay_branch_pc=branch_pc if lle_cpu else None)]
 
 # ---------------------------------------------------------------------------
 # Offline static verification trace simulation (--static-verify).
@@ -2763,7 +2724,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             )
 
         if not is_control(w):
-            out.append(normal_line(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu, elf=elf))
+            out.append(normal_line(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu))
             if _is_cop0_move(w):
                 # MFC0/MTC0 can raise (privilege/reserved encoding): propagate
                 # the resulting flow before any native continuation (spec 3.4).
@@ -2791,9 +2752,9 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if op == 3:  # jal
             ADDRESS_SPACE.check_jump(addr, w)
             target = jump_target(addr, w)
-            _, _jal_site, _jal_tag = _enhancement_word(addr, w, elf=elf)
+            _jal_rw = _enhancement_rewrite(addr)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable, elf=elf))
+            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             if target in known or target in resume_owners:
                 _call_stmt = f"    {emit_checked_body_call(ADDRESS_SPACE.symbol(target, resume_owners), addr)}"
                 if lle_cpu:
@@ -2803,13 +2764,13 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                     f"    dispatch_call(s, {G(target)}, "
                     f"{G((addr + 8) & 0xFFFFFFFF)});"
                 )
-            if _jal_site is not None and _jal_tag == "gate_30hz":
+            if _jal_rw is not None:
+                # gate_30hz on a call (the only rewrite a call site plans): the delay
+                # slot above always runs; the call is gated while the toggle is on.
                 out.append(
-                    f"    {{ static uint8_t _nk_gate_{addr:08x} = 0u; "
-                    f"_nk_gate_{addr:08x} ^= 1u; "
-                    f"if (_nk_gate_{addr:08x}) {{\n"
-                    f"    {_call_stmt}\n"
-                    f"    }} }}"
+                    f"    if (!nk_enhancement_on() || nk_enhancement_gate_30hz()) {{\n"
+                    f"{_call_stmt}\n"
+                    f"    }}"
                 )
             else:
                 out.extend(_call_stmt.split("\n"))
@@ -2828,7 +2789,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             out.append(f"    {{ uint32_t _t = {R(a)};")
             out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
-                                        indent="      ", elf=elf))
+                                        indent="      "))
             if d != 0:
                 out.append(
                     f"      dispatch_call(s, _t, {G((addr + 8) & 0xFFFFFFFF)}); }}"
@@ -2859,12 +2820,12 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                     out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
                     out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile,
                                                 lle_cpu=lle_cpu, resumable=resumable,
-                                                indent="      ", elf=elf))
+                                                indent="      "))
                 else:
                     out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
                     out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile,
                                                 lle_cpu=lle_cpu, resumable=resumable,
-                                                indent="      ", elf=elf))
+                                                indent="      "))
                 out.append(f"      {emit_host_return(resumable, stack_census=stack_census)} }}")
             elif ds_is_syscall and dsw is not None and not lle_cpu:
                 out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
@@ -2874,21 +2835,21 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             elif ds_is_syscall and dsw is not None:
                 # LLE: the delay-slot syscall raises with BD set (spec 3.4).
                 out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable, elf=elf))
+                out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             else:
                 # Computed return/tail-call: same contract as jalr above -- the
                 # target register is read at the transfer, not after the slot.
                 out.append(f"    {{ uint32_t _t = {R(a)};")
                 out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
-                                            indent="      ", elf=elf))
+                                            indent="      "))
                 out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             continue
         if op == 2:  # j
             ADDRESS_SPACE.check_jump(addr, w)
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable, elf=elf))
+            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             if target == addr:
                 # Self-loop (a spin wait): the native call below would recurse on the host
                 # stack once per iteration. Keep it a backward goto with the preemption point.
@@ -2909,9 +2870,6 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         link = f"s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; " if is_link(w) else ""
         cond = cond_expr(w)
         inject_stmt = ""
-        _, _br_site, _br_tag = _enhancement_word(addr, w, elf=elf)
-        if _br_site is not None and _br_tag == "gate_30hz":
-            inject_stmt += f" {{ static uint8_t _nk_gate_{addr:08x} = 0u; _nk_gate_{addr:08x} ^= 1u; if (!_nk_gate_{addr:08x}) _c = 1u; }}"
         if hst_profile and addr in GUEST_PATCHES:
             p = GUEST_PATCHES[addr]
             if p["kind"] == "cond":
@@ -2924,7 +2882,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
 
         out.append(f"    {{ uint32_t _c = {cond};{inject_stmt}")
         out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
-        _delay = delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable, elf=elf)
+        _delay = delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable)
         _delay_inline = " ".join(line.strip() for line in _delay)
         if is_linked_call(elf, addr, w, ranges):
             # bltzal/bgezal (bal = bgezal $zero) to a callable is a CALL (#968), inside
@@ -3444,6 +3402,15 @@ def main(argv):
                 read_words_fn=_read_words,
                 known_functions=sorted(known),
             )
+            for site in ENHANCEMENT_SITES.values():
+                stock = site["stock_words"][0]
+                if is_control(stock) and not (
+                    (stock >> 26) == 3 and site["rewrite"]["kind"] == "gate"
+                ):
+                    raise enhancement_package.EnhancementPackageError(
+                        f"site {site['id']}: only a jal call site can be rewritten among "
+                        "control transfers (fail-closed refusal)"
+                    )
             ENHANCEMENT_PKG_META = {
                 "id": pkg_validated["id"],
                 "version": pkg_validated["version"],
@@ -3909,7 +3876,8 @@ def main(argv):
 
     # Write the shared functions header
     funcs_h_path = f"{base_name}_funcs.h"
-    write_funcs_header(funcs_h_path, emitted, resume_owners, module_translations)
+    write_funcs_header(funcs_h_path, emitted, resume_owners, module_translations,
+                       enhancement=ENHANCEMENT_PKG_META is not None)
 
     # The analyzer, not mapped-RAM reachability, owns executable-byte authority.
     # Preserve its exact end-exclusive ranges in generated registration. Exact
@@ -3941,7 +3909,17 @@ def main(argv):
             f"sites={ENHANCEMENT_PKG_META['sites_count']} "
             f"sha256={ENHANCEMENT_PKG_META['digest']} */"
         )
-        main_out.append("")
+        main_out += [
+            "int nk_enhancement_on(void) {",
+            "    static int on = -1;",
+            "    if (on < 0) {",
+            '        const char *v = getenv("SR_EXPERIMENTAL_60HZ");',
+            "        on = (v && v[0] == '1' && v[1] == '\\0') ? 1 : 0;",
+            "    }",
+            "    return on;",
+            "}",
+            "",
+        ]
     census_entries = sorted({a for a in emitted if a not in resume_owners})
     if stack_census:
         census_values = census_entries or [0]

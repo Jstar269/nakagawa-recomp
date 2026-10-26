@@ -168,7 +168,7 @@
             "minimum": 1,
             "maximum": 16,
             "default": 1,
-            "description": "Number of contiguous 32-bit stock instruction words covered by stock_digest."
+            "description": "Number of contiguous 32-bit stock instruction words covered by stock_digest; only 1 has a defined rewrite today."
           },
           "transform": {
             "type": "string",
@@ -178,7 +178,8 @@
               "decay_k_to_1-sqrt(1-k)",
               "probability_per_update_x0.5",
               "gate_30hz",
-              "vblank_wait_2_to_1"
+              "vblank_wait_2_to_1",
+              "retention_m_to_sqrt(m)"
             ],
             "description": "Declarative frame-rate rescale transform class."
           }

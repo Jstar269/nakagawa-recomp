@@ -4279,10 +4279,6 @@ def main() -> int:
     p_launch.add_argument("--fps-cap", type=int, default=-1,
                           help="Host presentation cap (-1 uses PSP scanout pacing)")
     p_launch.add_argument("--software", action="store_true", help="Use software GE rasterizer")
-    p_launch.add_argument(
-        "--experimental-60hz", action="store_true", default=False,
-        help="Experimental: opt in to native 60 Hz frame-rate rescaled game logic (default: off / authentic 30 Hz)",
-    )
     p_launch.add_argument("--user-data-root", type=Path,
                           help="Override player per-user data directory (the imported fonts live under it)")
     p_launch.set_defaults(func=cmd_launch)
