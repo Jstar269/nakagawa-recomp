@@ -26,6 +26,8 @@
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
+#include <fcntl.h>
+#include <io.h>
 #endif
 
 #if defined(_MSC_VER)
@@ -61,6 +63,34 @@ typedef struct {
 
 static FILE *xb_fopen(const char *path, const char *mode);
 
+/* Opens the archive for the cached member-read handle. On Windows the handle shares
+ * delete as well as read and write, so a mounted archive can still be deleted or
+ * replaced, as on POSIX; the next read then fails its size check. */
+static FILE *xb_fopen_shared_read(const char *path) {
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wpath[32768];
+    if (!path ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath,
+                            (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0) {
+        return NULL;
+    }
+    HANDLE handle = CreateFileW(wpath, GENERIC_READ,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (handle == INVALID_HANDLE_VALUE) return NULL;
+    int fd = _open_osfhandle((intptr_t)handle, _O_RDONLY | _O_BINARY);
+    if (fd < 0) {
+        CloseHandle(handle);
+        return NULL;
+    }
+    FILE *file = _fdopen(fd, "rb");
+    if (!file) _close(fd); /* also closes the OS handle */
+    return file;
+#else
+    return fopen(path, "rb");
+#endif
+}
+
 static void xb_close_file_handle(NkXbArchive *archive) {
     if (archive && archive->file_handle) {
         fclose(archive->file_handle);
@@ -68,14 +98,20 @@ static void xb_close_file_handle(NkXbArchive *archive) {
     }
 }
 
+/* Member reads reuse one handle per archive instead of a stat, fopen and fclose per
+ * read; it is opened on the first read and closed on a read error, a size change,
+ * nk_xb_release_file_handle and nk_xb_close. */
 static FILE *xb_get_file_handle(NkXbArchive *archive) {
     if (!archive || !archive->file_backed || !archive->file_path) return NULL;
     if (!archive->file_handle) {
-        archive->file_handle = xb_fopen(archive->file_path, "rb");
+        archive->file_handle = xb_fopen_shared_read(archive->file_path);
     }
     return archive->file_handle;
 }
 
+void nk_xb_release_file_handle(NkXbArchive *archive) {
+    xb_close_file_handle(archive);
+}
 
 static void xb_error(char *message, size_t message_size, const char *format, ...) {
     if (!message || message_size == 0) return;
@@ -1266,6 +1302,9 @@ NkResult nk_xb_open_file_lazy(const char *path, bool big_endian,
         out_archive->data = NULL;
         out_archive->data_size = 0u;
         out_archive->owns_data = false;
+        /* A mount holds no descriptor: a title can mount hundreds of archives. The
+         * first member read opens the shared handle. */
+        xb_close_file_handle(out_archive);
     }
     if (result != NK_OK) nk_xb_close(out_archive);
     return result;

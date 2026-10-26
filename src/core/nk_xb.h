@@ -92,6 +92,8 @@ NkResult nk_xb_open_memory(const void *data, size_t data_size,
                            const NkXbLimits *limits, NkXbArchive *out_archive,
                            char *error_message, size_t error_message_size);
 void nk_xb_close(NkXbArchive *archive);
+/* Closes a file-backed archive's cached member-read handle; the next read reopens it. */
+void nk_xb_release_file_handle(NkXbArchive *archive);
 
 /* Read one already-validated entry into a caller-owned buffer. The destination
  * must be large enough for entry->expanded_size; no output allocation is
