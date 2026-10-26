@@ -5,6 +5,7 @@
   "source_snapshot_date": "2026-10-23",
   "platform": "Windows x64, UCRT64",
   "total_download_bytes": 101848305,
+  "total_source_bytes": 445460414,
   "artifacts": [
     {
       "id": "cpython-embed-amd64",
@@ -25,6 +26,7 @@
       "archive_format": "zip",
       "install_subdir": "python",
       "notice_location": "archive LICENSE.txt and bundled license notices",
+      "source": "cpython",
       "status": "ready"
     },
     {
@@ -49,6 +51,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-binutils",
       "status": "ready"
     },
     {
@@ -74,6 +77,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-brotli",
       "status": "ready"
     },
     {
@@ -98,6 +102,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-bzip2",
       "status": "ready"
     },
     {
@@ -122,6 +127,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-gcc",
       "status": "ready"
     },
     {
@@ -146,6 +152,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-crt",
       "status": "ready"
     },
     {
@@ -170,6 +177,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-freetype",
       "status": "ready"
     },
     {
@@ -194,6 +202,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-gcc",
       "status": "ready"
     },
     {
@@ -218,6 +227,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-gettext",
       "status": "ready"
     },
     {
@@ -242,6 +252,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-glib2",
       "status": "ready"
     },
     {
@@ -266,6 +277,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/include/gmp.h licence header (the package has no share/licenses/ entry); the GFDL-1.3-or-later manual ucrt64/share/info/gmp.info includes its licence",
+      "source": "mingw-w64-gmp",
       "status": "ready"
     },
     {
@@ -290,6 +302,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-graphite2",
       "status": "ready"
     },
     {
@@ -314,6 +327,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-harfbuzz",
       "status": "ready"
     },
     {
@@ -338,6 +352,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-headers",
       "status": "ready"
     },
     {
@@ -362,6 +377,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-isl",
       "status": "ready"
     },
     {
@@ -386,6 +402,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-gcc",
       "status": "ready"
     },
     {
@@ -410,6 +427,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-gcc",
       "status": "ready"
     },
     {
@@ -434,6 +452,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-libiconv",
       "status": "ready"
     },
     {
@@ -458,6 +477,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-libpng",
       "status": "ready"
     },
     {
@@ -482,6 +502,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-gcc",
       "status": "ready"
     },
     {
@@ -506,6 +527,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-gcc",
       "status": "ready"
     },
     {
@@ -530,6 +552,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-winpthreads",
       "status": "ready"
     },
     {
@@ -554,6 +577,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-make",
       "status": "ready"
     },
     {
@@ -578,6 +602,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-mpc",
       "status": "ready"
     },
     {
@@ -602,6 +627,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-mpfr",
       "status": "ready"
     },
     {
@@ -626,6 +652,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-pcre2",
       "status": "ready"
     },
     {
@@ -650,6 +677,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-sdl3",
       "status": "ready"
     },
     {
@@ -674,6 +702,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-sdl3-ttf",
       "status": "ready"
     },
     {
@@ -698,6 +727,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/tzdata/LICENSE (upstream tz LICENSE: the tz code and data are in the public domain)",
+      "source": "mingw-w64-tzdata",
       "status": "ready"
     },
     {
@@ -722,6 +752,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-vulkan-headers",
       "status": "ready"
     },
     {
@@ -746,6 +777,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-vulkan-loader",
       "status": "ready"
     },
     {
@@ -770,6 +802,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "none in archive (it installs only ucrt64/lib/default-manifest.o); the MSYS2 PKGBUILD declares license=('custom:Public Domain')",
+      "source": "mingw-w64-windows-default-manifest",
       "status": "ready"
     },
     {
@@ -794,6 +827,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-winpthreads",
       "status": "ready"
     },
     {
@@ -818,6 +852,7 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-zlib",
       "status": "ready"
     },
     {
@@ -842,7 +877,531 @@
       "archive_format": "tar.zst",
       "install_subdir": "msys64",
       "notice_location": "archive ucrt64/share/licenses/",
+      "source": "mingw-w64-zstd",
       "status": "ready"
+    }
+  ],
+  "sources": [
+    {
+      "id": "cpython",
+      "name": "CPython source release",
+      "version": "3.15.1",
+      "url": "https://www.python.org/ftp/python/3.15.1/Python-3.15.1.tar.xz",
+      "allowed_hosts": [
+        "www.python.org"
+      ],
+      "filename": "Python-3.15.1.tar.xz",
+      "size_bytes": 35789408,
+      "sha256": "673ae7232d84c894729882c8257d300ef2d26523911bfd3917ec8ce7f526f99b",
+      "sha256_source": {
+        "url": "https://www.python.org/api/v2/downloads/release_file/5839/",
+        "method": "python.org release_file API sha256_sum",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-binutils",
+      "name": "MSYS2 source package mingw-w64-binutils",
+      "version": "2.47-4",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-binutils-2.47-4.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-binutils-2.47-4.src.tar.zst",
+      "size_bytes": 39012346,
+      "sha256": "e829fa1387f3f1ab14187c34c94e180f6d2da2b6aad8acdf6b1597abb4c0eb2f",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-binutils-2.47-4.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-brotli",
+      "name": "MSYS2 source package mingw-w64-brotli",
+      "version": "1.2.1-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-brotli-1.2.1-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-brotli-1.2.1-1.src.tar.zst",
+      "size_bytes": 645162,
+      "sha256": "3dfc69b88a111ef4809928e81d4cb650ea9c7ba5da4ebd1bf28d6effdeeb6bd6",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-brotli-1.2.1-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-bzip2",
+      "name": "MSYS2 source package mingw-w64-bzip2",
+      "version": "1.0.8-4",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-bzip2-1.0.8-4.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-bzip2-1.0.8-4.src.tar.zst",
+      "size_bytes": 818825,
+      "sha256": "fd9360917314d1cbccb3cb15ed8450d1e56b8a9f733b606504aba52c52159e54",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-bzip2-1.0.8-4.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-crt",
+      "name": "MSYS2 source package mingw-w64-crt",
+      "version": "14.0.0.r495.g63ebe6cdb-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-crt-14.0.0.r495.g63ebe6cdb-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-crt-14.0.0.r495.g63ebe6cdb-1.src.tar.zst",
+      "size_bytes": 55146965,
+      "sha256": "08b00d1bc565a2430d7559e40116eccc9137dd41431475d125933cd32a10e769",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-crt-14.0.0.r495.g63ebe6cdb-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-freetype",
+      "name": "MSYS2 source package mingw-w64-freetype",
+      "version": "2.15.0-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-freetype-2.15.0-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-freetype-2.15.0-1.src.tar.zst",
+      "size_bytes": 2720468,
+      "sha256": "2f09c60b72bd249642d055aa5a34edf2577392e592415f3f4730dd37990b47ad",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-freetype-2.15.0-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-gcc",
+      "name": "MSYS2 source package mingw-w64-gcc",
+      "version": "16.2.0-6",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-gcc-16.2.0-6.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-gcc-16.2.0-6.src.tar.zst",
+      "size_bytes": 107229138,
+      "sha256": "a901d8afb78438abcff9ed020cd9aa9431db76de1992171c2454c3c07ad289e8",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-gcc-16.2.0-6.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-gettext",
+      "name": "MSYS2 source package mingw-w64-gettext",
+      "version": "1.0-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-gettext-1.0-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-gettext-1.0-1.src.tar.zst",
+      "size_bytes": 10267655,
+      "sha256": "cca0d0c8f60353faccc5ad40405240014e4a7ccc8b1c6ca9f4626aef3097d26e",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-gettext-1.0-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-glib2",
+      "name": "MSYS2 source package mingw-w64-glib2",
+      "version": "2.90.1-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-glib2-2.90.1-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-glib2-2.90.1-1.src.tar.zst",
+      "size_bytes": 5875958,
+      "sha256": "ac3bc00e4079e6b51dd0a1fb9ccc420fff033b4e9095e4487dbf6cf01312cee6",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-glib2-2.90.1-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-gmp",
+      "name": "MSYS2 source package mingw-w64-gmp",
+      "version": "6.3.0-2",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-gmp-6.3.0-2.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-gmp-6.3.0-2.src.tar.zst",
+      "size_bytes": 2097066,
+      "sha256": "f288f944fd9609db220bcf6a8dd0703a5674eeb906ef35eb8485bb8192135994",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-gmp-6.3.0-2.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-graphite2",
+      "name": "MSYS2 source package mingw-w64-graphite2",
+      "version": "1.3.15-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-graphite2-1.3.15-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-graphite2-1.3.15-1.src.tar.zst",
+      "size_bytes": 13317053,
+      "sha256": "eb76ce274c68ea6bad0883144c21e44a803ec94fed9dc0f6584feb0a8415a1d6",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-graphite2-1.3.15-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-harfbuzz",
+      "name": "MSYS2 source package mingw-w64-harfbuzz",
+      "version": "14.6.0-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-harfbuzz-14.6.0-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-harfbuzz-14.6.0-1.src.tar.zst",
+      "size_bytes": 20299472,
+      "sha256": "6c02c446b27412717a760eca77ac6ed997b294fdc390a5e5f46760ebda8a7c64",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-harfbuzz-14.6.0-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-headers",
+      "name": "MSYS2 source package mingw-w64-headers",
+      "version": "14.0.0.r495.g63ebe6cdb-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-headers-14.0.0.r495.g63ebe6cdb-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-headers-14.0.0.r495.g63ebe6cdb-1.src.tar.zst",
+      "size_bytes": 55137484,
+      "sha256": "1de0821540e27952a7c4361570238cb919e8e6ddc18cf4ab77503155e4e59bee",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-headers-14.0.0.r495.g63ebe6cdb-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-isl",
+      "name": "MSYS2 source package mingw-w64-isl",
+      "version": "0.28-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-isl-0.28-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-isl-0.28-1.src.tar.zst",
+      "size_bytes": 1944224,
+      "sha256": "889246cdeb8b3f731010b2c63edc16ee75a7a0e7336d267fa071710d11751b05",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-isl-0.28-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-libiconv",
+      "name": "MSYS2 source package mingw-w64-libiconv",
+      "version": "1.19-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-libiconv-1.19-1.src.tar.zst",
+      "size_bytes": 5131029,
+      "sha256": "74428280c17094da5b702c29b2e1a0abae59556ea5dfdd65705cc8ccc1e000fb",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-libpng",
+      "name": "MSYS2 source package mingw-w64-libpng",
+      "version": "1.6.59-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libpng-1.6.59-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-libpng-1.6.59-1.src.tar.zst",
+      "size_bytes": 1611403,
+      "sha256": "2b836f8565a3889ed9bb86f9724074ae274f109e2bcd882dd1f080ea4da8a41a",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-libpng-1.6.59-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-make",
+      "name": "MSYS2 source package mingw-w64-make",
+      "version": "4.4.1-5",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-make-4.4.1-5.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-make-4.4.1-5.src.tar.zst",
+      "size_bytes": 2351870,
+      "sha256": "d1f3f824b2e642f02d81067a09c7a8fbdbe73967ce3827d4975d63b6fee6bed6",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-make-4.4.1-5.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-mpc",
+      "name": "MSYS2 source package mingw-w64-mpc",
+      "version": "1.4.1-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-mpc-1.4.1-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-mpc-1.4.1-1.src.tar.zst",
+      "size_bytes": 533531,
+      "sha256": "655ed4227108f08f129a0900850ab16330c2e2ad45105900d4327f036ace3a5f",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-mpc-1.4.1-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-mpfr",
+      "name": "MSYS2 source package mingw-w64-mpfr",
+      "version": "4.2.2-3",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-mpfr-4.2.2-3.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-mpfr-4.2.2-3.src.tar.zst",
+      "size_bytes": 1507413,
+      "sha256": "c8c9b1e091b744165b150d59b7599bcf014fe9c3ae21df98fd3807f05f702c60",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-mpfr-4.2.2-3.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-pcre2",
+      "name": "MSYS2 source package mingw-w64-pcre2",
+      "version": "10.49-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-pcre2-10.49-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-pcre2-10.49-1.src.tar.zst",
+      "size_bytes": 2183818,
+      "sha256": "b02f0d5070b7d7f6db5c8ba9b009f28c1a07b9b52aaf7964dc0c8b098e4088d1",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-pcre2-10.49-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-sdl3",
+      "name": "MSYS2 source package mingw-w64-sdl3",
+      "version": "3.4.18-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-sdl3-3.4.18-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-sdl3-3.4.18-1.src.tar.zst",
+      "size_bytes": 15571951,
+      "sha256": "33a2c5bee4eaf4b62c62aa76ca67927211d194d2ddee2cfd66aea4aea2756a52",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-sdl3-3.4.18-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-sdl3-ttf",
+      "name": "MSYS2 source package mingw-w64-sdl3-ttf",
+      "version": "3.2.2-3",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-sdl3-ttf-3.2.2-3.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-sdl3-ttf-3.2.2-3.src.tar.zst",
+      "size_bytes": 1488741,
+      "sha256": "36eae27ccc3b5e044e89c5bed91e1cf829f0e3cf43a96ad15cd385dcdeb885a7",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-sdl3-ttf-3.2.2-3.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-tzdata",
+      "name": "MSYS2 source package mingw-w64-tzdata",
+      "version": "2026e-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-tzdata-2026e-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-tzdata-2026e-1.src.tar.zst",
+      "size_bytes": 693452,
+      "sha256": "6f3cae6bb0378b3ef5d8260d3a2b616aff7d3dcaaba51d7190964e6e498cc72e",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-tzdata-2026e-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-vulkan-headers",
+      "name": "MSYS2 source package mingw-w64-vulkan-headers",
+      "version": "1~1.4.363.0-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-vulkan-headers-1~1.4.363.0-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-vulkan-headers-1~1.4.363.0-1.src.tar.zst",
+      "size_bytes": 3358958,
+      "sha256": "8becfcd6d5ec4a744adfcac7c12f6363e45a48abe3af75003baacf344e8caaa6",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-vulkan-headers-1~1.4.363.0-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-vulkan-loader",
+      "name": "MSYS2 source package mingw-w64-vulkan-loader",
+      "version": "1~1.4.363.0-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-vulkan-loader-1~1.4.363.0-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-vulkan-loader-1~1.4.363.0-1.src.tar.zst",
+      "size_bytes": 1850297,
+      "sha256": "61ed2ebe6007c464af1687e4ecad93199e9faeb3d8dd4d3c24e5b2576f730c9b",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-vulkan-loader-1~1.4.363.0-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-windows-default-manifest",
+      "name": "MSYS2 source package mingw-w64-windows-default-manifest",
+      "version": "20260815-1",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-windows-default-manifest-20260815-1.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-windows-default-manifest-20260815-1.src.tar.zst",
+      "size_bytes": 1973,
+      "sha256": "bed6d206e13c6ef0149f59fb7ed0a20c8665b8f39297247aded467860830f954",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-windows-default-manifest-20260815-1.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-winpthreads",
+      "name": "MSYS2 source package mingw-w64-winpthreads",
+      "version": "14.0.0.r495.g63ebe6cdb-2",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r495.g63ebe6cdb-2.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-winpthreads-14.0.0.r495.g63ebe6cdb-2.src.tar.zst",
+      "size_bytes": 55146369,
+      "sha256": "876d54338dae4e3b2ca84c4fe20bddc9274dfd827374c092ffb201e948fd9d3d",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r495.g63ebe6cdb-2.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-zlib",
+      "name": "MSYS2 source package mingw-w64-zlib",
+      "version": "1.3.2-2",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-zlib-1.3.2-2.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-zlib-1.3.2-2.src.tar.zst",
+      "size_bytes": 1326375,
+      "sha256": "eef69dea52357e01b272d6fd6dc4d7c0773f71260cb7bcde6047c8c383518db3",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-zlib-1.3.2-2.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
+    },
+    {
+      "id": "mingw-w64-zstd",
+      "name": "MSYS2 source package mingw-w64-zstd",
+      "version": "1.5.7-2",
+      "url": "https://repo.msys2.org/mingw/sources/mingw-w64-zstd-1.5.7-2.src.tar.zst",
+      "allowed_hosts": [
+        "repo.msys2.org"
+      ],
+      "filename": "mingw-w64-zstd-1.5.7-2.src.tar.zst",
+      "size_bytes": 2402010,
+      "sha256": "306797282df799e95d550e6d0bb4b0a7b848027b8e13893a24236e060837c217",
+      "sha256_source": {
+        "signature_url": "https://repo.msys2.org/mingw/sources/mingw-w64-zstd-1.5.7-2.src.tar.zst.sig",
+        "method": "detached package signature verified with gpgv against the official MSYS2 keyring; SHA-256 of the verified file",
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
+      }
     }
   ],
   "python_runtime": {

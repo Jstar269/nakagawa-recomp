@@ -17,8 +17,10 @@ import sys
 import tarfile
 import tempfile
 import threading
+from typing import Callable
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlsplit
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -29,9 +31,12 @@ from nk_core.prereq_fetcher import (
     default_data_root,
     download_verified_item,
     install_items,
+    _pinned_sources,
     main as fetcher_main,
     stage_bundle,
+    stage_sources,
     verify_bundle,
+    verify_source_archive,
 )
 
 
@@ -355,7 +360,9 @@ class TestPrerequisiteFetcher(unittest.TestCase):
 
     # ---- Release bundle (#1285) ----------------------------------------------
 
-    def bundle_manifest(self, *, msys_members: dict[str, bytes] | None = None) -> Path:
+    def bundle_manifest(self, *, msys_members: dict[str, bytes] | None = None,
+                        edit: Callable[[dict], None] | None = None) -> Path:
+        """A two-artifact manifest served by the test server, with a pinned source for each."""
         python_zip = io.BytesIO()
         with zipfile.ZipFile(python_zip, "w") as archive:
             archive.writestr("python.exe", b"synthetic python\n")
@@ -377,9 +384,10 @@ class TestPrerequisiteFetcher(unittest.TestCase):
                 link.linkname = "gcc.exe"
                 archive.addfile(link)
         artifacts = []
-        for item_id, path, body, fmt, subdir in (
-            ("cpython-embed-amd64", "/python.zip", python_zip.getvalue(), "zip", "python"),
-            ("mingw-w64-ucrt-x86_64-gcc", "/gcc.pkg.tar.gz", msys_tar.getvalue(), "tar.gz", "msys64"),
+        for item_id, path, body, fmt, subdir, source in (
+            ("cpython-embed-amd64", "/python.zip", python_zip.getvalue(), "zip", "python", "cpython"),
+            ("mingw-w64-ucrt-x86_64-gcc", "/gcc.pkg.tar.gz", msys_tar.getvalue(), "tar.gz", "msys64",
+             "mingw-w64-gcc"),
         ):
             _PayloadHandler.payloads[path] = body
             artifacts.append({
@@ -388,10 +396,25 @@ class TestPrerequisiteFetcher(unittest.TestCase):
                 "allowed_hosts": ["127.0.0.1"], "filename": path.lstrip("/"),
                 "size_bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(),
                 "license": "GPL-3.0-or-later", "archive_format": fmt, "install_subdir": subdir,
-                "status": "ready",
+                "source": source, "status": "ready",
             })
+        sources = []
+        for source_id, filename, body in (
+            ("cpython", "Python-1.0-test.tar.xz", b"synthetic CPython source release\n"),
+            ("mingw-w64-gcc", "mingw-w64-gcc-1.0-test.src.tar.zst", b"synthetic gcc source package\n"),
+        ):
+            _PayloadHandler.payloads[f"/sources/{filename}"] = body
+            sources.append({
+                "id": source_id, "name": source_id, "version": "1.0-test",
+                "url": f"http://127.0.0.1:{self.server.server_port}/sources/{filename}",
+                "allowed_hosts": ["127.0.0.1"], "filename": filename,
+                "size_bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(),
+            })
+        data = {"schema_version": 1, "artifacts": artifacts, "sources": sources}
+        if edit:
+            edit(data)
         manifest = self.root / f"prereq_manifest_{len(list(self.root.glob('prereq_manifest_*')))}.json"
-        manifest.write_text(json.dumps({"schema_version": 1, "artifacts": artifacts}), encoding="utf-8")
+        manifest.write_text(json.dumps(data), encoding="utf-8")
         return manifest
 
     def test_bundle_stages_the_per_user_layout_with_a_full_inventory(self) -> None:
@@ -414,6 +437,7 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         self.assertEqual(sorted(listed), [
             "msys64/ucrt64/bin/cc.exe", "msys64/ucrt64/bin/gcc.exe",
             "msys64/ucrt64/bin/mingw32-make.exe", "msys64/ucrt64/share/licenses/gcc/COPYING",
+            "notices/SOURCES.txt",
             "notices/cpython-embed-amd64/LICENSE.txt",
             "notices/mingw-w64-ucrt-x86_64-gcc/ucrt64/share/licenses/gcc/COPYING",
             "python/LICENSE.txt", "python/python.exe",
@@ -514,6 +538,224 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         with patch("sys.stdout", out):
             self.assertEqual(fetcher_main(["--manifest", str(manifest), "--bundle-dest", str(self.root / "x")]), 2)
         self.assertEqual(json.loads(out.getvalue())["code"], "BUNDLE_CACHE_REJECTED")
+
+    def test_bundle_strips_documentation_and_keeps_every_licence_file(self) -> None:
+        # Owner decision (2026-10-26, #1285): share/doc, share/info and share/man hold
+        # GFDL-licensed manuals that a build never reads; they are not shipped. A licence
+        # that a package keeps only in share/doc (MSYS2 mpfr's COPYING.LESSER) must still
+        # reach notices/.
+        documentation = {
+            "ucrt64/share/doc/mpfr/COPYING.LESSER": b"LGPL-3.0 text\n",
+            "ucrt64/share/doc/mpfr/FAQ.html": b"<p>manual</p>\n",
+            "ucrt64/share/info/gcc.info": b"GFDL manual\n",
+            "ucrt64/share/man/man1/gcc.1": b".TH GCC 1\n",
+        }
+        manifest = self.bundle_manifest(msys_members={
+            "ucrt64/bin/gcc.exe": b"synthetic gcc\n",
+            "ucrt64/bin/mingw32-make.exe": b"synthetic make\n",
+            "ucrt64/share/licenses/gcc/COPYING": b"GPL text\n",
+            "ucrt64/share/gcc-1.0/python/libstdcxx.py": b"kept\n",
+            **documentation,
+        })
+        dest = self.root / "stripped"
+        bundle = stage_bundle(manifest, dest, self.root / "cache", allow_http=True)
+        share = dest / "msys64" / "ucrt64" / "share"
+        for folder in ("doc", "info", "man"):
+            self.assertFalse((share / folder).exists(), folder)
+        self.assertEqual((share / "gcc-1.0" / "python" / "libstdcxx.py").read_bytes(), b"kept\n")
+        notices = dest / "notices" / "mingw-w64-ucrt-x86_64-gcc" / "ucrt64" / "share"
+        self.assertEqual((notices / "doc" / "mpfr" / "COPYING.LESSER").read_bytes(), b"LGPL-3.0 text\n")
+        self.assertEqual((notices / "licenses" / "gcc" / "COPYING").read_bytes(), b"GPL text\n")
+        self.assertEqual(bundle["stripped_documentation"], {
+            "paths": ["msys64/ucrt64/share/doc", "msys64/ucrt64/share/info", "msys64/ucrt64/share/man"],
+            "file_count": len(documentation),
+            "bytes": sum(len(data) for data in documentation.values()),
+        })
+        inventory = (dest / "bundle-inventory.txt").read_text(encoding="utf-8")
+        self.assertNotIn("msys64/ucrt64/share/doc/", inventory)
+        self.assertEqual(verify_bundle(manifest, dest), bundle)
+        # An extracted tree that lists a manual again is refused by name.
+        manual = share / "info" / "gcc.info"
+        manual.parent.mkdir(parents=True)
+        manual.write_bytes(documentation["ucrt64/share/info/gcc.info"])
+        digest = hashlib.sha256(manual.read_bytes()).hexdigest()
+        with (dest / "bundle-inventory.txt").open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(f"{digest} {manual.stat().st_size} msys64/ucrt64/share/info/gcc.info\n")
+        with self.assertRaisesRegex(PrerequisiteFetchError,
+                                    "msys64/ucrt64/share/info/gcc.info is documentation the bundle does not ship"):
+            verify_bundle(manifest, dest)
+
+    def test_bundle_notices_name_the_pinned_source_of_every_artifact(self) -> None:
+        manifest = self.bundle_manifest()
+        dest = self.root / "named"
+        bundle = stage_bundle(manifest, dest, self.root / "cache", allow_http=True)
+        notice = (dest / "notices" / "SOURCES.txt").read_text(encoding="utf-8")
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        self.assertIn(f"Manifest SHA-256: {hashlib.sha256(manifest.read_bytes()).hexdigest()}", notice)
+        for source in data["sources"]:
+            self.assertIn(f"\n{source['filename']}\n  SHA-256: {source['sha256']}\n"
+                          f"  Size: {source['size_bytes']} bytes\n", notice)
+        self.assertIn("  Source of: cpython-embed-amd64 1.0-test (GPL-3.0-or-later)", notice)
+        self.assertIn("  Source of: mingw-w64-ucrt-x86_64-gcc 1.0-test (GPL-3.0-or-later)", notice)
+        # A forged notice with a consistent inventory and record is still refused.
+        forged = notice.replace("Python-1.0-test.tar.xz", "Python-0.9-test.tar.xz").encode("utf-8")
+        (dest / "notices" / "SOURCES.txt").write_bytes(forged)
+        lines = (dest / "bundle-inventory.txt").read_text(encoding="utf-8").splitlines()
+        lines = [f"{hashlib.sha256(forged).hexdigest()} {len(forged)} notices/SOURCES.txt"
+                 if line.endswith(" notices/SOURCES.txt") else line for line in lines]
+        (dest / "bundle-inventory.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        record = json.loads((dest / "installed.json").read_text(encoding="utf-8"))
+        record["bundle"]["unpacked_bytes"] = bundle["unpacked_bytes"] + len(forged) - len(notice.encode("utf-8"))
+        (dest / "installed.json").write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaisesRegex(PrerequisiteFetchError, "notices/SOURCES.txt does not name the pinned sources"):
+            verify_bundle(manifest, dest)
+
+    def test_bundle_and_sources_refuse_artifacts_without_a_matching_source_pin(self) -> None:
+        def drop_sources(data: dict) -> None:
+            del data["sources"]
+
+        def unnamed(data: dict) -> None:
+            del data["artifacts"][1]["source"]
+
+        def bumped(data: dict) -> None:
+            data["artifacts"][1]["version"] = "1.1-test"
+
+        def unused(data: dict) -> None:
+            data["sources"].append({**data["sources"][1], "id": "mingw-w64-extra", "filename": "extra.src.tar.zst"})
+
+        def duplicate(data: dict) -> None:
+            data["sources"][1]["filename"] = data["sources"][0]["filename"]
+
+        for edit, message in (
+            (drop_sources, "SOURCE_UNPINNED: the manifest lists no pinned sources"),
+            (unnamed, "SOURCE_UNPINNED: mingw-w64-ucrt-x86_64-gcc names no pinned source"),
+            (bumped, "SOURCE_VERSION_MISMATCH: mingw-w64-ucrt-x86_64-gcc 1.1-test names source mingw-w64-gcc 1.0-test"),
+            (unused, "source mingw-w64-extra is not named by any bundled artifact"),
+            (duplicate, "source mingw-w64-gcc is listed twice"),
+        ):
+            with self.subTest(case=edit.__name__):
+                manifest = self.bundle_manifest(edit=edit)
+                requests = _PayloadHandler.requests
+                dest = self.root / f"refused-{edit.__name__}"
+                with self.assertRaisesRegex(PrerequisiteFetchError, message):
+                    stage_bundle(manifest, dest, self.root / "cache", allow_http=True)
+                with self.assertRaisesRegex(PrerequisiteFetchError, message):
+                    stage_sources(manifest, self.root / f"{edit.__name__}.zip", self.root / "cache", allow_http=True)
+                # Refused before any download or any output.
+                self.assertEqual(_PayloadHandler.requests, requests)
+                self.assertFalse(dest.exists())
+                self.assertFalse((self.root / f"{edit.__name__}.zip").exists())
+
+    def test_source_archive_holds_exactly_the_pinned_sources(self) -> None:
+        manifest = self.bundle_manifest()
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        archive_path = self.root / "release" / "nakagawa-recomp-1.0-prerequisite-sources.zip"
+        result = stage_sources(manifest, archive_path, self.root / "cache", allow_http=True)
+        with zipfile.ZipFile(archive_path) as archive:
+            names = archive.namelist()
+            self.assertEqual(names, [
+                "nakagawa-recomp-1.0-prerequisite-sources/SOURCES.txt",
+                "nakagawa-recomp-1.0-prerequisite-sources/Python-1.0-test.tar.xz",
+                "nakagawa-recomp-1.0-prerequisite-sources/mingw-w64-gcc-1.0-test.src.tar.zst",
+            ])
+            for source in data["sources"]:
+                body = archive.read(f"nakagawa-recomp-1.0-prerequisite-sources/{source['filename']}")
+                self.assertEqual(body, _PayloadHandler.payloads[f"/sources/{source['filename']}"])
+            notice = archive.read("nakagawa-recomp-1.0-prerequisite-sources/SOURCES.txt")
+            self.assertTrue(all(info.compress_type == zipfile.ZIP_STORED for info in archive.infolist()))
+        self.assertFalse(archive_path.with_name(archive_path.name + ".part").exists())
+        # The same notice ships in the bundle's notices/.
+        stage_bundle(manifest, self.root / "bundle", self.root / "cache", allow_http=True)
+        self.assertEqual(notice, (self.root / "bundle" / "notices" / "SOURCES.txt").read_bytes())
+        self.assertEqual(result, {
+            "schema_version": 1,
+            "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            "source_count": 2,
+            "source_bytes": sum(source["size_bytes"] for source in data["sources"]),
+            "archive_bytes": archive_path.stat().st_size,
+            "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+        })
+        # A second staging reuses the verified cache, makes no request, and writes the same bytes.
+        requests = _PayloadHandler.requests
+        self.server.shutdown()
+        again = stage_sources(manifest, self.root / "again" / archive_path.name, self.root / "cache", allow_http=True)
+        self.assertEqual(_PayloadHandler.requests, requests)
+        self.assertEqual(again["archive_sha256"], result["archive_sha256"])
+        self.assertEqual(verify_source_archive(manifest, archive_path), result)
+
+    def test_source_archive_refuses_unsafe_outputs_and_changed_archives(self) -> None:
+        manifest = self.bundle_manifest()
+        cache = self.root / "cache"
+        archive_path = self.root / "sources.zip"
+        result = stage_sources(manifest, archive_path, cache, allow_http=True)
+        with self.assertRaisesRegex(PrerequisiteFetchError, "SOURCE_ARCHIVE_EXISTS"):
+            stage_sources(manifest, archive_path, cache, allow_http=True)
+        with self.assertRaisesRegex(PrerequisiteFetchError, "SOURCE_ARCHIVE_REJECTED"):
+            stage_sources(manifest, self.root / "sources.tar", cache, allow_http=True)
+        with self.assertRaisesRegex(PrerequisiteFetchError, "INSTALL_ROOT_REJECTED"):
+            stage_sources(manifest, REPOSITORY_ROOT_FOR_TESTS / "build" / "sources-test.zip", cache, allow_http=True)
+        self.assertFalse((REPOSITORY_ROOT_FOR_TESTS / "build" / "sources-test.zip").exists())
+
+        with zipfile.ZipFile(archive_path) as archive:
+            members = {info.filename: archive.read(info) for info in archive.infolist()}
+
+        def rewritten(name: str, entries: dict[str, bytes]) -> Path:
+            path = self.root / name
+            with zipfile.ZipFile(path, "w") as archive:
+                for member, body in entries.items():
+                    archive.writestr(member, body)
+            return path
+
+        gcc = "sources/mingw-w64-gcc-1.0-test.src.tar.zst"
+        notice = "sources/SOURCES.txt"
+        same_size = dict(members)
+        same_size[gcc] = members[gcc].replace(b"gcc", b"GCC")
+        self.assertEqual(len(same_size[gcc]), len(members[gcc]))
+        missing = {name: body for name, body in members.items() if name != gcc}
+        extra = {**members, "sources/README.txt": b"x"}
+        nested = {**members, "sources/more/README.txt": b"x"}
+        two_roots = {**members, "other/README.txt": b"x"}
+        edited_notice = {**members, notice: members[notice] + b"\n"}
+        for name, entries, message in (
+            ("same-size.zip", same_size, "mingw-w64-gcc-1.0-test.src.tar.zst does not match its pinned size and SHA-256"),
+            ("missing.zip", missing, "sources/mingw-w64-gcc-1.0-test.src.tar.zst is missing"),
+            ("extra.zip", extra, "sources/README.txt is not a pinned source"),
+            ("nested.zip", nested, "one folder"),
+            ("two-roots.zip", two_roots, "one folder"),
+            ("notice.zip", edited_notice, "SOURCES.txt does not match the manifest"),
+        ):
+            with self.subTest(case=name):
+                with self.assertRaisesRegex(PrerequisiteFetchError, message):
+                    verify_source_archive(manifest, rewritten(name, entries))
+        self.assertEqual(verify_source_archive(manifest, rewritten("renamed.zip", members))["source_count"],
+                         result["source_count"])
+        (self.root / "not-a-zip.zip").write_bytes(b"not a zip")
+        with self.assertRaisesRegex(PrerequisiteFetchError, "SOURCE_ARCHIVE_INVALID: the source archive is missing"):
+            verify_source_archive(manifest, self.root / "not-a-zip.zip")
+
+        # A source served with bytes other than its pin is never stored.
+        def tampered(data: dict) -> None:
+            data["sources"][0]["sha256"] = hashlib.sha256(b"other bytes").hexdigest()
+
+        with self.assertRaisesRegex(PrerequisiteFetchError, "HASH_MISMATCH"):
+            stage_sources(self.bundle_manifest(edit=tampered), self.root / "tampered.zip",
+                          self.root / "cache-tampered", allow_http=True)
+        self.assertFalse((self.root / "tampered.zip").exists())
+
+    def test_source_archive_command_line_reports_json(self) -> None:
+        manifest = self.bundle_manifest()
+        archive_path = self.root / "cli-sources.zip"
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.assertEqual(fetcher_main(["--manifest", str(manifest), "--source-archive", str(archive_path)]), 2)
+        self.assertEqual(json.loads(out.getvalue())["event"], "sources-failed")
+        self.assertEqual(json.loads(out.getvalue())["code"], "BUNDLE_CACHE_REJECTED")
+        result = stage_sources(manifest, archive_path, self.root / "cache", allow_http=True)
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            self.assertEqual(fetcher_main(["--manifest", str(manifest), "--verify-source-archive",
+                                           str(archive_path)]), 0)
+        self.assertEqual(json.loads(out.getvalue()), {"event": "sources-verified", **result})
 
     def test_offline_failure_names_network_boundary(self) -> None:
         self.server.shutdown()
@@ -657,6 +899,38 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         self.assertRegex(retrieved, r"^\d{4}-\d{2}-\d{2}$")
         self.assertGreaterEqual(retrieved, manifest["source_snapshot_date"])
 
+    def test_every_bundled_artifact_names_its_pinned_source(self) -> None:
+        """The corresponding source of every bundled artifact is pinned (#1285).
+
+        Owner decision (2026-10-26): the release ships the source of every bundled
+        package, not only the copyleft ones, as one archive next to the zip. Each
+        MSYS2 package names the MSYS2 source package of its pkgbase at the same
+        version, pinned from the file whose detached package signature verified
+        against the MSYS2 keyring; CPython names its python.org source release.
+        """
+        manifest_path = Path(__file__).resolve().parents[1] / "assets" / "prereq_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        sources = {source["id"]: source for source in _pinned_sources(manifest, allow_http=False)}
+        self.assertEqual(manifest["total_source_bytes"],
+                         sum(source["size_bytes"] for source in sources.values()))
+        for item in manifest["artifacts"]:
+            source = sources[item["source"]]
+            with self.subTest(artifact=item["id"]):
+                pin = source["sha256_source"]
+                if item["id"] == "cpython-embed-amd64":
+                    self.assertEqual(source["url"], f"https://www.python.org/ftp/python/{item['version']}/"
+                                                    f"Python-{item['version']}.tar.xz")
+                    self.assertEqual(pin["method"], "python.org release_file API sha256_sum")
+                else:
+                    self.assertTrue(item["id"].startswith("mingw-w64-ucrt-x86_64-"), item["id"])
+                    self.assertTrue(source["id"].startswith("mingw-w64-"), source["id"])
+                    self.assertEqual(source["url"], f"https://repo.msys2.org/mingw/sources/"
+                                                    f"{source['id']}-{item['version']}.src.tar.zst")
+                    self.assertEqual(pin["signature_url"], source["url"] + ".sig")
+                    self.assertRegex(pin["signing_key_fingerprint"], r"^[0-9A-F]{40}$")
+                self.assertTrue(source["url"].endswith("/" + source["filename"]))
+                self.assertRegex(pin["retrieved_utc"], r"^\d{4}-\d{2}-\d{2}$")
+
     def test_synthetic_installed_toolchain_resolves_the_font_closure(self) -> None:
         """The installer's extracted layout must resolve the closure (#421).
 
@@ -728,14 +1002,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Offline by default (AGENTS.md section 5): the shipped player, runtime and
 # their Python helpers reach the network only through these files, both of
 # them the consented, pinned prerequisite download. prereq_fetcher.py also
-# serves the maintainer's release staging (--bundle-dest, #1285) from the same
-# pinned hosts; the player never passes that option, and a release that carries
-# prereqs/ makes no download at all. A new egress needs a maintainer decision,
-# a "Network use" entry in docs/SETUP.md, and a line here.
+# serves the maintainer's release staging (--bundle-dest and --source-archive,
+# #1285) from the same pinned hosts; the player never passes those options, and a
+# release that carries prereqs/ makes no download at all. A new egress needs a
+# maintainer decision, a "Network use" entry in docs/SETUP.md, and a line here.
 NETWORK_EGRESS_ALLOWLIST = frozenset({
     "src/player/package_builder.c",
     "tools/nk_core/prereq_fetcher.py",
 })
+
+# The only hosts those downloads reach: the "Network use" table in docs/SETUP.md.
+# Every manifest pin, the corresponding-source pins included, stays on them.
+PREREQUISITE_HOSTS = frozenset({"www.python.org", "repo.msys2.org"})
 
 # Shipped code: everything under src/ and the Python the player runs. Maintainer
 # tools elsewhere in tools/ (SBOM and issue-link audits) never ship and are not
@@ -766,6 +1044,20 @@ class TestNetworkEgressAllowlist(unittest.TestCase):
                 if match:
                     offenders.append(f"{rel}: {match.group(0).strip()}")
         self.assertEqual(offenders, [], "network API outside the egress allowlist; see AGENTS.md section 5")
+
+    def test_pinned_downloads_reach_only_the_documented_hosts(self) -> None:
+        # Release staging and the consented download fetch only manifest pins over
+        # HTTPS; a pin on another host would be a new egress (AGENTS.md section 5).
+        manifest = json.loads((REPO_ROOT / "assets" / "prereq_manifest.json").read_text(encoding="utf-8"))
+        for entry in manifest["artifacts"] + manifest["sources"]:
+            with self.subTest(entry=entry["id"]):
+                url = urlsplit(entry["url"])
+                self.assertEqual(url.scheme, "https")
+                self.assertLessEqual(set(entry["allowed_hosts"]), PREREQUISITE_HOSTS)
+                self.assertIn(url.hostname, entry["allowed_hosts"])
+        setup = (REPO_ROOT / "docs" / "SETUP.md").read_text(encoding="utf-8")
+        for host in sorted(PREREQUISITE_HOSTS):
+            self.assertIn(f"`{host}`", setup)
 
     def test_allowlisted_downloaders_still_exist(self) -> None:
         for rel in sorted(NETWORK_EGRESS_ALLOWLIST):

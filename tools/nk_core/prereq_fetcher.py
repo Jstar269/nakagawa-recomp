@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import sys
 import tarfile
@@ -211,12 +212,21 @@ def download_verified_item(
     ) from last_error
 
 
+# A licence or copying file anywhere in a package: COPYING, COPYING.LESSER, LICENSE.txt,
+# LICENCE.md, NOTICE, COPYRIGHT and their suffixed forms. Some packages keep these only in
+# share/doc (MSYS2 mpfr's COPYING.LESSER), which a release bundle strips (#1285).
+_NOTICE_NAME = re.compile(r"(?:copying|licen[cs]e|notice|copyright)(?:[._-].*)?", re.IGNORECASE)
+
+
+def _is_notice_member(archive_member: str) -> bool:
+    normalized = archive_member.replace("\\", "/")
+    return ("/share/licenses/" in f"/{normalized.lower()}"
+            or _NOTICE_NAME.fullmatch(PurePosixPath(normalized).name) is not None)
+
+
 def _copy_notices(item_id: str, archive_member: str, source: Path, notices_root: Path) -> str | None:
     normalized = archive_member.replace("\\", "/")
-    lower = normalized.lower()
-    if "/share/licenses/" not in f"/{lower}" and Path(normalized).name.lower() not in {
-        "license", "license.txt", "copying", "copying.txt", "notice", "notice.txt", "copyright"
-    }:
+    if not _is_notice_member(normalized):
         return None
     relative = _safe_relative_path(normalized)
     target = notices_root / item_id / Path(*relative.parts)
@@ -510,6 +520,13 @@ BUNDLE_REQUIRED_FILES = (
     "msys64/ucrt64/bin/gcc.exe",
     "msys64/ucrt64/bin/mingw32-make.exe",
 )
+# Owner decision (2026-10-26, #1285): the GFDL-licensed documentation in these folders
+# of every msys64 prefix is not needed to build and is not shipped in prereqs/. Every
+# package's licence and copying files stay in notices/, and the full upstream
+# documentation is in the corresponding-source archive.
+BUNDLE_STRIPPED_DOCUMENTATION = ("share/doc", "share/info", "share/man")
+# Names the source file of every bundled artifact (see _source_notice).
+BUNDLE_SOURCE_NOTICE = "notices/SOURCES.txt"
 
 
 def _check_bundle_path(relative: str) -> str:
@@ -543,6 +560,36 @@ def _materialize_links(root: Path) -> None:
                 shutil.copyfile(target, link)
 
 
+def _is_stripped_documentation(relative: str) -> bool:
+    parts = relative.split("/")
+    return (len(parts) > 4 and parts[0] == "msys64"
+            and "/".join(parts[2:4]) in BUNDLE_STRIPPED_DOCUMENTATION)
+
+
+def _strip_documentation(root: Path) -> dict:
+    """Remove share/doc, share/info and share/man from every msys64 prefix of a staged bundle."""
+    msys = root / "msys64"
+    prefixes = sorted(path for path in msys.iterdir() if path.is_dir()) if msys.is_dir() else []
+    removed: list[str] = []
+    file_count = 0
+    removed_bytes = 0
+    for prefix in prefixes:
+        for relative in BUNDLE_STRIPPED_DOCUMENTATION:
+            folder = prefix / relative
+            if not folder.exists():
+                continue
+            name = folder.relative_to(root).as_posix()
+            if folder.is_symlink() or not folder.is_dir():
+                raise PrerequisiteFetchError(f"BUNDLE_PATH_REJECTED: {name} is not a folder.")
+            for directory, _dirnames, filenames in os.walk(folder):
+                for filename in filenames:
+                    file_count += 1
+                    removed_bytes += (Path(directory) / filename).stat().st_size
+            shutil.rmtree(folder)
+            removed.append(name)
+    return {"paths": removed, "file_count": file_count, "bytes": removed_bytes}
+
+
 def _bundle_files(root: Path) -> list[str]:
     files: list[str] = []
     for tree in BUNDLE_TREES:
@@ -571,13 +618,17 @@ def stage_bundle(
 
     Every artifact is downloaded into download_cache (or reused from it) and checked
     against its pinned size and SHA-256 before it is unpacked with the per-user
-    installer's own extraction rules. The result is verified again before returning.
+    installer's own extraction rules. The GFDL-licensed documentation folders are
+    stripped, notices/SOURCES.txt names each artifact's pinned source file, and the
+    result is verified again before returning. A manifest without a pinned source for
+    every artifact is refused: the bundle never ships without its corresponding source.
     """
     manifest_path = Path(manifest_path)
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
     if not isinstance(manifest, dict) or not isinstance(manifest.get("artifacts"), list):
         raise PrerequisiteFetchError("MANIFEST_INVALID: artifacts must be a list.")
+    sources = _pinned_sources(manifest, allow_http=allow_http)
     destination = _outside_repository(destination, "the prerequisite bundle")
     download_cache = _outside_repository(download_cache, "the bundle download cache")
     if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
@@ -592,9 +643,12 @@ def stage_bundle(
     )
     shutil.rmtree(destination / ".staging", ignore_errors=True)
     _materialize_links(destination)
+    stripped = _strip_documentation(destination)
     for required in required_files:
         if not (destination / required).is_file():
             raise PrerequisiteFetchError(f"BUNDLE_INCOMPLETE: the pinned artifacts do not provide {required}.")
+    with (destination / BUNDLE_SOURCE_NOTICE).open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(_source_notice(manifest_bytes, manifest, sources))
     entries = _bundle_inventory(destination)
     with (destination / BUNDLE_INVENTORY).open("w", encoding="utf-8", newline="\n") as stream:
         for digest, size, relative in entries:
@@ -605,6 +659,7 @@ def stage_bundle(
         "inventory": BUNDLE_INVENTORY,
         "file_count": len(entries),
         "unpacked_bytes": sum(size for _, size, _ in entries),
+        "stripped_documentation": stripped,
     }
     _write_install_record(destination / BUNDLE_RECORD, {
         "schema_version": 1,
@@ -619,11 +674,17 @@ def verify_bundle(manifest_path: Path, bundle_root: Path) -> dict:
 
     The record must name the manifest's exact bytes and hold exactly its ready
     artifacts with their pinned version, size and SHA-256; every inventory line must
-    match its file's size and SHA-256; and no file outside the inventory may exist
-    under python/, msys64/ or notices/. Returns the record's bundle section.
+    match its file's size and SHA-256; no file outside the inventory may exist
+    under python/, msys64/ or notices/; no stripped documentation folder may hold a
+    file; and notices/SOURCES.txt must name the manifest's pinned sources. Returns the
+    record's bundle section.
     """
     manifest_bytes = Path(manifest_path).read_bytes()
     manifest = json.loads(manifest_bytes)
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("artifacts"), list):
+        raise PrerequisiteFetchError("MANIFEST_INVALID: artifacts must be a list.")
+    # Verification downloads nothing: only the pinned names, sizes and digests matter.
+    sources = _pinned_sources(manifest, allow_http=True)
     bundle_root = Path(bundle_root)
     try:
         record = json.loads((bundle_root / BUNDLE_RECORD).read_text(encoding="utf-8"))
@@ -656,6 +717,8 @@ def verify_bundle(manifest_path: Path, bundle_root: Path) -> dict:
                 or not size_text.isdigit() or relative in listed):
             raise PrerequisiteFetchError(f"BUNDLE_INVALID: inventory line {number} is malformed.")
         listed[_check_bundle_path(relative)] = (digest, int(size_text))
+        if _is_stripped_documentation(relative):
+            raise PrerequisiteFetchError(f"BUNDLE_INVALID: {relative} is documentation the bundle does not ship.")
     if len(listed) != bundle.get("file_count") or sum(size for _, size in listed.values()) != bundle.get("unpacked_bytes"):
         raise PrerequisiteFetchError("BUNDLE_INVALID: the file inventory does not match its record.")
     for relative, (digest, size) in listed.items():
@@ -667,27 +730,243 @@ def verify_bundle(manifest_path: Path, bundle_root: Path) -> dict:
     unlisted = sorted(set(_bundle_files(bundle_root)) - set(listed))
     if unlisted:
         raise PrerequisiteFetchError(f"BUNDLE_INVALID: {unlisted[0]} is not in the file inventory.")
+    if (BUNDLE_SOURCE_NOTICE not in listed or (bundle_root / BUNDLE_SOURCE_NOTICE).read_bytes()
+            != _source_notice(manifest_bytes, manifest, sources).encode("utf-8")):
+        raise PrerequisiteFetchError(f"BUNDLE_INVALID: {BUNDLE_SOURCE_NOTICE} does not name the pinned sources.")
     return bundle
 
 
-def _bundle_main(args: argparse.Namespace) -> int:
+# ---- Corresponding source (#1285) -------------------------------------------
+# Owner decision (2026-10-26): the release ships the source of every bundled
+# package, not only the copyleft ones, as one archive published next to the zip,
+# instead of a written offer. Every ready artifact names an entry of the
+# manifest's "sources" list: the MSYS2 source package (*.src.tar.zst) of its
+# pkgbase at the same version, or the python.org source release of CPython. Each
+# entry is pinned by URL, size and SHA-256 like the binaries, and a version bump
+# that leaves an artifact's source behind is refused.
+
+SOURCE_ARCHIVE_NOTICE = "SOURCES.txt"
+# Fixed member metadata, so the archive's bytes depend only on the pinned files.
+_SOURCE_ARCHIVE_TIME = (1980, 1, 1, 0, 0, 0)
+
+
+def _pinned_sources(manifest: dict, *, allow_http: bool) -> list[dict]:
+    """Return the manifest's source pins after checking them and their artifact mapping."""
+    sources = manifest.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise PrerequisiteFetchError("SOURCE_UNPINNED: the manifest lists no pinned sources.")
+    by_id: dict[str, dict] = {}
+    filenames: set[str] = set()
+    for source in sources:
+        if not isinstance(source, dict):
+            raise PrerequisiteFetchError("MANIFEST_INVALID: a source entry is not an object.")
+        _validated_item(source, allow_http=allow_http)
+        filename = source.get("filename")
+        if (not isinstance(filename, str) or PurePosixPath(filename).name != filename or "\\" in filename
+                or filename in {".", "..", SOURCE_ARCHIVE_NOTICE}):
+            raise PrerequisiteFetchError(f"MANIFEST_INVALID: source {source['id']} needs a simple file name.")
+        if not isinstance(source.get("version"), str) or not source["version"]:
+            raise PrerequisiteFetchError(f"MANIFEST_INVALID: source {source['id']} has no version.")
+        if source["id"] in by_id or filename in filenames:
+            raise PrerequisiteFetchError(f"MANIFEST_INVALID: source {source['id']} is listed twice.")
+        by_id[source["id"]] = source
+        filenames.add(filename)
+    named: set[str] = set()
+    for item in manifest["artifacts"]:
+        if item.get("status", "ready") != "ready":
+            continue
+        source = by_id.get(item.get("source"))
+        if source is None:
+            raise PrerequisiteFetchError(f"SOURCE_UNPINNED: {item.get('id')} names no pinned source.")
+        if source["version"] != item.get("version"):
+            raise PrerequisiteFetchError(
+                f"SOURCE_VERSION_MISMATCH: {item['id']} {item.get('version')} names source "
+                f"{source['id']} {source['version']}."
+            )
+        named.add(source["id"])
+    unused = sorted(set(by_id) - named)
+    if unused:
+        raise PrerequisiteFetchError(f"MANIFEST_INVALID: source {unused[0]} is not named by any bundled artifact.")
+    return sources
+
+
+def _source_notice(manifest_bytes: bytes, manifest: dict, sources: list[dict]) -> str:
+    """The text of notices/SOURCES.txt and of the source archive's SOURCES.txt."""
+    built_from: dict[str, list[dict]] = {}
+    for item in manifest["artifacts"]:
+        if item.get("status", "ready") == "ready":
+            built_from.setdefault(item["source"], []).append(item)
+    lines = [
+        "Corresponding source of the bundled build prerequisites",
+        "",
+        "The prereqs/ folder of the Nakagawa Recomp release zip holds the build prerequisites",
+        "pinned in source/assets/prereq_manifest.json. The source of every one of them is",
+        "published with the same release as one archive next to the zip,",
+        "nakagawa-recomp-<version>-prerequisite-sources.zip: the MSYS2 source package",
+        "(*.src.tar.zst) of each MSYS2 package and the python.org source release of CPython.",
+        "Each file below is pinned by size and SHA-256 in that manifest. The documentation",
+        "folders share/doc, share/info and share/man are not shipped in prereqs/; the",
+        "licence and copying files of every package are in prereqs/notices.",
+        "",
+        f"Manifest SHA-256: {hashlib.sha256(manifest_bytes).hexdigest()}",
+    ]
+    for source in sources:
+        lines += [
+            "",
+            source["filename"],
+            f"  SHA-256: {source['sha256'].lower()}",
+            f"  Size: {source['size_bytes']} bytes",
+            f"  From: {source['url']}",
+        ]
+        lines += [f"  Source of: {item['id']} {item['version']} ({item.get('license', 'no licence recorded')})"
+                  for item in built_from[source["id"]]]
+    return "\n".join(lines) + "\n"
+
+
+def _source_archive_info(name: str, size: int) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(name, _SOURCE_ARCHIVE_TIME)
+    info.create_system = 3
+    info.external_attr = 0o100644 << 16
+    info.compress_type = zipfile.ZIP_STORED
+    info.file_size = size
+    return info
+
+
+def stage_sources(
+    manifest_path: Path,
+    archive_path: Path,
+    download_cache: Path,
+    *,
+    progress: ProgressCallback | None = None,
+    retries: int = 3,
+    allow_http: bool = False,
+) -> dict:
+    """Write the corresponding-source archive published next to the release zip.
+
+    Every pinned source file is downloaded into download_cache/sources (or reused
+    from it) and checked against its pinned size and SHA-256, then stored unchanged
+    in one zip under a single folder named after the archive, with SOURCES.txt. The
+    archive is verified again, contents included, before returning.
+    """
+    manifest_path = Path(manifest_path)
+    manifest_bytes = manifest_path.read_bytes()
+    manifest = json.loads(manifest_bytes)
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("artifacts"), list):
+        raise PrerequisiteFetchError("MANIFEST_INVALID: artifacts must be a list.")
+    sources = _pinned_sources(manifest, allow_http=allow_http)
+    archive_path = _outside_repository(archive_path, "the source archive")
+    download_cache = _outside_repository(download_cache, "the source download cache")
+    if archive_path.suffix.lower() != ".zip" or not archive_path.stem:
+        raise PrerequisiteFetchError("SOURCE_ARCHIVE_REJECTED: name the source archive <name>.zip.")
+    if archive_path.exists():
+        raise PrerequisiteFetchError("SOURCE_ARCHIVE_EXISTS: write the source archive to a new file.")
+    files = [
+        (source, download_verified_item(
+            source, download_cache / "sources" / source["id"] / source["filename"],
+            progress=progress, retries=retries, allow_http=allow_http,
+        ))
+        for source in sources
+    ]
+    notice = _source_notice(manifest_bytes, manifest, sources).encode("utf-8")
+    root = archive_path.stem
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = archive_path.with_name(archive_path.name + ".part")
     try:
+        with zipfile.ZipFile(partial, "w", allowZip64=True) as archive:
+            archive.writestr(_source_archive_info(f"{root}/{SOURCE_ARCHIVE_NOTICE}", len(notice)), notice)
+            for source, path in files:
+                info = _source_archive_info(f"{root}/{source['filename']}", path.stat().st_size)
+                with path.open("rb") as stream, archive.open(info, "w") as output:
+                    shutil.copyfileobj(stream, output, CHUNK_SIZE)
+        os.replace(partial, archive_path)
+    finally:
+        partial.unlink(missing_ok=True)
+    return verify_source_archive(manifest_path, archive_path)
+
+
+def verify_source_archive(manifest_path: Path, archive_path: Path) -> dict:
+    """Check a corresponding-source archive against the manifest's source pins.
+
+    The archive must hold one top-level folder with exactly SOURCES.txt, matching the
+    manifest, and every pinned source file with its pinned size and SHA-256.
+    """
+    manifest_bytes = Path(manifest_path).read_bytes()
+    manifest = json.loads(manifest_bytes)
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("artifacts"), list):
+        raise PrerequisiteFetchError("MANIFEST_INVALID: artifacts must be a list.")
+    # Verification downloads nothing: only the pinned names, sizes and digests matter.
+    sources = _pinned_sources(manifest, allow_http=True)
+    archive_path = Path(archive_path)
+    try:
+        package = zipfile.ZipFile(archive_path)
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise PrerequisiteFetchError("SOURCE_ARCHIVE_INVALID: the source archive is missing or not a zip.") from exc
+    with package:
+        names = [info.filename for info in package.infolist()]
+        roots = {name.partition("/")[0] for name in names}
+        if len(roots) != 1 or len(set(names)) != len(names) or any(name.count("/") != 1 for name in names):
+            raise PrerequisiteFetchError("SOURCE_ARCHIVE_INVALID: the archive must hold its files in one folder.")
+        root = roots.pop()
+        expected = {f"{root}/{SOURCE_ARCHIVE_NOTICE}"} | {f"{root}/{source['filename']}" for source in sources}
+        missing = sorted(expected - set(names))
+        if missing:
+            raise PrerequisiteFetchError(f"SOURCE_ARCHIVE_INVALID: {missing[0]} is missing.")
+        unlisted = sorted(set(names) - expected)
+        if unlisted:
+            raise PrerequisiteFetchError(f"SOURCE_ARCHIVE_INVALID: {unlisted[0]} is not a pinned source.")
+        try:
+            if package.read(f"{root}/{SOURCE_ARCHIVE_NOTICE}") != _source_notice(
+                    manifest_bytes, manifest, sources).encode("utf-8"):
+                raise PrerequisiteFetchError(
+                    f"SOURCE_ARCHIVE_INVALID: {SOURCE_ARCHIVE_NOTICE} does not match the manifest.")
+            for source in sources:
+                digest = hashlib.sha256()
+                size = 0
+                with package.open(f"{root}/{source['filename']}") as stream:
+                    while block := stream.read(CHUNK_SIZE):
+                        digest.update(block)
+                        size += len(block)
+                if size != source["size_bytes"] or digest.hexdigest() != source["sha256"].lower():
+                    raise PrerequisiteFetchError(
+                        f"SOURCE_ARCHIVE_INVALID: {source['filename']} does not match its pinned size and SHA-256.")
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise PrerequisiteFetchError(f"SOURCE_ARCHIVE_INVALID: the archive cannot be read: {exc}") from exc
+    return {
+        "schema_version": 1,
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "source_count": len(sources),
+        "source_bytes": sum(source["size_bytes"] for source in sources),
+        "archive_bytes": archive_path.stat().st_size,
+        "archive_sha256": _sha256_file(archive_path),
+    }
+
+
+def _bundle_main(args: argparse.Namespace) -> int:
+    kind = "sources" if args.source_archive or args.verify_source_archive else "bundle"
+    try:
+        if (args.bundle_dest or args.source_archive) and not args.download_cache:
+            raise PrerequisiteFetchError(
+                "BUNDLE_CACHE_REJECTED: --bundle-dest and --source-archive need --download-cache.")
         if args.bundle_dest:
-            if not args.download_cache:
-                raise PrerequisiteFetchError("BUNDLE_CACHE_REJECTED: --bundle-dest needs --download-cache.")
             result = stage_bundle(args.manifest, args.bundle_dest, args.download_cache)
             event = "bundle-staged"
+        elif args.source_archive:
+            result = stage_sources(args.manifest, args.source_archive, args.download_cache)
+            event = "sources-staged"
+        elif args.verify_source_archive:
+            result = verify_source_archive(args.manifest, args.verify_source_archive)
+            event = "sources-verified"
         else:
             result = verify_bundle(args.manifest, args.verify_bundle)
             event = "bundle-verified"
     except PrerequisiteFetchError as exc:
-        print(json.dumps({"event": "bundle-failed", "code": str(exc).partition(":")[0], "message": str(exc)}))
+        print(json.dumps({"event": f"{kind}-failed", "code": str(exc).partition(":")[0], "message": str(exc)}))
         return 2
     except json.JSONDecodeError as exc:
-        print(json.dumps({"event": "bundle-failed", "code": "MANIFEST_INVALID", "message": str(exc)}))
+        print(json.dumps({"event": f"{kind}-failed", "code": "MANIFEST_INVALID", "message": str(exc)}))
         return 2
     except OSError as exc:
-        print(json.dumps({"event": "bundle-failed", "code": "BUNDLE_IO_FAILED", "message": str(exc)}))
+        print(json.dumps({"event": f"{kind}-failed", "code": "BUNDLE_IO_FAILED", "message": str(exc)}))
         return 2
     print(json.dumps({"event": event, **result}))
     return 0
@@ -706,10 +985,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="release packaging: stage the verified tree for the zip's prereqs/ folder here")
     bundle.add_argument("--verify-bundle", type=Path,
                         help="check a staged or extracted prereqs/ folder completely, file contents included")
+    bundle.add_argument("--source-archive", type=Path,
+                        help="release packaging: write the corresponding-source archive (a new .zip) here")
+    bundle.add_argument("--verify-source-archive", type=Path,
+                        help="check a corresponding-source archive against the pinned sources, contents included")
     parser.add_argument("--download-cache", type=Path,
-                        help="with --bundle-dest: keep and reuse verified archives here, outside the bundle")
+                        help="with --bundle-dest or --source-archive: keep and reuse verified archives here, "
+                             "outside the bundle")
     args = parser.parse_args(argv)
-    if args.bundle_dest or args.verify_bundle:
+    if args.bundle_dest or args.verify_bundle or args.source_archive or args.verify_source_archive:
         return _bundle_main(args)
     progress_stream = args.progress_file.open("a", encoding="utf-8") if args.progress_file else sys.stdout
     received_by_item: dict[str, int] = {}
