@@ -6888,6 +6888,40 @@ static uint32_t h_RegisterExitCallback(CpuState *s) {
         fprintf(stderr, "CBLOG: registered external-exit callback uid=0x%x\n", cb_uid);
     return 0;
 }
+
+/* Player quit request (#1392). PSPSDK documents the exit callback as the game's notice that
+ * the user asked to quit from the HOME menu: the callback does its cleanup and calls
+ * sceKernelExitGame itself. Measured under PSPLink, sceKernelExitGame does not run a
+ * registered exit callback, so this request is the only place the callback is notified and
+ * h_ExitGame stays terminal. The notification goes through sr_callback_notify, so the body
+ * runs on the thread that created the callback at its next callback-servicing wait.
+ *
+ * Unmeasured on the stock-firmware HOME-menu path: the notify argument (0 here) and how long
+ * the firmware waits. SR_EXIT_REQUEST_WINDOW_US is a host policy, not PSP timing: a guest
+ * that has not exited when that much guest time has passed is ended by the player. */
+#define SR_EXIT_REQUEST_WINDOW_US 5000000u
+static int s_exit_request_pending;
+static uint64_t s_exit_request_deadline_us;
+
+/* Returns 1 when the guest's exit callback was notified (now or by an earlier request) and
+ * its window is still open, so the player keeps running; 0 when the player exits now: no
+ * valid callback is registered, the notification failed, or the window has passed. */
+int sr_exit_request_quit(void) {
+    if (s_exit_request_pending) return !sr_exit_request_expired();
+    if (!s_exit_cb_uid || !sr_callback_is_valid(s_exit_cb_uid)) return 0;
+    if (sr_callback_notify(s_exit_cb_uid, 0u) != 0u) return 0;
+    s_exit_request_pending = 1;
+    s_exit_request_deadline_us = sched_vtime_us() + SR_EXIT_REQUEST_WINDOW_US;
+    fprintf(stderr, "GAMELOG: quit requested; notified exit callback uid=0x%x, waiting up to "
+                    "%u us of guest time for sceKernelExitGame\n",
+            s_exit_cb_uid, SR_EXIT_REQUEST_WINDOW_US);
+    return 1;
+}
+
+/* 1 once a notified quit request's guest-time window has passed without the guest exiting. */
+int sr_exit_request_expired(void) {
+    return s_exit_request_pending && sched_vtime_us() >= s_exit_request_deadline_us;
+}
 /* sceKernelStopUnloadSelfModuleWithStatus(status, ...): on hardware the kernel stops the
  * module's threads and reclaims its memory -- control NEVER returns to the caller. The
  * runtime loads exactly one game module and its threads are the only execution surface,
@@ -24475,6 +24509,8 @@ static void hle_register_selftest_oracle_handlers(void) {
     sr_hle_register(0x349d6d6c, "sceKernelCheckCallback", h_CheckCallback);
     sr_hle_register(0xba4051d6, "sceKernelCancelCallback", h_CancelCallback);
     sr_hle_register(0x2a3d44ff, "sceKernelGetCallbackCount", h_GetCallbackCount);
+    /* The quit-request selftest (#1392) registers its exit callback through this NID. */
+    sr_hle_register(0x4ac57943, "sceKernelRegisterExitCallback", h_RegisterExitCallback);
     sr_hle_register(0xd6da4ba1, "sceKernelCreateSema", h_CreateSema);
     sr_hle_register(0x28b6489c, "sceKernelDeleteSema", h_DeleteSema);
     sr_hle_register(0x3f53e640, "sceKernelSignalSema", h_SignalSema);
@@ -25258,8 +25294,6 @@ void sr_hle_init(void) {
     sr_hle_register(0x71bc9871, "sceKernelChangeThreadPriority", h_ChangeThreadPriority);
     sr_hle_register(0xffc36a14, "sceKernelReferThreadRunStatus", h_ReferThreadRunStatus);
     sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleId);
-    /* Boot setup batch (return success / reference value). */
-    sr_hle_register(0x4ac57943, "sceKernelRegisterExitCallback", h_RegisterExitCallback);
     /* sceImpose language/confirm-button mode: retained state shared with the system-param table
      * above (the getter had no registration at all before this). */
     hle_register_impose_handlers();
@@ -25637,6 +25671,8 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_callbacks_len = 0u;
     s_callbacks_cap = 0u;
     s_exit_cb_uid = 0u;
+    s_exit_request_pending = 0;
+    s_exit_request_deadline_us = 0u;
     s_utility_av_loaded = 0u;
     s_volatile_locked = 0;
     g_sdk_version = 0u;

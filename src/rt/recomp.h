@@ -1329,6 +1329,12 @@ int          gui_pause_busy_reason(void);
 void         gui_pause_enter(void);
 SrPauseFrame gui_pause_frame(void);
 void         gui_pause_leave(void);
+/* A player quit request notifies the guest's registered exit callback (src/rt/hle.c, #1392).
+ * sr_exit_request_quit returns 1 while the guest has its bounded window to call
+ * sceKernelExitGame, 0 when the player should exit now; sr_exit_request_expired is 1 once that
+ * window has passed. */
+int      sr_exit_request_quit(void);
+int      sr_exit_request_expired(void);
 SrPauseVerdict sched_pause_request(SrPauseSource source);
 int      sched_pause_active(void);
 int      sched_pause_pending(void);

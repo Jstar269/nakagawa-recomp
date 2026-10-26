@@ -15000,6 +15000,74 @@ static void test_callback_check_pump_services_pending_in_slot_order(void) {
     sr_test_guest_fn_reset();
 }
 
+/* A player quit request (#1392) notifies the callback registered with
+ * sceKernelRegisterExitCallback once, through sr_callback_notify, and its body runs on the
+ * owner thread at the next callback-servicing point. A repeat request does not notify again;
+ * the request expires when SR_EXIT_REQUEST_WINDOW_US of guest time has passed without an
+ * exit; with no registered callback the player exits at once. */
+#define NID_SCE_KERNEL_REGISTER_EXIT_CALLBACK 0x4ac57943u
+#define EXIT_REQUEST_WINDOW_US 5000000u   /* SR_EXIT_REQUEST_WINDOW_US in hle.c */
+
+static uint32_t exit_request_register(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_REGISTER_EXIT_CALLBACK);
+}
+
+static void test_quit_request_notifies_registered_exit_callback(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    s_wakeup_log_len = 0u;
+    s_vtime_us = 1000u;
+
+    TCB *owner = fixture_thread(0x3420u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+
+    expect(sr_exit_request_quit() == 0 && !sr_exit_request_expired(),
+           "quit request: with no exit callback registered the player exits at once");
+
+    uint32_t cb = wakeup_create_callback(WAKEUP_FIRST_NAME, "exit-callback",
+                                         WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    expect(cb != 0u && exit_request_register(cb) == 0u,
+           "quit request: the exit callback is registered through sceKernelRegisterExitCallback");
+    expect(!sr_thread_has_pending_callbacks(owner->uid),
+           "quit request: registering the exit callback notifies nothing");
+
+    expect(sr_exit_request_quit() == 1,
+           "quit request: a registered exit callback keeps the player running for the guest");
+    expect(sr_thread_has_pending_callbacks(owner->uid) && s_wakeup_log_len == 0u,
+           "quit request: the owner's exit callback is pending, its body not run inline");
+    expect(sr_exit_request_quit() == 1,
+           "quit request: a repeat request inside the window keeps waiting");
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback")) == 1u,
+           "quit request: the owner's callback pump services the exit callback");
+    expect(s_wakeup_log_len == 1u && wakeup_log_is(0u, 1u, 0u, WAKEUP_FIRST_COMMON),
+           "quit request: the exit callback runs once (count 1, notify argument 0, its common "
+           "argument), a repeat request does not notify it again");
+
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US - 1u;
+    expect(!sr_exit_request_expired() && sr_exit_request_quit() == 1,
+           "quit request: the window is still open one microsecond before it ends");
+    s_vtime_us = 1000u + EXIT_REQUEST_WINDOW_US;
+    expect(sr_exit_request_expired() && sr_exit_request_quit() == 0,
+           "quit request: a guest that has not exited when the window ends is ended by the player");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback")) == 0u &&
+               s_wakeup_log_len == 1u,
+           "quit request: the expired request notified nothing more");
+
+    wakeup_delete_callback(cb);
+    sr_test_guest_fn_reset();
+    s_vtime_us = 0u;
+}
+
 /* sceKernelDelayThreadCB(1000) parked with nothing pending. Both callbacks are then notified
  * while the thread waits: each notify wakes it, the wakeup alone runs no body, and the resumed
  * wait services both in slot order, re-parks on its original deadline, and returns 0 when that
@@ -26980,6 +27048,13 @@ static void test_route_read_widths_hold_for_their_reads_on_a_starved_host(void) 
  * the observed process result. */
 #define EXITGAME_POISON 0xDEADBEEFu
 #define EXITGAME_RETURNED 90   /* the syscall came back; on hardware it cannot */
+#define EXITGAME_REENTERED 91  /* sceKernelExitGame ran the pending exit callback (#1392) */
+#define EXITGAME_NO_REQUEST 92 /* the exit-callback quit request could not be set up */
+
+static void exit_game_reentered_guest_fn(CpuState *cpu) {
+    (void)cpu;
+    _Exit(EXITGAME_REENTERED);
+}
 
 static int run_exit_game_poisoned(void) {
     CpuState cpu;
@@ -26989,6 +27064,19 @@ static int run_exit_game_poisoned(void) {
     s_cpu = &s_cpu_store;
     sched_init(&s_cpu_store);
     sr_hle_init();
+    /* A quit request leaves the registered exit callback pending, as when the guest's
+     * callback answers it with sceKernelExitGame. Measured under PSPLink, ExitGame does not run
+     * a registered exit callback, so it must end the process without servicing it (#1392). */
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, exit_game_reentered_guest_fn);
+    TCB *owner = fixture_thread(0x3430u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    uint32_t cb = wakeup_create_callback(WAKEUP_FIRST_NAME, "exit-callback",
+                                         WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    if (cb == 0u || exit_request_register(cb) != 0u || sr_exit_request_quit() != 1 ||
+        !sr_thread_has_pending_callbacks(owner->uid))
+        return EXITGAME_NO_REQUEST;
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = EXITGAME_POISON;   /* $a0 */
     cpu.r[5] = EXITGAME_POISON;   /* $a1 */
@@ -27164,6 +27252,10 @@ static void test_exit_game_ignores_argument_registers(const char *self) {
     rc = exit_game_spawn_child(self);
     expect(rc != -1, "exit-game child process starts");
     if (rc == -1) return;
+    expect(rc != (intptr_t)EXITGAME_NO_REQUEST,
+           "exit-game child leaves a quit request's exit callback pending before ExitGame");
+    expect(rc != (intptr_t)EXITGAME_REENTERED,
+           "sceKernelExitGame does not run the pending exit callback (#1392)");
     expect(rc != (intptr_t)EXITGAME_RETURNED,
            "dispatching sceKernelExitGame terminates the process instead of returning");
     expect(((unsigned long long)rc & 0xffffffffull) != (unsigned long long)EXITGAME_POISON,
@@ -31760,6 +31852,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_delay_thread_zero_loop_still_preempts_at_timeslice();
     test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
     test_callback_check_pump_services_pending_in_slot_order();
+    test_quit_request_notifies_registered_exit_callback();
     test_callback_wakeup_resumes_delay_wait_in_slot_order();
     test_display_frame_per_sec_float_return();
     test_rtc_conversion_errors_and_full_range();
