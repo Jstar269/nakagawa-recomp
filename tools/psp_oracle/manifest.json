@@ -483,7 +483,7 @@
     },
     {
       "id": "PSP-CACHE-001",
-      "status": "planned",
+      "status": "implemented",
       "hardware_evidence": "MEASURED",
       "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
       "evidence_cases": ["cache-alias-init", "cache-writeback-contrast", "cache-inval-contrast", "cache-wball", "cache-done"],
@@ -500,7 +500,7 @@
     },
     {
       "id": "PSP-AUDIO-001",
-      "status": "planned",
+      "status": "implemented",
       "hardware_evidence": "MEASURED",
       "evidence_ref": "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
       "evidence_cases": ["audio-ch-reserve", "audio-ch-query-before", "audio-ch-output-blocking-0", "audio-ch-output-blocking-1", "audio-ch-query-after", "audio-ch-release", "audio-ch-query-released", "audio-out2-reserve", "audio-out2-query-before", "audio-out2-output-blocking", "audio-out2-query-after", "audio-out2-release", "audio-src-reserve", "audio-done"],

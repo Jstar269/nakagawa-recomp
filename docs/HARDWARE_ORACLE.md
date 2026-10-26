@@ -803,6 +803,18 @@ One console is one data point; see §11. Nothing here closes issue #70
   - `teardown-test` (`PSP-TEARDOWN-001`): `exitdelete-main` is a SKIP record, as on 2026-10-10.
   - `dma-invalid-tail-s0`, `dma-invalid-tail-memcpy-src`, `dma-invalid-tail-memcpy-dst`, `dma-invalid-tail-try-src` and `dma-invalid-tail-try-dst` (`PSP-DMAC-001`): every record is a SKIP, identical to the 2026-10-10 run.
 
+  Runtime boundary (`PSP-CACHE-001`), issue #311: each `cache-alias` record's pass rule checks
+  only the word read after the maintenance call: the uncached alias after
+  `sceKernelDcacheWritebackRange` (`cache-writeback-contrast`) or `sceKernelDcacheWritebackAll`
+  (`cache-wball`), and the cached alias after `sceKernelDcacheInvalidateRange` (`cache-alias-init`,
+  `cache-inval-contrast`). The runtime keeps guest RAM as one coherent byte array, and its Dcache
+  handlers in `src/rt/hle.c` keep no cache state (beyond a renderer notice they return 0), so every
+  alias read returns the newest word. It meets those post-maintenance results, but it does not reproduce the contrast words read
+  before the maintenance call: the uncached read before the writeback and the stale cached read
+  before the invalidate. Those words stay in the private envelope, are not cited here, and no
+  runtime selftest asserts them. A title that depends on reading stale data through the cached
+  alias is outside this model.
+
   What the `ge-nan` cells establish (`PSP-GE-001`, issue #69), for these exact words only. All 21 records were identical in both runs. Each input word was loaded into `S000`, with `S001` set to `0.0` for `vadd.s` and `1.0` for `vmul.s`:
 
   | Input word | `vadd.s S002, S000, S001` (+0) | `vmul.s S002, S000, S001` (x1) |
