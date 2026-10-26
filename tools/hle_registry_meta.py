@@ -1010,7 +1010,7 @@ HANDLER_METADATA = {
         "evidence": [
             "docs/HARDWARE_ORACLE.md (PSP-B1-01: ClearEventFlag(mask) keeps only the bits in mask)",
         ],
-        "limitation": "the measured mask behavior matches the normal-object path; an unknown event-flag UID currently returns generic 0x80020000 instead of the measured unknown-event-flag code 0x8002019A, and error precedence is not covered",
+        "limitation": "the measured mask behavior matches the normal-object path; an unknown UID, or a UID of another kernel-object kind, returns the measured unknown-event-flag code 0x8002019A; error precedence is not covered",
     },
     "h_CreateFpl": {
         "status": "partial",
@@ -1252,7 +1252,7 @@ HANDLER_METADATA = {
             "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event signal/cancel before deadline and late dispatch)",
             "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: event flag poll/wait modes and outputs)",
         ],
-        "limitation": "the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown event-flag UID currently returns generic 0x80020000 instead of 0x8002019A, and other mode, pointer, and multi-waiter precedence is not established",
+        "limitation": "the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown UID, or a UID of another kernel-object kind, returns 0x8002019A; other mode, pointer, and multi-waiter precedence is not established",
     },
     "h_WaitSema": {
         "status": "partial",

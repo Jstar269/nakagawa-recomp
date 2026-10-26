@@ -334,7 +334,7 @@ Semantic handler census: **491** handlers across **25** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema(-1) restores the create-time initial count)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)
 - **`h_ClearEventFlag`** (`sceKernel`): `sceKernelClearEventFlag` (0x812346e4)
-  - Limitation: the measured mask behavior matches the normal-object path; an unknown event-flag UID currently returns generic 0x80020000 instead of the measured unknown-event-flag code 0x8002019A, and error precedence is not covered
+  - Limitation: the measured mask behavior matches the normal-object path; an unknown UID, or a UID of another kernel-object kind, returns the measured unknown-event-flag code 0x8002019A; error precedence is not covered
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: ClearEventFlag(mask) keeps only the bits in mask)
 - **`h_CreateFpl`** (`sceKernel`): `sceKernelCreateFpl` (0xc07bb470)
   - Limitation: the cited cells cover valid pool creation and block/status behavior; the handler converts zero block size/count to 16/1, a branch not established by those cited valid-pool cells, and allocation exhaustion plus partition, attribute, and option error precedence need separate evidence
@@ -526,7 +526,7 @@ Semantic handler census: **491** handlers across **25** API families, covering *
   - Limitation: the cited cases cover owner release in the priority-inheritance control and interrupt-context refusal; invalid UIDs, bad counts, and multi-waiter priority ordering are not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-priority-inheritance owner release and accepted interrupt-context cell)
 - **`h_WaitEventFlag`** (`sceKernel`): `sceKernelWaitEventFlag` (0x402fcf22)
-  - Limitation: the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown event-flag UID currently returns generic 0x80020000 instead of 0x8002019A, and other mode, pointer, and multi-waiter precedence is not established
+  - Limitation: the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown UID, or a UID of another kernel-object kind, returns 0x8002019A; other mode, pointer, and multi-waiter precedence is not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event signal/cancel before deadline and late dispatch)
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: event flag poll/wait modes and outputs)
 - **`h_WaitSema`** (`sceKernel`): `sceKernelWaitSema` (0x4e3a1105)
