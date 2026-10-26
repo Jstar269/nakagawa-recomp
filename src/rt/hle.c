@@ -258,6 +258,30 @@ static int hle_log_on(void) {
     return enabled;
 }
 
+/* The other diagnostic switches on the per-call path follow the same rule (#1296). An
+ * uncached getenv takes the C runtime's environment lock and compares the name against
+ * every variable, and sr_syscall() plus the CpuSuspendIntr/CpuResumeIntr pair a guest
+ * allocator brackets each allocation with read up to four of them per call. */
+static int hle_env_switch(int *cached, const char *name) {
+    if (*cached < 0) *cached = getenv(name) != NULL;
+    return *cached;
+}
+
+static int hle_nidlog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_NIDLOG");
+}
+
+static int hle_syslog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_SYSLOG");
+}
+
+static int hle_debug_thread_log_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_DEBUG_THREAD_LOG");
+}
+
 /* Display-list tracing is extremely verbose (several writes per presented
  * frame).  Keep Standard mode quiet; Diagnostics enables SR_GEDUMP, and the
  * public SR_DEBUG GE bit (0x08) remains an equivalent opt-in. */
@@ -6922,10 +6946,10 @@ static uint32_t h_StopUnloadSelfModuleWithStatus(CpuState *s) {
  * on reaching zero, calls ResumeIntr. The spinlock at 0x10974 polls 0x30aa80 via bne. */
 static uint32_t h_CpuSuspendIntr(CpuState *s) {
     (void)s;
-    if (getenv("SR_SYSLOG")) {
+    if (hle_syslog_on()) {
         fprintf(stderr, "HLE: sceKernelCpuSuspendIntr called\n");
     }
-    if (getenv("SR_DEBUG_THREAD_LOG")) {
+    if (hle_debug_thread_log_on()) {
         /* Role-resolved rather than UID-literal (the historical literals drifted and
          * left these diagnostics permanently silent). A build with no worker/launcher
          * binding has no role to report, so both branches stay quiet. */
@@ -6947,10 +6971,10 @@ static uint32_t h_CpuSuspendIntr(CpuState *s) {
 }
 
 static uint32_t h_CpuResumeIntr(CpuState *s) {
-    if (getenv("SR_SYSLOG")) {
+    if (hle_syslog_on()) {
         fprintf(stderr, "HLE: sceKernelCpuResumeIntr called\n");
     }
-    if (getenv("SR_DEBUG_THREAD_LOG")) {
+    if (hle_debug_thread_log_on()) {
         /* Role-resolved (see h_CpuSuspendIntr). */
         if (sched_current_is_worker()) {
             fprintf(stderr, "DEBUG: CpuResumeIntr worker=0x%x: r2 (v0)=0x%x, r6 (a2)=0x%x, r16 (s0)=0x%x, r26 (k0)=0x%x, ra=0x%x, sp=0x%x\n  Stack:",
@@ -25498,7 +25522,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         sr_flight_hle_arguments(flight_sequence, s->r[4], s->r[5], s->r[6], s->r[7]);
     }
     sr_last_nid = nid;
-    if (getenv("SR_NIDLOG")) {
+    if (hle_nidlog_on()) {
         static FILE *nf = NULL; static unsigned long nc = 0;
         if (!nf) nf = fopen("nidseq_mine.txt", "w");
         if (nf) { fprintf(nf, "0x%08x 0x%x %u\n", nid, sched_current_uid(), s_vcount);
@@ -25538,7 +25562,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         if (sr_sched_on) { sr_trace_close(); sr_compat_report(); sr_perf_shutdown(); fflush(stderr); _Exit(7); }
         longjmp(g_hle_jmp, 1);
     }
-    if (getenv("SR_SYSLOG")) {
+    if (hle_syslog_on()) {
         /* Log the first time each (thread, nid) pair occurs, to see what each thread does. */
         static struct { uint32_t uid, nid; } seen[4096]; static int nseen = 0;
         uint32_t cur = sched_current_uid(); int known = 0;
