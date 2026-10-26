@@ -2187,14 +2187,11 @@ _SV_SPECIAL = {0x0006e9bc, 0x0006ea1c, 0x00108630, 0x0010433c}
 #   "inject" : unconditionally inject `stmt` into the branch block.
 #   "probe"  : emit a one-shot fprintf probe at function entry (no semantic
 #              change; diagnostic only).
-_GUEST_PATCH_KEYS = {0x00010950, 0x00048320, 0x0004cdc8}
+_GUEST_PATCH_KEYS = {0x00010950, 0x0004cdc8}
 GUEST_PATCHES = {
     0x00010950: {"kind": "cond", "value": "0 /* bypass loop 0x10950 */",
                  "stmt": " s->r[16] = s->r[3];",
                  "why": "bypass spin loop at 0x10950 (worker frame init)",
-                 "issue": "#5.1"},
-    0x00048320: {"kind": "inject", "stmt": " _c = 1u;",
-                 "why": "force single-iteration pass at 0x48320",
                  "issue": "#5.1"},
     0x0004cdc8: {"kind": "cond", "value": "1u",
                  "why": "route host0 asset reads through sceIoOpen so HLE can serve extracted XB files; the guest-only host filesystem is unavailable",

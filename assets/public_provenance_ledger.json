@@ -1666,7 +1666,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9eea8db73fce59198b09c6ab79fcef0eb23e4b3a6f126cff371883766eae32b1"
+      "sha256": "5f7c4a0e72d5de8e6876d30edc74dee6ad15a34105984f15b5b8836086ee9c9b"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -11128,7 +11128,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7122e51e7ba9b6607fac7381daaf0433f23b433f4574d9c663fd2b1a7c616670"
+      "sha256": "32f1a9264a6b74d6b9fe7bafcdfff0fd51dfd53ec793f675b1c823c22e950929"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -11153,7 +11153,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "75c3f4ea093dca52557a27a0f563e689958a2d94c83f53602337a6e31990c316"
+      "sha256": "2ee40690e6e7f14ef384c131cc05ab5a5228874ec63353b8b69c88f0286d0b58"
     },
     {
       "path": "tools/compiler_compare.py",
@@ -12914,7 +12914,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a5a67c676ef07bda1f3c2e911431044d86b4f8b26c3b04d18007fe113a038efd"
+      "sha256": "c8a849ef519b2488e49dd3b57b2abad0ba2b31b17c45b6da4ea5010b97e6eb13"
     },
     {
       "path": "tools/test_codegen_retail_allocator.py",
@@ -12986,7 +12986,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "21c8e475415a525068b5deb7a4b59bfc8866e9d69c9ddff819c10e124f0926bf"
+      "sha256": "f85b08bafbb20f0f5648b819fa107bd025f7f91e18133ac08b5fa0198546b536"
     },
     {
       "path": "tools/test_compiler_compare.py",

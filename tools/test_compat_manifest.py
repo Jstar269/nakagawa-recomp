@@ -999,10 +999,10 @@ class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
         self.assertTrue(patches, "temporary compatibility debt census is empty")
         ids = [patch["id"] for patch in patches]
         self.assertEqual(len(ids), len(set(ids)), "census ids are not unique")
-        # The #363 subject: the forced branches, the walk/backdrop stubs and the
+        # The #363 subject: the forced branch, the walk/backdrop stubs and the
         # eight static-success HST_SIMPLE_STUBS must all be inventoried.
         anchors = {patch["id"].split(":")[1] for patch in patches}
-        for address in ("0x00010950", "0x00048320", "0x0001034c", "0x001d9eb0",
+        for address in ("0x00010950", "0x0001034c", "0x001d9eb0",
                         "0x00015f98", "0x0001c604"):
             self.assertIn(address, anchors, f"census lost {address}")
 
