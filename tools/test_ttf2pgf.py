@@ -733,7 +733,7 @@ class IntegerRasterEquivalenceTests(unittest.TestCase):
             edges = []
             for _ in range(rng.randint(1, 6)):
                 points = [(rng.randint(-span, span), rng.randint(-span, span)) for _ in range(rng.randint(3, 6))]
-                edges.extend((x0, y0, x1, y1) for (x0, y0), (x1, y1) in zip(points, points[1:] + points[:1]))
+                edges.extend((x0, y0, x1, y1) for (x0, y0), (x1, y1) in zip(points, points[1:] + points[:1], strict=True))
             xs = [x for edge in edges for x in (edge[0], edge[2])]
             ys = [y for edge in edges for y in (edge[1], edge[3])]
             raster = ttf2pgf._Raster(
