@@ -5872,7 +5872,8 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
                osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
            "after the answer the keyboard accepts shutdown and reaches NONE");
 
-    /* A new keyboard replaces one whose request is still open. */
+    /* One utility dialog slot (#1386): a second keyboard InitStart while one is VISIBLE is
+     * refused, and the running keyboard keeps the slot and the person's open request. */
     osk_person_reset();
     s_osk_person_typing = 1;
     osk_guest_build(1, 16u, 0u);
@@ -5884,40 +5885,228 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
     (void)osk_poll(&cpu);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u && s_osk_abandons == 1,
-           "starting a new keyboard drops the old keyboard's unanswered request");
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0x80110001u && s_osk_abandons == 0 &&
+               s_osk_request_open,
+           "a second keyboard InitStart while the first is VISIBLE returns INVALID_STATUS and "
+           "keeps the person's open request (#1386)");
     s_osk_person_typing = 0;
-    expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u && osk_poll_past_visible(&cpu) == 3u &&
-               s_osk_requests == 2 && osk_guest_out_is(0, n, 1),
-           "the new keyboard asks the person afresh and is answered");
+    expect(osk_poll_past_visible(&cpu) == 3u && s_osk_requests == 1 && osk_guest_out_is(0, n, 1),
+           "the first keyboard is answered through its own request");
     memset(&cpu, 0, sizeof(cpu));
     (void)sr_syscall(&cpu, NID_OSK_SHUTDOWN);
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
 
-    /* Another utility dialog takes the slot while the person is still typing: the keyboard is
-     * no longer polled (GetStatus reports WRONG_TYPE), so its box must not stay open. */
+    /* Another utility dialog cannot take the slot while the person is still typing (#1386):
+     * savedata's InitStart is refused and the keyboard stays VISIBLE with its request open.
+     * Once the keyboard is back at NONE savedata takes the slot, and from then on the
+     * keyboard's GetStatus reports WRONG_TYPE. */
     osk_person_reset();
     s_osk_person_typing = 1;
     osk_guest_build(1, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog will replace starts");
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog asks to replace starts");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
     expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
     memset(&cpu, 0, sizeof(cpu));
     for (uint32_t off = 0; off < 0x600u; off += 4u) MEM_W32(OSK_SAVEDATA_PARAM_ADDR + off, 0u);
+    MEM_W32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu, 0xdeadbeefu);
     cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u && s_osk_abandons == 1 &&
-               !s_osk_request_open,
-           "a savedata dialog taking the slot drops the keyboard's unanswered request");
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0x80110001u && s_osk_abandons == 0 &&
+               s_osk_request_open && MEM_R32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu) == 0xdeadbeefu,
+           "a savedata InitStart while the keyboard is VISIBLE returns INVALID_STATUS and "
+           "changes nothing");
+    expect(osk_poll(&cpu) == 2u, "the keyboard still holds the slot and stays VISIBLE");
+    s_osk_person_typing = 0;
+    expect(osk_poll_past_visible(&cpu) == 3u && sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u &&
+               osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u && osk_guest_out_is(0, n, 1),
+           "the keyboard is answered and winds down to NONE");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u &&
+               MEM_R32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
+           "with the keyboard at NONE a savedata InitStart takes the slot");
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_OSK_STATUS) == 0x80110005u,
-           "the replaced keyboard reports WRONG_TYPE");
-    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
-           "the dropped request writes nothing into the field");
+           "the keyboard that gave up the slot reports WRONG_TYPE");
     osk_person_reset();
+    sr_hle_test_osk_slot_reset();
+}
+
+/* ---- One utility dialog slot (#1386), through the production dispatch. Savedata, message,
+ * netconf, gamedata-install, game-sharing and the OSK share it: a second InitStart while a
+ * dialog is active returns INVALID_STATUS (0x80110001) and leaves both dialogs untouched, a
+ * call for a type that does not hold the slot returns WRONG_TYPE (0x80110005), the OSK's
+ * PSP-measured code (#363), and the holder keeps the slot at NONE after use. The code a PSP
+ * returns for a second InitStart is unmeasured; the #1386 contract names INVALID_STATUS. */
+#define NID_SAVEDATA_DIALOG_STATUS   0x8874dbe0u
+#define NID_SAVEDATA_DIALOG_UPDATE   0xd4b95ffbu
+#define NID_SAVEDATA_DIALOG_SHUTDOWN 0x9790b33cu
+#define NID_MSG_DIALOG_INIT          0x2ad8e239u
+#define NID_MSG_DIALOG_UPDATE        0x95fc253bu
+#define NID_MSG_DIALOG_STATUS        0x9a1c91d7u
+#define NID_MSG_DIALOG_SHUTDOWN      0x67af3428u
+#define NID_NETCONF_DIALOG_INIT      0x4db1e739u
+#define NID_NETCONF_DIALOG_UPDATE    0x91e70e35u
+#define NID_NETCONF_DIALOG_STATUS    0x6332aa39u
+#define NID_NETCONF_DIALOG_SHUTDOWN  0xf88155f6u
+#define NID_GAMEDATA_DIALOG_INIT     0x24ac31ebu
+#define NID_GAMEDATA_DIALOG_UPDATE   0x4aecd179u
+#define NID_GAMEDATA_DIALOG_STATUS   0xb57e95d9u
+#define NID_GAMEDATA_DIALOG_SHUTDOWN 0x32e32dcbu
+#define NID_SHARING_DIALOG_INIT      0xc492f751u
+#define NID_SHARING_DIALOG_UPDATE    0x7853182du
+#define NID_SHARING_DIALOG_STATUS    0x946963f3u
+#define NID_SHARING_DIALOG_SHUTDOWN  0xefc6f80fu
+#define UTILITY_MSG_PARAM_ADDR       0x09034000u
+#define UTILITY_MSG2_PARAM_ADDR      0x09034400u
+#define UTILITY_OTHER_PARAM_ADDR     0x09034800u
+#define UTILITY_SAVEDATA_PARAM_ADDR  0x09035000u /* 0x600 bytes */
+#define UTILITY_RESULT_UNTOUCHED     0xdeadbeefu
+
+typedef struct UtilityDialogNids {
+    const char *name;
+    uint32_t init, update, status, shutdown;
+} UtilityDialogNids;
+
+static uint32_t utility_call(CpuState *cpu, uint32_t nid, uint32_t a0) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = a0;
+    return sr_syscall(cpu, nid);
+}
+
+/* A zeroed parameter block whose common result field (+0x1c) holds a sentinel: an InitStart
+ * that takes the block writes 0 there, so a refused one is visible by the sentinel staying. */
+static void utility_param_block(uint32_t addr, uint32_t size) {
+    for (uint32_t off = 0; off < size; off += 4u) MEM_W32(addr + off, 0u);
+    MEM_W32(addr + 0x1cu, UTILITY_RESULT_UNTOUCHED);
+}
+
+static void test_utility_dialog_single_slot(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
+          NID_SAVEDATA_DIALOG_STATUS, NID_SAVEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityMsgDialog", NID_MSG_DIALOG_INIT, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS,
+          NID_MSG_DIALOG_SHUTDOWN },
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+        { "sceUtilityOsk", NID_OSK_INIT, NID_OSK_UPDATE, NID_OSK_STATUS, NID_OSK_SHUTDOWN },
+    };
+    const size_t count = sizeof(dialogs) / sizeof(dialogs[0]);
+    char what[256];
+    CpuState cpu;
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    osk_person_reset();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+
+    /* No dialog ever opened: every type's Update, GetStatus and ShutdownStart is WRONG_TYPE. */
+    for (size_t i = 0; i < count; i++) {
+        snprintf(what, sizeof(what), "%sUpdate, GetStatus and ShutdownStart with no dialog ever "
+                 "opened return WRONG_TYPE", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].update, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].shutdown, 0u) == 0x80110005u,
+               what);
+    }
+
+    /* The message dialog takes the free slot. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
+           "a message InitStart takes the free slot and clears its result");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 1u, "the message dialog reports INIT");
+
+    /* Repeated init: a second message InitStart neither restarts the running dialog nor takes
+     * its own parameter block. */
+    utility_param_block(UTILITY_MSG2_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG2_PARAM_ADDR) == 0x80110001u &&
+               MEM_R32(UTILITY_MSG2_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "a second message InitStart while one is active returns INVALID_STATUS and leaves "
+           "its parameter block alone");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "the running message dialog was not restarted: it moves on from INIT to RUNNING");
+
+    /* Overlapping types: every other dialog's InitStart is refused while the message dialog is
+     * active, and calls for those types are WRONG_TYPE. */
+    for (size_t i = 0; i < count; i++) {
+        if (dialogs[i].init == NID_MSG_DIALOG_INIT) continue;
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        utility_param_block(block, savedata ? 0x600u : 0x40u);
+        snprintf(what, sizeof(what), "%sInitStart while the message dialog is active returns "
+                 "INVALID_STATUS and leaves its parameter block alone", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0x80110001u &&
+                   MEM_R32(block + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+               what);
+        snprintf(what, sizeof(what), "%sGetStatus while the message dialog holds the slot "
+                 "returns WRONG_TYPE", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].status, 0u) == 0x80110005u, what);
+    }
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "the refused InitStarts left the message dialog RUNNING");
+
+    /* The holder finishes; until its GetStatus reports NONE it still holds the active slot. */
+    expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 3u &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
+           "the message dialog finishes with its own result");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u,
+           "the finished message dialog accepts ShutdownStart");
+    utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "a savedata InitStart before the shut-down message dialog reports NONE is refused");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+           "the message dialog winds down to NONE and keeps the slot there after use");
+
+    /* With the holder at NONE the next type takes the slot, and the old holder's calls become
+     * WRONG_TYPE. */
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
+           "with the message dialog at NONE a savedata InitStart takes the slot");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0x80110005u &&
+               utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110005u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0x80110005u,
+           "the message dialog that gave up the slot answers WRONG_TYPE");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "the savedata dialog reports INIT, then winds down to NONE after ShutdownStart");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a ShutdownStart at NONE does not re-arm the savedata dialog");
+
+    /* Each remaining type takes the free slot in turn and gives it back at NONE. */
+    for (size_t i = 0; i < count; i++) {
+        const uint32_t init = dialogs[i].init;
+        if (init == NID_SAVEDATA_DIALOG_INIT || init == NID_MSG_DIALOG_INIT || init == NID_OSK_INIT)
+            continue;
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x40u);
+        snprintf(what, sizeof(what), "%sInitStart takes the free slot; the dialog reports INIT, "
+                 "then winds down to NONE after ShutdownStart", dialogs[i].name);
+        expect(utility_call(&cpu, init, UTILITY_OTHER_PARAM_ADDR) == 0u &&
+                   MEM_R32(UTILITY_OTHER_PARAM_ADDR + 0x1cu) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
+                   utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 4u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0u,
+               what);
+    }
+    sr_hle_test_osk_slot_reset();
 }
 
 static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
@@ -31768,6 +31957,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_osk_overlay_through_hle_scripted_pad();
     test_osk_overlay_closing_press_stays_with_keyboard();
     test_osk_keyboard_keeps_guest_time_running();
+    test_utility_dialog_single_slot();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
