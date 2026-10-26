@@ -18900,6 +18900,182 @@ static void test_td24c_atrac_info_batch(void) {
     }
 }
 
+/* ---- issue #1379: the halfway and MOut set calls get their own signatures ----
+ *
+ * Six sceAtrac NIDs were registered to h_AtracSetDataAndGetID(buf, bufSize).
+ * The ID-taking calls (sceAtracSetHalfwayBuffer(id, buf, readSize, bufSize),
+ * sceAtracSetMOutData(id, buf, bufSize), sceAtracSetMOutHalfwayBuffer(id, buf,
+ * readSize, bufSize)) read the ID as a buffer address; the halfway calls lost
+ * the difference between the filled prefix (readSize) and the buffer
+ * (bufSize); the MOut calls accepted stereo tracks; and every *AndGetID call
+ * assumed ATRAC3+ whatever the fmt tag said. Every leg dispatches the
+ * production NID through sr_syscall. Fixtures are the synthetic #32 ring track
+ * (terminator-unit ATRAC3+ frames) and the synthetic #1096 AT3 frame; no game
+ * data. Error codes follow the public PPSSPP reference and are not measured on
+ * a PSP. */
+#define NID_SCE_ATRAC_SET_HALFWAY_BUFFER_AND_GET_ID       0x0fae370eu
+#define NID_SCE_ATRAC_SET_HALFWAY_BUFFER                  0x3f6e26b5u
+#define NID_SCE_ATRAC_SET_MOUT_DATA_AND_GET_ID            0x472e3825u
+#define NID_SCE_ATRAC_SET_MOUT_HALFWAY_BUFFER             0x5cf9d852u
+#define NID_SCE_ATRAC_SET_MOUT_HALFWAY_BUFFER_AND_GET_ID  0x9cd7de03u
+#define NID_SCE_ATRAC_SET_MOUT_DATA                       0xf6837a1au
+#define AT1379_INCORRECT_READ_SIZE 0x80630013u
+#define AT1379_NOT_MONO            0x80630019u
+
+static void at1379_set_channels(uint16_t channels) {
+    fixture_wr16(&g_mem[AT_RINGBASE - 0x08000000u + 22u], channels);
+}
+/* A halfway buffer seen through sceAtracGetStreamDataInfo: the guest writes
+ * right after the filled prefix, may write the rest of the file, and the file
+ * read position is the prefix size. */
+static int at1379_halfway_info(uint32_t id, uint32_t readSize) {
+    enum { AT1379_WP = 0x08000200u, AT1379_WB = 0x08000204u, AT1379_RO = 0x08000208u };
+    MEM_W32(AT1379_WP, 0xdeadbeefu);
+    MEM_W32(AT1379_WB, 0xdeadbeefu);
+    MEM_W32(AT1379_RO, 0xdeadbeefu);
+    return td24b_dispatch4(NID_SCE_ATRAC_GET_STREAM_DATA_INFO, id, AT1379_WP, AT1379_WB, AT1379_RO) == 0u &&
+           MEM_R32(AT1379_WP) == AT_RINGBASE + readSize &&
+           MEM_R32(AT1379_WB) == AT_FILESIZE - readSize &&
+           MEM_R32(AT1379_RO) == readSize;
+}
+static uint32_t at1379_channels(uint32_t id) {
+    enum { AT1379_OUT = 0x08000220u };
+    MEM_W32(AT1379_OUT, 0xdeadbeefu);
+    if (td24b_dispatch4(NID_SCE_ATRAC_GET_CHANNEL, id, AT1379_OUT, 0u, 0u) != 0u)
+        return 0xffffffffu;
+    return MEM_R32(AT1379_OUT);
+}
+
+static void test_atrac_set_entry_points_1379(void) {
+    enum {
+        AT1379_OUT = 0x08000224u,
+        AT1379_DEC = 0x08000230u, AT1379_FIN = 0x08000234u, AT1379_REM = 0x08000238u,
+        AT1379_AT3_TRACK = 0x08002000u,
+        AT1379_AT3_SIZE = 380u,
+    };
+    const uint32_t READ = AT_BUFSIZE;      /* filled prefix of the track */
+    const uint32_t BUF = AT_FILESIZE;      /* buffer large enough for the file */
+    reset_fixture();
+    sr_hle_init();
+
+    /* 1. sceAtracSetHalfwayBufferAndGetID(buf, readSize, bufSize) */
+    atring_build_header();
+    uint32_t id = td24b_dispatch4(NID_SCE_ATRAC_SET_HALFWAY_BUFFER_AND_GET_ID,
+                                  AT_RINGBASE, READ, BUF, 0u);
+    expect(id < 8u, "#1379: sceAtracSetHalfwayBufferAndGetID allocates a context");
+    if (id >= 8u) return;
+    expect(at1379_halfway_info(id, READ),
+           "#1379: a halfway buffer writes after its filled prefix, up to the file end");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_IS_SECOND_BUFFER_NEEDED, id, 0u, 0u, 0u) == 0u,
+           "#1379: a halfway buffer needs no second buffer");
+    MEM_W32(AT1379_OUT, 0xdeadbeefu);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_REMAIN_FRAME, id, AT1379_OUT, 0u, 0u) == 0u &&
+               MEM_R32(AT1379_OUT) == (READ - AT_DATAOFF) / AT_ALIGN,
+           "#1379: a halfway buffer has the frames of its filled prefix left");
+    {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = id; cpu.r[5] = AT_PCMOUT; cpu.r[6] = AT1379_DEC; cpu.r[7] = AT1379_FIN; cpu.r[8] = AT1379_REM;
+        MEM_W32(AT1379_DEC, 0xdeadbeefu);
+        expect(sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA) == 0u && MEM_R32(AT1379_DEC) == 2048u,
+               "#1379: a halfway buffer decodes its first frame");
+    }
+    for (uint32_t off = READ; off < AT_FILESIZE; off++)
+        g_mem[AT_RINGBASE - 0x08000000u + off] = atring_file_byte(off);
+    expect(td24b_dispatch4(0x7db31251u /* sceAtracAddStreamData */, id,
+                           AT_FILESIZE - READ, 0u, 0u) == 0u,
+           "#1379: the guest adds the rest of the file to the halfway buffer");
+    MEM_W32(AT1379_OUT, 0xdeadbeefu);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_REMAIN_FRAME, id, AT1379_OUT, 0u, 0u) == 0u &&
+               MEM_R32(AT1379_OUT) == 0xffffffffu,
+           "#1379: a completed halfway buffer reports all data on memory");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u) == 0u,
+           "#1379: halfway context releases");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_HALFWAY_BUFFER_AND_GET_ID,
+                           AT_RINGBASE, BUF + 1u, BUF, 0u) == AT1379_INCORRECT_READ_SIZE,
+           "#1379: a filled prefix larger than the buffer is refused (INCORRECT_READ_SIZE)");
+
+    /* 2. sceAtracSetHalfwayBuffer(id, buf, readSize, bufSize) configures that ID. */
+    uint32_t got = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u);
+    expect(got < 8u, "#1379: sceAtracGetAtracID allocates an ATRAC3+ context");
+    if (got >= 8u) return;
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_HALFWAY_BUFFER, got, AT_RINGBASE, READ, BUF) == 0u,
+           "#1379: sceAtracSetHalfwayBuffer configures the given ID");
+    expect(at1379_halfway_info(got, READ),
+           "#1379: sceAtracSetHalfwayBuffer keeps the prefix and buffer sizes apart");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_HALFWAY_BUFFER, 0x7fu, AT_RINGBASE, READ, BUF) ==
+               ATRAC_ERROR_BAD_ATRACID,
+           "#1379: sceAtracSetHalfwayBuffer refuses an invalid ID (BAD_ATRACID)");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_HALFWAY_BUFFER, got, AT_RINGBASE, BUF + 1u, BUF) ==
+               AT1379_INCORRECT_READ_SIZE,
+           "#1379: sceAtracSetHalfwayBuffer refuses a prefix larger than the buffer");
+    expect(at1379_halfway_info(got, READ),
+           "#1379: a refused sceAtracSetHalfwayBuffer leaves the context unchanged");
+
+    /* 3. The MOut calls accept a mono track. */
+    atring_build_header();
+    at1379_set_channels(1u);
+    id = td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_DATA_AND_GET_ID, AT_RINGBASE, AT_BUFSIZE, 0u, 0u);
+    expect(id < 8u && at1379_channels(id) == 1u,
+           "#1379: sceAtracSetMOutDataAndGetID accepts a mono track");
+    if (id < 8u) (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+    id = td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_HALFWAY_BUFFER_AND_GET_ID,
+                         AT_RINGBASE, READ, BUF, 0u);
+    expect(id < 8u && at1379_halfway_info(id, READ),
+           "#1379: sceAtracSetMOutHalfwayBufferAndGetID keeps the prefix and buffer sizes apart");
+    if (id < 8u) (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_DATA, got, AT_RINGBASE, AT_BUFSIZE, 0u) == 0u &&
+               at1379_channels(got) == 1u,
+           "#1379: sceAtracSetMOutData configures the given ID with a mono track");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_HALFWAY_BUFFER, got, AT_RINGBASE, READ, BUF) == 0u &&
+               at1379_halfway_info(got, READ),
+           "#1379: sceAtracSetMOutHalfwayBuffer configures the given ID as a halfway buffer");
+
+    /* 4. ...and refuse a stereo one (NOT_MONO). The *AndGetID calls allocate
+     * nothing; the ID-taking calls leave the context unchanged. */
+    atring_build_header();
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_DATA_AND_GET_ID, AT_RINGBASE, AT_BUFSIZE, 0u, 0u) ==
+               AT1379_NOT_MONO,
+           "#1379: sceAtracSetMOutDataAndGetID refuses a stereo track (NOT_MONO)");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_HALFWAY_BUFFER_AND_GET_ID,
+                           AT_RINGBASE, READ, BUF, 0u) == AT1379_NOT_MONO,
+           "#1379: sceAtracSetMOutHalfwayBufferAndGetID refuses a stereo track (NOT_MONO)");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_DATA, got, AT_RINGBASE, AT_BUFSIZE, 0u) ==
+               AT1379_NOT_MONO,
+           "#1379: sceAtracSetMOutData refuses a stereo track (NOT_MONO)");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_MOUT_HALFWAY_BUFFER, got, AT_RINGBASE, READ, BUF) ==
+               AT1379_NOT_MONO,
+           "#1379: sceAtracSetMOutHalfwayBuffer refuses a stereo track (NOT_MONO)");
+    expect(at1379_channels(got) == 1u && at1379_halfway_info(got, READ),
+           "#1379: a NOT_MONO refusal leaves the configured context unchanged");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, got, 0u, 0u, 0u) == 0u,
+           "#1379: the configured context releases");
+    got = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3PLUS, 0u, 0u, 0u);
+    expect(got == 0u, "#1379: the refused *AndGetID calls left every ID free");
+    if (got < 8u) (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, got, 0u, 0u, 0u);
+
+    /* 5. The *AndGetID calls take the codec from the RIFF fmt tag. */
+    td1096_build_at3_track(AT1379_AT3_TRACK, 0x0270u);
+    id = td24b_dispatch4(NID_SCE_ATRAC_SET_DATA_AND_GET_ID, AT1379_AT3_TRACK, AT1379_AT3_SIZE, 0u, 0u);
+    expect(id < 8u, "#1379: sceAtracSetDataAndGetID accepts an AT3 track (fmt tag 0x0270)");
+    if (id < 8u) {
+        MEM_W32(AT1379_OUT, 0xdeadbeefu);
+        expect(td24b_dispatch4(NID_SCE_ATRAC_GET_MAX_SAMPLE, id, AT1379_OUT, 0u, 0u) == 0u &&
+                   MEM_R32(AT1379_OUT) == ATRAC3_FRAME_SAMPLES,
+               "#1379: an fmt tag 0x0270 track gets an AT3 context (1024-sample frames)");
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = id; cpu.r[5] = AT_PCMOUT; cpu.r[6] = AT1379_DEC; cpu.r[7] = AT1379_FIN; cpu.r[8] = AT1379_REM;
+        expect(sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA) == 0u,
+               "#1379: the AT3 context decodes through the AT3 decoder");
+        (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+    }
+    td24c_build_track(AT1379_AT3_TRACK, 0x400u, 16000u);   /* fmt tag 1 (PCM) */
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA_AND_GET_ID, AT1379_AT3_TRACK, 0x400u, 0u, 0u) ==
+               ATRAC_ERROR_UNKNOWN_FORMAT,
+           "#1379: sceAtracSetDataAndGetID refuses a RIFF whose fmt tag is not ATRAC");
+}
+
 /* TD-24 batch 4: production-dispatch regressions for 20 converted fake-success
  * handlers across 6 families:
  *   1. Ctrl sampling (SetSamplingMode, SetSamplingCycle, SetIdleCancelThreshold, GetIdleCancelThreshold)
@@ -31907,6 +32083,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_mp3_loop_and_mono();
     test_mp3_error_paths();
     test_at3_synthetic_decode_bookkeeping();
+    test_atrac_set_entry_points_1379();
     test_td24d_hle_batch();
     test_impose_language_mode_pair();
     test_sas_core_mix_preserves_caller_pcm();

@@ -9603,7 +9603,10 @@ static uint32_t atrac_remaining_frames(const Atrac *a) {
     if (remainingBytes < 0) remainingBytes = 0;
     return (uint32_t)remainingBytes / a->bytesPerFrame;
 }
-static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size) {
+/* Configure `a` from the first `size` bytes of a track held in a guest buffer
+ * of `bufSize` bytes (the ring or the whole-file buffer). sceAtracSetData passes
+ * size == bufSize; the halfway calls pass the filled prefix separately. */
+static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t bufSize) {
     /* Transactional: a rejected buffer leaves the previously configured
      * context untouched. */
     uint32_t oldBuf = a->buf;
@@ -9649,7 +9652,7 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size) {
     a->streamWindowRead = 0;
     a->streamWindowWrite = 0;
     a->streamWindowQueued = 0;
-    a->bufferMaxSize = size;
+    a->bufferMaxSize = bufSize;
     if (a->size > a->fileSize) a->size = a->fileSize;
     if (a->bytesPerFrame == 0u || a->dataByteOffset == 0u) {
         /* No frame-size/ring contract in the fed prefix (e.g. a fact-only
@@ -9805,45 +9808,138 @@ static uint32_t h_AtracGetAtracID(CpuState *s) {
     }
     return ATRAC_ERROR_NO_ATRACID;
 }
-static uint32_t h_AtracSetDataAndGetID(CpuState *s) {
+/* The sceAtracSet*Data and sceAtracSet*HalfwayBuffer family (PSPSDK
+ * pspatrac3.h). A data call hands over a buffer whose bufSize bytes all hold
+ * the track's start; a halfway call hands over a bufSize-byte buffer of which
+ * only the first readSize bytes are filled, and the guest adds the rest
+ * through sceAtracGetStreamDataInfo and sceAtracAddStreamData. The calls that
+ * take an ID configure that context; the *AndGetID calls allocate one for the
+ * codec the RIFF fmt chunk names. The MOut calls ask for mono output, which
+ * the HLE models for mono tracks only. Validation order and error codes follow
+ * the public PPSSPP reference (Core/HLE/sceAtrac.cpp); they are not measured
+ * on a PSP here (#1096). */
+#define ATRAC_ERROR_INCORRECT_READ_SIZE 0x80630013u
+#define ATRAC_ERROR_NOT_MONO 0x80630019u
+/* Codec named by the fmt chunk of the RIFF prefix: tag 0x0270 is ATRAC3 and
+ * WAVE_FORMAT_EXTENSIBLE (0xFFFE) is ATRAC3+. 0 for any other tag, or when the
+ * prefix has no fmt chunk. */
+static uint32_t atrac_riff_codec(uint32_t buf, uint32_t size) {
+    if (size < 44u || !sr_guest_span_readable(buf, size) ||
+        MEM_R32(buf) != 0x46464952u /* 'RIFF' */ ||
+        MEM_R32(buf + 8u) != 0x45564157u /* 'WAVE' */)
+        return 0u;
+    uint32_t end = size < ATRAC_RIFF_SCAN_MAX ? size : ATRAC_RIFF_SCAN_MAX;
+    for (uint32_t off = 12u; off <= end - 10u;) {
+        uint32_t sz = MEM_R32(buf + off + 4u);
+        if (MEM_R32(buf + off) == 0x20746d66u /* 'fmt ' */) {
+            uint32_t tag = MEM_R16(buf + off + 8u);
+            return tag == 0x0270u ? ATRAC_CODEC_AT3
+                 : tag == 0xFFFEu ? ATRAC_CODEC_AT3PLUS : 0u;
+        }
+        uint64_t next = (uint64_t)off + 8u + sz + (sz & 1u);
+        if (next > end) break;
+        off = (uint32_t)next;
+    }
+    return 0u;
+}
+/* Channel count of the RIFF prefix as the codec `codec` parses it, without
+ * touching any context; -1 when the prefix does not parse. */
+static int atrac_riff_channels(uint32_t codec, uint32_t buf, uint32_t size) {
+    Atrac probe;
+    memset(&probe, 0, sizeof(probe));
+    probe.codecType = codec;
+    return atrac_parse_track(&probe, buf, size) ? probe.channels : -1;
+}
+static void atrac_log_setdata(const Atrac *a, const char *call) {
+    if (!atrac_log_on()) return;
+    fprintf(stderr, "ATRAC_SETDATA: %s id=%d buf=0x%08x size=%u bufSize=%u fileSize=%u frame=%u dataOff=%u endSample=%d state=%d\n",
+            call, (int)(a - s_atrac), a->buf, a->size, a->bufferMaxSize, a->fileSize,
+            a->bytesPerFrame, a->dataByteOffset, a->endSample, a->bufferState);
+}
+/* Shared body of the *AndGetID calls. */
+static uint32_t atrac_set_new(uint32_t buf, uint32_t readSize, uint32_t bufSize,
+                              int mono, const char *call) {
+    if (readSize > bufSize) return ATRAC_ERROR_INCORRECT_READ_SIZE;
+    if (bufSize > readSize && !sr_guest_span_readable(buf, bufSize))
+        return ATRAC_ERROR_SIZE_TOO_SMALL;
+    uint32_t codec = atrac_riff_codec(buf, readSize);
+    int channels = codec ? atrac_riff_channels(codec, buf, readSize) : -1;
+    if (channels < 0) return ATRAC_ERROR_UNKNOWN_FORMAT;
+    if (mono && channels != 1) return ATRAC_ERROR_NOT_MONO;
     int id = -1; for (int i = 0; i < 8; i++) if (!s_atrac[i].used) { id = i; break; }
     if (id < 0) return ATRAC_ERROR_NO_ATRACID;
     Atrac *a = &s_atrac[id];
     memset(a, 0, sizeof(*a));
-    a->used = 1; a->codecType = ATRAC_CODEC_AT3PLUS;
-    if (!atrac_set_track(a, A0, A1)) {
+    a->used = 1; a->codecType = codec;
+    if (!atrac_set_track(a, buf, readSize, bufSize)) {
         /* The ID was never handed out: do not leave a half-configured slot
          * behind that later calls could mistake for a valid context. */
         a->used = 0;
         return ATRAC_ERROR_UNKNOWN_FORMAT;
     }
     atrac_ensure_decoder(a);
-    if (atrac_log_on()) {
-        fprintf(stderr, "ATRAC_SETDATA: id=%d buf=0x%08x size=%u fileSize=%u frame=%u dataOff=%u endSample=%d state=%d\n",
-                id, a->buf, a->size, a->fileSize, a->bytesPerFrame, a->dataByteOffset, a->endSample, a->bufferState);
-        fprintf(stderr, "ATRAC_SETDATA_BYTES: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                MEM_R8(a->buf+0), MEM_R8(a->buf+1), MEM_R8(a->buf+2), MEM_R8(a->buf+3),
-                MEM_R8(a->buf+4), MEM_R8(a->buf+5), MEM_R8(a->buf+6), MEM_R8(a->buf+7),
-                MEM_R8(a->buf+8), MEM_R8(a->buf+9), MEM_R8(a->buf+10), MEM_R8(a->buf+11),
-                MEM_R8(a->buf+12), MEM_R8(a->buf+13), MEM_R8(a->buf+14), MEM_R8(a->buf+15));
+    if (a->codecType == ATRAC_CODEC_AT3 && !a->dec_at3) {
+        atrac_release_decoder(a);
+        atrac_stream_window_free(a);
+        a->used = 0;
+        return ATRAC_ERROR_UNKNOWN_FORMAT;
     }
+    atrac_log_setdata(a, call);
     return (uint32_t)id;
 }
 static Atrac *atrac_of(uint32_t id) { return id < 8 && s_atrac[id].used ? &s_atrac[id] : 0; }
-static uint32_t h_AtracSetData(CpuState *s) {
-    Atrac *a = atrac_of(A0);
+/* Shared body of the calls that configure an existing ID. A MOut call on a
+ * track that is not mono returns NOT_MONO; the public reference keeps the
+ * data in that case, but its stereo-to-mono output is not modelled here, so
+ * the HLE refuses before touching the context. */
+static uint32_t atrac_set_existing(uint32_t id, uint32_t buf, uint32_t readSize,
+                                   uint32_t bufSize, int mono, const char *call) {
+    Atrac *a = atrac_of(id);
     if (!a) return ATRAC_ERROR_BAD_ATRACID;
-    if (!A1 || A2 < 44u || !sr_guest_span_readable(A1, A2))
+    if (readSize > bufSize) return ATRAC_ERROR_INCORRECT_READ_SIZE;
+    if (!buf || readSize < 44u || !sr_guest_span_readable(buf, bufSize))
         return ATRAC_ERROR_SIZE_TOO_SMALL;
-    if (!atrac_set_track(a, A1, A2))
+    if (mono && atrac_riff_channels(a->codecType, buf, readSize) != 1)
+        return ATRAC_ERROR_NOT_MONO;
+    if (!atrac_set_track(a, buf, readSize, bufSize))
         return ATRAC_ERROR_UNKNOWN_FORMAT;
     atrac_ensure_decoder(a);
     if (a->codecType == ATRAC_CODEC_AT3 && !a->dec_at3)
         return ATRAC_ERROR_UNKNOWN_FORMAT;
-    if (atrac_log_on())
-        fprintf(stderr, "ATRAC_SETDATA_EXISTING: id=%u buf=0x%08x size=%u fileSize=%u frame=%u dataOff=%u endSample=%d state=%d\n",
-                A0, a->buf, a->size, a->fileSize, a->bytesPerFrame, a->dataByteOffset, a->endSample, a->bufferState);
+    atrac_log_setdata(a, call);
     return 0;
+}
+/* sceAtracSetDataAndGetID(buf, bufSize) */
+static uint32_t h_AtracSetDataAndGetID(CpuState *s) {
+    return atrac_set_new(A0, A1, A1, 0, "SetDataAndGetID");
+}
+/* sceAtracSetHalfwayBufferAndGetID(buf, readSize, bufSize) */
+static uint32_t h_AtracSetHalfwayBufferAndGetID(CpuState *s) {
+    return atrac_set_new(A0, A1, A2, 0, "SetHalfwayBufferAndGetID");
+}
+/* sceAtracSetMOutDataAndGetID(buf, bufSize) */
+static uint32_t h_AtracSetMOutDataAndGetID(CpuState *s) {
+    return atrac_set_new(A0, A1, A1, 1, "SetMOutDataAndGetID");
+}
+/* sceAtracSetMOutHalfwayBufferAndGetID(buf, readSize, bufSize) */
+static uint32_t h_AtracSetMOutHalfwayBufferAndGetID(CpuState *s) {
+    return atrac_set_new(A0, A1, A2, 1, "SetMOutHalfwayBufferAndGetID");
+}
+/* sceAtracSetData(id, buf, bufSize) */
+static uint32_t h_AtracSetData(CpuState *s) {
+    return atrac_set_existing(A0, A1, A2, A2, 0, "SetData");
+}
+/* sceAtracSetHalfwayBuffer(id, buf, readSize, bufSize) */
+static uint32_t h_AtracSetHalfwayBuffer(CpuState *s) {
+    return atrac_set_existing(A0, A1, A2, A3, 0, "SetHalfwayBuffer");
+}
+/* sceAtracSetMOutData(id, buf, bufSize) */
+static uint32_t h_AtracSetMOutData(CpuState *s) {
+    return atrac_set_existing(A0, A1, A2, A2, 1, "SetMOutData");
+}
+/* sceAtracSetMOutHalfwayBuffer(id, buf, readSize, bufSize) */
+static uint32_t h_AtracSetMOutHalfwayBuffer(CpuState *s) {
+    return atrac_set_existing(A0, A1, A2, A3, 1, "SetMOutHalfwayBuffer");
 }
 static uint32_t h_AtracReleaseAtracID(CpuState *s) {
     Atrac *a = atrac_of(A0);
@@ -24759,8 +24855,8 @@ static void hle_register_atrac_handlers(void) {
     sr_hle_register(0x644e5607, "sceAtracResetPlayPosition", h_AtracResetPlayPosition);
     /* Additional sceAtrac handlers (TD-24 batch 4) */
     sr_hle_register(0x132f1eca, "sceAtracReinit", h_AtracReinit);
-    sr_hle_register(0x0fae370e, "sceAtracSetHalfwayBufferAndGetID", h_AtracSetDataAndGetID);
-    sr_hle_register(0x3f6e26b5, "sceAtracSetHalfwayBuffer", h_AtracSetDataAndGetID);
+    sr_hle_register(0x0fae370e, "sceAtracSetHalfwayBufferAndGetID", h_AtracSetHalfwayBufferAndGetID);
+    sr_hle_register(0x3f6e26b5, "sceAtracSetHalfwayBuffer", h_AtracSetHalfwayBuffer);
     sr_hle_register(0x0e2a73ab, "sceAtracSetData", h_AtracSetData);
     sr_hle_register(0x780f88d1, "sceAtracGetAtracID", h_AtracGetAtracID);
     sr_hle_register(0x2dd3e298, "sceAtracGetBufferInfoForResetting", h_AtracGetBufferInfoForResetting);
@@ -24779,10 +24875,10 @@ static void hle_register_atrac_handlers(void) {
     sr_hle_register(0xd6a5f2f7, "sceAtracGetMaxSample", h_AtracGetMaxSample);
     sr_hle_register(0x5622b7c1, "sceAtracSetAA3DataAndGetID", h_AtracSetDataAndGetID);
     sr_hle_register(0x5dd66588, "sceAtracSetAA3HalfwayBufferAndGetID", h_AtracSetDataAndGetID);
-    sr_hle_register(0x472e3825, "sceAtracSetMOutDataAndGetID", h_AtracSetDataAndGetID);
-    sr_hle_register(0x5cf9d852, "sceAtracSetMOutHalfwayBuffer", h_AtracSetDataAndGetID);
-    sr_hle_register(0x9cd7de03, "sceAtracSetMOutHalfwayBufferAndGetID", h_AtracSetDataAndGetID);
-    sr_hle_register(0xf6837a1a, "sceAtracSetMOutData", h_AtracSetDataAndGetID);
+    sr_hle_register(0x472e3825, "sceAtracSetMOutDataAndGetID", h_AtracSetMOutDataAndGetID);
+    sr_hle_register(0x5cf9d852, "sceAtracSetMOutHalfwayBuffer", h_AtracSetMOutHalfwayBuffer);
+    sr_hle_register(0x9cd7de03, "sceAtracSetMOutHalfwayBufferAndGetID", h_AtracSetMOutHalfwayBufferAndGetID);
+    sr_hle_register(0xf6837a1a, "sceAtracSetMOutData", h_AtracSetMOutData);
     sr_hle_register(0x83bf7afd, "sceAtracSetSecondBuffer", h_AtracSetSecondBuffer);
     sr_hle_register(0x83e85ea0, "sceAtracGetSecondBufferInfo", h_AtracGetSecondBufferInfo);
     sr_hle_register(0xd5c28cc0, "sceAtracReleaseResources", h_AtracReleaseResources);
