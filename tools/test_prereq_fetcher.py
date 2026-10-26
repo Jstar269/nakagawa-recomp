@@ -555,6 +555,10 @@ class TestPrerequisiteFetcher(unittest.TestCase):
             "ucrt64/bin/mingw32-make.exe": b"synthetic make\n",
             "ucrt64/share/licenses/gcc/COPYING": b"GPL text\n",
             "ucrt64/share/gcc-1.0/python/libstdcxx.py": b"kept\n",
+            # Not licence files: the name rule takes only a dotted suffix.
+            "ucrt64/include/notice_board.h": b"/* header */\n",
+            "ucrt64/bin/license-check.exe": b"tool\n",
+            "ucrt64/share/doc/mpfr/COPYINGS": b"not a licence\n",
             **documentation,
         })
         dest = self.root / "stripped"
@@ -563,13 +567,14 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         for folder in ("doc", "info", "man"):
             self.assertFalse((share / folder).exists(), folder)
         self.assertEqual((share / "gcc-1.0" / "python" / "libstdcxx.py").read_bytes(), b"kept\n")
-        notices = dest / "notices" / "mingw-w64-ucrt-x86_64-gcc" / "ucrt64" / "share"
-        self.assertEqual((notices / "doc" / "mpfr" / "COPYING.LESSER").read_bytes(), b"LGPL-3.0 text\n")
-        self.assertEqual((notices / "licenses" / "gcc" / "COPYING").read_bytes(), b"GPL text\n")
+        notices = dest / "notices" / "mingw-w64-ucrt-x86_64-gcc"
+        self.assertEqual(sorted(path.relative_to(notices).as_posix() for path in notices.rglob("*") if path.is_file()),
+                         ["ucrt64/share/doc/mpfr/COPYING.LESSER", "ucrt64/share/licenses/gcc/COPYING"])
+        self.assertEqual((notices / "ucrt64/share/doc/mpfr/COPYING.LESSER").read_bytes(), b"LGPL-3.0 text\n")
         self.assertEqual(bundle["stripped_documentation"], {
             "paths": ["msys64/ucrt64/share/doc", "msys64/ucrt64/share/info", "msys64/ucrt64/share/man"],
-            "file_count": len(documentation),
-            "bytes": sum(len(data) for data in documentation.values()),
+            "file_count": len(documentation) + 1,
+            "bytes": sum(len(data) for data in documentation.values()) + len(b"not a licence\n"),
         })
         inventory = (dest / "bundle-inventory.txt").read_text(encoding="utf-8")
         self.assertNotIn("msys64/ucrt64/share/doc/", inventory)
@@ -717,7 +722,8 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         two_roots = {**members, "other/README.txt": b"x"}
         edited_notice = {**members, notice: members[notice] + b"\n"}
         for name, entries, message in (
-            ("same-size.zip", same_size, "mingw-w64-gcc-1.0-test.src.tar.zst does not match its pinned size and SHA-256"),
+            ("same-size.zip", same_size,
+             "mingw-w64-gcc-1.0-test.src.tar.zst does not match its pinned size and SHA-256"),
             ("missing.zip", missing, "sources/mingw-w64-gcc-1.0-test.src.tar.zst is missing"),
             ("extra.zip", extra, "sources/README.txt is not a pinned source"),
             ("nested.zip", nested, "one folder"),

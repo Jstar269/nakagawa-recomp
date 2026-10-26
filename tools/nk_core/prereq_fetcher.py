@@ -212,10 +212,11 @@ def download_verified_item(
     ) from last_error
 
 
-# A licence or copying file anywhere in a package: COPYING, COPYING.LESSER, LICENSE.txt,
-# LICENCE.md, NOTICE, COPYRIGHT and their suffixed forms. Some packages keep these only in
-# share/doc (MSYS2 mpfr's COPYING.LESSER), which a release bundle strips (#1285).
-_NOTICE_NAME = re.compile(r"(?:copying|licen[cs]e|notice|copyright)(?:[._-].*)?", re.IGNORECASE)
+# A licence or copying file anywhere in a package: COPYING, LICENSE, LICENCE, NOTICE or
+# COPYRIGHT, alone or with a dotted suffix such as COPYING.LESSER or LICENSE.txt. Some
+# packages keep these only in share/doc (MSYS2 mpfr's COPYING.LESSER), which a release
+# bundle strips (#1285).
+_NOTICE_NAME = re.compile(r"(?:copying|licen[cs]e|notice|copyright)(?:\.[a-z0-9][a-z0-9._-]*)?", re.IGNORECASE)
 
 
 def _is_notice_member(archive_member: str) -> bool:
