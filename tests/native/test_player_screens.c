@@ -58,37 +58,38 @@ static void set_test_viewport(NkUi *ui, int width, int height) {
 static const PlayerUiTitle k_titles[] = {
     {"Synthetic Showcase Scene", "TEST00007", "Ready", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
-     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     "", "", "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PLAYABLE, false},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
-     "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
+     "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PLAYABLE, false},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
-     "Source-owned compatibility fixture.", "", NULL, "", "RETRY PACKAGE CHECK",
-     "◆", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
+     "Source-owned compatibility fixture.", "", NULL, "", "", "",
+     "RETRY PACKAGE CHECK", "◆", 0x6CB6FFFFu,
+     PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_NONE, true},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
-     "No compatibility record exists.", "", NULL, "", "BUILD PACKAGE",
-     "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true,
+     "No compatibility record exists.", "", NULL, "", "", "",
+     "BUILD PACKAGE", "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_NONE, true},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
-     "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
+     "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_WONT_BOOT, true},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
-     "Source-owned runtime fixture.", "", NULL, "", "BUILD PACKAGE",
-     "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
+     "Source-owned runtime fixture.", "", NULL, "", "", "",
+     "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
      PLAYER_UI_TIER_PERFECT, true},
     {"Synthetic Profile", "TEST00001", "Ready", "",
-     "Source-owned runtime fixture.", "", NULL, "", "PLAY",
-     "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     "Source-owned runtime fixture.", "", NULL, "", "", "",
+     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
      PLAYER_UI_TIER_PERFECT, true}
 };
@@ -127,7 +128,8 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_WIZ_COPY_FAILED, FLOW_ERROR_STOP, FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
                FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
-               FLOW_SETTINGS_REMOVE, FLOW_CONTROLLER, FLOW_CONTROLLER_GAME,
+               FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_CONTROLLER,
+               FLOW_CONTROLLER_GAME,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
                FLOW_DEVLOG, FLOW_DEVLOG_EMPTY } FlowCase;
 
@@ -219,6 +221,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.page = which == FLOW_SETTINGS_ONLINE ? PLAYER_UI_SETTINGS_PAGE_ONLINE
         : which == FLOW_SETTINGS_NOTICES ? PLAYER_UI_SETTINGS_PAGE_NOTICES
         : which == FLOW_SETTINGS_REMOVE ? PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
+        : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
         : PLAYER_UI_SETTINGS_PAGE_MAIN;
     settings.resolution = "2x (960x544)";
     settings.pacing = "PSP timing";
@@ -229,6 +232,10 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.saves_folder = "C:/synthetic/Nakagawa/saves";
     settings.online_mode = true;
     settings.developer_mode = true;
+    settings.share_system_libraries = true;
+    if (which == FLOW_SETTINGS_BUILD_CACHE) {
+        settings.notice = "Shared library cache cleared. The next build compiles its libraries again.";
+    }
     settings.tools[0] = k_settings_tools[0];
     settings.tools[1] = k_settings_tools[1];
     settings.tool_count = 2u;
@@ -1351,8 +1358,16 @@ static void test_settings_pages(void) {
          "Online and developer opens its page"},
         {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_NOTICES, PLAYER_UI_SETTINGS_OPEN_NOTICES,
          "Third-party notices opens its page"},
-        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS, PLAYER_UI_SETTINGS_OPEN_REMOVE_TOOLS,
-         "Remove build tools asks first"},
+        {FLOW_SETTINGS, PLAYER_UI_ID_SETTINGS_BUILD_CACHE, PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE,
+         "Build tools and cache opens its page"},
+        {FLOW_SETTINGS_BUILD_CACHE, PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES,
+         PLAYER_UI_SETTINGS_TOGGLE_SHARE_LIBRARIES, "the share switch toggles library sharing"},
+        {FLOW_SETTINGS_BUILD_CACHE, PLAYER_UI_ID_SETTINGS_CLEAR_LIBRARIES,
+         PLAYER_UI_SETTINGS_CLEAR_SHARED_LIBRARIES, "Clear shared library cache clears it"},
+        {FLOW_SETTINGS_BUILD_CACHE, PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS,
+         PLAYER_UI_SETTINGS_OPEN_REMOVE_TOOLS, "Remove build tools asks first"},
+        {FLOW_SETTINGS_BUILD_CACHE, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
+         "Back returns to Settings from build tools and cache"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_ONLINE_MODE, PLAYER_UI_SETTINGS_TOGGLE_ONLINE,
          "the online switch toggles online mode"},
         {FLOW_SETTINGS_ONLINE, PLAYER_UI_ID_SETTINGS_UPDATES, PLAYER_UI_SETTINGS_TOGGLE_UPDATES,
@@ -1373,11 +1388,11 @@ static void test_settings_pages(void) {
          "Back leaves the notices"},
         {FLOW_SETTINGS_REMOVE, PLAYER_UI_ID_SETTINGS_CONFIRM_REMOVE,
          PLAYER_UI_SETTINGS_REMOVE_TOOLS, "Remove tools removes them"},
-        {FLOW_SETTINGS_REMOVE, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_BACK,
-         "Keep them leaves the tools alone"}
+        {FLOW_SETTINGS_REMOVE, PLAYER_UI_ID_SETTINGS_BACK, PLAYER_UI_SETTINGS_KEEP_TOOLS,
+         "Keep them leaves the tools alone and returns to build tools and cache"}
     };
     static const FlowCase pages[] = {FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
-                                     FLOW_SETTINGS_REMOVE};
+                                     FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE};
     for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         CHECK(settings_op_is(activate_flow_button(cases[i].id, cases[i].which), cases[i].op),
               cases[i].what);
@@ -1401,8 +1416,14 @@ static void test_settings_pages(void) {
               "each Settings page fits the 960 x 540 minimum window");
     }
     CHECK(flow_case_fits(FLOW_SETTINGS, 960, 540, dump, sizeof(dump)) &&
-              strstr(dump, "\"DONE\"") != NULL && strstr(dump, "\"REMOVE BUILD TOOLS\"") != NULL,
+              strstr(dump, "\"DONE\"") != NULL &&
+              strstr(dump, "\"BUILD TOOLS AND CACHE\"") != NULL,
           "Done and every Settings button are on screen at 960 x 540");
+    CHECK(flow_case_fits(FLOW_SETTINGS_BUILD_CACHE, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "\"SHARE LIBRARIES: ON\"") != NULL &&
+              strstr(dump, "\"REMOVE BUILD TOOLS\"") != NULL &&
+              strstr(dump, "Shared library cache cleared.") != NULL,
+          "build tools and cache shows the switch, tool removal and the clear notice");
 }
 
 static bool controller_op_is(PlayerUiAction action, PlayerUiControllerOp op, size_t control) {
@@ -2106,6 +2127,8 @@ static int capture_screens(const char *directory) {
             {FLOW_SETTINGS_ONLINE, "settings-online", PLAYER_UI_ID_SETTINGS_ONLINE_MODE},
             {FLOW_SETTINGS_NOTICES, "settings-notices", PLAYER_UI_ID_SETTINGS_BACK},
             {FLOW_SETTINGS_REMOVE, "settings-remove-tools", PLAYER_UI_ID_SETTINGS_BACK},
+            {FLOW_SETTINGS_BUILD_CACHE, "settings-build-cache",
+             PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES},
             {FLOW_CONTROLLER, "controller", PLAYER_UI_ID_CONTROLLER_BUTTON(0u)},
             {FLOW_CONTROLLER_GAME, "controller-game-mapping", PLAYER_UI_ID_CONTROLLER_BUTTON(10u)},
             {FLOW_CALIBRATE_REST, "controller-calibrate-rest",

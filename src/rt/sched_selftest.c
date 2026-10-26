@@ -311,6 +311,7 @@ static void reset_sched(void) {
     s_pause_source = SR_PAUSE_SRC_USER;
     s_pause_request_ns = 0;
     s_pause_requested_duration_ms = 0;
+    s_pause_script_timed = 0;
     s_pause_total_ns = 0;
     s_pause_count = 0;
     s_pause_exit_reason = SR_PAUSE_EXIT_NONE;
@@ -4550,6 +4551,39 @@ static void test_pause_s14_idle_vblank_request_enters_before_guest_resumes(void)
     sr_sched_stop_requested = NULL;
 }
 
+/* S15: a scripted step keeps its host-time length while a presenter frame draws the
+ * overlay (#1159 C9b). The frame paces and pumps the window but never asks to resume;
+ * the step's deadline ends the pause.
+ *
+ * MUTANT: drop the scripted-deadline check in sched_pause_run -- the frame never
+ *   resumes, the stop guard ends the pause after 100 frames, and this fails. */
+static void test_pause_s15_scripted_length_with_presenter_frame(void) {
+    pause_test_reset(1, 2000u);
+    s_clock_epoch_ns = 1000000u;
+    s_vbl_next_ns = 18000000u;
+    s_pause_script_steps = calloc(1, sizeof(*s_pause_script_steps));
+    expect(s_pause_script_steps != NULL, "S15 script step allocated");
+    if (!s_pause_script_steps) return;
+    s_pause_script_steps[0].vcount = 0u;
+    s_pause_script_steps[0].host_ms = 5u;
+    s_pause_script_steps[0].source = SR_PAUSE_SRC_SCRIPT;
+    s_pause_script_count = 1;
+    s_pause_script_index = 0;
+    s_pause_script_loaded = 1;
+    g_pause_test_resume_after = ~0u;
+    g_pause_test_frame_advance_ns = 1000000u;
+    g_pause_test_stop_after_frame = 100u;
+    sr_sched_stop_requested = pause_test_stop_requested;
+    sched_pause_script_maybe_request();
+    expect(s_pause_requested && s_pause_script_timed, "S15 the scripted step latches a timed pause");
+    expect(sched_pause_run() == SR_PAUSE_EXIT_RESUME, "S15 the step's deadline resumes the pause");
+    expect(g_pause_test_frame_calls == 5u && g_pause_test_enters == 1u && g_pause_test_leaves == 1u,
+           "S15 the presenter ran one frame per millisecond until the five millisecond deadline");
+    expect(sched_pause_total_ns() == 5000000u && !s_pause_script_timed,
+           "S15 exactly the scripted length is excluded from guest time");
+    sr_sched_stop_requested = NULL;
+}
+
 #define LOAD_EXEC_RESET_PARENT_ENTRY 0x08ffde00u
 #define LOAD_EXEC_RESET_CHILD_ENTRY 0x08ffde10u
 #define LOAD_EXEC_RESET_NEXT_ENTRY 0x08ffde20u
@@ -4742,6 +4776,7 @@ int main(int argc, char **argv) {
     test_pause_s12_turbo_sequence_is_unchanged();
     test_pause_s13_repeated_pauses_accumulate();
     test_pause_s14_idle_vblank_request_enters_before_guest_resumes();
+    test_pause_s15_scripted_length_with_presenter_frame();
     test_loadexec_retires_scheduler_world();
 
     fprintf(stderr, "sched_selftest: title config \"%s\" (valid=0x%x)\n",

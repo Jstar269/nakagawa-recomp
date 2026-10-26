@@ -34,10 +34,12 @@ extern void sr_audio_pause_enter(void);
 extern void sr_audio_pause_leave(void);
 extern int sr_audio_pause_script_ready(void);
 
-static const SrPauseHost s_driver_pause_host = {
+/* The window's overlay callbacks join once gui_init has a presenter that can draw it. */
+static SrPauseHost s_driver_pause_host = {
     .audio_enter = sr_audio_pause_enter,
     .audio_leave = sr_audio_pause_leave,
     .script_ready = sr_audio_pause_script_ready,
+    .busy_reason = gui_pause_busy_reason,
 };
 
 /* An opt-in file side channel for a parent launcher that cannot reliably own a
@@ -608,7 +610,9 @@ have_image:;
     int gui_requested = 0;
     for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--sched") == 0) use_sched = 1;
     for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--gui") == 0) {
-        gui_init(SR_APP_TITLE);
+        char caption[SR_WINDOW_TITLE_CAP];
+        sr_window_title_format(getenv("SR_GAME_TITLE"), caption, sizeof(caption));
+        gui_init(caption);
         gui_requested = 1;
         use_sched = 1;
     }
@@ -621,6 +625,11 @@ have_image:;
     /* An acceptance launch ends the scheduler once its requested frames were presented. */
     if (gui_headless_acceptance_requested())
         sr_sched_stop_requested = gui_headless_acceptance_complete;
+    if (gui_pause_presenter()) {
+        s_driver_pause_host.enter = gui_pause_enter;
+        s_driver_pause_host.frame = gui_pause_frame;
+        s_driver_pause_host.leave = gui_pause_leave;
+    }
     sr_sched_pause_host = &s_driver_pause_host;
 
     if (use_sched) {

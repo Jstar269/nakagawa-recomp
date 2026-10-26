@@ -44,6 +44,7 @@ typedef enum {
     VIEW_PREREQ_ABOUT,
     VIEW_CONFIRM_REMOVE_TOOLS,
     VIEW_ONLINE_SETTINGS,   /* Settings > Online and developer options */
+    VIEW_BUILD_CACHE,       /* Settings > Build tools and cache (#1306) */
     VIEW_DEVELOPER_LOG      /* the developer log panel (developer mode, F12) */
 } PlayerView;
 
@@ -184,6 +185,10 @@ typedef struct {
     bool online_news;      /* the news strip, when online mode ships */
     bool online_reports;   /* user-sent reports, when online mode ships */
     bool developer_mode;   /* shows the developer log panel (F12, Select + R) */
+    /* Builds keep the compiled system libraries a disc carries in the data folder and
+       reuse them for other games with the same library (#1306). On by default; the
+       copies never leave this PC. */
+    bool share_system_libraries;
     /* Save locations are not a setting: nk_launch_prepare_session resolves a
        writable per-disc Memory Stick root at launch (SR_MEMSTICK). The settings
        screen shows that real root instead of a configurable dead field. */
@@ -285,6 +290,25 @@ typedef struct {
     size_t count;
 } PlayerCompatibilityPreflight;
 
+/* The input check that must pass before the Library offers BUILD PACKAGE.
+   The complete checks are built for the wizard; the selected title keeps the
+   first blocking result and the identity it was checked against. */
+typedef struct {
+    bool checked;
+    bool passed;
+    bool is_experimental;
+    char disc_id[MAX_DISC_ID_LEN];
+    char title_id[64];
+    char iso_path[NK_MAX_PATH];
+    char runtime_root[NK_MAX_PATH];
+    char selected_executable[MAX_PATH_LEN];
+    char action_folder[NK_MAX_PATH];
+    int64_t source_size_bytes;
+    int64_t profile_size_bytes;
+    int64_t decrypted_executable_size_bytes;
+    PlayerPreflightCheck blocker;
+} PlayerPackageBuildPreflight;
+
 /* A preflight row in plain words for the cards (#1280, #1302): a name for what
    was checked, a status word, and one player sentence. Every code and status has
    its own sentence; the developer message stays in the log. */
@@ -349,6 +373,7 @@ typedef struct PlayerApp {
     PlayerSettings settings;
     ErrorState last_error;
     SetupWizardState wizard;
+    PlayerPackageBuildPreflight package_build_preflight;
     PackageBuildSession build_session;
     /* The build session whose failure or cancellation has been shown, so the
        main loop shows it once and the user can leave the card (#1277). */
@@ -362,7 +387,7 @@ typedef struct PlayerApp {
     bool prerequisite_fetcher_started;
     bool prerequisite_bootstrap_ready;
     bool prerequisite_cancel_sent;
-    bool request_open_license_folder;
+    bool request_open_folder;
     char requested_open_path[NK_MAX_PATH];
 
     /* Native core state */
@@ -721,6 +746,7 @@ bool player_ui_canvas_fit(int pixel_width, int pixel_height,
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
 void player_app_toggle_ui_sounds(PlayerApp *app);
+void player_app_toggle_share_system_libraries(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
 void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
 
@@ -908,6 +934,12 @@ void player_app_wizard_finish_extraction(PlayerApp *app, NkResult result,
 void player_app_build_compatibility_preflight(
     PlayerApp *app, bool disc_readable, bool param_sfo_parsed,
     const NkIsoExecutableReport *executables);
+/* Recheck the selected library title's current ISO and title profile before a
+   build. force=true bypasses the title-page cache; a refusal leaves its plain
+   blocking check in package_build_preflight. */
+bool player_app_build_package_preflight(PlayerApp *app, int game_index, bool force);
+const PlayerPreflightCheck *player_app_package_build_preflight_blocker(
+    const PlayerApp *app, int game_index);
 /* PSP system fonts: the Fonts & System step's import and removal. Each refreshes the
    per-slot status and the message. Import reads the folder's .pgf files once each, checks
    them with the native reader, and copies each slot's file into the per-user cache. */
@@ -957,8 +989,11 @@ bool player_app_prereq_take_resume(PlayerApp *app);
 bool player_app_open_prerequisite_about(PlayerApp *app);
 /* Asks the main loop to open the downloaded tools' licence texts folder. Asks
    nothing, and returns false, when the per-user data folder can't be found. */
+bool player_app_request_open_folder(PlayerApp *app, const char *path);
 bool player_app_request_license_folder(PlayerApp *app);
 void player_app_remove_prerequisites(PlayerApp *app);
+/* Settings > Build tools and cache: delete the shared library cache and say so. */
+void player_app_clear_shared_library_cache(PlayerApp *app);
 void player_app_set_build_error(
     PlayerApp *app,
     const char *failed_stage,

@@ -1915,9 +1915,17 @@ static void sample_tex(int tu, int tv, int *r, int *g, int *b, int *a) {
     if (s_stat_on > 0 && *a == 0) s_stat.texa0++;
 }
 
-static void sample_tex_f(float fu, float fv_coord, int *r, int *g, int *b, int *a) {
+static int tex_footprint_is_minifying(float du_dx, float dv_dx, float du_dy, float dv_dy) {
+    float dx2 = du_dx * du_dx + dv_dx * dv_dx;
+    float dy2 = du_dy * du_dy + dv_dy * dv_dy;
+    return fmaxf(dx2, dy2) > 1.0f;
+}
+
+static void sample_tex_f(float fu, float fv_coord, int minifying,
+                         int *r, int *g, int *b, int *a) {
     static int nobil = -1; if (nobil < 0) nobil = getenv("SR_NOBILINEAR") ? 1 : 0;
-    int use_linear = !nobil && ((ge.tex_filter & 1) || ((ge.tex_filter >> 8) & 1));
+    int filter_linear = minifying ? (ge.tex_filter & 1) : ((ge.tex_filter >> 8) & 1);
+    int use_linear = !nobil && filter_linear;
     if (!use_linear) { sample_tex((int)(fu + 0.5f), (int)(fv_coord + 0.5f), r, g, b, a); return; }
     /* An integer texel coordinate names that texel's CENTRE -- that is the convention the
      * nearest branch above implements by rounding. The filter window is centred on the
@@ -2360,14 +2368,15 @@ static int color_test(int r, int g, int b) {
 
 /* Compute final pixel colour from interpolated texcoord+colour+fog.
  * `fog` is fixed-point 0..256 (256 = no fog). Returns 0 if the alpha test rejects. */
-static int shade(float u, float fv, int fog, int vr, int vg, int vb, int va, int *or_, int *og, int *ob, int *oa) {
+static int shade(float u, float fv, int minifying, int fog,
+                 int vr, int vg, int vb, int va, int *or_, int *og, int *ob, int *oa) {
     int r, g, b, a;
     int dbg_ta = -1;
     if (ge.tex_enable && !ge.clear && ge.tex_addr) {
         int tr, tg, tb, ta;
         int rgba = (ge.tex_func & 0x100) != 0;
         int dbl  = (ge.tex_func & 0x10000) != 0;
-        sample_tex_f(u, fv, &tr, &tg, &tb, &ta);
+        sample_tex_f(u, fv, minifying, &tr, &tg, &tb, &ta);
         dbg_ta = ta;
         switch (ge.tex_func & 7) {
             case 1: /* decal */
@@ -2586,6 +2595,8 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
     long long dx0=bx-ax,  dy0=by-ay;
     long long dx1=cxx-bx, dy1=cyy-by;
     long long dx2=ax-cxx, dy2=ay-cyy;
+    float w0_dx = -(float)dy1 * 16.0f * inv, w1_dx = -(float)dy2 * 16.0f * inv;
+    float w0_dy =  (float)dx1 * 16.0f * inv, w1_dy =  (float)dx2 * 16.0f * inv;
     long long bias0 = (dy0 < 0 || (dy0 == 0 && dx0 > 0)) ? 0 : -1;
     long long bias1 = (dy1 < 0 || (dy1 == 0 && dx1 > 0)) ? 0 : -1;
     long long bias2 = (dy2 < 0 || (dy2 == 0 && dx2 > 0)) ? 0 : -1;
@@ -2625,12 +2636,24 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             }
 
             float u = 0, fv = 0;
+            int minifying = 0;
             if (textured) {
                 AT_PIX(iu, u); AT_PIX(iv, v);
+                float iu_dx = w0_dx * iu_ac + w1_dx * iu_bc;
+                float iv_dx = w0_dx * iv_ac + w1_dx * iv_bc;
+                float iu_dy = w0_dy * iu_ac + w1_dy * iu_bc;
+                float iv_dy = w0_dy * iv_ac + w1_dy * iv_bc;
                 if (persp) {
                     float inv_rw = (irw != 0.0f) ? 1.0f / irw : 1.0f;
+                    float irw_dx = w0_dx * irw_ac + w1_dx * irw_bc;
+                    float irw_dy = w0_dy * irw_ac + w1_dy * irw_bc;
                     u = iu * inv_rw; fv = iv * inv_rw;
+                    iu_dx = (iu_dx - u * irw_dx) * inv_rw;
+                    iv_dx = (iv_dx - fv * irw_dx) * inv_rw;
+                    iu_dy = (iu_dy - u * irw_dy) * inv_rw;
+                    iv_dy = (iv_dy - fv * irw_dy) * inv_rw;
                 } else { u = iu; fv = iv; }
+                minifying = tex_footprint_is_minifying(iu_dx, iv_dx, iu_dy, iv_dy);
             }
             int r, g, b, a;
             if (gouraud) {
@@ -2641,7 +2664,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             int fog = use_fog ? (int)(clampf01(ifog) * 256.0f) : 256;
 
             int sr,sg,sb,sa;
-            if (!shade(u,fv,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+            if (!shade(u,fv,minifying,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
 
             /* SR_PIXWHO=x,y: log every triangle that writes the chosen pixel — identifies
              * which draw owns a misrendered region without guessing from geometry. */
@@ -2707,13 +2730,23 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
         float t=(float)i/(float)steps;
         int x=(int)(A->x+dx*t), y=(int)(A->y+dy*t);
         float u=0, fv=0;
+        int minifying = 0;
         if (textured) {
-            u  = A->u + (B->u - A->u)*t;
-            fv = A->v + (B->v - A->v)*t;
+            float du_dt = B->u - A->u;
+            float dv_dt = B->v - A->v;
+            u  = A->u + du_dt*t;
+            fv = A->v + dv_dt*t;
             if (persp) {
                 float rw = A->rw + (B->rw - A->rw)*t;
-                if (rw != 0.0f) { u /= rw; fv /= rw; }
+                if (rw != 0.0f) {
+                    float drw_dt = B->rw - A->rw;
+                    u /= rw; fv /= rw;
+                    du_dt = (du_dt - u * drw_dt) / rw;
+                    dv_dt = (dv_dt - fv * drw_dt) / rw;
+                }
             }
+            float inv_len = 1.0f / (len > 0.0f ? len : 1.0f);
+            minifying = tex_footprint_is_minifying(du_dt * inv_len, dv_dt * inv_len, 0.0f, 0.0f);
         }
         int r=(int)(A->r+(B->r-A->r)*t), g=(int)(A->g+(B->g-A->g)*t);
         int b=(int)(A->b+(B->b-A->b)*t), a=(int)(A->a+(B->a-A->a)*t);
@@ -2722,7 +2755,7 @@ static void draw_line_vtx(const Vtx *A, const Vtx *B, int persp) {
         if (!zrange_ok(lz, persp)) { if (s_stat_on > 0) s_stat.zrange++; continue; }
         int fog = use_fog ? (int)(clampf01(A->fog+(B->fog-A->fog)*t)*256.0f) : 256;
         int sr,sg,sb,sa;
-        if (!shade(u,fv,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
+        if (!shade(u,fv,minifying,fog,r,g,b,a,&sr,&sg,&sb,&sa)) continue;
         put_px_rgba_tested(x,y,clamp_z(lz),use_z,sr,sg,sb,sa);
     }
 }
@@ -2746,7 +2779,7 @@ static void draw_point_vtx(const Vtx *A, int persp) {
     int fog = (persp && ge.fog_enable && !ge.clear) ? (int)(clampf01(A->fog)*256.0f) : 256;
     s_in3d = persp;
     int sr,sg,sb,sa;
-    if (!shade(u,fv,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
+    if (!shade(u,fv,0,fog,A->r,A->g,A->b,A->a,&sr,&sg,&sb,&sa)) return;
     int use_z = persp ? ge.ztest_enable : thru_ztest();
     put_px_rgba_tested((int)A->x,(int)A->y,clamp_z(A->z),use_z,sr,sg,sb,sa);
 }
@@ -3345,6 +3378,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     float v_start = (p0->y <= p1->y) ? v0 : v1 - step_v;
     float u_dir = (p0->x <= p1->x) ? step_u : -step_u;
     float v_dir = (p0->y <= p1->y) ? step_v : -step_v;
+    int minifying = tex_footprint_is_minifying(u_dir, 0.0f, 0.0f, v_dir);
 
     /* SR_PIXWHO probe: the sprite path owned only its clear-mode case, so a misrendered
      * row owned by a textured sprite had no way to name the draw. Name the full sampling
@@ -3370,7 +3404,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
         for (int x = xa; x < xb; x++) {
             float u = u_start + (float)(x - xa) * u_dir;
             int r, g, b, a;
-            if (!shade(u, fv, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
+            if (!shade(u, fv, minifying, fog, p1->r, p1->g, p1->b, p1->a, &r, &g, &b, &a)) continue;
             put_px_rgba_tested(x, y, pz, use_z, r, g, b, a);
         }
     }
