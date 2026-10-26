@@ -13904,9 +13904,13 @@ static void test_suspend_resume_errors_and_ready_thread(void) {
  * Expected results are the PSPAutotests threads/threads/change.expected cells:
  * an unknown, -1 or deleted UID answers UNKNOWN_THID; a never-started or finished
  * target answers DORMANT; priorities 0x08..0x77 are accepted and -2, -1, 0x01..0x07,
- * 0x78 and 0x79 answer 0x80020193 without changing the priority; priority 0 gives the
- * target the caller's current priority (0x18 there); a change that leaves a ready
- * thread strictly stronger than the caller lets it run at the call.
+ * 0x78 and 0x79 answer 0x80020193 without changing the priority; ready, suspended and
+ * waiting targets are changed; priority 0 gives the target the caller's current
+ * priority (0x18 there); a change that leaves another ready thread strictly stronger
+ * than the caller lets it run at the call, an equal one does not; and a caller that
+ * changes its own priority, even to the same value, goes behind its equal-priority
+ * ready peers and yields at the call ("[r] Zero", and the test thread's line before
+ * "Current").
  * ------------------------------------------------------------------------- */
 #define NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY 0x71bc9871u
 #define SRT_ILLEGAL_PRIORITY 0x80020193u
@@ -13944,6 +13948,19 @@ static void test_change_thread_priority_contract(void) {
     expect(deleted != 0u && sched_delete_thread(deleted) == 0u, "create and delete a thread");
     expect(srt_change_priority(deleted, 0x20u) == SRT_UNKNOWN_THID,
            "ChangeThreadPriority of a deleted thread returns UNKNOWN_THID");
+
+    /* ---- suspended and waiting targets are changed and do not take the CPU -- */
+    TCB *suspended = fixture_thread(0x5b3u, TH_READY, 0x30);
+    TCB *waiting = fixture_thread(0x5b4u, TH_WAIT_OBJ, 0x30);
+    suspended->started = 1;
+    suspended->suspended = 1;
+    waiting->started = 1;
+    expect(srt_change_priority(suspended->uid, 0x08u) == 0u && suspended->priority == 0x08 &&
+           self->state == TH_RUNNING,
+           "ChangeThreadPriority of a suspended thread succeeds and it does not preempt");
+    expect(srt_change_priority(waiting->uid, 0x08u) == 0u && waiting->priority == 0x08 &&
+           waiting->state == TH_WAIT_OBJ && self->state == TH_RUNNING,
+           "ChangeThreadPriority of a waiting thread succeeds and it keeps waiting");
 
     /* ---- illegal priorities are refused and change nothing ------------------ */
     static const uint32_t illegal[] = { 0xfffffffeu, 0xffffffffu, 0x01u, 0x02u, 0x04u,
@@ -13985,6 +14002,39 @@ static void test_change_thread_priority_contract(void) {
            self->state == TH_READY,
            "lowering the caller below a ready thread reschedules at the call");
     self->state = TH_RUNNING;
+
+    /* ---- the caller goes behind its equal-priority ready peers -------------- */
+    /* The caller holds slot 0 and the cursor is reset, so without the move to the back
+     * of the queue the next selection at 0x20 would be the caller again. */
+    const int self_idx = (int)(self - s_tcb);
+    const int ready_idx = (int)(ready - s_tcb);
+    self->priority = 0x20;
+    ready->priority = 0x20;
+    s_last_pick = -1;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->priority == 0x20 &&
+           self->state == TH_READY,
+           "ChangeThreadPriority(0) to the caller's own priority yields to an equal ready peer");
+    expect(pick_next() == ready_idx, "the equal-priority peer is selected before the caller");
+    ready->state = TH_READY;
+    self->state = TH_RUNNING;
+    s_cur = self_idx;
+    s_last_pick = -1;
+    expect(srt_change_priority(self->uid, 0x20u) == 0u && self->state == TH_READY,
+           "ChangeThreadPriority of the caller's own UID yields to an equal ready peer");
+    expect(pick_next() == ready_idx, "the peer runs first after the caller's own UID");
+    ready->state = TH_READY;
+    self->state = TH_RUNNING;
+    s_cur = self_idx;
+
+    ready->priority = 0x21;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->state == TH_RUNNING,
+           "with no ready peer at the caller's priority the caller keeps running");
+
+    ready->priority = 0x20;
+    s_dispatch_enabled = 0;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->state == TH_RUNNING,
+           "the yield is deferred while dispatch is disabled");
+    s_dispatch_enabled = 1;
 
     expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
     s_cur = -1;

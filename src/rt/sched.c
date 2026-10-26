@@ -4019,9 +4019,24 @@ int sched_current_priority(void) { return s_cur >= 0 ? s_tcb[s_cur].priority : 3
  * The precedence of DORMANT over ILLEGAL_PRIORITY for a dormant target with an illegal
  * priority is not covered by that evidence; the existing DORMANT check stays first.
  * Without a calling thread, priority 0 names no priority and fails closed with
- * ILLEGAL_PRIORITY.  The caller applies the scheduling boundary (h_ChangeThreadPriority). */
+ * ILLEGAL_PRIORITY.
+ *
+ * A successful change is a scheduling boundary:
+ *   - when the target is the caller, the caller goes to the back of its new priority's
+ *     queue and yields to a ready peer of that priority or stronger, even when the value
+ *     is unchanged: in change.expected the common harness's resched thread, created at
+ *     the caller's priority, runs inside ChangeThreadPriority(0, 0x20) ("[r] Zero") and
+ *     the equal-priority test thread runs inside ChangeThreadPriority(self, 0x20) (its
+ *     line comes before "Current");
+ *   - otherwise a ready thread now strictly stronger than the caller takes the CPU
+ *     (the 0x08, 0x09 and 0x17 cells); an equal one does not ("Ready", the 0x00 cell).
+ *     Where another target lands in its new priority's queue is not measured: its
+ *     rotation marker, which belongs to the old priority, is cleared as before.
+ * Either switch is deferred, like every other one, while interrupts or dispatch are
+ * disabled. */
 #define SCHED_USER_PRIORITY_MIN 0x08
 #define SCHED_USER_PRIORITY_MAX 0x77
+static void sched_yield_current_behind_peers(void);
 uint32_t sched_set_priority(uint32_t uid, int priority) {
     uid = resolve_thread_uid(uid);
     TCB *t = tcb_by_uid(uid);
@@ -4034,7 +4049,14 @@ uint32_t sched_set_priority(uint32_t uid, int priority) {
     if (priority < SCHED_USER_PRIORITY_MIN || priority > SCHED_USER_PRIORITY_MAX)
         return SCE_KERNEL_ERROR_ILLEGAL_PRIORITY;
     t->priority = priority;
-    t->rot_head = 0;   /* a queue position belongs to the old priority */
+    if (s_cur >= 0 && t == &s_tcb[s_cur]) {
+        sched_promote_expired_waits();
+        sched_rotation_mark(s_cur);
+        sched_yield_current_behind_peers();
+    } else {
+        t->rot_head = 0;
+        sched_preempt();
+    }
     return 0;
 }
 
@@ -4216,17 +4238,26 @@ uint32_t sched_rotate_thread_ready_queue(int priority) {
         sched_preempt();   /* a rotated stronger queue may now owe the CPU */
         return 0;
     }
-    if (!s_interrupts_enabled || !s_dispatch_enabled) return 0;
+    sched_yield_current_behind_peers();
+    return 0;
+}
+
+/* The running caller, already marked as the back of its priority's queue, gives the CPU
+ * to the scheduler when a ready, non-suspended peer of that priority or a stronger one
+ * exists; with no such peer the queue is just the caller and it keeps running.  Deferred,
+ * like every other switch, while interrupts or dispatch are disabled. */
+static void sched_yield_current_behind_peers(void) {
+    if (s_cur < 0 || !s_interrupts_enabled || !s_dispatch_enabled) return;
+    const int priority = s_tcb[s_cur].priority;
     int peer_ready = 0;
     for (int i = 0; i < s_ntcb; i++)
         if (i != s_cur && s_tcb[i].state == TH_READY && !s_tcb[i].suspended &&
             s_tcb[i].priority <= priority) { peer_ready = 1; break; }
-    if (!peer_ready) return 0;   /* nobody to yield to: the queue is just the caller */
+    if (!peer_ready) return;
     TCB *cur = &s_tcb[s_cur];
     memcpy(&cur->saved, s_cpu, sizeof(CpuState));
     cur->state = TH_READY;
     switch_to_scheduler();
-    return 0;
 }
 
 int sched_is_dormant(uint32_t uid) {

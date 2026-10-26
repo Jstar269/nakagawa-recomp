@@ -4065,17 +4065,11 @@ static uint32_t h_DelaySysClockThreadCB(CpuState *s) {
     if (result != 0u) return result;
     return h_DelayThreadCBForUsec(usec);
 }
-/* sceKernelChangeThreadPriority(thid, priority).  Validation and the stored value are
- * sched_set_priority's; a successful change is a scheduling boundary, so a ready thread
- * that is now strictly stronger than the caller (the target raised above it, or the
- * caller lowered below a ready peer) runs at the call, as the PSPAutotests
- * threads/threads/change.expected ordering shows.  The switch is deferred, like every
- * other preemption, while interrupts or dispatch are disabled. */
+/* sceKernelChangeThreadPriority(thid, priority).  Validation, the stored value and the
+ * scheduling boundary at the call (the PSPAutotests threads/threads/change.expected
+ * cells) are sched_set_priority's. */
 static uint32_t h_ChangeThreadPriority(CpuState *s) {
-    (void)s;
-    uint32_t result = sched_set_priority(A0, (int)A1);
-    if (result == 0u) sched_preempt();
-    return result;
+    return sched_set_priority(A0, (int)A1);
 }
 
 /* sceKernelChangeCurrentThreadAttr: changes the current thread's attribute bits.
