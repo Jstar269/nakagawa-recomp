@@ -2899,6 +2899,71 @@ static int ge_reset_queues(GeIdleWait *after) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_TIMING
+/* GE teardown for every case that calls sceGuInit, on every path out of it.
+ *
+ * sceGuInit (PSPSDK src/gu/sceGuInit.c; pspsdk e62057d9, the PSPDEV v20261001
+ * the probe links) creates the "SceGuSignal" event flag and registers
+ * libpspgu's callbackSig and callbackFin with sceGeSetCallback.  Those handlers
+ * are code in this PRX.  Only sceGuTerm (src/gu/sceGuTerm.c) removes them, by
+ * sceKernelDeleteEventFlag and sceGeUnsetCallback.  A case that returns
+ * without it leaves the GE driver holding handlers in memory the runner then
+ * unloads, and the next GE interrupt runs freed code in interrupt context.
+ *
+ * The order is fixed: a bounded wait for the GE to go idle; if it does not,
+ * reset every queue (sceGeBreak(1)) and wait, bounded, again; then unregister
+ * the case's own GE callback, if it set one; then sceGuTerm when sceGuInit
+ * succeeded.  sceGuTerm runs even when the GE never reached idle, so no
+ * handler outlives the module; whether it did is returned for the record.
+ * sceGuTerm is skipped after a failed sceGuInit: that call already undid what
+ * it had registered, and its callback ID is not valid. */
+typedef struct {
+    uint32_t reset_issued;  /* the GE was busy after the wait; sceGeBreak(1) was issued */
+    int reset_rc;           /* sceGeBreak result; 0 when not issued                     */
+    int draw_state;         /* last sceGeDrawSync(1)                                    */
+    uint32_t elapsed_us;    /* time spent in both bounded waits                         */
+    int idle;               /* draw_state == PSP_GE_LIST_DONE                           */
+    uint32_t term_called;   /* sceGuTerm ran                                            */
+} GeGuTeardown;
+
+#define GE_GU_TEARDOWN_OUTS 5
+
+static GeGuTeardown ge_gu_teardown(int init_rc, int own_cbid) {
+    GeGuTeardown t;
+    memset(&t, 0, sizeof(t));
+    GeIdleWait w = ge_wait_idle(-1, GE_IDLE_DEADLINE_US);
+    t.elapsed_us = w.elapsed_us;
+    if (!w.idle) {
+        t.reset_issued = 1u;
+        t.reset_rc = ge_reset_queues(&w);
+        t.elapsed_us += w.elapsed_us;
+    }
+    t.draw_state = w.draw_state;
+    t.idle = w.idle;
+    if (own_cbid >= 0) {
+        (void)sceGeUnsetCallback(own_cbid);
+    }
+    if (init_rc >= 0) {
+        sceGuTerm();
+        t.term_called = 1u;
+    }
+    return t;
+}
+
+/* out0 reset issued, out1 sceGeBreak result, out2 last draw state,
+   out3 elapsed us, out4 sceGuTerm ran. */
+static inline void ge_gu_teardown_outs(const GeGuTeardown *t,
+                                       uint32_t out[GE_GU_TEARDOWN_OUTS]) {
+    out[0] = t->reset_issued;
+    out[1] = (uint32_t)t->reset_rc;
+    out[2] = (uint32_t)t->draw_state;
+    out[3] = t->elapsed_us;
+    out[4] = t->term_called;
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
 
@@ -4555,8 +4620,12 @@ static void run_ge_nan(int emulated) {
                          (uint32_t)render_rc, out, 4);
         }
     }
+    /* The terminal record carries the teardown outcome: TIMEOUT, with the last
+       draw state as its result, when the GE did not reach idle. */
+    const GeGuTeardown gu_down = ge_gu_teardown(init_rc, -1);
     const uint32_t done_out[1] = {20u};
-    defer_record("ge-nan-done", "PASS", 0u, done_out, 1);
+    defer_record("ge-nan-done", gu_down.idle ? "PASS" : "TIMEOUT",
+                 (uint32_t)gu_down.draw_state, done_out, 1);
     flush_deferred(emulated, "PSP-GE-001");
 }
 #endif
@@ -5592,7 +5661,17 @@ static void run_ge_timing(int emulated) {
         passes++;
         gt_pass(emulated, 333, 333, 166);
         passes++;
-        (void)sceGeUnsetCallback(s_gt_cbid);
+    }
+    /* Reached on every path once sceGuInit has run, whether or not the
+       callback registration or the passes succeeded. */
+    const GeGuTeardown gu_down = ge_gu_teardown(init_rc, s_gt_cbid);
+    s_gt_cbid = -1;
+    {
+        uint32_t out[GE_GU_TEARDOWN_OUTS];
+        ge_gu_teardown_outs(&gu_down, out);
+        emit_record_extended(emulated, "PSP-GE-TIMING-001", "gt-gu-teardown",
+                             gu_down.idle ? "PASS" : "TIMEOUT", (uint32_t)gu_down.draw_state,
+                             out, GE_GU_TEARDOWN_OUTS);
     }
     const int restore_rc = scePowerSetClockFrequency(boot_cpu, boot_cpu, boot_bus);
     const uint32_t done_out[4] = {passes, (uint32_t)restore_rc,
@@ -6170,7 +6249,11 @@ static void run_vram_mirror(int emulated) {
     const VramMirrorGeOutcome sprite_c = vram_mirror_ge_step(
         color_offset, depth_offset, gu_init_rc, VRAM_MIRROR_GE_SPRITE_C,
         sprite_b.completed);
-    const int ge_idle = sprite_c.ge_idle;
+    /* GE teardown before any CPU sample or restore.  vram-restore's GE-idle
+       field (out4) records whether the GE reached idle by the end of it. */
+    probe_step(emulated, "vram-mirror", "gu-teardown");
+    const GeGuTeardown gu_down = ge_gu_teardown(gu_init_rc, -1);
+    const int ge_idle = sprite_c.ge_idle && gu_down.idle;
     const int ge_sequence_complete = clear.completed && sprite_a.completed &&
         sprite_b.completed && sprite_c.completed;
 
