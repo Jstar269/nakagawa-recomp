@@ -2096,6 +2096,12 @@
     "name": "sceWlanDevIsPowerOn",
     "status": "unreviewed"
   },
+  "0x94416130": {
+    "classification": "dedicated",
+    "handler": "h_GetThreadmanIdList",
+    "name": "sceKernelGetThreadmanIdList",
+    "status": "unreviewed"
+  },
   "0x946963f3": {
     "classification": "dedicated",
     "handler": "h_SharingDialogStatus",
