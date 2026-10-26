@@ -473,6 +473,69 @@ static int test_focused_button_activation(void) {
     return 1;
 }
 
+/* One frame of a row of two buttons, base and base + 1. Returns the activated
+   button, or 0. */
+static NkUiId draw_button_pair(NkUi *ui, NkUiId base, NkUiId focus_request) {
+    NkUiLayout layout;
+    NkUiStyle style;
+    NkUiId activated = 0u;
+    memset(&layout, 0, sizeof(layout));
+    layout.width = (NkUiSizing){NK_UI_SIZE_FIXED, 320.0f, 0.0f, 0.0f};
+    layout.height = (NkUiSizing){NK_UI_SIZE_FIXED, 60.0f, 0.0f, 0.0f};
+    layout.direction = NK_UI_LAYOUT_ROW;
+    layout.gap = 16.0f;
+    memset(&style, 0, sizeof(style));
+    nk_ui_begin(ui, 37.0);
+    if (focus_request != 0u) {
+        nk_ui_focus(ui, focus_request);
+    }
+    if (nk_ui_begin_container(ui, base + 100u, &layout, &style)) {
+        if (nk_ui_button(ui, base, "Keep", NK_UI_BUTTON_PRIMARY)) activated = base;
+        if (nk_ui_button(ui, base + 1u, "Remove", 0u)) activated = base + 1u;
+        nk_ui_end_container(ui);
+    }
+    (void)nk_ui_end(ui);
+    return activated;
+}
+
+static int test_input_waits_for_a_new_screen_layout(void) {
+    NkUiTextBackend fixed = nk_ui_text_fixed();
+    NkUiConfig config;
+    NkUiEvent nav;
+    NkUiEvent activate;
+    NkUi *ui;
+    NkUiId activated = 0u;
+    int frame;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &fixed;
+    memset(&nav, 0, sizeof(nav));
+    nav.type = NK_UI_EV_NAV;
+    nav.dir = NK_UI_DIR_RIGHT;
+    nav.down = true;
+    memset(&activate, 0, sizeof(activate));
+    activate.type = NK_UI_EV_ACTIVATE;
+    activate.down = true;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create new screen context");
+    for (frame = 0; frame < 3; ++frame) {
+        (void)draw_button_pair(ui, 10u, frame == 0 ? 10u : 0u);
+    }
+    /* A new screen opens on its first button; Right then Enter arrive right after its
+       first frame, before Clay has laid out its buttons. */
+    (void)draw_button_pair(ui, 20u, 20u);
+    CHECK(nk_ui_focused(ui) == 20u, "the new screen opens on its requested button");
+    nk_ui_push_event(ui, &nav);
+    nk_ui_push_event(ui, &activate);
+    for (frame = 0; frame < 3 && activated == 0u; ++frame) {
+        activated = draw_button_pair(ui, 20u, 0u);
+    }
+    CHECK(activated == 21u, "Right then Enter on a new screen's first frames picks the second button");
+    CHECK(nk_ui_focused(ui) == 21u, "the move is kept, not lost to the unplaced graph");
+    nk_ui_destroy(ui);
+    return 1;
+}
+
 /* A row: a control that owns left and right (a segmented control), then a plain
    button to its right. */
 static void horizontal_row_frame(NkUi *ui, NkUiNavDir *taken, bool *took) {
@@ -693,6 +756,7 @@ int main(int argc, char **argv) {
         !test_theme_access() || !test_overlay_rejects_waves() ||
         !test_container_return_contract() || !test_backend_declarations() ||
         !test_rounding_edges() || !test_progress_sweep() || !test_focused_button_activation() ||
+        !test_input_waits_for_a_new_screen_layout() ||
         !test_control_owns_horizontal() || !test_wave_caps() ||
         !test_image_decode() || !test_image_command()) {
         return 1;

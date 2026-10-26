@@ -19,7 +19,7 @@ clock.  This module pins the replacement contract:
   in ``tools/flight_diff.py`` refuses an identity-less bundle fail closed.
 
 The identity is transported the way the Makefile already transports build
-identity into the compile: a ``-D`` define alongside ``-DSR_BUILD_DIR``
+identity into the compile: a ``-D`` define
 (``SOURCE_DATE_EPOCH`` -> ``-DSR_SOURCE_DATE_EPOCH``, the source commit
 ``git rev-parse HEAD`` -> ``-DSR_BUILD_ID``).
 """

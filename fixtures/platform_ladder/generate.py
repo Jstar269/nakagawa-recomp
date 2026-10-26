@@ -2665,12 +2665,22 @@ def _verify_overlay_translation(fixture_dir: Path, main_c: str, chunks: str) -> 
             raise RuntimeError(f"{spec.file_name} is not registered as a runtime-placed module")
         if f'"{spec.file_name}", 0x{len(data):08x}u' not in main_c:
             raise RuntimeError(f"{spec.file_name} descriptor does not carry the file identity")
+        # The descriptor names the module's base symbol, whose stem prefixes its bodies:
+        # m<index> in the game's chunks, or l<FNV-1a> for a module carried once, which is
+        # compiled from its own translation unit (tools/codegen.py, #1306).
+        base = re.search(
+            rf"static const SrModuleCode sr_m{index}_code = \{{[^}}]*?&sr_([ml][0-9a-f]+)_base,",
+            main_c,
+        )
+        if base is None:
+            raise RuntimeError(f"{spec.file_name} descriptor names no base symbol")
+        prefix = base.group(1)
         for offset in (OVERLAY_START_OFF, OVERLAY_STOP_OFF, OVERLAY_QUERY_OFF):
-            if f"void m{index}_{offset:08x}(CpuState *s)" not in chunks:
+            if f"void {prefix}_{offset:08x}(CpuState *s)" not in chunks:
                 raise RuntimeError(f"{spec.file_name}: entry 0x{offset:x} was not translated")
-        if f"MEM_R16((sr_m{index}_base + " not in chunks:
+        if f"MEM_R16((sr_{prefix}_base + " not in chunks:
             raise RuntimeError(f"{spec.file_name}: relocated immediates do not read the image")
-    if re.search(r"sr_register\(0x[0-9a-f]{8}u, m\d+_", chunks):
+    if re.search(r"sr_register\(0x[0-9a-f]{8}u, [ml][0-9a-f]+_", chunks):
         raise RuntimeError("a runtime-placed module function was registered at a fixed address")
 
 
@@ -2769,8 +2779,11 @@ def verify(build_dir: Path, workload: str) -> int:
             )
 
     if plan.name == "ladder-overlay":
+        library_text = "\n".join(
+            path.read_text(encoding="ascii") for path in sorted(build_dir.glob("nk_lib_*.c"))
+        )
         _verify_overlay_translation(fixture_dir, main_c.read_text(encoding="ascii"),
-                                    generated_text)
+                                    generated_text + "\n" + library_text)
 
     image = image_path.read_bytes()
     result_offset = plan.result_addr() - plan.base

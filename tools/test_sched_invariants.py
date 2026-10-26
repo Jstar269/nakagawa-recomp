@@ -586,6 +586,72 @@ class HostThreadCreatorAuditTests(unittest.TestCase):
         )
 
 
+class HostCallbackEntryAuditTests(unittest.TestCase):
+    """Code that another thread runs without the runtime creating one: SDL audio and timer
+    callbacks, event watches, OS thread pools, waits, timers and asynchronous work queues.
+    Each registration needs a documented owner and the reason a paused guest cannot observe
+    it (docs/ARCHITECTURE.md, "Runtime host-thread audit")."""
+
+    PATTERN = (
+        r"(^|[^[:alnum:]_])(SDL_SetAudioPostmixCallback|SDL_SetAudioStream(Get|Put)Callback|"
+        r"SDL_SetAudioIterationCallbacks|SDL_OpenAudioDeviceStream|SDL_AddTimer(NS)?|"
+        r"SDL_AddEventWatch|SDL_SetEventFilter|SDL_AddHintCallback|SDL_Show(Open|Save)FileDialog|"
+        r"SDL_ShowOpenFolderDialog|SDL_ShowFileDialogWithProperties|QueueUserWorkItem|"
+        r"CreateThreadpool[[:alnum:]_]*|TrySubmitThreadpoolCallback|RegisterWaitForSingleObject|"
+        r"CreateTimerQueueTimer|timeSetEvent|SetTimer|SetWaitableTimer(Ex)?|ReadFileEx|WriteFileEx|"
+        r"BindIoCompletionCallback|MFPutWorkItem(Ex|2)?|MFScheduleWorkItem|MFCreateAsyncResult|"
+        r"BeginGetEvent)[[:space:]]*\("
+    )
+    ALLOWED = {
+        # The SR_AUDIODUMP postmix writer copies the device's mixed output into a host WAV
+        # file; it reads no guest memory and writes no state the guest reads.
+        ("src/rt/audio_unavailable.c", "SDL_SetAudioPostmixCallback"),
+    }
+
+    def _registrations(self):
+        result = subprocess.run(
+            ["git", "grep", "-n", "-I", "-o", "-E", self.PATTERN, "--", "src/rt", "src/core"],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertIn(result.returncode, (0, 1), result.stderr)
+        found = set()
+        for line in result.stdout.splitlines():
+            path, _line_number, match = line.split(":", 2)
+            if "selftest" in Path(path).name.lower():
+                continue
+            name = re.sub(r"^[^A-Za-z_]+", "", match).split("(")[0].strip()
+            found.add((path, name))
+        return found
+
+    def test_callback_entries_are_allowlisted(self):
+        self.assertEqual(
+            self._registrations(), self.ALLOWED,
+            "a host callback entry needs a documented owner and guest-state quiescence rule",
+        )
+
+    def test_pattern_refuses_each_entry_kind(self):
+        refused = (
+            "SDL_SetAudioStreamGetCallback(s, f, u);", "SDL_SetAudioStreamPutCallback(s, f, u);",
+            "SDL_SetAudioPostmixCallback(d, f, u);", "SDL_OpenAudioDeviceStream(d, &spec, f, u);",
+            "SDL_AddTimer(10, f, u);", "SDL_AddTimerNS(10, f, u);", "SDL_AddEventWatch(f, u);",
+            "SDL_SetEventFilter(f, u);", "SDL_ShowOpenFileDialog(f, u, w, 0, 0, 0, 0);",
+            "QueueUserWorkItem(f, u, 0);", "CreateThreadpoolWork(f, u, 0);",
+            "TrySubmitThreadpoolCallback(f, u, 0);", "RegisterWaitForSingleObject(&h, e, f, u, 0, 0);",
+            "CreateTimerQueueTimer(&t, 0, f, u, 0, 0, 0);", "timeSetEvent(1, 0, f, 0, 0);",
+            "SetTimer(w, 1, 10, f);", "ReadFileEx(h, b, n, &o, f);", "MFPutWorkItem(q, cb, s);",
+            "gen->lpVtbl->BeginGetEvent(gen, cb, 0);",
+        )
+        allowed = ("SDL_GetAudioStreamQueued(s);", "my_SetTimer_helper(1);", "SDL_PauseAudioDevice(d);")
+        for text in refused + allowed:
+            with self.subTest(text=text):
+                matched = re.search(_posix_classes_to_python(self.PATTERN), text) is not None
+                self.assertEqual(matched, text in refused)
+
+
+def _posix_classes_to_python(pattern):
+    return pattern.replace("[:alnum:]", "A-Za-z0-9").replace("[:space:]", " \\t")
+
+
 class PauseRuntimeAssertionTests(unittest.TestCase):
     def test_time_refresh_aborts_inside_the_pause_loop(self):
         candidates = (

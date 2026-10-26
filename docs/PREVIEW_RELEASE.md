@@ -237,10 +237,14 @@ Get-ChildItem -LiteralPath $Stage -Recurse -File -Force |
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [System.IO.Compression.ZipFile]::CreateFromDirectory(
     $Stage, $Zip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
-Write-Output $Zip
+# The ZIP itself is a container, not an attested subject: publish its SHA-256 next to it so a
+# download can be checked before it is extracted.
+$ZipHash = (Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash.ToLowerInvariant()
+"$ZipHash  $(Split-Path -Leaf $Zip)" | Set-Content -LiteralPath "$Zip.sha256" -Encoding utf8NoBOM
+Write-Output $Zip, "$Zip.sha256"
 ```
 
-The package contains the native player and synthetic verification binary under `bin/`, the mechanically resolved SDL3/SDL3_ttf runtime DLL closures and their notices, the public-safe source export under `source/`, setup and smoke instructions, root README/license/notices, `SOURCE.txt`, LGPL relinking material, the third-party notice bundle, three SBOM formats, and `SHA256SUMS.txt`. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, Vulkan SDK files, local databases, or title outputs. `SHA256SUMS.txt` covers every staged file except itself.
+The package contains the native player and synthetic verification binary under `bin/`, the mechanically resolved SDL3/SDL3_ttf runtime DLL closures and their notices, the public-safe source export under `source/`, setup and smoke instructions, root README/license/notices, `SOURCE.txt`, LGPL relinking material, the third-party notice bundle, three SBOM formats, and `SHA256SUMS.txt`. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, Vulkan SDK files, local databases, or title outputs. `SHA256SUMS.txt` covers every staged file except itself. Attach `nakagawa-recomp-<version>-windows-x64.zip.sha256` to the release next to the ZIP: v0.0.1 binaries are not Authenticode-signed, so the published checksum and the per-file build attestations are how a user checks a download.
 
 Before a maintainer treats the zip as publishable, inspect it with:
 

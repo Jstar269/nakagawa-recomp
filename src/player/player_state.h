@@ -44,6 +44,7 @@ typedef enum {
     VIEW_PREREQ_ABOUT,
     VIEW_CONFIRM_REMOVE_TOOLS,
     VIEW_ONLINE_SETTINGS,   /* Settings > Online and developer options */
+    VIEW_BUILD_CACHE,       /* Settings > Build tools and cache (#1306) */
     VIEW_DEVELOPER_LOG      /* the developer log panel (developer mode, F12) */
 } PlayerView;
 
@@ -184,6 +185,10 @@ typedef struct {
     bool online_news;      /* the news strip, when online mode ships */
     bool online_reports;   /* user-sent reports, when online mode ships */
     bool developer_mode;   /* shows the developer log panel (F12, Select + R) */
+    /* Builds keep the compiled system libraries a disc carries in the data folder and
+       reuse them for other games with the same library (#1306). On by default; the
+       copies never leave this PC. */
+    bool share_system_libraries;
     /* Save locations are not a setting: nk_launch_prepare_session resolves a
        writable per-disc Memory Stick root at launch (SR_MEMSTICK). The settings
        screen shows that real root instead of a configurable dead field. */
@@ -268,6 +273,9 @@ typedef struct {
     char code[32];
     PlayerPreflightStatus status;
     char message[2048];
+    /* The row's player sentence when it needs this check's own facts (a
+       folder to put a file in); empty uses the sentence for code and status. */
+    char plain[640];
     unsigned int issue_numbers[2];
     size_t issue_count;
 } PlayerPreflightCheck;
@@ -282,14 +290,36 @@ typedef struct {
     size_t count;
 } PlayerCompatibilityPreflight;
 
-/* A preflight row in plain words for the cards (#1280): a name for what was
-   checked, a status word, and the reason without its code prefix. */
+/* The input check that must pass before the Library offers BUILD PACKAGE.
+   The complete checks are built for the wizard; the selected title keeps the
+   first blocking result and the identity it was checked against. */
+typedef struct {
+    bool checked;
+    bool passed;
+    bool is_experimental;
+    char disc_id[MAX_DISC_ID_LEN];
+    char title_id[64];
+    char iso_path[NK_MAX_PATH];
+    char runtime_root[NK_MAX_PATH];
+    char selected_executable[MAX_PATH_LEN];
+    char action_folder[NK_MAX_PATH];
+    int64_t source_size_bytes;
+    int64_t profile_size_bytes;
+    int64_t decrypted_executable_size_bytes;
+    PlayerPreflightCheck blocker;
+} PlayerPackageBuildPreflight;
+
+/* A preflight row in plain words for the cards (#1280, #1302): a name for what
+   was checked, a status word, and one player sentence. Every code and status has
+   its own sentence; the developer message stays in the log. */
 const char *player_preflight_label(const PlayerPreflightCheck *check);
 const char *player_preflight_status_word(const PlayerPreflightCheck *check);
 const char *player_preflight_plain_message(const PlayerPreflightCheck *check);
-/* The check that keeps the game out of the library in this version: an
-   unreadable disc or an executable Nakagawa cannot use. NULL when the game can
-   be added. */
+/* True for a check that keeps the game out of the library in this version: an
+   unreadable disc or an executable Nakagawa cannot use. Only these rows read as
+   errors; the rest are steps for later, on a card that offers ADD TO LIBRARY. */
+bool player_preflight_check_blocks(const PlayerPreflightCheck *check);
+/* The first blocking check, or NULL when the game can be added. */
 const PlayerPreflightCheck *player_preflight_blocking_check(
     const PlayerCompatibilityPreflight *preflight);
 
@@ -343,6 +373,7 @@ typedef struct PlayerApp {
     PlayerSettings settings;
     ErrorState last_error;
     SetupWizardState wizard;
+    PlayerPackageBuildPreflight package_build_preflight;
     PackageBuildSession build_session;
     /* The build session whose failure or cancellation has been shown, so the
        main loop shows it once and the user can leave the card (#1277). */
@@ -356,7 +387,7 @@ typedef struct PlayerApp {
     bool prerequisite_fetcher_started;
     bool prerequisite_bootstrap_ready;
     bool prerequisite_cancel_sent;
-    bool request_open_license_folder;
+    bool request_open_folder;
     char requested_open_path[NK_MAX_PATH];
 
     /* Native core state */
@@ -396,6 +427,16 @@ typedef struct PlayerApp {
     /* The library card requests a package-status worker retry through this
        flag; worker creation and queue ownership stay on the main event loop. */
     bool request_package_status_retry;
+    /* A control asked to start game `request_launch_index`. The launch runs
+       on a worker the event loop in main.c owns (#1298), so renderers raise
+       this instead of starting the game from draw code. */
+    bool request_launch;
+    int request_launch_index;
+    /* A launch is checking the package or starting the process on that
+       worker; `launch_pending_disc_id` names the game. The UI keeps drawing
+       and shows the game as starting until the worker hands back. */
+    bool launch_pending;
+    char launch_pending_disc_id[NK_MAX_DISC_ID_LEN];
 
     /* Index of the leftmost visible card in the library strip. The strip
        lays cards out horizontally and a 1280-wide window fits about four, so
@@ -471,6 +512,54 @@ size_t player_display_text_with_home(const char *in, const char *home,
 size_t player_display_text(const char *in, char *out, size_t out_size);
 
 bool player_app_remove_game(PlayerApp *app, int game_index);
+
+/* Remove from library (#1304). What Nakagawa built for one game, found from
+ * its disc ID under the player's own roots (never from a stored path): the
+ * built package, the build cache, and the disc files it extracted. The disc
+ * image and the user's own decrypted files are never part of it. Saves are
+ * listed apart and go only when asked. */
+typedef enum {
+    PLAYER_REMOVAL_PACKAGE = 0,
+    PLAYER_REMOVAL_BUILD_CACHE,
+    PLAYER_REMOVAL_EXTRACTED,
+    PLAYER_REMOVAL_KIND_COUNT
+} PlayerRemovalKind;
+
+#define PLAYER_REMOVAL_PATH_CAP 12
+
+typedef struct {
+    char path[NK_MAX_PATH];
+    /* A top-level child kept when the folder is deleted (the saves inside
+       the extracted disc files), or empty. */
+    char keep_child[16];
+    PlayerRemovalKind kind;
+    bool saves;              /* this path is save data */
+    uint64_t bytes;
+} PlayerRemovalPath;
+
+typedef struct {
+    char disc_id[NK_MAX_DISC_ID_LEN];
+    PlayerRemovalPath paths[PLAYER_REMOVAL_PATH_CAP];
+    size_t path_count;
+    uint64_t kind_bytes[PLAYER_REMOVAL_KIND_COUNT];
+    bool kind_present[PLAYER_REMOVAL_KIND_COUNT];
+    bool has_saves;
+    uint64_t saves_bytes;
+} PlayerRemovalPlan;
+
+/* Why a title cannot be removed now, or NULL when it can: a showcase demo,
+ * a game that starts or runs, a build or a disc copy in progress. */
+const char *player_app_removal_blocker(const PlayerApp *app, int game_index);
+/* Fills plan with what exists now for the title, with sizes. False when the
+ * title cannot be removed or its disc ID is not a plain folder name. */
+bool player_app_plan_game_removal(const PlayerApp *app, int game_index,
+                                  PlayerRemovalPlan *plan);
+/* Removes the title from the library and deletes what the plan lists, the
+ * saves only when delete_saves is set. Every folder is checked again just
+ * before it goes. On failure the library entry stays and error says what was
+ * left; the rest may already be deleted. */
+bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete_saves,
+                                     char *error, size_t error_size);
 void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);
 void player_app_set_cli_not_found_error(PlayerApp *app,
@@ -484,7 +573,9 @@ const char *player_error_badge(const ErrorState *error);
 bool player_error_leads_with_message(const ErrorState *error);
 /* "Restart game", "Try again", or NULL when the card has no retry action. */
 const char *player_error_retry_label(const ErrorState *error);
-/* Run the card's retry action. False when it has none or its game is gone. */
+/* Run the card's retry action. False when it has none or its game is gone.
+   Restart game asks for the launch (player_app_request_launch); Try again
+   starts the build. */
 bool player_app_retry_from_error(PlayerApp *app);
 /* The report Copy details puts on the clipboard: version, problem, code, game,
    disc ID, stage, details, log file and the last runtime boot events. The
@@ -655,6 +746,7 @@ bool player_ui_canvas_fit(int pixel_width, int pixel_height,
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
 void player_app_toggle_ui_sounds(PlayerApp *app);
+void player_app_toggle_share_system_libraries(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
 void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
 
@@ -687,8 +779,9 @@ float player_settings_second_column_offset(float card_width);
 
 /* Whether the event loop should attempt the launcher-to-game focus handoff on
  * this frame. Pure state logic so the once-per-launch contract is tested
- * without SDL: a failed SDL_MinimizeWindow keeps the launcher visible, and
- * retrying it every frame would rewrite the launcher settings every frame. */
+ * without SDL: the launcher stays open behind the game and hands it the
+ * foreground once, after the game reports its window (#1298); retrying every
+ * frame would take the foreground back from a user who moved away. */
 bool player_app_should_attempt_window_handoff(bool interactive_window,
                                               bool game_running,
                                               bool handoff_attempted,
@@ -708,6 +801,50 @@ int player_app_focus_count(const PlayerApp *app);
 /* Process launch integration */
 bool player_app_launch_game(PlayerApp *app, int game_index);
 void player_app_stop_game(PlayerApp *app);
+
+/* One PLAY, split so its slow part can leave the UI thread (#1298). Checking a
+ * package hashes every artifact it lists (hundreds of MB for a retail title),
+ * and the launch checks it again while preparing and before spawning.
+ *
+ * player_app_launch_begin (UI thread) copies what the launch needs out of the
+ * app; player_launch_work_run touches only the work and may run on any
+ * thread; player_app_launch_finish (UI thread) adopts the started session or
+ * shows the error card the old single call showed. player_app_launch_game is
+ * all three in a row. */
+typedef enum {
+    PLAYER_LAUNCH_STEP_NONE = 0,
+    PLAYER_LAUNCH_STEP_PACKAGE,
+    PLAYER_LAUNCH_STEP_DATA_ROOT,
+    PLAYER_LAUNCH_STEP_PREPARE,
+    PLAYER_LAUNCH_STEP_START
+} PlayerLaunchStep;
+
+typedef struct {
+    int game_index;
+    GameRecord game;
+    char package_root[MAX_PATH_LEN];
+    bool has_package_root;
+    PlayerSettings settings;
+    bool launch_headless;
+    uint32_t headless_accept_presented_frames;
+    char boot_event_file_path[MAX_PATH_LEN];
+    char input_profile_path[NK_MAX_PATH];
+    char ui_root[MAX_PATH_LEN];
+    /* Results, written by player_launch_work_run. */
+    PlayerLaunchStep failed_step;
+    NkResult result;
+    NkLaunchDataRootStatus data_root_status;
+    char package_error[2048];
+    char data_root_reason[1024];
+    NkLaunchSession session;
+} PlayerLaunchWork;
+
+bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *work);
+void player_launch_work_run(PlayerLaunchWork *work);
+bool player_app_launch_finish(PlayerApp *app, PlayerLaunchWork *work);
+
+/* Ask the event loop to start game `game_index` (see request_launch). */
+void player_app_request_launch(PlayerApp *app, int game_index);
 
 /* Copy the launch-relevant player settings into a prepared session's runtime
  * configuration (resolution, frame cap, vsync, fullscreen, master volume).
@@ -798,6 +935,12 @@ void player_app_wizard_finish_extraction(PlayerApp *app, NkResult result,
 void player_app_build_compatibility_preflight(
     PlayerApp *app, bool disc_readable, bool param_sfo_parsed,
     const NkIsoExecutableReport *executables);
+/* Recheck the selected library title's current ISO and title profile before a
+   build. force=true bypasses the title-page cache; a refusal leaves its plain
+   blocking check in package_build_preflight. */
+bool player_app_build_package_preflight(PlayerApp *app, int game_index, bool force);
+const PlayerPreflightCheck *player_app_package_build_preflight_blocker(
+    const PlayerApp *app, int game_index);
 /* PSP system fonts: the Fonts & System step's import and removal. Each refreshes the
    per-slot status and the message. Import reads the folder's .pgf files once each, checks
    them with the native reader, and copies each slot's file into the per-user cache. */
@@ -845,7 +988,13 @@ void player_app_prereq_cancel(PlayerApp *app);
 void player_app_prereq_finish_cancel(PlayerApp *app);
 bool player_app_prereq_take_resume(PlayerApp *app);
 bool player_app_open_prerequisite_about(PlayerApp *app);
+/* Asks the main loop to open the downloaded tools' licence texts folder. Asks
+   nothing, and returns false, when the per-user data folder can't be found. */
+bool player_app_request_open_folder(PlayerApp *app, const char *path);
+bool player_app_request_license_folder(PlayerApp *app);
 void player_app_remove_prerequisites(PlayerApp *app);
+/* Settings > Build tools and cache: delete the shared library cache and say so. */
+void player_app_clear_shared_library_cache(PlayerApp *app);
 void player_app_set_build_error(
     PlayerApp *app,
     const char *failed_stage,

@@ -54,6 +54,29 @@ The commands generate their synthetic inputs beneath the ignored `build/` tree.
 - **Windows is the supported player platform and Linux is development-only**: Only Windows 11 x64 is supported today for the desktop player runtime. Linux host runtime/player support is in progress after backend seams are portable ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)), followed by macOS (Apple Silicon) ([#329](https://github.com/Jstar269/nakagawa-recomp/issues/329)) and Android ARM64 ([#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)). Linux/WSL currently serves as a development platform for building the player and portable core and running native tests ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306), [#471](https://github.com/Jstar269/nakagawa-recomp/pull/471)).
 - **Audio output requires a connected audio device**: Public builds drive one SDL3 audio stream per `sceAudio` channel ([#301](https://github.com/Jstar269/nakagawa-recomp/issues/301), [#411](https://github.com/Jstar269/nakagawa-recomp/pull/411)); with no audio device the game runs silently after one message. The SAS hardware conformance group is planned ([#311](https://github.com/Jstar269/nakagawa-recomp/issues/311)).
 
+## Checking your download
+
+v0.0.1 is not code-signed. The first time you run `nakagawa_player.exe`, Windows SmartScreen may say
+"Windows protected your PC" because the file has no publisher signature yet. Before you choose
+**More info** and then **Run anyway**, check that the download is the one this project built:
+
+1. Compare the ZIP's SHA-256 with `nakagawa-recomp-0.0.1-windows-x64.zip.sha256`, published next to it
+   on the release page:
+
+   ```powershell
+   (Get-FileHash .\nakagawa-recomp-0.0.1-windows-x64.zip -Algorithm SHA256).Hash.ToLower()
+   ```
+
+2. After extracting, `SHA256SUMS.txt` lists the SHA-256 of every file in the package.
+3. With the [GitHub CLI](https://cli.github.com/), check that each executable and DLL under `bin\` was
+   built by this repository's release workflow:
+
+   ```powershell
+   gh attestation verify .\bin\nakagawa_player.exe --repo Jstar269/nakagawa-recomp
+   ```
+
+If any check fails, don't run the file; report it as described under [How to report](#how-to-report).
+
 ## Requirements when running the packaged player
 
 The v0.0.1 package layout (defined in [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md)) is
@@ -109,6 +132,7 @@ Hot Shots Tennis runs with 23 title-specific compatibility patches: the forced b
 - **CPU reads of GPU-rendered VRAM**: A CPU read of depth data through a VRAM mirror is still wrong for some depth-buffer settings ([#1049](https://github.com/Jstar269/nakagawa-recomp/issues/1049)).
 - **ATRAC3 sound effects**: A private replay still reports ATRAC3 decode failures for some sound effects, and the decode contract is not yet matched to PSP hardware ([#1096](https://github.com/Jstar269/nakagawa-recomp/issues/1096)).
 - **Video cutscene timing**: The decoded-picture count and the audio offset are not yet fully accounted for ([#279](https://github.com/Jstar269/nakagawa-recomp/issues/279)).
+- **Not code-signed yet**: Windows SmartScreen warns on first run until releases are signed; see [Checking your download](#checking-your-download) for how to confirm a download before you run it.
 - **Console window**: The player is a console-subsystem app, so opening it by double-clicking also opens a console window beside it ([#1146](https://github.com/Jstar269/nakagawa-recomp/issues/1146)).
 - **Resolved: one-frame skinned-character corruption**: The corruption at the title-to-main-menu transition was traced to a VFPU3 compare-decode error, fixed in [#822](https://github.com/Jstar269/nakagawa-recomp/pull/822). The maintainer confirmed on 2026-10-19 that it no longer appears on the GPU presenter, and [#69](https://github.com/Jstar269/nakagawa-recomp/issues/69) closed on 2026-10-20. Reopen #69 if it returns.
 

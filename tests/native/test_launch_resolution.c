@@ -153,7 +153,7 @@ static int write_launch_environment_probe(void) {
     const char *novbpace = getenv("SR_NOVBPACE");
     const char *font_dir = getenv("SR_FONTDIR");
     const char *user_data_root = getenv("SR_USER_DATA_ROOT");
-    const char *title_name = getenv("SR_TITLE_NAME");
+    const char *game_title = getenv("SR_GAME_TITLE");
     const char *disc_id = getenv("SR_DISC_ID");
     const char *ui_root = getenv("SR_UI_ROOT");
     int ok = fprintf(f,
@@ -169,7 +169,7 @@ static int write_launch_environment_probe(void) {
                      "SR_NOVBPACE=%s\n"
                      "SR_FONTDIR=%s\n"
                      "SR_USER_DATA_ROOT=%s\n"
-                     "SR_TITLE_NAME=%s\n"
+                     "SR_GAME_TITLE=%s\n"
                      "SR_DISC_ID=%s\n"
                      "SR_UI_ROOT=%s\n",
                      iso ? iso : "<unset>",
@@ -184,7 +184,7 @@ static int write_launch_environment_probe(void) {
                      novbpace ? novbpace : "<unset>",
                      font_dir ? font_dir : "<unset>",
                      user_data_root ? user_data_root : "<unset>",
-                     title_name ? title_name : "<unset>",
+                     game_title ? game_title : "<unset>",
                      disc_id ? disc_id : "<unset>",
                      ui_root ? ui_root : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
@@ -320,8 +320,8 @@ static void test_no_iso_child_environment(const char *test_executable,
     char *old_novbpace = capture_environment_value("SR_NOVBPACE", &had_novbpace);
     bool had_user_root;
     char *old_user_root = capture_environment_value("SR_USER_DATA_ROOT", &had_user_root);
-    bool had_title_name;
-    char *old_title_name = capture_environment_value("SR_TITLE_NAME", &had_title_name);
+    bool had_game_title;
+    char *old_game_title = capture_environment_value("SR_GAME_TITLE", &had_game_title);
     bool had_ui_root;
     char *old_ui_root = capture_environment_value("SR_UI_ROOT", &had_ui_root);
     set_environment_value("PSP_ISO", "poisoned-parent.iso");
@@ -331,17 +331,17 @@ static void test_no_iso_child_environment(const char *test_executable,
     /* An inherited SR_USER_DATA_ROOT must not reach the child: the session's root wins. */
     set_environment_value("SR_USER_DATA_ROOT", "poisoned-parent-root");
     /* Nor another game's name or another player's folder (the pause overlay's, #1159). */
-    set_environment_value("SR_TITLE_NAME", "poisoned-parent-title");
+    set_environment_value("SR_GAME_TITLE", "poisoned-parent-title");
     set_environment_value("SR_UI_ROOT", "poisoned-parent-ui-root");
 
     assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
     assert(session.iso_path[0] == '\0');
-    assert(strcmp(session.title_name, "Launch Resolution Fixture") == 0);
+    assert(strcmp(session.game_title, "Launch Resolution Fixture") == 0);
     /* The player names its own folder after preparation (player_state.c). */
-    char player_folder[NK_MAX_PATH];
-    snprintf(player_folder, sizeof(player_folder), "%s%cplayer", root, sep);
-    assert(strlen(player_folder) < sizeof(session.ui_root));
-    memcpy(session.ui_root, player_folder, strlen(player_folder) + 1);
+    char player_folder[sizeof(session.ui_root)];
+    int player_folder_len = snprintf(player_folder, sizeof(player_folder), "%s%cplayer", root, sep);
+    assert(player_folder_len > 0 && (size_t)player_folder_len < sizeof(player_folder));
+    memcpy(session.ui_root, player_folder, (size_t)player_folder_len + 1);
     assert(session.staged_executable_checked);
     assert(session.config.fps_cap == -1);
     assert(ends_with(session.executable_path, "display-smoke") ||
@@ -442,7 +442,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     /* The pause overlay's name, disc ID and font folder (#1159) come from the session. */
     {
         char expected[NK_MAX_PATH + 32];
-        assert(strstr(observed, "SR_TITLE_NAME=Launch Resolution Fixture\n") != NULL);
+        assert(strstr(observed, "SR_GAME_TITLE=Launch Resolution Fixture\n") != NULL);
         assert(strstr(observed, "SR_DISC_ID=TEST00006\n") != NULL);
         snprintf(expected, sizeof(expected), "SR_UI_ROOT=%s\n", player_folder);
         assert(strstr(observed, expected) != NULL);
@@ -475,14 +475,14 @@ static void test_no_iso_child_environment(const char *test_executable,
     restore_environment_value("NK_LAUNCH_TEST_UNRELATED", old_unrelated,
                               had_unrelated);
     restore_environment_value("SR_USER_DATA_ROOT", old_user_root, had_user_root);
-    restore_environment_value("SR_TITLE_NAME", old_title_name, had_title_name);
+    restore_environment_value("SR_GAME_TITLE", old_game_title, had_game_title);
     restore_environment_value("SR_UI_ROOT", old_ui_root, had_ui_root);
     free(old_iso);
     free(old_novbpace);
     free(old_report);
     free(old_unrelated);
     free(old_user_root);
-    free(old_title_name);
+    free(old_game_title);
     free(old_ui_root);
     assert(nk_platform_set_app_data_dir_override(NULL));
 

@@ -1005,7 +1005,7 @@ NkResult nk_launch_prepare_session(
         session->user_data_root[0] = '\0';
     snprintf(session->title_id, sizeof(session->title_id), "%s", game->title_id);
     snprintf(session->disc_id, sizeof(session->disc_id), "%s", game->disc_id);
-    snprintf(session->title_name, sizeof(session->title_name), "%s", game->title_name);
+    snprintf(session->game_title, sizeof(session->game_title), "%s", game->title_name);
     int boot_written = snprintf(session->boot_executable,
                                 sizeof(session->boot_executable), "%s",
                                 boot_executable);
@@ -1359,6 +1359,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_loose_content_roots[NK_LAUNCH_LOOSE_ROOTS_ENV_CAPACITY + 32];
     char env_font[NK_MAX_PATH + 16];
     char env_user_data_root[NK_MAX_PATH + 32];
+    char env_game_title[NK_MAX_TITLE_LEN + 20];
     char env_fs[32];
     char env_memstick[NK_MAX_PATH + 16];
     char env_modules[NK_MAX_PATH * 2 + 32];
@@ -1368,7 +1369,6 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_volume[32];
     char env_input_profile[NK_MAX_PATH + 32];
     char env_headless_accept_frames[64];
-    char env_title_name[NK_MAX_TITLE_LEN + 16];
     char env_disc_id[NK_MAX_DISC_ID_LEN + 16];
     char env_ui_root[NK_MAX_PATH + 16];
     char sep = nk_platform_path_separator();
@@ -1456,15 +1456,19 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     snprintf(env_user_data_root, sizeof(env_user_data_root), "SR_USER_DATA_ROOT=%s",
              session->user_data_root);
     envp[env_count++] = env_user_data_root;
-    /* What the pause overlay shows and draws with: the game's name and disc ID, and the
-     * player's folder for the UI fonts. Always exported, so an empty value masks an
-     * inherited one instead of naming another game. */
-    snprintf(env_title_name, sizeof(env_title_name), "SR_TITLE_NAME=%s", session->title_name);
-    envp[env_count++] = env_title_name;
+    /* What the pause overlay shows and draws with, beside the game's name (SR_GAME_TITLE
+     * below): the disc ID and the player's folder for the UI fonts. Always exported, so an
+     * empty value masks an inherited one instead of naming another game. */
     snprintf(env_disc_id, sizeof(env_disc_id), "SR_DISC_ID=%s", session->disc_id);
     envp[env_count++] = env_disc_id;
     snprintf(env_ui_root, sizeof(env_ui_root), "SR_UI_ROOT=%s", session->ui_root);
     envp[env_count++] = env_ui_root;
+
+    /* The user's own disc title (PARAM.SFO TITLE) for the window caption and the pause overlay; the
+     * runtime sanitises it (sr_window_title_sanitize in src/rt/recomp.h). Always exported so an inherited value cannot
+     * name another game. */
+    snprintf(env_game_title, sizeof(env_game_title), "SR_GAME_TITLE=%s", session->game_title);
+    envp[env_count++] = env_game_title;
 
     /* A setup transaction promotes already-decrypted support modules below
      * the selected game's private root. Tell the runtime's late-import loader

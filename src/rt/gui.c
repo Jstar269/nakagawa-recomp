@@ -938,11 +938,14 @@ static int gui_pause_compose(int w, int h, int rgba) {
     if (s_pause_host) {
         NkOverlayModel model;
         NkOverlayAction action;
+        char game_title[SR_WINDOW_TITLE_GAME_MAX + 1];
         float display_scale = 1.0f, pixels_per_point = 1.0f;
         (void)sdl3vk_window_scales(&display_scale, &pixels_per_point);
         gui_pause_describe_controls();
         memset(&model, 0, sizeof(model));
-        model.title_name = getenv("SR_TITLE_NAME");
+        /* The launcher's SR_GAME_TITLE, cleaned as the window caption cleans it. */
+        (void)sr_window_title_sanitize(getenv("SR_GAME_TITLE"), game_title, sizeof(game_title));
+        model.title_name = game_title;
         model.disc_id = getenv("SR_DISC_ID");
         model.scaling = gui_pause_scaling_to_overlay(sdl3vk_present_scaling());
         model.hud_on = sdl3vk_hud_is_enabled() != 0;

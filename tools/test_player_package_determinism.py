@@ -23,8 +23,7 @@ build ran, and the toolchain copies them into its own output:
 
 ``workspace-path``
     The absolute per-user output root, in its long spelling and in the Windows 8.3
-    short spelling Make and ``gcc`` echo into dependency files, the link map and
-    ``-DSR_BUILD_DIR``.
+    short spelling Make and ``gcc`` echo into dependency files and the link map.
 ``scratch-name``
     The ``tempfile.mkdtemp`` scratch workspace ``tools/title_codegen_plan.py``
     creates when the output path is not Make-safe. Its random suffix is part of
@@ -156,7 +155,7 @@ GUEST_DERIVED_SUFFIXES = (".c", ".h", ".bin", ".toml")
 MANIFEST_IDENTIFIED = ("build-report.json", "package.json", "completion-manifest.json")
 # Toolchain files that record where the objects were written rather than what was
 # compiled: the response file the title link reads (#724), the profile-entries file
-# the runtime stamp is hashed from (CFLAGS carries -DSR_BUILD_DIR), and the list of
+# the runtime stamp is hashed from, and the list of
 # runtime objects the stamp's recipe hands tools/build_profile.py to invalidate (#783).
 # Each names the content-addressed cache entry, so two manifests differ in them exactly
 # where they differ in the compiled artifacts, and two roots differ in them by the root
@@ -175,9 +174,7 @@ PATH_ECHOES = ("link-objects.rsp", ".runtime-profile-entries", ".runtime-invalid
 # The 8.3 suffix is ``~N`` with N counting collisions, so it reaches ``~10`` and beyond.
 #
 # Separators: only forward slashes are matched, on purpose. No writer of these files
-# echoes a backslash: the Makefile's CFLAGS carry
-# ``-DSR_BUILD_DIR=\"$(subst \,/,$(BUILD_DIR))\"`` (the runtime profile entries are
-# hashed from CFLAGS), and the link response file is written as
+# echoes a backslash: the link response file is written as
 # ``$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))``. The invalidation list
 # is written without a substitution, as ``$(RT_GE_O) $(RT_OBJS)``, but each of those is
 # ``$(BUILD_DIR)/<name>.o`` and the planner hands Make ``BUILD_DIR`` as

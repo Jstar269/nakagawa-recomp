@@ -104,8 +104,9 @@ typedef struct {
     char memstick_root[NK_MAX_PATH];
     char title_id[64];
     char disc_id[NK_MAX_DISC_ID_LEN];
-    /* The game's name as the library shows it; the pause overlay's title (SR_TITLE_NAME). */
-    char title_name[NK_MAX_TITLE_LEN];
+    /* PARAM.SFO TITLE of the selected disc; handed to the runtime as SR_GAME_TITLE for the caption
+       and the pause overlay's title. */
+    char game_title[NK_MAX_TITLE_LEN];
     /* The player's own folder, which holds the UI fonts the pause overlay draws with
        (SR_UI_ROOT). Set by the player after preparation; empty exports an empty value. */
     char ui_root[NK_MAX_PATH];

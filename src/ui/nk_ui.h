@@ -259,10 +259,11 @@ enum {
     NK_UI_BUTTON_SMALL = 1u << 4,   /* 34 px, inline and pager actions */
     NK_UI_BUTTON_GROW = 1u << 5,    /* fill the row instead of fitting the label */
     NK_UI_BUTTON_NOT_DEFAULT = 1u << 6, /* never the screen's default focus (top-bar tabs) */
+    NK_UI_BUTTON_ROW = 1u << 7,         /* left/right stay in its row of buttons */
     /* Left and right change the control instead of moving focus (a segmented
        control, a slider): while it is focused they stay queued as NK_UI_EV_NAV for
        nk_ui_take_event. For nk_ui_register_button. */
-    NK_UI_BUTTON_OWNS_HORIZONTAL = 1u << 7
+    NK_UI_BUTTON_OWNS_HORIZONTAL = 1u << 8
 };
 
 /* Device scale and edge rounding are shared helpers for hosts and tests. */

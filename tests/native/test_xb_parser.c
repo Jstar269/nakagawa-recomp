@@ -350,13 +350,21 @@ static void test_file_backed_archive_is_lazy(void) {
     assert(nk_xb_open_file_lazy(path, false, NULL, &archive, error, sizeof(error)) == NK_OK);
     assert(archive.data == NULL);
     assert(archive.data_size == 0u);
-    for (size_t i = 0; i < archive.entry_count; i++) {
-        uint8_t output[128];
-        size_t output_size = 0;
-        assert(nk_xb_read_entry(&archive, i, output, sizeof(output), &output_size,
-                                error, sizeof(error)) == NK_OK);
-        assert(output_size == entries[i].size);
-        assert(memcmp(output, entries[i].data, entries[i].size) == 0);
+    /* Mounting holds no descriptor; member reads then reuse one cached handle. */
+    assert(archive.file_handle == NULL);
+    FILE *member_handle = NULL;
+    for (size_t pass = 0; pass < 2u; pass++) {
+        for (size_t i = 0; i < archive.entry_count; i++) {
+            uint8_t output[128];
+            size_t output_size = 0;
+            assert(nk_xb_read_entry(&archive, i, output, sizeof(output), &output_size,
+                                    error, sizeof(error)) == NK_OK);
+            assert(output_size == entries[i].size);
+            assert(memcmp(output, entries[i].data, entries[i].size) == 0);
+            assert(archive.file_handle != NULL);
+            if (!member_handle) member_handle = archive.file_handle;
+            assert(archive.file_handle == member_handle);
+        }
     }
     SrArchiveVfs vfs;
     SrArchiveFile file;
@@ -374,10 +382,14 @@ static void test_file_backed_archive_is_lazy(void) {
     assert(vfs_output_size == sizeof(lzs_data) - 1u &&
            memcmp(vfs_output, lzs_data, vfs_output_size) == 0);
     sr_archive_vfs_destroy(&vfs);
-    remove(path);
+    /* The cached handle must not pin the file on any host: the archive stays deletable
+     * while mounted, and the next read fails instead of serving the deleted bytes. */
+    assert(archive.file_handle == member_handle);
+    assert(remove(path) == 0);
     uint8_t output[128];
     assert(nk_xb_read_entry(&archive, 0u, output, sizeof(output), NULL,
                             error, sizeof(error)) != NK_OK);
+    assert(archive.file_handle == NULL);
     nk_xb_close(&archive);
     free(bytes.data);
     printf("[XB_TEST] file-backed metadata-only mount and lazy member reads PASSED\n");
@@ -681,6 +693,54 @@ static void test_deterministic_mutation_fuzz(void) {
     free(mutated);
     free(seed.data);
     printf("[XB_TEST] Deterministic 2048-mutation hostile corpus completed PASSED\n");
+}
+
+
+static void test_archive_vfs_keeps_one_open_handle(void) {
+    static const uint8_t first_data[] = "first archive";
+    static const uint8_t second_data[] = "second archive";
+    const FixtureEntry first_entries[] = {
+        { "data/first.bin", first_data, sizeof(first_data) - 1u, NK_XB_COMPRESSION_NONE }
+    };
+    const FixtureEntry second_entries[] = {
+        { "data/second.bin", second_data, sizeof(second_data) - 1u, NK_XB_COMPRESSION_NONE }
+    };
+    ByteBuffer first = make_archive(first_entries, 1u, false);
+    ByteBuffer second = make_archive(second_entries, 1u, false);
+    const char *first_path = SR_SELFTEST_BUILD_ROOT "/test_xb_handle_a.xb";
+    const char *second_path = SR_SELFTEST_BUILD_ROOT "/test_xb_handle_b.xb";
+    write_file_bytes(first_path, first.data, first.size);
+    write_file_bytes(second_path, second.data, second.size);
+
+    SrArchiveVfs vfs;
+    SrArchiveFile file;
+    uint8_t output[32];
+    size_t output_size = 0;
+    sr_archive_vfs_init(&vfs);
+    assert(sr_archive_vfs_mount_file(&vfs, first_path, false, -1, NULL) == NK_OK);
+    assert(sr_archive_vfs_mount_file(&vfs, second_path, false, -1, NULL) == NK_OK);
+    assert(vfs.mounts[0].file_handle == NULL && vfs.mounts[1].file_handle == NULL);
+    assert(sr_archive_vfs_lookup(&vfs, "data/first.bin", -2, &file));
+    assert(sr_archive_vfs_read(&vfs, &file, 0u, output, 4u, &output_size) == NK_OK);
+    assert(output_size == 4u && memcmp(output, first_data, 4u) == 0);
+    FILE *first_handle = vfs.mounts[0].file_handle;
+    assert(first_handle != NULL);
+    /* Chunked reads of one member, as the HLE file reads issue them, reuse the handle. */
+    assert(sr_archive_vfs_read(&vfs, &file, 4u, output, 4u, &output_size) == NK_OK);
+    assert(output_size == 4u && memcmp(output, first_data + 4u, 4u) == 0);
+    assert(vfs.mounts[0].file_handle == first_handle);
+    /* Reading another mount releases the first one's handle. */
+    assert(sr_archive_vfs_lookup(&vfs, "data/second.bin", -2, &file));
+    assert(sr_archive_vfs_read(&vfs, &file, 0u, output, sizeof(output),
+                               &output_size) == NK_OK);
+    assert(output_size == sizeof(second_data) - 1u &&
+           memcmp(output, second_data, output_size) == 0);
+    assert(vfs.mounts[0].file_handle == NULL && vfs.mounts[1].file_handle != NULL);
+    sr_archive_vfs_destroy(&vfs);
+    assert(remove(first_path) == 0 && remove(second_path) == 0);
+    free(first.data);
+    free(second.data);
+    printf("[XB_TEST] archive VFS keeps one cached member-read handle PASSED\n");
 }
 
 static void test_staging_cleanup_boundary(void) {
@@ -1475,6 +1535,36 @@ static void count_stage_progress(const char *current_path, int percent,
     ++*(size_t *)userdata;
 }
 
+typedef struct {
+    size_t calls;
+    size_t total_files;
+    size_t last_files_extracted;
+    bool saw_progress;
+    bool total_is_stable;
+    bool files_are_monotonic;
+    bool files_fit_total;
+} TitleStageProgressCapture;
+
+static void capture_title_stage_progress(const char *current_path, int percent,
+                                         size_t files_extracted,
+                                         size_t total_files, void *userdata) {
+    (void)current_path;
+    (void)percent;
+    TitleStageProgressCapture *capture = (TitleStageProgressCapture *)userdata;
+    assert(capture != NULL);
+    if (!capture->saw_progress) {
+        capture->saw_progress = true;
+        capture->total_files = total_files;
+    } else {
+        if (capture->total_files != total_files) capture->total_is_stable = false;
+        if (files_extracted < capture->last_files_extracted)
+            capture->files_are_monotonic = false;
+    }
+    if (files_extracted > total_files) capture->files_fit_total = false;
+    capture->last_files_extracted = files_extracted;
+    capture->calls++;
+}
+
 #if !defined(_WIN32) && !defined(_WIN64)
 /* fcntl record locks never conflict inside one process, so a second process
  * holds the title's lock for the busy case. */
@@ -1557,9 +1647,26 @@ static void test_title_staging_transaction(void) {
     char path[NATIVE_TEST_PATH_MAX];
 
     /* 1. First staging extracts, validates and promotes in one step. */
-    assert(run_title_stage(&request, NULL, &summary, &outcome, prepared_root,
+    TitleStageProgressCapture progress = { 0 };
+    progress.total_is_stable = true;
+    progress.files_are_monotonic = true;
+    progress.files_fit_total = true;
+    PlayerStageCallbacks progress_callbacks = {
+        NULL, capture_title_stage_progress, &progress
+    };
+    assert(run_title_stage(&request, &progress_callbacks, &summary, &outcome, prepared_root,
                            sizeof(prepared_root), message, sizeof(message)) == NK_OK);
     assert(outcome == PLAYER_STAGE_TITLE_STAGED);
+    bool lock_remains_after_success = nk_platform_file_exists(paths.lock_path);
+    if (!progress.total_is_stable)
+        fprintf(stderr, "[XB_TEST] staging progress total changed during one ISO copy\n");
+    if (lock_remains_after_success)
+        fprintf(stderr, "[XB_TEST] successful POSIX staging left its lock file behind\n");
+    assert(progress.calls > 0 && progress.saw_progress);
+    assert(progress.total_is_stable);
+    assert(progress.files_are_monotonic && progress.files_fit_total);
+    assert(progress.total_files == 2 && progress.last_files_extracted == 2);
+    assert(!lock_remains_after_success);
     assert(strcmp(prepared_root, paths.final_root) == 0);
     assert(summary.extracted_asset_count == 2 && summary.extracted_audio_count == 1);
     title_join(path, sizeof(path), paths.final_root, "EBOOT.BIN");
@@ -1693,9 +1800,7 @@ static void test_title_staging_transaction(void) {
     assert(strstr(message, "title manifest") != NULL);
     assert(strstr(message, "fresh copy") == NULL);
     assert(missing_progress_calls == 0);
-#if defined(_WIN32) || defined(_WIN64)
     assert(!nk_platform_file_exists(missing_paths.lock_path));
-#endif
     assert(!nk_platform_dir_exists(missing_paths.final_root));
     assert(!nk_platform_dir_exists(missing_paths.staging_root));
     assert(summary.extracted_asset_count == 0);
@@ -1724,6 +1829,7 @@ static void test_title_staging_transaction(void) {
     assert(strstr(message, "[STAGE_CANCELLED]") != NULL);
     assert(!nk_platform_dir_exists(cancelled_paths.final_root));
     assert(!nk_platform_dir_exists(cancelled_paths.staging_root));
+    assert(!nk_platform_file_exists(cancelled_paths.lock_path));
 
     /* 8. A disc ID that could name another directory is refused outright. */
     PlayerStageTitleRequest unsafe = request;
@@ -1757,6 +1863,7 @@ int main(void) {
     test_archive_vfs_provider();
     test_archive_vfs_many_members();
     test_archive_vfs_mount_scaling();
+    test_archive_vfs_keeps_one_open_handle();
     test_staging_cleanup_boundary();
     test_staging_discard_reparse_boundary();
     test_iso_to_native_staging_pipeline();

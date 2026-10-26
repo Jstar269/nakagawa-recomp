@@ -100,9 +100,8 @@ The owner decided on 2026-10-21 that the native player's UI is written in C on S
 Not done yet:
 
 - **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** `src/ui/` (nk_ui) wraps it with the theme, text, focus, input and SDL_Renderer layers.
-- **The nk_ui launcher is the default.** It draws the Library, Title detail, About, the setup wizard, package build progress, the build-tool download and the error card with the design system in section 8. Settings, the game-found view and the controller screens are still drawn by `src/player/ui_renderer.c`, letterboxed inside it. `--ui=legacy` (or `NK_UI=legacy`) keeps the existing renderer for one release; the player also falls back to it when the UI fonts cannot load.
-- The in-game overlay is built on nk_ui inside the runtime (`src/rt/overlay/`); settings, first run and error
-  dialogs on nk_ui are targets, specified in section 8.
+- **The nk_ui launcher is the default.** It draws the Library, Title detail, About, the setup wizard, package build progress, the build-tool download, the error card, the card a disc gets when it is added, Settings with its online, notices and removal pages, the controller settings screen with its calibration steps, and the developer log, with the design system in section 8. `--ui=legacy` (or `NK_UI=legacy`) keeps the existing renderer for one release; the player also falls back to it when the UI fonts cannot load.
+- The in-game overlay is built on nk_ui inside the runtime (`src/rt/overlay/`); settings, first run and error dialogs on nk_ui are targets, specified in section 8.
 
 ---
 
@@ -265,7 +264,7 @@ The native player provides a dedicated Controller Settings screen (`VIEW_CONTROL
   3. *Review & Accept*: visual summary of captured resting and extreme values with Accept or Cancel actions.
   Values are stored in the unified `input_profile.json` (schema 2, schema 1 files still load) and applied during analog and trigger transform evaluations. Keyboard Escape or gamepad East button safely cancels at any point.
 - **In-game pause**: `Esc`, `F1` or the gamepad's `Guide` pauses a running game, and so does disconnecting its controller. The scheduler stops the guest ([issue #1171](https://github.com/Jstar269/nakagawa-recomp/issues/1171), the [Clocks section](ARCHITECTURE.md#clocks)); the window shows the last game frame under the scrim and holds all input, and a button held as the pause closes does not reach the game as a press. Focus loss and window minimization do not auto-pause in v0.0.1.
-- **Pause overlay** ([issue #1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159)): the runtime draws the pause menu (resume, settings, controls, quit to library) and the controller-disconnected dialog with nk_ui over the frozen frame (`src/rt/overlay/`, hosted by `src/rt/gui.c`). Game scaling and the performance HUD change for the rest of the run; the library's Settings keep what a game starts with. The controls page shows the mapping in force. Quitting is refused while the game is saving. The launcher passes the game's name, its disc ID and the player's folder (`SR_TITLE_NAME`, `SR_DISC_ID`, `SR_UI_ROOT`), where the runtime finds the UI fonts and SDL3_ttf; without them the pause shows the frozen frame alone.
+- **Pause overlay** ([issue #1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159)): the runtime draws the pause menu (resume, settings, controls, quit to library) and the controller-disconnected dialog with nk_ui over the frozen frame (`src/rt/overlay/`, hosted by `src/rt/gui.c`). Game scaling and the performance HUD change for the rest of the run; the library's Settings keep what a game starts with. The controls page shows the mapping in force. Quitting is refused while the game is saving. The launcher passes the game's name, its disc ID and the player's folder (`SR_GAME_TITLE`, `SR_DISC_ID`, `SR_UI_ROOT`), where the runtime finds the UI fonts and SDL3_ttf; without them the pause shows the frozen frame alone.
 
 ---
 
