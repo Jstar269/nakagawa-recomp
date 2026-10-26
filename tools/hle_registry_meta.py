@@ -1582,6 +1582,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelUnloadModule": "kernel_module",
     # --- kernel: semaphores, event flags, mutexes, message boxes and pipes ---
     "sceKernelCancelEventFlag": "kernel_sync",
+    "sceKernelCancelMsgPipe": "kernel_sync",
     "sceKernelCancelMutex": "kernel_sync",
     "sceKernelCancelReceiveMbx": "kernel_sync",
     "sceKernelCancelSema": "kernel_sync",
@@ -1608,6 +1609,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelReferEventFlagStatus": "kernel_sync",
     "sceKernelReferLwMutexStatus": "kernel_sync",
     "sceKernelReferMbxStatus": "kernel_sync",
+    "sceKernelReferMsgPipeStatus": "kernel_sync",
     "sceKernelReferMutexStatus": "kernel_sync",
     "sceKernelReferSemaStatus": "kernel_sync",
     "sceKernelSendMbx": "kernel_sync",
