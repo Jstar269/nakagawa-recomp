@@ -1716,15 +1716,18 @@ static int write_fixed_module_prx(const char *path, uint32_t link) {
     return written == sizeof(image) && close_result == 0;
 }
 
-static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start);
+static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start,
+                                          uint32_t export_nid);
 
 static int write_runtime_module_prx(const char *path, uint8_t flavour) {
-    return write_runtime_module_prx_entry(path, flavour, 1);
+    return write_runtime_module_prx_entry(path, flavour, 1, RT_EXPORT_NID);
 }
 
 /* with_start == 0 writes a library module with no start routine: the system library
- * exports only module_stop and the ELF entry is 0xFFFFFFFF. */
-static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start) {
+ * exports only module_stop and the ELF entry is 0xFFFFFFFF. The named library exports
+ * one function under `export_nid`. */
+static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start,
+                                          uint32_t export_nid) {
     enum { PHOFF = 0x34u, RELOC_OFFSET = RT_SEG_OFFSET + RT_FILE_SPAN,
            SIZE = RELOC_OFFSET + RT_RELOC_COUNT * 8u };
     /* A start-less module's single system-library address sits at table + 4. */
@@ -1802,7 +1805,7 @@ static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int
         fixture_wr32(seg + RT_SYSLIB_TABLE + 4, RT_STOP);
         fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_STOP);
     }
-    fixture_wr32(seg + RT_LIB_TABLE + 0, RT_EXPORT_NID);
+    fixture_wr32(seg + RT_LIB_TABLE + 0, export_nid);
     fixture_wr32(seg + RT_LIB_TABLE + 4, RT_QUERY);
     memcpy(seg + RT_LIBNAME, "RtPlacedLib", 12);
     fixture_wr32(seg + RT_DATA_PTR, RT_QUERY);
@@ -1875,6 +1878,85 @@ static uint32_t rt_lifecycle(uint32_t (*handler)(CpuState *), uint32_t uid,
     cpu.r[6] = argp;
     cpu.r[7] = status;
     return handler(&cpu);
+}
+
+/* A started module that exports a NID host HLE also serves takes that NID over, and only
+ * while it is started (#286). scePsmfPlayerGetAudioOutSize is the shadowed NID: the host
+ * handler answers a handle it does not know with its status error, and the guest body
+ * answers a0 + RT_START_MARK, so the result names which side ran. Generic loader and
+ * linker paths only; no title address or module name is involved. */
+#define RT_HLE_SHADOW_NID 0x3EA82A4Bu      /* scePsmfPlayerGetAudioOutSize */
+#define RT_HLE_SHADOW_HOST 0x80616001u     /* the host handler's unknown-handle status */
+
+static uint32_t rt_shadow_import(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    return sr_syscall(&cpu, RT_HLE_SHADOW_NID);
+}
+
+static void test_runtime_placed_hle_shadow(const char *alpha_guest, const char *alpha_path) {
+    extern void sr_hle_test_partition_reset(void);
+    uint32_t base = 0;
+    expect(sr_hle_test_is_registered(RT_HLE_SHADOW_NID) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN &&
+               rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: host HLE serves the NID before any module exports it");
+    expect(write_runtime_module_prx_entry(alpha_path, 1u, 1, RT_HLE_SHADOW_NID) &&
+               runtime_module_identity(alpha_path, &s_rt_alpha_code),
+           "runtime placement: the fixture module exports a host-served NID");
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
+    sr_module_code_register(&s_rt_alpha_code);
+    s_rt_start_calls = 0;
+    s_rt_stop_calls = 0;
+
+    /* Shipped default: host HLE implements the export, so the host keeps serving it and
+     * module_start is bypassed; the export never links. */
+    _putenv("SR_REAL_MODULE_START=");
+    uint32_t uid = rt_load(alpha_guest, 0u);
+    expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+               sr_module_code_is_bound(&s_rt_alpha_code, &base) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == base + RT_QUERY,
+           "runtime placement: the shadowing export registers at the placed address");
+    expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_start_calls == 0u && sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u &&
+               rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: by default a host-served module's start leaves the host handler");
+    expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+               rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN,
+           "runtime placement: unloading the unstarted module restores the builtin");
+
+    /* Real module start: before start the host handler runs; once module_start has run the
+     * guest body owns the NID; unload hands it back to the host handler. */
+    _putenv("SR_REAL_MODULE_START=1");
+    uid = rt_load(alpha_guest, 0u);
+    expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+               sr_module_code_is_bound(&s_rt_alpha_code, &base) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+               sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u &&
+               rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: before module start the shadowed import reaches host HLE");
+    expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_start_calls == 1u &&
+               sr_hle_test_started_export(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+               rt_shadow_import() == RT_START_MARK,
+           "runtime placement: after module start the shadowed import runs the guest body");
+    expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_stop_calls == 1u &&
+               rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+               !sr_module_code_is_bound(&s_rt_alpha_code, NULL) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN &&
+               sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u,
+           "runtime placement: unload returns the shadowed NID to the builtin");
+    expect(rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: after unload the shadowed import reaches host HLE again");
+
+    _putenv("SR_REAL_MODULE_START=");
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
 }
 
 static void test_runtime_placed_modules(void) {
@@ -2191,7 +2273,7 @@ static void test_runtime_placed_modules(void) {
         char nostart_path[1024];
         runtime_module_path(nostart_path, sizeof(nostart_path), "rt-nostart.prx");
         s_rt_nostart_code.link_high = RT_MEM_SPAN;
-        expect(write_runtime_module_prx_entry(nostart_path, 5u, 0) &&
+        expect(write_runtime_module_prx_entry(nostart_path, 5u, 0, RT_EXPORT_NID) &&
                    runtime_module_identity(nostart_path, &s_rt_nostart_code),
                "runtime placement: the start-less module fixture is written");
         sr_module_code_register(&s_rt_nostart_code);
@@ -2305,6 +2387,8 @@ static void test_runtime_placed_modules(void) {
                    sr_hle_test_module_count() == 0u,
                "runtime placement: a full partition refuses the load with NO_MEMORY");
     }
+
+    test_runtime_placed_hle_shadow(alpha_guest, alpha_path);
 
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();
