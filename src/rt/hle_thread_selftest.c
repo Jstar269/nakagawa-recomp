@@ -18514,6 +18514,103 @@ static void test_atrac_stream_ring_wrap(void) {
            "streamed context releases cleanly");
 }
 
+/* ---- issue #1291: a streamed reset continues from the guest's refill ----
+ *
+ * A title hands sceAtracSetData its streaming ring, then starts playback the
+ * PSPSDK way: sceAtracGetBufferInfoForResetting(sample 0) says where to write
+ * and from which file offset, the guest writes that refill, and
+ * sceAtracResetPlayPosition passes the byte count it wrote. The guest then
+ * keeps its own file position (refill start + bytes written) and feeds the
+ * ring from it. The HLE used to ignore the refill: its ring and read offset
+ * stayed at the SetData state, so the frames after the refill mixed the stale
+ * ring with the guest's newer bytes, the decoder rejected them, and every
+ * later sceAtracDecodeData returned 0x80630006 while the guest retried.
+ * Synthetic terminator-unit frames as in the #32 fixture; no game data. */
+static void test_atrac_reset_refill_stream(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    atring_build_header();
+
+    cpu.r[4] = AT_RINGBASE;
+    cpu.r[5] = AT_BUFSIZE;
+    uint32_t id = sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA_AND_GET_ID);
+    expect(id < 8u, "#1291: streamed ATRAC3+ track accepted");
+    if (id >= 8u) return;
+
+    const uint32_t INFO = 0x08000300u;
+    const uint32_t WP = 0x08000200u, WB = 0x08000204u, RO = 0x08000208u;
+    const uint32_t DEC = 0x08000210u, FIN = 0x08000214u, REM = 0x08000218u;
+    const uint32_t REMAIN = 0x0800021cu;
+
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = INFO;
+    expect(sr_syscall(&cpu, 0x2dd3e298u) == 0u,
+           "#1291: sceAtracGetBufferInfoForResetting(sample 0) succeeds");
+    uint32_t wp = MEM_R32(INFO + 0u), writable = MEM_R32(INFO + 4u);
+    uint32_t minimum = MEM_R32(INFO + 8u), file_pos = MEM_R32(INFO + 12u);
+    expect(wp == AT_RINGBASE && file_pos == AT_DATAOFF,
+           "#1291: the reset refill starts at the ring start with the first frame");
+    expect(writable >= minimum && writable % AT_ALIGN == 0u,
+           "#1291: the reset refill offers whole frames, at least the minimum");
+
+    /* The guest writes the refill, then reports the byte count. */
+    for (uint32_t b = 0; b < writable; b++)
+        MEM_W8(wp + b, atring_file_byte(file_pos + b));
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0u,
+           "#1291: sceAtracResetPlayPosition accepts the refill it offered");
+
+    cpu.r[4] = id; cpu.r[5] = REMAIN;
+    expect(sr_syscall(&cpu, 0x9ae849a7u) == 0u &&
+               MEM_R32(REMAIN) == writable / AT_ALIGN - 1u,
+           "#1291: after the reset the remaining frames are the refill minus its state-loading frame");
+
+    uint32_t next = file_pos + writable;   /* the guest's own file position */
+    int read_offset_mismatch = 0, decode_failures = 0, decoded_frames = 0;
+    for (int i = 0; i < 30; i++) {
+        cpu.r[4] = id; cpu.r[5] = WP; cpu.r[6] = WB; cpu.r[7] = RO;
+        expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0u,
+               "#1291: sceAtracGetStreamDataInfo succeeds after the reset");
+        uint32_t wb = MEM_R32(WB), ro = MEM_R32(RO);
+        if (next < AT_FILESIZE && wb > 0u) {
+            if (ro != next) read_offset_mismatch++;
+            uint32_t n = wb < AT_FILESIZE - next ? wb : AT_FILESIZE - next;
+            uint32_t at = MEM_R32(WP);
+            for (uint32_t b = 0; b < n; b++)
+                MEM_W8(at + b, atring_file_byte(next + b));
+            cpu.r[4] = id; cpu.r[5] = n; cpu.r[6] = 0u;
+            expect(sr_syscall(&cpu, 0x7db31251u) == 0u,
+                   "#1291: sceAtracAddStreamData accepts the continued feed");
+            next += n;
+        }
+        cpu.r[4] = id; cpu.r[5] = AT_PCMOUT; cpu.r[6] = DEC; cpu.r[7] = FIN;
+        cpu.r[8] = REM;
+        uint32_t ret = sr_syscall(&cpu, 0x6a8c3cd5u);
+        if (ret != 0u) decode_failures++;
+        else if (MEM_R32(DEC) == 2048u) decoded_frames++;
+    }
+    expect(read_offset_mismatch == 0,
+           "#1291: the stream read offset continues after the reset refill");
+    expect(decode_failures == 0,
+           "#1291: no frame after a reset refill is refused by the decoder");
+    expect(decoded_frames == 30,
+           "#1291: every sceAtracDecodeData after the reset returns a full frame");
+
+    /* Refused counts leave the context unchanged (codes UNMEASURED). */
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable + AT_ALIGN; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630018u,
+           "#1291: a refill larger than the offered space is refused");
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = AT_ALIGN;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630018u,
+           "#1291: a second-buffer count is refused when none was offered");
+
+    cpu.r[4] = id;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0u,
+           "#1291: streamed context releases cleanly");
+}
+
 /* TD-24 batch 3: production-dispatch regressions for four converted Class B
  * fake-success handlers. Every leg enters the exact production NID mapping
  * through sr_syscall -- the same path a generated import stub takes -- and
@@ -31816,6 +31913,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_devkit_version_measured();
     test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();
+    test_atrac_reset_refill_stream();
     test_td24c_atrac_info_batch();
     test_mp3_stream_lifecycle();
     test_mp3_loop_and_mono();

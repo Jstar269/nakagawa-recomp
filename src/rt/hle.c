@@ -10211,11 +10211,75 @@ static uint32_t h_AtracGetLoopStatus(CpuState *s) {
     return 0;
 }
 static uint32_t h_AtracSetLoopNum(CpuState *s) { Atrac *a = atrac_of(A0); if (a) a->loopNum = (int)A1; return 0; }
+/* File offset of the first byte sceAtracGetBufferInfoForResetting asks the
+ * guest to write for a streamed reset to `sample`: the frame before the one
+ * that holds the sample, so the refill starts with a state-loading frame. */
+static uint32_t atrac_stream_reset_file_offset(const Atrac *a, uint32_t sample) {
+    uint32_t off = a->dataByteOffset;
+    uint32_t spf = (uint32_t)atrac_samples_per_frame(a);
+    if (a->bytesPerFrame > 0u && sample >= spf) {
+        uint64_t byteOff = (uint64_t)off +
+                           (uint64_t)((sample - spf) / spf) * a->bytesPerFrame;
+        off = byteOff > 0xffffffffu ? 0xffffffffu : (uint32_t)byteOff;
+    }
+    return off;
+}
+/* Bytes sceAtracGetBufferInfoForResetting offers in the first buffer for a
+ * streamed reset that refills from `fileOff`: the frame-aligned ring capacity,
+ * at most the rest of the file. */
+static uint32_t atrac_stream_reset_writable(const Atrac *a, uint32_t fileOff) {
+    uint32_t bSize = a->bytesPerFrame > 0u
+        ? a->bufferMaxSize / a->bytesPerFrame * a->bytesPerFrame : a->bufferMaxSize;
+    uint32_t writable = a->fileSize > fileOff ? a->fileSize - fileOff : 0u;
+    return writable > bSize ? bSize : writable;
+}
+/* sceAtracResetPlayPosition(id, sample, writtenFirstBuf, writtenSecondBuf).
+ * PSPSDK pspatrac3.h contract: the guest first asks
+ * sceAtracGetBufferInfoForResetting where to write, writes the file bytes from
+ * the reported read position to the reported write position, and then passes
+ * the byte counts it wrote here. The library continues from that refill, so a
+ * streamed context drops its old ring contents: the refill sits at the start
+ * of the buffer (no RIFF prefix), the file read position continues after it,
+ * and the decode cursor skips the refill's state-loading first frame exactly
+ * as sceAtracSetData does for sample 0. Keeping the old ring (#1291) made the
+ * next frames mix the stale ring with the guest's refill, which the decoder
+ * rejects. A halfway buffer simply gains the bytes written after its fed
+ * prefix. Which frame the PSP resumes for a sample at or beyond the second
+ * frame, and its error codes for counts beyond the offered space, are
+ * UNMEASURED: oversize counts are refused with the neighbouring
+ * ADD_DATA_IS_TOO_BIG code and leave the context unchanged. */
 static uint32_t h_AtracResetPlayPosition(CpuState *s) {
     Atrac *a = atrac_of(A0);
     if (!a) return 0;
-    a->posSample = (int)A1;
+    uint32_t sample = A1, wroteFirst = A2, wroteSecond = A3;
+    if (wroteSecond != 0u) return ATRAC_ERROR_ADD_DATA_IS_TOO_BIG;
+    if (atrac_streamed_state(a)) {
+        uint32_t fileOff = atrac_stream_reset_file_offset(a, sample);
+        uint32_t newSize;
+        if (wroteFirst > atrac_stream_reset_writable(a, fileOff) ||
+            !sr_size_add_ok(fileOff, wroteFirst, &newSize) ||
+            !sr_guest_span_readable(a->buf, wroteFirst))
+            return ATRAC_ERROR_ADD_DATA_IS_TOO_BIG;
+        uint32_t cursor = a->bytesPerFrame;
+        a->size = newSize;
+        a->bufferHeaderSize = 0;
+        a->bufferPos = cursor;
+        a->bufferValidBytes = wroteFirst > cursor ? wroteFirst - cursor : 0u;
+        (void)atrac_stream_window_init(a);
+        atrac_update_buffer_state(a);
+    } else if (a->bufferState == ATRAC_STATE_HALFWAY_BUFFER) {
+        uint32_t newSize;
+        if (wroteFirst > a->fileSize - a->size ||
+            !sr_size_add_ok(a->size, wroteFirst, &newSize))
+            return ATRAC_ERROR_ADD_DATA_IS_TOO_BIG;
+        a->size = newSize;
+        atrac_update_buffer_state(a);
+    }
+    a->posSample = (int)sample;
     (void)atrac_reset_decoder(a);
+    if (atrac_log_on())
+        fprintf(stderr, "ATRAC_RESET: id=%u sample=%u wrote=%u size=%u pos=%u avail=%u state=%d\n",
+                A0, sample, wroteFirst, a->size, a->bufferPos, a->bufferValidBytes, a->bufferState);
     return 0;
 }
 
@@ -10276,16 +10340,10 @@ static uint32_t h_AtracGetBufferInfoForResetting(CpuState *s) {
         minWrite1 = (needed > a->size) ? (needed - a->size) : 0u;
         filePos1 = a->size;
     } else {
-        /* Streamed mode */
-        uint32_t sampleFileOffset = a->dataByteOffset;
-        uint32_t samplesPerFrame = (uint32_t)atrac_samples_per_frame(a);
-        if (a->bytesPerFrame > 0 && A1 >= samplesPerFrame) {
-            sampleFileOffset += ((A1 - samplesPerFrame) / samplesPerFrame) * a->bytesPerFrame;
-        }
-        uint32_t bSize = a->bytesPerFrame > 0 ? (a->bufferMaxSize / a->bytesPerFrame * a->bytesPerFrame) : a->bufferMaxSize;
+        /* Streamed mode: h_AtracResetPlayPosition consumes this refill. */
+        uint32_t sampleFileOffset = atrac_stream_reset_file_offset(a, A1);
         writePos1 = a->buf;
-        writable1 = (a->fileSize > sampleFileOffset) ? (a->fileSize - sampleFileOffset) : 0u;
-        if (writable1 > bSize) writable1 = bSize;
+        writable1 = atrac_stream_reset_writable(a, sampleFileOffset);
         minWrite1 = a->bytesPerFrame > 0 ? a->bytesPerFrame * 2u : 0u;
         filePos1 = sampleFileOffset;
     }
