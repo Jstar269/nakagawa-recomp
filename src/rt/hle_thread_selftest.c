@@ -5092,6 +5092,91 @@ static void test_unregistered_batch_refusals(void) {
            "sceAudiocodec 0x3dd7ee1a stays unregistered because no public name is confirmed");
 }
 
+/* #1139 phase 0: the public PSPSDK ad hoc surface (pspnet_adhoc.h 22, pspnet_adhocctl.h 21,
+ * pspnet_adhocmatching.h 16 prototypes; NIDs are sha1(name)) is refused by name with the offline
+ * network code sceNetInit uses. That code is the runtime's documented refusal, not a measured ad hoc
+ * result. A NID missing from the registry would reach sr_syscall's unknown-NID stop, so membership is
+ * checked before the call. */
+static void test_adhoc_named_refusals(void) {
+    static const struct {
+        uint32_t nid;
+        const char *name;
+    } adhoc[] = {
+        {0x7f75c338u, "sceNetAdhocGameModeCreateMaster"},
+        {0x3278ab0cu, "sceNetAdhocGameModeCreateReplica"},
+        {0xa0229362u, "sceNetAdhocGameModeDeleteMaster"},
+        {0x0b2228e9u, "sceNetAdhocGameModeDeleteReplica"},
+        {0x98c204c8u, "sceNetAdhocGameModeUpdateMaster"},
+        {0xfa324b4eu, "sceNetAdhocGameModeUpdateReplica"},
+        {0xc7c1fc57u, "sceNetAdhocGetPdpStat"},
+        {0xb9685118u, "sceNetAdhocGetPtpStat"},
+        {0xe1d621d7u, "sceNetAdhocInit"},
+        {0x6f92741bu, "sceNetAdhocPdpCreate"},
+        {0x7f27bb5eu, "sceNetAdhocPdpDelete"},
+        {0xdfe53e03u, "sceNetAdhocPdpRecv"},
+        {0xabed3790u, "sceNetAdhocPdpSend"},
+        {0x9df81198u, "sceNetAdhocPtpAccept"},
+        {0x157e6225u, "sceNetAdhocPtpClose"},
+        {0xfc6fc07bu, "sceNetAdhocPtpConnect"},
+        {0x9ac2eeacu, "sceNetAdhocPtpFlush"},
+        {0xe08bdac1u, "sceNetAdhocPtpListen"},
+        {0x877f6d66u, "sceNetAdhocPtpOpen"},
+        {0x8bea2b3eu, "sceNetAdhocPtpRecv"},
+        {0x4da4c788u, "sceNetAdhocPtpSend"},
+        {0xa62c6f57u, "sceNetAdhocTerm"},
+        {0x20b317a0u, "sceNetAdhocctlAddHandler"},
+        {0x0ad043edu, "sceNetAdhocctlConnect"},
+        {0xec0635c1u, "sceNetAdhocctlCreate"},
+        {0xa5c055ceu, "sceNetAdhocctlCreateEnterGameMode"},
+        {0x6402490bu, "sceNetAdhocctlDelHandler"},
+        {0x34401d65u, "sceNetAdhocctlDisconnect"},
+        {0xcf8e084du, "sceNetAdhocctlExitGameMode"},
+        {0x99560abeu, "sceNetAdhocctlGetAddrByName"},
+        {0x362cbe8fu, "sceNetAdhocctlGetAdhocId"},
+        {0x5a014ce0u, "sceNetAdhocctlGetGameModeInfo"},
+        {0x8916c003u, "sceNetAdhocctlGetNameByAddr"},
+        {0xded9d28eu, "sceNetAdhocctlGetParameter"},
+        {0x8db83fdcu, "sceNetAdhocctlGetPeerInfo"},
+        {0xe162cb14u, "sceNetAdhocctlGetPeerList"},
+        {0x81aee1beu, "sceNetAdhocctlGetScanInfo"},
+        {0x75ecd386u, "sceNetAdhocctlGetState"},
+        {0xe26f226eu, "sceNetAdhocctlInit"},
+        {0x5e7f79c9u, "sceNetAdhocctlJoin"},
+        {0x1ff89745u, "sceNetAdhocctlJoinEnterGameMode"},
+        {0x08fff7a0u, "sceNetAdhocctlScan"},
+        {0x9d689e13u, "sceNetAdhocctlTerm"},
+        {0xec19337du, "sceNetAdhocMatchingAbortSendData"},
+        {0xea3c6108u, "sceNetAdhocMatchingCancelTarget"},
+        {0x8f58bedfu, "sceNetAdhocMatchingCancelTargetWithOpt"},
+        {0xca5eda6fu, "sceNetAdhocMatchingCreate"},
+        {0xf16eaf4fu, "sceNetAdhocMatchingDelete"},
+        {0xb5d96c2au, "sceNetAdhocMatchingGetHelloOpt"},
+        {0xc58bcd9eu, "sceNetAdhocMatchingGetMembers"},
+        {0x40f8f435u, "sceNetAdhocMatchingGetPoolMaxAlloc"},
+        {0x9c5cfb7du, "sceNetAdhocMatchingGetPoolStat"},
+        {0x2a2a1e07u, "sceNetAdhocMatchingInit"},
+        {0x5e3d4b79u, "sceNetAdhocMatchingSelectTarget"},
+        {0xf79472d7u, "sceNetAdhocMatchingSendData"},
+        {0xb58e61b7u, "sceNetAdhocMatchingSetHelloOpt"},
+        {0x93ef3843u, "sceNetAdhocMatchingStart"},
+        {0x32b156b3u, "sceNetAdhocMatchingStop"},
+        {0x7945ecdau, "sceNetAdhocMatchingTerm"},
+    };
+    expect(sizeof(adhoc) / sizeof(adhoc[0]) == 59u, "the public ad hoc surface has 59 prototypes");
+    reset_fixture();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(adhoc) / sizeof(adhoc[0]); i++) {
+        int registered = sr_hle_test_is_registered(adhoc[i].nid);
+        if (!registered) fprintf(stderr, "  unregistered ad hoc NID 0x%08x %s\n", adhoc[i].nid, adhoc[i].name);
+        expect(registered, "public ad hoc NID has a production registration");
+        if (!registered) continue;
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        expect(sr_syscall(&cpu, adhoc[i].nid) == 0x80010086u,
+               "public ad hoc NID refuses with the offline network code 0x80010086");
+    }
+}
+
 extern void sr_hle_test_volatile_mem_reset(void);
 
 /* Enter the production Lock/TryLock NID mappings with an output span that crosses
@@ -31794,6 +31879,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sysreg_corrupt_overlay();
     test_sysreg_flush_failure();
     test_unregistered_batch_refusals();
+    test_adhoc_named_refusals();
     test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
     test_ge_break_continue();
