@@ -106,6 +106,9 @@ typedef struct {
     /* The compile stage's note that other apps may feel slower; empty when the
        build runs a single job. */
     char compile_notice[192];
+    /* Set by the caller before package_builder_start: the build compiles every system
+       library itself and leaves the shared library cache untouched (#1306). */
+    bool no_shared_libraries;
     char log_file_path[NK_MAX_PATH];
     char progress_file_path[NK_MAX_PATH];
     char cancel_file_path[NK_MAX_PATH];
@@ -276,6 +279,12 @@ void package_builder_request_prerequisite_cancel(
 bool package_builder_remove_downloaded_tools(const char *data_root,
                                             char *error_code, size_t error_code_size,
                                             char *error_message, size_t error_message_size);
+/* Delete the shared library cache, <data_root>/cache/shared-libraries: the compiled
+ * system libraries builds share (#1306), which live only there. A missing cache
+ * counts as cleared. */
+bool package_builder_clear_shared_library_cache(const char *data_root,
+                                                char *error_code, size_t error_code_size,
+                                                char *error_message, size_t error_message_size);
 
 /* Pure: report the first missing build tool (python, gcc, mingw32-make).
  * Returns false and clears the outputs when all three are present. On success

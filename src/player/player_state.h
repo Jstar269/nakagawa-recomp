@@ -44,6 +44,7 @@ typedef enum {
     VIEW_PREREQ_ABOUT,
     VIEW_CONFIRM_REMOVE_TOOLS,
     VIEW_ONLINE_SETTINGS,   /* Settings > Online and developer options */
+    VIEW_BUILD_CACHE,       /* Settings > Build tools and cache (#1306) */
     VIEW_DEVELOPER_LOG      /* the developer log panel (developer mode, F12) */
 } PlayerView;
 
@@ -184,6 +185,10 @@ typedef struct {
     bool online_news;      /* the news strip, when online mode ships */
     bool online_reports;   /* user-sent reports, when online mode ships */
     bool developer_mode;   /* shows the developer log panel (F12, Select + R) */
+    /* Builds keep the compiled system libraries a disc carries in the data folder and
+       reuse them for other games with the same library (#1306). On by default; the
+       copies never leave this PC. */
+    bool share_system_libraries;
     /* Save locations are not a setting: nk_launch_prepare_session resolves a
        writable per-disc Memory Stick root at launch (SR_MEMSTICK). The settings
        screen shows that real root instead of a configurable dead field. */
@@ -749,6 +754,7 @@ bool player_ui_canvas_fit(int pixel_width, int pixel_height,
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
 void player_app_toggle_ui_sounds(PlayerApp *app);
+void player_app_toggle_share_system_libraries(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
 void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
 
@@ -999,6 +1005,8 @@ bool player_app_open_prerequisite_about(PlayerApp *app);
 bool player_app_request_open_folder(PlayerApp *app, const char *path);
 bool player_app_request_license_folder(PlayerApp *app);
 void player_app_remove_prerequisites(PlayerApp *app);
+/* Settings > Build tools and cache: delete the shared library cache and say so. */
+void player_app_clear_shared_library_cache(PlayerApp *app);
 void player_app_set_build_error(
     PlayerApp *app,
     const char *failed_stage,

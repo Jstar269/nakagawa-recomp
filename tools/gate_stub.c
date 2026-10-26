@@ -215,6 +215,12 @@ int      gui_headless_acceptance_requested(void) { return 0; }
 int      gui_headless_acceptance_ready(void) { return 0; }
 int      gui_headless_acceptance_complete(void) { return 0; }
 uint32_t gui_headless_acceptance_presented_frames(void) { return 0u; }
+/* The gate has no window, so no pause presenter: the scheduler refuses a pause request. */
+int      gui_pause_presenter(void) { return 0; }
+int      gui_pause_busy_reason(void) { return 0; }
+void     gui_pause_enter(void) {}
+int      gui_pause_frame(void) { return 1; /* SR_PAUSE_FRAME_RESUME (SrPauseFrame, recomp.h) */ }
+void     gui_pause_leave(void) {}
 
 /* --- Extracted-data preparation stub (hle.c seam; the gate never scans) --- */
 int sr_host_data_prepare(void) { return 4; /* SR_DATA_STATE_DISABLED */ }
