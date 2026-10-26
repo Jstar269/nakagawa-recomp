@@ -78,6 +78,30 @@ static int s_pause_device_fallback;
 static int s_pause_device_was_paused;
 static int s_pause_failure_reported;
 static int s_master_volume_percent = 100;
+
+/* SR_PERF audio-queue telemetry (#1296). Each accepted push records when it landed and the
+ * queue depth it left, which dates the moment that audio runs out. A later push that finds
+ * the queue empty measures the silence since then. A silence of a second or more is a stream
+ * that stopped and started again (a sound effect channel between effects), not an underrun. */
+typedef struct {
+    uint64_t push_ns;
+    uint32_t queued_frames;
+} AudioPushMark;
+
+#define SR_AUDIO_RESTART_GAP_NS 1000000000ull
+
+static AudioPushMark s_push_marks[SR_AUDIO_CHANNELS];
+
+static uint64_t audio_starved_ns(const AudioPushMark *mark, uint64_t now_ns,
+                                 int queued_frames, int *underrun) {
+    *underrun = 0;
+    if (queued_frames > 0 || mark->push_ns == 0) return 0;
+    uint64_t dry_ns = mark->push_ns +
+        (uint64_t)mark->queued_frames * 1000000000ull / SR_AUDIO_SAMPLE_RATE;
+    uint64_t starved = now_ns > dry_ns ? now_ns - dry_ns : 0;
+    *underrun = starved < SR_AUDIO_RESTART_GAP_NS;
+    return starved;
+}
 static int s_reported_unavailable = 0;
 static int s_reported_init = 0;
 static int s_cleanup_registered = 0;
@@ -602,10 +626,19 @@ void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
     s_stats.total_pushed_frames += (uint64_t)nframes;
     s_stats.channel_pushed_frames[ch] += (uint64_t)nframes;
 
+    const uint64_t now_ns = SDL_GetTicksNS();
+    int underrun;
+    const uint64_t starved_ns = audio_starved_ns(&s_push_marks[ch], now_ns, cur_queued_frames,
+                                                 &underrun);
+    sr_perf_audio_queue(ch, (uint32_t)cur_queued_frames, starved_ns, underrun);
+    s_push_marks[ch].push_ns = now_ns;
+    s_push_marks[ch].queued_frames = (uint32_t)(cur_queued_frames + nframes);
+
     const int new_queue_bytes = SDL_GetAudioStreamQueued(s_streams[ch]);
     if (new_queue_bytes >= 0) {
         const int new_q = new_queue_bytes / 4;
         sr_audio_shadow_sync(ch, (uint32_t)new_q);
+        s_push_marks[ch].queued_frames = (uint32_t)new_q;
         if (new_q > (int)s_stats.peak_queued_frames[ch])
             s_stats.peak_queued_frames[ch] = (uint32_t)new_q;
     }
@@ -971,6 +1004,7 @@ static void test_reset(void) {
     s_test_fail_pause_stash_alloc = 0;
     s_test_pause_failure_messages = 0;
     memset(&s_stats, 0, sizeof(s_stats));
+    memset(s_push_marks, 0, sizeof(s_push_marks));
     set_test_env("SR_MASTER_VOLUME", "");
 }
 
@@ -1118,6 +1152,25 @@ static void test_master_volume_gain(void) {
     assert(sr_audio_master_gain(250) == 1.0f);
     assert(sr_audio_master_gain(50) == 0.5f);
     assert(sr_audio_master_gain(80) > 0.7999f && sr_audio_master_gain(80) < 0.8001f);
+}
+
+/* SR_PERF underrun classification (#1296): pure, window-free. A push that left 441 frames
+ * (10 ms) at t = 1 s dates the queue's end at 1.010 s. */
+static void test_underrun_classification(void) {
+    const AudioPushMark mark = { 1000000000ull, 441u };
+    const AudioPushMark none = { 0u, 0u };
+    int underrun = -1;
+    /* Audio still queued: no starvation, whatever the clock says. */
+    assert(audio_starved_ns(&mark, 5000000000ull, 1, &underrun) == 0 && underrun == 0);
+    /* Empty 20 ms after the queue ran out: a 20 ms underrun of a playing stream. */
+    assert(audio_starved_ns(&mark, 1030000000ull, 0, &underrun) == 20000000ull && underrun == 1);
+    /* Empty before the estimated end (the device pulled ahead): an underrun with no silence. */
+    assert(audio_starved_ns(&mark, 1005000000ull, 0, &underrun) == 0 && underrun == 1);
+    /* Empty a second or more after the end: a stream that stopped and restarted. */
+    assert(audio_starved_ns(&mark, 2010000000ull, 0, &underrun) == 1000000000ull && underrun == 0);
+    /* The first push a channel ever gets is not an underrun. */
+    assert(audio_starved_ns(&none, 1030000000ull, 0, &underrun) == 0 && underrun == 0);
+    printf("test_underrun_classification: PASS\n");
 }
 
 static void set_test_env(const char *key, const char *value) {
@@ -1573,6 +1626,7 @@ int main(int argc, char **argv) {
     (void)argv;
     printf("--- Running audio selftest ---\n");
     test_master_volume_gain();
+    test_underrun_classification();
     test_dummy_mixer_handoff();
     test_pause_queue_hold_and_fades();
     test_pause_master_gain_applied_once();

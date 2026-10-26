@@ -110,6 +110,8 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
 - High-contrast focus (`NkUiPrefs.high_contrast_focus`): a 4 px white ring between 2 px black keylines.
 - A focusable control calls `nk_ui_register_button` and, when focused, `nk_ui_focus_ring(ui, id, radius)`. A focused
   secondary button also fills with `surface_high`; a focused card's edge becomes `line_strong`.
+- Arrow keys move to the nearest control in that direction. A button with `NK_UI_BUTTON_ROW` keeps Left and Right in
+  its row, so a row of actions under cards of different heights is walked end to end.
 
 ### Layout grid
 
@@ -189,7 +191,7 @@ Only actions the screen handles appear in its prompt bar.
 
 ### Library (C5, built)
 
-Top bar with LIBRARY, ABOUT and SETTINGS tabs (SETTINGS opens the Settings view, so it is never the active tab;
+Top bar with LIBRARY, ABOUT and SETTINGS tabs (SETTINGS opens the Settings view, whose page shows that tab active;
 Start or F1, the menu prompt, opens it too); `LIBRARY` in `DISPLAY` with the count in `CAPTION` beside it ("7 titles · 2 showcase demos"); a pager
 (small PREVIOUS and NEXT buttons around "PAGE 1 OF 2") on the right of that row when the grid spans pages; the card
 grid, ending with the add card ("Add a disc image you own", "Choose an .iso file"); prompt bar with MOVE, OPEN and
@@ -200,11 +202,36 @@ line, the primary START SETUP WIZARD button (the default focus), CHOOSE A DISC I
 ### Title detail (C5, built)
 
 Aside: the hero, then a PACKAGE card (eyebrow, status pill, the status detail in `BODY_S` `muted`, and any input
-note in an inset `info` box). Main column: eyebrow LIBRARY › TITLE, the name in `TITLE_XL`, the disc ID in
-`DATA`, the status pill and tag, one action row on the column's left edge with every button 52 px (the primary
-action, PLAY when the package is ready, then OPEN SAVE FOLDER and BACK), and the COMPATIBILITY card (eyebrow, the word as a pill coloured by the word: Works `ready`,
-Partially works and Experimental `info`, Boots to a named boundary `warning`, others `muted`; the detail; a
-`FOOTNOTE` naming `docs/COMPATIBILITY.md`). Prompt bar: MOVE, SELECT, BACK.
+note in an inset `info` box). The detail follows the package state (ready, checking, building, check failed,
+missing, starting, running), never the primary action: while its game runs, a ready package says "Running now.
+Stop the game to rebuild or change settings." The input note about decrypted files shows only while the package
+still needs them. Main column: eyebrow LIBRARY › TITLE, the name in `TITLE_XL`, the disc ID in `DATA`, the status
+pill and tag, one action row on the column's left edge with every button 52 px (the primary action, PLAY when
+the package is ready, STARTING... while the launch starts, STOP GAME while a game runs, then OPEN SAVE FOLDER and
+BACK), and the WHAT TO EXPECT card. Its eyebrow carries a player tier chip (PERFECT and PLAYABLE `ready`, IN-GAME
+and MENU `info`, TITLE SCREEN `warning`, WON'T BOOT `error`; no chip for a title no one has tried). Below it come
+one or two plain sentences on what to expect on this PC in `BODY_S` `paper`, then the known issues in `muted`
+when there are any. The tier comes from the title's own player record, or else from its `docs/COMPATIBILITY.md`
+status word through the table in [Status words](COMPATIBILITY.md#status-words). The status word itself describes
+the project's test route and read as a claim about the user's game (#1297), so only developer mode names it, in a
+`FOOTNOTE`. Under the card, REMOVE FROM LIBRARY (a `DANGER` button) for a disc the user added. It is left off
+the showcase demos, and also while that game starts or runs, a package builds or a disc is being copied. Prompt
+bar: MOVE, SELECT, BACK.
+
+### Remove from library (built)
+
+A flow card, 640 px wide, opened over the title page. Cancel has the first focus, and Back closes it, as Cancel
+does. The eyebrow is REMOVE FROM LIBRARY with a `warning` triangle, then "Remove *title*?" in `TITLE`. A box lists
+what Nakagawa built for the game, each item with its size: the built package, the build cache (packages and
+bring-up), and the disc files Nakagawa copied. A `warning` FREES line gives the total. A `ready` line says the disc
+image on the user's PC is not touched. The game's saves are the copied disc's Memory Stick folder and its
+per-user save folder. They get their own box, unticked every time the dialog opens; under it, "Your saves stay." in
+`muted`, or in `error` once the box is ticked, "Your saves for this game will be deleted too." A game with nothing
+built and no saves says so. REMOVE (`DANGER`) removes the title, deletes those folders (and the saves only when
+ticked), and returns to the library. Focus lands on the tile that took the removed title's place, or on the add
+card when it was the last, and the page turns to it. The folders are found from the disc ID under the player's own
+roots, never from a path stored in the library. The disc image, the user's decrypted files and the shared
+manifests are never on the list. Prompt bar: MOVE, SELECT, CANCEL.
 
 ### About (built)
 
@@ -224,7 +251,30 @@ The version is written once, `NK_PLAYER_VERSION` in `src/player/ui/player_ui_nk.
 `SOURCE_DATE_EPOCH` when set, else the source commit's time (Makefile and CMake both), formatted in UTC as
 MM-DD-YYYY; without either the line reads `(dev build)`. No tag or release is implied by it.
 
+### Game found (built)
+
+The card a disc gets when it is added from the Library ([#1302](https://github.com/Jstar269/nakagawa-recomp/issues/1302)),
+in the dialog card the wizard and error screens use, 820 px wide. A status pill (GAME FOUND `ready`, NOT TESTED YET
+`info`, CAN'T PLAY YET or NOT ON THE LIST YET `error`) with the disc ID and YOUR DISC tags; the game's name in
+`TITLE` ("PSP game" when the disc has none); one `BODY` lead saying what Nakagawa can do with it; then the checks in an
+inset box, one row each: the status word in its colour (132 px), what was checked (124 px), and the sentence in
+`muted`, two lines of it from a 680 px tall window and one below that. Every row is a player sentence from
+`player_preflight_plain_message`, never the developer message, which stays in the log. Only a check that keeps the disc
+out of the library is `error`; anything still to do (not built yet, PSP fonts missing) is `warning`, so nothing red
+sits beside ADD TO LIBRARY. A disc this version cannot use is not offered to the library: its reason replaces the
+lead's second line and the card offers CHOOSE ANOTHER DISC and BACK. While the disc is read, the card shows its path,
+an indeterminate bar and CANCEL. The whole card fits the 960 x 540 minimum window.
+
 ### Settings (C6)
+
+Built now (#1302): one page under the top bar with SETTINGS active, two cards of named rows, each value on the 34 px
+button that changes it: GAME (resolution, frame pacing, VSync, fullscreen, scaling) and LAUNCHER AND SOUND (game
+volume with - and +, launcher fullscreen, reduce motion, menu sounds, controller settings, then the controller and the
+saves folder as captions). Under them DONE (primary: saves and returns to the Library), ONLINE AND DEVELOPER,
+THIRD-PARTY NOTICES and REMOVE BUILD TOOLS; the online options, the notices and the removal check are dialog cards.
+Left and Right move between the two cards along a row (`NK_UI_BUTTON_ROW`), so CONTROLLER SETTINGS is reached from
+SCALING. Every change is saved as it is made. Below a 680 px tall window the `SETTINGS` heading is left out (the tab names the
+page) so every row fits 960 x 540. The tabbed layout below is the target for a later pass:
 
 - Top bar with SETTINGS active; `SETTINGS` in `DISPLAY`; a tab row (`LABEL`, 10/12 px padding, 3 px accent rule
   under the active tab, `line` underneath): DISPLAY, AUDIO, CONTROLS, PATHS AND STORAGE, ACCESSIBILITY, ABOUT.
@@ -243,6 +293,32 @@ MM-DD-YYYY; without either the line reads `(dev build)`. No tag or release is im
   row.
 - Controls tab: a 30 px mapping header in `EYEBROW` and 38 px mapping rows; a row waiting for a press fills with
   `capture` and the prompt bar shows only CANCEL.
+
+### Controller settings (built)
+
+Settings > Controls opens one page under the top bar with SETTINGS active. Under the `CONTROLLER` heading (left out
+below 680 px tall), one status line: a conflict in `error`, a load or save message, the prompt while a button is
+awaited, or which controller is connected. Two cards side by side:
+
+- BUTTONS: the eyebrow names the mapping being edited (`BUTTONS · GLOBAL MAPPING`, or the game's own in `ready`),
+  then the 14 PSP controls in two columns of name and binding. The binding is a small button with the host button's
+  name; a conflicted control's name is `error`; the control waiting for a press shows `Press a button...` as the
+  primary button. Choosing it again, or Esc, cancels the wait.
+- STICK AND TRIGGERS: dead zone and trigger threshold with - and +, CALIBRATE STICK, and LIVE INPUT in `DATA`: the
+  raw stick, the PSP value it maps to, the triggers and the buttons held.
+
+Under the cards SAVE PROFILE (primary), RESET TO DEFAULTS and, with a game selected, USE THIS GAME'S OWN MAPPING or
+USE THE GLOBAL MAPPING; BACK sits at the right end, under the stick card. The page opens on the first binding.
+Calibration replaces the cards with a 720 px dialog card per step: rest (a progress bar, CANCEL only), range
+(FINISH) and result (ACCEPT), each with its live numbers. Esc or East cancels a step and returns to CALIBRATE STICK.
+Every page fits 960 x 540.
+
+### Developer log (built)
+
+F12 in developer mode opens one card under a top bar without tabs: a `warning` `▲ DEVELOPER MODE` eyebrow, the
+privacy line (on this PC only, paths as `%USERPROFILE%`), then the newest lines that fit in `DATA` on the ground
+colour, each cut to the card's width, and COPY, SAVE and CLOSE (primary, focused first) with the last notice beside
+them. Esc or F12 closes it.
 
 ### First run (C7)
 

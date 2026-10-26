@@ -4547,11 +4547,12 @@ static bool package_validate_completion(const char *package_root,
     return true;
 }
 
-bool nk_title_manifest_read_experimental_profile(
+static bool nk_title_manifest_read_experimental_profile_impl(
     const char *user_data_root,
     const char *disc_id,
     const char *title_id,
     const char *selected_executable,
+    bool allow_unbound_executable,
     NkTitleEntrySnapshot *out_title,
     char out_executable_sha256[65],
     char *error_buf,
@@ -4559,6 +4560,7 @@ bool nk_title_manifest_read_experimental_profile(
 ) {
     if (error_buf && error_buf_len) error_buf[0] = '\0';
     if (out_title) memset(out_title, 0, sizeof(*out_title));
+    if (out_executable_sha256) out_executable_sha256[0] = '\0';
     if (!user_data_root || !*user_data_root || !out_executable_sha256) return false;
     char normalized[10];
     if (!nk_manifest_normalize_disc_id(disc_id, normalized)) {
@@ -4609,20 +4611,30 @@ bool nk_title_manifest_read_experimental_profile(
     const char *profile_executable = NULL;
     const char *profile_hash = NULL;
     const char *elf_hash = NULL;
+    bool unbound_executable = false;
     if (valid) {
         valid = package_string(obj_get(identity, "disc_id"), &profile_disc) &&
                 strcmp(profile_disc, normalized) == 0 &&
-                package_string(obj_get(identity, "selected_executable"), &profile_executable) &&
-                package_sha256(obj_get(identity, "executable_sha256"), &profile_hash) &&
-                package_sha256(obj_get(identity, "elf_sha256"), &elf_hash) &&
-                strcmp(profile_hash, elf_hash) == 0;
+                package_string(obj_get(identity, "selected_executable"), &profile_executable);
+        if (valid && profile_executable[0] == '\0') {
+            unbound_executable = allow_unbound_executable &&
+                nk_json_is_null(obj_get(identity, "executable_sha256")) &&
+                nk_json_is_null(obj_get(identity, "elf_sha256"));
+            valid = unbound_executable;
+        } else if (valid) {
+            valid = package_sha256(obj_get(identity, "executable_sha256"), &profile_hash) &&
+                    package_sha256(obj_get(identity, "elf_sha256"), &elf_hash) &&
+                    strcmp(profile_hash, elf_hash) == 0;
+        }
     }
     const char *selected_leaf = selected_executable;
     if (selected_leaf && strrchr(selected_leaf, '/')) selected_leaf = strrchr(selected_leaf, '/') + 1;
-    if (valid && (!selected_leaf || !*selected_leaf ||
-        !(strcmp(profile_executable, "PSP_GAME/SYSDIR/EBOOT.BIN") == 0 ||
-          strcmp(profile_executable, "PSP_GAME/SYSDIR/BOOT.BIN") == 0) ||
-        strcmp(strrchr(profile_executable, '/') + 1, selected_leaf) != 0)) {
+    if (valid && unbound_executable) {
+        if (selected_leaf && selected_leaf[0]) valid = false;
+    } else if (valid && (!selected_leaf || !*selected_leaf ||
+               !(strcmp(profile_executable, "PSP_GAME/SYSDIR/EBOOT.BIN") == 0 ||
+                 strcmp(profile_executable, "PSP_GAME/SYSDIR/BOOT.BIN") == 0) ||
+               strcmp(strrchr(profile_executable, '/') + 1, selected_leaf) != 0)) {
         valid = false;
     }
 
@@ -4669,13 +4681,33 @@ bool nk_title_manifest_read_experimental_profile(
     if (!valid && error_buf && error_buf_len && !error_buf[0]) {
         snprintf(error_buf, error_buf_len,
                  "Experimental profile is stale or does not match disc %s and selected executable %s.",
-                 normalized, selected_leaf ? selected_leaf : "(none)");
+                 normalized, selected_leaf && selected_leaf[0] ? selected_leaf : "(none)");
     }
     free(validated);
-    if (valid) snprintf(out_executable_sha256, 65, "%s", profile_hash);
+    if (valid && !unbound_executable) {
+        snprintf(out_executable_sha256, 65, "%s", profile_hash);
+    }
     json_free(profile);
     free(writer.data);
     return valid;
+}
+
+bool nk_title_manifest_read_experimental_profile(
+    const char *user_data_root, const char *disc_id, const char *title_id,
+    const char *selected_executable, NkTitleEntrySnapshot *out_title,
+    char out_executable_sha256[65], char *error_buf, size_t error_buf_len) {
+    return nk_title_manifest_read_experimental_profile_impl(
+        user_data_root, disc_id, title_id, selected_executable, false,
+        out_title, out_executable_sha256, error_buf, error_buf_len);
+}
+
+bool nk_title_manifest_read_unbound_experimental_profile(
+    const char *user_data_root, const char *disc_id, const char *title_id,
+    NkTitleEntrySnapshot *out_title, char *error_buf, size_t error_buf_len) {
+    char executable_sha256[65] = "";
+    return nk_title_manifest_read_experimental_profile_impl(
+        user_data_root, disc_id, title_id, NULL, true,
+        out_title, executable_sha256, error_buf, error_buf_len);
 }
 
 bool nk_title_manifest_experimental_profile_executable(

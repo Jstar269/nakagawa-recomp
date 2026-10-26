@@ -53,6 +53,11 @@ struct NkUi {
     NkUiFocusGraph *focus_graph;
     NkUiEvent events[64];
     size_t event_count;
+    NkUiEvent held_events[64];  /* input waiting one frame for a laid-out focus graph */
+    size_t held_count;
+    bool layout_pending;        /* a control registered this frame before its first layout */
+    bool graph_unplaced;        /* the last frame's focus graph has such controls */
+    bool input_held;            /* this frame's input was held */
     size_t focus_entry_count;
     NkUiId focused;
     NkUiId focus_request;
@@ -313,11 +318,55 @@ void nk_ui_push_event(NkUi *ui, const NkUiEvent *event) {
     ui->events[ui->event_count++] = *event;
 }
 
+/* Puts held input back in front of anything that arrived since, in order. */
+static void nk_ui_restore_held_events(NkUi *ui) {
+    size_t cap = sizeof(ui->events) / sizeof(ui->events[0]);
+    size_t keep;
+    if (ui->held_count == 0u) {
+        return;
+    }
+    keep = ui->event_count;
+    if (keep > cap - ui->held_count) {
+        keep = cap - ui->held_count;
+    }
+    memmove(&ui->events[ui->held_count], ui->events, keep * sizeof(ui->events[0]));
+    memcpy(ui->events, ui->held_events, ui->held_count * sizeof(ui->events[0]));
+    ui->event_count = ui->held_count + keep;
+    ui->held_count = 0u;
+}
+
 void nk_ui_begin(NkUi *ui, double now_s) {
+    size_t first_spatial;
+    size_t i;
     if (ui == NULL) {
         return;
     }
+    nk_ui_restore_held_events(ui);
+    /* A screen's first frame registers its controls before Clay has laid them
+       out, so the focus graph it leaves has them all at the origin and a move
+       or a pointer hit through it goes nowhere. From the first such event on,
+       input waits one frame for the laid-out graph, in order; what comes before
+       it (an activation of the focused control) runs now. Input is never held
+       twice in a row. */
+    first_spatial = ui->event_count;
+    if (ui->graph_unplaced && !ui->input_held) {
+        for (i = 0u; i < ui->event_count; ++i) {
+            if (ui->events[i].type == NK_UI_EV_NAV || ui->events[i].type == NK_UI_EV_CYCLE ||
+                ui->events[i].type == NK_UI_EV_POINTER) {
+                first_spatial = i;
+                break;
+            }
+        }
+    }
+    ui->input_held = first_spatial < ui->event_count;
+    if (ui->input_held) {
+        ui->held_count = ui->event_count - first_spatial;
+        memcpy(ui->held_events, &ui->events[first_spatial],
+               ui->held_count * sizeof(ui->events[0]));
+        ui->event_count = first_spatial;
+    }
     nk_ui_update_focus_from_events(ui);
+    ui->layout_pending = false;
     nk_ui_focus_begin_frame(ui->focus_graph);
     ui->focus_entry_count = 0u;
     nk_ui_draw_buffer_reset(&ui->draw);
@@ -945,6 +994,8 @@ const NkUiDrawList *nk_ui_end(NkUi *ui) {
     ui->focused = nk_ui_focus_current(ui->focus_graph);
     ui->frame_open = false;
     ui->event_count = 0;
+    ui->graph_unplaced = ui->layout_pending;
+    nk_ui_restore_held_events(ui);
     return ui->frame_ok ? &ui->draw.list : NULL;
 }
 
@@ -988,12 +1039,17 @@ void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
     if (ui == NULL || id == 0u || ui->focus_graph == NULL) {
         return;
     }
-    (void)nk_ui_clay_element_rect(ui->clay, id, &rect);
+    if (!nk_ui_clay_element_rect(ui->clay, id, &rect)) {
+        ui->layout_pending = true;
+    }
     entry.id = id;
     entry.rect = rect;
     entry.flags = (flags & NK_UI_BUTTON_DISABLED) != 0u
         ? NK_UI_FOCUS_DISABLED : 0u;
-    if (entry.flags == 0u && ui->focus_entry_count == 0u &&
+    if ((flags & NK_UI_BUTTON_ROW) != 0u) {
+        entry.flags |= NK_UI_FOCUS_ROW_MEMBER;
+    }
+    if ((entry.flags & NK_UI_FOCUS_DISABLED) == 0u && ui->focus_entry_count == 0u &&
         ui->focused == 0u && (flags & NK_UI_BUTTON_NOT_DEFAULT) == 0u) {
         entry.flags |= NK_UI_FOCUS_DEFAULT;
     }
