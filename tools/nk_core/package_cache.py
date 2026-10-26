@@ -935,9 +935,11 @@ def package_optimization(
 # A package build splits generated C into chunks of about this many bytes (#1296). The
 # function count alone made Hot Shots Tennis chunks of 0.8 to 52 MB of C; one cc1 compiling
 # the 52 MB chunk at -O1 peaked at 2.7 GB, so a host with little free memory compiled one
-# chunk at a time. The same functions in chunks of at most 4 MB peaked at 440 MB each, with
-# the same total compile time and the same machine code for every function: chunking keeps
-# function order and only moves the boundaries between translation units.
+# chunk at a time. The same functions in chunks of at most 4 MB peaked at 440 MB each, for
+# the same total compile time. Chunking keeps every function's C text, its order and the
+# compile flags, and only moves the boundaries between translation units; gcc's inlining of
+# the runtime header's static inline helpers does depend on the unit's size, so smaller
+# units inline them into more functions (about a fifth of Hot Shots Tennis's functions).
 PACKAGE_CHUNK_TARGET_BYTES = 4_000_000
 
 
