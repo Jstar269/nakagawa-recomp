@@ -24,6 +24,11 @@ import zlib
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from nk_core import package_cache  # noqa: E402  (the package-layer epochs the fixture must spell)
+from test_player_package_route import (  # noqa: E402
+    build_plain_mips_elf,
+    build_psp_container,
+    create_test_iso_with_executables,
+)
 PLAYER_EXE = Path(
     os.environ.get("NAKAGAWA_PLAYER_UI_TEST_EXE", "build/nakagawa_player_ui_test.exe")
 )
@@ -442,15 +447,18 @@ def synthetic_ready_package(
 
 
 def synthetic_experimental_profile(
-    runtime_root: Path, disc_id: str, source_executable: bytes
+    runtime_root: Path, disc_id: str, source_executable: bytes | None
 ) -> None:
-    """Write the profile a passing experimental build leaves: it binds EBOOT.BIN.
+    """Write a synthetic experimental profile for an imported or built title.
 
-    The library entry is saved with no selected executable, as the importer
-    saves a disc whose EBOOT.BIN was encrypted (#1276).
+    ``None`` is the valid imported state when EBOOT.BIN was encrypted and no
+    executable has been selected. Bytes model a profile after a passing build.
     """
     title_id = f"experimental-{disc_id.lower()}"
-    executable_hash = hashlib.sha256(source_executable).hexdigest()
+    executable_hash = (
+        hashlib.sha256(source_executable).hexdigest()
+        if source_executable is not None else None
+    )
     profile = {
         "schema_version": 1,
         "manifest": {
@@ -478,7 +486,9 @@ def synthetic_experimental_profile(
         },
         "input_identity": {
             "disc_id": disc_id,
-            "selected_executable": "PSP_GAME/SYSDIR/EBOOT.BIN",
+            "selected_executable": (
+                "PSP_GAME/SYSDIR/EBOOT.BIN" if source_executable is not None else ""
+            ),
             "executable_sha256": executable_hash,
             "elf_sha256": executable_hash,
         },
@@ -553,6 +563,7 @@ def compute_effective_timeout(
     Scripted wait events parse as:
       - WAIT_MS=<duration_ms>: waits for explicit millisecond duration.
       - WAIT_VIEW=<view_mask>,<timeout_ms>: waits up to timeout_ms for view match.
+      - WAIT_PACKAGE_STATUS=<status>,<timeout_ms>: waits for package validation.
 
     When explicit_timeout is None, sums all wait event bounds and adds
     TIMEOUT_BUFFER_SECONDS over DEFAULT_BASE_TIMEOUT_SECONDS to ensure slow
@@ -570,6 +581,11 @@ def compute_effective_timeout(
         elif ev.startswith("WAIT_VIEW=") and "," in ev:
             try:
                 effective += int(ev.split(",", 1)[1]) / 1000.0
+            except ValueError:
+                pass
+        elif ev.startswith("WAIT_PACKAGE_STATUS=") and "," in ev:
+            try:
+                effective += int(ev.rsplit(",", 1)[1]) / 1000.0
             except ValueError:
                 pass
     return effective + TIMEOUT_BUFFER_SECONDS
@@ -635,6 +651,7 @@ class NativePlayerUiTests(unittest.TestCase):
         downloaded_tool_payload: bool = False,
         data_root_present: bool = True,
         profile_refusal: bool = False,
+        build_preflight: str | None = None,
         legacy_data: bool = False,
         env_extra: dict[str, str] | None = None,
         ui_mode: str | None = None,
@@ -721,15 +738,29 @@ class NativePlayerUiTests(unittest.TestCase):
                     disc_id="TEST00009", title_id="experimental-test00009",
                 )
             elif post_build_ready or incompatible_package:
-                source_executable = b"synthetic input executable\n"
+                source_executable = (
+                    build_plain_mips_elf() if incompatible_package
+                    else b"synthetic input executable\n"
+                )
                 ready_source_iso = scratch / "ready-source.iso"
-                synthetic_art_iso(
-                    ready_source_iso, source_executable=source_executable
-                )
-                synthetic_ready_package(
-                    runtime_root, source_executable,
-                    data_root_present=data_root_present,
-                )
+                if incompatible_package:
+                    create_test_iso_with_executables(
+                        ready_source_iso, source_executable, disc_id="TEST00006",
+                        title="Synthetic Incompatible Package",
+                    )
+                    synthetic_ready_package(
+                        runtime_root, source_executable,
+                        disc_id="TEST00006", title_id="experimental-test00006",
+                        data_root_present=data_root_present,
+                    )
+                else:
+                    synthetic_art_iso(
+                        ready_source_iso, source_executable=source_executable
+                    )
+                    synthetic_ready_package(
+                        runtime_root, source_executable,
+                        data_root_present=data_root_present,
+                    )
             catalog_overlay: Path | None = None
             if catalog_reload_count:
                 catalog_overlay = scratch / "catalog-overlay.json"
@@ -767,6 +798,20 @@ class NativePlayerUiTests(unittest.TestCase):
                 )
             ui_iso_path: Path | None = None
             art_mount_source: Path | None = None
+            if build_preflight is not None:
+                if build_preflight == "encrypted":
+                    executable = build_psp_container()
+                elif build_preflight == "missing-manifest":
+                    executable = build_plain_mips_elf()
+                else:
+                    raise ValueError(f"unknown build preflight fixture: {build_preflight}")
+                ui_iso_path = scratch / "build-preflight.iso"
+                create_test_iso_with_executables(
+                    ui_iso_path, executable, disc_id="TEST00009",
+                    title="Synthetic Build Preflight",
+                )
+                if build_preflight == "encrypted":
+                    synthetic_experimental_profile(runtime_root, "TEST00009", None)
             if art_iso is not None:
                 if art_iso == "saturated":
                     # The cache exerciser appends a per-slot suffix. Keep
@@ -814,7 +859,8 @@ class NativePlayerUiTests(unittest.TestCase):
             )
             if env_extra:
                 env.update(env_extra)
-
+            if incompatible_package:
+                env["NK_UI_TEST_BIND_EBOOT"] = "1"
             if build_ready_test:
                 view = "build-ready"
             elif experimental_build_ready:
@@ -925,8 +971,14 @@ class NativePlayerUiTests(unittest.TestCase):
             compute_effective_timeout([]),
             DEFAULT_BASE_TIMEOUT_SECONDS + TIMEOUT_BUFFER_SECONDS,
         )
-        events = ["WAIT_MS=2500", "WAIT_VIEW=ready_library,10000", "WAIT_VIEW=error,5000", "QUIT"]
-        expected = DEFAULT_BASE_TIMEOUT_SECONDS + 2.5 + 10.0 + 5.0 + TIMEOUT_BUFFER_SECONDS
+        events = [
+            "WAIT_MS=2500",
+            "WAIT_VIEW=ready_library,10000",
+            "WAIT_PACKAGE_STATUS=INCOMPATIBLE,3000",
+            "WAIT_VIEW=error,5000",
+            "QUIT",
+        ]
+        expected = DEFAULT_BASE_TIMEOUT_SECONDS + 2.5 + 10.0 + 3.0 + 5.0 + TIMEOUT_BUFFER_SECONDS
         self.assertEqual(compute_effective_timeout(events), expected)
 
     @unittest.skipUnless(sys.platform == "win32", "legacy %USERPROFILE%\\Nakagawa\\data migration warning is Windows-only")
@@ -1440,6 +1492,63 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual([view for view, _ in self.screens(run)][-1], "controller")
         self.assertEqual(frames[-1]["input_scope"], "TEST00006")
 
+    def test_build_package_waits_for_title_preflight(self) -> None:
+        """#1286: the title page must catch build refusals before BUILD PACKAGE."""
+        for fixture in ("encrypted", "missing-manifest"):
+            with self.subTest(fixture=fixture):
+                run = self.run_player(
+                    f"build-preflight-{fixture}",
+                    ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=200"),
+                    build_preflight=fixture,
+                    ui_mode="next",
+                )
+                if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+                    self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                title_frames = [frame for frame in frames if frame["next_route"] == "2"]
+                self.assertTrue(title_frames, run["stdout"])
+                self.assertEqual(
+                    title_frames[-1]["next_primary_label"],
+                    "disabled:BUILD_PACKAGE",
+                    run["stdout"],
+                )
+                self.assertEqual(title_frames[-1]["package_building"], "0")
+                self.assertEqual(
+                    title_frames[-1]["next_preflight_action"], "OPEN_FOLDER"
+                )
+                if fixture == "encrypted":
+                    self.assertIn("decrypted", title_frames[-1]["next_preflight"].lower())
+                else:
+                    self.assertIn("title_settings", title_frames[-1]["next_preflight"].lower())
+
+    def test_build_package_waits_for_preflight_in_legacy_renderer(self) -> None:
+        """#1286: the legacy Library disables the same refused package inputs."""
+        for fixture in ("encrypted", "missing-manifest"):
+            with self.subTest(fixture=fixture):
+                run = self.run_player(
+                    f"build-preflight-{fixture}",
+                    ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=200"),
+                    build_preflight=fixture,
+                    ui_mode="legacy",
+                )
+                frames = run["frames"]
+                assert isinstance(frames, list)
+                self.assertTrue(frames, run["stdout"])
+                self.assertEqual(frames[-1]["package_building"], "0", run["stdout"])
+                self.assertEqual(frames[-1]["error"], "NONE", run["stdout"])
+                self.assertEqual(
+                    frames[-1]["next_preflight_action"], "OPEN_FOLDER", run["stdout"]
+                )
+                if fixture == "encrypted":
+                    self.assertEqual(frames[-1]["next_preflight_code"], "EXECUTABLE")
+                    self.assertIn("ENCRYPTED_EXECUTABLE", frames[-1]["next_preflight_detail"])
+                    self.assertIn("decrypted", frames[-1]["next_preflight"].lower())
+                else:
+                    self.assertEqual(frames[-1]["next_preflight_code"], "TITLE_PROFILE")
+                    self.assertIn("TITLE_PROFILE_", frames[-1]["next_preflight_detail"])
+                    self.assertIn("title_settings", frames[-1]["next_preflight"].lower())
+
     def test_library_keyboard_gamepad_navigation_and_picker(self) -> None:
         run = self.run_player("library", ("KEY_RIGHT", "PAD_DPAD_RIGHT", "KEY_TAB", "KEY_RETURN"))
         frames = run["frames"]
@@ -1718,8 +1827,12 @@ class NativePlayerUiTests(unittest.TestCase):
         # The button is a focus stop (it was a dead pill, with no stop).
         self.assertEqual(frames[-1]["focus_count"], "4")
         run = self.run_player(
-            "ready", ("KEY_RETURN",), incompatible_package=True, wait_background=True,
+            "ready",
+            ("WAIT_PACKAGE_STATUS=INCOMPATIBLE,10000", "KEY_RETURN"),
+            incompatible_package=True,
+            wait_background=True,
         )
+        self.assertIn("[PLAYER_UI_TEST] wait_package_status result=PASS", run["stdout"])
         frames = run["frames"]
         assert isinstance(frames, list)
         self.assertEqual(frames[0]["view"], "ready_library")

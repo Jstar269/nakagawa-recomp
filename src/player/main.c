@@ -1055,6 +1055,14 @@ static void player_ui_nk_apply_action(PlayerApp *app,
         player_ui_developer_log_apply(app, (PlayerUiDeveloperLogOp)action->primary);
         return;
     }
+    if (action->kind == PLAYER_UI_ACTION_OPEN_BUILD_INPUT_FOLDER) {
+        const char *path = app->package_build_preflight.action_folder;
+        if (action->title_index < (size_t)app->game_count && path[0]) {
+            (void)nk_platform_mkdir_p_private(path);
+            (void)player_app_request_open_folder(app, path);
+        }
+        return;
+    }
     if (action->kind == PLAYER_UI_ACTION_ADD_DISC) {
         app->request_file_picker = true;
         return;
@@ -1240,7 +1248,8 @@ enum {
     PLAYER_UI_TEST_ACTION_INVALIDATE_AND_START_SYNTHETIC_BUILD = -20261005,
     PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_FAILURE = -20261006,
     PLAYER_UI_TEST_ACTION_INVALIDATE_PACKAGE_CACHE = -20261007,
-    PLAYER_UI_TEST_ACTION_WAIT_ART_DELAY_ACTIVE = -20261008
+    PLAYER_UI_TEST_ACTION_WAIT_ART_DELAY_ACTIVE = -20261008,
+    PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_STATUS = -20261009
 };
 
 static unsigned s_ui_test_package_status_thread_create_attempts;
@@ -1300,6 +1309,25 @@ static bool player_ui_test_parse_positive_u64(const char *text, uint64_t *value)
     unsigned long long parsed = strtoull(text, &end, 10);
     if (end == text || !end || *end != '\0' || parsed == 0) return false;
     *value = (uint64_t)parsed;
+    return true;
+}
+
+static bool player_ui_test_parse_package_status(
+    const char *text, NkRuntimePackageStatus *out_status) {
+    if (!text || !out_status) return false;
+    if (strcmp(text, "OK") == 0) {
+        *out_status = NK_RUNTIME_PACKAGE_OK;
+    } else if (strcmp(text, "MISSING") == 0) {
+        *out_status = NK_RUNTIME_PACKAGE_MISSING;
+    } else if (strcmp(text, "INCOMPATIBLE") == 0) {
+        *out_status = NK_RUNTIME_PACKAGE_INCOMPATIBLE;
+    } else if (strcmp(text, "STALE") == 0) {
+        *out_status = NK_RUNTIME_PACKAGE_STALE;
+    } else if (strcmp(text, "UNKNOWN") == 0) {
+        *out_status = NK_RUNTIME_PACKAGE_UNKNOWN;
+    } else {
+        return false;
+    }
     return true;
 }
 
@@ -1423,6 +1451,21 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         event->type = SDL_EVENT_USER;
         event->user.code = PLAYER_UI_TEST_ACTION_WAIT_VIEW;
         event->user.windowID = target_mask;
+        event->user.timestamp = timeout;
+        return 1;
+    }
+    if (strncmp(token, "WAIT_PACKAGE_STATUS=", 20) == 0) {
+        char *comma = strchr(token + 20, ',');
+        NkRuntimePackageStatus target = NK_RUNTIME_PACKAGE_UNKNOWN;
+        uint64_t timeout = 0;
+        if (!comma) return -1;
+        *comma = '\0';
+        if (!player_ui_test_parse_package_status(token + 20, &target) ||
+            !player_ui_test_parse_positive_u64(comma + 1, &timeout) ||
+            timeout > UINT32_MAX) return -1;
+        event->type = SDL_EVENT_USER;
+        event->user.code = PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_STATUS;
+        event->user.windowID = (Uint32)target;
         event->user.timestamp = timeout;
         return 1;
     }
@@ -1724,6 +1767,10 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     int next_primary = -1;
     char next_primary_label[64] = "none";
     char next_detail[256] = "none";
+    char next_preflight[640] = "none";
+    char next_preflight_code[64] = "none";
+    char next_preflight_detail[640] = "none";
+    char next_preflight_action[24] = "none";
     int next_package = -1;
     char next_expect[256] = "none";
     {
@@ -1738,13 +1785,40 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
             snprintf(next_detail, sizeof(next_detail), "%s",
                      model->library_status_detail != NULL && model->library_status_detail[0]
                          ? model->library_status_detail : "none");
+            snprintf(next_preflight, sizeof(next_preflight), "%s",
+                     model->build_preflight_message != NULL &&
+                             model->build_preflight_message[0]
+                         ? model->build_preflight_message : "none");
+            if (model->build_preflight_folder != NULL &&
+                model->build_preflight_folder[0]) {
+                snprintf(next_preflight_action, sizeof(next_preflight_action), "OPEN_FOLDER");
+            }
             next_package = (int)model->package_state;
             snprintf(next_expect, sizeof(next_expect), "%s",
                      model->compatibility_expect != NULL && model->compatibility_expect[0]
                          ? model->compatibility_expect : "none");
             for (char *q = next_primary_label; *q; q++) if (*q == ' ') *q = '_';
             for (char *q = next_detail; *q; q++) if (*q == ' ') *q = '_';
+            for (char *q = next_preflight; *q; q++) if (*q == ' ') *q = '_';
             for (char *q = next_expect; *q; q++) if (*q == ' ') *q = '_';
+        } else if (selected != NULL && s_ui_test_next_ui == NULL) {
+            const PlayerPreflightCheck *blocker =
+                player_app_package_build_preflight_blocker(
+                    app, app->selected_game_index);
+            if (blocker) {
+                snprintf(next_preflight, sizeof(next_preflight), "%s",
+                         player_preflight_plain_message(blocker));
+                snprintf(next_preflight_code, sizeof(next_preflight_code), "%s",
+                         blocker->code[0] ? blocker->code : "unknown");
+                snprintf(next_preflight_detail, sizeof(next_preflight_detail), "%.639s",
+                         blocker->message[0] ? blocker->message : "unknown");
+                if (app->package_build_preflight.action_folder[0]) {
+                    snprintf(next_preflight_action,
+                             sizeof(next_preflight_action), "OPEN_FOLDER");
+                }
+                for (char *q = next_preflight; *q; q++) if (*q == ' ') *q = '_';
+                for (char *q = next_preflight_detail; *q; q++) if (*q == ' ') *q = '_';
+            }
         }
     }
     /* The error card's words as single tokens (spaces become underscores). */
@@ -1800,6 +1874,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "badge=%d,%d,%d,%d running=%d pixels=%016llx "
            "render_ns=%llu package_validations=%llu online_mode=%d developer_mode=%d "
            "dev_log_lines=%zu next_primary=%d next_primary_label=%s next_detail=%s "
+           "next_preflight=%s next_preflight_code=%s next_preflight_detail=%s "
+           "next_preflight_action=%s "
            "incompatible_reason=%s next_at_root=%d next_route=%d "
            "error_title=%s error_badge=%s error_retry=%s error_copied=%d "
            "next_package=%d next_expect=%s launch_pending=%d next_focus=%u\n",
@@ -1860,6 +1936,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            (unsigned long long)validation_calls,
            app->settings.online_mode ? 1 : 0, app->settings.developer_mode ? 1 : 0,
            player_dev_log_count(app), next_primary, next_primary_label, next_detail,
+           next_preflight, next_preflight_code, next_preflight_detail,
+           next_preflight_action,
            incompatible_reason,
            s_ui_test_next_ui != NULL ? (player_ui_nk_at_library_root(s_ui_test_next_ui) ? 1 : 0) : -1,
            s_ui_test_next_ui != NULL ? player_ui_nk_test_route(s_ui_test_next_ui) : -1,
@@ -3235,6 +3313,9 @@ int main(int argc, char *argv[]) {
     int ui_test_frame = 0;
     bool ui_test_waiting_for_time = false;
     bool ui_test_waiting_for_view = false;
+    bool ui_test_waiting_for_package_status = false;
+    NkRuntimePackageStatus ui_test_wait_package_status_target =
+        NK_RUNTIME_PACKAGE_UNKNOWN;
     bool ui_test_waiting_for_art_attempt = false;
     bool ui_test_waiting_for_art_delay = false;
     uint64_t ui_test_wait_art_delay_deadline = 0;
@@ -3654,6 +3735,47 @@ int main(int argc, char *argv[]) {
             app.game_count = 1;
             app.selected_game_index = 0;
             player_app_set_view(&app, VIEW_LIBRARY);
+        } else if (strcmp(test_view, "build-preflight-encrypted") == 0 ||
+                   strcmp(test_view, "build-preflight-missing-manifest") == 0) {
+            /* #1286: an imported title whose current build inputs are refused
+               must reach the library title page with BUILD PACKAGE gated. */
+            app.game_count = 0;
+            app.selected_game_index = -1;
+            GameRecord game;
+            memset(&game, 0, sizeof(game));
+            snprintf(game.disc_id, sizeof(game.disc_id), "TEST00009");
+            snprintf(game.title_name, sizeof(game.title_name),
+                     "Synthetic Build Preflight Fixture");
+            snprintf(game.disc_version, sizeof(game.disc_version), "1.00");
+            snprintf(game.title_id, sizeof(game.title_id),
+                     "experimental-test00009");
+            game.status = NK_STATUS_IDENTIFIED;
+            game.is_experimental = true;
+            if (strcmp(test_view, "build-preflight-encrypted") == 0) {
+                game.executable_eboot_kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+                game.executable_selection = NK_ISO_EXEC_SELECTION_NONE;
+            } else {
+                snprintf(game.selected_executable,
+                         sizeof(game.selected_executable), "EBOOT.BIN");
+                game.executable_eboot_kind = NK_ISO_EXEC_MIPS_ELF32;
+                game.executable_selection = NK_ISO_EXEC_SELECTION_EBOOT;
+            }
+            app.games[0] = game;
+            app.game_count = 1;
+            app.selected_game_index = 0;
+            PlayerRuntimePackageCacheEntry *package =
+                &app.runtime_package_cache[0];
+            memset(package, 0, sizeof(*package));
+            snprintf(package->disc_id, sizeof(package->disc_id), "%s",
+                     game.disc_id);
+            snprintf(package->title_id, sizeof(package->title_id), "%s",
+                     game.title_id);
+            snprintf(package->selected_executable,
+                     sizeof(package->selected_executable), "%s",
+                     game.selected_executable);
+            package->status_valid = true;
+            package->status = NK_RUNTIME_PACKAGE_MISSING;
+            player_app_set_view(&app, VIEW_LIBRARY);
         } else if (strcmp(test_view, "build-ready-experimental") == 0) {
             /* #1276: an experimental entry imported while its EBOOT.BIN was
                encrypted has no selected executable; its build has just bound
@@ -3864,6 +3986,16 @@ int main(int argc, char *argv[]) {
         snprintf(app.games[app.selected_game_index].iso_path,
                  sizeof(app.games[app.selected_game_index].iso_path), "%s",
                  ui_test_iso_path);
+    }
+    const char *bind_test_eboot = getenv("NK_UI_TEST_BIND_EBOOT");
+    if (ui_test_mode && ui_test_iso_path && bind_test_eboot &&
+        strcmp(bind_test_eboot, "1") == 0 &&
+        app.selected_game_index >= 0 && app.selected_game_index < app.game_count) {
+        GameRecord *game = &app.games[app.selected_game_index];
+        snprintf(game->selected_executable, sizeof(game->selected_executable),
+                 "EBOOT.BIN");
+        game->executable_eboot_kind = NK_ISO_EXEC_MIPS_ELF32;
+        game->executable_selection = NK_ISO_EXEC_SELECTION_EBOOT;
     }
     if (ui_test_iso_path) {
         for (int i = 0; i < app.game_count; i++) {
@@ -4341,6 +4473,29 @@ int main(int argc, char *argv[]) {
                     ui_test_block_script = true;
                 }
             }
+            if (ui_test_waiting_for_package_status) {
+                const GameRecord *game = app.selected_game_index >= 0 &&
+                    app.selected_game_index < app.game_count
+                    ? &app.games[app.selected_game_index] : NULL;
+                bool ready = game &&
+                    !player_app_runtime_package_check_pending(&app, game) &&
+                    !player_app_runtime_package_check_failed(&app, game) &&
+                    player_app_cached_runtime_package_status(&app, game) ==
+                        ui_test_wait_package_status_target;
+                if (ready) {
+                    printf("[PLAYER_UI_TEST] wait_package_status result=PASS\n");
+                    ui_test_waiting_for_package_status = false;
+                } else if (ui_test_now >= ui_test_wait_deadline) {
+                    fprintf(stderr,
+                            "[PLAYER_UI_TEST] wait_package_status result=FAIL target=%d\n",
+                            (int)ui_test_wait_package_status_target);
+                    ui_test_failed = true;
+                    ui_test_quit_queued = true;
+                    running = false;
+                } else {
+                    ui_test_block_script = true;
+                }
+            }
             if (ui_test_waiting_for_art_attempt) {
                 unsigned completed = ui_renderer_test_art_attempt_count();
                 if (completed >= ui_test_wait_art_attempt_target) {
@@ -4476,6 +4631,14 @@ int main(int argc, char *argv[]) {
                     ui_test_wait_view_mask = scripted_event.user.windowID;
                     ui_test_wait_deadline = ui_test_now + scripted_event.user.timestamp;
                     ui_test_waiting_for_view = true;
+                } else if (scripted_event.type == SDL_EVENT_USER &&
+                           scripted_event.user.code == PLAYER_UI_TEST_ACTION_WAIT_PACKAGE_STATUS) {
+                    ui_test_wait_package_status_target =
+                        (NkRuntimePackageStatus)scripted_event.user.windowID;
+                    ui_test_wait_deadline = ui_test_now + scripted_event.user.timestamp;
+                    ui_test_waiting_for_package_status = true;
+                    printf("[PLAYER_UI_TEST] wait_package_status target=%u started\n",
+                           scripted_event.user.windowID);
                 } else if (scripted_event.type == SDL_EVENT_USER &&
                            scripted_event.user.code == PLAYER_UI_TEST_ACTION_ASSERT_CONSENT) {
                     bool matches = app.active_view == VIEW_PREREQ_CONSENT &&
@@ -4693,12 +4856,21 @@ int main(int argc, char *argv[]) {
             }
 #endif
         }
-        if (app.request_open_license_folder) {
-            app.request_open_license_folder = false;
+        if (app.request_open_folder) {
+            app.request_open_folder = false;
 #if defined(_WIN32) || defined(_WIN64)
             if (app.requested_open_path[0]) {
                 (void)ShellExecuteA(NULL, "open", app.requested_open_path,
                                     NULL, NULL, SW_SHOWNORMAL);
+            }
+#else
+            if (app.requested_open_path[0]) {
+                char url[NK_MAX_PATH * 3u];
+                if (!player_ui_file_url(app.requested_open_path, url, sizeof(url)) ||
+                    !SDL_OpenURL(url)) {
+                    fprintf(stderr, "[PLAYER] The folder could not be opened: %s\n",
+                            SDL_GetError());
+                }
             }
 #endif
         }
