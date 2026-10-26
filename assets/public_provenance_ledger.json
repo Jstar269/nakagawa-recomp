@@ -1384,7 +1384,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a50db4ce6593c7bbe371f9be3169f8db0d3adff053712efd6d990d3c0c80b311"
+      "sha256": "19fa0c3b395f3865fdd15562f3ee25f9f849318d30d673b2eed251f59ec4e372"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1495,7 +1495,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ea085649515d1e492f2c97546480769aba0a11663b724fb4b12d97ca9d04599f"
+      "sha256": "a276f2cb3c6e3d485ddb4751371e667596fc6218c77cef3668c6e00cd7cb8aa5"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -1741,7 +1741,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a9e8b3fee34ff576494e0d9751294462dd960e1c97f7344dda08d7982bd8c9b4"
+      "sha256": "fef7963aa72fc275bc7459934dc373591760b3f0469e6a11ccdba8f73aedf29b"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -3203,7 +3203,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3c9de0eafdba97f6f1251b73c28092e85d3b13f5ad1fc74a20be76e8ff9e9cb2"
+      "sha256": "42512439a2d9fae237c9d9bd6e5e1ffb218ad3bdb92a29eedbcad5c000ff44bb"
     },
     {
       "path": "src/core/nk_input_profile.h",
@@ -3215,7 +3215,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f75a5ba59b736a4ea18195f189606fca5899a31e047bd078226050c63bf6b36"
+      "sha256": "c1436db3e9d84bfb7aef4c838ebf2d42f79af12d3639b5d8b635c602d73cb05b"
     },
     {
       "path": "src/core/nk_iso.c",
@@ -5384,7 +5384,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a3eb29c507db2d6643089eaa91af0124abe83ec178fe451fb793cff46fe69b08"
+      "sha256": "4fb7b2c3377fe9d31d3f9fcd93f6f4fb97c450e7cbacc41f54935002227bc011"
     },
     {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
@@ -5397,7 +5397,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "486b7317659d82a41961bf30bff026601b2a878e2886ef4e522d7af3d6c9b50c"
+      "sha256": "27cb47a213e92778733f6c55cd00671f1dc7be44b07759e925f1b1b751f4330a"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shader_manifest.json",
@@ -9870,7 +9870,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c1c2d8242bf951863b4639c193a4333361e57bf273439c3582e0bc1464eee21b"
+      "sha256": "ec9b1007999fb555613357a430fa6962bb33f65e85f23aab29f640b95d1955f0"
     },
     {
       "path": "tests/native/test_input_settings.c",
