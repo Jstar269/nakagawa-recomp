@@ -736,7 +736,7 @@ static void test_pinned_prerequisite_manifest(void) {
     assert(package_builder_find_cli(NULL, cli_path, sizeof(cli_path)));
     assert(package_builder_load_prerequisites(cli_path, &list, error, sizeof(error)));
     assert(list.count == 35);
-    assert(list.total_bytes == UINT64_C(101853260));
+    assert(list.total_bytes == UINT64_C(101848305));
     assert(strcmp(list.items[0].id, "cpython-embed-amd64") == 0);
     assert(strcmp(list.items[0].host, "www.python.org") == 0);
     assert(strcmp(list.items[0].version, "3.15.1") == 0);
@@ -927,6 +927,52 @@ static void test_remove_downloaded_tools_preserves_other_app_data(void) {
     assert(native_test_remove_tree(data_root));
 }
 
+static void test_clear_shared_library_cache_keeps_other_caches(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 11: shared library cache clear boundary\n");
+    char data_root[NK_MAX_PATH];
+    char library_object[NK_MAX_PATH];
+    char object_dir[NK_MAX_PATH];
+    char kept_object[NK_MAX_PATH];
+    char library_dir[NK_MAX_PATH];
+    char error_code[64];
+    char error_message[256];
+    char sep = nk_platform_path_separator();
+    int n = snprintf(data_root, sizeof(data_root), "%s%cdata_root_library_cache_test",
+                     native_test_get_root(), sep);
+    assert(n > 0 && (size_t)n < sizeof(data_root));
+    n = snprintf(library_dir, sizeof(library_dir), "%s%ccache%cshared-libraries%cab",
+                 data_root, sep, sep, sep);
+    assert(n > 0 && (size_t)n < sizeof(library_dir));
+    n = snprintf(library_object, sizeof(library_object), "%s%cab00.o", library_dir, sep);
+    assert(n > 0 && (size_t)n < sizeof(library_object));
+    n = snprintf(object_dir, sizeof(object_dir), "%s%ccache%cobjects%ccd", data_root, sep, sep, sep);
+    assert(n > 0 && (size_t)n < sizeof(object_dir));
+    n = snprintf(kept_object, sizeof(kept_object), "%s%ccd00.o", object_dir, sep);
+    assert(n > 0 && (size_t)n < sizeof(kept_object));
+    assert(nk_platform_mkdir_p(library_dir));
+    assert(nk_platform_mkdir_p(object_dir));
+    const char *const objects[2] = { library_object, kept_object };
+    for (int i = 0; i < 2; i++) {
+        FILE *file = fopen(objects[i], "wb");
+        assert(file != NULL);
+        assert(fputs("synthetic object", file) >= 0);
+        assert(fclose(file) == 0);
+    }
+
+    assert(package_builder_clear_shared_library_cache(
+        data_root, error_code, sizeof(error_code), error_message, sizeof(error_message)));
+    assert(error_code[0] == '\0' && error_message[0] == '\0');
+    assert(!nk_platform_file_exists(library_object));
+    assert(nk_platform_file_exists(kept_object));
+    /* Clearing again finds nothing to remove and still succeeds. */
+    assert(package_builder_clear_shared_library_cache(
+        data_root, error_code, sizeof(error_code), error_message, sizeof(error_message)));
+    assert(!package_builder_clear_shared_library_cache(
+        "", error_code, sizeof(error_code), error_message, sizeof(error_message)));
+    assert(strcmp(error_code, "DATA_DIR_UNAVAILABLE") == 0);
+    assert(native_test_remove_tree(data_root));
+}
+
 int main(int argc, char *argv[]) {
     if (argc == 2 && strcmp(argv[1], "--child-exit-zero") == 0) return 0;
     if (argc == 3 && strcmp(argv[1], "-c") == 0) return run_python_probe_stub(argc, argv);
@@ -965,6 +1011,7 @@ int main(int argc, char *argv[]) {
     test_toolchain_preflight();
     test_pinned_prerequisite_manifest();
     test_remove_downloaded_tools_preserves_other_app_data();
+    test_clear_shared_library_cache_keeps_other_caches();
 #if defined(_WIN32) || defined(_WIN64)
     test_native_download_verification();
 #else

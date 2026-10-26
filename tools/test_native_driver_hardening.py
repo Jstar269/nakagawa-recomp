@@ -105,6 +105,12 @@ int gui_headless_acceptance_requested(void) {{ return 0; }}
 int gui_headless_acceptance_ready(void) {{ return 0; }}
 int gui_headless_acceptance_complete(void) {{ return 0; }}
 uint32_t gui_headless_acceptance_presented_frames(void) {{ return 0u; }}
+/* No window, so no pause presenter (gui.c): driver.c installs none of its callbacks. */
+int gui_pause_presenter(void) {{ return 0; }}
+int gui_pause_busy_reason(void) {{ return 0; }}
+void gui_pause_enter(void) {{}}
+SrPauseFrame gui_pause_frame(void) {{ return SR_PAUSE_FRAME_RESUME; }}
+void gui_pause_leave(void) {{}}
 int (*sr_sched_stop_requested)(void) = NULL;
 const SrPauseHost *sr_sched_pause_host = NULL;
 void sr_audio_pause_enter(void) {{}}
