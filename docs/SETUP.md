@@ -662,6 +662,21 @@ it needs all of the following:
   (`Expand-Archive`) use it; PowerShell 7 remains the development baseline for
   the other repository scripts.
 
+A release folder can carry the pinned prerequisites itself, in `prereqs/` beside `bin/` and
+`source/` ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). BUILD PACKAGE
+then uses that folder ahead of `PATH` and the per-user download, so it shows no consent card
+and opens no network connection. Before each build the player checks the folder against
+`source/assets/prereq_manifest.json`: `prereqs/installed.json` must record exactly the pinned
+artifacts with their pinned version, size and SHA-256, and every file listed in
+`prereqs/bundle-inventory.txt` (one `<sha256> <size> <path>` line per file) must exist with
+its recorded size. A folder that fails the check is refused with
+`PREREQUISITE_BUNDLE_INVALID`, naming the first missing or changed file, and nothing is
+downloaded in its place: extract the release zip again into a short folder path. The player
+does not hash the bundled files, about 7,600 files and 700 MB, because that would hold BUILD
+PACKAGE for seconds; packaging verifies them. **Settings → About & Licenses** then lists the
+bundled components and opens `prereqs/notices`, and **Remove Downloaded Build Tools** never
+touches `prereqs/`.
+
 When a pinned Windows prerequisite is missing, BUILD PACKAGE opens one consent
 card showing each component's name, version, source host, download size, and
 licence, plus the total. Nothing is downloaded until **DOWNLOAD** is selected;
@@ -714,6 +729,9 @@ connection, listed below; any future online feature will be opt-in and added her
 | What | Host | When | Controlled by |
 | --- | --- | --- | --- |
 | Build-tool download | `www.python.org`, `repo.msys2.org` (HTTPS) | Only after you select **DOWNLOAD** on the BUILD PACKAGE consent card | That consent card, per build |
+
+A release folder that carries a verified `prereqs/` tree never makes the build-tool
+download ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)).
 
 There is no update check, telemetry or crash upload. The `network_mode` entry in
 `settings.json` is reserved and always reads `"offline"`; a build treats any other value as

@@ -219,6 +219,9 @@ typedef struct {
     bool cancel_requested;
     bool bootstrap_python;
     bool resume_build_pending;
+    /* The verified release bundle (#1285) the About screen listed, or empty
+       when it listed the per-user download; licence texts open from here. */
+    char bundle_root[NK_MAX_PATH];
 } PlayerPrerequisiteState;
 
 /* Room for a diagnostic that names up to three searched paths plus
