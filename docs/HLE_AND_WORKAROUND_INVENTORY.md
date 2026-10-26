@@ -46,7 +46,7 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **574** (dedicated **523**, fake_success **4**, controlled_unsupported **47**).
+Registered NIDs: **633** (dedicated **523**, fake_success **4**, controlled_unsupported **106**).
 Semantic handler census: **491** handlers across **25** API families, covering **529** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
