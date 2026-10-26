@@ -2155,10 +2155,9 @@ static int dispatch_try_with_boundary(
      *
      * The every-100-dispatch sr_timeslice=0 resets that used to sit here (one for the
      * worker thread, one for every other thread) were a defensive backstop against
-     * priority inversion predating LAUNCHER_DEMOTE (src/rt/sched.c, ~line 597): the
-     * launcher thread is unconditionally demoted below the worker's priority at thread
-     * creation now, which is the real fix. Removed per Phase 1.4 — pure dispatch overhead
-     * once the primary fix is in place. */
+     * priority inversion. Removed per Phase 1.4 — pure dispatch overhead. The launcher
+     * demotion that replaced them is retired too (#363): pick_next is strict priority, and
+     * every thread keeps the priority its creator passed. */
     SR_YIELD(s, s->pc);
 
     /* Phase 2.6 / BUG1: pc=0 in dispatch() means the thread lost its state somewhere
