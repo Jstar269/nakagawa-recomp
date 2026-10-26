@@ -109,7 +109,11 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
   or naming is needed beyond that. Emulator-derived units are labelled
   `derived-translated` (`docs/provenance/INDEPENDENCE_MODEL.md`), never "independent".
   Behaviour claims still need tests, and PSP evidence where hardware semantics are claimed.
-  Source under a licence incompatible with GPL-3.0-or-later stays excluded.
+  Since 2026-10-25 the maintainer pre-approves any source under a licence compatible with
+  GPL-3.0-or-later (for example MIT, BSD, Apache-2.0, zlib, or a CC0 or public-domain
+  dedication, such as NVIDIA's MIT-licensed dxvk-remix API): it may be vendored or adapted
+  under these same rules without a further decision. Source under a licence incompatible with
+  GPL-3.0-or-later stays excluded.
 - Do not rewrite working inherited code only to make it original: replace it when evidence shows
   it is wrong or an LLE path makes it unnecessary (`docs/INDEPENDENCE_CAMPAIGN.md`, re-scope).
 - Do not call code "clean-room" or "independent" unless its trusted record supports that
@@ -251,7 +255,7 @@ python tools/tree_lint.py --check
 python tools/lint_docs.py
 python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
 python -m pre_commit run --all-files
-npx --yes markdownlint-cli2@0.23.3 <changed .md files>
+npx --yes markdownlint-cli2@0.24.0 <changed .md files>
 ```
 
 Before the first push, check every item in [`REVIEW.md`](REVIEW.md#findings-to-pre-empt) "Findings to

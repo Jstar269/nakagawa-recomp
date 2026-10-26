@@ -587,6 +587,7 @@ class NativePlayerUiTests(unittest.TestCase):
         "test_cli_not_found_error_text_fits_at_minimum_window",
         "test_long_error_text_fits_at_minimum_window",
         "test_completed_retry_clears_failure_when_cache_generation_changes",
+        "test_controller_bind_conflict_calibration_and_profile_save",
         "test_corrupt_art_is_failed_after_bounded_retries",
         "test_decoder_rejection_is_failed_after_bounded_retries",
         "test_exit_path_joins_iso_art_workers_and_tears_down_textures",
@@ -603,6 +604,12 @@ class NativePlayerUiTests(unittest.TestCase):
         "test_per_title_controller_mapping_choice",
         "test_readable_art_without_png_decoder_is_unsupported",
         "test_repeated_post_build_failures_keep_prior_title_retryable",
+        "test_settings_about_opens_the_pinned_license_list",
+        "test_settings_presentation_choice_saves_with_native_default_schema",
+        "test_settings_removal_requires_confirmation_and_keeps_other_app_data",
+        "test_settings_scaling_choice_cycles_and_saves_by_name",
+        "test_settings_screen_returns_to_library",
+        "test_settings_ui_sounds_toggle_is_the_last_stop_and_saves",
         "test_staged_card_exposes_runtime_required_status",
         "test_worker_start_failure_does_not_block_other_title_builds",
     ))
@@ -978,7 +985,7 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["developer_mode"], "0")
 
     def test_developer_log_panel_needs_developer_mode(self) -> None:
-        # The panel is drawn by the existing renderer in both launchers.
+        # The next UI draws its own panel; --ui=legacy keeps the existing one.
         for ui_mode in ("next", "legacy"):
             with self.subTest(ui_mode=ui_mode):
                 panel = self.run_player("developer-log", ("KEY_F12",), ui_mode=ui_mode)
@@ -1119,6 +1126,319 @@ class NativePlayerUiTests(unittest.TestCase):
             [library, ("library", "3"), ("settings", "3"), ("library", "3")],
             "R steps from About to Settings, and Back returns to About",
         )
+
+    def next_ui_run(self, view: str, events: tuple[str, ...], **kwargs: object) -> dict[str, object]:
+        run = self.run_player(view, events, ui_mode="next", **kwargs)  # type: ignore[arg-type]
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        return run
+
+    @staticmethod
+    def disc_card(run: dict[str, object]) -> tuple[dict[str, str], list[dict[str, str]]]:
+        """The game-found card the next UI drew first: its kind and its check rows."""
+        stdout = run["stdout"]
+        assert isinstance(stdout, str)
+        card: dict[str, str] = {}
+        rows: list[dict[str, str]] = []
+        for line in stdout.splitlines():
+            if line.startswith("[PLAYER_UI_TEST] next_ui_disc ") and not card:
+                card = dict(part.split("=", 1) for part in line.split()[2:])
+            elif line.startswith("[PLAYER_UI_TEST] next_ui_disc_row ") and card and \
+                    len(rows) < int(card["rows"]):
+                fields = line[len("[PLAYER_UI_TEST] next_ui_disc_row "):]
+                status, rest = fields.split(" tone=", 1)
+                tone, rest = rest.split(" label=", 1)
+                label, message = rest.split(" message=", 1)
+                rows.append({"status": status[len("status="):], "tone": tone,
+                             "label": label, "message": message})
+        return card, rows
+
+    def assert_plain_rows(self, rows: list[dict[str, str]], stdout: object) -> None:
+        self.assertTrue(rows, stdout)
+        for row in rows:
+            with self.subTest(row=row["label"]):
+                self.assertTrue(row["label"] and row["message"] and row["status"], row)
+                self.assertNotIn("Not supported", row["status"])
+                # Developer codes and messages stay in the log (#1280, #1302).
+                self.assertNotRegex(row["message"], r"\b[A-Z][A-Z_]{3,}\b:")
+                self.assertNotIn(" .", row["message"])
+                self.assertNotIn("PARAM.SFO", row["message"])
+                self.assertNotIn("jpn0", row["message"])
+                self.assertTrue(row["message"].endswith("."), row)
+
+    def test_next_ui_game_found_cards_use_plain_words_and_offer_add_honestly(self) -> None:
+        """#1302: the three discs' cards in the next UI, with their real checks."""
+        supported = self.next_ui_run("supported", ("WAIT_MS=100", "KEY_ESCAPE"))
+        card, rows = self.disc_card(supported)
+        self.assertEqual((card.get("kind"), card.get("add")), ("1", "1"), supported["stdout"])
+        self.assert_plain_rows(rows, supported["stdout"])
+        self.assertNotIn("error", [row["tone"] for row in rows],
+                         "nothing beside Add to library reads as an error")
+        fonts = [row for row in rows if row["label"] == "Fonts"]
+        self.assertEqual(len(fonts), 1, rows)
+        self.assertEqual((fonts[0]["status"], fonts[0]["tone"]), ("Some missing", "warning"),
+                         "missing PSP fonts are a warning the game can still be added with")
+        self.assertEqual(self.screens(supported)[-1][0], "library")
+
+        untested = self.next_ui_run("experimental", ("WAIT_MS=100", "KEY_RETURN"))
+        card, rows = self.disc_card(untested)
+        frames = untested["frames"]
+        assert isinstance(frames, list)
+        games_before = int(frames[0]["games"])
+        self.assertEqual((card.get("kind"), card.get("add")), ("2", "1"), untested["stdout"])
+        self.assert_plain_rows(rows, untested["stdout"])
+        self.assertNotIn("error", [row["tone"] for row in rows])
+        self.assertEqual(frames[-1]["view"], "library", "Add to library adds and returns")
+        self.assertEqual(int(frames[-1]["games"]), games_before + 1)
+
+        blocked = self.next_ui_run("experimental-blocked", ("WAIT_MS=100", "KEY_RETURN"))
+        card, rows = self.disc_card(blocked)
+        self.assertEqual((card.get("kind"), card.get("add")), ("3", "0"), blocked["stdout"])
+        self.assert_plain_rows(rows, blocked["stdout"])
+        self.assertNotIn("Game program", [row["label"] for row in rows],
+                         "the check that keeps the disc out is the card's reason, not a row")
+        frames = blocked["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["picker"], "1", "Choose another disc opens the picker")
+        self.assertEqual(frames[-1]["games"], frames[0]["games"], "nothing is added")
+
+        unsupported = self.next_ui_run("unsupported", ("WAIT_MS=100", "KEY_RETURN"))
+        card, _ = self.disc_card(unsupported)
+        self.assertEqual((card.get("kind"), card.get("add")), ("4", "0"), unsupported["stdout"])
+        self.assertEqual(self.screens(unsupported)[-1][0], "library")
+
+    # The next UI's Settings controls (player_ui_nk.h), as the frame line prints them.
+    SETTINGS_FOCUS = {
+        "resolution": str(0x4501), "pacing": str(0x4502), "done": str(0x450C),
+        "online": str(0x450D), "notices": str(0x450E), "remove_tools": str(0x450F),
+        "online_mode": str(0x4511), "back": str(0x4517), "confirm_remove": str(0x4519),
+        "controller": str(0x450B), "scaling": str(0x4505),
+        "launcher_fullscreen": str(0x450A),
+    }
+    # From Resolution, Down runs through the Game card's five rows to the button
+    # row, which it enters at Third-party notices.
+    TO_SETTINGS_BUTTONS = ("KEY_DOWN",) * 5
+
+    def focus_trail(self, run: dict[str, object]) -> list[str]:
+        """The controls the next UI focused, with repeats collapsed."""
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        trail: list[str] = []
+        for frame in frames:
+            if not trail or trail[-1] != frame["next_focus"]:
+                trail.append(frame["next_focus"])
+        return trail
+
+    def test_next_ui_settings_changes_are_saved_and_done_returns(self) -> None:
+        """#1302: Settings in the next UI runs the same handlers and saves each change."""
+        focus = self.SETTINGS_FOCUS
+        run = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100", "KEY_RETURN", "KEY_DOWN", "KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE"),
+        )
+        self.assertEqual(self.focus_trail(run)[:2], [focus["resolution"], focus["pacing"]],
+                         "Settings opens on Resolution")
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("resolution_scale"), 2, "Resolution steps 1x to 2x")
+        self.assertEqual(settings.get("fps_cap"), 0, "Frame pacing switches to no extra cap")
+        self.assertEqual(self.screens(run)[-1][0], "library")
+
+        done = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS + ("KEY_LEFT", "KEY_LEFT", "KEY_RETURN"),
+        )
+        self.assertIn(focus["done"], self.focus_trail(done))
+        self.assertEqual(self.screens(done), [("settings", "1"), ("library", "1")],
+                         "Done saves and returns to the library")
+
+        tabs = self.next_ui_run(
+            "settings", ("WAIT_MS=100", "MOUSE_MOVE=400,30", "MOUSE_DOWN", "MOUSE_UP")
+        )
+        self.assertEqual(self.screens(tabs), [("settings", "1"), ("library", "3")],
+                         "the ABOUT tab on Settings closes it and opens About")
+
+    def test_next_ui_settings_pages_open_and_return(self) -> None:
+        """#1302: the online, notices and removal pages are next-UI cards too."""
+        focus = self.SETTINGS_FOCUS
+        online = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS +
+            ("KEY_LEFT", "KEY_RETURN", "WAIT_MS=100", "KEY_RETURN", "KEY_ESCAPE", "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(online)],
+                         ["settings", "online_settings", "settings"])
+        trail = self.focus_trail(online)
+        self.assertEqual(trail[-3:], [focus["online"], focus["online_mode"], focus["online"]],
+                         "the page opens on its first switch and Back focuses its button")
+        frames = online["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["online_mode"], "1")
+
+        notices = self.next_ui_run(
+            "settings", ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS + ("KEY_RETURN", "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(notices)],
+                         ["settings", "prereq_about"])
+        self.assertEqual(self.focus_trail(notices)[-1], focus["back"])
+
+        # Right comes straight after the card opens, before its buttons are laid
+        # out; nk_ui holds it a frame instead of losing it (a slow CI runner did).
+        removal = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS +
+            ("KEY_RIGHT", "KEY_RETURN", "WAIT_MS=1", "KEY_RIGHT", "KEY_RETURN"),
+            downloaded_tool_payload=True,
+        )
+        self.assertEqual([view for view, _ in self.screens(removal)],
+                         ["settings", "confirm_remove_tools", "settings"])
+        self.assertIn(focus["confirm_remove"], self.focus_trail(removal))
+        self.assertFalse(removal["downloaded_tool_marker_exists"])
+
+        kept = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + self.TO_SETTINGS_BUTTONS +
+            ("KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100", "KEY_RETURN"),
+            downloaded_tool_payload=True,
+        )
+        self.assertTrue(kept["downloaded_tool_marker_exists"],
+                        "the removal card opens on the choice that keeps the tools")
+
+    # The next UI's controller page (player_ui_nk.h), as the frame line prints it.
+    CONTROLLER_FOCUS = {
+        "select": str(0x4600), "start": str(0x4601), "calibrate": str(0x4625),
+        "back": str(0x4628), "scope": str(0x4629), "calibration_cancel": str(0x462B),
+    }
+    # From the first binding, two steps right and two down reach Calibrate stick.
+    TO_CALIBRATE = ("KEY_RIGHT", "KEY_RIGHT", "KEY_DOWN", "KEY_DOWN")
+
+    def test_next_ui_controller_rebind_calibrate_save_and_back(self) -> None:
+        """Controller settings in the next UI run the same handlers as the existing renderer."""
+        focus = self.CONTROLLER_FOCUS
+        bind = self.next_ui_run(
+            "controller", ("WAIT_MS=100", "KEY_DOWN", "KEY_RETURN", "PAD_SOUTH", "WAIT_MS=100"),
+        )
+        frames = bind["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(self.focus_trail(bind)[:2], [focus["select"], focus["start"]],
+                         "the page opens on the first binding")
+        self.assertIn("1", [frame["controller_capturing"] for frame in frames],
+                      "choosing a binding waits for a button")
+        self.assertEqual(frames[-1]["controller_capturing"], "0",
+                         "the controller's button is taken, not routed to the page")
+        self.assertEqual(frames[-1]["controller_conflicts"], "1")
+        self.assertNotEqual(frames[0]["start_binding"], frames[-1]["start_binding"])
+
+        cancel = self.next_ui_run(
+            "controller", ("WAIT_MS=100", "KEY_RETURN", "KEY_ESCAPE", "WAIT_MS=100"),
+        )
+        frames = cancel["frames"]
+        assert isinstance(frames, list)
+        self.assertIn("1", [frame["controller_capturing"] for frame in frames])
+        self.assertEqual(frames[-1]["view"], "controller", "Esc while waiting only cancels")
+        self.assertEqual(frames[-1]["controller_capturing"], "0")
+        self.assertEqual(frames[-1]["select_binding"], frames[0]["select_binding"])
+
+        calibrate = self.next_ui_run(
+            "controller",
+            ("WAIT_MS=100",) + self.TO_CALIBRATE +
+            ("KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE", "WAIT_MS=100"),
+        )
+        frames = calibrate["frames"]
+        assert isinstance(frames, list)
+        self.assertIn("1", [frame["calibrating"] for frame in frames])
+        self.assertEqual(frames[-1]["calibrating"], "0")
+        self.assertEqual(frames[-1]["view"], "controller")
+        self.assertEqual(self.focus_trail(calibrate)[-3:],
+                         [focus["calibrate"], focus["calibration_cancel"], focus["calibrate"]],
+                         "the rest step opens on Cancel and Esc returns to Calibrate stick")
+
+        # Down from Calibrate stick reaches Back, at the right end of the button
+        # row; the mapping choice is next to it and Save profile is first.
+        scope = self.next_ui_run(
+            "controller",
+            ("WAIT_MS=100",) + self.TO_CALIBRATE + ("KEY_DOWN", "KEY_LEFT", "KEY_RETURN",
+                                                     "WAIT_MS=100"),
+        )
+        frames = scope["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(self.focus_trail(scope)[-3:],
+                         [focus["calibrate"], focus["back"], focus["scope"]])
+        self.assertEqual(frames[0]["input_scope"], "global")
+        self.assertEqual(frames[-1]["input_scope"], "TEST00005")
+
+        save = self.next_ui_run(
+            "controller",
+            ("WAIT_MS=100",) + self.TO_CALIBRATE + ("KEY_DOWN",) + ("KEY_LEFT",) * 3 +
+            ("KEY_RETURN", "WAIT_MS=100"),
+        )
+        frames = save["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["profile_save_notice"], "1")
+        self.assertTrue(save["profile_exists"])
+
+        back = self.next_ui_run(
+            "controller",
+            ("WAIT_MS=100",) + self.TO_CALIBRATE + ("KEY_DOWN", "KEY_RETURN", "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(back)], ["controller", "settings"])
+        self.assertEqual(self.focus_trail(back)[-1], self.SETTINGS_FOCUS["controller"],
+                         "Back returns to Settings on Controls")
+
+    def test_next_ui_settings_opens_controls_and_esc_returns(self) -> None:
+        """Settings > Controls opens the next UI's controller page; Esc comes back.
+
+        Right from Scaling, the last GAME row, is Controls beside it: a settings
+        row keeps Left and Right in its row (it reached the button row before)."""
+        focus = self.SETTINGS_FOCUS
+        run = self.next_ui_run(
+            "settings",
+            ("WAIT_MS=100",) + ("KEY_DOWN",) * 4 +
+            ("KEY_RIGHT", "KEY_RETURN", "WAIT_MS=100", "KEY_ESCAPE", "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(run)],
+                         ["settings", "controller", "settings"])
+        self.assertEqual(self.focus_trail(run)[-4:],
+                         [focus["scaling"], focus["controller"], self.CONTROLLER_FOCUS["select"],
+                          focus["controller"]])
+        pacing = self.next_ui_run("settings", ("WAIT_MS=100", "KEY_DOWN", "KEY_RIGHT"))
+        self.assertEqual(self.focus_trail(pacing)[-1], focus["launcher_fullscreen"],
+                         "Right from Frame pacing is Fullscreen (F11) beside it, not the top bar")
+        mouse = self.next_ui_run(
+            "settings", ("WAIT_MS=100", "MOUSE_MOVE=1010,392", "MOUSE_DOWN", "MOUSE_UP",
+                         "WAIT_MS=100"),
+        )
+        self.assertEqual([view for view, _ in self.screens(mouse)], ["settings", "controller"])
+
+    def test_next_ui_developer_log_buttons(self) -> None:
+        """The developer log opens on Close; Copy keeps it open."""
+        closed = self.next_ui_run("developer-log", ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100"))
+        self.assertEqual(self.focus_trail(closed)[0], str(0x4703))
+        self.assertEqual([view for view, _ in self.screens(closed)], ["developer_log", "library"])
+        copied = self.next_ui_run(
+            "developer-log", ("WAIT_MS=100", "KEY_LEFT", "KEY_LEFT", "KEY_RETURN", "WAIT_MS=100"),
+        )
+        self.assertEqual(self.focus_trail(copied)[-1], str(0x4701))
+        self.assertEqual([view for view, _ in self.screens(copied)], ["developer_log"])
+
+    def test_next_ui_title_detail_and_mapping_follow_the_chosen_title(self) -> None:
+        """The second card's Title detail, and the game's own mapping chosen from
+        there, are the second title's (#1301: a frame without an action no
+        longer reselects the first title)."""
+        run = self.next_ui_run(
+            "library",
+            ("WAIT_MS=100", "KEY_RIGHT", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=200",
+             "MOUSE_MOVE=483,31", "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=200",
+             "MOUSE_MOVE=1010,392", "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=200") +
+            self.TO_CALIBRATE + ("KEY_DOWN", "KEY_LEFT", "KEY_RETURN", "WAIT_MS=200"),
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        title = [frame for frame in frames if frame["next_route"] == "2"]
+        self.assertTrue(title, "the Title detail page opened")
+        self.assertEqual({frame["selected_disc"] for frame in title}, {"TEST00006"})
+        self.assertEqual([view for view, _ in self.screens(run)][-1], "controller")
+        self.assertEqual(frames[-1]["input_scope"], "TEST00006")
 
     def test_library_keyboard_gamepad_navigation_and_picker(self) -> None:
         run = self.run_player("library", ("KEY_RIGHT", "PAD_DPAD_RIGHT", "KEY_TAB", "KEY_RETURN"))
@@ -2117,6 +2437,30 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(built_frames[0]["view"], "building_package")
         self.assertEqual(built_frames[0]["build_badge"], "PACKAGE_BUILT", built["stdout"])
 
+    def test_build_bar_shows_the_compiled_share_of_parts(self) -> None:
+        """A compile stage that counts its parts fills the bar to that share.
+
+        Without a count the bar sweeps and claims no percentage; a package build
+        once sat on that sweep for minutes with no sign of how far it had got.
+        The same count carries a calm note that other apps may feel slower, drawn
+        under the bar; a build without one draws no note. The next UI's card is
+        checked by nk-ui-player-screens-selftest."""
+        sweeping = self.run_player("building", ("KEY_ESCAPE",), ui_mode="legacy")
+        sweeping_frames = sweeping["frames"]
+        assert isinstance(sweeping_frames, list)
+        self.assertEqual(sweeping_frames[0]["build_badge"], "BUILDING_RUNTIME_PACKAGE")
+        self.assertEqual(sweeping_frames[0]["build_bar_permille"], "-1")
+        self.assertEqual(sweeping_frames[0]["build_notice"], "0")
+
+        counted = self.run_player("building-parts", ("KEY_ESCAPE",), ui_mode="legacy")
+        counted_frames = counted["frames"]
+        assert isinstance(counted_frames, list)
+        self.assertEqual(counted_frames[0]["view"], "building_package")
+        self.assertEqual(counted_frames[0]["build_bar_permille"], "300", counted["stdout"])
+        self.assertEqual(counted_frames[0]["build_notice"], "1", counted["stdout"])
+        self.assertEqual(counted_frames[1]["build_bar_permille"], "-1")
+        self.assertEqual(counted_frames[1]["build_notice"], "0")
+
     def test_controller_bind_conflict_calibration_and_profile_save(self) -> None:
         bind = self.run_player("controller", ("KEY_TAB", "KEY_RETURN", "PAD_SOUTH"))
         bind_frames = bind["frames"]
@@ -2157,6 +2501,28 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(missing_source_frames, list)
         self.assertEqual(missing_source_frames[0]["error"], "SOURCE_NOT_FOUND")
         self.assertEqual(missing_source_frames[1]["picker"], "1")
+
+    def test_invalid_disc_in_wizard_is_visible_without_a_selected_iso(self) -> None:
+        for ui_mode in (None, "legacy"):
+            with self.subTest(ui_mode=ui_mode or "default"):
+                baseline = self.run_player("wizard2", ui_mode=ui_mode)
+                rejected = self.run_player(
+                    "wizard2", drop_invalid_iso=True, ui_mode=ui_mode
+                )
+                baseline_frames = baseline["frames"]
+                rejected_frames = rejected["frames"]
+                assert isinstance(baseline_frames, list)
+                assert isinstance(rejected_frames, list)
+                baseline_frame = baseline_frames[-1]
+                rejected_frame = rejected_frames[-1]
+                self.assertEqual(rejected_frame["view"], "wizard")
+                self.assertEqual(rejected_frame["wizard_step"], "select_game")
+                self.assertEqual(rejected_frame["bad_disc_notice"], "1")
+                if ui_mode == "legacy":
+                    self.assertNotEqual(
+                        rejected_frame["pixels"], baseline_frame["pixels"],
+                        "the legacy renderer must show the invalid-file sentence",
+                    )
 
         recovery_codes = (
             "EXPERIMENTAL_PROFILE_FAILED",
@@ -2474,6 +2840,247 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertIn(frames[-1]["error"], ("RUNTIME_PACKAGE_NOT_READY",), run["stdout"])
         self.assertNotEqual(frames[-1]["error_retry"], "Restart_game")
 
+    # Enum values of PlayerUiPackageState (src/player/ui/player_ui_nk.h).
+    PACKAGE_READY = "1"
+    PACKAGE_STARTING = "5"
+    PACKAGE_RUNNING = "6"
+
+    # Open the ready title, then Tab past the three top-bar tabs to its PLAY.
+    PLAY_READY_TITLE = ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", "KEY_TAB",
+                        "WAIT_MS=100", "KEY_TAB", "WAIT_MS=100", "KEY_TAB", "WAIT_MS=100")
+
+    def test_play_keeps_drawing_through_a_slow_start(self) -> None:
+        """#1298: PLAY answers at once and the launcher keeps drawing while the game starts.
+
+        NK_UI_TEST_SLOW_START_MS makes the launch take 1.5 s before its package
+        check, standing in for a retail package whose check hashes several
+        hundred MB. Failing-before: the launch ran on the UI thread, so the
+        frames stopped for the whole start and PLAY showed nothing until it
+        ended (about 20 s for the owner's Hot Shots Tennis package)."""
+        run = self.run_player(
+            "ready", (*self.PLAY_READY_TITLE, "KEY_RETURN", "WAIT_MS=2500"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            env_extra={"NK_UI_TEST_SLOW_START_MS": "1500"},
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        before = [frame for frame in frames if frame["next_primary_label"] == "PLAY"]
+        self.assertTrue(before, "the synthetic ready package offers PLAY")
+        pending = [frame for frame in frames if frame["launch_pending"] == "1"]
+        self.assertGreater(len(pending), 1, run["stdout"])
+        # The frame that took the press drew the title before the launch began;
+        # every later one shows it starting.
+        for frame in pending[1:]:
+            self.assertEqual(frame["next_primary_label"], "disabled:STARTING...")
+            self.assertEqual(frame["next_package"], self.PACKAGE_STARTING)
+        first = frames.index(pending[0])
+        last = frames.index(pending[-1])
+        ticks = [int(frame["ticks_ms"]) for frame in frames[first:last + 2]]
+        self.assertGreaterEqual(ticks[-1] - ticks[0], 1400, "the start took its 1.5 s")
+        self.assertGreaterEqual(len(pending), 10, "the launcher drew through the start")
+        gaps = [later - earlier for earlier, later in zip(ticks, ticks[1:], strict=False)]
+        self.assertLess(max(gaps), 500, f"a frame took {max(gaps)} ms during the start")
+        # The synthetic package has no staged disc and no real program, so the
+        # start ends with the launch's own card, as a synchronous launch did.
+        outcome = frames[-1]
+        self.assertEqual(outcome["launch_pending"], "0")
+        self.assertIn(outcome["error"], ("RUNTIME_NOT_FOUND", "PROCESS_SPAWN_FAILED",
+                                         "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT"),
+                      run["stdout"])
+
+    def title_frame_with_a_game_running(self, running: str) -> dict[str, str]:
+        """The open title's last frame while NK_UI_TEST_GAME_RUNNING=`running`.
+
+        A running game makes quitting ask first, so the script closes twice
+        with the confirmation unavailable (as the close-confirmation test does)."""
+        run = self.run_player(
+            "ready", ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", "CLOSE", "CLOSE"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            env_extra={"NK_UI_TEST_GAME_RUNNING": running,
+                       "NK_UI_TEST_MESSAGEBOX_FAIL": "1"},
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        titled = [frame for frame in frames if frame["next_package"] != "-1"]
+        self.assertTrue(titled, run["stdout"])
+        return titled[-1]
+
+    # The "library" view's tiles at 1280x720: TEST00005, then TEST00006.
+    FIRST_TILE = "MOUSE_MOVE=175,260"
+    SECOND_TILE = "MOUSE_MOVE=485,260"
+
+    def opened_titles(self, frames: list[dict[str, str]]) -> list[str]:
+        """The disc of each title page the run opened, in order."""
+        opened: list[str] = []
+        previous = None
+        for frame in frames:
+            route = frame["next_route"]
+            if route == "2" and previous != "2":
+                opened.append(frame["selected_disc"])
+            elif route == "2" and opened and frame["selected_disc"] != opened[-1]:
+                opened.append(frame["selected_disc"])
+            previous = route
+        return opened
+
+    def test_clicking_a_tile_opens_that_tile(self) -> None:
+        """#1301: a click opens the tile under the pointer, not the focused one.
+
+        Failing-before: every frame without an action handed the launcher a
+        NONE action whose title_index was 0, and the launcher selected that
+        index, so each title page it opened showed the first game."""
+        run = self.run_player(
+            "library",
+            ("WAIT_MS=300", self.SECOND_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300"),
+            ui_mode="next", wait_background=True,
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["selected_disc"], "TEST00005", "focus starts on tile 1")
+        self.assertEqual(self.opened_titles(frames), ["TEST00006"], run["stdout"])
+        self.assertEqual(frames[-1]["next_route"], "2")
+        self.assertEqual(frames[-1]["selected_disc"], "TEST00006")
+
+    def test_clicking_a_tile_after_a_build_opens_that_tile(self) -> None:
+        """#1301: after a build, with the built title focused, a click opens the clicked tile."""
+        run = self.run_player(
+            "library",
+            ("WAIT_MS=300", "START_SYNTHETIC_BUILD=2", "WAIT_MS=2200",
+             # Back in the library, focus the built title, as the owner had it.
+             "KEY_RIGHT", "WAIT_MS=200",
+             self.FIRST_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300",
+             "KEY_ESCAPE", "WAIT_MS=300",
+             self.SECOND_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300"),
+            ui_mode="next", wait_background=True, post_build_ready=True,
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        self.assertIn("synthetic_build result=PASS index=1 disc=TEST00006", str(run["stdout"]))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        focused_built = [frame for frame in frames
+                         if frame["view"] == "ready_library" and frame["next_route"] == "1"
+                         and frame["selected_disc"] == "TEST00006"]
+        self.assertTrue(focused_built, "the built title had focus before the click")
+        self.assertEqual(self.opened_titles(frames), ["TEST00005", "TEST00006"], run["stdout"])
+
+    # Control IDs from src/player/ui/player_ui_nk.h, as the frame records print them.
+    TITLE_REMOVE = str(0x2004)
+    REMOVE_CANCEL = str(0x4401)
+    REMOVE_CONFIRM = str(0x4402)
+    ROUTE_REMOVE = "4"
+
+    def library_item(self, index: int) -> str:
+        return str(0x1100 + index)
+
+    LIBRARY_ADD = str(0x1002)
+
+    # Remove from library is the title page's lowest control, so Down presses
+    # end on it whichever action-row buttons are enabled.
+    DOWN_TO_REMOVE = ("KEY_DOWN", "WAIT_MS=80") * 4
+
+    def remove_run(self, events: tuple[str, ...]) -> list[dict[str, str]]:
+        run = self.run_player("library", events, ui_mode="next", wait_background=True)
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        return frames
+
+    def test_remove_from_library_asks_then_focuses_the_next_tile(self) -> None:
+        """#1304: Remove from library asks first, Cancel keeps the game, and Remove
+        returns to the library with the next tile focused."""
+        open_first = ("WAIT_MS=300", self.FIRST_TILE, "MOUSE_DOWN", "MOUSE_UP", "WAIT_MS=300")
+        frames = self.remove_run((*open_first, *self.DOWN_TO_REMOVE, "KEY_RETURN", "WAIT_MS=200",
+                                  "KEY_ESCAPE", "WAIT_MS=200"))
+        dialog = [frame for frame in frames if frame["next_route"] == self.ROUTE_REMOVE]
+        self.assertGreater(len(dialog), 1, "Remove from library opens the dialog")
+        # The title frame that took the press pushed the route; the dialog
+        # draws from the next frame on, with Cancel focused.
+        self.assertEqual(dialog[1]["next_focus"], self.REMOVE_CANCEL, "Cancel has the first focus")
+        self.assertEqual(frames[-1]["next_route"], "2", "Back closes the dialog onto the title page")
+        self.assertEqual(frames[-1]["next_focus"], self.TITLE_REMOVE)
+        self.assertEqual(frames[-1]["games"], frames[0]["games"], "Cancel removes nothing")
+
+        frames = self.remove_run((*open_first, *self.DOWN_TO_REMOVE, "KEY_RETURN", "WAIT_MS=200",
+                                  "KEY_RIGHT", "WAIT_MS=100", "KEY_RETURN", "WAIT_MS=400"))
+        confirm = [frame for frame in frames if frame["next_focus"] == self.REMOVE_CONFIRM]
+        self.assertTrue(confirm, "the dialog's Remove button takes focus")
+        last = frames[-1]
+        self.assertEqual(int(last["games"]), int(frames[0]["games"]) - 1, "the title left")
+        self.assertEqual(last["next_route"], "1", "Remove returns to the library")
+        self.assertEqual(last["next_at_root"], "1")
+        # TEST00005 was the first tile, so TEST00006 now holds its place.
+        self.assertEqual(last["next_focus"], self.library_item(0))
+        self.assertEqual(last["selected_disc"], "TEST00006")
+
+    def test_removing_the_last_tile_focuses_the_add_card(self) -> None:
+        """#1304: with no tile after the removed one, focus goes to the add card."""
+        frames = self.remove_run(("WAIT_MS=300", self.SECOND_TILE, "MOUSE_DOWN", "MOUSE_UP",
+                                  "WAIT_MS=300", *self.DOWN_TO_REMOVE, "KEY_RETURN",
+                                  "WAIT_MS=200", "KEY_RIGHT", "WAIT_MS=100", "KEY_RETURN",
+                                  "WAIT_MS=400"))
+        last = frames[-1]
+        self.assertEqual(int(last["games"]), int(frames[0]["games"]) - 1, "the title left")
+        self.assertEqual(last["next_route"], "1")
+        self.assertEqual(last["next_focus"], self.LIBRARY_ADD)
+        self.assertEqual(last["selected_disc"], "TEST00005")
+
+    def test_compatibility_records_carry_a_player_tier(self) -> None:
+        """#1297: every title record maps to a player tier; Hot Shots Tennis is Playable.
+
+        The category -> tier table itself is pinned against docs/COMPATIBILITY.md
+        by test_player_screens.c; this checks the per-title records the
+        launcher really uses."""
+        run = self.run_player(
+            "library", ("WAIT_MS=100",),
+            env_extra={"NK_UI_TEST_REPORT_COMPATIBILITY": "1"},
+        )
+        records = {}
+        for line in str(run["stdout"]).splitlines():
+            match = re.match(
+                r"\[PLAYER_UI_TEST\] compatibility key=(\S+) category_tier=(.+?) tier=(.+)$",
+                line,
+            )
+            if match:
+                records[match.group(1)] = (match.group(2), match.group(3))
+        self.assertIn("UCUS98701", records, run["stdout"])
+        tiers = {"Perfect", "Playable", "In-game", "Menu", "Title screen", "Won't boot"}
+        for key, (category_tier, tier) in records.items():
+            with self.subTest(key=key):
+                self.assertIn(category_tier, tiers, "the record's docs category has a tier")
+                self.assertIn(tier, tiers)
+        self.assertEqual(records["UCUS98701"], ("Title screen", "Playable"))
+        self.assertEqual(records["UCUS-98701"], ("Title screen", "Playable"))
+        self.assertEqual(records["PAC-MAN_Championship_Edition"][1], "In-game")
+        self.assertEqual(records["pspdev-phase5-v1"][1], "Won't boot")
+
+    def test_title_page_while_the_game_runs(self) -> None:
+        """#1297: the running game's title page follows the package, not the STOP GAME action.
+
+        The drawn texts are checked by test_player_screens.c; this pins the
+        state the launcher hands the screen."""
+        cases = {
+            "TEST00006": ("STOP_GAME", self.PACKAGE_RUNNING),
+            "starting:TEST00006": ("STOP_GAME", self.PACKAGE_STARTING),
+        }
+        for running, (label, state) in cases.items():
+            with self.subTest(running=running):
+                last = self.title_frame_with_a_game_running(running)
+                self.assertEqual(last["selected_disc"], "TEST00006")
+                self.assertEqual(last["selected_runtime"], "1", "the package is ready")
+                self.assertEqual(last["next_primary_label"], label)
+                self.assertEqual(last["next_package"], state)
+                self.assertNotIn("boundary", last["next_expect"])
+        # Another game running leaves this title's package card alone.
+        other = self.title_frame_with_a_game_running("TEST00001")
+        self.assertEqual(other["next_package"], self.PACKAGE_READY)
+
     def test_preflight_refusal_is_not_a_build_failure(self) -> None:
         """#1286: a build refused at preflight never started, so its card is not
         "Package Build Failed" and its badge is not a code."""
@@ -2578,6 +3185,38 @@ class FirstRunRouteTests(unittest.TestCase):
             cwd=ROOT, env=self.scratch_env(scratch), capture_output=True, text=True,
             timeout=120, check=False,
         )
+
+    def test_bad_startup_iso_opens_error_card_and_keeps_launcher_running(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".first-run-invalid-iso-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            bad_iso = scratch / "not a PSP disc.iso"
+            bad_iso.write_bytes(b"synthetic non-ISO input\n")
+            runtime_root = scratch / "runtime"
+            runtime_root.mkdir()
+            screenshot = scratch / "last-frame.bmp"
+            completed = subprocess.run(
+                [
+                    str(PLAYER_EXE), f"--iso={bad_iso}",
+                    "--ui-test-events=WAIT_VIEW=error,5000;KEY_RETURN;WAIT_MS=100;QUIT",
+                    f"--ui-test-screenshot={screenshot}",
+                    f"--runtime-root={runtime_root}",
+                ],
+                cwd=ROOT, env=self.scratch_env(scratch), capture_output=True,
+                text=True, timeout=30, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            frames = parse_frames(completed.stdout)
+            self.assertTrue(frames, completed.stdout + completed.stderr)
+            error_frame = next((frame for frame in frames if frame["view"] == "error"), None)
+            self.assertIsNotNone(error_frame, completed.stdout + completed.stderr)
+            assert error_frame is not None
+            self.assertEqual(error_frame["view"], "error")
+            self.assertEqual(error_frame["error"], "ISO_CORRUPT")
+            self.assertEqual(error_frame["bad_disc_notice"], "1")
+            self.assertEqual(error_frame["error_text_complete"], "1")
+            self.assertEqual(frames[-1]["view"], "library")
+            self.assertEqual(frames[-1]["picker"], "1")
+            self.assertTrue(screenshot.is_file())
 
     def test_iso_route_stores_nothing_until_add_to_library(self) -> None:
         sys.path.insert(0, str(ROOT / "tools"))

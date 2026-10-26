@@ -6,9 +6,10 @@ Status: plan — nothing below is implemented unless marked.
 (sal063 under GPLv3 with credits, PPSSPP lineage under GPL-2.0-or-later) is no longer rewritten
 only to make it original. A G-item is replaced only when (1) hardware or test evidence shows it
 is wrong, or (2) an LLE path makes it unnecessary (as planned for G9 and G12). Where a replacement
-is needed, vendoring or adapting FFmpeg codec subsets, uofw (MIT), or GPL-compatible emulator
-source (PPSSPP, JPCSP) is preferred over a fresh rewrite, under the `AGENTS.md` section 4 import
-rules (2026-10-22 extension). Emulator-derived units stay labelled `derived-translated`, so this
+is needed, vendoring or adapting FFmpeg codec subsets, uofw (MIT), GPL-compatible emulator
+source (PPSSPP, JPCSP), or any other source under a GPL-3.0-or-later-compatible licence is
+preferred over a fresh rewrite, under the `AGENTS.md` section 4 import rules (2026-10-22 and
+2026-10-25 extensions). Emulator-derived units stay labelled `derived-translated`, so this
 campaign's independence claims never cover them, and G14 (PGD/amctrl) stays excluded. The group analysis below is
 kept as the inventory and evidence plan; read its "(a) clean-room rewrite" verdicts as
 "replace only under (1) or (2)".
@@ -574,7 +575,8 @@ that authority.
 - Exact sizes of the excluded implementations (`iso.c`, `audio.c`,
   `pgf.c`/`.h`, `pgd.c`/`.h`, `pgd_decrypt.py`, and the historical
   `evf.c`/`fp_convert.c` from which today's headers descend): not
-  measurable from the public tree; record from the private checkout at
+  measurable from the public tree; record from the retired private copy
+  (the private-backend build mode was retired on 2026-10-25) at
   implementation time. They do not affect sequencing.
 - Whether the `sched_*` flat-C API spellings originated with sal063 or
   earlier: believed project-coined (PPSSPP's kernel is C++ with different

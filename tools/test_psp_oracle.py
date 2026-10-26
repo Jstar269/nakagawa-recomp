@@ -1475,7 +1475,7 @@ class PspOracleRunnerTests(unittest.TestCase):
                 ),
             ), patch(
                 "psp_oracle.run_psplink._read_hardware_lock",
-                return_value=(True, "HELD_AND_CONFIRMED"),
+                return_value=(True, "HELD_AND_QUALIFIED", {"boot_number": 42}),
             ):
                 self.assertEqual(
                     run_psplink_main(
@@ -4623,7 +4623,7 @@ class HleMeasureProbeTests(unittest.TestCase):
 
     @staticmethod
     def _nid(name: str) -> int:
-        return int.from_bytes(hashlib.sha1(name.encode("ascii")).digest()[:4], "little")
+        return int.from_bytes(hashlib.sha1(name.encode("ascii"), usedforsecurity=False).digest()[:4], "little")
 
     @staticmethod
     def _imports(text: str) -> list[tuple[str, int, str]]:

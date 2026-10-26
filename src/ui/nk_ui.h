@@ -258,7 +258,8 @@ enum {
     NK_UI_BUTTON_LARGE = 1u << 3,   /* 52 px, the one main action on a screen */
     NK_UI_BUTTON_SMALL = 1u << 4,   /* 34 px, inline and pager actions */
     NK_UI_BUTTON_GROW = 1u << 5,    /* fill the row instead of fitting the label */
-    NK_UI_BUTTON_NOT_DEFAULT = 1u << 6 /* never the screen's default focus (top-bar tabs) */
+    NK_UI_BUTTON_NOT_DEFAULT = 1u << 6, /* never the screen's default focus (top-bar tabs) */
+    NK_UI_BUTTON_ROW = 1u << 7          /* left/right stay in its row of buttons */
 };
 
 /* Device scale and edge rounding are shared helpers for hosts and tests. */

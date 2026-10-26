@@ -1166,6 +1166,96 @@ static void test_non_ascii_user_data_root(const char *base, char sep) {
     remove_dir_utf8(probe_dir);
 }
 
+/* Read a whole small file into out; returns its length or -1. */
+static long read_small_file(const char *path, char *out, size_t out_size) {
+    FILE *f = nk_fopen_utf8(path, "rb");
+    if (!f) return -1;
+    size_t got = fread(out, 1, out_size - 1u, f);
+    fclose(f);
+    out[got] = '\0';
+    return (long)got;
+}
+
+/* 22. A finished run's output is kept as game-<disc>-last.txt with a -prev
+ * copy, and a long run keeps its tail from a whole line (#1303). */
+static void test_keep_run_log(const char *base, char sep) {
+    printf("[LAUNCH_TEST] Subtest 22: a finished run's output is kept in the logs folder\n");
+    fflush(stdout);
+    char events[700];
+    char log_dir[700];
+    char last[800];
+    char prev[800];
+    char part[800];
+    char kept[800];
+    char text[4096];
+    snprintf(events, sizeof(events), "%s%crun-log.events", base, sep);
+    snprintf(log_dir, sizeof(log_dir), "%s%crun-logs", base, sep);
+    snprintf(last, sizeof(last), "%s%cgame-TEST00001-last.txt", log_dir, sep);
+    snprintf(prev, sizeof(prev), "%s%cgame-TEST00001-prev.txt", log_dir, sep);
+    snprintf(part, sizeof(part), "%s%cgame-TEST00001-last.txt.part", log_dir, sep);
+    remove(last);
+    remove(prev);
+
+    /* The first run is copied unchanged; the events file stays as it was. */
+    static const char first_run[] = "BOOT_EVENT phase=window_ready\nfirst run line\n";
+    write_file(events, first_run);
+    assert(nk_launch_keep_run_log_in(events, log_dir, "TEST00001", 1024u, kept, sizeof(kept)));
+    assert(strcmp(kept, last) == 0);
+    assert(read_small_file(last, text, sizeof(text)) == (long)strlen(first_run));
+    assert(strcmp(text, first_run) == 0);
+    assert(read_small_file(events, text, sizeof(text)) == (long)strlen(first_run));
+    assert(!nk_platform_file_exists(prev));
+    assert(!nk_platform_file_exists(part));
+
+    /* The next run replaces -last and the first run becomes -prev. A run over
+       the cap keeps its tail: the cut lands mid-line, so the kept text starts
+       at the next whole line after a note saying how much was cut. */
+    char second_run[1024];
+    size_t used = 0;
+    for (int i = 0; i < 40; i++) {
+        used += (size_t)snprintf(second_run + used, sizeof(second_run) - used,
+                                 "second run line %02d\n", i);
+    }
+    write_file(events, second_run);
+    assert(nk_launch_keep_run_log_in(events, log_dir, "TEST00001", 100u, kept, sizeof(kept)));
+    assert(read_small_file(prev, text, sizeof(text)) == (long)strlen(first_run));
+    assert(strcmp(text, first_run) == 0);
+    long kept_len = read_small_file(last, text, sizeof(text));
+    assert(kept_len > 0);
+    assert(strncmp(text, "[nakagawa] the first ", 21) == 0);
+    const char *body = strchr(text, '\n');
+    assert(body != NULL);
+    body++;
+    assert(strncmp(body, "second run line ", 16) == 0);
+    assert(strlen(body) <= 100u);
+    assert(strstr(body, "second run line 39\n") != NULL);
+    assert(strcmp(body + strlen(body) - 19u, "second run line 39\n") == 0);
+    assert(!nk_platform_file_exists(part));
+
+    /* A third run drops the oldest copy. */
+    write_file(events, "third run line\n");
+    assert(nk_launch_keep_run_log_in(events, log_dir, "TEST00001", 1024u, kept, sizeof(kept)));
+    assert(read_small_file(prev, text, sizeof(text)) == kept_len);
+    assert(read_small_file(last, text, sizeof(text)) > 0);
+    assert(strcmp(text, "third run line\n") == 0);
+
+    /* A disc ID that is not a plain name, or a missing events file, keeps
+       nothing and leaves the earlier copies alone. */
+    assert(!nk_launch_keep_run_log_in(events, log_dir, "..", 1024u, kept, sizeof(kept)));
+    assert(kept[0] == '\0');
+    assert(!nk_launch_keep_run_log_in(events, log_dir, "ULUS/10000", 1024u, kept, sizeof(kept)));
+    assert(!nk_launch_keep_run_log_in(events, log_dir, "", 1024u, kept, sizeof(kept)));
+    remove(events);
+    assert(!nk_launch_keep_run_log_in(events, log_dir, "TEST00001", 1024u, kept, sizeof(kept)));
+    assert(kept[0] == '\0');
+    assert(read_small_file(last, text, sizeof(text)) > 0);
+    assert(strcmp(text, "third run line\n") == 0);
+
+    remove(last);
+    remove(prev);
+    test_rmdir(log_dir);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return write_launch_environment_probe();
@@ -2002,6 +2092,8 @@ int main(int argc, char **argv) {
 
     /* 20. nk_launch_stop state changes and process termination. */
     test_launch_stop_functionality(argv[0], base, sep);
+
+    test_keep_run_log(base, sep);
 
     printf("[LAUNCH_TEST] ALL LAUNCH RESOLUTION TESTS PASSED!\n");
     native_test_assert_real_config_untouched();

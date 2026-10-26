@@ -56,15 +56,147 @@ class TitleCodegenPlanTests(unittest.TestCase):
         selected = self.synthetic if manifest is None else manifest
         return title_codegen_plan.build_plan(selected, **values)
 
-    def test_package_build_command_enables_bounded_parallel_compilation(self) -> None:
+    def test_package_build_command_runs_the_chosen_job_count(self) -> None:
         self.assertEqual(
-            title_codegen_plan._make_build_command("mingw32-make", native_only=False),
-            ["mingw32-make", "--no-print-directory", "-j2", "all"],
+            title_codegen_plan._make_build_command("mingw32-make", "compile", jobs=6),
+            ["mingw32-make", "--no-print-directory", "-j6", "compile"],
         )
         self.assertEqual(
-            title_codegen_plan._make_build_command("make", native_only=True),
-            ["make", "--no-print-directory", "-j2", "compile"],
+            title_codegen_plan._make_build_command("make", "compile", jobs=3, dry_run=True),
+            ["make", "--no-print-directory", "-j3", "-n", "compile"],
         )
+
+    def test_package_build_targets_split_generation_from_compilation(self) -> None:
+        targets = title_codegen_plan._make_build_targets
+        self.assertEqual(targets(native_only=False), ("pipeline", "compile"))
+        self.assertEqual(targets(native_only=True), ("compile",))
+        self.assertEqual(targets(native_only=False, aot_stage=True), ("pipeline",))
+        self.assertEqual(targets(native_only=True, aot_stage=True), ("pipeline",))
+
+    def test_package_build_jobs_follow_memory_and_cpus(self) -> None:
+        gib = 1024**3
+        jobs = title_codegen_plan.package_build_jobs
+        cases = (
+            # (logical CPUs, available bytes, expected jobs)
+            (24, 22 * gib, 6),          # the measured PC: memory bound
+            (24, 28 * gib, 8),          # never above eight jobs
+            (24, 64 * gib, 8),
+            (4, 64 * gib, 4),           # CPU bound
+            (24, 10 * gib, 2),
+            (24, 10 * gib - 1, 1),      # floor((10 GiB - 1 - 4 GiB) / 3 GiB) = 1
+            (24, 6 * gib, 1),           # never below one job
+            (24, 3 * gib, 1),           # less than the reserve
+            (1, 64 * gib, 1),
+            (0, 64 * gib, 1),           # an unknown CPU count is one CPU
+            (None, 64 * gib, 1),
+        )
+        for cpus, available, expected in cases:
+            with self.subTest(cpus=cpus, available=available):
+                chosen, reason = jobs(cpu_count=cpus, available_bytes=available)
+                self.assertEqual(chosen, expected)
+                self.assertIn("GB memory available", reason)
+
+    def test_package_build_jobs_without_a_memory_reading_keep_two(self) -> None:
+        jobs = title_codegen_plan.package_build_jobs
+        self.assertEqual(jobs(cpu_count=24, available_bytes=None)[0], 2)
+        self.assertEqual(jobs(cpu_count=1, available_bytes=None)[0], 1)
+        self.assertIn("unknown", jobs(cpu_count=24, available_bytes=None)[1])
+
+    def test_package_build_jobs_override_is_clamped(self) -> None:
+        jobs = title_codegen_plan.package_build_jobs
+        gib = 1024**3
+        for override, expected in (("3", 3), (" 5 ", 5), ("8", 8), ("32", 8), ("0", 1), ("-4", 1)):
+            with self.subTest(override=override):
+                chosen, reason = jobs(cpu_count=2, available_bytes=5 * gib, override=override)
+                self.assertEqual(chosen, expected)
+                self.assertIn("NK_PACKAGE_JOBS=", reason)
+        # An empty or unreadable override is ignored, and the log says so.
+        self.assertEqual(jobs(cpu_count=24, available_bytes=22 * gib, override="")[0], 6)
+        chosen, reason = jobs(cpu_count=24, available_bytes=22 * gib, override="many")
+        self.assertEqual(chosen, 6)
+        self.assertIn("ignored NK_PACKAGE_JOBS='many'", reason)
+
+    def test_host_package_build_jobs_reads_the_environment(self) -> None:
+        with mock.patch.dict(os.environ, {"NK_PACKAGE_JOBS": "3"}):
+            self.assertEqual(title_codegen_plan._host_package_build_jobs()[0], 3)
+        available = title_codegen_plan.available_physical_memory()
+        if available is not None:
+            self.assertGreater(available, 0)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NK_PACKAGE_JOBS", None)
+            chosen, _reason = title_codegen_plan._host_package_build_jobs()
+        self.assertGreaterEqual(chosen, 1)
+        self.assertLessEqual(chosen, title_codegen_plan.PACKAGE_BUILD_MAX_JOBS)
+
+    def test_planned_compile_objects_reads_a_make_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            cwd = Path(temp)
+            absolute = (cwd / "abs").as_posix()
+            listing = "\n".join((
+                '"python" tools/shader_embed.py verify',
+                "gcc -O2 -MMD -MP -c src/rt/hle.c -o build/x/hle.o",
+                f"gcc -O2 -I{absolute} -c {absolute}/game_recomp_0.c -o {absolute}/game_recomp_0.o",
+                "gcc -O2 -c src/rt/hle.c -o build/x/hle.o",  # repeated: counted once
+                "gcc -O2 -o build/x/game.exe @build/x/link-objects.rsp -lm",  # the link
+                "gcc -c src/rt/ge.c -o \"build/x/ge.o\"",
+            ))
+            objects = title_codegen_plan.planned_compile_objects(listing, cwd)
+        self.assertEqual(
+            objects,
+            [cwd / "build/x/hle.o", Path(absolute) / "game_recomp_0.o", cwd / "build/x/ge.o"],
+        )
+        self.assertEqual(title_codegen_plan.planned_compile_objects("make: Nothing to be done", cwd), [])
+
+    def test_compile_progress_counter_counts_written_objects(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fresh = root / "fresh.o"
+            in_flight = root / "in_flight.o"
+            stale = root / "stale.o"
+            stale.write_bytes(b"old object")
+            os.utime(stale, ns=(1_000_000_000, 1_000_000_000))
+            counter = title_codegen_plan.CompileProgressCounter([fresh, in_flight, stale])
+            self.assertEqual(counter.total, 3)
+            self.assertEqual(counter.completed(), 0)
+            in_flight.write_bytes(b"")  # created by the assembler, not yet filled
+            self.assertEqual(counter.completed(), 0)
+            fresh.write_bytes(b"\x7fELF")
+            self.assertEqual(counter.completed(), 1)
+            stale.write_bytes(b"new object")
+            self.assertEqual(counter.completed(), 2)
+            in_flight.write_bytes(b"\x7fELF")
+            self.assertEqual(counter.completed(), 3)
+
+    def test_make_with_progress_appends_each_new_count(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            objects = [root / f"part{index}.o" for index in range(3)]
+            progress = root / "progress.jsonl"
+            # A stand-in for Make that writes the objects one at a time.
+            script = (
+                "import sys, time\n"
+                "for path in sys.argv[1:]:\n"
+                "    time.sleep(0.2)\n"
+                "    open(path, 'wb').write(b'obj')\n"
+                "time.sleep(0.2)\n"
+            )
+            returncode = title_codegen_plan._run_make_with_progress(
+                [sys.executable, "-c", script, *map(str, objects)],
+                cwd=root,
+                env=os.environ.copy(),
+                counter=title_codegen_plan.CompileProgressCounter(objects),
+                progress_file=progress,
+                jobs=4,
+                cpus=24,
+                poll_seconds=0.05,
+            )
+            rows = [json.loads(line) for line in progress.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(returncode, 0)
+        self.assertEqual(rows[0], {"completed": 0, "total": 3, "jobs": 4, "cpus": 24})
+        self.assertEqual(rows[-1], {"completed": 3, "total": 3, "jobs": 4, "cpus": 24})
+        completed = [row["completed"] for row in rows]
+        self.assertEqual(completed, sorted(set(completed)), "each count is written once, in order")
+        self.assertTrue(all(row["total"] == 3 for row in rows))
 
     def test_unconfigured_data_root_has_no_invalid_local_asset_record(self) -> None:
         manifest = copy.deepcopy(self.synthetic)

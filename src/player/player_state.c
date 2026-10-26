@@ -1941,6 +1941,148 @@ bool player_app_remove_game(PlayerApp *app, int game_index) {
     return true;
 }
 
+/* A disc ID used as a folder name: letters, digits, '-' and '_' only, so it
+   can never name a parent, a separator or a drive. */
+static bool player_removal_disc_id_ok(const char *disc_id) {
+    if (!disc_id || !disc_id[0] || strlen(disc_id) >= NK_MAX_DISC_ID_LEN) return false;
+    for (const char *p = disc_id; *p; ++p) {
+        char c = *p;
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+              c == '-' || c == '_')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+const char *player_app_removal_blocker(const PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return "The game is not in the library.";
+    const GameRecord *game = &app->games[game_index];
+    if (player_game_is_showcase(game)) return "Showcase demos come with Nakagawa and stay in the library.";
+    if (!player_removal_disc_id_ok(game->disc_id)) return "This game's disc ID cannot name a folder.";
+    if (app->is_game_running || app->launch_pending) return "Stop the game first.";
+    if (app->build_session.is_building) return "Wait for the package build to finish first.";
+    if (app->wizard.is_extracting) return "Wait for the disc copy to finish first.";
+    return NULL;
+}
+
+static bool player_removal_add(PlayerRemovalPlan *plan, PlayerRemovalKind kind, bool saves,
+                               const char *keep_child, const char *root, const char *a,
+                               const char *b, const char *c) {
+    if (plan->path_count >= PLAYER_REMOVAL_PATH_CAP || !root || !root[0]) return false;
+    PlayerRemovalPath *entry = &plan->paths[plan->path_count];
+    char sep = nk_platform_path_separator();
+    int n;
+    if (c) {
+        n = snprintf(entry->path, sizeof(entry->path), "%s%c%s%c%s%c%s", root, sep, a, sep, b,
+                     sep, c);
+    } else if (b) {
+        n = snprintf(entry->path, sizeof(entry->path), "%s%c%s%c%s", root, sep, a, sep, b);
+    } else {
+        n = snprintf(entry->path, sizeof(entry->path), "%s%c%s", root, sep, a);
+    }
+    if (n <= 0 || (size_t)n >= sizeof(entry->path)) return false;
+    if (nk_platform_path_missing(entry->path)) return true;
+    snprintf(entry->keep_child, sizeof(entry->keep_child), "%s", keep_child ? keep_child : "");
+    entry->kind = kind;
+    entry->saves = saves;
+    entry->bytes = 0;
+    if (!nk_platform_tree_size(entry->path, keep_child, &entry->bytes)) entry->bytes = 0;
+    plan->path_count++;
+    if (saves) {
+        plan->has_saves = true;
+        plan->saves_bytes += entry->bytes;
+    } else {
+        plan->kind_present[kind] = true;
+        plan->kind_bytes[kind] += entry->bytes;
+    }
+    return true;
+}
+
+bool player_app_plan_game_removal(const PlayerApp *app, int game_index,
+                                  PlayerRemovalPlan *plan) {
+    if (!plan) return false;
+    memset(plan, 0, sizeof(*plan));
+    if (player_app_removal_blocker(app, game_index) != NULL) return false;
+    const char *disc = app->games[game_index].disc_id;
+    snprintf(plan->disc_id, sizeof(plan->disc_id), "%s", disc);
+    /* The build writes under the runtime root when one is set; disc copies
+       and saves always live in the per-user directories. */
+    char build_root[NK_MAX_PATH];
+    char data_root[NK_MAX_PATH];
+    char saves_root[NK_MAX_PATH];
+    bool have_build = player_app_data_root(app, build_root, sizeof(build_root));
+    bool have_data = nk_platform_get_app_data_dir(data_root, sizeof(data_root));
+    bool have_saves = nk_platform_get_path(NK_PATH_SAVES, saves_root, sizeof(saves_root));
+    bool ok = true;
+    if (have_build) {
+        ok = player_removal_add(plan, PLAYER_REMOVAL_PACKAGE, false, NULL, build_root,
+                                "packages", disc, NULL) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, false, NULL, build_root,
+                                "cache", "packages", disc) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_BUILD_CACHE, false, NULL, build_root,
+                                "cache", "bringup", disc) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, false, NULL, build_root,
+                                "experimental", disc, NULL) && ok;
+    }
+    if (have_data) {
+        /* The extracted disc files keep their Memory Stick folder, the saves
+           of a game started from them, unless the saves go too. */
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, false, "memstick", data_root,
+                                "games", disc, NULL) && ok;
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, true, NULL, data_root,
+                                "games", disc, "memstick") && ok;
+        /* A disc copy that stopped part way leaves these beside it. */
+        char staging[NK_MAX_DISC_ID_LEN + 24];
+        snprintf(staging, sizeof(staging), ".staging_%s", disc);
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, false, NULL, data_root,
+                                "games", staging, NULL) && ok;
+        snprintf(staging, sizeof(staging), ".staging_%s.retired", disc);
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, false, NULL, data_root,
+                                "games", staging, NULL) && ok;
+    }
+    if (have_saves) {
+        ok = player_removal_add(plan, PLAYER_REMOVAL_EXTRACTED, true, NULL, saves_root, disc,
+                                NULL, NULL) && ok;
+    }
+    return ok;
+}
+
+bool player_app_remove_game_and_data(PlayerApp *app, int game_index, bool delete_saves,
+                                     char *error, size_t error_size) {
+    if (error && error_size) error[0] = '\0';
+    PlayerRemovalPlan plan;
+    const char *blocker = player_app_removal_blocker(app, game_index);
+    if (blocker) {
+        if (error && error_size) snprintf(error, error_size, "%s", blocker);
+        return false;
+    }
+    if (!player_app_plan_game_removal(app, game_index, &plan)) {
+        if (error && error_size) {
+            snprintf(error, error_size, "The folders for this game could not be listed.");
+        }
+        return false;
+    }
+    /* Saves first when they go, so a kept Memory Stick folder never holds up
+       the extracted files around it. */
+    for (int pass = 0; pass < 2; ++pass) {
+        for (size_t i = 0; i < plan.path_count; ++i) {
+            const PlayerRemovalPath *entry = &plan.paths[i];
+            if (entry->saves != (pass == 0)) continue;
+            if (entry->saves && !delete_saves) continue;
+            const char *keep = entry->keep_child[0] && !delete_saves ? entry->keep_child : NULL;
+            if (!nk_platform_remove_tree(entry->path, keep)) {
+                if (error && error_size) {
+                    snprintf(error, error_size, "%s could not be deleted. Close any program "
+                             "using it and try again.", entry->path);
+                }
+                return false;
+            }
+        }
+    }
+    return player_app_remove_game(app, game_index);
+}
+
 void player_app_set_view(PlayerApp *app, PlayerView view) {
     if (!app) return;
     app->active_view = view;
@@ -2038,7 +2180,11 @@ bool player_app_retry_from_error(PlayerApp *app) {
                        app->last_error.subject_disc_id);
     app->selected_game_index = index;
     player_app_set_view(app, VIEW_LIBRARY);
-    if (retry == PLAYER_ERROR_RETRY_RESTART_GAME) return player_app_launch_game(app, index);
+    if (retry == PLAYER_ERROR_RETRY_RESTART_GAME) {
+        /* The same launch PLAY runs, on the event loop's launch worker. */
+        player_app_request_launch(app, index);
+        return true;
+    }
     return player_app_start_package_build(app, index);
 }
 
@@ -2350,50 +2496,29 @@ static void player_set_boundary_text(PlayerApp *app, const char *reason) {
     }
 }
 
-bool player_app_launch_game(PlayerApp *app, int game_index) {
-    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+static NkResult player_resolve_input_profile(PlayerApp *app, const GameRecord *game,
+                                             char *out, size_t out_size);
+
+bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *work) {
+    if (!app || !work || game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
+    const char *root = player_package_root(app, game);
+    memset(work, 0, sizeof(*work));
     app->close_confirmation_pending = false;
     /* A launch initiated by the player requests a GUI child by default, even if
        package preflight rejects it before launch-session preparation. */
     app->launch_session.config.gui_mode = !app->launch_headless;
-
-    char package_error[2048] = "";
-    NkRuntimePackageStatus package_status = player_app_validate_runtime_package(
-        app, game, NULL, package_error, sizeof(package_error));
-    char data_root_path[NK_MAX_PATH] = "";
-    char data_root_reason[1024] = "";
-    NkLaunchDataRootStatus data_root_status = player_app_game_data_root_status(
-        app, game, data_root_path, sizeof(data_root_path), data_root_reason,
-        sizeof(data_root_reason));
-    bool runtime_available = package_status == NK_RUNTIME_PACKAGE_OK ||
-        (package_status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
-         nk_launch_runtime_available(player_package_root(app, game),
-                                     game->title_id));
-    if (!runtime_available) {
-        player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Game Not Ready",
-                             "This game isn't ready to start yet. Build or repair its game files, then try again.",
-                             "Return to Library", VIEW_LIBRARY);
-        player_set_boundary_text(app, package_error[0] ? package_error :
-                                     "Runtime package is missing or incompatible.");
-        return false;
+    work->game_index = game_index;
+    work->game = *game;
+    if (root) {
+        snprintf(work->package_root, sizeof(work->package_root), "%s", root);
+        work->has_package_root = true;
     }
-    if (data_root_status != NK_LAUNCH_DATA_ROOT_READY &&
-        data_root_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
-        player_app_set_error(app,
-                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
-                                 ? "TITLE_DATA_MISSING" : "TITLE_PROFILE_INVALID",
-                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
-                                 ? "Game Data Missing" : "Game Settings Unavailable",
-                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
-                                 ? "This game needs its data files before it can start. Add the missing files, then try again."
-                                 : "This game's title settings could not be checked. Review the details and try again.",
-                             "Return to Library", VIEW_LIBRARY);
-        player_set_boundary_text(app, data_root_reason[0] ? data_root_reason :
-                                     "The title data folder could not be resolved.");
-        return false;
-    }
-
+    work->settings = app->settings;
+    work->launch_headless = app->launch_headless;
+    work->headless_accept_presented_frames = app->headless_accept_presented_frames;
+    /* The boot-event marker and the input mapping are written here, on the
+       thread that owns the app; the work only reads the resulting paths. */
     app->child_window_ready = false;
     app->launch_session.boot_event_file_path[0] = '\0';
     if (!player_prepare_boot_event_file(app)) {
@@ -2407,18 +2532,122 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
         );
         return false;
     }
+    snprintf(work->boot_event_file_path, sizeof(work->boot_event_file_path), "%s",
+             app->boot_event_file_path);
+    (void)player_resolve_input_profile(app, game, work->input_profile_path,
+                                       sizeof(work->input_profile_path));
+    return true;
+}
+
+void player_launch_work_run(PlayerLaunchWork *work) {
+    if (!work) return;
+    const GameRecord *game = &work->game;
+    const char *root = work->has_package_root ? work->package_root : NULL;
+    char default_root[NK_MAX_PATH];
+    const char *package_root = root;
+    work->failed_step = PLAYER_LAUNCH_STEP_NONE;
+    work->result = NK_OK;
+    if (!package_root) {
+        if (nk_platform_get_app_data_dir(default_root, sizeof(default_root))) {
+            package_root = default_root;
+        } else {
+            snprintf(work->package_error, sizeof(work->package_error), "%s",
+                "DATA_DIR_UNAVAILABLE: the Windows Local AppData known folder, LOCALAPPDATA, or APPDATA could not be resolved; package discovery cannot run.");
+        }
+    }
+    NkRuntimePackageStatus package_status = package_root
+        ? nk_launch_validate_runtime_package(package_root, game, NULL,
+                                             work->package_error,
+                                             sizeof(work->package_error))
+        : NK_RUNTIME_PACKAGE_MISSING;
+    bool runtime_available = package_status == NK_RUNTIME_PACKAGE_OK ||
+        (package_status == NK_RUNTIME_PACKAGE_MISSING && !game->is_experimental &&
+         nk_launch_runtime_available(root, game->title_id));
+    if (!runtime_available) {
+        work->failed_step = PLAYER_LAUNCH_STEP_PACKAGE;
+        return;
+    }
+    char data_root_path[NK_MAX_PATH] = "";
+    work->data_root_status = nk_launch_game_data_root_status(
+        root, game, data_root_path, sizeof(data_root_path), work->data_root_reason,
+        sizeof(work->data_root_reason));
+    if (work->data_root_status != NK_LAUNCH_DATA_ROOT_READY &&
+        work->data_root_status != NK_LAUNCH_DATA_ROOT_NOT_REQUIRED) {
+        work->failed_step = PLAYER_LAUNCH_STEP_DATA_ROOT;
+        return;
+    }
     printf("[PLAYER] Preparing launch session for %s (%s)...\n", game->disc_id, game->title_name);
 
-    NkResult res = nk_launch_prepare_session(&app->launch_session, game,
-                                              player_package_root(app, game));
+    NkLaunchSession *session = &work->session;
+    work->result = nk_launch_prepare_session(session, game, root);
     /* nk_launch defaults gui_mode to false for headless harnesses. */
-    app->launch_session.config.gui_mode = !app->launch_headless;
-    if (res != NK_OK) {
+    session->config.gui_mode = !work->launch_headless;
+    if (work->result != NK_OK) {
+        printf("[PLAYER] Launch preparation failed: %s\n", session->last_error);
+        work->failed_step = PLAYER_LAUNCH_STEP_PREPARE;
+        return;
+    }
+
+    /* Apply user settings via typed runtime configuration */
+    player_app_apply_settings_to_session(&work->settings, &session->config);
+    if (work->input_profile_path[0]) {
+        snprintf(session->config.input_profile_path,
+                 sizeof(session->config.input_profile_path), "%s",
+                 work->input_profile_path);
+    }
+    session->config.headless_accept_presented_frames =
+        work->headless_accept_presented_frames;
+    session->config.gui_mode = !work->launch_headless ||
+        work->headless_accept_presented_frames > 0u;
+    if (work->boot_event_file_path[0]) {
+        snprintf(session->boot_event_file_path,
+                 sizeof(session->boot_event_file_path), "%s",
+                 work->boot_event_file_path);
+    }
+
+    printf("[PLAYER] Spawning runtime: %s (ISO: %s)\n", session->executable_path, session->iso_path);
+
+    work->result = nk_launch_start(session);
+    if (work->result != NK_OK) {
+        printf("[PLAYER] Runtime process spawn failed: %s\n", session->last_error);
+        work->failed_step = PLAYER_LAUNCH_STEP_START;
+    }
+}
+
+bool player_app_launch_finish(PlayerApp *app, PlayerLaunchWork *work) {
+    if (!app || !work) return false;
+    int game_index = work->game_index;
+    if (work->failed_step == PLAYER_LAUNCH_STEP_PACKAGE) {
+        player_app_set_error(app, "RUNTIME_PACKAGE_NOT_READY", "Game Not Ready",
+                             "This game isn't ready to start yet. Build or repair its game files, then try again.",
+                             "Return to Library", VIEW_LIBRARY);
+        player_set_boundary_text(app, work->package_error[0] ? work->package_error :
+                                     "Runtime package is missing or incompatible.");
+        return false;
+    }
+    if (work->failed_step == PLAYER_LAUNCH_STEP_DATA_ROOT) {
+        NkLaunchDataRootStatus data_root_status = work->data_root_status;
+        player_app_set_error(app,
+                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                                 ? "TITLE_DATA_MISSING" : "TITLE_PROFILE_INVALID",
+                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                                 ? "Game Data Missing" : "Game Settings Unavailable",
+                             data_root_status == NK_LAUNCH_DATA_ROOT_MISSING
+                                 ? "This game needs its data files before it can start. Add the missing files, then try again."
+                                 : "This game's title settings could not be checked. Review the details and try again.",
+                             "Return to Library", VIEW_LIBRARY);
+        player_set_boundary_text(app, work->data_root_reason[0] ? work->data_root_reason :
+                                     "The title data folder could not be resolved.");
+        return false;
+    }
+    /* From here the prepared session is the app's, started or not, as it was
+       when the launch prepared app->launch_session in place. */
+    app->launch_session = work->session;
+    if (work->failed_step == PLAYER_LAUNCH_STEP_PREPARE) {
         if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
-        printf("[PLAYER] Launch preparation failed: %s\n", app->launch_session.last_error);
         const char *err_code = "RUNTIME_NOT_FOUND";
         const char *err_title = "Recompiled Binary Not Available";
-        if (res == NK_ERROR_INVALID_EXECUTABLE) {
+        if (work->result == NK_ERROR_INVALID_EXECUTABLE) {
             err_code = "STAGED_EXECUTABLE_INVALID";
             err_title = "Staged Executable Is Invalid";
         } else if (strstr(app->launch_session.last_error, "manifest") != NULL ||
@@ -2438,26 +2667,8 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
         );
         return false;
     }
-
-    /* Apply user settings via typed runtime configuration */
-    player_app_apply_settings_to_session(&app->settings, &app->launch_session.config);
-    player_app_apply_input_profile_to_session(app, game);
-    app->launch_session.config.headless_accept_presented_frames =
-        app->headless_accept_presented_frames;
-    app->launch_session.config.gui_mode = !app->launch_headless ||
-        app->headless_accept_presented_frames > 0u;
-    if (app->boot_event_file_path[0]) {
-        snprintf(app->launch_session.boot_event_file_path,
-                 sizeof(app->launch_session.boot_event_file_path), "%s",
-                 app->boot_event_file_path);
-    }
-
-    printf("[PLAYER] Spawning runtime: %s (ISO: %s)\n", app->launch_session.executable_path, app->launch_session.iso_path);
-
-    NkResult start_res = nk_launch_start(&app->launch_session);
-    if (start_res != NK_OK) {
+    if (work->failed_step == PLAYER_LAUNCH_STEP_START) {
         if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
-        printf("[PLAYER] Runtime process spawn failed: %s\n", app->launch_session.last_error);
         player_app_set_error(
             app,
             "PROCESS_SPAWN_FAILED",
@@ -2471,9 +2682,14 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
 
     app->is_game_running = true;
     app->launch_time_ms = 0;
+    /* The library may have changed while the work ran: find the game again. */
+    if (game_index < 0 || game_index >= app->game_count ||
+        strcmp(app->games[game_index].disc_id, work->game.disc_id) != 0) {
+        game_index = player_app_find_game_by_disc_id(app, work->game.disc_id);
+    }
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
-    if (tm_info) {
+    if (tm_info && game_index >= 0) {
         strftime(app->games[game_index].last_played, sizeof(app->games[game_index].last_played),
                  "%Y-%m-%d %H:%M", tm_info);
         /* A bundled demo or sample that ran is not a library title: its last-played
@@ -2484,9 +2700,28 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
         }
     }
     printf("[PLAYER] Game started successfully (PID: %d)!\n", app->launch_session.process.process_id);
-    player_dev_log_add(app, "launch", "started %s (%s)", app->games[game_index].disc_id,
-                       app->games[game_index].title_name);
+    player_dev_log_add(app, "launch", "started %s (%s)", work->game.disc_id,
+                       work->game.title_name);
     return true;
+}
+
+bool player_app_launch_game(PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    PlayerLaunchWork *work = (PlayerLaunchWork *)malloc(sizeof(*work));
+    if (!work) return false;
+    bool started = player_app_launch_begin(app, game_index, work);
+    if (started) {
+        player_launch_work_run(work);
+        started = player_app_launch_finish(app, work);
+    }
+    free(work);
+    return started;
+}
+
+void player_app_request_launch(PlayerApp *app, int game_index) {
+    if (!app || game_index < 0 || game_index >= app->game_count) return;
+    app->request_launch = true;
+    app->request_launch_index = game_index;
 }
 
 static bool player_copy_bounded_text(char *destination, size_t destination_size,
@@ -2628,7 +2863,15 @@ void player_app_stop_game(PlayerApp *app) {
     app->is_game_running = false;
     app->close_confirmation_pending = false;
     app->child_window_ready = false;
-    if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
+    if (app->boot_event_file_path[0]) {
+        /* The run's output stays in the logs folder (#1303). */
+        char kept_log[NK_MAX_PATH];
+        if (nk_launch_keep_run_log(app->boot_event_file_path, app->launch_session.disc_id,
+                                   kept_log, sizeof(kept_log))) {
+            player_dev_log_add(app, "runtime", "game output kept in %s", kept_log);
+        }
+        remove(app->boot_event_file_path);
+    }
 }
 
 void player_app_apply_settings_to_session(const PlayerSettings *settings,
@@ -2642,19 +2885,20 @@ void player_app_apply_settings_to_session(const PlayerSettings *settings,
     config->master_volume = settings->master_volume;
 }
 
-NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRecord *game) {
+/* The NK_INPUT_PROFILE path `game` launches with, written to `out`; `out` is
+ * left as it was when there is no path to hand over. */
+static NkResult player_resolve_input_profile(PlayerApp *app, const GameRecord *game,
+                                             char *out, size_t out_size) {
     if (!app) return NK_ERROR_GENERIC;
     app->input_profile_notice[0] = '\0';
-    if (!game || !game->disc_id[0]) return NK_ERROR_GENERIC;
+    if (!game || !game->disc_id[0] || !out || out_size == 0) return NK_ERROR_GENERIC;
 
     char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN] = {0};
     if (!input_settings_has_title_mapping(&app->input_settings, game->disc_id)) {
         /* No per-title entry: the disc runs the global mapping, which is the
          * file the player already owns and the runtime already resolves. */
         if (app->input_settings.profile_path[0]) {
-            snprintf(app->launch_session.config.input_profile_path,
-                     sizeof(app->launch_session.config.input_profile_path), "%s",
-                     app->input_settings.profile_path);
+            snprintf(out, out_size, "%s", app->input_settings.profile_path);
         }
         return NK_OK;
     }
@@ -2672,9 +2916,14 @@ NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRec
         return res;
     }
 
-    snprintf(app->launch_session.config.input_profile_path,
-             sizeof(app->launch_session.config.input_profile_path), "%s", path);
+    snprintf(out, out_size, "%s", path);
     return NK_OK;
+}
+
+NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRecord *game) {
+    if (!app) return NK_ERROR_GENERIC;
+    return player_resolve_input_profile(app, game, app->launch_session.config.input_profile_path,
+                                        sizeof(app->launch_session.config.input_profile_path));
 }
 
 static bool player_read_semantic_stop(const char *path, char *boundary,
@@ -2779,24 +3028,35 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
         }
         if (events) fclose(events);
     }
-    if (app->boot_event_file_path[0] && !runtime_failed) {
+    /* The whole run's output stays in the logs folder as game-<disc>-last.txt
+       (#1303); the error card and Copy details name that file. Without it, a
+       failed run keeps its cache file as before. */
+    char kept_log[NK_MAX_PATH] = "";
+    if (app->boot_event_file_path[0]) {
+        if (nk_launch_keep_run_log(app->boot_event_file_path, stopped_disc_id,
+                                   kept_log, sizeof(kept_log))) {
+            player_dev_log_add(app, "runtime", "game output kept in %s", kept_log);
+        } else {
+            player_dev_log_add(app, "runtime", "game output could not be kept in the logs folder");
+        }
+    }
+    if (app->boot_event_file_path[0] && (kept_log[0] || !runtime_failed)) {
         remove(app->boot_event_file_path);
     }
+    const char *run_log = kept_log[0] ? kept_log : app->boot_event_file_path;
     printf("[PLAYER] Game process exited with code %d (ran for %llu ms)\n", code,
            (unsigned long long)elapsed_ms);
 
     if (has_semantic_stop) {
         player_app_set_game_stop_error(app, "RUNTIME_SEMANTIC_BOUNDARY", stopped_boundary,
                                        stopped_issue, code, elapsed_ms, stopped_disc_id,
-                                       app->boot_event_file_path);
+                                       run_log);
     } else if (elapsed_ms < 500) {
         player_app_set_game_stop_error(app, "RUNTIME_PREMATURE_EXIT", NULL, 0, code,
-                                       elapsed_ms, stopped_disc_id,
-                                       app->boot_event_file_path);
+                                       elapsed_ms, stopped_disc_id, run_log);
     } else if (code != 0) {
         player_app_set_game_stop_error(app, "RUNTIME_ERROR_EXIT", NULL, 0, code, elapsed_ms,
-                                       stopped_disc_id,
-                                       app->boot_event_file_path);
+                                       stopped_disc_id, run_log);
     }
     return true;
 }
@@ -3080,6 +3340,19 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
     app->requested_open_path[0] = '\0';
     player_app_set_view(app, VIEW_PREREQ_ABOUT);
     return true;
+}
+
+bool player_app_request_license_folder(PlayerApp *app) {
+    char data_root[NK_MAX_PATH];
+    int n;
+    if (!app) return false;
+    app->request_open_license_folder = false;
+    if (!player_app_data_root(app, data_root, sizeof(data_root)) || !data_root[0]) return false;
+    n = snprintf(app->requested_open_path, sizeof(app->requested_open_path),
+                 "%s%cprerequisites%cnotices", data_root,
+                 nk_platform_path_separator(), nk_platform_path_separator());
+    app->request_open_license_folder = n > 0 && (size_t)n < sizeof(app->requested_open_path);
+    return app->request_open_license_folder;
 }
 
 void player_app_remove_prerequisites(PlayerApp *app) {
@@ -3502,26 +3775,62 @@ const char *player_preflight_label(const PlayerPreflightCheck *check) {
     return "Check";
 }
 
+bool player_preflight_check_blocks(const PlayerPreflightCheck *check) {
+    return check && check->status == PREFLIGHT_UNSUPPORTED &&
+           (strcmp(check->code, "EXECUTABLE") == 0 || strcmp(check->code, "DISC_SFO") == 0);
+}
+
 const char *player_preflight_status_word(const PlayerPreflightCheck *check) {
     if (!check) return "Unknown";
-    bool package = strcmp(check->code, "RUNTIME_PACKAGE") == 0;
-    switch (check->status) {
-        case PREFLIGHT_OK: return "Ready";
-        case PREFLIGHT_MISSING: return package ? "Not built yet" : "Needed";
-        case PREFLIGHT_INCOMPATIBLE: return "Rebuild";
-        case PREFLIGHT_STALE: return "Out of date";
-        case PREFLIGHT_UNSUPPORTED: return "Not supported";
-        case PREFLIGHT_IN_PROGRESS: return "Untested";
-        case PREFLIGHT_INVALID: return "Problem";
+    if (check->status == PREFLIGHT_OK) return "Ready";
+    if (player_preflight_check_blocks(check)) return "Can't use";
+    if (strcmp(check->code, "RUNTIME_PACKAGE") == 0) {
+        switch (check->status) {
+            case PREFLIGHT_MISSING: return "Not built yet";
+            case PREFLIGHT_STALE:
+            case PREFLIGHT_INCOMPATIBLE: return "Build again";
+            default: return "Not yet";
+        }
     }
-    return "Unknown";
+    if (strcmp(check->code, "DATA_ROOT") == 0) return "Checked later";
+    if (strcmp(check->code, "SYSTEM_FONTS") == 0) {
+        return check->status == PREFLIGHT_INVALID ? "Can't read" : "Some missing";
+    }
+    switch (check->status) {
+        case PREFLIGHT_MISSING: return "Needed";
+        case PREFLIGHT_INCOMPATIBLE: return "Build again";
+        case PREFLIGHT_STALE: return "Out of date";
+        case PREFLIGHT_IN_PROGRESS: return "Untested";
+        case PREFLIGHT_UNSUPPORTED:
+        case PREFLIGHT_INVALID:
+        default: return "Not yet";
+    }
 }
 
 const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
     if (!check) return "";
-    /* The package validator and the font summary speak in cache and slot terms;
-       the card says what they mean for the player. */
-    if (strcmp(check->code, "RUNTIME_PACKAGE") == 0) {
+    if (check->plain[0]) return check->plain;
+    /* The checks speak in file, cache and profile terms for the developer log;
+       the card says what each one means for the player (#1302). */
+    bool ok = check->status == PREFLIGHT_OK;
+    if (strcmp(check->code, "EXPERIMENTAL") == 0) {
+        return "Not tested with this game yet. You can add it and try.";
+    } else if (strcmp(check->code, "DISC_SFO") == 0) {
+        if (ok) return "Nakagawa read the disc and knows which game it is.";
+        if (check->status == PREFLIGHT_MISSING) {
+            return "The disc's game information is missing, so Nakagawa can't tell which "
+                   "game it is.";
+        }
+        return "Nakagawa couldn't read this disc image. Check that it's a complete copy of "
+               "your disc.";
+    } else if (strcmp(check->code, "EXECUTABLE") == 0) {
+        return ok ? "Found the game's program."
+                  : "Nakagawa can't use the game's program on this disc.";
+    } else if (strcmp(check->code, "GUEST_MODULES") == 0) {
+        return ok ? "Found the game's other program files."
+                  : "Some of the game's program files are encrypted, and Nakagawa doesn't "
+                    "decrypt games.";
+    } else if (strcmp(check->code, "RUNTIME_PACKAGE") == 0) {
         switch (check->status) {
             case PREFLIGHT_OK: return "Built and ready to play.";
             case PREFLIGHT_MISSING:
@@ -3529,29 +3838,32 @@ const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
             case PREFLIGHT_STALE:
             case PREFLIGHT_INCOMPATIBLE:
                 return "Built by an older version of Nakagawa. Build it again from the Library.";
-            default: break;
+            default:
+                return "Nakagawa can't build this game yet.";
         }
+    } else if (strcmp(check->code, "DATA_ROOT") == 0) {
+        if (ok) return "The game's files are ready.";
+        return "Nakagawa checks the game's files again after you build it.";
     } else if (strcmp(check->code, "SYSTEM_FONTS") == 0) {
-        if (check->status == PREFLIGHT_OK) return "PSP system fonts found.";
-        if (check->status == PREFLIGHT_MISSING) {
-            return "Some PSP system fonts were not found, so some text may look different. "
-                   "You can import your own fonts in the setup wizard.";
+        if (ok) return "PSP system fonts found.";
+        if (check->status == PREFLIGHT_INVALID) {
+            return "Your imported PSP fonts can't be read. You can import them again in the "
+                   "setup wizard.";
         }
-    } else if (strcmp(check->code, "EXPERIMENTAL") == 0) {
-        return "Not tested yet: this game may not start, or may stop early.";
+        return "Some PSP system fonts were not found, so some text may look different. "
+               "You can import your own fonts in the setup wizard.";
+    } else if (strcmp(check->code, "AUDIO_OUTPUT") == 0) {
+        return "Sound plays through your default audio device. With no device, the game "
+               "runs silently.";
     }
-    return player_plain_reason(check->message);
+    return ok ? "Ready." : "Nakagawa checks this again before the game plays.";
 }
 
 const PlayerPreflightCheck *player_preflight_blocking_check(
     const PlayerCompatibilityPreflight *preflight) {
     if (!preflight) return NULL;
     for (size_t i = 0; i < preflight->count; i++) {
-        const PlayerPreflightCheck *check = &preflight->checks[i];
-        if (check->status == PREFLIGHT_UNSUPPORTED &&
-            (strcmp(check->code, "EXECUTABLE") == 0 || strcmp(check->code, "DISC_SFO") == 0)) {
-            return check;
-        }
+        if (player_preflight_check_blocks(&preflight->checks[i])) return &preflight->checks[i];
     }
     return NULL;
 }
@@ -3574,6 +3886,18 @@ static void player_preflight_add(PlayerCompatibilityPreflight *preflight,
         memcpy(check->issue_numbers, issues, issue_count * sizeof(issues[0]));
         check->issue_count = issue_count;
     }
+}
+
+/* The player sentence for the check added last, when it names this check's own
+   facts. */
+static void player_preflight_set_plain(PlayerCompatibilityPreflight *preflight,
+                                       const char *format, ...) {
+    va_list args;
+    if (!preflight || preflight->count == 0 || !format) return;
+    PlayerPreflightCheck *check = &preflight->checks[preflight->count - 1u];
+    va_start(args, format);
+    vsnprintf(check->plain, sizeof(check->plain), format, args);
+    va_end(args);
 }
 
 typedef enum {
@@ -4039,6 +4363,10 @@ static void player_check_guest_modules(PlayerApp *app,
                      first_name, decrypted_dir);
             player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_MISSING,
                                  message, issues, 1);
+            player_preflight_set_plain(preflight,
+                "Some of the game's program files are encrypted, and Nakagawa doesn't "
+                "decrypt games. Put a decrypted %.120s from your own copy in %.300s.",
+                first_name, decrypted_dir);
         } else {
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; %.200s is not ready "
@@ -4047,6 +4375,10 @@ static void player_check_guest_modules(PlayerApp *app,
                      more, decrypted_dir);
             player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_UNSUPPORTED,
                                  message, issues, 1);
+            player_preflight_set_plain(preflight,
+                "One of the game's program files (%.120s) can't be used yet. Put a "
+                "working decrypted copy from your own disc in %.300s.",
+                first_name, decrypted_dir);
         }
     }
     free(modules);
@@ -4219,6 +4551,9 @@ void player_app_build_compatibility_preflight(
                 decrypted_dir);
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                  message, NULL, 0);
+            player_preflight_set_plain(preflight,
+                "The EBOOT.elf you added isn't a working game program. Replace it with a "
+                "decrypted EBOOT.elf from your own copy in %.300s.", decrypted_dir);
         } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_MISSING) {
             /* Nakagawa does not decrypt games and reads no key file: an
              * encrypted EBOOT.BIN needs a user-supplied decrypted EBOOT.elf. */
@@ -4230,6 +4565,9 @@ void player_app_build_compatibility_preflight(
                 decrypted_dir);
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                  message, issues, 1);
+            player_preflight_set_plain(preflight,
+                "The game's program is encrypted, and Nakagawa doesn't decrypt games. Put a "
+                "decrypted EBOOT.elf from your own copy in %.300s.", decrypted_dir);
         } else {
             static const unsigned int path_issues[] = { 308 };
             char message[512];
@@ -4239,15 +4577,24 @@ void player_app_build_compatibility_preflight(
                 "broader ISO-to-Play support is in the works.");
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                  message, path_issues, 1);
+            player_preflight_set_plain(preflight,
+                "Nakagawa couldn't find a safe folder for this game's files. Check that "
+                "your user folder can be written to.");
         }
     } else if (eboot == NK_ISO_EXEC_EMPTY_OR_ZERO) {
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                              "EBOOT.BIN is empty or zero-filled and cannot be analyzed.", NULL, 0);
+        player_preflight_set_plain(preflight,
+                                   "The game's program on this disc is empty, so the disc "
+                                   "image may be damaged.");
     } else {
         static const unsigned int issues[] = { 308 };
         player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                              "Unknown/malformed executable boundary; broader title support is in the works.",
                              issues, 1);
+        player_preflight_set_plain(preflight,
+                                   "Nakagawa doesn't recognise the game's program on this "
+                                   "disc.");
     }
 
     if (disc_readable) {

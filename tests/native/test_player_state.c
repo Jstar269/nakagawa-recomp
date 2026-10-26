@@ -1378,6 +1378,12 @@ static int repeat_launch_child_mode(void) {
                      marker_present ? 1 : 0) >= 0;
     if (fclose(report) != 0) ok = 0;
     if (!ok) return 4;
+    /* Runtime output: the launch sends stdout and stderr to the boot-event
+       file, which the player keeps as logs/game-<disc>-last.txt (#1303). */
+    printf("synthetic runtime stdout marker_present=%d\n", marker_present ? 1 : 0);
+    fflush(stdout);
+    fprintf(stderr, "synthetic runtime stderr line\n");
+    fflush(stderr);
     const char *stop_reason = getenv("NK_REPEAT_LAUNCH_STOP_REASON");
     const char *boot_event_path = getenv("SR_BOOT_EVENT_FILE");
     if (stop_reason && strcmp(stop_reason, "semantic-boundary") == 0 &&
@@ -1405,6 +1411,26 @@ static int repeat_launch_child_mode(void) {
         if (!ok) return 5;
     }
     return exit_code;
+}
+
+/* True when the file at `path` holds `needle`. */
+static bool run_log_contains(const char *path, const char *needle) {
+    FILE *file = nk_fopen_utf8(path, "rb");
+    if (!file) return false;
+    char text[8192];
+    size_t got = fread(text, 1, sizeof(text) - 1u, file);
+    fclose(file);
+    text[got] = '\0';
+    return strstr(text, needle) != NULL;
+}
+
+/* True when a developer log line holds `needle`. */
+static bool dev_log_contains(const PlayerApp *app, const char *needle) {
+    for (size_t i = 0; i < player_dev_log_count(app); i++) {
+        const char *line = player_dev_log_line(app, i);
+        if (line && strstr(line, needle)) return true;
+    }
+    return false;
 }
 
 /* Launch through the player-owned session path, let the child reach a
@@ -1578,6 +1604,22 @@ static void test_bitmap_font_text_fallback(void) {
  * "~" (the stored path is untouched). The profile folder is matched on whole
  * path components only, so a profile name that is a prefix of another folder
  * name is left alone. */
+/* Open licence texts asks for <data root>/prerequisites/notices, from the same
+   data root the rest of the player uses, and asks for nothing without an app. */
+static void test_license_folder_request(void) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    char expected[NK_MAX_PATH];
+    char sep = nk_platform_path_separator();
+    assert(app != NULL);
+    assert(!player_app_request_license_folder(NULL));
+    snprintf(app->runtime_root, sizeof(app->runtime_root), "synthetic-data-root");
+    assert(player_app_request_license_folder(app));
+    assert(app->request_open_license_folder);
+    snprintf(expected, sizeof(expected), "synthetic-data-root%cprerequisites%cnotices", sep, sep);
+    assert(strcmp(app->requested_open_path, expected) == 0);
+    free(app);
+}
+
 static void test_display_path_hides_profile_folder(void) {
     /* Each platform's own path spelling: the profile folder and its separator. */
 #if defined(_WIN32) || defined(_WIN64)
@@ -1891,9 +1933,13 @@ static void test_error_cards_are_plain(void) {
     if (!profile || !profile[0]) profile = getenv("HOME");
     if (profile && strlen(profile) > 3) assert(strstr(report, profile) == NULL);
 
-    /* Restart game relaunches the same game: here its package is missing, so
-       the launch itself says so. */
-    assert(!player_app_retry_from_error(app));
+    /* Restart game asks the main loop to relaunch the same game off the UI
+       thread (#1298); here its package is missing, so the launch says so. */
+    assert(!app->request_launch);
+    assert(player_app_retry_from_error(app));
+    assert(app->request_launch && app->request_launch_index == 0);
+    app->request_launch = false;
+    assert(!player_app_launch_game(app, app->request_launch_index));
     assert(strcmp(app->last_error.error_code, "RUNTIME_PACKAGE_NOT_READY") == 0);
     assert(app->selected_game_index == 0);
 
@@ -1940,10 +1986,50 @@ static void test_error_cards_are_plain(void) {
     snprintf(check->message, sizeof(check->message),
              "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.");
     assert(strcmp(player_preflight_label(check), "Game program") == 0);
-    assert(strcmp(player_preflight_status_word(check), "Not supported") == 0);
+    assert(strcmp(player_preflight_status_word(check), "Can't use") == 0);
     assert(strcmp(player_preflight_plain_message(check),
-                  "EBOOT.BIN is encrypted. Nakagawa does not decrypt games.") == 0);
+                  "Nakagawa can't use the game's program on this disc.") == 0);
     assert(player_preflight_blocking_check(&preflight) == check);
+    /* A check with its own facts (the folder to put a file in) says them. */
+    snprintf(check->plain, sizeof(check->plain), "Put a decrypted EBOOT.elf in C:/synthetic.");
+    assert(strcmp(player_preflight_plain_message(check),
+                  "Put a decrypted EBOOT.elf in C:/synthetic.") == 0);
+
+    /* #1302: every code and status reads as a player sentence: no developer
+       code, no empty name, and "Can't use" only where the disc is kept out. */
+    {
+        static const char *const codes[] = {
+            "EXPERIMENTAL", "DISC_SFO", "EXECUTABLE", "GUEST_MODULES", "RUNTIME_PACKAGE",
+            "DATA_ROOT", "SYSTEM_FONTS", "AUDIO_OUTPUT", "SOMETHING_NEW"
+        };
+        static const PlayerPreflightStatus statuses[] = {
+            PREFLIGHT_OK, PREFLIGHT_MISSING, PREFLIGHT_INCOMPATIBLE, PREFLIGHT_STALE,
+            PREFLIGHT_UNSUPPORTED, PREFLIGHT_IN_PROGRESS, PREFLIGHT_INVALID
+        };
+        PlayerPreflightCheck row;
+        for (size_t c = 0; c < sizeof(codes) / sizeof(codes[0]); c++) {
+            for (size_t s = 0; s < sizeof(statuses) / sizeof(statuses[0]); s++) {
+                const char *message;
+                const char *word;
+                size_t length;
+                memset(&row, 0, sizeof(row));
+                snprintf(row.code, sizeof(row.code), "%s", codes[c]);
+                row.status = statuses[s];
+                snprintf(row.message, sizeof(row.message),
+                         "SYNTHETIC_CODE: developer text with an empty name .");
+                message = player_preflight_plain_message(&row);
+                word = player_preflight_status_word(&row);
+                length = strlen(message);
+                assert(length > 1u && message[length - 1u] == '.');
+                assert(strstr(message, "SYNTHETIC_CODE") == NULL);
+                assert(strstr(message, "developer text") == NULL);
+                assert(strstr(message, " .") == NULL);
+                assert(strcmp(word, "Not supported") != 0);
+                assert(player_preflight_label(&row)[0] != '\0');
+                assert((strcmp(word, "Can't use") == 0) == player_preflight_check_blocks(&row));
+            }
+        }
+    }
 
     free(app);
     printf("[PLAYER_STATE_TEST] error cards are plain, with their codes in the details PASS\n");
@@ -2295,6 +2381,240 @@ static void test_stage_discard_removes_a_deep_tree(void) {
     printf("PASS: staging discard removes a 32-level tree without exhausting the stack\n");
 }
 
+/* Joins root and up to three parts with the platform separator. */
+static void removal_test_path(char *out, size_t size, const char *root, const char *a,
+                              const char *b, const char *c) {
+    const char sep = nk_platform_path_separator();
+    int n;
+    if (c) n = snprintf(out, size, "%s%c%s%c%s%c%s", root, sep, a, sep, b, sep, c);
+    else if (b) n = snprintf(out, size, "%s%c%s%c%s", root, sep, a, sep, b);
+    else n = snprintf(out, size, "%s%c%s", root, sep, a);
+    assert(n > 0 && (size_t)n < size);
+}
+
+/* A folder holding one file of the given size. */
+static void removal_test_tree(const char *dir, const char *name, size_t bytes) {
+    char file[NK_MAX_PATH * 2];
+    assert(nk_platform_mkdir_p(dir));
+    removal_test_path(file, sizeof(file), dir, name, NULL, NULL);
+    FILE *out = fopen(file, "wb");
+    assert(out != NULL);
+    for (size_t i = 0; i < bytes; ++i) assert(fputc('x', out) != EOF);
+    assert(fclose(out) == 0);
+}
+
+typedef struct {
+    char build_root[NK_MAX_PATH];
+    char data_root[NK_MAX_PATH];
+    char saves_root[NK_MAX_PATH];
+    char package[NK_MAX_PATH];
+    char cache_packages[NK_MAX_PATH];
+    char cache_bringup[NK_MAX_PATH];
+    char games[NK_MAX_PATH];
+    char memstick[NK_MAX_PATH];
+    char staging[NK_MAX_PATH];
+    char saves[NK_MAX_PATH];
+    char decrypted[NK_MAX_PATH];
+    char manifests[NK_MAX_PATH];
+    char iso[NK_MAX_PATH];
+} RemovalFixture;
+
+/* Everything Nakagawa keeps for one disc, plus what it must never delete:
+   the disc image, the user's decrypted files and the shared manifests. */
+static void removal_fixture_make(RemovalFixture *f, const char *disc) {
+    char name[64];
+    memset(f, 0, sizeof(*f));
+    removal_test_path(f->build_root, sizeof(f->build_root), native_test_get_root(),
+                      "rt1304", NULL, NULL);
+    assert(nk_platform_get_app_data_dir(f->data_root, sizeof(f->data_root)));
+    assert(nk_platform_get_path(NK_PATH_SAVES, f->saves_root, sizeof(f->saves_root)));
+    assert(native_test_path_within(f->data_root, native_test_get_root()));
+    assert(native_test_path_within(f->saves_root, native_test_get_root()));
+    removal_test_path(f->package, sizeof(f->package), f->build_root, "packages", disc, NULL);
+    removal_test_path(f->cache_packages, sizeof(f->cache_packages), f->build_root, "cache",
+                      "packages", disc);
+    removal_test_path(f->cache_bringup, sizeof(f->cache_bringup), f->build_root, "cache",
+                      "bringup", disc);
+    removal_test_path(f->games, sizeof(f->games), f->data_root, "games", disc, NULL);
+    removal_test_path(f->memstick, sizeof(f->memstick), f->games, "memstick", NULL, NULL);
+    snprintf(name, sizeof(name), ".staging_%s", disc);
+    removal_test_path(f->staging, sizeof(f->staging), f->data_root, "games", name, NULL);
+    removal_test_path(f->saves, sizeof(f->saves), f->saves_root, disc, NULL, NULL);
+    removal_test_path(f->decrypted, sizeof(f->decrypted), f->build_root, "titles", disc,
+                      "decrypted");
+    removal_test_path(f->manifests, sizeof(f->manifests), f->build_root, "manifests", NULL,
+                      NULL);
+    snprintf(name, sizeof(name), "%s.iso", disc);
+    removal_test_path(f->iso, sizeof(f->iso), native_test_get_root(), name, NULL, NULL);
+    removal_test_tree(f->package, "package.json", 3000);
+    removal_test_tree(f->cache_packages, "objects.bin", 200);
+    removal_test_tree(f->cache_bringup, "bringup.json", 100);
+    removal_test_tree(f->games, "EBOOT.BIN", 1000);
+    removal_test_tree(f->memstick, "DATA.BIN", 40);
+    removal_test_tree(f->staging, "partial.bin", 7);
+    removal_test_tree(f->saves, "SAVE.BIN", 2);
+    removal_test_tree(f->decrypted, "EBOOT.BIN", 9);
+    removal_test_tree(f->manifests, "title.json", 5);
+    write_text_file(f->iso, "disc image");
+}
+
+static PlayerApp *removal_test_app(const RemovalFixture *f, const char *disc) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    NkGameEntry entry;
+    size_t root_length = strlen(f->build_root);
+    assert(app != NULL);
+    nk_library_init(&app->library);
+    /* Joined straight into the field: a snprintf from a larger buffer fails
+       -Wformat-truncation in optimized builds. */
+    removal_test_path(app->library.library_path, sizeof(app->library.library_path),
+                      f->build_root, "library1304.json", NULL, NULL);
+    remove(app->library.library_path);
+    assert(root_length < sizeof(app->runtime_root));
+    memcpy(app->runtime_root, f->build_root, root_length + 1);
+    seed_entry(&entry, disc, "Removal Fixture");
+    snprintf(entry.iso_path, sizeof(entry.iso_path), "%s", f->iso);
+    assert(nk_library_add_or_update(&app->library, &entry) == NK_OK);
+    seed_entry(&entry, "RMV01305", "Next Fixture");
+    assert(nk_library_add_or_update(&app->library, &entry) == NK_OK);
+    player_app_sync_library(app);
+    assert(app->game_count == 2);
+    assert(player_app_find_game_by_disc_id(app, disc) == 0);
+    return app;
+}
+
+/* The tree helpers behind Remove from library walk a deep tree without
+   running out of stack, keep the named top-level child, and delete a link as
+   itself, never what it points at. */
+static void test_tree_helpers_walk_a_deep_tree(void) {
+    char root[NK_MAX_PATH];
+    char path[NK_MAX_PATH * 4];
+    char keep[NK_MAX_PATH * 2];
+    uint64_t bytes = 0;
+    const char sep = nk_platform_path_separator();
+    removal_test_path(root, sizeof(root), native_test_get_root(), "tree1304", NULL, NULL);
+    snprintf(path, sizeof(path), "%s", root);
+    for (int depth = 0; depth < 48; depth++) {
+        size_t length = strlen(path);
+        assert(length + 4 < sizeof(path));
+        snprintf(path + length, sizeof(path) - length, "%cd%d", sep, depth % 10);
+        removal_test_tree(path, "f.bin", 3);
+    }
+    removal_test_path(keep, sizeof(keep), root, "memstick", NULL, NULL);
+    removal_test_tree(keep, "SAVE.BIN", 5);
+    assert(nk_platform_tree_size(root, NULL, &bytes) && bytes == 48u * 3u + 5u);
+    assert(nk_platform_tree_size(root, "memstick", &bytes) && bytes == 48u * 3u);
+    assert(nk_platform_remove_tree(root, "memstick"));
+    assert(nk_platform_dir_exists(keep) && !nk_platform_path_missing(root));
+    removal_test_path(path, sizeof(path), root, "d0", NULL, NULL);
+    assert(!nk_platform_dir_exists(path));
+#if !defined(_WIN32) && !defined(_WIN64)
+    {
+        /* Windows needs a privilege for a symlink, so only POSIX checks it. */
+        char outside[NK_MAX_PATH * 2];
+        char outside_file[NK_MAX_PATH * 2];
+        char link[NK_MAX_PATH * 2];
+        removal_test_path(outside, sizeof(outside), native_test_get_root(), "tree1304-outside",
+                          NULL, NULL);
+        removal_test_tree(outside, "KEEP.BIN", 4);
+        removal_test_path(outside_file, sizeof(outside_file), outside, "KEEP.BIN", NULL, NULL);
+        removal_test_path(link, sizeof(link), root, "link", NULL, NULL);
+        assert(symlink(outside, link) == 0);
+        assert(nk_platform_tree_size(root, "memstick", &bytes) && bytes == 0u);
+        assert(nk_platform_remove_tree(root, NULL));
+        assert(nk_platform_file_exists(outside_file));
+    }
+#else
+    assert(nk_platform_remove_tree(root, NULL));
+#endif
+    assert(nk_platform_path_missing(root));
+    assert(nk_platform_remove_tree(root, NULL));
+    assert(nk_platform_tree_size(root, NULL, &bytes) && bytes == 0u);
+    printf("PASS: tree size and removal walk a 48-level tree and keep the named child\n");
+}
+
+/* #1304: Remove from library deletes the package, the build cache and the disc
+   files Nakagawa copied, keeps the saves unless asked, and never touches the
+   disc image, the user's decrypted files or another title's data. */
+static void test_remove_from_library_deletes_what_nakagawa_built(void) {
+    RemovalFixture f;
+    PlayerRemovalPlan plan;
+    char error[NK_MAX_PATH + 128];
+    removal_fixture_make(&f, "RMV01304");
+    PlayerApp *app = removal_test_app(&f, "RMV01304");
+
+    assert(player_app_plan_game_removal(app, 0, &plan));
+    assert(plan.kind_present[PLAYER_REMOVAL_PACKAGE] &&
+           plan.kind_bytes[PLAYER_REMOVAL_PACKAGE] == 3000u);
+    assert(plan.kind_present[PLAYER_REMOVAL_BUILD_CACHE] &&
+           plan.kind_bytes[PLAYER_REMOVAL_BUILD_CACHE] == 300u);
+    /* The copied disc files without their Memory Stick folder, and the
+       leftover staging folder. */
+    assert(plan.kind_present[PLAYER_REMOVAL_EXTRACTED] &&
+           plan.kind_bytes[PLAYER_REMOVAL_EXTRACTED] == 1007u);
+    assert(plan.has_saves && plan.saves_bytes == 42u);
+    for (size_t i = 0; i < plan.path_count; ++i) {
+        assert(strcmp(plan.paths[i].path, f.iso) != 0);
+        assert(!native_test_path_within(plan.paths[i].path, f.decrypted));
+        assert(!native_test_path_within(plan.paths[i].path, f.manifests));
+    }
+
+    /* Nothing goes while the game starts, runs or builds. */
+    app->launch_pending = true;
+    assert(player_app_removal_blocker(app, 0) != NULL);
+    assert(!player_app_remove_game_and_data(app, 0, false, error, sizeof(error)));
+    assert(error[0] != '\0');
+    app->launch_pending = false;
+    app->is_game_running = true;
+    assert(!player_app_plan_game_removal(app, 0, &plan));
+    app->is_game_running = false;
+    app->build_session.is_building = true;
+    assert(player_app_removal_blocker(app, 0) != NULL);
+    app->build_session.is_building = false;
+    assert(nk_platform_dir_exists(f.package));
+
+    assert(player_app_remove_game_and_data(app, 0, false, error, sizeof(error)));
+    assert(app->game_count == 1 && strcmp(app->games[0].disc_id, "RMV01305") == 0);
+    assert(!nk_platform_dir_exists(f.package));
+    assert(!nk_platform_dir_exists(f.cache_packages));
+    assert(!nk_platform_dir_exists(f.cache_bringup));
+    assert(!nk_platform_dir_exists(f.staging));
+    assert(nk_platform_dir_exists(f.games) && nk_platform_dir_exists(f.memstick));
+    {
+        char eboot[NK_MAX_PATH * 2];
+        removal_test_path(eboot, sizeof(eboot), f.games, "EBOOT.BIN", NULL, NULL);
+        assert(!nk_platform_file_exists(eboot));
+    }
+    assert(nk_platform_dir_exists(f.saves));
+    assert(nk_platform_dir_exists(f.decrypted));
+    assert(nk_platform_dir_exists(f.manifests));
+    assert(nk_platform_file_exists(f.iso));
+    remove(app->library.library_path);
+    free(app);
+
+    /* With the box ticked the saves go too, and so does the emptied folder. */
+    removal_fixture_make(&f, "RMV01304");
+    app = removal_test_app(&f, "RMV01304");
+    assert(player_app_remove_game_and_data(app, 0, true, error, sizeof(error)));
+    assert(!nk_platform_dir_exists(f.games));
+    assert(!nk_platform_dir_exists(f.saves));
+    assert(!nk_platform_dir_exists(f.package));
+    assert(nk_platform_dir_exists(f.decrypted));
+    assert(nk_platform_file_exists(f.iso));
+    remove(app->library.library_path);
+
+    /* A showcase demo and a disc ID that is not a plain folder name are
+       refused before anything is planned. */
+    snprintf(app->games[0].title_id, sizeof(app->games[0].title_id), "showcase-scene");
+    assert(!player_app_plan_game_removal(app, 0, &plan));
+    app->games[0].title_id[0] = '\0';
+    snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "..");
+    assert(player_app_removal_blocker(app, 0) != NULL);
+    assert(!player_app_remove_game_and_data(app, 0, false, error, sizeof(error)));
+    free(app);
+    printf("PASS: remove from library deletes what Nakagawa built and keeps the disc "
+           "image and, unless asked, the saves\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -2366,11 +2686,14 @@ int main(int argc, char **argv) {
     native_test_assert_config_root_isolated();
 
     test_stage_discard_removes_a_deep_tree();
+    test_tree_helpers_walk_a_deep_tree();
+    test_remove_from_library_deletes_what_nakagawa_built();
     test_package_build_lifecycle(self_executable);
     test_error_cards_are_plain();
     test_build_outcome_is_shown_once_per_session();
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
+    test_license_folder_request();
     test_library_card_status_text();
     /* Saves a library file under the cache root, so it runs only once that
      * root is the temporary one. */
@@ -4492,9 +4815,9 @@ int main(int argc, char **argv) {
         }
 
         /* The focus handoff is attempted once per launch, and only on proven
-           evidence. A failed SDL_MinimizeWindow leaves the launcher visible:
-           the contract is that the loop does not retry, because each retry
-           would recapture and rewrite the launcher settings every frame. */
+           evidence. The launcher stays open behind the game (#1298) and hands
+           its window the foreground once: retrying every frame would take the
+           foreground back from a user who moved to another window. */
         assert(player_app_should_attempt_window_handoff(true, true, false, true));
         assert(player_app_should_attempt_window_handoff(true, true, false, false) == false);
         assert(player_app_should_attempt_window_handoff(true, false, false, true) == false);
@@ -5625,6 +5948,17 @@ int main(int argc, char **argv) {
                  user_root, sep, sep);
         assert(nk_platform_mkdir_p(data_root));
         nk_title_catalog_snapshot_release(&title_snapshot);
+        char logs_dir[NK_MAX_PATH];
+        char run_log_last[NK_MAX_PATH + 64];
+        char run_log_prev[NK_MAX_PATH + 64];
+        char run_log_name[64];
+        assert(nk_platform_get_path(NK_PATH_LOGS, logs_dir, sizeof(logs_dir)));
+        snprintf(run_log_name, sizeof(run_log_name), "game-%s-last.txt", disc_id);
+        snprintf(run_log_last, sizeof(run_log_last), "%s%c%s", logs_dir, sep, run_log_name);
+        snprintf(run_log_prev, sizeof(run_log_prev), "%s%cgame-%s-prev.txt", logs_dir, sep,
+                 disc_id);
+        remove(run_log_last);
+        remove(run_log_prev);
 
         char source_media_json[512];
         snprintf(source_media_json, sizeof(source_media_json),
@@ -5742,6 +6076,14 @@ int main(int argc, char **argv) {
             assert(report.marker_present == false);
             assert(strcmp(report.memstick, memstick1) == 0);
         }
+        /* #1303: the ended run's output is in the logs folder, not only in
+           the cache file the session deletes, and the developer log names it. */
+        assert(run_log_contains(run_log_last, "synthetic runtime stdout marker_present=0"));
+        assert(run_log_contains(run_log_last, "synthetic runtime stderr line"));
+        assert(!nk_platform_file_exists(run_log_prev));
+        assert(!nk_platform_file_exists(rep->boot_event_file_path));
+        assert(dev_log_contains(rep, "game output kept in "));
+        assert(dev_log_contains(rep, run_log_name));
 
         /* Launch 2 in the same process: same save root, and the child sees
            the savedata the first launch wrote. */
@@ -5752,6 +6094,9 @@ int main(int argc, char **argv) {
             assert(report.marker_present == true);
             assert(strcmp(report.memstick, memstick1) == 0);
         }
+        /* The second run is -last and the first run moved to -prev. */
+        assert(run_log_contains(run_log_last, "synthetic runtime stdout marker_present=1"));
+        assert(run_log_contains(run_log_prev, "synthetic runtime stdout marker_present=0"));
         /* The pre-existing per-disc slot survives both launches. */
         assert(nk_platform_file_exists(slot_sentinel));
 
@@ -5908,9 +6253,24 @@ int main(int argc, char **argv) {
         assert(strstr(rep->last_error.boundary_text, "tracked in issue 308") != NULL);
         assert(strchr(rep->last_error.boundary_text, '#') == NULL);
         assert(strcmp(player_error_retry_label(&rep->last_error), "Restart game") == 0);
-        assert(strcmp(rep->last_error.log_file_path, stop_event_path) == 0);
-        assert(nk_platform_file_exists(stop_event_path));
-        remove(stop_event_path);
+        /* #1303: the card's log file is the kept run log, which holds the
+           stop event and the runtime's output; the cache copy is gone. */
+        assert(strcmp(rep->last_error.log_file_path, run_log_last) == 0);
+        assert(run_log_contains(run_log_last,
+                                "BOOT_EVENT phase=stop reason=semantic-boundary "
+                                "boundary=unsupported-interpreter-form issue=308"));
+        assert(run_log_contains(run_log_last, "synthetic runtime stderr line"));
+        assert(!nk_platform_file_exists(stop_event_path));
+        {
+            char report_text[PLAYER_ERROR_DETAILS_MAX + 4096];
+            assert(player_app_format_error_report(rep, "test", report_text,
+                                                  sizeof(report_text)) > 0);
+            const char *log_line = strstr(report_text, "Log file: ");
+            assert(log_line != NULL);
+            const char *log_end = strchr(log_line, '\n');
+            const char *name = strstr(log_line, run_log_name);
+            assert(name != NULL && (!log_end || name < log_end));
+        }
         set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "");
 
         /* Runtime stack exhaustion has no tracker issue and must still reach the
@@ -5964,6 +6324,8 @@ int main(int argc, char **argv) {
            pre-existing per-disc save slot is left alone. */
         test_rmdir(memstick1);
         remove(report_path);
+        remove(run_log_last);
+        remove(run_log_prev);
         remove(git_before);
         remove(git_after);
         remove(iso_path);

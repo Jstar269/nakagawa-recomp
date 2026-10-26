@@ -1874,16 +1874,13 @@ int main(int argc, char **argv) {{
                 decrypted_dir,
             )
 
-    def test_package_build_mode_selection_and_limits(self) -> None:
+    def test_package_build_public_backends_and_limits(self) -> None:
         disc_id = "TEST00004"
-        disc_id_priv = "TEST00005"
         user_root = self.temp_dir / "user-data-mode"
         user_root.mkdir(parents=True, exist_ok=True)
         iso_file = self.temp_dir / "mode-test.iso"
         eboot_bytes = build_plain_mips_elf()
         create_test_iso_with_executables(iso_file, build_psp_container(), disc_id=disc_id, title="Mode Test Title")
-        iso_file_priv = self.temp_dir / "mode-test-priv.iso"
-        create_test_iso_with_executables(iso_file_priv, build_psp_container(), disc_id=disc_id_priv, title="Mode Test Title Priv")
 
         title_id = "synthetic-title2-v1"
         entry_pub = {
@@ -1893,24 +1890,13 @@ int main(int argc, char **argv) {{
             "selected_executable": "",
             "is_experimental": False,
         }
-        entry_priv = {
-            "disc_id": disc_id_priv,
-            "title_id": title_id,
-            "iso_path": str(iso_file_priv),
-            "selected_executable": "",
-            "is_experimental": False,
-        }
         (user_root / "library.json").write_text(
-            json.dumps({"schema_version": 1, "games": [entry_pub, entry_priv]}),
+            json.dumps({"schema_version": 1, "games": [entry_pub]}),
             encoding="utf-8",
         )
         decrypted_dir = user_root / "titles" / disc_id / "decrypted"
         decrypted_dir.mkdir(parents=True, exist_ok=True)
         (decrypted_dir / "EBOOT.elf").write_bytes(eboot_bytes)
-
-        decrypted_dir_priv = user_root / "titles" / disc_id_priv / "decrypted"
-        decrypted_dir_priv.mkdir(parents=True, exist_ok=True)
-        (decrypted_dir_priv / "EBOOT.elf").write_bytes(eboot_bytes)
 
         manifest_path = ROOT / "assets" / "titles" / "synthetic-title2.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1965,7 +1951,6 @@ int main(int argc, char **argv) {{
 
         captured_commands.clear()
         with patch.object(nk_cli, "_load_entry_manifest", return_value=(manifest_path, manifest, None)), \
-             patch.object(nk_cli, "_has_private_backends", return_value=False), \
              patch.object(nk_cli.subprocess, "run", side_effect=fake_run), \
              patch.object(nk_cli, "_stage_runtime_assets"), \
              patch.object(nk_cli.package_cache, "validate_package_cache", return_value=(True, "")):
@@ -1985,29 +1970,6 @@ int main(int argc, char **argv) {{
                 "PGD-protected data: unavailable; broader ISO-to-Play support is in the works.",
             ])
 
-        # Test private mode when private backends are present
-        disc_id_priv = "TEST00005"
-        args_priv = type("BuildArgs", (), {
-            "disc_id": disc_id_priv,
-            "user_data_root": user_root,
-            "module_dir": None,
-            "psp_header": None,
-        })()
-        captured_commands.clear()
-        with patch.object(nk_cli, "_load_entry_manifest", return_value=(manifest_path, manifest, None)), \
-             patch.object(nk_cli, "_has_private_backends", return_value=True), \
-             patch.object(nk_cli.subprocess, "run", side_effect=fake_run), \
-             patch.object(nk_cli, "_stage_runtime_assets"), \
-             patch.object(nk_cli.package_cache, "validate_package_cache", return_value=(True, "")):
-            self.assertEqual(nk_cli.cmd_build_package(args_priv), 0)
-            self.assertTrue(len(captured_commands) > 0)
-            self.assertNotIn("--public-safe", captured_commands[0])
-            report_priv = json.loads((user_root / "packages" / disc_id_priv / "build-report.json").read_text(encoding="utf-8"))
-            self.assertEqual(report_priv.get("backends"), "private")
-            self.assertEqual(report_priv.get("limits"), [])
-            completion_priv = json.loads((user_root / "packages" / disc_id_priv / "completion-manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(completion_priv.get("backends"), "private")
-            self.assertEqual(completion_priv.get("limits"), [])
 
     def test_prx_format_boot_fallback_is_selected_by_both_inspectors(self) -> None:
         """Retail BOOT.BIN is often PSP PRX-format (e_type 0xFFA0), which the
@@ -3176,7 +3138,6 @@ class PackageBuildFailureMessageTests(unittest.TestCase):
             return subprocess.CompletedProcess(list(command), returncode, stdout=stdout, stderr=stderr)
 
         with patch.object(nk_cli, "_load_entry_manifest", return_value=(manifest_path, manifest, None)), \
-             patch.object(nk_cli, "_has_private_backends", return_value=False), \
              patch.object(nk_cli.subprocess, "run", side_effect=fake_compile), \
              patch.object(nk_cli, "_stage_runtime_assets"), \
              patch.object(nk_cli.package_cache, "validate_package_cache", return_value=(True, "")):
