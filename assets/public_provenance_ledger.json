@@ -14980,7 +14980,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "db40017e1c82f068fa60163ffe343c1b3983bb5172c3227e3a56a0c74323d202"
+      "sha256": "965f70f2a0ad329f0fc791c32f9fdf075487a417d77d501fce4ea1524f42e822"
     },
     {
       "path": "tools/test_ui_font_assets.py",
