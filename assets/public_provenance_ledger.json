@@ -129,7 +129,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9660f3e74abbae769998740dc24f365d741e0dc814c19c5d0da80bbd50e7773d"
+      "sha256": "43976772e4aeadc8354570bd9c00c4e58ea3df31b48cf86a22b6a0e9be47e3ed"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/feature_request.yml",
@@ -147,7 +147,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "22734fd44ad1f2e18ae93287d5763c17cd5d9c2bf359d57ab4990467f03f51b4"
+      "sha256": "0c841597fea15bd54d0e52bf7fd2df5dca80e4b425ceb3051d6ed5adb4add9d6"
     },
     {
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
@@ -339,7 +339,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "db09911467067618458b583a43b1429874049c1305e2f1fbbc595b0d5eea8b80"
+      "sha256": "d4ea25fe1a76ba00ed6bc2994f1019da6ef08888210518f517f017ec2f772bb2"
     },
     {
       "path": "AGENTS.md",
@@ -453,7 +453,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a7bc9ed0f6b65aa854b6cca401e21bc3c6a596d065800c6e8368500bb4d73940"
+      "sha256": "d7de2a1ec34a9b060f8eb209080593244a72f515d6b193f2cbebb2da94d7f533"
     },
     {
       "path": "REVIEW.md",
@@ -480,7 +480,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "82aae1d37d4a784b7a6effcd9e048e70c607a487bc2bb522db4e2dcc46343335"
+      "sha256": "62f0559dc41a3824071815efdf3a49847eebce8f205d560b8a2fc4a5dfe61957"
     },
     {
       "path": "THIRD_PARTY_LICENSES/Brotli.txt",
@@ -1384,7 +1384,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "19fa0c3b395f3865fdd15562f3ee25f9f849318d30d673b2eed251f59ec4e372"
+      "sha256": "93400fef4e5035a6a143b8d5471e9080f56f8e00443fce4123c6fa1ff0e1ffd6"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1666,7 +1666,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9eea8db73fce59198b09c6ab79fcef0eb23e4b3a6f126cff371883766eae32b1"
+      "sha256": "713d2ad3f3529d014aad96365552dfa06d0874aac6508ce5abb9071d1b891740"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1693,7 +1693,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "00b41716e932ebfcd770d569bef6aa6516b7eab6779bd38a79682182dff0aeec"
+      "sha256": "c1922e4e316ba536c35cefcf82513c18cbd4f0e524532f1ec903e38ad15541bc"
     },
     {
       "path": "docs/SMOKE_TEST.md",
@@ -1702,7 +1702,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cf34d05d97b1af361e2a63b514dc131e5e177009ad7bc8824f2c1c4d48c48154"
+      "sha256": "c9b75ff671dd10b612169faa8595c86951ebaae8c6297effa2aab200ba788610"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -1759,7 +1759,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "692c539c3629e3ac63508a4c299a4c7fbd69b1ba8db76e00e5540de24ca5d557"
+      "sha256": "2030e7f2ec196c4d15d2ea944208960927987342b395db8db32480c1aefd2862"
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
@@ -14103,7 +14103,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4b09c3f361fa79d6b5de1d9add0f595d40d3561222932c61a9a206977097e28c"
+      "sha256": "791e76ebceec85358d21b2f9a700574160864b5a6852965eeea6ea61f140a12b"
     },
     {
       "path": "tools/test_portability_inventory.py",
