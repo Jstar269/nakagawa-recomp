@@ -404,6 +404,80 @@ class TestPrerequisiteFetcher(unittest.TestCase):
             "total_download_bytes must match the pinned artifact sizes",
         )
 
+    def test_every_pinned_license_is_a_resolved_spdx_expression(self) -> None:
+        """No pinned prerequisite carries an unresolved licence (#1285).
+
+        Each ``license`` is one single-line SPDX expression: identifiers joined
+        by AND or OR, an optional WITH exception, and parentheses. NOASSERTION
+        and NONE are refused. A LicenseRef- identifier has no SPDX licence-list
+        text, so its artifact's ``notice_location`` must name the notice
+        itself rather than only the generic licence directory.
+        """
+        manifest_path = Path(__file__).resolve().parents[1] / "assets" / "prereq_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        identifier = re.compile(r"(?:LicenseRef-[A-Za-z0-9.-]+|[A-Za-z0-9][A-Za-z0-9.+-]*)\Z")
+        operators = {"AND", "OR", "WITH"}
+
+        def parse(tokens: list[str], pos: int) -> int:
+            pos = parse_term(tokens, pos)
+            while pos < len(tokens) and tokens[pos] in {"AND", "OR"}:
+                pos = parse_term(tokens, pos + 1)
+            return pos
+
+        def parse_term(tokens: list[str], pos: int) -> int:
+            self.assertLess(pos, len(tokens), "expression ends where a licence is expected")
+            if tokens[pos] == "(":
+                pos = parse(tokens, pos + 1)
+                self.assertLess(pos, len(tokens), "unbalanced parenthesis")
+                self.assertEqual(tokens[pos], ")")
+                return pos + 1
+            pos = parse_id(tokens, pos)
+            if pos < len(tokens) and tokens[pos] == "WITH":
+                pos = parse_id(tokens, pos + 1)
+            return pos
+
+        def parse_id(tokens: list[str], pos: int) -> int:
+            self.assertLess(pos, len(tokens), "expression ends where an identifier is expected")
+            token = tokens[pos]
+            self.assertNotIn(token, operators | {"(", ")", "NOASSERTION", "NONE"})
+            self.assertRegex(token, identifier)
+            return pos + 1
+
+        for item in manifest["artifacts"]:
+            with self.subTest(artifact=item["id"]):
+                expression = item["license"]
+                self.assertIsInstance(expression, str)
+                self.assertEqual(expression, " ".join(expression.split()),
+                                 "licence must be one line with single spaces")
+                tokens = re.findall(r"\(|\)|[^\s()]+", expression)
+                self.assertEqual(parse(tokens, 0), len(tokens),
+                                 f"trailing tokens in {expression!r}")
+                if any(token.startswith("LicenseRef-") for token in tokens):
+                    notice = item.get("notice_location", "")
+                    self.assertIsInstance(notice, str)
+                    self.assertNotEqual(notice.strip(), "archive ucrt64/share/licenses/",
+                                        "a LicenseRef- licence must name its notice")
+                    self.assertTrue(notice.strip())
+
+    def test_brotli_pin_includes_the_cve_2026_111497_fix(self) -> None:
+        """The shipped Brotli decoder must be 1.2.1 or later (CVE-2026-111497).
+
+        Brotli 1.0.3 to 1.2.0 can write out of bounds while decoding an
+        attacker-controlled stream; the player stages libbrotlidec.dll from
+        this pin (SDL3_ttf -> FreeType, WOFF2). A re-pin after the manifest's
+        source snapshot records the date its database entry was read.
+        """
+        manifest_path = Path(__file__).resolve().parents[1] / "assets" / "prereq_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        item = next(item for item in manifest["artifacts"]
+                    if item["id"] == "mingw-w64-ucrt-x86_64-brotli")
+        upstream, _, pkgrel = item["version"].partition("-")
+        self.assertTrue(pkgrel.isdigit(), item["version"])
+        self.assertGreaterEqual(tuple(int(part) for part in upstream.split(".")), (1, 2, 1))
+        retrieved = item["sha256_source"].get("retrieved_utc", manifest["source_snapshot_date"])
+        self.assertRegex(retrieved, r"^\d{4}-\d{2}-\d{2}$")
+        self.assertGreaterEqual(retrieved, manifest["source_snapshot_date"])
+
     def test_synthetic_installed_toolchain_resolves_the_font_closure(self) -> None:
         """The installer's extracted layout must resolve the closure (#421).
 

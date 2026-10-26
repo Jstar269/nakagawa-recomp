@@ -104,6 +104,9 @@ typedef enum {
     PLAYER_UI_ACTION_REMOVE_TITLE,         /* the title page asks to remove it (#1304) */
     PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES,  /* the confirm screen's saves box */
     PLAYER_UI_ACTION_REMOVE_CONFIRM,       /* remove it; .primary is 1 to delete saves */
+    PLAYER_UI_ACTION_STALL_KEEP_WAITING,
+    PLAYER_UI_ACTION_STALL_STOP_GAME,
+    PLAYER_UI_ACTION_OPEN_BUILD_INPUT_FOLDER, /* fix a package-build preflight blocker */
     PLAYER_UI_ACTION_DISC,             /* a game-found card control; .primary carries the op */
     PLAYER_UI_ACTION_SETTINGS,         /* a Settings control; .primary carries the op */
     PLAYER_UI_ACTION_CONTROLLER,       /* a controller settings control; .primary carries the
@@ -130,6 +133,8 @@ typedef struct {
        or empty hides it. */
     const char *compatibility_category;
     const char *input_note;
+    const char *build_preflight_message;
+    const char *build_preflight_folder;
     const char *primary_action_label;
     const char *status_marker;
     uint32_t status_rgba;
@@ -280,13 +285,15 @@ typedef struct {
 
 /* The Settings pages: the main page (VIEW_SETTINGS), online and developer
    options (VIEW_ONLINE_SETTINGS), the third-party notices for downloaded build
-   tools (VIEW_PREREQ_ABOUT) and the build tool removal check
-   (VIEW_CONFIRM_REMOVE_TOOLS). */
+   tools (VIEW_PREREQ_ABOUT), the build tool removal check
+   (VIEW_CONFIRM_REMOVE_TOOLS) and build tools and cache (VIEW_BUILD_CACHE, #1306),
+   the page that opens the removal check. */
 typedef enum {
     PLAYER_UI_SETTINGS_PAGE_MAIN = 0,
     PLAYER_UI_SETTINGS_PAGE_ONLINE,
     PLAYER_UI_SETTINGS_PAGE_NOTICES,
-    PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
+    PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS,
+    PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
 } PlayerUiSettingsPage;
 
 /* What a Settings control asks for (PLAYER_UI_ACTION_SETTINGS). main.c runs the
@@ -316,7 +323,11 @@ typedef enum {
     PLAYER_UI_SETTINGS_TOGGLE_DEVELOPER,
     PLAYER_UI_SETTINGS_OPEN_DEVELOPER_LOG,
     PLAYER_UI_SETTINGS_OPEN_LICENSE_TEXTS,
-    PLAYER_UI_SETTINGS_REMOVE_TOOLS
+    PLAYER_UI_SETTINGS_REMOVE_TOOLS,
+    PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE,
+    PLAYER_UI_SETTINGS_TOGGLE_SHARE_LIBRARIES,
+    PLAYER_UI_SETTINGS_CLEAR_SHARED_LIBRARIES,
+    PLAYER_UI_SETTINGS_KEEP_TOOLS          /* the removal check, back to build tools and cache */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
@@ -336,6 +347,8 @@ typedef struct {
     const char *controller_line;    /* "Keyboard ready" or the pad's name */
     const char *saves_folder;
     const char *notice;             /* a settings notice (a failed save), or NULL */
+    /* Build tools and cache: builds share compiled system libraries (#1306) */
+    bool share_system_libraries;
     /* Online and developer options */
     bool online_mode;
     bool online_updates;
@@ -483,6 +496,7 @@ typedef struct {
 typedef struct {
     const PlayerUiTitle *title;
     size_t title_index;
+    bool stalled_game_notice_visible;
     float logical_width;    /* 0 selects 1280 */
     float logical_height;   /* 0 selects 800 */
 } PlayerUiTitleModel;
@@ -519,6 +533,8 @@ enum {
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,
     PLAYER_UI_ID_TITLE_SAVE_FOLDER = 0x2003u,
     PLAYER_UI_ID_TITLE_REMOVE = 0x2004u,
+    PLAYER_UI_ID_TITLE_STALL_KEEP_WAITING = 0x2005u,
+    PLAYER_UI_ID_TITLE_STALL_STOP_GAME = 0x2006u,
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
@@ -552,6 +568,9 @@ enum {
     PLAYER_UI_ID_SETTINGS_BACK = 0x4517u,
     PLAYER_UI_ID_SETTINGS_LICENSE_TEXTS = 0x4518u,
     PLAYER_UI_ID_SETTINGS_CONFIRM_REMOVE = 0x4519u,
+    PLAYER_UI_ID_SETTINGS_BUILD_CACHE = 0x451Au,
+    PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES = 0x451Bu,
+    PLAYER_UI_ID_SETTINGS_CLEAR_LIBRARIES = 0x451Cu,
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,

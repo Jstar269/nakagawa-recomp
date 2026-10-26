@@ -2044,6 +2044,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         app->selected_game_index = app->game_count - 1;
     }
     GameRecord *game = &app->games[app->selected_game_index];
+    const PlayerPreflightCheck *build_blocker = NULL;
 
     /* Hero Banner Card. Shrinks on short windows so the strip below never
      * falls off screen; wide enough on narrow windows to avoid clipping. */
@@ -2089,6 +2090,15 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         player_app_runtime_package_check_pending(app, game);
     bool package_check_failed =
         player_app_runtime_package_check_failed(app, game);
+    if (!package_ready && !package_checking && !package_check_failed &&
+        (package_status == NK_RUNTIME_PACKAGE_MISSING ||
+         package_status == NK_RUNTIME_PACKAGE_STALE ||
+         package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE)) {
+        (void)player_app_build_package_preflight(
+            app, app->selected_game_index, false);
+        build_blocker = player_app_package_build_preflight_blocker(
+            app, app->selected_game_index);
+    }
     bool runtime_required = game->assets_staged && !package_ready &&
                             !package_check_failed &&
                             package_status == NK_RUNTIME_PACKAGE_MISSING;
@@ -2139,7 +2149,10 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         char experimental_reason[224];
         /* The decrypted-files step matters only while there is no package
            built from them (#1297). */
-        if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
+        if (build_blocker) {
+            snprintf(experimental_reason, sizeof(experimental_reason), "%s",
+                     player_preflight_plain_message(build_blocker));
+        } else if (game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
             game->executable_selection == NK_ISO_EXEC_SELECTION_NONE &&
             !package_ready) {
             snprintf(experimental_reason, sizeof(experimental_reason),
@@ -2169,6 +2182,10 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                                  experimental_reason, 0.95f, hero_w - 64.0f,
                                  COLOR_TEXT_MUTED);
         }
+    } else if (build_blocker) {
+        draw_text_ellipsized(ren, hero_x + 32.0f, hero_y + 120.0f,
+                             player_preflight_plain_message(build_blocker),
+                             0.95f, hero_w - 64.0f, COLOR_AMBER);
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE &&
                !package_ready && !package_checking && !package_check_failed) {
         char why[256];
@@ -2311,21 +2328,36 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
         draw_status_pill(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
                          "PACKAGE STATUS UNKNOWN");
     } else if (package_status == NK_RUNTIME_PACKAGE_STALE) {
-        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                                "REBUILD PACKAGE", true, in, primary_focused)) {
-            player_app_start_package_build(app, app->selected_game_index);
+        if (build_blocker) {
+            draw_status_pill_focused(ren, hero_x + 32.0f, btn_y, 220.0f,
+                                     54.0f, "REBUILD PACKAGE", primary_focused);
+        } else {
+            if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                    "REBUILD PACKAGE", true, in, primary_focused)) {
+                player_app_start_package_build(app, app->selected_game_index);
+            }
         }
         focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_MISSING) {
-        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                                "BUILD PACKAGE", true, in, primary_focused)) {
-            player_app_start_package_build(app, app->selected_game_index);
+        if (build_blocker) {
+            draw_status_pill_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                     "BUILD PACKAGE", primary_focused);
+        } else {
+            if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                    "BUILD PACKAGE", true, in, primary_focused)) {
+                player_app_start_package_build(app, app->selected_game_index);
+            }
         }
         focus++;
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
-        if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
-                                "REBUILD PACKAGE", true, in, primary_focused)) {
-            player_app_rebuild_package(app, app->selected_game_index);
+        if (build_blocker) {
+            draw_status_pill_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                     "REBUILD PACKAGE", primary_focused);
+        } else {
+            if (draw_button_focused(ren, hero_x + 32.0f, btn_y, 220.0f, 54.0f,
+                                    "REBUILD PACKAGE", true, in, primary_focused)) {
+                player_app_rebuild_package(app, app->selected_game_index);
+            }
         }
         focus++;
     } else if (game->assets_staged) {
@@ -3091,8 +3123,8 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         focus++;
         bool remove_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, card_x + 238.0f, manage_y, 330.0f, 36.0f,
-                                "REMOVE DOWNLOADED BUILD TOOLS", false, in, remove_focused)) {
-            player_app_set_view(app, VIEW_CONFIRM_REMOVE_TOOLS);
+                                "BUILD TOOLS AND CACHE", false, in, remove_focused)) {
+            player_app_set_view(app, VIEW_BUILD_CACHE);
         }
         focus++;
 
@@ -3269,8 +3301,8 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     focus++;
     bool remove_focused = (app->focus_index == focus);
     if (draw_button_focused(ren, card_x + 452.0f, manage_y, 330.0f, 46.0f,
-                            "REMOVE DOWNLOADED BUILD TOOLS", false, in, remove_focused)) {
-        player_app_set_view(app, VIEW_CONFIRM_REMOVE_TOOLS);
+                            "BUILD TOOLS AND CACHE", false, in, remove_focused)) {
+        player_app_set_view(app, VIEW_BUILD_CACHE);
     }
     focus++;
 
@@ -4200,8 +4232,68 @@ static void render_confirm_remove_tools(SDL_Renderer *ren, PlayerApp *app,
     bool cancel_focused = app->focus_index == 1;
     if (draw_button_focused(ren, card_x + 270.0f, buttons_y, 180.0f, 44.0f,
                             "CANCEL", true, in, cancel_focused)) {
+        player_app_set_view(app, VIEW_BUILD_CACHE);
+    }
+    render_footer_hints(ren, app);
+}
+
+/* --- View: Build tools and cache (#1306) --- */
+
+static const char k_share_libraries_sentence[] =
+    "A game disc carries system libraries that other games often share. Builds keep each "
+    "compiled library in the app-data folder and reuse it when another game has the same "
+    "one, so those builds finish sooner. The copies stay on this PC and are never uploaded "
+    "or shared.";
+
+static void render_build_cache(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
+    float w = (float)app->window_width;
+    float h = (float)app->window_height;
+    float card_w = dialog_card_w(w, 760.0f);
+    float card_h = 440.0f;
+    float card_x = centered_card_x(w, card_w);
+    float card_y = (h - card_h) * 0.5f;
+    float x;
+    float y;
+    char label[64];
+    bool focused;
+    int focus = 0;
+    if (card_y < 70.0f) card_y = 70.0f;
+    x = card_x + 32.0f;
+    draw_shadow(ren, card_x, card_y, card_w, card_h, 10.0f);
+    draw_rounded_fill(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BG);
+    draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
+    draw_badge(ren, x, card_y + 24.0f, "SETTINGS", COLOR_BLUE);
+    draw_text_ellipsized(ren, x, card_y + 60.0f, "Build tools and cache", 1.8f,
+                         card_w - 64.0f, COLOR_TEXT_WHITE);
+    snprintf(label, sizeof(label), "Share compiled libraries: %s",
+             app->settings.share_system_libraries ? "ON" : "OFF");
+    focused = app->focus_index == focus++;
+    if (draw_button_focused(ren, x, card_y + 104.0f, 320.0f, 36.0f, label,
+                            app->settings.share_system_libraries, in, focused)) {
+        player_app_toggle_share_system_libraries(app);
+    }
+    y = draw_text_wrapped(ren, x, card_y + 148.0f, card_w - 64.0f, k_share_libraries_sentence,
+                          0.95f, COLOR_TEXT_MUTED, 4);
+    focused = app->focus_index == focus++;
+    if (draw_button_focused(ren, x, y + 12.0f, 320.0f, 36.0f, "CLEAR SHARED LIBRARY CACHE",
+                            false, in, focused)) {
+        player_app_clear_shared_library_cache(app);
+    }
+    focused = app->focus_index == focus++;
+    if (draw_button_focused(ren, x + 336.0f, y + 12.0f, 330.0f, 36.0f,
+                            "REMOVE DOWNLOADED BUILD TOOLS", false, in, focused)) {
+        player_app_set_view(app, VIEW_CONFIRM_REMOVE_TOOLS);
+    }
+    if (app->settings_notice[0]) {
+        draw_text_ellipsized(ren, x, y + 60.0f, app->settings_notice, 1.0f, card_w - 64.0f,
+                             COLOR_AMBER);
+    }
+    focused = app->focus_index == focus++;
+    if (draw_button_focused(ren, x, card_y + card_h - 62.0f, 160.0f, 44.0f, "BACK", true, in,
+                            focused)) {
         player_app_set_view(app, VIEW_SETTINGS);
     }
+    (void)focus;
     render_footer_hints(ren, app);
 }
 
@@ -5096,6 +5188,9 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
             break;
         case VIEW_CONFIRM_REMOVE_TOOLS:
             render_confirm_remove_tools(renderer, app, input);
+            break;
+        case VIEW_BUILD_CACHE:
+            render_build_cache(renderer, app, input);
             break;
         case VIEW_ONLINE_SETTINGS:
             render_online_settings(renderer, app, input);

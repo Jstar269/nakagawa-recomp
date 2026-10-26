@@ -30,6 +30,11 @@
 #ifdef SR_SDL3VK
 #include "gpu_sdl3vk/ge_gpu.h"
 #endif
+#if defined(SR_SDL3VK) && !defined(SR_GUI_PRESENT_SELFTEST)
+#include "nk_ui_theme.h"         /* the pause overlay's scrim token */
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_render.h>
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -85,6 +90,8 @@ static uint32_t s_buttons = 0;
 static uint8_t  s_lx = 128, s_ly = 128;   /* live left-stick (0..255, 128=centre), latched each present */
 static int      s_pad_present = 0;         /* a controller is currently connected */
 static uint64_t s_last_ns;             /* fallback frame-pacing deadline */
+/* The framebuffer the guest last had displayed: a pause freezes its current contents. */
+static struct { uint32_t addr; int fmt; uint32_t stride; int valid; } s_shown_fb;
 #endif /* !SR_GUI_PRESENT_SELFTEST */
 static uint64_t s_present_next_ns;      /* host output cap; never delays guest execution */
 static int      s_present_cap = PRESENT_CAP_ENV_UNRESOLVED;
@@ -211,7 +218,7 @@ static int present_slot_due(void) {
 #ifndef SR_GUI_PRESENT_SELFTEST
 #ifdef SR_SDL3VK
 /* The window's keys and typed text go to the in-window keyboard while it is open. The text
- * input is claimed only then, so Escape still quits the game the rest of the time. */
+ * input is claimed only then, so Escape opens the pause the rest of the time. */
 static void sr_gui_feed_keyboard(void) {
     sdl3vk_set_text_claim(sr_osk_overlay_active());
     Sdl3VkKeyEvent ev[32];
@@ -232,11 +239,22 @@ static void sr_gui_feed_keyboard(void) {
     }
 }
 
+/* Esc, F1 or Guide (or the open pad going away) asks the scheduler for a pause. The request
+ * only latches: the pause opens at the scheduler's next switch point, and a refused request
+ * leaves the game running (sched.c logs why). */
+static void sr_gui_take_pause_request(void) {
+    int request = sdl3vk_take_pause_request();
+    if (request == SDL3VK_PAUSE_REQUEST_NONE || !sr_sched_on) return;
+    (void)sched_pause_request(request == SDL3VK_PAUSE_REQUEST_PAD_LOST
+                                  ? SR_PAUSE_SRC_PAD_LOST : SR_PAUSE_SRC_USER);
+}
+
 static void sync_sdl_input(void) {
     s_buttons = sdl3vk_buttons();
     sdl3vk_analog(&s_lx, &s_ly);
     s_pad_present = sdl3vk_pad_present();
     sr_gui_feed_keyboard();
+    sr_gui_take_pause_request();
 }
 #endif
 
@@ -467,7 +485,7 @@ uint32_t gui_pad_pulses_take(void) {
  * stride is in pixels (PSP buffer width, typically 512). */
 /* Convert the guest framebuffer to the BGRA words both presenters consume. The
  * offscreen sink converts too, so this is not behind a presenter #if. */
-static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
+static void convert_fb_pixels(uint32_t fbaddr, int fmt, uint32_t stride) {
     for (int y = 0; y < PSP_H; y++) {
         for (int x = 0; x < PSP_W; x++) {
             uint32_t i = (uint32_t)(y * (int)stride + x);
@@ -493,6 +511,11 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
             s_px[y * PSP_W + x] = ((uint32_t)rr << 16) | ((uint32_t)gg << 8) | (uint32_t)bb;
         }
     }
+}
+
+/* A guest frame: the conversion plus the first-frame boot milestone. */
+static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
+    convert_fb_pixels(fbaddr, fmt, stride);
     static int s_first_frame = 1;
     if (s_first_frame) {
         s_first_frame = 0;
@@ -529,6 +552,19 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
     }
 }
 
+#if defined(SR_SDL3VK) || defined(_WIN32)
+/* The user closed the window. _Exit skips the atexit perf hook, so write the SR_PERF_JSON
+ * summary and the final partial CSV row first, as the guest-thread exits in hle.c and ge.c
+ * do. No cross-thread handshake is needed: gui_pump, gui_present and the pause overlay's
+ * frame and leave hooks (called from sched.c) run on the scheduler's OS thread (guest threads
+ * are coroutines on it, sr_coro.h), which owns the perf counters and the CSV handle. The call
+ * is idempotent and a no-op without SR_PERF (#1072). */
+static void gui_window_closed_exit(void) {
+    sr_perf_shutdown();
+    _Exit(0);
+}
+#endif
+
 void gui_pump(void) {
     if (!s_on) return;
     if (s_offscreen) return;
@@ -536,14 +572,14 @@ void gui_pump(void) {
     if (s_sdl3) {
         int alive = sdl3vk_poll();
         sync_sdl_input();
-        if (!alive) { _Exit(0); }
+        if (!alive) { gui_window_closed_exit(); }
         return;
     }
 #endif
 #ifdef _WIN32
     MSG msg;
     while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) {
-        if (msg.message == WM_QUIT) { _Exit(0); }
+        if (msg.message == WM_QUIT) { gui_window_closed_exit(); }
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }
@@ -626,7 +662,7 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         int osk_open = sr_osk_overlay_active();
         int res = osk_open ? -1 : gegpu_present(fbaddr, fmt, stride);
         sync_sdl_input();
-        if (res == 0) { _Exit(0); }
+        if (res == 0) { gui_window_closed_exit(); }
         if (res == 1) {
             /* The GPU fast path never reaches convert_fb, which is the only emitter of
              * the first_frame boot milestone. Without this, boot_gate.py can never pass
@@ -691,7 +727,7 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         if (sr_osk_overlay_active()) osk_overlay_paint(sr_osk_overlay_view(), s_px, PSP_W, PSP_H);
         int present_result = sdl3vk_present_rgba(s_px);
         sync_sdl_input();
-        if (present_result == 0) { _Exit(0); }
+        if (present_result == 0) { gui_window_closed_exit(); }
         accepted = present_result == 1;
         goto pace;
     }
@@ -725,6 +761,12 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
 #ifdef SR_SDL3VK
 pace:
 #endif
+    if (accepted) {
+        s_shown_fb.addr = fbaddr;
+        s_shown_fb.fmt = fmt;
+        s_shown_fb.stride = stride;
+        s_shown_fb.valid = 1;
+    }
     gui_headless_acceptance_record_present(accepted);
     /* Pace to ~60 Hz so the intro/menus play at a watchable speed. Skipped when the scheduler
      * already paces vblanks to real time (the default): pacing twice on unaligned grids makes
@@ -739,6 +781,216 @@ pace:
         SDL_DelayPrecise(period_ns - (now_ns - s_last_ns));
     s_last_ns = SDL_GetTicksNS();
     return accepted;
+}
+
+/* ---- in-game pause presenter (#1159) -------------------------------------------------
+ * The scheduler stops the game at a switch point and calls these from its pause loop
+ * (SrPauseHost, sched.c). While paused the window shows the frame the guest last had
+ * displayed under the overlay scrim, redrawn at the display rate, and only waits on events
+ * while minimised. The overlay owns all input: the game reads a released pad, and a button
+ * held when the overlay closes stays hidden from the game until it is let go (sdl3vk.h).
+ * These repeat presents are not guest presents: they never reach the frame capture, the
+ * headless acceptance count, the first-frame milestone or the guest frame rate. */
+#ifdef SR_SDL3VK
+static int          s_pause_open;
+static int          s_pause_resume;      /* the overlay asked to resume */
+static int          s_pause_dirty;       /* the overlay image must be composed again */
+static int          s_pause_have_frame;  /* s_px holds the frozen game frame */
+static int          s_pause_failure_reported;
+static uint64_t     s_pause_next_ns;
+static SDL_Surface  *s_pause_surface;
+static SDL_Renderer *s_pause_ren;
+static SDL_Texture  *s_pause_tex;
+
+static void gui_pause_free_canvas(void) {
+    if (s_pause_tex) SDL_DestroyTexture(s_pause_tex);
+    if (s_pause_ren) SDL_DestroyRenderer(s_pause_ren);
+    if (s_pause_surface) SDL_DestroySurface(s_pause_surface);
+    s_pause_tex = NULL;
+    s_pause_ren = NULL;
+    s_pause_surface = NULL;
+}
+
+/* The frame under the overlay is the displayed framebuffer as it is now. A framebuffer the
+ * GPU rasterizer drew is brought back to guest memory first, the coherence step the keyboard
+ * takes before reading it; nothing the guest observes changes. */
+static int gui_pause_freeze(void) {
+    if (!s_shown_fb.valid) return 0;
+    GeGpuFbDescriptor d = { s_shown_fb.addr, (uint32_t)s_shown_fb.fmt, s_shown_fb.stride, PSP_W, PSP_H };
+    if (gegpu_sync_guest_fb(&d) == GEGPU_SYNC_FAILED) return 0;
+    if (!display_cpu_source_current(s_shown_fb.addr, s_shown_fb.fmt, s_shown_fb.stride)) return 0;
+    convert_fb_pixels(s_shown_fb.addr, s_shown_fb.fmt, s_shown_fb.stride);
+    return 1;
+}
+
+/* Draws the overlay image at the swapchain's size: the frozen frame placed where a game
+ * frame would be, then the scrim over all of it. */
+static int gui_pause_compose(int w, int h, int rgba) {
+    SDL_PixelFormat format = rgba ? SDL_PIXELFORMAT_RGBA32 : SDL_PIXELFORMAT_BGRA32;
+    if (!s_pause_surface || s_pause_surface->w != w || s_pause_surface->h != h ||
+        s_pause_surface->format != format) {
+        gui_pause_free_canvas();
+        s_pause_surface = SDL_CreateSurface(w, h, format);
+        s_pause_ren = s_pause_surface ? SDL_CreateSoftwareRenderer(s_pause_surface) : NULL;
+        if (!s_pause_ren) {
+            gui_pause_free_canvas();
+            return 0;
+        }
+        if (s_pause_have_frame) {
+            s_pause_tex = SDL_CreateTexture(s_pause_ren, SDL_PIXELFORMAT_XRGB8888,
+                                            SDL_TEXTUREACCESS_STATIC, PSP_W, PSP_H);
+            if (s_pause_tex && !SDL_UpdateTexture(s_pause_tex, NULL, s_px, PSP_W * 4)) {
+                SDL_DestroyTexture(s_pause_tex);
+                s_pause_tex = NULL;
+            }
+            if (!s_pause_tex) {
+                gui_pause_free_canvas();
+                return 0;
+            }
+        }
+    }
+    SDL_SetRenderDrawBlendMode(s_pause_ren, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(s_pause_ren, 0, 0, 0, 255);
+    SDL_RenderClear(s_pause_ren);
+    if (s_pause_tex) {
+        Sdl3VkPresentPlan plan = sdl3vk_present_plan(sdl3vk_present_scaling(), PSP_W, PSP_H, w, h, INT32_MAX);
+        if (plan.w > 0 && plan.h > 0) {
+            SDL_FRect dst = { (float)plan.x, (float)plan.y, (float)plan.w, (float)plan.h };
+            SDL_SetTextureScaleMode(s_pause_tex, plan.nearest ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR);
+            SDL_RenderTexture(s_pause_ren, s_pause_tex, NULL, &dst);
+        }
+    }
+    const uint32_t scrim = nk_ui_theme_n1()->scrim;
+    SDL_SetRenderDrawBlendMode(s_pause_ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(s_pause_ren, (Uint8)(scrim >> 24), (Uint8)(scrim >> 16),
+                           (Uint8)(scrim >> 8), (Uint8)scrim);
+    SDL_RenderFillRect(s_pause_ren, NULL);
+    SDL_RenderPresent(s_pause_ren);
+    return 1;
+}
+
+/* Every input and window event while the overlay is open (sdl3vk_set_input_claim). Esc,
+ * F1, Guide and the pad's back button (east) close it. */
+static void gui_pause_input(const void *event, void *user) {
+    const SDL_Event *ev = (const SDL_Event *)event;
+    (void)user;
+    switch (ev->type) {
+    case SDL_EVENT_KEY_DOWN:
+        if (!ev->key.repeat && (ev->key.key == SDLK_ESCAPE || ev->key.key == SDLK_F1))
+            s_pause_resume = 1;
+        break;
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        if (ev->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE ||
+            ev->gbutton.button == SDL_GAMEPAD_BUTTON_EAST)
+            s_pause_resume = 1;
+        break;
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        s_pause_dirty = 1;
+        s_pause_next_ns = 0;
+        break;
+    case SDL_EVENT_WINDOW_EXPOSED:
+        s_pause_next_ns = 0;
+        break;
+    default:
+        break;
+    }
+}
+#endif
+
+int gui_pause_presenter(void) {
+#ifdef SR_SDL3VK
+    return s_sdl3;
+#else
+    return 0;
+#endif
+}
+
+int gui_pause_busy_reason(void) {
+    if (sr_osk_overlay_active()) return SR_PAUSE_REFUSED_KEYBOARD;
+#ifdef SR_SDL3VK
+    if (s_sdl3 && sdl3vk_renderer_terminal()) return SR_PAUSE_REFUSED_STOPPING;
+#endif
+    return 0;
+}
+
+void gui_pause_enter(void) {
+#ifdef SR_SDL3VK
+    if (!s_sdl3 || s_pause_open) return;
+    s_pause_open = 1;
+    s_pause_resume = 0;
+    s_pause_dirty = 1;
+    s_pause_next_ns = 0;
+    sdl3vk_set_input_claim(gui_pause_input, NULL);
+    s_buttons = 0;
+    s_lx = 128;
+    s_ly = 128;
+    s_pause_have_frame = gui_pause_freeze();
+#endif
+}
+
+SrPauseFrame gui_pause_frame(void) {
+#ifdef SR_SDL3VK
+    if (!s_sdl3 || !s_pause_open) return SR_PAUSE_FRAME_RESUME;
+    uint64_t now = SDL_GetTicksNS();
+    uint32_t wait_ms = 100u;   /* minimised: wait on events, waking for the stop hook */
+    if (!sdl3vk_window_minimized())
+        wait_ms = s_pause_next_ns > now ? (uint32_t)((s_pause_next_ns - now + 999999u) / 1000000u) : 0u;
+    if (wait_ms) sdl3vk_wait_events(wait_ms);
+    if (!sdl3vk_poll()) { gui_window_closed_exit(); }
+    if (s_pause_resume) return SR_PAUSE_FRAME_RESUME;
+    now = SDL_GetTicksNS();
+    if (sdl3vk_window_minimized() || now < s_pause_next_ns) return SR_PAUSE_FRAME_CONTINUE;
+    uint64_t period = sdl3vk_display_period_ns();
+    s_pause_next_ns = now + (period ? period : PSP_SCANOUT_PERIOD_NS);
+
+    int w = 0, h = 0, rgba = 0;
+    if (!sdl3vk_overlay_extent(&w, &h, &rgba)) return SR_PAUSE_FRAME_CONTINUE;
+    const void *px = NULL;
+    int pitch = 0;
+    if (s_pause_dirty) {
+        if (!gui_pause_compose(w, h, rgba)) {
+            if (!s_pause_failure_reported) {
+                s_pause_failure_reported = 1;
+                fprintf(stderr, "SR_PAUSE: the overlay image (%dx%d) could not be drawn: %s\n",
+                        w, h, SDL_GetError());
+            }
+            return SR_PAUSE_FRAME_CONTINUE;
+        }
+        px = s_pause_surface->pixels;
+        pitch = s_pause_surface->pitch;
+        s_pause_dirty = 0;
+    }
+    int presented = sdl3vk_present_overlay(px, pitch);
+    if (presented == 0) { gui_window_closed_exit(); }
+    if (presented == 2) {
+        s_pause_dirty = 1;
+        s_pause_next_ns = 0;
+    } else if (presented < 0) {
+        /* A renderer that can no longer present cannot show the overlay; the game goes on
+         * and meets the same terminal renderer it would have met without a pause. */
+        if (sdl3vk_renderer_terminal()) return SR_PAUSE_FRAME_RESUME;
+        s_pause_dirty = 1;
+    }
+    return SR_PAUSE_FRAME_CONTINUE;
+#else
+    return SR_PAUSE_FRAME_RESUME;
+#endif
+}
+
+void gui_pause_leave(void) {
+#ifdef SR_SDL3VK
+    if (!s_sdl3 || !s_pause_open) return;
+    /* Events queued since the last frame are still the overlay's; the held state they leave
+     * is what the release mask hides. A window close among them still ends the run. */
+    if (!sdl3vk_poll()) { gui_window_closed_exit(); }
+    sdl3vk_set_input_claim(NULL, NULL);
+    sdl3vk_overlay_release();
+    gui_pause_free_canvas();
+    s_pause_open = 0;
+    s_pause_resume = 0;
+    s_buttons = sdl3vk_buttons();
+    sdl3vk_analog(&s_lx, &s_ly);
+#endif
 }
 #endif /* !SR_GUI_PRESENT_SELFTEST */
 

@@ -28,13 +28,6 @@
 #ifndef _MSC_EXTENSIONS
 #define _MSC_EXTENSIONS  /* for _Exit on MSVC; harmless under MinGW */
 #endif
-/* Output directory of THIS build, supplied by the Makefile as -DSR_BUILD_DIR. It is
- * only ever used to place host-side diagnostic artifacts (the ExitGame crash dump and
- * exit flag) next to the executable that produced them. It carries no title identity
- * and no PSP semantics. The fallback keeps a direct compile of this file working. */
-#ifndef SR_BUILD_DIR
-#define SR_BUILD_DIR "build/hst"
-#endif
 #ifndef _WIN32
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
@@ -6318,6 +6311,10 @@ static uint32_t h_PsmfGetAudio(CpuState *s){s_psmf_getaudio++;SrPsmfPlayer*p=psm
     return 0;}
 static uint32_t h_PsmfAudioOutSize(CpuState *s){return psmf_find(A0,0)?8192u:PSMF_ERR_STATUS;}
 
+/* Host path helpers defined with the rest of the host-path layer below. */
+static int sr_exit_artifact_path_alloc(const wchar_t *name, char **out);
+static FILE *sr_fopen_utf8(const char *path, const wchar_t *mode);
+
 /* sceKernelExitGame: real PSP terminates the process. Three callers observed so far:
  *  (1) the guest's libc _exit path (call site already inside the engine shutdown decision)
  *  (2) the launcher thread (uid 0x110 / 0x111) after the worker dissolves
@@ -6359,14 +6356,15 @@ static uint32_t h_ExitGame(CpuState *s) {
      * runtime observable; that legacy diagnostic path allowed execution after ExitGame. */
     sr_trace_close();
 
-    /* Write crash dump and exit flag for tools/mem_debug.py to trap and trace.
-     * SR_BUILD_DIR is the build's own output directory (Makefile: BUILD_DIR), so a
-     * generic or second title writes its own dump instead of a literal build/hst/.
-     * The fallback keeps a hand-rolled compile that does not define it working. */
-    char sr_dump_path[512], sr_flag_path[512];
-    snprintf(sr_dump_path, sizeof sr_dump_path, "%s/crash_dump.bin", SR_BUILD_DIR);
-    snprintf(sr_flag_path, sizeof sr_flag_path, "%s/exited.flag", SR_BUILD_DIR);
-    FILE *f_dump = fopen(sr_dump_path, "wb");
+    /* Write crash dump and exit flag for tools/mem_debug.py to trap and trace. They go
+     * beside the executable that produced them, where tools/mem_debug.py
+     * build_artifact_dir looks, so each title writes its own dump. The folder is
+     * resolved at run time, never compiled in: a packaged game writes beside its own
+     * executable, and the compiled object carries no build path (#1306). */
+    char *sr_dump_path = NULL, *sr_flag_path = NULL;
+    sr_exit_artifact_path_alloc(L"crash_dump.bin", &sr_dump_path);
+    sr_exit_artifact_path_alloc(L"exited.flag", &sr_flag_path);
+    FILE *f_dump = sr_dump_path ? sr_fopen_utf8(sr_dump_path, L"wb") : NULL;
     if (f_dump) {
         /* Versioned header so tools/mem_debug.py can reject dumps written by a
          * different CpuState ABI instead of misreading them:
@@ -6382,11 +6380,13 @@ static uint32_t h_ExitGame(CpuState *s) {
         }
         fclose(f_dump);
     }
-    FILE *f_flag = fopen(sr_flag_path, "w");
+    FILE *f_flag = sr_flag_path ? sr_fopen_utf8(sr_flag_path, L"w") : NULL;
     if (f_flag) {
         fprintf(f_flag, "1\n");
         fclose(f_flag);
     }
+    free(sr_dump_path);
+    free(sr_flag_path);
 
     fflush(NULL);
     if (cur == 0) {
@@ -8117,6 +8117,18 @@ static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
     return ms0_fopen_rel_utf8(rel, mode, NULL);
 }
 #endif /* _WIN32 */
+
+/* UTF-8 path of the file NAME beside this executable, for the ExitGame diagnostics.
+ * Returns 0 and leaves *out NULL when the executable's folder cannot be resolved. */
+static int sr_exit_artifact_path_alloc(const wchar_t *name, char **out) {
+    wchar_t *dir = NULL, *joined = NULL;
+    *out = NULL;
+    int ok = sr_wide_module_dir_alloc(&dir) && sr_wide_join_alloc(dir, name, &joined) &&
+             sr_wide_to_utf8_alloc(joined, out);
+    free(dir);
+    free(joined);
+    return ok;
+}
 
 /* The three helpers below name no host primitive: the unified Memory Stick
  * root resolution, the byte-path join and the directory-root resolution are
@@ -19224,6 +19236,21 @@ static unsigned long s_watchdog_fires = 0;
  * s_last_flip_vcount is reset so a fresh stretch starts at bucket 0. */
 static uint32_t s_watchdog_bucket = 0;
 
+/* A resumed frame closes one observed no-frame stretch. stderr is redirected
+ * to the per-run boot-event log by the native launcher, so the parent player
+ * can consume this event while the game is still running. */
+static void hle_watchdog_note_present(void) {
+    if (s_watchdog_bucket > 0u) {
+        uint32_t diff = s_vcount - s_last_flip_vcount;
+        fprintf(stderr,
+                "BOOT_EVENT phase=resumed observation=frame_present "
+                "no_frame_vblanks=%u\n", diff);
+        fflush(stderr);
+    }
+    s_last_flip_vcount = s_vcount;
+    s_watchdog_bucket = 0;
+}
+
 #ifdef SR_HLE_THREAD_SELFTEST
 /* White-box view of the flip accounting for the conformance harness. The counters are
  * file-static because nothing outside this file may steer display state; the regression
@@ -19966,8 +19993,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         s_display_latched_pending = 0;
         s_display_configured = 1;
         s_framebuf = addr;
-        s_last_flip_vcount = s_vcount;
-        s_watchdog_bucket = 0;
+        hle_watchdog_note_present();
         /* Issue #57: arm any due present capture BEFORE the present so the recorded
          * frame is exactly the one being presented. */
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
@@ -20286,8 +20312,7 @@ void sr_vblank_tick(void) {
         s_display_latched_pending = 0;
         s_display_configured = 1;
         s_framebuf = s_display_active.addr;
-        s_last_flip_vcount = s_vcount;
-        s_watchdog_bucket = 0;
+        hle_watchdog_note_present();
         /* Same arm as the sync=0 immediate flip: a NEXTFRAME (sync=1) flip is presented
          * here, so the capture must be armed before this present or the recorded frame
          * is not the presented one. Arming only in the sync=0 branch left every
@@ -20371,9 +20396,15 @@ void sr_vblank_tick(void) {
                 "WATCHDOG: no new frame presented for %u vblanks (~%us) - neutral "
                 "NO-NEW-FLIP observation, not by itself a hang/stall verdict\n",
                 diff, diff / 60);
+        uint32_t ready = 0u, delay = 0u, wait = 0u, spin = 0u;
+        extern void sched_watchdog_summary(uint32_t *, uint32_t *,
+                                           uint32_t *, uint32_t *);
+        sched_watchdog_summary(&ready, &delay, &wait, &spin);
         fprintf(stderr,
-                "BOOT_EVENT phase=stalled observation=no_new_flip no_frame_vblanks=%u seconds=%u\n",
-                diff, diff / 60);
+                "BOOT_EVENT phase=stalled observation=no_new_flip "
+                "no_frame_vblanks=%u seconds=%u ready=%u delay=%u wait=%u spin=%u\n",
+                diff, diff / 60u, ready, delay, wait, spin);
+        fflush(stderr);
         /* Which side of the display handoff stopped presenting: did the guest stop
          * asking for flips, or are its requests being refused? last_vcount vs
          * s_last_flip_vcount separates "no call since the last flip" from "calls
@@ -25102,6 +25133,71 @@ static void hle_register_unregistered_import_batch(void) {
     /* sceNetApctl is the access-point control library; with no network stack the runtime refuses its
      * handler calls under the offline network policy (0x80010086). */
     sr_hle_register_unsupported(0x5963991bu, "sceNetApctlDelHandler", 0x80010086u);
+    /* The public ad hoc libraries (#1139 phase 0) sit above sceNet: the PSPSDK prototypes in
+     * pspnet_adhoc.h (22), pspnet_adhocctl.h (21) and pspnet_adhocmatching.h (16), each NID
+     * sha1(name) as tools/nid_corpus.json records for its pspsdk-sourced names. With no network
+     * stack they refuse under the offline network policy, with the runtime's documented
+     * SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED that sceNetInit returns. The code is not a
+     * measured ad hoc result; PSP-visible ad hoc state and errors are unmeasured. */
+    sr_hle_register_unsupported(0x7f75c338u, "sceNetAdhocGameModeCreateMaster", 0x80010086u);
+    sr_hle_register_unsupported(0x3278ab0cu, "sceNetAdhocGameModeCreateReplica", 0x80010086u);
+    sr_hle_register_unsupported(0xa0229362u, "sceNetAdhocGameModeDeleteMaster", 0x80010086u);
+    sr_hle_register_unsupported(0x0b2228e9u, "sceNetAdhocGameModeDeleteReplica", 0x80010086u);
+    sr_hle_register_unsupported(0x98c204c8u, "sceNetAdhocGameModeUpdateMaster", 0x80010086u);
+    sr_hle_register_unsupported(0xfa324b4eu, "sceNetAdhocGameModeUpdateReplica", 0x80010086u);
+    sr_hle_register_unsupported(0xc7c1fc57u, "sceNetAdhocGetPdpStat", 0x80010086u);
+    sr_hle_register_unsupported(0xb9685118u, "sceNetAdhocGetPtpStat", 0x80010086u);
+    sr_hle_register_unsupported(0xe1d621d7u, "sceNetAdhocInit", 0x80010086u);
+    sr_hle_register_unsupported(0x6f92741bu, "sceNetAdhocPdpCreate", 0x80010086u);
+    sr_hle_register_unsupported(0x7f27bb5eu, "sceNetAdhocPdpDelete", 0x80010086u);
+    sr_hle_register_unsupported(0xdfe53e03u, "sceNetAdhocPdpRecv", 0x80010086u);
+    sr_hle_register_unsupported(0xabed3790u, "sceNetAdhocPdpSend", 0x80010086u);
+    sr_hle_register_unsupported(0x9df81198u, "sceNetAdhocPtpAccept", 0x80010086u);
+    sr_hle_register_unsupported(0x157e6225u, "sceNetAdhocPtpClose", 0x80010086u);
+    sr_hle_register_unsupported(0xfc6fc07bu, "sceNetAdhocPtpConnect", 0x80010086u);
+    sr_hle_register_unsupported(0x9ac2eeacu, "sceNetAdhocPtpFlush", 0x80010086u);
+    sr_hle_register_unsupported(0xe08bdac1u, "sceNetAdhocPtpListen", 0x80010086u);
+    sr_hle_register_unsupported(0x877f6d66u, "sceNetAdhocPtpOpen", 0x80010086u);
+    sr_hle_register_unsupported(0x8bea2b3eu, "sceNetAdhocPtpRecv", 0x80010086u);
+    sr_hle_register_unsupported(0x4da4c788u, "sceNetAdhocPtpSend", 0x80010086u);
+    sr_hle_register_unsupported(0xa62c6f57u, "sceNetAdhocTerm", 0x80010086u);
+    sr_hle_register_unsupported(0x20b317a0u, "sceNetAdhocctlAddHandler", 0x80010086u);
+    sr_hle_register_unsupported(0x0ad043edu, "sceNetAdhocctlConnect", 0x80010086u);
+    sr_hle_register_unsupported(0xec0635c1u, "sceNetAdhocctlCreate", 0x80010086u);
+    sr_hle_register_unsupported(0xa5c055ceu, "sceNetAdhocctlCreateEnterGameMode", 0x80010086u);
+    sr_hle_register_unsupported(0x6402490bu, "sceNetAdhocctlDelHandler", 0x80010086u);
+    sr_hle_register_unsupported(0x34401d65u, "sceNetAdhocctlDisconnect", 0x80010086u);
+    sr_hle_register_unsupported(0xcf8e084du, "sceNetAdhocctlExitGameMode", 0x80010086u);
+    sr_hle_register_unsupported(0x99560abeu, "sceNetAdhocctlGetAddrByName", 0x80010086u);
+    sr_hle_register_unsupported(0x362cbe8fu, "sceNetAdhocctlGetAdhocId", 0x80010086u);
+    sr_hle_register_unsupported(0x5a014ce0u, "sceNetAdhocctlGetGameModeInfo", 0x80010086u);
+    sr_hle_register_unsupported(0x8916c003u, "sceNetAdhocctlGetNameByAddr", 0x80010086u);
+    sr_hle_register_unsupported(0xded9d28eu, "sceNetAdhocctlGetParameter", 0x80010086u);
+    sr_hle_register_unsupported(0x8db83fdcu, "sceNetAdhocctlGetPeerInfo", 0x80010086u);
+    sr_hle_register_unsupported(0xe162cb14u, "sceNetAdhocctlGetPeerList", 0x80010086u);
+    sr_hle_register_unsupported(0x81aee1beu, "sceNetAdhocctlGetScanInfo", 0x80010086u);
+    sr_hle_register_unsupported(0x75ecd386u, "sceNetAdhocctlGetState", 0x80010086u);
+    sr_hle_register_unsupported(0xe26f226eu, "sceNetAdhocctlInit", 0x80010086u);
+    sr_hle_register_unsupported(0x5e7f79c9u, "sceNetAdhocctlJoin", 0x80010086u);
+    sr_hle_register_unsupported(0x1ff89745u, "sceNetAdhocctlJoinEnterGameMode", 0x80010086u);
+    sr_hle_register_unsupported(0x08fff7a0u, "sceNetAdhocctlScan", 0x80010086u);
+    sr_hle_register_unsupported(0x9d689e13u, "sceNetAdhocctlTerm", 0x80010086u);
+    sr_hle_register_unsupported(0xec19337du, "sceNetAdhocMatchingAbortSendData", 0x80010086u);
+    sr_hle_register_unsupported(0xea3c6108u, "sceNetAdhocMatchingCancelTarget", 0x80010086u);
+    sr_hle_register_unsupported(0x8f58bedfu, "sceNetAdhocMatchingCancelTargetWithOpt", 0x80010086u);
+    sr_hle_register_unsupported(0xca5eda6fu, "sceNetAdhocMatchingCreate", 0x80010086u);
+    sr_hle_register_unsupported(0xf16eaf4fu, "sceNetAdhocMatchingDelete", 0x80010086u);
+    sr_hle_register_unsupported(0xb5d96c2au, "sceNetAdhocMatchingGetHelloOpt", 0x80010086u);
+    sr_hle_register_unsupported(0xc58bcd9eu, "sceNetAdhocMatchingGetMembers", 0x80010086u);
+    sr_hle_register_unsupported(0x40f8f435u, "sceNetAdhocMatchingGetPoolMaxAlloc", 0x80010086u);
+    sr_hle_register_unsupported(0x9c5cfb7du, "sceNetAdhocMatchingGetPoolStat", 0x80010086u);
+    sr_hle_register_unsupported(0x2a2a1e07u, "sceNetAdhocMatchingInit", 0x80010086u);
+    sr_hle_register_unsupported(0x5e3d4b79u, "sceNetAdhocMatchingSelectTarget", 0x80010086u);
+    sr_hle_register_unsupported(0xf79472d7u, "sceNetAdhocMatchingSendData", 0x80010086u);
+    sr_hle_register_unsupported(0xb58e61b7u, "sceNetAdhocMatchingSetHelloOpt", 0x80010086u);
+    sr_hle_register_unsupported(0x93ef3843u, "sceNetAdhocMatchingStart", 0x80010086u);
+    sr_hle_register_unsupported(0x32b156b3u, "sceNetAdhocMatchingStop", 0x80010086u);
+    sr_hle_register_unsupported(0x7945ecdau, "sceNetAdhocMatchingTerm", 0x80010086u);
     /* sceRtcGetAccumulativeTime (0x011f03c1) is not declared in the PSPSDK RTC header, so its contract
      * is not established here and it is refused under its name rather than guessed. */
     sr_hle_register_unsupported(0x011f03c1u, "sceRtcGetAccumulativeTime", 0x80020002u);
