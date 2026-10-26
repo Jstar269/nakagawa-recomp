@@ -5662,15 +5662,18 @@ static SrPsmfPlayer s_psmf_players[4];
  * player path being involved in a no-new-frame stretch. File-local: no other translation
  * unit consumes them (the watchdog that prints them lives in this file). */
 static unsigned long s_psmf_calls = 0, s_psmf_getvideo = 0, s_psmf_getaudio = 0;
-static SrPsmfPlayer *psmf_find(uint32_t guest, int create) {
+static SrPsmfPlayer *psmf_slot(uint32_t guest, int create) {
     SrPsmfPlayer *freeSlot = NULL;
-    s_psmf_calls++;   /* every scePsmfPlayer handler resolves its control block here */
     for (size_t i = 0; i < sizeof(s_psmf_players) / sizeof(s_psmf_players[0]); i++) {
         if (s_psmf_players[i].used && s_psmf_players[i].guest == guest) return &s_psmf_players[i];
         if (!s_psmf_players[i].used && !freeSlot) freeSlot = &s_psmf_players[i];
     }
-    if (create && guest && freeSlot) { memset(freeSlot, 0, sizeof(*freeSlot)); freeSlot->used=1; freeSlot->guest=guest; return freeSlot; }
+    if (create && guest && freeSlot) { memset(freeSlot, 0, sizeof(*freeSlot)); freeSlot->used=1; freeSlot->guest=guest; freeSlot->h264=-1; return freeSlot; }
     return NULL;
+}
+static SrPsmfPlayer *psmf_find(uint32_t guest, int create) {
+    s_psmf_calls++;   /* every scePsmfPlayer handler resolves its control block here */
+    return psmf_slot(guest, create);
 }
 static void psmf_flush(SrPsmfPlayer *p) {
     if (!p) return;
@@ -5984,6 +5987,21 @@ static void psmf_media_reset(SrPsmfPlayer *p) {
     p->rejectNamed = 0;
 }
 
+/* Give back everything a player acquired -- queued access units, the producer, the H.264
+ * decoder instance and the audio decoder -- and free its slot.  Issue #279: Delete used to
+ * reset the decoder and then forget its id, so every movie kept one of a backend's few
+ * decoder instances (four for Media Foundation and FFmpeg) and the fifth movie of a session
+ * got none. */
+static void psmf_player_release(SrPsmfPlayer *p) {
+    if (!p) return;
+    psmf_flush(p);
+    if (p->producer) { sr_psmf_producer_close(p->producer); p->producer = NULL; }
+    if (p->h264 >= 0) { sr_h264_destroy(p->h264); p->h264 = -1; }
+    psmf_media_reset(p);
+    memset(p, 0, sizeof(*p));
+    p->h264 = -1;
+}
+
 /* Presentation time of one submitted picture.  A packet that carried a PTS sets the clock;
  * a packet that did not advances it by exactly one frame, and until the first PTS arrives the
  * picture's time stays unknown (-1) rather than invented. */
@@ -6268,11 +6286,15 @@ static int psmf_parse_header(SrPsmfPlayer *p, const uint8_t *h, uint32_t n) {
     return 1;
 }
 static uint32_t h_PsmfCreate(CpuState *s) {
-    SrPsmfPlayer *p=psmf_find(A0,1); if(!p||!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_PARAM; uint32_t b=MEM_R32(A1),sz=MEM_R32(A1+4),pri=MEM_R32(A1+8);
+    /* Parameters are checked before a slot is claimed, so a refused create keeps nothing;
+     * creating over a live control block gives the old player's decoder and producer back
+     * and starts a fresh player (issue #279). */
+    SrPsmfPlayer *p=psmf_find(A0,0); if(!A0||!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_PARAM; uint32_t b=MEM_R32(A1),sz=MEM_R32(A1+4),pri=MEM_R32(A1+8);
     if(!b||sz<0x00285800u){MEM_W32(A0,0);return PSMF_ERR_BUFSIZE;} if(pri<0x10u||pri>=0x6eu){MEM_W32(A0,0);return PSMF_ERR_PARAM;}
-    p->h264=-1;p->buffer=b;p->bufferSize=sz;p->priority=pri;p->status=PSMF_STATUS_INIT;p->pixelMode=3;p->loopStatus=1;p->videoCodec=0xe;p->audioCodec=0xf;MEM_W32(A0,A0);sched_delay_current(20000);return 0;
+    psmf_player_release(p); p=psmf_slot(A0,1); if(!p)return PSMF_ERR_PARAM;
+    p->buffer=b;p->bufferSize=sz;p->priority=pri;p->status=PSMF_STATUS_INIT;p->pixelMode=3;p->loopStatus=1;p->videoCodec=0xe;p->audioCodec=0xf;MEM_W32(A0,A0);sched_delay_current(20000);return 0;
 }
-static uint32_t h_PsmfDelete(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;psmf_flush(p);if(p->producer){sr_psmf_producer_close(p->producer);p->producer=NULL;}psmf_media_reset(p);memset(p,0,sizeof(*p));p->h264=-1;MEM_W32(A0,0);sched_delay_current(20000);return 0;}
+static uint32_t h_PsmfDelete(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;psmf_player_release(p);MEM_W32(A0,0);sched_delay_current(20000);return 0;}
 static uint32_t h_PsmfSetTempBuf(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||A2<0x10000u)return PSMF_ERR_PARAM;p->tempBuf=A1;p->tempSize=A2;return 0;}
 static uint32_t h_PsmfSetPsmfCB(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;char path[512];if(!guest_cstr(A1,path,sizeof(path)))return PSMF_ERR_PARAM;uint32_t lba=0,sz=0;uint8_t h[2048];if(iso_lookup(path,&lba,&sz)!=0||sz<sizeof(h)||iso_read(lba,0,h,sizeof(h))!=(int)sizeof(h)||!psmf_parse_header(p,h,sizeof(h)))return PSMF_ERR_PARAM;if(p->producer)sr_psmf_producer_close(p->producer);p->producer=NULL;p->source.lba=lba;p->source.size=sz;SrPsmfSource source={psmf_iso_read,p,sz};p->producer=sr_psmf_producer_open(&source,p->presentationBase);if(!p->producer)return PSMF_ERR_PARAM;strncpy(p->path,path,sizeof(p->path)-1);p->fileLba=lba;p->fileSize=sz;p->readOffset=p->streamOffset;p->status=PSMF_STATUS_STANDBY;psmf_flush(p);psmf_media_reset(p);sched_delay_current(3100);return 0;}
 static uint32_t h_PsmfConfig(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;if(A1==0){if(A2>1)return PSMF_ERR_PARAM;p->loopStatus=A2;return 0;}if(A1==1){if((int32_t)A2<-1||A2>3)return PSMF_ERR_PARAM;p->pixelMode=(A2==(uint32_t)-1)?3:A2;return 0;}return PSMF_ERR_CONFIG;}
@@ -25731,15 +25753,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
     /* Media-player state owns host decoder/producer objects as well as guest
      * pointers. Close those objects before the next program reuses guest RAM. */
     for (size_t i = 0; i < sizeof(s_psmf_players) / sizeof(s_psmf_players[0]); i++) {
-        SrPsmfPlayer *p = &s_psmf_players[i];
-        psmf_flush(p);
-        if (p->producer) {
-            sr_psmf_producer_close(p->producer);
-            p->producer = NULL;
-        }
-        psmf_media_reset(p);
-        memset(p, 0, sizeof(*p));
-        p->h264 = -1;
+        psmf_player_release(&s_psmf_players[i]);
     }
     for (unsigned i = 0; i < sizeof(s_atrac) / sizeof(s_atrac[0]); i++) {
         atrac_release_decoder(&s_atrac[i]);
