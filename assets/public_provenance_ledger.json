@@ -1840,7 +1840,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d1da2cd908426621bdbc0c7eb62f0c21aba9966006e6df2f424ba6a5f2a521ac"
+      "sha256": "a0bbfb74f880094ed19ae74c01d5622433892e37a8cbaa15b7dafe3adc4a55a1"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -3503,7 +3503,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c05e2a2116aacb5f364d67fb69953b550b8971cf7d31fc6932edeb945b42b7a7"
+      "sha256": "25f741676b70532d6e80a8fa3444248109007f9e5d9f01f637b184bec08e3076"
     },
     {
       "path": "src/player/package_builder.c",
@@ -3539,7 +3539,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "17a5b90c5f9c6d1261b344c2b04c5a1d5efa921becdd862f7522f9df6fc56005"
+      "sha256": "e0978f8e7b0786405ea996220f9515a2f007cead0038db59422c8298e10f1512"
     },
     {
       "path": "src/player/player_state.h",
@@ -3551,7 +3551,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce9e2f75c96d8feb3c412b668f4d6047b003b7902d9d8a412ad14691610c1ac5"
+      "sha256": "89ee635edb5b0e1c9ba777bc082a60a6677d23cef523d535f1e963e483a38f5a"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -3611,7 +3611,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5d50d8dd900c7183f56085cc13d452204d91db798316678a5b747e0f7a430f09"
+      "sha256": "d2b1b294acbce632653594fbad0dea89d7beba6bc68203e92a88ff5514ccd479"
     },
     {
       "path": "src/player/ui/player_ui_nk.h",
@@ -3623,7 +3623,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "84767a04bf08aa38a03d6099ffb7274f33d35fa579dd66fd6d65dd795f87f13e"
+      "sha256": "557ab33f36d5134a63933a419b650b4596208667db0fd48c82c2619748cd8a7c"
     },
     {
       "path": "src/player/ui/player_ui_sound.c",
@@ -3671,7 +3671,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5cc227f596604e42fc33b69e75a90ecb7acdc73cea4be3e9a37b03211ebc3c02"
+      "sha256": "784e677e4e56926f93a6ef4f7ab511d4d8c10b26e6611a6256cf75b7b3b48eb5"
     },
     {
       "path": "src/player/ui/ui_router.c",
@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5279e57edbd4c730887dcc12dd3bd366bb406e1e52dae8c187de1e5a846f9d53"
+      "sha256": "3291709bb8db59ddb12e96a79f7917c0b5d4cba021b59c931e4ff89c10e094b9"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8932,7 +8932,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "11abd85310462157f6b9a8947e5e2cff37e945beeeabdc3c792d7c9afff74841"
+      "sha256": "c452d79f7f39d3edcf5793f574cd8123412a53fcbe6b0e815906a098931f9574"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -10038,7 +10038,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4c6bbc015a292d6695b54fb4b62c52f8e5737fc7f8d9d10998b08feaa0915d67"
+      "sha256": "b48b442e8a0711bcd7d479cb3c1be3c1feef655b977dd28296a84e0983ac6c52"
     },
     {
       "path": "tests/native/test_player_state.c",
@@ -10050,7 +10050,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fbd5dddb1e807f2f06549638e12b252dd9acc6cf88a61eed6733fd907bba528f"
+      "sha256": "6532d303f5a4c180e97e571ef8933c0e43dd3dc04ccc37310dd6620a5e41df80"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -12649,7 +12649,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57a880cbff9a1c1e5bb415b453e650599d1d34556e0635e1e14e0f205ded34db"
+      "sha256": "9b71be2b5705877742f7a5205f333a8f64c1d5e156430539f217e52cff1dcea4"
     },
     {
       "path": "tools/test_analyze_import_stub_entries.py",
