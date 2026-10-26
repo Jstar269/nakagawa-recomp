@@ -726,12 +726,24 @@ cannot move guest time backward or jump it. In turbo mode (`SR_NOVBPACE=1`) time
 deterministically at scheduler boundaries and is never host-dependent. SDL monotonic time is used
 for pacing/profiling only; the one host wall-clock read is the RTC epoch init.
 
-**Runtime host-thread audit.** The runtime creates one native host thread: the Windows OSK
-text-entry worker in `src/rt/osk_text_entry.c`. It publishes an answer for the guest to poll and
-does not write guest memory. SDL's audio thread consumes stream data and also does not touch guest
-state. All other scheduler and HLE work runs on the runtime thread. The source guard in
-`tools/test_sched_invariants.py` fails when another native thread creator appears outside the
-OSK file; a new worker must document how its guest-state access is quiesced before it is added.
+**Runtime host-thread audit.** Guest threads, HLE handlers, the window's event pump and the
+pause loop all run on the runtime thread. Work that runs elsewhere, and why a paused guest
+cannot observe it ([#1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159)):
+
+| Host work | Where it runs | What reaches the guest, and when |
+| --- | --- | --- |
+| On-screen keyboard text entry (`src/rt/osk_text_entry.c`) | A native worker thread, Windows input-box route only | It publishes an answer and writes no guest memory. The guest takes the answer only from its own `sceUtilityOsk*` update calls, so a paused guest takes nothing. The pause is also refused while the in-window keyboard is open. |
+| SDL audio output (`src/rt/audio_unavailable.c`) | SDL's audio device thread consumes the bound channel streams | The guest reads only the queue depth, on its own calls. A pause stashes each queue and puts back exactly that depth on resume. If the stash fails, the device is paused, so nothing is consumed (`audio-selftest`). |
+| Audio dump (`SR_AUDIODUMP`, postmix callback) | SDL's audio device thread | It writes the mixed output to a host WAV file and reads no guest memory. |
+| Asynchronous file I/O (`sceIoReadAsync` and related calls) | The runtime thread | A request completes in `io_async_dispatch_tick`, which runs at guest syscall entry and counts syscalls, not host time. A paused guest makes no syscalls. |
+| Media decode (ATRAC3+, H.264, MP3) | The runtime thread, inside the guest's decode call | Nothing runs between calls. |
+| GE rendering and readback (`src/rt/gpu_sdl3vk/ge_gpu.c`) | The host GPU | Results reach guest memory only through the read barrier the runtime thread takes before a guest read or a present. Its timing changes when bytes are copied, never what the guest reads. |
+
+Two source guards in `tools/test_sched_invariants.py` keep this table complete. One fails when a
+native thread creator appears outside the keyboard file. The other fails when a host callback
+entry appears that is not listed above: SDL audio, timer, event-watch and dialog callbacks, OS
+thread pools, waits, timers, completion routines, and Media Foundation work queues. Before new
+host work is added, its row must say how a paused guest is kept from observing it.
 
 ## Environment Variables
 

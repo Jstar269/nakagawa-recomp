@@ -610,7 +610,9 @@ have_image:;
     int gui_requested = 0;
     for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--sched") == 0) use_sched = 1;
     for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--gui") == 0) {
-        gui_init(SR_APP_TITLE);
+        char caption[SR_WINDOW_TITLE_CAP];
+        sr_window_title_format(getenv("SR_GAME_TITLE"), caption, sizeof(caption));
+        gui_init(caption);
         gui_requested = 1;
         use_sched = 1;
     }
