@@ -12697,7 +12697,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c5fe5b68cc74104601d82715a3ad91367310c65497f4352eea292380aac7aa70"
+      "sha256": "34cecd9ac586612a08ecb24a54316b420583f45d44d3886e2a8d20c214887acc"
     },
     {
       "path": "tools/test_asset_index_c.py",
