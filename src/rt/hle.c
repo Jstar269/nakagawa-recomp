@@ -22488,6 +22488,15 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
             break;
         }
     }
+    /* A cancelled or deleted timed wait reports its remaining timeout, as the
+     * public PSPAutotests threads/msgpipe cancel and delete cases show
+     * (reference output, not measured here). */
+    if (has_timeout && (result == SCE_KERNEL_ERROR_WAIT_CANCEL ||
+                        result == SCE_KERNEL_ERROR_WAIT_DELETE)) {
+        sched_vtime_refresh();
+        uint64_t now = sched_vtime_us();
+        MEM_W32(toptr, now < end_time ? (uint32_t)(end_time - now) : 0u);
+    }
     /* All departures detach/reconsider through the same object hook. Only the
      * normal syscall boundary may preempt; owner abandonment never does here. */
     if (sched_wait_finish(waiter_scope)) sched_preempt();
@@ -22510,18 +22519,28 @@ static uint32_t h_ReceiveMsgPipeCB(CpuState *s) {
     return msg_pipe_blocking_common(s, 0, 1);
 }
 
-/* Count the Send/Receive invocations still waiting on this pipe. An entry stays
- * in p->waiters until its owner finishes the wait, so an invocation already
- * released with a result (TERMINAL) is no longer a waiter. Blocked, notified
- * and callback-parked invocations still are. */
+/* A waiter counts for Cancel and Refer only while it is its owner's active
+ * wait (blocked, or readied to retry and not yet run), so a thread counts at
+ * most once. An entry stays in p->waiters until its owner finishes, so one
+ * already released with a result (TERMINAL) is no longer a waiter. A
+ * callback-aware wait whose owner is running callbacks is paused, not
+ * waiting: it neither counts nor is cancelled, and resumes waiting when the
+ * callbacks return (the PPSSPP pause model; not measured here). A readied
+ * waiter has not transferred yet, whereas the PSP serves a waiter directly
+ * (docs/HARDWARE_ORACLE.md, PSP-B3-01), so a Cancel or Delete between the
+ * wake and the retry still releases it without its bytes. */
+static int msg_pipe_waiter_waiting(const MsgPipeWaiter *waiter) {
+    SrWaitState state;
+    uint32_t owner;
+    return sched_wait_state(waiter->invocation, &state, &owner) &&
+           (state == SR_WAIT_BLOCKED || state == SR_WAIT_NOTIFIED);
+}
+
 static void msg_pipe_count_waiters(const MsgPipe *p, uint32_t *send_out,
                                    uint32_t *receive_out) {
     uint32_t send = 0u, receive = 0u;
     for (int i = 0; i < p->nwaiters; i++) {
-        SrWaitState state;
-        uint32_t owner;
-        if (!sched_wait_state(p->waiters[i].invocation, &state, &owner) ||
-            state == SR_WAIT_TERMINAL) continue;
+        if (!msg_pipe_waiter_waiting(&p->waiters[i])) continue;
         if (p->waiters[i].is_send) send++;
         else receive++;
     }
@@ -22533,10 +22552,11 @@ static uint32_t h_CancelMsgPipe(CpuState *s) {
     /* a0=uid, a1=numSendWaitThreads out, a2=numReceiveWaitThreads out (issue #1381).
      * Both output pointers may be NULL; a non-NULL one that is not writable
      * fails closed with ILLEGAL_ADDR before any waiter or buffer changes
-     * (project choice, as in h_CancelReceiveMbx). Every sender and receiver
-     * waiter is released with WAIT_CANCEL. Emptying the buffer follows
-     * PPSSPP's sceKernelCancelMsgPipe and the public PSPAutotests
-     * threads/msgpipe cancel case (emulator consensus, not measured here). */
+     * (project choice, as in h_CancelReceiveMbx). Every counted sender and
+     * receiver waiter is released with WAIT_CANCEL. The counts, the emptied
+     * buffer and the remaining timeout a cancelled timed waiter reports follow
+     * the public PSPAutotests threads/msgpipe cancel case and PPSSPP
+     * (reference output and emulator consensus, not measured here). */
     MsgPipe *p = msg_pipe_find(A0);
     if (!p) return SCE_KERNEL_ERROR_UNKNOWN_MPPID;
     uint32_t sendp = A1;
@@ -22554,9 +22574,13 @@ static uint32_t h_CancelMsgPipe(CpuState *s) {
     if (getenv("SR_MSGLOG"))
         fprintf(stderr, "HLE: CancelMsgPipe uid=0x%x name='%s' send=%u receive=%u\n",
                 p->uid, p->name, senders, receivers);
-    /* No waiter: no wake result to latch. */
+    /* No waiter: no wake result to latch. Completing an invocation records its
+     * result without detaching it, so p->waiters is stable during the walk. */
     if (senders || receivers) {
-        sched_wait_cancel_object(p->uid, SCE_KERNEL_ERROR_WAIT_CANCEL);
+        for (int i = 0; i < p->nwaiters; i++)
+            if (msg_pipe_waiter_waiting(&p->waiters[i]))
+                (void)sched_wait_complete(p->waiters[i].invocation,
+                                          SCE_KERNEL_ERROR_WAIT_CANCEL);
         sched_preempt();
     }
     return 0;
