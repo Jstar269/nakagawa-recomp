@@ -5101,7 +5101,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8cd853cdddf8729d8648295df1b2adda42f198152ccb36fa90e82c517ac3b598"
+      "sha256": "6f90abf319e42724acb5b292ea404ece1b48d67333773680333a131c491e74d1"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -5332,7 +5332,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2209028b3857881de4dda7ace8cede3a8026e02c387974bfcc428b2f9bdac3ad"
+      "sha256": "1b07a1a2b96618e49d8b08c73035a3e8e5e9026a85c3802a673d0f2e94b4b6eb"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -11551,7 +11551,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0201121cc227b6aa4a2a99736ffac659028845b3d84620082e726a53964195c5"
+      "sha256": "fa2237e1948f8e72ec9e2347deb4cec9b880b52bc22b2f1b17c67442985559f1"
     },
     {
       "path": "tools/hle_registry_meta.py",
@@ -11563,7 +11563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8dc02cad7b57e55351a9fbd173a9f24f19b9d7b7ae14f6e3dd78e34c05219472"
+      "sha256": "c86749cdad22c744002351d35ff6df68924ebdf95243edfa7cc87eaa891001da"
     },
     {
       "path": "tools/host_stubs.py",
@@ -13551,7 +13551,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1f06fb0f9f2564f4c3b26dee0f6736693ae9c318bb215166592d8ab09f3f8166"
+      "sha256": "d3ad2a2344c6395fea61234dde5f8507f833f4183081d680a2211529eda404c1"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
