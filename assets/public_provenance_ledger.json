@@ -1675,7 +1675,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1618778823486b9ad79f16a7a66a62fc3ad7ea541cad7dea864aa4167b43f044"
+      "sha256": "835207099c7314bcb4d317f9988dd2d0bd4179620079e15166fe2a328303915d"
     },
     {
       "path": "docs/SETUP.md",
@@ -14824,7 +14824,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fd36ec24d485707bf94ad4668ee0e90716c2fcbd80fbb013dbd554ab79990d08"
+      "sha256": "36ff5d954a3b5005099d246414b6a1df6f1712408b791597844f3e5e3c8ae5c6"
     },
     {
       "path": "tools/test_title_codegen_synthetic.py",
@@ -15256,7 +15256,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fd4f1616d7e337d07e500b4645c5887322d51799ee955f7d92e1064072da8455"
+      "sha256": "88078714461b41f806a2ec125732528f192455fbe257cca1978640f041350014"
     },
     {
       "path": "tools/title_manager_plan.ps1",
