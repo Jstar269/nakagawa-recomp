@@ -4810,6 +4810,94 @@ static void player_font_append(char *out, size_t out_len, const char *text) {
     out[used + room] = '\0';
 }
 
+/* The PSP system fonts in registry order: jpn0.pgf, ltn0.pgf to ltn15.pgf, kr0.pgf. */
+#define PLAYER_PSP_FONT_COUNT (NK_FONT_LATIN_INDEX_COUNT + 2)
+
+static const char *player_psp_font_name(int font) {
+    if (font == 0) return nk_font_slot_psp_filename(NK_FONT_SLOT_JAPANESE);
+    if (font == PLAYER_PSP_FONT_COUNT - 1) return nk_font_slot_psp_filename(NK_FONT_SLOT_KOREAN);
+    return nk_font_latin_index_filename(font - 1);
+}
+
+/* The fonts flagged in `wanted`, by their PSP file names: "a, b and c". A run of three or more
+   Latin files reads as "ltn7.pgf to ltn15.pgf". */
+static void player_font_append_names(char *out, size_t out_len,
+                                     const bool wanted[PLAYER_PSP_FONT_COUNT]) {
+    char items[PLAYER_PSP_FONT_COUNT][32];
+    size_t count = 0;
+    for (int font = 0; font < PLAYER_PSP_FONT_COUNT; font++) {
+        int last = font;
+        if (!wanted[font]) continue;
+        if (font >= 1 && font <= NK_FONT_LATIN_INDEX_COUNT) {
+            while (last + 1 <= NK_FONT_LATIN_INDEX_COUNT && wanted[last + 1]) last++;
+        }
+        if (last - font >= 2) {
+            snprintf(items[count++], sizeof(items[0]), "%s to %s", player_psp_font_name(font),
+                     player_psp_font_name(last));
+            font = last;
+        } else {
+            snprintf(items[count++], sizeof(items[0]), "%s", player_psp_font_name(font));
+        }
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (i > 0) player_font_append(out, out_len, i + 1 == count ? " and " : ", ");
+        player_font_append(out, out_len, items[i]);
+    }
+}
+
+/* The Fonts check's player sentence when a PSP system font is not imported (#1300). A game that
+   asks for one gets a stand-in from another file (a nearby imported size, the older single Latin
+   import, or the project's font), whose face differs from the PSP's, or no font when nothing
+   stands in. Empty when every font is the user's own import. */
+static void player_font_missing_sentence(char *out, size_t out_len,
+                                         const NkFontSlotState states[NK_FONT_SLOT_COUNT],
+                                         const NkFontLatinIndexState latin[NK_FONT_LATIN_INDEX_COUNT]) {
+    bool missing[PLAYER_PSP_FONT_COUNT] = { false };
+    bool unserved[PLAYER_PSP_FONT_COUNT] = { false };
+    size_t missing_count = 0;
+    size_t unserved_count = 0;
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    for (int font = 0; font < PLAYER_PSP_FONT_COUNT; font++) {
+        NkFontSource source;
+        bool exact;
+        if (font == 0 || font == PLAYER_PSP_FONT_COUNT - 1) {
+            source = states[font == 0 ? NK_FONT_SLOT_JAPANESE : NK_FONT_SLOT_KOREAN].source;
+            exact = source == NK_FONT_SOURCE_USER;
+        } else {
+            source = latin[font - 1].source;
+            exact = source == NK_FONT_SOURCE_USER && latin[font - 1].served_index == font - 1;
+        }
+        if (exact) continue;
+        missing[font] = true;
+        missing_count++;
+        if (source == NK_FONT_SOURCE_NONE) {
+            unserved[font] = true;
+            unserved_count++;
+        }
+    }
+    if (missing_count == 0) return;
+    bool one = missing_count == 1;
+    player_font_append(out, out_len, one ? "This PSP system font was not found: "
+                                         : "These PSP system fonts were not found: ");
+    player_font_append_names(out, out_len, missing);
+    player_font_append(out, out_len, one ? ". Games that ask for it get " : ". Games that ask for them get ");
+    if (unserved_count == missing_count) {
+        player_font_append(out, out_len, "no font at all. ");
+    } else {
+        player_font_append(out, out_len, "a stand-in font that looks different");
+        if (unserved_count > 0) {
+            player_font_append(out, out_len, ", and no font at all for ");
+            player_font_append_names(out, out_len, unserved);
+        }
+        player_font_append(out, out_len, ". ");
+    }
+    player_font_append(out, out_len, one ? "Import it" : "Import them");
+    player_font_append(out, out_len,
+                       " from your own PSP in the setup wizard; System fonts in docs/SETUP.md "
+                       "says how.");
+}
+
 void player_app_refresh_font_status(PlayerApp *app) {
     NkFontSlotState states[NK_FONT_SLOT_COUNT];
     NkFontLatinIndexState latin_states[NK_FONT_LATIN_INDEX_COUNT];
@@ -5113,6 +5201,11 @@ static void player_build_compatibility_preflight_for_game(
         player_preflight_add(preflight, "SYSTEM_FONTS",
                              every_slot ? PREFLIGHT_OK : PREFLIGHT_MISSING,
                              summary, font_issues, every_slot ? 0 : 1);
+        {
+            char missing[sizeof(preflight->checks[0].plain)];
+            player_font_missing_sentence(missing, sizeof(missing), states, latin_states);
+            if (missing[0]) player_preflight_set_plain(preflight, "%s", missing);
+        }
     }
 
     /* The public runtime drives the default device through SDL3 (#301). Whether a
