@@ -2745,9 +2745,14 @@ static uint32_t h_ImposeGetLanguageMode(CpuState *s) {
  * IdleCancelThreshold) and PPSSPP Core/HLE/sceCtrl.cpp, where the sets update
  * the sampling state later reads observe. The power-on defaults are digital
  * mode (0), cycle 0, and disabled thresholds (-1/-1, matching the previous
- * fixed getter and its PPSSPP-default comment). Validation of out-of-range
- * modes/cycles is UNMEASURED here: requests are retained verbatim and
- * reported back, like the batch-2 power clocks. */
+ * fixed getter and its PPSSPP-default comment). The setters validate their
+ * argument (issue #1390): the accepted ranges and the two error codes are
+ * pinned by PSPAutotests tests/ctrl/sampling and tests/ctrl/sampling2 (.expected
+ * files recorded on a PSP), corroborated by PPSSPP Core/HLE/sceCtrl.cpp; there
+ * is no project oracle case for them yet. The stored mode and cycle do not yet
+ * change what is sampled or how often (also #1390). */
+#define SCE_CTRL_ERROR_INVALID_MODE 0x80000107u  /* SCE_KERNEL_ERROR_INVALID_MODE */
+#define SCE_CTRL_ERROR_INVALID_VALUE 0x800001feu /* SCE_KERNEL_ERROR_INVALID_VALUE */
 static uint32_t s_ctrl_sampling_mode = 0u;
 static uint32_t s_ctrl_sampling_cycle = 0u;
 static uint32_t s_ctrl_idle_reset = 0xFFFFFFFFu;
@@ -2799,14 +2804,21 @@ static uint32_t h_CtrlGetIdleCancelThreshold(CpuState *s) {
     if (A1) MEM_W32(A1, s_ctrl_idle_back);
     return 0;
 }
-/* sceCtrlSetSamplingMode(mode): store the mode, returning the previous one. */
+/* sceCtrlSetSamplingMode(mode): store the mode (0 digital, 1 analog), returning
+ * the previous one. Any other mode, 2 and -1 included, is refused with
+ * INVALID_MODE and leaves the stored mode unchanged (PSPAutotests ctrl/sampling). */
 static uint32_t h_CtrlSetSamplingMode(CpuState *s) {
+    if (A0 > 1u) return SCE_CTRL_ERROR_INVALID_MODE;
     uint32_t prev = s_ctrl_sampling_mode;
     s_ctrl_sampling_mode = A0;
     return prev;
 }
-/* sceCtrlSetSamplingCycle(cycle): store the cycle, returning the previous one. */
+/* sceCtrlSetSamplingCycle(cycle): store the cycle in microseconds, returning the
+ * previous one. 0 (sample on VBLANK) and 5555..20000 are accepted; 1..5554, values
+ * above 20000 and -1 are refused with INVALID_VALUE and leave the stored cycle
+ * unchanged (PSPAutotests ctrl/sampling and ctrl/sampling2). */
 static uint32_t h_CtrlSetSamplingCycle(CpuState *s) {
+    if ((A0 > 0u && A0 < 5555u) || A0 > 20000u) return SCE_CTRL_ERROR_INVALID_VALUE;
     uint32_t prev = s_ctrl_sampling_cycle;
     s_ctrl_sampling_cycle = A0;
     return prev;
@@ -2842,6 +2854,16 @@ static uint32_t h_CtrlGetSamplingMode(CpuState *s) {
     (void)s;
     if (!A0 || !sr_guest_span_writable(A0, 4u)) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
     MEM_W32(A0, s_ctrl_sampling_mode);
+    return 0;
+}
+/* sceCtrlGetSamplingCycle(int *pcycle): report the cycle retained by
+ * sceCtrlSetSamplingCycle (power-on default 0) and return 0, the round trip
+ * PSPAutotests ctrl/sampling records. The out-pointer is checked like the mode
+ * getter above; that refusal code is UNMEASURED on hardware. */
+static uint32_t h_CtrlGetSamplingCycle(CpuState *s) {
+    (void)s;
+    if (!A0 || !sr_guest_span_writable(A0, 4u)) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(A0, s_ctrl_sampling_cycle);
     return 0;
 }
 
@@ -19042,7 +19064,10 @@ static uint32_t ctrl_fill_n(uint32_t buf, uint32_t nbufs, int negate, int peek) 
      * Clamping an oversized request the way this used to is a fabricated success:
      * the guest asked for something the API cannot do and was told it worked. */
     if (nbufs > CTRL_RING) return SCE_CTRL_ERROR_INVALID_SIZE;
-    if (nbufs == 0) return 0;                      /* zero requested, zero written */
+    /* A zero count is refused with the same code (issue #1390 acceptance, from the
+     * project's PSP-3000 measurement cited there; not yet a public oracle case, and
+     * PPSSPP returns 0 here). Refusing writes nothing and consumes nothing. */
+    if (nbufs == 0) return SCE_CTRL_ERROR_INVALID_SIZE;
     int avail = (s_ctrl_w - s_ctrl_r + CTRL_RING) % CTRL_RING;
     /* Blocking ReadBuffer waits for at least one fresh sample (delivered each VBLANK). */
     if (!peek) {
@@ -19106,6 +19131,12 @@ static uint32_t ctrl_fill(uint32_t buf, uint32_t count, int negate) {
 static uint32_t h_CtrlReadBuffer(CpuState *s) { return ctrl_fill(A0, A1, 0); }
 static uint32_t h_CtrlPeekBufferPositive(CpuState *s) {
     return ctrl_fill_n(A0, A1, 0, 1);
+}
+/* sceCtrlReadBufferNegative / sceCtrlPeekBufferNegative: the positive contract with
+ * the button field inverted (PSPSDK pspctrl.h); the read consumes and the peek does not. */
+static uint32_t h_CtrlReadBufferNegative(CpuState *s) { return ctrl_fill(A0, A1, 1); }
+static uint32_t h_CtrlPeekBufferNegative(CpuState *s) {
+    return ctrl_fill_n(A0, A1, 1, 1);
 }
 
 /* sceCtrlReadLatch(SceCtrlLatch *latch) (PSPSDK pspctrl.h, 16 bytes: uiMake, uiBreak, uiPress,
@@ -24580,6 +24611,8 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x4a9e5e29, "sceUmdWaitDriveStatCB", h_UmdWaitDriveStatCB);
     sr_hle_register(0x1f803938, "sceCtrlReadBufferPositive", h_CtrlReadBuffer);
     sr_hle_register(0x3a622550, "sceCtrlPeekBufferPositive", h_CtrlPeekBufferPositive);
+    sr_hle_register(0x60b81f86, "sceCtrlReadBufferNegative", h_CtrlReadBufferNegative);
+    sr_hle_register(0xc152080a, "sceCtrlPeekBufferNegative", h_CtrlPeekBufferNegative);
     sr_hle_register(0x0b588501, "sceCtrlReadLatch", h_CtrlReadLatch);
     sr_hle_register(0xb1d0e5cd, "sceCtrlPeekLatch", h_CtrlPeekLatch);
     sr_hle_register(0x6a638d83, "sceIoRead", h_IoRead);
@@ -24917,6 +24950,7 @@ static void hle_register_ctrl_sampling_handlers(void) {
     sr_hle_register(0x6a2774f3, "sceCtrlSetSamplingCycle", h_CtrlSetSamplingCycle);
     sr_hle_register(0xa7144800, "sceCtrlSetIdleCancelThreshold", h_CtrlSetIdleCancelThreshold);
     sr_hle_register(0xda6b76a1, "sceCtrlGetSamplingMode", h_CtrlGetSamplingMode);
+    sr_hle_register(0x02baad91, "sceCtrlGetSamplingCycle", h_CtrlGetSamplingCycle);
     /* 0x687660fa is GetIdleCancelThreshold(int*,int*), NOT ReadBufferNegative -- the pad
      * handler used pointer a1 as a buffer count and wrote up to a ring of SceCtrlData
      * through a1's 4-byte int (and could block the caller on the input ring). */

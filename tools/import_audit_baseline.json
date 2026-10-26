@@ -31,6 +31,12 @@
     "refusal_error": "0x80010086",
     "status": "controlled_unsupported"
   },
+  "0x02baad91": {
+    "classification": "dedicated",
+    "handler": "h_CtrlGetSamplingCycle",
+    "name": "sceCtrlGetSamplingCycle",
+    "status": "unreviewed"
+  },
   "0x03444eb4": {
     "classification": "dedicated",
     "handler": "h_GeListSync",
@@ -1409,6 +1415,12 @@
     "name": "sceMpegDelete",
     "status": "unreviewed"
   },
+  "0x60b81f86": {
+    "classification": "dedicated",
+    "handler": "h_CtrlReadBufferNegative",
+    "name": "sceCtrlReadBufferNegative",
+    "status": "unreviewed"
+  },
   "0x611e9e11": {
     "classification": "dedicated",
     "handler": "h_MpegQueryStreamSize",
@@ -2689,6 +2701,12 @@
     "classification": "dedicated",
     "handler": "h_MpegQueryMemSize",
     "name": "sceMpegQueryMemSize",
+    "status": "unreviewed"
+  },
+  "0xc152080a": {
+    "classification": "dedicated",
+    "handler": "h_CtrlPeekBufferNegative",
+    "name": "sceCtrlPeekBufferNegative",
     "status": "unreviewed"
   },
   "0xc1734599": {

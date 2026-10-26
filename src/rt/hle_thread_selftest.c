@@ -7331,6 +7331,69 @@ static void test_unregistered_batch_ctrl_sampling_getter(void) {
     sr_hle_test_ctrl_sampling_reset();
 }
 
+/* Issue #1390: the sampling setters validate their argument and keep the old value on error.
+ * The matrix is PSPAutotests tests/ctrl/sampling and tests/ctrl/sampling2 (.expected files
+ * recorded on a PSP): SetSamplingMode accepts 0 and 1 and refuses 2 and -1 with 0x80000107;
+ * SetSamplingCycle accepts 0 and 5555..20000 and refuses 1, 333, 4444, 5554, 20001 and -1 with
+ * 0x800001FE; sceCtrlGetSamplingCycle reports the stored cycle and returns 0. Production
+ * dispatch through sr_syscall; HOST_TESTED, no project oracle case yet. */
+static void test_ctrl_sampling_mode_cycle_matrix(void) {
+    enum {
+        NID_CTRL_GET_SAMPLING_MODE = 0xda6b76a1u,
+        NID_CTRL_SET_SAMPLING_MODE = 0x1f4011e6u,
+        NID_CTRL_GET_SAMPLING_CYCLE = 0x02baad91u,
+        NID_CTRL_SET_SAMPLING_CYCLE = 0x6a2774f3u,
+        CTRL_SAMPLING_OUT = 0x00270040u,
+    };
+    static const uint32_t refused_cycles[] = { 1u, 333u, 4444u, 5554u, 20001u, 0xffffffffu };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ctrl_sampling_reset();
+    expect(sr_hle_test_is_registered(NID_CTRL_GET_SAMPLING_CYCLE),
+           "sceCtrlGetSamplingCycle has a production registration");
+
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_MODE, 1u, 0u, 0u, 0u) == 0u,
+           "sceCtrlSetSamplingMode(1) returns the previous digital mode 0");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_MODE, 2u, 0u, 0u, 0u) == 0x80000107u,
+           "sceCtrlSetSamplingMode(2) is refused with INVALID_MODE");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_MODE, 0xffffffffu, 0u, 0u, 0u) == 0x80000107u,
+           "sceCtrlSetSamplingMode(-1) is refused with INVALID_MODE");
+    MEM_W32(CTRL_SAMPLING_OUT, 0xa57c3de1u);
+    expect(td24b_dispatch4(NID_CTRL_GET_SAMPLING_MODE, CTRL_SAMPLING_OUT, 0u, 0u, 0u) == 0u &&
+               MEM_R32(CTRL_SAMPLING_OUT) == 1u,
+           "a refused sampling mode leaves the stored mode 1 unchanged");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_MODE, 0u, 0u, 0u, 0u) == 1u,
+           "sceCtrlSetSamplingMode(0) after the refusals returns the kept mode 1");
+
+    MEM_W32(CTRL_SAMPLING_OUT, 0xa57c3de1u);
+    expect(td24b_dispatch4(NID_CTRL_GET_SAMPLING_CYCLE, CTRL_SAMPLING_OUT, 0u, 0u, 0u) == 0u &&
+               MEM_R32(CTRL_SAMPLING_OUT) == 0u,
+           "sceCtrlGetSamplingCycle reports the power-on cycle 0");
+    for (size_t i = 0; i < sizeof refused_cycles / sizeof refused_cycles[0]; i++)
+        expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_CYCLE, refused_cycles[i], 0u, 0u, 0u) ==
+                   0x800001feu,
+               "an out-of-range sampling cycle is refused with INVALID_VALUE");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_CYCLE, 5555u, 0u, 0u, 0u) == 0u,
+           "sceCtrlSetSamplingCycle(5555) is accepted and returns the kept cycle 0");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_CYCLE, 5556u, 0u, 0u, 0u) == 5555u,
+           "sceCtrlSetSamplingCycle(5556) returns the previous cycle 5555");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_CYCLE, 20000u, 0u, 0u, 0u) == 5556u,
+           "sceCtrlSetSamplingCycle(20000) returns the previous cycle 5556");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_CYCLE, 20001u, 0u, 0u, 0u) == 0x800001feu,
+           "sceCtrlSetSamplingCycle(20001) is refused");
+    MEM_W32(CTRL_SAMPLING_OUT, 0xa57c3de1u);
+    expect(td24b_dispatch4(NID_CTRL_GET_SAMPLING_CYCLE, CTRL_SAMPLING_OUT, 0u, 0u, 0u) == 0u &&
+               MEM_R32(CTRL_SAMPLING_OUT) == 20000u,
+           "a refused sampling cycle leaves the stored cycle 20000 unchanged");
+    expect(td24b_dispatch4(NID_CTRL_SET_SAMPLING_CYCLE, 0u, 0u, 0u, 0u) == 20000u,
+           "sceCtrlSetSamplingCycle(0) returns the kept cycle 20000");
+    MEM_W32(CTRL_SAMPLING_OUT, 0xa57c3de1u);
+    expect(td24b_dispatch4(NID_CTRL_GET_SAMPLING_CYCLE, 0u, 0u, 0u, 0u) == 0x800200d3u &&
+               MEM_R32(CTRL_SAMPLING_OUT) == 0xa57c3de1u,
+           "sceCtrlGetSamplingCycle refuses a NULL out-pointer with ILLEGAL_ADDR and no write");
+    sr_hle_test_ctrl_sampling_reset();
+}
+
 static void test_display_clock_reads_are_observational(void) {
     enum {
         NID_DISPLAY_CURRENT_HCOUNT = 0x773dd3a3u,
@@ -15162,8 +15225,9 @@ static void test_delay_thread_zero_loop_still_preempts_at_timeslice(void) {
  *    NUM_CTRL_BUFFERS (64) buffers returns SCE_KERNEL_ERROR_INVALID_SIZE rather
  *    than being clamped, and the returned value is the number of buffers
  *    actually written -- __CtrlReadSingleBuffer() contributes 0 for a pointer it
- *    cannot write, so a call that stores nothing reports 0.  With nBufs == 0 the
- *    available count is min(fresh, 0) == 0, so it writes nothing and returns 0.
+ *    cannot write, so a call that stores nothing reports 0.  PPSSPP returns 0
+ *    for nBufs == 0; issue #1390 specifies INVALID_SIZE from the project's PSP-3000
+ *    measurement (not yet a public oracle case), and that is what is asserted.
  *  - pspautotests tests/ctrl/ctrl.expected records that the blocking read really
  *    does wait and that the peek form does not.  Only the blocking form is
  *    registered by this runtime, so that is background, not an assertion here.
@@ -15183,6 +15247,8 @@ static void test_delay_thread_zero_loop_still_preempts_at_timeslice(void) {
  * --------------------------------------------------------------------------- */
 #define NID_SCE_CTRL_READ_BUFFER_POSITIVE 0x1f803938u
 #define NID_SCE_CTRL_PEEK_BUFFER_POSITIVE 0x3a622550u
+#define NID_SCE_CTRL_READ_BUFFER_NEGATIVE 0x60b81f86u
+#define NID_SCE_CTRL_PEEK_BUFFER_NEGATIVE 0xc152080au
 #define SCE_CTRL_ERROR_INVALID_SIZE 0x80000104u
 #define CTRL_SAMPLE_BYTES 16u
 #define CTRL_BTN_START 0x0008u
@@ -15427,10 +15493,48 @@ static void test_ctrl_read_buffer_contract(void) {
     ctrl_drain(&cpu);
     ctrl_tick(4u);
     ctrl_fill_guest(CTRL_OK_BUF, 4u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
-    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 0u) == 0u,
-           "a zero-buffer request reports zero buffers written");
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 0u) == SCE_CTRL_ERROR_INVALID_SIZE,
+           "a zero-buffer read is refused with INVALID_SIZE (issue #1390)");
+    expect(ctrl_peek_dispatch(&cpu, CTRL_OK_BUF, 0u) == SCE_CTRL_ERROR_INVALID_SIZE,
+           "a zero-buffer peek is refused with INVALID_SIZE (issue #1390)");
     expect(ctrl_guest_all(CTRL_OK_BUF, 4u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u),
            "a zero-buffer request writes no guest byte");
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 4u) == 4u,
+           "a refused zero-buffer read leaves the sample ring unconsumed");
+
+    /* --- negative read and peek ------------------------------------------- *
+     * The Negative forms invert the button field (PSPSDK pspctrl.h): a held
+     * START reads as every bit set except START. The peek leaves the history
+     * for the read, which then delivers the same samples. */
+    expect(sr_hle_test_is_registered(NID_SCE_CTRL_READ_BUFFER_NEGATIVE) &&
+               sr_hle_test_is_registered(NID_SCE_CTRL_PEEK_BUFFER_NEGATIVE),
+           "sceCtrlReadBufferNegative and sceCtrlPeekBufferNegative are registered");
+    ctrl_env("", "0008", "1", "1");
+    ctrl_drain(&cpu);
+    ctrl_tick(2u);
+    ctrl_fill_guest(CTRL_OK_BUF, 2u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = CTRL_OK_BUF;
+    cpu.r[5] = 2u;
+    expect(sr_syscall(&cpu, NID_SCE_CTRL_PEEK_BUFFER_NEGATIVE) == 2u &&
+               MEM_R32(CTRL_OK_BUF + 4u) == ~(uint32_t)CTRL_BTN_START &&
+               MEM_R32(CTRL_OK_BUF + CTRL_SAMPLE_BYTES + 4u) == ~(uint32_t)CTRL_BTN_START,
+           "a negative peek reports a held START as its cleared bit in every sample");
+    uint8_t neg_peeked[2u * CTRL_SAMPLE_BYTES];
+    memcpy(neg_peeked, (const void *)SR_HOST(CTRL_OK_BUF), sizeof(neg_peeked));
+    ctrl_fill_guest(CTRL_OK_BUF, 2u * CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = CTRL_OK_BUF;
+    cpu.r[5] = 2u;
+    expect(sr_syscall(&cpu, NID_SCE_CTRL_READ_BUFFER_NEGATIVE) == 2u &&
+               memcmp(neg_peeked, (const void *)SR_HOST(CTRL_OK_BUF), sizeof(neg_peeked)) == 0,
+           "a negative read delivers the samples the negative peek left unconsumed");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = CTRL_OK_BUF;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_CTRL_READ_BUFFER_NEGATIVE) == SCE_CTRL_ERROR_INVALID_SIZE,
+           "a zero-buffer negative read is refused with INVALID_SIZE");
+    ctrl_env("1", "", "", "");
 
     /* --- span crossing the end of the arena -------------------------------- *
      * The base is writable and its first sample fits exactly; the second cannot.
@@ -15730,8 +15834,8 @@ static void test_ctrl_sample_timestamp_microsecond_contract(void) {
 
     /* Vector F: ZERO COUNT
      * Produce a sample at T = 4,000,000 us. Advance time to 4,500,000 us.
-     * Issue a zero-count read (nbufs = 0). The zero-count read must return 0,
-     * write no bytes, and must NOT create or restamp any sample.
+     * Issue a zero-count read (nbufs = 0). The zero-count read is refused with
+     * INVALID_SIZE (issue #1390), writes no bytes, and must NOT create or restamp any sample.
      * Advance time to 5,000,000 us and read the sample: its timestamp must
      * still be 4,000,000 us. */
     ctrl_drain(&cpu);
@@ -15739,8 +15843,8 @@ static void test_ctrl_sample_timestamp_microsecond_contract(void) {
     sr_ctrl_sample();
     s_vtime_us = 4500000u;
     ctrl_fill_guest(CTRL_OK_BUF, CTRL_SAMPLE_BYTES, 0xa5a5a5a5u);
-    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 0u) == 0u,
-           "Vector F: zero-count read reports 0");
+    expect(ctrl_dispatch(&cpu, CTRL_OK_BUF, 0u) == SCE_CTRL_ERROR_INVALID_SIZE,
+           "Vector F: zero-count read is refused with INVALID_SIZE");
     expect(ctrl_guest_all(CTRL_OK_BUF, CTRL_SAMPLE_BYTES, 0xa5a5a5a5u),
            "Vector F: zero-count read writes no guest bytes");
     s_vtime_us = 5000000u;
@@ -31754,6 +31858,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_psp_measured_rtc_time64_20261024();
     test_psp_measured_umd_state_20261024();
     test_unregistered_batch_ctrl_sampling_getter();
+    test_ctrl_sampling_mode_cycle_matrix();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();
     test_delay_zero_probe_semantics();
