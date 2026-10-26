@@ -2657,6 +2657,30 @@ static void test_io_async_and_path_imports(void) {
     expect(sr_hle_test_io_poll_async(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 2u,
            "sceIoLseekAsync returns its resulting position through the async result");
 
+    /* A past-the-end destination is refused through the async result too (#1380). */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[6] = 4u;  /* one past the three-byte file */
+    cpu.r[7] = 0u;
+    cpu.r[8] = 0u;  /* SEEK_SET */
+    expect(sr_hle_test_io_lseek_async(&cpu) == 0u,
+           "sceIoLseekAsync queues a past-the-end destination");
+    sr_hle_test_io_async_import_boundary();
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
+               MEM_R32(RESULT_ADDR) == IO_ERROR_FUNCTION_NOT_SUPPORTED &&
+               MEM_R32(RESULT_ADDR + 4u) == 0xffffffffu,
+           "sceIoLseekAsync refuses a past-the-end destination instead of clamping it");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 1u;
+    expect(sr_hle_test_io_lseek32(&cpu) == 2u,
+           "the refused asynchronous seek leaves the position unchanged");
+
     MEM_W32(IOCTL_OUT_ADDR, 0xaaaaaaaau);
     MEM_W32(RESULT_ADDR, 0xfeedfaceu);
     memset(&cpu, 0, sizeof(cpu));
@@ -2858,7 +2882,8 @@ static void test_fd_namespace(void) {
         FD_KIND_FILE = 2,
         SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR = 0x80020323u,
         SCE_KERNEL_ERROR_TOO_MANY_OPEN_FILES = 0x80020320u,
-        SCE_KERNEL_ERROR_INVALID_ARGUMENT = 0x80020324u
+        SCE_KERNEL_ERROR_INVALID_ARGUMENT = 0x80020324u,
+        IO_ERROR_FUNCTION_NOT_SUPPORTED = 0x80010086u
     };
     const uint32_t path_addr = 0x09010000u;
     const uint32_t payload_addr = 0x09011000u;
@@ -2952,6 +2977,82 @@ static void test_fd_namespace(void) {
     cpu.r[5] = 1u;
     expect(sr_hle_test_io_open(&cpu) == 0x80010002u,
            "open non-existent file returns driver errno 0x80010002");
+
+    /* PSP_O_CREAT (0x0200) and PSP_O_EXCL (0x0800), #1380. PSP-IO-001 measured only that a
+     * read-only open of a missing file fails; a write open without PSP_O_CREAT fails the same
+     * way and creates nothing. An exclusive create of an existing file has no measured
+     * result, so it is refused with the named boundary and the file is left intact. */
+    {
+        static const char flags_guest[] = "ms0:/NAKAGAWA_OPEN_FLAGS.TXT";
+        static const uint32_t no_create[] = {
+            0x0002u, 0x0003u, 0x0402u, 0x0102u, 0x0802u  /* WRONLY, RDWR, +TRUNC, +APPEND, +EXCL */
+        };
+        static const uint32_t exclusive_existing[] = {
+            0x0A02u, 0x0E02u, 0x0B02u  /* WRONLY|CREAT|EXCL, +TRUNC, +APPEND */
+        };
+        char flags_host[256];
+        fd_host_path(flags_host, sizeof(flags_host), flags_guest);
+        DeleteFileA(flags_host);
+        for (size_t i = 0; i < sizeof(no_create) / sizeof(no_create[0]); i++) {
+            fd_set_path(&cpu, path_addr, flags_guest);
+            cpu.r[5] = no_create[i];
+            uint32_t rc = sr_hle_test_io_open(&cpu);
+            if (rc < 64u) {
+                memset(&cpu, 0, sizeof(cpu));
+                cpu.r[4] = rc;
+                (void)sr_hle_test_io_close(&cpu);
+            }
+            expect(rc == 0x80010002u && GetFileAttributesA(flags_host) == INVALID_FILE_ATTRIBUTES,
+                   "an open without PSP_O_CREAT of a missing file fails and creates nothing");
+            DeleteFileA(flags_host);
+        }
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0A02u;
+        uint32_t excl_fd = sr_hle_test_io_open(&cpu);
+        expect(excl_fd < 64u, "PSP_O_CREAT|PSP_O_EXCL creates a missing file");
+        fd_guest_copy(payload_addr, "abc", 3u);
+        fd_set_write(&cpu, excl_fd, payload_addr, 3u);
+        expect(sr_hle_test_io_write(&cpu) == 3u, "the exclusively created file takes bytes");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = excl_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u, "the exclusively created file closes");
+        for (size_t i = 0; i < sizeof(exclusive_existing) / sizeof(exclusive_existing[0]); i++) {
+            fd_set_path(&cpu, path_addr, flags_guest);
+            cpu.r[5] = exclusive_existing[i];
+            uint32_t rc = sr_hle_test_io_open(&cpu);
+            if (rc < 64u) {
+                memset(&cpu, 0, sizeof(cpu));
+                cpu.r[4] = rc;
+                (void)sr_hle_test_io_close(&cpu);
+            }
+            expect(rc == IO_ERROR_FUNCTION_NOT_SUPPORTED &&
+                       fd_host_bytes_equal(flags_host, (const uint8_t *)"abc", 3u),
+                   "PSP_O_CREAT|PSP_O_EXCL on an existing file is refused and leaves it intact");
+        }
+        /* Without PSP_O_CREAT an existing file still opens, and APPEND and TRUNC apply. */
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0102u;
+        uint32_t append_fd = sr_hle_test_io_open(&cpu);
+        expect(append_fd < 64u, "WRONLY|APPEND opens an existing file without PSP_O_CREAT");
+        fd_guest_copy(payload_addr, "de", 2u);
+        fd_set_write(&cpu, append_fd, payload_addr, 2u);
+        expect(sr_hle_test_io_write(&cpu) == 2u, "the append descriptor takes bytes");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = append_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u &&
+                   fd_host_bytes_equal(flags_host, (const uint8_t *)"abcde", 5u),
+               "APPEND without PSP_O_CREAT appends to the existing file");
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0402u;
+        uint32_t trunc_fd = sr_hle_test_io_open(&cpu);
+        expect(trunc_fd < 64u, "WRONLY|TRUNC opens an existing file without PSP_O_CREAT");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = trunc_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u &&
+                   fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
+               "TRUNC without PSP_O_CREAT truncates the existing file");
+        DeleteFileA(flags_host);
+    }
 
     /* DOS device names (join rule): create-open is not-found, matching the POSIX open
      * branch in hle.c; remove and mkdir refuse as an illegal path. Pins the cross-host
@@ -3157,6 +3258,59 @@ static void test_fd_namespace(void) {
     cpu.r[8] = 2u;     /* SEEK_END */
     cpu.r[6] = 0u;
     expect(sr_hle_test_io_lseek(&cpu) == sizeof(payload) - 1u && cpu.r[3] == 0u, "lseek SEEK_END succeeds");
+
+    /* Seek destinations are no longer clamped (#1380). PSP-IO-001 measured destinations
+     * inside the file only; one before the start or past the end has no measured result,
+     * so it is refused with the named boundary and the position stays where it was. */
+    {
+        const uint32_t file_size = (uint32_t)(sizeof(payload) - 1u);
+        static const struct { uint32_t offset, whence; } bad32[] = {
+            {0xffffffffu, 0u}, {0xfffffffau, 1u}, {1u, 2u}, {(uint32_t)(sizeof(payload) - 1u), 1u},
+        };
+        static const struct { uint32_t low, high, whence; } bad64[] = {
+            {0u, 1u, 0u},                    /* 2^32 from the start */
+            {0xfffffff0u, 0xffffffffu, 1u},  /* -16 from 5 */
+            {0xffffffffu, 0x7fffffffu, 1u},  /* INT64_MAX from 5: no overflow */
+            {0u, 0x80000000u, 2u},           /* INT64_MIN from the end */
+            {1u, 0u, 2u},                    /* one past the end */
+        };
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        cpu.r[5] = file_size;
+        cpu.r[6] = 0u;
+        expect(sr_hle_test_io_lseek32(&cpu) == file_size,
+               "lseek32 to the end of the file itself succeeds");
+        for (size_t i = 0; i < sizeof(bad32) / sizeof(bad32[0]) + sizeof(bad64) / sizeof(bad64[0]); i++) {
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = 5u;
+            cpu.r[6] = 0u;
+            expect(sr_hle_test_io_lseek32(&cpu) == 5u, "lseek32 places the descriptor at 5");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            uint32_t rc;
+            if (i < sizeof(bad32) / sizeof(bad32[0])) {
+                cpu.r[5] = bad32[i].offset;
+                cpu.r[6] = bad32[i].whence;
+                rc = sr_hle_test_io_lseek32(&cpu);
+            } else {
+                size_t j = i - sizeof(bad32) / sizeof(bad32[0]);
+                cpu.r[6] = bad64[j].low;
+                cpu.r[7] = bad64[j].high;
+                cpu.r[8] = bad64[j].whence;
+                rc = sr_hle_test_io_lseek(&cpu);
+                expect(cpu.r[3] == 0xffffffffu, "a refused lseek reports an error high word");
+            }
+            expect(rc == IO_ERROR_FUNCTION_NOT_SUPPORTED,
+                   "a seek before the start or past the end is refused, not clamped");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = 0u;
+            cpu.r[6] = 1u;
+            expect(sr_hle_test_io_lseek32(&cpu) == 5u,
+                   "a refused seek leaves the descriptor position unchanged");
+        }
+    }
 
     /* Closed descriptor behavior */
     memset(&cpu, 0, sizeof(cpu));
