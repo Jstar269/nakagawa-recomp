@@ -387,7 +387,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6a4fb689ab3ef1688e6a5ee7e3687473ef4c5e26f38a1de836cdce5666b11b54"
+      "sha256": "ec79351d296877754671b5f455251e9a2f50fbd7bb2044c0fe81f0cbc777451d"
     },
     {
       "path": "CREDITS.md",
@@ -1357,7 +1357,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5a2bd252f384056934f5f7a1cf5923c8a4956366724d2dbc678b190c6a60b9a0"
+      "sha256": "54a74589c6c40391ac131dc0fe6eada6583d70e4fada225b081a544ed7bf8b29"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1645,7 +1645,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f5d872d4538059540601e23e8bf41612e999dfc261420a5527f1dbc2b6825d8d"
+      "sha256": "f628f816d1d6b879ffaca4f622eaaf45e623e82d295e60263a9d8a1cd7e2f74c"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
