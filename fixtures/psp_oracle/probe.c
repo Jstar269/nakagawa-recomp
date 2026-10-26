@@ -4703,6 +4703,7 @@ static const ScePspFMatrix4 s_gt_identity = {
 };
 
 static int s_gt_cbid = -1;
+static uint32_t s_gt_records;  /* PSP-GE-TIMING-001 records emitted before ge-timing-done */
 static volatile uint32_t s_gt_fin_count;
 static volatile uint32_t s_gt_fin_time[4];
 static volatile uint32_t s_gt_fin_id[4];
@@ -4818,6 +4819,14 @@ static void gt_summary(uint32_t *v, uint32_t n, uint32_t out[3]) {
    out9-11 idle min/med/max, out12 enqueue med, out13 CPU MHz, out14 bus MHz,
    out15 last enqueue error.  All times are microseconds from just before the
    first enqueue.  The result word is the fin median. */
+/* Every PSP-GE-TIMING-001 record goes through here, so the ge-timing-done
+   completion record can carry the number emitted before it. */
+static void gt_record(int emulated, const char *case_id, const char *status,
+                      uint32_t result, const uint32_t *out, size_t count) {
+    emit_record_extended(emulated, "PSP-GE-TIMING-001", case_id, status, result, out, count);
+    s_gt_records++;
+}
+
 static void gt_emit(int emulated, const char *cell, uint32_t size, uint32_t units,
                     uint32_t list_bytes, GtStats *st) {
     uint32_t fin[3], idle[3], enq[3];
@@ -4831,9 +4840,8 @@ static void gt_emit(int emulated, const char *cell, uint32_t size, uint32_t unit
     };
     char case_id[64];
     snprintf(case_id, sizeof(case_id), "gt-%s-%s-%u", s_gt_clk, cell, (unsigned int)size);
-    emit_record_extended(emulated, "PSP-GE-TIMING-001", case_id,
-                         st->errors ? "FAIL" : st->timeouts ? "TIMEOUT" : "PASS",
-                         fin[1], out, 16);
+    gt_record(emulated, case_id, st->errors ? "FAIL" : st->timeouts ? "TIMEOUT" : "PASS",
+              fin[1], out, 16);
 }
 
 static void gt_begin(uint32_t *list) { (void)sceGuStart(GU_SEND, list); }
@@ -5283,8 +5291,8 @@ static void gt_cell_two_lists(int emulated) {
     };
     char case_id[64];
     snprintf(case_id, sizeof(case_id), "gt-%s-t15-twolists-32", s_gt_clk);
-    emit_record_extended(emulated, "PSP-GE-TIMING-001", case_id,
-                         st.errors ? "FAIL" : st.timeouts ? "TIMEOUT" : "PASS", fin2[1], out, 16);
+    gt_record(emulated, case_id, st.errors ? "FAIL" : st.timeouts ? "TIMEOUT" : "PASS",
+              fin2[1], out, 16);
 }
 
 /* The long list the completion cells share: GT_LONG_PASSES passes over the
@@ -5310,7 +5318,7 @@ static void gt_emit_rep(int emulated, const char *cell, uint32_t rep, const char
                         uint32_t result, const uint32_t *out, size_t count) {
     char case_id[64];
     snprintf(case_id, sizeof(case_id), "gt-%s-%s-r%u", s_gt_clk, cell, (unsigned int)rep);
-    emit_record_extended(emulated, "PSP-GE-TIMING-001", case_id, status, result, out, count);
+    gt_record(emulated, case_id, status, result, out, count);
 }
 
 /* C1+C3: on the long list, the time the last pass's final pixel reaches eDRAM
@@ -5607,7 +5615,7 @@ static void gt_pass(int emulated, int pll, int cpu, int bus) {
         const uint32_t out[3] = {(uint32_t)rc, s_gt_cpu_mhz, s_gt_bus_mhz};
         char case_id[32];
         snprintf(case_id, sizeof(case_id), "gt-%s-clock", s_gt_clk);
-        emit_record_extended(emulated, "PSP-GE-TIMING-001", case_id, "SKIP", (uint32_t)rc, out, 3);
+        gt_record(emulated, case_id, "SKIP", (uint32_t)rc, out, 3);
         return;
     }
     gt_cells_commands(emulated);
@@ -5645,8 +5653,8 @@ static void run_ge_timing(int emulated) {
     {
         const uint32_t out[4] = {(uint32_t)init_rc, (uint32_t)s_gt_cbid, (uint32_t)boot_cpu,
                                  (uint32_t)boot_bus};
-        emit_record_extended(emulated, "PSP-GE-TIMING-001", "gt-setup",
-                             init_rc >= 0 && s_gt_cbid >= 0 ? "PASS" : "FAIL", 0u, out, 4);
+        gt_record(emulated, "gt-setup", init_rc >= 0 && s_gt_cbid >= 0 ? "PASS" : "FAIL", 0u,
+                  out, 4);
     }
     uint32_t passes = 0;
     if (init_rc >= 0 && s_gt_cbid >= 0) {
@@ -5669,16 +5677,19 @@ static void run_ge_timing(int emulated) {
     {
         uint32_t out[GE_GU_TEARDOWN_OUTS];
         ge_gu_teardown_outs(&gu_down, out);
-        emit_record_extended(emulated, "PSP-GE-TIMING-001", "gt-gu-teardown",
-                             gu_down.idle ? "PASS" : "TIMEOUT", (uint32_t)gu_down.draw_state,
-                             out, GE_GU_TEARDOWN_OUTS);
+        gt_record(emulated, "gt-gu-teardown", gu_down.idle ? "PASS" : "TIMEOUT",
+                  (uint32_t)gu_down.draw_state, out, GE_GU_TEARDOWN_OUTS);
     }
     const int restore_rc = scePowerSetClockFrequency(boot_cpu, boot_cpu, boot_bus);
     const uint32_t done_out[4] = {passes, (uint32_t)restore_rc,
                                   (uint32_t)scePowerGetCpuClockFrequencyInt(),
                                   (uint32_t)scePowerGetBusClockFrequencyInt()};
-    emit_record_extended(emulated, "PSP-GE-TIMING-001", "gt-done",
-                         restore_rc >= 0 ? "PASS" : "FAIL", passes, done_out, 4);
+    gt_record(emulated, "gt-done", restore_rc >= 0 ? "PASS" : "FAIL", passes, done_out, 4);
+    /* Stream completion: out0 is the number of records above, which the runner
+       checks against the ordered contract in tools/psp_oracle/parse_golden.py. */
+    const uint32_t records = s_gt_records;
+    emit_record_extended(emulated, "PSP-GE-TIMING-001", "ge-timing-done", "PASS", 0u,
+                         &records, 1);
 }
 #endif
 

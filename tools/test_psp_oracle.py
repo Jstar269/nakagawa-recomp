@@ -3981,6 +3981,72 @@ class GuTeardownContractTests(unittest.TestCase):
                 self.assertNotEqual(_gu_teardown_problems(mutant), [], name)
 
 
+class GeTimingContractTests(unittest.TestCase):
+    """#1296: the ge-timing stream has a strict ordered completion contract."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
+        self.spec, self.counts = CAMPAIGN_PROBE_CASES["ge-timing"]
+
+    def test_contract_is_strict_and_counts_the_records(self) -> None:
+        self.assertEqual(_campaign_completeness_contract("ge-timing"),
+                         "strict-golden-sequence")
+        self.assertEqual(self.spec.test_id, "PSP-GE-TIMING-001")
+        self.assertEqual(self.spec.terminal_case, "ge-timing-done")
+        # gt-setup, 334 cells per clock pass, the teardown and gt-done.
+        self.assertEqual(self.spec.terminal_count, 1 + 2 * 334 + 2)
+        self.assertEqual(self.spec.ordered_cases[:2], ("gt-setup", "gt-b111-t0-empty-0"))
+        self.assertEqual(self.spec.ordered_cases[-3:], ("gt-gu-teardown", "gt-done", "ge-timing-done"))
+        self.assertEqual(
+            [case[len("gt-b111-"):] for case in self.spec.ordered_cases if case.startswith("gt-b111-")],
+            [case[len("gt-b166-"):] for case in self.spec.ordered_cases if case.startswith("gt-b166-")])
+
+    def test_every_record_is_counted_by_the_completion_record(self) -> None:
+        block = self.probe[self.probe.index("#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_TIMING\n/* GE execution"):]
+        block = _c_code(block[:block.index("\n#endif")])
+        emits = re.findall(r'emit_record_extended\(emulated, "PSP-GE-TIMING-001", ([^,]+),', block)
+        self.assertEqual(emits, ["case_id", '"ge-timing-done"'])
+        wrapper = dict(_c_function_list(block))["gt_record"]
+        self.assertIn("s_gt_records++;", wrapper)
+        run = dict(_c_function_list(block))["run_ge_timing"]
+        self.assertLess(run.index('gt_record(emulated, "gt-done"'), run.index('"ge-timing-done"'))
+        self.assertIn("const uint32_t records = s_gt_records;", run)
+
+    def test_contract_names_only_cells_the_probe_emits(self) -> None:
+        self.assertIn('snprintf(s_gt_clk, sizeof(s_gt_clk), "b%u", (unsigned int)bus);', self.probe)
+        self.assertIn("gt_pass(emulated, 222, 222, 111);", self.probe)
+        self.assertIn("gt_pass(emulated, 333, 333, 166);", self.probe)
+        cells = {re.match(r"[a-z]\d+-", case[len("gt-b111-"):]).group(0)
+                 for case in self.spec.ordered_cases if case.startswith("gt-b111-")}
+        # t0-t15, s1-s4 and the completion cells c13, c2, c4, c5 and c6.
+        self.assertEqual(len(cells), 16 + 4 + 5)
+        for cell in sorted(cells):
+            with self.subTest(cell=cell):
+                self.assertRegex(self.probe, r'["-]%s' % re.escape(cell))
+
+    def test_the_measured_order_parses_and_a_reordered_stream_does_not(self) -> None:
+        rows = []
+        for case_id in self.spec.ordered_cases:
+            out = " ".join(f"out{i}=0x00000000" for i in range(self.counts[case_id]))
+            if case_id == self.spec.terminal_case:
+                out = f"out0=0x{self.spec.terminal_count:08x}"
+            rows.append(f"NAKAGAWA_PSP_TEST schema=1 test_id=PSP-GE-TIMING-001 case_id={case_id} "
+                        f"status=PASS result=0x00000000 {out}\n")
+        meta = ("NAKAGAWA_PSP_META schema=1 source=psp model=PSP-3000 firmware=6.6.1 "
+                "binary_sha256=" + "0" * 64 + " source_commit=" + "0" * 40 + "\n")
+        self.assertTrue(parse_campaign_probe_output(meta + "".join(rows), "ge-timing").complete)
+        swapped = rows[:]
+        swapped[1], swapped[2] = swapped[2], swapped[1]
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(meta + "".join(swapped), "ge-timing")
+        clock_skip = ("NAKAGAWA_PSP_TEST schema=1 test_id=PSP-GE-TIMING-001 case_id=gt-b166-clock "
+                      "status=SKIP result=0x80000107 out0=0x80000107 out1=0x000000de out2=0x0000006f\n")
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(meta + "".join(rows[:335]) + clock_skip, "ge-timing",
+                                        require_complete=False)
+
+
 class CampaignHost0LogTests(unittest.TestCase):
     """Every campaign case writes its evidence to the host0 log the runner reads."""
 
