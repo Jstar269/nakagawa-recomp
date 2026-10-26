@@ -1,27 +1,27 @@
 # Documentation
 
-This index covers the active sanitized public source repository and its
-public-safe candidate/export boundary. Source code, tests and the
-Makefile remain authoritative for implementation behavior; curated GitHub Issues
-are authoritative for actionable work. Private operational, title-run and legal
-review documents are intentionally outside the public source tree; explicitly
-labelled historical evidence stays in the tree for provenance.
+This is the map of Nakagawa Recomp's documentation. When a page and the code
+disagree, the source code, tests and Makefile win; GitHub Issues are the place
+for open work. Private run notes and legal review documents are kept outside this
+public repository on purpose, while pages clearly marked as historical stay here
+as a record.
 
 ## For players
 
-Links for playing and trying the project, rather than changing it:
+Start here if you want to play or try the project rather than change it:
 
 - [`../README.md`](../README.md) — what the project is, and the quick start.
 - [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) — playing a game you own.
 - [`../ACCESSIBILITY.md`](../ACCESSIBILITY.md) — what the player does and does not support for accessibility, and how to report a barrier.
-- [`../SUPPORT.md`](../SUPPORT.md) — where to take a question.
+- [`../SUPPORT.md`](../SUPPORT.md) — where to take a question, including
+  [GitHub Discussions](https://github.com/Jstar269/nakagawa-recomp/discussions).
 - [`SHOWCASE.md`](SHOWCASE.md) — the two demo programs.
 - [`COMPATIBILITY.md`](COMPATIBILITY.md) — which games work.
 - [`SETUP.md`](SETUP.md#windows-host-pitfalls) — troubleshooting: Windows host pitfalls.
 
 ## Start here
 
-Rows are what you are about to do, not topics. Read the row you are in, not the table.
+Each row is something you are about to do. Find yours and read what it points to.
 
 | When you are about to | Read |
 | --- | --- |
@@ -88,9 +88,9 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 
 ## Doctrine, player, and productization
 
-These were reachable only by knowing their filenames until now. Doctrine binds
-current work; the productization documents are maintained decision and gap records
-with explicit target and unbuilt boundaries.
+The doctrine pages set rules that current work must follow. The productization
+pages are maintained records of decisions and gaps; each one says plainly what is
+a target and what isn't built yet.
 
 - [`LLE_FIDELITY_ARCHITECTURE.md`](LLE_FIDELITY_ARCHITECTURE.md) — the
   fidelity-over-convenience doctrine and why original guest execution outranks

@@ -1,8 +1,15 @@
 # Architecture Overview
 
-High-level map of the PSP static recompiler: what each major area does, how data flows, and where
-to start when behavior diverges. The live source, Makefile, and tests are authoritative when this
-overview and implementation disagree.
+This page is a map of how Nakagawa Recomp turns a PSP game into a native program: what each major part
+does, how data flows between them, and where to start looking when something behaves differently from a
+PSP. When this page and the code disagree, the live source, Makefile and tests are right.
+
+In short: the tools in `tools/` read the game's program files, find its functions, and translate its MIPS
+machine code into C ahead of time (AOT). That C is compiled together with the native runtime in `src/rt/`,
+which stands in for the PSP's system software, graphics, sound and input. If the running game reaches valid
+code that wasn't translated, a small interpreter runs it, but only inside code the analyzer has claimed;
+anything it can't handle stops the run with a named message instead of guessing. The player in
+`src/player/` puts it all in front of the user.
 
 ## Pipeline
 
@@ -41,7 +48,8 @@ oracle traces. Those remain local inputs.
 
 ## PSP core, title profile, and backend boundary
 
-Wave 1 introduces a narrow, versioned contract without changing the HST production path:
+The first wave of this work adds a small, versioned contract between the PSP core, a title's profile and
+the host backends, without changing how Hot Shots Tennis (HST) is built today:
 
 ```text
 validated ProgramImage (tools/prxload.py)
