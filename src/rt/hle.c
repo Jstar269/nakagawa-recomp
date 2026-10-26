@@ -9215,6 +9215,9 @@ static uint32_t h_MpegAvcDecodeFlush(CpuState *s) {
 #define ATRAC3_SAMPLES_PER_FRAME 1024
 #define ATRAC_CODEC_AT3PLUS 0x1000u
 #define ATRAC_CODEC_AT3 0x1001u
+/* Measured on a PSP-3000 (#1096): the first sceAtracDecodeData of an AT3 stream
+ * whose fact delay is 500 returns this code with 0 samples. */
+#define ATRAC_ERROR_API_FAIL 0x80630002u
 #define ATRAC_ERROR_NO_ATRACID 0x80630003u
 #define ATRAC_ERROR_INVALID_CODECTYPE 0x80630004u
 #define ATRAC_ERROR_BAD_ATRACID 0x80630005u
@@ -9225,6 +9228,9 @@ static uint32_t h_MpegAvcDecodeFlush(CpuState *s) {
 #define ATRAC_ERROR_ADD_DATA_IS_TOO_BIG 0x80630018u
 #define ATRAC_ERROR_NO_LOOP_INFORMATION 0x80630021u
 #define ATRAC_ERROR_ALLDATA_DECODED 0x80630022u
+/* Measured on a PSP-3000 (#1096): sceAtracDecodeData of a streamed AT3 track
+ * after its last buffered frame, with file data still to stream. */
+#define ATRAC_ERROR_BUFFER_IS_EMPTY 0x80630023u
 #define ATRAC_ERROR_DECODE_DATA_AFTER_END 0x80630024u
 #define ATRAC_PSP_ALLDATA_IS_ON_MEMORY 0xFFFFFFFFu
 #define ATRAC_PSP_NONLOOP_STREAM_IS_ON_MEMORY 0xFFFFFFFEu
@@ -9250,8 +9256,9 @@ typedef struct {
     uint32_t avgBytesPerSec;      /* RIFF fmt nAvgBytesPerSec (bitrate source) */
     uint16_t formatTag;           /* RIFF fmt wFormatTag */
     uint8_t at3Extradata[14];     /* validated AT3 WAVEFORMATEX extension */
-    int at3FactDelayPresent;      /* RIFF fact delay exists; trim is NOT_MEASURED */
-    int at3FirstFrameDelayNotMeasured;
+    uint32_t at3FactSize;         /* RIFF fact chunk size (8 or 12) */
+    uint32_t at3FactDelay;        /* fact word after the sample count */
+    int at3FirstFramePending;     /* no frame decoded since SetData */
     int endSample, posSample, loopNum;
     int loopStartSample, loopEndSample;   /* 'smpl' loop points; -1 when absent */
     uint32_t bufferPos;           /* ring offset of the next frame to consume */
@@ -9388,7 +9395,7 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
     uint16_t formatTag = 0;
     uint8_t at3Extradata[14] = {0};
     int hasFmt = 0;
-    int at3FactDelayPresent = 0;
+    uint32_t at3FactSize = 0, at3FactDelay = 0;
     int endSample = 0;
     int loopStartSample = -1, loopEndSample = -1;
     for (uint32_t off = 12u; off <= scan_end - 8u;) {
@@ -9407,7 +9414,8 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
             if (sz < 4u || sz > avail) return 0;
             if (a->codecType == ATRAC_CODEC_AT3) {
                 if (sz != 8u && sz != 12u) return 0;
-                at3FactDelayPresent = 1;
+                at3FactSize = sz;
+                at3FactDelay = MEM_R32(p + 12u);
             }
             uint32_t samples = MEM_R32(p + 8u);
             if (samples == 0u || samples > 0x7fffffffu) return 0;
@@ -9474,7 +9482,8 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
     a->channels = channels;
     a->formatTag = formatTag;
     memcpy(a->at3Extradata, at3Extradata, sizeof(a->at3Extradata));
-    a->at3FactDelayPresent = at3FactDelayPresent;
+    a->at3FactSize = at3FactSize;
+    a->at3FactDelay = at3FactDelay;
     a->endSample = endSample;
     a->loopStartSample = loopStartSample;
     a->loopEndSample = loopEndSample;
@@ -9642,7 +9651,7 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size) {
     }
     (void)atrac_reset_decoder(a);
     a->decodeFailureReported = 0;
-    a->at3FirstFrameDelayNotMeasured = 0;
+    a->at3FirstFramePending = 1;
     if (oldStreamWindow) free(oldStreamWindow);
     a->streamWindow = NULL;
     a->streamWindowSize = 0;
@@ -9880,16 +9889,19 @@ int sr_hle_test_atrac_second_buffer(uint32_t id, uint32_t *addr, uint32_t *size)
     return 1;
 }
 #endif
-/* Decode the next frame through its codec-specific bridge into guest `out`. Returns
- *   1  frame decoded and written (channels*samplesPerFrame interleaved s16),
+/* Decode the next frame through its codec-specific bridge into guest `out`,
+ * dropping its first `skip` samples. *samples_out is the decoder frame length;
+ * (frame - skip) samples are written. Returns
+ *   1  frame decoded and written (channels*(samplesPerFrame-skip) interleaved s16),
  *   0  no frame available right now (streamed ring empty or frame not yet fed),
  *  -1  permanent failure (no decoder, or the frame failed to decode).
  * A -1 is a visible gap: the caller returns an error code instead of
  * fabricating PCM (no fake audio). */
-static int atrac_decode_frame(Atrac *a, uint32_t out, int *samples_out) {
+static int atrac_decode_frame(Atrac *a, uint32_t out, int skip, int *samples_out) {
     uint32_t src;
     int streamed = atrac_streamed_state(a);
     if (samples_out) *samples_out = 0;
+    if (skip < 0 || skip >= atrac_samples_per_frame(a)) return -1;
     if (a->bytesPerFrame == 0u) return 0;   /* ring not sized yet (streaming refill) */
     if (streamed) {
         if (a->bufferValidBytes < a->bytesPerFrame) return 0;
@@ -9933,18 +9945,20 @@ static int atrac_decode_frame(Atrac *a, uint32_t out, int *samples_out) {
         return -1;
     }
     /* Whole-span preflight before the bulk guest write (AGENTS.md guest-memory
-     * hardening): the complete channels*n*2 writable span must be valid, and a
-     * rejected output address must not leave partial PCM behind. */
-    if (out && !sr_guest_span_writable(out, (uint32_t)n * (uint32_t)a->channels * 2u))
+     * hardening): the complete channels*kept*2 writable span must be valid, and
+     * a rejected output address must not leave partial PCM behind. */
+    int kept = n - skip;
+    const int16_t *pcm = a->host_pcm + skip * a->channels;
+    if (out && !sr_guest_span_writable(out, (uint32_t)kept * (uint32_t)a->channels * 2u))
         return -1;
     /* host_pcm is already interleaved channels*n s16 (PR-A contract). */
     if (out)
-        for (int i = 0; i < n * a->channels; i++)
-            MEM_W16(out + (uint32_t)i * 2u, (uint16_t)a->host_pcm[i]);
+        for (int i = 0; i < kept * a->channels; i++)
+            MEM_W16(out + (uint32_t)i * 2u, (uint16_t)pcm[i]);
     if (audio_stat_on()) {
         int pk = 0;
-        for (int i = 0; i < n * a->channels; i++) {
-            int v = a->host_pcm[i];
+        for (int i = 0; i < kept * a->channels; i++) {
+            int v = pcm[i];
             if (v < 0) v = -v;
             if (v > pk) pk = v;
         }
@@ -9957,18 +9971,52 @@ static int atrac_decode_frame(Atrac *a, uint32_t out, int *samples_out) {
     return 1;
 }
 
-/* NOT_MEASURED: the PSP's trimming of the first decoded frame using the RIFF
- * fact-chunk delay has not been measured. Keep the complete decoder frame and
- * report this boundary once; do not infer or apply a delay value. */
-static int atrac3_first_frame_delay_trim_samples(Atrac *a) {
+/* First sceAtracDecodeData of a plain AT3 track against the delay word of an
+ * 8-byte RIFF fact chunk. MEASURED on a PSP-3000 (firmware 6.61) on 2026-10-24
+ * with one 2-channel, 304-byte-block stream launched once per delay, only the
+ * delay word changed (#1096; fixtures/psp_oracle/README.md `at3-decode`):
+ *   delay 0 and 1024 -> 955 samples; delay 955 -> 1024 samples; later calls
+ *   1024 each; delay 500 -> the first decode returns 0x80630002, 0 samples.
+ * Only these delays are modelled. Any other delay, or a 12-byte fact chunk,
+ * keeps the complete decoder frame and reports ATRAC3_NOT_MEASURED once. The
+ * PSP's sceAtracSetData refusal of delay 2048 (0x80630008) is measured but not
+ * modelled here. The sample counts are measured; which samples of the frame
+ * the PSP drops is not public evidence, and the leading ones are dropped
+ * (assumed). */
+static const struct {
+    uint32_t delay;
+    int first_samples;     /* samples returned by the first call; 0 = refused */
+    uint32_t error;        /* first-call return when refused */
+} k_atrac3_first_frame_measured[] = {
+    { 0u, 955, 0u },
+    { 955u, 1024, 0u },
+    { 1024u, 955, 0u },
+    { 500u, 0, ATRAC_ERROR_API_FAIL },
+};
+/* Returns the first-call error for a refused delay (0 otherwise) and sets
+ * *skip to the leading samples the first frame drops. */
+static uint32_t atrac3_first_frame_rule(const Atrac *a, int *skip) {
     static int reported;
-    if (a->codecType != ATRAC_CODEC_AT3 || !a->at3FactDelayPresent ||
-        a->at3FirstFrameDelayNotMeasured)
+    *skip = 0;
+    if (a->codecType != ATRAC_CODEC_AT3 || !a->at3FirstFramePending)
         return 0;
-    a->at3FirstFrameDelayNotMeasured = 1;
+    if (a->at3FactSize == 8u) {
+        for (size_t i = 0; i < sizeof(k_atrac3_first_frame_measured) /
+                                   sizeof(k_atrac3_first_frame_measured[0]); i++) {
+            if (k_atrac3_first_frame_measured[i].delay != a->at3FactDelay)
+                continue;
+            if (k_atrac3_first_frame_measured[i].error)
+                return k_atrac3_first_frame_measured[i].error;
+            *skip = ATRAC3_SAMPLES_PER_FRAME -
+                    k_atrac3_first_frame_measured[i].first_samples;
+            return 0;
+        }
+    }
     if (!reported) {
         fprintf(stderr,
-                "ATRAC3_NOT_MEASURED: first-frame RIFF fact-delay trimming is not applied pending PSP measurement.\n");
+                "ATRAC3_NOT_MEASURED: first-frame length for fact size %u delay %u is not measured; "
+                "the complete decoder frame is kept (#1096).\n",
+                a->at3FactSize, a->at3FactDelay);
         reported = 1;
     }
     return 0;
@@ -9986,9 +10034,17 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
         if (remAddr) MEM_W32(remAddr, atrac_remaining_frames(a));
         return ATRAC_ERROR_DECODE_DATA_AFTER_END;
     }
-    (void)atrac3_first_frame_delay_trim_samples(a);
+    int skip = 0;
+    uint32_t first_err = atrac3_first_frame_rule(a, &skip);
+    if (first_err) {
+        /* Measured: 0 samples. The other outputs are not recorded, and a
+         * repeated call (which refuses again here, nothing being consumed)
+         * was not measured. */
+        if (decAddr) MEM_W32(decAddr, 0u);
+        return first_err;
+    }
     int decoded_samples = 0;
-    int st = atrac_decode_frame(a, out, &decoded_samples);
+    int st = atrac_decode_frame(a, out, skip, &decoded_samples);
     if (st < 0) {
         /* Honest gap: this track cannot produce PCM in this build (unsupported
          * codec, decoder allocation failure, or a frame that failed to decode).
@@ -9999,10 +10055,27 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
         atrac_report_decode_failure(a);
         return ATRAC_ERROR_UNKNOWN_FORMAT;
     }
+    if (st == 0 && a->codecType == ATRAC_CODEC_AT3 &&
+        atrac_streamed_state(a) && a->size < a->fileSize) {
+        /* MEASURED on a PSP-3000 (#1096; fixtures/psp_oracle/README.md
+         * `at3-decode`): once the buffered frames of a streamed AT3 track are
+         * used up and file data remains to be added, DecodeData returns
+         * 0x80630023 with 0 samples and end flag 0. Nothing is consumed, so
+         * sceAtracAddStreamData resumes decoding. */
+        if (decAddr) MEM_W32(decAddr, 0u);
+        if (finAddr) MEM_W32(finAddr, 0u);
+        if (remAddr) MEM_W32(remAddr, atrac_remaining_frames(a));
+        return ATRAC_ERROR_BUFFER_IS_EMPTY;
+    }
     if (st > 0) {
-        n = decoded_samples;
+        /* The guest receives the kept samples. The stream position still
+         * advances by the whole decoder frame, as before this trim existed:
+         * the PSP's position after a shortened first call is NOT_MEASURED
+         * (#1096), so the frame-offset bookkeeping is left unchanged. */
+        n = decoded_samples - skip;
+        a->at3FirstFramePending = 0;
         if (atrac_streamed_state(a)) atrac_consume_frame(a);
-        a->posSample += n;
+        a->posSample += decoded_samples;
         if (atrac_streamed_state(a) && a->loopEndSample > 0 && a->posSample > a->loopEndSample) {
             a->posSample = a->loopStartSample >= 0 ? a->loopStartSample : 0;
             if (a->loopNum > 0) a->loopNum--;
