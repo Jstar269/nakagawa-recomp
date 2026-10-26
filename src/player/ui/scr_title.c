@@ -33,6 +33,8 @@
 #define TITLE_ID_ACTIONS 0x2000002Au
 #define TITLE_ID_BUILD_PREFLIGHT 0x20000030u
 #define TITLE_ID_BUILD_FOLDER 0x20000031u
+#define TITLE_ID_INPUT_ACTIONS 0x20000032u
+#define TITLE_ID_INPUT_GUIDE 0x20000100u
 #define TITLE_ID_STALL_NOTICE 0x20000035u
 #define TITLE_ID_STALL_EYEBROW 0x20000036u
 #define TITLE_ID_STALL_TEXT 0x20000037u
@@ -158,6 +160,117 @@ static const char *package_state_text(PlayerUiPackageState state) {
         case PLAYER_UI_PACKAGE_MISSING:
         default: return "The package for this game is not ready yet.";
     }
+}
+
+/* ---- Files a disc needs (#308) ----------------------------------------------------
+   Why the files are needed, one row per file (still needed, or a copy to
+   replace; the file to add; what it is a copy of), a count and the folder.
+   The title page, the game-found card and the wizard's Verify step share it;
+   each keeps its own buttons (Check again, Open folder). The words never ask
+   for a key and never say how to decrypt: Nakagawa does not decrypt games. */
+
+#define INPUT_GUIDE_LEAD \
+    "This game's program files are encrypted on the disc, and Nakagawa doesn't decrypt " \
+    "games. It can use decrypted copies you make from your own disc: put these files in " \
+    "the folder below, then choose Check again."
+
+static bool input_guide_present(const PlayerUiInputGuide *guide) {
+    return guide != NULL && guide->file_count > 0u;
+}
+
+/* max_rows bounds the listed files on a short window; the count line says how
+   many are not shown. A short window (max_rows of 2 or fewer) also gets the
+   compact form: no eyebrow, two lines of the reason, one of the folder, and the
+   Replace marks without their sentence. */
+static void input_guide_box(NkUi *ui, NkUiId base, const PlayerUiInputGuide *guide,
+                            float width, size_t max_rows) {
+    const NkUiTheme *theme = nk_ui_theme(ui);
+    NkUiLayout box = layout_make(NK_UI_LAYOUT_COLUMN, sizing_grow(), sizing_fit(), 6.0f);
+    NkUiStyle style;
+    NkUiTextStyle lead = nk_ui_type(NK_UI_TYPE_BODY_S, theme->paper);
+    NkUiTextStyle data = nk_ui_type(NK_UI_TYPE_DATA, theme->muted);
+    float inner = width - 28.0f;
+    size_t shown;
+    bool replace = false;
+    bool compact = max_rows > 0u && max_rows <= 2u;
+    if (!input_guide_present(guide)) return;
+    if (inner < 120.0f) inner = 120.0f;
+    memset(&style, 0, sizeof(style));
+    style.fill_rgba = theme->surface;
+    style.border_rgba = theme->line;
+    style.border_width = NK_UI_BORDER_HAIRLINE;
+    style.corner_radius = 10.0f;
+    box.padding_top = box.padding_bottom = compact ? 8.0f : 12.0f;
+    box.padding_left = box.padding_right = 14.0f;
+    if (compact) box.gap = 4.0f;
+    if (!nk_ui_begin_container(ui, base, &box, &style)) return;
+    if (!compact) nk_ui_eyebrow(ui, base + 1u, "Files to add");
+    nk_ui_text(ui, base + 2u,
+               nk_ui_text_clamp(ui, INPUT_GUIDE_LEAD, &lead, inner, compact ? 2 : 3), &lead);
+    shown = guide->file_count < PLAYER_UI_INPUT_FILES ? guide->file_count : PLAYER_UI_INPUT_FILES;
+    if (max_rows > 0u && shown > max_rows) shown = max_rows;
+    for (size_t i = 0u; i < guide->file_count && i < PLAYER_UI_INPUT_FILES; ++i) {
+        if (guide->files[i].replace) replace = true;
+    }
+    for (size_t i = 0u; i < shown; ++i) {
+        const PlayerUiInputFile *file = &guide->files[i];
+        NkUiId row_id = (NkUiId)(base + 0x10u + (NkUiId)i * 8u);
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_3);
+        row.align_y = NK_UI_ALIGN_CENTER;
+        if (nk_ui_begin_container(ui, row_id, &row, NULL)) {
+            NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(84.0f), sizing_fit(), 0.0f);
+            NkUiTextStyle name = nk_ui_type(NK_UI_TYPE_DATA, theme->paper);
+            NkUiTextStyle source = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
+            char copy_of[200];
+            float rest = inner - 84.0f - 150.0f - 2.0f * NK_UI_SPACE_3;
+            if (nk_ui_begin_container(ui, row_id + 1u, &cell, NULL)) {
+                nk_ui_text_role(ui, row_id + 4u, file->replace ? "REPLACE" : "NEEDED",
+                                NK_UI_TYPE_LABEL_S, file->replace ? theme->error : theme->warning);
+                nk_ui_end_container(ui);
+            }
+            cell.width = sizing_fixed(150.0f);
+            if (nk_ui_begin_container(ui, row_id + 2u, &cell, NULL)) {
+                nk_ui_text(ui, row_id + 5u,
+                           nk_ui_text_clamp(ui, safe_text(file->name, "?"), &name, 150.0f, 1),
+                           &name);
+                nk_ui_end_container(ui);
+            }
+            (void)snprintf(copy_of, sizeof(copy_of), "copy of %s",
+                           safe_text(file->source, "a file on the disc"));
+            if (rest < 60.0f) rest = 60.0f;
+            nk_ui_text(ui, row_id + 3u, nk_ui_text_clamp(ui, copy_of, &source, rest, 1), &source);
+            nk_ui_end_container(ui);
+        }
+    }
+    {
+        char count[192];
+        size_t hidden = guide->file_count > shown ? guide->file_count - shown : 0u;
+        if (hidden > 0u) {
+            (void)snprintf(count, sizeof(count), "%s \xC2\xB7 %u more not shown",
+                           safe_text(guide->summary, ""), (unsigned)hidden);
+        } else {
+            (void)snprintf(count, sizeof(count), "%s", safe_text(guide->summary, ""));
+        }
+        if (count[0] != '\0') {
+            NkUiTextStyle caption = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
+            nk_ui_text(ui, base + 3u, nk_ui_text_clamp(ui, count, &caption, inner, 1), &caption);
+        }
+    }
+    if (replace && !compact) {
+        NkUiTextStyle caption = nk_ui_type(NK_UI_TYPE_CAPTION, theme->error);
+        nk_ui_text(ui, base + 4u,
+                   nk_ui_text_clamp(ui,
+                                    "A file marked Replace is in the folder but isn't a working "
+                                    "program file. Put a new copy in its place.",
+                                    &caption, inner, 2),
+                   &caption);
+    }
+    if (guide->folder != NULL && guide->folder[0] != '\0') {
+        data.wrap = true;
+        nk_ui_text(ui, base + 5u,
+                   nk_ui_text_clamp(ui, guide->folder, &data, inner, compact ? 1 : 2), &data);
+    }
+    nk_ui_end_container(ui);
 }
 
 PlayerUiAction player_ui_screen_title(NkUi *ui,
@@ -331,8 +444,31 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 }
                 nk_ui_end_container(ui);
             }
-            if (title->build_preflight_message != NULL &&
-                title->build_preflight_message[0] != '\0') {
+            if (input_guide_present(&model->input_guide)) {
+                /* The build waits for decrypted copies from the user's disc
+                   (#308): which files, where they go, and a check that runs
+                   again without adding the disc again. */
+                float main_width = width - 2.0f * gutter - NK_UI_DETAIL_GAP - aside;
+                input_guide_box(ui, TITLE_ID_INPUT_GUIDE, &model->input_guide, main_width,
+                                height >= 680.0f ? PLAYER_UI_INPUT_FILES : 2u);
+                row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+                row.align_y = NK_UI_ALIGN_CENTER;
+                if (nk_ui_begin_container(ui, TITLE_ID_INPUT_ACTIONS, &row, NULL)) {
+                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_CHECK_AGAIN, "Check again", 0u)) {
+                        result = action(PLAYER_UI_ACTION_CHECK_INPUT_AGAIN,
+                                        model->title_index, PLAYER_UI_PRIMARY_NONE);
+                    }
+                    if (model->input_guide.folder != NULL &&
+                        model->input_guide.folder[0] != '\0' &&
+                        nk_ui_button(ui, PLAYER_UI_ID_TITLE_OPEN_INPUT_FOLDER, "Open folder",
+                                     0u)) {
+                        result = action(PLAYER_UI_ACTION_OPEN_BUILD_INPUT_FOLDER,
+                                        model->title_index, PLAYER_UI_PRIMARY_NONE);
+                    }
+                    nk_ui_end_container(ui);
+                }
+            } else if (title->build_preflight_message != NULL &&
+                       title->build_preflight_message[0] != '\0') {
                 nk_ui_text_role(ui, TITLE_ID_BUILD_PREFLIGHT,
                                 title->build_preflight_message,
                                 NK_UI_TYPE_BODY_S, theme->error);
@@ -1084,6 +1220,7 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
 #define WIZ_ID_BUTTONS 0x61000030u
 #define WIZ_ID_EXTRA 0x61000031u
 #define WIZ_ID_TEXT 0x61001000u
+#define WIZ_ID_GUIDE 0x61000300u
 
 static PlayerUiAction wizard_op(PlayerUiWizardOp op) {
     PlayerUiAction result;
@@ -1328,10 +1465,12 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
     case 3: {
         bool blocked = model->experimental && model->blocked_reason != NULL &&
                        model->blocked_reason[0] != '\0';
-        const char *badge = blocked ? "Not playable yet"
+        /* Encrypted program files the user can supply (#308). */
+        bool guided = blocked && input_guide_present(&model->input_guide);
+        const char *badge = guided ? "Needs your files" : blocked ? "Not playable yet"
             : (model->experimental ? "Not tested yet"
                : (model->supported ? "Title profiled" : "Profile missing"));
-        uint32_t tone = blocked ? theme->error
+        uint32_t tone = guided ? theme->warning : blocked ? theme->error
             : (model->experimental ? theme->warning
                : (model->supported ? theme->ready : theme->error));
         const char *note;
@@ -1352,6 +1491,9 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             /* Why the copy failed and what to do next, in place of the catalog note. */
             note = model->extraction_error;
             note_tone = theme->error;
+        } else if (guided) {
+            note = "This game needs files from your own disc before Nakagawa can use it.";
+            note_tone = theme->warning;
         } else if (blocked) {
             note = "This game can't be played in this version of Nakagawa yet.";
             note_tone = theme->error;
@@ -1375,10 +1517,15 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                 nk_ui_tag(ui, WIZ_ID_TEXT + 0x22u, safe_text(model->disc_id, "Unknown"));
                 nk_ui_end_container(ui);
             }
-            wizard_text(ui, 1u, safe_text(model->title_name, "PlayStation Portable title"),
-                        NK_UI_TYPE_TITLE, theme->paper);
-            wizard_text(ui, 2u, note, NK_UI_TYPE_BODY_S, note_tone);
-            if (blocked && !model->extracting) {
+            /* A guided step on a short window gives the name's line to the
+               files; the disc ID chip above still says which disc it is. */
+            if (!guided || model->logical_height >= 680.0f) {
+                wizard_text(ui, 1u, safe_text(model->title_name, "PlayStation Portable title"),
+                            NK_UI_TYPE_TITLE, theme->paper);
+            }
+            /* A guided step says it in the guide itself. */
+            if (!guided) wizard_text(ui, 2u, note, NK_UI_TYPE_BODY_S, note_tone);
+            if (blocked && !model->extracting && !guided) {
                 wizard_text(ui, 6u, model->blocked_reason, NK_UI_TYPE_BODY_S, theme->paper);
             }
             if (model->extracting) {
@@ -1395,6 +1542,12 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                                                               "Preparing the disc image..."),
                                                 &file, inner - 32.0f, 1), &file);
                 }
+            } else if (guided) {
+                /* The files take the room the check rows had; the rows come
+                   back once Check again lets the disc in. */
+                input_guide_box(ui, WIZ_ID_GUIDE, &model->input_guide, inner - 32.0f,
+                                model->logical_height >= 800.0f ? PLAYER_UI_INPUT_FILES
+                                : model->logical_height >= 680.0f ? 2u : 1u);
             } else {
                 for (size_t i = 0u; i < model->check_count && i < PLAYER_UI_WIZARD_CHECKS; ++i) {
                     const PlayerUiCheckRow *check = &model->checks[i];
@@ -1431,6 +1584,25 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                  PLAYER_UI_WIZARD_CANCEL}
             };
             wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 1u, &result);
+        } else if (guided) {
+            /* Check again reads the same disc again once the files are in
+               the folder; nothing is imported again (#308). */
+            WizardButton buttons[4] = {
+                {PLAYER_UI_ID_WIZARD_PRIMARY, "Check again", NK_UI_BUTTON_PRIMARY,
+                 PLAYER_UI_WIZARD_CHECK_AGAIN},
+                {PLAYER_UI_ID_WIZARD_OPEN_FOLDER, "Open folder", 0u,
+                 PLAYER_UI_WIZARD_OPEN_INPUT_FOLDER},
+                {PLAYER_UI_ID_WIZARD_SECOND, "Choose a different one", 0u,
+                 PLAYER_UI_WIZARD_CHOOSE_DIFFERENT},
+                {PLAYER_UI_ID_WIZARD_CANCEL, "Cancel", 0u, PLAYER_UI_WIZARD_CANCEL}
+            };
+            if (model->input_guide.folder != NULL && model->input_guide.folder[0] != '\0') {
+                wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 4u, &result);
+            } else {
+                buttons[1] = buttons[2];
+                buttons[2] = buttons[3];
+                wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 3u, &result);
+            }
         } else if (blocked) {
             /* Adding it would only fail later, at build time (#1280). */
             static const WizardButton buttons[] = {
@@ -1580,6 +1752,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
 #define DISC_ID_ROWS 0x62000100u
 #define DISC_ID_DETAILS 0x62000020u
 #define DISC_ID_TEXT 0x62001000u
+#define DISC_ID_GUIDE 0x62000300u
 
 static PlayerUiAction disc_op(PlayerUiDiscOp op) {
     PlayerUiAction result;
@@ -1650,8 +1823,10 @@ PlayerUiAction player_ui_screen_disc(NkUi *ui, const PlayerUiDiscModel *model) {
     uint32_t tone;
     float inner;
     float height;
+    bool guided;
     if (ui == NULL || model == NULL) return result;
     theme = nk_ui_theme(ui);
+    guided = model->kind == PLAYER_UI_DISC_BLOCKED && input_guide_present(&model->input_guide);
     height = model->logical_height > 80.0f ? model->logical_height : 800.0f;
     inner = flow_begin(ui, model->logical_width > 80.0f ? model->logical_width : 1280.0f,
                        height, 820.0f);
@@ -1674,9 +1849,9 @@ PlayerUiAction player_ui_screen_disc(NkUi *ui, const PlayerUiDiscModel *model) {
             lead = "Not tested with this game yet. You can add it and try.";
             break;
         case PLAYER_UI_DISC_BLOCKED:
-            marker = FLOW_MARK_CROSS;
-            badge = "Can't play yet";
-            tone = theme->error;
+            marker = guided ? FLOW_MARK_TRIANGLE : FLOW_MARK_CROSS;
+            badge = guided ? "Needs your files" : "Can't play yet";
+            tone = guided ? theme->warning : theme->error;
             lead = "This game can't be played in this version of Nakagawa yet.";
             break;
         case PLAYER_UI_DISC_UNSUPPORTED:
@@ -1708,9 +1883,17 @@ PlayerUiAction player_ui_screen_disc(NkUi *ui, const PlayerUiDiscModel *model) {
         disc_text(ui, 0u, safe_text(model->title_name, "PSP game"), NK_UI_TYPE_TITLE,
                   theme->paper);
     }
-    disc_text(ui, 1u, lead, NK_UI_TYPE_BODY, model->kind == PLAYER_UI_DISC_BLOCKED
+    if (guided) {
+        /* Encrypted program files the user can supply (#308): the next step,
+           not a dead end. */
+        lead = "This game needs files from your own disc before Nakagawa can use it.";
+    }
+    disc_text(ui, 1u, lead, NK_UI_TYPE_BODY, model->kind == PLAYER_UI_DISC_BLOCKED && !guided
                                                  ? theme->error : theme->muted);
-    if (model->kind == PLAYER_UI_DISC_BLOCKED && model->reason != NULL) {
+    if (guided) {
+        input_guide_box(ui, DISC_ID_GUIDE, &model->input_guide, inner,
+                        height >= 680.0f ? PLAYER_UI_INPUT_FILES : 2u);
+    } else if (model->kind == PLAYER_UI_DISC_BLOCKED && model->reason != NULL) {
         /* The reason names the folder a file goes in, so it is kept whole. */
         NkUiTextStyle reason = nk_ui_type(NK_UI_TYPE_BODY_S, theme->paper);
         nk_ui_text(ui, DISC_ID_TEXT + 2u,
@@ -1741,7 +1924,9 @@ PlayerUiAction player_ui_screen_disc(NkUi *ui, const PlayerUiDiscModel *model) {
                        nk_ui_text_clamp(ui, model->iso_path, &path, inner, 2), &path);
         }
         nk_ui_progress_bar(ui, DISC_ID_TEXT + 5u, inner, -1.0f, model->now_s);
-    } else if (model->kind != PLAYER_UI_DISC_BLOCKED || height >= 680.0f) {
+    } else if (!guided && (model->kind != PLAYER_UI_DISC_BLOCKED || height >= 680.0f)) {
+        /* A guided card gives the room to the files it needs; the other checks
+           come back once Check again lets the disc in. */
         /* Two lines of each sentence from a 680 px tall window; one below it,
            so the card still fits the 540 px minimum. A disc that can't be added
            gives the room to its reason there. */
@@ -1768,9 +1953,21 @@ PlayerUiAction player_ui_screen_disc(NkUi *ui, const PlayerUiDiscModel *model) {
                     }
                     break;
                 case PLAYER_UI_DISC_BLOCKED:
-                    /* Adding it would only fail later, at build time (#1280). */
-                    if (nk_ui_button(ui, PLAYER_UI_ID_DISC_PRIMARY, "Choose another disc",
-                                     NK_UI_BUTTON_PRIMARY)) {
+                    /* Adding it would only fail later, at build time (#1280).
+                       Files the user can supply get Check again, which reads
+                       the same disc again, and the folder they go in (#308). */
+                    if (guided) {
+                        if (nk_ui_button(ui, PLAYER_UI_ID_DISC_PRIMARY, "Check again",
+                                         NK_UI_BUTTON_PRIMARY)) {
+                            result = disc_op(PLAYER_UI_DISC_CHECK_AGAIN);
+                        }
+                        if (model->input_guide.folder != NULL &&
+                            model->input_guide.folder[0] != '\0' &&
+                            nk_ui_button(ui, PLAYER_UI_ID_DISC_OPEN_FOLDER, "Open folder", 0u)) {
+                            result = disc_op(PLAYER_UI_DISC_OPEN_FOLDER);
+                        }
+                    } else if (nk_ui_button(ui, PLAYER_UI_ID_DISC_PRIMARY, "Choose another disc",
+                                            NK_UI_BUTTON_PRIMARY)) {
                         result = disc_op(PLAYER_UI_DISC_CHOOSE_ANOTHER);
                     }
                     if (nk_ui_button(ui, PLAYER_UI_ID_DISC_SECOND, "Back", 0u)) {

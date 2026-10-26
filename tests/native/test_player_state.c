@@ -1119,6 +1119,91 @@ static void write_guest_module_iso(const char *path, const char *name,
     free(image);
 }
 
+/* A disc with a readable PARAM.SFO, an EBOOT.BIN that is a plain MIPS ELF or an
+ * encrypted ~PSP container, and module_count encrypted PRXs named lib00.prx,
+ * lib01.prx, ... in PSP_GAME/USRDIR/module: PVD at 16, root 17, PSP_GAME 18,
+ * SYSDIR 19, USRDIR 20, module directory 21, PARAM.SFO 22, EBOOT.BIN 23, one
+ * sector per module from 24. Synthetic bytes only. */
+static void write_input_class_iso(const char *path, const char *disc_id,
+                                  bool encrypted_eboot, size_t module_count) {
+    enum { SECTOR = 2048, ROOT = 17, GAME = 18, SYSDIR = 19, USRDIR = 20,
+           MODDIR = 21, SFO = 22, EBOOT = 23, FIRST_MODULE = 24 };
+    static const uint8_t dot[1] = { 0 };
+    static const uint8_t dotdot[1] = { 1 };
+    unsigned char encrypted[0x100];
+    unsigned char plain[88];
+    uint8_t sfo[256];
+    size_t sfo_size = build_player_test_param_sfo(sfo, sizeof(sfo), disc_id,
+                                                  "Input class fixture");
+    size_t total = ((size_t)FIRST_MODULE + module_count) * SECTOR;
+    uint8_t *image = (uint8_t *)calloc(1, total);
+    size_t off;
+    assert(image != NULL);
+    assert(module_count <= 32u);
+    memset(encrypted, 0, sizeof(encrypted));
+    memcpy(encrypted, "~PSP", 4);
+    encrypted[0x27] = 1;    /* one segment */
+    encrypted[0x55] = 0x10; /* of 0x1000 bytes */
+    build_synthetic_mips_elf(plain);
+
+    uint8_t *pvd = image + 16 * SECTOR;
+    pvd[0] = 1;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    put_iso_both32(pvd + 80, (uint32_t)(total / SECTOR));
+    iso_dir_record(pvd + 156, dot, 1, ROOT, SECTOR, true);
+
+    uint8_t *root = image + ROOT * SECTOR;
+    off = iso_dir_record(root, dot, 1, ROOT, SECTOR, true);
+    off += iso_dir_record(root + off, dotdot, 1, ROOT, SECTOR, true);
+    iso_dir_record(root + off, (const uint8_t *)"PSP_GAME", 8, GAME, SECTOR, true);
+
+    uint8_t *game = image + GAME * SECTOR;
+    off = iso_dir_record(game, dot, 1, GAME, SECTOR, true);
+    off += iso_dir_record(game + off, dotdot, 1, ROOT, SECTOR, true);
+    off += iso_dir_record(game + off, (const uint8_t *)"PARAM.SFO;1", 11, SFO,
+                          (uint32_t)sfo_size, false);
+    off += iso_dir_record(game + off, (const uint8_t *)"SYSDIR", 6, SYSDIR, SECTOR, true);
+    iso_dir_record(game + off, (const uint8_t *)"USRDIR", 6, USRDIR, SECTOR, true);
+
+    uint8_t *sysdir = image + SYSDIR * SECTOR;
+    off = iso_dir_record(sysdir, dot, 1, SYSDIR, SECTOR, true);
+    off += iso_dir_record(sysdir + off, dotdot, 1, GAME, SECTOR, true);
+    iso_dir_record(sysdir + off, (const uint8_t *)"EBOOT.BIN;1", 11, EBOOT,
+                   encrypted_eboot ? (uint32_t)sizeof(encrypted) : (uint32_t)sizeof(plain),
+                   false);
+
+    uint8_t *usrdir = image + USRDIR * SECTOR;
+    off = iso_dir_record(usrdir, dot, 1, USRDIR, SECTOR, true);
+    off += iso_dir_record(usrdir + off, dotdot, 1, GAME, SECTOR, true);
+    iso_dir_record(usrdir + off, (const uint8_t *)"module", 6, MODDIR, SECTOR, true);
+
+    uint8_t *moddir = image + MODDIR * SECTOR;
+    off = iso_dir_record(moddir, dot, 1, MODDIR, SECTOR, true);
+    off += iso_dir_record(moddir + off, dotdot, 1, USRDIR, SECTOR, true);
+    for (size_t i = 0; i < module_count; i++) {
+        char name[16];
+        snprintf(name, sizeof(name), "lib%02u.prx", (unsigned)i);
+        off += iso_dir_record(moddir + off, (const uint8_t *)name, strlen(name),
+                              (uint32_t)(FIRST_MODULE + i), (uint32_t)sizeof(encrypted),
+                              false);
+        memcpy(image + (FIRST_MODULE + i) * SECTOR, encrypted, sizeof(encrypted));
+    }
+    assert(off <= SECTOR);
+
+    memcpy(image + SFO * SECTOR, sfo, sfo_size);
+    if (encrypted_eboot) {
+        memcpy(image + EBOOT * SECTOR, encrypted, sizeof(encrypted));
+    } else {
+        memcpy(image + EBOOT * SECTOR, plain, sizeof(plain));
+    }
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(image, 1, total, file) == total);
+    assert(fclose(file) == 0);
+    free(image);
+}
+
 static const char *const FIXTURE_SHA256 =
     "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
 
@@ -2924,6 +3009,220 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
     free(app);
     printf("PASS: remove from library deletes what Nakagawa built and keeps the disc "
            "image and, unless asked, the saves\n");
+}
+
+static void expect_input(const PlayerInputReport *input, PlayerInputClass input_class,
+                         size_t encrypted_total, size_t encrypted_ready,
+                         size_t files_needed) {
+    assert(input != NULL);
+    if (input->input_class != input_class || input->encrypted_total != encrypted_total ||
+        input->encrypted_ready != encrypted_ready || input->files_needed != files_needed) {
+        fprintf(stderr, "input class=%s total=%zu ready=%zu needed=%zu listed=%zu\n",
+                player_input_class_name(input->input_class), input->encrypted_total,
+                input->encrypted_ready, input->files_needed, input->file_count);
+    }
+    assert(input->input_class == input_class);
+    assert(input->encrypted_total == encrypted_total);
+    assert(input->encrypted_ready == encrypted_ready);
+    assert(input->files_needed == files_needed);
+    assert(input->file_count == (files_needed < PLAYER_INPUT_FILES_MAX
+                                     ? files_needed : (size_t)PLAYER_INPUT_FILES_MAX));
+}
+
+/* #308: what kind of program input a disc is, the files an encrypted disc
+   still needs, and checking again in place once the user has put them in the
+   title's folder. Nakagawa never decrypts (#295): every plain copy here is a
+   synthetic file the test writes, as a user would. */
+static void test_input_classification_and_check_again(void) {
+    const char sep = nk_platform_path_separator();
+    /* Sized so every path fits the library's NK_MAX_PATH fields. */
+    char root[256];
+    char user[300];
+    char iso[NK_MAX_PATH];
+    char folder[360];
+    char elf[400];
+    char lib0[400];
+    char lib1[400];
+    NkIsoExecutableReport report;
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    assert(strlen(native_test_get_root()) < 200);
+    snprintf(root, sizeof(root), "%.200s%cinput-class", native_test_get_root(), sep);
+    snprintf(user, sizeof(user), "%s%cuser", root, sep);
+    snprintf(iso, sizeof(iso), "%s%cgame.iso", root, sep);
+    snprintf(folder, sizeof(folder), "%s%ctitles%cTEST00011%cdecrypted", user, sep, sep, sep);
+    snprintf(elf, sizeof(elf), "%s%cEBOOT.elf", folder, sep);
+    snprintf(lib0, sizeof(lib0), "%s%clib00.prx", folder, sep);
+    snprintf(lib1, sizeof(lib1), "%s%clib01.prx", folder, sep);
+    assert(nk_platform_mkdir_p(user));
+    player_app_set_runtime_root(app, user);
+
+    /* Classes from the executable report alone (no disc image: no module scan). */
+    snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "TEST00011");
+    snprintf(app->inspecting_game.title_id, sizeof(app->inspecting_game.title_id),
+             "experimental-test00011");
+    app->inspecting_game.is_experimental = true;
+    memset(&report, 0, sizeof(report));
+    report.eboot.kind = NK_ISO_EXEC_MIPS_ELF32;
+    report.selected = NK_ISO_EXEC_SELECTION_EBOOT;
+    snprintf(report.selected_path, sizeof(report.selected_path), "EBOOT.BIN");
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_PLAIN_ELF, 0, 0, 0);
+    assert(app->wizard.preflight.input.folder[0] == '\0');
+    /* A plain program of a catalogued project-made title reads as homebrew. */
+    app->inspecting_game.is_experimental = false;
+    snprintf(app->inspecting_game.title_id, sizeof(app->inspecting_game.title_id),
+             "synthetic-allegrex-v1");
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_HOMEBREW, 0, 0, 0);
+    app->inspecting_game.is_experimental = true;
+    snprintf(app->inspecting_game.title_id, sizeof(app->inspecting_game.title_id),
+             "experimental-test00011");
+    /* BOOT.BIN beside an encrypted EBOOT.BIN is the disc's own plain program. */
+    report.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+    report.boot.kind = NK_ISO_EXEC_MIPS_ELF32;
+    report.selected = NK_ISO_EXEC_SELECTION_BOOT;
+    report.boot_fallback = true;
+    snprintf(report.selected_path, sizeof(report.selected_path), "BOOT.BIN");
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_PLAIN_ELF, 0, 0, 0);
+    /* Empty, unknown and unreadable programs are unsupported. */
+    memset(&report, 0, sizeof(report));
+    report.eboot.kind = NK_ISO_EXEC_EMPTY_OR_ZERO;
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_UNSUPPORTED, 0, 0, 0);
+    report.eboot.kind = NK_ISO_EXEC_UNKNOWN;
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_UNSUPPORTED, 0, 0, 0);
+    player_app_build_compatibility_preflight(app, false, false, NULL);
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_UNSUPPORTED, 0, 0, 0);
+    /* An encrypted program: the exact file, where it comes from, and the folder. */
+    report.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+    remove(elf);
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_ENCRYPTED_RETAIL, 1, 0, 1);
+    assert(strcmp(app->wizard.preflight.input.folder, folder) == 0);
+    assert(strcmp(app->wizard.preflight.input.files[0].name, "EBOOT.elf") == 0);
+    assert(strcmp(app->wizard.preflight.input.files[0].source,
+                  "PSP_GAME/SYSDIR/EBOOT.BIN") == 0);
+    assert(app->wizard.preflight.input.files[0].state == PLAYER_INPUT_FILE_NEEDED);
+    assert(!nk_platform_dir_exists(folder)); /* checking writes nothing */
+    assert(nk_platform_mkdir_p(folder));
+    write_text_file(elf, "not an ELF");
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_ENCRYPTED_RETAIL, 1, 0, 1);
+    assert(app->wizard.preflight.input.files[0].state == PLAYER_INPUT_FILE_UNUSABLE);
+    write_synthetic_mips_elf(elf);
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_DECRYPTED_RETAIL, 1, 1, 0);
+    report.eboot.kind = NK_ISO_EXEC_SCE_WRAPPER;
+    player_app_build_compatibility_preflight(app, true, true, &report);
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_DECRYPTED_RETAIL, 1, 1, 0);
+    assert(remove(elf) == 0);
+    assert(strcmp(player_input_class_name(PLAYER_INPUT_ENCRYPTED_RETAIL),
+                  "encrypted-retail") == 0);
+    assert(strcmp(player_input_class_name(PLAYER_INPUT_UNCHECKED), "unchecked") == 0);
+
+    /* A disc with more files to supply than a card names counts every one. */
+    write_input_class_iso(iso, "TEST00011", true, 10);
+    snprintf(app->inspecting_game.iso_path, sizeof(app->inspecting_game.iso_path), "%s", iso);
+    app->inspecting_game.selected_executable[0] = '\0';
+    {
+        IsoInspectResult inspected;
+        memset(&inspected, 0, sizeof(inspected));
+        assert(iso_inspect_file(iso, &inspected) && inspected.success);
+        assert(inspected.executables.eboot.kind == NK_ISO_EXEC_PSP_ENCRYPTED);
+        player_app_build_compatibility_preflight(app, true, true, &inspected.executables);
+    }
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_ENCRYPTED_RETAIL, 11, 0, 11);
+    assert(strcmp(app->wizard.preflight.input.files[1].name, "lib00.prx") == 0);
+    assert(strstr(app->wizard.preflight.input.files[1].source,
+                  "USRDIR/module/lib00.prx") != NULL);
+
+    /* Check again: the disc being added is read again from the same image,
+       with no picker and no new import. */
+    write_input_class_iso(iso, "TEST00011", true, 0);
+    {
+        IsoInspectResult inspected;
+        memset(&inspected, 0, sizeof(inspected));
+        assert(iso_inspect_file(iso, &inspected) && inspected.success);
+        player_app_build_compatibility_preflight(app, true, true, &inspected.executables);
+    }
+    assert(player_preflight_blocking_check(&app->wizard.preflight) != NULL);
+    assert(!player_app_recheck_inspected_disc(app));
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_ENCRYPTED_RETAIL, 1, 0, 1);
+    write_synthetic_mips_elf(elf);
+    assert(player_app_recheck_inspected_disc(app));
+    assert(player_preflight_blocking_check(&app->wizard.preflight) == NULL);
+    expect_input(&app->wizard.preflight.input, PLAYER_INPUT_DECRYPTED_RETAIL, 1, 1, 0);
+    assert(strcmp(app->inspecting_game.disc_id, "TEST00011") == 0);
+    /* Another game at the same path is refused, not taken over. */
+    write_input_class_iso(iso, "TEST00012", false, 0);
+    assert(!player_app_recheck_inspected_disc(app));
+    {
+        const PlayerPreflightCheck *blocking =
+            player_preflight_blocking_check(&app->wizard.preflight);
+        assert(blocking != NULL && strcmp(blocking->code, "DISC_SFO") == 0);
+        assert(strstr(blocking->message, "SOURCE_ISO_CHANGED") != NULL);
+        assert(strstr(player_preflight_plain_message(blocking), "Choose the disc again") != NULL);
+    }
+    assert(strcmp(app->inspecting_game.disc_id, "TEST00011") == 0);
+    assert(remove(iso) == 0);
+    assert(!player_app_recheck_inspected_disc(app));
+    assert(remove(elf) == 0);
+
+    /* The library title page: the build check finds the files still needed,
+       and supplying them clears it on the page's next look, without the disc
+       being added again. Before #308 the check's cache keyed only the disc,
+       the profile and EBOOT.elf, so a module copy added later left the
+       refusal standing until the player restarted. */
+    write_input_class_iso(iso, "TEST00011", true, 2);
+    app->game_count = 1;
+    app->selected_game_index = 0;
+    memset(&app->games[0], 0, sizeof(app->games[0]));
+    snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "TEST00011");
+    snprintf(app->games[0].title_id, sizeof(app->games[0].title_id), "experimental-test00011");
+    snprintf(app->games[0].title_name, sizeof(app->games[0].title_name), "Input class fixture");
+    snprintf(app->games[0].disc_version, sizeof(app->games[0].disc_version), "1.00");
+    snprintf(app->games[0].selected_executable, sizeof(app->games[0].selected_executable),
+             "EBOOT.BIN");
+    snprintf(app->games[0].iso_path, sizeof(app->games[0].iso_path), "%s", iso);
+    app->games[0].iso_size_bytes = (uint64_t)nk_platform_get_file_size(iso);
+    app->games[0].is_experimental = true;
+    app->games[0].executable_eboot_kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+    app->games[0].executable_selection = NK_ISO_EXEC_SELECTION_NONE;
+    write_experimental_profile_fixture(user, "TEST00011", "experimental-test00011",
+                                       "EBOOT.BIN", FIXTURE_SHA256);
+    assert(!player_app_build_package_preflight(app, 0, false));
+    assert(strcmp(player_app_package_build_preflight_blocker(app, 0)->code, "EXECUTABLE") == 0);
+    expect_input(player_app_package_build_input(app, 0), PLAYER_INPUT_ENCRYPTED_RETAIL, 3, 0, 3);
+    assert(strcmp(player_app_package_build_input(app, 0)->folder, folder) == 0);
+    write_synthetic_mips_elf(elf);
+    assert(!player_app_build_package_preflight(app, 0, false));
+    assert(strcmp(player_app_package_build_preflight_blocker(app, 0)->code, "GUEST_MODULES") == 0);
+    expect_input(player_app_package_build_input(app, 0), PLAYER_INPUT_ENCRYPTED_RETAIL, 3, 1, 2);
+    write_synthetic_guest_prx(lib0, 88);
+    assert(!player_app_build_package_preflight(app, 0, false));
+    expect_input(player_app_package_build_input(app, 0), PLAYER_INPUT_ENCRYPTED_RETAIL, 3, 2, 1);
+    write_synthetic_guest_prx(lib1, 88);
+    assert(player_app_build_package_preflight(app, 0, false));
+    assert(player_app_package_build_preflight_blocker(app, 0) == NULL);
+    expect_input(player_app_package_build_input(app, 0), PLAYER_INPUT_DECRYPTED_RETAIL, 3, 3, 0);
+    /* A copy that stops being usable shows again once the page checks again. */
+    write_text_file(lib1, "not a module");
+    assert(!player_app_build_package_preflight(app, 0, true));
+    expect_input(player_app_package_build_input(app, 0), PLAYER_INPUT_ENCRYPTED_RETAIL, 3, 2, 1);
+    assert(player_app_package_build_input(app, 0)->files[0].state == PLAYER_INPUT_FILE_UNUSABLE);
+    /* Another title selected: the report is not this title's. */
+    snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "TEST00013");
+    assert(player_app_package_build_input(app, 0) == NULL);
+
+    assert(remove(lib1) == 0);
+    assert(remove(lib0) == 0);
+    assert(remove(elf) == 0);
+    assert(remove(iso) == 0);
+    free(app);
+    printf("[PLAYER_STATE_TEST] input classification and check again PASSED\n");
 }
 
 int main(int argc, char **argv) {
@@ -7313,6 +7612,10 @@ int main(int argc, char **argv) {
         free(probe);
         printf("[PLAYER_STATE_TEST] ADD TO LIBRARY staging decision PASSED\n");
     }
+
+    printf("[PLAYER_STATE_TEST] Subtest 24: program input classification and check again\n");
+    fflush(stdout);
+    test_input_classification_and_check_again();
 
     free(app);
     printf("[PLAYER_STATE_TEST] ALL PLAYER STATE TESTS PASSED!\n");

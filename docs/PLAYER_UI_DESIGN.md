@@ -265,6 +265,19 @@ sits beside ADD TO LIBRARY. A disc this version cannot use is not offered to the
 lead's second line and the card offers CHOOSE ANOTHER DISC and BACK. While the disc is read, the card shows its path,
 an indeterminate bar and CANCEL. The whole card fits the 960 x 540 minimum window.
 
+A disc whose program files are encrypted, and that only needs decrypted copies the user makes from their own disc,
+is not a dead end ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Its pill reads NEEDS YOUR FILES
+(`warning` triangle), the lead says the game needs files from the user's own disc, and a FILES TO ADD box takes the
+place of the check rows: one sentence that Nakagawa doesn't decrypt games and can use decrypted copies, one row per
+file (NEEDED in `warning` or REPLACE in `error`, the file name to put in the folder in `DATA`, and "copy of" the disc
+file in `muted`), a count line, a REPLACE sentence when a copy there is not a working program file, and the folder
+in `DATA`. Below a 680 px tall window the box is compact: two rows, two lines of the sentence, one of the folder. The
+buttons are CHECK AGAIN (primary, the first focus), OPEN FOLDER (it makes the folder first) and BACK. Check again
+reads the same disc image again, with no file picker and no new import, and the card becomes NOT TESTED YET with ADD
+TO LIBRARY once every file is in place. It never asks for a key and never says how to decrypt. The wizard's Verify
+step shows the same box, with CHECK AGAIN, OPEN FOLDER, CHOOSE A DIFFERENT ONE and CANCEL, and the title page shows
+it under the action row while BUILD PACKAGE waits for the files, with CHECK AGAIN and OPEN FOLDER.
+
 ### Settings (C6)
 
 Built now (#1302): one page under the top bar with SETTINGS active, two cards of named rows, each value on the 34 px

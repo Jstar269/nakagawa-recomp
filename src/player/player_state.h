@@ -285,9 +285,58 @@ typedef struct {
  * plus headroom, so adding a check never silently displaces another. */
 #define PLAYER_PREFLIGHT_MAX_CHECKS 10
 
+/* What kind of program input a disc is (#308), so every card can say whether
+   Nakagawa can use it as it is, with files the user supplies, or not at all.
+   Nakagawa does not decrypt games (#295): an encrypted program file is usable
+   only through a decrypted copy the user puts in the title's folder. */
+typedef enum {
+    PLAYER_INPUT_UNCHECKED = 0,     /* no disc has been checked */
+    PLAYER_INPUT_PLAIN_ELF,         /* the disc's own program files are plain MIPS ELF */
+    PLAYER_INPUT_HOMEBREW,          /* plain, and catalogued as homebrew or project-made */
+    PLAYER_INPUT_DECRYPTED_RETAIL,  /* encrypted on the disc; every encrypted file has a
+                                       usable decrypted copy from the user */
+    PLAYER_INPUT_ENCRYPTED_RETAIL,  /* encrypted on the disc; a decrypted copy is missing
+                                       or unusable, so Nakagawa cannot prepare it yet */
+    PLAYER_INPUT_UNSUPPORTED        /* unreadable disc, or an empty, unknown or malformed
+                                       program or module tree */
+} PlayerInputClass;
+
+/* At most this many files are named on a card; the rest are counted. */
+#define PLAYER_INPUT_FILES_MAX 8
+/* player_module_name_is_safe() allows 128 characters. */
+#define PLAYER_INPUT_FILE_NAME_MAX 132
+#define PLAYER_INPUT_FILE_SOURCE_MAX 160
+
+typedef enum {
+    PLAYER_INPUT_FILE_NEEDED = 0,   /* not in the folder yet */
+    PLAYER_INPUT_FILE_UNUSABLE      /* in the folder, but not a usable plain ELF or PRX */
+} PlayerInputFileState;
+
+typedef struct {
+    char name[PLAYER_INPUT_FILE_NAME_MAX];      /* the file to put in the folder */
+    char source[PLAYER_INPUT_FILE_SOURCE_MAX];  /* the encrypted file on the disc */
+    PlayerInputFileState state;
+} PlayerInputFile;
+
+/* The program input of the checked disc: its class, the folder its decrypted
+   copies go in, and the first files still to supply, in disc order. */
+typedef struct {
+    PlayerInputClass input_class;
+    char folder[NK_MAX_PATH * 2];
+    PlayerInputFile files[PLAYER_INPUT_FILES_MAX];
+    size_t file_count;       /* entries in files[] */
+    size_t files_needed;     /* every file still to supply or replace, listed or not */
+    size_t encrypted_total;  /* encrypted program files on the disc */
+    size_t encrypted_ready;  /* of those, how many have a usable decrypted copy */
+} PlayerInputReport;
+
+/* A stable lower-case name for the developer log and tests ("encrypted-retail"). */
+const char *player_input_class_name(PlayerInputClass input_class);
+
 typedef struct {
     PlayerPreflightCheck checks[PLAYER_PREFLIGHT_MAX_CHECKS];
     size_t count;
+    PlayerInputReport input;
 } PlayerCompatibilityPreflight;
 
 /* The input check that must pass before the Library offers BUILD PACKAGE.
@@ -307,6 +356,11 @@ typedef struct {
     int64_t profile_size_bytes;
     int64_t decrypted_executable_size_bytes;
     PlayerPreflightCheck blocker;
+    /* The program input the last check found. The sizes of the files it still
+       asked for (-1: absent) are part of the cache key, so supplying one runs
+       the check again without the disc being added again. */
+    PlayerInputReport input;
+    int64_t input_file_sizes[PLAYER_INPUT_FILES_MAX];
 } PlayerPackageBuildPreflight;
 
 /* A preflight row in plain words for the cards (#1280, #1302): a name for what
@@ -966,6 +1020,14 @@ void player_app_build_compatibility_preflight(
 bool player_app_build_package_preflight(PlayerApp *app, int game_index, bool force);
 const PlayerPreflightCheck *player_app_package_build_preflight_blocker(
     const PlayerApp *app, int game_index);
+/* The program input the selected library title's last build check found, or
+   NULL when that check is not for this title. */
+const PlayerInputReport *player_app_package_build_input(const PlayerApp *app, int game_index);
+/* Check the disc being added again, from the same image, after the user put
+   files in its folder: no file picker and no new import. The disc must still
+   be the same game; the checks and their input report are rebuilt in
+   app->wizard.preflight. Returns true when nothing keeps the disc out. */
+bool player_app_recheck_inspected_disc(PlayerApp *app);
 /* PSP system fonts: the Fonts & System step's import and removal. Each refreshes the
    per-slot status and the message. Import reads the folder's .pgf files once each, checks
    them with the native reader, and copies each slot's file into the per-user cache. */

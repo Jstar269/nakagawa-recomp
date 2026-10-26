@@ -768,10 +768,25 @@ static int player_ui_wizard_save_title(PlayerApp *app) {
     return idx;
 }
 
+/* Open folder for the disc being added (#308): the folder its decrypted
+   copies go in, made first so the file manager has something to show. */
+static void player_ui_open_inspected_input_folder(PlayerApp *app) {
+    const char *folder = app->wizard.preflight.input.folder;
+    if (!folder[0]) return;
+    (void)nk_platform_mkdir_p_private(folder);
+    (void)player_app_request_open_folder(app, folder);
+}
+
 /* The setup wizard's controls: the same handlers the existing renderer's
    wizard buttons call (render_setup_wizard in ui_renderer.c). */
 static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
     switch (op) {
+        case PLAYER_UI_WIZARD_CHECK_AGAIN:
+            (void)player_app_recheck_inspected_disc(app);
+            break;
+        case PLAYER_UI_WIZARD_OPEN_INPUT_FOLDER:
+            player_ui_open_inspected_input_folder(app);
+            break;
         case PLAYER_UI_WIZARD_NEXT:
             player_app_wizard_next(app);
             break;
@@ -890,6 +905,12 @@ static void player_ui_disc_apply(PlayerApp *app, PlayerUiDiscOp op) {
             break;
         case PLAYER_UI_DISC_CHOOSE_ANOTHER:
             app->request_file_picker = true;
+            break;
+        case PLAYER_UI_DISC_CHECK_AGAIN:
+            (void)player_app_recheck_inspected_disc(app);
+            break;
+        case PLAYER_UI_DISC_OPEN_FOLDER:
+            player_ui_open_inspected_input_folder(app);
             break;
         case PLAYER_UI_DISC_NONE:
         default:
@@ -1074,6 +1095,16 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     }
     if (action->kind == PLAYER_UI_ACTION_STALL_STOP_GAME) {
         player_app_stop_stalled_game(app);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_CHECK_INPUT_AGAIN) {
+        /* The title page's Check again (#308): the same build check, now,
+           whatever its cache holds; the disc is not added again. */
+        if (action->title_index < (size_t)app->game_count) {
+            bool passed = player_app_build_package_preflight(app, (int)action->title_index, true);
+            player_dev_log_add(app, "build preflight", "check again: %s",
+                               passed ? "input checks passed" : "still waiting for files");
+        }
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_OPEN_BUILD_INPUT_FOLDER) {
@@ -1844,6 +1875,9 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
             }
         }
     }
+    /* The selected title's program input from its last build check (#308). */
+    const PlayerInputReport *selected_input = selected != NULL
+        ? player_app_package_build_input(app, app->selected_game_index) : NULL;
     /* The error card's words as single tokens (spaces become underscores). */
     char error_title[sizeof(app->last_error.title)];
     char error_badge[64];
@@ -1907,7 +1941,8 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "next_preflight_action=%s "
            "incompatible_reason=%s next_at_root=%d next_route=%d "
            "error_title=%s error_badge=%s error_retry=%s error_copied=%d "
-           "next_package=%d next_expect=%s launch_pending=%d next_focus=%u\n",
+           "next_package=%d next_expect=%s launch_pending=%d next_focus=%u "
+           "input_class=%s input_files=%zu next_input_class=%s next_input_files=%zu\n",
            frame_number, (unsigned long long)SDL_GetTicks(),
            player_ui_test_view_name(app->active_view),
            app->selected_game_index,
@@ -1974,7 +2009,11 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            error_title, error_badge, error_retry,
            app->last_error.details_copied ? 1 : 0,
            next_package, next_expect, app->launch_pending ? 1 : 0,
-           s_ui_test_next_ui != NULL ? player_ui_nk_test_focus(s_ui_test_next_ui) : 0u);
+           s_ui_test_next_ui != NULL ? player_ui_nk_test_focus(s_ui_test_next_ui) : 0u,
+           player_input_class_name(app->wizard.preflight.input.input_class),
+           app->wizard.preflight.input.files_needed,
+           selected_input ? player_input_class_name(selected_input->input_class) : "none",
+           selected_input ? selected_input->files_needed : (size_t)0);
 
     static bool consent_items_reported = false;
     if (app->active_view == VIEW_PREREQ_CONSENT && !consent_items_reported) {

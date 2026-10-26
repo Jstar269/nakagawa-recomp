@@ -99,6 +99,10 @@ struct PlayerUiNk {
     char wizard_summary[224];
     char disc_reason[PLAYER_UI_BLOCKED_REASON_MAX];
     char disc_profile[512];
+    /* The files-to-add count line (#308): for the disc being added (game-found
+       card and wizard), and for the selected library title. */
+    char input_summary[128];
+    char title_input_summary[128];
     char settings_controller[160];
     char settings_saves[NK_MAX_PATH];
     char settings_tools[PLAYER_UI_SETTINGS_TOOLS][192];
@@ -379,6 +383,36 @@ static void player_ui_check_row(PlayerUiCheckRow *row, const NkUiTheme *theme,
     row->rgba = player_ui_check_rgba(theme, check);
 }
 
+/* The files a disc still needs (#308), from the program input its last check
+   found. Only an encrypted disc still short of decrypted copies gets a guide;
+   the names and folder point into that report, which outlives the frame. */
+static void player_ui_input_guide(PlayerUiInputGuide *guide, const PlayerInputReport *input,
+                                  char *summary, size_t summary_size) {
+    size_t more;
+    memset(guide, 0, sizeof(*guide));
+    if (input == NULL || input->input_class != PLAYER_INPUT_ENCRYPTED_RETAIL ||
+        input->file_count == 0u) {
+        return;
+    }
+    for (size_t i = 0u; i < input->file_count && i < PLAYER_UI_INPUT_FILES; ++i) {
+        guide->files[i].name = input->files[i].name;
+        guide->files[i].source = input->files[i].source;
+        guide->files[i].replace = input->files[i].state == PLAYER_INPUT_FILE_UNUSABLE;
+        guide->file_count++;
+    }
+    more = input->files_needed > guide->file_count ? input->files_needed - guide->file_count : 0u;
+    if (more > 0u) {
+        snprintf(summary, summary_size, "%u of %u encrypted files ready \xC2\xB7 %u more after these",
+                 (unsigned)input->encrypted_ready, (unsigned)input->encrypted_total,
+                 (unsigned)more);
+    } else {
+        snprintf(summary, summary_size, "%u of %u encrypted files ready",
+                 (unsigned)input->encrypted_ready, (unsigned)input->encrypted_total);
+    }
+    guide->summary = summary;
+    guide->folder = input->folder;
+}
+
 /* The setup wizard's model, from the same wizard state the existing renderer
    reads. */
 static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app,
@@ -429,6 +463,9 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
                              "project page shows which games work.",
                              player_preflight_plain_message(blocking));
                     model.blocked_reason = player->wizard_blocked;
+                    player_ui_input_guide(&model.input_guide, &app->wizard.preflight.input,
+                                          player->input_summary,
+                                          sizeof(player->input_summary));
                 }
             }
             /* Plain names and reasons; the codes stay in the developer log (#1280).
@@ -503,6 +540,8 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
         snprintf(player->disc_reason, sizeof(player->disc_reason),
                  "%s Then open the disc again.", player_preflight_plain_message(blocking));
         model.reason = player->disc_reason;
+        player_ui_input_guide(&model.input_guide, &app->wizard.preflight.input,
+                              player->input_summary, sizeof(player->input_summary));
     }
     if ((model.kind == PLAYER_UI_DISC_SUPPORTED || model.kind == PLAYER_UI_DISC_UNSUPPORTED) &&
         player_app_title_profile_refusal_for_disc(app, game->disc_id, player->disc_profile,
@@ -529,9 +568,15 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     if (player->disc_reported_view != (int)app->active_view) {
         player->disc_reported_view = (int)app->active_view;
-        printf("[PLAYER_UI_TEST] next_ui_disc kind=%d rows=%zu add=%d\n", (int)model.kind,
-               model.check_count,
-               model.kind == PLAYER_UI_DISC_SUPPORTED || model.kind == PLAYER_UI_DISC_UNTESTED);
+        printf("[PLAYER_UI_TEST] next_ui_disc kind=%d rows=%zu add=%d files=%zu\n",
+               (int)model.kind, model.check_count,
+               model.kind == PLAYER_UI_DISC_SUPPORTED || model.kind == PLAYER_UI_DISC_UNTESTED,
+               model.input_guide.file_count);
+        for (size_t i = 0u; i < model.input_guide.file_count; ++i) {
+            printf("[PLAYER_UI_TEST] next_ui_disc_file name=%s replace=%d source=%s\n",
+                   model.input_guide.files[i].name, model.input_guide.files[i].replace ? 1 : 0,
+                   model.input_guide.files[i].source);
+        }
         for (size_t i = 0u; i < model.check_count; ++i) {
             printf("[PLAYER_UI_TEST] next_ui_disc_row status=%s tone=%s label=%s message=%s\n",
                    model.checks[i].status,
@@ -1523,6 +1568,13 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             memset(&model, 0, sizeof(model));
             model.title = &player->titles[index];
             model.title_index = (size_t)index;
+            /* The build check's refusal is on the page only while the build
+               waits for it; so are the files it waits for (#308). */
+            player_ui_input_guide(&model.input_guide,
+                                  player->titles[index].build_preflight_message[0] != '\0'
+                                      ? player_app_package_build_input(app, index) : NULL,
+                                  player->title_input_summary,
+                                  sizeof(player->title_input_summary));
             model.stalled_game_notice_visible =
                 player->titles[index].package_state == PLAYER_UI_PACKAGE_RUNNING &&
                 app->stalled_game_notice_visible;

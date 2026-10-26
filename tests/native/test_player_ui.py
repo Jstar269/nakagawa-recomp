@@ -1261,15 +1261,24 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["view"], "library", "Add to library adds and returns")
         self.assertEqual(int(frames[-1]["games"]), games_before + 1)
 
+        # #308: an encrypted program the user can supply a decrypted copy of
+        # gets the file it needs and Check again, which reads the same disc
+        # again: no picker, nothing added, the same program input.
         blocked = self.next_ui_run("experimental-blocked", ("WAIT_MS=100", "KEY_RETURN"))
         card, rows = self.disc_card(blocked)
-        self.assertEqual((card.get("kind"), card.get("add")), ("3", "0"), blocked["stdout"])
+        self.assertEqual((card.get("kind"), card.get("add"), card.get("files")), ("3", "0", "1"),
+                         blocked["stdout"])
+        self.assertIn("[PLAYER_UI_TEST] next_ui_disc_file name=EBOOT.elf replace=0 "
+                      "source=PSP_GAME/SYSDIR/EBOOT.BIN", blocked["stdout"])
         self.assert_plain_rows(rows, blocked["stdout"])
         self.assertNotIn("Game program", [row["label"] for row in rows],
                          "the check that keeps the disc out is the card's reason, not a row")
         frames = blocked["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[-1]["picker"], "1", "Choose another disc opens the picker")
+        self.assertEqual(frames[-1]["picker"], "0", "Check again opens no picker")
+        self.assertEqual(frames[-1]["view"], "experimental", "the card stays for its files")
+        self.assertEqual(frames[-1]["input_class"], "encrypted-retail")
+        self.assertEqual(frames[-1]["input_files"], "1")
         self.assertEqual(frames[-1]["games"], frames[0]["games"], "nothing is added")
 
         unsupported = self.next_ui_run("unsupported", ("WAIT_MS=100", "KEY_RETURN"))
@@ -1565,8 +1574,14 @@ class NativePlayerUiTests(unittest.TestCase):
                 )
                 if fixture == "encrypted":
                     self.assertIn("decrypted", title_frames[-1]["next_preflight"].lower())
+                    # #308: the title page knows the program input and the
+                    # one file the build waits for.
+                    self.assertEqual(title_frames[-1]["next_input_class"], "encrypted-retail")
+                    self.assertEqual(title_frames[-1]["next_input_files"], "1")
                 else:
                     self.assertIn("title_settings", title_frames[-1]["next_preflight"].lower())
+                    self.assertEqual(title_frames[-1]["next_input_class"], "plain-elf")
+                    self.assertEqual(title_frames[-1]["next_input_files"], "0")
 
     def test_build_package_waits_for_preflight_in_legacy_renderer(self) -> None:
         """#1286: the legacy Library disables the same refused package inputs."""

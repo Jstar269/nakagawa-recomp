@@ -125,9 +125,10 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_WIZ_BAD_DISC, FLOW_WIZ_CHOSEN,
                FLOW_WIZ_COPYING, FLOW_WIZ_VERIFY, FLOW_WIZ_EXPERIMENTAL, FLOW_WIZ_FONTS,
                FLOW_WIZ_READY, FLOW_WIZ_STAGED, FLOW_WIZ_OPTIONS, FLOW_WIZ_BLOCKED,
-               FLOW_WIZ_COPY_FAILED, FLOW_ERROR_STOP, FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
+               FLOW_WIZ_COPY_FAILED, FLOW_WIZ_GUIDED, FLOW_ERROR_STOP, FLOW_DISC_CHECKING,
+               FLOW_DISC_SUPPORTED,
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
-               FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
+               FLOW_DISC_GUIDED, FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
@@ -163,6 +164,23 @@ static const PlayerUiCheckRow k_disc_rows_fonts[] = {
      "game runs silently.", 0x2DD4BFFFu}
 };
 
+/* #308: the files an encrypted disc still needs, as player_ui_nk.c passes them:
+   two still needed and one copy to replace, with a long folder. */
+static const char k_guide_folder[] =
+    "D:/Synthetic Players/Long User Name/Nakagawa Recomp/data/runtime/titles/TEST00007/decrypted";
+
+static PlayerUiInputGuide guide_fixture(void) {
+    PlayerUiInputGuide guide;
+    memset(&guide, 0, sizeof(guide));
+    guide.files[0] = (PlayerUiInputFile){"EBOOT.elf", "PSP_GAME/SYSDIR/EBOOT.BIN", false};
+    guide.files[1] = (PlayerUiInputFile){"lib00.prx", "PSP_GAME/USRDIR/module/lib00.prx", false};
+    guide.files[2] = (PlayerUiInputFile){"lib01.prx", "PSP_GAME/USRDIR/module/lib01.prx", true};
+    guide.file_count = 3u;
+    guide.summary = "0 of 3 encrypted files ready";
+    guide.folder = k_guide_folder;
+    return guide;
+}
+
 static PlayerUiAction draw_disc_case(NkUi *ui, FlowCase which) {
     PlayerUiDiscModel disc;
     const PlayerUiCheckRow *rows = k_disc_rows_ready;
@@ -193,6 +211,16 @@ static PlayerUiAction draw_disc_case(NkUi *ui, FlowCase which) {
                           "D:/Synthetic Players/Long User Name/Nakagawa Recomp/data/runtime/"
                           "titles/TEST00007/decrypted. Then open the disc again.";
             /* The checks after the program's: what the player shows for one. */
+            count = 4u;
+            rows = k_disc_rows_fonts + 2u;
+            break;
+        case FLOW_DISC_GUIDED:
+            /* #308: the same encrypted disc, with the files it needs listed. */
+            disc.kind = PLAYER_UI_DISC_BLOCKED;
+            disc.reason = "The game's program is encrypted, and Nakagawa doesn't decrypt games. "
+                          "Put a decrypted EBOOT.elf from your own copy in the folder. "
+                          "Then open the disc again.";
+            disc.input_guide = guide_fixture();
             count = 4u;
             rows = k_disc_rows_fonts + 2u;
             break;
@@ -408,6 +436,20 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             wizard.checks[0] = (PlayerUiCheckRow){"Not built yet", "Game build",
                                                   "Not built yet.", 0xDBB024FFu};
             wizard.check_count = 1u;
+            break;
+        case FLOW_WIZ_GUIDED:
+            /* #308: the blocked disc again, with the files it needs listed;
+               laid out at the window the fit checks ask for. */
+            wizard.step = 3;
+            wizard.experimental = true;
+            wizard.blocked_reason = "EBOOT.BIN is encrypted. Nakagawa does not decrypt games. "
+                                    "Then open the disc again.";
+            wizard.checks[0] = (PlayerUiCheckRow){"Not built yet", "Game build",
+                                                  "Not built yet.", 0xDBB024FFu};
+            wizard.check_count = 1u;
+            wizard.input_guide = guide_fixture();
+            wizard.logical_width = g_flow_width;
+            wizard.logical_height = g_flow_height;
             break;
         case FLOW_WIZ_COPY_FAILED:
             /* #1278: the copy failed; the card says why. */
@@ -1324,6 +1366,121 @@ static void test_disc_cards(void) {
     }
 }
 
+/* #308: an encrypted disc whose decrypted files the user can supply gets the
+   files it needs, the folder, Check again and Open folder, on the game-found
+   card, the wizard's Verify step and the title page. Check again reads the same
+   disc again: nothing is imported again, and nothing asks for a key. */
+static void test_input_guides(void) {
+    static char dump[CASE_DUMP_CAP];
+    static const FlowCase guided[] = {FLOW_DISC_GUIDED, FLOW_WIZ_GUIDED};
+    CHECK(disc_op_is(activate_flow_button(PLAYER_UI_ID_DISC_PRIMARY, FLOW_DISC_GUIDED),
+                     PLAYER_UI_DISC_CHECK_AGAIN),
+          "the guided card's first action checks the same disc again");
+    CHECK(disc_op_is(activate_flow_button(PLAYER_UI_ID_DISC_OPEN_FOLDER, FLOW_DISC_GUIDED),
+                     PLAYER_UI_DISC_OPEN_FOLDER),
+          "Open folder opens the folder the files go in");
+    CHECK(disc_op_is(activate_flow_button(PLAYER_UI_ID_DISC_SECOND, FLOW_DISC_GUIDED),
+                     PLAYER_UI_DISC_BACK),
+          "Back still leaves the guided card");
+    CHECK(activate_flow_button(PLAYER_UI_ID_DISC_OPEN_FOLDER, FLOW_DISC_BLOCKED).kind ==
+              PLAYER_UI_ACTION_NONE,
+          "a blocked disc with no files to supply has no Open folder");
+    CHECK(wizard_op_is(activate_flow_button(PLAYER_UI_ID_WIZARD_PRIMARY, FLOW_WIZ_GUIDED),
+                       PLAYER_UI_WIZARD_CHECK_AGAIN),
+          "the guided Verify step's first action checks the same disc again");
+    CHECK(wizard_op_is(activate_flow_button(PLAYER_UI_ID_WIZARD_OPEN_FOLDER, FLOW_WIZ_GUIDED),
+                       PLAYER_UI_WIZARD_OPEN_INPUT_FOLDER),
+          "the Verify step opens the folder the files go in");
+    CHECK(wizard_op_is(activate_flow_button(PLAYER_UI_ID_WIZARD_SECOND, FLOW_WIZ_GUIDED),
+                       PLAYER_UI_WIZARD_CHOOSE_DIFFERENT),
+          "another disc can still be chosen from the guided Verify step");
+    CHECK(wizard_op_is(activate_flow_button(PLAYER_UI_ID_WIZARD_CANCEL, FLOW_WIZ_GUIDED),
+                       PLAYER_UI_WIZARD_CANCEL),
+          "Cancel still leaves the wizard");
+    for (size_t i = 0u; i < sizeof(guided) / sizeof(guided[0]); ++i) {
+        CHECK(dump_flow_case(guided[i], dump, sizeof(dump)), "lay out a guided card");
+        CHECK(strstr(dump, "\"EBOOT.elf\"") != NULL && strstr(dump, "\"lib00.prx\"") != NULL &&
+                  strstr(dump, "copy of PSP_GAME/SYSDIR/EBOOT.BIN") != NULL,
+              "each file is named with the disc file it is a copy of");
+        CHECK(strstr(dump, "\"REPLACE\"") != NULL && strstr(dump, "\"NEEDED\"") != NULL &&
+                  strstr(dump, "isn't a working program") != NULL,
+              "a copy that can't be used is marked Replace and says why");
+        CHECK(strstr(dump, "0 of 3 encrypted files ready") != NULL,
+              "the card counts the files");
+        CHECK(strstr(dump, "TEST00007/decrypted") != NULL, "the card names the folder");
+        CHECK(strstr(dump, "\"CHECK AGAIN\"") != NULL && strstr(dump, "\"OPEN FOLDER\"") != NULL,
+              "the card offers Check again and Open folder");
+        CHECK(strstr(dump, "doesn't decrypt") != NULL, "the card says Nakagawa doesn't decrypt");
+        CHECK(strstr(dump, "ADD TO LIBRARY") == NULL && strstr(dump, "open the disc again") == NULL,
+              "the card neither adds the disc nor sends the player to import it again");
+        CHECK(strstr(dump, "key file") == NULL && strstr(dump, "Key file") == NULL &&
+                  strstr(dump, "keyfile") == NULL && strstr(dump, " keys") == NULL,
+              "the card never asks for a key");
+        CHECK(flow_case_fits(guided[i], 960, 540, dump, sizeof(dump)) &&
+                  strstr(dump, "\"CHECK AGAIN\"") != NULL,
+              "the guided card fits the 960 x 540 minimum window with Check again on it");
+        CHECK(flow_case_fits(guided[i], 1280, 720, dump, sizeof(dump)) &&
+                  strstr(dump, "\"CHECK AGAIN\"") != NULL,
+              "the guided card fits 1280 x 720");
+        CHECK(flow_case_fits(guided[i], 1280, 800, dump, sizeof(dump)) &&
+                  strstr(dump, "\"lib01.prx\"") != NULL,
+              "every listed file is on screen at 1280 x 800");
+    }
+    {
+        /* The title page: the build waits for the same files. */
+        PlayerUiTitle title = k_titles[1];
+        PlayerUiTitleModel model;
+        NkUiConfig config;
+        NkUiTextBackend text = screen_test_text_backend();
+        NkUi *ui;
+        title.primary_action_label = "BUILD PACKAGE";
+        title.primary_action_enabled = false;
+        title.build_preflight_message = "The game's program is encrypted, and Nakagawa "
+                                        "doesn't decrypt games.";
+        title.build_preflight_folder = k_guide_folder;
+        memset(&model, 0, sizeof(model));
+        model.title = &title;
+        model.title_index = 1u;
+        model.logical_width = 1280.0f;
+        model.logical_height = 800.0f;
+        model.input_guide = guide_fixture();
+        CHECK(activate_title_button(PLAYER_UI_ID_TITLE_CHECK_AGAIN, &model).kind ==
+                  PLAYER_UI_ACTION_CHECK_INPUT_AGAIN,
+              "the title page's Check again runs the build check again");
+        CHECK(activate_title_button(PLAYER_UI_ID_TITLE_CHECK_AGAIN, &model).title_index == 1u,
+              "Check again is for this title");
+        CHECK(activate_title_button(PLAYER_UI_ID_TITLE_OPEN_INPUT_FOLDER, &model).kind ==
+                  PLAYER_UI_ACTION_OPEN_BUILD_INPUT_FOLDER,
+              "the title page's Open folder opens the input folder");
+        memset(&config, 0, sizeof(config));
+        config.host = NK_UI_HOST_LAUNCHER;
+        config.text = &text;
+        ui = nk_ui_create(&config);
+        CHECK(ui != NULL, "create the title page");
+        if (ui != NULL) {
+            set_test_viewport(ui, 1280, 800);
+            for (int frame = 0; frame < 2; ++frame) {
+                nk_ui_begin(ui, 0.0);
+                (void)player_ui_screen_title(ui, &model);
+                (void)nk_ui_end(ui);
+            }
+            (void)nk_ui_dump(ui, dump, sizeof(dump));
+            CHECK(strstr(dump, "\"EBOOT.elf\"") != NULL && strstr(dump, "\"CHECK AGAIN\"") != NULL &&
+                      strstr(dump, "TEST00007/decrypted") != NULL,
+                  "the title page lists the files, the folder and Check again");
+            model.input_guide.file_count = 0u;
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_title(ui, &model);
+            (void)nk_ui_end(ui);
+            (void)nk_ui_dump(ui, dump, sizeof(dump));
+            CHECK(strstr(dump, "CHECK AGAIN") == NULL && strstr(dump, "\"OPEN FOLDER\"") != NULL &&
+                      strstr(dump, "doesn't decrypt games.") != NULL,
+                  "with no files listed the page keeps its refusal and Open folder");
+            nk_ui_destroy(ui);
+        }
+    }
+}
+
 /* #1302: Settings in the next UI. Every control returns the op main.c runs with
    the existing handlers, and each page fits the minimum window. */
 static void test_settings_pages(void) {
@@ -2122,6 +2279,8 @@ static int capture_screens(const char *directory) {
             {FLOW_DISC_UNTESTED, "disc-untested", PLAYER_UI_ID_DISC_PRIMARY},
             {FLOW_DISC_FONTS, "disc-fonts-missing", PLAYER_UI_ID_DISC_PRIMARY},
             {FLOW_DISC_BLOCKED, "disc-blocked", PLAYER_UI_ID_DISC_PRIMARY},
+            {FLOW_DISC_GUIDED, "disc-needs-files", PLAYER_UI_ID_DISC_PRIMARY},
+            {FLOW_WIZ_GUIDED, "wizard-needs-files", PLAYER_UI_ID_WIZARD_PRIMARY},
             {FLOW_DISC_UNSUPPORTED, "disc-unsupported", PLAYER_UI_ID_DISC_PRIMARY},
             {FLOW_SETTINGS, "settings", PLAYER_UI_ID_SETTINGS_RESOLUTION},
             {FLOW_SETTINGS_ONLINE, "settings-online", PLAYER_UI_ID_SETTINGS_ONLINE_MODE},
@@ -2524,6 +2683,7 @@ int main(int argc, char **argv) {
     test_wizard_actions();
     test_plain_cards();
     test_disc_cards();
+    test_input_guides();
     test_settings_pages();
     test_controller_and_developer_log_pages();
     test_version_line();
