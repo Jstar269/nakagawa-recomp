@@ -195,7 +195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25c634254b1b0666e00ec33b767621022b4b062c30b62e7ca8d3b0208a1872e6"
+      "sha256": "442d1ad042fb693b38f65daa436ac55e9b3ce18d99d7f0a4280c4ed22fcde1e1"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -1450,7 +1450,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6d034b0f5e4750c2fb0c3d0c47e4fa222795abc57607cea115f721670fea22f0"
+      "sha256": "7a514e27e96e4e05e4d372617eb37fc64d76b9cbb8575b5d17a5a400a65c0a12"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -11551,7 +11551,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0201121cc227b6aa4a2a99736ffac659028845b3d84620082e726a53964195c5"
+      "sha256": "a72d7b77170afb81e7b8d1228cfb0c6e19d8d138521b82f6e6635f932de2c34e"
     },
     {
       "path": "tools/hle_registry_meta.py",
@@ -11563,7 +11563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8dc02cad7b57e55351a9fbd173a9f24f19b9d7b7ae14f6e3dd78e34c05219472"
+      "sha256": "93dde2c5bc13e2d7d0aa768e467e512d007215124926ddb4765c2abcfae8c4f8"
     },
     {
       "path": "tools/host_stubs.py",
@@ -13551,7 +13551,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1f06fb0f9f2564f4c3b26dee0f6736693ae9c318bb215166592d8ab09f3f8166"
+      "sha256": "36916138e22c84bcff7724ce4a26d90df2862a9536390b853aca73398df0646c"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
@@ -14451,7 +14451,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d5cfe2278ac68e11c11a72607051c94f7821642213caeab196ee659fdc9507f5"
+      "sha256": "ee761f9690d0ec34d362372dfb00823cc3a3009c826e09e4883e65960ae564e8"
     },
     {
       "path": "tools/test_public_export.py",
