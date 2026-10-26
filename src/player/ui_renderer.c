@@ -113,11 +113,12 @@ typedef bool (SDLCALL *UiTtfGetStringSizeFn)(TTF_Font *font, const char *text, s
 typedef bool (SDLCALL *UiTtfMeasureStringFn)(TTF_Font *font, const char *text, size_t length, int max_width, int *measured_width, size_t *measured_length);
 typedef SDL_Surface *(SDLCALL *UiTtfRenderTextFn)(TTF_Font *font, const char *text, size_t length, SDL_Color fg);
 
-#define UI_FONT_CACHE_ENTRIES 96
+#define UI_FONT_CACHE_ENTRIES 128
 #define UI_FONT_CACHE_TEXT 160
 
 typedef struct {
     char text[UI_FONT_CACHE_TEXT];
+    uint32_t hash;      /* FNV-1a hash of text, bucket, color_key, and density */
     int size_bucket;    /* (int)(scale * 10): distinct raster per bucket */
     uint32_t color_key; /* packed RGBA */
     float density;      /* pixel-density multiplier the raster was made for */
@@ -733,6 +734,7 @@ void ui_font_shutdown(void) {
             g_font.entries[i].tex = NULL;
         }
         g_font.entries[i].text[0] = '\0';
+        g_font.entries[i].hash = 0;
     }
     if (g_font.font && g_font.f_close) {
         g_font.f_close(g_font.font);
@@ -1107,17 +1109,34 @@ static size_t ui_font_fit_prefix(const char *str, float scale, float max_width) 
     return measured_len;
 }
 
+static uint32_t ui_font_hash(const char *str, int bucket, uint32_t color_key, float density) {
+    uint32_t h = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)str; *p; p++) {
+        h = (h ^ *p) * 16777619u;
+    }
+    h = (h ^ (uint32_t)bucket) * 16777619u;
+    h = (h ^ color_key) * 16777619u;
+    uint32_t d_bits;
+    memcpy(&d_bits, &density, sizeof(d_bits));
+    h = (h ^ d_bits) * 16777619u;
+    return h;
+}
+
 static UiFontCacheEntry *ui_font_cache_lookup(const char *str, int bucket, uint32_t color_key, float density) {
+    uint32_t hash = ui_font_hash(str, bucket, color_key, density);
+    uint32_t start = hash & (UI_FONT_CACHE_ENTRIES - 1);
     UiFontCacheEntry *free_slot = NULL;
-    UiFontCacheEntry *oldest = &g_font.entries[0];
+    UiFontCacheEntry *oldest = &g_font.entries[start];
+
     for (int i = 0; i < UI_FONT_CACHE_ENTRIES; i++) {
-        UiFontCacheEntry *e = &g_font.entries[i];
+        uint32_t idx = (start + (uint32_t)i) & (UI_FONT_CACHE_ENTRIES - 1);
+        UiFontCacheEntry *e = &g_font.entries[idx];
         if (!e->tex) {
             if (!free_slot) free_slot = e;
-            continue;
+            break;
         }
-        if (e->size_bucket == bucket && e->color_key == color_key && e->density == density &&
-            strcmp(e->text, str) == 0) {
+        if (e->hash == hash && e->size_bucket == bucket && e->color_key == color_key &&
+            e->density == density && strcmp(e->text, str) == 0) {
             e->last_used = ++g_font.tick;
             return e;
         }
@@ -1128,6 +1147,7 @@ static UiFontCacheEntry *ui_font_cache_lookup(const char *str, int bucket, uint3
         SDL_DestroyTexture(slot->tex);
         slot->tex = NULL;
     }
+    slot->hash = hash;
     return slot;
 }
 
