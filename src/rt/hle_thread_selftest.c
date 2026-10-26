@@ -18598,17 +18598,47 @@ static void test_atrac_reset_refill_stream(void) {
     expect(decoded_frames == 30,
            "#1291: every sceAtracDecodeData after the reset returns a full frame");
 
-    /* Refused counts leave the context unchanged (codes UNMEASURED). */
+    /* Counts outside the offered refill are refused and leave the context
+     * unchanged (codes from the public PPSSPP reference, not measured). */
+    uint32_t pos_before = 0, valid_before = 0, pos_after = 0, valid_after = 0;
+    (void)sr_hle_test_atrac_ring(id, &pos_before, NULL, NULL, NULL, &valid_before);
     cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable + AT_ALIGN; cpu.r[7] = 0u;
-    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630018u,
-           "#1291: a refill larger than the offered space is refused");
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630016u,
+           "#1291: a refill larger than the offered space is refused (BAD_FIRST_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = minimum - 1u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630016u,
+           "#1291: a refill below the required minimum is refused (BAD_FIRST_RESET_SIZE)");
     cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = AT_ALIGN;
-    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630018u,
-           "#1291: a second-buffer count is refused when none was offered");
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630017u,
+           "#1291: a second-buffer count is refused when none was offered (BAD_SECOND_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = AT_FILEFR * 2048u + 1u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630015u,
+           "#1291: a reset past the end sample is refused (BAD_SAMPLE)");
+    cpu.r[4] = 0x7fu; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == ATRAC_ERROR_BAD_ATRACID,
+           "#1291: sceAtracResetPlayPosition on an invalid ID is refused (BAD_ATRACID)");
+    expect(sr_hle_test_atrac_ring(id, &pos_after, NULL, NULL, NULL, &valid_after) == 1 &&
+               pos_after == pos_before && valid_after == valid_before,
+           "#1291: refused resets leave the stream ring unchanged");
 
     cpu.r[4] = id;
     expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0u,
            "#1291: streamed context releases cleanly");
+
+    /* An ID without data has no refill to describe or consume. */
+    cpu.r[4] = ATRAC_CODEC_AT3PLUS;
+    uint32_t bare = sr_syscall(&cpu, NID_SCE_ATRAC_GET_ID);
+    expect(bare < 8u, "#1291: sceAtracGetAtracID allocates an empty context");
+    if (bare >= 8u) return;
+    cpu.r[4] = bare; cpu.r[5] = 0u; cpu.r[6] = INFO;
+    expect(sr_syscall(&cpu, 0x2dd3e298u) == 0x80630010u,
+           "#1291: sceAtracGetBufferInfoForResetting without data is refused (NO_DATA)");
+    cpu.r[4] = bare; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630010u,
+           "#1291: sceAtracResetPlayPosition without data is refused (NO_DATA)");
+    cpu.r[4] = bare;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0u,
+           "#1291: empty context releases cleanly");
 }
 
 /* TD-24 batch 3: production-dispatch regressions for four converted Class B
