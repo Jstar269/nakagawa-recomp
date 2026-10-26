@@ -75,9 +75,11 @@ does not attempt either operation.
 ## The input profile
 
 `assets/input_profiles/standard-gamepad.json` is the public default mapping. It is
-the runtime's own built-in default written out in the schema-2 profile format that
-the player saves to `<config>/input_profile.json`, and the route stages it into the
-sandbox config folder for the run.
+the runtime's own built-in gamepad default written out in the schema-2 profile format,
+and the route stages it into the sandbox config folder for the run. The player now
+saves `<config>/input_profile.json` at schema 3, which adds `keyboard_bindings`
+([#1299](https://github.com/Jstar269/nakagawa-recomp/issues/1299)); a schema 2 file
+such as this one loads with the default keyboard keys.
 
 Rules the validator enforces, in addition to the runtime parser's:
 
