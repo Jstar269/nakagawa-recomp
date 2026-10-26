@@ -2847,7 +2847,8 @@ static void run_display_mask_duty(int emulated) {
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
 /* Bounded GE waits.  A probe never blocks on the GE without a bound: on a
  * PSP-3000 a blocking sceGeListSync(qid, 0) after sceGeBreak/sceGeContinue
  * never returned, and the rest of the case and its completion record were
@@ -2896,6 +2897,71 @@ static int ge_reset_queues(GeIdleWait *after) {
     const int rc = sceGeBreak(1, &param);
     *after = ge_wait_idle(-1, GE_IDLE_DEADLINE_US);
     return rc;
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING
+/* GE teardown for every case that calls sceGuInit, on every path out of it.
+ *
+ * sceGuInit (PSPSDK src/gu/sceGuInit.c; pspsdk e62057d9, the PSPDEV v20261001
+ * the probe links) creates the "SceGuSignal" event flag and registers
+ * libpspgu's callbackSig and callbackFin with sceGeSetCallback.  Those handlers
+ * are code in this PRX.  Only sceGuTerm (src/gu/sceGuTerm.c) removes them, by
+ * sceKernelDeleteEventFlag and sceGeUnsetCallback.  A case that returns
+ * without it leaves the GE driver holding handlers in memory the runner then
+ * unloads, and the next GE interrupt runs freed code in interrupt context.
+ *
+ * The order is fixed: a bounded wait for the GE to go idle; if it does not,
+ * reset every queue (sceGeBreak(1)) and wait, bounded, again; then unregister
+ * the case's own GE callback, if it set one; then sceGuTerm when sceGuInit
+ * succeeded.  sceGuTerm runs even when the GE never reached idle, so no
+ * handler outlives the module; whether it did is returned for the record.
+ * sceGuTerm is skipped after a failed sceGuInit: that call already undid what
+ * it had registered, and its callback ID is not valid. */
+typedef struct {
+    uint32_t reset_issued;  /* the GE was busy after the wait; sceGeBreak(1) was issued */
+    int reset_rc;           /* sceGeBreak result; 0 when not issued                     */
+    int draw_state;         /* last sceGeDrawSync(1)                                    */
+    uint32_t elapsed_us;    /* time spent in both bounded waits                         */
+    int idle;               /* draw_state == PSP_GE_LIST_DONE                           */
+    uint32_t term_called;   /* sceGuTerm ran                                            */
+} GeGuTeardown;
+
+#define GE_GU_TEARDOWN_OUTS 5
+
+static GeGuTeardown ge_gu_teardown(int init_rc, int own_cbid) {
+    GeGuTeardown t;
+    memset(&t, 0, sizeof(t));
+    GeIdleWait w = ge_wait_idle(-1, GE_IDLE_DEADLINE_US);
+    t.elapsed_us = w.elapsed_us;
+    if (!w.idle) {
+        t.reset_issued = 1u;
+        t.reset_rc = ge_reset_queues(&w);
+        t.elapsed_us += w.elapsed_us;
+    }
+    t.draw_state = w.draw_state;
+    t.idle = w.idle;
+    if (own_cbid >= 0) {
+        (void)sceGeUnsetCallback(own_cbid);
+    }
+    if (init_rc >= 0) {
+        sceGuTerm();
+        t.term_called = 1u;
+    }
+    return t;
+}
+
+/* out0 reset issued, out1 sceGeBreak result, out2 last draw state,
+   out3 elapsed us, out4 sceGuTerm ran. */
+static inline void ge_gu_teardown_outs(const GeGuTeardown *t,
+                                       uint32_t out[GE_GU_TEARDOWN_OUTS]) {
+    out[0] = t->reset_issued;
+    out[1] = (uint32_t)t->reset_rc;
+    out[2] = (uint32_t)t->draw_state;
+    out[3] = t->elapsed_us;
+    out[4] = t->term_called;
 }
 #endif
 
@@ -4555,8 +4621,12 @@ static void run_ge_nan(int emulated) {
                          (uint32_t)render_rc, out, 4);
         }
     }
+    /* The terminal record carries the teardown outcome: TIMEOUT, with the last
+       draw state as its result, when the GE did not reach idle. */
+    const GeGuTeardown gu_down = ge_gu_teardown(init_rc, -1);
     const uint32_t done_out[1] = {20u};
-    defer_record("ge-nan-done", "PASS", 0u, done_out, 1);
+    defer_record("ge-nan-done", gu_down.idle ? "PASS" : "TIMEOUT",
+                 (uint32_t)gu_down.draw_state, done_out, 1);
     flush_deferred(emulated, "PSP-GE-001");
 }
 #endif
@@ -5128,7 +5198,11 @@ static void run_vram_mirror(int emulated) {
     const VramMirrorGeOutcome sprite_c = vram_mirror_ge_step(
         color_offset, depth_offset, gu_init_rc, VRAM_MIRROR_GE_SPRITE_C,
         sprite_b.completed);
-    const int ge_idle = sprite_c.ge_idle;
+    /* GE teardown before any CPU sample or restore.  vram-restore's GE-idle
+       field (out4) records whether the GE reached idle by the end of it. */
+    probe_step(emulated, "vram-mirror", "gu-teardown");
+    const GeGuTeardown gu_down = ge_gu_teardown(gu_init_rc, -1);
+    const int ge_idle = sprite_c.ge_idle && gu_down.idle;
     const int ge_sequence_complete = clear.completed && sprite_a.completed &&
         sprite_b.completed && sprite_c.completed;
 
@@ -9465,7 +9539,7 @@ static void run_fake_success(int emulated) {
 #define CPU_TIMING_SYSCALL_CALLS 2048u
 #define CPU_TIMING_DRAW_SYNC_CALLS 4u
 #define CPU_TIMING_GE_CALLS_PER_TRIAL 1u
-#define CPU_TIMING_RESULT_COUNT 64u
+#define CPU_TIMING_RESULT_COUNT 65u
 #define CPU_TIMING_REPEAT_8(OP) OP OP OP OP OP OP OP OP
 
 typedef uint32_t (*CpuTimingLoop)(uint32_t blocks);
@@ -9873,6 +9947,13 @@ static void cpu_timing_emit_ge_skip(int emulated, const char *case_id) {
                          "SKIP", 0u, out, 7);
 }
 
+/* The GE teardown row when sceGuInit was never called: same shape, all zero. */
+static void cpu_timing_emit_gu_teardown_skip(int emulated) {
+    const uint32_t out[GE_GU_TEARDOWN_OUTS] = {0u, 0u, 0u, 0u, 0u};
+    emit_record_extended(emulated, "PSP-CPU-TIMING-001", "cpu-timing-gu-teardown",
+                         "SKIP", 0u, out, GE_GU_TEARDOWN_OUTS);
+}
+
 static int cpu_timing_measure_ge_calls(int emulated, uint32_t cpu_mhz) {
     uint32_t enqueue[CPU_TIMING_TRIALS] = {0};
     uint32_t enqueue_base[CPU_TIMING_TRIALS] = {0};
@@ -9885,33 +9966,26 @@ static int cpu_timing_measure_ge_calls(int emulated, uint32_t cpu_mhz) {
     if (!cpu_timing_ge_wait_idle()) {
         cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-enqueue");
         cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-update-stall");
+        cpu_timing_emit_gu_teardown_skip(emulated);
         return 0;
     }
     const int gu_rc = sceGuInit();
-    if (gu_rc < 0) {
-        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-enqueue");
-        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-update-stall");
-        return 0;
+    int ready = gu_rc >= 0;
+    if (ready) {
+        /* This buffer is enqueued below, so libpspgu must emit a queued list to memory. */
+        const int gu_start_rc = sceGuStart(GU_SEND, s_cpu_timing_ge_list);
+        const int list_bytes = gu_start_rc >= 0 ? sceGuFinish() : gu_start_rc;
+        ready = gu_start_rc >= 0 &&
+            list_bytes >= (int)(2u * sizeof(s_cpu_timing_ge_list[0])) &&
+            (uint32_t)list_bytes <= sizeof(s_cpu_timing_ge_list) &&
+            ((uint32_t)list_bytes & (sizeof(s_cpu_timing_ge_list[0]) - 1u)) == 0u;
+        if (ready) s_cpu_timing_ge_list_bytes = (uint32_t)list_bytes;
     }
-    int pass = 1;
-    /* This buffer is enqueued below, so libpspgu must emit a queued list to memory. */
-    const int gu_start_rc = sceGuStart(GU_SEND, s_cpu_timing_ge_list);
-    if (gu_start_rc < 0) {
-        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-enqueue");
-        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-update-stall");
-        return 0;
+    int pass = ready;
+    if (ready) {
+        sceKernelDcacheWritebackAll();
+        probe_step(emulated, "cpu-timing", "ge-enqueue-stall-update");
     }
-    const int list_bytes = sceGuFinish();
-    if (list_bytes < (int)(2u * sizeof(s_cpu_timing_ge_list[0])) ||
-        (uint32_t)list_bytes > sizeof(s_cpu_timing_ge_list) ||
-        ((uint32_t)list_bytes & (sizeof(s_cpu_timing_ge_list[0]) - 1u)) != 0u) {
-        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-enqueue");
-        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-update-stall");
-        return 0;
-    }
-    s_cpu_timing_ge_list_bytes = (uint32_t)list_bytes;
-    sceKernelDcacheWritebackAll();
-    probe_step(emulated, "cpu-timing", "ge-enqueue-stall-update");
     for (uint32_t trial = 0; pass && trial < CPU_TIMING_TRIALS; trial++) {
         int error = 0;
         s_cpu_timing_ge_count = 0;
@@ -9936,19 +10010,29 @@ static int cpu_timing_measure_ge_calls(int emulated, uint32_t cpu_mhz) {
         if (pass) valid++;
         else break;
     }
-    int idle = cpu_timing_ge_wait_idle();
-    if (!pass && s_cpu_timing_ge_count != 0u && !idle) {
-        PspGeBreakParam param;
-        memset(&param, 0, sizeof(param));
-        (void)sceGeBreak(1, &param);
-        idle = cpu_timing_ge_wait_idle();
+    /* Reached on every path once sceGuInit has run: stop the GE if it is still
+       busy, wait for it, then sceGuTerm, before any record is written. */
+    probe_step(emulated, "cpu-timing", "gu-teardown");
+    const GeGuTeardown gu_down = ge_gu_teardown(gu_rc, -1);
+    const int idle = gu_down.idle;
+    if (ready) {
+        cpu_timing_emit_ge_cell(emulated, "syscall-ge-list-enqueue",
+                                enqueue, enqueue_base, valid, cpu_mhz, first_error,
+                                last_enqueued, last_update_attempts, pass && idle);
+        cpu_timing_emit_ge_cell(emulated, "syscall-ge-list-update-stall",
+                                update, update_base, valid, cpu_mhz, first_error,
+                                last_enqueued, last_update_attempts, pass && idle);
+    } else {
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-enqueue");
+        cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-update-stall");
     }
-    cpu_timing_emit_ge_cell(emulated, "syscall-ge-list-enqueue",
-                            enqueue, enqueue_base, valid, cpu_mhz, first_error,
-                            last_enqueued, last_update_attempts, pass && idle);
-    cpu_timing_emit_ge_cell(emulated, "syscall-ge-list-update-stall",
-                            update, update_base, valid, cpu_mhz, first_error,
-                            last_enqueued, last_update_attempts, pass && idle);
+    {
+        uint32_t out[GE_GU_TEARDOWN_OUTS];
+        ge_gu_teardown_outs(&gu_down, out);
+        emit_record_extended(emulated, "PSP-CPU-TIMING-001", "cpu-timing-gu-teardown",
+                             idle ? "PASS" : "TIMEOUT", (uint32_t)gu_down.draw_state,
+                             out, GE_GU_TEARDOWN_OUTS);
+    }
     return pass && idle;
 }
 
@@ -10068,6 +10152,7 @@ static void run_cpu_timing(int emulated) {
                              "SKIP", 0u, drawsync_out, 4);
         cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-enqueue");
         cpu_timing_emit_ge_skip(emulated, "syscall-ge-list-update-stall");
+        cpu_timing_emit_gu_teardown_skip(emulated);
     }
     cpu_timing_emit_vblank(emulated);
 

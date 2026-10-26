@@ -1570,7 +1570,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
 
         cpu_spec, cpu_counts = run_psplink_module.CAMPAIGN_PROBE_CASES["cpu-timing"]
         self.assertEqual(cpu_spec.terminal_case, "cpu-timing-complete")
-        self.assertEqual(cpu_spec.terminal_count, 64)
+        self.assertEqual(cpu_spec.terminal_count, 65)
         cpu_rows = []
         for case_id in cpu_spec.ordered_cases:
             out_count = cpu_counts[case_id]

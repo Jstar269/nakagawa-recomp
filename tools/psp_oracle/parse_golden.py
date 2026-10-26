@@ -1789,7 +1789,7 @@ _register_campaign_probe(
      for cell in _FPU_CC_CELLS},
 )
 
-# cpu-timing (probe.c, run_cpu_timing): the 64 measured/restore records are
+# cpu-timing (probe.c, run_cpu_timing): the 65 measured/restore records are
 # followed by a stream-completion record whose out0 is the semantic record count.
 _CPU_TIMING_NORMAL_BLOCKS = (2048, 8192, 32768)
 _CPU_TIMING_NORMAL_OPS = (
@@ -1810,6 +1810,7 @@ _CPU_TIMING_SEMANTIC_CASES = (
     "syscall-ge-drawsync-done",
     "syscall-ge-list-enqueue",
     "syscall-ge-list-update-stall",
+    "cpu-timing-gu-teardown",
     "syscall-vblank-start-latency",
     "cpu-timing-sync-setup",
     "syscall-sema-signal-wait",
@@ -1821,6 +1822,7 @@ _CPU_TIMING_OUT_COUNTS.update({
     "cpu-timing-ge-idle": 2,
     "syscall-ge-list-enqueue": 7,
     "syscall-ge-list-update-stall": 7,
+    "cpu-timing-gu-teardown": 5,
     "cpu-timing-sync-setup": 2,
     "cpu-timing-done": 3,
 })

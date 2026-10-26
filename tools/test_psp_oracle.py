@@ -2672,7 +2672,24 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertIn("sceGuStart(GU_SEND, s_cpu_timing_ge_list);", self.probe)
         self.assertIn("s_cpu_timing_ge_list_bytes = (uint32_t)list_bytes;", self.probe)
         self.assertIn("(uintptr_t)s_cpu_timing_ge_list +", self.probe)
-        self.assertIn("(uint32_t)list_bytes > sizeof(s_cpu_timing_ge_list)", self.probe)
+        self.assertIn("(uint32_t)list_bytes <= sizeof(s_cpu_timing_ge_list)", self.probe)
+
+    def test_cpu_timing_tears_down_libpspgu_before_recording_the_ge_cells(self) -> None:
+        bodies = dict(_c_function_list(_c_code(self.probe)))
+        ge = bodies["cpu_timing_measure_ge_calls"]
+        teardown = ge.index("const GeGuTeardown gu_down = ge_gu_teardown(gu_rc, -1);")
+        self.assertLess(ge.index("sceGuInit()"), teardown)
+        self.assertLess(teardown, ge.index("cpu_timing_emit_ge_cell("))
+        self.assertLess(teardown, ge.index('"cpu-timing-gu-teardown"'))
+        # Every path emits the teardown row, so the stream keeps its shape.
+        self.assertIn("cpu_timing_emit_gu_teardown_skip(emulated);\n        return 0;", ge)
+        self.assertIn("cpu_timing_emit_gu_teardown_skip(emulated);", bodies["run_cpu_timing"])
+        self.assertIn("#define CPU_TIMING_RESULT_COUNT 65u", self.probe)
+        mutant = self.probe.replace(
+            "    const int gu_rc = sceGuInit();\n",
+            "    const int gu_rc = sceGuInit();\n    if (gu_rc < 0) {\n        return 0;\n    }\n", 1)
+        self.assertNotEqual(mutant, self.probe)
+        self.assertNotEqual(_gu_teardown_problems(mutant), [])
 
     def test_dmac_cases_are_individually_buildable_and_use_the_real_imports(self) -> None:
         for case in (
@@ -3815,6 +3832,174 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
             self.assertLess(body.index(earlier), bad, earlier)
         self.assertLess(bad, body.index("sceRegGetKeysNum((REGHANDLE)0xffffffffu"))
         self.assertLess(body.index('"registry-bad-handle"'), body.index('"registry-done"'))
+
+
+def _c_function_list(code: str) -> list[tuple[str, str]]:
+    """(name, body with braces) of every top-level function definition, in source order.
+
+    A list rather than a mapping: different case blocks of probe.c may reuse a name.
+    """
+    found = []
+    for match in re.finditer(r"^(?:static\s+)?[A-Za-z_][\w \t\*]*?\b(\w+)\s*\(([^;{}]*)\)\s*\{",
+                             code, re.MULTILINE):
+        if match.group(1) in _C_NOT_CALLS:
+            continue
+        brace = code.index("{", match.end() - 1)
+        found.append((match.group(1), code[brace:_c_close(code, brace) + 1]))
+    return found
+
+
+def _c_depth(body: str, at: int) -> int:
+    """Brace depth at index `at` of a function body that starts at its opening brace."""
+    text = re.sub(r'"(?:[^"\\]|\\.)*"', '""', body[:at])
+    return text.count("{") - text.count("}")
+
+
+def _gu_teardown_problems(source: str) -> list[str]:
+    """Paths of a PSP oracle source that can unload with a GE callback still registered.
+
+    sceGuInit registers libpspgu's GE signal and finish callbacks (PSPSDK src/gu/sceGuInit.c)
+    and only sceGuTerm removes them (src/gu/sceGuTerm.c); a callback a case registers itself is
+    removed only by sceGeUnsetCallback.  The runner unloads the probe after the case returns, so
+    a registration left behind points the next GE interrupt at freed code.  Checked on the
+    comment-free text, per function:
+
+    - a function that calls sceGuInit passes its result to ge_gu_teardown in a statement at the
+      function's top level, with no return or goto between the two;
+    - a function that calls sceGeSetCallback passes that ID to ge_gu_teardown, or to
+      sceGeUnsetCallback after a bounded GE wait, the same way;
+    - ge_gu_teardown waits for idle with the bound, resets the queues when the GE is still
+      busy, unregisters the case's callback, and only then calls sceGuTerm, with no return
+      before it; sceGuTerm is called nowhere else.
+    """
+    code = _c_code(source)
+    functions = _c_function_list(code)
+    problems: list[str] = []
+    if "sceGuInit(" not in code and "sceGeSetCallback(" not in code:
+        return problems
+
+    def reaches(name: str, body: str, start: int, pattern: str, what: str) -> int:
+        """Index of the first top-level `pattern` after `start` with no exit in between, or -1."""
+        for match in re.finditer(pattern, body[start:]):
+            at = start + match.start()
+            statement = body[max(body.rfind(c, 0, at) for c in ";{}") + 1:at]
+            if _c_depth(body, at) != 1 or re.search(r"\b(?:if|else|for|while|do|case)\b|\?", statement):
+                continue  # inside a block or a conditional statement: not every path
+            if re.search(r"\b(?:return|goto)\b", body[start:at]):
+                problems.append(f"{name} can return before {what}")
+            return at
+        problems.append(f"{name} never reaches {what} at its top level")
+        return -1
+
+    term_owners = [name for name, body in functions if "sceGuTerm(" in body]
+    if term_owners != ["ge_gu_teardown"]:
+        problems.append(f"sceGuTerm is called from {term_owners}, not only from ge_gu_teardown")
+    helpers = [body for name, body in functions if name == "ge_gu_teardown"]
+    if len(helpers) != 1:
+        problems.append(f"{len(helpers)} definitions of ge_gu_teardown, not one")
+    else:
+        helper = helpers[0]
+        steps = [re.search(pattern, helper) for pattern in (
+            r"ge_wait_idle\(\s*-1\s*,\s*GE_IDLE_DEADLINE_US\s*\)",
+            r"if \(!\w+\.idle\) \{[^{}]*ge_reset_queues\(",
+            r"sceGeUnsetCallback\(\s*own_cbid\s*\)",
+            r"if \(init_rc >= 0\) \{\s*sceGuTerm\(\);",
+        )]
+        if not all(steps):
+            problems.append("ge_gu_teardown lacks the bounded wait, the reset, the callback "
+                            "unregistration or the guarded sceGuTerm")
+        elif [step.start() for step in steps] != sorted(step.start() for step in steps):
+            problems.append("ge_gu_teardown does not wait, reset and unregister before sceGuTerm")
+        elif re.search(r"\breturn\b", helper[:steps[-1].start()]):
+            problems.append("ge_gu_teardown can return before sceGuTerm")
+
+    for name, body in functions:
+        if name == "ge_gu_teardown":
+            continue
+        for call in re.finditer(r"\b(\w+) = sceGuInit\(\)", body):
+            reaches(name, body, call.end(),
+                    r"ge_gu_teardown\(\s*%s\s*," % re.escape(call.group(1)),
+                    f"ge_gu_teardown({call.group(1)}, ...)")
+        if body.count("sceGuInit(") != len(re.findall(r"\b\w+ = sceGuInit\(\)", body)):
+            problems.append(f"{name} calls sceGuInit without keeping its result")
+        for call in re.finditer(r"\b(\w+) = sceGeSetCallback\(", body):
+            cbid = re.escape(call.group(1))
+            at = reaches(name, body, call.end(),
+                         r"ge_gu_teardown\([^;]*,\s*%s\s*\)|sceGeUnsetCallback\(\s*%s\s*\)" % (cbid, cbid),
+                         f"the unregistration of {call.group(1)}")
+            if at >= 0 and not body[at:].startswith("ge_gu_teardown(") and \
+                    "ge_wait_idle(" not in body[call.end():at]:
+                problems.append(f"{name} unregisters {call.group(1)} without a bounded GE wait")
+        if body.count("sceGeSetCallback(") != len(re.findall(r"\b\w+ = sceGeSetCallback\(", body)):
+            problems.append(f"{name} calls sceGeSetCallback without keeping its ID")
+    return problems
+
+
+class GuTeardownContractTests(unittest.TestCase):
+    """#1296: no probe unloads with a libpspgu or probe-owned GE callback still registered."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+        self.probe = (self.fixture / "probe.c").read_text(encoding="utf-8")
+
+    def test_every_gu_init_and_ge_callback_is_torn_down_on_every_path(self) -> None:
+        for source in sorted(self.fixture.glob("*.c")):
+            with self.subTest(source=source.name):
+                self.assertEqual(_gu_teardown_problems(source.read_text(encoding="utf-8")), [])
+        code = _c_code(self.probe)
+        owners = {name for name, body in _c_function_list(code) if "sceGuInit(" in body}
+        self.assertIn("run_ge_nan", owners)
+        self.assertIn("run_vram_mirror", owners)
+        self.assertIn("ge_run_case", {name for name, body in _c_function_list(code)
+                                      if "sceGeSetCallback(" in body})
+
+    def test_the_teardown_check_refuses_each_leak(self) -> None:
+        helper_term = "    if (init_rc >= 0) {\n        sceGuTerm();\n        t.term_called = 1u;\n    }\n"
+        helper_wait = "    GeIdleWait w = ge_wait_idle(-1, GE_IDLE_DEADLINE_US);\n"
+        nan_init = "    const int init_rc = sceGuInit();\n    s_ge_nan_frame"
+        vram_down = "const GeGuTeardown gu_down = ge_gu_teardown(gu_init_rc, -1);"
+        mask_unset = "    sceGeUnsetCallback(cbid);\n"
+        mask_set = "    const int cbid = sceGeSetCallback(&cb);\n"
+        for anchor in (helper_term, helper_wait, nan_init, vram_down, mask_unset, mask_set):
+            self.assertEqual(self.probe.count(anchor), 1, anchor)
+        mutants = {
+            # The shape every sceGuInit case had before #1296 round 3: no teardown at all.
+            "no-teardown": re.sub(r"const GeGuTeardown gu_down = ge_gu_teardown\([^;]*\);",
+                                  "const GeGuTeardown gu_down = {0};", self.probe),
+            "no-term": self.probe.replace(helper_term, ""),
+            "term-before-wait": self.probe.replace(helper_term, "").replace(
+                helper_wait, helper_term.replace("t.term_called", "unused") + helper_wait),
+            "no-reset": self.probe.replace("t.reset_rc = ge_reset_queues(&w);", "", 1),
+            "term-elsewhere": self.probe.replace(nan_init, nan_init.replace(
+                "sceGuInit();\n", "sceGuInit();\n    sceGuTerm();\n")),
+            "early-return": self.probe.replace(nan_init, nan_init.replace(
+                "sceGuInit();\n", "sceGuInit();\n    if (init_rc < 0) {\n        return;\n    }\n")),
+            "result-dropped": self.probe.replace(nan_init, nan_init.replace(
+                "const int init_rc = sceGuInit();", "const int init_rc = 0;\n    sceGuInit();")),
+            "conditional-teardown": self.probe.replace(
+                vram_down, "GeGuTeardown gu_down = {0};\n    if (clear.completed)\n        gu_down = "
+                "ge_gu_teardown(gu_init_rc, -1);"),
+            "nested-teardown": self.probe.replace(
+                vram_down, "GeGuTeardown gu_down = {0};\n    if (clear.completed) {\n        gu_down = "
+                "ge_gu_teardown(gu_init_rc, -1);\n    }"),
+            "callback-kept": self.probe.replace(mask_unset, ""),
+            "callback-early-return": self.probe.replace(
+                mask_set, mask_set + "    if (cbid < 0) {\n        return;\n    }\n"),
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name):
+                self.assertNotEqual(mutant, self.probe)
+                self.assertNotEqual(_gu_teardown_problems(mutant), [], name)
+
+    def test_ge_nan_and_vram_mirror_record_the_teardown(self) -> None:
+        bodies = dict(_c_function_list(_c_code(self.probe)))
+        nan = bodies["run_ge_nan"]
+        self.assertRegex(nan, r'defer_record\("ge-nan-done", gu_down\.idle \? "PASS" : "TIMEOUT",')
+        self.assertLess(nan.index("ge_gu_teardown("), nan.index('"ge-nan-done"'))
+        vram = bodies["run_vram_mirror"]
+        self.assertIn("const int ge_idle = sprite_c.ge_idle && gu_down.idle;", vram)
+        self.assertLess(vram.index("ge_gu_teardown("), vram.index("restore-vram"))
 
 
 class CampaignHost0LogTests(unittest.TestCase):

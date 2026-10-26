@@ -477,7 +477,9 @@ input is used. Their ordered result streams have strict completion parsers in
   2D screen-coordinate, 3D clip-position, and lit-normal GE draws. It emits 20
   measurement records and `ge-nan-done`; it does not repeat the already
   measured `vasin` domain-edge words. The renderer records integer bit
-  patterns and hashes, never formatted floats.
+  patterns and hashes, never formatted floats. `ge-nan-done` also carries the
+  GE teardown outcome: `TIMEOUT`, with the last draw state as its result, when
+  the GE did not reach idle before `sceGuTerm`.
 - `CASE=audio-query` (`audio-query`, `PSP-AUDIO-001`) records both
   `sceAudioGetChannelRestLen` and `sceAudioGetChannelRestLength`, two
   `sceAudioOutputBlocking` calls at 512 samples maximum, one
@@ -535,13 +537,30 @@ advance the stall address to the byte end returned by `sceGuFinish()`, and wait
 for idle before the next trial. GE list completion is polled for at most 250 ms
 and reset on timeout.
 
-The 64 semantic rows end with `cpu-timing-done` (clock restoration), followed
-by `cpu-timing-complete` with `out0=64`. The runner checks their exact order and
+After the GE cells, `cpu-timing-gu-teardown` records the GE teardown (`out0`
+reset issued, `out1` `sceGeBreak` result, `out2` last draw state, `out3` elapsed
+us, `out4` `sceGuTerm` ran; `TIMEOUT` when the GE did not reach idle, `SKIP`
+when `sceGuInit` was never called). The GE cells are written only after it.
+
+The 65 semantic rows end with `cpu-timing-done` (clock restoration), followed
+by `cpu-timing-complete` with `out0=65`. The runner checks their exact order and
 field counts. Framebuffer, GE-idle, or sync setup refusals emit `SKIP` rows in
 the same shape; any non-`PASS` measurement makes the capture ineligible. The
 GE enqueue and stall-update rows also report `out4` as the first negative PSP
 return code, `out5` as successful enqueues in the last trial, and `out6` as
 stall-update attempts in the last trial.
+
+**GE teardown.** `sceGuInit` registers libpspgu's GE signal and finish
+callbacks, which are code in the probe PRX, and only `sceGuTerm` removes them.
+Every case that calls `sceGuInit` (`ge-nan`, `vram-mirror`, `cpu-timing`)
+therefore ends in `ge_gu_teardown` on every path once `sceGuInit` has run: a
+bounded wait for the GE to go idle, a queue reset (`sceGeBreak(1)`) and a
+second bounded wait when it is still busy, then the unregistration of the
+case's own GE callback, then `sceGuTerm`. `sceGuTerm` runs even when the GE
+never reached idle, so no handler outlives the unloaded module, and the case
+records whether it did. A source test in `tools/test_psp_oracle.py` refuses
+any path that returns between `sceGuInit` or `sceGeSetCallback` and that
+teardown.
 
 ## Pending PSP-3000 campaign
 
@@ -558,7 +577,7 @@ publishes their words.
 | `thread-scheduler` | `PSP-THREAD-003` | Suspend UID 0 and self, resume UID 0, out-of-range ready-queue rotation, ready order after rotation (bounded wait; `TIMEOUT` if the third thread never runs), and timeout of a waiting thread while suspended. |
 | `wait-outcomes` | `PSP-WAIT-001` | Semaphore and event-flag signal/cancel operations that occur before a deadline but are dispatched afterward. |
 | `ge-break-continue` | `PSP-GE-CONTROL-001` | Break without an active list, continue without a paused list, invalid break mode, list/draw sync statuses for paused work, the continue result with a bounded drain (`ge-continue-drain`, `TIMEOUT` with the last states if the GE does not go idle), a queue reset when needed (`ge-quiesce-after-continue`), cancelled work, and a final quiesce (`ge-quiesce-after-cancel`). |
-| `vram-mirror` | `PSP-VRAM-MIRROR-001` | **MEASURED** on 2026-10-16 (PSP-3000 / 6.61; probe revisions `24c1472e`, `fd3efc64`, `df41dba2`). At sampled word-aligned offsets, CPU position-pattern reads establish identity mirrors at `0x04000000`/`0x04400000`, XOR `0x2040` at `0x04200000`, and the bits-5..9 rotation plus XOR `0x2040` at `0x04600000`; uncached forms agree. Sub-word address bits were not independently measured. Mirror write scans and GE depth/colour rows are recorded. The GE depth rule reported by the integrator is `(y * 1024 + 2x) ^ 0x2040` for a 512-pixel, 16-bit buffer. **MEASURED** on 2026-10-21 (PSP-3000 / 6.61, `VRAM_MIRROR_DEPTH_BIAS` and the opt-in `VRAM_MIRROR_FULL_SCAN=1` whole-VRAM scan): with a depth buffer at `0x0ce000` (bit 13 set) the XOR applies to the absolute VRAM offset, `(zbp + y * 1024 + 2x) ^ 0x2040` (0 mismatches over 8,640 samples; the buffer-relative form gives 1,328); with `0x0cc040` (bit 6 set) the GE wrote no depth anywhere in VRAM, which is unresolved ([#1049](https://github.com/Jstar269/nakagawa-recomp/issues/1049)). Raw PSP words remain private. The probe backs up and verifies restoration of all 2 MiB. |
+| `vram-mirror` | `PSP-VRAM-MIRROR-001` | **MEASURED** on 2026-10-16 (PSP-3000 / 6.61; probe revisions `24c1472e`, `fd3efc64`, `df41dba2`). At sampled word-aligned offsets, CPU position-pattern reads establish identity mirrors at `0x04000000`/`0x04400000`, XOR `0x2040` at `0x04200000`, and the bits-5..9 rotation plus XOR `0x2040` at `0x04600000`; uncached forms agree. Sub-word address bits were not independently measured. Mirror write scans and GE depth/colour rows are recorded. The GE depth rule reported by the integrator is `(y * 1024 + 2x) ^ 0x2040` for a 512-pixel, 16-bit buffer. **MEASURED** on 2026-10-21 (PSP-3000 / 6.61, `VRAM_MIRROR_DEPTH_BIAS` and the opt-in `VRAM_MIRROR_FULL_SCAN=1` whole-VRAM scan): with a depth buffer at `0x0ce000` (bit 13 set) the XOR applies to the absolute VRAM offset, `(zbp + y * 1024 + 2x) ^ 0x2040` (0 mismatches over 8,640 samples; the buffer-relative form gives 1,328); with `0x0cc040` (bit 6 set) the GE wrote no depth anywhere in VRAM, which is unresolved ([#1049](https://github.com/Jstar269/nakagawa-recomp/issues/1049)). Raw PSP words remain private. The probe backs up and verifies restoration of all 2 MiB. After the four GE steps it runs the GE teardown, and `vram-restore` `out4` records whether the GE was idle at its end. |
 | `late-prx-target` | `PSP-LATE-PRX-001` | A late-loaded module that owns a semaphore-blocked waiter thread, an event flag and a callback, whose `module_stop` returns 0 without touching them; PSPLink `modstop`/`modunld` then stop and unload it. **MEASURED** on 2026-10-21 (PSP-3000 / 6.61): stop returned 0 and the module was unloaded, but the waiter, the parked main thread, the semaphore, the event flag and the callback all survived as orphans ([#1106](https://github.com/Jstar269/nakagawa-recomp/issues/1106)). What a waiter receives on wake after unload is not measured. |
 | `at3-decode` | `PSP-AT3-001` | One bounded ATRAC3 decode run of an AT3 stream staged in `host0:` (never part of the repository): AVCODEC and ATRAC3PLUS load, `sceAtracGetAtracID(0x1001)`, `sceAtracSetData`, repeated `sceAtracDecodeData` until the buffered frames run out, stream-position queries, release and unload, each preceded by a durable step marker; the PCM of every call is reduced to a hash, a peak and a few leading samples in the private host0 log. Ends in the normal teardown. **MEASURED** on 2026-10-21 and 2026-10-22 (PSP-3000 / 6.61): codec `0x1001` is accepted; the first decode returns 955 samples, then 24 decodes return 1024 samples each, and the call after the last buffered frame returns `0x80630023` with 0 samples ([#1096](https://github.com/Jstar269/nakagawa-recomp/issues/1096)). |
 | `fake-success` | `PSP-FAKE-001` | States of handlers that had answered success unconditionally. Default launch, no dialog: `sceKernelVolatileMemLock`/`TryLock`/`Unlock` with the lock held (a helper thread issues every call that can block), the `scePowerRegisterCallback`/`scePowerUnregisterCallback` slot matrix (Unregister only on slots the probe registered a moment earlier, or out of range), and `sceUtilityOsk*` with no keyboard ever opened. Ends in the normal teardown. `FAKE_SUCCESS_OSK_CYCLE=1` adds an on-screen-keyboard cycle that needs a person to finish the dialog; run it only attended, and never soft reset with a keyboard open. **MEASURED** on 2026-10-22 (PSP-3000 / 6.61): Lock blocks while held and TryLock returns `0x802b0200`; Unregister of an empty slot returns `0x80000025`; ShutdownStart with no keyboard returns `0x80110005` ([#363](https://github.com/Jstar269/nakagawa-recomp/issues/363)). |
