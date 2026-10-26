@@ -1754,6 +1754,115 @@ class NanTrapCacheKeyTests(unittest.TestCase):
         self.assertEqual(decision.action, "aot-regenerate")
 
 
+class ObjectCacheTests(unittest.TestCase):
+    """#1306: compiled objects shared between package builds in the player data folder."""
+
+    COMMAND = "gcc -O0 -Isrc/rt -MMD -MP -MF /b/x/hle.d -MT /b/x/hle.o -c src/rt/hle.c -o /b/x/hle.o"
+
+    def test_compile_commands_are_read_exactly_or_not_at_all(self) -> None:
+        command = package_cache.parse_compile_command(self.COMMAND)
+        self.assertIsNotNone(command)
+        self.assertEqual((command.source, command.output), ("src/rt/hle.c", "/b/x/hle.o"))
+        for line in (
+            "gcc -o player.exe a.o b.o",  # a link
+            "gcc -c a.c b.c -o x.o",  # two sources
+            "gcc -c a.S -o a.o",  # not C
+            "gcc -c a.c",  # no named object
+            "gcc -c 'a.c -o a.o",  # does not split
+            "echo -c a.c -o a.o x",  # one source, but a positional too many
+        ):
+            self.assertIsNone(package_cache.parse_compile_command(line), line)
+
+    def test_preprocess_keeps_the_dependency_file_and_drops_the_object(self) -> None:
+        command = package_cache.parse_compile_command(self.COMMAND)
+        argv = package_cache.preprocess_command(command)
+        self.assertEqual(argv[-2:], ["-E", "-P"])
+        self.assertNotIn("-c", argv)
+        self.assertNotIn("-o", argv)
+        self.assertEqual(argv[argv.index("-MF") + 1], "/b/x/hle.d")
+        without_depfile = package_cache.parse_compile_command("gcc -MMD -c a.c -o a.o")
+        self.assertEqual(package_cache.preprocess_command(without_depfile), ["gcc", "a.c", "-E", "-P"])
+
+    def test_key_names_compiler_command_and_input_but_not_the_build_folder(self) -> None:
+        def key(line: str, *, build_dir: str, preprocessed: bytes = b"int x;\n",
+                compiler: str = "gcc:1") -> str:
+            return package_cache.object_cache_key(
+                package_cache.parse_compile_command(line),
+                compiler_identity_text=compiler,
+                build_dir=build_dir,
+                preprocessed=preprocessed,
+            )
+
+        base = key("gcc -O0 -I/one/b -c a.c -o /one/b/a.o", build_dir="/one/b")
+        self.assertEqual(base, key("gcc -O0 -I/two/b -c a.c -o /two/b/a.o", build_dir="/two/b"))
+        self.assertNotEqual(base, key("gcc -O2 -I/one/b -c a.c -o /one/b/a.o", build_dir="/one/b"))
+        self.assertNotEqual(base, key("gcc -O0 -I/one/b -c a.c -o /one/b/a.o", build_dir="/one/b",
+                                      preprocessed=b"int y;\n"))
+        self.assertNotEqual(base, key("gcc -O0 -I/one/b -c a.c -o /one/b/a.o", build_dir="/one/b",
+                                      compiler="gcc:2"))
+        self.assertRegex(base, r"^[0-9a-f]{64}$")
+
+    def test_store_fetch_prune_and_clear_touch_only_cached_objects(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "objects"
+            cache = package_cache.ObjectCache(root)
+            source = Path(scratch) / "a.o"
+            keys = [format(index, "064x") for index in (1, 2, 3)]
+            for index, key in enumerate(keys):
+                source.write_bytes(bytes([index + 1]) * 100)
+                self.assertTrue(cache.store(key, source))
+                os.utime(cache.path_for(key), ns=(index * 10**9, index * 10**9))
+            source.write_bytes(b"")
+            self.assertFalse(cache.store(format(9, "064x"), source), "an empty object is never stored")
+            with self.assertRaises(package_cache.PackageCacheError):
+                cache.path_for("../escape")
+
+            destination = Path(scratch) / "build" / "b.o"
+            self.assertTrue(cache.fetch(keys[0], destination))
+            self.assertEqual(destination.read_bytes(), b"\x01" * 100)
+            self.assertFalse(cache.fetch(format(8, "064x"), destination))
+
+            unrelated = root / keys[1][:2] / "notes.txt"
+            unrelated.write_text("kept", encoding="utf-8")
+            # keys[0] was just used, so the oldest unused object goes first.
+            self.assertEqual(cache.prune(200), 1)
+            self.assertFalse(cache.path_for(keys[1]).exists())
+            self.assertTrue(cache.path_for(keys[0]).exists())
+            self.assertEqual(cache.size(), 200)
+            self.assertEqual(cache.clear(), 2)
+            self.assertEqual(cache.entries(), [])
+            self.assertEqual(unrelated.read_text(encoding="utf-8"), "kept")
+
+    def test_limit_and_root(self) -> None:
+        self.assertEqual(package_cache.object_cache_limit({}), package_cache.DEFAULT_OBJECT_CACHE_MAX_BYTES)
+        self.assertEqual(package_cache.object_cache_limit({"NK_OBJECT_CACHE_MAX_BYTES": "5"}), 5)
+        for bad in ("-1", "lots"):
+            with self.assertRaises(package_cache.PackageCacheError):
+                package_cache.object_cache_limit({"NK_OBJECT_CACHE_MAX_BYTES": bad})
+        with tempfile.TemporaryDirectory() as scratch:
+            self.assertEqual(
+                package_cache.object_cache_root(scratch),
+                Path(scratch).resolve().joinpath("cache", "objects"),
+            )
+        self.assertEqual(nk_cli._OBJECT_CACHE_DIR_ENV, package_cache.OBJECT_CACHE_DIR_ENV)
+        self.assertEqual(nk_cli._OBJECT_CACHE_ROOT_PARTS, package_cache.OBJECT_CACHE_ROOT_PARTS)
+        self.assertEqual(nk_cli._SHARED_LIBRARY_CACHE_DIR_ENV,
+                         package_cache.SHARED_LIBRARY_CACHE_DIR_ENV)
+        self.assertEqual(nk_cli._SHARED_LIBRARY_CACHE_ROOT_PARTS,
+                         package_cache.SHARED_LIBRARY_CACHE_ROOT_PARTS)
+        self.assertNotEqual(package_cache.SHARED_LIBRARY_CACHE_ROOT_PARTS,
+                            package_cache.OBJECT_CACHE_ROOT_PARTS)
+        # The player clears the same folder (src/player/package_builder.c).
+        player = (ROOT / "src" / "player" / "package_builder.c").read_text(encoding="utf-8")
+        self.assertIn('"%s%ccache%cshared-libraries"', player)
+        # Settings off reaches the planner as no library cache at all.
+        source = Path(nk_cli.__file__).read_text(encoding="utf-8")
+        self.assertIn('if getattr(args, "no_shared_libraries", False):', source)
+        builder = (ROOT / "src" / "player" / "package_builder.c").read_text(encoding="utf-8")
+        self.assertIn('if (session->no_shared_libraries) argv[argc++] = "--no-shared-libraries";',
+                      builder)
+
+
 class PackageOptimizationTests(unittest.TestCase):
     """A package build compiles the runtime at -O2 and generated code at the profile's
     qualified level unless the caller sets one (#1296); the key names what Make really used."""

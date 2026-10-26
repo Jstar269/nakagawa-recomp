@@ -106,14 +106,15 @@ moved or deleted by the player.
 
 **Expected result:** Pass if the error dialog displays a red badge with the specific error code (e.g. `ISO_CORRUPT`), a clear human-readable title, the fail-closed boundary description naming what is missing and any tracking issue, the log file location (`LOG FILE: ...`), and a focused recovery button (**Return to Library**) that restores navigation.
 
-### Step 11: F1 overlay in a running package
+### Step 11: F3 overlay and pause in a running package
 
 1. Launch a running package (such as the source-owned display smoke fixture via `mingw32-make display-smoke-player` from a source checkout, or a showcase demo when available ([#309](https://github.com/Jstar269/nakagawa-recomp/issues/309))). The release archive does not contain generated fixture packages.
-2. In the running game window, press the `F1` key.
+2. In the running game window, press the `F3` key.
 3. Observe the performance HUD overlay.
-4. Press `F1` again.
+4. Press `F3` again.
+5. Press `Esc` (or `F1`, or the controller's Guide button), wait a few seconds, then hold a button the game reacts to and press `Esc` again while still holding it.
 
-**Expected result:** Pass if pressing `F1` toggles an in-game HUD displaying live performance telemetry from `SR_PERF` (presented FPS, frame time in ms, VBlank rate, audio status), and pressing `F1` again dismisses the overlay without affecting game execution.
+**Expected result:** Pass if pressing `F3` toggles an in-game HUD displaying live performance telemetry from `SR_PERF` (presented FPS, frame time in ms, VBlank rate, audio status), and pressing `F3` again dismisses the overlay without affecting game execution. The pause passes if the game stops on its last frame under a dark scrim with its sound held, the held button does nothing in the game until it is released and pressed again, and the game then continues where it stopped.
 
 ### Step 12: Quit
 
