@@ -1291,7 +1291,7 @@ uint32_t gui_headless_acceptance_presented_frames(void);
 extern int (*sr_sched_stop_requested)(void);
 
 /* Player pause is a scheduler-context host stall. C9a owns the audio callbacks;
- * the presenter, input claim and busy-reason callback are supplied by C9b. */
+ * the window's presenter supplies the presenter, input claim and busy-reason callbacks. */
 typedef enum {
     SR_PAUSE_FRAME_CONTINUE = 0,
     SR_PAUSE_FRAME_RESUME = 1
@@ -1314,13 +1314,21 @@ typedef struct SrPauseHost {
     void (*audio_leave)(void);
     /* Test-script seam: nonzero once its pending audio stimulus is queued. */
     int (*script_ready)(void);
-    /* Returns 0 or a refusal verdict (keyboard/stopping); reserved for C9b. */
+    /* Returns 0 or a refusal verdict: the keyboard is open, or the presenter is stopping. */
     int (*busy_reason)(void);
     void (*enter)(void);
     SrPauseFrame (*frame)(void);
     void (*leave)(void);
 } SrPauseHost;
 extern const SrPauseHost *sr_sched_pause_host;
+/* The window's pause presenter (src/rt/gui.c, C9b). gui_pause_presenter is 1 when the
+ * SDL3/Vulkan window can draw the overlay; only then does the driver install enter, frame
+ * and leave. busy_reason applies to every presenter. */
+int          gui_pause_presenter(void);
+int          gui_pause_busy_reason(void);
+void         gui_pause_enter(void);
+SrPauseFrame gui_pause_frame(void);
+void         gui_pause_leave(void);
 SrPauseVerdict sched_pause_request(SrPauseSource source);
 int      sched_pause_active(void);
 int      sched_pause_pending(void);

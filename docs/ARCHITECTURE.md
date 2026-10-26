@@ -690,6 +690,22 @@ Clock ownership:
   wall time lags host wall time by the accumulated pauses for the rest of the session. A pause
   is not PSP suspend and raises no power callback. Losing focus or minimizing the window does
   not pause the guest in v0.0.1.
+
+  In the SDL3/Vulkan window, `Esc`, `F1` or the controller's Guide button asks for the pause,
+  and so does losing the open controller (`src/rt/gpu_sdl3vk/sdl3vk.c`, `src/rt/gui.c`). The
+  request opens the pause at the scheduler's next switch point. It is refused while the
+  on-screen keyboard is open, once the presenter can no longer present, without a window
+  presenter (headless, offscreen or GDI runs) and under automation; `SR_PAUSE: refused` names
+  the reason once per reason. While paused the window shows the frame the guest last had
+  displayed under the overlay scrim, redrawn at the display rate and waiting on events while
+  minimized; these presents are never guest presents, captures or headless-acceptance frames.
+  The overlay owns all input: the guest reads a released pad and a centred stick, and a button
+  or stick still held as the overlay closes stays hidden from the guest until it is let go, so
+  the press that resumed never reaches the game as a fresh press (`NkInputGate`,
+  `src/core/nk_input_profile.h`). Guide is the pause button only; a profile binding to it has no
+  effect in game. The overlay's screens (resume, settings, controls, quit to library) are in the
+  works under [#1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159); today `Esc`,
+  `F1`, Guide or the controller's back button (East) resumes.
 - **libc time/gettimeofday** — seconds/usec since the standard Unix epoch, converted from the RTC
   tick. The PSP timezone is a console setting (`s_psp_timezone_minutes`), not the host process
   timezone. The retained, settable system-profile owner for timezone/daylight does not exist yet:
