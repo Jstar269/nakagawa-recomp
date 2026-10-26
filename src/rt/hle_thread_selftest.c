@@ -3805,29 +3805,76 @@ static void test_ms0_unified_namespace(void) {
             sr_hle_test_io_close(&cpu);
         }
 
-        /* Issue #1387 on the Windows handle route: a shorter overwrite is
-         * renamed over the old file whole, no temporary is left, and a load
-         * whose buffer is too small is refused instead of truncated. */
+        /* Issue #1387 on the Windows handle route.  A shorter overwrite made
+         * while a guest descriptor holds the old file open replaces the file
+         * whole (the open descriptor keeps reading the old bytes, as on POSIX)
+         * and leaves no temporary.  A temporary that cannot be created fails
+         * the SAVE and keeps the previous save.  A load whose buffer is too
+         * small is refused instead of truncated. */
         static const char shorter[] = "NEW\n";
+        char save_host[512], stage_glob[600], planted[600];
+        fd_host_path(save_host, sizeof save_host, guest_open);
+        char *slot_end = strrchr(save_host, '\\');
+        expect(slot_end != NULL, "savedata host path names its save directory");
+        if (slot_end) *slot_end = '\0';
+        snprintf(stage_glob, sizeof stage_glob, "%s\\.nakagawa-stage-*", save_host);
+        snprintf(planted, sizeof planted, "%s\\.nakagawa-stage-1", save_host);
+        if (slot_end) *slot_end = '\\';
+
+        fd_set_path(&cpu, PATH_ADDR, guest_open);
+        cpu.r[5] = 1u; /* O_RDONLY */
+        uint32_t held = sr_hle_test_io_open(&cpu);
+        expect(held < 64u, "a guest descriptor holds the save file open");
         fd_guest_copy(DATA_ADDR, shorter, sizeof(shorter) - 1u);
         MEM_W32(PARAM_ADDR + 0x30, 3u); /* SD_SAVE */
         MEM_W32(PARAM_ADDR + 0x7c, (uint32_t)(sizeof(shorter) - 1u));
         expect(sr_savedata_execute(PARAM_ADDR) == 0u,
-               "savedata overwrite through the temporary rename succeeds");
-        char save_host[512], partial_host[600];
-        fd_host_path(save_host, sizeof save_host, guest_open);
-        snprintf(partial_host, sizeof partial_host, "%s.nakagawa-partial", save_host);
+               "savedata overwrite of a file a guest descriptor holds open succeeds");
+        if (held < 64u) {
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = held;
+            cpu.r[5] = DATA_ADDR + 0x100u;
+            cpu.r[6] = (uint32_t)(sizeof(data) - 1u);
+            expect(sr_hle_test_io_read(&cpu) == sizeof(data) - 1u &&
+                       MEM_R8(DATA_ADDR + 0x100u) == (uint8_t)'S',
+                   "the held descriptor keeps reading the previous bytes");
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = held;
+            sr_hle_test_io_close(&cpu);
+        }
         WIN32_FILE_ATTRIBUTE_DATA fad;
         expect(GetFileAttributesExA(save_host, GetFileExInfoStandard, &fad) &&
                    fad.nFileSizeHigh == 0u && fad.nFileSizeLow == sizeof(shorter) - 1u,
                "savedata overwrite replaces the whole file, no stale tail");
-        expect(GetFileAttributesA(partial_host) == INVALID_FILE_ATTRIBUTES,
+        WIN32_FIND_DATAA found;
+        HANDLE scan = FindFirstFileA(stage_glob, &found);
+        expect(scan == INVALID_HANDLE_VALUE,
                "savedata overwrite leaves no temporary file behind");
+        if (scan != INVALID_HANDLE_VALUE) FindClose(scan);
+
+        expect(CreateDirectoryA(planted, NULL) != 0,
+               "a directory planted at a temporary's name");
+        fd_guest_copy(DATA_ADDR, data, sizeof(data) - 1u);
+        MEM_W32(PARAM_ADDR + 0x7c, (uint32_t)(sizeof(data) - 1u));
+        expect(sr_savedata_execute(PARAM_ADDR) == 0x80110381u,
+               "a SAVE whose PARAM.SFO cannot be staged fails");
+        expect(GetFileAttributesExA(save_host, GetFileExInfoStandard, &fad) &&
+                   fad.nFileSizeLow == sizeof(shorter) - 1u,
+               "a SAVE that failed while staging keeps the previous data file");
+        scan = FindFirstFileA(stage_glob, &found);
+        int stage_entries = 0;
+        if (scan != INVALID_HANDLE_VALUE) {
+            do stage_entries++; while (FindNextFileA(scan, &found));
+            FindClose(scan);
+        }
+        expect(stage_entries == 1, "a failed SAVE leaves only the planted directory");
+        RemoveDirectoryA(planted);
+
         MEM_W32(PARAM_ADDR + 0x30, 2u); /* SD_LOAD */
         MEM_W32(PARAM_ADDR + 0x78, 2u);
         MEM_W32(PARAM_ADDR + 0x7c, 0x1234u);
         MEM_W8(DATA_ADDR, 0xEEu);
-        expect(sr_savedata_execute(PARAM_ADDR) == 0x80110308u &&
+        expect(sr_savedata_execute(PARAM_ADDR) == 0x80110306u &&
                    MEM_R32(PARAM_ADDR + 0x7c) == 0u && MEM_R8(DATA_ADDR) == 0xEEu,
                "savedata load refuses data larger than the guest buffer");
     }

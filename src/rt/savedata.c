@@ -121,11 +121,11 @@ enum { SD_AUTOLOAD=0, SD_AUTOSAVE=1, SD_LOAD=2, SD_SAVE=3, SD_LISTLOAD=4, SD_LIS
 #define ERR_RW_NOT_FOUND    0x80110329u
 #define ERR_RW_MS_FULL      0x80110323u
 #define ERR_SIZES_NO_DATA   0x801103C7u   /* SIZES on a save that doesn't exist yet (PPSSPP) */
-/* LOAD_PARAM / RW_BAD_PARAMS (PPSSPP ErrorCodes.h), returned when the save data is
- * larger than the guest buffer.  UNMEASURED: no PSP capture shows which code
- * firmware returns for that case. */
-#define ERR_LOAD_PARAM_UNMEASURED 0x80110308u
-#define ERR_RW_PARAM_UNMEASURED   0x80110328u
+/* LOAD_DATA_BROKEN (PPSSPP Core/HLE/ErrorCodes.h).  PPSSPP's LoadNotCryptedSave
+ * (Core/Dialog/SavedataParam.cpp, revision d40137a0) returns it in LOAD and
+ * READDATA modes alike when the save data is larger than the guest buffer.
+ * UNMEASURED: no PSP capture shows which code firmware returns for that case. */
+#define ERR_LOAD_DATA_BROKEN_UNMEASURED 0x80110306u
 
 /* SceUtilitySavedataParam: bind result (offset 0x34, after mode). PPSSPP sets 1021 on every
  * successful load -- "PSP always responds this and this unlocks some games". */
@@ -286,19 +286,73 @@ static int save_rel(char *out, size_t cap, const char *game, const char *save) {
 
 static int sdlog(void) { static int v = -1; if (v < 0) v = getenv("SR_DLGLOG") ? 1 : 0; return v; }
 
-/* Issue #1387: a save member is never truncated in place.  Its bytes go to a
- * sibling temporary that is renamed over the member only after every byte is
- * written and flushed, so a write that fails part-way leaves the previous file
- * whole.  The suffix is 17 bytes, longer than any guest-chosen name can be
- * (rd_cstr caps fileName at 15 bytes), so a temporary never collides with a
- * save member.  A temporary left by an interrupted run is replaced by the next
- * save of that member. */
-#define SAVEDATA_TMP_SUFFIX ".nakagawa-partial"
+/* Issue #1387: one SAVE is one transaction over its member files: the data
+ * file, PARAM.SFO and the icon, picture and sound blobs.
+ *
+ * Stage: host_write_file writes each member to a fresh temporary in the save
+ * directory and flushes it to stable storage.  Nothing is published yet, so if
+ * staging any member fails, every temporary is discarded and the SAVE fails
+ * with no member touched: the previous save survives whole.
+ *
+ * Commit: only when every member is staged are the temporaries renamed over
+ * their members, in reverse staging order.  Each rename replaces one member
+ * atomically (POSIX renameat; on Win32 a rename through the temporary's own
+ * handle that replaces an existing member, the same-directory operation
+ * MoveFileExW performs for MOVEFILE_REPLACE_EXISTING, with POSIX semantics where
+ * the host has them).  The data file is staged first and therefore published
+ * last.  A rename that fails
+ * (a host lock, a link or directory planted at a member name, an I/O error)
+ * stops the commit, discards the remaining temporaries and fails the SAVE, so a
+ * SAVE that reports failure never replaced the data file.
+ *
+ * Temporaries are named ".nakagawa-stage-<n>", one per staged member.  The name
+ * is 17 bytes, longer than any savedata fileName (rd_cstr caps it at 15 bytes)
+ * and unlike every system member name, so it never collides with a member.
+ * Temporaries an interrupted run left behind are removed when the next SAVE of
+ * that directory begins, and FILES and SIZES never report them. */
+#define SAVEDATA_STAGE_PREFIX ".nakagawa-stage-"
+#define SAVEDATA_STAGE_MAX 6u   /* data file, PARAM.SFO, ICON0, ICON1, PIC1, SND0 */
 
-static int host_tmp_name(char *out, size_t cap, const char *name) {
-    int n = snprintf(out, cap, "%s" SAVEDATA_TMP_SUFFIX, name);
+static int savedata_is_stage_name(const char *name) {
+    return name && !strncmp(name, SAVEDATA_STAGE_PREFIX, sizeof(SAVEDATA_STAGE_PREFIX) - 1u);
+}
+
+static int stage_name(char *out, size_t cap, unsigned index) {
+    int n = snprintf(out, cap, SAVEDATA_STAGE_PREFIX "%u", index);
     return n > 0 && (size_t)n < cap && path_sanitize(out);
 }
+
+/* Two member names that select the same host file.  Win32 compares names
+ * case-insensitively, so there "param.sfo" and "PARAM.SFO" are one member. */
+static int same_member(const char *a, const char *b) {
+#ifdef _WIN32
+    return sd_stricmp(a, b) == 0;
+#else
+    return strcmp(a, b) == 0;
+#endif
+}
+
+typedef struct SavedataStaged {
+    char name[16];              /* the member this temporary will replace */
+    char tmp[24];               /* SAVEDATA_STAGE_PREFIX "<n>" */
+    int staged;                 /* the temporary exists and is not published */
+#ifdef _WIN32
+    HANDLE h;                   /* the temporary's verified handle, kept to the rename */
+#endif
+} SavedataStaged;
+
+typedef struct SavedataTxn {
+    const char *dir;
+    unsigned count;
+    int open;
+    SavedataStaged m[SAVEDATA_STAGE_MAX];
+#ifdef _WIN32
+    wchar_t canonical_root[MAX_PATH * 2];
+#elif defined(SR_CD_BACKEND_POSIX_AT)
+    sr_cd_root root;            /* one retained root for the whole transaction */
+    char rel[SR_CD_REL_MAX];
+#endif
+} SavedataTxn;
 
 #ifdef _WIN32
 /* Rename the verified temporary THROUGH its own handle to `leaf` in the
@@ -325,13 +379,36 @@ static int host_replace_by_handle(HANDLE h, const char *leaf_utf8,
     FILE_RENAME_INFO *info = (FILE_RENAME_INFO *)malloc(total);
     if (!info) return 0;
     memset(info, 0, total);
-    info->ReplaceIfExists = TRUE;
     info->RootDirectory = NULL;
     info->FileNameLength = (DWORD)(name_chars * sizeof(wchar_t));
     memcpy(info->FileName, final_path, dir_chars * sizeof(wchar_t));
     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, leaf_utf8, -1,
                         info->FileName + dir_chars, need);
-    BOOL ok = SetFileInformationByHandle(h, FileRenameInfo, info, (DWORD)total);
+    BOOL ok = FALSE;
+#if defined(FILE_RENAME_FLAG_POSIX_SEMANTICS) && defined(NTDDI_VERSION) && \
+    NTDDI_VERSION >= 0x0A000002
+    /* POSIX semantics replace a member that another handle holds open (a
+     * guest sceIoOpen descriptor, which shares delete access), as renameat
+     * does: that handle keeps reading the old file.  The classic rename
+     * refuses such a member with ERROR_ACCESS_DENIED (observed on Windows 11),
+     * which would fail every SAVE made while the game has its file open.
+     * Windows before 10 1607 and volumes without POSIX semantics refuse the
+     * class or the flag, and then get the classic rename. */
+    info->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+    ok = SetFileInformationByHandle(h, FileRenameInfoEx, info, (DWORD)total);
+    if (!ok) {
+        DWORD err = GetLastError();
+        if (err == ERROR_INVALID_PARAMETER || err == ERROR_NOT_SUPPORTED ||
+            err == ERROR_CALL_NOT_IMPLEMENTED || err == ERROR_INVALID_FUNCTION) {
+            info->Flags = 0;
+            info->ReplaceIfExists = TRUE;
+            ok = SetFileInformationByHandle(h, FileRenameInfo, info, (DWORD)total);
+        }
+    }
+#else
+    info->ReplaceIfExists = TRUE;
+    ok = SetFileInformationByHandle(h, FileRenameInfo, info, (DWORD)total);
+#endif
     free(info);
     return ok && sr_vfs_handle_is_contained(h, canonical_root);
 }
@@ -342,46 +419,39 @@ static int host_rel_join(char *out, size_t cap, const char *rel, const char *lea
 }
 #endif
 
-static int host_write_file(const char *dir, const char *name, const uint8_t *data, uint32_t n) {
-    char tmp[SR_CD_NAME_MAX];
-    if (!path_sanitize(name)) { errno = EINVAL; return 0; }
-    if (!host_tmp_name(tmp, sizeof(tmp), name)) { errno = ENAMETOOLONG; return 0; }
+/* Stage one member: write its `n` bytes to the member's fresh temporary and
+ * flush them to stable storage.  The published member is not touched. */
+static int host_write_file(SavedataTxn *t, SavedataStaged *s, const uint8_t *data, uint32_t n) {
+    if (n > 0 && !data) { errno = EINVAL; return 0; }
 #ifdef _WIN32
     char path[PATH_MAX];
-    if (!path_join(path, sizeof(path), dir, tmp)) return 0;
-    /* OPEN -> HANDLE -> FINAL PATH VERIFY -> OPERATION. The write lands through
-     * the very handle whose final path was verified, so a swap after the check
-     * cannot redirect the bytes. OPEN_ALWAYS + SetEndOfFile truncates only
-     * after verification, so a planted temporary link never truncates its
-     * target.  DELETE access lets the same handle rename or discard it. */
-    wchar_t canonical_root[MAX_PATH * 2];
-    if (!ms_canonical_root(canonical_root, sizeof(canonical_root)/sizeof(wchar_t)))
-        return 0;
+    if (!path_join(path, sizeof(path), t->dir, s->tmp)) return 0;
+    /* OPEN -> HANDLE -> FINAL PATH VERIFY -> OPERATION.  CREATE_NEW makes a
+     * new object, so nothing planted at the temporary's name (a link, a hard
+     * link, a stale file) is ever opened or truncated, and the bytes land
+     * through the very handle whose final path was verified.  DELETE access
+     * lets the same handle rename or discard the temporary later. */
     HANDLE h;
     if (!sr_vfs_open_contained_utf8(path, GENERIC_READ | GENERIC_WRITE | DELETE,
-                                    FILE_ATTRIBUTE_NORMAL, OPEN_ALWAYS, canonical_root, &h))
+                                    FILE_ATTRIBUTE_NORMAL, CREATE_NEW, t->canonical_root, &h))
         return 0;
-    int ok = SetFilePointer(h, 0, NULL, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
-             SetEndOfFile(h);
     DWORD written = 0;
-    if (ok && n > 0 && data) {
-        ok = WriteFile(h, data, (DWORD)n, &written, NULL) && written == (DWORD)n;
-    }
+    int ok = !n || (WriteFile(h, data, (DWORD)n, &written, NULL) && written == (DWORD)n);
     if (ok) ok = FlushFileBuffers(h) != 0;
-    if (ok) ok = host_replace_by_handle(h, name, canonical_root);
-    if (!ok) (void)sr_vfs_dispose_by_handle(h);
-    CloseHandle(h);
-    return ok ? 1 : 0;
+    if (!ok) {
+        (void)sr_vfs_dispose_by_handle(h);
+        CloseHandle(h);
+        return 0;
+    }
+    s->h = h;
+    s->staged = 1;
+    return 1;
 #else
 #if defined(SR_CD_BACKEND_POSIX_AT)
-    char rel[SR_CD_REL_MAX], tmp_rel[SR_CD_REL_MAX], dst_rel[SR_CD_REL_MAX];
-    if (!savedata_root_relative(dir, rel, sizeof(rel))) return 0;
-    if (!host_rel_join(tmp_rel, sizeof(tmp_rel), rel, tmp) ||
-        !host_rel_join(dst_rel, sizeof(dst_rel), rel, name)) return 0;
-    sr_cd_root root;
-    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;
+    /* The seam opens the temporary with O_NOFOLLOW and refuses anything but a
+     * regular file; txn_begin already unlinked any stale object of its name. */
     FILE *f = NULL;
-    sr_cd_status st = sr_cd_open_file(&root, rel, tmp, SR_CD_FILE_WRITE_TRUNCATE, &f);
+    sr_cd_status st = sr_cd_open_file(&t->root, t->rel, s->tmp, SR_CD_FILE_WRITE_TRUNCATE, &f);
     int ok = st == SR_CD_OK && f;
     if (ok) {
         ok = !n || fwrite(data, 1, n, f) == n;
@@ -389,13 +459,14 @@ static int host_write_file(const char *dir, const char *name, const uint8_t *dat
         if (ok && fsync(fileno(f)) != 0) ok = 0;
         if (fclose(f) != 0) ok = 0;
     }
-    /* sr_cd_rename_file refuses a destination that is a link, directory or
-     * special file, and renameat never follows either final component. */
-    if (ok) ok = sr_cd_rename_file(&root, tmp_rel, dst_rel) == SR_CD_OK;
-    if (!ok) (void)sr_cd_delete_leaf(&root, rel, tmp);
-    sr_cd_root_close(&root);
-    return ok;
+    if (!ok) {
+        (void)sr_cd_delete_leaf(&t->root, t->rel, s->tmp);
+        return 0;
+    }
+    s->staged = 1;
+    return 1;
 #else
+    (void)t; (void)s; (void)data; (void)n;
     return 0;
 #endif
 #endif
@@ -466,15 +537,135 @@ static int host_read_file(const char *dir, const char *name, uint8_t *data, uint
 #endif
 }
 
+/* ---- the SAVE transaction (issue #1387; see host_write_file) ---------------------------- */
+
+/* Remove one staged temporary that will not be published. */
+static void host_discard(SavedataTxn *t, SavedataStaged *s) {
+    if (!s->staged) return;
+#ifdef _WIN32
+    (void)t;
+    (void)sr_vfs_dispose_by_handle(s->h);
+    CloseHandle(s->h);
+    s->h = NULL;
+#elif defined(SR_CD_BACKEND_POSIX_AT)
+    (void)sr_cd_delete_leaf(&t->root, t->rel, s->tmp);
+#else
+    (void)t;
+#endif
+    s->staged = 0;
+}
+
+/* Discard every unpublished temporary and end the transaction. */
+static void txn_abort(SavedataTxn *t) {
+    for (unsigned i = 0; i < t->count; i++) host_discard(t, &t->m[i]);
+#if !defined(_WIN32) && defined(SR_CD_BACKEND_POSIX_AT)
+    if (t->open) sr_cd_root_close(&t->root);
+#endif
+    t->open = 0;
+    t->count = 0;
+}
+
+static int txn_begin(SavedataTxn *t, const char *dir) {
+    memset(t, 0, sizeof(*t));
+    t->dir = dir;
+#if defined(_WIN32) || defined(SR_CD_BACKEND_POSIX_AT)
+#ifdef _WIN32
+    if (!ms_canonical_root(t->canonical_root, sizeof(t->canonical_root) / sizeof(wchar_t)))
+        return 0;
+#else
+    if (!savedata_root_relative(dir, t->rel, sizeof(t->rel))) return 0;
+    if (sr_cd_root_open(ms_root(), &t->root) != SR_CD_OK) return 0;
+#endif
+    t->open = 1;
+    /* Remove what an interrupted SAVE left behind.  Each removal is bound to
+     * this directory and never follows a link; a directory planted at a
+     * temporary's name is refused here and then fails that member's stage. */
+    for (unsigned i = 0; i < SAVEDATA_STAGE_MAX; i++) {
+        char tmp[24];
+        if (!stage_name(tmp, sizeof(tmp), i)) { txn_abort(t); return 0; }
+#ifdef _WIN32
+        char path[PATH_MAX];
+        int was_dir = 0;
+        if (!path_join(path, sizeof(path), dir, tmp)) { txn_abort(t); return 0; }
+        (void)sr_vfs_delete_contained_leaf(path, t->canonical_root, &was_dir);
+#else
+        (void)sr_cd_delete_leaf(&t->root, t->rel, tmp);
+#endif
+    }
+    return 1;
+#else
+    return 0;   /* an unsupported host has no contained write route */
+#endif
+}
+
+/* Stage `name`.  A member written twice in one SAVE keeps its later bytes, as
+ * the sequential writes this transaction replaced did. */
+static int txn_stage(SavedataTxn *t, const char *name, const uint8_t *data, uint32_t n) {
+    size_t len = name ? strlen(name) : 0;
+    if (!t->open || !path_sanitize(name) || len >= sizeof(t->m[0].name)) {
+        errno = EINVAL;
+        return 0;
+    }
+    unsigned slot = t->count;
+    for (unsigned i = 0; i < t->count; i++) {
+        if (same_member(t->m[i].name, name)) { slot = i; break; }
+    }
+    if (slot >= SAVEDATA_STAGE_MAX) { errno = ENOSPC; return 0; }
+    SavedataStaged *s = &t->m[slot];
+    host_discard(t, s);
+    if (slot == t->count) {
+        if (!stage_name(s->tmp, sizeof(s->tmp), slot)) return 0;
+        t->count++;
+    }
+    memcpy(s->name, name, len + 1u);
+    return host_write_file(t, s, data, n);
+}
+
+/* Publish every staged member, the data file last, and end the transaction.
+ * Returns 0 when any rename failed; members not yet renamed keep their
+ * previous contents and their temporaries are discarded. */
+static int txn_commit(SavedataTxn *t) {
+    int ok = t->open;
+    for (unsigned i = t->count; ok && i-- > 0;) {
+        SavedataStaged *s = &t->m[i];
+        if (!s->staged) { ok = 0; break; }
+#ifdef _WIN32
+        ok = host_replace_by_handle(s->h, s->name, t->canonical_root);
+        if (ok) {
+            CloseHandle(s->h);
+            s->h = NULL;
+            s->staged = 0;
+        }
+#elif defined(SR_CD_BACKEND_POSIX_AT)
+        char tmp_rel[SR_CD_REL_MAX], dst_rel[SR_CD_REL_MAX];
+        /* sr_cd_rename_file refuses a destination that is a link, directory or
+         * special file, and renameat never follows either final component. */
+        ok = host_rel_join(tmp_rel, sizeof(tmp_rel), t->rel, s->tmp) &&
+             host_rel_join(dst_rel, sizeof(dst_rel), t->rel, s->name) &&
+             sr_cd_rename_file(&t->root, tmp_rel, dst_rel) == SR_CD_OK;
+        if (ok) s->staged = 0;
+#else
+        ok = 0;
+#endif
+    }
+    txn_abort(t);
+    return ok;
+}
+
 /* Storage boundary: PSP serialization/crypto can be inserted by replacing these operations;
  * dialog and guest-memory code never depends on the host filesystem representation. */
 typedef struct SavedataStorageOps {
     int (*prepare)(const char *dir);
-    int (*write)(const char *dir, const char *name, const uint8_t *data, uint32_t size);
+    int (*begin)(SavedataTxn *txn, const char *dir);
+    int (*stage)(SavedataTxn *txn, const char *name, const uint8_t *data, uint32_t size);
+    int (*commit)(SavedataTxn *txn);
+    void (*abort)(SavedataTxn *txn);
     int (*read)(const char *dir, const char *name, uint8_t *data, uint32_t cap, uint32_t *size);
 } SavedataStorageOps;
 
-static const SavedataStorageOps s_storage = { mkdirs, host_write_file, host_read_file };
+static const SavedataStorageOps s_storage = {
+    mkdirs, txn_begin, txn_stage, txn_commit, txn_abort, host_read_file
+};
 
 /* ---- minimal PARAM.SFO writer (PSF v1.1) -------------------------------------------------- */
 typedef struct { const char *key; uint16_t fmt; uint32_t len, maxlen; const void *val; } SfoEnt;
@@ -489,9 +680,9 @@ static SfoEnt sfo_str_entry(const char *key, const char *val, uint32_t maxlen) {
     return (SfoEnt){key, 0x0204, len, maxlen, val};
 }
 
-static void sfo_write(const char *dir, const char *title, const char *saveTitle,
-                      const char *detail, const char *saveDir, uint32_t parental,
-                      const char *fileName) {
+static int sfo_write(SavedataTxn *txn, const char *title, const char *saveTitle,
+                     const char *detail, const char *saveDir, uint32_t parental,
+                     const char *fileName) {
     static uint8_t params[128], filelist[3168];   /* zeroed secure blocks */
     /* FILE_LIST entry 0: {char name[13]; u8 hash[16]; u8 pad[3]} -- records the data file
      * (hash left zero; we don't encrypt). */
@@ -516,7 +707,7 @@ static void sfo_write(const char *dir, const char *title, const char *saveTitle,
 
     uint32_t keyOff[8], keySize = 0, dataOff[8], dataSize = 0;
     for (int i = 0; i < n; i++) {
-        if (e[i].len > e[i].maxlen) return;
+        if (e[i].len > e[i].maxlen) return 0;
         keyOff[i] = keySize; keySize += (uint32_t)strlen(e[i].key) + 1;
         dataOff[i] = dataSize; dataSize += (e[i].maxlen + 3) & ~3u;
     }
@@ -525,7 +716,7 @@ static void sfo_write(const char *dir, const char *title, const char *saveTitle,
     uint32_t totalAlloc = dataStart + dataSize;
 
     uint8_t *buf = (uint8_t *)calloc(1, totalAlloc);
-    if (!buf) return;
+    if (!buf) return 0;
     memcpy(buf, "\0PSF", 4);
     *(uint32_t *)(buf + 4) = 0x0101;
     *(uint32_t *)(buf + 8) = keyStart;
@@ -558,8 +749,9 @@ static void sfo_write(const char *dir, const char *title, const char *saveTitle,
             memcpy(buf + dataStart + dataOff[i], e[i].val, e[i].len);
         }
     }
-    s_storage.write(dir, "PARAM.SFO", buf, totalAlloc);
+    int ok = s_storage.stage(txn, "PARAM.SFO", buf, totalAlloc);
     free(buf);
+    return ok;
 }
 
 /* ---- ScePspDateTime (16 bytes) from a standard time_t ------------------------------------- */
@@ -661,11 +853,13 @@ static int validate_filedata_writable(uint32_t fd) {
     return sr_guest_span_writable(buf, cap);
 }
 
-static void write_filedata(const char *dir, const char *name, uint32_t fd) {
+/* Stage one PspUtilitySavedataFileData blob.  An absent blob is no member and
+ * succeeds; a present one that cannot be staged fails the SAVE. */
+static int write_filedata(SavedataTxn *txn, const char *name, uint32_t fd) {
     uint32_t buf = MEM_R32(fd + 0), sz = MEM_R32(fd + 8);
-    if (!buf || !sz) return;
-    if (!sr_guest_span_readable_current(buf, sz)) return;
-    s_storage.write(dir, name, (const uint8_t *)SR_HOST(buf), sz);
+    if (!buf || !sz) return 1;
+    if (!sr_guest_span_readable_current(buf, sz)) return 0;
+    return s_storage.stage(txn, name, (const uint8_t *)SR_HOST(buf), sz);
 }
 
 static uint32_t do_save(uint32_t param, const char *game, const char *save) {
@@ -691,19 +885,32 @@ static uint32_t do_save(uint32_t param, const char *game, const char *save) {
 
     save_dir(dir, sizeof(dir), game, save);
     if (!s_storage.prepare(dir)) return 0x80110381u;
-    if (fileName[0] && dataBuf && dataSize && dataSize < 0x04000000) {
-        if (!s_storage.write(dir, fileName, (const uint8_t *)SR_HOST(dataBuf), dataSize))
-            return 0x80110381u;   /* SAVE_NO_MS: couldn't write */
-    }
+    /* Issue #1387: every member is staged before any is published, so a
+     * failure anywhere leaves the previous save as it was (host_write_file). */
+    SavedataTxn txn;
+    if (!s_storage.begin(&txn, dir)) return 0x80110381u;
+    int ok = 1;
+    if (fileName[0] && dataBuf && dataSize && dataSize < 0x04000000)
+        ok = s_storage.stage(&txn, fileName, (const uint8_t *)SR_HOST(dataBuf), dataSize);
     rd_cstr(param + SDP_sfoTitle, title, sizeof(title));
     rd_cstr(param + SDP_sfoSaveTitle, saveTitle, sizeof(saveTitle));
     rd_cstr(param + SDP_sfoDetail, detail, sizeof(detail));
     snprintf(saveDir, sizeof(saveDir), "%s%s", game, save);
-    sfo_write(dir, title, saveTitle, detail, saveDir, MEM_R8(param + SDP_sfoParental), fileName);
-    write_filedata(dir, "ICON0.PNG", param + SDP_icon0);
-    write_filedata(dir, "ICON1.PMF", param + SDP_icon1);
-    write_filedata(dir, "PIC1.PNG", param + SDP_pic1);
-    write_filedata(dir, "SND0.AT3", param + SDP_snd0);
+    ok = ok && sfo_write(&txn, title, saveTitle, detail, saveDir,
+                         MEM_R8(param + SDP_sfoParental), fileName);
+    ok = ok && write_filedata(&txn, "ICON0.PNG", param + SDP_icon0);
+    ok = ok && write_filedata(&txn, "ICON1.PMF", param + SDP_icon1);
+    ok = ok && write_filedata(&txn, "PIC1.PNG", param + SDP_pic1);
+    ok = ok && write_filedata(&txn, "SND0.AT3", param + SDP_snd0);
+    if (!ok) {
+        s_storage.abort(&txn);
+        if (sdlog()) fprintf(stderr, "savedata: SAVE %s -> staging failed, previous save kept\n", dir);
+        return 0x80110381u;   /* SAVE_NO_MS: couldn't write */
+    }
+    if (!s_storage.commit(&txn)) {
+        if (sdlog()) fprintf(stderr, "savedata: SAVE %s -> publishing failed\n", dir);
+        return 0x80110381u;
+    }
     if (sdlog()) fprintf(stderr, "savedata: SAVE %s\\%s (%" PRIu32 " bytes)\n", dir, fileName, dataSize);
     return 0;
 }
@@ -783,12 +990,12 @@ static uint32_t do_load(uint32_t param, const char *game, const char *save) {
             return ERR_LOAD_NOT_FOUND;
         }
         /* Issue #1387: data that does not fit the guest buffer is refused, not
-         * cut to the buffer size and reported as a success.  The error name
-         * follows PPSSPP's table; the code a PSP returns here is UNMEASURED. */
+         * cut to the buffer size and reported as a success.  The code follows
+         * PPSSPP; the one a PSP returns here is UNMEASURED. */
         if (dataBuf && (uint64_t)n > (uint64_t)cap) {
             if (sdlog()) fprintf(stderr, "savedata: LOAD %s -> %u bytes exceed buffer %" PRIu32 "\n",
                                  dir, (unsigned)n, cap);
-            return ERR_LOAD_PARAM_UNMEASURED;
+            return ERR_LOAD_DATA_BROKEN_UNMEASURED;
         }
         size_t to_read = (size_t)n;
         uint32_t rd = 0;
@@ -946,7 +1153,7 @@ static uint32_t do_files(uint32_t param, const char *game, const char *save) {
     }
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
-        if (de->d_name[0] == '.') continue;
+        if (de->d_name[0] == '.' || savedata_is_stage_name(de->d_name)) continue;
         if (!path_sanitize(de->d_name)) continue;
         if (!path_join(path, sizeof(path), dir, de->d_name)) continue;
         struct stat st;
@@ -1000,6 +1207,7 @@ static uint32_t do_sizes(uint32_t param, const char *game) {
             if (d) {
                 struct dirent *de;
                 while ((de = readdir(d)) != NULL) {
+                    if (savedata_is_stage_name(de->d_name)) continue;   /* issue #1387 */
                     if (!path_sanitize(de->d_name)) continue;
                     if (!path_join(path, sizeof(path), dir, de->d_name)) continue;
                     struct stat st;
@@ -1166,7 +1374,6 @@ uint32_t sr_savedata_execute(uint32_t param) {
             uint32_t r = do_load(param, game, save);             /* PPSSPP error remap */
             if (r == ERR_LOAD_NO_DATA) r = ERR_RW_NO_DATA;
             if (r == ERR_LOAD_NOT_FOUND) r = ERR_RW_NOT_FOUND;
-            if (r == ERR_LOAD_PARAM_UNMEASURED) r = ERR_RW_PARAM_UNMEASURED;
             return r;
         }
         case SD_LISTDELETE: case SD_DELETE: case SD_AUTODELETE:
