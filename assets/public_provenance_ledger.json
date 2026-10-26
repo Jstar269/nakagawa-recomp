@@ -1657,7 +1657,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "400ede3a8d44f913992db1c249a3b9fd7a6644e17cb8c659b26c221a4f45b20a"
+      "sha256": "bb2a04344abed33adfe7b47d09d2d00e876c84b01c939533694d8ea19b0dcf65"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -5496,7 +5496,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "22f6c03e9acd2346623b1d26b95d1ef858c56609538b42d574bbe799f62c0dac"
+      "sha256": "6f57138d603a147cd4e18ce78beff38156bf1b578a5cde896d7a774ced68dfb0"
     },
     {
       "path": "src/rt/gui.c",
@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c06ab355061790b0190d4ebb3504c0e741204f5b99bde3975c2c2ef7642a4222"
+      "sha256": "195bd9434990a65622b03a71a4302309384d9f11e5ab2d93551fc9144c7e04de"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8906,7 +8906,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1c7fa3f1f54a1de6d04003bba313c9238450cca4a7a464517646c9f4f2a25ed5"
+      "sha256": "2f2747e94ebc194e9a422b27d0bd48402ad53e0d154bce1e810ef4aac9a7ae22"
     },
     {
       "path": "src/rt/savedata.c",
@@ -13502,7 +13502,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "771a7b3fd3e8532a6d563a1655b3fe0a9f9435f76f2ed0c5ff79931a934b90aa"
+      "sha256": "70a458d4af1b1189a2dcfe30656967d256feeb298daa7b3fa82b2548f2b11d90"
     },
     {
       "path": "tools/test_guestmem_c.py",
@@ -13514,7 +13514,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3010527ea87953bb3b399648f13d39c73bae7729c74aec7cb915cb00d83eac95"
+      "sha256": "975e85548a97e58e2e4484ec812fa62291ee2abf9539c437332638dc9f5367a7"
     },
     {
       "path": "tools/test_hardware_runner_protocol.py",
