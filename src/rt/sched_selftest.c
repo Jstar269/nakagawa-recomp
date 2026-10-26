@@ -61,6 +61,8 @@ void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void
 void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
 
 uint32_t g_sr_debug = 0;
+int g_prof_enabled;   /* SR_YIELD in the flight equivalence body */
+void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
 SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
 int g_sr_mem_watch_count = 0;
 int g_sr_heap_watch = 0;
@@ -2993,6 +2995,140 @@ static void test_liveness_bounded_long_run_starvation(void) {
     (void)low;
 }
 
+/* ---- flight recorder equivalence (#320, acceptance 5) --------------------------------
+ *
+ * Recording must not change what the guest sees. The same three-thread workload runs
+ * with the recorder disabled and then with every class enabled at the maximum limit;
+ * the scheduler pick order, the guest memory the threads write, each thread's final
+ * state and exit status, the restored callee-saved register and the scheduler counters
+ * must be identical, and the enabled run must have recorded the scheduling it observed
+ * (so the comparison is not of two unrecorded runs).
+ *
+ * MUTANT: make record_locked() force a slice expiry
+ *   (`atomic_store_explicit(&sr_timeslice, 0, memory_order_relaxed);`)
+ *   -- the wake each body records before its SR_YIELD then switches to the woken
+ *   thread early, and the pick order and guest log diverge. A host sleep or yield in the recorder is caught statically instead, by
+ *   tools/test_flight_diff.py (RecorderTimingTests). */
+enum {
+    FLIGHT_EQ_OBJ = 0x46000001u,
+    FLIGHT_EQ_LOG = 0x08800000u,   /* guest word 0: entry count; then one word per entry */
+    FLIGHT_EQ_THREADS = 3,
+    FLIGHT_EQ_MAX_PICKS = 32,
+    FLIGHT_EQ_LOG_WORDS = 1 + 2 * FLIGHT_EQ_THREADS,
+    FLIGHT_EQ_STATE_WORDS = FLIGHT_EQ_LOG_WORDS + 5 * FLIGHT_EQ_THREADS + 6
+};
+
+typedef struct {
+    uint32_t picks[FLIGHT_EQ_MAX_PICKS];
+    uint32_t pick_count;
+    uint32_t drained;              /* 1 when the run ended with nothing runnable */
+    uint32_t words[FLIGHT_EQ_STATE_WORDS];
+} FlightEqTrace;
+
+static void flight_eq_log(uint32_t word) {
+    uint32_t n = MEM_R32(FLIGHT_EQ_LOG);
+    MEM_W32(FLIGHT_EQ_LOG + 4u + 4u * n, word);
+    MEM_W32(FLIGHT_EQ_LOG, n + 1u);
+}
+
+/* Log entry, release the previous waiter (a recorded wake), take a yield point, block,
+ * then log the restored s0 and return. */
+static void flight_eq_body(CpuState *s) {
+    uint32_t uid = s_tcb[s_cur].uid;
+    flight_eq_log(uid);
+    s->r[16] = 0x5a5a0000u | uid;
+    sched_wake(FLIGHT_EQ_OBJ);
+    SR_YIELD(s, 0x09100000u);
+    sched_block_on(FLIGHT_EQ_OBJ);
+    flight_eq_log(s->r[16] ^ 0x80000000u);
+    s->r[2] = MEM_R32(FLIGHT_EQ_LOG);
+}
+
+static void flight_eq_run(FlightEqTrace *out) {
+    static const int priorities[FLIGHT_EQ_THREADS] = {30, 30, 20};
+    uint32_t uids[FLIGHT_EQ_THREADS];
+    int woken = 0;
+    memset(out, 0, sizeof(*out));
+    reset_sched();
+    g_test_body = flight_eq_body;
+    for (int i = 0; i < FLIGHT_EQ_THREADS; i++) {
+        uids[i] = sched_create_thread(0x09100000u + 0x10u * (uint32_t)i, priorities[i], 0x10000u);
+        sched_start_thread(uids[i], 0, 0);
+    }
+    while (out->pick_count < FLIGHT_EQ_MAX_PICKS) {
+        int next = pick_next();
+        if (next < 0) {
+            if (woken) {
+                out->drained = 1u;
+                break;
+            }
+            sched_wake(FLIGHT_EQ_OBJ);
+            woken = 1;
+            continue;
+        }
+        out->picks[out->pick_count++] = s_tcb[next].uid;
+        run_one_slice(next);
+    }
+    unsigned w = 0;
+    for (unsigned i = 0; i < FLIGHT_EQ_LOG_WORDS; i++)
+        out->words[w++] = MEM_R32(FLIGHT_EQ_LOG + 4u * i);
+    for (int i = 0; i < FLIGHT_EQ_THREADS; i++) {
+        TCB *t = tcb_by_uid(uids[i]);
+        out->words[w++] = uids[i];
+        out->words[w++] = t ? (uint32_t)t->state : 0xffffffffu;
+        out->words[w++] = t ? t->wait_obj : 0xffffffffu;
+        out->words[w++] = t ? (uint32_t)t->exit_status : 0xffffffffu;
+        out->words[w++] = t ? t->saved.r[16] : 0xffffffffu;
+    }
+    SrSchedLivenessSnapshot snap;
+    sched_liveness_snapshot(&snap);
+    out->words[w++] = (uint32_t)s_last_pick;
+    out->words[w++] = (uint32_t)s_tick;
+    out->words[w++] = (uint32_t)s_vtime_us;
+    out->words[w++] = (uint32_t)snap.picks;
+    out->words[w++] = (uint32_t)snap.wake_transitions;
+    out->words[w++] = (uint32_t)snap.waiters_readied;
+    for (int i = 0; i < FLIGHT_EQ_THREADS; i++) sched_terminate_thread(uids[i]);
+    g_test_body = NULL;
+}
+
+static void test_flight_recorder_does_not_perturb_scheduling(void) {
+    FlightEqTrace off, on;
+    SrFlightSnapshot snapshot;
+    SrFlightEvent event;
+
+    sr_flight_test_disable();
+    flight_eq_run(&off);
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == 0u, "flight equivalence: the disabled recorder records nothing");
+    expect(off.drained == 1u && off.pick_count == 6u,
+           "flight equivalence: the workload drains in six picks (three entries, three resumes)");
+    expect(off.picks[0] == off.picks[2] && off.words[0] == 6u,
+           "flight equivalence: the first peer's wake resumes the priority-20 thread next");
+
+    sr_flight_test_reset(SR_FLIGHT_CLASS_ALL, SR_FLIGHT_MAX_EVENTS);
+    flight_eq_run(&on);
+    sr_flight_snapshot(&snapshot);
+    unsigned picks = 0, blocks = 0, wakes = 0;
+    for (int i = 0; i < sr_flight_event_count(); i++) {
+        if (!sr_flight_event_at((uint32_t)i, &event) || event.event_class != SR_FLIGHT_CLASS_SCHED)
+            continue;
+        if (event.kind == SR_FLIGHT_KIND_SCHED_PICK && event.arg1 != 0u) picks++;
+        if (event.kind == SR_FLIGHT_KIND_SCHED_BLOCK) blocks++;
+        if (event.kind == SR_FLIGHT_KIND_SCHED_WAKE) wakes++;
+    }
+    sr_flight_test_disable();
+    expect(snapshot.dropped == 0u && picks == 6u && blocks == 3u && wakes == 3u,
+           "flight equivalence: the enabled recorder saw every pick, block and wake");
+
+    expect(on.drained == off.drained && on.pick_count == off.pick_count,
+           "flight equivalence: recording does not change how many picks the workload takes");
+    expect(memcmp(on.picks, off.picks, sizeof(off.picks)) == 0,
+           "flight equivalence: recording does not change the scheduler pick order");
+    expect(memcmp(on.words, off.words, sizeof(off.words)) == 0,
+           "flight equivalence: recording does not change guest memory, thread state or counters");
+}
+
 /* ---- main -------------------------------------------------------------------------- */
 
 /* ---- PSP display-wait semantics -----------------------------------------------------
@@ -4632,6 +4768,7 @@ int main(int argc, char **argv) {
     test_liveness_queue_full_and_empty_without_spin();
     test_liveness_sole_runnable_becomes_nonsole();
     test_liveness_bounded_long_run_starvation();
+    test_flight_recorder_does_not_perturb_scheduling();
 
     /* PSP display-wait semantics (hardware-pinned; see the block above these). */
     test_waitvblankstart_always_blocks();
