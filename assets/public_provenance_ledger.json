@@ -1441,7 +1441,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2a9e430cfb33054c00ed474669c643e9b7adb33782423d05c3c851fef1202cf0"
+      "sha256": "7ae5dac1e21650f7e1716ad0ec852c8341137cf4457f0d0b7ed2cfedcedbd1cd"
     },
     {
       "path": "docs/HLE_AND_WORKAROUND_INVENTORY.md",
