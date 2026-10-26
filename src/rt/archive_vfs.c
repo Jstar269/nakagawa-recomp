@@ -431,6 +431,18 @@ static void archive_cache_insert(SrArchiveVfs *vfs, size_t mount_index,
     vfs->cache_bytes += size;
 }
 
+/* Each file-backed mount caches its member-read handle. A title can mount hundreds of
+ * archives, more than the C runtime allows open streams, so reading from one mount
+ * releases the handle of the mount read before it. */
+static void archive_handle_switch(SrArchiveVfs *vfs, size_t mount_index) {
+    size_t slot = mount_index + 1u;
+    if (vfs->handle_mount_slot != 0u && vfs->handle_mount_slot != slot &&
+        vfs->handle_mount_slot <= vfs->mount_count) {
+        nk_xb_release_file_handle(&vfs->mounts[vfs->handle_mount_slot - 1u]);
+    }
+    vfs->handle_mount_slot = slot;
+}
+
 NkResult sr_archive_vfs_read(const SrArchiveVfs *vfs, const SrArchiveFile *file,
                              uint64_t offset, void *output, size_t output_capacity,
                              size_t *output_size) {
@@ -456,6 +468,7 @@ NkResult sr_archive_vfs_read(const SrArchiveVfs *vfs, const SrArchiveFile *file,
         if (output_size) *output_size = amount;
         return NK_OK;
     }
+    if (mount->file_backed) archive_handle_switch(mutable_vfs, file->mount_index);
 
     if (entry->compression == NK_XB_COMPRESSION_NONE) {
         if (entry->offset > mount->source_size ||
