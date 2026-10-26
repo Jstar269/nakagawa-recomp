@@ -1598,6 +1598,16 @@ class _BuildProgressReporter:
 # The planner appends {"completed": N, "total": M} lines here while Make compiles
 # (title_codegen_plan.COMPILE_PROGRESS_FILE_ENV).
 _COMPILE_PROGRESS_FILE_ENV = "NK_COMPILE_PROGRESS_FILE"
+# Compiled objects are shared between package builds from here, inside the player data
+# folder (nk_core.package_cache OBJECT_CACHE_DIR_ENV / OBJECT_CACHE_ROOT_PARTS). Setting
+# the variable to 0 turns the reuse off for one build.
+_OBJECT_CACHE_DIR_ENV = "NK_OBJECT_CACHE_DIR"
+_OBJECT_CACHE_ROOT_PARTS = ("cache", "objects")
+# The system libraries a disc carries are shared through their own folder, which the
+# player's Settings can turn off (--no-shared-libraries) and clear
+# (SHARED_LIBRARY_CACHE_DIR_ENV / SHARED_LIBRARY_CACHE_ROOT_PARTS there).
+_SHARED_LIBRARY_CACHE_DIR_ENV = "NK_SHARED_LIBRARY_CACHE_DIR"
+_SHARED_LIBRARY_CACHE_ROOT_PARTS = ("cache", "shared-libraries")
 
 
 def compile_progress_message(completed: int, total: int) -> str:
@@ -2238,6 +2248,19 @@ def _build_package(args: argparse.Namespace, stage_observer,
             progress_path = Path(progress_dir) / "compile-progress.jsonl"
             compile_environment = dict(build_environment)
             compile_environment[_COMPILE_PROGRESS_FILE_ENV] = str(progress_path)
+            compile_environment.setdefault(
+                _OBJECT_CACHE_DIR_ENV,
+                str(user_root.joinpath(*_OBJECT_CACHE_ROOT_PARTS)),
+            )
+            if compile_environment[_OBJECT_CACHE_DIR_ENV] == "0":
+                del compile_environment[_OBJECT_CACHE_DIR_ENV]
+            if getattr(args, "no_shared_libraries", False):
+                compile_environment.pop(_SHARED_LIBRARY_CACHE_DIR_ENV, None)
+            else:
+                compile_environment.setdefault(
+                    _SHARED_LIBRARY_CACHE_DIR_ENV,
+                    str(user_root.joinpath(*_SHARED_LIBRARY_CACHE_ROOT_PARTS)),
+                )
             with _CompileProgressRelay(reporter, progress_path):
                 completed = subprocess.run(
                     command,
@@ -4361,6 +4384,9 @@ def main() -> int:
                          help="Emit machine-readable progress JSON objects (one per line)")
     p_build.add_argument("--log-file", type=Path, default=None,
                          help="Write build log to the specified file")
+    p_build.add_argument("--no-shared-libraries", action="store_true",
+                         help="compile the disc's system libraries for this game only, "
+                              "without the shared library cache")
     p_build.set_defaults(func=cmd_build_package)
 
     p_bringup = subparsers.add_parser(

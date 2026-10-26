@@ -9,7 +9,9 @@ its own link space, with nothing in the generated code depending on a load base.
 These tests drive the real generator over the source-owned overlay modules of
 the platform ladder and pin the generated contract the runtime binds:
 
-* every guest address of the module's own image is ``(sr_m<k>_base + link)``;
+* every guest address of the module's own image is ``(<base symbol> + link)``;
+* a module carried once is named by its bytes (``l<fnv>_...``, ``sr_l<fnv>_base``) and
+  written to its own ``nk_lib_<fnv>.c``, the same file whatever game carries it (#1306);
 * an instruction whose immediate the loader relocates reads that immediate from
   the loaded image (``MEM_R16``), never from the link-time word;
 * the module's functions are reached only through its ``SrModuleCode``
@@ -79,6 +81,12 @@ class RuntimeModuleTranslation(unittest.TestCase):
             path.read_text(encoding="ascii")
             for path in sorted(cls.out.parent.glob("g_recomp_[0-9]*.c"))
         )
+        cls.libraries = {
+            path.name: path.read_text(encoding="ascii")
+            for path in sorted(cls.out.parent.glob("nk_lib_*.c"))
+        }
+        cls.bodies = cls.chunks + "\n" + "\n".join(cls.libraries.values())
+        cls.hashes = [codegen.fnv1a64(path.read_bytes()) for _spec, path in cls.overlays]
         cls.plain = root / "plain" / "g_recomp.c"
         cls.plain.parent.mkdir()
         status, _out, err = run_codegen([
@@ -90,10 +98,17 @@ class RuntimeModuleTranslation(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def module_function(self, index, offset):
+    def prefix(self, index):
+        return f"l{self.hashes[index]:016x}"
+
+    def base(self, index):
+        return f"sr_{self.prefix(index)}_base"
+
+    def module_function(self, index, offset, bodies=None):
+        name = f"{self.prefix(index)}_{offset:08x}"
         match = re.search(
-            rf"(?ms)^void m{index}_{offset:08x}\(CpuState \*s\) \{{.*?^\}}", self.chunks)
-        self.assertIsNotNone(match, f"m{index}_{offset:08x} was not generated")
+            rf"(?ms)^void {name}\(CpuState \*s\) \{{.*?^\}}", bodies or self.bodies)
+        self.assertIsNotNone(match, f"{name} was not generated")
         return match.group(0)
 
     def test_exports_are_translation_entries(self):
@@ -117,18 +132,23 @@ class RuntimeModuleTranslation(unittest.TestCase):
                           f'0x{codegen.fnv1a64(data):016x}ull', text)
             self.assertIn(f"0x{relocations.load_low:08x}u, 0x{relocations.load_high:08x}u, "
                           f"0x{relocations.alignment:x}u, 1u", text)
-            self.assertIn(f"NULL, &sr_m{index}_base", text)
+            self.assertIn(f"NULL, &{self.base(index)}", text)
             self.assertIn(f"    sr_module_code_register(&sr_m{index}_code);", self.main_c)
-            self.assertIn(f"extern uint32_t sr_m{index}_base;", self.funcs_h)
+            self.assertIn(f"uint32_t {self.base(index)};", self.main_c)
+            self.assertIn(f"extern uint32_t {self.base(index)};", self.funcs_h)
+            library = self.libraries[f"nk_lib_{self.hashes[index]:016x}.c"]
+            self.assertIn(f"extern uint32_t {self.base(index)};", library)
             for offset in (ladder.OVERLAY_START_OFF, ladder.OVERLAY_STOP_OFF,
                            ladder.OVERLAY_QUERY_OFF, ladder.OVERLAY_STUB_OFF):
-                self.assertRegex(self.main_c, rf"\{{ 0x{offset:08x}u, \d+u, m{index}_{offset:08x} \}}")
-                self.assertIn(f"void m{index}_{offset:08x}(CpuState *s);", self.funcs_h)
+                name = f"{self.prefix(index)}_{offset:08x}"
+                self.assertRegex(self.main_c, rf"\{{ 0x{offset:08x}u, \d+u, {name} \}}")
+                self.assertIn(f"void {name}(CpuState *s);", self.funcs_h)
+                self.assertIn(f"void {name}(CpuState *s);", library)
 
     def test_module_functions_are_never_registered_at_fixed_addresses(self):
-        registrations = re.findall(r"sr_register\(0x([0-9a-f]{8})u, ([fmr]\w+)\)", self.chunks)
+        registrations = re.findall(r"sr_register\(0x([0-9a-f]{8})u, ([flmr]\w+)\)", self.bodies)
         self.assertTrue(registrations, "the primary image still registers its functions")
-        self.assertFalse([name for _addr, name in registrations if name.startswith("m")])
+        self.assertFalse([name for _addr, name in registrations if name[0] in "lm"])
         plain_registrations = re.findall(
             r"sr_register\(0x([0-9a-f]{8})u, ([fr]\w+)\)",
             "\n".join(p.read_text(encoding="ascii")
@@ -149,7 +169,7 @@ class RuntimeModuleTranslation(unittest.TestCase):
             )
             self.assertGreaterEqual(len(immediate_sites), 10)
             for address in immediate_sites:
-                self.assertIn(f"MEM_R16((sr_m{index}_base + 0x{address:08x}u))", self.chunks,
+                self.assertIn(f"MEM_R16(({self.base(index)} + 0x{address:08x}u))", self.bodies,
                               f"{spec.file_name}: site 0x{address:x} does not read the image")
             start = self.module_function(index, ladder.OVERLAY_START_OFF)
             # lui t1, %hi(seed): the link-time immediate never reaches generated code.
@@ -157,41 +177,72 @@ class RuntimeModuleTranslation(unittest.TestCase):
             link_immediate = struct.unpack_from(
                 "<I", data, ladder.OVERLAY_TEXT_FILE_OFFSET + lui_site)[0] & 0xFFFF
             self.assertIn(
-                f"(((uint32_t)(uint16_t)MEM_R16((sr_m{index}_base + 0x{lui_site:08x}u))) << 16)",
+                f"(((uint32_t)(uint16_t)MEM_R16(({self.base(index)} + 0x{lui_site:08x}u))) << 16)",
                 start)
             self.assertNotIn(f"(0x{link_immediate:x}u << 16)", start)
 
     def test_every_own_address_is_base_relative(self):
         for index, _overlay in enumerate(self.overlays):
             start = self.module_function(index, ladder.OVERLAY_START_OFF)
-            self.assertIn(f"SR_YIELD(s, (sr_m{index}_base + 0x00000000u));", start)
+            base = self.base(index)
+            self.assertIn(f"SR_YIELD(s, ({base} + 0x00000000u));", start)
             # jal mix: the link value and the direct call are both module-relative.
-            self.assertRegex(start, rf"s->r\[31\] = \(sr_m{index}_base \+ 0x[0-9a-f]{{8}}u\);")
-            self.assertIn(f"m{index}_{ladder.OVERLAY_MIX_OFF:08x}(s);", start)
-            self.assertIn(f"m{index}_{ladder.OVERLAY_STUB_OFF:08x}(s);", start)
+            self.assertRegex(start, rf"s->r\[31\] = \({base} \+ 0x[0-9a-f]{{8}}u\);")
+            self.assertIn(f"{self.prefix(index)}_{ladder.OVERLAY_MIX_OFF:08x}(s);", start)
+            self.assertIn(f"{self.prefix(index)}_{ladder.OVERLAY_STUB_OFF:08x}(s);", start)
             # jalr through the relocated function pointer carries a module-relative resume.
-            self.assertRegex(start, rf"dispatch_call\(s, _t, \(sr_m{index}_base \+ 0x[0-9a-f]{{8}}u\)\);")
+            self.assertRegex(start, rf"dispatch_call\(s, _t, \({base} \+ 0x[0-9a-f]{{8}}u\)\);")
             literals = re.findall(r"\b0x([0-9a-f]{8})u\b", start)
             self.assertFalse(
                 [value for value in literals if 0x08000000 <= int(value, 16) < 0x0C000000],
                 "a module body names no absolute user-RAM address")
 
-    def test_same_bytes_translate_identically_at_any_index_order(self):
-        # Two codegen runs that list the modules in the opposite order assign the
-        # other index; the module bodies differ only by that index.
-        reverse = Path(self.tmp.name) / "reverse" / "g_recomp.c"
-        reverse.parent.mkdir()
+    def test_a_module_compiles_from_the_same_file_in_any_game(self):
+        # Another game (another name, at another index, beside other modules) writes
+        # each shared module's translation unit byte for byte, so its object is reused.
+        other = Path(self.tmp.name) / "other" / "other_recomp.c"
+        other.parent.mkdir()
         status, _out, err = run_codegen([
-            str(self.main), str(reverse), "--base=0x08940000", "--funcs-per-chunk=4",
+            str(self.main), str(other), "--base=0x08940000", "--funcs-per-chunk=7",
             *[f"--extra-elf={path}@runtime" for _spec, path in reversed(self.overlays)],
         ])
         self.assertEqual(status, 0, err)
-        chunks = "\n".join(p.read_text(encoding="ascii")
-                           for p in sorted(reverse.parent.glob("g_recomp_[0-9]*.c")))
-        first = self.module_function(0, ladder.OVERLAY_START_OFF)
-        swapped = re.search(r"(?ms)^void m1_00000000\(CpuState \*s\) \{.*?^\}", chunks).group(0)
-        self.assertEqual(first.replace("m0_", "mX_").replace("sr_m0_", "sr_mX_"),
-                         swapped.replace("m1_", "mX_").replace("sr_m1_", "sr_mX_"))
+        libraries = {path.name: path.read_text(encoding="ascii")
+                     for path in sorted(other.parent.glob("nk_lib_*.c"))}
+        self.assertEqual(libraries, self.libraries)
+        self.assertEqual(len(libraries), len(self.overlays))
+        for text in libraries.values():
+            self.assertNotIn("g_recomp", text)
+            self.assertNotIn("other_recomp", text)
+            self.assertIn('#include "recomp.h"', text)
+        # The module bodies stay out of the game's own chunks.
+        self.assertNotRegex(self.chunks, r"(?m)^void [lm][0-9a-f]+_[0-9a-f]{8}\(")
+
+    def test_a_module_carried_twice_keeps_indexed_names_in_the_game_chunks(self):
+        root = Path(self.tmp.name) / "twice"
+        root.mkdir()
+        spec, path = self.overlays[0]
+        copy = root / ("copy_" + spec.file_name)
+        copy.write_bytes(path.read_bytes())
+        out = root / "g_recomp.c"
+        status, _out, err = run_codegen([
+            str(self.main), str(out), "--base=0x08940000",
+            f"--extra-elf={path}@runtime", f"--extra-elf={copy}@runtime"])
+        self.assertEqual(status, 0, err)
+        self.assertEqual(sorted(root.glob("nk_lib_*.c")), [])
+        chunks = "\n".join(p.read_text(encoding="ascii") for p in sorted(root.glob("g_recomp_[0-9]*.c")))
+        self.assertIn("void m0_00000000(CpuState *s)", chunks)
+        self.assertIn("void m1_00000000(CpuState *s)", chunks)
+        # A later build without the duplicate removes no library file it did not write,
+        # and one with it again removes the stale translation unit.
+        stale = root / "nk_lib_0123456789abcdef.c"
+        stale.write_text("/* stale */\n", encoding="ascii")
+        status, _out, err = run_codegen([
+            str(self.main), str(out), "--base=0x08940000", f"--extra-elf={path}@runtime"])
+        self.assertEqual(status, 0, err)
+        self.assertFalse(stale.exists())
+        self.assertEqual([p.name for p in root.glob("nk_lib_*.c")],
+                         [f"nk_lib_{self.hashes[0]:016x}.c"])
 
 
 class RuntimeModuleBoundaries(unittest.TestCase):
@@ -219,7 +270,7 @@ class RuntimeModuleBoundaries(unittest.TestCase):
             str(self.main), str(out), "--base=0x08940000", f"--extra-elf={path}@runtime"])
         self.assertEqual(status, 0, err)
         main_c = out.read_text(encoding="ascii")
-        self.assertRegex(main_c, r'"relocations cannot be translated: [^"]*GPREL16[^"]*", &sr_m0_base,')
+        self.assertRegex(main_c, r'"relocations cannot be translated: [^"]*GPREL16[^"]*", &sr_l[0-9a-f]{16}_base,')
         self.assertIn("NULL, 0u, NULL, 0u", main_c, "an untranslatable module carries no bodies")
 
     def test_runtime_module_names_must_be_distinct(self):
@@ -247,9 +298,8 @@ class RuntimeModuleBoundaries(unittest.TestCase):
         self.assertEqual(status, 0, err)
         main_c = out.read_text(encoding="ascii")
         self.assertIn(f"0x{FIXED_LINK:08x}u, 0x{FIXED_LINK + memsz:08x}u, 0x4u, 0u", main_c)
-        chunks = "\n".join(p.read_text(encoding="ascii")
-                           for p in sorted(out.parent.glob("g_recomp_[0-9]*.c")))
-        self.assertIn(f"void m0_{FIXED_LINK:08x}(CpuState *s)", chunks)
+        library = (out.parent / f"nk_lib_{codegen.fnv1a64(data):016x}.c").read_text(encoding="ascii")
+        self.assertIn(f"void l{codegen.fnv1a64(data):016x}_{FIXED_LINK:08x}(CpuState *s)", library)
 
 
 FIXED_LINK = 0x08B00000
