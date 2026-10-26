@@ -19,10 +19,13 @@ The manifest is deterministic (sorted, ASCII, LF) and carries per-NID
 classification so downstream consumers never re-derive policy:
 
     {"nid": "0x1b4217bc", "name": …, "handler": …, "origin": "static",
-     "owner_file": "src/rt/hle.c", "classification": "fake_success", "status": "stub"}
+     "owner_file": "src/rt/hle.c", "subsystem": "kernel_memory",
+     "classification": "fake_success", "status": "stub"}
 
 `owner_file` is the runtime source file whose registration call registers the
-NID (hle.c or hle_power.c; see runtime_hle_sources).
+NID (hle.c or hle_power.c; see runtime_hle_sources). `subsystem` is the
+runtime subsystem that owns the NID for the HLE split (issue #307), from
+tools/hle_registry_meta.py SUBSYSTEM_BY_PREFIX; see subsystem_for.
 
 CLI:
     python tools/hle_manifest.py [--out build/hle_manifest.json]
@@ -581,6 +584,7 @@ def validate_meta(regs: list[dict]) -> None:
                     "every partial and compatibility entry must carry a non-empty limitation "
                     "(state a factual limitation from code or 'limitation not yet reviewed (#341)')"
                 )
+    validate_subsystems(regs)
 
 
 def _evidence_anchor_present(path: Path, anchor: str) -> bool:
@@ -654,6 +658,45 @@ def unwaived_and_stale(findings: list[dict]) -> tuple[list[dict], list[dict]]:
     return unwaived, stale
 
 
+def subsystem_for(name: str) -> str | None:
+    """The runtime subsystem that owns a registered name, or None when no prefix claims it.
+
+    The longest `meta.SUBSYSTEM_BY_PREFIX` key that prefixes the name (leading
+    underscores stripped) decides. Distinct keys of equal length cannot both
+    prefix one name, so the answer is unique whenever it exists.
+    """
+    prefix = subsystem_prefix(name)
+    return None if prefix is None else meta.SUBSYSTEM_BY_PREFIX[prefix]
+
+
+def subsystem_prefix(name: str) -> str | None:
+    """The `meta.SUBSYSTEM_BY_PREFIX` key that decides `name`'s subsystem (see subsystem_for)."""
+    bare = name.lstrip("_")
+    matches = [p for p in meta.SUBSYSTEM_BY_PREFIX if bare.startswith(p)]
+    return max(matches, key=len) if matches else None
+
+
+def validate_subsystems(regs: list[dict]) -> None:
+    """Fail closed unless every registration has one subsystem and every prefix still decides one.
+
+    An unclaimed name is a NID with no owner for the runtime split (#307); a
+    prefix that decides no registration is stale; a value outside
+    `meta.SUBSYSTEMS` is a typo that would mint a new subsystem.
+    """
+    unknown = sorted({v for v in meta.SUBSYSTEM_BY_PREFIX.values() if v not in meta.SUBSYSTEMS})
+    if unknown:
+        raise ManifestError(f"SUBSYSTEM_BY_PREFIX uses subsystems missing from SUBSYSTEMS: {unknown}")
+    unowned = sorted({r["name"] for r in regs if subsystem_for(r["name"]) is None})
+    if unowned:
+        raise ManifestError(
+            f"registrations no SUBSYSTEM_BY_PREFIX key claims (add an owner in tools/hle_registry_meta.py): {unowned}"
+        )
+    deciding = {subsystem_prefix(r["name"]) for r in regs}
+    stale = sorted(set(meta.SUBSYSTEM_BY_PREFIX) - deciding)
+    if stale:
+        raise ManifestError(f"SUBSYSTEM_BY_PREFIX keys that decide no registration (stale): {stale}")
+
+
 def runtime_hle_sources() -> list[tuple[str, str]]:
     """The runtime HLE units the manifest is extracted from, as (path, text) in join order.
 
@@ -719,6 +762,7 @@ def build_manifest(source: str | None = None) -> dict:
                 "handler": r["handler"],
                 "origin": r["origin"],
                 "owner_file": r["owner_file"],
+                "subsystem": subsystem_for(r["name"]),
                 "classification": classification,
                 "status": status,
                 **({"refusal_error": f"0x{r['refusal_error']:08x}"}
