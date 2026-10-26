@@ -12,6 +12,7 @@ and reproducibility of the committed classification baseline.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -373,16 +374,15 @@ class LiveManifestTests(unittest.TestCase):
     #:
     #: sceAtracGetChannel (0x31668bba -> 0x31668baa) was a member and was
     #: corrected: a single-nibble slip whose canonical value the table already
-    #: carried, so the fix was mechanical. The two below are not near-misses of
-    #: their canonical values and route real dedicated handlers, so correcting
-    #: them is a routing change that needs evidence, not a transcription fix.
-    #: Absence from the table is not itself proof a NID is fabricated -- the
-    #: table has ~1615 entries and the PSP exports more than that -- so what
-    #: these registrations actually reach is an open question, not a finding.
-    REVERSE_NID_DEBT = {
-        0x1579A30A: ("sceUtilityUnloadModule", 0xE49BFE92, 324),
-        0x2A6117A5: ("sceUtilityLoadModule", 0x2A2B3DE0, 324),
-    }
+    #: carried, so the fix was mechanical. The sceUtilityLoadModule and
+    #: sceUtilityUnloadModule aliases 0x2a6117a5 and 0x1579a30a were members
+    #: until #1393 dropped them: neither is SHA-1 derivable from its name, and
+    #: neither appears in the PPSSPP-seeded corpus behind nid_names.h or in the
+    #: pspsdk libpsputility stubs, which bind only 0x2a2b3de0 and 0xe49bfe92.
+    #: A title importing either alias now meets the unknown-NID path.
+    #: Absence from the table is not by itself proof a NID is fabricated, so a
+    #: future member needs that kind of evidence before it is removed.
+    REVERSE_NID_DEBT: dict[int, tuple[str, int, int]] = {}
 
     def test_no_new_registration_contradicts_the_canonical_table_by_name(self) -> None:
         """Fail closed on registrations the canonical table assigns elsewhere.
@@ -425,6 +425,21 @@ class LiveManifestTests(unittest.TestCase):
         for nid, (name, canonical_nid, _issue) in self.REVERSE_NID_DEBT.items():
             self.assertEqual(nids_by_name[name], {canonical_nid})
             self.assertNotIn(nid, table)
+
+    def test_utility_module_loaders_register_only_their_canonical_nids(self) -> None:
+        """Regression for #1393: no alias NID routes the module loaders."""
+        loaders = {
+            nid: r["name"]
+            for nid, r in self.regs.items()
+            if r["name"] in ("sceUtilityLoadModule", "sceUtilityUnloadModule")
+        }
+        self.assertEqual(
+            loaders,
+            {0x2A2B3DE0: "sceUtilityLoadModule", 0xE49BFE92: "sceUtilityUnloadModule"},
+        )
+        for nid, name in loaders.items():
+            digest = hashlib.sha1(name.encode("ascii")).digest()
+            self.assertEqual(int.from_bytes(digest[:4], "little"), nid)
 
     def test_sce_atrac_get_channel_uses_the_canonical_nid(self) -> None:
         """Regression for the 0x31668bba -> 0x31668baa transcription fix."""

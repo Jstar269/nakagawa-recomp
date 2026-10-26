@@ -24816,9 +24816,7 @@ static void hle_register_sas_handlers(void) {
 static void hle_register_utility_module_handlers(void) {
     sr_hle_register(0xc629af26, "sceUtilityLoadAvModule", h_UtilityLoadAvModule);
     sr_hle_register(0xf7d8d092, "sceUtilityUnloadAvModule", h_UtilityUnloadAvModule);
-    sr_hle_register(0x2a6117a5, "sceUtilityLoadModule", h_UtilityLoadModule);
     sr_hle_register(0x2a2b3de0, "sceUtilityLoadModule", h_UtilityLoadModule);
-    sr_hle_register(0x1579a30a, "sceUtilityUnloadModule", h_UtilityUnloadModule);
     sr_hle_register(0xe49bfe92, "sceUtilityUnloadModule", h_UtilityUnloadModule);
     sr_hle_register_unsupported(0x1579a159, "sceUtilityLoadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
     sr_hle_register_unsupported(0x64d50c56, "sceUtilityUnloadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */

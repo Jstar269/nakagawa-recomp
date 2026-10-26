@@ -37,8 +37,8 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **574** (dedicated **523**, fake_success **4**, controlled_unsupported **47**).
-Semantic handler census: **491** handlers across **25** API families, covering **529** handler-associated NID registrations.
+Registered NIDs: **572** (dedicated **521**, fake_success **4**, controlled_unsupported **47**).
+Semantic handler census: **491** handlers across **25** API families, covering **527** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -46,7 +46,7 @@ Semantic handler census: **491** handlers across **25** API families, covering *
 | `partial` | 166 | 168 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 309 | 332 |
+| `unreviewed` | 309 | 330 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -73,9 +73,9 @@ Semantic handler census: **491** handlers across **25** API families, covering *
 | `sceRtc` | 4 | 5 | 0 | 0 | 0 | 9 | 9 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
-| `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
+| `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **166** | **1** | **2** | **309** | **491** | **529** |
+| **Total** | **13** | **166** | **1** | **2** | **309** | **491** | **527** |
 
 #### Complete Handlers (Evidence-Backed)
 
