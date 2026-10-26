@@ -391,6 +391,7 @@ typedef enum {
 
 typedef struct {
     char iso_path[MAX_PATH_LEN];
+    uint64_t iso_path_hash;
     SDL_Texture *icon_tex;
     float icon_w;
     float icon_h;
@@ -637,10 +638,23 @@ static GameTextureCacheEntry *ui_game_texture_entry_for_job(UiArtJob *job) {
     return NULL;
 }
 
+static uint64_t ui_hash_iso_path(const char *str) {
+    if (!str) return 0;
+    uint64_t h = UINT64_C(14695981039346656037);
+    while (*str) {
+        h ^= (uint8_t)*str++;
+        h *= UINT64_C(1099511628211);
+    }
+    return h;
+}
+
 static GameTextureCacheEntry *ui_get_game_texture_entry(const char *iso_path) {
     if (!iso_path || !*iso_path) return NULL;
+    uint64_t target_hash = ui_hash_iso_path(iso_path);
     for (int i = 0; i < GAME_TEXTURE_CACHE_SIZE; i++) {
-        if (s_game_textures[i].iso_path[0] && strcmp(s_game_textures[i].iso_path, iso_path) == 0) {
+        if (s_game_textures[i].iso_path_hash == target_hash &&
+            s_game_textures[i].iso_path[0] &&
+            strcmp(s_game_textures[i].iso_path, iso_path) == 0) {
             return &s_game_textures[i];
         }
     }
@@ -648,6 +662,7 @@ static GameTextureCacheEntry *ui_get_game_texture_entry(const char *iso_path) {
         if (!s_game_textures[i].iso_path[0]) {
             strncpy(s_game_textures[i].iso_path, iso_path, sizeof(s_game_textures[i].iso_path) - 1);
             s_game_textures[i].iso_path[sizeof(s_game_textures[i].iso_path) - 1] = '\0';
+            s_game_textures[i].iso_path_hash = target_hash;
             return &s_game_textures[i];
         }
     }
@@ -676,6 +691,7 @@ static GameTextureCacheEntry *ui_get_game_texture_entry(const char *iso_path) {
     memset(&s_game_textures[reused], 0, sizeof(s_game_textures[reused]));
     strncpy(s_game_textures[reused].iso_path, iso_path, sizeof(s_game_textures[reused].iso_path) - 1);
     s_game_textures[reused].iso_path[sizeof(s_game_textures[reused].iso_path) - 1] = '\0';
+    s_game_textures[reused].iso_path_hash = target_hash;
     return &s_game_textures[reused];
 }
 
@@ -690,6 +706,7 @@ static void ui_game_textures_shutdown(void) {
             s_game_textures[i].pic1_tex = NULL;
         }
         s_game_textures[i].iso_path[0] = '\0';
+        s_game_textures[i].iso_path_hash = 0;
         s_game_textures[i].icon_attempted = false;
         s_game_textures[i].icon_terminal = UI_ART_TERMINAL_PENDING;
         s_game_textures[i].pic1_attempted = false;
