@@ -51,6 +51,21 @@ static void init(void) {
 """
 
 
+def pspsdk_adhoc_refusals() -> dict[str, tuple[str, str]]:
+    """The public ad hoc surface (#1139 phase 0): NID -> (name, refusal code).
+
+    Names are the tracked corpus's ``pspsdk-sourced`` entries (present in the pinned PSPSDK
+    headers pspnet_adhoc.h, pspnet_adhocctl.h and pspnet_adhocmatching.h); each NID is
+    recomputed from its name, so nothing here is copied from another project's table.
+    """
+    corpus = json.loads((ROOT / "tools" / "nid_corpus.json").read_text(encoding="utf-8"))
+    names = [
+        e["name"] for e in corpus["entries"]
+        if e["class"] == "pspsdk-sourced" and e["name"].startswith("sceNetAdhoc")
+    ]
+    return {f"0x{nid_name_proof.nid_of(n):08x}": (n, "0x80010086") for n in names}
+
+
 class ExtractionTests(unittest.TestCase):
     def test_synthetic_source_extracts_all_forms(self) -> None:
         regs = extract_registrations(SYNTH_SOURCE)
@@ -964,6 +979,45 @@ citations (PSP-B1-01, no-colon forms) need their own check.
         source = Path(meta.__file__).read_text(encoding="utf-8")
         self.assertNotIn("issue #31", source)
 
+    def test_public_adhoc_surface_is_refused_by_name(self) -> None:
+        """#1139 phase 0: every public PSPSDK ad hoc NID is a named refusal, not an unknown NID.
+
+        The split is the three public headers' prototype counts (22, 21 and 16). Network HLE
+        stays fail-closed (AGENTS.md section 5): each one refuses with the runtime's documented
+        SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED, the sceNetInit code, not a measured result.
+        """
+        expected = pspsdk_adhoc_refusals()
+        names = [name for name, _ in expected.values()]
+        self.assertEqual(
+            (
+                sum(1 for n in names if n.startswith("sceNetAdhocctl")),
+                sum(1 for n in names if n.startswith("sceNetAdhocMatching")),
+                len(names),
+            ),
+            (21, 16, 59),
+        )
+        baseline = json.loads(DEFAULT_BASELINE.read_text(encoding="ascii"))
+        for nid, (name, error) in sorted(expected.items()):
+            with self.subTest(nid=nid, name=name):
+                self.assertTrue(
+                    nid in baseline, f"{nid} {name} is missing from tools/import_audit_baseline.json"
+                )
+                self.assertEqual(
+                    {k: baseline[nid].get(k) for k in ("name", "classification", "refusal_error", "status")},
+                    {
+                        "name": name,
+                        "classification": "controlled_unsupported",
+                        "refusal_error": error,
+                        "status": "controlled_unsupported",
+                    },
+                )
+                reg = self.regs.get(int(nid, 16))
+                self.assertIsNotNone(reg, "public ad hoc NID has no production registration")
+                self.assertEqual(
+                    (reg["origin"], reg["handler"], reg["owner_file"]),
+                    ("static_unsupported", "h_ControlledUnsupported", "src/rt/hle.c"),
+                )
+
     def test_committed_baseline_is_current_and_reproducible(self) -> None:
         baseline = json.loads(DEFAULT_BASELINE.read_text(encoding="ascii"))
         self.assertEqual(
@@ -1167,6 +1221,8 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0xe3ee2c81": ("sceMp3LowLevelDecode", "0x80010086"),
                 "0x8ab81558": ("sceMp3StartEntry", "0x80010086"),
                 "0x732b042a": ("sceMp3EndEntry", "0x80010086"),
+                # The 59 public PSPSDK ad hoc entry points refuse under the offline network policy (#1139).
+                **pspsdk_adhoc_refusals(),
             },
         )
         self.assertEqual(
