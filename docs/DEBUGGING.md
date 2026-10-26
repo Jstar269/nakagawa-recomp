@@ -599,8 +599,10 @@ A scripted answer follows the same status sequence as a person's. `sceUtilityOsk
 returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE` (for as many
 frames as the person takes; one poll for a scripted answer), then `QUIT` (whether the text was
 confirmed or cancelled; each field's result tells them apart) until the title calls
-`sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`. A keyboard the title shuts down,
-or replaces with a new one, before the person answered closes its input box and writes nothing.
+`sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`. Only one utility dialog runs at a
+time: while the keyboard is open, a second `sceUtilityOskInitStart` or another dialog's InitStart
+returns `INVALID_STATUS` (`0x80110001`) and leaves the keyboard and its input box alone
+([#1386](https://github.com/Jstar269/nakagawa-recomp/issues/1386)).
 `sceUtilityOskUpdate` itself keeps its named no-dialog compatibility result
 ([#281](https://github.com/Jstar269/nakagawa-recomp/issues/281)); the runtime owns the
 progression instead.
