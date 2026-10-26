@@ -2199,6 +2199,31 @@ static void test_nk_json_utf8_encode(void) {
     assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0x9F && (uint8_t)out[2] == 0xBF);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
+    /* U+D800 (start high surrogate boundary) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xD800, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xA0 && (uint8_t)out[2] == 0x80);
+
+    /* U+DFFF (end low surrogate boundary) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xDFFF, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xBF && (uint8_t)out[2] == 0xBF);
+
+    /* U+E000 (first scalar after surrogate area) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xE000, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xEE && (uint8_t)out[1] == 0x80 && (uint8_t)out[2] == 0x80);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* U+FFFE (noncharacter boundary) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xFFFE, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xEF && (uint8_t)out[1] == 0xBF && (uint8_t)out[2] == 0xBE);
+
     /* U+FFFF (max 3-byte) */
     memset(out, 0xCC, sizeof(out));
     len = nk_json_utf8_encode(0xFFFF, out);
@@ -2230,6 +2255,37 @@ static void test_nk_json_utf8_encode(void) {
     assert((uint8_t)out[0] == 0xF4 && (uint8_t)out[1] == 0x8F &&
            (uint8_t)out[2] == 0xBF && (uint8_t)out[3] == 0xBF);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* 5. Codepoints above U+10FFFF (out-of-range integer values) */
+    /* U+110000 */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x110000, out);
+    assert(len == 4);
+    assert((uint8_t)out[0] == (uint8_t)(0xF0 | (0x110000 >> 18)));
+    assert((uint8_t)out[1] == (uint8_t)(0x80 | ((0x110000 >> 12) & 0x3F)));
+    assert((uint8_t)out[2] == (uint8_t)(0x80 | ((0x110000 >> 6) & 0x3F)));
+    assert((uint8_t)out[3] == (uint8_t)(0x80 | (0x110000 & 0x3F)));
+
+    /* 0xFFFFFFFF */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xFFFFFFFF, out);
+    assert(len == 4);
+    assert((uint8_t)out[0] == (uint8_t)(0xF0 | (0xFFFFFFFF >> 18)));
+    assert((uint8_t)out[1] == (uint8_t)(0x80 | ((0xFFFFFFFF >> 12) & 0x3F)));
+    assert((uint8_t)out[2] == (uint8_t)(0x80 | ((0xFFFFFFFF >> 6) & 0x3F)));
+    assert((uint8_t)out[3] == (uint8_t)(0x80 | (0xFFFFFFFF & 0x3F)));
+
+    /* 6. Buffer overrun sentinel check (verifying out[4] canary remains untouched) */
+    {
+        char canary_buf[5];
+        static const uint32_t test_cps[] = { 0x41, 0x80, 0x800, 0x10000, 0x10FFFF, 0xFFFFFFFF };
+        for (size_t i = 0; i < sizeof(test_cps) / sizeof(test_cps[0]); i++) {
+            memset(canary_buf, 0xAA, sizeof(canary_buf));
+            size_t encoded_len = nk_json_utf8_encode(test_cps[i], canary_buf);
+            assert(encoded_len >= 1 && encoded_len <= 4);
+            assert((uint8_t)canary_buf[4] == 0xAA);
+        }
+    }
 
     printf("[HOSTILE_TEST] nk_json_utf8_encode tests PASSED!\n");
     fflush(stdout);
