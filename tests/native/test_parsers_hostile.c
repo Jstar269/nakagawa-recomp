@@ -2199,6 +2199,38 @@ static void test_nk_json_utf8_encode(void) {
     assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0x9F && (uint8_t)out[2] == 0xBF);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
 
+    /* Surrogate boundaries (U+D800 .. U+DFFF) */
+    /* U+D800 (high surrogate start) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xD800, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xA0 && (uint8_t)out[2] == 0x80);
+
+    /* U+DBFF (high surrogate end) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xDBFF, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xAF && (uint8_t)out[2] == 0xBF);
+
+    /* U+DC00 (low surrogate start) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xDC00, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xB0 && (uint8_t)out[2] == 0x80);
+
+    /* U+DFFF (low surrogate end) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xDFFF, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xED && (uint8_t)out[1] == 0xBF && (uint8_t)out[2] == 0xBF);
+
+    /* U+E000 (first scalar after surrogate area) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xE000, out);
+    assert(len == 3);
+    assert((uint8_t)out[0] == 0xEE && (uint8_t)out[1] == 0x80 && (uint8_t)out[2] == 0x80);
+    assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
     /* U+FFFF (max 3-byte) */
     memset(out, 0xCC, sizeof(out));
     len = nk_json_utf8_encode(0xFFFF, out);
@@ -2230,6 +2262,63 @@ static void test_nk_json_utf8_encode(void) {
     assert((uint8_t)out[0] == 0xF4 && (uint8_t)out[1] == 0x8F &&
            (uint8_t)out[2] == 0xBF && (uint8_t)out[3] == 0xBF);
     assert(nk_json_validate_utf8((const uint8_t *)out, len));
+
+    /* 5. Values out of standard Unicode range (> U+10FFFF) */
+    /* U+110000 (first code point past U+10FFFF) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x110000, out);
+    assert(len == 4);
+    assert((uint8_t)out[0] == 0xF4 && (uint8_t)out[1] == 0x90 &&
+           (uint8_t)out[2] == 0x80 && (uint8_t)out[3] == 0x80);
+
+    /* 0x1F3456 */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0x1F3456, out);
+    assert(len == 4);
+    assert((uint8_t)out[0] == 0xF7 && (uint8_t)out[1] == 0xB3 &&
+           (uint8_t)out[2] == 0x91 && (uint8_t)out[3] == 0x96);
+
+    /* 0xFFFFFFFF (UINT32_MAX) */
+    memset(out, 0xCC, sizeof(out));
+    len = nk_json_utf8_encode(0xFFFFFFFF, out);
+    assert(len == 4);
+    assert((uint8_t)out[0] == (uint8_t)(0xF0 | (0xFFFFFFFF >> 18)) &&
+           (uint8_t)out[1] == (uint8_t)(0x80 | ((0xFFFFFFFF >> 12) & 0x3F)) &&
+           (uint8_t)out[2] == (uint8_t)(0x80 | ((0xFFFFFFFF >> 6) & 0x3F)) &&
+           (uint8_t)out[3] == (uint8_t)(0x80 | (0xFFFFFFFF & 0x3F)));
+
+    /* 6. Buffer overrun & sentinel safety checks */
+    {
+        char buf[8];
+        memset(buf, 0xAA, sizeof(buf));
+        len = nk_json_utf8_encode(0x41, buf);
+        assert(len == 1);
+        assert(buf[0] == "A"[0]);
+        for (size_t i = len; i < sizeof(buf); i++) {
+            assert((uint8_t)buf[i] == 0xAA);
+        }
+
+        memset(buf, 0xAA, sizeof(buf));
+        len = nk_json_utf8_encode(0x00A9, buf);
+        assert(len == 2);
+        for (size_t i = len; i < sizeof(buf); i++) {
+            assert((uint8_t)buf[i] == 0xAA);
+        }
+
+        memset(buf, 0xAA, sizeof(buf));
+        len = nk_json_utf8_encode(0x20AC, buf);
+        assert(len == 3);
+        for (size_t i = len; i < sizeof(buf); i++) {
+            assert((uint8_t)buf[i] == 0xAA);
+        }
+
+        memset(buf, 0xAA, sizeof(buf));
+        len = nk_json_utf8_encode(0x1F600, buf);
+        assert(len == 4);
+        for (size_t i = len; i < sizeof(buf); i++) {
+            assert((uint8_t)buf[i] == 0xAA);
+        }
+    }
 
     printf("[HOSTILE_TEST] nk_json_utf8_encode tests PASSED!\n");
     fflush(stdout);
