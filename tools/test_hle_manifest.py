@@ -357,6 +357,80 @@ class RegistrationOwnerFileTests(unittest.TestCase):
             extract_registrations(SYNTH_SOURCE, [("src/rt/hle.c", "static void other(void) {}\n")])
 
 
+class RegistrationSubsystemTests(unittest.TestCase):
+    """Every registration has exactly one subsystem owner for the HLE split (#307).
+
+    tools/hle_registry_meta.py SUBSYSTEM_BY_PREFIX decides it by longest prefix.
+    The manifest fails closed on a registration no key claims, on a key that
+    decides nothing, and on a subsystem outside SUBSYSTEMS.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.manifest = build_manifest()
+        cls.raw_regs = extract_registrations(hle_manifest.runtime_hle_source())
+
+    def test_every_registration_has_exactly_one_known_subsystem(self) -> None:
+        for r in self.manifest["registrations"]:
+            subsystem = r.get("subsystem")
+            self.assertIsInstance(subsystem, str, f"{r['nid']} {r['name']} has no subsystem")
+            self.assertIn(subsystem, meta.SUBSYSTEMS, f"{r['nid']} {r['name']} has unknown subsystem {subsystem!r}")
+
+    def test_no_prefix_is_written_twice(self) -> None:
+        """A dict literal keeps only the last value of a repeated key, so one prefix could name two subsystems."""
+        tree = ast.parse((ROOT / "tools" / "hle_registry_meta.py").read_text(encoding="utf-8"))
+        literals = [
+            node.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "SUBSYSTEM_BY_PREFIX" for t in node.targets)
+        ]
+        self.assertEqual(len(literals), 1, "SUBSYSTEM_BY_PREFIX must be one dict literal")
+        self.assertIsInstance(literals[0], ast.Dict)
+        keys = [k.value for k in literals[0].keys if isinstance(k, ast.Constant)]
+        self.assertEqual(len(keys), len(literals[0].keys), "every SUBSYSTEM_BY_PREFIX key must be a string literal")
+        repeated = sorted({k for k in keys if keys.count(k) > 1})
+        self.assertEqual(repeated, [], f"SUBSYSTEM_BY_PREFIX keys written more than once: {repeated}")
+
+    def test_the_longest_prefix_decides(self) -> None:
+        self.assertEqual(hle_manifest.subsystem_for("sceAudioChReserve"), "audio")
+        self.assertEqual(hle_manifest.subsystem_for("sceAudiocodecDecode"), "audio_codec")
+        self.assertEqual(hle_manifest.subsystem_for("sceKernelPowerLock"), "power")
+        self.assertEqual(hle_manifest.subsystem_for("sceKernelLockLwMutexCB"), "kernel_sync")
+        self.assertEqual(hle_manifest.subsystem_for("_sceKernelLockLwMutex"), "kernel_sync")
+        self.assertEqual(hle_manifest.subsystem_for("__sceSasCore"), "audio")
+        self.assertEqual(hle_manifest.subsystem_for("sceKernelDelaySysClockThreadCB"), "kernel_thread")
+        self.assertIsNone(hle_manifest.subsystem_for("synthUnowned"))
+
+    def test_every_hle_power_c_registration_is_in_the_power_subsystem(self) -> None:
+        """The one unit already split out agrees with the map. The reverse need not hold yet:
+        hle.c still registers the scePower_469989ad controlled refusal."""
+        by_owner = {r["name"]: r["subsystem"] for r in self.manifest["registrations"]
+                    if r["owner_file"] == "src/rt/hle_power.c"}
+        self.assertTrue(by_owner)
+        self.assertEqual({name: "power" for name in by_owner}, by_owner)
+
+    def test_registration_no_prefix_claims_fails_closed(self) -> None:
+        trimmed = {k: v for k, v in meta.SUBSYSTEM_BY_PREFIX.items() if k != "sceUmd"}
+        with mock.patch.object(meta, "SUBSYSTEM_BY_PREFIX", trimmed):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("no SUBSYSTEM_BY_PREFIX key claims", str(ctx.exception))
+        self.assertIn("sceUmdActivate", str(ctx.exception))
+
+    def test_prefix_that_decides_no_registration_is_stale(self) -> None:
+        with mock.patch.dict(meta.SUBSYSTEM_BY_PREFIX, {"sceSynthNoSuchModule": "io"}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("sceSynthNoSuchModule", str(ctx.exception))
+
+    def test_subsystem_outside_the_closed_set_fails(self) -> None:
+        with mock.patch.dict(meta.SUBSYSTEM_BY_PREFIX, {"sceUmd": "umd_typo"}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("umd_typo", str(ctx.exception))
+
+
 class LiveManifestTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
