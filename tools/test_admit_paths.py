@@ -34,6 +34,16 @@ from admit_paths import AdmitError  # noqa: E402
 
 #: Commits run by the tool need an identity, and a host's own Git configuration
 #: must not change what the tests observe.
+#:
+#: Every git command a fixture or the tool runs must also be finished when it
+#: returns. `git commit`, `merge` and `fetch` otherwise start
+#: `git maintenance run --auto --detach`, and Git 2.55's default geometric
+#: strategy repacks in that detached process whenever two or more loose objects
+#: share the objects/17 directory, which depends on the commit hashes. The repack
+#: then writes .git/objects while TemporaryDirectory removes the tree, and the
+#: cleanup fails with ENOTEMPTY. The same settings as
+#: nk_core/git_isolation.isolated_git_env, in the environment so that the
+#: repositories the tests create keep their default configuration.
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "Nakagawa Recomp Tests",
     "GIT_AUTHOR_EMAIL": "tests@nakagawa-recomp.invalid",
@@ -41,6 +51,13 @@ GIT_ENV = {
     "GIT_COMMITTER_EMAIL": "tests@nakagawa-recomp.invalid",
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_COUNT": "3",
+    "GIT_CONFIG_KEY_0": "gc.auto",
+    "GIT_CONFIG_VALUE_0": "0",
+    "GIT_CONFIG_KEY_1": "maintenance.auto",
+    "GIT_CONFIG_VALUE_1": "false",
+    "GIT_CONFIG_KEY_2": "gc.autoDetach",
+    "GIT_CONFIG_VALUE_2": "false",
 }
 
 

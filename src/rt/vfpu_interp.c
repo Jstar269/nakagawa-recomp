@@ -100,26 +100,6 @@ static void eat_prefix(CpuState *s) {
     s->vfpuCtrl[2] = 0u;
 }
 
-/* One vscmp lane: -1.0, 0.0 or +1.0 for a < b, a == b, a > b. A NaN operand is not
- * unordered here, unlike vsge/vslt: the PSP orders the raw words by sign and
- * magnitude, so a NaN with a clear sign bit is above every non-NaN value and one with
- * a set sign bit below. Measured on a PSP-3000 (PSP-VFPU-CMP-001, 2026-10-15) for a
- * quiet or signalling NaN against 1.5 on either side and a negative quiet NaN on the
- * left; a pair of NaNs follows the same order and is UNMEASURED. Lanes without a NaN
- * are plain float compares, so +0 and -0 are equal (also measured). The generated
- * code (tools/codegen.py, VFPU3 sub-op 5) emits the same lane. */
-static float vscmp_lane(float a, float b) {
-    uint32_t ab, bb;
-    memcpy(&ab, &a, 4);
-    memcpy(&bb, &b, 4);
-    if ((ab & 0x7fffffffu) > 0x7f800000u || (bb & 0x7fffffffu) > 0x7f800000u) {
-        const int64_t ka = (ab >> 31) ? -(int64_t)(ab & 0x7fffffffu) : (int64_t)(ab & 0x7fffffffu);
-        const int64_t kb = (bb >> 31) ? -(int64_t)(bb & 0x7fffffffu) : (int64_t)(bb & 0x7fffffffu);
-        return ka < kb ? -1.0f : (ka > kb ? 1.0f : 0.0f);
-    }
-    return (a < b) ? -1.0f : ((a > b) ? 1.0f : 0.0f);
-}
-
 /* Arithmetic conventions measured on a PSP-3000 for vsgn, vbfy1 and vbfy2
  * (2026-10-24, issue #326; vectors in vfpu_interp_selftest.c check_psp_measured_vfpu9):
  * a denormal operand counts as a zero of the same sign, and a NaN result
@@ -128,6 +108,26 @@ static float vscmp_lane(float a, float b) {
  * RESULT is applied for symmetry but no measured cell produced one. */
 static uint32_t vfpu_daz(uint32_t b) {
     return (b & 0x7f800000u) == 0u ? (b & 0x80000000u) : b;
+}
+
+/* One vscmp lane: -1.0, 0.0 or +1.0 for a < b, a == b, a > b, in sign-magnitude integer
+ * order of the raw words after vfpu_daz flushes a denormal to a zero of its sign. Unlike
+ * vsge/vslt, a NaN is not unordered: a NaN with a clear sign bit is above +infinity and
+ * every non-NaN value, one with a set sign bit below -infinity, and two NaNs order by
+ * payload; +0 and -0 are equal. Measured on a PSP-3000: PSP-VFPU-CMP-001 (2026-10-15, a
+ * quiet or signalling NaN against 1.5 on either side, signed zeros, infinities) and
+ * PSP-HLE-ISSUES-001 (2026-10-24, captured, not acceptance-eligible: NaN against NaN and
+ * against infinity, denormal against zero, at every width). The generated code
+ * (tools/codegen.py, VFPU3 sub-op 5) emits the same lane. */
+static float vscmp_lane(float a, float b) {
+    uint32_t ab, bb;
+    memcpy(&ab, &a, 4);
+    memcpy(&bb, &b, 4);
+    ab = vfpu_daz(ab);
+    bb = vfpu_daz(bb);
+    const int64_t ka = (ab >> 31) ? -(int64_t)(ab & 0x7fffffffu) : (int64_t)(ab & 0x7fffffffu);
+    const int64_t kb = (bb >> 31) ? -(int64_t)(bb & 0x7fffffffu) : (int64_t)(bb & 0x7fffffffu);
+    return ka < kb ? -1.0f : (ka > kb ? 1.0f : 0.0f);
 }
 
 static uint32_t vfpu_add_bits(uint32_t a, uint32_t b) {
@@ -395,9 +395,11 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
             /* Major 0x1B by bits 25..23: 0 vcmp, 2 vmin, 3 vmax, 5 vscmp, 6 vsge, 7 vslt. Slots 6/7
              * were decoded as vcmovt/vcmovf before 2026-10-10 (the conditional moves are the VFPU4
              * vcmov below), which broke the flagship's slerp sign term (issue #69). vsge and vslt
-             * treat a NaN operand as unordered and write 0.0; vscmp orders a NaN lane by sign and
-             * magnitude (vscmp_lane). All 45 cells of PSP-VFPU-CMP-001 (PSP-3000, 2026-10-15)
-             * match these lanes. */
+             * treat a NaN operand as unordered and write 0.0; vscmp orders the denormal-flushed
+             * raw words by sign and magnitude (vscmp_lane). All 45 cells of PSP-VFPU-CMP-001
+             * (PSP-3000, 2026-10-15) and the 30 vscmp cells of PSP-HLE-ISSUES-001 (2026-10-24,
+             * captured) match these lanes. A denormal operand of vsge/vslt is UNMEASURED and
+             * keeps the host float compare. */
             float a[4], b[4], d[4];
             vreg_idx(vd, n, di); vreg_idx(vs, n, si); vreg_idx(vt, n, ti);
             sr_vread(a, s, si, n, s->vfpuCtrl[0]);
