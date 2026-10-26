@@ -959,7 +959,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a17611e54b9bbf29e9e143fb0ee6c5927171ff634c83adaeec1e088a7e1bd905"
+      "sha256": "d0e47c84e8e4c64bfdb2f7b8b1ba13831c3dca84a451ce59737a1013ee1d976e"
     },
     {
       "path": "assets/public_provenance_ledger.json",
@@ -1570,7 +1570,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "84cd3e1b9e2819036542bbc99561a475aae7d214e5f7ba32f6eee40c636d7eda"
+      "sha256": "6684d95e128665ce9c26757c2652e48332f3ac3459a05ca677f665cdade10b6b"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -1684,7 +1684,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b3d3249cdb2488badd295e74a7cf7bb630ce8a56a0a79c13330a136be583245e"
+      "sha256": "071d7664651c5a9f9eb620a5f78e19b8435b94625bbb233704e5868a8d818fb1"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -10945,7 +10945,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1dc8f099fa6d9445ecaf2eec51af2c1d8221829463145a6e4dc93e0fedb3b966"
+      "sha256": "9c68406a55eacdd6bea23b6e0235b1ce272ed5317d2fc465f5c1524c7898a2c8"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -11914,7 +11914,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "403add85ed8b3351a4972cdf8ce61c2d771186d519293a237b1dac3732b6380f"
+      "sha256": "2b02c561faef5e587e86cb1673bb1f1255b655d73f1c84e29728c68ef32ecbf5"
     },
     {
       "path": "tools/nk_core/synthetic_disc_ids.py",
@@ -14151,7 +14151,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "967fb0ae0748e4554b88bd7f2261148e9d510221ac5ab775c119997a9d372064"
+      "sha256": "ae5e06d0ca1e5250d47a31770be7c56ffe9a21d5c53878a4f0265dc14824923a"
     },
     {
       "path": "tools/test_production_smoke.py",
