@@ -60,6 +60,9 @@ typedef struct {
     size_t max_cache_bytes;
     size_t max_cache_entries;
     uint64_t use_clock;
+    /* 1 + index of the file-backed mount whose member-read handle may be open, 0 for
+     * none: the VFS keeps at most one archive descriptor open. */
+    size_t handle_mount_slot;
 } SrArchiveVfs;
 
 void sr_archive_vfs_init(SrArchiveVfs *vfs);
