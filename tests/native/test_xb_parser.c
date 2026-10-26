@@ -350,13 +350,21 @@ static void test_file_backed_archive_is_lazy(void) {
     assert(nk_xb_open_file_lazy(path, false, NULL, &archive, error, sizeof(error)) == NK_OK);
     assert(archive.data == NULL);
     assert(archive.data_size == 0u);
-    for (size_t i = 0; i < archive.entry_count; i++) {
-        uint8_t output[128];
-        size_t output_size = 0;
-        assert(nk_xb_read_entry(&archive, i, output, sizeof(output), &output_size,
-                                error, sizeof(error)) == NK_OK);
-        assert(output_size == entries[i].size);
-        assert(memcmp(output, entries[i].data, entries[i].size) == 0);
+    /* Mounting holds no descriptor; member reads then reuse one cached handle. */
+    assert(archive.file_handle == NULL);
+    FILE *member_handle = NULL;
+    for (size_t pass = 0; pass < 2u; pass++) {
+        for (size_t i = 0; i < archive.entry_count; i++) {
+            uint8_t output[128];
+            size_t output_size = 0;
+            assert(nk_xb_read_entry(&archive, i, output, sizeof(output), &output_size,
+                                    error, sizeof(error)) == NK_OK);
+            assert(output_size == entries[i].size);
+            assert(memcmp(output, entries[i].data, entries[i].size) == 0);
+            assert(archive.file_handle != NULL);
+            if (!member_handle) member_handle = archive.file_handle;
+            assert(archive.file_handle == member_handle);
+        }
     }
     SrArchiveVfs vfs;
     SrArchiveFile file;
@@ -374,10 +382,14 @@ static void test_file_backed_archive_is_lazy(void) {
     assert(vfs_output_size == sizeof(lzs_data) - 1u &&
            memcmp(vfs_output, lzs_data, vfs_output_size) == 0);
     sr_archive_vfs_destroy(&vfs);
-    remove(path);
+    /* The cached handle must not pin the file on any host: the archive stays deletable
+     * while mounted, and the next read fails instead of serving the deleted bytes. */
+    assert(archive.file_handle == member_handle);
+    assert(remove(path) == 0);
     uint8_t output[128];
     assert(nk_xb_read_entry(&archive, 0u, output, sizeof(output), NULL,
                             error, sizeof(error)) != NK_OK);
+    assert(archive.file_handle == NULL);
     nk_xb_close(&archive);
     free(bytes.data);
     printf("[XB_TEST] file-backed metadata-only mount and lazy member reads PASSED\n");
@@ -681,6 +693,54 @@ static void test_deterministic_mutation_fuzz(void) {
     free(mutated);
     free(seed.data);
     printf("[XB_TEST] Deterministic 2048-mutation hostile corpus completed PASSED\n");
+}
+
+
+static void test_archive_vfs_keeps_one_open_handle(void) {
+    static const uint8_t first_data[] = "first archive";
+    static const uint8_t second_data[] = "second archive";
+    const FixtureEntry first_entries[] = {
+        { "data/first.bin", first_data, sizeof(first_data) - 1u, NK_XB_COMPRESSION_NONE }
+    };
+    const FixtureEntry second_entries[] = {
+        { "data/second.bin", second_data, sizeof(second_data) - 1u, NK_XB_COMPRESSION_NONE }
+    };
+    ByteBuffer first = make_archive(first_entries, 1u, false);
+    ByteBuffer second = make_archive(second_entries, 1u, false);
+    const char *first_path = SR_SELFTEST_BUILD_ROOT "/test_xb_handle_a.xb";
+    const char *second_path = SR_SELFTEST_BUILD_ROOT "/test_xb_handle_b.xb";
+    write_file_bytes(first_path, first.data, first.size);
+    write_file_bytes(second_path, second.data, second.size);
+
+    SrArchiveVfs vfs;
+    SrArchiveFile file;
+    uint8_t output[32];
+    size_t output_size = 0;
+    sr_archive_vfs_init(&vfs);
+    assert(sr_archive_vfs_mount_file(&vfs, first_path, false, -1, NULL) == NK_OK);
+    assert(sr_archive_vfs_mount_file(&vfs, second_path, false, -1, NULL) == NK_OK);
+    assert(vfs.mounts[0].file_handle == NULL && vfs.mounts[1].file_handle == NULL);
+    assert(sr_archive_vfs_lookup(&vfs, "data/first.bin", -2, &file));
+    assert(sr_archive_vfs_read(&vfs, &file, 0u, output, 4u, &output_size) == NK_OK);
+    assert(output_size == 4u && memcmp(output, first_data, 4u) == 0);
+    FILE *first_handle = vfs.mounts[0].file_handle;
+    assert(first_handle != NULL);
+    /* Chunked reads of one member, as the HLE file reads issue them, reuse the handle. */
+    assert(sr_archive_vfs_read(&vfs, &file, 4u, output, 4u, &output_size) == NK_OK);
+    assert(output_size == 4u && memcmp(output, first_data + 4u, 4u) == 0);
+    assert(vfs.mounts[0].file_handle == first_handle);
+    /* Reading another mount releases the first one's handle. */
+    assert(sr_archive_vfs_lookup(&vfs, "data/second.bin", -2, &file));
+    assert(sr_archive_vfs_read(&vfs, &file, 0u, output, sizeof(output),
+                               &output_size) == NK_OK);
+    assert(output_size == sizeof(second_data) - 1u &&
+           memcmp(output, second_data, output_size) == 0);
+    assert(vfs.mounts[0].file_handle == NULL && vfs.mounts[1].file_handle != NULL);
+    sr_archive_vfs_destroy(&vfs);
+    assert(remove(first_path) == 0 && remove(second_path) == 0);
+    free(first.data);
+    free(second.data);
+    printf("[XB_TEST] archive VFS keeps one cached member-read handle PASSED\n");
 }
 
 static void test_staging_cleanup_boundary(void) {
@@ -1803,6 +1863,7 @@ int main(void) {
     test_archive_vfs_provider();
     test_archive_vfs_many_members();
     test_archive_vfs_mount_scaling();
+    test_archive_vfs_keeps_one_open_handle();
     test_staging_cleanup_boundary();
     test_staging_discard_reparse_boundary();
     test_iso_to_native_staging_pipeline();
