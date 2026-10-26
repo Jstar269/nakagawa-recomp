@@ -1524,6 +1524,20 @@ static int repeat_launch_child_mode(void) {
     fflush(stderr);
     const char *stop_reason = getenv("NK_REPEAT_LAUNCH_STOP_REASON");
     const char *boot_event_path = getenv("SR_BOOT_EVENT_FILE");
+    if (stop_reason && strcmp(stop_reason, "hold-without-boot-event") == 0) {
+        /* A child that runs but never reaches the runtime's first boot event
+           (#1290): it writes none and stays alive until the player stops it.
+           The 60 s bound only keeps a failed test from leaving it behind. */
+        for (int i = 0; i < 600; i++) {
+#if defined(_WIN32) || defined(_WIN64)
+            Sleep(100);
+#else
+            const struct timespec delay = { 0, 100000000L };
+            (void)nanosleep(&delay, NULL);
+#endif
+        }
+        return 8;
+    }
     if (stop_reason && strcmp(stop_reason, "semantic-boundary") == 0 &&
         boot_event_path && *boot_event_path) {
         FILE *events = fopen(boot_event_path, "ab");
@@ -6563,6 +6577,65 @@ int main(int argc, char **argv) {
         assert(strstr(rep->last_error.message, "a processor feature") != NULL);
         if (stop_event_path[0]) remove(stop_event_path);
         set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "");
+
+        /* #1290: a child that is running but never writes a boot event never
+           started. Until 15 s after launch the session stays running; at
+           15 s the player stops the child and shows the start-failure card,
+           and the developer log says why. The clock is synthetic. */
+        set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "hold-without-boot-event");
+        set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
+        assert(player_app_launch_game(rep, 0));
+        assert(rep->is_game_running);
+        char hold_event_path[NK_MAX_PATH];
+        snprintf(hold_event_path, sizeof(hold_event_path), "%s", rep->boot_event_file_path);
+        assert(hold_event_path[0] != '\0');
+        rep->launch_time_ms = 20000;
+        assert(!player_app_monitor_game_session(rep, 20000));
+        assert(!player_app_monitor_game_session(rep, 25000));
+        assert(!player_app_monitor_game_session(rep, 34999));
+        assert(rep->is_game_running);
+        assert(player_app_monitor_game_session(rep, 35000));
+        assert(!rep->is_game_running);
+        assert_session_released(&rep->launch_session);
+        assert(rep->active_view == VIEW_ERROR);
+        assert(strcmp(rep->last_error.error_code, "RUNTIME_START_TIMEOUT") == 0);
+        assert(strcmp(rep->last_error.title, "Game Couldn't Start") == 0);
+        assert(strstr(rep->last_error.message, "The game didn't start") != NULL);
+        assert(strcmp(player_error_badge(&rep->last_error), "Game didn't start") == 0);
+        assert(player_error_leads_with_message(&rep->last_error));
+        assert(strstr(rep->last_error.details, "No boot event") != NULL);
+        assert(strstr(rep->last_error.details, "15000 ms") != NULL);
+        assert(strcmp(player_error_retry_label(&rep->last_error), "Restart game") == 0);
+        assert(strcmp(rep->last_error.subject_disc_id, rep->games[0].disc_id) == 0);
+        assert(strcmp(rep->last_error.recovery_action_label, "Return to Library") == 0);
+        assert(rep->last_error.return_view == VIEW_LIBRARY);
+        assert(strcmp(rep->last_error.log_file_path, run_log_last) == 0);
+        assert(!nk_platform_file_exists(hold_event_path));
+        assert(dev_log_contains(rep, "is running (first check, 0 ms)"));
+        assert(dev_log_contains(rep, "after 5000 ms; still waiting"));
+        assert(dev_log_contains(rep, "after 15000 ms; stopping it"));
+
+        /* A child whose first boot event is in the session file is starting,
+           however long its window takes: the deadline no longer applies. The
+           test appends the event the runtime would write. */
+        assert(player_app_launch_game(rep, 0));
+        assert(rep->is_game_running);
+        snprintf(hold_event_path, sizeof(hold_event_path), "%s", rep->boot_event_file_path);
+        {
+            FILE *events = nk_fopen_utf8(hold_event_path, "ab");
+            assert(events != NULL);
+            assert(fputs("BOOT_EVENT phase=init public_safe=1\n", events) >= 0);
+            assert(fclose(events) == 0);
+        }
+        rep->launch_time_ms = 40000;
+        assert(!player_app_monitor_game_session(rep, 100000));
+        assert(rep->is_game_running);
+        assert(dev_log_contains(rep, "first boot event seen after 60000 ms"));
+        player_app_stop_game(rep);
+        assert(!rep->is_game_running);
+        assert_session_released(&rep->launch_session);
+        set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "");
+
         /* Final recovery launch: the session is never stuck. */
         set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
         repeat_launch_and_settle(rep, 0, 11000, 12000, memstick1);
