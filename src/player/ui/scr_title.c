@@ -31,6 +31,12 @@
 #define TITLE_ID_CHIP_STATUS 0x20000028u
 #define TITLE_ID_CHIP_BADGE 0x20000029u
 #define TITLE_ID_ACTIONS 0x2000002Au
+#define TITLE_ID_BUILD_PREFLIGHT 0x20000030u
+#define TITLE_ID_BUILD_FOLDER 0x20000031u
+#define TITLE_ID_STALL_NOTICE 0x20000035u
+#define TITLE_ID_STALL_EYEBROW 0x20000036u
+#define TITLE_ID_STALL_TEXT 0x20000037u
+#define TITLE_ID_STALL_ACTIONS 0x20000038u
 #define TITLE_ID_COMPAT 0x20000005u
 #define TITLE_ID_COMPAT_HEAD 0x2000002Cu
 #define TITLE_ID_COMPAT_EYEBROW 0x20000006u
@@ -274,6 +280,30 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                                                       ? "Showcase demo" : "Your disc"));
                 nk_ui_end_container(ui);
             }
+            if (model->stalled_game_notice_visible &&
+                nk_ui_card_begin(ui, TITLE_ID_STALL_NOTICE, sizing_grow(), sizing_fit(),
+                                 NK_UI_SPACE_2)) {
+                nk_ui_eyebrow(ui, TITLE_ID_STALL_EYEBROW, "No new frames");
+                nk_ui_text_role(ui, TITLE_ID_STALL_TEXT,
+                                "The game hasn't drawn anything new for 30 seconds. It may be stuck.",
+                                NK_UI_TYPE_BODY_S, theme->paper);
+                row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+                row.align_y = NK_UI_ALIGN_CENTER;
+                if (nk_ui_begin_container(ui, TITLE_ID_STALL_ACTIONS, &row, NULL)) {
+                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_STALL_KEEP_WAITING,
+                                     "Keep waiting", NK_UI_BUTTON_LARGE)) {
+                        result = action(PLAYER_UI_ACTION_STALL_KEEP_WAITING,
+                                        model->title_index, PLAYER_UI_PRIMARY_NONE);
+                    }
+                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_STALL_STOP_GAME,
+                                     "Stop game", NK_UI_BUTTON_LARGE | NK_UI_BUTTON_DANGER)) {
+                        result = action(PLAYER_UI_ACTION_STALL_STOP_GAME,
+                                        model->title_index, PLAYER_UI_PRIMARY_NONE);
+                    }
+                    nk_ui_end_container(ui);
+                }
+                nk_ui_end_container(ui);
+            }
             /* One action row on the column's left edge, every button the same
                52 px height; the focus ring may spill into the column gap. */
             row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
@@ -300,6 +330,18 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                                     PLAYER_UI_PRIMARY_NONE);
                 }
                 nk_ui_end_container(ui);
+            }
+            if (title->build_preflight_message != NULL &&
+                title->build_preflight_message[0] != '\0') {
+                nk_ui_text_role(ui, TITLE_ID_BUILD_PREFLIGHT,
+                                title->build_preflight_message,
+                                NK_UI_TYPE_BODY_S, theme->error);
+                if (title->build_preflight_folder != NULL &&
+                    title->build_preflight_folder[0] != '\0' &&
+                    nk_ui_button(ui, TITLE_ID_BUILD_FOLDER, "Open folder", 0u)) {
+                    result = action(PLAYER_UI_ACTION_OPEN_BUILD_INPUT_FOLDER,
+                                    model->title_index, PLAYER_UI_PRIMARY_NONE);
+                }
             }
             /* The player tier, then what to expect in plain words and any
                known issues (#1297). The docs category describes the
@@ -1759,9 +1801,9 @@ PlayerUiAction player_ui_screen_disc(NkUi *ui, const PlayerUiDiscModel *model) {
 /* ---- Settings ----------------------------------------------------------------------
    One page of named rows, each with its value on the button that changes it, in
    two cards: what a game uses the next time it starts, and the launcher and
-   sound. Its pages (online and developer options, third-party notices, removing
-   the build tools) are dialog cards like the rest of the flow. Every change is
-   saved as it is made. */
+   sound. Its pages (online and developer options, third-party notices, build
+   tools and cache, removing the build tools) are dialog cards like the rest of
+   the flow. Every change is saved as it is made. */
 
 #define SET_ID_ROOT 0x63000001u
 #define SET_ID_TOP 0x63000010u
@@ -1964,8 +2006,8 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
         if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_NOTICES, "Third-party notices", 0u)) {
             *result = settings_op(PLAYER_UI_SETTINGS_OPEN_NOTICES);
         }
-        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS, "Remove build tools", 0u)) {
-            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_REMOVE_TOOLS);
+        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BUILD_CACHE, "Build tools and cache", 0u)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE);
         }
         nk_ui_end_container(ui);
     }
@@ -2094,6 +2136,56 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
             }
         }
         break;
+    case PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE:
+        /* #1306: the shared library switch, its clear button and tool removal. */
+        flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
+        nk_ui_text_role(ui, FLOW_ID_TITLE, "Build tools and cache", NK_UI_TYPE_TITLE,
+                        theme->paper);
+        nk_ui_text_role(ui, FLOW_ID_LEAD,
+                        "A game disc carries system libraries that other games often share. "
+                        "The compiled copies stay in the app-data folder on this PC and are "
+                        "never uploaded or shared.",
+                        NK_UI_TYPE_BODY_S, theme->muted);
+        if (wizard_box_begin(ui, 0u)) {
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                         NK_UI_SPACE_3);
+            if (wizard_switch(ui, PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES, SET_ID_TEXT + 0xC0u,
+                              "Share libraries",
+                              "Builds keep each compiled library and reuse it for another game "
+                              "with the same one, so those builds finish sooner.",
+                              model->share_system_libraries, inner - 32.0f)) {
+                *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_SHARE_LIBRARIES);
+            }
+            if (nk_ui_begin_container(ui, SET_ID_TEXT + 0xC8u, &row, NULL)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_CLEAR_LIBRARIES,
+                                 "Clear shared library cache", NK_UI_BUTTON_SMALL)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_CLEAR_SHARED_LIBRARIES);
+                }
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS, "Remove build tools",
+                                 NK_UI_BUTTON_SMALL)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_OPEN_REMOVE_TOOLS);
+                }
+                nk_ui_end_container(ui);
+            }
+            if (model->notice != NULL && model->notice[0] != '\0') {
+                NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_BODY_S, theme->warning);
+                nk_ui_text(ui, SET_ID_TEXT + 0xCCu,
+                           nk_ui_text_clamp(ui, model->notice, &text, inner - 32.0f, 2), &text);
+            }
+            nk_ui_end_container(ui);
+        }
+        {
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                         NK_UI_SPACE_3);
+            row.padding_top = NK_UI_SPACE_1;
+            if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back", NK_UI_BUTTON_PRIMARY)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+                }
+                nk_ui_end_container(ui);
+            }
+        }
+        break;
     case PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS:
     default:
         flow_eyebrow(ui, FLOW_MARK_TRIANGLE, "Remove build tools", theme->warning);
@@ -2111,7 +2203,7 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
             if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
                 if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Keep them",
                                  NK_UI_BUTTON_PRIMARY)) {
-                    *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+                    *result = settings_op(PLAYER_UI_SETTINGS_KEEP_TOOLS);
                 }
                 if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_CONFIRM_REMOVE, "Remove tools",
                                  NK_UI_BUTTON_DANGER)) {

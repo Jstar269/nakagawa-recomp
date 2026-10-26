@@ -612,6 +612,14 @@ _Static_assert((int)SDL_GAMEPAD_AXIS_RIGHTY == (int)NK_HOST_AXIS_RIGHTY, "host a
 _Static_assert((int)SDL_GAMEPAD_AXIS_LEFT_TRIGGER == (int)NK_HOST_AXIS_LEFT_TRIGGER, "host axis enum drift: LEFT_TRIGGER");
 _Static_assert((int)SDL_GAMEPAD_AXIS_RIGHT_TRIGGER == (int)NK_HOST_AXIS_RIGHT_TRIGGER, "host axis enum drift: RIGHT_TRIGGER");
 
+/* Profile key codes are USB HID keyboard usages, which SDL_Scancode shares; the input-profile
+ * selftest checks every default key's name against its SDL scancode. */
+_Static_assert((int)SDL_SCANCODE_A == 4, "SDL scancode drift from HID usage: A");
+_Static_assert((int)SDL_SCANCODE_RETURN == 40, "SDL scancode drift from HID usage: RETURN");
+_Static_assert((int)SDL_SCANCODE_UP == 82, "SDL scancode drift from HID usage: UP");
+_Static_assert((int)SDL_SCANCODE_KP_0 == 98, "SDL scancode drift from HID usage: KP_0");
+_Static_assert((int)SDL_SCANCODE_RALT == 230, "SDL scancode drift from HID usage: RALT");
+
 /* Versioned host input profile state (#357). */
 static NkInputProfile s_input_profile;
 static bool s_input_profile_loaded;
@@ -693,6 +701,16 @@ static uint32_t s_button_pulse;
  * from s_button_pulse, which the guest's sample consumes, so both see every press. */
 static uint32_t s_pad_pulse;
 static int      s_text_claim;
+
+/* In-game pause (sdl3vk.h). The gate hides input from the game while the overlay has it and
+ * after it lets go; the raw host state is kept for the moment the claim ends. */
+static int            s_pause_request;
+static Sdl3VkInputSink s_claim_sink;
+static void          *s_claim_user;
+static NkInputGate    s_gate;
+static uint32_t       s_raw_buttons;
+static uint8_t        s_raw_lx = 128, s_raw_ly = 128;
+static uint32_t       s_claim_saved_pulse, s_claim_saved_pad_pulse;
 #define KEY_QUEUE_CAP 64
 static Sdl3VkKeyEvent s_key_queue[KEY_QUEUE_CAP];
 static int            s_key_head, s_key_count;
@@ -739,23 +757,29 @@ static void queue_text_utf8(const char *s) {
     }
 }
 
-static uint32_t keyboard_button(SDL_Scancode sc) {
-    switch (sc) {
-    case SDL_SCANCODE_RETURN: return 0x0008;
-    case SDL_SCANCODE_LSHIFT:
-    case SDL_SCANCODE_RSHIFT: return 0x0001;
-    case SDL_SCANCODE_X:      return 0x4000;
-    case SDL_SCANCODE_Z:      return 0x2000;
-    case SDL_SCANCODE_A:      return 0x8000;
-    case SDL_SCANCODE_S:      return 0x1000;
-    case SDL_SCANCODE_Q:      return 0x0100;
-    case SDL_SCANCODE_W:      return 0x0200;
-    case SDL_SCANCODE_UP:     return 0x0010;
-    case SDL_SCANCODE_DOWN:   return 0x0040;
-    case SDL_SCANCODE_LEFT:   return 0x0080;
-    case SDL_SCANCODE_RIGHT:  return 0x0020;
-    default:                  return 0;
+uint32_t sdl3vk_map_keyboard(const NkInputProfile *profile, const bool *key_state, int key_count) {
+    NkInputProfile def_profile;
+    const NkInputProfile *p = profile;
+    if (!p) {
+        nk_input_profile_init_default(&def_profile);
+        p = &def_profile;
     }
+    return nk_input_profile_eval_keys(p, key_state, key_count);
+}
+
+uint32_t sdl3vk_map_key(const NkInputProfile *profile, int scancode) {
+    NkInputProfile def_profile;
+    const NkInputProfile *p = profile;
+    if (!p) {
+        nk_input_profile_init_default(&def_profile);
+        p = &def_profile;
+    }
+    return nk_input_profile_key_buttons(p, scancode);
+}
+
+static uint32_t keyboard_button(SDL_Scancode sc) {
+    const NkInputProfile *prof = padscript_active() ? NULL : sdl3vk_get_input_profile();
+    return sdl3vk_map_key(prof, (int)sc);
 }
 
 static uint32_t gamepad_button(Uint8 button) {
@@ -769,15 +793,44 @@ static uint32_t gamepad_button(Uint8 button) {
     return psp_btn;
 }
 
+static void pause_request_latch(int request) {
+    if (s_claim_sink) return;
+    /* The person's own request wins over the pad-lost one if both arrive together. */
+    if (s_pause_request != SDL3VK_PAUSE_REQUEST_USER) s_pause_request = request;
+}
+
 static void poll_input(int *quit) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
+        /* Device bookkeeping and quit are the window's own, claimed or not. */
         switch (ev.type) {
         case SDL_EVENT_QUIT: s_quit_requested = 1; break;
+        case SDL_EVENT_GAMEPAD_ADDED:
+            if (!s_pad) s_pad = SDL_OpenGamepad(ev.gdevice.which);
+            break;
+        case SDL_EVENT_GAMEPAD_REMOVED:
+            if (s_pad && SDL_GetGamepadID(s_pad) == ev.gdevice.which) {
+                SDL_CloseGamepad(s_pad); s_pad = NULL;
+                pause_request_latch(SDL3VK_PAUSE_REQUEST_PAD_LOST);
+            }
+            break;
+        default: break;
+        }
+        /* While the overlay has the input every event is its own; nothing reaches the game. */
+        if (s_claim_sink) {
+            s_claim_sink(&ev, s_claim_user);
+            continue;
+        }
+        switch (ev.type) {
         case SDL_EVENT_KEY_DOWN:
-            /* While the on-screen keyboard is open, Escape cancels it: it does not quit. */
-            if (ev.key.key == SDLK_ESCAPE && !s_text_claim) s_quit_requested = 1;
-            if (ev.key.key == SDLK_F1 && !ev.key.repeat) {
+            /* Esc and F1 ask for the pause and are consumed. While the on-screen keyboard is
+             * open Esc cancels it instead; F1 still asks, and the scheduler refuses with the
+             * keyboard reason. */
+            if ((ev.key.key == SDLK_ESCAPE && !s_text_claim) || ev.key.key == SDLK_F1) {
+                if (!ev.key.repeat) pause_request_latch(SDL3VK_PAUSE_REQUEST_USER);
+                break;
+            }
+            if (ev.key.key == SDLK_F3 && !ev.key.repeat) {
                 sdl3vk_hud_set_enabled(!s_hud_enabled);
             }
             /* While the keyboard is claimed its keys go to the keyboard only: a keyboard Enter that
@@ -794,39 +847,26 @@ static void poll_input(int *quit) {
             if (s_text_claim) queue_text_utf8(ev.text.text);
             break;
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
+            /* Guide asks for the pause and is consumed, whatever the profile binds to it. */
+            if (ev.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) {
+                pause_request_latch(SDL3VK_PAUSE_REQUEST_USER);
+                break;
+            }
             uint32_t bit = gamepad_button(ev.gbutton.button);
             s_button_pulse |= bit;
             s_pad_pulse |= bit;
             break;
         }
-        case SDL_EVENT_GAMEPAD_ADDED:
-            if (!s_pad) s_pad = SDL_OpenGamepad(ev.gdevice.which);
-            break;
-        case SDL_EVENT_GAMEPAD_REMOVED:
-            if (s_pad && SDL_GetGamepadID(s_pad) == ev.gdevice.which) {
-                SDL_CloseGamepad(s_pad); s_pad = NULL;
-            }
-            break;
         default: break;
         }
     }
 
-    uint32_t b = 0;
-    const bool *k = SDL_GetKeyboardState(NULL);
-    /* Same bindings as the GDI front-end (gui.c read_keys), from the same table
-     * (src/core/nk_input_profile.h). */
-    if (k[SDL_SCANCODE_RETURN]) b |= NK_PSP_BTN_START_BIT;         /* START   */
-    if (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT]) b |= NK_PSP_BTN_SELECT_BIT; /* SELECT */
-    if (k[SDL_SCANCODE_X]) b |= NK_PSP_BTN_CROSS_BIT;              /* CROSS   */
-    if (k[SDL_SCANCODE_Z]) b |= NK_PSP_BTN_CIRCLE_BIT;             /* CIRCLE  */
-    if (k[SDL_SCANCODE_A]) b |= NK_PSP_BTN_SQUARE_BIT;             /* SQUARE  */
-    if (k[SDL_SCANCODE_S]) b |= NK_PSP_BTN_TRIANGLE_BIT;           /* TRIANGLE*/
-    if (k[SDL_SCANCODE_Q]) b |= NK_PSP_BTN_LTRIGGER_BIT;           /* L       */
-    if (k[SDL_SCANCODE_W]) b |= NK_PSP_BTN_RTRIGGER_BIT;           /* R       */
-    if (k[SDL_SCANCODE_UP])    b |= NK_PSP_BTN_UP_BIT;
-    if (k[SDL_SCANCODE_DOWN])  b |= NK_PSP_BTN_DOWN_BIT;
-    if (k[SDL_SCANCODE_LEFT])  b |= NK_PSP_BTN_LEFT_BIT;
-    if (k[SDL_SCANCODE_RIGHT]) b |= NK_PSP_BTN_RIGHT_BIT;
+    int key_count = 0;
+    const bool *k = SDL_GetKeyboardState(&key_count);
+    /* The profile's keyboard keys (#1299). Its defaults are the GDI front-end's map
+     * (gui.c read_keys); SR_PADSCRIPT keeps the defaults, as it does for the gamepad. */
+    const NkInputProfile *key_prof = padscript_active() ? NULL : sdl3vk_get_input_profile();
+    uint32_t b = sdl3vk_map_keyboard(key_prof, k, key_count);
 
     uint8_t lx = 128, ly = 128;
     s_pad_present = s_pad != NULL;
@@ -835,6 +875,7 @@ static void poll_input(int *quit) {
         for (int i = 0; i < NK_HOST_BUTTON_COUNT; i++) {
             host_buttons[i] = SDL_GetGamepadButton(s_pad, (SDL_GamepadButton)i);
         }
+        host_buttons[NK_HOST_BUTTON_GUIDE] = false;   /* the pause button, never the game's */
         int16_t host_axes[NK_HOST_AXIS_COUNT];
         for (int i = 0; i < NK_HOST_AXIS_COUNT; i++) {
             host_axes[i] = SDL_GetGamepadAxis(s_pad, (SDL_GamepadAxis)i);
@@ -844,6 +885,10 @@ static void poll_input(int *quit) {
         sdl3vk_map_gamepad(prof, host_buttons, host_axes, &pad_buttons, &lx, &ly);
         b |= pad_buttons;
     }
+    s_raw_buttons = b;
+    s_raw_lx = lx; s_raw_ly = ly;
+    nk_input_gate_apply(&s_gate, &b, &s_button_pulse, &lx, &ly);
+    nk_input_gate_apply(&s_gate, NULL, &s_pad_pulse, NULL, NULL);
     uint32_t published = b | s_button_pulse;
     if (getenv("SR_INLOG")) {
         static uint32_t previous_published;
@@ -877,6 +922,45 @@ uint32_t sdl3vk_take_pad_pulses(void) {
     s_pad_pulse = 0;
     return pulses;
 }
+
+int sdl3vk_take_pause_request(void) {
+    int request = s_pause_request;
+    s_pause_request = SDL3VK_PAUSE_REQUEST_NONE;
+    return request;
+}
+
+void sdl3vk_set_input_claim(Sdl3VkInputSink sink, void *user) {
+    if (sink) {
+        if (!s_claim_sink) {
+            nk_input_gate_claim(&s_gate);
+            s_claim_saved_pulse = s_button_pulse;
+            s_claim_saved_pad_pulse = s_pad_pulse;
+            s_button_pulse = 0;
+            s_pad_pulse = 0;
+            s_pause_request = SDL3VK_PAUSE_REQUEST_NONE;
+        }
+        s_claim_sink = sink;
+        s_claim_user = user;
+        s_buttons = 0;
+        s_lx = 128; s_ly = 128;
+        return;
+    }
+    if (!s_claim_sink) return;
+    s_claim_sink = NULL;
+    s_claim_user = NULL;
+    nk_input_gate_release(&s_gate, s_raw_buttons, s_raw_lx, s_raw_ly);
+    s_button_pulse = s_claim_saved_pulse & ~s_gate.hidden;
+    s_pad_pulse = s_claim_saved_pad_pulse & ~s_gate.hidden;
+    s_claim_saved_pulse = 0;
+    s_claim_saved_pad_pulse = 0;
+    uint32_t held = s_raw_buttons;
+    uint8_t lx = s_raw_lx, ly = s_raw_ly;
+    nk_input_gate_apply(&s_gate, &held, &s_button_pulse, &lx, &ly);
+    s_buttons = held;
+    s_lx = lx; s_ly = ly;
+}
+
+int sdl3vk_input_claimed(void) { return s_claim_sink != NULL; }
 
 /* Start or stop the window's text input with the keyboard. Claiming also clears any queued
  * keys, so a keyboard opened now does not act on keys pressed before it. */
@@ -1604,6 +1688,259 @@ int sdl3vk_wait_image(void *vk_image) {
     return 1;
 }
 
+/* ---- pause overlay (#1159) ----------------------------------------------------------
+ * While the game is stopped the pause presenter shows one image the size of the swapchain,
+ * composed on the CPU (the frozen game frame, the scrim and the overlay screens). It is
+ * uploaded once per change into a device-local image and copied to each acquired swapchain
+ * image, so a present that shows the same image again costs no upload. None of this is a
+ * game frame: it never serves a capture or counts as a present. */
+
+static VkImage        s_ovl_img;
+static VkDeviceMemory s_ovl_img_mem;
+static VkBuffer       s_ovl_buf;
+static VkDeviceMemory s_ovl_buf_mem;
+static void          *s_ovl_buf_map;
+static uint32_t       s_ovl_w, s_ovl_h;
+static VkFormat       s_ovl_fmt = VK_FORMAT_UNDEFINED;
+static int            s_ovl_valid;
+
+/* The CPU layouts the overlay image can be composed in: 8-bit channels, R,G,B,A or B,G,R,A. */
+static int overlay_format_order(VkFormat fmt, int *rgba) {
+    switch (fmt) {
+    case VK_FORMAT_B8G8R8A8_UNORM:
+    case VK_FORMAT_B8G8R8A8_SRGB: *rgba = 0; return 1;
+    case VK_FORMAT_R8G8B8A8_UNORM:
+    case VK_FORMAT_R8G8B8A8_SRGB: *rgba = 1; return 1;
+    default: return 0;
+    }
+}
+
+int sdl3vk_window_minimized(void) {
+    return s_win && (SDL_GetWindowFlags(s_win) & SDL_WINDOW_MINIMIZED) != 0;
+}
+
+void sdl3vk_wait_events(uint32_t timeout_ms) {
+    (void)SDL_WaitEventTimeout(NULL, timeout_ms > (uint32_t)INT32_MAX ? INT32_MAX : (Sint32)timeout_ms);
+}
+
+int sdl3vk_present_scaling(void) { return s_scaling; }
+
+uint64_t sdl3vk_display_period_ns(void) {
+    if (!s_win) return 0;
+    const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(s_win));
+    if (!mode || mode->refresh_rate <= 0.0f) return 0;
+    return (uint64_t)(1000000000.0 / (double)mode->refresh_rate);
+}
+
+int sdl3vk_overlay_extent(int *w, int *h, int *rgba) {
+    int order = 0;
+    if (!s_dev || !s_swap || s_renderer_terminal || sdl3vk_window_minimized() ||
+        !s_swap_ext.width || !s_swap_ext.height || !overlay_format_order(s_swap_fmt, &order))
+        return 0;
+    if (w) *w = (int)s_swap_ext.width;
+    if (h) *h = (int)s_swap_ext.height;
+    if (rgba) *rgba = order;
+    return 1;
+}
+
+void sdl3vk_overlay_release(void) {
+    if (!s_dev) return;
+    if (s_ovl_img || s_ovl_buf) (void)wait_all_present_frames();
+    if (s_ovl_buf_map) vkUnmapMemory(s_dev, s_ovl_buf_mem);
+    if (s_ovl_buf)     vkDestroyBuffer(s_dev, s_ovl_buf, NULL);
+    if (s_ovl_buf_mem) vkFreeMemory(s_dev, s_ovl_buf_mem, NULL);
+    if (s_ovl_img)     vkDestroyImage(s_dev, s_ovl_img, NULL);
+    if (s_ovl_img_mem) vkFreeMemory(s_dev, s_ovl_img_mem, NULL);
+    s_ovl_buf_map = NULL;
+    s_ovl_buf = VK_NULL_HANDLE;
+    s_ovl_buf_mem = VK_NULL_HANDLE;
+    s_ovl_img = VK_NULL_HANDLE;
+    s_ovl_img_mem = VK_NULL_HANDLE;
+    s_ovl_w = s_ovl_h = 0;
+    s_ovl_fmt = VK_FORMAT_UNDEFINED;
+    s_ovl_valid = 0;
+}
+
+static int overlay_ensure(uint32_t w, uint32_t h) {
+    if (s_ovl_img && s_ovl_w == w && s_ovl_h == h && s_ovl_fmt == s_swap_fmt) return 1;
+    sdl3vk_overlay_release();
+    VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    bci.size = (VkDeviceSize)w * h * 4u;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    VkMemoryRequirements mr;
+    VkMemoryAllocateInfo mai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    if (vkCreateBuffer(s_dev, &bci, NULL, &s_ovl_buf) != VK_SUCCESS) goto fail;
+    vkGetBufferMemoryRequirements(s_dev, s_ovl_buf, &mr);
+    mai.allocationSize = mr.size;
+    mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mai.memoryTypeIndex == UINT32_MAX ||
+        vkAllocateMemory(s_dev, &mai, NULL, &s_ovl_buf_mem) != VK_SUCCESS ||
+        vkBindBufferMemory(s_dev, s_ovl_buf, s_ovl_buf_mem, 0) != VK_SUCCESS ||
+        vkMapMemory(s_dev, s_ovl_buf_mem, 0, VK_WHOLE_SIZE, 0, &s_ovl_buf_map) != VK_SUCCESS)
+        goto fail;
+
+    VkImageCreateInfo imi = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    imi.imageType = VK_IMAGE_TYPE_2D;
+    imi.format = s_swap_fmt;
+    imi.extent.width = w; imi.extent.height = h; imi.extent.depth = 1;
+    imi.mipLevels = 1; imi.arrayLayers = 1; imi.samples = VK_SAMPLE_COUNT_1_BIT;
+    imi.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imi.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    imi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(s_dev, &imi, NULL, &s_ovl_img) != VK_SUCCESS) goto fail;
+    vkGetImageMemoryRequirements(s_dev, s_ovl_img, &mr);
+    mai.allocationSize = mr.size;
+    mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mai.memoryTypeIndex == UINT32_MAX ||
+        vkAllocateMemory(s_dev, &mai, NULL, &s_ovl_img_mem) != VK_SUCCESS ||
+        vkBindImageMemory(s_dev, s_ovl_img, s_ovl_img_mem, 0) != VK_SUCCESS)
+        goto fail;
+    s_ovl_w = w; s_ovl_h = h;
+    s_ovl_fmt = s_swap_fmt;
+    return 1;
+fail:
+    fprintf(stderr, "sdl3vk: pause overlay image (%ux%u) could not be created\n", w, h);
+    sdl3vk_overlay_release();
+    return 0;
+}
+
+/* Copies the composed pixels into the overlay image. It runs once per change, so a blocking
+ * one-off submission is fine; every present that read the old image has finished first. */
+static int overlay_upload(const void *px, int pitch) {
+    const size_t row = (size_t)s_ovl_w * 4u;
+    if (pitch < 0 || (size_t)pitch < row) return 0;
+    if (!wait_all_present_frames()) return 0;
+    for (uint32_t y = 0; y < s_ovl_h; y++)
+        memcpy((uint8_t *)s_ovl_buf_map + y * row, (const uint8_t *)px + (size_t)y * (size_t)pitch, row);
+    VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkResetCommandBuffer(s_cmd, 0);
+    if (vkBeginCommandBuffer(s_cmd, &bi) != VK_SUCCESS) return 0;
+    barrier(s_cmd, s_ovl_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            0, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy bic = {0};
+    bic.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    bic.imageSubresource.layerCount = 1;
+    bic.imageExtent.width = s_ovl_w; bic.imageExtent.height = s_ovl_h; bic.imageExtent.depth = 1;
+    vkCmdCopyBufferToImage(s_cmd, s_ovl_buf, s_ovl_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+    barrier(s_cmd, s_ovl_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    if (vkEndCommandBuffer(s_cmd) != VK_SUCCESS) return 0;
+    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &s_cmd;
+    vkResetFences(s_dev, 1, &s_fence);
+    if (vkQueueSubmit(s_queue, 1, &si, s_fence) != VK_SUCCESS) return 0;
+    if (vkWaitForFences(s_dev, 1, &s_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) return 0;
+    s_ovl_valid = 1;
+    return 1;
+}
+
+int sdl3vk_present_overlay(const void *px, int pitch) {
+    if (s_renderer_terminal || !s_dev || !s_swap) return -1;
+    if (s_quit_requested) return 0;
+    int order = 0;
+    const uint32_t w = s_swap_ext.width, h = s_swap_ext.height;
+    if (!overlay_format_order(s_swap_fmt, &order)) return -1;
+    if (px) {
+        if (!overlay_ensure(w, h) || !overlay_upload(px, pitch)) {
+            s_ovl_valid = 0;
+            return -1;
+        }
+    }
+    if (!s_ovl_valid || s_ovl_w != w || s_ovl_h != h || s_ovl_fmt != s_swap_fmt) return 2;
+
+    PresentFrame *f = &s_frame[s_frame_cursor];
+    if (!wait_present_frame(f)) return -1;
+    uint32_t idx = 0;
+    VkResult ar = vkAcquireNextImageKHR(s_dev, s_swap, UINT64_MAX, f->sem_acq, VK_NULL_HANDLE, &idx);
+    if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
+        wait_all_present_frames();
+        vkQueueWaitIdle(s_queue); /* presentation-engine scope; resize path only */
+        if (!create_swapchain() && !sdl3vk_window_minimized()) return -1;
+        return 2;
+    }
+    /* VK_SUBOPTIMAL_KHR acquired an image that can still be shown; the present below
+     * reports it again and the swapchain is rebuilt there. */
+    if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR) return -1;
+    if (s_swap_img_fence[idx] && s_swap_img_fence[idx] != f->fence)
+        vkWaitForFences(s_dev, 1, &s_swap_img_fence[idx], VK_TRUE, UINT64_MAX);
+    s_swap_img_fence[idx] = f->fence;
+
+    VkCommandBuffer cmd = f->cmd;
+    VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkResetCommandBuffer(cmd, 0);
+    vkBeginCommandBuffer(cmd, &bi);
+    barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            0, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkImageCopy ic = {0};
+    ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    ic.srcSubresource.layerCount = 1;
+    ic.dstSubresource = ic.srcSubresource;
+    ic.extent.width = w; ic.extent.height = h; ic.extent.depth = 1;
+    vkCmdCopyImage(cmd, s_ovl_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+    barrier(cmd, s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            VK_ACCESS_TRANSFER_WRITE_BIT, 0,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) return -1;
+
+    VkPipelineStageFlags wait_st = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &f->sem_acq;
+    si.pWaitDstStageMask = &wait_st;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = &f->sem_done;
+    vkResetFences(s_dev, 1, &f->fence);
+    if (vkQueueSubmit(s_queue, 1, &si, f->fence) != VK_SUCCESS) return -1;
+    f->submitted = 1;
+    f->source = VK_NULL_HANDLE;
+
+    VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = &f->sem_done;
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &s_swap;
+    pi.pImageIndices = &idx;
+    int did_present = 0;
+    const char *why = NULL;
+    switch (classify_present(vkQueuePresentKHR(s_queue, &pi), &did_present, &why)) {
+    case PRESENT_OK:
+        s_frame_cursor = (s_frame_cursor + 1) % PRESENT_FRAMES;
+        return 1;
+    case PRESENT_ENQUEUED_REBUILD:
+    case PRESENT_OUT_OF_DATE:
+        s_frame_cursor = (s_frame_cursor + 1) % PRESENT_FRAMES;
+        wait_all_present_frames();
+        vkQueueWaitIdle(s_queue);
+        if (!create_swapchain() && !sdl3vk_window_minimized()) {
+            s_renderer_terminal = 1;
+            fprintf(stderr, "sdl3vk: pause overlay: swapchain rebuild failed\n");
+            return -1;
+        }
+        return 2;
+    case PRESENT_NOT_ENQUEUED:
+        recover_unenqueued_present(f);
+        fprintf(stderr, "sdl3vk: pause overlay present failed: %s\n", why ? why : "not enqueued");
+        return -1;
+    case PRESENT_SURFACE_LOST:
+    case PRESENT_TERMINAL:
+    case PRESENT_UNCLASSIFIED:
+    default:
+        s_renderer_terminal = 1;
+        fprintf(stderr, "sdl3vk: pause overlay present failed: %s\n", why ? why : "terminal");
+        return -1;
+    }
+}
+
 /* ---- capture selftest (issue #57) ---------------------------------------------------- */
 
 /* Scratch root for the files the capture selftest writes (see sdl3vk_capture_selftest). The
@@ -2028,8 +2365,323 @@ int sdl3vk_input_profile_selftest(void) {
         sdl3vk_reset_input_profile();
     }
 
+    /* ---- 5(e) Keyboard keys come from the profile (#1299) ---- */
+    {
+        /* The default profile reproduces the map hard-coded before schema 3, key name and
+         * SDL scancode alike. */
+        static const struct {
+            SDL_Scancode sc;
+            const char *name;
+            uint32_t expected_bit;
+        } kKeyTable[] = {
+            { SDL_SCANCODE_RETURN, "return", 0x0008 }, /* START */
+            { SDL_SCANCODE_LSHIFT, "lshift", 0x0001 }, /* SELECT */
+            { SDL_SCANCODE_RSHIFT, "rshift", 0x0001 }, /* SELECT */
+            { SDL_SCANCODE_X,      "x",      0x4000 }, /* CROSS */
+            { SDL_SCANCODE_Z,      "z",      0x2000 }, /* CIRCLE */
+            { SDL_SCANCODE_A,      "a",      0x8000 }, /* SQUARE */
+            { SDL_SCANCODE_S,      "s",      0x1000 }, /* TRIANGLE */
+            { SDL_SCANCODE_Q,      "q",      0x0100 }, /* LTRIGGER */
+            { SDL_SCANCODE_W,      "w",      0x0200 }, /* RTRIGGER */
+            { SDL_SCANCODE_UP,     "up",     0x0010 },
+            { SDL_SCANCODE_DOWN,   "down",   0x0040 },
+            { SDL_SCANCODE_LEFT,   "left",   0x0080 },
+            { SDL_SCANCODE_RIGHT,  "right",  0x0020 },
+        };
+        for (size_t i = 0; i < sizeof(kKeyTable) / sizeof(kKeyTable[0]); i++) {
+            bool keys[SDL_SCANCODE_COUNT] = {false};
+            keys[kKeyTable[i].sc] = true;
+            uint32_t held = sdl3vk_map_keyboard(NULL, keys, SDL_SCANCODE_COUNT);
+            uint32_t pressed = sdl3vk_map_key(NULL, (int)kKeyTable[i].sc);
+            if (held != kKeyTable[i].expected_bit || pressed != kKeyTable[i].expected_bit) {
+                fprintf(stderr, "input_profile_selftest: default key %s: held 0x%04x pressed 0x%04x "
+                        "expected 0x%04x\n", kKeyTable[i].name, held, pressed,
+                        kKeyTable[i].expected_bit);
+                ok = 0;
+            }
+            if (nk_host_key_from_name(kKeyTable[i].name) != (int)kKeyTable[i].sc) {
+                fprintf(stderr, "input_profile_selftest: key name '%s' is not SDL scancode %d\n",
+                        kKeyTable[i].name, (int)kKeyTable[i].sc);
+                ok = 0;
+            }
+        }
+        {
+            bool keys[SDL_SCANCODE_COUNT] = {false};
+            keys[SDL_SCANCODE_C] = true;
+            if (sdl3vk_map_keyboard(NULL, keys, SDL_SCANCODE_COUNT) != 0 ||
+                sdl3vk_map_key(NULL, SDL_SCANCODE_C) != 0) {
+                fprintf(stderr, "input_profile_selftest: unbound default key C produced a button\n");
+                ok = 0;
+            }
+            /* A key past the host's reported state array reads as released. */
+            keys[SDL_SCANCODE_X] = true;
+            if (sdl3vk_map_keyboard(NULL, keys, SDL_SCANCODE_X) != 0) {
+                fprintf(stderr, "input_profile_selftest: key beyond key_count read as held\n");
+                ok = 0;
+            }
+        }
+
+        /* A saved profile that moves CROSS from X to C: the runtime loads it and the
+         * production key paths set CROSS for C and nothing for X. */
+        const char *tmp_keys = "selftest_keyboard_profile.json";
+        NkInputProfile custom;
+        nk_input_profile_init_default(&custom);
+        custom.psp_keys[NK_PSP_BTN_CROSS].primary = nk_host_key_from_name("c");
+        char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN] = {0};
+        if (nk_input_profile_save(&custom, tmp_keys, diag, sizeof(diag)) != NK_OK) {
+            fprintf(stderr, "input_profile_selftest: keyboard profile save failed: %s\n", diag);
+            ok = 0;
+        }
+        profile_test_setenv("NK_INPUT_PROFILE", tmp_keys);
+        sdl3vk_reset_input_profile();
+        sdl3vk_init_input_profile();
+        const NkInputProfile *prof = sdl3vk_get_input_profile();
+        bool keys[SDL_SCANCODE_COUNT] = {false};
+        keys[SDL_SCANCODE_C] = true;
+        uint32_t held_c = sdl3vk_map_keyboard(prof, keys, SDL_SCANCODE_COUNT);
+        keys[SDL_SCANCODE_C] = false;
+        keys[SDL_SCANCODE_X] = true;
+        uint32_t held_x = sdl3vk_map_keyboard(prof, keys, SDL_SCANCODE_COUNT);
+        uint32_t pulse_c = keyboard_button(SDL_SCANCODE_C);
+        uint32_t pulse_x = keyboard_button(SDL_SCANCODE_X);
+        if (held_c != NK_PSP_BTN_CROSS_BIT || pulse_c != NK_PSP_BTN_CROSS_BIT ||
+            held_x != 0 || pulse_x != 0) {
+            fprintf(stderr, "input_profile_selftest: remapped key: C held 0x%04x pressed 0x%04x, "
+                    "X held 0x%04x pressed 0x%04x; expected C -> 0x4000 and X -> 0\n",
+                    held_c, pulse_c, held_x, pulse_x);
+            ok = 0;
+        }
+
+        /* SR_PADSCRIPT keeps the default keys even with the remap on disk. */
+        profile_test_setenv("SR_PADSCRIPT", "synthetic_script_active");
+        sdl3vk_reset_input_profile();
+        sdl3vk_init_input_profile();
+        if (keyboard_button(SDL_SCANCODE_X) != NK_PSP_BTN_CROSS_BIT ||
+            keyboard_button(SDL_SCANCODE_C) != 0) {
+            fprintf(stderr, "input_profile_selftest: SR_PADSCRIPT active did not keep default keys\n");
+            ok = 0;
+        }
+
+        profile_test_setenv("SR_PADSCRIPT", NULL);
+        profile_test_setenv("NK_INPUT_PROFILE", NULL);
+        remove(tmp_keys);
+        sdl3vk_reset_input_profile();
+    }
+
     return ok;
 }
+
+/* ---- pause input selftest (#1159); no Vulkan needed ------------------------------------
+ * Drives the real event path (poll_input) with an SDL virtual gamepad and pushed key events:
+ * Esc, F1 and Guide ask for the pause and never reach the game; while the overlay holds the
+ * claim every event goes to it and the game reads a released pad; a button held when the
+ * claim ends is not a fresh press until it is let go (P8); a stick pushed when the claim ends
+ * reads centred until it returns; and losing the open pad asks for the pause. */
+
+typedef struct {
+    int events;
+    int south_downs;
+    int guide_downs;
+    int escapes;
+} PauseTestSink;
+
+static void pause_test_sink(const void *event, void *user) {
+    const SDL_Event *ev = (const SDL_Event *)event;
+    PauseTestSink *sink = (PauseTestSink *)user;
+    sink->events++;
+    if (ev->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && ev->gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH)
+        sink->south_downs++;
+    if (ev->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && ev->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)
+        sink->guide_downs++;
+    if (ev->type == SDL_EVENT_KEY_DOWN && ev->key.key == SDLK_ESCAPE)
+        sink->escapes++;
+}
+
+static void pause_test_key(SDL_Keycode key, bool repeat) {
+    SDL_Event ev;
+    SDL_zero(ev);
+    ev.type = SDL_EVENT_KEY_DOWN;
+    ev.key.key = key;
+    ev.key.down = true;
+    ev.key.repeat = repeat;
+    SDL_PushEvent(&ev);
+}
+
+/* SDL holds back a Guide release that comes within its minimum Guide press time (250 ms)
+ * and drops a new Guide press until that release is out, so a test tap waits it out. */
+static void pause_test_guide_release(SDL_Joystick *joy) {
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_GUIDE, false);
+    SDL_Delay(300);
+    int quit = 0;
+    poll_input(&quit);
+    sdl3vk_consume_button_pulses();
+}
+
+/* One host poll followed by one game sample, the order a VBLANK sees them in. */
+static uint32_t pause_test_sample(void) {
+    int quit = 0;
+    poll_input(&quit);
+    uint32_t seen = sdl3vk_buttons();
+    sdl3vk_consume_button_pulses();
+    return seen;
+}
+
+#define PAUSE_CHECK(cond, ...) do { if (!(cond)) { \
+    fprintf(stderr, "pause_input_selftest: " __VA_ARGS__); fputc('\n', stderr); ok = 0; } } while (0)
+
+int sdl3vk_pause_input_selftest(void) {
+    int ok = 1;
+    if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+        fprintf(stderr, "pause_input_selftest: SDL gamepad subsystem unavailable: %s\n", SDL_GetError());
+        return 0;
+    }
+    SDL_VirtualJoystickDesc desc;
+    SDL_INIT_INTERFACE(&desc);
+    desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+    desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+    desc.nbuttons = SDL_GAMEPAD_BUTTON_DPAD_RIGHT + 1;
+    desc.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1u;
+    desc.button_mask = (1u << (SDL_GAMEPAD_BUTTON_DPAD_RIGHT + 1)) - 1u;
+    desc.name = "Nakagawa pause selftest pad";
+    SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
+    SDL_Joystick *joy = id ? SDL_OpenJoystick(id) : NULL;
+    if (!joy) {
+        fprintf(stderr, "pause_input_selftest: virtual gamepad unavailable: %s\n", SDL_GetError());
+        if (id) SDL_DetachVirtualJoystick(id);
+        SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+        return 0;
+    }
+    /* Physical button i is SDL_GamepadButton i under this mask. */
+    const uint32_t cross = gamepad_button(SDL_GAMEPAD_BUTTON_SOUTH);
+    const uint32_t circle = gamepad_button(SDL_GAMEPAD_BUTTON_EAST);
+    PauseTestSink sink = {0};
+
+    (void)pause_test_sample();
+    PAUSE_CHECK(s_pad != NULL, "the virtual gamepad was not opened");
+    PAUSE_CHECK(cross && circle && cross != circle, "default mapping lacks cross/circle");
+    (void)sdl3vk_take_pause_request();
+    (void)sdl3vk_take_pad_pulses();
+
+    /* The game sees a press, and Guide is the pause button only. */
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_SOUTH, true);
+    PAUSE_CHECK(pause_test_sample() & cross, "cross press not seen by the game");
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_SOUTH, false);
+    (void)pause_test_sample();
+    (void)sdl3vk_take_pad_pulses();
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_GUIDE, true);
+    PAUSE_CHECK(pause_test_sample() == 0, "Guide reached the game");
+    PAUSE_CHECK(sdl3vk_take_pad_pulses() == 0, "Guide reached the keyboard's pad pulses");
+    PAUSE_CHECK(sdl3vk_take_pause_request() == SDL3VK_PAUSE_REQUEST_USER, "Guide did not ask for the pause");
+    pause_test_guide_release(joy);
+
+    /* A profile may bind Guide (HOME is the documented choice); Guide is still the pause
+     * button and the binding never fires in game. */
+    {
+        const char *tmp_profile = "selftest_pause_guide_profile.json";
+        NkInputProfile custom;
+        nk_input_profile_init_default(&custom);
+        custom.psp_buttons[NK_PSP_BTN_HOME].primary.type = NK_BINDING_HOST_BUTTON;
+        custom.psp_buttons[NK_PSP_BTN_HOME].primary.index = NK_HOST_BUTTON_GUIDE;
+        char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN] = {0};
+        PAUSE_CHECK(nk_input_profile_save(&custom, tmp_profile, diag, sizeof(diag)) == NK_OK,
+                    "profile save failed: %s", diag);
+        profile_test_setenv("NK_INPUT_PROFILE", tmp_profile);
+        sdl3vk_reset_input_profile();
+        sdl3vk_init_input_profile();
+        SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_GUIDE, true);
+        (void)pause_test_sample();
+        PAUSE_CHECK((pause_test_sample() & NK_PSP_BTN_HOME_BIT) == 0, "a Guide binding reached the game");
+        PAUSE_CHECK(sdl3vk_take_pause_request() == SDL3VK_PAUSE_REQUEST_USER,
+                    "Guide bound in the profile did not ask for the pause");
+        pause_test_guide_release(joy);
+        profile_test_setenv("NK_INPUT_PROFILE", NULL);
+        remove(tmp_profile);
+        sdl3vk_reset_input_profile();
+        sdl3vk_init_input_profile();
+    }
+
+    /* Esc and F1 ask; a held key's repeats do not ask again. */
+    pause_test_key(SDLK_ESCAPE, false);
+    (void)pause_test_sample();
+    PAUSE_CHECK(sdl3vk_take_pause_request() == SDL3VK_PAUSE_REQUEST_USER, "Esc did not ask for the pause");
+    PAUSE_CHECK(s_key_count == 0, "Esc reached the key queue");
+    pause_test_key(SDLK_F1, false);
+    (void)pause_test_sample();
+    PAUSE_CHECK(sdl3vk_take_pause_request() == SDL3VK_PAUSE_REQUEST_USER, "F1 did not ask for the pause");
+    pause_test_key(SDLK_ESCAPE, true);
+    (void)pause_test_sample();
+    PAUSE_CHECK(sdl3vk_take_pause_request() == SDL3VK_PAUSE_REQUEST_NONE, "a key repeat asked again");
+
+    /* The overlay holds the claim: everything is its own. */
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_SOUTH, true);
+    (void)pause_test_sample();        /* cross held before the pause opens */
+    sdl3vk_set_input_claim(pause_test_sink, &sink);
+    PAUSE_CHECK(sdl3vk_input_claimed(), "the claim did not take");
+    PAUSE_CHECK(sdl3vk_buttons() == 0, "a held button shows through the claim");
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_SOUTH, false);
+    (void)pause_test_sample();
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_SOUTH, true);
+    PAUSE_CHECK(pause_test_sample() == 0, "a press reached the game through the claim");
+    PAUSE_CHECK(sdl3vk_take_pad_pulses() == 0, "a press reached the pad pulses through the claim");
+    PAUSE_CHECK(sink.south_downs == 1, "the overlay saw %d cross presses, expected 1", sink.south_downs);
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_GUIDE, true);
+    pause_test_key(SDLK_ESCAPE, false);
+    (void)pause_test_sample();
+    pause_test_guide_release(joy);
+    PAUSE_CHECK(sink.guide_downs == 1 && sink.escapes == 1, "the overlay saw Guide %d times and Esc %d times, expected 1 and 1", sink.guide_downs, sink.escapes);
+    PAUSE_CHECK(sdl3vk_take_pause_request() == SDL3VK_PAUSE_REQUEST_NONE, "a request latched under the claim");
+    SDL_SetJoystickVirtualAxis(joy, SDL_GAMEPAD_AXIS_LEFTX, SDL_JOYSTICK_AXIS_MAX);
+    (void)pause_test_sample();
+    uint8_t lx = 0, ly = 0;
+    sdl3vk_analog(&lx, &ly);
+    PAUSE_CHECK(lx == 128 && ly == 128, "the stick reached the game through the claim");
+
+    /* P8: cross is still held as the overlay closes. */
+    sdl3vk_set_input_claim(NULL, NULL);
+    PAUSE_CHECK(!sdl3vk_input_claimed(), "the claim did not end");
+    PAUSE_CHECK((sdl3vk_buttons() & cross) == 0, "the held cross shows at release");
+    for (int i = 0; i < 3; i++)
+        PAUSE_CHECK((pause_test_sample() & cross) == 0, "the held cross became a press (sample %d)", i);
+    sdl3vk_analog(&lx, &ly);
+    PAUSE_CHECK(lx == 128, "the pushed stick shows before it returns");
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_EAST, true);
+    PAUSE_CHECK(pause_test_sample() & circle, "a button pressed after the release is not seen");
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_EAST, false);
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_SOUTH, false);
+    PAUSE_CHECK((pause_test_sample() & (cross | circle)) == 0, "released buttons still show");
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_SOUTH, true);
+    PAUSE_CHECK(pause_test_sample() & cross, "cross pressed again after its release is not seen");
+    SDL_SetJoystickVirtualButton(joy, SDL_GAMEPAD_BUTTON_SOUTH, false);
+    (void)pause_test_sample();
+    SDL_SetJoystickVirtualAxis(joy, SDL_GAMEPAD_AXIS_LEFTX, 0);
+    (void)pause_test_sample();
+    SDL_SetJoystickVirtualAxis(joy, SDL_GAMEPAD_AXIS_LEFTX, SDL_JOYSTICK_AXIS_MAX);
+    (void)pause_test_sample();
+    sdl3vk_analog(&lx, &ly);
+    PAUSE_CHECK(lx > 128, "the stick pushed again after centring is not seen");
+    SDL_SetJoystickVirtualAxis(joy, SDL_GAMEPAD_AXIS_LEFTX, 0);
+    (void)pause_test_sample();
+    (void)sdl3vk_take_pad_pulses();
+
+    /* Losing the open pad asks for the pause. */
+    SDL_CloseJoystick(joy);
+    SDL_DetachVirtualJoystick(id);
+    (void)pause_test_sample();
+    PAUSE_CHECK(s_pad == NULL, "the removed pad stayed open");
+    PAUSE_CHECK(sdl3vk_take_pause_request() == SDL3VK_PAUSE_REQUEST_PAD_LOST, "losing the pad did not ask for the pause");
+
+    if (s_pad) { SDL_CloseGamepad(s_pad); s_pad = NULL; }
+    SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+    nk_input_gate_init(&s_gate);
+    s_pause_request = SDL3VK_PAUSE_REQUEST_NONE;
+    s_button_pulse = s_pad_pulse = 0;
+    s_buttons = 0;
+    s_lx = s_ly = 128;
+    s_pad_present = 0;
+    if (ok) printf("pause_input_selftest: OK\n");
+    return ok;
+}
+#undef PAUSE_CHECK
 
 static int sdl3vk_capture_selftest_body(void) {
     int ok = 1;
@@ -2071,6 +2723,12 @@ static int sdl3vk_capture_selftest_body(void) {
     /* ---- input profile mapping selftest (#357); no Vulkan needed ------------------- */
     if (!sdl3vk_input_profile_selftest()) {
         fprintf(stderr, "gpu capture selftest: input profile selftest failed\n");
+        return 1;
+    }
+
+    /* ---- pause input claim and release mask (#1159); no Vulkan needed -------------- */
+    if (!sdl3vk_pause_input_selftest()) {
+        fprintf(stderr, "gpu capture selftest: pause input selftest failed\n");
         return 1;
     }
 
@@ -2208,6 +2866,44 @@ static int sdl3vk_capture_selftest_body(void) {
         ok = 0;
     }
     remove("selftest_cpu.ppm");
+
+    /* ---- pause overlay (#1159): shown, repeated without an upload, never captured ------ */
+    {
+        int ow = 0, oh = 0, orgba = 0;
+        if (!sdl3vk_overlay_extent(&ow, &oh, &orgba)) {
+            fprintf(stderr, "overlay: no extent for a live swapchain\n"); ok = 0;
+        } else {
+            const size_t opitch = (size_t)ow * 4u;
+            uint8_t *opx = (uint8_t *)malloc(opitch * (size_t)oh);
+            if (!opx) {
+                fprintf(stderr, "overlay: out of memory\n"); ok = 0;
+            } else {
+                for (size_t i = 0; i < opitch * (size_t)oh; i++) opx[i] = (uint8_t)(i * 7u);
+                if (!sr_capture_arm("selftest_overlay.ppm")) {
+                    fprintf(stderr, "overlay: capture arm refused\n"); ok = 0;
+                }
+                int first = sdl3vk_present_overlay(NULL, 0);
+                if (first != 2) {
+                    fprintf(stderr, "overlay: a present before any image returned %d (expected 2)\n", first);
+                    ok = 0;
+                }
+                int shown = sdl3vk_present_overlay(opx, (int)opitch);
+                int again = sdl3vk_present_overlay(NULL, 0);
+                if (shown != 1 || again != 1) {
+                    fprintf(stderr, "overlay: presents returned %d, %d (expected 1, 1)\n", shown, again);
+                    ok = 0;
+                }
+                if (sr_capture_result() != 0) {
+                    fprintf(stderr, "overlay: an overlay present serviced the capture\n"); ok = 0;
+                }
+                sr_capture_cancel();
+                FILE *f = fopen("selftest_overlay.ppm", "rb");
+                if (f) { fclose(f); fprintf(stderr, "overlay: capture file must not exist\n"); ok = 0; }
+                free(opx);
+            }
+            sdl3vk_overlay_release();
+        }
+    }
 
     /* ---- cancel: an armed capture never serviced reports "nothing attempted" --------- */
     if (!sr_capture_arm("selftest_cancel.ppm")) {
@@ -2528,6 +3224,7 @@ int sdl3vk_capture_selftest(void) {
 }
 
 void sdl3vk_shutdown(void) {
+    sdl3vk_overlay_release();
     if (s_dev) {
         (void)wait_all_present_frames();
         /* Presentation-engine ownership is not covered by a submit fence.  A queue-idle

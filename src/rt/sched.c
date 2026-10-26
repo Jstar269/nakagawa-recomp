@@ -221,6 +221,9 @@ static int s_pause_active;
 static SrPauseSource s_pause_source;
 static uint64_t s_pause_request_ns;
 static uint64_t s_pause_requested_duration_ms;
+/* The pause came from a scripted step: it ends at its own host-time deadline even while a
+ * presenter frame draws the overlay. */
+static int s_pause_script_timed;
 static uint64_t s_pause_total_ns;
 static uint64_t s_pause_count;
 static int s_pause_exit_reason;
@@ -306,6 +309,7 @@ static HostLibcThreadRecord s_libc_threads[MAXTHREADS];
 static int      s_ntcb = 0;
 static int      s_cur = -1;      /* index of running thread, -1 = scheduler */
 static int      s_last_pick = -1;/* rotation cursor (file-scope so the selftest can reset it) */
+static uint32_t s_watchdog_spin_observations;
 /* CPU-wide PSP interrupt state.  Because scheduling is suppressed while this is
  * false, an interrupt-disabled state cannot migrate to another guest thread. */
 static int      s_interrupts_enabled = 1;
@@ -718,6 +722,7 @@ void sched_init(CpuState *cpu) {
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
+    s_watchdog_spin_observations = 0;
     s_root_seen = 0;
     s_tick = 0;
     s_guest_reset_requested = 0;
@@ -726,6 +731,7 @@ void sched_init(CpuState *cpu) {
     s_pause_source = SR_PAUSE_SRC_USER;
     s_pause_request_ns = 0;
     s_pause_requested_duration_ms = 0;
+    s_pause_script_timed = 0;
     s_pause_total_ns = 0;
     s_pause_count = 0;
     s_pause_exit_reason = SR_PAUSE_EXIT_NONE;
@@ -1100,6 +1106,32 @@ void sched_dump_threads(void) {
                 why, deadline, t->is_cb_wait, t->wakeups,
                 t->join_waiting ? t->join_target : 0u);
     }
+}
+
+/* Snapshot scheduler states for the player-facing no-frame event. `spin` is
+ * the number of scheduler spin-watchdog observations since the last snapshot;
+ * it is evidence of busy looping, not a count of PSP threads. */
+void sched_watchdog_summary(uint32_t *ready, uint32_t *delay,
+                            uint32_t *wait, uint32_t *spin) {
+    uint32_t ready_count = 0;
+    uint32_t delay_count = 0;
+    uint32_t wait_count = 0;
+    if (ready) *ready = 0;
+    if (delay) *delay = 0;
+    if (wait) *wait = 0;
+    if (spin) *spin = s_watchdog_spin_observations;
+    for (int i = 0; i < s_ntcb; i++) {
+        switch (s_tcb[i].state) {
+            case TH_READY:      ready_count++; break;
+            case TH_WAIT_DELAY: delay_count++; break;
+            case TH_WAIT_OBJ:   wait_count++; break;
+            default: break;
+        }
+    }
+    if (ready) *ready = ready_count;
+    if (delay) *delay = delay_count;
+    if (wait) *wait = wait_count;
+    s_watchdog_spin_observations = 0;
 }
 
 /* Run the game's VBLANK interrupt handler (a guest function) on a dedicated interrupt context.
@@ -3076,8 +3108,11 @@ void sr_yield(CpuState *s) {
         /* Diagnostic: spin watchdog. */
         static unsigned long long spun = 0;
         static int dumps = 0;
-        if (++spun % 100000ull == 2001 && dumps < 6) {
-            dumps++;
+        if (++spun % 100000ull == 2001) {
+            if (s_watchdog_spin_observations != UINT32_MAX)
+                s_watchdog_spin_observations++;
+            if (dumps < 6) {
+                dumps++;
             static const char *stn[] = {"DORMANT", "READY", "RUNNING", "WAIT_DELAY", "WAIT_OBJ"};
             int ready = 0, delay = 0, dormant = 0, run = 0, waitobj = 0;
             for (int i = 0; i < s_ntcb; i++) {
@@ -3102,6 +3137,7 @@ void sr_yield(CpuState *s) {
                         s_tcb[i].saved.r[19], s_tcb[i].saved.r[2],
                         s_tcb[i].wait_obj, s_tcb[i].wakeups);
             fflush(stderr);
+            }
         }
         return;
     }
@@ -3397,6 +3433,7 @@ int sched_reset_for_loadexec(void) {
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
+    s_watchdog_spin_observations = 0;
     s_root_seen = 0;
     g_root_uid = SR_ROLE_UID_NONE;
     g_worker_uid = SR_ROLE_UID_NONE;
@@ -3420,6 +3457,7 @@ int sched_reset_for_loadexec(void) {
     s_pause_source = SR_PAUSE_SRC_USER;
     s_pause_request_ns = 0u;
     s_pause_requested_duration_ms = 0u;
+    s_pause_script_timed = 0;
     s_pause_total_ns = 0u;
     s_pause_count = 0u;
     s_pause_exit_reason = SR_PAUSE_EXIT_NONE;
@@ -4429,6 +4467,7 @@ static void sched_pause_script_maybe_request(void) {
     }
     s_pause_requested_duration_ms = step->host_ms;
     const SrPauseVerdict verdict = sched_pause_request(step->source);
+    s_pause_script_timed = verdict == SR_PAUSE_ACCEPTED;
     if (verdict != SR_PAUSE_ACCEPTED) s_pause_requested_duration_ms = 0;
 }
 
@@ -4459,8 +4498,11 @@ static void sched_pause_script_dispatch_pending(void) {
     s_pause_script_audio_wait_started = 0;
     s_pause_script_audio_wait_ns = 0;
     s_pause_requested_duration_ms = duration_ms;
-    if (sched_pause_latch_request(source, request_ns, request_vcount, 0) != SR_PAUSE_ACCEPTED)
+    s_pause_script_timed = 1;
+    if (sched_pause_latch_request(source, request_ns, request_vcount, 0) != SR_PAUSE_ACCEPTED) {
         s_pause_requested_duration_ms = 0;
+        s_pause_script_timed = 0;
+    }
 }
 
 extern int sr_savedata_pause_busy(void);
@@ -4529,6 +4571,7 @@ static void sched_pause_end(uint64_t t0, int reason) {
     s_pause_active = 0;
     s_pause_requested = 0;
     s_pause_requested_duration_ms = 0;
+    s_pause_script_timed = 0;
     atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
     sr_rt_phase = SR_RT_PHASE_SCHED;
     const int saving = sr_savedata_pause_busy();
@@ -4555,6 +4598,7 @@ static int sched_pause_run(void) {
         sched_pause_log_refusal(s_pause_source, verdict);
         s_pause_requested = 0;
         s_pause_requested_duration_ms = 0;
+        s_pause_script_timed = 0;
         atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
         s_pause_exit_reason = verdict == SR_PAUSE_REFUSED_STOPPING
             ? SR_PAUSE_EXIT_STOP : SR_PAUSE_EXIT_NONE;
@@ -4573,6 +4617,10 @@ static int sched_pause_run(void) {
         SrPauseFrame frame = (sr_sched_pause_host && sr_sched_pause_host->frame)
             ? sr_sched_pause_host->frame()
             : sched_pause_script_frame(deadline_ns);
+        /* A presenter frame paces and pumps the window; a scripted step still decides
+         * when its pause ends. */
+        if (frame != SR_PAUSE_FRAME_RESUME && s_pause_script_timed && host_now_ns() >= deadline_ns)
+            frame = SR_PAUSE_FRAME_RESUME;
         if (frame == SR_PAUSE_FRAME_RESUME) break;
     }
     sched_pause_end(t0, reason);

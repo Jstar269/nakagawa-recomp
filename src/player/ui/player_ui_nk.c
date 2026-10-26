@@ -320,7 +320,8 @@ static bool player_ui_disc_view(PlayerView view) {
 
 static bool player_ui_settings_view(PlayerView view) {
     return view == VIEW_SETTINGS || view == VIEW_ONLINE_SETTINGS ||
-           view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS;
+           view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
+           view == VIEW_BUILD_CACHE;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -556,6 +557,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         case VIEW_ONLINE_SETTINGS: model.page = PLAYER_UI_SETTINGS_PAGE_ONLINE; break;
         case VIEW_PREREQ_ABOUT: model.page = PLAYER_UI_SETTINGS_PAGE_NOTICES; break;
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
+        case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
         case VIEW_SETTINGS:
         default: model.page = PLAYER_UI_SETTINGS_PAGE_MAIN; break;
     }
@@ -587,6 +589,12 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
     model.online_news = app->settings.online_news;
     model.online_reports = app->settings.online_reports;
     model.developer_mode = app->settings.developer_mode;
+    model.share_system_libraries = app->settings.share_system_libraries;
+    /* The build tools and cache page says what its clear button did, as the
+       existing renderer's page does. */
+    if (model.page == PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE && app->settings_notice[0] != '\0') {
+        model.notice = app->settings_notice;
+    }
     for (size_t i = 0u; i < app->prerequisites.items.count &&
                         model.tool_count < PLAYER_UI_SETTINGS_TOOLS; ++i) {
         const PackagePrerequisite *item = &app->prerequisites.items.items[i];
@@ -896,8 +904,9 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 /* Back from one of its pages, focus the button that opened it. */
                 focus = player->last_view == VIEW_ONLINE_SETTINGS ? PLAYER_UI_ID_SETTINGS_ONLINE
                     : player->last_view == VIEW_PREREQ_ABOUT ? PLAYER_UI_ID_SETTINGS_NOTICES
-                    : player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
-                        ? PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS
+                    : player->last_view == VIEW_BUILD_CACHE ||
+                            player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
+                        ? PLAYER_UI_ID_SETTINGS_BUILD_CACHE
                     : player->last_view == VIEW_CONTROLLER_SETTINGS
                         ? PLAYER_UI_ID_SETTINGS_CONTROLLER
                         : PLAYER_UI_ID_SETTINGS_RESOLUTION;
@@ -922,6 +931,11 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
             case VIEW_PREREQ_ABOUT:
             case VIEW_CONFIRM_REMOVE_TOOLS: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
+            case VIEW_BUILD_CACHE:
+                /* Back from the removal check, focus the button that opened it. */
+                focus = player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
+                    ? PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS : PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES;
+                break;
             default: break;
         }
     }
@@ -1157,6 +1171,7 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     bool check_failed;
     bool starting;
     bool running;
+    const PlayerPreflightCheck *build_blocker;
     PlayerUiPrimaryAction primary = PLAYER_UI_PRIMARY_NONE;
     if (player == NULL || app == NULL || out == NULL || index < 0 ||
         index >= app->game_count || index >= (int)PLAYER_UI_TITLE_CAP) {
@@ -1205,6 +1220,12 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
     } else {
         out->package_state = PLAYER_UI_PACKAGE_MISSING;
     }
+    build_blocker = (package_ready || checking || check_failed || starting || running)
+        ? NULL : player_app_package_build_preflight_blocker(app, index);
+    out->build_preflight_message = build_blocker
+        ? player_preflight_plain_message(build_blocker) : "";
+    out->build_preflight_folder = build_blocker
+        ? app->package_build_preflight.action_folder : "";
     out->compatibility_category = player_ui_compatibility(
         game, &out->compatibility_expect, &out->compatibility_known_issues,
         &out->compatibility_tier);
@@ -1264,12 +1285,16 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         primary = PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK;
     } else if (package_status == NK_RUNTIME_PACKAGE_STALE) {
         out->primary_action_label = "REBUILD PACKAGE";
-        out->primary_action_enabled = true;
-        primary = PLAYER_UI_PRIMARY_BUILD;
+        if (!build_blocker) {
+            out->primary_action_enabled = true;
+            primary = PLAYER_UI_PRIMARY_BUILD;
+        }
     } else if (package_status == NK_RUNTIME_PACKAGE_MISSING) {
         out->primary_action_label = "BUILD PACKAGE";
-        out->primary_action_enabled = true;
-        primary = PLAYER_UI_PRIMARY_BUILD;
+        if (!build_blocker) {
+            out->primary_action_enabled = true;
+            primary = PLAYER_UI_PRIMARY_BUILD;
+        }
     } else if (package_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
         out->primary_action_label = "REBUILD PACKAGE";
         out->primary_action_enabled = true;
@@ -1480,6 +1505,13 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             nk_ui_router_replace(player->router, PLAYER_UI_ROUTE_LIBRARY);
         } else {
             PlayerUiTitleModel model;
+            const GameRecord *game = &app->games[index];
+            if (!app->launch_pending && !app->is_game_running &&
+                !player_app_cached_game_has_runtime(app, game) &&
+                !player_app_runtime_package_check_pending(app, game) &&
+                !player_app_runtime_package_check_failed(app, game)) {
+                (void)player_app_build_package_preflight(app, index, false);
+            }
             player_ui_fill_titles(player, app, (size_t)app->game_count >
                                   PLAYER_UI_TITLE_CAP ? PLAYER_UI_TITLE_CAP :
                                   (size_t)app->game_count);
@@ -1491,6 +1523,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             memset(&model, 0, sizeof(model));
             model.title = &player->titles[index];
             model.title_index = (size_t)index;
+            model.stalled_game_notice_visible =
+                player->titles[index].package_state == PLAYER_UI_PACKAGE_RUNNING &&
+                app->stalled_game_notice_visible;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
             action = player_ui_screen_title(player->ui, &model);

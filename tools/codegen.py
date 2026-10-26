@@ -1510,20 +1510,22 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             # are the VFPU4 vcmov (jump 0x15) handled above. The flagship's quaternion slerp uses
             # vsge to build its sign term (2 * (dot >= 0) - 1), and the wrong decode multiplied its
             # dot product by stale scratch lanes, which is the one-frame skinned-model corruption
-            # of issue #69. vsge and vslt treat a NaN operand as unordered and write 0.0; vscmp
-            # does not: a PSP-3000 orders a lane with a NaN by sign and magnitude of the raw
-            # words, so NaN vs 1.5 writes +1.0, 1.5 vs NaN writes -1.0 and -NaN vs 1.5 writes
-            # -1.0, quiet or signalling (PSP-VFPU-CMP-001, measured 2026-10-15; every other cell
-            # of that probe agrees with the plain float compares below). A pair of NaNs follows
-            # the same order and is UNMEASURED. src/rt/vfpu_interp.c (vscmp_lane) is the twin.
+            # of issue #69. vsge and vslt treat a NaN operand as unordered and write 0.0 (a
+            # denormal operand of theirs is UNMEASURED and keeps the host float compare). vscmp
+            # compares raw words: a PSP-3000 orders each lane by sign and magnitude of the bit
+            # patterns after flushing a denormal to a zero of its sign, so +0 equals -0, NaN vs
+            # 1.5 writes +1.0, 1.5 vs NaN writes -1.0, -NaN vs 1.5 writes -1.0, NaNs order
+            # above infinity and by payload, and 0x00000001 vs 0 writes 0.0, at every width
+            # (PSP-VFPU-CMP-001, measured 2026-10-15; PSP-HLE-ISSUES-001, captured 2026-10-24,
+            # not acceptance-eligible). src/rt/vfpu_interp.c (vscmp_lane) is the twin.
             name = {5: "vscmp.s", 6: "vsge.s", 7: "vslt.s"}[sub]
             mag_a = "(int64_t)(_ab&0x7fffffffu)"
             mag_b = "(int64_t)(_bb&0x7fffffffu)"
             expr = {5: ("{ uint32_t _ab,_bb; memcpy(&_ab,&_a[_i],4); memcpy(&_bb,&_b[_i],4); "
-                        "if((_ab&0x7fffffffu)>0x7f800000u||(_bb&0x7fffffffu)>0x7f800000u){ "
+                        "if((_ab&0x7f800000u)==0u) _ab&=0x80000000u; "
+                        "if((_bb&0x7f800000u)==0u) _bb&=0x80000000u; "
                         f"int64_t _ka=(_ab>>31)?-{mag_a}:{mag_a},_kb=(_bb>>31)?-{mag_b}:{mag_b}; "
-                        "_d[_i]=(_ka<_kb)?-1.0f:((_ka>_kb)?1.0f:0.0f); } "
-                        "else _d[_i]=(_a[_i]<_b[_i])?-1.0f:((_a[_i]>_b[_i])?1.0f:0.0f); }"),
+                        "_d[_i]=(_ka<_kb)?-1.0f:((_ka>_kb)?1.0f:0.0f); }"),
                     6: "_d[_i]=(_a[_i]>=_b[_i])?1.0f:0.0f;",
                     7: "_d[_i]=(_a[_i]<_b[_i])?1.0f:0.0f;"}[sub]
             body = (f"float _a[4],_b[4],_d[4]; sr_vread(_a,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
@@ -2912,13 +2914,20 @@ class RuntimeModuleTranslation:
     functions: list = None        # (link address, nwords)
     spans: list = None            # (start, end) link space
     stubbed: list = None          # (link address, reason)
+    # A shared module is named by its bytes, not its place in the build, and goes in its
+    # own translation unit, so every game carrying the same module compiles the same file.
+    shared: bool = False
 
     @property
     def base_symbol(self):
+        if self.shared:
+            return f"sr_l{self.file_fnv1a64:016x}_base"
         return f"sr_m{self.index}_base"
 
     @property
     def prefix(self):
+        if self.shared:
+            return f"l{self.file_fnv1a64:016x}"
         return f"m{self.index}"
 
 
@@ -2943,7 +2952,7 @@ def c_string(text):
     return '"' + "".join(out) + '"'
 
 
-def translate_runtime_module(index, module_path, profile=None, cfg_gate=False):
+def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False):
     """Translate one runtime-placed module in its own link space.
 
     Returns a ``RuntimeModuleTranslation``; a module the build cannot translate
@@ -2958,7 +2967,7 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False):
     name = os.path.basename(module_path)
     module = RuntimeModuleTranslation(
         index=index, name=name, file_size=len(data), file_fnv1a64=fnv1a64(data),
-        texts=[], functions=[], spans=[], stubbed=[],
+        texts=[], functions=[], spans=[], stubbed=[], shared=shared,
     )
     sys.stderr.write(f"Processing runtime-placed module: {name}\n")
     try:
@@ -3043,6 +3052,64 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False):
         ADDRESS_SPACE = previous_space
     module.spans = sorted(set((lo, hi) for lo, hi in ranges if hi > lo))
     return module
+
+
+SHARED_LIBRARY_SOURCE_RE = re.compile(r"nk_lib_[0-9a-f]{16}\.c")
+
+
+def shared_library_source_name(module):
+    """A shared module's translation unit, named by its bytes (tools/title_codegen_plan.py
+    SHARED_LIBRARY_SOURCE_RE)."""
+    return f"nk_lib_{module.file_fnv1a64:016x}.c"
+
+
+def shared_library_source_text(module):
+    """A shared module's translation unit: its bodies with their own declarations.
+
+    Nothing in it names the game, so the build of every game carrying this module writes
+    the same bytes. The first comment names the module for the build log; comments do
+    not reach the compiler.
+    """
+    shown = "".join(ch if ch.isalnum() or ch in "._-" else "?" for ch in module.name)
+    lines = [
+        "/* Generated by tools/codegen.py. Do not edit by hand. */",
+        f"/* system library {shown} */",
+        '#include "recomp.h"',
+        "#include <math.h>",
+        "#include <string.h>",
+        "#include <stdio.h>",
+        "",
+        "#ifndef SR_CPUSTATE_ABI_VERSION",
+        '#error "generated functions require SR_CPUSTATE_ABI_VERSION"',
+        f"#elif SR_CPUSTATE_ABI_VERSION != {CPU_STATE_ABI_VERSION}u",
+        f'#error "generated functions require CpuState ABI version {CPU_STATE_ABI_VERSION}u"',
+        "#endif",
+        "",
+        f"extern uint32_t {module.base_symbol};",
+    ]
+    lines.extend(f"void {module.prefix}_{a:08x}(CpuState *s);" for a, _nwords in module.functions)
+    lines.append("")
+    if SV_ENABLED:
+        lines += [SR_SV_CHECK, ""]
+    return "\n".join(lines) + "\n" + "\n\n".join(module.texts) + "\n"
+
+
+def write_shared_library_sources(out_dir, module_translations):
+    """Write each shared module's translation unit and remove ones a previous run left."""
+    written = set()
+    for module in module_translations:
+        if not module.shared or not module.texts:
+            continue
+        name = shared_library_source_name(module)
+        written.add(name)
+        with open(os.path.join(out_dir, name), "w", encoding="ascii", newline="\n") as f:
+            f.write(shared_library_source_text(module))
+    for entry in os.listdir(out_dir):
+        stem, suffix = os.path.splitext(entry)
+        source = stem + ".c"
+        if suffix in (".c", ".o", ".d") and SHARED_LIBRARY_SOURCE_RE.fullmatch(source) and \
+                source not in written:
+            os.remove(os.path.join(out_dir, entry))
 
 
 def runtime_module_descriptor_lines(module):
@@ -3685,14 +3752,23 @@ def main(argv):
     # Runtime-placed modules: translated in their own link spaces, registered
     # only as descriptors, and bound by the module loader at the base the guest
     # allocator chooses when the game loads them.
+    # A module carried once is shared: it gets its own translation unit, which another
+    # game's build with the same module writes byte for byte. Two copies of one module in
+    # a build keep their indexed names, and the stack census wraps every body in place.
+    module_hashes = []
+    for module_path in runtime_modules:
+        with open(module_path, "rb") as source:
+            module_hashes.append(fnv1a64(source.read()))
     module_translations = []
     for index, module_path in enumerate(runtime_modules):
+        shared = not stack_census and module_hashes.count(module_hashes[index]) == 1
         translated = translate_runtime_module(index, module_path, profile=profile,
-                                              cfg_gate=cfg_gate)
+                                              cfg_gate=cfg_gate, shared=shared)
         if isinstance(translated, int):
             return translated
         module_translations.append(translated)
-        func_texts.extend(translated.texts)
+        if not translated.shared:
+            func_texts.extend(translated.texts)
 
     if stack_census:
         try:
@@ -3851,6 +3927,8 @@ def main(argv):
                     a_val = int(m.group(2), 16)
                     f.write(f"    sr_register(0x{a_val:08x}u, {prefix}_{a_val:08x});\n")
             f.write("}\n")
+
+    write_shared_library_sources(os.path.dirname(base_name) or ".", module_translations)
 
     if cfg_report_path is not None:
         cfg_report["emitted_ownership_map"] = build_emitted_ownership_map(
