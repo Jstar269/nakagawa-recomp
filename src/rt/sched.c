@@ -221,6 +221,9 @@ static int s_pause_active;
 static SrPauseSource s_pause_source;
 static uint64_t s_pause_request_ns;
 static uint64_t s_pause_requested_duration_ms;
+/* The pause came from a scripted step: it ends at its own host-time deadline even while a
+ * presenter frame draws the overlay. */
+static int s_pause_script_timed;
 static uint64_t s_pause_total_ns;
 static uint64_t s_pause_count;
 static int s_pause_exit_reason;
@@ -726,6 +729,7 @@ void sched_init(CpuState *cpu) {
     s_pause_source = SR_PAUSE_SRC_USER;
     s_pause_request_ns = 0;
     s_pause_requested_duration_ms = 0;
+    s_pause_script_timed = 0;
     s_pause_total_ns = 0;
     s_pause_count = 0;
     s_pause_exit_reason = SR_PAUSE_EXIT_NONE;
@@ -3420,6 +3424,7 @@ int sched_reset_for_loadexec(void) {
     s_pause_source = SR_PAUSE_SRC_USER;
     s_pause_request_ns = 0u;
     s_pause_requested_duration_ms = 0u;
+    s_pause_script_timed = 0;
     s_pause_total_ns = 0u;
     s_pause_count = 0u;
     s_pause_exit_reason = SR_PAUSE_EXIT_NONE;
@@ -4456,6 +4461,7 @@ static void sched_pause_script_maybe_request(void) {
     }
     s_pause_requested_duration_ms = step->host_ms;
     const SrPauseVerdict verdict = sched_pause_request(step->source);
+    s_pause_script_timed = verdict == SR_PAUSE_ACCEPTED;
     if (verdict != SR_PAUSE_ACCEPTED) s_pause_requested_duration_ms = 0;
 }
 
@@ -4486,8 +4492,11 @@ static void sched_pause_script_dispatch_pending(void) {
     s_pause_script_audio_wait_started = 0;
     s_pause_script_audio_wait_ns = 0;
     s_pause_requested_duration_ms = duration_ms;
-    if (sched_pause_latch_request(source, request_ns, request_vcount, 0) != SR_PAUSE_ACCEPTED)
+    s_pause_script_timed = 1;
+    if (sched_pause_latch_request(source, request_ns, request_vcount, 0) != SR_PAUSE_ACCEPTED) {
         s_pause_requested_duration_ms = 0;
+        s_pause_script_timed = 0;
+    }
 }
 
 extern int sr_savedata_pause_busy(void);
@@ -4556,6 +4565,7 @@ static void sched_pause_end(uint64_t t0, int reason) {
     s_pause_active = 0;
     s_pause_requested = 0;
     s_pause_requested_duration_ms = 0;
+    s_pause_script_timed = 0;
     atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
     sr_rt_phase = SR_RT_PHASE_SCHED;
     const int saving = sr_savedata_pause_busy();
@@ -4582,6 +4592,7 @@ static int sched_pause_run(void) {
         sched_pause_log_refusal(s_pause_source, verdict);
         s_pause_requested = 0;
         s_pause_requested_duration_ms = 0;
+        s_pause_script_timed = 0;
         atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
         s_pause_exit_reason = verdict == SR_PAUSE_REFUSED_STOPPING
             ? SR_PAUSE_EXIT_STOP : SR_PAUSE_EXIT_NONE;
@@ -4600,6 +4611,10 @@ static int sched_pause_run(void) {
         SrPauseFrame frame = (sr_sched_pause_host && sr_sched_pause_host->frame)
             ? sr_sched_pause_host->frame()
             : sched_pause_script_frame(deadline_ns);
+        /* A presenter frame paces and pumps the window; a scripted step still decides
+         * when its pause ends. */
+        if (frame != SR_PAUSE_FRAME_RESUME && s_pause_script_timed && host_now_ns() >= deadline_ns)
+            frame = SR_PAUSE_FRAME_RESUME;
         if (frame == SR_PAUSE_FRAME_RESUME) break;
     }
     sched_pause_end(t0, reason);

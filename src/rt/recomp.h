@@ -1177,6 +1177,74 @@ uint32_t ge_get_cmd(uint32_t cmd);
  * explicit offscreen sink; gui_present is called from sceDisplaySetFrameBuf to accept a frame,
  * pump messages, and sample live input on interactive routes. */
 #define SR_APP_TITLE "Nakagawa Recomp"   /* canonical window caption; see also gpu_sdl3vk/sdl3vk.c */
+/* Window caption for the running game: "Nakagawa Recomp - <game title>". The launcher hands the
+ * title of the user's own disc (PARAM.SFO TITLE) to the runtime in SR_GAME_TITLE; these turn it
+ * into a safe caption. No game names live here: with no title, or one that sanitises to nothing,
+ * the caption is the plain SR_APP_TITLE. */
+#define SR_WINDOW_TITLE_APP SR_APP_TITLE
+#define SR_WINDOW_TITLE_GAME_MAX 96   /* bytes of game title kept, on a character boundary */
+#define SR_WINDOW_TITLE_CAP (sizeof(SR_WINDOW_TITLE_APP) + 3 + SR_WINDOW_TITLE_GAME_MAX + 1)
+
+/* Length of the well-formed UTF-8 sequence at s (1..4), or 0 when it is malformed, overlong,
+ * a surrogate or beyond U+10FFFF. */
+static inline size_t sr_window_title_utf8_len(const unsigned char *s) {
+    if (s[0] < 0x80) return 1;
+    if (s[0] >= 0xC2 && s[0] <= 0xDF) return (s[1] & 0xC0) == 0x80 ? 2 : 0;
+    if (s[0] >= 0xE0 && s[0] <= 0xEF) {
+        if ((s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80) return 0;
+        if (s[0] == 0xE0 && s[1] < 0xA0) return 0;   /* overlong */
+        if (s[0] == 0xED && s[1] >= 0xA0) return 0;  /* surrogate */
+        return 3;
+    }
+    if (s[0] >= 0xF0 && s[0] <= 0xF4) {
+        if ((s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80 || (s[3] & 0xC0) != 0x80) return 0;
+        if (s[0] == 0xF0 && s[1] < 0x90) return 0;   /* overlong */
+        if (s[0] == 0xF4 && s[1] >= 0x90) return 0;  /* beyond U+10FFFF */
+        return 4;
+    }
+    return 0;
+}
+
+/* Copy the printable, valid-UTF-8 part of `raw` into out (capacity cap, always terminated): control
+ * characters (C0, DEL, C1) and malformed bytes are dropped, whitespace runs collapse to one space,
+ * leading/trailing space is trimmed, and the result stops at SR_WINDOW_TITLE_GAME_MAX bytes on a
+ * character boundary. Returns the byte length. */
+static inline size_t sr_window_title_sanitize(const char *raw, char *out, size_t cap) {
+    size_t n = 0, limit = cap ? cap - 1 : 0;
+    int pending_space = 0;
+    if (limit > SR_WINDOW_TITLE_GAME_MAX) limit = SR_WINDOW_TITLE_GAME_MAX;
+    if (!out || !cap) return 0;
+    for (const unsigned char *p = (const unsigned char *)(raw ? raw : ""); *p;) {
+        size_t len = sr_window_title_utf8_len(p);
+        if (len == 0) { p++; continue; }
+        if (len == 1 && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+            pending_space = 1; p++; continue;
+        }
+        if ((len == 1 && (*p < 0x20 || *p == 0x7F)) || (len == 2 && p[0] == 0xC2 && p[1] < 0xA0)) {
+            p += len; continue;
+        }
+        size_t need = len + ((pending_space && n) ? 1 : 0);
+        if (n + need > limit) break;
+        if (pending_space && n) out[n++] = ' ';
+        pending_space = 0;
+        for (size_t i = 0; i < len; i++) out[n++] = (char)p[i];
+        p += len;
+    }
+    out[n] = '\0';
+    return n;
+}
+
+/* Format the caption for `game_title` (may be NULL or empty) into out. Returns the byte length. */
+static inline size_t sr_window_title_format(const char *game_title, char *out, size_t cap) {
+    char title[SR_WINDOW_TITLE_GAME_MAX + 1];
+    int n;
+    if (!out || !cap) return 0;
+    if (sr_window_title_sanitize(game_title, title, sizeof(title)) == 0)
+        n = snprintf(out, cap, "%s", SR_WINDOW_TITLE_APP);
+    else
+        n = snprintf(out, cap, "%s - %s", SR_WINDOW_TITLE_APP, title);
+    return n < 0 ? 0 : ((size_t)n < cap ? (size_t)n : cap - 1);
+}
 /* Shared one-shot gate used by the visible GDI and SDL/Vulkan presenters.
  * The boot-event file is the launcher's handoff marker; headless presenters
  * and already-serviced launches never invoke the supplied window operation. */
@@ -1223,7 +1291,7 @@ uint32_t gui_headless_acceptance_presented_frames(void);
 extern int (*sr_sched_stop_requested)(void);
 
 /* Player pause is a scheduler-context host stall. C9a owns the audio callbacks;
- * the presenter, input claim and busy-reason callback are supplied by C9b. */
+ * the window's presenter supplies the presenter, input claim and busy-reason callbacks. */
 typedef enum {
     SR_PAUSE_FRAME_CONTINUE = 0,
     SR_PAUSE_FRAME_RESUME = 1
@@ -1246,13 +1314,21 @@ typedef struct SrPauseHost {
     void (*audio_leave)(void);
     /* Test-script seam: nonzero once its pending audio stimulus is queued. */
     int (*script_ready)(void);
-    /* Returns 0 or a refusal verdict (keyboard/stopping); reserved for C9b. */
+    /* Returns 0 or a refusal verdict: the keyboard is open, or the presenter is stopping. */
     int (*busy_reason)(void);
     void (*enter)(void);
     SrPauseFrame (*frame)(void);
     void (*leave)(void);
 } SrPauseHost;
 extern const SrPauseHost *sr_sched_pause_host;
+/* The window's pause presenter (src/rt/gui.c, C9b). gui_pause_presenter is 1 when the
+ * SDL3/Vulkan window can draw the overlay; only then does the driver install enter, frame
+ * and leave. busy_reason applies to every presenter. */
+int          gui_pause_presenter(void);
+int          gui_pause_busy_reason(void);
+void         gui_pause_enter(void);
+SrPauseFrame gui_pause_frame(void);
+void         gui_pause_leave(void);
 SrPauseVerdict sched_pause_request(SrPauseSource source);
 int      sched_pause_active(void);
 int      sched_pause_pending(void);

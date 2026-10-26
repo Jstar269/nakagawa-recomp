@@ -4,7 +4,7 @@
   "schema_version": 1,
   "source_snapshot_date": "2026-10-23",
   "platform": "Windows x64, UCRT64",
-  "total_download_bytes": 101853260,
+  "total_download_bytes": 101848305,
   "artifacts": [
     {
       "id": "cpython-embed-amd64",
@@ -54,19 +54,20 @@
     {
       "id": "mingw-w64-ucrt-x86_64-brotli",
       "name": "mingw-w64-ucrt-x86_64-brotli",
-      "version": "1.2.0-1",
-      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-brotli-1.2.0-1-any.pkg.tar.zst",
+      "version": "1.2.1-1",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-brotli-1.2.1-1-any.pkg.tar.zst",
       "allowed_hosts": [
         "repo.msys2.org"
       ],
-      "filename": "mingw-w64-ucrt-x86_64-brotli-1.2.0-1-any.pkg.tar.zst",
-      "size_bytes": 453708,
-      "sha256": "9cc89665496ea504751476eafba15c71c554aaf3004babc2004f7c07ffd60514",
+      "filename": "mingw-w64-ucrt-x86_64-brotli-1.2.1-1-any.pkg.tar.zst",
+      "size_bytes": 448753,
+      "sha256": "e3257d4303fc0aca4c64f702d4c8cd766a321351c5e61927631c30bfdf2e7536",
       "sha256_source": {
         "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
         "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
         "method": "official repository database %SHA256SUM%, database signature verified against the official MSYS2 keyring",
-        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+        "signing_key_fingerprint": "5F944B027F7FE2091985AA2EFA11531AA0AA7F57",
+        "retrieved_utc": "2026-10-26"
       },
       "license": "MIT",
       "license_metadata": "spdx:MIT",

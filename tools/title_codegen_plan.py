@@ -78,6 +78,9 @@ PACKAGE_BUILD_JOBS_ENV = "NK_PACKAGE_JOBS"
 #: file while it compiles, one line each time another object finishes.
 COMPILE_PROGRESS_FILE_ENV = "NK_COMPILE_PROGRESS_FILE"
 COMPILE_PROGRESS_POLL_SECONDS = 0.5
+#: A runtime-placed system library's own translation unit (tools/codegen.py
+#: shared_library_source_name): named by the module's bytes, never by the game.
+SHARED_LIBRARY_SOURCE_RE = re.compile(r"nk_lib_[0-9a-f]{16}\.c")
 ROOT = Path(__file__).resolve().parents[1]
 
 #: Manifest fields that carry no operational meaning and are therefore excluded
@@ -305,6 +308,252 @@ def _run_make_with_progress(
             _write_compile_progress(progress_file, completed, counter.total, load)
         if returncode is not None:
             return returncode
+
+
+def _object_path(text: str, cwd: Path) -> Path:
+    path = Path(text)
+    return path if path.is_absolute() else cwd / path
+
+
+class CompiledObjectReuse:
+    """Take planned objects from the shared object cache, and store the ones Make compiles.
+
+    Every key is taken before Make runs, from the preprocessed source as it is then. An
+    object Make compiles is stored only when its key, taken again after the build, is
+    unchanged: a header Make regenerated mid-build can never file an object under the
+    key of the source it replaced. Any key that cannot be taken is simply a miss.
+
+    A system library's object (``nk_lib_*.o``) goes to ``library_cache`` instead, the
+    shared library cache the player's Settings can turn off and clear; without one,
+    library objects are compiled and kept out of every cache.
+    """
+
+    def __init__(
+        self,
+        cache: Any,
+        commands: list[Any],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        build_dir: str,
+        jobs: int,
+        library_cache: Any = None,
+    ):
+        self.cache = cache
+        self.library_cache = library_cache
+        self.cwd = cwd
+        self.commands = [command for command in commands if self.cache_for(command) is not None]
+        self.libraries = [command for command in commands if self.is_library(command)]
+        self.env = env
+        self.build_dir = build_dir
+        self.jobs = max(1, jobs)
+        self.keys: dict[Path, str] = {}
+        self.reused: list[Path] = []
+        self._identities: dict[str, str | None] = {}
+
+    @classmethod
+    def from_dry_run(
+        cls, cache: Any, dry_run_output: str, **kwargs: Any
+    ) -> "CompiledObjectReuse":
+        from nk_core import package_cache
+
+        commands = []
+        seen: set[Path] = set()
+        # make -n prints a recipe line continued with a backslash as it is written.
+        logical = re.sub(r"\\\r?\n", " ", dry_run_output)
+        for line in logical.splitlines():
+            command = package_cache.parse_compile_command(line)
+            if command is None:
+                continue
+            path = _object_path(command.output, kwargs["cwd"])
+            if path not in seen:
+                seen.add(path)
+                commands.append(command)
+        return cls(cache, commands, **kwargs)
+
+    @property
+    def total(self) -> int:
+        return len(self.commands)
+
+    @staticmethod
+    def is_library(command: Any) -> bool:
+        return bool(SHARED_LIBRARY_SOURCE_RE.fullmatch(Path(command.source).name))
+
+    def cache_for(self, command: Any) -> Any:
+        return self.library_cache if self.is_library(command) else self.cache
+
+    def library_name(self, command: Any) -> str:
+        """The module a library object was translated from, from its source's banner."""
+        try:
+            with _object_path(command.source, self.cwd).open(encoding="ascii") as source:
+                head = [source.readline() for _ in range(2)]
+        except (OSError, UnicodeDecodeError):
+            head = []
+        match = re.fullmatch(r"/\* system library (\S+) \*/\n?", head[1] if len(head) > 1 else "")
+        return match.group(1) if match else Path(command.source).name
+
+    def _key(self, command: Any) -> str | None:
+        from nk_core import package_cache
+
+        identity = self._identities.get(command.argv[0])
+        if identity is None:
+            return None
+        try:
+            # The preprocess run writes the dependency file beside the object.
+            _object_path(command.output, self.cwd).parent.mkdir(parents=True, exist_ok=True)
+            completed = subprocess.run(
+                package_cache.preprocess_command(command),
+                cwd=self.cwd,
+                env=self.env,
+                capture_output=True,
+                check=False,
+            )
+        except OSError:
+            return None
+        if completed.returncode != 0:
+            return None
+        return package_cache.object_cache_key(
+            command,
+            compiler_identity_text=identity,
+            build_dir=self.build_dir,
+            preprocessed=completed.stdout,
+        )
+
+    def _keys(self, commands: list[Any]) -> list[str | None]:
+        from concurrent.futures import ThreadPoolExecutor
+        from nk_core import package_cache
+
+        for compiler in {command.argv[0] for command in commands}:
+            if compiler not in self._identities:
+                self._identities[compiler] = package_cache.object_compiler_identity(
+                    compiler, environment=self.env
+                )
+        with ThreadPoolExecutor(max_workers=self.jobs) as pool:
+            return list(pool.map(self._key, commands))
+
+    def fetch(self) -> list[Path]:
+        """Place every cached object before Make runs; return the objects placed."""
+        for command, key in zip(self.commands, self._keys(self.commands), strict=True):
+            if key is None:
+                continue
+            path = _object_path(command.output, self.cwd)
+            self.keys[path] = key
+            if self.cache_for(command).fetch(key, path):
+                self.reused.append(path)
+        return list(self.reused)
+
+    def library_report(self) -> list[str]:
+        """One build-log line per system library: reused, compiled, or not shared."""
+        reused = set(self.reused)
+        lines = []
+        for command in self.libraries:
+            name = self.library_name(command)
+            if self.library_cache is None:
+                lines.append(f"SHARED_LIBRARY: {name} compiled for this game only (sharing is off)")
+            elif _object_path(command.output, self.cwd) in reused:
+                lines.append(f"SHARED_LIBRARY: reused {name}")
+            else:
+                lines.append(f"SHARED_LIBRARY: compiling {name}")
+        return lines
+
+    def store(self) -> int:
+        """Store each object Make compiled whose inputs did not change mid-build."""
+        reused = set(self.reused)
+        missed = [
+            command
+            for command in self.commands
+            if _object_path(command.output, self.cwd) in self.keys
+            and _object_path(command.output, self.cwd) not in reused
+        ]
+        stored = 0
+        for command, key in zip(missed, self._keys(missed), strict=True):
+            path = _object_path(command.output, self.cwd)
+            if key is not None and key == self.keys[path] and \
+                    self.cache_for(command).store(key, path):
+                stored += 1
+        return stored
+
+
+def _object_cache_from_environment(env: dict[str, str], name: str) -> Any:
+    """The cache the caller named in ``name``, removed from Make's environment."""
+    from nk_core import package_cache
+
+    root = env.pop(name, "")
+    return package_cache.ObjectCache(root) if root else None
+
+
+def _run_compile_phase(
+    make_executable: str,
+    *,
+    env: dict[str, str],
+    jobs: int,
+    progress_file: Path | None,
+    object_cache: Any,
+    build_dir: str,
+    library_cache: Any = None,
+    cwd: Path = ROOT,
+) -> int:
+    """Run ``make compile``, reusing cached objects and counting the ones it compiles."""
+    from nk_core import package_cache
+
+    command = _make_build_command(make_executable, "compile", jobs=jobs)
+    if object_cache is not None:
+        # Generated headers first, so every object can be keyed before Make compiles it.
+        prepared = subprocess.run(
+            _make_build_command(make_executable, "compile-inputs", jobs=jobs),
+            cwd=cwd,
+            env=env,
+            check=False,
+        )
+        if prepared.returncode != 0:
+            return prepared.returncode
+    planned = subprocess.run(
+        _make_build_command(make_executable, "compile", jobs=jobs, dry_run=True),
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    listing = planned.stdout if planned.returncode == 0 else ""
+    objects = planned_compile_objects(listing, cwd)
+    reuse = None
+    if object_cache is not None and listing:
+        reuse = CompiledObjectReuse.from_dry_run(
+            object_cache, listing, cwd=cwd, env=env, build_dir=build_dir, jobs=jobs,
+            library_cache=library_cache,
+        )
+        reused = set(reuse.fetch())
+        print(f"OBJECT_CACHE: reused {len(reused)} of {len(objects)} objects", flush=True)
+        for line in reuse.library_report():
+            print(line, flush=True)
+        objects = [path for path in objects if path not in reused]
+        if objects:
+            names = " ".join(path.name for path in objects)
+            print(f"OBJECT_CACHE: compiling {names}", flush=True)
+    if progress_file is not None and objects:
+        returncode = _run_make_with_progress(
+            command,
+            cwd=cwd,
+            env=env,
+            counter=CompileProgressCounter(objects),
+            progress_file=progress_file,
+            jobs=jobs,
+            cpus=os.process_cpu_count() or 1,
+        )
+    else:
+        returncode = subprocess.run(command, cwd=cwd, env=env, check=False).returncode
+    if returncode == 0 and reuse is not None:
+        stored = reuse.store()
+        pruned = 0
+        try:
+            limit = package_cache.object_cache_limit(env)
+            for cache in (object_cache, library_cache):
+                pruned += cache.prune(limit) if cache is not None else 0
+        except package_cache.PackageCacheError as exc:
+            print(f"OBJECT_CACHE: not pruned: {exc}", flush=True)
+        print(f"OBJECT_CACHE: stored {stored} objects, pruned {pruned}", flush=True)
+    return returncode
 
 
 def compute_protected_digest(manifest: dict[str, Any]) -> str:
@@ -1245,10 +1494,12 @@ def _aot_required_outputs(game_name: str) -> set[str]:
 
 
 def _is_aot_output(name: str, game_name: str) -> bool:
-    """Whether ``name`` is generation-phase output: a required output or a C chunk."""
+    """Whether ``name`` is generation-phase output: a required output, a C chunk, or a
+    system library's own translation unit (``nk_lib_*.c``, named apart from the game
+    so that another game's build compiles the identical file)."""
     return name in _aot_required_outputs(game_name) or (
         name.startswith(f"{game_name}_recomp_") and Path(name).suffix.lower() in {".c", ".h"}
-    )
+    ) or bool(SHARED_LIBRARY_SOURCE_RE.fullmatch(name))
 
 
 def _copy_reusable_aot(source: Path, destination: Path, game_name: str) -> None:
@@ -1809,37 +2060,25 @@ def build_package(
         progress_text = os.environ.get(COMPILE_PROGRESS_FILE_ENV, "")
         progress_file = Path(progress_text) if progress_text else None
         build_environment.pop(COMPILE_PROGRESS_FILE_ENV, None)
+        object_cache = _object_cache_from_environment(
+            build_environment, package_cache.OBJECT_CACHE_DIR_ENV
+        )
+        library_cache = _object_cache_from_environment(
+            build_environment, package_cache.SHARED_LIBRARY_CACHE_DIR_ENV
+        )
         for target in _make_build_targets(native_only=pregenerated, aot_stage=aot_stage):
             command = _make_build_command(make_executable, target, jobs=build_jobs)
             try:
-                if target == "compile" and progress_file is not None:
-                    planned = subprocess.run(
-                        _make_build_command(make_executable, target, jobs=build_jobs, dry_run=True),
-                        cwd=ROOT,
+                if target == "compile" and (progress_file is not None or object_cache is not None):
+                    returncode = _run_compile_phase(
+                        make_executable,
                         env=build_environment,
-                        capture_output=True,
-                        text=True,
-                        check=False,
+                        jobs=build_jobs,
+                        progress_file=progress_file,
+                        object_cache=object_cache,
+                        library_cache=library_cache,
+                        build_dir=build_workspace.as_posix(),
                     )
-                    objects = (
-                        planned_compile_objects(planned.stdout, ROOT)
-                        if planned.returncode == 0
-                        else []
-                    )
-                    if objects:
-                        returncode = _run_make_with_progress(
-                            command,
-                            cwd=ROOT,
-                            env=build_environment,
-                            counter=CompileProgressCounter(objects),
-                            progress_file=progress_file,
-                            jobs=build_jobs,
-                            cpus=os.process_cpu_count() or 1,
-                        )
-                    else:
-                        returncode = subprocess.run(
-                            command, cwd=ROOT, env=build_environment, check=False
-                        ).returncode
                 else:
                     returncode = subprocess.run(
                         command, cwd=ROOT, env=build_environment, check=False
