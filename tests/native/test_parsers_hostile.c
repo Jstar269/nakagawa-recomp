@@ -262,10 +262,10 @@ static void test_nk_json_validate_utf8_edge_cases(void) {
         static const uint8_t ed_d000[] = { 0xED, 0x80, 0x80 };
         /* 0xED c1 < 0x80 is invalid */
         static const uint8_t ed_bad_c1_low[] = { 0xED, 0x7F, 0x80 };
-        /* 0xED c1 > 0x9F (0xA0..0xBF) is surrogate and invalid */
+        /* 0xED c1 = 0xC0 is not a continuation byte and invalid (surrogates: section 4) */
         static const uint8_t ed_bad_c1_high[] = { 0xED, 0xC0, 0x80 };
 
-        /* 0xF1..0xF3 range: U+40000 (0xF1 0x80 0x80 0x80), U+80000 (0xF2 0x90 0x80 0x80), U+FFFFF (0xF3 0xBF 0xBF 0xBF) */
+        /* 0xF1..0xF3 range: U+40000 (0xF1 0x80 0x80 0x80), U+90000 (0xF2 0x90 0x80 0x80), U+FFFFF (0xF3 0xBF 0xBF 0xBF) */
         static const uint8_t f1_valid[] = { 0xF1, 0x80, 0x80, 0x80 };
         static const uint8_t f2_valid[] = { 0xF2, 0x90, 0x80, 0x80 };
         static const uint8_t f3_valid[] = { 0xF3, 0xBF, 0xBF, 0xBF };
@@ -274,7 +274,7 @@ static void test_nk_json_validate_utf8_edge_cases(void) {
         static const uint8_t f4_u100000[] = { 0xF4, 0x80, 0x80, 0x80 };
         /* 0xF4 c1 < 0x80 is invalid */
         static const uint8_t f4_bad_c1_low[] = { 0xF4, 0x7F, 0x80, 0x80 };
-        /* 0xF4 c1 > 0x8F (0x90) is > U+10FFFF and invalid */
+        /* 0xF4 c1 = 0xC0 is not a continuation byte and invalid (above U+10FFFF: section 5) */
         static const uint8_t f4_bad_c1_high[] = { 0xF4, 0xC0, 0x80, 0x80 };
 
         assert(nk_json_validate_utf8(ed_d000, sizeof(ed_d000)) == true);
