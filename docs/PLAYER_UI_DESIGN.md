@@ -271,7 +271,8 @@ Built now (#1302): one page under the top bar with SETTINGS active, two cards of
 button that changes it: GAME (resolution, frame pacing, VSync, fullscreen, scaling) and LAUNCHER AND SOUND (game
 volume with - and +, launcher fullscreen, reduce motion, menu sounds, controller settings, then the controller and the
 saves folder as captions). Under them DONE (primary: saves and returns to the Library), ONLINE AND DEVELOPER,
-THIRD-PARTY NOTICES and REMOVE BUILD TOOLS; the online options, the notices and the removal check are dialog cards.
+THIRD-PARTY NOTICES and BUILD TOOLS AND CACHE (#1306: the share libraries switch, CLEAR SHARED LIBRARY CACHE and
+REMOVE BUILD TOOLS); the online options, the notices, build tools and cache and the removal check are dialog cards.
 Left and Right move between the two cards along a row (`NK_UI_BUTTON_ROW`), so CONTROLLER SETTINGS is reached from
 SCALING. Every change is saved as it is made. Below a 680 px tall window the `SETTINGS` heading is left out (the tab names the
 page) so every row fits 960 x 540. The tabbed layout below is the target for a later pass:

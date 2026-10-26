@@ -942,6 +942,14 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             (void)player_app_request_license_folder(app);
             break;
         case PLAYER_UI_SETTINGS_REMOVE_TOOLS: player_app_remove_prerequisites(app); break;
+        case PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE: player_app_set_view(app, VIEW_BUILD_CACHE); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_SHARE_LIBRARIES:
+            player_app_toggle_share_system_libraries(app);
+            break;
+        case PLAYER_UI_SETTINGS_CLEAR_SHARED_LIBRARIES:
+            player_app_clear_shared_library_cache(app);
+            break;
+        case PLAYER_UI_SETTINGS_KEEP_TOOLS: player_app_set_view(app, VIEW_BUILD_CACHE); break;
         case PLAYER_UI_SETTINGS_NONE:
         default:
             break;

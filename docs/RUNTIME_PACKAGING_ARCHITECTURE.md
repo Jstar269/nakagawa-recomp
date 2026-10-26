@@ -343,7 +343,7 @@ compiles nothing.
   `nk_lib_<fnv1a64>.c`, named by the module's bytes, with symbols `l<fnv>_<link>` and
   `sr_l<fnv>_base` and nothing that names the game. Another game with the same module
   compiles the identical file, and the build log names each library it reused or
-  compiled. Settings > BUILD TOOLS & CACHE turns this sharing off
+  compiled. Settings > BUILD TOOLS AND CACHE turns this sharing off
   (`build-package --no-shared-libraries`) and clears the folder. A module carried
   twice in one build, or a stack-census build, keeps its indexed `m<k>` names inside
   the game's chunks.

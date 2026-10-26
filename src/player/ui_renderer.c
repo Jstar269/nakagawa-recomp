@@ -3123,7 +3123,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         focus++;
         bool remove_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, card_x + 238.0f, manage_y, 330.0f, 36.0f,
-                                "BUILD TOOLS & CACHE", false, in, remove_focused)) {
+                                "BUILD TOOLS AND CACHE", false, in, remove_focused)) {
             player_app_set_view(app, VIEW_BUILD_CACHE);
         }
         focus++;
@@ -3301,7 +3301,7 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     focus++;
     bool remove_focused = (app->focus_index == focus);
     if (draw_button_focused(ren, card_x + 452.0f, manage_y, 330.0f, 46.0f,
-                            "BUILD TOOLS & CACHE", false, in, remove_focused)) {
+                            "BUILD TOOLS AND CACHE", false, in, remove_focused)) {
         player_app_set_view(app, VIEW_BUILD_CACHE);
     }
     focus++;
