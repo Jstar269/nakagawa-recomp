@@ -1450,7 +1450,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6d034b0f5e4750c2fb0c3d0c47e4fa222795abc57607cea115f721670fea22f0"
+      "sha256": "82d7e8352eb938425b8bf8e214d9b0c803be1d41093f25a85f6f8e5460ba5a59"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1657,7 +1657,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "400ede3a8d44f913992db1c249a3b9fd7a6644e17cb8c659b26c221a4f45b20a"
+      "sha256": "0934fe2bec88b6c9adf5bc06c69377fcc3315debcbe1d2b8b19c30469dc9f5e5"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1840,7 +1840,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d1da2cd908426621bdbc0c7eb62f0c21aba9966006e6df2f424ba6a5f2a521ac"
+      "sha256": "22aab7e6d5b305c0f666935cbe11f290616d86878a5b3eb54c22e446d0fc2736"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5279e57edbd4c730887dcc12dd3bd366bb406e1e52dae8c187de1e5a846f9d53"
+      "sha256": "4b2f606e9463721362cfcb2c055f6d4b175d7c6c874f925d2f86c6046c21d83c"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8443,7 +8443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dad2e13e033d4326159abaee51a5a0382fce8ce209670afd24c1f73029f80d14"
+      "sha256": "a908d6e8973b040f0edfbc3e7cb07e5d93c994df2af9bf135923e31cf13cb9d3"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -8906,7 +8906,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1c7fa3f1f54a1de6d04003bba313c9238450cca4a7a464517646c9f4f2a25ed5"
+      "sha256": "9be19c20acf559c864ce2b3a557d4cff83a057cbb1f99a0918c0bb6e7bf6ac97"
     },
     {
       "path": "src/rt/savedata.c",
@@ -8932,7 +8932,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "11abd85310462157f6b9a8947e5e2cff37e945beeeabdc3c792d7c9afff74841"
+      "sha256": "b0a9c19ccb885a9c2146af64d6ddcf9b2e730b46d8f88cffffb87c4f8cd15906"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -11611,7 +11611,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5384316226d249cef6a02106a76b4b5100aaa8964ce0f9c6bd561882dcc25555"
+      "sha256": "792557b96c629337b71b0788cf53164d2e1c01269ae2f37a89787fed3cb7bb96"
     },
     {
       "path": "tools/import_audit_gate.py",
