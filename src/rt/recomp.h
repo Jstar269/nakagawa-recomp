@@ -673,6 +673,7 @@ void  sr_mem_init(void);
 void  sr_mem_reset(void);              /* LoadExec: zero guest RAM and retire executable spans */
 void  sr_load_segment(uint32_t vaddr, const void *data, uint32_t len);
 uint32_t sr_loaded_end(void);   /* highest guest address the loader wrote (module end incl. BSS) */
+uint32_t sr_loaded_base(void);  /* lowest guest address the loader wrote; UINT32_MAX when none */
 void  sr_loaded_end_set(uint32_t end); /* host loader seed for a new package program */
 
 /* Backing store for the game's newlib allocation API (see tools/codegen.py custom

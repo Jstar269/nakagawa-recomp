@@ -245,6 +245,11 @@ static uint32_t g_loaded_end = 0;   /* highest guest address written by the load
 
 uint32_t sr_loaded_end(void) { return g_loaded_end; }
 
+/* The lowest address the host loader wrote: with sr_loaded_end() it bounds the main
+ * module's image, the range sceKernelGetModuleIdByAddress resolves to the main module. */
+static uint32_t g_loaded_base = UINT32_MAX;
+uint32_t sr_loaded_base(void) { return g_loaded_base; }
+
 void sr_loaded_end_set(uint32_t end) {
     g_loaded_end = end;
 }
@@ -254,6 +259,7 @@ void sr_mem_reset(void) {
     /* g_mem points at guest RAM 0x08000000 inside the full physical arena. */
     memset(g_mem - 0x08000000u, 0, 0x0c000000u);
     g_loaded_end = 0u;
+    g_loaded_base = UINT32_MAX;
     sr_exec_span_reset();
 }
 
@@ -285,6 +291,7 @@ void sr_load_segment(uint32_t vaddr, const void *data, uint32_t len) {
     fprintf(stderr, "sr_load_segment: vaddr=0x%08" PRIx32 " len=0x%08" PRIx32 " SR_HOST=0x%p\n", vaddr, len, SR_HOST(vaddr));
     memcpy(SR_HOST(vaddr), data, len);
     if (vaddr + len > g_loaded_end) g_loaded_end = vaddr + len;
+    if (vaddr < g_loaded_base) g_loaded_base = vaddr;
 }
 
 /* Newlib malloc/free backing store (guest addresses 0x00010738 / 0x000104e0 in

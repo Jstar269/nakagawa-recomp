@@ -759,6 +759,9 @@ int sr_aot_return_boundary_scope_end(CpuState *s,
  * sr_hle_test_partition_reset() and restores the default afterwards. */
 static uint32_t s_fixture_loaded_end = 0x00400000u;
 uint32_t sr_loaded_end(void) { return s_fixture_loaded_end; }
+/* The main image's lowest loaded address; UINT32_MAX (nothing loaded) by default. */
+static uint32_t s_fixture_loaded_base = UINT32_MAX;
+uint32_t sr_loaded_base(void) { return s_fixture_loaded_base; }
 
 int g_hle_depth;
 jmp_buf g_hle_jmp;
@@ -22270,6 +22273,75 @@ static void test_partition_ends_at_lowest_live_stack(void) {
     s_fixture_loaded_end = 0x00400000u;
 }
 
+/* #1385: sceKernelGetModuleIdByAddress and sceKernelGetModuleId resolve through the
+ * live module records and the main image, not a constant shared by every module. */
+static void test_module_id_queries_resolve_owning_module(void) {
+    const uint32_t NID_GET_ID = 0xf0a26395u;
+    const uint32_t NID_GET_ID_BY_ADDR = 0xd8b73127u;
+    const uint32_t UNKNOWN_MODULE = 0x8002012eu;
+    const uint32_t A_BASE = 0x08a10000u, B_BASE = 0x08a20000u, SPAN = 0x10000u;
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_test_module_reset();
+    s_fixture_loaded_base = 0x08804000u;
+    s_fixture_loaded_end = 0x08a00000u;
+    sr_hle_init();
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x08804100u;
+    uint32_t main_id = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    expect(main_id != 0u && (main_id & 0x80000000u) == 0u,
+           "an address in the main image resolves to the main module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x08a00000u - 4u;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == main_id,
+           "the main image's last word resolves to the same main module");
+    uint32_t thread_uid = sched_create_thread(0x2000u, 32, 0x8000u);
+    expect(thread_uid != 0u && thread_uid != main_id,
+           "the main module's UID is not another kernel object's");
+
+    uint32_t uid_a = sr_hle_test_register_module("late_a.prx", A_BASE + 0x70u, 0u);
+    uint32_t uid_b = sr_hle_test_register_module("late_b.prx", B_BASE + 0x70u, 0u);
+    expect(uid_a != 0u && uid_b != 0u &&
+               sr_hle_test_set_module_image(uid_a, A_BASE, A_BASE + SPAN, 0u) &&
+               sr_hle_test_set_module_image(uid_b, B_BASE, B_BASE + SPAN, 0u),
+           "two late modules are loaded at the same time");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = A_BASE + 0x40u;
+    uint32_t got_a = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = B_BASE;
+    uint32_t got_b = sr_syscall(&cpu, NID_GET_ID_BY_ADDR);
+    expect(got_a == uid_a && got_b == uid_b && got_a != got_b && got_a != main_id,
+           "each late module's address resolves to its own distinct UID");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[31] = A_BASE + 0x100u;
+    expect(sr_syscall(&cpu, NID_GET_ID) == uid_a,
+           "sceKernelGetModuleId from late module code returns that module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[31] = 0x08804200u;
+    expect(sr_syscall(&cpu, NID_GET_ID) == main_id,
+           "sceKernelGetModuleId from main-image code returns the main module");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == UNKNOWN_MODULE,
+           "a null address is owned by no module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 0x09f00000u;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == UNKNOWN_MODULE,
+           "an address outside every image is owned by no module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[31] = 0x09f00000u;
+    expect(sr_syscall(&cpu, NID_GET_ID) == UNKNOWN_MODULE,
+           "sceKernelGetModuleId from code no module owns is refused");
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = uid_b;
+    expect(sr_hle_test_unload_module(&cpu) == 0u, "the second late module is unloaded");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = B_BASE + 0x40u;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == UNKNOWN_MODULE,
+           "an unloaded module's range resolves to no module, not the main module");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = A_BASE;
+    expect(sr_syscall(&cpu, NID_GET_ID_BY_ADDR) == uid_a,
+           "the module still loaded keeps its UID");
+
+    sr_hle_test_module_reset();
+    s_fixture_loaded_base = UINT32_MAX;
+    s_fixture_loaded_end = 0x00400000u;
+}
+
 /* The runtime keeps none of the PSP user partition for itself. Its VBLANK interrupt stack and
  * nested host->guest frames used to occupy [0x09ef0000, 0x0a000000), the partition's top
  * 1.06 MiB, so with a main image ending at 0x08a00000 and a module_start and a main thread
@@ -31845,6 +31917,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_alloc_block_at_fixed_address();
     test_partition_ends_at_lowest_live_stack();
     test_partition_spans_the_whole_user_partition();
+    test_module_id_queries_resolve_owning_module();
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();
@@ -31933,6 +32006,7 @@ void sr_recomp_test_unused_trace_close(void);
 #define sr_heap_note_bulk_write sr_recomp_test_unused_heap_note_bulk_write
 #define sr_newlib_malloc sr_recomp_test_unused_newlib_malloc
 #define sr_loaded_end sr_recomp_test_unused_loaded_end
+#define sr_loaded_base sr_recomp_test_unused_loaded_base
 #define g_hle_depth sr_recomp_test_unused_hle_depth
 #define g_hle_jmp sr_recomp_test_unused_hle_jmp
 #define sr_trace_close sr_recomp_test_unused_trace_close
@@ -31941,6 +32015,7 @@ void sr_recomp_test_unused_trace_close(void);
 #undef g_hle_jmp
 #undef g_hle_depth
 #undef sr_loaded_end
+#undef sr_loaded_base
 #undef sr_newlib_malloc
 #undef sr_heap_note_bulk_write
 #undef sr_heap_note_write
