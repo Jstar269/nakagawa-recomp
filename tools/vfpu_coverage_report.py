@@ -555,6 +555,10 @@ def _differential_tests(record: dict[str, object], synthetic_words: set[int]) ->
         )
     if record["opcode"] in {0x35, 0x3D} and record["interpreter_supported"]:
         tests.append("vfpu-interp-selftest:check_quad_memops")
+    # vrndi.s (VFPU7 selector 1, single width): both lanes against the issue #326 step rule.
+    if (record["opcode"] == 0x34 and ((word >> 16) & 0x3FF) == 0x21
+            and record["vector_size"] == 1 and record["interpreter_supported"]):
+        tests.append("vfpu-interp-selftest:check_vrndi_rule_cells")
     return sorted(set(tests))
 
 
