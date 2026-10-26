@@ -13074,6 +13074,39 @@ static void test_td24b_cheap_hle_batch(void) {
            "ReleaseSubIntrHandler on a non-VBLANK line answers success without effect");
     expect(sr_vblank_handler() == 0u, "non-VBLANK lines leave VBLANK delivery clear");
 
+    /* #1287: a title that re-registers the same VBLANK handler before every frame writes the
+     * registration line once, not once per frame. A changed registration and a register after
+     * Release are written again; SR_HLELOG still writes every call. Return codes are unchanged
+     * (duplicate-register codes are UNMEASURED on the PSP). */
+    {
+        char err[2048];
+        FILE *capture = NULL;
+        int saved = -1;
+        int every = getenv("SR_HLELOG") != NULL;
+        err[0] = '\0';
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        expect(capturing, "the sub-interrupt selftest can capture the runtime's stderr");
+        uint32_t first = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0u);
+        uint32_t again = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0u);
+        uint32_t new_arg = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0x10u);
+        uint32_t release = td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u);
+        uint32_t after = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0x10u);
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        expect(first == 0u && again == 0u && new_arg == 0u && release == 0u && after == 0u,
+               "repeated, changed and post-Release registrations keep their success answers");
+        expect(count_occurrences(err,
+                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000000\n") ==
+                   (every ? 2 : 1),
+               "an identical VBLANK re-registration writes no second registration line");
+        expect(count_occurrences(err,
+                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000010\n") == 2,
+               "a changed arg and a register after Release each write the registration line");
+        expect(sr_vblank_no() == 1u && sr_vblank_arg() == 0x10u,
+               "the quiet path still records the latest registration");
+        expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
+               "the log fixture leaves the VBLANK line released");
+    }
+
     /* ---- 4+5. scePowerSetClockFrequency / 350 ---- */
     reset_fixture();
     sr_hle_init();

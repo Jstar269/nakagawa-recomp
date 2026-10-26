@@ -11490,6 +11490,9 @@ static void hle_register_umd_callback_handlers(void) {
 /* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
  * (it typically wakes the sleeping game thread). PSP_VBLANK_INT = 30. */
 static uint32_t g_vbl_handler = 0, g_vbl_arg = 0, g_vbl_no = 0; static int g_vbl_on = 0;
+/* The slot holds a Register that Release has not cleared; a handler word of 0 is still a
+ * registration. Only h_RegisterSubIntr's log-on-change test reads it (#1287). */
+static int g_vbl_registered = 0;
 
 /* Generic PSP callback objects are kernel objects, not a 16-entry subsystem
  * table. Hardware creates at least 1024 of them. Keep an append-only host array:
@@ -11823,8 +11826,14 @@ static uint32_t h_RegisterSubIntr(CpuState *s) {
      * (PSPSDK pspintrman.h and its vsync sample: `void on_vblank(int sub, void *data)`), so
      * the sub-interrupt number is kept with the handler and its arg. */
     if (A0 == 30) {
-        fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
-        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3;
+        /* Titles re-register the same handler before almost every frame (#1287), so the line
+         * is written only when a registration changes the slot, or always under SR_HLELOG.
+         * The return code is unchanged: duplicate-register codes are UNMEASURED on the PSP. */
+        int changed = !g_vbl_registered || g_vbl_handler != A2 || g_vbl_no != A1 ||
+                      g_vbl_arg != A3;
+        if (changed || hle_log_on())
+            fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
+        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3; g_vbl_registered = 1;
     }
     return 0;
 }
@@ -11844,7 +11853,9 @@ static uint32_t h_DisableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 0; retu
  * Register. Non-VBLANK lines answer success without effect (UNMEASURED), as
  * with Enable/Disable. */
 static uint32_t h_ReleaseSubIntr(CpuState *s) {
-    if (A0 == 30) { g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; }
+    if (A0 == 30) {
+        g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; g_vbl_registered = 0;
+    }
     return 0;
 }
 uint32_t sr_vblank_handler(void) { return g_vbl_on ? g_vbl_handler : 0; }
