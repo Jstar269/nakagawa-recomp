@@ -1657,7 +1657,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "550054cc732ee836c99b0158eda119ea277fa5d5b9f0b62fd7d82c0cbbf4578b"
+      "sha256": "400ede3a8d44f913992db1c249a3b9fd7a6644e17cb8c659b26c221a4f45b20a"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -5509,7 +5509,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7861d47859cea1b4b143417dd42b05cd2a1233cad008487892d4a41c7939d571"
+      "sha256": "8784ae96ee26007b08b1fb6e8e972dbac3030c5d602f4b5175c41d50cdbabc1c"
     },
     {
       "path": "src/rt/h264_ffmpeg.c",
@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "88312e5c76c0cd1016ede28cc3c25fc6256e86ef13901361432dd0e84d476996"
+      "sha256": "c06ab355061790b0190d4ebb3504c0e741204f5b99bde3975c2c2ef7642a4222"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8443,7 +8443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0d3a4f0172e28134205a061cba6266e06f8df56245406089c4e96be9b420bc02"
+      "sha256": "0d50962098bc3442ea1e8af33d82b33f018f3d03b8d733aee16bc46b3b25bc14"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -8906,7 +8906,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f9b00b3690d9ff974a2f1c4a54404f3533b73dc4a18dd777c15c9fbbefc2ae32"
+      "sha256": "1c7fa3f1f54a1de6d04003bba313c9238450cca4a7a464517646c9f4f2a25ed5"
     },
     {
       "path": "src/rt/savedata.c",
@@ -12781,7 +12781,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "38d28ff249b34f3467e7352ff7a57b29bf8692d549ede828c6640a5572d22229"
+      "sha256": "438174cc4b51eb0a4369449422c4699f7ba2a0d432bd8aab16ed5cba54a46e74"
     },
     {
       "path": "tools/test_ci_paths.py",
@@ -13911,7 +13911,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0999479ae8ab967c989e6c2a8ee0625b72225d74e3880713b66b603b0abe428b"
+      "sha256": "7408801419e71329d0b5afad4a1500f3c6c60e56a2b9591237f4699f72576a0f"
     },
     {
       "path": "tools/test_nid_name_proof.py",
