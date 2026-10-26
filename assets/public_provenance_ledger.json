@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6a7a9e2062ca3bb1a9715845e7a4e36d942d16791f7ecc305fe4e2b85edc2c3b"
+      "sha256": "1c3cfa96f25bf4519ab177e08cd060ccd48b6d7f7867d74f4c088f05db2da2c0"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -14644,7 +14644,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7875627774b7e4304a8da9615dedbb503de019db76a2a57c39591292eea41ac3"
+      "sha256": "2c187b277655418d5be8a844e8fead392cab577616d0400d7b424f6c6428bdbb"
     },
     {
       "path": "tools/test_scratch_dir.py",
