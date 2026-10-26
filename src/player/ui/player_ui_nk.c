@@ -1491,6 +1491,9 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             memset(&model, 0, sizeof(model));
             model.title = &player->titles[index];
             model.title_index = (size_t)index;
+            model.stalled_game_notice_visible =
+                player->titles[index].package_state == PLAYER_UI_PACKAGE_RUNNING &&
+                app->stalled_game_notice_visible;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
             action = player_ui_screen_title(player->ui, &model);

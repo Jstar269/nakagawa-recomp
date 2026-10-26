@@ -386,6 +386,17 @@ typedef struct PlayerApp {
     int showcase_count;
     bool is_game_running;
     uint64_t launch_time_ms;
+    uint64_t boot_event_read_offset;
+    bool stalled_game_notice_visible;
+    bool stalled_game_notice_dismissed;
+    bool stalled_game_notice_raise_requested;
+    bool stalled_game_restore_game_front_requested;
+    uint32_t stalled_game_no_frame_vblanks;
+    uint32_t stalled_game_seconds;
+    uint32_t stalled_game_ready;
+    uint32_t stalled_game_delay;
+    uint32_t stalled_game_wait;
+    uint32_t stalled_game_spin;
     /* Keep the launcher UI headless. An explicit presented-frame acceptance
        request may still open a window in the child runtime. */
     bool launch_headless;
@@ -775,6 +786,8 @@ int player_app_focus_count(const PlayerApp *app);
 /* Process launch integration */
 bool player_app_launch_game(PlayerApp *app, int game_index);
 void player_app_stop_game(PlayerApp *app);
+void player_app_stop_stalled_game(PlayerApp *app);
+void player_app_keep_waiting_for_stalled_game(PlayerApp *app);
 
 /* One PLAY, split so its slow part can leave the UI thread (#1298). Checking a
  * package hashes every artifact it lists (hundreds of MB for a retail title),

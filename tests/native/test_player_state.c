@@ -66,6 +66,7 @@
 #else
 #include <dirent.h>
 #include <fcntl.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1410,6 +1411,21 @@ static int repeat_launch_child_mode(void) {
         if (fclose(save) != 0) ok = 0;
         if (!ok) return 5;
     }
+    const char *hold_open = getenv("NK_REPEAT_LAUNCH_HOLD_OPEN");
+    if (hold_open && strcmp(hold_open, "1") == 0) {
+        if (boot_event_path && *boot_event_path) {
+            FILE *events = fopen(boot_event_path, "ab");
+            if (!events) return 7;
+            ok = fputs("BOOT_EVENT phase=display_flip source=synthetic\n", events) >= 0;
+            if (fclose(events) != 0) ok = 0;
+            if (!ok) return 7;
+        }
+#if defined(_WIN32) || defined(_WIN64)
+        Sleep(INFINITE);
+#else
+        for (;;) (void)pause();
+#endif
+    }
     return exit_code;
 }
 
@@ -1422,6 +1438,14 @@ static bool run_log_contains(const char *path, const char *needle) {
     fclose(file);
     text[got] = '\0';
     return strstr(text, needle) != NULL;
+}
+
+static bool append_runtime_event(const char *path, const char *event) {
+    FILE *file = path ? fopen(path, "ab") : NULL;
+    if (!file) return false;
+    bool ok = fputs(event, file) >= 0;
+    if (fclose(file) != 0) ok = false;
+    return ok;
 }
 
 /* True when a developer log line holds `needle`. */
@@ -5994,14 +6018,18 @@ int main(int argc, char **argv) {
         bool had_report_env;
         bool had_code_env;
         bool had_stop_env;
+        bool had_hold_env;
         char *old_report_env =
             capture_environment_value("NK_REPEAT_LAUNCH_REPORT_FILE", &had_report_env);
         char *old_code_env =
             capture_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", &had_code_env);
         char *old_stop_env =
             capture_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", &had_stop_env);
+        char *old_hold_env =
+            capture_environment_value("NK_REPEAT_LAUNCH_HOLD_OPEN", &had_hold_env);
         set_environment_value("NK_REPEAT_LAUNCH_REPORT_FILE", report_path);
         set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "");
+        set_environment_value("NK_REPEAT_LAUNCH_HOLD_OPEN", "");
 
         bool git_available = git_status_snapshot(git_before);
         if (!git_available) {
@@ -6294,6 +6322,119 @@ int main(int argc, char **argv) {
         set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");
         repeat_launch_and_settle(rep, 0, 11000, 12000, memstick1);
 
+        /* #1289: a live synthetic runtime presents, then stops presenting.
+           Its watchdog event must surface a notice at 30 seconds, clear on a
+           resumed frame, and let Stop game reach the existing early-stop card. */
+        set_environment_value("NK_REPEAT_LAUNCH_HOLD_OPEN", "1");
+        bool stall_launched = player_app_launch_game(rep, 0);
+        bool events_ok = stall_launched && rep->is_game_running &&
+                         rep->boot_event_file_path[0] != '\0';
+        bool no_early_notice = false;
+        bool warning_appeared = false;
+        bool warning_raise_requested = false;
+        bool keep_waiting_dismissed = false;
+        bool dismissed_notice_stayed_hidden = false;
+        bool warning_cleared = false;
+        bool warning_return_requested = false;
+        bool warning_returned = false;
+        bool warning_stopped_game = false;
+        bool warning_card_has_details = false;
+        bool scheduler_summary_kept = false;
+        char stall_events_path[NK_MAX_PATH] = "";
+        if (events_ok) {
+            snprintf(stall_events_path, sizeof(stall_events_path), "%s",
+                     rep->boot_event_file_path);
+            (void)player_app_monitor_game_session(rep, 13000);
+            no_early_notice = !rep->stalled_game_notice_visible;
+            events_ok = append_runtime_event(
+                stall_events_path,
+                "BOOT_EVENT phase=stalled observation=no_new_flip "
+                "no_frame_vblanks=1740 seconds=29 ready=1 delay=2 wait=3 spin=4\n");
+            if (events_ok) {
+                (void)player_app_monitor_game_session(rep, 42000);
+                no_early_notice = no_early_notice &&
+                                  !rep->stalled_game_notice_visible;
+                events_ok = append_runtime_event(
+                    stall_events_path,
+                    "BOOT_EVENT phase=stalled observation=no_new_flip "
+                    "no_frame_vblanks=1800 seconds=30 ready=1 delay=2 wait=3 spin=4\n");
+            }
+            if (events_ok) {
+                (void)player_app_monitor_game_session(rep, 43000);
+                warning_appeared = rep->stalled_game_notice_visible;
+                warning_raise_requested =
+                    rep->stalled_game_notice_raise_requested;
+                scheduler_summary_kept = rep->stalled_game_no_frame_vblanks == 1800u &&
+                    rep->stalled_game_seconds == 30u && rep->stalled_game_ready == 1u &&
+                    rep->stalled_game_delay == 2u && rep->stalled_game_wait == 3u &&
+                    rep->stalled_game_spin == 4u;
+                player_app_keep_waiting_for_stalled_game(rep);
+                keep_waiting_dismissed = !rep->stalled_game_notice_visible &&
+                    rep->stalled_game_notice_dismissed &&
+                    rep->stalled_game_restore_game_front_requested;
+                /* The player main loop consumes the focus request before it
+                   polls the next runtime event. */
+                rep->stalled_game_restore_game_front_requested = false;
+                events_ok = append_runtime_event(
+                    stall_events_path,
+                    "BOOT_EVENT phase=stalled observation=no_new_flip "
+                    "no_frame_vblanks=1860 seconds=31 ready=1 delay=2 wait=3 spin=4\n");
+            }
+            if (events_ok) {
+                (void)player_app_monitor_game_session(rep, 43050);
+                dismissed_notice_stayed_hidden =
+                    !rep->stalled_game_notice_visible &&
+                    rep->stalled_game_notice_dismissed;
+                events_ok = append_runtime_event(
+                    stall_events_path,
+                    "BOOT_EVENT phase=resumed observation=frame_present\n");
+            }
+            if (events_ok) {
+                (void)player_app_monitor_game_session(rep, 43100);
+                warning_cleared = !rep->stalled_game_notice_visible &&
+                    !rep->stalled_game_notice_dismissed;
+                warning_return_requested =
+                    rep->stalled_game_restore_game_front_requested;
+                events_ok = append_runtime_event(
+                    stall_events_path,
+                    "BOOT_EVENT phase=stalled observation=no_new_flip "
+                    "no_frame_vblanks=1800 seconds=30 ready=1 delay=2 wait=3 spin=4\n");
+            }
+            if (events_ok) {
+                (void)player_app_monitor_game_session(rep, 74000);
+                warning_returned = rep->stalled_game_notice_visible;
+                player_app_stop_stalled_game(rep);
+                warning_stopped_game = !rep->is_game_running &&
+                    strcmp(rep->last_error.error_code, "RUNTIME_NO_NEW_FRAMES") == 0;
+                warning_card_has_details =
+                    strcmp(rep->last_error.title, "Game Stopped Early") == 0 &&
+                    strstr(rep->last_error.message, "last in-game save") != NULL &&
+                    strstr(rep->last_error.details, "no_frame_vblanks=1800") != NULL &&
+                    strstr(rep->last_error.details, "ready=1 delay=2 wait=3 spin=4") != NULL;
+            }
+        }
+        /* Stop even on a failed assertion so the synthetic child cannot outlive
+           the native test process. */
+        if (rep->is_game_running) player_app_stop_game(rep);
+        set_environment_value("NK_REPEAT_LAUNCH_HOLD_OPEN", "");
+        bool stall_log_kept = warning_stopped_game &&
+            strcmp(rep->last_error.log_file_path, run_log_last) == 0 &&
+            run_log_contains(run_log_last, "BOOT_EVENT phase=stalled") &&
+            run_log_contains(run_log_last, "ready=1 delay=2 wait=3 spin=4");
+        assert(events_ok);
+        assert(no_early_notice);
+        assert(warning_appeared);
+        assert(warning_raise_requested);
+        assert(keep_waiting_dismissed);
+        assert(dismissed_notice_stayed_hidden);
+        assert(warning_cleared);
+        assert(warning_return_requested);
+        assert(warning_returned);
+        assert(scheduler_summary_kept);
+        assert(warning_stopped_game);
+        assert(warning_card_has_details);
+        assert(stall_log_kept);
+
         /* (d) No repository-tracked file changed across the runs. */
         if (git_available) {
             bool after_ok = git_status_snapshot(git_after);
@@ -6311,9 +6452,12 @@ int main(int argc, char **argv) {
                                   had_code_env);
         restore_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", old_stop_env,
                                   had_stop_env);
+        restore_environment_value("NK_REPEAT_LAUNCH_HOLD_OPEN", old_hold_env,
+                                  had_hold_env);
         free(old_report_env);
         free(old_code_env);
         free(old_stop_env);
+        free(old_hold_env);
         free(rep);
 
         char marker_path[1200];

@@ -19224,6 +19224,21 @@ static unsigned long s_watchdog_fires = 0;
  * s_last_flip_vcount is reset so a fresh stretch starts at bucket 0. */
 static uint32_t s_watchdog_bucket = 0;
 
+/* A resumed frame closes one observed no-frame stretch. stderr is redirected
+ * to the per-run boot-event log by the native launcher, so the parent player
+ * can consume this event while the game is still running. */
+static void hle_watchdog_note_present(void) {
+    if (s_watchdog_bucket > 0u) {
+        uint32_t diff = s_vcount - s_last_flip_vcount;
+        fprintf(stderr,
+                "BOOT_EVENT phase=resumed observation=frame_present "
+                "no_frame_vblanks=%u\n", diff);
+        fflush(stderr);
+    }
+    s_last_flip_vcount = s_vcount;
+    s_watchdog_bucket = 0;
+}
+
 #ifdef SR_HLE_THREAD_SELFTEST
 /* White-box view of the flip accounting for the conformance harness. The counters are
  * file-static because nothing outside this file may steer display state; the regression
@@ -19966,8 +19981,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         s_display_latched_pending = 0;
         s_display_configured = 1;
         s_framebuf = addr;
-        s_last_flip_vcount = s_vcount;
-        s_watchdog_bucket = 0;
+        hle_watchdog_note_present();
         /* Issue #57: arm any due present capture BEFORE the present so the recorded
          * frame is exactly the one being presented. */
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
@@ -20286,8 +20300,7 @@ void sr_vblank_tick(void) {
         s_display_latched_pending = 0;
         s_display_configured = 1;
         s_framebuf = s_display_active.addr;
-        s_last_flip_vcount = s_vcount;
-        s_watchdog_bucket = 0;
+        hle_watchdog_note_present();
         /* Same arm as the sync=0 immediate flip: a NEXTFRAME (sync=1) flip is presented
          * here, so the capture must be armed before this present or the recorded frame
          * is not the presented one. Arming only in the sync=0 branch left every
@@ -20371,9 +20384,15 @@ void sr_vblank_tick(void) {
                 "WATCHDOG: no new frame presented for %u vblanks (~%us) - neutral "
                 "NO-NEW-FLIP observation, not by itself a hang/stall verdict\n",
                 diff, diff / 60);
+        uint32_t ready = 0u, delay = 0u, wait = 0u, spin = 0u;
+        extern void sched_watchdog_summary(uint32_t *, uint32_t *,
+                                           uint32_t *, uint32_t *);
+        sched_watchdog_summary(&ready, &delay, &wait, &spin);
         fprintf(stderr,
-                "BOOT_EVENT phase=stalled observation=no_new_flip no_frame_vblanks=%u seconds=%u\n",
-                diff, diff / 60);
+                "BOOT_EVENT phase=stalled observation=no_new_flip "
+                "no_frame_vblanks=%u seconds=%u ready=%u delay=%u wait=%u spin=%u\n",
+                diff, diff / 60u, ready, delay, wait, spin);
+        fflush(stderr);
         /* Which side of the display handoff stopped presenting: did the guest stop
          * asking for flips, or are its requests being refused? last_vcount vs
          * s_last_flip_vcount separates "no call since the last flip" from "calls

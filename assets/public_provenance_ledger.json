@@ -3503,7 +3503,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "23b12d237f916dab98658686388dad9e5b2ebe7a608662fd66646884aee2edad"
+      "sha256": "7cf7bf611487aff6f548a042dc0988075e75bab661eb3a68fd53d61a9b5043d7"
     },
     {
       "path": "src/player/package_builder.c",
@@ -3539,7 +3539,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aadc9b203e84a6b710ba5a1915cf86df9dab0abc39b73224dc0bd711b784f108"
+      "sha256": "e8cec27a5310dd4afb949ea5068522aff4a25eb61479168cf1d3b72d951d0aa9"
     },
     {
       "path": "src/player/player_state.h",
@@ -3551,7 +3551,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9a0e5d1fcf514c31cbd2cf253978fb8ea918bb9f539a935b1d44621ae051d25a"
+      "sha256": "57983322f459bdc2af5552df66978826513a2709ffa22f64f96f2f926d2a4295"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -3611,7 +3611,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4cca8943232d8663300d107b58c7d2d66bda5aefe62c5ee2907437b77d26ac1b"
+      "sha256": "8d8267574fe9b87551ba81d4de15f85f6f36a6597b8f8929a5dc09d9ceb8ece4"
     },
     {
       "path": "src/player/ui/player_ui_nk.h",
@@ -3623,7 +3623,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2fce3a315ca563085589edce6eee2d105da9e6a01bc8949478488516d4aa9795"
+      "sha256": "0257ab633bdce36de7edab30bd28752707bca993867a3d74f1b4fca369c24ac4"
     },
     {
       "path": "src/player/ui/player_ui_sound.c",
@@ -3671,7 +3671,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "965e50a4ca90755073b9b1c1287e32b26c59b4bd58a6d4a329c2903f8fde9f4b"
+      "sha256": "b01e27a696cca2fae21c2319b1f67fe204813189a524541bf77bef40f3abfdd9"
     },
     {
       "path": "src/player/ui/ui_router.c",
@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "db7e0e24d81555c3d1771b8df58ff79bba48cd0199b8ec3cbb9e438552da0261"
+      "sha256": "c9f24d9169e8c39c8d134a2317425d6be6b7a06f858849d92a6f7ec4898957a4"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8932,7 +8932,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "19b0b1d0fbbf6704b17b944afd43e34686302d7d555fb4036f907dd82a304db2"
+      "sha256": "10d7dcff3f493d2652abb8d0332aaace3331e25755459cf92760092dd41a32ca"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -10038,7 +10038,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b1a727b052be12a7896845d4ae7f0abc0241a9875e5562606ae9ae24d8a5eaea"
+      "sha256": "88498d3971b16b11887549ad1eee951fb879e4f6d59544d037db48ea10baa423"
     },
     {
       "path": "tests/native/test_player_state.c",
@@ -10050,7 +10050,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c40380bf7ff4f081d3fd01486faee1656f49e13d81b5a5fefd13c718838f45ad"
+      "sha256": "07861ba21fc0a73bc357854531a5df7df8b15b18c0153d578c149f825b1c154e"
     },
     {
       "path": "tests/native/test_player_ui.py",

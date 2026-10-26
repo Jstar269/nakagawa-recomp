@@ -2234,6 +2234,26 @@ static void test_title_with_a_running_game(void) {
     CHECK(strstr(dump, "named boundary") == NULL && strstr(dump, "NAMED BOUNDARY") == NULL &&
               strstr(dump, "COMPATIBILITY.md") == NULL,
           "the compatibility card names no docs category outside the developer view");
+    /* #1289: a neutral no-frame observation stays actionable while the game
+       process remains alive; choosing either button returns its real action. */
+    model.stalled_game_notice_visible = true;
+    nk_ui_begin(ui, 0.0);
+    (void)player_ui_screen_title(ui, &model);
+    (void)nk_ui_end(ui);
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    CHECK(strstr(dump, "The game hasn't drawn anything new for 30 seconds. It may be stuck.") != NULL,
+          "the running title displays the no-frame notice");
+    CHECK(strstr(dump, "KEEP WAITING") != NULL && strstr(dump, "STOP GAME") != NULL,
+          "the running title offers both no-frame choices");
+    PlayerUiAction keep_waiting = activate_title_button(
+        PLAYER_UI_ID_TITLE_STALL_KEEP_WAITING, &model);
+    CHECK(keep_waiting.kind == PLAYER_UI_ACTION_STALL_KEEP_WAITING,
+          "Keep waiting returns the live-session action");
+    PlayerUiAction stop_game = activate_title_button(
+        PLAYER_UI_ID_TITLE_STALL_STOP_GAME, &model);
+    CHECK(stop_game.kind == PLAYER_UI_ACTION_STALL_STOP_GAME,
+          "Stop game returns the stop-session action");
+    model.stalled_game_notice_visible = false;
     running.compatibility_tier = PLAYER_UI_TIER_NONE;
     nk_ui_begin(ui, 0.0);
     (void)player_ui_screen_title(ui, &model);

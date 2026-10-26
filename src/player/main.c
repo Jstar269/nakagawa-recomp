@@ -1056,6 +1056,14 @@ static void player_ui_nk_apply_action(PlayerApp *app,
         player_ui_developer_log_apply(app, (PlayerUiDeveloperLogOp)action->primary);
         return;
     }
+    if (action->kind == PLAYER_UI_ACTION_STALL_KEEP_WAITING) {
+        player_app_keep_waiting_for_stalled_game(app);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_STALL_STOP_GAME) {
+        player_app_stop_stalled_game(app);
+        return;
+    }
     if (action->kind == PLAYER_UI_ACTION_ADD_DISC) {
         app->request_file_picker = true;
         return;
@@ -4910,6 +4918,24 @@ int main(int argc, char *argv[]) {
 #else
             (void)fronted;
 #endif
+        }
+        /* A stalled game keeps running, so its window would otherwise cover
+           the launcher and hide the only actionable notice. Raise the player
+           once when the notice first appears. When the notice is dismissed or
+           a frame resumes, return focus to the game; on platforms without a
+           process-window raise, minimize only after that explicit notice
+           transition so the previous game window can be seen again. */
+        if (app.stalled_game_notice_raise_requested) {
+            app.stalled_game_notice_raise_requested = false;
+            if (interactive_window) SDL_RaiseWindow(window);
+        }
+        if (app.stalled_game_restore_game_front_requested) {
+            app.stalled_game_restore_game_front_requested = false;
+            if (interactive_window && app.is_game_running &&
+                !nk_platform_bring_process_window_to_front(
+                    &app.launch_session.process)) {
+                SDL_MinimizeWindow(window);
+            }
         }
         if (interactive_window) {
             player_apply_launcher_fullscreen(&app, window,

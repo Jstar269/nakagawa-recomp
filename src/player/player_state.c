@@ -2128,6 +2128,7 @@ void player_app_set_cli_not_found_error(PlayerApp *app,
 const char *player_error_badge(const ErrorState *error) {
     static const struct { const char *code; const char *badge; } badges[] = {
         {"RUNTIME_SEMANTIC_BOUNDARY", "Game stopped"},
+        {"RUNTIME_NO_NEW_FRAMES", "Game stopped"},
         {"RUNTIME_PREMATURE_EXIT", "Game didn't start"},
         {"RUNTIME_ERROR_EXIT", "Game closed"},
         {"TITLE_DATA_MISSING", "Game data needed"},
@@ -2148,7 +2149,8 @@ const char *player_error_badge(const ErrorState *error) {
 
 bool player_error_leads_with_message(const ErrorState *error) {
     static const char *const codes[] = {
-        "RUNTIME_SEMANTIC_BOUNDARY", "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT",
+        "RUNTIME_SEMANTIC_BOUNDARY", "RUNTIME_NO_NEW_FRAMES",
+        "RUNTIME_PREMATURE_EXIT", "RUNTIME_ERROR_EXIT",
         "TITLE_DATA_MISSING", "TITLE_PROFILE_INVALID", "RUNTIME_PACKAGE_NOT_READY",
         "PACKAGE_REVALIDATION_FAILED", "PACKAGE_BUILD_FAILED", "PACKAGE_BUILD_REFUSED",
         "PACKAGE_DISK_FULL",
@@ -2322,6 +2324,14 @@ void player_app_set_game_stop_error(PlayerApp *app, const char *code,
             snprintf(app->last_error.boundary_text, sizeof(app->last_error.boundary_text),
                      "Stopped at %s (not supported yet).", where);
         }
+    } else if (strcmp(code, "RUNTIME_NO_NEW_FRAMES") == 0) {
+        snprintf(message, sizeof(message),
+                 "The game stopped drawing new frames. %s Press Restart game to try again.",
+                 progress);
+        player_app_set_error(app, code, "Game Stopped Early", message,
+                             "Return to Library", VIEW_LIBRARY);
+        snprintf(app->last_error.details, sizeof(app->last_error.details), "%s",
+                 where);
     } else if (strcmp(code, "RUNTIME_PREMATURE_EXIT") == 0) {
         player_app_set_error(app, code, "Game Couldn't Start",
                              "The game closed while it was starting. Press Restart game to try "
@@ -2438,6 +2448,24 @@ static int player_format_boot_event_path(char *out, size_t out_size,
  * launch really consumes. */
 static unsigned int player_boot_event_sequence;
 
+static void player_clear_stalled_game_notice(PlayerApp *app, bool restore_game_window) {
+    if (!app) return;
+    if (restore_game_window &&
+        (app->stalled_game_notice_visible ||
+         app->stalled_game_notice_raise_requested)) {
+        app->stalled_game_restore_game_front_requested = true;
+    }
+    app->stalled_game_notice_visible = false;
+    app->stalled_game_notice_dismissed = false;
+    app->stalled_game_notice_raise_requested = false;
+    app->stalled_game_no_frame_vblanks = 0;
+    app->stalled_game_seconds = 0;
+    app->stalled_game_ready = 0;
+    app->stalled_game_delay = 0;
+    app->stalled_game_wait = 0;
+    app->stalled_game_spin = 0;
+}
+
 void player_app_next_boot_event_path(char *out, size_t out_size) {
     if (!out || out_size == 0) return;
 
@@ -2449,6 +2477,10 @@ void player_app_next_boot_event_path(char *out, size_t out_size) {
 
 static bool player_prepare_boot_event_file(PlayerApp *app) {
     if (!app) return false;
+
+    app->boot_event_read_offset = 0;
+    player_clear_stalled_game_notice(app, false);
+    app->stalled_game_restore_game_front_requested = false;
 
     ++player_boot_event_sequence;
     if (!player_format_boot_event_path(app->boot_event_file_path,
@@ -2856,6 +2888,7 @@ void player_app_stop_game(PlayerApp *app) {
     if (!app) return;
     if (!app->is_game_running) {
         app->close_confirmation_pending = false;
+        player_clear_stalled_game_notice(app, true);
         return;
     }
     printf("[PLAYER] Stopping active game session...\n");
@@ -2863,6 +2896,7 @@ void player_app_stop_game(PlayerApp *app) {
     app->is_game_running = false;
     app->close_confirmation_pending = false;
     app->child_window_ready = false;
+    player_clear_stalled_game_notice(app, true);
     if (app->boot_event_file_path[0]) {
         /* The run's output stays in the logs folder (#1303). */
         char kept_log[NK_MAX_PATH];
@@ -2872,6 +2906,49 @@ void player_app_stop_game(PlayerApp *app) {
         }
         remove(app->boot_event_file_path);
     }
+}
+
+void player_app_stop_stalled_game(PlayerApp *app) {
+    if (!app || !app->is_game_running || !app->stalled_game_notice_visible) return;
+
+    char disc_id[sizeof(app->launch_session.disc_id)];
+    snprintf(disc_id, sizeof(disc_id), "%s", app->launch_session.disc_id);
+    char stall_details[256];
+    snprintf(stall_details, sizeof(stall_details),
+             "no_frame_vblanks=%u seconds=%u; scheduler summary: "
+             "ready=%u delay=%u wait=%u spin=%u",
+             app->stalled_game_no_frame_vblanks, app->stalled_game_seconds,
+             app->stalled_game_ready, app->stalled_game_delay,
+             app->stalled_game_wait, app->stalled_game_spin);
+
+    printf("[PLAYER] Stopping stalled game session...\n");
+    nk_launch_stop(&app->launch_session);
+    app->is_game_running = false;
+    app->close_confirmation_pending = false;
+    app->child_window_ready = false;
+
+    char kept_log[NK_MAX_PATH] = "";
+    if (app->boot_event_file_path[0]) {
+        if (nk_launch_keep_run_log(app->boot_event_file_path, disc_id,
+                                   kept_log, sizeof(kept_log))) {
+            player_dev_log_add(app, "runtime", "game output kept in %s", kept_log);
+            remove(app->boot_event_file_path);
+        } else {
+            player_dev_log_add(app, "runtime",
+                               "game output could not be kept in the logs folder");
+        }
+    }
+    const char *run_log = kept_log[0] ? kept_log : app->boot_event_file_path;
+    player_app_set_game_stop_error(app, "RUNTIME_NO_NEW_FRAMES", stall_details,
+                                   0u, 0, 0u, disc_id, run_log);
+    player_clear_stalled_game_notice(app, true);
+}
+
+void player_app_keep_waiting_for_stalled_game(PlayerApp *app) {
+    if (!app || !app->is_game_running || !app->stalled_game_notice_visible) return;
+    app->stalled_game_notice_visible = false;
+    app->stalled_game_notice_dismissed = true;
+    app->stalled_game_restore_game_front_requested = true;
 }
 
 void player_app_apply_settings_to_session(const PlayerSettings *settings,
@@ -2979,11 +3056,102 @@ static bool player_read_semantic_stop(const char *path, char *boundary,
     return found;
 }
 
+#define PLAYER_STALLED_NOTICE_SECONDS 30u
+#define PLAYER_BOOT_EVENT_LINE_MAX 1024u
+
+static void player_consume_stall_event_line(PlayerApp *app, const char *line) {
+    static const char stalled_prefix[] =
+        "BOOT_EVENT phase=stalled observation=no_new_flip ";
+    static const char resumed_prefix[] =
+        "BOOT_EVENT phase=resumed observation=frame_present";
+    if (!app || !line) return;
+    if (strncmp(line, resumed_prefix, sizeof(resumed_prefix) - 1u) == 0) {
+        player_clear_stalled_game_notice(app, true);
+        return;
+    }
+    if (strncmp(line, stalled_prefix, sizeof(stalled_prefix) - 1u) != 0) return;
+
+    unsigned int no_frame_vblanks = 0u, seconds = 0u;
+    unsigned int ready = 0u, delay = 0u, wait = 0u, spin = 0u;
+    if (sscanf(line + sizeof(stalled_prefix) - 1u,
+               "no_frame_vblanks=%u seconds=%u ready=%u delay=%u wait=%u spin=%u",
+               &no_frame_vblanks, &seconds, &ready, &delay, &wait, &spin) != 6) {
+        return;
+    }
+    app->stalled_game_no_frame_vblanks = (uint32_t)no_frame_vblanks;
+    app->stalled_game_seconds = (uint32_t)seconds;
+    app->stalled_game_ready = (uint32_t)ready;
+    app->stalled_game_delay = (uint32_t)delay;
+    app->stalled_game_wait = (uint32_t)wait;
+    app->stalled_game_spin = (uint32_t)spin;
+    if (app->stalled_game_seconds >= PLAYER_STALLED_NOTICE_SECONDS &&
+        !app->stalled_game_notice_dismissed &&
+        !app->stalled_game_notice_visible) {
+        app->stalled_game_notice_visible = true;
+        app->stalled_game_notice_raise_requested = true;
+        player_dev_log_add(app, "runtime",
+                           "no new frame for %u seconds; scheduler ready=%u delay=%u "
+                           "wait=%u spin=%u",
+                           app->stalled_game_seconds, app->stalled_game_ready,
+                           app->stalled_game_delay, app->stalled_game_wait,
+                           app->stalled_game_spin);
+    }
+}
+
+/* Runtime stderr is appended to this session file. Read only complete lines
+ * added since the previous frame, instead of rescanning the growing log. */
+static void player_monitor_stalled_game_events(PlayerApp *app) {
+    if (!app || !app->boot_event_file_path[0]) return;
+    FILE *events = nk_fopen_utf8(app->boot_event_file_path, "rb");
+    if (!events) return;
+    if (fseek(events, 0, SEEK_END) != 0) {
+        fclose(events);
+        return;
+    }
+    long file_end = ftell(events);
+    if (file_end < 0) {
+        fclose(events);
+        return;
+    }
+    if (app->boot_event_read_offset > (uint64_t)file_end) {
+        app->boot_event_read_offset = 0;
+    }
+    if (fseek(events, (long)app->boot_event_read_offset, SEEK_SET) != 0) {
+        fclose(events);
+        return;
+    }
+
+    uint64_t offset = app->boot_event_read_offset;
+    const uint64_t snapshot_end = (uint64_t)file_end;
+    char line[PLAYER_BOOT_EVENT_LINE_MAX];
+    size_t used = 0u;
+    bool overflow = false;
+    while (offset < snapshot_end) {
+        int ch = fgetc(events);
+        if (ch == EOF) break;
+        offset++;
+        if (ch == '\n') {
+            if (!overflow) {
+                line[used] = '\0';
+                player_consume_stall_event_line(app, line);
+            }
+            app->boot_event_read_offset = offset;
+            used = 0u;
+            overflow = false;
+        } else if (ch != '\r') {
+            if (used + 1u < sizeof(line)) line[used++] = (char)ch;
+            else overflow = true;
+        }
+    }
+    fclose(events);
+}
+
 bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
     if (!app || !app->is_game_running) return false;
     if (app->launch_time_ms == 0) {
         app->launch_time_ms = now_ms;
     }
+    player_monitor_stalled_game_events(app);
     if (nk_launch_is_running(&app->launch_session)) {
         return false;
     }
@@ -3002,6 +3170,7 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
              app->launch_session.disc_id);
     app->is_game_running = false;
     app->close_confirmation_pending = false;
+    player_clear_stalled_game_notice(app, true);
     /* The child has exited and been reaped: release its process and job
        handles before the session is reused. The natural-exit path used to
        drop them on the floor; the next launch's nk_launch_prepare_session

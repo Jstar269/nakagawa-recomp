@@ -31,6 +31,10 @@
 #define TITLE_ID_CHIP_STATUS 0x20000028u
 #define TITLE_ID_CHIP_BADGE 0x20000029u
 #define TITLE_ID_ACTIONS 0x2000002Au
+#define TITLE_ID_STALL_NOTICE 0x20000031u
+#define TITLE_ID_STALL_EYEBROW 0x20000032u
+#define TITLE_ID_STALL_TEXT 0x20000033u
+#define TITLE_ID_STALL_ACTIONS 0x20000034u
 #define TITLE_ID_COMPAT 0x20000005u
 #define TITLE_ID_COMPAT_HEAD 0x2000002Cu
 #define TITLE_ID_COMPAT_EYEBROW 0x20000006u
@@ -272,6 +276,30 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 nk_ui_tag(ui, TITLE_ID_CHIP_BADGE,
                           safe_text(title->badge, title->art_kind != NK_UI_ART_NONE
                                                       ? "Showcase demo" : "Your disc"));
+                nk_ui_end_container(ui);
+            }
+            if (model->stalled_game_notice_visible &&
+                nk_ui_card_begin(ui, TITLE_ID_STALL_NOTICE, sizing_grow(), sizing_fit(),
+                                 NK_UI_SPACE_2)) {
+                nk_ui_eyebrow(ui, TITLE_ID_STALL_EYEBROW, "No new frames");
+                nk_ui_text_role(ui, TITLE_ID_STALL_TEXT,
+                                "The game hasn't drawn anything new for 30 seconds. It may be stuck.",
+                                NK_UI_TYPE_BODY_S, theme->paper);
+                row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
+                row.align_y = NK_UI_ALIGN_CENTER;
+                if (nk_ui_begin_container(ui, TITLE_ID_STALL_ACTIONS, &row, NULL)) {
+                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_STALL_KEEP_WAITING,
+                                     "Keep waiting", NK_UI_BUTTON_LARGE)) {
+                        result = action(PLAYER_UI_ACTION_STALL_KEEP_WAITING,
+                                        model->title_index, PLAYER_UI_PRIMARY_NONE);
+                    }
+                    if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_STALL_STOP_GAME,
+                                     "Stop game", NK_UI_BUTTON_LARGE | NK_UI_BUTTON_DANGER)) {
+                        result = action(PLAYER_UI_ACTION_STALL_STOP_GAME,
+                                        model->title_index, PLAYER_UI_PRIMARY_NONE);
+                    }
+                    nk_ui_end_container(ui);
+                }
                 nk_ui_end_container(ui);
             }
             /* One action row on the column's left edge, every button the same
