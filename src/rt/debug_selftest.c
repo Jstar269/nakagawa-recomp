@@ -23,7 +23,6 @@
 #else
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 #endif
@@ -50,9 +49,10 @@ static void set_test_env(const char *name, const char *value) {
 }
 
 /* ---- diagnostic streams (#1296) ----------------------------------------------
- * stderr is pointed at a channel that keeps write boundaries, a message-mode named
- * pipe on Windows and a datagram socket elsewhere, so every write the C library
- * issues arrives as one message and the test counts them. */
+ * stderr is pointed at a pipe the test reads back. On Windows it is a message-mode
+ * named pipe, which keeps write boundaries: every write the C runtime issues arrives
+ * as one message, so the test counts them. Elsewhere it is an ordinary pipe and only
+ * the bytes are checked. */
 #ifdef _WIN32
 static HANDLE s_stream_channel = INVALID_HANDLE_VALUE;
 
@@ -94,18 +94,20 @@ static void stream_wait_ms(unsigned ms) { Sleep(ms); }
 static int s_stream_channel = -1;
 
 static int stream_channel_open(void) {
-    int sv[2];
-    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) != 0) return -1;
-    if (fcntl(sv[0], F_SETFL, O_NONBLOCK) != 0) return -1;
-    s_stream_channel = sv[0];
-    return sv[1];
+    int fds[2];
+    if (pipe(fds) != 0) return -1;
+    if (fcntl(fds[0], F_SETFL, O_NONBLOCK) != 0) return -1;
+    s_stream_channel = fds[0];
+    return fds[1];
 }
 
+/* A pipe merges writes, so `messages` counts reads here and is not checked. */
 static int stream_channel_drain(char *buf, size_t cap, size_t *len, unsigned *messages) {
     for (;;) {
         char msg[4096];
-        ssize_t got = recv(s_stream_channel, msg, sizeof msg, 0);
+        ssize_t got = read(s_stream_channel, msg, sizeof msg);
         if (got < 0) return errno == EAGAIN || errno == EWOULDBLOCK ? 0 : -1;
+        if (got == 0) return 0;
         if ((size_t)got > cap - *len) return -1;
         memcpy(buf + *len, msg, (size_t)got);
         *len += (size_t)got;
@@ -123,8 +125,9 @@ static void stream_wait_ms(unsigned ms) {
 #endif
 
 /* Three diagnostic lines printed to a redirected stderr reach it complete, without an
- * explicit flush, and in at most one write per printf call. Windows' C runtime wrote
- * an unbuffered redirected stream one byte per WriteFile, one message per byte here. */
+ * explicit flush, and on Windows in at most one write per printf call. Windows' C
+ * runtime wrote an unbuffered redirected stream one byte per WriteFile, one message per
+ * byte here. */
 static int streams_selftest(void) {
     static const char payload[] = "pc=0x08804000 uid=0x00000042 status=diagnostic-stream";
     char expected[512], seen[1024];
@@ -166,12 +169,12 @@ static int streams_selftest(void) {
                 seen_len, expected_len, rc);
         return 1;
     }
+#ifdef _WIN32
     if (messages > 3u) {
         fprintf(stderr, "debug streams selftest: %zu bytes took %u writes, not at most 3\n",
                 seen_len, messages);
         return 1;
     }
-#ifdef _WIN32
     if (buffered < 1) {
         fprintf(stderr, "debug streams selftest: redirected stderr was not buffered\n");
         return 1;
@@ -182,7 +185,7 @@ static int streams_selftest(void) {
         return 1;
     }
 #endif
-    printf("debug streams selftest: OK (%u writes for %zu bytes)\n", messages, seen_len);
+    printf("debug streams selftest: OK (%u reads for %zu bytes)\n", messages, seen_len);
     return 0;
 }
 

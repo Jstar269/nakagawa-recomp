@@ -65,9 +65,9 @@ class TestDebugC(unittest.TestCase):
 
     def test_redirected_diagnostics_arrive_whole_without_a_flush(self):
         """#1296: the Windows C runtime wrote a redirected unbuffered stderr one byte per
-        system call, on the thread that printed. The selftest points stderr at a channel
-        that keeps write boundaries and requires three printed lines to arrive complete,
-        without an explicit flush, in at most one write per call."""
+        system call, on the thread that printed. The selftest points stderr at a pipe and
+        requires three printed lines to arrive complete without an explicit flush; on
+        Windows the pipe keeps write boundaries and at most one write per call passes."""
         result = subprocess.run(
             [os.fspath(self.exe), "streams"], cwd=self.tmp, capture_output=True, text=True,
             timeout=60,
