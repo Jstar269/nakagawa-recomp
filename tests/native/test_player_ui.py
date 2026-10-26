@@ -2502,6 +2502,28 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(missing_source_frames[0]["error"], "SOURCE_NOT_FOUND")
         self.assertEqual(missing_source_frames[1]["picker"], "1")
 
+    def test_invalid_disc_in_wizard_is_visible_without_a_selected_iso(self) -> None:
+        for ui_mode in (None, "legacy"):
+            with self.subTest(ui_mode=ui_mode or "default"):
+                baseline = self.run_player("wizard2", ui_mode=ui_mode)
+                rejected = self.run_player(
+                    "wizard2", drop_invalid_iso=True, ui_mode=ui_mode
+                )
+                baseline_frames = baseline["frames"]
+                rejected_frames = rejected["frames"]
+                assert isinstance(baseline_frames, list)
+                assert isinstance(rejected_frames, list)
+                baseline_frame = baseline_frames[-1]
+                rejected_frame = rejected_frames[-1]
+                self.assertEqual(rejected_frame["view"], "wizard")
+                self.assertEqual(rejected_frame["wizard_step"], "select_game")
+                self.assertEqual(rejected_frame["bad_disc_notice"], "1")
+                if ui_mode == "legacy":
+                    self.assertNotEqual(
+                        rejected_frame["pixels"], baseline_frame["pixels"],
+                        "the legacy renderer must show the invalid-file sentence",
+                    )
+
         recovery_codes = (
             "EXPERIMENTAL_PROFILE_FAILED",
             "SOURCE_NOT_FOUND",
@@ -3163,6 +3185,38 @@ class FirstRunRouteTests(unittest.TestCase):
             cwd=ROOT, env=self.scratch_env(scratch), capture_output=True, text=True,
             timeout=120, check=False,
         )
+
+    def test_bad_startup_iso_opens_error_card_and_keeps_launcher_running(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".first-run-invalid-iso-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            bad_iso = scratch / "not a PSP disc.iso"
+            bad_iso.write_bytes(b"synthetic non-ISO input\n")
+            runtime_root = scratch / "runtime"
+            runtime_root.mkdir()
+            screenshot = scratch / "last-frame.bmp"
+            completed = subprocess.run(
+                [
+                    str(PLAYER_EXE), f"--iso={bad_iso}",
+                    "--ui-test-events=WAIT_VIEW=error,5000;KEY_RETURN;WAIT_MS=100;QUIT",
+                    f"--ui-test-screenshot={screenshot}",
+                    f"--runtime-root={runtime_root}",
+                ],
+                cwd=ROOT, env=self.scratch_env(scratch), capture_output=True,
+                text=True, timeout=30, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            frames = parse_frames(completed.stdout)
+            self.assertTrue(frames, completed.stdout + completed.stderr)
+            error_frame = next((frame for frame in frames if frame["view"] == "error"), None)
+            self.assertIsNotNone(error_frame, completed.stdout + completed.stderr)
+            assert error_frame is not None
+            self.assertEqual(error_frame["view"], "error")
+            self.assertEqual(error_frame["error"], "ISO_CORRUPT")
+            self.assertEqual(error_frame["bad_disc_notice"], "1")
+            self.assertEqual(error_frame["error_text_complete"], "1")
+            self.assertEqual(frames[-1]["view"], "library")
+            self.assertEqual(frames[-1]["picker"], "1")
+            self.assertTrue(screenshot.is_file())
 
     def test_iso_route_stores_nothing_until_add_to_library(self) -> None:
         sys.path.insert(0, str(ROOT / "tools"))

@@ -26,6 +26,8 @@
 #include <io.h>
 #endif
 
+static const char k_invalid_disc_message[] = "This file isn't a PSP disc image.";
+
 static bool player_view_is_library(PlayerView view) {
     return view == VIEW_LIBRARY || view == PLAYER_VIEW_READY_LIBRARY;
 }
@@ -155,15 +157,14 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
                          "%.48s: %.200s", res.boundary_code, message);
             } else {
                 snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                         "Selected file is not a valid PSP disc image: %.190s",
-                         res.error_message[0] ? res.error_message : "Not a valid ISO9660 image.");
+                         "%s", k_invalid_disc_message);
             }
         } else {
             player_app_set_error(
                 app,
                 named_boundary ? res.boundary_code : "ISO_CORRUPT",
-                named_boundary ? "Not a Disc Image" : "Unreadable PSP Disc Image",
-                message,
+                named_boundary ? "Not a Disc Image" : "Not a PSP Disc Image",
+                named_boundary ? message : k_invalid_disc_message,
                 "Try Another File", VIEW_LIBRARY);
         }
     }
@@ -1759,6 +1760,11 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
     for (char *q = error_title; *q; q++) if (*q == ' ') *q = '_';
     for (char *q = error_badge; *q; q++) if (*q == ' ') *q = '_';
     for (char *q = error_retry; *q; q++) if (*q == ' ') *q = '_';
+    const bool bad_disc_notice =
+        (app->active_view == VIEW_SETUP_WIZARD &&
+         strcmp(app->wizard.status_message, k_invalid_disc_message) == 0) ||
+        (app->active_view == VIEW_ERROR &&
+         strcmp(app->last_error.message, k_invalid_disc_message) == 0);
     char incompatible_reason[256];
     snprintf(incompatible_reason, sizeof(incompatible_reason), "%s",
              ui_test_last_incompatible_reason()[0] ? ui_test_last_incompatible_reason() : "none");
@@ -1783,6 +1789,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "selected=%d selected_disc=%s selected_title_id=%s "
            "focus=%d focus_count=%d settings_two_col=%d wizard_step=%s "
            "font_confirmed=%d extracting=%d extraction_percent=%d extraction_cancel=%d error=%s "
+           "bad_disc_notice=%d "
            "picker=%d package_building=%d package_cancelled=%d profile_fallback=%d "
            "controller_capturing=%d controller_conflicts=%d calibrating=%d "
            "error_text_complete=%d error_text_lines=%d "
@@ -1814,6 +1821,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            app->wizard.is_extracting ? 1 : 0, app->wizard.extraction_percent,
            player_app_wizard_cancel_requested(app) ? 1 : 0,
            app->last_error.error_code[0] ? app->last_error.error_code : "NONE",
+           bad_disc_notice ? 1 : 0,
            app->request_file_picker ? 1 : 0,
            app->build_session.is_building ? 1 : 0,
            app->build_session.is_cancelled ? 1 : 0,
@@ -3616,7 +3624,17 @@ int main(int argc, char *argv[]) {
             }
         } else {
             fprintf(stderr, "[PLAYER] Failed to inspect ISO: %s\n", initial_iso_path);
-            return 1;
+            if (stage_only || app.launch_headless) return 1;
+            const bool named_boundary = res.boundary_code[0] != '\0';
+            const char *message = res.error_message[0]
+                ? res.error_message
+                : "The selected file is not a valid ISO9660 disc image.";
+            player_app_set_error(
+                &app,
+                named_boundary ? res.boundary_code : "ISO_CORRUPT",
+                named_boundary ? "Not a Disc Image" : "Not a PSP Disc Image",
+                named_boundary ? message : k_invalid_disc_message,
+                "Try Another File", VIEW_LIBRARY);
         }
     }
 
