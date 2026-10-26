@@ -368,15 +368,20 @@ class PerCallPathsReadNoEnvironmentTests(unittest.TestCase):
 
     An uncached getenv takes the C runtime's environment lock and compares the name with
     every environment variable. sr_syscall() runs for every guest import, a guest allocator
-    brackets each allocation with sceKernelCpuSuspendIntr/sceKernelCpuResumeIntr, and the
-    delay, block and sleep paths and the scheduler loop run on every context switch, so a
+    brackets each allocation with sceKernelCpuSuspendIntr/sceKernelCpuResumeIntr, a guest
+    can sleep, wake and query threads and create objects every frame, and the delay, block
+    and sleep paths and the scheduler loop run on every context switch, so a
     getenv in any of them is paid on the busy host thread thousands of times a second. The
     switches keep their meaning (set before launch, they still enable their logs); only the
     repeated environment search goes.
     """
 
     PER_CALL = (
-        ("hle.c", HLE, ("sr_syscall", "h_CpuSuspendIntr", "h_CpuResumeIntr")),
+        ("hle.c", HLE, (
+            "sr_syscall", "h_CpuSuspendIntr", "h_CpuResumeIntr", "sr_alloc_uid",
+            "h_SleepThread", "h_SleepThreadCB", "h_WakeupThread", "h_CancelWakeupThread",
+            "h_ReferThreadRunStatus",
+        )),
         ("sched.c", SCHED, ("sched_delay_current", "sched_block_on", "sched_thread_sleep_cb")),
     )
 
