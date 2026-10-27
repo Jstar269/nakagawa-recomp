@@ -5332,7 +5332,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1b07a1a2b96618e49d8b08c73035a3e8e5e9026a85c3802a673d0f2e94b4b6eb"
+      "sha256": "b07a9c41fe0dd56f0d9c17ab3113caaf199d745fdbe1ca2eab01ae0eafba6b0d"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -8844,7 +8844,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "022c123e442679b0204f89e18b46af474fee1718e5673554b9bc8c4c8e7d3841"
+      "sha256": "ae184a00b4c86e1bc2ff3cf04d06dabd2e1629a7ad864ace2debaa29d3c81bb7"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -8856,7 +8856,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "599b994905d2b38a69871de6bc9f2331d57ad4add068b5ea42ad7bf8c95ac665"
+      "sha256": "c1d086f842ef4b671bdf521e523d83cf5fd6cefbf41a4881a9b81fe9b777869f"
     },
     {
       "path": "src/rt/psmf_producer.h",
@@ -8880,7 +8880,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "271fa6032c05c10def482416d9e0a45f385d34516f5050cb33d02054947208ba"
+      "sha256": "3e98055eb6ea94f2007d7bd62129f21b3b6f5e51737c5d9684b27bbcde0e9601"
     },
     {
       "path": "src/rt/recomp.c",
@@ -12505,7 +12505,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5e7d918a7997192f592cd6afc91b405595366278e437364811f25173c2e53ce2"
+      "sha256": "75e8d35c897c824d348ccb7e5a2b4f08ce8d392cb0ac734a066b845e83aa11fd"
     },
     {
       "path": "tools/recomp_helper_inventory.py",
@@ -14499,7 +14499,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "133ecbbbd5cabf2c9d2ce25af81e8b83ec5c2108499cf3de48ffe756d5984dc1"
+      "sha256": "fa69c4f44472339a209284c712d071b927eb69807697f878d2ee89adadfcb634"
     },
     {
       "path": "tools/test_readme_images.py",
