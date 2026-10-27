@@ -344,28 +344,28 @@ Steps:
    ```
 
    Expected: no adapter, `False`, and no toolchain.
-3. Copy the ZIP, its `.sha256` and your game image into the VM without the guest network, for example with Hyper-V Enhanced Session drive redirection or an attached data disk, into a short folder such as `C:\Acceptance`.
+3. Copy the ZIP, its `.sha256` and your game image into the VM without the guest network, for example with Hyper-V Enhanced Session drive redirection or an attached data disk, into a short folder such as `%USERPROFILE%\Acceptance`.
 4. Check the download and extract it:
 
    ```powershell
-   $Zip = 'C:\Acceptance\nakagawa-recomp-0.0.1-windows-x64.zip'
+   $Zip = Join-Path $env:USERPROFILE 'Acceptance\nakagawa-recomp-0.0.1-windows-x64.zip'
    $Expected = (Get-Content -LiteralPath "$Zip.sha256" -Raw).Split(' ')[0]
    if ((Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Expected) { throw 'ZIP hash mismatch' }
-   Expand-Archive -LiteralPath $Zip -DestinationPath 'C:\Nakagawa'
+   Expand-Archive -LiteralPath $Zip -DestinationPath (Join-Path $env:USERPROFILE 'Nakagawa')
    ```
 
 5. Check the extracted prerequisites with their own bundled CPython, still offline. Expected: one JSON line with `"event": "bundle-verified"` and the `file_count` recorded in the release notes.
 
    ```powershell
-   Set-Location 'C:\Nakagawa'
+   Set-Location (Join-Path $env:USERPROFILE 'Nakagawa')
    .\prereqs\python\python.exe -c "import runpy, sys; sys.path.insert(0, 'source'); sys.argv = ['prereq_fetcher', '--manifest', 'source/assets/prereq_manifest.json', '--verify-bundle', 'prereqs']; runpy.run_module('tools.nk_core.prereq_fetcher', run_name='__main__')"
    ```
 
-6. Start `C:\Nakagawa\bin\nakagawa_player.exe` from Explorer. v0.0.1 is not Authenticode-signed, so a SmartScreen or antivirus prompt is possible: record its exact text for [#1283](https://github.com/Jstar269/nakagawa-recomp/issues/1283) and [#1284](https://github.com/Jstar269/nakagawa-recomp/issues/1284), allow it, and continue. It is not a download prompt.
+6. Start `%USERPROFILE%\Nakagawa\bin\nakagawa_player.exe` from Explorer. v0.0.1 is not Authenticode-signed, so a SmartScreen or antivirus prompt is possible: record its exact text for [#1283](https://github.com/Jstar269/nakagawa-recomp/issues/1283) and [#1284](https://github.com/Jstar269/nakagawa-recomp/issues/1284), allow it, and continue. It is not a download prompt.
 7. Click **START SETUP WIZARD** and add your game image. If its game card names an encrypted executable, place your own unencrypted files in the folder the card names, as [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md#what-the-player-does-automatically) describes.
 8. Select **BUILD PACKAGE**. Pass: no consent card and no download prompt appear, and the build completes. A `PREREQUISITE_BUNDLE_INVALID` card names the damaged file: record the name, it is a failure. Any build-tool consent card is a failure.
 9. Select **Play**. Pass: the title reaches its first interactive screen and accepts input.
-10. Open **Settings → About & Licenses**. Pass: it lists the bundled components, and **OPEN LICENSE TEXTS** opens `C:\Nakagawa\prereqs\notices`, which contains `SOURCES.txt`.
+10. Open **Settings → About & Licenses**. Pass: it lists the bundled components, and **OPEN LICENSE TEXTS** opens `%USERPROFILE%\Nakagawa\prereqs\notices`, which contains `SOURCES.txt`.
 11. Repeat the commands of step 2. Expected: still no adapter up.
 
 Report the result in #1285 and #278: the ZIP SHA-256, the Windows build and VM type, the GPU, the time for extraction and for BUILD PACKAGE, and `PASS`, `FAIL` or `BLOCKED` for each step. Evidence about the title stays private (AGENTS.md section 5): report the title's catalog name and the step results only, with no captures, logs or paths from the run.
