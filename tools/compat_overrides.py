@@ -424,22 +424,6 @@ SCHEDULER_HOOKS = [
          owner_issue="#363",
          retirement="prove the guest's create/exit sequence needs no reuse, which retires the "
                     "binding with it"),
-    dict(address=0x0029a174, category="temporary_compatibility_patch", name="launcher priority demotion",
-         source="src/rt/sched.c:sched_create_thread_finish",
-         reason="the launcher thread's declared priority is overridden to 50 (below the "
-                "worker's ~38-40) to prevent it starving the worker via an unconditional "
-                "SR_YIELD-heavy loop; opt-out via SR_NO_LAUNCHER_DEMOTE=1. Flagged in "
-                "ISSUES.md P2 as the leading suspect for movement-triggered rendering "
-                "glitches -- capture with SR_THLOG=1 SR_GELOG=1 before changing "
-                "(SR_ROTLOG was retired with pick_next's rotation, 2026-07-18). The address "
-                "above is no longer compiled into the runtime: it reaches sched.c only as the "
-                "runtime_bindings.launcher_thread_entry of a validated title manifest, so an "
-                 "unconfigured build never demotes anything. Retire by fixing the underlying "
-                 "scheduling inversion, which retires the binding with it.",
-         test="make sched-selftest (generic/fixture-a/fixture-b matrix)",
-         owner_issue="#363",
-         retirement="fix the underlying scheduling inversion that lets the launcher starve the "
-                    "worker, which retires the binding with it"),
     dict(address=0x000468c8, category="temporary_compatibility_patch", name="worker relaunch trampoline",
          source="src/rt/sched.c:deliver_vblank",
          reason="a DORMANT thread holding the WORKER role is restarted on the next VBLANK, "
