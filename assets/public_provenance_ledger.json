@@ -399,7 +399,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6a4fb689ab3ef1688e6a5ee7e3687473ef4c5e26f38a1de836cdce5666b11b54"
+      "sha256": "ec79351d296877754671b5f455251e9a2f50fbd7bb2044c0fe81f0cbc777451d"
     },
     {
       "path": "CREDITS.md",
@@ -417,7 +417,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c8648a0d1014dfb08af47e7c4cb011a14edb88364252eddf8d9a38d08ff66404"
+      "sha256": "7a63d78b2cbc7da1be646b2100377ed7460abd9c13ef9fd10af4a79452bc7772"
     },
     {
       "path": "LICENSE",
@@ -1369,7 +1369,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9c13b170b3f7feb8022af414e1e6c79431f97fa410a69977a2b0e25ace6b7fc4"
+      "sha256": "bf7b4006fde2d00263d6de8c909151fb510c4e42c39f883f5250ed87ef45c8bd"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1414,7 +1414,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "05374f481a678cbb261472f93afb7f81ab6db65754f8714deff832e719d17943"
+      "sha256": "d13eddf9010598200ad16c758328e4c7ae28583a60bd4416f52d680ea3645355"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1444,7 +1444,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "51e3a2cc793e22ee7cf51ad3be8d19a1998aa17539b11be5bd2991564582b023"
+      "sha256": "b7274657163671b82e4f89f42c1b53da255e9a6b55d54655a3e5e3a7088d8969"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1498,7 +1498,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "727e0caa01e7f3a57c24b8025cbf6b8e380a37ebcf2fbd2e7b6adbf02fff3b4c"
+      "sha256": "f58dbc4267059f9ba3bd64155b7ef909acba727c5c71dd89830f0a38d55dd7f8"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -1525,7 +1525,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "02da0f5eafce5d85b29d71ff437da2065bc7dce53edc90d8259fe21fcba3a9a4"
+      "sha256": "2115d102d068364d39c035ee20068b56af6b25797d682b2f1032a039e1178666"
     },
     {
       "path": "docs/ONLINE_FEATURES.md",
@@ -1555,7 +1555,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c31cf9fbaca4607bec7b4dd6730dcdda5220e0a8e949e600196a4a54c3d972a7"
+      "sha256": "bc660642e61b074858f42e36fa2ec9923106a6e54b443d646354fcd333f791bb"
     },
     {
       "path": "docs/PLAYER_UI_DESIGN.md",
@@ -1573,7 +1573,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4e0187a4747438a3f8434e8e1d5cf7d657aab0b963d0d052f7d8f2386d1d0a0a"
+      "sha256": "934f1a9952ccc3b6be7333e9f233c78cb3699fa870530ce94bfd9bbead6b8cc9"
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
@@ -1591,7 +1591,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "87941d617e2eeff499339a409d3cb445ca55a4d429f679ffd0b3a68372b0556a"
+      "sha256": "5cab340a954a3654b1ad70fc2861d4f3db7d6c1f17f2fd784d806714a4ea4b49"
     },
     {
       "path": "docs/PROVENANCE_MERGE_GATE.md",
@@ -1657,7 +1657,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f5d872d4538059540601e23e8bf41612e999dfc261420a5527f1dbc2b6825d8d"
+      "sha256": "9000a3222936140c7cd2405011e28784f23f83d27564d89b80a14f949180839a"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
@@ -1669,7 +1669,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "0bb354a5368bf27847cfa04d6ade7e72275df85a109e5edae8d8b5b32f7c70ee"
+      "sha256": "38e06a96bd0f573e15ca5afd49f0bdee9cf8eeaf0b626736c5323d0cb25afaac"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1687,7 +1687,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "835207099c7314bcb4d317f9988dd2d0bd4179620079e15166fe2a328303915d"
+      "sha256": "eb4a4a8d830d179d579ee91cd4425f31e901f159c1262e86739ce23629d70d5d"
     },
     {
       "path": "docs/SETUP.md",
@@ -1696,7 +1696,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ee3fb4451c210f3a3d763ef18acbe2a24dd5607456886af0e6da3077c96f62b8"
+      "sha256": "61ad8775ccd7e3085b8f4937805be18f90f16fb170eb88608498a7be5c44f1e0"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1741,7 +1741,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1c1a14dc9accd79aab0ab9b7e283a02e10c639a8535e10aed980ac829c2c5b09"
+      "sha256": "9511e6a96570a49504ea96a99ed133197dc2107cdf83a45e0bef8de4b91a3bcd"
     },
     {
       "path": "docs/TITLE_TESTING.md",
@@ -1843,7 +1843,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fb7c9d02796b49619cbcfb1520cb731886797c6a84af799debae5905384f2105"
+      "sha256": "e05cb5dbb3366da98859a5165352437744669c0d4ba4f2d7df7af2824f6a2a13"
     },
     {
       "path": "docs/cleanroom/SCHED_SPEC.md",
@@ -1852,7 +1852,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2a26e67934dec5eacbd02220458793c8cc1bc1dbdaed77b0a871cbd264099ef8"
+      "sha256": "8a5fb49f6f922644bddd8acc44e452081f41397decc3af388b7405f95b11b7db"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -5122,7 +5122,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1c4910d95f144d2ade1ddf8f0c10f8a88d89f5a4e56f7b7c09debeeb774d66a7"
+      "sha256": "23ce08a4a81abe7da69c44d783e701666546f81ead626bc85e3e37c55804de92"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -8426,7 +8426,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "79c51e3338e109916fcd096a6556d5c5183655692f557da2739a66048bd16bf8"
+      "sha256": "ebaeb673054c16449ca28553118d0a63811a3e3530d226fcff3aea0c83799812"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8439,7 +8439,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5e1ded5d02b1098324f475ec218031092b254bd049a65d2e9793e1404691b9ed"
+      "sha256": "468865e523ff62557293bdb13524e6f8c450f27dfdab5ef7b6eeb823fce64db5"
     },
     {
       "path": "src/rt/hle_power.h",
@@ -8452,7 +8452,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b69ea53ba698fe6cd7914596a7716dbf18da05bfd7961013a8e7b5ad322eb47f"
+      "sha256": "b1cf896800a16404e84dd9c0c78d89663d8845021dd67dbda3ef9909adc8f853"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -8464,7 +8464,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "17c7cd16f1a254b4b33e708e4c16c5ea658239b953e757f597ca1f6687ee5252"
+      "sha256": "e2aa246b4a70c5c3ec316b614f92f0f2799b2d13a5f5a2b73964c4bf6c017404"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -8927,7 +8927,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "29129ec62842f05256e4f44995445cc2e84fe3195b231930b19bd275ef63ad4d"
+      "sha256": "356a305155526065ff09955b88f2f81521d0b99e2835b6582dbdf89d214faf2d"
     },
     {
       "path": "src/rt/savedata.c",
@@ -8953,7 +8953,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "05823ff1a48eb7eb4e3110c070f58ff0507acd99a0a3623c7e596008c3f89973"
+      "sha256": "6e4ffc82f494671f9eb943789d579cabc3155793b89ec89b912d73fbaac2e638"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -8965,7 +8965,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "646587a23a597ad0e96faf62dd91254e941657bde29cf044f1d0f0dec6d7f243"
+      "sha256": "596f4d5e026921a312a17f22a977a4f5380ffb569be6884dc54cafcf0f04ff40"
     },
     {
       "path": "src/rt/scripted_input.h",
@@ -12286,7 +12286,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9289c2b9aa536b8d726a4a61439cf093b7f098fa87034a0d000389800b8d9cd1"
+      "sha256": "787b8f82aa2fa06d733fb7779014cdd42a553600a7a73091ea0c69831a86ad94"
     },
     {
       "path": "tools/psp_oracle/parse_golden.py",
@@ -14376,7 +14376,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4f8431e5327693f81da9d077f3ee016588cc78ae83bf8345ddb3b1f8ca270c70"
+      "sha256": "bdbf0cec986b6076e6c68a64893c1fcaf0ad24aee2ac4193b180e7aa87f198ff"
     },
     {
       "path": "tools/test_psp_parsers.py",

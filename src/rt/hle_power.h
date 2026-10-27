@@ -11,6 +11,15 @@
 
 #include "recomp.h"
 
+/* Clocks at power-on, in MHz: PSP-3000 oracle, 2026-10-10, hle-power-clock (hle_power.c). */
+#define SR_POWER_BOOT_PLL_MHZ 222u
+#define SR_POWER_BOOT_CPU_MHZ 222u
+#define SR_POWER_BOOT_BUS_MHZ 111u
+
+/* The emulated bus clock in MHz: the boot clock until scePowerSetClockFrequency changes it.
+ * The GE runs on this clock (issue #1296, CASE=ge-timing). */
+uint32_t sr_power_bus_clock_mhz(void);
+
 uint32_t h_PowerGetBatteryLifePercent(CpuState *s);
 uint32_t h_PowerIsBatteryCharging(CpuState *s);
 uint32_t h_PowerIsBatteryExist(CpuState *s);

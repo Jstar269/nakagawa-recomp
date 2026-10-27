@@ -228,7 +228,7 @@ The guest MIPS program must observe:
 
 #### Transparent Archive VFS
 
-Directly reading assets from the `data.xb` container without extracting 56,672 files to disk is fully compatible with LLE **if and only if** it is implemented as a transparent block driver inside `src/rt/iso.c`. The guest continues calling `sceIoOpen("disc0:/PSP_GAME/USRDIR/data.xb", ...)` or standard file APIs, completely unaware that the host is streaming sectors directly from the container.
+Directly reading assets from the `data.xb` container without extracting 56,672 files to disk is fully compatible with LLE **if and only if** it is implemented as a transparent block driver in the runtime's disc I/O layer. The shipped archive-backed VFS is `src/rt/archive_vfs.c` ([`ARCHIVE_VFS.md`](ARCHIVE_VFS.md)). The guest continues calling `sceIoOpen("disc0:/PSP_GAME/USRDIR/data.xb", ...)` or standard file APIs, completely unaware that the host is streaming sectors directly from the container.
 
 ---
 

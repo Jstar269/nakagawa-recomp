@@ -1,8 +1,15 @@
 # Architecture Overview
 
-High-level map of the PSP static recompiler: what each major area does, how data flows, and where
-to start when behavior diverges. The live source, Makefile, and tests are authoritative when this
-overview and implementation disagree.
+This page is a map of how Nakagawa Recomp turns a PSP game into a native program: what each major part
+does, how data flows between them, and where to start looking when something behaves differently from a
+PSP. When this page and the code disagree, the live source, Makefile and tests are right.
+
+In short: the tools in `tools/` read the game's program files, find its functions, and translate its MIPS
+machine code into C ahead of time (AOT). That C is compiled together with the native runtime in `src/rt/`,
+which stands in for the PSP's system software, graphics, sound and input. If the running game reaches valid
+code that wasn't translated, a small interpreter runs it, but only inside code the analyzer has claimed;
+anything it can't handle stops the run with a named message instead of guessing. The player in
+`src/player/` puts it all in front of the user.
 
 ## Pipeline
 
@@ -41,7 +48,8 @@ oracle traces. Those remain local inputs.
 
 ## PSP core, title profile, and backend boundary
 
-Wave 1 introduces a narrow, versioned contract without changing the HST production path:
+The first wave of this work adds a small, versioned contract between the PSP core, a title's profile and
+the host backends, without changing how Hot Shots Tennis (HST) is built today:
 
 ```text
 validated ProgramImage (tools/prxload.py)
@@ -239,7 +247,8 @@ The runtime executes generated guest functions and implements the host side of P
 | `savedata.c` | Utility savedata mapped to host storage |
 | `pgf_public.c` | Project-authored public PGF reader linked under `PUBLIC_SAFE=1`, written from `docs/cleanroom/PGF_SPEC.md` (#349); the lineage-sensitive private backend `pgf.c` was retired on 2026-10-25 |
 | `h264_mf.c` | Windows Media Foundation video-decode integration |
-| `h264_null.c` | Host-neutral/null video-decoder path used by portability/test builds |
+| `h264_ffmpeg.c` / `h264_ffmpeg_sub/` | Portable H.264 backend: the pinned FFmpeg n4.4 decoder subset, the default off Windows (`H264_FFMPEG=1`, [#1263](https://github.com/Jstar269/nakagawa-recomp/pull/1263)) |
+| `h264_null.c` | Shared H.264 front end (decoder instances, PSMF demux, backend selection) and the null backend, which fails closed with a named boundary when no decoder is built (`H264_FFMPEG=0` off Windows) |
 | `osk_win.c` | Win32 on-screen keyboard input box; it blocks its caller until the person answers, so only the text-entry worker shows it |
 | `osk_text_entry.c` / `osk_text_entry.h` | Project-authored, non-blocking keyboard text entry: answers a field in the game window when the presenter can draw the keyboard, otherwise shows the input box on a worker thread so the keyboard never stops guest time; closes whatever it shows when the title drops the keyboard, and opens nothing under the offscreen presenter |
 | `osk_overlay.c` / `osk_overlay.h` | Project-authored in-window on-screen keyboard: the key grid, cursor, typing, the guest's length bound and inputtype, the UTF-16 answer, and edge-based pad input. Pure C with no host dependency; the session it keeps is the one the HLE keyboard polls and the vblank controller latch feeds |

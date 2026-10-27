@@ -1,27 +1,27 @@
 # Documentation
 
-This index covers the active sanitized public source repository and its
-public-safe candidate/export boundary. Source code, tests and the
-Makefile remain authoritative for implementation behavior; curated GitHub Issues
-are authoritative for actionable work. Private operational, title-run and legal
-review documents are intentionally outside the public source tree; explicitly
-labelled historical evidence stays in the tree for provenance.
+This is the map of Nakagawa Recomp's documentation. When a page and the code
+disagree, the source code, tests and Makefile win; GitHub Issues are the place
+for open work. Private run notes and legal review documents are kept outside this
+public repository on purpose, while pages clearly marked as historical stay here
+as a record.
 
 ## For players
 
-Links for playing and trying the project, rather than changing it:
+Start here if you want to play or try the project rather than change it:
 
 - [`../README.md`](../README.md) — what the project is, and the quick start.
 - [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) — playing a game you own.
 - [`../ACCESSIBILITY.md`](../ACCESSIBILITY.md) — what the player does and does not support for accessibility, and how to report a barrier.
-- [`../SUPPORT.md`](../SUPPORT.md) — where to take a question.
+- [`../SUPPORT.md`](../SUPPORT.md) — where to take a question, including
+  [GitHub Discussions](https://github.com/Jstar269/nakagawa-recomp/discussions).
 - [`SHOWCASE.md`](SHOWCASE.md) — the two demo programs.
 - [`COMPATIBILITY.md`](COMPATIBILITY.md) — which games work.
 - [`SETUP.md`](SETUP.md#windows-host-pitfalls) — troubleshooting: Windows host pitfalls.
 
 ## Start here
 
-Rows are what you are about to do, not topics. Read the row you are in, not the table.
+Each row is something you are about to do. Find yours and read what it points to.
 
 | When you are about to | Read |
 | --- | --- |
@@ -88,9 +88,9 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 
 ## Doctrine, player, and productization
 
-These were reachable only by knowing their filenames until now. Doctrine binds
-current work; the productization documents are maintained decision and gap records
-with explicit target and unbuilt boundaries.
+The doctrine pages set rules that current work must follow. The productization
+pages are maintained records of decisions and gaps; each one says plainly what is
+a target and what isn't built yet.
 
 - [`LLE_FIDELITY_ARCHITECTURE.md`](LLE_FIDELITY_ARCHITECTURE.md) — the
   fidelity-over-convenience doctrine and why original guest execution outranks
@@ -115,11 +115,11 @@ with explicit target and unbuilt boundaries.
   productization target and the routes evaluated for it. All four are CURRENT
   maintained records; each marks unbuilt behavior inline, so CURRENT does not mean
   the target pipeline exists.
-- [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md) — proposed scope and packaging
-  specification for an early preview. It is a proposal: creating a tag or release is a
+- [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md) — scope, packaging and qualification
+  guide for the v0.0.1 release candidate. Creating a tag or release is a
   maintainer-only action (`AGENTS.md` section 3), and no agent may perform it.
 - [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md) — draft release notes
-  for the v0.0.1 public build, including the proposed preview copy it superseded.
+  for the v0.0.1 public build.
   Status: DRAFT; releases are maintainer-published.
 
 ## Archive
@@ -152,12 +152,15 @@ history lives in git, so nothing is deleted.
   include/exclude policy and fail-closed candidate construction.
 - [`INDEPENDENCE_CAMPAIGN.md`](INDEPENDENCE_CAMPAIGN.md) plans the route from
   derived code to original code and LLE replacement. A plan only — nothing in
-  it is implemented unless marked.
+  it is implemented unless marked. Since the 2026-10-20 re-scope, working inherited
+  code is no longer rewritten only to make it original.
 - [`cleanroom/SCHED_SPEC.md`](cleanroom/SCHED_SPEC.md) specifies scheduler
-  behaviour for a future clean-room implementation. A spec only — the derived
-  scheduler it describes replacing is still the shipped code.
+  behaviour. It was written for a clean-room rewrite that is no longer planned
+  ([#340](https://github.com/Jstar269/nakagawa-recomp/issues/340) was closed as not planned); it stays as a behaviour reference, and the
+  derived scheduler is the shipped code.
 - [`cleanroom/PRX_LOADER_SPEC.md`](cleanroom/PRX_LOADER_SPEC.md) specifies the
-  runtime PSP module (PRX) loader for clean-room rewrite unit G3.
+  runtime PSP module (PRX) loader. It was written for clean-room rewrite unit G3,
+  which the 2026-10-20 re-scope no longer plans; it stays as a behaviour reference.
 - [`cleanroom/PGF_SPEC.md`](cleanroom/PGF_SPEC.md) specifies the runtime PSP
   PGF reader for clean-room rewrite unit G4. The public reader built from it
   landed as `src/rt/pgf_public.c` (PR #474) and is available for supported inputs,
@@ -222,11 +225,11 @@ Every substantial document carries one status.
 | `TITLE_PROFILE_ARCHITECTURE.md` | CURRENT | No-hardcoded-title rule, enforced by `tools/test_generic_title_planning_proof.py` |
 | `NATIVE_UI_REGRESSION_MATRIX.md` | CURRENT | Authoritative capability disposition table plus the native slice functional checklist |
 | `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation narrative and launch-path evidence; per-capability status is maintained in `NATIVE_UI_REGRESSION_MATRIX.md` |
-| `PREVIEW_RELEASE.md` | CURRENT | Proposed preview scope. A proposal only — tags and releases are maintainer-only |
-| `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build; carries the proposed preview copy |
+| `PREVIEW_RELEASE.md` | CURRENT | v0.0.1 release candidate scope and qualification guide; tags and releases are maintainer-only |
+| `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build |
 | `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists and the player decrypts the user's own disc locally, while retail-disc hash validation and one-click play without the developer toolchain remain unbuilt and are marked inline |
 | `PLAYER_UI_DESIGN.md` | CURRENT | Player UI design system for the default launcher: tokens, components, and the screen specs C6-C8 build against |
-| `ONLINE_FEATURES.md` | DRAFT | Design for the launcher's opt-in online mode (update check, news, user-sent reports) and developer mode, asked in the setup wizard; nothing built yet |
+| `ONLINE_FEATURES.md` | DRAFT | Design for the launcher's opt-in online mode (update check, news, user-sent reports) and developer mode, asked in the setup wizard; the switches, the wizard step and the developer log panel are built, no online feature is yet |
 | `AOT_PRODUCTIZATION_ARCHITECTURE.md` | CURRENT | Maintained evaluation of end-user recompilation routes A-G; the zero-toolchain recommended routes remain unimplemented |
 | `RUNTIME_PACKAGING_ARCHITECTURE.md` | CURRENT | Maintained process-isolation decision record; installers and one-click end-user preparation remain unbuilt |
 | `ISO_ONLY_GAP_ANALYSIS.md` | CURRENT | Maintained LLE gap analysis; existing bounded ISO helpers and the remaining retail-preparation stages are distinguished inline |
