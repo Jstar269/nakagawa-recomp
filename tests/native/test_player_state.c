@@ -4607,6 +4607,75 @@ int main(int argc, char **argv) {
             assert(false);
         }
         assert(strcmp(written_profile_id, "experimental-ulus99997") == 0);
+        /* Launcher review B1: that profile, written for a disc whose EBOOT.BIN
+           is encrypted, names no executable yet. It reads back unbound, and
+           never as bound to EBOOT.BIN. Before the fix the reader refused its
+           empty selected_executable, so the title page said "Add the disc
+           again" forever and BUILD PACKAGE stayed off. */
+        {
+            NkTitleEntrySnapshot unbound = {0};
+            char unbound_error[512] = "";
+            char unbound_hash[65] = "";
+            if (!nk_title_manifest_read_unbound_experimental_profile(
+                    preflight_root, "ULUS99997", "experimental-ulus99997", &unbound,
+                    unbound_error, sizeof(unbound_error))) {
+                fprintf(stderr, "[PLAYER_STATE_TEST] unbound profile read: %s\n",
+                        unbound_error);
+                assert(false);
+            }
+            assert(strcmp(unbound.entry.id, "experimental-ulus99997") == 0);
+            assert(strcmp(unbound.entry.primary_disc_id, "ULUS99997") == 0);
+            nk_title_catalog_snapshot_release(&unbound);
+            assert(!nk_title_manifest_read_experimental_profile(
+                preflight_root, "ULUS99997", "experimental-ulus99997", "EBOOT.BIN",
+                &unbound, unbound_hash, unbound_error, sizeof(unbound_error)));
+            nk_title_catalog_snapshot_release(&unbound);
+
+            /* The title page's check: an experimental disc with an encrypted
+               EBOOT.BIN, its decrypted EBOOT.elf in the title's folder and
+               that unbound profile has valid title settings. */
+            GameRecord saved_game = wiz->inspecting_game;
+            NkIsoExecutableReport encrypted;
+            char elf_dir[1024], elf_path[1280];
+            unsigned char elf[88];
+            FILE *elf_file;
+            const PlayerPreflightCheck *profile_check;
+            int elf_written = snprintf(elf_dir, sizeof(elf_dir), "%s%ctitles%cULUS99997%cdecrypted",
+                                       preflight_root, nk_platform_path_separator(),
+                                       nk_platform_path_separator(),
+                                       nk_platform_path_separator());
+            assert(elf_written > 0 && (size_t)elf_written < sizeof(elf_dir));
+            assert(nk_platform_mkdir_p(elf_dir));
+            elf_written = snprintf(elf_path, sizeof(elf_path), "%s%cEBOOT.elf", elf_dir,
+                                   nk_platform_path_separator());
+            assert(elf_written > 0 && (size_t)elf_written < sizeof(elf_path));
+            build_synthetic_mips_elf(elf);
+            elf_file = fopen(elf_path, "wb");
+            assert(elf_file != NULL);
+            assert(fwrite(elf, 1, sizeof(elf), elf_file) == sizeof(elf));
+            assert(fclose(elf_file) == 0);
+            memset(&wiz->inspecting_game, 0, sizeof(wiz->inspecting_game));
+            snprintf(wiz->inspecting_game.disc_id, sizeof(wiz->inspecting_game.disc_id),
+                     "ULUS99997");
+            snprintf(wiz->inspecting_game.title_id, sizeof(wiz->inspecting_game.title_id),
+                     "experimental-ulus99997");
+            wiz->inspecting_game.is_experimental = true;
+            wiz->inspecting_game.status = NK_STATUS_IDENTIFIED;
+            memset(&encrypted, 0, sizeof(encrypted));
+            encrypted.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+            encrypted.selected = NK_ISO_EXEC_SELECTION_NONE;
+            player_app_build_compatibility_preflight(wiz, true, true, &encrypted);
+            profile_check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+            assert(profile_check && profile_check->status == PREFLIGHT_OK);
+            profile_check = find_preflight_check(&wiz->wizard.preflight, "TITLE_PROFILE");
+            if (!profile_check || profile_check->status != PREFLIGHT_OK) {
+                fprintf(stderr, "[PLAYER_STATE_TEST] title profile: %s\n",
+                        profile_check ? profile_check->message : "(missing)");
+                assert(false);
+            }
+            assert(remove(elf_path) == 0);
+            wiz->inspecting_game = saved_game;
+        }
         assert(nk_title_catalog_epoch() == epoch_before_profile_read);
         for (int slot = 0; slot < 8; slot++) {
             char slot_id[32];

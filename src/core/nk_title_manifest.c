@@ -4613,9 +4613,16 @@ static bool nk_title_manifest_read_experimental_profile_impl(
     const char *elf_hash = NULL;
     bool unbound_executable = false;
     if (valid) {
+        /* selected_executable is "" in the profile written for a disc whose
+           EBOOT.BIN is encrypted (no plain executable to bind yet), so it is
+           read as any string: package_string refuses an empty one, which
+           made that unbound profile unreadable and its title unbuildable. */
+        const JsonNode *selected_node = obj_get(identity, "selected_executable");
         valid = package_string(obj_get(identity, "disc_id"), &profile_disc) &&
                 strcmp(profile_disc, normalized) == 0 &&
-                package_string(obj_get(identity, "selected_executable"), &profile_executable);
+                selected_node && selected_node->type == JSON_STRING &&
+                selected_node->u.str_val;
+        if (valid) profile_executable = selected_node->u.str_val;
         if (valid && profile_executable[0] == '\0') {
             unbound_executable = allow_unbound_executable &&
                 nk_json_is_null(obj_get(identity, "executable_sha256")) &&
