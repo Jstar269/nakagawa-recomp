@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "cc383e83d255deb74632063370c37ce7eda397447beb257ef148e4b73fdce8d2"
+      "sha256": "8d744f90b3aa9f5b8a653f2ca42c7af94408147c2bfdccacfb31a8db75cfed00"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8932,7 +8932,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "53cc6c09f6058590ec30eb70adec21e940ad2c443987ce167cecf38bfbed773d"
+      "sha256": "562f19529e46dd561ab5af524ebbcda9c0de5a29160c67b8e38e112d86ea0790"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -14644,7 +14644,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c187b277655418d5be8a844e8fead392cab577616d0400d7b424f6c6428bdbb"
+      "sha256": "55f31a05ea052937e9f5a1f4adc914d72424006cbcb5c87933eb9aacb15ea04a"
     },
     {
       "path": "tools/test_scratch_dir.py",
