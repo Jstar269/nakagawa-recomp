@@ -45,6 +45,11 @@ decoder maps the ordinal to a generation and retail family; it never applies
 the PSPSDK enum table to the kernel-only `sceKernelGetModel()` original/slim
 convention.
 
+`CASE=cpu-timing` measures generic Allegrex instruction classes and PSP syscall
+fast paths using fixed synthetic buffers. It runs at 333/166 MHz and restores
+the boot clocks before teardown; raw measurements are retained in the private
+host0 log.
+
 Bounded follow-up cases for issues #69, #311, and #303 are `CASE=ge-nan`,
 `CASE=audio-query`, and `CASE=dma-cells`; these remain `NOT_RUN`. The
 `CASE=delay-zero` records were measured on the accepted 2026-10-01 PSPLink
@@ -505,9 +510,61 @@ it measures bounded overrun classification and never treats `K` as a physical
 invalid boundary. An unowned destination tail remains `SKIP`; invalid-span
 validation and K3/K4 remain `NOT_RUN` under #303.
 
+## Allegrex and syscall timing (`CASE=cpu-timing`; [issue #1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296))
+
+The CPU timing case uses an unrolled eight-instruction body, a matched loop
+control, eight rounds, and seven trials at each block size. The instruction
+cells cover integer add/shift/logic, multiply and divide with `mflo`, cached
+and streamed loads/stores, taken and not-taken branches with delay slots, FPU
+add/multiply/divide, and VFPU add/multiply. The streamed cells use a 128 KiB
+synthetic buffer and one cache-line stride; the hot cells repeatedly access one
+word. The case changes the PSP clock to 333/166 MHz for the measurements and
+restores the boot CPU and bus clocks before teardown.
+
+Each instruction record's `result` is hundredths of a CPU cycle per counted
+instruction after subtracting the matched loop control. Its outputs are the
+instruction count, median measured microseconds, median control microseconds,
+and CPU MHz. The syscall cells use repeated calls with a matched no-op call
+loop and report hundredths of a CPU cycle per API call. They cover setting the
+currently displayed framebuffer to the same buffer, accumulated hcount,
+completed `sceGeDrawSync(0)`, empty GE list enqueue and stall release, and
+uncontended semaphore and lightweight-mutex pairs. `sceDisplayWaitVblankStart`
+is recorded separately as wall latency because the scheduler owns the wait;
+it is not charged as CPU service time. Blocking `sceGeDrawSync(0)` uses four calls
+per trial in a helper thread with a 100 ms caller timeout and termination path.
+GE enqueue and stall-update measurements queue one stalled list per trial,
+advance the stall address to the byte end returned by `sceGuFinish()`, and wait
+for idle before the next trial. GE list completion is polled for at most 250 ms
+and reset on timeout.
+
+The display cell needs a displayed framebuffer. Standalone PSPLink (the game
+context after a PSPLink reset) displays none, so there the probe displays its
+own 8888 buffer, stride 512, at the start of eDRAM, as a game would, measures,
+and then sets back the null framebuffer the PSP reported. Both changes use
+`PSP_DISPLAY_SETBUF_NEXTFRAME` and wait for the vblank that latches them: an
+immediate set that changes the stride or format returns `0x80000107`. The
+`cpu-timing-framebuffer` row follows the display cell: `result` is 1 when the
+probe displayed its own buffer and 0 when it re-set the PSP's; `out0` is the
+`sceDisplayGetFrameBuf` (or probe `sceDisplaySetFrameBuf`) result, `out1-3` the
+buffer, stride and format the cell used, and `out4` the restoring
+`sceDisplaySetFrameBuf` result (0 when nothing was restored).
+
+After the GE cells, `cpu-timing-gu-teardown` records the GE teardown (`out0`
+reset issued, `out1` `sceGeBreak` result, `out2` last draw state, `out3` elapsed
+us, `out4` `sceGuTerm` ran; `TIMEOUT` when the GE did not reach idle, `SKIP`
+when `sceGuInit` was never called). The GE cells are written only after it.
+
+The 65 semantic rows end with `cpu-timing-done` (clock restoration), followed
+by `cpu-timing-complete` with `out0=65`. The runner checks their exact order and
+field counts. Framebuffer, GE-idle, or sync setup refusals emit `SKIP` rows in
+the same shape; any non-`PASS` measurement makes the capture ineligible. The
+GE enqueue and stall-update rows also report `out4` as the first negative PSP
+return code, `out5` as successful enqueues in the last trial, and `out6` as
+stall-update attempts in the last trial.
+
 **GE teardown.** `sceGuInit` registers libpspgu's GE signal and finish
 callbacks, which are code in the probe PRX, and only `sceGuTerm` removes them.
-Every case that calls `sceGuInit` (`ge-nan`, `vram-mirror`, `ge-timing`)
+Every case that calls `sceGuInit` (`ge-nan`, `vram-mirror`, `ge-timing`, `cpu-timing`)
 therefore ends in `ge_gu_teardown` on every path once `sceGuInit` has run: a
 bounded wait for the GE to go idle, a queue reset (`sceGeBreak(1)`) and a
 second bounded wait when it is still busy, then the unregistration of the

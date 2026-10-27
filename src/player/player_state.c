@@ -10,6 +10,8 @@
 #include "nk_font.h"
 #include "nk_json.h"
 #include "nk_platform.h"
+#include "nk_psp_container.h"
+#include "nk_psp_keystore.h"
 #include "iso_reader.h"
 #include "nk_title_manifest.h"
 #include <errno.h>
@@ -3390,12 +3392,36 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
     char gcc_path[NK_MAX_PATH];
     char make_path[NK_MAX_PATH];
     char python_path[NK_MAX_PATH];
-    bool have_python = package_builder_find_python_in_root(user_data_root,
-                                                            python_path, sizeof(python_path));
-    bool have_gcc = package_builder_find_tool_in_root("gcc", user_data_root,
-                                                       gcc_path, sizeof(gcc_path));
-    bool have_make = package_builder_find_tool_in_root("mingw32-make", user_data_root,
-                                                        make_path, sizeof(make_path));
+    /* A release zip's verified prereqs/ tree (#1285) is the pinned toolchain:
+       it outranks PATH and the per-user download, needs no consent card and
+       no network, and a damaged one is refused by name rather than replaced. */
+    PackageBundledTools bundled;
+    PackageBundleStatus bundle_status =
+        package_builder_resolve_bundled_tools(app->install_root, cli_path, &bundled);
+    if (bundle_status == PACKAGE_BUNDLE_INVALID) {
+        player_app_set_error(app, "PREREQUISITE_BUNDLE_INVALID",
+                             "Bundled Build Tools Are Damaged", bundled.error,
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+    bool have_python;
+    bool have_gcc;
+    bool have_make;
+    if (bundle_status == PACKAGE_BUNDLE_VALID) {
+        snprintf(python_path, sizeof(python_path), "%s", bundled.python_path);
+        snprintf(gcc_path, sizeof(gcc_path), "%s", bundled.gcc_path);
+        snprintf(make_path, sizeof(make_path), "%s", bundled.make_path);
+        snprintf(app->build_session.prerequisites_root,
+                 sizeof(app->build_session.prerequisites_root), "%s", bundled.root);
+        have_python = have_gcc = have_make = true;
+    } else {
+        have_python = package_builder_find_python_in_root(user_data_root,
+                                                          python_path, sizeof(python_path));
+        have_gcc = package_builder_find_tool_in_root("gcc", user_data_root,
+                                                     gcc_path, sizeof(gcc_path));
+        have_make = package_builder_find_tool_in_root("mingw32-make", user_data_root,
+                                                      make_path, sizeof(make_path));
+    }
     bool missing_toolchain = !have_gcc || !have_make;
     if (!have_python || missing_toolchain) {
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -3623,8 +3649,21 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
                              "Return to Settings", VIEW_SETTINGS);
         return false;
     }
-    package_builder_mark_prerequisites_installed(&list, data_root);
+    /* A verified release bundle (#1285) is what BUILD PACKAGE uses, so list it
+       and its notices; otherwise list the per-user download. */
+    char bundle_root[NK_MAX_PATH];
+    if (package_builder_bundled_prerequisites_root(app->install_root, bundle_root,
+                                                   sizeof(bundle_root)) &&
+        package_builder_check_bundled_prerequisites(bundle_root, &list, error, sizeof(error)) ==
+            PACKAGE_BUNDLE_VALID) {
+        package_builder_mark_prerequisites_installed_at(&list, bundle_root);
+    } else {
+        bundle_root[0] = '\0';
+        package_builder_mark_prerequisites_installed(&list, data_root);
+    }
     app->prerequisites.items = list;
+    snprintf(app->prerequisites.bundle_root, sizeof(app->prerequisites.bundle_root), "%s",
+             bundle_root);
     app->prerequisites.item_count = 0;
     for (size_t i = 0; i < list.count; i++) {
         if (list.items[i].installed) app->prerequisites.item_count++;
@@ -3651,6 +3690,12 @@ bool player_app_request_license_folder(PlayerApp *app) {
     int n;
     if (!app) return false;
     app->request_open_folder = false;
+    if (app->prerequisites.bundle_root[0]) {
+        n = snprintf(path, sizeof(path), "%s%cnotices", app->prerequisites.bundle_root,
+                     nk_platform_path_separator());
+        if (n < 0 || (size_t)n >= sizeof(path)) return false;
+        return player_app_request_open_folder(app, path);
+    }
     if (!player_app_data_root(app, data_root, sizeof(data_root)) || !data_root[0]) return false;
     n = snprintf(path, sizeof(path),
                  "%s%cprerequisites%cnotices", data_root,
@@ -4385,6 +4430,146 @@ static bool player_is_usable_mips_elf32(const char *path, bool module) {
     return usable;
 }
 
+/* Built-in game decryption (owner decision 2026-10-27, #295). The largest
+   program file the boundary takes from a disc, as in the module scan. */
+#define PLAYER_DECRYPT_MAX_INPUT (64u * 1024u * 1024u)
+
+/* One encrypted program file from the user's own disc, decrypted with the
+   built-in game tables into the title's private folder. A file already at the
+   destination is the user's and is never replaced. The result is written
+   beside it, checked against the shared PSP ELF32/MIPS layout rule, and only
+   then renamed into place, so a failed or interrupted run leaves nothing.
+   Firmware is refused by the boundary before any key is read. Returns the
+   named result (nk_psp_status_name, or VALIDATION_FAILURE, OUTPUT_EXISTS,
+   RESOURCE_LIMIT); "VALIDATED_DECRYPTED" means the file is in place. */
+static const char *player_decrypt_disc_file(const char *iso_path, uint32_t lba,
+                                            uint32_t size, const char *directory,
+                                            const char *destination, bool module,
+                                            char *detail, size_t detail_size) {
+    char staged[NK_MAX_PATH * 2 + 340];
+    char key_error[160];
+    unsigned char *input;
+    uint8_t *plain = NULL;
+    size_t plain_size = 0;
+    NkIsoReader *reader;
+    NkKeystore *keys;
+    NkPspCtx ctx;
+    FILE *out;
+    int rc;
+    if (detail && detail_size) detail[0] = '\0';
+    if (size == 0 || size > PLAYER_DECRYPT_MAX_INPUT) {
+        if (detail && detail_size) {
+            snprintf(detail, detail_size, "the file on the disc is %u bytes", (unsigned)size);
+        }
+        return "RESOURCE_LIMIT";
+    }
+    int written = snprintf(staged, sizeof(staged), "%s.decrypting", destination);
+    if (written < 0 || (size_t)written >= sizeof(staged)) return "IO_FAILURE";
+    input = (unsigned char *)malloc(size);
+    if (input == NULL) return "RESOURCE_LIMIT";
+    reader = nk_iso_reader_open(iso_path);
+    if (reader == NULL || nk_iso_reader_read(reader, lba, 0, input, size) != (int)size) {
+        if (reader) nk_iso_reader_close(reader);
+        free(input);
+        if (detail && detail_size) snprintf(detail, detail_size, "the disc image could not be read");
+        return "IO_FAILURE";
+    }
+    nk_iso_reader_close(reader);
+    keys = nk_keystore_create();
+    if (keys == NULL ||
+        nk_keystore_load_builtin(keys, key_error, sizeof(key_error)) != NK_PSP_OK) {
+        nk_keystore_free(keys);
+        free(input);
+        if (detail && detail_size) snprintf(detail, detail_size, "%s", keys ? key_error : "out of memory");
+        return "INTERNAL_ERROR";
+    }
+    nk_psp_ctx_init(&ctx, keys);
+    rc = nk_container_decrypt(&ctx, input, size, &plain, &plain_size);
+    nk_keystore_free(keys);
+    free(input);
+    if (rc != NK_PSP_OK) {
+        if (detail && detail_size) snprintf(detail, detail_size, "%.300s", ctx.message);
+        return nk_psp_status_name(rc);
+    }
+    if (!nk_platform_mkdir_p_private(directory)) {
+        free(plain);
+        if (detail && detail_size) snprintf(detail, detail_size, "the title's folder could not be made");
+        return "IO_FAILURE";
+    }
+    (void)nk_remove_utf8(staged);
+    out = nk_fopen_utf8(staged, "wb");
+    if (out == NULL || fwrite(plain, 1, plain_size, out) != plain_size) {
+        if (out) fclose(out);
+        free(plain);
+        (void)nk_remove_utf8(staged);
+        if (detail && detail_size) snprintf(detail, detail_size, "the decrypted file could not be written");
+        return "IO_FAILURE";
+    }
+    free(plain);
+    if (fclose(out) != 0) {
+        (void)nk_remove_utf8(staged);
+        if (detail && detail_size) snprintf(detail, detail_size, "the decrypted file could not be written");
+        return "IO_FAILURE";
+    }
+    if (!player_is_usable_mips_elf32(staged, module)) {
+        (void)nk_remove_utf8(staged);
+        if (detail && detail_size) {
+            snprintf(detail, detail_size, "the decrypted file is not a usable MIPS ELF32 %s",
+                     module ? "module" : "program");
+        }
+        return "VALIDATION_FAILURE";
+    }
+    if (!nk_platform_path_missing(destination)) {
+        (void)nk_remove_utf8(staged);
+        return "OUTPUT_EXISTS";
+    }
+    if (nk_rename_utf8(staged, destination) != 0) {
+        (void)nk_remove_utf8(staged);
+        if (detail && detail_size) snprintf(detail, detail_size, "the decrypted file could not be moved into place");
+        return "IO_FAILURE";
+    }
+    return "VALIDATED_DECRYPTED";
+}
+
+/* What a decryption result means, in the cards' plain words. */
+static const char *player_decrypt_plain_reason(const char *status) {
+    if (strcmp(status, "KEY_REQUIRED") == 0 || strcmp(status, "UNSUPPORTED_SCHEME") == 0) {
+        return "it uses an encryption Nakagawa doesn't cover yet";
+    }
+    if (strcmp(status, "FIRMWARE_OUT_OF_SCOPE") == 0) {
+        return "it is PSP system software, which Nakagawa never decrypts";
+    }
+    if (strcmp(status, "MALFORMED_INPUT") == 0 || strcmp(status, "INTEGRITY_FAILURE") == 0 ||
+        strcmp(status, "DECOMPRESS_FAILURE") == 0) {
+        return "the file on the disc looks damaged or changed";
+    }
+    if (strcmp(status, "VALIDATION_FAILURE") == 0) {
+        return "the result didn't check out, so nothing was kept";
+    }
+    if (strcmp(status, "IO_FAILURE") == 0 || strcmp(status, "RESOURCE_LIMIT") == 0) {
+        return "a file couldn't be read or written";
+    }
+    return "something went wrong inside Nakagawa";
+}
+
+/* The disc's EBOOT.BIN, decrypted into the title's folder as EBOOT.elf. */
+static const char *player_decrypt_disc_eboot(const char *iso_path, const char *directory,
+                                             const char *elf_path,
+                                             char *detail, size_t detail_size) {
+    uint32_t lba = 0, size = 0;
+    bool is_dir = false;
+    NkIsoReader *reader = nk_iso_reader_open(iso_path);
+    int found = reader ? nk_iso_reader_lookup(reader, "PSP_GAME/SYSDIR/EBOOT.BIN",
+                                              &lba, &size, &is_dir) : -1;
+    if (reader) nk_iso_reader_close(reader);
+    if (found != 0 || is_dir) {
+        if (detail && detail_size) snprintf(detail, detail_size, "EBOOT.BIN could not be found on the disc");
+        return "IO_FAILURE";
+    }
+    return player_decrypt_disc_file(iso_path, lba, size, directory, elf_path, false,
+                                    detail, detail_size);
+}
+
 static PlayerDecryptedEbootState player_find_decrypted_eboot(
     const char *runtime_root, const char *disc_id, char *directory,
     size_t directory_size, char *elf_path, size_t elf_path_size) {
@@ -4401,9 +4586,10 @@ static PlayerDecryptedEbootState player_find_decrypted_eboot(
 
 /* Issue #308 guest-module readiness: the disc's own PRX modules are resolved
    through the same per-title folder as the executable, one module at a time
-   and fail closed per module.  Nakagawa does not decrypt games: an encrypted
-   module is ready only when the user supplies a plain copy in that folder.
-   CFW patch-module exclusion stays the intake route's named job. */
+   and fail closed per module.  An encrypted module with no copy there is
+   decrypted from the disc with the built-in game tables (#295); a plain copy
+   the user put there always wins.  CFW patch-module exclusion stays the
+   intake route's named job. */
 /* Disc surveys found 35+ PRXs in one folder; 256 covers that count with a
    fixed upper bound for malformed images. */
 #define PLAYER_MAX_GUEST_MODULES 256
@@ -4667,8 +4853,9 @@ static void player_check_guest_modules(const GameRecord *game,
     char message[2048];
     char discovery_message[2048];
     char more[40];
-    size_t total = 0, ready = 0, not_ready = 0;
+    size_t total = 0, ready = 0, not_ready = 0, decrypted = 0;
     bool first_encrypted = false;
+    const char *first_status = "";
     PlayerModuleScanStatus scan_status;
     if (!game || !game->iso_path[0] || !game->disc_id[0]) {
         return;
@@ -4744,18 +4931,38 @@ static void player_check_guest_modules(const GameRecord *game,
             ready++;
             continue;
         }
-        /* Encrypted on the disc and no plain copy supplied: Nakagawa does not
-         * decrypt games, so this module stays not ready. */
-        not_ready++;
-        if (first_name[0] == '\0') {
-            snprintf(first_name, sizeof(first_name), "%.200s", module->name);
-            first_encrypted = true;
+        /* Encrypted on the disc and no plain copy supplied: decrypt it with
+         * the built-in tables. It stays not ready only when that stops. */
+        {
+            char decrypt_detail[320];
+            const char *status = player_decrypt_disc_file(
+                game->iso_path, module->lba, module->size, decrypted_dir,
+                module_path, true, decrypt_detail, sizeof(decrypt_detail));
+            if (strcmp(status, "VALIDATED_DECRYPTED") == 0) {
+                ready++;
+                decrypted++;
+                continue;
+            }
+            not_ready++;
+            if (first_name[0] == '\0') {
+                snprintf(first_name, sizeof(first_name), "%.200s", module->name);
+                snprintf(first_detail, sizeof(first_detail), "%.300s", decrypt_detail);
+                first_status = status;
+                first_encrypted = true;
+            }
         }
     }
     if (not_ready == 0) {
-        snprintf(message, sizeof(message),
-                 "Guest modules: %u of %u ready.",
-                 (unsigned)ready, (unsigned)total);
+        if (decrypted > 0) {
+            snprintf(message, sizeof(message),
+                     "Guest modules: %u of %u ready; %u decrypted from the disc with "
+                     "the built-in tables.",
+                     (unsigned)ready, (unsigned)total, (unsigned)decrypted);
+        } else {
+            snprintf(message, sizeof(message),
+                     "Guest modules: %u of %u ready.",
+                     (unsigned)ready, (unsigned)total);
+        }
         player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_OK, message,
                              NULL, 0);
         free(modules);
@@ -4771,16 +4978,16 @@ static void player_check_guest_modules(const GameRecord *game,
         if (first_encrypted) {
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; ENCRYPTED_MODULE: %.200s "
-                     "is encrypted%s. Nakagawa does not decrypt games. Place a "
-                     "decrypted %.200s from your own copy in %.900s.",
-                     (unsigned)ready, (unsigned)total, first_name, more,
-                     first_name, decrypted_dir);
+                     "is encrypted and built-in decryption stopped: %s (%.300s)%s. "
+                     "Place a decrypted %.200s from your own copy in %.900s.",
+                     (unsigned)ready, (unsigned)total, first_name, first_status,
+                     first_detail, more, first_name, decrypted_dir);
             player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_MISSING,
                                  message, issues, 1);
             player_preflight_set_plain(preflight,
-                "Some of the game's program files are encrypted, and Nakagawa doesn't "
-                "decrypt games. Put a decrypted %.120s from your own copy in %.300s.",
-                first_name, decrypted_dir);
+                "Nakagawa couldn't decrypt one of the game's program files (%.120s): %s. "
+                "You can put a decrypted copy from your own disc in %.300s.",
+                first_name, player_decrypt_plain_reason(first_status), decrypted_dir);
         } else {
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; %.200s is not ready "
@@ -4953,9 +5160,34 @@ static void player_build_compatibility_preflight_for_game(
         PlayerDecryptedEbootState decrypted_state = player_find_decrypted_eboot(
             runtime_root, game->disc_id, decrypted_dir,
             sizeof(decrypted_dir), decrypted_elf, sizeof(decrypted_elf));
-        if (decrypted_state == PLAYER_DECRYPTED_EBOOT_VALID) {
+        const char *decrypt_status = "";
+        char decrypt_detail[320] = "";
+        if (decrypted_state == PLAYER_DECRYPTED_EBOOT_MISSING && disc_readable &&
+            game->iso_path[0]) {
+            /* No EBOOT.elf yet: decrypt the disc's own with the built-in
+             * tables (#295). A copy the user put there is never replaced. */
+            decrypt_status = player_decrypt_disc_eboot(game->iso_path, decrypted_dir,
+                                                       decrypted_elf, decrypt_detail,
+                                                       sizeof(decrypt_detail));
+            if (strcmp(decrypt_status, "VALIDATED_DECRYPTED") == 0) {
+                decrypted_state = PLAYER_DECRYPTED_EBOOT_VALID;
+                player_dev_log_add(app, "disc", "%.16s EBOOT.BIN decrypted with the built-in tables",
+                                   game->disc_id);
+            } else {
+                player_dev_log_add(app, "disc", "%.16s EBOOT.BIN not decrypted: %s",
+                                   game->disc_id, decrypt_status);
+            }
+        }
+        if (decrypted_state == PLAYER_DECRYPTED_EBOOT_VALID &&
+            strcmp(decrypt_status, "VALIDATED_DECRYPTED") == 0) {
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
-                "User-supplied decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
+                "EBOOT.BIN was decrypted from the disc with the built-in tables; the "
+                "decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
+                NULL, 0);
+        } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_VALID) {
+            player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
+                "The decrypted EBOOT.elf in the title's folder is a valid MIPS ELF32 and "
+                "selected for analysis.",
                 NULL, 0);
         } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_INVALID) {
             char message[512];
@@ -4969,19 +5201,21 @@ static void player_build_compatibility_preflight_for_game(
                 "The EBOOT.elf you added isn't a working game program. Replace it with a "
                 "decrypted EBOOT.elf from your own copy in %.300s.", decrypted_dir);
         } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_MISSING) {
-            /* Nakagawa does not decrypt games and reads no key file: an
-             * encrypted EBOOT.BIN needs a user-supplied decrypted EBOOT.elf. */
-            char message[512];
+            /* Built-in decryption stopped with a named result: the user may
+             * still put a decrypted EBOOT.elf from their own copy there. */
+            char message[1024];
+            if (!decrypt_status[0]) decrypt_status = "IO_FAILURE";
             snprintf(message, sizeof(message),
-                "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not "
-                "decrypt games. Place a decrypted EBOOT.elf from your own copy in "
+                "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption "
+                "stopped: %s (%.300s). Place a decrypted EBOOT.elf from your own copy in "
                 "%.300s.",
-                decrypted_dir);
+                decrypt_status, decrypt_detail, decrypted_dir);
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                  message, issues, 1);
             player_preflight_set_plain(preflight,
-                "The game's program is encrypted, and Nakagawa doesn't decrypt games. Put a "
-                "decrypted EBOOT.elf from your own copy in %.300s.", decrypted_dir);
+                "Nakagawa couldn't decrypt the game's program: %s. You can put a "
+                "decrypted EBOOT.elf from your own copy in %.300s.",
+                player_decrypt_plain_reason(decrypt_status), decrypted_dir);
         } else {
             static const unsigned int path_issues[] = { 308 };
             char message[512];

@@ -418,30 +418,12 @@ SCHEDULER_HOOKS = [
                     "needs no host participation"),
 ]
 
-# HST-only guest Newlib addresses now live behind the validated HST title-config
-# accessor. They are not generic scheduler overrides and are absent from sched.c.
-TITLE_CONFIGURED_SCHEDULER_COMPAT = [
-    dict(address=0x002cf338, category="temporary_compatibility_patch",
-         name="master reent fallback address",
-         source="src/rt/title_config.c:sr_title_config_reent_bindings",
-         title_scope="hst-ucus98701",
-         reason="provides the pre-launcher Newlib master only for the validated HST profile; "
-                "generic and fixture builds receive no address",
-         test="tools/test_hle_title_isolation.py and flagship verification",
-         owner_issue="#363",
-         retirement="model the actual libc/thread bring-up so the pre-launcher master reent needs "
-                    "no host-supplied address; then remove the binding"),
-    dict(address=0x0030aa88, category="temporary_compatibility_patch",
-         name="guest thread reent table root",
-         source="src/rt/title_config.c:sr_title_config_reent_bindings",
-         title_scope="hst-ucus98701",
-         reason="seeds and maintains the guest's legacy per-thread reent hash only for the "
-                "validated HST profile; generic builds perform no guest-table access",
-         test="tools/test_hle_title_isolation.py and flagship verification",
-         owner_issue="#363",
-         retirement="model the guest's own per-thread reent registration so the host stops "
-                    "seeding the guest table; then remove the binding"),
-]
+# HST-only guest Newlib reent bindings. The two entries (0x002cf338 master reent fallback
+# address, 0x0030aa88 guest thread reent table root) were retired under #363 (2026-10-27):
+# they were selected only by a manifest id no local HST manifest carries, so the private
+# full-match route already ran without them. The runtime no longer seeds, maintains or
+# resets the guest's per-thread reent table, and no reent address remains in public source.
+TITLE_CONFIGURED_SCHEDULER_COMPAT: "list[dict]" = []
 
 # --- src/rt/recomp.c: dispatch bindings owned by TITLE CONFIGURATION ----------
 # These three used to be numeric literals compiled into generic dispatch. They are

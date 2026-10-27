@@ -153,6 +153,12 @@ KEY_FILE_DATA_SUFFIXES = {
     "", ".json", ".txt", ".bin", ".dat", ".cfg", ".conf", ".ini",
     ".key", ".keys", ".pem",
 }
+#: The one reviewed table of public game-decryption keys (maintainer decision
+#: 2026-10-27, AGENTS.md section 5): the PPSSPP tag tables Nakagawa uses to
+#: decrypt a game the user owns. Its bytes are admitted exactly, like every public
+#: path; a key literal anywhere else still fails, and so does a copy of this file
+#: under another name.
+PUBLIC_GAME_KEY_TABLE_PATHS = frozenset({"src/core/nk_psp_builtin_keys.c"})
 #: Every loadable KeyStore names this format; a tracked copy carries key material.
 KEYSTORE_CONTENT_MARKER = "nakagawa-psp-keystore"
 #: Source and prose files may legitimately name the KeyStore format itself.
@@ -1240,6 +1246,14 @@ def private_key_assignment_lines(text: str, filename: str = "") -> list[int]:
     if c_lines:
         return c_lines
     return _json_key_assignment_lines(text)
+
+
+def private_key_literal_lines(rel: str, text: str) -> list[int]:
+    """Key-literal lines that fail the audit: every one, except in the reviewed
+    public game-key table (``PUBLIC_GAME_KEY_TABLE_PATHS``)."""
+    if rel in PUBLIC_GAME_KEY_TABLE_PATHS:
+        return []
+    return private_key_assignment_lines(text, filename=rel)
 
 
 # Byte-exact third-party imports are copied verbatim from an upstream pin and
@@ -2697,7 +2711,7 @@ def audit_entries_with_semantics(
                 entry_findings.append(Finding("SPDX", rel, "missing SPDX identifier in first eight lines"))
 
             if PurePosixPath(rel).suffix.lower() in {".c", ".h", ".py", ".json"}:
-                for line in private_key_assignment_lines(text_str, filename=rel):
+                for line in private_key_literal_lines(rel, text_str):
                     entry_findings.append(Finding("PRIVATE_KEY", rel, f"direct 16-byte key literal at line {line}"))
 
             if is_keystore_content(rel, text_str):
