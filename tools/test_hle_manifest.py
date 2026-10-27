@@ -863,6 +863,7 @@ class LiveManifestTests(unittest.TestCase):
                 "h_IoLseek",
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
+                    "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
             0x109F50BC: (
@@ -915,6 +916,7 @@ class LiveManifestTests(unittest.TestCase):
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
                     "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                    "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
             0x42EC03AC: (
@@ -1578,7 +1580,8 @@ class EvidenceTierTests(unittest.TestCase):
         self.assertEqual(
             sorted(t["id"] for t in document["tests"] if t.get("hardware_evidence") == "MEASURED"),
             [
-                "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-DISPLAY-001",
+                "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-CPU-TIMING-001",
+                "PSP-DISPLAY-001",
                 "PSP-DISPLAY-002", "PSP-DISPLAY-003", "PSP-DISPLAY-004", "PSP-DMAC-001",
                 "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-FPU-CC-001", "PSP-GE-001",
                 "PSP-GE-CONTROL-001", "PSP-GE-TIMING-001", "PSP-HLE-AUDIO-SRC-001",

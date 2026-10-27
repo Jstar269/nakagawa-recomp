@@ -213,6 +213,13 @@ Copy-Item docs\PREVIEW_RELEASE.md, docs\SETUP.md, docs\SMOKE_TEST.md, docs\RELEA
 Copy-Item (Join-Path $Bin 'THIRD_PARTY_NOTICES') $Stage -Recurse
 Copy-Item (Join-Path $Bin 'THIRD_PARTY_NOTICES.txt'), (Join-Path $Bin 'SOURCE.txt'), (Join-Path $Bin 'RELINK.md') $Stage
 
+# The pinned build prerequisites (#1285): the verified, unpacked tree BUILD PACKAGE uses, checked
+# against the exported manifest the player reads. Archives are cached outside the stage.
+$PrereqCache = Join-Path $ArtifactRoot 'prereq-archives'
+python -m tools.nk_core.prereq_fetcher --manifest (Join-Path $Source 'assets/prereq_manifest.json') `
+    --bundle-dest (Join-Path $Stage 'prereqs') --download-cache $PrereqCache
+if ($LASTEXITCODE -ne 0) { throw 'Staging the pinned build prerequisites failed.' }
+
 python tools/generate_sbom.py --package-dir $Bin `
     --spdx-out (Join-Path $Stage 'SBOM.spdx.json') `
     --spdx3-out (Join-Path $Stage 'SBOM.spdx3.jsonld') `
@@ -245,6 +252,8 @@ Write-Output $Zip, "$Zip.sha256"
 ```
 
 The package contains the native player and synthetic verification binary under `bin/`, the mechanically resolved SDL3/SDL3_ttf runtime DLL closures and their notices, the public-safe source export under `source/`, setup and smoke instructions, root README/license/notices, `SOURCE.txt`, LGPL relinking material, the third-party notice bundle, three SBOM formats, and `SHA256SUMS.txt`. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, Vulkan SDK files, local databases, or title outputs. `SHA256SUMS.txt` covers every staged file except itself. Attach `nakagawa-recomp-<version>-windows-x64.zip.sha256` to the release next to the ZIP: v0.0.1 binaries are not Authenticode-signed, so the published checksum and the per-file build attestations are how a user checks a download.
+
+`prereqs/` carries the pinned build prerequisites from `assets/prereq_manifest.json`, CPython and the MSYS2 UCRT64 packages, unpacked in the layout the per-user download installs, plus `installed.json` and `bundle-inventory.txt` ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). BUILD PACKAGE uses it without a consent card or a download ([`SETUP.md`](SETUP.md#player-build-package-prerequisites)). The staging step downloads each archive from its pinned host into the cache, or reuses a cached copy, checks its exact size and SHA-256, unpacks it with the per-user installer's path and link rules (a package link becomes a copy of its target, because a ZIP cannot carry links), and then verifies the whole tree, file contents included. It prints the bundle's `file_count` and `unpacked_bytes`: record them and the ZIP size in the release notes. The bundled third-party executables keep their upstream bytes and are not re-signed. From the source checkout, `python -m tools.nk_core.prereq_fetcher --manifest assets/prereq_manifest.json --verify-bundle <extracted folder>/prereqs` repeats the full check on an extracted copy. Until the corresponding source of the bundled GPL and LGPL packages ships with the same release and the notices name it ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)), do not publish a ZIP that contains `prereqs/`.
 
 Before a maintainer treats the zip as publishable, inspect it with:
 
