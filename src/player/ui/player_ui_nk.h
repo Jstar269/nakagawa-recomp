@@ -220,6 +220,7 @@ typedef struct {
     bool extraction_complete;
     bool extraction_failed;
     bool experimental;
+    bool recorded;   /* experimental, but on the compatibility list (Hot Shots Tennis) */
     bool supported;
     /* Experimental, but this version cannot use the disc (#1280): the reason
        and its next step, and no Add to library. NULL when it can be added. */

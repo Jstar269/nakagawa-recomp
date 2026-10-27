@@ -403,6 +403,8 @@ static void player_ui_check_row(PlayerUiCheckRow *row, const NkUiTheme *theme,
 
 /* The setup wizard's model, from the same wizard state the existing renderer
    reads. */
+static bool player_ui_unrecorded_experimental(const GameRecord *game);
+
 static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app,
                                               NkUiScale scale) {
     const NkUiTheme *theme = nk_ui_theme(player->ui);
@@ -434,6 +436,7 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
             model.extraction_complete = app->wizard.extraction_complete;
             model.extraction_failed = app->wizard.extraction_failed;
             model.experimental = game->is_experimental;
+            model.recorded = game->is_experimental && !player_ui_unrecorded_experimental(game);
             model.supported = !game->is_experimental &&
                               (app->wizard.extraction_complete ||
                                game->status == NK_STATUS_VERIFIED);
@@ -513,7 +516,11 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
         case VIEW_INSPECTING: model.kind = PLAYER_UI_DISC_CHECKING; break;
         case VIEW_SUPPORTED_TITLE: model.kind = PLAYER_UI_DISC_SUPPORTED; break;
         case VIEW_EXPERIMENTAL_TITLE:
-            model.kind = blocking != NULL ? PLAYER_UI_DISC_BLOCKED : PLAYER_UI_DISC_UNTESTED;
+            /* A disc on the compatibility list is found, not untested, as its
+               title page's PLAYABLE says. */
+            model.kind = blocking != NULL ? PLAYER_UI_DISC_BLOCKED
+                : player_ui_unrecorded_experimental(game) ? PLAYER_UI_DISC_UNTESTED
+                : PLAYER_UI_DISC_SUPPORTED;
             break;
         case VIEW_UNSUPPORTED_TITLE:
         default: model.kind = PLAYER_UI_DISC_UNSUPPORTED; break;

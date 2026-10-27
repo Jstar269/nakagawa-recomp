@@ -4936,35 +4936,38 @@ int main(int argc, char *argv[]) {
                      event.type == SDL_EVENT_PEN_UP)) {
                     SDL_ConvertEventToRenderCoordinates(renderer, &event);
                 }
+                /* A pad arriving or leaving updates the player's state first: the
+                   launcher also takes these events for its prompts, and a consumed
+                   event left Settings and the wizard saying "keyboard and mouse"
+                   with a controller attached. */
+                if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
+                    if (!gamepad) {
+                        gamepad = SDL_OpenGamepad(event.gdevice.which);
+                        if (gamepad) {
+                            const char *pad_name = SDL_GetGamepadName(gamepad);
+                            snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
+                                     "%s", pad_name ? pad_name : "Controller");
+                            app.settings.controller_connected = true;
+                            printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
+                        }
+                    }
+                    if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                        player_ui_nk_note_gamepad(next_ui, event.gdevice.which, true);
+                    }
+                } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
+                    player_ui_nk_note_gamepad(next_ui, event.gdevice.which, false);
+                    if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                        SDL_CloseGamepad(gamepad);
+                        gamepad = NULL;
+                        app.settings.controller_name[0] = '\0';
+                        app.settings.controller_connected = false;
+                        printf("[PLAYER] Gamepad disconnected\n");
+                    }
+                }
                 if (!player_dispatch_ui_event(&app, &input, next_ui, window, &running,
                                               &close_request_handled_in_batch,
                                               &event)) {
                     switch (event.type) {
-                    case SDL_EVENT_GAMEPAD_ADDED:
-                        if (!gamepad) {
-                            gamepad = SDL_OpenGamepad(event.gdevice.which);
-                            if (gamepad) {
-                                const char *pad_name = SDL_GetGamepadName(gamepad);
-                                snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
-                                         "%s", pad_name ? pad_name : "Controller");
-                                app.settings.controller_connected = true;
-                                printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
-                            }
-                        }
-                        if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
-                            player_ui_nk_note_gamepad(next_ui, event.gdevice.which, true);
-                        }
-                        break;
-                    case SDL_EVENT_GAMEPAD_REMOVED:
-                        player_ui_nk_note_gamepad(next_ui, event.gdevice.which, false);
-                        if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
-                            SDL_CloseGamepad(gamepad);
-                            gamepad = NULL;
-                            app.settings.controller_name[0] = '\0';
-                            app.settings.controller_connected = false;
-                            printf("[PLAYER] Gamepad disconnected\n");
-                        }
-                        break;
                     case SDL_EVENT_USER:
                         if (ui_renderer_handle_async_event(renderer, &event)) {
                             break;

@@ -1631,7 +1631,8 @@ class NativePlayerUiTests(unittest.TestCase):
                           focus["controller"]])
         pacing = self.next_ui_run("settings", ("WAIT_MS=100", "KEY_DOWN", "KEY_RIGHT"))
         self.assertEqual(self.focus_trail(pacing)[-1], focus["launcher_fullscreen"],
-                         "Right from Frame pacing is Fullscreen (F11) beside it, not the top bar")
+                         "Right from Frame pacing is Launcher fullscreen (F11) beside it, not "
+                         "the top bar")
         mouse = self.next_ui_run(
             "settings", ("WAIT_MS=100", "MOUSE_MOVE=1010,392", "MOUSE_DOWN", "MOUSE_UP",
                          "WAIT_MS=100"),
