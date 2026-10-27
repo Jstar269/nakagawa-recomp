@@ -258,6 +258,37 @@ static int hle_log_on(void) {
     return enabled;
 }
 
+/* The other diagnostic switches on the per-call path follow the same rule (#1296). An
+ * uncached getenv takes the C runtime's environment lock and compares the name against
+ * every variable, and sr_syscall() plus the CpuSuspendIntr/CpuResumeIntr pair a guest
+ * allocator brackets each allocation with read up to four of them per call. */
+static int hle_env_switch(int *cached, const char *name) {
+    if (*cached < 0) *cached = getenv(name) != NULL;
+    return *cached;
+}
+
+static int hle_nidlog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_NIDLOG");
+}
+
+static int hle_syslog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_SYSLOG");
+}
+
+static int hle_debug_thread_log_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_DEBUG_THREAD_LOG");
+}
+
+/* Thread sleep, wakeup and run-status calls and every UID allocation report under
+ * SR_WAKELOG; a guest can make those calls every frame. */
+static int hle_wakelog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_WAKELOG");
+}
+
 /* Display-list tracing is extremely verbose (several writes per presented
  * frame).  Keep Standard mode quiet; Diagnostics enables SR_GEDUMP, and the
  * public SR_DEBUG GE bit (0x08) remains an equivalent opt-in. */
@@ -504,7 +535,7 @@ static uint32_t s_uid = 0x110;
 uint32_t sr_alloc_uid(void) {
     while (s_uid == 0u || s_uid == SR_ROLE_UID_NONE) s_uid++;
     uint32_t uid = s_uid++;
-    if (getenv("SR_WAKELOG")) fprintf(stderr, "ALLOC_UID: 0x%x\n", uid);
+    if (hle_wakelog_on()) fprintf(stderr, "ALLOC_UID: 0x%x\n", uid);
     return uid;
 }
 
@@ -4163,7 +4194,7 @@ static uint32_t h_GetThreadStackFreeSize(CpuState *s) {
 static uint32_t h_SleepThread(CpuState *s) {
     (void)s;
     uint32_t uid = sched_current_uid();
-    if (getenv("SR_WAKELOG")) {
+    if (hle_wakelog_on()) {
         static int n=0;
         if (n++<8) fprintf(stderr, "SLEEP uid=0x%x\n", uid);
     }
@@ -4175,7 +4206,7 @@ static uint32_t h_SleepThread(CpuState *s) {
 static uint32_t h_SleepThreadCB(CpuState *s) {
     (void)s;
     uint32_t uid = sched_current_uid();
-    if (getenv("SR_WAKELOG")) {
+    if (hle_wakelog_on()) {
         static int n=0;
         if (n++<8) fprintf(stderr, "SLEEP_CB uid=0x%x\n", uid);
     }
@@ -4185,14 +4216,14 @@ static uint32_t h_SleepThreadCB(CpuState *s) {
     return 0;
 }
 static uint32_t h_WakeupThread(CpuState *s) {
-    if (getenv("SR_WAKELOG")) { static int n=0; if (n++<8) fprintf(stderr, "WAKEUP target=0x%x (from 0x%x)\n", A0, sched_current_uid()); }
+    if (hle_wakelog_on()) { static int n=0; if (n++<8) fprintf(stderr, "WAKEUP target=0x%x (from 0x%x)\n", A0, sched_current_uid()); }
     uint32_t result = sched_thread_wakeup(A0);
     if (result == 0) sched_preempt();
     return result;
 }
 static uint32_t h_CancelWakeupThread(CpuState *s) {
     int old = sched_thread_cancel_wakeup(A0);
-    if (getenv("SR_WAKELOG")) { static int n=0; if (n++<8) fprintf(stderr, "CANCEL_WAKE target=0x%x old=%d (from 0x%x)\n", A0, old, sched_current_uid()); }
+    if (hle_wakelog_on()) { static int n=0; if (n++<8) fprintf(stderr, "CANCEL_WAKE target=0x%x old=%d (from 0x%x)\n", A0, old, sched_current_uid()); }
     return old < 0 ? 0x800201a0u : (uint32_t)old;
 }
 static uint32_t h_WaitThreadEnd_impl(CpuState *s, int is_cb) {
@@ -4274,7 +4305,7 @@ static uint32_t h_ReferThreadRunStatus(CpuState *s) {
         MEM_W32(out + 0x20, rs.intrPreemptCount);
         MEM_W32(out + 0x24, rs.threadPreemptCount);
         MEM_W32(out + 0x28, rs.releaseCount);
-        if (getenv("SR_WAKELOG")) { static int n=0; if (n++<12) fprintf(stderr,
+        if (hle_wakelog_on()) { static int n=0; if (n++<12) fprintf(stderr,
             "REFER_RUN target=0x%x status=%u pri=%u waitType=%u waitId=0x%x wakeups=%u\n",
             A0, rs.status, rs.currentPriority, rs.waitType, rs.waitId, rs.wakeupCount); }
     }
@@ -6922,10 +6953,10 @@ static uint32_t h_StopUnloadSelfModuleWithStatus(CpuState *s) {
  * on reaching zero, calls ResumeIntr. The spinlock at 0x10974 polls 0x30aa80 via bne. */
 static uint32_t h_CpuSuspendIntr(CpuState *s) {
     (void)s;
-    if (getenv("SR_SYSLOG")) {
+    if (hle_syslog_on()) {
         fprintf(stderr, "HLE: sceKernelCpuSuspendIntr called\n");
     }
-    if (getenv("SR_DEBUG_THREAD_LOG")) {
+    if (hle_debug_thread_log_on()) {
         /* Role-resolved rather than UID-literal (the historical literals drifted and
          * left these diagnostics permanently silent). A build with no worker/launcher
          * binding has no role to report, so both branches stay quiet. */
@@ -6947,10 +6978,10 @@ static uint32_t h_CpuSuspendIntr(CpuState *s) {
 }
 
 static uint32_t h_CpuResumeIntr(CpuState *s) {
-    if (getenv("SR_SYSLOG")) {
+    if (hle_syslog_on()) {
         fprintf(stderr, "HLE: sceKernelCpuResumeIntr called\n");
     }
-    if (getenv("SR_DEBUG_THREAD_LOG")) {
+    if (hle_debug_thread_log_on()) {
         /* Role-resolved (see h_CpuSuspendIntr). */
         if (sched_current_is_worker()) {
             fprintf(stderr, "DEBUG: CpuResumeIntr worker=0x%x: r2 (v0)=0x%x, r6 (a2)=0x%x, r16 (s0)=0x%x, r26 (k0)=0x%x, ra=0x%x, sp=0x%x\n  Stack:",
@@ -11573,6 +11604,9 @@ static void hle_register_umd_callback_handlers(void) {
 /* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
  * (it typically wakes the sleeping game thread). PSP_VBLANK_INT = 30. */
 static uint32_t g_vbl_handler = 0, g_vbl_arg = 0, g_vbl_no = 0; static int g_vbl_on = 0;
+/* The slot holds a Register that Release has not cleared; a handler word of 0 is still a
+ * registration. Only h_RegisterSubIntr's log-on-change test reads it (#1287). */
+static int g_vbl_registered = 0;
 
 /* Generic PSP callback objects are kernel objects, not a 16-entry subsystem
  * table. Hardware creates at least 1024 of them. Keep an append-only host array:
@@ -11906,8 +11940,14 @@ static uint32_t h_RegisterSubIntr(CpuState *s) {
      * (PSPSDK pspintrman.h and its vsync sample: `void on_vblank(int sub, void *data)`), so
      * the sub-interrupt number is kept with the handler and its arg. */
     if (A0 == 30) {
-        fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
-        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3;
+        /* Titles re-register the same handler before almost every frame (#1287), so the line
+         * is written only when a registration changes the slot, or always under SR_HLELOG.
+         * The return code is unchanged: duplicate-register codes are UNMEASURED on the PSP. */
+        int changed = !g_vbl_registered || g_vbl_handler != A2 || g_vbl_no != A1 ||
+                      g_vbl_arg != A3;
+        if (changed || hle_log_on())
+            fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
+        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3; g_vbl_registered = 1;
     }
     return 0;
 }
@@ -11927,7 +11967,9 @@ static uint32_t h_DisableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 0; retu
  * Register. Non-VBLANK lines answer success without effect (UNMEASURED), as
  * with Enable/Disable. */
 static uint32_t h_ReleaseSubIntr(CpuState *s) {
-    if (A0 == 30) { g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; }
+    if (A0 == 30) {
+        g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; g_vbl_registered = 0;
+    }
     return 0;
 }
 uint32_t sr_vblank_handler(void) { return g_vbl_on ? g_vbl_handler : 0; }
@@ -22942,14 +22984,22 @@ typedef struct {
     int initc;                     /* semaphores: create-time count for CancelSema(-1); LwMutex initialCount */
     uint32_t workarea;             /* LwMutex workarea address */
     char name[32];                 /* LwMutex name */
+    int kind;                      /* SYNC_KIND_*: the object class sharing this table */
 } Sync;
+/* Semaphores, event flags and LwMutexes share s_sync; the kind keeps them apart for
+ * sceKernelGetThreadmanIdList, which lists one class at a time. */
+enum { SYNC_KIND_SEMA = 1, SYNC_KIND_EVENT_FLAG, SYNC_KIND_LWMUTEX };
 static Sync s_sync[128];
 static Sync *sync_find(uint32_t uid) {
     for (int i = 0; i < 128; i++) if (s_sync[i].used && s_sync[i].uid == uid) return &s_sync[i];
     return NULL;
 }
-static Sync *sync_new(void) {
-    for (int i = 0; i < 128; i++) if (!s_sync[i].used) { s_sync[i].used = 1; s_sync[i].uid = sr_alloc_uid(); return &s_sync[i]; }
+static Sync *sync_new(int kind) {
+    for (int i = 0; i < 128; i++)
+        if (!s_sync[i].used) {
+            s_sync[i].used = 1; s_sync[i].uid = sr_alloc_uid(); s_sync[i].kind = kind;
+            return &s_sync[i];
+        }
     return NULL;
 }
 
@@ -22960,7 +23010,7 @@ static uint32_t h_CreateSema(CpuState *s) {
      * maxCount == 0 are accepted on hardware, so no validation is added for
      * either. */
     if (A1 & ~0x3ffu) return 0x80020191u;
-    Sync *m = sync_new(); if (!m) return 0x80020000;
+    Sync *m = sync_new(SYNC_KIND_SEMA); if (!m) return 0x80020000;
     m->count = (int)A2; m->maxc = (int)A3;
     /* PSP-B2-01 (psp-hw-20260917): CancelSema(-1) resets the count to the
      * create-time initial count, not to zero. */
@@ -23458,7 +23508,7 @@ static uint32_t h_CreateLwMutex(CpuState *s) {
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;   /* ILLEGAL_ADDR */
     /* PSP-B1-01: a non-recursive mutex cannot start with more than one lock. */
     if (!(attr & LWMUTEX_ATTR_RECURSIVE) && initial > 1) return 0x800201bdu;
-    Sync *m = sync_new(); if (!m) return 0x80020000;
+    Sync *m = sync_new(SYNC_KIND_LWMUTEX); if (!m) return 0x80020000;
     m->workarea = wa;
     m->attr = attr;
     m->initc = initial;
@@ -24343,7 +24393,7 @@ static uint32_t h_ReferMutexStatus(CpuState *s) {
 
 static uint32_t h_CreateEventFlag(CpuState *s) {
     /* a0=name, a1=attr, a2=initPattern, a3=opt. */
-    Sync *m = sync_new(); if (!m) return 0x80020000;
+    Sync *m = sync_new(SYNC_KIND_EVENT_FLAG); if (!m) return 0x80020000;
     m->pattern = A2;
     m->attr = A1;
     m->init_pattern = A2;
@@ -24537,6 +24587,110 @@ static uint32_t h_ReferEventFlagStatus(CpuState *s) {
     MEM_W32(info + 44, m->pattern);
     MEM_W32(info + 48, 0);
     return 0;
+}
+
+/* ---- sceKernelGetThreadmanIdList(type, readbuf, readbufsize, idcount) ----
+ *
+ * Signature and list classes: the public PSPSDK (pspthreadman.h, SceKernelIdListType);
+ * readbufsize counts SceUIDs. The call writes min(readbufsize, total) uids of the class to
+ * readbuf, stores the total in *idcount when idcount is not NULL, and returns the number
+ * written (issue #1288). Every argument check runs before any guest write.
+ *
+ * UNMEASURED on a PSP: the list order (table order here), whether the return of a short
+ * buffer is the number written or the total (the PSPSDK leaves it open), and the error
+ * codes, which are the PSPSDK pspkerror.h names for each case: ILLEGAL_TYPE for a type
+ * outside SceKernelIdListType, ILLEGAL_SIZE for a negative readbufsize, ILLEGAL_ADDR for
+ * an unwritable readbuf span or idcount. Thread event handlers are a PSPSDK class this
+ * runtime does not track (their registration is not implemented), so that type is a named
+ * refusal, never an empty list. */
+#define THREADMAN_ERROR_ILLEGAL_TYPE 0x800201bbu   /* SCE_KERNEL_ERROR_ILLEGAL_TYPE */
+
+typedef struct {
+    uint32_t readbuf;
+    uint32_t cap;      /* uids readbuf holds */
+    uint32_t total;    /* uids of the class */
+} ThreadmanIdSink;
+
+static void threadman_id_sink(uint32_t uid, void *ctx) {
+    ThreadmanIdSink *sink = (ThreadmanIdSink *)ctx;
+    if (sink->total < sink->cap) MEM_W32(sink->readbuf + 4u * sink->total, uid);
+    sink->total++;
+}
+
+/* The classes the HLE object tables own. Returns 1 when `tmid` is one of them. */
+static int hle_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx) {
+    switch (tmid) {
+        case SR_TMID_SEMAPHORE:
+        case SR_TMID_EVENT_FLAG: {
+            const int kind = tmid == SR_TMID_SEMAPHORE ? SYNC_KIND_SEMA : SYNC_KIND_EVENT_FLAG;
+            for (int i = 0; i < 128; i++)
+                if (s_sync[i].used && s_sync[i].kind == kind) visit(s_sync[i].uid, ctx);
+            return 1;
+        }
+        case SR_TMID_MBOX:
+            for (int i = 0; i < MBX_MAX; i++)
+                if (s_mbx[i].used) visit(s_mbx[i].uid, ctx);
+            return 1;
+        case SR_TMID_VPL:   /* vpl_lookup: uid = 0x600 + slot */
+            for (uint32_t i = 0; i < VPL_MAX; i++)
+                if (s_vpls[i].used) visit(0x600u + i, ctx);
+            return 1;
+        case SR_TMID_FPL:   /* fpl_lookup: uid = 0x500 + slot */
+            for (uint32_t i = 0; i < FPL_MAX; i++)
+                if (s_fpls[i].used) visit(0x500u + i, ctx);
+            return 1;
+        case SR_TMID_MPIPE:
+            for (int i = 0; i < MSG_PIPE_MAX; i++)
+                if (s_msg_pipes[i].used) visit(s_msg_pipes[i].uid, ctx);
+            return 1;
+        case SR_TMID_CALLBACK:
+            for (size_t i = 0; i < s_callbacks_len; i++)
+                if (s_callbacks[i].used) visit(s_callbacks[i].uid, ctx);
+            return 1;
+        case SR_TMID_VTIMER:
+            for (int i = 0; i < VTIMER_MAX; i++)
+                if (s_vtimers[i].used) visit(s_vtimers[i].uid, ctx);
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int threadman_id_type_listed(int tmid) {
+    return (tmid >= SR_TMID_THREAD && tmid <= SR_TMID_VTIMER) ||
+           (tmid >= SR_TMID_SLEEP_THREAD && tmid <= SR_TMID_DORMANT_THREAD);
+}
+
+static uint32_t h_GetThreadmanIdList(CpuState *s) {
+    const int tmid = (int)(int32_t)A0;
+    const uint32_t readbuf = A1;
+    const int32_t readbufsize = (int32_t)A2;
+    const uint32_t idcount = A3;
+    if (!threadman_id_type_listed(tmid)) return THREADMAN_ERROR_ILLEGAL_TYPE;
+    if (tmid == SR_TMID_THREAD_EVENT_HANDLER) {
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelGetThreadmanIdList type %d "
+                        "(ThreadEventHandler): thread event handlers are not modelled, so "
+                        "no list is given\n", tmid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (readbufsize < 0) return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (readbufsize > 0) {
+        const uint64_t bytes = (uint64_t)(uint32_t)readbufsize * 4u;
+        if (!readbuf || bytes > UINT32_MAX || !sr_guest_span_writable(readbuf, (uint32_t)bytes))
+            return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    }
+    if (idcount && !sr_guest_span_writable(idcount, 4u)) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    ThreadmanIdSink sink = { readbuf, (uint32_t)readbufsize, 0u };
+    if (!sched_visit_threadman_ids(tmid, threadman_id_sink, &sink) &&
+        !hle_visit_threadman_ids(tmid, threadman_id_sink, &sink)) {
+        /* A listed PSPSDK class with no owner here: fail closed by name. */
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelGetThreadmanIdList type %d has no "
+                        "object table in this runtime\n", tmid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (idcount) MEM_W32(idcount, sink.total);
+    return sink.total < sink.cap ? sink.total : sink.cap;
 }
 
 static void hle_register_thread_exit_handlers(void) {
@@ -25101,6 +25255,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
     sr_hle_register(0x110dec9au, "sceKernelUSec2SysClock", h_USec2SysClock);
     sr_hle_register(0x7e65b999, "sceKernelCancelAlarm", h_CancelAlarm);
+    sr_hle_register(0x94416130u, "sceKernelGetThreadmanIdList", h_GetThreadmanIdList);
     sr_hle_register(0x034a921fu, "sceKernelGetVTimerTime", h_GetVTimerTime);
     sr_hle_register(0x50f61d8a, "sceKernelFreeMemoryBlock", h_FreeMemoryBlock);
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
@@ -25653,7 +25808,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         sr_flight_hle_arguments(flight_sequence, s->r[4], s->r[5], s->r[6], s->r[7]);
     }
     sr_last_nid = nid;
-    if (getenv("SR_NIDLOG")) {
+    if (hle_nidlog_on()) {
         static FILE *nf = NULL; static unsigned long nc = 0;
         if (!nf) nf = fopen("nidseq_mine.txt", "w");
         if (nf) { fprintf(nf, "0x%08x 0x%x %u\n", nid, sched_current_uid(), s_vcount);
@@ -25693,7 +25848,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         if (sr_sched_on) { sr_trace_close(); sr_compat_report(); sr_perf_shutdown(); fflush(stderr); _Exit(7); }
         longjmp(g_hle_jmp, 1);
     }
-    if (getenv("SR_SYSLOG")) {
+    if (hle_syslog_on()) {
         /* Log the first time each (thread, nid) pair occurs, to see what each thread does. */
         static struct { uint32_t uid, nid; } seen[4096]; static int nseen = 0;
         uint32_t cur = sched_current_uid(); int known = 0;
