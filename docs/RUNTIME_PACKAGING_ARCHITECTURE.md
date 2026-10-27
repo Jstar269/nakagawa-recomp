@@ -84,7 +84,7 @@ list is not evidence that a distributable installer or title package exists:
 * `src/core/nk_platform_win32.c`: Win32 `CreateProcessW` with UTF-16 executable/command-line conversion, environment block generation, and wait handles.
 * `src/core/nk_platform_posix.c`: POSIX `fork` + `execv` with environment configuration.
 * `src/core/nk_launch.h` & `src/core/nk_launch.c`: typed `NkLaunchSession` candidate resolution, environment construction, and process lifecycle management.
-* `src/player/ui/player_ui_nk.c`: the default launcher's "PLAY" / "STOP GAME" action triggers; the older `src/player/ui_renderer.c` (`--ui=legacy`) keeps its "PLAY NOW" trigger and active PID indicators.
+* `src/player/ui/player_ui_nk.c`: the default launcher's "PLAY" / "STOP GAME" action triggers; the older `src/player/ui_renderer.c`, kept only in the regression-test build (`--ui=legacy`), keeps its "PLAY NOW" trigger and active PID indicators.
 
 ---
 

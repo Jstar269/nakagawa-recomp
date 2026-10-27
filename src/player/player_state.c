@@ -966,6 +966,8 @@ int player_app_focus_count(const PlayerApp *app) {
                    (app->settings.developer_mode ? 1 : 0) + 1;
         case VIEW_DEVELOPER_LOG:
             return 3; /* copy, save, close */
+        case VIEW_PSP_FONTS:
+            return 3; /* import, remove, back */
         case VIEW_CONTROLLER_SETTINGS:
             if (input_settings_is_calibrating(&app->input_settings)) {
                 switch (input_settings_get_calibration_stage(&app->input_settings)) {
@@ -4269,7 +4271,7 @@ const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
                    "setup wizard.";
         }
         return "Some PSP system fonts were not found, so some text may look different. "
-               "You can import your own fonts in the setup wizard.";
+               "You can import your PSP's own fonts in Settings, PSP fonts.";
     } else if (strcmp(check->code, "AUDIO_OUTPUT") == 0) {
         return "Sound plays through your default audio device. With no device, the game "
                "runs silently.";

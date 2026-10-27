@@ -45,8 +45,8 @@ this document.
 | ID | Capability | Status | Surface | Owning evidence |
 | --- | :--- | :---: | :--- | :--- |
 | `ISO_INSPECT_WORKS` | ISO9660 PVD and directory parsing from a raw disc image | **PASS** | native player, headless `nk_cli` | `tests/native/test_xb_parser.c`, `tools/test_nk_core.py` (`test_iso_inspection_success`) |
-| `ISO_ART_TERMINAL_OUTCOMES` | Per-image loaded, absent, failed, and unsupported outcomes with bounded recovery and joined worker shutdown | **PARTIAL** | native player | `tests/native/test_player_ui.py` runs the art workers in the `--ui=legacy` renderer; the default launcher (the next UI) shows an art placeholder and does not draw disc art yet |
-| `LAUNCHER_UI_DEFAULT` | The nk_ui launcher (`src/player/ui/`) is the default, with `--ui=legacy` or `NK_UI=legacy` keeping the existing renderer for one release, and a font-less host falling back to it | **PASS** | native player | `tests/native/test_player_ui.py` (`test_next_ui_is_the_default_with_a_legacy_fallback`, `test_next_ui_mouse_and_keyboard_reach_the_add_card`) |
+| `ISO_ART_TERMINAL_OUTCOMES` | Per-image loaded, absent, failed, and unsupported outcomes with bounded recovery and joined worker shutdown | **PARTIAL** | native player | `tests/native/test_player_ui.py` runs the art workers in the old renderer, which only its regression build keeps (`--ui=legacy`); the default launcher (the next UI) shows an art placeholder and does not draw disc art yet |
+| `LAUNCHER_UI_DEFAULT` | The nk_ui launcher (`src/player/ui/`) is the only launcher: it draws every `PlayerView`, the shipped player has no switch to the old renderer, and a launcher that cannot start (UI fonts missing) gets a message box and exit code 4, never the old renderer | **PASS** | native player | `tests/native/test_player_ui.py` (`test_next_ui_is_the_only_launcher`, `test_every_view_is_drawn_by_the_launcher`, `LegacyRendererSourceTests`, `test_next_ui_mouse_and_keyboard_reach_the_add_card`) |
 | `TITLE_ID_DETECTION_WORKS` | `DISC_ID` / `TITLE` from `PARAM.SFO`, matched against the qualified title catalog | **PASS** | native player, headless `nk_cli` | `tools/test_nk_core.py` (`test_title_registry_matching_and_normalization`), `tests/native/test_launch_resolution.c` |
 | `PREPARED_FOLDER_VALIDATION_WORKS` | Transactional staging and validation of the game directory | **PASS** | native player | `tests/native/test_xb_parser.c`, `tests/native/test_launch_resolution.c` |
 | `MODULE_DECRYPTION` | Built-in decryption of encrypted executables and PRX modules | **PASS** | native player | Restored with built-in tables ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)): the disc check decrypts EBOOT.BIN and encrypted modules of a UMD image into the title's folder; one it can't decrypt fails closed as `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` with a named result; `tools/test_psp_decrypt.py` (`tests/native/test_player_state.c`, `tools/test_iso_parity.py`) |
@@ -83,9 +83,9 @@ this document.
 
 Notes on what the table deliberately does not claim:
 
-- Since the next UI became the default launcher, the tests that pin the existing
+- Since the next UI became the only launcher, the tests that pin the old
   renderer's layout, hit boxes, art workers and package badges run with
-  `--ui=legacy`; `LEGACY_RENDERER_TESTS` in `tests/native/test_player_ui.py` lists
+  `--ui=legacy`, which only the regression build accepts; `LEGACY_RENDERER_TESTS` in `tests/native/test_player_ui.py` lists
   them. The game-found card, Settings, the controller settings screen and the
   developer log are next-UI screens
   (`test_next_ui_game_found_cards_use_plain_words_and_offer_add_honestly`,

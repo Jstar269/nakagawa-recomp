@@ -100,7 +100,7 @@ The owner decided on 2026-10-21 that the native player's UI is written in C on S
 Not done yet:
 
 - **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** `src/ui/` (nk_ui) wraps it with the theme, text, focus, input and SDL_Renderer layers.
-- **The nk_ui launcher is the default.** It draws the Library, Title detail, About, the setup wizard, package build progress, the build-tool download, the error card, the card a disc gets when it is added, Settings with its online, notices and removal pages, the controller settings screen with its calibration steps, and the developer log, with the design system in section 8. `--ui=legacy` (or `NK_UI=legacy`) keeps the existing renderer for one release; the player also falls back to it when the UI fonts cannot load.
+- **The nk_ui launcher is the default.** It draws the Library, Title detail, About, the setup wizard, package build progress, the build-tool download, the error card, the card a disc gets when it is added, Settings with its online, notices and removal pages, the controller settings screen with its calibration steps, and the developer log, with the design system in section 8. It is the only launcher: the shipped player has no switch to the old renderer, and when the launcher cannot start (its fonts missing from an incomplete ZIP extraction) the player says why in a message box, tells the user to extract the ZIP again, and exits with code 4. The old `ui_renderer.c` stays only for regression tests that still pin it (`--ui=legacy`, in the `NK_PLAYER_UI_REGRESSION_TEST` build).
 - Settings, first run, error dialogs and the in-game overlay on nk_ui are targets, specified in section 8.
 
 ---

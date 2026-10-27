@@ -2017,6 +2017,9 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
         if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BUILD_CACHE, "Build tools and cache", 0u)) {
             *result = settings_op(PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE);
         }
+        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_FONTS, "PSP fonts", 0u)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_FONTS);
+        }
         nk_ui_end_container(ui);
     }
     nk_ui_end_container(ui);
@@ -2188,6 +2191,69 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
             row.padding_top = NK_UI_SPACE_1;
             if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
                 if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back", NK_UI_BUTTON_PRIMARY)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+                }
+                nk_ui_end_container(ui);
+            }
+        }
+        break;
+    case PLAYER_UI_SETTINGS_PAGE_FONTS:
+        /* Walkthrough blocker: the wizard's Fonts step is not on the Add to
+           library path, so the import lives here, with each slot's status. */
+        flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
+        nk_ui_text_role(ui, FLOW_ID_TITLE, "PSP fonts", NK_UI_TYPE_TITLE, theme->paper);
+        nk_ui_text_role(ui, FLOW_ID_LEAD,
+                        "Optional. Games look right with your PSP's own fonts: copy the .pgf "
+                        "files from flash0:/font on your PSP to a folder on this PC and import "
+                        "it (docs/SETUP.md, \"Copying the fonts from your PSP\"). Until then "
+                        "similar fonts stand in.",
+                        NK_UI_TYPE_BODY_S, theme->muted);
+        if (wizard_box_begin(ui, 0u)) {
+            NkUiLayout cols = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
+                                          NK_UI_SPACE_4);
+            if (nk_ui_begin_container(ui, SET_ID_TEXT + 0xD0u, &cols, NULL)) {
+                float column = (inner - 32.0f - 2.0f * NK_UI_SPACE_4) / 3.0f;
+                for (int c = 0; c < 3; ++c) {
+                    NkUiLayout col = layout_make(NK_UI_LAYOUT_COLUMN, sizing_fixed(column),
+                                                 sizing_fit(), 2.0f);
+                    if (!nk_ui_begin_container(ui, (NkUiId)(SET_ID_TEXT + 0xD1u + (NkUiId)c),
+                                               &col, NULL)) {
+                        continue;
+                    }
+                    for (size_t r = 0u; r < 6u; ++r) {
+                        size_t item = (size_t)c * 6u + r;
+                        NkUiTextStyle font = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
+                        if (item >= model->font_line_count) break;
+                        nk_ui_text(ui, (NkUiId)(SET_ID_TEXT + 0xE0u + (NkUiId)item),
+                                   nk_ui_text_clamp(ui, safe_text(model->font_lines[item], ""),
+                                                    &font, column, 1), &font);
+                    }
+                    nk_ui_end_container(ui);
+                }
+                nk_ui_end_container(ui);
+            }
+            if (model->font_message != NULL && model->font_message[0] != '\0') {
+                NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION, theme->warning);
+                nk_ui_text(ui, SET_ID_TEXT + 0xDCu,
+                           nk_ui_text_clamp(ui, model->font_message, &text, inner - 32.0f, 2),
+                           &text);
+            }
+            nk_ui_end_container(ui);
+        }
+        {
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                         NK_UI_SPACE_3);
+            row.padding_top = NK_UI_SPACE_1;
+            if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_IMPORT_FONTS, "Import fonts folder",
+                                 NK_UI_BUTTON_PRIMARY)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_IMPORT_FONTS);
+                }
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_REMOVE_FONTS, "Remove imported fonts",
+                                 0u)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_REMOVE_FONTS);
+                }
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back", 0u)) {
                     *result = settings_op(PLAYER_UI_SETTINGS_BACK);
                 }
                 nk_ui_end_container(ui);

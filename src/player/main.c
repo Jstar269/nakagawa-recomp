@@ -521,6 +521,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                 player_app_set_view(app, VIEW_BUILD_CACHE);
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
                        app->active_view == VIEW_BUILD_CACHE ||
+                       app->active_view == VIEW_PSP_FONTS ||
                        app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -682,6 +683,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                 player_app_set_view(app, VIEW_BUILD_CACHE);
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
                        app->active_view == VIEW_BUILD_CACHE ||
+                       app->active_view == VIEW_PSP_FONTS ||
                        app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -992,6 +994,12 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             player_app_clear_shared_library_cache(app);
             break;
         case PLAYER_UI_SETTINGS_KEEP_TOOLS: player_app_set_view(app, VIEW_BUILD_CACHE); break;
+        case PLAYER_UI_SETTINGS_OPEN_FONTS:
+            player_app_refresh_font_status(app);
+            player_app_set_view(app, VIEW_PSP_FONTS);
+            break;
+        case PLAYER_UI_SETTINGS_IMPORT_FONTS: app->request_font_folder_picker = true; break;
+        case PLAYER_UI_SETTINGS_REMOVE_FONTS: player_app_fonts_remove_imports(app); break;
         case PLAYER_UI_SETTINGS_NONE:
         default:
             break;
@@ -1166,6 +1174,11 @@ static void player_ui_nk_apply_action(PlayerApp *app,
         player_app_prereq_cancel(app);
         return;
     }
+    if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER &&
+        app->active_view == VIEW_PREPARING) {
+        player_app_set_view(app, VIEW_LIBRARY);
+        return;
+    }
     if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER) {
         if (app->last_error.return_view == VIEW_PREREQ_CONSENT &&
             app->prerequisites.phase == PLAYER_PREREQ_FAILED) {
@@ -1299,10 +1312,19 @@ static void player_render_active_ui(PlayerUiNk *next_ui, PlayerApp *app,
     if (next) (void)SDL_SetRenderScale(renderer, 1.0f, 1.0f);
     if (next && player_ui_nk_render(next_ui, app, renderer, window, &action)) {
         player_ui_nk_apply_action(app, &action);
-    } else {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    } else if (next_ui == NULL) {
+        /* --ui=legacy, the regression build only. */
         player_use_presentation(app, window, false);
         player_fit_ui_canvas(app, renderer);
         ui_render_frame(renderer, app, input);
+#endif
+    } else {
+        /* The launcher draws every view (player_ui_nk_draws_view); a frame it
+           could not draw is cleared, never handed to another renderer. */
+        (void)input;
+        (void)SDL_SetRenderDrawColor(renderer, 11u, 15u, 20u, 255u);
+        (void)SDL_RenderClear(renderer);
     }
 }
 
@@ -1351,7 +1373,8 @@ static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
         { "prereq_progress", VIEW_PREREQ_PROGRESS },
         { "prereq_about", VIEW_PREREQ_ABOUT },
         { "confirm_remove_tools", VIEW_CONFIRM_REMOVE_TOOLS },
-        { "build_cache", VIEW_BUILD_CACHE }
+        { "build_cache", VIEW_BUILD_CACHE },
+        { "psp_fonts", VIEW_PSP_FONTS }
     };
     if (!names || !names[0] || !mask) return false;
     uint32_t parsed_mask = 0;
@@ -1769,6 +1792,7 @@ static const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_PREREQ_ABOUT: return "prereq_about";
     case VIEW_CONFIRM_REMOVE_TOOLS: return "confirm_remove_tools";
     case VIEW_BUILD_CACHE: return "build_cache";
+    case VIEW_PSP_FONTS: return "psp_fonts";
     case VIEW_ONLINE_SETTINGS: return "online_settings";
     case VIEW_DEVELOPER_LOG: return "developer_log";
     default: return "unknown";
@@ -3447,19 +3471,14 @@ int main(int argc, char *argv[]) {
        file, instead of the documented empty-library prompt. */
     bool populate_sample = false;
     bool force_empty = false;
-    /* The next UI is the default. --ui=legacy (or NK_UI=legacy) keeps the
-       existing renderer for one release as the documented fallback; the
-       command line wins over the environment. */
+    /* The nk_ui launcher is the only launcher. The regression-test build keeps
+       the old renderer behind --ui=legacy for the tests that still pin it;
+       the shipped player has no way to reach it. */
     bool ui_next_requested = true;
-    const char *ui_environment = getenv("NK_UI");
-    if (ui_environment != NULL && strcmp(ui_environment, "legacy") == 0) {
-        ui_next_requested = false;
-    }
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nakagawa_player [--user-data-root=<folder>] "
-                   "[--ui=next|--ui=legacy] "
                    "[--iso=<path> [--stage|--stage-only|--launch-now]] "
                    "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>] "
                    "[--width=W --height=H [--render-scale=S]] "
@@ -3467,13 +3486,12 @@ int main(int argc, char *argv[]) {
                    "[--headless-accept-presented-frames=N] "
                    "[--headless-timeout-ms=N]\n");
             return 0;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
         } else if (strcmp(argv[i], "--ui=next") == 0) {
             ui_next_requested = true;
         } else if (strcmp(argv[i], "--ui=legacy") == 0) {
             ui_next_requested = false;
-        } else if (strncmp(argv[i], "--ui=", 5u) == 0) {
-            fprintf(stderr, "[PLAYER] Unknown UI mode. Use --ui=next or --ui=legacy.\n");
-            return 2;
+#endif
         } else if (strncmp(argv[i], "--screenshot=", 13) == 0) {
             screenshot_path = argv[i] + 13;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -4045,6 +4063,9 @@ int main(int argc, char *argv[]) {
             player_app_set_view(&app, VIEW_ONLINE_SETTINGS);
         } else if (strcmp(test_view, "build-cache") == 0) {
             player_app_set_view(&app, VIEW_BUILD_CACHE);
+        } else if (strcmp(test_view, "psp-fonts") == 0) {
+            player_app_refresh_font_status(&app);
+            player_app_set_view(&app, VIEW_PSP_FONTS);
         } else if (strcmp(test_view, "developer-log") == 0) {
             app.settings.developer_mode = true;
             player_dev_log_add(&app, "test", "synthetic developer log line");
@@ -4395,10 +4416,25 @@ int main(int argc, char *argv[]) {
         s_ui_test_next_ui = next_ui;
 #endif
         if (next_ui == NULL) {
-            fprintf(stderr,
-                    "[PLAYER] The next UI could not start: %s. Using the existing player UI.\n",
-                    ui_error[0] != '\0' ? ui_error : "initialization failed");
-            ui_next_requested = false;
+            /* There is no other launcher to fall back to: say why, once, and
+               stop. A missing file means the ZIP was extracted incompletely. */
+            const char *reason = ui_error[0] != '\0' ? ui_error : "it could not initialize";
+            char message[768];
+            (void)snprintf(message, sizeof(message),
+                           "Nakagawa Recomp can't open its launcher: %s.\n\n"
+                           "Some of its files are missing. Extract the ZIP again, keeping "
+                           "every folder, and start nakagawa_player.exe from the extracted "
+                           "folder.", reason);
+            fprintf(stderr, "[PLAYER] LAUNCHER_UNAVAILABLE: %s\n", message);
+            if (interactive_window) {
+                SDL_HideWindow(window);
+                (void)SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+                                               "Nakagawa Recomp can't start", message, NULL);
+            }
+            SDL_DestroyRenderer(renderer);
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+            return 4;
         }
     }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -4407,6 +4443,14 @@ int main(int argc, char *argv[]) {
     }
     if (ui_test_mode && getenv("NK_UI_TEST_REPORT_COMPATIBILITY") != NULL) {
         player_ui_nk_test_report_compatibility();
+    }
+    if (ui_test_mode && getenv("NK_UI_TEST_REPORT_VIEWS") != NULL) {
+        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_PSP_FONTS. */
+        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_PSP_FONTS; ++view) {
+            printf("[PLAYER_UI_TEST] view_coverage value=%d name=%s nk=%d\n", view,
+                   player_ui_test_view_name((PlayerView)view),
+                   player_ui_nk_draws_view(view) ? 1 : 0);
+        }
     }
 #endif
     s_switch_presentation = interactive_window && next_ui != NULL;

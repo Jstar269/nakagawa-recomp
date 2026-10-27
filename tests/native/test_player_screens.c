@@ -167,7 +167,8 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_WIZ_COPY_FAILED, FLOW_ERROR_STOP, FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
                FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
-               FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_CONTROLLER,
+               FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
+               FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
                FLOW_DEVLOG, FLOW_DEVLOG_EMPTY,
@@ -252,6 +253,8 @@ static PlayerUiAction draw_disc_case(NkUi *ui, FlowCase which) {
     return player_ui_screen_disc(ui, &disc);
 }
 
+static const char *const k_font_lines[18];
+
 static const char *const k_settings_tools[] = {
     "synthetic-compiler 14.2 \xC2\xB7 GPL-3.0-or-later",
     "synthetic-headers 0.9 \xC2\xB7 licence review in the works"
@@ -264,6 +267,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         : which == FLOW_SETTINGS_NOTICES ? PLAYER_UI_SETTINGS_PAGE_NOTICES
         : which == FLOW_SETTINGS_REMOVE ? PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
+        : which == FLOW_SETTINGS_FONTS ? PLAYER_UI_SETTINGS_PAGE_FONTS
         : PLAYER_UI_SETTINGS_PAGE_MAIN;
     settings.resolution = "2x (960x544)";
     settings.pacing = "PSP timing";
@@ -277,6 +281,12 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.share_system_libraries = true;
     if (which == FLOW_SETTINGS_BUILD_CACHE) {
         settings.notice = "Shared library cache cleared. The next build compiles its libraries again.";
+    }
+    if (which == FLOW_SETTINGS_FONTS) {
+        for (size_t i = 0u; i < sizeof(k_font_lines) / sizeof(k_font_lines[0]); ++i) {
+            settings.font_lines[settings.font_line_count++] = k_font_lines[i];
+        }
+        settings.font_message = "Imported 3 fonts from C:/synthetic/psp-fonts.";
     }
     settings.tools[0] = k_settings_tools[0];
     settings.tools[1] = k_settings_tools[1];
@@ -374,7 +384,7 @@ static PlayerUiAction draw_developer_log_case(NkUi *ui, FlowCase which) {
     return player_ui_screen_developer_log(ui, &log);
 }
 
-static const char *const k_font_lines[] = {
+static const char *const k_font_lines[18] = {
     "Japanese: synthetic fallback", "Latin 1: synthetic fallback",
     "Latin 2: synthetic fallback", "Latin 3: synthetic fallback",
     "Latin 4: synthetic fallback", "Latin 5: synthetic fallback",
@@ -1814,6 +1824,34 @@ static void test_settings_pages(void) {
           "build tools and cache shows the switch, tool removal and the clear notice");
 }
 
+/* Walkthrough blocker: Settings > PSP fonts imports and removes the user's
+   PSP fonts and shows every slot's status, with the plain hint. */
+static void test_psp_fonts_page(void) {
+    static char dump[CASE_DUMP_CAP];
+    CHECK(activate_flow_button(PLAYER_UI_ID_SETTINGS_FONTS, FLOW_SETTINGS).kind ==
+              PLAYER_UI_ACTION_SETTINGS &&
+              (PlayerUiSettingsOp)activate_flow_button(PLAYER_UI_ID_SETTINGS_FONTS,
+                                                       FLOW_SETTINGS).primary ==
+              PLAYER_UI_SETTINGS_OPEN_FONTS,
+          "Settings opens PSP fonts");
+    CHECK((PlayerUiSettingsOp)activate_flow_button(PLAYER_UI_ID_SETTINGS_IMPORT_FONTS,
+                                                   FLOW_SETTINGS_FONTS).primary ==
+              PLAYER_UI_SETTINGS_IMPORT_FONTS,
+          "Import fonts folder asks for the folder picker");
+    CHECK((PlayerUiSettingsOp)activate_flow_button(PLAYER_UI_ID_SETTINGS_REMOVE_FONTS,
+                                                   FLOW_SETTINGS_FONTS).primary ==
+              PLAYER_UI_SETTINGS_REMOVE_FONTS,
+          "Remove imported fonts removes them");
+    CHECK(dump_flow_case(FLOW_SETTINGS_FONTS, dump, sizeof(dump)) &&
+              strstr(dump, "Optional.") != NULL && strstr(dump, "flash0:/font") != NULL &&
+              strstr(dump, "Copying the fonts from your PSP") != NULL &&
+              strstr(dump, "Japanese: synthetic fallback") != NULL &&
+              strstr(dump, "Korean: synthetic fallback") != NULL &&
+              strstr(dump, "Latin 16: synthetic fallback") != NULL &&
+              strstr(dump, "Imported 3 fonts") != NULL,
+          "the page says the fonts are optional, how to copy them, and every slot's status");
+}
+
 static bool controller_op_is(PlayerUiAction action, PlayerUiControllerOp op, size_t control) {
     return action.kind == PLAYER_UI_ACTION_CONTROLLER &&
            (PlayerUiControllerOp)action.primary == op && action.title_index == control;
@@ -3137,6 +3175,7 @@ int main(int argc, char **argv) {
     test_screen_actions();
     test_error_details_fit_the_minimum_window();
     test_every_screen_fits_the_window();
+    test_psp_fonts_page();
     test_wizard_actions();
     test_plain_cards();
     test_disc_cards();
