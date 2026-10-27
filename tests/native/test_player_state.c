@@ -2926,6 +2926,181 @@ static void test_remove_from_library_deletes_what_nakagawa_built(void) {
            "image and, unless asked, the saves\n");
 }
 
+/* #1285: a release zip's verified prereqs/ tree beside bin/ runs BUILD PACKAGE
+   with no consent card and no download, even with nothing on PATH; a damaged
+   tree is refused by name and never falls back to a download. */
+static void write_bundle_state_file(const char *base, const char *relative, const char *text) {
+    char path[NATIVE_TEST_PATH_MAX + 128];
+    char sep = nk_platform_path_separator();
+    int n = snprintf(path, sizeof(path), "%s%c%s", base, sep, relative);
+    assert(n > 0 && (size_t)n < sizeof(path));
+    for (char *p = path + strlen(base); *p; p++) {
+        if (*p == '/') *p = sep;
+    }
+    char parent[NATIVE_TEST_PATH_MAX + 128];
+    memcpy(parent, path, strlen(path) + 1);
+    *strrchr(parent, sep) = '\0';
+    assert(nk_platform_mkdir_p(parent));
+    write_text_file(path, text);
+}
+
+static void test_bundled_prerequisite_build(const char *self_executable) {
+    printf("[PLAYER_STATE_TEST] bundled prerequisites: BUILD PACKAGE without consent or download\n");
+    fflush(stdout);
+    char sep = nk_platform_path_separator();
+#if defined(_WIN32) || defined(_WIN64)
+    const char *python_rel = "python/python.exe";
+    const char *gcc_rel = "msys64/ucrt64/bin/gcc.exe";
+    const char *make_rel = "msys64/ucrt64/bin/mingw32-make.exe";
+#else
+    const char *python_rel = "python/python";
+    const char *gcc_rel = "msys64/ucrt64/bin/gcc";
+    const char *make_rel = "msys64/ucrt64/bin/mingw32-make";
+#endif
+    char root[NK_MAX_PATH + 32];
+    char release[NK_MAX_PATH + 48];
+    char install_root[NK_MAX_PATH + 64];
+    char prereqs[NK_MAX_PATH + 64];
+    char user_root[NK_MAX_PATH + 48];
+    char iso_path[NK_MAX_PATH + 48];
+    char path[NK_MAX_PATH + 128];
+    assert(nk_platform_get_path(NK_PATH_CACHE, root, NK_MAX_PATH));
+    size_t root_len = strlen(root);
+    snprintf(root + root_len, sizeof(root) - root_len, "%cbundle-build-state", sep);
+    if (nk_platform_dir_exists(root)) assert(native_test_remove_tree(root));
+    snprintf(release, sizeof(release), "%s%crelease", root, sep);
+    snprintf(install_root, sizeof(install_root), "%s%cbin", release, sep);
+    snprintf(prereqs, sizeof(prereqs), "%s%cprereqs", release, sep);
+    snprintf(user_root, sizeof(user_root), "%s%cuser", root, sep);
+    snprintf(iso_path, sizeof(iso_path), "%s%cbundle.iso", root, sep);
+    assert(nk_platform_mkdir_p(install_root));
+    assert(nk_platform_mkdir_p(user_root));
+
+    write_bundle_state_file(release, "source/tools/nk_cli.py", "# synthetic CLI\n");
+    write_bundle_state_file(release, "source/assets/prereq_manifest.json",
+        "{\"schema_version\": 1, \"total_download_bytes\": 100, \"artifacts\": [\n"
+        " {\"id\": \"cpython-embed-amd64\", \"name\": \"Synthetic CPython\", \"version\": \"3.15.1\",\n"
+        "  \"url\": \"https://www.python.org/ftp/synthetic.zip\", \"allowed_hosts\": [\"www.python.org\"],\n"
+        "  \"filename\": \"synthetic.zip\", \"size_bytes\": 100,\n"
+        "  \"sha256\": \"1111111111111111111111111111111111111111111111111111111111111111\",\n"
+        "  \"license\": \"PSF-2.0\", \"status\": \"ready\"}]}\n");
+    write_bundle_state_file(prereqs, python_rel, "");
+    snprintf(path, sizeof(path), "%s%c%s", prereqs, sep, python_rel);
+    for (char *p = path + strlen(prereqs); *p; p++) if (*p == '/') *p = sep;
+    copy_executable_file(self_executable, path);
+    int64_t python_size = nk_platform_get_file_size(path);
+    assert(python_size > 0);
+    write_bundle_state_file(prereqs, gcc_rel, "gcc\n");
+    write_bundle_state_file(prereqs, make_rel, "make\n");
+    char inventory[NATIVE_TEST_PATH_MAX * 2];
+    snprintf(inventory, sizeof(inventory),
+             "%064d %lld %s\n%064d 4 %s\n%064d 5 %s\n",
+             0, (long long)python_size, python_rel, 0, gcc_rel, 0, make_rel);
+    write_bundle_state_file(prereqs, "bundle-inventory.txt", inventory);
+    char record[1024];
+    snprintf(record, sizeof(record),
+             "{\"schema_version\": 1, \"bundle\": {\"schema_version\": 1, "
+             "\"inventory\": \"bundle-inventory.txt\", \"file_count\": 3, \"unpacked_bytes\": %lld},\n"
+             " \"installed\": {\"cpython-embed-amd64\": {\"version\": \"3.15.1\", \"size_bytes\": 100,\n"
+             "  \"sha256\": \"1111111111111111111111111111111111111111111111111111111111111111\",\n"
+             "  \"license\": \"PSF-2.0\", \"notices\": []}}}\n",
+             (long long)python_size + 9);
+    write_bundle_state_file(prereqs, "installed.json", record);
+
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    nk_library_init(&app->library);
+    app->game_count = 1;
+    app->selected_game_index = 0;
+    write_player_package_preflight_iso(iso_path, "TEST00011", "Bundle fixture", false);
+    snprintf(app->games[0].disc_id, sizeof(app->games[0].disc_id), "TEST00011");
+    snprintf(app->games[0].title_id, sizeof(app->games[0].title_id), "experimental-test00011");
+    snprintf(app->games[0].title_name, sizeof(app->games[0].title_name), "Bundle fixture");
+    snprintf(app->games[0].disc_version, sizeof(app->games[0].disc_version), "1.00");
+    snprintf(app->games[0].selected_executable, sizeof(app->games[0].selected_executable),
+             "EBOOT.BIN");
+    assert(strlen(iso_path) < sizeof(app->games[0].iso_path));
+    memcpy(app->games[0].iso_path, iso_path, strlen(iso_path) + 1u);
+    app->games[0].iso_size_bytes = (uint64_t)nk_platform_get_file_size(iso_path);
+    app->games[0].is_experimental = true;
+    app->games[0].executable_eboot_kind = NK_ISO_EXEC_MIPS_ELF32;
+    app->games[0].executable_selection = NK_ISO_EXEC_SELECTION_EBOOT;
+    assert(strlen(user_root) < sizeof(app->runtime_root));
+    assert(strlen(install_root) < sizeof(app->install_root));
+    memcpy(app->runtime_root, user_root, strlen(user_root) + 1u);
+    memcpy(app->install_root, install_root, strlen(install_root) + 1u);
+    write_experimental_profile_fixture(user_root, app->games[0].disc_id, app->games[0].title_id,
+                                       app->games[0].selected_executable, FIXTURE_SHA256);
+
+    bool had_path = false;
+    bool had_python = false;
+    bool had_override = false;
+    bool had_mode = false;
+    char *saved_path = capture_environment_value("PATH", &had_path);
+    char *saved_python = capture_environment_value("PYTHON", &had_python);
+    char *saved_override = capture_environment_value("NK_INSTALL_ROOT", &had_override);
+    char *saved_mode = capture_environment_value("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", &had_mode);
+    /* Nothing on the host can stand in for the bundle. */
+    nk_ps_set_env("PATH", "");
+#if defined(_WIN32) || defined(_WIN64)
+    nk_ps_set_env("PYTHON", "C:/Windows/System32/where.exe");
+#else
+    nk_ps_set_env("PYTHON", "/bin/sh");
+#endif
+    nk_ps_set_env("NK_INSTALL_ROOT", NULL);
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "reuse");
+
+    bool started = player_app_start_package_build(app, 0);
+    if (!started) {
+        fprintf(stderr, "bundled build refused: %s: %s\n", app->last_error.error_code,
+                app->last_error.message);
+    }
+    assert(started);
+    assert(app->active_view == VIEW_BUILDING_PACKAGE);
+    assert(app->prerequisites.phase == PLAYER_PREREQ_IDLE);
+    assert(!app->prerequisite_job_started && !app->prerequisite_fetcher_started);
+    char expected_root[NK_MAX_PATH];
+    assert(nk_platform_absolute_path(prereqs, expected_root, sizeof(expected_root)));
+    assert(strcmp(app->build_session.prerequisites_root, expected_root) == 0);
+    poll_player_package_build_to_terminal(app);
+    assert(app->build_session.is_complete);
+    snprintf(path, sizeof(path), "%s%cprerequisites", user_root, sep);
+    assert(!nk_platform_dir_exists(path));
+
+    /* About & Licenses lists the bundle and opens its notices. */
+    assert(player_app_open_prerequisite_about(app));
+    assert(app->prerequisites.item_count == 1);
+    assert(strcmp(app->prerequisites.bundle_root, expected_root) == 0);
+    assert(player_app_request_license_folder(app));
+    snprintf(path, sizeof(path), "%s%cnotices", expected_root, sep);
+    assert(strcmp(app->requested_open_path, path) == 0);
+
+    /* A record that no longer matches the pinned manifest is refused by name. */
+    player_app_set_view(app, VIEW_LIBRARY);
+    char *stale_version = strstr(record, "\"3.15.1\"");
+    assert(stale_version != NULL);
+    stale_version[6] = '0';
+    write_bundle_state_file(prereqs, "installed.json", record);
+    assert(!player_app_start_package_build(app, 0));
+    assert(app->active_view == VIEW_ERROR);
+    assert(strcmp(app->last_error.error_code, "PREREQUISITE_BUNDLE_INVALID") == 0);
+    assert(strstr(app->last_error.message, "cpython-embed-amd64") != NULL);
+    assert(app->prerequisites.phase != PLAYER_PREREQ_CONSENT);
+    assert(!app->build_session.is_building);
+
+    restore_environment_value("PATH", saved_path, had_path);
+    restore_environment_value("PYTHON", saved_python, had_python);
+    restore_environment_value("NK_INSTALL_ROOT", saved_override, had_override);
+    restore_environment_value("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", saved_mode, had_mode);
+    free(saved_path);
+    free(saved_python);
+    free(saved_override);
+    free(saved_mode);
+    free(app);
+    assert(native_test_remove_tree(root));
+    printf("[PLAYER_STATE_TEST] bundled prerequisites PASS\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -2935,7 +3110,13 @@ int main(int argc, char **argv) {
             "import sys, sysconfig; sys.exit(sys.implementation.name != 'cpython' or "
             "sysconfig.get_platform().startswith('mingw') or "
             "not ((3, 14) <= sys.version_info[:2] <= (3, 15)))";
-        return strcmp(argv[2], python_probe) == 0 ? 0 : 94;
+        /* The pinned runtime (a bundled or downloaded CPython) must be 3.15. */
+        static const char python_probe_315[] =
+            "import sys, sysconfig; sys.exit(sys.implementation.name != 'cpython' or "
+            "sysconfig.get_platform().startswith('mingw') or "
+            "sys.version_info[:2] != (3, 15))";
+        return strcmp(argv[2], python_probe) == 0 ||
+               strcmp(argv[2], python_probe_315) == 0 ? 0 : 94;
     }
     if (argc >= 3 && strcmp(argv[2], "build-package") == 0) {
         return player_state_package_builder_child(argc, argv);
@@ -3000,6 +3181,7 @@ int main(int argc, char **argv) {
     test_tree_helpers_walk_a_deep_tree();
     test_remove_from_library_deletes_what_nakagawa_built();
     test_package_build_lifecycle(self_executable);
+    test_bundled_prerequisite_build(self_executable);
     test_error_cards_are_plain();
     test_build_outcome_is_shown_once_per_session();
     test_bitmap_font_text_fallback();

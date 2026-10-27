@@ -1014,6 +1014,46 @@ uint32_t sr_register_count(void);  /* number of sr_register() calls performed so
  * never on this path), so enabling detection cannot slow dispatch itself. */
 RecompFn sr_lookup(uint32_t addr);
 
+/* Guest function names from tools/codegen.py --symbol-map (names and addresses only). The
+ * generated sr_register_all() hands over one table sorted by address; size 0 means only the
+ * start address is named. A build without a map registers nothing, so every lookup is NULL
+ * and every report prints exactly what it printed before. */
+typedef struct SrGuestSymbol {
+    uint32_t addr;
+    uint32_t size;
+    const char *name;
+} SrGuestSymbol;
+void sr_guest_symbols_register(const SrGuestSymbol *table, uint32_t count);
+/* The registered symbol naming pc, or NULL. */
+const SrGuestSymbol *sr_guest_symbol_at(uint32_t pc);
+/* "name" or "name+0x<offset>" for pc in buf, or "" when no symbol names it. */
+const char *sr_guest_symbol_label(uint32_t pc, char *buf, size_t len);
+
+/* The entry of a sorted table whose start is pc, or whose nonzero size covers pc. */
+static inline const SrGuestSymbol *sr_guest_symbol_find(const SrGuestSymbol *table,
+                                                        uint32_t count, uint32_t pc) {
+    uint32_t lo = 0u, hi = count;  /* first entry whose start is above pc */
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        if (table[mid].addr <= pc) lo = mid + 1u;
+        else hi = mid;
+    }
+    if (lo == 0u) return NULL;
+    const SrGuestSymbol *sym = &table[lo - 1u];
+    return pc == sym->addr || pc - sym->addr < sym->size ? sym : NULL;
+}
+
+/* sr_guest_symbol_label's text for a symbol found for pc (NULL gives ""). */
+static inline const char *sr_guest_symbol_format(const SrGuestSymbol *sym, uint32_t pc,
+                                                 char *buf, size_t len) {
+    if (len == 0u) return "";
+    buf[0] = '\0';
+    if (!sym) return buf;
+    if (pc == sym->addr) snprintf(buf, len, "%s", sym->name);
+    else snprintf(buf, len, "%s+0x%" PRIx32, sym->name, pc - sym->addr);
+    return buf;
+}
+
 /* Codegen registers exact analyzer-owned, end-exclusive executable spans before
  * guest execution. Mapped RAM alone never grants interpreter fetch authority.
  * Registration validates structural ownership (alignment, non-empty extent) and
