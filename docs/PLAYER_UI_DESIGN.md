@@ -1,6 +1,6 @@
 # Player UI design system
 
-The visual spec for the native player's launcher UI (the default since C10; `--ui=legacy` keeps the old one for
+The visual spec for the native player's launcher UI (the only launcher since v0.0.1; the old renderer survives only in the regression-test build for
 one release). It is the reference every
 screen lane builds against: Library and Title detail (C5, built), Settings (C6), first run (C7) and error dialogs
 (C8). The tokens and components it names live in code:

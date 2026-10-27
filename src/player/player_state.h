@@ -45,7 +45,8 @@ typedef enum {
     VIEW_CONFIRM_REMOVE_TOOLS,
     VIEW_ONLINE_SETTINGS,   /* Settings > Online and developer options */
     VIEW_BUILD_CACHE,       /* Settings > Build tools and cache (#1306) */
-    VIEW_DEVELOPER_LOG      /* the developer log panel (developer mode, F12) */
+    VIEW_DEVELOPER_LOG,     /* the developer log panel (developer mode, F12) */
+    VIEW_PSP_FONTS          /* Settings > PSP fonts: import your PSP's own fonts; the last value */
 } PlayerView;
 
 typedef enum {

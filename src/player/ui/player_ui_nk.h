@@ -297,7 +297,8 @@ typedef enum {
     PLAYER_UI_SETTINGS_PAGE_ONLINE,
     PLAYER_UI_SETTINGS_PAGE_NOTICES,
     PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS,
-    PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
+    PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE,
+    PLAYER_UI_SETTINGS_PAGE_FONTS
 } PlayerUiSettingsPage;
 
 /* What a Settings control asks for (PLAYER_UI_ACTION_SETTINGS). main.c runs the
@@ -331,7 +332,10 @@ typedef enum {
     PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE,
     PLAYER_UI_SETTINGS_TOGGLE_SHARE_LIBRARIES,
     PLAYER_UI_SETTINGS_CLEAR_SHARED_LIBRARIES,
-    PLAYER_UI_SETTINGS_KEEP_TOOLS          /* the removal check, back to build tools and cache */
+    PLAYER_UI_SETTINGS_KEEP_TOOLS,         /* the removal check, back to build tools and cache */
+    PLAYER_UI_SETTINGS_OPEN_FONTS,         /* Settings > PSP fonts */
+    PLAYER_UI_SETTINGS_IMPORT_FONTS,       /* the folder picker, then the import */
+    PLAYER_UI_SETTINGS_REMOVE_FONTS        /* remove the imported fonts */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
@@ -362,6 +366,11 @@ typedef struct {
     /* Third-party notices: "name version · licence" per downloaded tool */
     const char *tools[PLAYER_UI_SETTINGS_TOOLS];
     size_t tool_count;
+    /* PSP fonts: one status line per slot (Japanese, the 16 Latin indices,
+       Korean) and the last import's result */
+    const char *font_lines[18];
+    size_t font_line_count;
+    const char *font_message;
     float logical_width;
     float logical_height;
 } PlayerUiSettingsModel;
@@ -579,6 +588,9 @@ enum {
     PLAYER_UI_ID_SETTINGS_BUILD_CACHE = 0x451Au,
     PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES = 0x451Bu,
     PLAYER_UI_ID_SETTINGS_CLEAR_LIBRARIES = 0x451Cu,
+    PLAYER_UI_ID_SETTINGS_FONTS = 0x451Du,
+    PLAYER_UI_ID_SETTINGS_IMPORT_FONTS = 0x451Eu,
+    PLAYER_UI_ID_SETTINGS_REMOVE_FONTS = 0x451Fu,
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,
@@ -687,6 +699,9 @@ PlayerUiNk *player_ui_nk_create(struct SDL_Renderer *renderer,
                                 char *error, size_t error_size);
 void player_ui_nk_destroy(PlayerUiNk *player);
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app);
+/* True when the launcher draws this view. Every PlayerView is drawn by it: the
+   shipped player has no other launcher. */
+bool player_ui_nk_draws_view(int view);
 /* True when the next UI shows the Library at the bottom of its stack (Esc
    there asks to quit, as in the existing UI). */
 bool player_ui_nk_at_library_root(const PlayerUiNk *player);

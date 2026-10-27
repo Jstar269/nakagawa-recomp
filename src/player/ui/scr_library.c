@@ -237,7 +237,7 @@ static PlayerUiAction library_empty(NkUi *ui, bool with_icon) {
         nk_ui_text_role(ui, LIBRARY_ID_EMPTY_TITLE, "Add your first game",
                         NK_UI_TYPE_TITLE, theme->paper);
         nk_ui_text_role(ui, LIBRARY_ID_EMPTY_TEXT,
-                        "The setup wizard checks a decrypted disc image (.iso) of a PSP game you "
+                        "The setup wizard checks a disc image (.iso) of a PSP game you "
                         "own and gets it ready to play on this PC.",
                         NK_UI_TYPE_BODY, theme->muted);
         {

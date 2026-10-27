@@ -69,10 +69,10 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
        (#1297). */
     {"UCUS98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
      "Plays full matches and Story Mode.",
-     "Known issues: low frame rate, sound drops out, and movies show black."},
+     "Known issues: a few late sound wakes while loading, and some movies show black."},
     {"UCUS-98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
      "Plays full matches and Story Mode.",
-     "Known issues: low frame rate, sound drops out, and movies show black."},
+     "Known issues: a few late sound wakes while loading, and some movies show black."},
     {"PAC-MAN Championship Edition", "Partially works", PLAYER_UI_TIER_NONE,
      "Reaches the title screen and plays a stage. The rest of the game has not been tried yet.",
      ""}
@@ -213,10 +213,18 @@ static bool player_ui_add_font(NkUiTtf *ttf, int font, const char *base_path,
    to Geist for Latin it lacks and to Noto Sans JP for Japanese titles. */
 static bool player_ui_register_fonts(NkUiTtf *ttf, const char *base_path,
                                      char *error, size_t error_size) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* Stands in for a ZIP extracted without its fonts folder. */
+    if (getenv("NK_UI_TEST_HIDE_UI_FONTS") != NULL) {
+        player_ui_set_error(error, error_size,
+                            "its fonts (assets\\fonts\\ui) are missing or damaged");
+        return false;
+    }
+#endif
     for (int font = 0; font < NK_UI_FONT_COUNT; ++font) {
         if (!player_ui_add_font(ttf, font, base_path, nk_ui_font_path(font))) {
             player_ui_set_error(error, error_size,
-                                "The next UI could not load the bundled UI fonts.");
+                                "its fonts (assets\\fonts\\ui) are missing or damaged");
             return false;
         }
     }
@@ -330,7 +338,7 @@ static bool player_ui_disc_view(PlayerView view) {
 static bool player_ui_settings_view(PlayerView view) {
     return view == VIEW_SETTINGS || view == VIEW_ONLINE_SETTINGS ||
            view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
-           view == VIEW_BUILD_CACHE;
+           view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -339,17 +347,22 @@ static bool player_ui_settings_view(PlayerView view) {
    the developer log. */
 static bool player_ui_nk_flow_view(PlayerView view) {
     return view == VIEW_SETUP_WIZARD || view == VIEW_BUILDING_PACKAGE ||
+           view == VIEW_PREPARING ||
            view == VIEW_PREREQ_CONSENT ||
            view == VIEW_PREREQ_PROGRESS || view == VIEW_ERROR ||
            player_ui_disc_view(view) || player_ui_settings_view(view) ||
            view == VIEW_CONTROLLER_SETTINGS || view == VIEW_DEVELOPER_LOG;
 }
 
+bool player_ui_nk_draws_view(int view_value) {
+    PlayerView view = (PlayerView)view_value;
+    return view == VIEW_LIBRARY || view == PLAYER_VIEW_READY_LIBRARY ||
+           player_ui_nk_flow_view(view);
+}
+
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
     return player != NULL && player->ready && app != NULL &&
-           (app->active_view == VIEW_LIBRARY ||
-            app->active_view == PLAYER_VIEW_READY_LIBRARY ||
-            player_ui_nk_flow_view(app->active_view));
+           player_ui_nk_draws_view(app->active_view);
 }
 
 static void player_ui_format_size(char *out, size_t out_size, uint64_t bytes) {
@@ -567,6 +580,18 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         case VIEW_PREREQ_ABOUT: model.page = PLAYER_UI_SETTINGS_PAGE_NOTICES; break;
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
         case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
+        case VIEW_PSP_FONTS:
+            model.page = PLAYER_UI_SETTINGS_PAGE_FONTS;
+            if (app->wizard.font_slot_detail[0][0] == '\0') player_app_refresh_font_status(app);
+            for (int item = 0; item < NK_FONT_LATIN_INDEX_COUNT + 2 && item < 18; ++item) {
+                model.font_lines[model.font_line_count++] = item == 0
+                    ? app->wizard.font_slot_detail[NK_FONT_SLOT_JAPANESE]
+                    : item == NK_FONT_LATIN_INDEX_COUNT + 1
+                        ? app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN]
+                        : app->wizard.font_latin_index_detail[item - 1];
+            }
+            model.font_message = app->wizard.font_message;
+            break;
         case VIEW_SETTINGS:
         default: model.page = PLAYER_UI_SETTINGS_PAGE_MAIN; break;
     }
@@ -872,6 +897,20 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
         model.logical_height = scale.logical_h;
         return player_ui_screen_prereq(player->ui, &model);
     }
+    if (app->active_view == VIEW_PREPARING) {
+        /* No preparation pipeline is connected in this build: the card says
+           so plainly, with the way back, and shows no fake progress. */
+        PlayerUiErrorModel model;
+        memset(&model, 0, sizeof(model));
+        model.badge = "Not available";
+        model.title = "Preparation Unavailable";
+        model.message = "No preparation pipeline is connected in this build, so no "
+                        "preparation work is running.";
+        model.recovery_label = "Return to Library";
+        model.logical_width = scale.logical_w;
+        model.logical_height = scale.logical_h;
+        return player_ui_screen_error(player->ui, &model);
+    }
     if (app->active_view == VIEW_ERROR) {
         const ErrorState *error = &app->last_error;
         bool launch_readiness = player_error_leads_with_message(error);
@@ -926,7 +965,8 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 break;
             case VIEW_PREREQ_CONSENT: focus = PLAYER_UI_ID_PREREQ_ACCEPT; break;
             case VIEW_PREREQ_PROGRESS: focus = PLAYER_UI_ID_PREREQ_CANCEL; break;
-            case VIEW_ERROR: focus = PLAYER_UI_ID_ERROR_RECOVER; break;
+            case VIEW_ERROR:
+            case VIEW_PREPARING: focus = PLAYER_UI_ID_ERROR_RECOVER; break;
             case VIEW_INSPECTING:
             case VIEW_SUPPORTED_TITLE:
             case VIEW_EXPERIMENTAL_TITLE:
@@ -938,6 +978,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                     : player->last_view == VIEW_BUILD_CACHE ||
                             player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
                         ? PLAYER_UI_ID_SETTINGS_BUILD_CACHE
+                    : player->last_view == VIEW_PSP_FONTS ? PLAYER_UI_ID_SETTINGS_FONTS
                     : player->last_view == VIEW_CONTROLLER_SETTINGS
                         ? PLAYER_UI_ID_SETTINGS_CONTROLLER
                         : PLAYER_UI_ID_SETTINGS_RESOLUTION;
@@ -959,6 +1000,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 break;
             }
             case VIEW_DEVELOPER_LOG: focus = PLAYER_UI_ID_DEVELOPER_LOG_CLOSE; break;
+            case VIEW_PSP_FONTS: focus = PLAYER_UI_ID_SETTINGS_IMPORT_FONTS; break;
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
             case VIEW_PREREQ_ABOUT:
             case VIEW_CONFIRM_REMOVE_TOOLS: focus = PLAYER_UI_ID_SETTINGS_BACK; break;

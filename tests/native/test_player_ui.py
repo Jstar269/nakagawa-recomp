@@ -591,9 +591,47 @@ def compute_effective_timeout(
     return effective + TIMEOUT_BUFFER_SECONDS
 
 
+class LegacyRendererSourceTests(unittest.TestCase):
+    """The shipped player never reaches the old renderer (owner, v0.0.1)."""
+
+    def test_ui_render_frame_is_called_only_in_the_regression_build(self) -> None:
+        for source in sorted((ROOT / "src" / "player").rglob("*.c")):
+            if source.name == "ui_renderer.c":
+                continue
+            depth = 0
+            guarded = []
+            for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("#if"):
+                    depth += 1
+                    guarded.append("NK_PLAYER_UI_REGRESSION_TEST" in stripped and
+                                   not stripped.startswith("#ifndef"))
+                elif stripped.startswith("#else") or stripped.startswith("#elif"):
+                    if guarded:
+                        guarded[-1] = False
+                elif stripped.startswith("#endif"):
+                    depth -= 1
+                    if guarded:
+                        guarded.pop()
+                elif "ui_render_frame(" in stripped and not stripped.startswith("void "):
+                    self.assertTrue(any(guarded),
+                                    f"{source.name}:{number} calls ui_render_frame outside "
+                                    "the NK_PLAYER_UI_REGRESSION_TEST build")
+
+    def test_shipped_player_has_no_legacy_switch(self) -> None:
+        main = (ROOT / "src" / "player" / "main.c").read_text(encoding="utf-8")
+        self.assertNotIn('getenv("NK_UI")', main)
+        help_text = main[main.index('"Usage: nakagawa_player'):]
+        help_text = help_text[:help_text.index("return 0;")]
+        self.assertNotIn("--ui=", help_text)
+        legacy = main.index('strcmp(argv[i], "--ui=legacy")')
+        self.assertGreater(legacy, main.rindex("#ifdef NK_PLAYER_UI_REGRESSION_TEST", 0, legacy))
+        self.assertGreater(main.index("#endif", legacy), legacy)
+
+
 class NativePlayerUiTests(unittest.TestCase):
-    # The next UI is the default. These tests pin behaviour of the existing
-    # renderer, which stays for one release as the --ui=legacy fallback: its
+    # The next UI is the only launcher. These tests pin behaviour of the old
+    # renderer, which only the regression build keeps (--ui=legacy): its
     # library layout and hit boxes, its disc-art workers, its package-status
     # badges and its build and error-card text metrics (the next UI's cards are
     # covered by tests/native/test_player_screens.c). They run with --ui=legacy
@@ -1096,23 +1134,70 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertNotIn("next_ui_disc_icon", missing["stdout"],
                          "an unreadable disc keeps the placeholder")
 
-    def test_next_ui_is_the_default_with_a_legacy_fallback(self) -> None:
+    def test_next_ui_is_the_only_launcher(self) -> None:
+        """The owner's rule for v0.0.1: the new launcher or nothing.
+
+        A player whose launcher cannot start (an extraction that lost
+        assets/fonts/ui) says why and exits; it never draws the old renderer."""
         marker = "[PLAYER_UI_TEST] UI_NEXT_ACTIVE"
         default_ui = self.run_player("empty")
-        flag_ui = self.run_player("empty", ui_mode="next")
-        legacy_flag = self.run_player("empty", ui_mode="legacy")
-        legacy_env = self.run_player("empty", env_extra={"NK_UI": "legacy"})
-        flag_wins = self.run_player("empty", ui_mode="next", env_extra={"NK_UI": "legacy"})
-        self.assertNotIn(marker, legacy_flag["stdout"])
-        self.assertNotIn(marker, legacy_env["stdout"])
-        if marker not in flag_ui["stdout"]:
-            # Without its fonts the next UI cannot start and the player keeps
-            # the existing renderer, whatever was asked for.
-            self.assertIn("The next UI could not start", flag_ui["stderr"])
-            self.assertNotIn(marker, default_ui["stdout"])
-            return
-        self.assertIn(marker, default_ui["stdout"])
-        self.assertIn(marker, flag_wins["stdout"], "the command line wins over NK_UI")
+        if marker not in default_ui["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        with tempfile.TemporaryDirectory(prefix=".player-ui-test-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            env = os.environ.copy()
+            env.update({
+                "SDL_VIDEODRIVER": env.get("SDL_VIDEODRIVER", ""),
+                "SDL_AUDIO_DRIVER": "dummy",
+                "LOCALAPPDATA": str(scratch),
+                "APPDATA": str(scratch),
+                "NK_UI_TEST_HIDE_UI_FONTS": "1",
+            })
+            completed = subprocess.run(
+                [str(PLAYER_EXE), f"--user-data-root={scratch / 'data'}",
+                 "--ui-test-events=WAIT_MS=100;QUIT",
+                 f"--ui-test-screenshot={scratch / 'shot.bmp'}"],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=60, check=False,
+            )
+        self.assertEqual(completed.returncode, 4, completed.stderr)
+        self.assertIn("LAUNCHER_UNAVAILABLE", completed.stderr)
+        self.assertIn("Extract the ZIP again", completed.stderr)
+        self.assertIn("assets\\fonts\\ui", completed.stderr)
+        self.assertNotIn(marker, completed.stdout)
+        self.assertNotIn("frame=", completed.stdout, "nothing is drawn after the message")
+
+    def test_every_view_is_drawn_by_the_launcher(self) -> None:
+        """Every PlayerView in player_state.h is drawn by the nk_ui launcher."""
+        header = (ROOT / "src" / "player" / "player_state.h").read_text(encoding="utf-8")
+        body = header[header.index("typedef enum {\n    VIEW_LIBRARY"):]
+        body = body[:body.index("} PlayerView;")]
+        body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+        declared = re.findall(r"\b((?:PLAYER_)?VIEW_[A-Z_]+)\b", body)
+        run = self.run_player("library", ("WAIT_MS=50",),
+                              env_extra={"NK_UI_TEST_REPORT_VIEWS": "1"})
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        coverage = re.findall(r"\[PLAYER_UI_TEST\] view_coverage value=(\d+) name=(\S+) nk=(\d)",
+                              str(run["stdout"]))
+        self.assertEqual(len(coverage), len(declared), (coverage, declared))
+        self.assertEqual([name for _, name, nk in coverage if nk != "1"], [],
+                         "views the launcher does not draw")
+        preparing = self.run_player("preparing", ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100"))
+        self.assertIn("[PLAYER_UI_TEST] UI_NEXT_ACTIVE", preparing["stdout"])
+        self.assertEqual(self.screens(preparing)[-1][0], "library",
+                         "Return to Library leaves the preparation card")
+
+    def test_settings_psp_fonts_imports_and_removes(self) -> None:
+        """Walkthrough blocker: the PSP font import is reachable from Settings."""
+        run = self.run_player("psp-fonts", ("WAIT_MS=100", "KEY_RETURN", "WAIT_MS=100"))
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in run["stdout"]:
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "psp_fonts")
+        self.assertIn(str(0x451E), self.focus_trail(run), "Import fonts folder has focus")
+        back = self.run_player("psp-fonts", ("WAIT_MS=100", "KEY_ESCAPE", "WAIT_MS=100"))
+        self.assertEqual(self.screens(back)[-1][0], "settings", "Esc goes back to Settings")
 
     def test_next_ui_mouse_and_keyboard_reach_the_add_card(self) -> None:
         click = self.run_player("library", ("MOUSE_MOVE=794,257", "MOUSE_DOWN", "MOUSE_UP"))
