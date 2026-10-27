@@ -1993,6 +1993,49 @@ int main(int argc, char **argv) {{
         )
         self.assertEqual(profile["manifest"]["modules"], [])
 
+    def test_experimental_intake_never_turns_a_disc_module_name_into_a_host_path(self) -> None:
+        # An ISO 9660 name may be a UNC or absolute path. The intake checks it as a string
+        # before forming any path, so it probes, reads and rewrites nothing outside the
+        # per-title folder and stops by name instead (final security pass, E1).
+        work = self.temp_dir / "module-name-host-path"
+        user_root = work / "user"
+        user_root.mkdir(parents=True)
+        outside = work / "outside"
+        outside.mkdir()
+        victim = outside / "b.prx"
+        victim.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0))
+        victim_id = os.stat(victim).st_ino
+        modules = {
+            "PSP_GAME/SYSDIR/EBOOT.BIN": build_plain_mips_elf(),
+            "PSP_GAME/USRDIR/" + "\\\\nk-test.invalid\\share\\a.prx": b"\x7fELF-not-read",
+        }
+        if os.name == "nt":
+            # An absolute name only stays one ISO name where the separator is a backslash.
+            modules["PSP_GAME/USRDIR/" + str(victim)] = b"~SCE" + bytes(0x60)
+        iso_file = work / "game.iso"
+        create_test_iso_with_module_tree(iso_file, modules, disc_id="TEST00074")
+        selected = work / "selected.elf"
+        selected.write_bytes(build_plain_mips_elf())
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        probed: list[str] = []
+        real_is_file = Path.is_file
+
+        def recording_is_file(path: Path, *args, **kwargs) -> bool:
+            probed.append(str(path))
+            if str(path).startswith("\\\\"):
+                return False  # never reach the network
+            return real_is_file(path, *args, **kwargs)
+
+        with patch.object(Path, "is_file", recording_is_file):
+            with self.assertRaises(nk_cli.ExperimentalModuleIntakeError) as ctx:
+                nk_cli._declare_experimental_disc_modules(
+                    iso_file, user_root, "TEST00074", candidates, selected, {},
+                )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        self.assertEqual([p for p in probed if "nk-test.invalid" in p or str(outside) in p], [])
+        self.assertEqual(os.stat(victim).st_ino, victim_id)
+        self.assertEqual([p.name for p in outside.iterdir()], ["b.prx"])
+
     def test_package_build_public_backends_and_limits(self) -> None:
         disc_id = "TEST00004"
         user_root = self.temp_dir / "user-data-mode"

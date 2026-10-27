@@ -694,6 +694,17 @@ class ExperimentalModuleIntakeError(PackageBuildError):
         super().__init__(f"{boundary_code}: {detail}")
 
 
+def _disc_module_name_ok(name: str) -> bool:
+    """Whether a disc file name may name a file in the per-title folder.
+
+    Checked as a string before any path is formed: an ISO 9660 name may be an
+    absolute or UNC path, and joining one replaces the folder it was joined to.
+    """
+    return (title_manifest.FILENAME_RE.fullmatch(name) is not None
+            and not name.endswith(".")
+            and name.split(".", 1)[0].upper() not in title_manifest.WINDOWS_RESERVED)
+
+
 def _declare_experimental_disc_modules(
     iso_path: Path, user_root: Path, disc_id: str, candidates: list[dict],
     selected_elf: Path, module_report: dict,
@@ -716,7 +727,7 @@ def _declare_experimental_disc_modules(
     unready: list[dict] = []
     for candidate in candidates:
         folder_copy = None
-        if title_folder is not None:
+        if title_folder is not None and _disc_module_name_ok(candidate["name"]):
             candidate_file = title_folder / candidate["name"]
             if candidate_file.is_file() and \
                     _classify_decrypted_elf_file(candidate_file, module=True) == "PLAIN_MIPS_ELF32":
