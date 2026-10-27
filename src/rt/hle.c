@@ -9859,9 +9859,10 @@ static uint32_t h_AtracGetAtracID(CpuState *s) {
  * through sceAtracGetStreamDataInfo and sceAtracAddStreamData. The calls that
  * take an ID configure that context; the *AndGetID calls allocate one for the
  * codec the RIFF fmt chunk names. The MOut calls ask for mono output, which
- * the HLE models for mono tracks only. Validation order and error codes follow
- * the public PPSSPP reference (Core/HLE/sceAtrac.cpp); they are not measured
- * on a PSP here (#1096). */
+ * the HLE models for mono tracks only. The validation order and the two
+ * refusal codes below are upstream-derived and unmeasured: they follow the
+ * public PPSSPP reference (GPL-2.0-or-later, Core/HLE/sceAtrac.cpp), not a
+ * PSP measurement, and stay so labelled until a probe pins them (#1096). */
 #define ATRAC_ERROR_INCORRECT_READ_SIZE 0x80630013u
 #define ATRAC_ERROR_NOT_MONO 0x80630019u
 /* Codec named by the fmt chunk of the RIFF prefix: tag 0x0270 is ATRAC3 and
