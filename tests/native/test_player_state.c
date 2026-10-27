@@ -3424,7 +3424,6 @@ int main(int argc, char **argv) {
 
 #if defined(NK_TITLE_MANIFEST_TEST_SEAMS)
     test_source_iso_member_path_validation();
-    test_psn_package_imports_as_its_iso();
 #endif
 
     /* Per-run cache isolation (#735 item 8): every fixture below resolves its
@@ -3456,6 +3455,7 @@ int main(int argc, char **argv) {
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
 
+    test_psn_package_imports_as_its_iso();
     test_stage_discard_removes_a_deep_tree();
     test_tree_helpers_walk_a_deep_tree();
     test_remove_from_library_deletes_what_nakagawa_built();
