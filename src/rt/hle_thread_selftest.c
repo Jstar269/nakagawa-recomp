@@ -530,6 +530,9 @@ static unsigned long s_test_gui_present_calls;
 static uint32_t s_test_gui_last_addr, s_test_gui_last_stride;
 static int s_test_gui_last_fmt;
 int gui_on(void) { return s_test_gui_on; }
+/* A real host window with a person at it (not the offscreen sink or an acceptance launch). */
+static int s_test_gui_interactive;
+int gui_interactive(void) { return s_test_gui_interactive; }
 void gui_pump(void) {}
 int gui_headless_acceptance_complete(void) { return 0; }
 /* The live pad: the keyboard tests hold a button on it for one frame; zero elsewhere. */
@@ -16362,6 +16365,98 @@ static void test_ctrl_live_input_latch_suppresses_phantom_start(void) {
     sr_ctrl_test_reset_live_input();
     expect(!sr_ctrl_test_live_input_seen(),
            "the test reset clears the latch for subsequent cases");
+}
+
+/* Poll one controller sample per vblank through the production sampler for `vblanks`
+ * vblanks and report how many of them carry START. */
+static unsigned ctrl_start_samples_over(CpuState *cpu, unsigned vblanks) {
+    unsigned start = 0;
+    for (unsigned i = 0; i < vblanks; i++) {
+        ctrl_tick(1u);
+        if (ctrl_dispatch(cpu, CTRL_OK_BUF, 1u) == 1u &&
+            (MEM_R32(CTRL_OK_BUF + 4u) & CTRL_BTN_START))
+            start++;
+    }
+    return start;
+}
+
+/* Start one pulse case from a known place: the default pulse (START for 4 vblanks every 240)
+ * is anchored to VCOUNT, which the fixture never rewinds, so tick (with a neutral pad) up to
+ * its period boundary first. The first vblanks measured afterwards are then exactly the ones a
+ * fresh run's pulse fires in. */
+static void ctrl_pulse_case(CpuState *cpu, int interactive, const char *noinput, const char *pad,
+                            const char *period, const char *width) {
+    s_test_gui_interactive = 0;
+    ctrl_env("1", "", "", "");
+    while (sr_display_vcount() % 240u) ctrl_tick(1u);
+    sr_route_reset();   /* disarm the pulse and drop any pending press */
+    sr_ctrl_test_reset_live_input();
+    s_test_gui_interactive = interactive;
+    ctrl_env(noinput, pad, period, width);
+    ctrl_drain(cpu);
+}
+
+/* Walkthrough B16: the "Test this PC" demos quit on START and first read the pad at vblank 2,
+ * and the headless bootstrap pulse (START for 4 vblanks every 240, from vblank 0) was also
+ * running in the real player, so they closed on their first frame. In a real window nothing
+ * may be synthesised unless the user asked; a headless host still gets the pulse. Driven
+ * through the production sampler (sr_vblank_tick -> h_CtrlButtons), not just the gate. */
+static void test_ctrl_pulse_never_synthesises_start_in_a_real_window(void) {
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_route_reset();   /* no route or pad script: the env pulse is the only input source */
+    /* VCOUNT is monotonic across the whole selftest and the pulse is anchored to it, so give it
+     * back at the same phase (mod 240) it was found in: later cases depend on that phase. */
+    const uint32_t entry_vcount = sr_display_vcount();
+
+    /* --- a real window, nothing requested: no START, ever -------------------- */
+    ctrl_pulse_case(&cpu, 1, "", "", "", "");
+    expect(sr_ctrl_test_pulse_suppressed(0u),
+           "a real window suppresses the bootstrap pulse before the first live key");
+    expect(!sr_ctrl_test_live_input_seen(),
+           "the window gate does not fake a live-input latch");
+    expect(ctrl_start_samples_over(&cpu, 11u) == 0u,
+           "a real window with no live input sees no START at vblanks 0 to 10");
+    expect(ctrl_start_samples_over(&cpu, 480u) == 0u,
+           "and none across two full pulse periods either");
+
+    /* --- the same run headless (offscreen sink, dummy driver, acceptance): pulses */
+    ctrl_pulse_case(&cpu, 0, "", "", "", "");
+    expect(!sr_ctrl_test_pulse_suppressed(0u),
+           "a headless host keeps the bootstrap pulse enabled");
+    expect(ctrl_start_samples_over(&cpu, 11u) >= 1u,
+           "a headless host still gets its START within the first vblanks");
+
+    /* --- a real window where the user asked for the pulse by name ------------- */
+    static const char *const asks[][4] = {
+        { "", "0008", "", "" },   /* SR_PAD */
+        { "", "", "60", "" },     /* SR_PADPERIOD */
+        { "", "", "", "3" },      /* SR_PADWIDTH */
+    };
+    for (unsigned a = 0; a < sizeof asks / sizeof asks[0]; a++) {
+        ctrl_pulse_case(&cpu, 1, asks[a][0], asks[a][1], asks[a][2], asks[a][3]);
+        expect(!sr_ctrl_test_pulse_suppressed(0u),
+               "an explicit pulse knob keeps the pulse enabled in a real window");
+        expect(ctrl_start_samples_over(&cpu, 11u) >= 1u,
+               "an explicit pulse knob still delivers START in a real window");
+    }
+
+    /* --- SR_NOINPUT wins over an explicit request ------------------------------ */
+    ctrl_pulse_case(&cpu, 1, "1", "0008", "", "");
+    expect(sr_ctrl_test_pulse_suppressed(0u),
+           "SR_NOINPUT suppresses the pulse even when SR_PAD names it");
+    expect(ctrl_start_samples_over(&cpu, 11u) == 0u,
+           "and no START reaches the guest in that case either");
+
+    /* --- leave the fixture as it was found ------------------------------------- */
+    s_test_gui_interactive = 0;
+    ctrl_env("1", "", "", "");
+    while ((sr_display_vcount() - entry_vcount) % 240u) ctrl_tick(1u);
+    sr_route_reset();
+    sr_ctrl_test_reset_live_input();
+    ctrl_env("", "", "", "");
 }
 
 static void test_ctrl_read_buffer_contract(void) {
@@ -34096,6 +34191,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
+    test_ctrl_pulse_never_synthesises_start_in_a_real_window();
     test_ctrl_read_buffer_contract();
     test_ctrl_sample_timestamp_microsecond_contract();
     test_nested_guest_call_abi();
