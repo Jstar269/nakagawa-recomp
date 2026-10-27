@@ -393,6 +393,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define ATRAC_ERROR_INVALID_CODECTYPE 0x80630004u
 #define ATRAC_ERROR_BAD_ATRACID 0x80630005u
 #define ATRAC_ERROR_UNKNOWN_FORMAT 0x80630006u
+#define ATRAC_ERROR_BUFFER_IS_EMPTY 0x80630023u
 #define ATRAC_ERROR_DECODE_DATA_AFTER_END 0x80630024u
 #define ATRAC_ERROR_SIZE_TOO_SMALL 0x80630011u
 #define NID_SCE_UTILITY_LOAD_MODULE 0x2a2b3de0u
@@ -18640,10 +18641,16 @@ static void td24c_build_track(uint32_t base, uint32_t fileSize, uint32_t avgByte
     td24c_wr32(base + 52u, fileSize - 56u);
 }
 
-/* One-frame, all-zero AT3 data is a synthetic silent frame. It exercises the
- * real FFmpeg decoder and HLE bookkeeping without title/game bytes. */
-static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
-    enum { FILE_SIZE = 380u, FRAME_SIZE = 304u };
+/* All-zero AT3 data with valid sound-unit headers is a synthetic silent
+ * frame. It exercises the real FFmpeg decoder and HLE bookkeeping without
+ * title/game bytes. `frames` such frames follow a 76-byte header; the 8-byte
+ * fact chunk carries `factSamples` and the delay word `factDelay`. */
+enum { TD1096_HEADER = 76u, TD1096_FRAME = 304u };
+static void td1096_build_at3_frames(uint32_t base, uint16_t formatTag,
+                                    uint32_t frames, uint32_t factSamples,
+                                    uint32_t factDelay) {
+    const uint32_t FRAME_SIZE = TD1096_FRAME;
+    const uint32_t FILE_SIZE = TD1096_HEADER + frames * TD1096_FRAME;
     for (uint32_t i = 0; i < FILE_SIZE; i++)
         g_mem[base - 0x08000000u + i] = 0;
     td24c_wr32(base + 0u, 0x46464952u);           /* RIFF */
@@ -18666,14 +18673,35 @@ static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
     td24c_wr16(base + 50u, 0u);                   /* reserved */
     td24c_wr32(base + 52u, 0x74636166u);          /* fact */
     td24c_wr32(base + 56u, 8u);
-    td24c_wr32(base + 60u, ATRAC3_FRAME_SAMPLES);
-    td24c_wr32(base + 64u, 0u);                   /* synthetic, NOT_MEASURED */
+    td24c_wr32(base + 60u, factSamples);
+    td24c_wr32(base + 64u, factDelay);            /* fact delay word */
     td24c_wr32(base + 68u, 0x61746164u);          /* data */
-    td24c_wr32(base + 72u, FRAME_SIZE);
+    td24c_wr32(base + 72u, frames * FRAME_SIZE);
     /* Valid silent joint-stereo sound-unit headers: channel 1 starts with
      * 0x28; reverse-ordered channel 2 carries id 3 at the end of the frame. */
-    g_mem[base - 0x08000000u + 76u] = 0xa0u;
-    g_mem[base - 0x08000000u + 76u + FRAME_SIZE - 2u] = 0x0cu;
+    for (uint32_t f = 0; f < frames; f++) {
+        uint32_t frame = base - 0x08000000u + TD1096_HEADER + f * FRAME_SIZE;
+        g_mem[frame] = 0xa0u;
+        g_mem[frame + FRAME_SIZE - 2u] = 0x0cu;
+    }
+}
+static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
+    td1096_build_at3_frames(base, formatTag, 1u, ATRAC3_FRAME_SAMPLES, 0u);
+}
+/* One sceAtracDecodeData through the production NID with sentinel outputs. */
+static uint32_t td1096_decode(uint32_t id, uint32_t pcm, uint32_t outN,
+                              uint32_t outEnd, uint32_t outRemain) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = id;
+    cpu.r[5] = pcm;
+    cpu.r[6] = outN;
+    cpu.r[7] = outEnd;
+    cpu.r[8] = outRemain;
+    MEM_W32(outN, 0xdeadbeefu);
+    MEM_W32(outEnd, 0xdeadbeefu);
+    MEM_W32(outRemain, 0xdeadbeefu);
+    return sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA);
 }
 
 static void test_at3_synthetic_decode_bookkeeping(void) {
@@ -18735,12 +18763,20 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
     MEM_W32(OUT_N, 0xdeadbeefu);
     MEM_W32(OUT_END, 0xdeadbeefu);
     MEM_W32(OUT_REMAIN, 0xdeadbeefu);
+    /* Sentinel the whole stereo frame so the trimmed write extent is visible. */
+    for (uint32_t i = 0; i < ATRAC3_FRAME_SAMPLES * 2u; i++)
+        MEM_W16(PCM_OUT + i * 2u, 0xa5a5u);
     uint32_t decode_ret = sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA);
+    /* PSP-3000 measurement (fixtures/psp_oracle/README.md `at3-decode`, #1096):
+     * fact delay 0 gives a first call of 955 samples. */
     expect(decode_ret == 0u &&
-               MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+               MEM_R32(OUT_N) == 955u &&
                MEM_R32(OUT_END) == 1u &&
                MEM_R32(OUT_REMAIN) == 0xffffffffu,
-           "AT3 DecodeData returns 1024 samples, final-frame flag, and all-data remain=-1");
+           "AT3 first DecodeData with fact delay 0 returns the measured 955 samples, final-frame flag, and all-data remain=-1");
+    expect(MEM_R16(PCM_OUT + (955u * 2u - 1u) * 2u) != 0xa5a5u &&
+               MEM_R16(PCM_OUT + 955u * 2u * 2u) == 0xa5a5u,
+           "AT3 first DecodeData writes exactly 955 stereo samples of PCM");
 
     cpu.r[4] = id;
     cpu.r[5] = PCM_OUT;
@@ -18757,6 +18793,91 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
            "AT3 DecodeData after the final frame returns 0x80630024 with outN=0");
     expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u) == 0u,
            "AT3 fixture releases its decoder context");
+
+    /* First-call length against the 8-byte fact chunk's delay word, measured
+     * on a PSP-3000 on 2026-10-24 (#1096; fixtures/psp_oracle/README.md
+     * `at3-decode`): delay 0 and 1024 give 955 samples, delay 955 gives 1024,
+     * delay 500 is refused by the first decode with 0x80630002 and 0 samples.
+     * Delay 100 is unmeasured: the complete decoder frame is kept. */
+    {
+        static const struct { uint32_t delay, ret, samples; const char *what; } rows[] = {
+            {0u, 0u, 955u, "AT3 fact delay 0 gives a 955-sample first call"},
+            {1024u, 0u, 955u, "AT3 fact delay 1024 gives a 955-sample first call"},
+            {955u, 0u, 1024u, "AT3 fact delay 955 gives a 1024-sample first call"},
+            {500u, 0x80630002u, 0u, "AT3 fact delay 500 is refused by the first decode with 0x80630002"},
+            {100u, 0u, 1024u, "AT3 unmeasured fact delay 100 keeps the complete decoder frame"},
+        };
+        for (unsigned r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
+            uint32_t rid = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
+                                           0u, 0u, 0u);
+            expect(rid < 8u, "AT3 fact-delay leg allocates a context");
+            if (rid >= 8u) return;
+            td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES,
+                                    rows[r].delay);
+            expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, rid, TRACK, 380u, 0u) == 0u,
+                   "AT3 SetData accepts the fact-delay leg's track");
+            uint32_t ret = td1096_decode(rid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+            expect(ret == rows[r].ret && MEM_R32(OUT_N) == rows[r].samples,
+                   rows[r].what);
+            (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, rid, 0u, 0u, 0u);
+        }
+    }
+
+    /* Buffer exhaustion, measured on a PSP-3000 on 2026-10-22 and 2026-10-24
+     * (#1096; fixtures/psp_oracle/README.md `at3-decode`): with more file data
+     * still to stream, the call after the last buffered frame returns
+     * 0x80630023 with 0 samples and end flag 0. The synthetic file has eight
+     * frames; SetData receives a four-frame prefix, leaving three decodable
+     * frames after the streamed ring's first-frame offset. */
+    {
+        enum { SRC = 0x08006000u, FRAMES = 8u, PREFIX_FRAMES = 4u,
+               WP = 0x08004200u, WB = 0x08004204u, RO = 0x08004208u };
+        const uint32_t prefix = TD1096_HEADER + PREFIX_FRAMES * TD1096_FRAME;
+        uint32_t sid = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
+                                       0u, 0u, 0u);
+        expect(sid < 8u, "AT3 streamed leg allocates a context");
+        if (sid >= 8u) return;
+        td1096_build_at3_frames(SRC, 0x0270u, FRAMES,
+                                FRAMES * ATRAC3_FRAME_SAMPLES, 0u);
+        for (uint32_t b = 0; b < prefix; b++)
+            MEM_W8(TRACK + b, MEM_R8(SRC + b));
+        expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, sid, TRACK, prefix, 0u) == 0u,
+               "AT3 SetData accepts a streamed prefix shorter than the file");
+
+        uint32_t ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+        expect(ret == 0u && MEM_R32(OUT_N) == 955u && MEM_R32(OUT_END) == 0u &&
+                   MEM_R32(OUT_REMAIN) == 2u,
+               "streamed AT3 first decode returns 955 samples with two frames remaining");
+        for (uint32_t left = 1u; left <= 2u; left++) {
+            ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+            expect(ret == 0u && MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+                       MEM_R32(OUT_END) == 0u && MEM_R32(OUT_REMAIN) == 2u - left,
+                   "streamed AT3 later decodes return 1024 samples and count frames down");
+        }
+        ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+        expect(ret == ATRAC_ERROR_BUFFER_IS_EMPTY && MEM_R32(OUT_N) == 0u &&
+                   MEM_R32(OUT_END) == 0u,
+               "streamed AT3 decode after the last buffered frame returns 0x80630023 with 0 samples and end 0");
+
+        /* The exhaustion is not terminal: feeding the next frame resumes. */
+        CpuState cpu2;
+        memset(&cpu2, 0, sizeof(cpu2));
+        cpu2.r[4] = sid; cpu2.r[5] = WP; cpu2.r[6] = WB; cpu2.r[7] = RO;
+        expect(sr_syscall(&cpu2, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0u &&
+                   MEM_R32(WB) >= TD1096_FRAME && MEM_R32(RO) == prefix,
+               "streamed AT3 ring offers room for the next file frame");
+        uint32_t wp = MEM_R32(WP), ro = MEM_R32(RO);
+        for (uint32_t b = 0; b < TD1096_FRAME; b++)
+            MEM_W8(wp + b, MEM_R8(SRC + ro + b));
+        expect(td24b_dispatch4(0x7db31251u, sid, TD1096_FRAME, 0u, 0u) == 0u,
+               "sceAtracAddStreamData accepts the next AT3 frame");
+        ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+        expect(ret == 0u && MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+                   MEM_R32(OUT_END) == 0u,
+               "streamed AT3 decode resumes after the ring is refilled");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, sid, 0u, 0u, 0u) == 0u,
+               "AT3 streamed leg releases its context");
+    }
 }
 
 static void test_td24c_atrac_info_batch(void) {
@@ -31607,6 +31728,216 @@ static void test_mp3_error_paths(void) {
            "errors: a second sceMp3TermResource is harmless");
 }
 
+/* sceKernelGetThreadmanIdList(type, readbuf, readbufsize, idcount), issue #1288. The
+ * signature and the list classes are the public PSPSDK ones (pspthreadman.h,
+ * SceKernelIdListType); readbufsize counts SceUIDs. The error codes, the list order and
+ * the return value of a short buffer are UNMEASURED on a PSP, so these checks pin the
+ * runtime's model, not a hardware oracle: the call writes min(readbufsize, total) uids,
+ * stores the total in *idcount when idcount is not NULL, and returns the number written. */
+#define NID_TMID_LIST          0x94416130u
+#define NID_TMID_SET_ALARM     0x6652b8cau
+#define NID_TMID_CANCEL_ALARM  0x7e65b999u
+#define NID_TMID_CREATE_CB     0xe81caf8fu
+#define NID_TMID_DELETE_CB     0xedba5844u
+#define NID_TMID_CREATE_MPP    0x7c0dc2a0u
+#define NID_TMID_DELETE_MPP    0xf0b7da1cu
+#define NID_TMID_CREATE_VT     0x20fff560u
+#define NID_TMID_DELETE_VT     0x328f9e52u
+#define TMID_BUF               0x00252000u
+#define TMID_COUNT             0x00252100u
+#define TMID_NAME              0x00252140u
+#define TMID_LWMUTEX_WA        0x00252200u
+#define TMID_HANDLER           0x08a10000u
+#define TMID_BUF_SLOTS         32u
+#define TMID_SENTINEL          0xa5a5a5a5u
+#define TMID_ILLEGAL_TYPE_ERR  0x800201bbu   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_TYPE */
+#define TMID_ILLEGAL_ADDR_ERR  0x800200d3u   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+#define TMID_ILLEGAL_SIZE_ERR  0x800201bcu   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_SIZE */
+#define TMID_NOT_MODELLED_ERR  0x80020002u   /* the runtime's named refusal */
+
+static uint32_t tmid_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3;
+    return sr_syscall(&cpu, nid);
+}
+
+static uint32_t tmid_list(uint32_t type, uint32_t buf, uint32_t size, uint32_t count) {
+    return tmid_call(NID_TMID_LIST, type, buf, size, count);
+}
+
+static void tmid_fill(void) {
+    for (uint32_t i = 0; i < TMID_BUF_SLOTS; i++) MEM_W32(TMID_BUF + 4u * i, TMID_SENTINEL);
+    MEM_W32(TMID_COUNT, TMID_SENTINEL);
+}
+
+/* The total for `type`, read through idcount with no buffer, or UINT32_MAX on an error. */
+static uint32_t tmid_total(uint32_t type) {
+    MEM_W32(TMID_COUNT, TMID_SENTINEL);
+    return tmid_list(type, 0u, 0u, TMID_COUNT) == 0u ? MEM_R32(TMID_COUNT) : UINT32_MAX;
+}
+
+static int tmid_lists(uint32_t type, uint32_t uid) {
+    tmid_fill();
+    uint32_t n = tmid_list(type, TMID_BUF, TMID_BUF_SLOTS, TMID_COUNT);
+    if (n > TMID_BUF_SLOTS) return 0;
+    for (uint32_t i = 0; i < n; i++)
+        if (MEM_R32(TMID_BUF + 4u * i) == uid) return 1;
+    return 0;
+}
+
+/* One created object of `type`: listed while it lives, gone once deleted, and never
+ * counted under `other`, the class that shares its table or its uid range. */
+static void tmid_check_object(const char *cls, uint32_t type, uint32_t other, uint32_t uid,
+                              uint32_t base, uint32_t other_base, uint32_t delete_nid) {
+    char msg[192];
+    snprintf(msg, sizeof msg, "ThreadmanIdList %s: created object 0x%x is listed once", cls, uid);
+    expect((int32_t)uid > 0 && tmid_total(type) == base + 1u && tmid_lists(type, uid), msg);
+    if (other) {
+        snprintf(msg, sizeof msg, "ThreadmanIdList %s: object is not listed under type %u", cls, other);
+        expect(tmid_total(other) == other_base && !tmid_lists(other, uid), msg);
+    }
+    if ((int32_t)uid <= 0) return;
+    snprintf(msg, sizeof msg, "ThreadmanIdList %s: delete succeeds", cls);
+    expect(tmid_call(delete_nid, uid, 0u, 0u, 0u) == 0u, msg);
+    snprintf(msg, sizeof msg, "ThreadmanIdList %s: deleted object is no longer listed", cls);
+    expect(tmid_total(type) == base && !tmid_lists(type, uid), msg);
+}
+
+static void test_threadman_id_list(void) {
+    char msg[192];
+    (void)wsv_begin();   /* uid 0x1e0, RUNNING, current */
+    expect(sr_hle_test_is_registered(NID_TMID_LIST),
+           "sceKernelGetThreadmanIdList has a production registration");
+    if (!sr_hle_test_is_registered(NID_TMID_LIST)) { s_cur = -1; return; }
+
+    TCB *dormant = fixture_thread(0x1e1u, TH_DORMANT, 32);
+    TCB *sleeper = fixture_thread(0x1e2u, TH_WAIT_OBJ, 32);
+    sleeper->started = 1; sleeper->sleeping = 1; sleeper->wait_obj = 0x1e2u;
+    TCB *delayed = fixture_thread(0x1e3u, TH_WAIT_DELAY, 32);
+    delayed->started = 1;
+    TCB *held = fixture_thread(0x1e4u, TH_READY, 32);
+    held->started = 1; held->suspended = 1;
+    TCB *deleted = fixture_thread(0x1e5u, TH_DORMANT, 32);
+    deleted->deleted = 1;
+    (void)dormant;
+
+    /* Every live thread, in table order; a deleted one is not an object any more. */
+    static const uint32_t live[] = {0x1e0u, 0x1e1u, 0x1e2u, 0x1e3u, 0x1e4u};
+    tmid_fill();
+    uint32_t rc = tmid_list(1u, TMID_BUF, 8u, TMID_COUNT);
+    int order_ok = 1;
+    for (uint32_t i = 0; i < 5u; i++) order_ok &= MEM_R32(TMID_BUF + 4u * i) == live[i];
+    snprintf(msg, sizeof msg, "ThreadmanIdList Thread: returns 5 and lists the live threads (rc=0x%x count=0x%x)",
+             rc, MEM_R32(TMID_COUNT));
+    expect(rc == 5u && MEM_R32(TMID_COUNT) == 5u && order_ok, msg);
+    expect(MEM_R32(TMID_BUF + 20u) == TMID_SENTINEL,
+           "ThreadmanIdList Thread: nothing is written past the listed uids");
+
+    /* The four thread-state lists agree with sceKernelReferThreadStatus. */
+    static const struct { uint32_t type; uint32_t uid; const char *name; } states[] = {
+        {64u, 0x1e2u, "SleepThread"}, {65u, 0x1e3u, "DelayThread"},
+        {66u, 0x1e4u, "SuspendThread"}, {67u, 0x1e1u, "DormantThread"},
+    };
+    for (size_t i = 0; i < sizeof states / sizeof states[0]; i++) {
+        tmid_fill();
+        rc = tmid_list(states[i].type, TMID_BUF, 4u, TMID_COUNT);
+        snprintf(msg, sizeof msg, "ThreadmanIdList %s: lists only uid 0x%x (rc=0x%x first=0x%x)",
+                 states[i].name, states[i].uid, rc, MEM_R32(TMID_BUF));
+        expect(rc == 1u && MEM_R32(TMID_COUNT) == 1u && MEM_R32(TMID_BUF) == states[i].uid &&
+                   MEM_R32(TMID_BUF + 4u) == TMID_SENTINEL, msg);
+    }
+
+    /* Truncation: two slots get the first two uids, idcount still reports the total. */
+    tmid_fill();
+    rc = tmid_list(1u, TMID_BUF, 2u, TMID_COUNT);
+    expect(rc == 2u && MEM_R32(TMID_COUNT) == 5u && MEM_R32(TMID_BUF) == 0x1e0u &&
+               MEM_R32(TMID_BUF + 4u) == 0x1e1u && MEM_R32(TMID_BUF + 8u) == TMID_SENTINEL,
+           "ThreadmanIdList truncation: writes readbufsize uids, idcount holds the total");
+
+    /* A NULL idcount is optional. */
+    tmid_fill();
+    rc = tmid_list(1u, TMID_BUF, 8u, 0u);
+    expect(rc == 5u && MEM_R32(TMID_BUF + 16u) == 0x1e4u && MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList NULL idcount: lists the uids and writes no count");
+
+    /* A count-only query: no buffer, no uids written. */
+    tmid_fill();
+    rc = tmid_list(1u, 0u, 0u, TMID_COUNT);
+    expect(rc == 0u && MEM_R32(TMID_COUNT) == 5u,
+           "ThreadmanIdList count-only: readbufsize 0 returns 0 and idcount holds the total");
+
+    /* Types outside the PSPSDK list are refused before any write. */
+    static const uint32_t illegal[] = {0u, 12u, 63u, 68u, 0xffffffffu};
+    for (size_t i = 0; i < sizeof illegal / sizeof illegal[0]; i++) {
+        tmid_fill();
+        rc = tmid_list(illegal[i], TMID_BUF, 4u, TMID_COUNT);
+        snprintf(msg, sizeof msg, "ThreadmanIdList invalid type %d: ILLEGAL_TYPE, nothing written (rc=0x%x)",
+                 (int)illegal[i], rc);
+        expect(rc == TMID_ILLEGAL_TYPE_ERR && MEM_R32(TMID_COUNT) == TMID_SENTINEL &&
+                   MEM_R32(TMID_BUF) == TMID_SENTINEL, msg);
+    }
+
+    /* Thread event handlers are a PSPSDK class this runtime does not track: a named
+     * refusal, never an empty success. */
+    tmid_fill();
+    rc = tmid_list(9u, TMID_BUF, 4u, TMID_COUNT);
+    expect(rc == TMID_NOT_MODELLED_ERR && MEM_R32(TMID_COUNT) == TMID_SENTINEL &&
+               MEM_R32(TMID_BUF) == TMID_SENTINEL,
+           "ThreadmanIdList ThreadEventHandler: refused by name, nothing written");
+
+    /* Bad guest pointers and sizes are refused before any write. */
+    tmid_fill();
+    expect(tmid_list(1u, 0u, 4u, TMID_COUNT) == TMID_ILLEGAL_ADDR_ERR &&
+               MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList NULL readbuf with a size: ILLEGAL_ADDR, no count written");
+    expect(tmid_list(1u, 0x0bfffff8u, 4u, TMID_COUNT) == TMID_ILLEGAL_ADDR_ERR &&
+               MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList readbuf span past guest memory: ILLEGAL_ADDR, no count written");
+    expect(tmid_list(1u, TMID_BUF, 0xffffffffu, TMID_COUNT) == TMID_ILLEGAL_SIZE_ERR &&
+               MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList negative readbufsize: ILLEGAL_SIZE, no count written");
+    expect(tmid_list(1u, TMID_BUF, 8u, 0x0bfffffeu) == TMID_ILLEGAL_ADDR_ERR &&
+               MEM_R32(TMID_BUF) == TMID_SENTINEL,
+           "ThreadmanIdList unwritable idcount: ILLEGAL_ADDR, no uid written");
+
+    /* The object classes the HLE tables keep. Semaphores, event flags and LwMutexes share
+     * one table, so each create is checked against the other class too. */
+    for (uint32_t i = 0; i < 8u; i++) MEM_W8(TMID_NAME + i, (uint8_t)"tmidobj"[i]);
+    uint32_t sema_base = tmid_total(2u), evf_base = tmid_total(3u);
+    uint32_t uid = tmid_call(NID_CNW_CREATE_SEMA, TMID_NAME, 0u, 1u, 1u);
+    tmid_check_object("Semaphore", 2u, 3u, uid, sema_base, evf_base, NID_WSV_DELETE_SEMA);
+    uid = tmid_call(NID_B1_CREATE_EVF, TMID_NAME, 0u, 0u, 0u);
+    tmid_check_object("EventFlag", 3u, 2u, uid, evf_base, sema_base, NID_B1_DELETE_EVF);
+    expect(tmid_call(NID_B1_CREATE_LWMUTEX, TMID_LWMUTEX_WA, TMID_NAME, 0u, 0u) == 0u &&
+               tmid_total(2u) == sema_base && tmid_total(3u) == evf_base,
+           "ThreadmanIdList: an LwMutex is neither a semaphore nor an event flag");
+    expect(tmid_call(NID_B1_DELETE_LWMUTEX, TMID_LWMUTEX_WA, 0u, 0u, 0u) == 0u,
+           "ThreadmanIdList: LwMutex delete succeeds");
+
+    uint32_t base = tmid_total(4u);
+    tmid_check_object("Mbox", 4u, 0u, tmid_call(NID_MBX_CREATE, TMID_NAME, 0u, 0u, 0u),
+                      base, 0u, NID_MBX_DELETE);
+    uint32_t vpl_base = tmid_total(5u), fpl_base = tmid_total(6u);
+    uid = tmid_call(NID_VPL_CREATE, TMID_NAME, 2u, 0u, 0x400u);
+    tmid_check_object("Vpl", 5u, 6u, uid, vpl_base, fpl_base, NID_VPL_DELETE);
+    uid = fpl_make_pool();
+    tmid_check_object("Fpl", 6u, 5u, uid, fpl_base, vpl_base, NID_FPL_DELETE);
+    base = tmid_total(7u);
+    tmid_check_object("Mpipe", 7u, 0u, tmid_call(NID_TMID_CREATE_MPP, TMID_NAME, 0u, 0u, 64u),
+                      base, 0u, NID_TMID_DELETE_MPP);
+    base = tmid_total(8u);
+    tmid_check_object("Callback", 8u, 0u, tmid_call(NID_TMID_CREATE_CB, TMID_NAME, TMID_HANDLER, 0u, 0u),
+                      base, 0u, NID_TMID_DELETE_CB);
+    base = tmid_total(10u);
+    tmid_check_object("Alarm", 10u, 0u, tmid_call(NID_TMID_SET_ALARM, 1000000000u, TMID_HANDLER, 0u, 0u),
+                      base, 0u, NID_TMID_CANCEL_ALARM);
+    base = tmid_total(11u);
+    tmid_check_object("VTimer", 11u, 0u, tmid_call(NID_TMID_CREATE_VT, TMID_NAME, 0u, 0u, 0u),
+                      base, 0u, NID_TMID_DELETE_VT);
+    s_cur = -1;
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && (strcmp(argv[1], "--psp-oracle") == 0 ||
                      strcmp(argv[1], "--exit-game-poisoned") == 0))
@@ -31703,6 +32034,13 @@ static int hle_selftest_main(int argc, char **argv) {
         test_kernel_nested_join();
         test_kernel_nested_mutex();
         fprintf(stderr, "kernel-nested-sync: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--threadman-idlist") == 0) {
+        test_threadman_id_list();
+        fprintf(stderr, "threadman-idlist: %d checks, %d failures\n", s_checks, s_failures);
         free(g_mem_base);
         return s_failures ? 1 : 0;
     }
@@ -31886,6 +32224,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vtimer_refusals_are_named();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
+    test_threadman_id_list();
     test_wait_sema_count_validation();
     test_expired_timed_object_waits_enter_strict_priority();
     test_hle_liveness_sema_handoff();
