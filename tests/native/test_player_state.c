@@ -4838,7 +4838,7 @@ int main(int argc, char **argv) {
         for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
             assert(states[slot].source == NK_FONT_SOURCE_USER);
         }
-        assert(strstr(states[NK_FONT_SLOT_JAPANESE].detail, "imported from your PSP") != NULL);
+        assert(strstr(states[NK_FONT_SLOT_JAPANESE].detail, "your imported font") != NULL);
 
         /* 14c: removal drops only the cache's slot files and the manifest; originals stay. */
         assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 3);
@@ -4925,7 +4925,7 @@ int main(int argc, char **argv) {
         write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
         assert(player_app_fonts_import_folder(font_app, source_dir));
         assert(strstr(font_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
-        assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "imported from your PSP") != NULL);
+        assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "your imported font") != NULL);
 
         /* Korean removed on its own: preflight is MISSING and names the slot. */
         assert(nk_font_remove_imports(font_root, remove_korean, err, sizeof(err)) == 1);
@@ -4949,7 +4949,7 @@ int main(int argc, char **argv) {
             const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
             assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
             assert(strstr(fcheck->message, "Korean: project font") != NULL);
-            assert(strstr(fcheck->message, "Japanese: imported from your PSP") != NULL);
+            assert(strstr(fcheck->message, "Japanese: your imported font") != NULL);
         }
         assert(player_app_fonts_remove_imports(font_app));
         assert(strstr(font_app->wizard.font_message, "Removed 2 imported PSP font file(s)") != NULL);
@@ -5134,7 +5134,7 @@ int main(int argc, char **argv) {
 
         player_app_refresh_font_status(runtime_app);
         assert(strstr(runtime_app->wizard.font_slot_detail[NK_FONT_SLOT_LATIN],
-                      "imported from your PSP") != NULL);
+                      "your imported font") != NULL);
         assert(player_app_fonts_remove_imports(runtime_app));
         free(runtime_app);
 
@@ -5258,13 +5258,13 @@ int main(int argc, char **argv) {
         assert(strstr(fallback_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
         assert(nk_platform_file_exists(manifest_path));
         assert(strstr(fallback_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN],
-                      "Korean: imported from your PSP.") != NULL);
+                      "Korean: your imported font.") != NULL);
         player_app_build_compatibility_preflight(fallback_app, true, true, &exec_rep);
         {
             const PlayerPreflightCheck *fcheck =
                 find_preflight_check(&fallback_app->wizard.preflight, "SYSTEM_FONTS");
             assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
-            assert(strstr(fcheck->message, "Korean: imported from your PSP.") != NULL);
+            assert(strstr(fcheck->message, "Korean: your imported font.") != NULL);
         }
 
         /* 3. Removing the imports leaves the project font, and both surfaces name it again. */
