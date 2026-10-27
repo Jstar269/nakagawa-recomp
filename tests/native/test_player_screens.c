@@ -51,7 +51,7 @@ static NkUiTextBackend screen_test_text_backend(void) {
 }
 
 static void set_test_viewport(NkUi *ui, int width, int height) {
-    NkUiViewport viewport = {width, height, 1.0f, 100, 100};
+    NkUiViewport viewport = {width, height, 1.0f, 100, 100, 0.0f, 0.0f};
     nk_ui_set_viewport(ui, &viewport);
 }
 
@@ -131,7 +131,10 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
-               FLOW_DEVLOG, FLOW_DEVLOG_EMPTY } FlowCase;
+               FLOW_DEVLOG, FLOW_DEVLOG_EMPTY,
+               /* Whole pages for the window-fit sweep only. */
+               FLOW_PAGE_LIBRARY, FLOW_PAGE_TITLE, FLOW_PAGE_ABOUT, FLOW_PAGE_REMOVE,
+               FLOW_CONSENT_FULL, FLOW_COUNT } FlowCase;
 
 /* The window size the game-found and Settings cases lay out for. */
 static float g_flow_width = 1280.0f;
@@ -348,8 +351,8 @@ static const char *const k_font_lines[] = {
 static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
     PlayerUiWizardModel wizard;
     memset(&wizard, 0, sizeof(wizard));
-    wizard.logical_width = 1280.0f;
-    wizard.logical_height = 800.0f;
+    wizard.logical_width = g_flow_width;
+    wizard.logical_height = g_flow_height;
     wizard.disc_id = "TEST00007";
     wizard.title_name = "Synthetic Showcase Scene";
     switch (which) {
@@ -436,6 +439,86 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
     }
     return player_ui_screen_wizard(ui, &wizard);
 }
+/* The build tool consent with as many items as a clean PC downloads. */
+static PlayerUiPrereqItem g_full_prereqs[35];
+
+/* Whole pages at the sweep's window size: the Library with a page of cards,
+   a title page, About, and the remove dialog. */
+static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
+    PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    if (which == FLOW_PAGE_LIBRARY) {
+        PlayerUiLibraryModel library;
+        memset(&library, 0, sizeof(library));
+        library.page_size = player_ui_library_page_size(g_flow_width, g_flow_height,
+                                                        &library.columns);
+        library.logical_width = g_flow_width;
+        library.logical_height = g_flow_height;
+        library.titles = k_titles;
+        library.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
+        library.page_label = "Page 1 of 2";
+        return player_ui_screen_library(ui, &library);
+    }
+    if (which == FLOW_PAGE_TITLE) {
+        static PlayerUiTitle fixture;
+        PlayerUiTitleModel title;
+        fixture = k_titles[0];
+        fixture.compatibility_tier = k_compatibility_cases[1].tier;
+        fixture.compatibility_expect = k_compatibility_cases[1].expect;
+        fixture.compatibility_known_issues = k_compatibility_cases[1].known_issues;
+        memset(&title, 0, sizeof(title));
+        title.title = &fixture;
+        title.title_index = 0u;
+        title.logical_width = g_flow_width;
+        title.logical_height = g_flow_height;
+        return player_ui_screen_title(ui, &title);
+    }
+    if (which == FLOW_PAGE_ABOUT) {
+        static char line[64];
+        PlayerUiAboutModel about;
+        player_ui_version_line(NK_PLAYER_VERSION, 1792713600LL, line, sizeof(line));
+        memset(&about, 0, sizeof(about));
+        about.version_line = line;
+        about.build_commit = "0123abc";
+        about.logical_width = g_flow_width;
+        about.logical_height = g_flow_height;
+        return player_ui_screen_about(ui, &about);
+    }
+    if (which == FLOW_PAGE_REMOVE) {
+        static const PlayerUiRemoveItem items[] = {
+            {"Built package", 3u * 1024u * 1024u}, {"Build cache", 512u * 1024u},
+            {"Disc files Nakagawa copied", 40u * 1024u * 1024u}
+        };
+        PlayerUiRemoveModel remove;
+        memset(&remove, 0, sizeof(remove));
+        remove.title = "Synthetic Untested Fixture";
+        remove.disc_id = "TEST00009";
+        remove.has_saves = true;
+        remove.saves_bytes = 2u * 1024u * 1024u;
+        remove.items = items;
+        remove.item_count = sizeof(items) / sizeof(items[0]);
+        remove.logical_width = g_flow_width;
+        remove.logical_height = g_flow_height;
+        return player_ui_screen_remove(ui, &remove);
+    }
+    if (which == FLOW_CONSENT_FULL) {
+        PlayerUiPrereqModel pre;
+        unsigned long long total = 0u;
+        for (size_t i = 0u; i < sizeof(g_full_prereqs) / sizeof(g_full_prereqs[0]); ++i) {
+            g_full_prereqs[i] = k_prereqs[i % 3u];
+            g_full_prereqs[i].name = "synthetic-ucrt-x86_64-toolchain-component-with-a-long-name";
+            total += g_full_prereqs[i].bytes;
+        }
+        memset(&pre, 0, sizeof(pre));
+        pre.items = g_full_prereqs;
+        pre.item_count = sizeof(g_full_prereqs) / sizeof(g_full_prereqs[0]);
+        pre.total_bytes = total;
+        pre.logical_width = g_flow_width;
+        pre.logical_height = g_flow_height;
+        return player_ui_screen_prereq(ui, &pre);
+    }
+    return none;
+}
+
 static FlowCase g_flow_case;
 
 static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
@@ -451,10 +534,11 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         error.recovery_label = "Return to Library";
         error.retry_label = "Restart game";
         error.copy_available = true;
-        error.logical_width = 1280.0f;
-        error.logical_height = 800.0f;
+        error.logical_width = g_flow_width;
+        error.logical_height = g_flow_height;
         return player_ui_screen_error(ui, &error);
     }
+    if (which >= FLOW_PAGE_LIBRARY) return draw_page_case(ui, which);
     if (which >= FLOW_DEVLOG) return draw_developer_log_case(ui, which);
     if (which >= FLOW_CONTROLLER) return draw_controller_case(ui, which);
     if (which >= FLOW_SETTINGS) return draw_settings_case(ui, which);
@@ -479,8 +563,8 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         build.lines[1] = "[compile] chunk 12 of 31";
         build.lines[2] = "[compile] chunk 13 of 31";
         build.line_count = 3u;
-        build.logical_width = 1280.0f;
-        build.logical_height = 800.0f;
+        build.logical_width = g_flow_width;
+        build.logical_height = g_flow_height;
         return player_ui_screen_build(ui, &build);
     }
     if (which == FLOW_CONSENT || which == FLOW_PROGRESS) {
@@ -494,8 +578,8 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         pre.item_received_bytes = 20971520ull;
         pre.item_total_bytes = 52428800ull;
         pre.total_received_bytes = 20971520ull;
-        pre.logical_width = 1280.0f;
-        pre.logical_height = 800.0f;
+        pre.logical_width = g_flow_width;
+        pre.logical_height = g_flow_height;
         return player_ui_screen_prereq(ui, &pre);
     }
     if (which == FLOW_ERROR) {
@@ -508,8 +592,8 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         error.details = "Synthetic details: a source-owned fixture error, shown as data.";
         error.log_path = "C:/synthetic/logs/build.log";
         error.recovery_label = "BACK TO LIBRARY";
-        error.logical_width = 1280.0f;
-        error.logical_height = 800.0f;
+        error.logical_width = g_flow_width;
+        error.logical_height = g_flow_height;
         return player_ui_screen_error(ui, &error);
     }
     return none;
@@ -1204,11 +1288,21 @@ static bool settings_op_is(PlayerUiAction action, PlayerUiSettingsOp op) {
     return action.kind == PLAYER_UI_ACTION_SETTINGS && (PlayerUiSettingsOp)action.primary == op;
 }
 
-/* Lays a flow case out at a window size with glyphs as wide as the mono face,
-   and says whether every text run is inside the window. */
+/* The launcher's viewport for a window of width x height pixels at 100%: its
+   screens keep at least the 1280 x 720 design layout (player_ui_nk.c). */
+static NkUiViewport launcher_viewport(int width, int height, float display_scale) {
+    NkUiViewport viewport = {width, height, display_scale, 0, 100, 1280.0f, 720.0f};
+    return viewport;
+}
+
+/* Lays a flow case out in a launcher window of width x height pixels with
+   glyphs as wide as the mono face, and says whether every box and text run is
+   inside the window and no text is painted over. */
 static bool flow_case_fits(FlowCase which, int width, int height, char *dump, size_t cap) {
     NkUiConfig config;
     NkUiTextBackend text = screen_test_text_backend();
+    NkUiViewport viewport = launcher_viewport(width, height, 1.0f);
+    NkUiScale scale = nk_ui_scale_for_viewport(&viewport);
     const NkUiDrawList *draw = NULL;
     bool inside = true;
     NkUi *ui;
@@ -1218,9 +1312,9 @@ static bool flow_case_fits(FlowCase which, int width, int height, char *dump, si
     config.text = &text;
     ui = nk_ui_create(&config);
     if (ui == NULL) return false;
-    set_test_viewport(ui, width, height);
-    g_flow_width = (float)width;
-    g_flow_height = (float)height;
+    nk_ui_set_viewport(ui, &viewport);
+    g_flow_width = scale.logical_w;
+    g_flow_height = scale.logical_h;
     for (int frame = 0; frame < 2; ++frame) {
         nk_ui_begin(ui, 0.0);
         (void)draw_flow_case(ui, which);
@@ -1229,11 +1323,14 @@ static bool flow_case_fits(FlowCase which, int width, int height, char *dump, si
     if (draw == NULL) inside = false;
     for (uint32_t i = 0u; draw != NULL && i < draw->ncmd; ++i) {
         const NkUiDrawCmd *cmd = &draw->cmd[i];
-        if (cmd->kind != NK_UI_DRAW_TEXT) continue;
-        if (cmd->bounds[0] < 0 || cmd->bounds[1] < 0 || cmd->bounds[2] > width ||
-            cmd->bounds[3] > height) {
+        /* Every box and run is on screen: a page that runs off the bottom
+           pushes the prompt bar (or its own buttons) out of the window. */
+        if (cmd->kind != NK_UI_DRAW_SCISSOR_START && cmd->kind != NK_UI_DRAW_SCISSOR_END &&
+            (cmd->bounds[0] < 0 || cmd->bounds[1] < 0 || cmd->bounds[2] > width ||
+             cmd->bounds[3] > height)) {
             inside = false;
         }
+        if (cmd->kind != NK_UI_DRAW_TEXT) continue;
         /* A squeezed layout draws text, or a box's fill, over earlier text. */
         for (uint32_t j = i + 1u; j < draw->ncmd; ++j) {
             const NkUiDrawCmd *other = &draw->cmd[j];
@@ -1608,6 +1705,50 @@ static void test_controller_keyboard_page(void) {
           "the keyboard keys fit 1280 x 800");
 }
 
+/* Every screen fits the default 1280 x 720 window and the 960 x 540 minimum
+   (logical px): no text outside the window, no text painted over, and so the
+   buttons are all on screen. A wrapped paragraph used to be laid out one line
+   tall when its page was overfull, and the next block painted over its later
+   lines (launcher review B2). */
+static void test_every_screen_fits_the_window(void) {
+    static char dump[CASE_DUMP_CAP];
+    /* The default window, the minimum, a small laptop's maximised window, and
+       the 1280 x 720 pixels of a 150% display (853 x 480 at 1x). */
+    static const struct { int w; int h; } sizes[] = {
+        {1280, 720}, {960, 540}, {1366, 705}, {853, 480}
+    };
+    {
+        /* A window under the design size draws the 1280 x 720 layout smaller;
+           a larger one keeps its density and gains room. */
+        NkUiViewport small = launcher_viewport(960, 540, 1.0f);
+        NkUiViewport hidpi = launcher_viewport(1920, 1080, 1.5f);
+        NkUiViewport hidpi_small = launcher_viewport(1440, 810, 1.5f);
+        NkUiViewport large = launcher_viewport(1920, 1080, 1.0f);
+        NkUiScale a = nk_ui_scale_for_viewport(&small);
+        NkUiScale b = nk_ui_scale_for_viewport(&hidpi);
+        NkUiScale c = nk_ui_scale_for_viewport(&hidpi_small);
+        NkUiScale d = nk_ui_scale_for_viewport(&large);
+        CHECK(a.density == 0.75f && a.logical_w == 1280.0f && a.logical_h == 720.0f,
+              "a 960 x 540 window lays the launcher out at 1280 x 720, drawn at 0.75");
+        CHECK(b.density == 1.5f && b.logical_w == 1280.0f && b.logical_h == 720.0f,
+              "a 1280 x 720 window on a 150% display keeps its density");
+        CHECK(c.density == 1.125f && c.logical_w == 1280.0f && c.logical_h == 720.0f,
+              "the 960 x 540 minimum on a 150% display lays out at 1280 x 720");
+        CHECK(d.density == 1.0f && d.logical_w == 1920.0f && d.logical_h == 1080.0f,
+              "a large window keeps its density and gains room");
+    }
+    for (size_t s = 0u; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+        for (int which = FLOW_BUILD; which < FLOW_COUNT; ++which) {
+            char message[160];
+            if (which == FLOW_DEVLOG) continue; /* cuts its lines to the box by design */
+            (void)snprintf(message, sizeof(message),
+                           "screen case %d fits a %d x %d window", which, sizes[s].w, sizes[s].h);
+            CHECK(flow_case_fits((FlowCase)which, sizes[s].w, sizes[s].h, dump, sizeof(dump)),
+                  message);
+        }
+    }
+}
+
 static void test_error_details_fit_the_minimum_window(void) {
     static char dump[CASE_DUMP_CAP];
     static const char details[] =
@@ -1943,7 +2084,7 @@ static bool capture_scaled(const char *directory, const NkUiTextBackend *text,
     if (renderer != NULL) ui = nk_ui_create(&config);
     if (ui != NULL) backend = nk_ui_sdlr_create(renderer, text);
     if (backend != NULL) {
-        NkUiViewport viewport = {pixel_w, pixel_h, display_scale, 0, 100};
+        NkUiViewport viewport = launcher_viewport(pixel_w, pixel_h, display_scale);
         NkUiScale scale = nk_ui_scale_for_viewport(&viewport);
         nk_ui_set_viewport(ui, &viewport);
         nk_ui_sdlr_set_scale(backend, scale.density);
@@ -2053,7 +2194,7 @@ static int capture_screens(const char *directory) {
     backend = nk_ui_sdlr_create(renderer, &text);
     if (backend == NULL) goto done;
     {
-        NkUiViewport viewport = {1280, 800, 1.0f, 100, 100};
+        NkUiViewport viewport = {1280, 800, 1.0f, 100, 100, 0.0f, 0.0f};
         nk_ui_set_viewport(ui, &viewport);
         nk_ui_sdlr_set_scale(backend, 1.0f);
     }
@@ -2593,6 +2734,7 @@ int main(int argc, char **argv) {
     test_router();
     test_screen_actions();
     test_error_details_fit_the_minimum_window();
+    test_every_screen_fits_the_window();
     test_wizard_actions();
     test_plain_cards();
     test_disc_cards();

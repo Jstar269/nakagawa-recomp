@@ -948,6 +948,7 @@ PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model)
 #define ABOUT_ID_NOTICE 0x5000002Bu
 #define ABOUT_ID_LINK 0x5000002Cu
 #define ABOUT_ID_BUILD 0x5000002Du
+#define ABOUT_ID_FOOT 0x5000002Eu
 #define ABOUT_ID_PROMPTS 0x50000040u
 #define ABOUT_ID_WAVES 0x50000050u
 
@@ -1048,12 +1049,19 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
                             "Not affiliated with or endorsed by Sony Interactive Entertainment. "
                             "PSP is a trademark of its owner. No game data is included.",
                             NK_UI_TYPE_CAPTION, theme->muted);
-            nk_ui_text_role(ui, ABOUT_ID_LINK, "github.com/Jstar269/nakagawa-recomp",
-                            NK_UI_TYPE_DATA, theme->paper);
-            if (model->build_commit != NULL && model->build_commit[0] != '\0') {
-                char build[64];
-                (void)snprintf(build, sizeof(build), "Source commit %s", model->build_commit);
-                nk_ui_text_role(ui, ABOUT_ID_BUILD, build, NK_UI_TYPE_FOOTNOTE, theme->dim);
+            /* The project link and the source commit share one line, so the
+               page fits the 1280 x 720 design size. */
+            row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_6);
+            row.align_y = NK_UI_ALIGN_CENTER;
+            if (nk_ui_begin_container(ui, ABOUT_ID_FOOT, &row, NULL)) {
+                nk_ui_text_role(ui, ABOUT_ID_LINK, "github.com/Jstar269/nakagawa-recomp",
+                                NK_UI_TYPE_DATA, theme->paper);
+                if (model->build_commit != NULL && model->build_commit[0] != '\0') {
+                    char build[64];
+                    (void)snprintf(build, sizeof(build), "Source commit %s", model->build_commit);
+                    nk_ui_text_role(ui, ABOUT_ID_BUILD, build, NK_UI_TYPE_FOOTNOTE, theme->dim);
+                }
+                nk_ui_end_container(ui);
             }
             nk_ui_end_container(ui);
         }

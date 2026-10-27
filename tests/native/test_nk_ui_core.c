@@ -113,7 +113,7 @@ static int test_theme_tokens(void) {
 }
 
 static int test_scale_model(void) {
-    NkUiViewport viewport = {640, 400, 6.0f, 0, 150};
+    NkUiViewport viewport = {640, 400, 6.0f, 0, 150, 0.0f, 0.0f};
     NkUiScale scale = nk_ui_scale_for_viewport(&viewport);
     CHECK(scale.density == 4.0f, "automatic UI density clamps at four");
     CHECK(scale.logical_w == 160.0f && scale.logical_h == 100.0f,
@@ -132,7 +132,7 @@ static int test_scale_model(void) {
 
 static int test_explicit_ui_scale_values(void) {
     static const int supported[] = {100, 125, 150, 200};
-    NkUiViewport viewport = {1600, 1000, 2.0f, 0, 100};
+    NkUiViewport viewport = {1600, 1000, 2.0f, 0, 100, 0.0f, 0.0f};
     NkUiScale scale;
     size_t i;
     scale = nk_ui_scale_for_viewport(&viewport);

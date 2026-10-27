@@ -201,6 +201,20 @@ NkUiScale nk_ui_scale_for_viewport(const NkUiViewport *viewport) {
         text_scale = (float)viewport->text_size_pct / 100.0f;
     }
     result.density = nk_ui_clamp_density(ui_scale * text_scale);
+    if (viewport->pixel_w > 0 && viewport->pixel_h > 0) {
+        float fit = result.density;
+        if (isfinite(viewport->min_logical_w) && viewport->min_logical_w > 0.0f) {
+            float fit_w = (float)viewport->pixel_w / viewport->min_logical_w;
+            if (fit_w < fit) fit = fit_w;
+        }
+        if (isfinite(viewport->min_logical_h) && viewport->min_logical_h > 0.0f) {
+            float fit_h = (float)viewport->pixel_h / viewport->min_logical_h;
+            if (fit_h < fit) fit = fit_h;
+        }
+        if (fit < result.density) {
+            result.density = fit > NK_UI_MIN_FIT_DENSITY ? fit : NK_UI_MIN_FIT_DENSITY;
+        }
+    }
     if (viewport->pixel_w > 0) {
         result.logical_w = (float)viewport->pixel_w / result.density;
     }

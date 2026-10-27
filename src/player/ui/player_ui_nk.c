@@ -1377,6 +1377,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     player->viewport.display_scale = display_scale;
     player->viewport.ui_scale_pct = 0;
     player->viewport.text_size_pct = 100;
+    /* The launcher's screens are laid out for at least its design size
+       (1280 x 720); a smaller window, down to the 960 x 540 minimum, draws the
+       same layout smaller instead of pushing buttons off the window. */
+    player->viewport.min_logical_w = (float)PLAYER_UI_DESIGN_WIDTH;
+    player->viewport.min_logical_h = (float)PLAYER_UI_DESIGN_HEIGHT;
     scale = nk_ui_scale_for_viewport(&player->viewport);
     {
         /* Prompts follow the last input device ("Match input"). */
