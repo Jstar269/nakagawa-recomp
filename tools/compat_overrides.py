@@ -244,12 +244,11 @@ CODEGEN_CUSTOM_STUBS = [
                 "native implementation preserves PSP EABI varargs placement (r6..r11, then stack), "
                 "including aligned two-word double arguments for floating conversions",
          test="tools/test_guest_printf.py"),
-    dict(address=0x0001034c, category="temporary_compatibility_patch", name="skip heap-statistics walk",
-         reason="the guest free-list can be incomplete during bring-up; walking it for "
-                "mallinfo-style counters must not block game initialization",
-         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
-         retirement="the guest free-list is complete during bring-up so the real walk no longer "
-                    "blocks initialization; then drop the skip"),
+    # 0x0001034c (heap-statistics walk skip) and 0x001d9eb0 (title backdrop selector
+    # postcondition): retired under #363 (2026-10-26). The walk reads the retail
+    # allocator's statically linked bins, which nothing writes once malloc/free/memalign/
+    # realloc are host-bridged, so it terminates; the chooser never returned 0 on the
+    # private route. Both now translate as written.
     # 0x0001a5f8 / 0x0001c008: constant-return stubs removed 2026-07-18 after a
     # Ghidra-assisted review proved both shadowed real translatable code (a
     # delay-slot setter and a computed-goto resume point). The real translations
@@ -259,13 +258,6 @@ CODEGEN_CUSTOM_STUBS = [
          reason="wraps the real per-frame body in a SR_YIELD loop so the cooperative scheduler "
                 "gets a fiber-switch point every frame; structural, does not alter game logic",
          test="none"),
-    dict(address=0x001d9eb0, category="temporary_compatibility_patch", name="title backdrop selector postcondition",
-         reason="recovers from an impossible id=0 result from the retail chooser (every shipped "
-                "title archive is numbered from 01) instead of leaving a stray text surface in "
-                "the title background",
-         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
-         retirement="root-cause the retail chooser's id=0 result (or translate its real body) so "
-                    "the postcondition recovery is unnecessary"),
     dict(address=0x00011090, category="faithful_abi_bridge", name="memcpy native",
          reason="native memmove-backed reimplementation (sr_native_memmove), same semantics as "
                 "the translated body, including the scalar accessors' VRAM read-back and write "
@@ -315,15 +307,13 @@ HST_ENTRY_ROLES = [
 ]
 
 # --- tools/host_stubs.py: HST_SIMPLE_STUBS ----------------------------------
-# #363 owns all eight: audit each body, prefer translating/executing the guest
-# function, otherwise implement the real generic lower-layer dependency instead
-# of a magic success value.
+# #363 owns the remaining five: audit each body, prefer translating/executing the
+# guest function, otherwise implement the real generic lower-layer dependency
+# instead of a magic success value.
+# Retired under #363 (2026-10-26), each now translated as written:
+#   0x00015f98 and 0x0001c818 -- no call site or address reference reaches them;
+#   0x0001c810 -- an empty function, so the stub only added r2 = 0, which no caller reads.
 HST_SIMPLE_STUBS = [
-    dict(address=0x00015f98, category="temporary_compatibility_patch", name="Config_LoadGameSettings",
-         reason="returns a static success value instead of performing real config load",
-         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
-         retirement="translate and run the real settings-load body (or implement the generic "
-                    "settings dependency) instead of returning a static 1"),
     dict(address=0x0001c010, category="temporary_compatibility_patch", name="VFS_RegisterHeap",
          reason="no-op success; no VFS heap is actually registered",
          test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
@@ -339,16 +329,6 @@ HST_SIMPLE_STUBS = [
          test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
          retirement="translate and run the real profile-load body (or implement the generic "
                     "profile dependency) instead of returning a static 1"),
-    dict(address=0x0001c810, category="temporary_compatibility_patch", name="TexCache_Initialize",
-         reason="no-op success; no texture cache is actually initialized here",
-         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
-         retirement="bring up a real texture cache (or translate the guest body) so the no-op "
-                    "success is unnecessary"),
-    dict(address=0x0001c818, category="temporary_compatibility_patch", name="VFS_RegisterCallback",
-         reason="no-op success; no VFS callback is actually registered",
-         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
-         retirement="register a real VFS callback through the generic lower layer, then drop the "
-                    "no-op success"),
     dict(address=0x0001c560, category="temporary_compatibility_patch", name="main_GraphicsInit",
          reason="returns a static success value instead of performing real graphics init "
                 "(the real GPU backend is brought up elsewhere in the host runtime)",

@@ -154,9 +154,16 @@ static void dump_dispatch_trace(void) {
          * null/indirect dispatch -- and must be printable, not mistaken for an empty
          * record (issue #45). */
         if (!g_dtrace[idx].used) continue;
-        fprintf(stderr, "  [%2d] tgt=0x%08" PRIx32 " pc=0x%08" PRIx32 " ra=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
+        fprintf(stderr, "  [%2d] tgt=0x%08" PRIx32 " pc=0x%08" PRIx32 " ra=0x%08" PRIx32 " uid=0x%" PRIx32,
                 i, g_dtrace[idx].target, g_dtrace[idx].pc,
                 g_dtrace[idx].ra, g_dtrace[idx].uid);
+        /* Names only when a symbol map was built in (sr_guest_symbols_register). */
+        char tgt_name[160], ra_name[160];
+        sr_guest_symbol_label(g_dtrace[idx].target, tgt_name, sizeof tgt_name);
+        sr_guest_symbol_label(g_dtrace[idx].ra, ra_name, sizeof ra_name);
+        if (tgt_name[0]) fprintf(stderr, " tgt_sym=%s", tgt_name);
+        if (ra_name[0]) fprintf(stderr, " ra_sym=%s", ra_name);
+        fputc('\n', stderr);
     }
     fprintf(stderr, "--- end dispatch trace ---\n");
     fflush(stderr);
@@ -1362,6 +1369,23 @@ RecompFn sr_lookup(uint32_t addr) {
     if (in_bound_module) return module_fn;
     RecompFn fn = (RecompFn)sr_dtab_lookup(&g_dtab, addr);
     return fn && sr_exec_span_owns_fetch(addr) ? fn : NULL;
+}
+
+/* Registered once from sr_register_all() before any guest thread runs; read-only after. */
+static const SrGuestSymbol *s_guest_symbols;
+static uint32_t s_guest_symbol_count;
+
+void sr_guest_symbols_register(const SrGuestSymbol *table, uint32_t count) {
+    s_guest_symbols = table;
+    s_guest_symbol_count = count;
+}
+
+const SrGuestSymbol *sr_guest_symbol_at(uint32_t pc) {
+    return sr_guest_symbol_find(s_guest_symbols, s_guest_symbol_count, pc);
+}
+
+const char *sr_guest_symbol_label(uint32_t pc, char *buf, size_t len) {
+    return sr_guest_symbol_format(sr_guest_symbol_at(pc), pc, buf, len);
 }
 
 #if defined(SR_STACK_CENSUS_ENABLED)
