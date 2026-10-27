@@ -946,8 +946,8 @@ PACKAGE_CHUNK_TARGET_BYTES = 4_000_000
 def package_chunking(environment: Mapping[str, str] | None = None) -> dict[str, str]:
     """``CHUNK_TARGET_BYTES`` for a package build; a value the caller set wins.
 
-    Both package routes apply this before deriving the cache key, as they do
-    ``package_optimization``, so the key names the chunking codegen really used.
+    Both package routes' codegen-option builders apply it, so the cache key names
+    the chunking codegen really used whoever derives the options.
     """
     env = os.environ if environment is None else environment
     return {

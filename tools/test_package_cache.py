@@ -1976,6 +1976,26 @@ class PackageChunkingTests(unittest.TestCase):
                 self.assertEqual(cli_options["chunk_target_bytes"], expected)
                 self.assertEqual(planner_options["chunk_target_bytes"], expected)
 
+    def test_both_option_builders_name_the_chunk_target_identically(self):
+        """Any caller of either builder gets the target codegen uses, not only the key routes."""
+        manifest = {"executable": {"base": 0x08804000, "entry": 0x08804100}, "codegen_profile": "hst"}
+        plan = {
+            "environment": {
+                "GAME_BASE": "0x08804000", "GAME_ENTRY": "0x08804100", "TITLE_EXTRA_SPANS": "",
+            },
+            "codegen_profile": "hst",
+        }
+        for environment, expected in (({}, "4000000"), ({"CHUNK_TARGET_BYTES": ""}, "4000000"),
+                                      ({"CHUNK_TARGET_BYTES": "123456"}, "123456")):
+            with self.subTest(environment=environment):
+                cli = nk_cli._package_codegen_options(manifest, environment)
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    planner = title_codegen_plan._cache_codegen_options(
+                        plan, selected_optional=set(), funcs_per_chunk=2000
+                    )
+                self.assertEqual(cli["chunk_target_bytes"], expected)
+                self.assertEqual(planner["chunk_target_bytes"], expected)
+
 
 class DecryptedElfRefusalTests(unittest.TestCase):
     def test_unusable_eboot_elf_points_at_the_users_own_copy(self) -> None:
