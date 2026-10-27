@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -633,6 +634,81 @@ class WindowsPlayerStageSmokeTests(unittest.TestCase):
                       showcase)
         self.assertIn("def stage_iso(out_dir: Path) -> Path:", showcase)
         self.assertIn("def loadexec_smoke() -> None:", showcase)
+
+
+class PlayerUiShardTests(unittest.TestCase):
+    """The player UI regressions run as parallel shards that together run each test once.
+
+    `make player-ui-regressions` starts one unittest process per entry of
+    PLAYER_UI_SHARDS, and tests/native/test_player_ui.py keeps the tests of its shard.
+    These checks load the real module's tests, so a test added to it is covered too.
+    """
+
+    MODULE = ROOT / "tests" / "native" / "test_player_ui.py"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        sys.path.insert(0, str(cls.MODULE.parent))
+        try:
+            spec = importlib.util.spec_from_file_location("test_player_ui_shards", cls.MODULE)
+            assert spec is not None and spec.loader is not None
+            cls.module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cls.module)
+        finally:
+            sys.path.remove(str(cls.MODULE.parent))
+        with mock.patch.dict(os.environ, {cls.module.PLAYER_UI_SHARD_ENV: ""}):
+            cls.suite = unittest.TestLoader().loadTestsFromModule(cls.module)
+        cls.ids = sorted(test.id() for test in cls.module._flatten(cls.suite))
+
+    def shard_ids(self, spec: str) -> list[str]:
+        return [test.id() for test in self.module._flatten(self.module.select_shard(self.suite, spec))]
+
+    def test_the_unsharded_suite_is_the_whole_module(self) -> None:
+        self.assertGreater(len(self.ids), 100)
+        self.assertEqual(len(self.ids), len(set(self.ids)))
+
+    def test_every_shard_count_runs_each_test_exactly_once(self) -> None:
+        for count in (1, 2, 3, 4, 7):
+            with self.subTest(count=count):
+                shards = [self.shard_ids(f"{index}/{count}") for index in range(count)]
+                self.assertTrue(all(shards), "every shard runs at least one test")
+                joined = [test for shard in shards for test in shard]
+                self.assertEqual(sorted(joined), self.ids, "the shards must partition the suite")
+
+    def test_malformed_and_empty_shards_are_refused(self) -> None:
+        for spec in ("1", "4/4", "-1/4", "0/0", "a/2", "0/2/3", " 0/2", "01/4", "0/05"):
+            with self.subTest(spec=spec), self.assertRaises(ValueError):
+                self.module.parse_shard(spec)
+        beyond = len(self.ids) + 1
+        with self.assertRaises(ValueError):
+            self.module.select_shard(self.suite, f"{beyond - 1}/{beyond}")
+
+    def test_the_environment_selects_the_shard_the_loader_returns(self) -> None:
+        with mock.patch.dict(os.environ, {self.module.PLAYER_UI_SHARD_ENV: "1/4"}):
+            loaded = unittest.TestLoader().loadTestsFromModule(self.module)
+        self.assertEqual([test.id() for test in self.module._flatten(loaded)], self.shard_ids("1/4"))
+
+    def test_the_makefile_runs_every_shard_of_one_count_side_by_side(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        listed = re.search(r"(?m)^PLAYER_UI_SHARDS := (.+)$", makefile)
+        self.assertIsNotNone(listed)
+        assert listed is not None
+        shards = listed.group(1).split()
+        self.assertEqual(shards, [str(index) for index in range(len(shards))],
+                         "the shard list must be 0..n-1 so every residue runs")
+        self.assertGreater(len(shards), 1)
+        targets = " ".join(f"player-ui-regressions-shard-{shard}" for shard in shards)
+        # The shard rule names exactly those targets, literally and as .PHONY.
+        self.assertIn(f"\n{targets}:\n", makefile)
+        self.assertIn(f".PHONY: player-ui-regressions {targets}\n", makefile)
+        self.assertIn("-j$(words $(PLAYER_UI_SHARDS)) --output-sync=target", makefile)
+        self.assertIn("$(addprefix player-ui-regressions-shard-,$(PLAYER_UI_SHARDS))", makefile)
+        self.assertIn(
+            f"{targets}: export NAKAGAWA_PLAYER_UI_SHARD = "
+            "$(patsubst player-ui-regressions-shard-%,%,$@)/$(words $(PLAYER_UI_SHARDS))",
+            makefile,
+        )
+        self.assertEqual(self.module.PLAYER_UI_SHARD_ENV, "NAKAGAWA_PLAYER_UI_SHARD")
 
 
 class VfpuFuzzShardTests(unittest.TestCase):
