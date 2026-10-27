@@ -142,6 +142,33 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured",
     },
+    # The sampling setters' accepted ranges and error codes follow PSPAutotests
+    # tests/ctrl/sampling and tests/ctrl/sampling2 (.expected files recorded on a PSP);
+    # the stored values do not yet drive sampling (#1390).
+    "h_CtrlSetSamplingMode": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix",
+            "PSPAutotests tests/ctrl/sampling (modes 2 and -1 refused with 0x80000107, mode kept)",
+        ],
+        "limitation": "validates and stores the mode, but digital mode does not yet centre the sampled analog axes (#1390); whether firmware truncates the argument to 8 bits before the range check is not measured",
+    },
+    "h_CtrlSetSamplingCycle": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix",
+            "PSPAutotests tests/ctrl/sampling2 (0 and 5555..20000 accepted, other cycles refused with 0x800001FE, cycle kept)",
+        ],
+        "limitation": "validates and stores the cycle, but samples are still latched once per VBLANK whatever the cycle (#1390)",
+    },
+    "h_CtrlGetSamplingCycle": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix",
+            "PSPAutotests tests/ctrl/sampling (power-on cycle 0, set/get round trip)",
+        ],
+        "limitation": "reports the cycle retained by sceCtrlSetSamplingCycle; PSPAutotests leaves the NULL out-pointer call out as crashing a PSP, so the ILLEGAL_ADDR refusal used here instead is the runtime's fail-closed choice, not a measured code",
+    },
     # Kernel alarms are guest-time timers whose handlers run in interrupt context from the
     # scheduler's interrupt-service step.  The only measured cells are the unknown-alarm-id
     # code and "a non-zero handler return reschedules"; the rest is project-defined.
@@ -1494,7 +1521,6 @@ PROFILE_ZERO_UNREVIEWED_IMPORTS = {
     0x0E20F177: {"name": "sceDisplaySetMode", "issue": PROFILE_ZERO_ISSUE},  # h_DisplaySetMode
     0x13F592BC: {"name": "sceAudioOutputPannedBlocking", "issue": PROFILE_ZERO_ISSUE},  # h_AudioOutputPannedBlocking
     0x172D316E: {"name": "sceKernelStdin", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
-    0x1F4011E6: {"name": "sceCtrlSetSamplingMode", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlSetSamplingMode
     0x1F803938: {"name": "sceCtrlReadBufferPositive", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlReadBuffer
     0x237DBD4F: {"name": "sceKernelAllocPartitionMemory", "issue": PROFILE_ZERO_ISSUE},  # h_AllocPartitionMemory
     0x278C0DF5: {"name": "sceKernelWaitThreadEnd", "issue": PROFILE_ZERO_ISSUE},  # h_WaitThreadEnd
@@ -1502,7 +1528,6 @@ PROFILE_ZERO_UNREVIEWED_IMPORTS = {
     0x446D8DE6: {"name": "sceKernelCreateThread", "issue": PROFILE_ZERO_ISSUE},  # h_CreateThread
     0x55C20A00: {"name": "sceKernelCreateEventFlag", "issue": PROFILE_ZERO_ISSUE},  # h_CreateEventFlag
     0x5F10D406: {"name": "sceKernelCpuResumeIntr", "issue": PROFILE_ZERO_ISSUE},  # h_CpuResumeIntr
-    0x6A2774F3: {"name": "sceCtrlSetSamplingCycle", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlSetSamplingCycle
     0x9D9A5BA1: {"name": "sceKernelGetBlockHeadAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GetBlockHeadAddr
     0xA291F107: {"name": "sceKernelMaxFreeMemSize", "issue": PROFILE_ZERO_ISSUE},  # h_MaxFreeMemSize
     0xA4FC06A4: {"name": "sceGeSetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeSetCallback
