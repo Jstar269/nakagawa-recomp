@@ -1,0 +1,102 @@
+name: Pages
+
+# Publishes the project website (docs/index.html) to GitHub Pages. The site is one static page plus
+# images the repository already publishes; there is no generator and no third-party build step.
+# Pull requests that touch the site run the build job only, so a broken page fails before it lands;
+# only a push to main (or a manual run on main) deploys.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - docs/index.html
+      - docs/images/brand/**
+      - docs/images/showcase-*
+      - docs/media/hst-title-screen.png
+      - .github/workflows/pages.yml
+  pull_request:
+    paths:
+      - docs/index.html
+      - docs/images/brand/**
+      - docs/images/showcase-*
+      - docs/media/hst-title-screen.png
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pages-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'deploy' }}
+  # Never cancel a deployment that is already running; a newer one queues behind it.
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Assemble the site
+        # Copy an explicit list of files so nothing else in the repository is published. The layout
+        # under _site/ mirrors docs/, which keeps the page's relative image paths valid both here and
+        # when docs/index.html is opened from a checkout.
+        run: |
+          set -euo pipefail
+          rm -rf _site
+          mkdir -p _site/images/brand _site/media
+          cp docs/index.html _site/index.html
+          cp docs/images/brand/nakagawa-mark-light.svg docs/images/brand/nakagawa-mark-dark.svg _site/images/brand/
+          cp docs/images/showcase-ge-scene.gif docs/images/showcase-ge-scene-v240.png _site/images/
+          cp docs/images/showcase-breakout.gif docs/images/showcase-breakout-v180.png _site/images/
+          cp docs/media/hst-title-screen.png _site/media/
+
+      - name: Check that every local reference resolves
+        # Fail on a src, srcset or href that names a local file the step above did not copy.
+        # External links and in-page anchors are not files and are skipped.
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r ref; do
+            if [ ! -f "_site/$ref" ]; then
+              echo "::error file=docs/index.html::$ref is referenced but not published by the Pages build"
+              missing=1
+            fi
+          done < <(grep -oE '(src|srcset|href)="[^"#:]+"' _site/index.html | sed -E 's/^[a-z]+="([^"]+)"$/\1/' | sort -u)
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          find _site -type f -printf '%P %s bytes\n' | sort
+
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
