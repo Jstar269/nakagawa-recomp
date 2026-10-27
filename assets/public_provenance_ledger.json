@@ -291,7 +291,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "54e9a4fd4af231518ba23a850d19ec76ff7607fb14973bd4b07c93b09bc7e84f"
+      "sha256": "70ed6db7b2d6f3d3a0ffb8ca5ddbd3153bab3982afc13f56d407ad4a187f66c7"
     },
     {
       "path": ".github/workflows/scorecards.yml",
@@ -1582,7 +1582,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0bec9bc3c07242cd6960c7f0fea7acdc7c7309e706fbcd51143a0a7077b19acd"
+      "sha256": "f4247c7c1434a515d1292e68d0c81fa384847c213a1b17c3edf787b2a6b9a733"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -3002,7 +3002,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ab6504458e0e6ef177975d485f658a63af3d447aff80e6655be8a4cbbfc5f47f"
+      "sha256": "85ab512c13705433d42c17f461d3a5e588b3567e3fbafbd72d031f7454f95cee"
     },
     {
       "path": "fixtures/vfpu_addressing/hardware_vfpu_addr_001.json",
@@ -14448,7 +14448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a6350e3332a9c2166812448f28029a8964279bf5bb503c2825f866a5d45d23bb"
+      "sha256": "4cdad1b80611e10637578ffafbd4144a2fd90e8a9e3610a4b9ea1b80eda0a6a4"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -14556,7 +14556,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "15115ba836f57b41bba3ef46f3837f3169dc3ee277122090be4f5e290f1ae8ca"
+      "sha256": "b61126d500e1c16f1ba0f3bfcaf018eb2319cd8af005ce3942ab8e5d5dfc1bcf"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -14808,7 +14808,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee761f9690d0ec34d362372dfb00823cc3a3009c826e09e4883e65960ae564e8"
+      "sha256": "77b8805e43aa5413197201fb7c1c136dfd25c0a5d96428b29e69f6e88c622d7c"
     },
     {
       "path": "tools/test_public_export.py",
@@ -15073,7 +15073,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "35fe5b169cd402ae853acdacae9b08610885d43c46b01b740248d5fb027b3d7f"
+      "sha256": "64eb1c336be7ada1f2fe5b269530a8a996f2a1473e549c018a4e92d6e5cfdf98"
     },
     {
       "path": "tools/test_soak_audit.py",

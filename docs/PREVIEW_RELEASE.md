@@ -87,7 +87,7 @@ The binary staging step passes `-ExcludeOptionalFonts` to `tools/copy_build_asse
 
 The attestation workflow runs `python tools/stage_runtime_dlls.py --target dist/bin` under `set -euo pipefail`; a nonzero exit aborts the job before artifact upload. Packaging copies the verified runtime files byte-for-byte and does not run the stager again.
 
-Complete the exact candidate's local release gates and hosted CI before packaging. The binary bundle must come from the [Trusted provenance attestation workflow](../.github/workflows/provenance-attestation.yml), which runs on `main` only after a maintainer freezes the exact candidate SHA. It checks that the required `candidate_sha` equals the workflow's checked-out commit, builds `nakagawa_player.exe` and `production_smoke.exe`, stages their runtime files and `toolchain.json`, creates SLSA Build L2 attestations for every file under `dist/`, and uploads a workflow artifact. This workflow does not create a tag, release, or release asset.
+Complete the exact candidate's local release gates and hosted CI before packaging. The binary bundle must come from the [Trusted provenance attestation workflow](../.github/workflows/provenance-attestation.yml), which runs on `main` only after a maintainer freezes the exact candidate SHA. It checks that the required `candidate_sha` equals the workflow's checked-out commit, builds `nakagawa_player.exe` and `production_smoke.exe`, stages their runtime files and `toolchain.json`, builds the two showcase demos into `dist/bin/demos/` (where the player finds them and lists them under **Test this PC**), creates SLSA Build L2 attestations for every file under `dist/`, and uploads a workflow artifact. The demos' PSP programs need PSPDEV, so its `showcase_prx` job first builds them on Linux with the PSPDEV pinned in `assets/upstream/pspdev.lock.json` (`fixtures/showcase/showcase.py build-prx`); the Windows job then builds their packages from those PRXs with its own toolchain (`showcase.py build --prebuilt-prx-dir`). This workflow does not create a tag, release, or release asset.
 
 The public-safe export command filters the source with `assets/public_source_profile.json` and needs the maintainer-controlled publication inputs before the output can be called a release asset. The package retains the source tree under `source/` so the player can resolve its BUILD PACKAGE CLI from the installed layout.
 
@@ -251,7 +251,7 @@ $ZipHash = (Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash.ToLowerInvari
 Write-Output $Zip, "$Zip.sha256"
 ```
 
-The package contains the native player and synthetic verification binary under `bin/`, the mechanically resolved SDL3/SDL3_ttf runtime DLL closures and their notices, the public-safe source export under `source/`, setup and smoke instructions, root README/license/notices, `SOURCE.txt`, LGPL relinking material, the third-party notice bundle, three SBOM formats, and `SHA256SUMS.txt`. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, Vulkan SDK files, local databases, or title outputs. `SHA256SUMS.txt` covers every staged file except itself. Attach `nakagawa-recomp-<version>-windows-x64.zip.sha256` to the release next to the ZIP: v0.0.1 binaries are not Authenticode-signed, so the published checksum and the per-file build attestations are how a user checks a download.
+The package contains the native player and synthetic verification binary under `bin/`, the showcase demos under `bin/demos/`, the mechanically resolved SDL3/SDL3_ttf runtime DLL closures and their notices, the public-safe source export under `source/`, setup and smoke instructions, root README/license/notices, `SOURCE.txt`, LGPL relinking material, the third-party notice bundle, three SBOM formats, and `SHA256SUMS.txt`. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, Vulkan SDK files, local databases, or title outputs. `SHA256SUMS.txt` covers every staged file except itself. Attach `nakagawa-recomp-<version>-windows-x64.zip.sha256` to the release next to the ZIP: v0.0.1 binaries are not Authenticode-signed, so the published checksum and the per-file build attestations are how a user checks a download.
 
 `prereqs/` carries the pinned build prerequisites from `assets/prereq_manifest.json`, CPython and the MSYS2 UCRT64 packages, unpacked in the layout the per-user download installs, plus `installed.json` and `bundle-inventory.txt` ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). BUILD PACKAGE uses it without a consent card or a download ([`SETUP.md`](SETUP.md#player-build-package-prerequisites)). The staging step downloads each archive from its pinned host into the cache, or reuses a cached copy, checks its exact size and SHA-256, unpacks it with the per-user installer's path and link rules (a package link becomes a copy of its target, because a ZIP cannot carry links), and then verifies the whole tree, file contents included. It prints the bundle's `file_count` and `unpacked_bytes`: record them and the ZIP size in the release notes. The bundled third-party executables keep their upstream bytes and are not re-signed. From the source checkout, `python -m tools.nk_core.prereq_fetcher --manifest assets/prereq_manifest.json --verify-bundle <extracted folder>/prereqs` repeats the full check on an extracted copy. Until the corresponding source of the bundled GPL and LGPL packages ships with the same release and the notices name it ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)), do not publish a ZIP that contains `prereqs/`.
 
@@ -260,7 +260,10 @@ Before a maintainer treats the zip as publishable, inspect it with:
 ```powershell
 $files = Get-ChildItem -LiteralPath $Stage -Recurse -File
 $forbidden = @($files | Where-Object {
-    $_.Extension -match '^\.(iso|prx|elf|eboot|sav|key|pgf|pgd)$'
+    $relative = [System.IO.Path]::GetRelativePath($Stage, $_.FullName).Replace('\', '/')
+    $_.Extension -match '^\.(iso|prx|elf|eboot|sav|key|pgf|pgd)$' -and
+        $relative -notmatch '^bin/font/nk[^/]*\.pgf$' -and
+        $relative -notlike 'bin/demos/*'
 })
 if ($forbidden.Count -ne 0) {
     $forbidden | ForEach-Object { Write-Error $_.FullName }
@@ -275,7 +278,7 @@ if ($privateMatches.Count -ne 0) {
 }
 ```
 
-The expected result is no output from the extension filter and no private-path match. An empty scan is evidence about this package only; it does not clear the repository history or the publication provenance gate.
+The extension filter exempts two project-authored, attested trees and nothing else: the player's own project fonts, `bin/font/nk*.pgf`, and the showcase demos under `bin/demos/` (their disc images, packages and PSPSDK notice), which the candidate job builds from the `showcase_prx` job's PRXs and attests with the player. The expected result is no output from the extension filter and no private-path match. An empty scan is evidence about this package only; it does not clear the repository history or the publication provenance gate.
 
 Additionally, both publication-audit legs must pass against the exact exported bytes to ensure export immutability (#293):
 
