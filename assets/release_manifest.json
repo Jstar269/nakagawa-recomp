@@ -720,23 +720,6 @@
       "comment": "Project-authored N1 Block & Branch artwork for dark page themes."
     },
     {
-      "id": "readme-showcase-ge-scene-v120",
-      "name": "README screenshot: GE scene demo at vblank 120",
-      "type": "asset",
-      "relationship": "CONTAINS",
-      "presence": "required",
-      "source_path": "docs/images/showcase-ge-scene-v120.png",
-      "license": "GPL-3.0-or-later",
-      "notice_path": "NOTICE.md",
-      "disposition": "approved_binary",
-      "public_scope_included": true,
-      "optional": false,
-      "hashes": {
-        "sha256": "5c71fa553f280aee3d1b4b0b8e48e7b99d9593250eedfcf16f0bf38376561d33"
-      },
-      "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
-    },
-    {
       "id": "readme-showcase-ge-scene-v240",
       "name": "README screenshot: GE scene demo at vblank 240",
       "type": "asset",
@@ -871,7 +854,7 @@
       "public_scope_included": true,
       "optional": false,
       "hashes": {
-        "sha256": "18f1317bc35cb5403fdcff6efefe8e125dfa6ca1e4b316500140b9e353a8e58f"
+        "sha256": "2dbf23ef3047b9c8b4d2adaf782e332cb3e0b4da2b30b8a9afbe3dae907888cc"
       },
       "comment": "Presentation capture of Hot Shots Tennis: Get a Grip running in Nakagawa Recomp. The game belongs to its publisher; not licensed under this repository. Admitted under the maintainer authorization of 2026-10-21."
     },
