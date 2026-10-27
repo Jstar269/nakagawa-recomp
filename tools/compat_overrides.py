@@ -404,32 +404,12 @@ RETIRED_INIT_WALKER_GUARD = dict(
 # Documented manually (not mechanically cross-checked by test_compat_manifest.py --
 # see that file's header for why the automated gate is scoped to the two sources
 # above only).
+# Retired under #363 (2026-10-27): the two 0x000468c8 worker hooks. "worker thread reuse"
+# returned the existing thread for a repeat create at the configured worker entry, and
+# "worker relaunch trampoline" restarted a DORMANT worker at VBLANK. The title creates its
+# worker once and the worker's loop never returns, so neither fired on the private
+# full-match route. The worker binding itself remains (it names the role for diagnostics).
 SCHEDULER_HOOKS = [
-    dict(address=0x000468c8, category="temporary_compatibility_patch", name="worker thread reuse",
-         source="src/rt/sched.c:sched_create_thread/tcb_by_entry",
-         reason="a new sceKernelCreateThread for the configured worker entry reuses an "
-                "existing dormant TCB instead of creating a fresh thread; opt-out via "
-                "SR_NO_THREAD_REUSE=1. The address above is no longer compiled into the "
-                "runtime: it reaches sched.c only as the runtime_bindings.worker_thread_entry "
-                "of a validated title manifest, so an unconfigured build never applies this "
-                 "override at all. Retire by proving the guest's create/exit sequence needs no "
-                 "reuse, which retires the binding with it.",
-         test="make sched-selftest (generic/fixture-a/fixture-b matrix)",
-         owner_issue="#363",
-         retirement="prove the guest's create/exit sequence needs no reuse, which retires the "
-                    "binding with it"),
-    dict(address=0x000468c8, category="temporary_compatibility_patch", name="worker relaunch trampoline",
-         source="src/rt/sched.c:deliver_vblank",
-         reason="a DORMANT thread holding the WORKER role is restarted on the next VBLANK, "
-                "as a host surrogate for the GE list-complete callback that re-arms the "
-                "guest's frame loop on real hardware; opt-out via SR_NO_RELAUNCH=1. Reached "
-                "only through the captured worker role, so a build with no worker binding "
-                 "re-arms nothing. Retire by implementing the real list-complete callback "
-                 "path, which retires the surrogate.",
-         test="make sched-selftest (generic build asserts no role is captured, so no relaunch)",
-         owner_issue="#363",
-         retirement="implement the real GE list-complete callback path, which retires the "
-                    "VBLANK relaunch surrogate"),
     dict(address=0x0029a174, category="temporary_compatibility_patch", name="launcher reent ownership",
          source="src/rt/sched.c:register_libc_thread/init_guest_reent",
          reason="a thread holding the LAUNCHER role seeds g_master_reent for every later "
