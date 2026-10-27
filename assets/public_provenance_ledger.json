@@ -465,7 +465,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fdb101d18a3b0e729f801c945e540893c4066c3e1f3eca82d1f330658d839aa4"
+      "sha256": "d9439bbe92abc4b9fcc0f6b10348f70fea8aa0ea32f5bfc9f6dd55e319f5ff1d"
     },
     {
       "path": "REVIEW.md",
@@ -1924,7 +1924,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9037ae4b7b9fbddde54a07151d98ae3e901a3d5ea394dc2af7b457fdfdd1c5a6"
+      "sha256": "9608e6f96efe2b9be9da53f11222269e50e0b2ebafbef5b5c117b501a1fd424d"
     },
     {
       "path": "docs/media/hst-title-screen.png",
