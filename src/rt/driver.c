@@ -135,6 +135,12 @@ static LONG WINAPI sr_crash_filter(EXCEPTION_POINTERS *ep) {
     if (s_cpu) {
         fprintf(stderr, "\n--- Guest CpuState ---\n");
         fprintf(stderr, "PC=0x%08x  SP(r29)=0x%08x  RA(r31)=0x%08x\n", s_cpu->pc, s_cpu->r[29], s_cpu->r[31]);
+        /* Names only when a symbol map was built in (sr_guest_symbols_register). */
+        char pc_name[160], ra_name[160];
+        if (sr_guest_symbol_label(s_cpu->pc, pc_name, sizeof pc_name)[0])
+            fprintf(stderr, "PC symbol: %s\n", pc_name);
+        if (sr_guest_symbol_label(s_cpu->r[31], ra_name, sizeof ra_name)[0])
+            fprintf(stderr, "RA symbol: %s\n", ra_name);
         fprintf(stderr, "r4=0x%08x  r5=0x%08x  r6=0x%08x  r7=0x%08x\n", s_cpu->r[4], s_cpu->r[5], s_cpu->r[6], s_cpu->r[7]);
         fprintf(stderr, "r8=0x%08x  r9=0x%08x  r10=0x%08x r11=0x%08x\n", s_cpu->r[8], s_cpu->r[9], s_cpu->r[10], s_cpu->r[11]);
         fprintf(stderr, "r12=0x%08x r13=0x%08x r14=0x%08x r15=0x%08x\n", s_cpu->r[12], s_cpu->r[13], s_cpu->r[14], s_cpu->r[15]);

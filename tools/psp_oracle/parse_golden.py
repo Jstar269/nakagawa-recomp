@@ -1769,6 +1769,68 @@ _register_campaign_probe(
     },
 )
 
+# ge-timing (probe.c, run_ge_timing; #1296): gt-setup, then one pass of the timing and
+# completion cells at 222/111 MHz (case tag b111) and one at 333/166 MHz (b166), then the
+# GE teardown and gt-done. Timing cells carry 16 words, c13 peeks 17, the other completion
+# cells 7, the teardown 5. A timing cell is named for its size parameter, a completion cell
+# for its rep. Shape and order only: the stream measures time, so no word is asserted.
+GE_TIMING_CLOCK_TAGS = ("b111", "b166")
+GE_TIMING_VERTEX_CELLS = (
+    "t7-list", "t7-strip", "t7-indexed", "t8-pos16", "t8-pos8", "t8-color", "t8-uv",
+    "t8-normal", "t8-full", "t9-lights0", "t9-lights1", "t9-lights4", "t10-weights1",
+    "t10-weights4", "t10-weights8",
+)
+GE_TIMING_ROUND2_SIZES = (8, 16, 32, 64, 128, 256)
+GE_TIMING_COMPLETION_CELLS = (
+    ("c13-peeks", 17), ("c4-signal", 7), ("c5-busyenq", 7), ("c2-drawsync", 7),
+    ("c6-listsync", 7),
+)
+
+
+def _ge_timing_pass_cells() -> tuple[tuple[str, int], ...]:
+    """(cell suffix, out count) of one clock pass, in probe order (gt_pass)."""
+    cells = ["t0-empty-0"]
+    cells += [f"t{n}-{name}-{words}" for words in (1024, 4096, 16384)
+              for n, name in ((1, "nop"), (2, "state"), (3, "matrix"))]
+    cells += [f"t4-clear-{kind}-{strips}" for kind in ("c8888", "cz8888", "c5650", "cz5650")
+              for strips in (1, 4, 16)]
+    cells += [f"t5-{form}-{size}" for size in (8, 32, 128)
+              for form in ("sprite", "sprite-perprim")]
+    cells += [f"t6-{form}-{count}" for count in (1024, 4096, 16384)
+              for form in ("tri1px", "tri1px-perprim")]
+    cells += [f"{cell}-{verts}" for verts in (1536, 6144, 18432)
+              for cell in GE_TIMING_VERTEX_CELLS]
+    cells += [f"t11-{fmt}-{size}-{filt}-{strips}"
+              for fmt in ("5650", "5650s", "8888", "8888s", "t4", "t4s", "t8", "t8s", "dxt1")
+              for size in (64, 512) for filt in ("nearest", "linear") for strips in (1, 4, 16)]
+    cells += [f"t12-{state}-{strips}"
+              for state in ("base", "blend", "alphatest", "depth", "dither", "xfbase", "fog")
+              for strips in (1, 4, 16)]
+    cells += [f"t13-clut{entries}-{loads}" for entries in (16, 256) for loads in (64, 256, 1024)]
+    cells += [f"t14-copy-{src}-{size}" for src in ("ram", "vram") for size in (64, 256, 480)]
+    cells += ["t15-twolists-32"]
+    cells += [f"s1-sprite-{w}x{h}-{(256 // w) * (256 // h)}"
+              for w in GE_TIMING_ROUND2_SIZES for h in GE_TIMING_ROUND2_SIZES]
+    cells += [f"s2-triquad-{size}-{2 * (256 // size) ** 2}" for size in GE_TIMING_ROUND2_SIZES]
+    cells += [f"s3-tex-{fmt}-{size}-{strips}" for fmt in ("8888", "8888s", "5650", "t8", "dxt1")
+              for size in (128, 256) for strips in (1, 4, 16)]
+    cells += ["s4-mix-vertex-fill-0"]
+    timed = tuple((cell, 16) for cell in cells)
+    return timed + tuple((f"{cell}-r{rep}", count) for cell, count in GE_TIMING_COMPLETION_CELLS
+                         for rep in range(8))
+
+
+GE_TIMING_OUT_COUNTS = {
+    "gt-setup": 4,
+    **{f"gt-{tag}-{cell}": count for tag in GE_TIMING_CLOCK_TAGS
+       for cell, count in _ge_timing_pass_cells()},
+    "gt-gu-teardown": 5,
+    "gt-done": 4,
+}
+_register_campaign_probe(
+    "ge-timing", "PSP-GE-TIMING-001", tuple(GE_TIMING_OUT_COUNTS), GE_TIMING_OUT_COUNTS,
+)
+
 # llsc-link: three link windows and the sc behaviours they measure (see probe.c,
 # run_llsc_link). Six words per cell: loaded, first sc result, A and B after the
 # cell, and the model words for A and B. The parser checks shape only.

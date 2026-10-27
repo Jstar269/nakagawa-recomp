@@ -2450,7 +2450,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107}
-                         | {110, 111, 112, 113, 115}, set(ids))
+                         | {110, 111, 112, 113, 114, 115}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -3061,6 +3061,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-HLE-AUDIO-SRC-001",
                 # The 2026-10-16 acceptance-eligible PSP-3000 VMIR3 run.
                 "PSP-VRAM-MIRROR-001",
+                # The 2026-10-27 acceptance-eligible ge-timing runs of 8f707fc0 (#1296).
+                "PSP-GE-TIMING-001",
                 # The 2026-10-27 acceptance-eligible cpu-timing run of 3a14a88e (#1296).
                 "PSP-CPU-TIMING-001",
             },
@@ -3827,8 +3829,10 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
             self.assertEqual(int(done.group(1)), len(spec.ordered_cases) - 1, case)
 
     def test_no_probe_blocks_on_the_ge_without_a_bound(self) -> None:
-        # A blocking sync is measured only inside a helper thread whose caller has a finite
-        # wait and terminates the worker if the GE never completes.
+        # A blocking sync is allowed only where it is the measurement (ge-timing's C2/C6,
+        # cpu-timing's blocking sceGeDrawSync(0) cell): inside a helper-thread entry whose
+        # creator waits for it with a timeout and terminates it when the wait fails, so a
+        # sync that never returns costs one cell.
         for source in sorted(self.fixture.glob("*.c")):
             text = re.sub(r"/\*.*?\*/|//[^\n]*", "", source.read_text(encoding="utf-8"),
                           flags=re.DOTALL)
@@ -4048,6 +4052,104 @@ class GuTeardownContractTests(unittest.TestCase):
         vram = bodies["run_vram_mirror"]
         self.assertIn("const int ge_idle = sprite_c.ge_idle && gu_down.idle;", vram)
         self.assertLess(vram.index("ge_gu_teardown("), vram.index("restore-vram"))
+
+    def test_ge_timing_unregisters_its_callback_through_the_teardown(self) -> None:
+        gt_down = "const GeGuTeardown gu_down = ge_gu_teardown(init_rc, s_gt_cbid);"
+        self.assertEqual(self.probe.count(gt_down), 1)
+        gt = dict(_c_function_list(_c_code(self.probe)))["run_ge_timing"]
+        self.assertLess(gt.index("ge_gu_teardown("), gt.index('"gt-gu-teardown"'))
+        self.assertLess(gt.index('"gt-gu-teardown"'), gt.index('"gt-done"'))
+        self.assertNotIn("sceGeUnsetCallback(", gt)
+        for name, mutant in {
+            "callback-kept": self.probe.replace(gt_down, gt_down.replace("s_gt_cbid", "-1")),
+            "only-after-passes": self.probe.replace(
+                gt_down, "GeGuTeardown gu_down = {0};\n    if (passes)\n        gu_down = "
+                "ge_gu_teardown(init_rc, s_gt_cbid);"),
+        }.items():
+            with self.subTest(mutant=name):
+                self.assertNotEqual(_gu_teardown_problems(mutant), [], name)
+
+
+class GeTimingContractTests(unittest.TestCase):
+    """#1296: the ge-timing stream has a strict ordered completion contract."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
+        self.spec, self.counts = CAMPAIGN_PROBE_CASES["ge-timing"]
+
+    def test_contract_is_strict_and_counts_the_records(self) -> None:
+        self.assertEqual(_campaign_completeness_contract("ge-timing"),
+                         "strict-golden-sequence")
+        self.assertEqual(self.spec.test_id, "PSP-GE-TIMING-001")
+        self.assertEqual(self.spec.terminal_case, "ge-timing-done")
+        # gt-setup, 334 cells per clock pass, the teardown and gt-done.
+        self.assertEqual(self.spec.terminal_count, 1 + 2 * 334 + 2)
+        self.assertEqual(self.spec.ordered_cases[:2], ("gt-setup", "gt-b111-t0-empty-0"))
+        self.assertEqual(self.spec.ordered_cases[-3:], ("gt-gu-teardown", "gt-done", "ge-timing-done"))
+        self.assertEqual(
+            [case[len("gt-b111-"):] for case in self.spec.ordered_cases if case.startswith("gt-b111-")],
+            [case[len("gt-b166-"):] for case in self.spec.ordered_cases if case.startswith("gt-b166-")])
+
+    def test_every_record_is_counted_by_the_completion_record(self) -> None:
+        block = self.probe[self.probe.index("#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_TIMING\n/* GE execution"):]
+        block = _c_code(block[:block.index("\n#endif")])
+        emits = re.findall(r'emit_record_extended\(emulated, "PSP-GE-TIMING-001", ([^,]+),', block)
+        self.assertEqual(emits, ["case_id", '"ge-timing-done"'])
+        wrapper = dict(_c_function_list(block))["gt_record"]
+        self.assertIn("s_gt_records++;", wrapper)
+        run = dict(_c_function_list(block))["run_ge_timing"]
+        self.assertLess(run.index('gt_record(emulated, "gt-done"'), run.index('"ge-timing-done"'))
+        self.assertIn("const uint32_t records = s_gt_records;", run)
+
+    def test_contract_names_only_cells_the_probe_emits(self) -> None:
+        self.assertIn('snprintf(s_gt_clk, sizeof(s_gt_clk), "b%u", (unsigned int)bus);', self.probe)
+        self.assertIn("gt_pass(emulated, 222, 222, 111);", self.probe)
+        self.assertIn("gt_pass(emulated, 333, 333, 166);", self.probe)
+        cells = {re.match(r"[a-z]\d+-", case[len("gt-b111-"):]).group(0)
+                 for case in self.spec.ordered_cases if case.startswith("gt-b111-")}
+        # t0-t15, s1-s4 and the completion cells c13, c2, c4, c5 and c6.
+        self.assertEqual(len(cells), 16 + 4 + 5)
+        for cell in sorted(cells):
+            with self.subTest(cell=cell):
+                self.assertRegex(self.probe, r'["-]%s' % re.escape(cell))
+
+    def test_the_measured_order_parses_and_a_reordered_stream_does_not(self) -> None:
+        rows = []
+        for case_id in self.spec.ordered_cases:
+            out = " ".join(f"out{i}=0x00000000" for i in range(self.counts[case_id]))
+            if case_id == self.spec.terminal_case:
+                out = f"out0=0x{self.spec.terminal_count:08x}"
+            rows.append(f"NAKAGAWA_PSP_TEST schema=1 test_id=PSP-GE-TIMING-001 case_id={case_id} "
+                        f"status=PASS result=0x00000000 {out}\n")
+        meta = ("NAKAGAWA_PSP_META schema=1 source=psp model=PSP-3000 firmware=6.6.1 "
+                "binary_sha256=" + "0" * 64 + " source_commit=" + "0" * 40 + "\n")
+        self.assertTrue(parse_campaign_probe_output(meta + "".join(rows), "ge-timing").complete)
+        swapped = rows[:]
+        swapped[1], swapped[2] = swapped[2], swapped[1]
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(meta + "".join(swapped), "ge-timing")
+        clock_skip = ("NAKAGAWA_PSP_TEST schema=1 test_id=PSP-GE-TIMING-001 case_id=gt-b166-clock "
+                      "status=SKIP result=0x80000107 out0=0x80000107 out1=0x000000de out2=0x0000006f\n")
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(meta + "".join(rows[:335]) + clock_skip, "ge-timing",
+                                        require_complete=False)
+
+    def test_manifest_row_is_measured_and_cites_every_record(self) -> None:
+        manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+            encoding="utf-8"))
+        row = next(test for test in manifest["tests"] if test["id"] == "PSP-GE-TIMING-001")
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["case_ids"], list(self.spec.ordered_cases))
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
+        self.assertEqual(row["evidence_ref"],
+                         "docs/HARDWARE_ORACLE.md#psp-ge-timing-001-measured-runs-2026-10-27")
+        self.assertIn("8f707fc0", row["measurement_note"])
+        # The cited section names every record; the probe's APIs are listed but not cited, so
+        # this row grants no HLE evidence tier.
+        section = hle_manifest.measured_evidence_section(row)
+        self.assertIn("`8f707fc0`", section)
+        self.assertFalse(set(row["apis"]) & set(row["evidence_cases"]))
 
 
 class CampaignHost0LogTests(unittest.TestCase):
