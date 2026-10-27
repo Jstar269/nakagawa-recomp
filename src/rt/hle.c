@@ -4176,15 +4176,12 @@ static uint32_t h_DeleteThread(CpuState *s) {
 static uint32_t h_GetThreadIdSched(CpuState *s) { (void)s; return sched_current_uid(); }
 static uint32_t h_GetThreadPriority(CpuState *s) { (void)s; return (uint32_t)sched_current_priority(); }
 static uint32_t h_GetThreadExitStatus(CpuState *s) { return sched_thread_exit_status(A0); }
+/* sceKernelGetThreadStackFreeSize(thid), thid 0 = the calling thread: the unused part of the
+ * selected thread's own stack, from the scheduler's stack range and creation fill
+ * (sched_thread_stack_free_size has the public evidence and the unmeasured cases). */
 static uint32_t h_GetThreadStackFreeSize(CpuState *s) {
-    /* Walk from SP upward until we hit the stack sentinel (0xDEADBEEF). */
-    uint32_t sp = s->r[29];
-    uint32_t free = 0;
-    for (uint32_t a = sp; a < sp + 65536; a += 4) {
-        if (MEM_R32(a) == 0xDEADBEEF) { free = a - sp; break; }
-    }
-    if (!free) free = 0x1000;
-    return free;
+    (void)s;
+    return sched_thread_stack_free_size(A0);
 }
 /* sceKernelSleepThread[CB] blocks only when no wakeup is banked; a pending wakeup is
  * consumed and the call returns without waiting. The context check therefore asks the
@@ -25256,6 +25253,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x110dec9au, "sceKernelUSec2SysClock", h_USec2SysClock);
     sr_hle_register(0x7e65b999, "sceKernelCancelAlarm", h_CancelAlarm);
     sr_hle_register(0x94416130u, "sceKernelGetThreadmanIdList", h_GetThreadmanIdList);
+    sr_hle_register(0x52089ca1, "sceKernelGetThreadStackFreeSize", h_GetThreadStackFreeSize);
     sr_hle_register(0x034a921fu, "sceKernelGetVTimerTime", h_GetVTimerTime);
     sr_hle_register(0x50f61d8a, "sceKernelFreeMemoryBlock", h_FreeMemoryBlock);
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
@@ -25602,7 +25600,6 @@ void sr_hle_init(void) {
     sr_hle_register(0xd7763699, "sceWlanGetSwitchState", h_WlanOn);
     sr_hle_power_register_callback();
     sr_hle_register(0x46ebb729, "sceUmdCheckMedium", h_UmdCheckMedium);
-    sr_hle_register(0x52089ca1, "sceKernelGetThreadStackFreeSize", h_GetThreadStackFreeSize);
     /* sceMpeg: faithful port (src/rt/mpeg.c). Drives the PSMF intro to completion. */
     sr_hle_register(0x682a619b, "sceMpegInit", h_MpegInit);
     sr_hle_register(0x874624d6, "sceMpegFinish", h_MpegFinish);
