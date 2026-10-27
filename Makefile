@@ -2030,8 +2030,8 @@ $(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input
 # The regressions are independent player processes, so they run as parallel shards
 # (tests/native/test_player_ui.py, NAKAGAWA_PLAYER_UI_SHARD): every shard runs side by
 # side and together they run each test exactly once. --output-sync keeps each shard's
-# report in one piece. The shard rule names its targets literally, so an edit to its
-# recipe stays a recipe-only Makefile change for tools/ci_paths.py.
+# report in one piece. The shard rules name their targets literally, so an edit to the
+# recipe stays recipe-only for tools/ci_paths.py.
 PLAYER_UI_SHARDS := 0 1 2 3
 .PHONY: player-ui-regressions player-ui-regressions-shard-0 player-ui-regressions-shard-1 player-ui-regressions-shard-2 player-ui-regressions-shard-3
 player-ui-regressions: $(PLAYER_UI_TEST_EXE)
@@ -2040,8 +2040,8 @@ player-ui-regressions: $(PLAYER_UI_TEST_EXE)
 # Target-specific export puts the variables into the recipe's child process
 # environment across platforms, avoiding POSIX shell syntax (e.g. VAR=val cmd)
 # that fails under Windows cmd.exe.
-player-ui-regressions-shard-%: export NAKAGAWA_PLAYER_UI_TEST_EXE := $(PLAYER_UI_TEST_EXE)
-player-ui-regressions-shard-%: export NAKAGAWA_PLAYER_UI_SHARD = $(patsubst player-ui-regressions-shard-%,%,$@)/$(words $(PLAYER_UI_SHARDS))
+player-ui-regressions-shard-0 player-ui-regressions-shard-1 player-ui-regressions-shard-2 player-ui-regressions-shard-3: export NAKAGAWA_PLAYER_UI_TEST_EXE := $(PLAYER_UI_TEST_EXE)
+player-ui-regressions-shard-0 player-ui-regressions-shard-1 player-ui-regressions-shard-2 player-ui-regressions-shard-3: export NAKAGAWA_PLAYER_UI_SHARD = $(patsubst player-ui-regressions-shard-%,%,$@)/$(words $(PLAYER_UI_SHARDS))
 player-ui-regressions-shard-0 player-ui-regressions-shard-1 player-ui-regressions-shard-2 player-ui-regressions-shard-3:
 	"$(PYTHON)" -m unittest discover -s tests/native -p "test_player_ui.py" -v
 

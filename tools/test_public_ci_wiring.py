@@ -675,7 +675,7 @@ class PlayerUiShardTests(unittest.TestCase):
         self.assertIn("-j$(words $(PLAYER_UI_SHARDS)) --output-sync=target", makefile)
         self.assertIn("$(addprefix player-ui-regressions-shard-,$(PLAYER_UI_SHARDS))", makefile)
         self.assertIn(
-            "player-ui-regressions-shard-%: export NAKAGAWA_PLAYER_UI_SHARD = "
+            f"{targets}: export NAKAGAWA_PLAYER_UI_SHARD = "
             "$(patsubst player-ui-regressions-shard-%,%,$@)/$(words $(PLAYER_UI_SHARDS))",
             makefile,
         )
