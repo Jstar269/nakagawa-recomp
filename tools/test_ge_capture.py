@@ -112,7 +112,7 @@ class TestGeCaptureWiring(unittest.TestCase):
         self.assertIn("VERT_ARENA_VERTS", gpu)
         self.assertIn("s_cmd_slot->vmap + vertex_base", gpu)
         self.assertIn("vertex_base * sizeof(GpuVert)", gpu)
-        self.assertIn("s_cmd_slot->vused += s_nverts", gpu)
+        self.assertIn("s_cmd_slot->vused += nverts", gpu)
 
     def test_mixed_waits_and_transfer_boundaries_are_explicit(self):
         gpu = (RT / "gpu_sdl3vk" / "ge_gpu.c").read_text(encoding="utf-8")
