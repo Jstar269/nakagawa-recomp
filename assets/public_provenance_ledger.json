@@ -21,7 +21,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "98019bc91206fc5e6fce7e7113c4791a16713d090a6ba722c2e00d6b00e12900"
+      "sha256": "366494c7035e218c2447a4283b0cc042a257c9db4b09e9d0a32099528afcc829"
     },
     {
       "path": ".clang-format",
