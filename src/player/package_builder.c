@@ -12,6 +12,7 @@
 #include "nk_platform.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -235,12 +236,12 @@ done:
     return ok;
 }
 
-void package_builder_mark_prerequisites_installed(PackagePrerequisiteList *list,
-                                                   const char *data_root) {
-    if (!list || !data_root || !data_root[0]) return;
+void package_builder_mark_prerequisites_installed_at(PackagePrerequisiteList *list,
+                                                      const char *prerequisites_root) {
+    if (!list || !prerequisites_root || !prerequisites_root[0]) return;
     char path[NK_MAX_PATH];
-    int n = snprintf(path, sizeof(path), "%s%cprerequisites%cinstalled.json",
-                     data_root, nk_platform_path_separator(), nk_platform_path_separator());
+    int n = snprintf(path, sizeof(path), "%s%cinstalled.json",
+                     prerequisites_root, nk_platform_path_separator());
     if (n < 0 || (size_t)n >= sizeof(path)) return;
     FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) return;
@@ -286,6 +287,258 @@ void package_builder_mark_prerequisites_installed(PackagePrerequisiteList *list,
         }
     }
     nk_json_free(root);
+}
+
+void package_builder_mark_prerequisites_installed(PackagePrerequisiteList *list,
+                                                   const char *data_root) {
+    if (!list || !data_root || !data_root[0]) return;
+    char prerequisites_root[NK_MAX_PATH];
+    int n = snprintf(prerequisites_root, sizeof(prerequisites_root), "%s%cprerequisites",
+                     data_root, nk_platform_path_separator());
+    if (n < 0 || (size_t)n >= sizeof(prerequisites_root)) return;
+    package_builder_mark_prerequisites_installed_at(list, prerequisites_root);
+}
+
+/* ---- Bundled prerequisites (#1285) ---------------------------------------
+ * A release zip carries the pinned tree in prereqs/ beside bin/ and source/.
+ * It is checked against the pinned manifest the same release ships: no file
+ * contents are hashed here (7,600 files and about 700 MB would stall BUILD
+ * PACKAGE for seconds), but every inventory entry must exist with its exact
+ * size, which catches a partial extraction, a quarantined or truncated file and
+ * a tree left over from another release. */
+
+#define PACKAGE_BUNDLE_RECORD "installed.json"
+#define PACKAGE_BUNDLE_INVENTORY "bundle-inventory.txt"
+#define PACKAGE_BUNDLE_FIX " Extract the release zip again into a short folder path and keep its bin, source and prereqs folders together."
+
+static PackageBundleStatus bundle_invalid(char *error, size_t error_size,
+                                          const char *detail, const char *subject) {
+    if (error && error_size) {
+        snprintf(error, error_size, "PREREQUISITE_BUNDLE_INVALID: %s%s%s.%s",
+                 detail, subject ? ": " : "", subject ? subject : "", PACKAGE_BUNDLE_FIX);
+    }
+    return PACKAGE_BUNDLE_INVALID;
+}
+
+static bool bundle_join(char *out, size_t out_size, const char *root, const char *relative) {
+    int n = snprintf(out, out_size, "%s%c%s", root, nk_platform_path_separator(), relative);
+    if (n < 0 || (size_t)n >= out_size) return false;
+    if (nk_platform_path_separator() != '/') {
+        for (char *p = out + strlen(root) + 1; *p; p++) {
+            if (*p == '/') *p = nk_platform_path_separator();
+        }
+    }
+    return true;
+}
+
+/* An inventory path is relative, '/'-separated, inside python/, msys64/ or
+ * notices/, and has no empty, "." or ".." segment. */
+static bool bundle_relative_path_safe(const char *path) {
+    if (!path || !path[0] || path[0] == '/') return false;
+    if (strncmp(path, "python/", 7) != 0 && strncmp(path, "msys64/", 7) != 0 &&
+        strncmp(path, "notices/", 8) != 0) return false;
+    const char *segment = path;
+    for (;;) {
+        const char *end = strchr(segment, '/');
+        size_t len = end ? (size_t)(end - segment) : strlen(segment);
+        if (len == 0 || (len == 1 && segment[0] == '.') ||
+            (len == 2 && segment[0] == '.' && segment[1] == '.')) return false;
+        for (size_t i = 0; i < len; i++) {
+            unsigned char ch = (unsigned char)segment[i];
+            if (ch < 0x20 || ch == 0x7f || ch == '\\' || ch == ':') return false;
+        }
+        if (!end) return true;
+        segment = end + 1;
+    }
+}
+
+static bool bundle_sha256_equal(const char *left, const char *right) {
+    if (!left || !right || strlen(left) != 64 || strlen(right) != 64) return false;
+    for (size_t i = 0; i < 64; i++) {
+        if (tolower((unsigned char)left[i]) != tolower((unsigned char)right[i])) return false;
+    }
+    return true;
+}
+
+static char *bundle_read_file(const char *path, long max_size, long *out_size) {
+    FILE *file = nk_fopen_utf8(path, "rb");
+    long size;
+    char *contents = NULL;
+    if (!file) return NULL;
+    if (fseek(file, 0, SEEK_END) == 0 && (size = ftell(file)) > 0 && size <= max_size &&
+        fseek(file, 0, SEEK_SET) == 0 && (contents = (char *)malloc((size_t)size)) != NULL &&
+        fread(contents, 1, (size_t)size, file) == (size_t)size) {
+        *out_size = size;
+    } else {
+        free(contents);
+        contents = NULL;
+    }
+    fclose(file);
+    return contents;
+}
+
+bool package_builder_bundled_prerequisites_root(const char *install_root,
+                                                char *out_root, size_t out_size) {
+    char candidate[NK_MAX_PATH];
+    if (out_root && out_size) out_root[0] = '\0';
+    if (!install_root || !install_root[0] || !out_root || out_size == 0) return false;
+    size_t len = strlen(install_root);
+    bool has_sep = install_root[len - 1] == '/' || install_root[len - 1] == '\\';
+    char sep[2] = { nk_platform_path_separator(), '\0' };
+    int n = snprintf(candidate, sizeof(candidate), "%s%s..%cprereqs", install_root,
+                     has_sep ? "" : sep, nk_platform_path_separator());
+    if (n < 0 || (size_t)n >= sizeof(candidate)) return false;
+    if (nk_platform_absolute_path(candidate, out_root, out_size)) return true;
+    if ((size_t)n >= out_size) return false;
+    memcpy(out_root, candidate, (size_t)n + 1);
+    return true;
+}
+
+static PackageBundleStatus bundle_check_inventory(const char *bundle_root,
+                                                  int64_t expected_files,
+                                                  int64_t expected_bytes,
+                                                  char *error, size_t error_size) {
+    char path[NK_MAX_PATH];
+    char line[1024];
+    char subject[300];
+    int64_t files = 0;
+    uint64_t bytes = 0;
+    if (!bundle_join(path, sizeof(path), bundle_root, PACKAGE_BUNDLE_INVENTORY)) {
+        return bundle_invalid(error, error_size, "the folder path is too long", NULL);
+    }
+    FILE *inventory = nk_fopen_utf8(path, "rb");
+    if (!inventory) {
+        return bundle_invalid(error, error_size, "the file inventory is missing",
+                              PACKAGE_BUNDLE_INVENTORY);
+    }
+    PackageBundleStatus status = PACKAGE_BUNDLE_VALID;
+    while (fgets(line, sizeof(line), inventory)) {
+        size_t len = strlen(line);
+        if (len == sizeof(line) - 1 && line[len - 1] != '\n') {
+            status = bundle_invalid(error, error_size, "an inventory line is too long", NULL);
+            break;
+        }
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
+        /* "<64 hex SHA-256> <decimal size> <relative path>" */
+        char *size_text = line + 64;
+        char *end = NULL;
+        bool hex_ok = len > 66 && *size_text == ' ';
+        for (size_t i = 0; hex_ok && i < 64; i++) hex_ok = isxdigit((unsigned char)line[i]) != 0;
+        unsigned long long size = 0;
+        if (hex_ok && isdigit((unsigned char)size_text[1])) {
+            errno = 0;
+            size = strtoull(size_text + 1, &end, 10);
+        }
+        if (!hex_ok || !end || errno != 0 || *end != ' ' || !bundle_relative_path_safe(end + 1)) {
+            snprintf(subject, sizeof(subject), "line %lld", (long long)files + 1);
+            status = bundle_invalid(error, error_size, "an inventory line is malformed", subject);
+            break;
+        }
+        const char *relative = end + 1;
+        snprintf(subject, sizeof(subject), "%s", relative);
+        if (!bundle_join(path, sizeof(path), bundle_root, relative)) {
+            status = bundle_invalid(error, error_size, "a bundled path is too long", subject);
+            break;
+        }
+        int64_t actual = nk_platform_get_file_size(path);
+        /* A directory reports size 0, so only an empty file needs the type check. */
+        if (actual < 0 || (size == 0 && !nk_platform_file_exists(path))) {
+            status = bundle_invalid(error, error_size, "a bundled file is missing", subject);
+            break;
+        }
+        if ((unsigned long long)actual != size) {
+            status = bundle_invalid(error, error_size, "a bundled file has the wrong size", subject);
+            break;
+        }
+        if (bytes > UINT64_MAX - size) {
+            status = bundle_invalid(error, error_size, "the inventory byte total overflows", NULL);
+            break;
+        }
+        bytes += size;
+        files++;
+    }
+    if (status == PACKAGE_BUNDLE_VALID && ferror(inventory)) {
+        status = bundle_invalid(error, error_size, "the file inventory could not be read",
+                                PACKAGE_BUNDLE_INVENTORY);
+    }
+    fclose(inventory);
+    if (status == PACKAGE_BUNDLE_VALID &&
+        (files != expected_files || expected_bytes < 0 || bytes != (uint64_t)expected_bytes)) {
+        snprintf(subject, sizeof(subject), "%lld files and %llu bytes listed, %lld and %lld recorded",
+                 (long long)files, (unsigned long long)bytes,
+                 (long long)expected_files, (long long)expected_bytes);
+        status = bundle_invalid(error, error_size, "the file inventory does not match its record", subject);
+    }
+    return status;
+}
+
+PackageBundleStatus package_builder_check_bundled_prerequisites(
+    const char *bundle_root, const PackagePrerequisiteList *pinned,
+    char *error, size_t error_size) {
+    char path[NK_MAX_PATH];
+    char parse_error[160];
+    long size = 0;
+    if (error && error_size) error[0] = '\0';
+    if (!bundle_root || !bundle_root[0] || !nk_platform_dir_exists(bundle_root)) {
+        return PACKAGE_BUNDLE_ABSENT;
+    }
+    if (!pinned || pinned->count == 0) {
+        return bundle_invalid(error, error_size, "the pinned manifest lists no artifacts", NULL);
+    }
+    if (!bundle_join(path, sizeof(path), bundle_root, PACKAGE_BUNDLE_RECORD)) {
+        return bundle_invalid(error, error_size, "the folder path is too long", NULL);
+    }
+    char *contents = bundle_read_file(path, 2L * 1024L * 1024L, &size);
+    if (!contents) {
+        return bundle_invalid(error, error_size, "the bundle record is missing or unreadable",
+                              PACKAGE_BUNDLE_RECORD);
+    }
+    NkJsonNode *root = nk_json_parse(contents, (size_t)size, parse_error, sizeof(parse_error));
+    free(contents);
+    NkJsonNode *bundle = nk_json_obj_get(root, "bundle");
+    NkJsonNode *installed = nk_json_obj_get(root, "installed");
+    int64_t schema = 0;
+    int64_t bundle_schema = 0;
+    int64_t file_count = 0;
+    int64_t unpacked_bytes = 0;
+    PackageBundleStatus status = PACKAGE_BUNDLE_VALID;
+    if (!root || !nk_json_is_object(root) ||
+        !nk_json_get_int64(nk_json_obj_get(root, "schema_version"), &schema) || schema != 1 ||
+        !nk_json_is_object(bundle) ||
+        !nk_json_get_int64(nk_json_obj_get(bundle, "schema_version"), &bundle_schema) ||
+        bundle_schema != 1 ||
+        !nk_json_get_string(nk_json_obj_get(bundle, "inventory")) ||
+        strcmp(nk_json_get_string(nk_json_obj_get(bundle, "inventory")), PACKAGE_BUNDLE_INVENTORY) != 0 ||
+        !nk_json_get_int64(nk_json_obj_get(bundle, "file_count"), &file_count) || file_count <= 0 ||
+        !nk_json_get_int64(nk_json_obj_get(bundle, "unpacked_bytes"), &unpacked_bytes) ||
+        unpacked_bytes <= 0 || !nk_json_is_object(installed)) {
+        status = bundle_invalid(error, error_size, "the bundle record is not a schema 1 bundle record",
+                                PACKAGE_BUNDLE_RECORD);
+    }
+    /* Exactly the pinned artifacts, each with the pinned version, size and SHA-256. */
+    if (status == PACKAGE_BUNDLE_VALID && installed->u.obj.count != pinned->count) {
+        status = bundle_invalid(error, error_size,
+                                "the bundle does not hold exactly the pinned artifacts", PACKAGE_BUNDLE_RECORD);
+    }
+    for (size_t i = 0; status == PACKAGE_BUNDLE_VALID && i < pinned->count; i++) {
+        const PackagePrerequisite *item = &pinned->items[i];
+        NkJsonNode *record = nk_json_obj_get(installed, item->id);
+        const char *version = nk_json_get_string(nk_json_obj_get(record, "version"));
+        const char *digest = nk_json_get_string(nk_json_obj_get(record, "sha256"));
+        int64_t record_size = 0;
+        if (!nk_json_is_object(record)) {
+            status = bundle_invalid(error, error_size, "a pinned artifact is not bundled", item->id);
+        } else if (!version || strcmp(version, item->version) != 0 ||
+                   !bundle_sha256_equal(digest, item->sha256) ||
+                   !nk_json_get_int64(nk_json_obj_get(record, "size_bytes"), &record_size) ||
+                   record_size < 0 || (uint64_t)record_size != item->size_bytes) {
+            status = bundle_invalid(error, error_size,
+                                    "a bundled artifact differs from the pinned manifest", item->id);
+        }
+    }
+    if (root) nk_json_free(root);
+    if (status != PACKAGE_BUNDLE_VALID) return status;
+    return bundle_check_inventory(bundle_root, file_count, unpacked_bytes, error, error_size);
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -1808,6 +2061,73 @@ bool package_builder_find_tool_in_root(const char *name, const char *data_root,
     return package_builder_find_tool(name, out_path, out_size);
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+#define PACKAGE_BUNDLE_EXE ".exe"
+#else
+#define PACKAGE_BUNDLE_EXE ""
+#endif
+
+static bool bundled_tool_path(const char *bundle_root, const char *relative,
+                              char *out_path, size_t out_size) {
+    char candidate[NK_MAX_PATH];
+    if (!bundle_join(candidate, sizeof(candidate), bundle_root, relative) ||
+        !nk_platform_file_exists(candidate) || strlen(candidate) >= out_size) return false;
+    memcpy(out_path, candidate, strlen(candidate) + 1);
+    return true;
+}
+
+PackageBundleStatus package_builder_resolve_bundled_tools(const char *install_root,
+                                                          const char *cli_path,
+                                                          PackageBundledTools *out) {
+    if (!out) return PACKAGE_BUNDLE_ABSENT;
+    memset(out, 0, sizeof(*out));
+    if (!package_builder_bundled_prerequisites_root(install_root, out->root, sizeof(out->root)) ||
+        !nk_platform_dir_exists(out->root)) {
+        out->root[0] = '\0';
+        out->status = PACKAGE_BUNDLE_ABSENT;
+        return out->status;
+    }
+    PackagePrerequisiteList *pinned = (PackagePrerequisiteList *)malloc(sizeof(*pinned));
+    char manifest_error[256] = "";
+    if (!pinned || !package_builder_load_prerequisites(cli_path, pinned, manifest_error,
+                                                       sizeof(manifest_error))) {
+        snprintf(out->error, sizeof(out->error),
+                 "PREREQUISITE_BUNDLE_INVALID: the bundle cannot be checked without the pinned manifest. %s",
+                 manifest_error[0] ? manifest_error : "Out of memory.");
+        free(pinned);
+        out->status = PACKAGE_BUNDLE_INVALID;
+        return out->status;
+    }
+    out->status = package_builder_check_bundled_prerequisites(out->root, pinned, out->error,
+                                                              sizeof(out->error));
+    free(pinned);
+    if (out->status != PACKAGE_BUNDLE_VALID) return out->status;
+
+    char python_candidate[NK_MAX_PATH];
+    if (!bundled_tool_path(out->root, "msys64/ucrt64/bin/gcc" PACKAGE_BUNDLE_EXE,
+                           out->gcc_path, sizeof(out->gcc_path))) {
+        out->status = bundle_invalid(out->error, sizeof(out->error), "the bundled compiler is missing",
+                                     "msys64/ucrt64/bin/gcc" PACKAGE_BUNDLE_EXE);
+    } else if (!bundled_tool_path(out->root, "msys64/ucrt64/bin/mingw32-make" PACKAGE_BUNDLE_EXE,
+                                  out->make_path, sizeof(out->make_path))) {
+        out->status = bundle_invalid(out->error, sizeof(out->error), "the bundled make is missing",
+                                     "msys64/ucrt64/bin/mingw32-make" PACKAGE_BUNDLE_EXE);
+    } else if (!bundled_tool_path(out->root, "python/python" PACKAGE_BUNDLE_EXE,
+                                  python_candidate, sizeof(python_candidate)) ||
+               !accept_python_candidate(python_candidate, true, out->python_path,
+                                        sizeof(out->python_path))) {
+        /* The pinned runtime is CPython 3.15; the same bounded probe as for an
+           installed download decides whether it runs on this machine. */
+        out->status = bundle_invalid(out->error, sizeof(out->error),
+                                     "the bundled CPython 3.15 is missing or did not run",
+                                     "python/python" PACKAGE_BUNDLE_EXE);
+    }
+    if (out->status != PACKAGE_BUNDLE_VALID) {
+        out->python_path[0] = out->gcc_path[0] = out->make_path[0] = '\0';
+    }
+    return out->status;
+}
+
 bool package_builder_toolchain_missing(
     bool have_python, bool have_gcc, bool have_make,
     char *out_tool, size_t out_tool_size,
@@ -1913,7 +2233,13 @@ NkResult package_builder_start(
     const char *envp[2] = { NULL, NULL };
     char downloaded_bin[NK_MAX_PATH];
     int path_len = 0;
-    if (user_data_root && user_data_root[0]) {
+    if (session->prerequisites_root[0]) {
+        /* A verified release bundle (#1285) replaces the per-user download. */
+        path_len = snprintf(downloaded_bin, sizeof(downloaded_bin),
+                            "%s%cmsys64%cucrt64%cbin", session->prerequisites_root,
+                            nk_platform_path_separator(), nk_platform_path_separator(),
+                            nk_platform_path_separator());
+    } else if (user_data_root && user_data_root[0]) {
         path_len = snprintf(downloaded_bin, sizeof(downloaded_bin),
                             "%s%cprerequisites%cmsys64%cucrt64%cbin",
                             user_data_root, nk_platform_path_separator(),
