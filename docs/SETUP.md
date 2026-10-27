@@ -423,12 +423,14 @@ The font files live in the PSP's system storage, `flash0:/font/`. They are plain
 
 1. On the PSP, open **Settings > Custom Firmware Settings**.
 2. Set **USB Device** to **Flash 0**, and **USB Read-Only** to **On**.
-3. Connect the PSP to your PC with a USB cable, then open **Settings > USB Connection** and press **X**. A new drive appears on the PC. It holds the PSP's system files, not your Memory Stick.
+3. Connect the PSP to your PC with a USB cable, then open **Settings > USB Connection** and press **X**. A new drive appears on the PC. It holds the PSP's system files (folders such as `font`, `kd` and `vsh`), not your Memory Stick. If it shows your Memory Stick's folders (`PSP`, `ISO`) instead, end the connection and check step 2 again.
 4. On the PC, copy the drive's `font` folder to a folder of your own, for example `Documents\PSP fonts`. Copy only: don't delete, rename or add anything on that drive.
 5. On the PSP, press **O** to end the USB connection. In **Custom Firmware Settings**, set **USB Device** back to **Memory Stick**.
-6. In the player, open the setup wizard's **Fonts & System** step, choose **IMPORT FONTS FOLDER**, and pick the folder you copied. The step then says how many fonts it imported and lists where each font comes from.
+6. In the player, open **Settings**, then **PSP FONTS**, choose **IMPORT FONTS FOLDER**, and pick the folder you copied. The page then says how many fonts it imported and lists where each font comes from.
 
 On PRO or LME custom firmware, the VSH menu (press **SELECT** in the XMB) has the same **USB DEVICE** setting: choose **Flash 0**, then follow steps 3 to 6, setting it back to **Memory Stick** afterwards.
+
+If no drive appears at all, a plugin that uses the USB port, such as PSPLink, is probably running. Turn it off in **Settings > Plugins**, restart the PSP, check step 2 again (after a restart **USB Device** can be back on **Memory Stick**), and repeat from step 3. Turn the plugin back on when you're done.
 
 You can copy the whole `font` folder. The import reads only the `.pgf` files in it: `gb3s1518.bwfon` and `imagefont.bin` are not read, and `arib.pgf` is listed as refused because no game font slot uses it. The sixteen Latin fonts (`ltn0.pgf` to `ltn15.pgf`), the Japanese font `jpn0.pgf` and the Korean font `kr0.pgf` are all used exactly, so all 18 game font slots come from your own PSP ([#1536](https://github.com/Jstar269/nakagawa-recomp/pull/1536)). If you imported fonts with an older build, import them again to pick up the Japanese and Korean ones.
 
@@ -472,7 +474,7 @@ To verify that system fonts are in place:
 
 1. **CLI:** `python tools/nk_cli.py fonts status` prints Japanese and Korean status plus one line for each of the 16 Latin indices. A line names an exact import, same-size fallback, project fallback, legacy fallback, or missing file.
 2. **Player preflight (#300):** the `SYSTEM_FONTS` check is `OK` when every Japanese, Korean, and Latin registry index resolves to an imported or project font. It is `MISSING` when an index has no source, and its message includes the exact file or fallback for every Latin index. It is `INVALID` (issue #313) when the manifest is malformed or a listed file fails its check.
-3. **Player setup wizard:** the **Fonts & System** step shows Japanese and Korean status and all 16 Latin indices, including each fallback, and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that step.
+3. **Player settings:** **Settings > PSP FONTS** shows the Japanese and Korean status and all 16 Latin indices, including each fallback, and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that page.
 
 ## 3. Build
 
