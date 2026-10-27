@@ -653,10 +653,15 @@ jobs:
           push-to-registry: false
           create-storage-record: false
 
+      # The showcase packages keep their build stamps (.codegen-profile-*,
+      # .runtime-profile-*, .recomp-profile-*) as dot-files, and their
+      # completion manifests list them. upload-artifact leaves dot-files out
+      # unless told otherwise, and the player then hides both demos as stale.
       - name: Upload the attested candidate bundle (workflow artifact only)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nakagawa-windows-x64-binaries-${{ github.sha }}
           path: dist/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
