@@ -1570,7 +1570,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "55c3494b85570d7b33f5e7528d694453fa69dd53045fe0340c1d8e5d28b085ce"
+      "sha256": "307085243f056657b3944afba980ce0b69da58de395dfa14cf7fafe323f47589"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
