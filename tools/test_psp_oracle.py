@@ -2705,6 +2705,15 @@ class PspDmacProbeTests(unittest.TestCase):
         ]
         self.assertEqual(order, sorted(order))
         self.assertIn("if (frame_owned) {", body)
+        # Changing the stride or format with IMMEDIATE returns 0x80000107 (measured on boot
+        # 48), so both changes are NEXTFRAME followed by the latching vblank.
+        own_set = body[order[2]:order[3]]
+        self.assertIn("PSP_DISPLAY_SETBUF_NEXTFRAME);", own_set)
+        self.assertIn("sceDisplayWaitVblankStart();", own_set)
+        self.assertNotIn("PSP_DISPLAY_SETBUF_IMMEDIATE", own_set)
+        restore = body[order[4]:order[5]]
+        self.assertIn("PSP_DISPLAY_SETBUF_NEXTFRAME);", restore)
+        self.assertIn("sceDisplayWaitVblankStart();", restore)
         spec, counts = CAMPAIGN_PROBE_CASES["cpu-timing"]
         cases = list(spec.ordered_cases)
         self.assertEqual(cases.index("cpu-timing-framebuffer"),

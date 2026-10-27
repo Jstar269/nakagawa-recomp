@@ -540,7 +540,9 @@ and reset on timeout.
 The display cell needs a displayed framebuffer. Standalone PSPLink (the game
 context after a PSPLink reset) displays none, so there the probe displays its
 own 8888 buffer, stride 512, at the start of eDRAM, as a game would, measures,
-and then sets back the null framebuffer the PSP reported. The
+and then sets back the null framebuffer the PSP reported. Both changes use
+`PSP_DISPLAY_SETBUF_NEXTFRAME` and wait for the vblank that latches them: an
+immediate set that changes the stride or format returns `0x80000107`. The
 `cpu-timing-framebuffer` row follows the display cell: `result` is 1 when the
 probe displayed its own buffer and 0 when it re-set the PSP's; `out0` is the
 `sceDisplayGetFrameBuf` (or probe `sceDisplaySetFrameBuf`) result, `out1-3` the

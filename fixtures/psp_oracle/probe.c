@@ -10117,7 +10117,10 @@ static void run_cpu_timing(int emulated) {
     /* The display cell re-sets the displayed framebuffer to itself.  Standalone
        PSPLink (game context after a PSPLink reset) displays none, so there the
        probe displays its own 8888 buffer at the start of eDRAM, as a game
-       would, and afterwards sets back what the PSP reported. */
+       would, and afterwards sets back what the PSP reported.  A set that
+       changes the stride or format must wait for the next frame (IMMEDIATE
+       returned 0x80000107 on 2026-10-27), so both changes use NEXTFRAME and
+       wait for the vblank that latches them. */
     int frame_rc = sceDisplayGetFrameBuf(&s_cpu_timing_framebuffer,
                                          &s_cpu_timing_stride,
                                          &s_cpu_timing_format,
@@ -10131,9 +10134,10 @@ static void run_cpu_timing(int emulated) {
         s_cpu_timing_stride = 512;
         s_cpu_timing_format = PSP_DISPLAY_PIXEL_FORMAT_8888;
         frame_rc = sceDisplaySetFrameBuf(s_cpu_timing_framebuffer, s_cpu_timing_stride,
-                                         s_cpu_timing_format, PSP_DISPLAY_SETBUF_IMMEDIATE);
+                                         s_cpu_timing_format, PSP_DISPLAY_SETBUF_NEXTFRAME);
         frame_owned = frame_rc >= 0;
-        if (!frame_owned) s_cpu_timing_framebuffer = NULL;
+        if (frame_owned) (void)sceDisplayWaitVblankStart();
+        else s_cpu_timing_framebuffer = NULL;
     }
     if (frame_rc >= 0 && s_cpu_timing_framebuffer != NULL) {
         cpu_timing_emit_syscall(emulated, "syscall-display-setframebuf",
@@ -10145,7 +10149,8 @@ static void run_cpu_timing(int emulated) {
     }
     if (frame_owned) {
         frame_restore = sceDisplaySetFrameBuf(NULL, frame_found_stride, frame_found_format,
-                                              PSP_DISPLAY_SETBUF_IMMEDIATE);
+                                              PSP_DISPLAY_SETBUF_NEXTFRAME);
+        if (frame_restore >= 0) (void)sceDisplayWaitVblankStart();
     }
     uint32_t frame_out[5] = {(uint32_t)frame_rc,
                              (uint32_t)(uintptr_t)s_cpu_timing_framebuffer,
