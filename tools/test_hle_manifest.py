@@ -12,6 +12,8 @@ and reproducibility of the committed classification baseline.
 from __future__ import annotations
 
 import ast
+import contextlib
+import io
 import json
 from pathlib import Path
 import re
@@ -24,6 +26,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import hle_manifest
 import hle_registry_meta as meta
+from import_fixtures import build_import_elf
 import nid_name_proof
 from hle_manifest import (
     DEFAULT_BASELINE,
@@ -1679,6 +1682,153 @@ class LiveEvidenceChainTests(unittest.TestCase):
                 entry = next(e for e in self.chain["entries"] if e["canonical_name"] == api)
                 self.assertEqual(entry["exercised"]["psp_oracle_probes"], probes)
 
+
+
+class ProfileZeroImportGateTests(unittest.TestCase):
+    """#341 acceptance item 2: profile-zero imports may not silently stay unreviewed."""
+
+    SYNTH_MANIFEST = {
+        "registrations": [
+            {"nid": "0x00000010", "name": "synthUnreviewed", "handler": "h_Alpha",
+             "classification": "dedicated", "status": "unreviewed"},
+            {"nid": "0x00000020", "name": "synthPartial", "handler": "h_Beta",
+             "classification": "dedicated", "status": "partial"},
+            {"nid": "0x00000030", "name": "synthStub", "handler": "h_ok",
+             "classification": "fake_success", "status": "stub"},
+        ],
+    }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.manifest = build_manifest()
+        cls.live_unreviewed = sorted(
+            int(r["nid"], 16) for r in cls.manifest["registrations"]
+            if r["classification"] == "dedicated" and r["status"] == "unreviewed"
+        )
+
+    def _module(self, tmp: str, nids: list[int]) -> Path:
+        path = Path(tmp) / "guest.prx"
+        path.write_bytes(build_import_elf([("SynthImports", nids)]))
+        return path
+
+    def _main(self, *argv: str) -> tuple[int, str]:
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = hle_manifest.main(list(argv))
+        return rc, err.getvalue()
+
+    def test_an_unreviewed_import_missing_from_the_allowlist_fails(self) -> None:
+        gate = hle_manifest.unreviewed_import_gate(self.SYNTH_MANIFEST, {0x10, 0x20, 0x30, 0x99}, {})
+        self.assertEqual([r["nid"] for r in gate["imported_unreviewed"]], ["0x00000010"])
+        self.assertEqual([r["nid"] for r in gate["unallowed"]], ["0x00000010"])
+        self.assertEqual(gate["stale"], [])
+
+    def test_an_allowlisted_unreviewed_import_passes(self) -> None:
+        allow = {0x10: {"name": "synthUnreviewed", "issue": meta.PROFILE_ZERO_ISSUE}}
+        gate = hle_manifest.unreviewed_import_gate(self.SYNTH_MANIFEST, {0x10, 0x20}, allow)
+        self.assertEqual((gate["unallowed"], gate["stale"]), ([], []))
+
+    def test_an_entry_that_is_no_longer_unreviewed_is_stale(self) -> None:
+        allow = {
+            0x20: {"name": "synthPartial", "issue": meta.PROFILE_ZERO_ISSUE},
+            0x30: {"name": "synthStub", "issue": meta.PROFILE_ZERO_ISSUE},
+        }
+        gate = hle_manifest.unreviewed_import_gate(self.SYNTH_MANIFEST, {0x20, 0x30}, allow)
+        self.assertEqual([r["nid"] for r in gate["stale"]], ["0x00000020", "0x00000030"])
+        self.assertIn("no longer unreviewed", gate["stale"][0]["reason"])
+
+    def test_an_entry_the_module_no_longer_imports_is_stale(self) -> None:
+        allow = {0x10: {"name": "synthUnreviewed", "issue": meta.PROFILE_ZERO_ISSUE}}
+        gate = hle_manifest.unreviewed_import_gate(self.SYNTH_MANIFEST, {0x20}, allow)
+        self.assertEqual([(r["nid"], r["reason"]) for r in gate["stale"]],
+                         [("0x00000010", "not imported by the module")])
+
+    def test_an_empty_import_set_fails_closed(self) -> None:
+        with self.assertRaises(ManifestError):
+            hle_manifest.unreviewed_import_gate(self.SYNTH_MANIFEST, set(), {})
+
+    def test_a_psp_module_supplies_its_imported_nids(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            imports = hle_manifest.load_imports(self._module(tmp, [0x11111111, 0x22222222]))
+        link = {"source": "psp module import table"}
+        self.assertEqual(imports, {0x11111111: link, 0x22222222: link})
+
+    def test_an_unreadable_module_import_table_is_an_error(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "guest.prx"
+            path.write_bytes(build_import_elf([("SynthImports", [0x11111111])], corrupt="null_nid_table"))
+            with self.assertRaises(ManifestError):
+                hle_manifest.load_imports(path)
+
+    def test_the_live_allowlist_names_341_and_only_unreviewed_registrations(self) -> None:
+        self.assertTrue(meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+        by_nid = {int(r["nid"], 16): r for r in self.manifest["registrations"]}
+        for nid, entry in meta.PROFILE_ZERO_UNREVIEWED_IMPORTS.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                self.assertEqual(entry["issue"], "https://github.com/Jstar269/nakagawa-recomp/issues/341")
+                self.assertEqual(entry["name"], by_nid[nid]["name"])
+                self.assertTrue(hle_manifest.is_dedicated_unreviewed(by_nid[nid]))
+
+    def test_metadata_rejects_an_allowlist_entry_whose_handler_was_reviewed(self) -> None:
+        reviewed = next(
+            r for r in self.manifest["registrations"]
+            if r["classification"] == "dedicated" and r["status"] == "partial"
+        )
+        stale = {int(reviewed["nid"], 16): {"name": reviewed["name"], "issue": meta.PROFILE_ZERO_ISSUE}}
+        with mock.patch.object(meta, "PROFILE_ZERO_UNREVIEWED_IMPORTS", stale):
+            with self.assertRaisesRegex(ManifestError, "is stale"):
+                build_manifest()
+
+    def test_metadata_rejects_an_allowlist_entry_without_the_tracking_issue(self) -> None:
+        nid = self.live_unreviewed[0]
+        name = next(r["name"] for r in self.manifest["registrations"] if int(r["nid"], 16) == nid)
+        with mock.patch.object(meta, "PROFILE_ZERO_UNREVIEWED_IMPORTS", {nid: {"name": name, "issue": ""}}):
+            with self.assertRaisesRegex(ManifestError, "tracking issue"):
+                build_manifest()
+
+    def test_the_cli_fails_on_an_unallowlisted_unreviewed_import(self) -> None:
+        import tempfile
+        extra = next(n for n in self.live_unreviewed if n not in meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+        with tempfile.TemporaryDirectory() as tmp:
+            module = self._module(tmp, sorted(meta.PROFILE_ZERO_UNREVIEWED_IMPORTS) + [extra])
+            rc, err = self._main("--out", str(Path(tmp) / "m.json"), "--imports", str(module),
+                                 "--check-profile-zero-imports")
+        self.assertEqual(rc, 1)
+        self.assertIn(f"0x{extra:08x}", err)
+        self.assertIn("not on PROFILE_ZERO_UNREVIEWED_IMPORTS", err)
+
+    def test_the_cli_fails_on_a_stale_allowlist_entry(self) -> None:
+        import tempfile
+        allowlisted = sorted(meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+        with tempfile.TemporaryDirectory() as tmp:
+            module = self._module(tmp, allowlisted[1:])
+            rc, err = self._main("--out", str(Path(tmp) / "m.json"), "--imports", str(module),
+                                 "--check-profile-zero-imports")
+        self.assertEqual(rc, 1)
+        self.assertIn(f"stale PROFILE_ZERO_UNREVIEWED_IMPORTS entry 0x{allowlisted[0]:08x}", err)
+
+    def test_the_cli_passes_when_every_unreviewed_import_is_allowlisted(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            module = self._module(tmp, sorted(meta.PROFILE_ZERO_UNREVIEWED_IMPORTS))
+            rc, err = self._main("--out", str(Path(tmp) / "m.json"), "--imports", str(module),
+                                 "--check-profile-zero-imports")
+        self.assertEqual((rc, err), (0, ""))
+
+    def test_the_cli_requires_an_import_source(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            hle_manifest.main(["--check-profile-zero-imports"])
+
+    def test_the_evidence_chain_lists_imported_unreviewed_handlers(self) -> None:
+        import tempfile
+        nid = self.live_unreviewed[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            chain = hle_manifest.build_evidence_chain(self.manifest, self._module(tmp, [nid]))
+        self.assertEqual([r["nid"] for r in chain["summary"]["imported_unreviewed"]], [f"0x{nid:08x}"])
+        entry = next(e for e in chain["entries"] if e["nid"] == f"0x{nid:08x}")
+        self.assertEqual(entry["imported"], {"source": "psp module import table"})
 
 
 class ModuleBucketTests(unittest.TestCase):
