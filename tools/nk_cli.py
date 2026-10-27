@@ -36,6 +36,22 @@ def _ensure_cli_module_path() -> None:
 
 _ensure_cli_module_path()
 
+
+def _disable_working_directory_executable_search() -> None:
+    """Resolve tools by name only through PATH, never from the working directory.
+
+    On Windows, ``shutil.which`` and ``CreateProcess`` both look in the current
+    directory before PATH unless ``NoDefaultCurrentDirectoryInExePath`` is set.
+    The player starts this CLI in its own working directory, which is wherever
+    the user launched it from, so a file named like a build tool there must not
+    be resolved or run. The setting is inherited by every child the build starts.
+    """
+    if os.name == "nt":
+        os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
+
+
+_disable_working_directory_executable_search()
+
 from nk_core import (  # noqa: E402
     PreparationEngine,
     ProgressEvent,
