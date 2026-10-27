@@ -444,6 +444,10 @@ if(BUILD_PLAYER)
     if(WIN32)
         # GUI subsystem, so a double-click opens no console window (see the Makefile PLAYER_GUI_LDFLAGS note)
         set_target_properties(nakagawa_player PROPERTIES WIN32_EXECUTABLE TRUE)
+        # The app icon; SDL gives every window the executable's first icon group (see the
+        # Makefile PLAYER_ICON_OBJ note). Other systems set it at run time instead.
+        enable_language(RC)
+        target_sources(nakagawa_player PRIVATE assets/brand/nakagawa.rc)
         if(DEFINED ENV{VULKAN_SDK})
             target_include_directories(nakagawa_player PRIVATE
                 "$ENV{VULKAN_SDK}/Include"

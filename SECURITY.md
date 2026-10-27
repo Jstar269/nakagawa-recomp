@@ -123,9 +123,9 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `tools/verify_vfpu_provenance.py` | SHA-1 | Git blob ID of a VFPU table against the pinned upstream tree | Keep: Git object identity |
 | `tools/validate_assets.py` | MD5 | Reads legacy, unversioned local asset references; new ones are versioned SHA-256 | Keep: legacy compatibility only, not a security check |
 | `tools/extract_xb.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
+| `tools/make_app_icon.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `tools/nk_cli.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `tools/ppm2png.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
-| `tools/stage_install.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `tools/codegen.py` | FNV-64 | Staged module identity (`fnv1a64`), mirrored by `src/rt/guest_interp.c` | Candidate: SHA-256 only with a codegen and package identity bump |
 | `src/rt/guest_interp.c` | FNV-64 | Staged module identity (`sr_module_code_fnv1a64`), checked against the staged file | Candidate: SHA-256 only with a codegen and package identity bump |
 | `tools/codegen.py` | FNV-32 | Self-modifying-code block record (`stale_fnv1a`), mirrored by `src/rt/stale_code.c` | Keep: change detector |
