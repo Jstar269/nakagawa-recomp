@@ -2691,6 +2691,26 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertNotEqual(mutant, self.probe)
         self.assertNotEqual(_gu_teardown_problems(mutant), [])
 
+    def test_cpu_timing_displays_its_own_framebuffer_when_none_is_displayed(self) -> None:
+        # 2026-10-27 (boot 47, standalone PSPLink): sceDisplayGetFrameBuf reported no
+        # framebuffer, so the display cell was SKIP and the capture was not eligible.
+        body = dict(_c_function_list(_c_code(self.probe)))["run_cpu_timing"]
+        order = [
+            body.index("sceDisplayGetFrameBuf("),
+            body.index("if (frame_rc >= 0 && s_cpu_timing_framebuffer == NULL) {"),
+            body.index("s_cpu_timing_framebuffer = sceGeEdramGetAddr();"),
+            body.index("cpu_timing_call_setframebuf, CPU_TIMING_SYSCALL_CALLS"),
+            body.index("sceDisplaySetFrameBuf(NULL, frame_found_stride, frame_found_format,"),
+            body.index('"cpu-timing-framebuffer"'),
+        ]
+        self.assertEqual(order, sorted(order))
+        self.assertIn("if (frame_owned) {", body)
+        spec, counts = CAMPAIGN_PROBE_CASES["cpu-timing"]
+        cases = list(spec.ordered_cases)
+        self.assertEqual(cases.index("cpu-timing-framebuffer"),
+                         cases.index("syscall-display-setframebuf") + 1)
+        self.assertEqual(counts["cpu-timing-framebuffer"], 5)
+
     def test_dmac_cases_are_individually_buildable_and_use_the_real_imports(self) -> None:
         for case in (
             "dma-concurrency",

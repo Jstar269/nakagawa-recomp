@@ -10114,17 +10114,27 @@ static void run_cpu_timing(int emulated) {
                                     (uint32_t)cpu_mhz, 1);
     }
 
-    const int frame_rc = sceDisplayGetFrameBuf(&s_cpu_timing_framebuffer,
-                                               &s_cpu_timing_stride,
-                                               &s_cpu_timing_format,
-                                               PSP_DISPLAY_SETBUF_IMMEDIATE);
-    uint32_t frame_out[4] = {(uint32_t)frame_rc,
-                             (uint32_t)(uintptr_t)s_cpu_timing_framebuffer,
-                             (uint32_t)s_cpu_timing_stride,
-                             (uint32_t)s_cpu_timing_format};
-    emit_record_extended(emulated, "PSP-CPU-TIMING-001", "cpu-timing-framebuffer",
-                         frame_rc >= 0 && s_cpu_timing_framebuffer != NULL ? "PASS" : "SKIP",
-                         (uint32_t)frame_rc, frame_out, 4);
+    /* The display cell re-sets the displayed framebuffer to itself.  Standalone
+       PSPLink (game context after a PSPLink reset) displays none, so there the
+       probe displays its own 8888 buffer at the start of eDRAM, as a game
+       would, and afterwards sets back what the PSP reported. */
+    int frame_rc = sceDisplayGetFrameBuf(&s_cpu_timing_framebuffer,
+                                         &s_cpu_timing_stride,
+                                         &s_cpu_timing_format,
+                                         PSP_DISPLAY_SETBUF_IMMEDIATE);
+    const int frame_found_stride = s_cpu_timing_stride;
+    const int frame_found_format = s_cpu_timing_format;
+    int frame_owned = 0;
+    int frame_restore = 0;
+    if (frame_rc >= 0 && s_cpu_timing_framebuffer == NULL) {
+        s_cpu_timing_framebuffer = sceGeEdramGetAddr();
+        s_cpu_timing_stride = 512;
+        s_cpu_timing_format = PSP_DISPLAY_PIXEL_FORMAT_8888;
+        frame_rc = sceDisplaySetFrameBuf(s_cpu_timing_framebuffer, s_cpu_timing_stride,
+                                         s_cpu_timing_format, PSP_DISPLAY_SETBUF_IMMEDIATE);
+        frame_owned = frame_rc >= 0;
+        if (!frame_owned) s_cpu_timing_framebuffer = NULL;
+    }
     if (frame_rc >= 0 && s_cpu_timing_framebuffer != NULL) {
         cpu_timing_emit_syscall(emulated, "syscall-display-setframebuf",
                                 cpu_timing_call_setframebuf, CPU_TIMING_SYSCALL_CALLS,
@@ -10133,6 +10143,18 @@ static void run_cpu_timing(int emulated) {
         cpu_timing_emit_syscall_skip(emulated, "syscall-display-setframebuf",
                                      CPU_TIMING_SYSCALL_CALLS, (uint32_t)cpu_mhz);
     }
+    if (frame_owned) {
+        frame_restore = sceDisplaySetFrameBuf(NULL, frame_found_stride, frame_found_format,
+                                              PSP_DISPLAY_SETBUF_IMMEDIATE);
+    }
+    uint32_t frame_out[5] = {(uint32_t)frame_rc,
+                             (uint32_t)(uintptr_t)s_cpu_timing_framebuffer,
+                             (uint32_t)s_cpu_timing_stride,
+                             (uint32_t)s_cpu_timing_format,
+                             (uint32_t)frame_restore};
+    emit_record_extended(emulated, "PSP-CPU-TIMING-001", "cpu-timing-framebuffer",
+                         frame_rc >= 0 && s_cpu_timing_framebuffer != NULL ? "PASS" : "SKIP",
+                         (uint32_t)frame_owned, frame_out, 5);
     cpu_timing_emit_syscall(emulated, "syscall-display-accumulated-hcount",
                             cpu_timing_call_hcount, CPU_TIMING_SYSCALL_CALLS,
                             1u, (uint32_t)cpu_mhz);

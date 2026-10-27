@@ -1803,8 +1803,8 @@ _CPU_TIMING_SEMANTIC_CASES = (
     *(f"{op}-{blocks}" for blocks in _CPU_TIMING_NORMAL_BLOCKS for op in _CPU_TIMING_NORMAL_OPS),
     *(f"{op}-{blocks}" for blocks in (32, 128, 256)
       for op in ("load-cache-miss", "store-cache-miss")),
-    "cpu-timing-framebuffer",
     "syscall-display-setframebuf",
+    "cpu-timing-framebuffer",
     "syscall-display-accumulated-hcount",
     "cpu-timing-ge-idle",
     "syscall-ge-drawsync-done",
@@ -1819,6 +1819,7 @@ _CPU_TIMING_SEMANTIC_CASES = (
 )
 _CPU_TIMING_OUT_COUNTS = {case_id: 4 for case_id in _CPU_TIMING_SEMANTIC_CASES}
 _CPU_TIMING_OUT_COUNTS.update({
+    "cpu-timing-framebuffer": 5,
     "cpu-timing-ge-idle": 2,
     "syscall-ge-list-enqueue": 7,
     "syscall-ge-list-update-stall": 7,

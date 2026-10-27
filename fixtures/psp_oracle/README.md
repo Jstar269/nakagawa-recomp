@@ -537,6 +537,16 @@ advance the stall address to the byte end returned by `sceGuFinish()`, and wait
 for idle before the next trial. GE list completion is polled for at most 250 ms
 and reset on timeout.
 
+The display cell needs a displayed framebuffer. Standalone PSPLink (the game
+context after a PSPLink reset) displays none, so there the probe displays its
+own 8888 buffer, stride 512, at the start of eDRAM, as a game would, measures,
+and then sets back the null framebuffer the PSP reported. The
+`cpu-timing-framebuffer` row follows the display cell: `result` is 1 when the
+probe displayed its own buffer and 0 when it re-set the PSP's; `out0` is the
+`sceDisplayGetFrameBuf` (or probe `sceDisplaySetFrameBuf`) result, `out1-3` the
+buffer, stride and format the cell used, and `out4` the restoring
+`sceDisplaySetFrameBuf` result (0 when nothing was restored).
+
 After the GE cells, `cpu-timing-gu-teardown` records the GE teardown (`out0`
 reset issued, `out1` `sceGeBreak` result, `out2` last draw state, `out3` elapsed
 us, `out4` `sceGuTerm` ran; `TIMEOUT` when the GE did not reach idle, `SKIP`
