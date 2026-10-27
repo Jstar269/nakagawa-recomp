@@ -123,9 +123,47 @@ static void test_audio_queue_line(void) {
           s_report_count);
 }
 
+/* Guest symbol labels (codegen --symbol-map). The registered table is what the crash report and
+ * the dispatch trace name addresses with; without a table every label is empty, so a build with
+ * no map prints exactly what it printed before. Address 0 is a real function start on a zero-based
+ * image, like the profiler's PC zero above. */
+static void expect_label(uint32_t pc, const char *want) {
+    char buf[64];
+    const char *got = sr_guest_symbol_label(pc, buf, sizeof buf);
+    CHECK(strcmp(got, want) == 0, "label for 0x%08" PRIx32 " is \"%s\" (expected \"%s\")",
+          pc, got, want);
+}
+
+static void test_guest_symbol_labels(void) {
+    static const SrGuestSymbol table[] = {
+        {0x00000000u, 0x00000010u, "entry_stub"},
+        {0x00000100u, 0x00000040u, "ball_update"},
+        {0x00000200u, 0x00000000u, "game_loop"},     /* no size: only the start is named */
+    };
+    expect_label(0x00000100u, "");                    /* nothing registered yet */
+    sr_guest_symbols_register(table, 3u);
+    expect_label(0x00000000u, "entry_stub");
+    expect_label(0x0000000cu, "entry_stub+0xc");
+    expect_label(0x00000010u, "");                    /* one past the size */
+    expect_label(0x00000100u, "ball_update");
+    expect_label(0x0000013cu, "ball_update+0x3c");
+    expect_label(0x00000140u, "");
+    expect_label(0x00000200u, "game_loop");
+    expect_label(0x00000204u, "");
+    expect_label(0xfffffffcu, "");
+    CHECK(sr_guest_symbol_at(0x00000120u) == &table[1], "0x120 resolves to the wrong entry");
+    char tiny[8];
+    CHECK(strcmp(sr_guest_symbol_label(0x0000013cu, tiny, sizeof tiny), "ball_up") == 0,
+          "a short buffer is not truncated to its size");
+    CHECK(sr_guest_symbol_label(0x00000100u, tiny, 0u)[0] == '\0', "a zero-size buffer is written");
+    sr_guest_symbols_register(NULL, 0u);
+    expect_label(0x00000100u, "");
+}
+
 int main(void) {
     test_telemetry_lines_are_emitted_whole();
     test_audio_queue_line();
+    test_guest_symbol_labels();
     sr_profile_test_reset();
 
     /* HST and other zero-based PSP images can legitimately execute PC zero. It must be a

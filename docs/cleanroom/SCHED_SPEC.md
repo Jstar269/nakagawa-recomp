@@ -6,6 +6,12 @@ implementation (`src/rt/sched.c`, sal063 lineage, ledger record `scheduler`)
 was readable while writing, and nothing from it is reproduced here beyond the
 interface spellings §2 fixes as `SEAM:` identifiers.
 
+**Re-scope (maintainer decision, 2026-10-20).** The clean-room scheduler rewrite this spec was written for
+is no longer planned: [#340](https://github.com/Jstar269/nakagawa-recomp/issues/340) was closed as not planned, and working inherited code is no longer
+rewritten only to make it original (`../INDEPENDENCE_CAMPAIGN.md`). The spec stays as a behaviour
+reference; the derived `src/rt/sched.c` is the shipped scheduler. The rank below is the campaign's
+original order.
+
 Rank: first (campaign §6, item 1). The scheduler is the permanent host
 boundary every LLE domain crosses, it owns the strongest source-owned tests
 in the tree, and LLE PR 6 needs its fatal-signal consumption defined before
@@ -212,9 +218,9 @@ and remaining-time computations all derive from this timeline through the
 shared refresh/deadline/block plumbing — no wait object duplicates time
 arithmetic [C1]. Calendar (RTC) reads map the same timeline through a
 one-time epoch offset sampled at first RTC use; thereafter they are pure
-guest-time arithmetic, and timezone handling stays on the fixed UTC
-constant until the missing system-profile owner lands (that single
-conversion criterion is out of scope) [C1]. In turbo mode time is fully
+guest-time arithmetic [C1]. The local-time offset is the console's time
+zone setting, owned outside the scheduler and never the host's (#1382).
+In turbo mode time is fully
 deterministic at scheduler boundaries and never host-dependent [C1].
 
 ### 3.5 Sleep/wakeup banking and join
@@ -244,6 +250,12 @@ state-only query at their own point after their own validation, and a
 universal pre-handler gate is explicitly ruled out [C1]. Blocking where
 waits are not permitted returns PSP's cannot-wait error, never a silent
 park and never fabricated success [C6], [C3].
+The opt-in GE completion source (`SR_GE_TIMING=1`, issue #1296) is serviced
+the same way: after any owed display episode and before alarms, in interrupt
+context, and only while interrupts are enabled; while a thread waits, its
+deadline is an idle wake source. Its deadlines come from the GE time
+model in `src/rt/ge.c`, measured on a PSP-3000 (issue #1296,
+`CASE=ge-timing`). Project decision.
 
 ### 3.7 Vblank waits and display observations
 
@@ -453,6 +465,7 @@ rationale, per the reading rule in §0.
 | `sched_set_stack_range_refusal` | §3.1 | Installs the HLE user partition's check that refuses a new thread stack over memory the partition has handed out; with none installed (standalone scheduler fixtures) every range is accepted [C5]. |
 | `sched_guest_stack_floor_above` | §3.1 | Lowest live thread-stack reservation at or above an address, or the arena ceiling. The HLE user partition's contiguous free space above its bump pointer ends there, so memory reported free never contains a live stack, and a create whose stack would overlap the partition's handed-out bump region fails like stack exhaustion [C5]. Project decision: on a PSP, thread stacks come from the same user partition, so the arena is that partition, `[0x08800000, 0x0a000000)`, carved from its top; the runtime's VBLANK stack and nested host->guest frames lie below it in kernel RAM. |
 | `sched_thread_info` | §3.1 | Fills `SrThreadInfo` for a UID and returns zero. Returns nonzero when the UID cannot be queried, which the thread handler reports as UNKNOWN_THID [C6]. |
+| `sched_visit_threadman_ids` | §3.1 | `sceKernelGetThreadmanIdList` for the classes the scheduler owns: threads, the SleepThread, DelayThread, SuspendThread and DormantThread lists, and alarms, by their PSPSDK `SceKernelIdListType` values [C6]. Visits the UID of every live object of the class, read-only, and returns nonzero; returns zero and visits nothing for any other class. A deleted thread is in no list, and the state lists use the status and wait type `sched_thread_run_status` reports [C5]. Project decision: table order, because the PSP's list order is unmeasured. |
 | `sched_suspend_thread` | §3.1 | `sceKernelSuspendThread`. Returns the PSP status: UNKNOWN_THID for an unknown UID, ILLEGAL_THID for UID zero or the calling thread, DORMANT for a dormant thread, and SUSPEND for a second suspend. A suspended thread is never selected until resumed (§3.2) [C5], [C6]. |
 | `sched_resume_thread` | §3.1 | `sceKernelResumeThread`. Returns the PSP status: UNKNOWN_THID for an unknown UID, DORMANT for a dormant thread, and NOT_SUSPEND for a thread that is not suspended, including the calling thread [C5], [C6]. A resumed thread is selectable again under §3.2. |
 | `sched_change_current_thread_attr` | §3.1 | `sceKernelChangeCurrentThreadAttr`. Applies `clear_mask` and `set_mask` to the running thread's attribute word and returns the PSP status code; the bit meanings are PSP ABI facts [C6]. |
@@ -487,6 +500,7 @@ rationale, per the reading rule in §0.
 | `sched_thread_set_gp` | §3.1 | Sets the thread's initial `$gp`, which the scheduler installs before the guest entry runs and again when a dormant thread starts. Used for runtime-placed module entry points. Project decision; the register value comes from the loaded image. |
 | `sched_module_range_busy` | §3.1 | Reports whether a READY or RUNNING thread (except `ignored_uid`) has a continuation PC or return address inside `[start, end)`. WAIT threads do not keep a module image alive: PSP-3000 issue #1106 measured that module-owned waiters may remain blocked after unload. Project decision: refusing an executing continuation is a named synthetic safety rule, not measured PSP error behavior. |
 | `sched_set_thread_exit_hook` | §3.1 | Installs the scheduler-owned callback invoked after a thread object is removed. It is used to finish deferred self-stop/unload cleanup after the caller can no longer execute in its module image. Project decision; the callback does not run guest code. |
+| `sched_set_ge_timing_hooks` | §3.6 | Installs the HLE GE completion source: a next-deadline query and a service step the scheduler calls from interrupt service once the deadline is reached. NULL hooks leave the scheduler unchanged; the hooks report nothing unless `SR_GE_TIMING=1`. Project decision (issue #1296); the deadline comes from the GE time model in `src/rt/ge.c`, measured on a PSP-3000 with `CASE=ge-timing`. |
 | `sched_guest_thread_running` | §3.1 | Returns nonzero while a guest thread is current, and zero when scheduler control is outside a guest thread. Used to refuse LoadExec when no caller continuation can be retired. Project decision. |
 | `sched_request_guest_reset` | §3.1 | Latches a request for the scheduler to stop the current guest dispatch at its next boundary after the requesting thread exits. The driver consumes it before replacing guest state. Project decision; LoadExec reset behavior is documented in `ARCHITECTURE.md`. |
 | `sched_reset_for_loadexec` | §3.1 | Runs only after `sched_run` returns to the host scheduler coroutine. Releases each old TCB's resources, wait handles, AOT return state and host fiber before clearing scheduler-owned guest threads. It refuses calls made while a guest coroutine is current. Project decision; `sched_init` remains process-start-only. |
