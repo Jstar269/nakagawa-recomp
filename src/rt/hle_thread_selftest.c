@@ -31660,6 +31660,24 @@ static void test_flash0_latin_index_resolution(void) {
                legacy_source && strcmp(legacy_source, "user-imported") == 0 &&
                legacy_served_index == -2 && strstr(legacy_path, "nkltn.pgf") != NULL,
            "SR_FONTDIR at a legacy-only import cache still resolves all Latin indices");
+
+    /* #1300: two indices not resolved above, so each logs its own line (the driver reads them):
+     * index 7 has only the legacy import, and index 16 no import at all, only the project font. */
+    Flash0Sources project_sources;
+    SrFontRegistryInfo project_info;
+    memset(&project_sources, 0, sizeof(project_sources));
+    snprintf(project_sources.user_data_dir, sizeof(project_sources.user_data_dir), "%s/no-imports",
+             root);
+    snprintf(project_sources.project_dir, sizeof(project_sources.project_dir), "%s", project_dir);
+    expect(sr_flash0_font_resolve_latin_index_path(&legacy_sources, 6, legacy_path,
+                                                   sizeof(legacy_path), &legacy_source,
+                                                   &legacy_served_index) &&
+               legacy_served_index == -2,
+           "a legacy-only cache serves its single Latin import for index 7");
+    expect(sr_flash0_font_registry_info(&project_sources, 16u, &project_info) ==
+                   SR_FONT_REGISTRY_PRESENT &&
+               project_info.source && strcmp(project_info.source, "project") == 0,
+           "with no import, Latin index 16 is served by the project font");
 }
 
 /* The guest-visible /DATA/FONT subtree over the synthetic roots the device test set up. Latin and

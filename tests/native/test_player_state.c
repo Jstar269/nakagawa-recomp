@@ -5495,6 +5495,123 @@ int main(int argc, char **argv) {
         assert(test_remove_tree(source_dir));
     }
 
+    /* 14s (#1300): the Fonts check names, by PSP file name, every system font that is not the
+       user's own import, and says what a game asking for one gets: a stand-in that looks
+       different, or no font. Only ltn0-2 and ltn4-6 and the Japanese font are imported first. */
+    printf("[PLAYER_STATE_TEST] Subtest 14s: the Fonts check names the PSP fonts not imported\n");
+    fflush(stdout);
+    {
+        static const int first_latin[] = { 0, 1, 2, 4, 5, 6 };
+        static const int rest_latin[] = { 3, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+        char base[512];
+        char per_user[768];
+        char runtime[768];
+        char first[800];
+        char rest[800];
+        char korean[800];
+        char path[1024];
+        const char sep = nk_platform_path_separator();
+        NkIsoExecutableReport exec_rep;
+        const PlayerPreflightCheck *fcheck;
+
+        assert(nk_platform_get_path(NK_PATH_CACHE, base, sizeof(base)));
+        snprintf(per_user, sizeof(per_user), "%s%cfont_missing_user", base, sep);
+        snprintf(runtime, sizeof(runtime), "%s%cfont_missing_runtime", base, sep);
+        snprintf(first, sizeof(first), "%s%cfont_missing_first", base, sep);
+        snprintf(rest, sizeof(rest), "%s%cfont_missing_rest", base, sep);
+        snprintf(korean, sizeof(korean), "%s%cfont_missing_korean", base, sep);
+        assert(test_remove_tree(per_user));
+        assert(test_remove_tree(runtime));
+        assert(test_remove_tree(first));
+        assert(test_remove_tree(rest));
+        assert(test_remove_tree(korean));
+        assert(nk_platform_mkdir_p(per_user));
+        assert(nk_platform_mkdir_p(runtime));
+        assert(nk_platform_mkdir_p(first));
+        assert(nk_platform_mkdir_p(rest));
+        assert(nk_platform_mkdir_p(korean));
+        snprintf(path, sizeof(path), "%s%cdump_japanese.pgf", first, sep);
+        write_binary_file(path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+        for (size_t i = 0; i < sizeof(first_latin) / sizeof(first_latin[0]); i++) {
+            snprintf(path, sizeof(path), "%s%cltn%d.pgf", first, sep, first_latin[i]);
+            write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        }
+        for (size_t i = 0; i < sizeof(rest_latin) / sizeof(rest_latin[0]); i++) {
+            snprintf(path, sizeof(path), "%s%cltn%d.pgf", rest, sep, rest_latin[i]);
+            write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        }
+        snprintf(path, sizeof(path), "%s%cdump_korean.pgf", korean, sep);
+        write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+
+        assert(nk_platform_set_app_data_dir_override(per_user));
+        PlayerApp *missing_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(missing_app != NULL);
+        nk_library_init(&missing_app->library);
+        player_app_set_runtime_root(missing_app, runtime);
+        snprintf(missing_app->inspecting_game.disc_id,
+                 sizeof(missing_app->inspecting_game.disc_id), "TEST80001");
+        snprintf(missing_app->inspecting_game.title_id,
+                 sizeof(missing_app->inspecting_game.title_id), "synthetic-allegrex-v1");
+        memset(&exec_rep, 0, sizeof(exec_rep));
+        exec_rep.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+        exec_rep.boot.kind = NK_ISO_EXEC_MIPS_ELF32;
+        exec_rep.selected = NK_ISO_EXEC_SELECTION_BOOT;
+        exec_rep.boot_fallback = true;
+        snprintf(exec_rep.selected_path, sizeof(exec_rep.selected_path), "BOOT.BIN");
+
+        /* 1. ltn3 and ltn7 are served by a same-size import; ltn8-15 and Korean have no font. */
+        assert(player_app_fonts_import_folder(missing_app, first));
+        player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_MISSING);
+        assert(strcmp(player_preflight_plain_message(fcheck),
+                      "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
+                      "Korean font. Games that ask for them get a stand-in font that looks "
+                      "different; for 8 of the 16 Latin fonts and the Korean font they get no "
+                      "font at all. Import them from your own PSP in the setup wizard.") == 0);
+
+        /* 2. Project fonts stand in for the rest: every font resolves, so the check is OK, and
+           it still names the fonts a game gets a stand-in for. */
+        snprintf(path, sizeof(path), "%s%cfont", runtime, sep);
+        assert(nk_platform_mkdir_p(path));
+        snprintf(path, sizeof(path), "%s%cfont%cnkltn.pgf", runtime, sep, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        snprintf(path, sizeof(path), "%s%cfont%cnkkr.pgf", runtime, sep, sep);
+        write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+        player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(strcmp(player_preflight_plain_message(fcheck),
+                      "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
+                      "Korean font. Games that ask for them get a stand-in font that looks "
+                      "different. Import them from your own PSP in the setup wizard.") == 0);
+
+        /* 3. Every Latin file imported: only the Korean font is named. */
+        assert(player_app_fonts_import_folder(missing_app, rest));
+        player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(strcmp(player_preflight_plain_message(fcheck),
+                      "This PSP system font was not found: the Korean font. Games that ask for it "
+                      "get a stand-in font that looks different. Import it from your own PSP in "
+                      "the setup wizard.") == 0);
+
+        /* 4. Every font is the user's own: nothing is named. */
+        assert(player_app_fonts_import_folder(missing_app, korean));
+        player_app_build_compatibility_preflight(missing_app, true, true, &exec_rep);
+        fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
+        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(strcmp(player_preflight_plain_message(fcheck), "PSP system fonts found.") == 0);
+
+        free(missing_app);
+        assert(nk_platform_set_app_data_dir_override(NULL));
+        assert(test_remove_tree(per_user));
+        assert(test_remove_tree(runtime));
+        assert(test_remove_tree(first));
+        assert(test_remove_tree(rest));
+        assert(test_remove_tree(korean));
+    }
+
     /* 15. Player settings persistence.
      *
      * Persist render resolution, frame cadence, VSync, fullscreen, reduce
