@@ -427,7 +427,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "612e7b6c58406ae617617848f21850d11f3b33902d9f4023fc58fc1dbee08809"
+      "sha256": "13bd1325f5a5d2fe59742d741f9d93c6820b0c4947ddc7e14725abe9c507bda2"
     },
     {
       "path": "NOTICE.md",
@@ -1375,7 +1375,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "06fcb21344cd1877ad815a0245dd8d28303dc557c0ece3bd7d4cf9b05db9d0c4"
+      "sha256": "b9cf39616e6547df9e60e39581b59c4e7083e4e7c87d6ca7de6dcc79cfd38db8"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -10062,7 +10062,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a8926b70ea7013c714f0dacfb4f4316695d3bfe02fccc67192098af846fa1ac0"
+      "sha256": "f4eea70b8ebe7e957aa613db214b58fd4474a3ba8b4281c07508d99a1c6cf264"
     },
     {
       "path": "tests/native/test_player_ui_art.c",
@@ -12793,7 +12793,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8b8f56a3239fdc481c50afc9fed881730078f3e2d33ffd165b936ecbcc976817"
+      "sha256": "7050f2c8b8ab1199737f4b83bbc9b7b9f4feeacab8497cda33c2c15180710743"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -14451,7 +14451,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee761f9690d0ec34d362372dfb00823cc3a3009c826e09e4883e65960ae564e8"
+      "sha256": "23d49063b0d9be04fbed42df0b25d5a8179d98bbbc2aa76ffdfe95c3046fc47a"
     },
     {
       "path": "tools/test_public_export.py",
