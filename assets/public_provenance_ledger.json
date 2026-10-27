@@ -959,7 +959,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d0e47c84e8e4c64bfdb2f7b8b1ba13831c3dca84a451ce59737a1013ee1d976e"
+      "sha256": "4621bf11d9ed5b8dfd6a02c75366e6a6fa21fc23bd9bea5120bee92af5e2e172"
     },
     {
       "path": "assets/public_provenance_ledger.json",
@@ -1570,7 +1570,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6684d95e128665ce9c26757c2652e48332f3ac3459a05ca677f665cdade10b6b"
+      "sha256": "55c3494b85570d7b33f5e7528d694453fa69dd53045fe0340c1d8e5d28b085ce"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -1666,7 +1666,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "75eed5beda07d1770461b27c5ce4e8020895ccc32963d2d5a6192a6dc5991d20"
+      "sha256": "8664679794d7876e3608e8947f2696c2345739ba04f980ac4d7574d8b4928903"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1684,7 +1684,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "071d7664651c5a9f9eb620a5f78e19b8435b94625bbb233704e5868a8d818fb1"
+      "sha256": "d38b10840d70306766f3a0aa74a0475d3266d6125e42e6b5d6e7bae710553af1"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -11914,7 +11914,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b597570850708cb8ba356bd4d5c3c1007013e6e165e5cce466d8c7e8e52b5eed"
+      "sha256": "3181bc3459185607e0337e5af431d735d1df300079230a14a6344d5d44d78959"
     },
     {
       "path": "tools/nk_core/synthetic_disc_ids.py",
@@ -14151,7 +14151,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4a456f7e037dd3a4193e7394bbe5db6ac18a04fe765bf10b931de160bd36ba8d"
+      "sha256": "5fe8306b76479fb0f10f6b967dcdf308341b923f1a168bbc7d8a01c3533a32b7"
     },
     {
       "path": "tools/test_production_smoke.py",
