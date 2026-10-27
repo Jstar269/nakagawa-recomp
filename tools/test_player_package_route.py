@@ -401,7 +401,7 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertIn("#547", preview)
         self.assertNotIn("automatic prerequisite installation is in the works", preview.lower())
         self.assertIn("-ExcludeOptionalFonts", preview)
-        self.assertIn("python tools/stage_runtime_dlls.py --target dist/bin", workflow)
+        self.assertIn('"$PYTHON" tools/stage_runtime_dlls.py --target dist/bin', workflow)
         self.assertIn("set -euo pipefail", workflow)
         self.assertIn("a nonzero exit aborts the job before artifact upload", preview)
         self.assertIn("does not run the stager again", preview)

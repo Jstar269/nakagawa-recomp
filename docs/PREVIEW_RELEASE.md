@@ -85,7 +85,7 @@ mingw32-make --no-print-directory display-smoke
 
 The binary staging step passes `-ExcludeOptionalFonts` to `tools/copy_build_assets.ps1`, so the optional repository font directory is not copied into the attested bundle.
 
-The attestation workflow runs `python tools/stage_runtime_dlls.py --target dist/bin` under `set -euo pipefail`; a nonzero exit aborts the job before artifact upload. Packaging copies the verified runtime files byte-for-byte and does not run the stager again.
+The attestation workflow runs `"$PYTHON" tools/stage_runtime_dlls.py --target dist/bin` (Windows CPython 3.15.1) under `set -euo pipefail`; a nonzero exit aborts the job before artifact upload. Packaging copies the verified runtime files byte-for-byte and does not run the stager again.
 
 Complete the exact candidate's local release gates and hosted CI before packaging. The binary bundle must come from the [Trusted provenance attestation workflow](../.github/workflows/provenance-attestation.yml), which runs on `main` only after a maintainer freezes the exact candidate SHA. It checks that the required `candidate_sha` equals the workflow's checked-out commit, builds `nakagawa_player.exe` and `production_smoke.exe`, stages their runtime files and `toolchain.json`, creates SLSA Build L2 attestations for every file under `dist/`, and uploads a workflow artifact. This workflow does not create a tag, release, or release asset.
 
