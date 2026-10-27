@@ -1987,5 +1987,73 @@ class SpanIndexMembershipTests(unittest.TestCase):
             self.assertEqual(analyze.in_ranges(addr, index), analyze.in_ranges(addr, ranges))
 
 
+
+def overlapping_segments_elf() -> tuple[bytes, list[tuple[int, int, int, int]]]:
+    """An ET_EXEC whose program headers overlap, each with distinct file bytes.
+
+    Returns the image and its (type, off, vaddr, filesz) headers. A non-load header covers
+    the first load's addresses, a later load overlaps the first, and the last load is
+    shorter on file than in memory.
+    """
+    base = PRIMARY_BASE
+    headers = [
+        (4, 0, base, 0x40),             # PT_NOTE over the first load: never read
+        (1, 0, base, 0x40),             # first load
+        (1, 0, base + 0x20, 0x40),      # second load, overlapping the first's tail
+        (1, 0, base + 0x100, 0x10),     # third load, 0x10 bytes on file of 0x40 in memory
+    ]
+    payload_off = 52 + 32 * len(headers)
+    blob = bytearray(payload_off)
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into("<HHIIIIIHHHHHH", blob, 16, 2, 8, 1, base, 52, 0, 0, 52, 32,
+                     len(headers), 40, 0, 0)
+    placed = []
+    for index, (p_type, _off, vaddr, filesz) in enumerate(headers):
+        off = len(blob)
+        blob += bytes((index * 0x40 + k) & 0xFF for k in range(filesz))
+        memsz = 0x40 if index == 3 else filesz
+        struct.pack_into("<8I", blob, 52 + 32 * index, p_type, off, vaddr, vaddr, filesz,
+                         memsz, 5, 4)
+        placed.append((p_type, off, vaddr, filesz))
+    return bytes(blob), placed
+
+
+class ElfLoadSpanTests(unittest.TestCase):
+    """read_at_vaddr serves the first PT_LOAD in header order that holds the address on file."""
+
+    def test_reads_match_a_walk_over_the_program_headers(self) -> None:
+        image_bytes, headers = overlapping_segments_elf()
+        image = analyze.Elf(image_bytes, base=0)
+
+        def reference(vaddr: int, n: int):
+            for p_type, off, lo, filesz in headers:
+                if p_type == 1 and lo <= vaddr < lo + filesz:
+                    return image_bytes[off + vaddr - lo:off + vaddr - lo + n]
+            return None
+
+        probes = set()
+        for _type, _off, lo, _filesz in headers:
+            probes.update(range(lo - 8, lo + 0x48))
+        for vaddr in sorted(probes):
+            for n in (1, 4, 0x30):
+                with self.subTest(vaddr=hex(vaddr), n=n):
+                    self.assertEqual(image.read_at_vaddr(vaddr, n), reference(vaddr, n))
+        # The first load wins where the second overlaps it, and a non-load header never
+        # serves bytes.
+        first = headers[1]
+        self.assertEqual(image.read_at_vaddr(PRIMARY_BASE + 0x20, 1),
+                         image_bytes[first[1] + 0x20:first[1] + 0x21])
+        self.assertIsNone(image.read_at_vaddr(PRIMARY_BASE + 0x110, 4))
+
+    def test_in_ranges_matches_any_over_random_range_lists(self) -> None:
+        rng = random.Random(1296)
+        for _ in range(500):
+            ranges = [(lo, lo + rng.randrange(-4, 24))
+                      for lo in (rng.randrange(0, 96) for _ in range(rng.randrange(0, 6)))]
+            for addr in range(-2, 122):
+                self.assertEqual(analyze.in_ranges(addr, ranges),
+                                 any(lo <= addr < hi for lo, hi in ranges))
+
+
 if __name__ == "__main__":
     unittest.main()
