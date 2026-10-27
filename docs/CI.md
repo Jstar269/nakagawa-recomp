@@ -135,6 +135,15 @@ display guest in the showcase's synthetic TEST00007 identity. The built `nakagaw
 APPDATA and USERPROFILE point under the runner temporary directory. The Linux `native_tools` job
 stages the PSPDEV-built scene instead. Neither run is PSP-hardware or consumer-ISO evidence.
 
+When `tools/ci_paths.py` routes the native jobs, both hosts run `psmf-media-selftest`, the
+source-authored PSMF/H.264 fixture behind the `sr_h264` decoder seam (#283), each on its own
+backend. The Windows job runs it in its `selftests` part on Media Foundation
+(`src/rt/h264_mf.c`), then requires `psmf-media-selftest-csc-mutant` to be killed. The Linux
+`native_tools` job runs it on the vendored FFmpeg subset (`H264_FFMPEG=1`). When no decoder
+instance can be created, the selftest reports `SKIP` for its decode checks and still exits 0, so
+the Windows step fails on any `SKIP` line. Neither run is private media acceptance or
+PSP-hardware evidence.
+
 The Windows job also runs `cosim-selftest` and `cosim-mutants`. The first executes the same
 source-owned guest bytes twice — once as generated native code, once through the production
 interpreter floor — and reports the first difference in the canonical instruction trace, the

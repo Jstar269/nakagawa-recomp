@@ -9142,8 +9142,12 @@ static uint32_t h_FontFindOptimumFont(CpuState *s) {
  * These thin wrappers marshal MIPS args to the ported mpeg_* functions. The port implements the
  * real PSMF analysis, ring-buffer accounting, handle/context creation, stream registration, and
  * AU getters with timestamp progression + end-of-stream, so the movie playback loop runs and
- * completes exactly as on PPSSPP. The SDL3 build decodes AVC video through Windows Media
- * Foundation (h264_mf.c); ATRAC movie audio is still modelled as silence. */
+ * completes exactly as on PPSSPP. AVC video goes through the backend-neutral decoder seam
+ * (sr_h264.h): the project-authored PSMF producer forms the access units, and the registry in
+ * h264_null.c picks the build's decoder, Media Foundation (h264_mf.c) on Windows or the vendored
+ * FFmpeg H.264 subset (h264_ffmpeg.c, the H264_FFMPEG=1 default elsewhere). A build with
+ * neither fails closed. Nothing here depends on which backend decodes. sceMpegAtracDecode
+ * still decodes no audio samples; it only advances the audio clock. */
 uint32_t mpeg_init(void);
 uint32_t mpeg_finish(void);
 uint32_t mpeg_query_mem_size(uint32_t outAddr);

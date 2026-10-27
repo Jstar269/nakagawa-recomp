@@ -1156,7 +1156,8 @@ jobs:
     #   smoke:     production pipeline, AOT-gap, staged smoke, player, UI, display
     #   ladder:    full platform ladder
     #   routes:    profile-zero production routes, native core tests
-    #   selftests: cosimulation + mutants, scheduler, dispatch, FP, strbuf, HLE thread
+    #   selftests: cosimulation + mutants, scheduler, dispatch, FP, strbuf, HLE thread,
+    #              Media Foundation H.264 media
     #   fuzz-0/1:  synthetic VFPU fuzzer, its cases split between two shards (FUZZ_CASE_SHARD)
     strategy:
       fail-fast: false
@@ -1485,6 +1486,26 @@ jobs:
         run: |
           py="$(cygpath -u "$PYTHON")"
           PYTHONPATH=tools "$py" -m unittest -v test_flash0_font
+
+      # The Windows build decodes H.264 through Media Foundation (src/rt/h264_mf.c), so this
+      # runs the source-authored PSMF/H.264 fixture on that backend (#283); native_tools runs
+      # the same fixture on the vendored FFmpeg subset. When no decoder instance can be
+      # created, the selftest prints SKIP for its decode checks and still exits 0, so any SKIP
+      # line fails the step. The CSC no-write mutant must then die on the same backend.
+      - name: Build and run the Media Foundation H.264 media selftest
+        if: matrix.part == 'selftests'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          log="$(cygpath -u "$RUNNER_TEMP")/psmf-media-selftest.log"
+          mingw32-make --no-print-directory GAME_NAME=ci BUILD_DIR=build/windows-runtime \
+            CC=gcc VULKAN_SDK=/ucrt64 psmf-media-selftest 2>&1 | tee "$log"
+          if grep -F 'SKIP:' "$log"; then
+            echo "psmf-media-selftest skipped its decode checks: Media Foundation created no H.264 decoder" >&2
+            exit 1
+          fi
+          mingw32-make --no-print-directory GAME_NAME=ci BUILD_DIR=build/windows-runtime \
+            CC=gcc VULKAN_SDK=/ucrt64 psmf-media-selftest-csc-mutant
 
       # The synthetic VFPU fuzzer's cases run as two shards: shard k admits the cases with
       # index % 2 == k (src/rt/vfpu_fuzz.c). Together they admit every case exactly once,
