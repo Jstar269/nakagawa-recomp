@@ -112,6 +112,13 @@ struct PlayerUiNk {
     PlayerView last_view;   /* the view drawn last, for the focus a Settings page returns to */
     unsigned flow_screen;   /* which flow screen drew last; 0 outside them */
     NkUiId pre_flow_focus;  /* the library focus to give back on leaving */
+    int pre_flow_game_count; /* titles in the library when the flow opened */
+    /* The title page's PLAY or BUILD PACKAGE went off while it had focus
+       (STARTING..., a running game): focus returns to it when it comes back
+       on, unless the user has moved since. title_primary_fallback is where
+       focus went meanwhile. */
+    bool title_primary_refocus;
+    NkUiId title_primary_fallback;
     NkUiPromptImages prompt_images;  /* Kenney glyphs; empty ones keep the geometry */
     PlayerUiArt *art;                /* disc ICON0 / PIC1, decoded at run time */
     PlayerUiSounds *sounds;          /* optional launcher sounds (ui_sounds) */
@@ -907,7 +914,15 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                         app->wizard.is_extracting
                     ? PLAYER_UI_ID_WIZARD_CANCEL : PLAYER_UI_ID_WIZARD_PRIMARY;
                 break;
-            case VIEW_BUILDING_PACKAGE: focus = PLAYER_UI_ID_BUILD_ACTION; break;
+            case VIEW_BUILDING_PACKAGE:
+                /* CANCEL BUILD is never the default focus, so a stray Enter or
+                   South cannot stop a build; a move reaches it. A finished
+                   build focuses BACK TO LIBRARY. */
+                if (app->build_session.is_complete && !app->build_session.is_failed) {
+                    screen += 1u;
+                    focus = PLAYER_UI_ID_BUILD_ACTION;
+                }
+                break;
             case VIEW_PREREQ_CONSENT: focus = PLAYER_UI_ID_PREREQ_ACCEPT; break;
             case VIEW_PREREQ_PROGRESS: focus = PLAYER_UI_ID_PREREQ_CANCEL; break;
             case VIEW_ERROR: focus = PLAYER_UI_ID_ERROR_RECOVER; break;
@@ -958,9 +973,16 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
     if (screen == player->flow_screen) return;
     if (player->flow_screen == 0u) {
         player->pre_flow_focus = nk_ui_focused(player->ui);
+        player->pre_flow_game_count = app->game_count;
     }
     if (screen != 0u) {
         nk_ui_focus(player->ui, focus);
+    } else if (app->game_count > player->pre_flow_game_count &&
+               app->selected_game_index >= 0 &&
+               app->selected_game_index < app->game_count) {
+        /* A flow that added a game (ADD TO LIBRARY) ends on its card. */
+        player->library_focus_pending = true;
+        player->library_focus_index = (size_t)app->selected_game_index;
     } else if (player->pre_flow_focus != 0u) {
         nk_ui_focus(player->ui, player->pre_flow_focus);
     }
@@ -1524,6 +1546,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             app->selected_game_index = (int)action.title_index;
             nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
             (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_TITLE);
+            player->title_primary_refocus = false;
             action.kind = PLAYER_UI_ACTION_NONE;
         } else if (action.kind == PLAYER_UI_ACTION_PAGE_PREVIOUS) {
             if (player->library_page > 0u) --player->library_page;
@@ -1564,6 +1587,38 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 app->stalled_game_notice_visible;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
+            {
+                /* Keep PLAY or BUILD PACKAGE focused across a game's start
+                   and exit: while it is off (STARTING..., STOP GAME is not
+                   offered as a default) focus waits on the fallback, and
+                   comes back when it is on again unless the user moved. */
+                const PlayerUiTitle *shown = &player->titles[index];
+                bool primary_default = shown->primary_action_enabled &&
+                    (shown->primary_action == PLAYER_UI_PRIMARY_PLAY ||
+                     shown->primary_action == PLAYER_UI_PRIMARY_BUILD);
+                NkUiId focused = nk_ui_focused(player->ui);
+                if (!primary_default) {
+                    if (focused == PLAYER_UI_ID_TITLE_PRIMARY) {
+                        player->title_primary_refocus = true;
+                        player->title_primary_fallback = 0u;
+                    } else if (player->title_primary_refocus &&
+                               player->title_primary_fallback == 0u) {
+                        player->title_primary_fallback = focused;
+                    } else if (player->title_primary_refocus &&
+                               focused != player->title_primary_fallback) {
+                        player->title_primary_refocus = false;
+                    }
+                } else if (player->title_primary_refocus) {
+                    /* No fallback recorded yet means the action was off for a
+                       single frame: focus is where the fallback put it. */
+                    if (player->title_primary_fallback == 0u ||
+                        focused == player->title_primary_fallback ||
+                        focused == PLAYER_UI_ID_TITLE_PRIMARY) {
+                        nk_ui_focus(player->ui, PLAYER_UI_ID_TITLE_PRIMARY);
+                    }
+                    player->title_primary_refocus = false;
+                }
+            }
             action = player_ui_screen_title(player->ui, &model);
             if (action.kind == PLAYER_UI_ACTION_BACK) {
                 nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));

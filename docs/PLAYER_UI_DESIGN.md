@@ -113,6 +113,11 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
   secondary button also fills with `surface_high`; a focused card's edge becomes `line_strong`.
 - Arrow keys move to the nearest control in that direction. A button with `NK_UI_BUTTON_ROW` keeps Left and Right in
   its row, so a row of actions under cards of different heights is walked end to end.
+- When the screen changes and the old focus is gone, focus lands on the page's first enabled control that may be the
+  default: the title page's PLAY or BUILD PACKAGE, the new card after ADD TO LIBRARY. Top-bar tabs
+  (`NK_UI_BUTTON_NOT_DEFAULT`) and danger buttons never are; a screen whose only control is a danger button (CANCEL
+  BUILD while a build runs) starts with nothing focused, and a move reaches it. PLAY or BUILD PACKAGE gets focus back
+  when it comes back on after STARTING... or a package check, unless the user moved meanwhile.
 
 ### Layout grid
 

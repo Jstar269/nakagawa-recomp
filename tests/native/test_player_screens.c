@@ -2730,6 +2730,101 @@ static int capture_screens(const char *directory) {
    card said "not ready yet" under a READY pill (its text followed the primary
    action, STOP GAME), the decryption note showed on a built package, and the
    compatibility card carried a "Boots to a named boundary" chip. */
+/* Launcher review B6: focus lands on the page's main action. Opening a title
+   from a focused library card focuses PLAY (or BUILD PACKAGE), not the first
+   control drawn (the LIBRARY tab); with that action off it lands on the next
+   enabled action, still not a tab. A running build focuses nothing, so a
+   stray Enter or South cannot cancel it, and a move reaches CANCEL BUILD. */
+static void test_default_focus_lands_on_the_main_action(void) {
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    PlayerUiLibraryModel library;
+    PlayerUiTitleModel title;
+    PlayerUiTitle off = k_titles[1];
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the default-focus UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    memset(&library, 0, sizeof(library));
+    library.page_size = player_ui_library_page_size(1280.0f, 800.0f, &library.columns);
+    library.titles = k_titles;
+    library.title_count = 3u;
+    library.logical_width = 1280.0f;
+    library.logical_height = 800.0f;
+    nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(0u));
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_library(ui, &library);
+        (void)nk_ui_end(ui);
+    }
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(0u), "the first card has focus");
+    memset(&title, 0, sizeof(title));
+    title.title = &k_titles[0];
+    title.logical_width = 1280.0f;
+    title.logical_height = 800.0f;
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_title(ui, &title);
+        (void)nk_ui_end(ui);
+    }
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_PRIMARY,
+          "opening a title focuses PLAY, not the LIBRARY tab");
+
+    off.primary_action_enabled = false;
+    title.title = &off;
+    nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(1u));
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_title(ui, &title);
+        (void)nk_ui_end(ui);
+    }
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_SAVE_FOLDER,
+          "with BUILD PACKAGE off, focus lands on the next action, not a tab");
+
+    {
+        PlayerUiBuildModel build;
+        NkUiEvent move;
+        memset(&build, 0, sizeof(build));
+        build.title_line = "Synthetic Showcase Scene (TEST00007)";
+        build.stage = 2;
+        build.fraction = -1.0f;
+        build.message = "Compiling the translated game for this PC.";
+        build.logical_width = 1280.0f;
+        build.logical_height = 800.0f;
+        nk_ui_focus(ui, 0u);
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_build(ui, &build);
+            (void)nk_ui_end(ui);
+        }
+        CHECK(nk_ui_focused(ui) != PLAYER_UI_ID_BUILD_ACTION,
+              "CANCEL BUILD is never the default focus");
+        memset(&move, 0, sizeof(move));
+        move.type = NK_UI_EV_NAV;
+        move.dir = NK_UI_DIR_DOWN;
+        nk_ui_push_event(ui, &move);
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_build(ui, &build);
+        (void)nk_ui_end(ui);
+        CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_BUILD_ACTION,
+              "a move from no focus reaches CANCEL BUILD");
+        build.built = true;
+        nk_ui_focus(ui, 0u);
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_build(ui, &build);
+            (void)nk_ui_end(ui);
+        }
+        CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_BUILD_ACTION,
+              "a finished build focuses BACK TO LIBRARY");
+    }
+    nk_ui_destroy(ui);
+}
+
 static void test_title_with_a_running_game(void) {
     static char dump[CASE_DUMP_CAP];
     NkUiConfig config;
@@ -3051,6 +3146,7 @@ int main(int argc, char **argv) {
     test_version_line();
     test_design_system_layout();
     test_title_with_a_running_game();
+    test_default_focus_lands_on_the_main_action();
     test_tier_table_matches_the_docs();
     test_remove_from_library();
     test_build_bar_shows_compiled_parts();
