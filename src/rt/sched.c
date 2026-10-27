@@ -108,6 +108,7 @@ enum { PSP_WAIT_NONE = 0, PSP_WAIT_SLEEP = 1, PSP_WAIT_DELAY = 2, PSP_WAIT_OBJEC
 #define SCE_KERNEL_ERROR_WAIT_DELETE       0x800201b5u
 #define SCE_KERNEL_ERROR_ILLEGAL_CONTEXT   0x80020064u
 #define SCE_KERNEL_ERROR_ILLEGAL_ATTR      0x80020191u
+#define SCE_KERNEL_ERROR_ILLEGAL_PRIORITY  0x80020193u
 
 /* PSP hardware treats a signed-negative status as an error-shaped non-delete
  * exit and latches SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT.  The boundary probe
@@ -2576,20 +2577,10 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
         g_launcher_uid = t->uid;
         if (getenv("SR_THLOG")) fprintf(stderr, "LAUNCHER_UID_CAPTURE: launcher uid=0x%x\n", t->uid);
     }
-    /* Priority-inversion guard, applied only to a configured launcher role. A launcher
-     * that spins in a module_start loop with thousands of SR_YIELD escapes per second is
-     * normally the highest-priority user thread (32 < worker pri ~38-40), so the scheduler
-     * always schedules it and starves the worker that drives SetFrameBuf / WaitVblank.
-     * Once the launcher uid is known, demote it below any probable worker priority so the
-     * worker can run. Disable with SR_NO_LAUNCHER_DEMOTE=1 (back to original behaviour).
-     * A build with no configured launcher binding never reaches this. */
-    if (!getenv("SR_NO_LAUNCHER_DEMOTE") && sr_title_config_is_launcher_entry(entry)) {
-        const int demoted_priority = 50;
-        t->priority = demoted_priority;
-        sr_compat_fired("SCHEDULER_HOOKS", entry, "launcher priority demotion");
-        if (getenv("SR_THLOG")) fprintf(stderr, "LAUNCHER_DEMOTE: launcher uid=0x%x -> priority=%d\n",
-                                        t->uid, demoted_priority);
-    }
+    /* A captured role never changes the priority its creator passed. The launcher used to
+     * be demoted to 50 here (#363) against a launcher that out-prioritized the worker and
+     * never blocked; under strict priority (pick_next) a launcher that blocks, for example
+     * in sceKernelSleepThread after starting its worker, lets that worker run on its own. */
     /* Give the thread a stack, the module gp, and a per-thread k0 (r26) area. The PSP kernel
      * sets k0 to a small per-thread control region near the top of the thread stack, and the
      * game's thread bodies use it as a base pointer (e.g. sw r21,4(k0)); leaving it 0 faults.
@@ -2788,7 +2779,7 @@ static void sched_rotation_mark(int head) {
  * numerically lower priority exists. There is no aging/anti-starvation on hardware -- a
  * busy higher-priority thread legitimately starves lower-priority threads. (An earlier
  * "anti-starvation" rotation here forced the first OTHER ready thread -- of any priority --
- * every third decision, which let a demoted priority-50 launcher preempt the priority-3x
+ * every third decision, which let a priority-50 launcher preempt the priority-3x
  * worker; that violated the model and is gone. Do not reintroduce it: if a route livelocks
  * on a busy-wait that hardware would satisfy, fix the subsystem that fails to produce the
  * awaited state.)
@@ -3195,17 +3186,35 @@ void sched_preempt(void) {
 #endif
 }
 
+/* Diagnostic switches read on every block, delay or scheduler pass. The environment is
+ * fixed once the process starts, and an uncached getenv takes the C runtime's environment
+ * lock and compares the name against every variable (#1296), so each is read once. */
+static int sched_env_switch(int *cached, const char *name) {
+    if (*cached < 0) *cached = getenv(name) != NULL;
+    return *cached;
+}
+
+static int sched_delaylog_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_DELAYLOG");
+}
+
+static int sched_blocklog_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_BLOCKLOG");
+}
+
 void sched_delay_current(uint64_t usec) {
     if (s_cur < 0) return;
     TCB *t = &s_tcb[s_cur];
     uint64_t duration = usec ? usec : 1u;
     vtime_refresh();
     uint64_t wake = scheduler_deadline_after(duration);
-    if (getenv("SR_DELAYLOG"))
+    if (sched_delaylog_on())
         fprintf(stderr, "DELAY uid=0x%x entry=0x%08x usec=%llu (%.1fs) wake=%llu\n",
                 t->uid, t->entry, (unsigned long long)usec,
                 (double)usec / 1e6, (unsigned long long)wake);
-    if (usec > 2000000u && getenv("SR_DELAYLOG"))   /* > 2s: catch a bogus huge delay */
+    if (usec > 2000000u && sched_delaylog_on())   /* > 2s: catch a bogus huge delay */
         fprintf(stderr, "BIG DELAY uid=0x%x entry=0x%08x usec=%llu (%.1fs)\n",
                 t->uid, t->entry, (unsigned long long)usec, (double)usec / 1e6);
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
@@ -3220,7 +3229,7 @@ void sched_delay_current(uint64_t usec) {
 void sched_block_on(uint32_t obj) {
     if (s_cur < 0) return;
     TCB *t = &s_tcb[s_cur];
-    if (getenv("SR_BLOCKLOG")) fprintf(stderr, "BLOCK: uid 0x%x on obj 0x%x (pc=0x%x ra=0x%x)\n", t->uid, obj, s_cpu->pc, s_cpu->r[31]);
+    if (sched_blocklog_on()) fprintf(stderr, "BLOCK: uid 0x%x on obj 0x%x (pc=0x%x ra=0x%x)\n", t->uid, obj, s_cpu->pc, s_cpu->r[31]);
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, obj);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, obj, 0u);
@@ -3768,7 +3777,8 @@ void sched_thread_sleep(void) {
 void sched_thread_sleep_cb(void) {
     if (s_cur < 0) return;
     TCB *t = &s_tcb[s_cur];
-    if (getenv("SR_WAKELOG")) {
+    static int wakelog = -1;
+    if (sched_env_switch(&wakelog, "SR_WAKELOG")) {
         fprintf(stderr, "DEBUG_SLEEP_CB: thread=0x%x wakeups=%d state=%d\n", t->uid, t->wakeups, t->state);
     }
     if (t->wakeups > 0) {
@@ -4065,17 +4075,57 @@ void sched_unwind_current(void) {
 
 int sched_current_priority(void) { return s_cur >= 0 ? s_tcb[s_cur].priority : 32; }
 
-/* sceKernelChangeThreadPriority: uid 0 = current thread. */
+/* sceKernelChangeThreadPriority(thid, priority); thid 0 = the calling thread.
+ *
+ * Results follow the PSPAutotests threads/threads/change.expected cells (#1388):
+ *   - an unknown, -1 or deleted UID answers UNKNOWN_THID;
+ *   - a dormant (never-started or finished) target answers DORMANT, as PSP-B3-01
+ *     (psp-hw-20260917) also measured;
+ *   - user priorities 0x08..0x77 are accepted; -2, -1, 0x01..0x07, 0x78 and 0x79 answer
+ *     ILLEGAL_PRIORITY (0x80020193, the code the thread-rotate-range cell measured for an
+ *     out-of-range ready-queue priority) and leave the priority unchanged;
+ *   - priority 0 gives the target the CALLER's current priority, not the target's.
+ * The precedence of DORMANT over ILLEGAL_PRIORITY for a dormant target with an illegal
+ * priority is not covered by that evidence; the existing DORMANT check stays first.
+ * Without a calling thread, priority 0 names no priority and fails closed with
+ * ILLEGAL_PRIORITY.
+ *
+ * A successful change is a scheduling boundary:
+ *   - when the target is the caller, the caller goes to the back of its new priority's
+ *     queue and yields to a ready peer of that priority or stronger, even when the value
+ *     is unchanged: in change.expected the common harness's resched thread, created at
+ *     the caller's priority, runs inside ChangeThreadPriority(0, 0x20) ("[r] Zero") and
+ *     the equal-priority test thread runs inside ChangeThreadPriority(self, 0x20) (its
+ *     line comes before "Current");
+ *   - otherwise a ready thread now strictly stronger than the caller takes the CPU
+ *     (the 0x08, 0x09 and 0x17 cells); an equal one does not ("Ready", the 0x00 cell).
+ *     Where another target lands in its new priority's queue is not measured: its
+ *     rotation marker, which belongs to the old priority, is cleared as before.
+ * Either switch is deferred, like every other one, while interrupts or dispatch are
+ * disabled. */
+#define SCHED_USER_PRIORITY_MIN 0x08
+#define SCHED_USER_PRIORITY_MAX 0x77
+static void sched_yield_current_behind_peers(void);
 uint32_t sched_set_priority(uint32_t uid, int priority) {
-    if (uid == 0 && s_cur >= 0) uid = s_tcb[s_cur].uid;
-    else uid = resolve_thread_uid(uid);
+    uid = resolve_thread_uid(uid);
     TCB *t = tcb_by_uid(uid);
     if (!t) return SCE_KERNEL_ERROR_UNKNOWN_THID;
-    /* PSP-B3-01 (psp-hw-20260917): a dormant (never-started or terminated)
-     * target answers DORMANT (0x800201A2). */
     if (t->state == TH_DORMANT) return SCE_KERNEL_ERROR_DORMANT;
+    if (priority == 0) {
+        if (s_cur < 0) return SCE_KERNEL_ERROR_ILLEGAL_PRIORITY;
+        priority = s_tcb[s_cur].priority;
+    }
+    if (priority < SCHED_USER_PRIORITY_MIN || priority > SCHED_USER_PRIORITY_MAX)
+        return SCE_KERNEL_ERROR_ILLEGAL_PRIORITY;
     t->priority = priority;
-    t->rot_head = 0;   /* a queue position belongs to the old priority */
+    if (s_cur >= 0 && t == &s_tcb[s_cur]) {
+        sched_promote_expired_waits();
+        sched_rotation_mark(s_cur);
+        sched_yield_current_behind_peers();
+    } else {
+        t->rot_head = 0;
+        sched_preempt();
+    }
     return 0;
 }
 
@@ -4257,17 +4307,26 @@ uint32_t sched_rotate_thread_ready_queue(int priority) {
         sched_preempt();   /* a rotated stronger queue may now owe the CPU */
         return 0;
     }
-    if (!s_interrupts_enabled || !s_dispatch_enabled) return 0;
+    sched_yield_current_behind_peers();
+    return 0;
+}
+
+/* The running caller, already marked as the back of its priority's queue, gives the CPU
+ * to the scheduler when a ready, non-suspended peer of that priority or a stronger one
+ * exists; with no such peer the queue is just the caller and it keeps running.  Deferred,
+ * like every other switch, while interrupts or dispatch are disabled. */
+static void sched_yield_current_behind_peers(void) {
+    if (s_cur < 0 || !s_interrupts_enabled || !s_dispatch_enabled) return;
+    const int priority = s_tcb[s_cur].priority;
     int peer_ready = 0;
     for (int i = 0; i < s_ntcb; i++)
         if (i != s_cur && s_tcb[i].state == TH_READY && !s_tcb[i].suspended &&
             s_tcb[i].priority <= priority) { peer_ready = 1; break; }
-    if (!peer_ready) return 0;   /* nobody to yield to: the queue is just the caller */
+    if (!peer_ready) return;
     TCB *cur = &s_tcb[s_cur];
     memcpy(&cur->saved, s_cpu, sizeof(CpuState));
     cur->state = TH_READY;
     switch_to_scheduler();
-    return 0;
 }
 
 int sched_is_dormant(uint32_t uid) {
@@ -4678,6 +4737,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
 
     static const char *stn[] = {"DORMANT", "READY", "RUNNING", "WAIT_DELAY", "WAIT_OBJ"};
     unsigned long long iters = 0;
+    const int sched_dump = getenv("SCHED_DUMP") != NULL;   /* once, not per pass (#1296) */
     /* Idle no-progress accounting; see the guard in the idle path below. */
     uint64_t idle_vbl_mark = s_vbl_count;
     int idle_no_progress = 0;
@@ -4688,7 +4748,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
          * successful window presentations. The guest is not resumed again. */
         if (sr_sched_stop_requested && sr_sched_stop_requested()) break;
         if (s_pause_requested && sched_pause_run() == SR_PAUSE_EXIT_STOP) break;
-        if (getenv("SCHED_DUMP") && (++iters % 400000) == 0) {
+        if (sched_dump && (++iters % 400000) == 0) {
             fprintf(stderr, "--- sched dump (tick=%llu) ---\n", (unsigned long long)s_tick);
             for (int i = 0; i < s_ntcb; i++)
                 fprintf(stderr, "  uid 0x%x entry 0x%08x %s prio %d wait_obj 0x%x\n",

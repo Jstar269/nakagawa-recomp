@@ -863,6 +863,7 @@ class LiveManifestTests(unittest.TestCase):
                 "h_IoLseek",
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
+                    "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
             0x109F50BC: (
@@ -915,6 +916,7 @@ class LiveManifestTests(unittest.TestCase):
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
                     "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                    "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
             0x42EC03AC: (
@@ -1581,7 +1583,8 @@ class EvidenceTierTests(unittest.TestCase):
                 "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-DISPLAY-001",
                 "PSP-DISPLAY-002", "PSP-DISPLAY-003", "PSP-DISPLAY-004", "PSP-DMAC-001",
                 "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-FPU-CC-001", "PSP-GE-001",
-                "PSP-GE-CONTROL-001", "PSP-HLE-AUDIO-SRC-001", "PSP-HLE-CTRL-LATCH-001",
+                "PSP-GE-CONTROL-001", "PSP-GE-TIMING-001", "PSP-HLE-AUDIO-SRC-001",
+                "PSP-HLE-CTRL-LATCH-001",
                 "PSP-HLE-GE-EDRAM-001", "PSP-HLE-HPRM-001", "PSP-HLE-KERNEL-STATUS-001",
                 "PSP-HLE-POWER-001", "PSP-HLE-POWER-002", "PSP-HLE-SYSPARAM-001",
                 "PSP-HLE-TIMER-ORDER-001", "PSP-HLE-VTIMER-001", "PSP-HLE-VTIMER-002",

@@ -471,8 +471,9 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
+            "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
         ],
-        "limitation": "PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; a destination before the start or past the end fails closed with IO_LSEEK_OUT_OF_RANGE (#1380); large offsets, invalid whence, raw devices and error precedence remain unmeasured (#341)",
+        "limitation": "PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; on a file, a destination before the start or past the end fails closed with IO_LSEEK_OUT_OF_RANGE (#1380); large offsets, invalid whence and error precedence remain unmeasured (#341). UMD block-device seeks follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (sector positions, SEEK_END at the last sector, 0x8001b003 for a negative or far-past-the-disc position); the refusal edge between the last sector and the captured far position is inferred",
     },
     "h_IoMkdir": {
         "status": "complete",
@@ -488,15 +489,16 @@ HANDLER_METADATA = {
             "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
         ],
-        "limitation": "measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; an open without PSP_O_CREAT never creates a file, and PSP_O_CREAT|PSP_O_EXCL on an existing file fails closed with IO_OPEN_EXCL_EXISTING (#1380); other flag combinations, general error precedence and raw UMD data operations remain unmeasured (#341)",
+        "limitation": "measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; an open without PSP_O_CREAT never creates a file, and PSP_O_CREAT|PSP_O_EXCL on an existing file fails closed with IO_OPEN_EXCL_EXISTING (#1380); other flag combinations and general error precedence remain unmeasured (#341). UMD block-device reads and seeks are covered under sceIoRead and sceIoLseek",
     },
     "h_IoRead": {
         "status": "partial",
         "evidence": [
             "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+            "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
         ],
-        "limitation": "PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); short reads at end of file, zero-length reads, partial-read position advance, unreadable buffers, write-only descriptors, raw UMD data and standard-stream reads remain unmeasured (#341)",
+        "limitation": "PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); short reads at end of file, zero-length file reads, partial-read position advance, unreadable buffers, write-only descriptors and standard-stream reads remain unmeasured (#341). UMD block-device reads follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (counts and results in 2048-byte sectors, the position advancing by the count, 0x80010016 for a zero count); a read crossing the last sector stays at the raw-device boundary, and the runtime refuses a destination outside guest memory where the console overran the buffer",
     },
     "h_IoRemove": {
         "status": "complete",
@@ -844,15 +846,25 @@ HANDLER_METADATA = {
     },
     "h_RtcGetCurrentClockLocal": {
         "status": "partial",
-        "limitation": "timezone/daylight comes from the fixed UTC constant until #77 adds the settable system profile, so LocalTime matches only a UTC-configured PSP (#77, #80, #341)",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
+            "src/rt/hle.c:psp_profile_local_offset_minutes",
+        ],
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the seed is the oracle console's measured setting, not a factory default, and the 60-minute daylight-saving shift is the setting's meaning, not measured (#1382, #341)",
     },
     "h_RtcConvertUtcToLocal": {
         "status": "partial",
-        "limitation": "runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
+        ],
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)",
     },
     "h_RtcConvertLocalToUtc": {
         "status": "partial",
-        "limitation": "runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
+        ],
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)",
     },
     "h_RtcGetTick": {
         "status": "complete",
