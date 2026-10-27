@@ -195,7 +195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "442d1ad042fb693b38f65daa436ac55e9b3ce18d99d7f0a4280c4ed22fcde1e1"
+      "sha256": "ed030e0b1bd63462238fbe9facd2c294a05b358d74a0c9dbaecd20c71f9876ef"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -312,7 +312,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "de0cf05860c1bf95ca298283cdc0ea7f13392700833468f83a28eaff8210f085"
+      "sha256": "8ea322566ce38f302fbbc44ae8cd6f63bb7fc6dda84424a3c5b13c390c9cbdc8"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -1387,7 +1387,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d3ad5f5eb60ed9ad35b599212845494acb1762b980011eff19724698b0742bbd"
+      "sha256": "54d7841bb316ab0e8e2b586ecaa2aaeb1487aea42b0220214699acb13fb9548a"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1444,7 +1444,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b7274657163671b82e4f89f42c1b53da255e9a6b55d54655a3e5e3a7088d8969"
+      "sha256": "c5fa0adae00958d6dd5f53e1d3126095f849a7adba8561a602c449b5ca4a5332"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1696,7 +1696,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "100ff2283920b68a92a693c4c27edee9a6b045149c5da5feb0fa8eed5bc884bd"
+      "sha256": "134a4226d3e25f37efc6d745d573e0d285e87ae0b422c552d2ee366ffe2ec40b"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -2411,7 +2411,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "da0dce9ac26ecb5a6544fc6965745d9cb58d1c7905de70125f4da7a11e2ccc57"
+      "sha256": "e4f078682cec16b41b9d4bd6d4d3ebe0c26f43fd41adf60c2d4d6d1ef7fc64f7"
     },
     {
       "path": "fixtures/psp_oracle/font_list.h",
@@ -2516,7 +2516,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "26c4b72d89655cf4d1a0557acddabd0079c7f8bf3aea1f4567e083d4f6c258fd"
+      "sha256": "f82821edbedae7f5544b4a2b06914c329feab1ef3c5aa88bccc71236ca01353c"
     },
     {
       "path": "fixtures/psp_oracle/libfont_imports.S",
@@ -14712,7 +14712,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bdbf0cec986b6076e6c68a64893c1fcaf0ad24aee2ac4193b180e7aa87f198ff"
+      "sha256": "83666ab2d9c13f145cb8d083139bc7f78db6fa0b00d8ff8e00ed71d034791fca"
     },
     {
       "path": "tools/test_psp_parsers.py",
@@ -14808,7 +14808,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee761f9690d0ec34d362372dfb00823cc3a3009c826e09e4883e65960ae564e8"
+      "sha256": "07bcb703c7e00f5c6a5df511e6ac7bd444e7be676bff5a63b4346c8d5b63a123"
     },
     {
       "path": "tools/test_public_export.py",
