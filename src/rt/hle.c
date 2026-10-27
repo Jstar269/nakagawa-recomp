@@ -15809,8 +15809,9 @@ static uint32_t vfs_overlay_merge_dir_posix(const char *guest_path, SrVfsDirList
     sr_cd_root_close(&root);
     if (st == SR_CD_NOT_FOUND) return 0;
     if (st != SR_CD_OK) {
-        fprintf(stderr, "sceIoDopen: refusing '%s': host directory is not contained in the "
-                        "configured Memory Stick root (%s)\n", guest_path, sr_cd_status_name(st));
+        fprintf(stderr, "sceIoDopen: refusing '%s': no directory reachable without a link "
+                        "inside the configured Memory Stick root (%s)\n",
+                guest_path, sr_cd_status_name(st));
         fflush(stderr);
         return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND, as on Win32 */
     }
