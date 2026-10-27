@@ -20164,6 +20164,7 @@ static void display_present_frame(void) {
     int presented = gui_present(s_display_active.addr, s_display_active.fmt,
                                 (uint32_t)s_display_active.stride);
     if (presented) {
+        if (sr_perf_enabled) sr_perf_present_frame(s_display_active.addr, s_vcount);
         SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_PRESENT, SR_FLIGHT_KIND_PRESENT_FRAME,
                                s_display_active.addr, (uint32_t)s_display_active.fmt,
                                (uint32_t)s_display_active.stride, s_vcount);

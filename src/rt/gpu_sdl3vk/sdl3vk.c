@@ -47,7 +47,7 @@
 #define PSP_H 272
 #define PRESENT_FRAMES 3
 #define HUD_W 240
-#define HUD_H 76
+#define HUD_H 108
 
 typedef struct PresentFrame {
     VkCommandBuffer cmd;
@@ -1361,8 +1361,13 @@ static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_i
     }
     if (!s_hud_surf || !s_hud_ren) return;
 
-    double fps = 0.0, frame_ms = 0.0, vblank_hz = 0.0;
-    sr_perf_get_hud_metrics(&fps, &frame_ms, &vblank_hz);
+    /* Game FPS counts new frames (a present of a buffer other than the previous one's), the
+     * figure a player feels; Presents counts every frame handed to the window, re-presents of
+     * the same finished frame included. Per frame is the mean VBLANKs between new frames:
+     * 2.0 is a 30-frame title on time, 1.0 a 60-frame one. */
+    double presents = 0.0, frame_ms = 0.0, vblank_hz = 0.0, game_fps = 0.0, per_frame = 0.0;
+    sr_perf_get_hud_metrics(&presents, &frame_ms, &vblank_hz);
+    sr_perf_get_hud_frames(&game_fps, &per_frame);
     /* -1: no backend query registered, so the status is unknown. */
     int audio_active = s_audio_active_cb ? (s_audio_active_cb() ? 1 : 0) : -1;
 
@@ -1374,20 +1379,29 @@ static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_i
 
     char line[64];
     SDL_SetRenderDrawColor(s_hud_ren, 240, 240, 240, 255);
-    snprintf(line, sizeof(line), "FPS:     %.1f (%.2f ms)", fps, frame_ms);
+    snprintf(line, sizeof(line), "Game FPS:  %.1f", game_fps);
     SDL_RenderDebugText(s_hud_ren, 12, 10, line);
 
-    snprintf(line, sizeof(line), "VBlank:  %.1f Hz", vblank_hz);
+    if (per_frame > 0.0)
+        snprintf(line, sizeof(line), "Per frame: %.1f VBlanks", per_frame);
+    else
+        snprintf(line, sizeof(line), "Per frame: -");
     SDL_RenderDebugText(s_hud_ren, 12, 30, line);
+
+    snprintf(line, sizeof(line), "Presents:  %.1f/s", presents);
+    SDL_RenderDebugText(s_hud_ren, 12, 50, line);
+
+    snprintf(line, sizeof(line), "VBlank:    %.1f Hz", vblank_hz);
+    SDL_RenderDebugText(s_hud_ren, 12, 70, line);
 
     if (audio_active > 0) {
         SDL_SetRenderDrawColor(s_hud_ren, 80, 240, 120, 255);
     } else {
         SDL_SetRenderDrawColor(s_hud_ren, 200, 200, 200, 255);
     }
-    snprintf(line, sizeof(line), "Audio:   %s",
+    snprintf(line, sizeof(line), "Audio:     %s",
              audio_active > 0 ? "Active" : (audio_active == 0 ? "Inactive" : "Unknown"));
-    SDL_RenderDebugText(s_hud_ren, 12, 50, line);
+    SDL_RenderDebugText(s_hud_ren, 12, 90, line);
 
     SDL_RenderPresent(s_hud_ren);
 

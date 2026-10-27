@@ -637,6 +637,7 @@ void sr_perf_vulkan_wait(uint64_t started_ns, int readback) { (void)started_ns; 
 void sr_perf_vulkan_pipeline(uint64_t started_ns) { (void)started_ns; }
 void sr_perf_vulkan_readback(uint32_t bytes) { (void)bytes; }
 void sr_perf_texture_cache(int hit) { (void)hit; }
+void sr_perf_present_frame(uint32_t buffer, uint32_t vcount) { (void)buffer; (void)vcount; }
 void sr_perf_texture_decode(uint64_t started_ns, uint32_t bytes) { (void)started_ns; (void)bytes; }
 void sr_perf_storage_read(SrPerfStorageSource source, uint32_t bytes, uint64_t started_ns, int success) { (void)source; (void)bytes; (void)started_ns; (void)success; }
 void sr_perf_h264(uint64_t started_ns, int result) { (void)started_ns; (void)result; }
