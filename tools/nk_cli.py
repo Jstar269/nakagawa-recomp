@@ -1288,7 +1288,8 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
         "stale_code_policy": environment.get(
             "STALE_CODE_POLICY", environment.get("SR_STALE_POLICY", "")
         ),
-        "chunk_target_bytes": environment.get("CHUNK_TARGET_BYTES", ""),
+        # Mirrors the planner: a package chunks by size unless the caller set a target.
+        "chunk_target_bytes": package_cache.package_chunking(environment)["CHUNK_TARGET_BYTES"],
         # The planner writes this into the package's cache metadata, so the key must carry it too.
         "planner_sha256": package_cache.sha256_file(ROOT / "tools" / "title_codegen_plan.py"),
     }

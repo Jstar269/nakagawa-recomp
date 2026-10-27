@@ -146,6 +146,14 @@ the player's `build-package` action. The command refuses to reuse an existing
 package directory when its manifest, executable, selected PRXs, or PSP header
 hashes differ. The manifest remains unchanged. Make's `all` target still runs the generation and
 compile phases separately so generated chunks are linked on a clean build.
+A package build chunks generated C by size: `CHUNK_TARGET_BYTES` defaults to 4,000,000
+bytes of C per translation unit (a value the caller sets wins, and the cache key names
+it). Every function's C text, its order and the compile flags stay the same; only the
+boundaries between translation units move (gcc inlines the runtime header's static inline
+helpers into more functions of a smaller unit). Each compile job is then given memory in
+proportion to the target (256 bytes per byte, at least 1 GiB, at most the 3 GiB that
+count-based chunks need), so a host with little free memory still compiles several chunks
+at once.
 Current Make recipes cannot transport whitespace or shell-sensitive characters
 in bound paths. Inputs at such paths are copied byte-for-byte into
 `<output-dir>/staged-inputs/` (hashes are unchanged). When the output directory

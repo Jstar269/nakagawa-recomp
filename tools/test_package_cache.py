@@ -1947,6 +1947,76 @@ class PackageOptimizationTests(unittest.TestCase):
                 self.assertIn(f"|{recomp}|", cli_flags)
 
 
+class PackageChunkingTests(unittest.TestCase):
+    """A package build chunks generated C by size unless the caller sets a target (#1296),
+    and both package routes name that target in the cache key."""
+
+    def test_default_and_a_caller_set_value(self):
+        self.assertEqual(package_cache.package_chunking({}), {"CHUNK_TARGET_BYTES": "4000000"})
+        self.assertEqual(package_cache.package_chunking({"CHUNK_TARGET_BYTES": ""}),
+                         {"CHUNK_TARGET_BYTES": "4000000"})
+        self.assertEqual(package_cache.package_chunking({"CHUNK_TARGET_BYTES": "123456"}),
+                         {"CHUNK_TARGET_BYTES": "123456"})
+
+    def test_planner_and_player_keys_name_the_package_chunking(self):
+        manifest = {
+            "executable": {"base": 0x08804000, "entry": 0x08804100},
+            "codegen_profile": "hst",
+        }
+        plan = {
+            "environment": {
+                "GAME_BASE": "0x08804000", "GAME_ENTRY": "0x08804100", "TITLE_EXTRA_SPANS": "",
+            },
+            "codegen_profile": "hst",
+        }
+        for environment, expected in (({}, "4000000"), ({"CHUNK_TARGET_BYTES": "123456"}, "123456")):
+            with self.subTest(environment=environment):
+                captured = []
+                with mock.patch.object(
+                    package_cache, "build_cache_key",
+                    side_effect=lambda sink=captured, **kwargs: sink.append(kwargs) or {},
+                ), mock.patch.object(
+                    package_cache, "compiler_identity", return_value="synthetic-compiler"
+                ), mock.patch.object(
+                    package_cache, "compiler_target", return_value="synthetic-target"
+                ), mock.patch.dict(os.environ, environment, clear=True), mock.patch.object(
+                    nk_cli, "_runtime_build_environment", side_effect=lambda **_: dict(os.environ)
+                ), tempfile.TemporaryDirectory(prefix="package_chunks_") as temp_dir:
+                    manifest_path = Path(temp_dir) / "synthetic.json"
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    nk_cli._current_package_cache_key(
+                        manifest, manifest_path, "1" * 64, None, None, {}, public_safe=True,
+                    )
+                    title_codegen_plan._cache_key_for_build(
+                        input_hashes={}, title_input_identity={}, plan=plan,
+                        selected_optional=set(), funcs_per_chunk=2000, public_safe=True,
+                        compiler_name="gcc",
+                    )
+                cli_options, planner_options = (call["codegen_options"] for call in captured)
+                self.assertEqual(cli_options["chunk_target_bytes"], expected)
+                self.assertEqual(planner_options["chunk_target_bytes"], expected)
+
+    def test_both_option_builders_name_the_chunk_target_identically(self):
+        """Any caller of either builder gets the target codegen uses, not only the key routes."""
+        manifest = {"executable": {"base": 0x08804000, "entry": 0x08804100}, "codegen_profile": "hst"}
+        plan = {
+            "environment": {
+                "GAME_BASE": "0x08804000", "GAME_ENTRY": "0x08804100", "TITLE_EXTRA_SPANS": "",
+            },
+            "codegen_profile": "hst",
+        }
+        for environment, expected in (({}, "4000000"), ({"CHUNK_TARGET_BYTES": ""}, "4000000"),
+                                      ({"CHUNK_TARGET_BYTES": "123456"}, "123456")):
+            with self.subTest(environment=environment):
+                cli = nk_cli._package_codegen_options(manifest, environment)
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    planner = title_codegen_plan._cache_codegen_options(
+                        plan, selected_optional=set(), funcs_per_chunk=2000
+                    )
+                self.assertEqual(cli["chunk_target_bytes"], expected)
+                self.assertEqual(planner["chunk_target_bytes"], expected)
+
+
 class DecryptedElfRefusalTests(unittest.TestCase):
     def test_unusable_eboot_elf_points_at_the_users_own_copy(self) -> None:
         """Nakagawa never decrypts and reads no key file, so the refusal of an
