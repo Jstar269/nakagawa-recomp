@@ -1386,11 +1386,17 @@ ball_table = 0x0030a000;  // type:data (not a function: ignored)
 - A named callable becomes `f_<address>_<name>`. The address stays in the name, so two static functions
   that share a name stay distinct, and searching for the address still finds the function. A resume
   body takes the name of the callable that owns it: `r_<address>_<owner>`.
+- Any other generated entry that lies inside a function whose `size:` the map gives, past its start, is
+  named after it with `in_`: `f_<address>_in_<name>`, or `r_<address>_in_<name>` for a resume body whose
+  owner has no name. The analyzer can start an entry inside a function, such as a jump target or a
+  continuation, so these are parts of the named function, not functions of their own.
 - Every reference is renamed with its definition. Without a map, or with a map that names no generated
-  entry, the generated C is byte-identical to a build without the option.
+  entry and holds none inside a sized function, the generated C is byte-identical to a build without the
+  option.
 - Host tools read the C names, so a link map, a debugger backtrace or a sampling profiler's
   per-symbol shares show them with no further step.
-- The generated registration file hands the runtime a table of the named functions. The crash report
+- The generated registration file hands the runtime a table of the named functions, including a sized
+  function whose start is not an entry but which holds one. The crash report
   then adds `PC symbol: ball_update+0x40` and `RA symbol: game_loop` lines, and the dispatch trace adds
   `tgt_sym=` and `ra_sym=`. An address inside a function is named only when the map gives its `size:`.
 - A malformed line, an address wider than 32 bits, two different names for one address, or a name that
