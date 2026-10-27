@@ -251,7 +251,7 @@
   },
   "0x0fae370e": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetHalfwayBufferAndGetID",
     "name": "sceAtracSetHalfwayBufferAndGetID",
     "status": "unreviewed"
   },
@@ -1092,7 +1092,7 @@
   },
   "0x3f6e26b5": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetHalfwayBuffer",
     "name": "sceAtracSetHalfwayBuffer",
     "status": "unreviewed"
   },
@@ -1209,7 +1209,7 @@
   },
   "0x472e3825": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetMOutDataAndGetID",
     "name": "sceAtracSetMOutDataAndGetID",
     "status": "unreviewed"
   },
@@ -1461,7 +1461,7 @@
   },
   "0x5cf9d852": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetMOutHalfwayBuffer",
     "name": "sceAtracSetMOutHalfwayBuffer",
     "status": "unreviewed"
   },
@@ -2455,7 +2455,7 @@
   },
   "0x9cd7de03": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetMOutHalfwayBufferAndGetID",
     "name": "sceAtracSetMOutHalfwayBufferAndGetID",
     "status": "unreviewed"
   },
@@ -3750,7 +3750,7 @@
   },
   "0xf6837a1a": {
     "classification": "dedicated",
-    "handler": "h_AtracSetDataAndGetID",
+    "handler": "h_AtracSetMOutData",
     "name": "sceAtracSetMOutData",
     "status": "unreviewed"
   },
