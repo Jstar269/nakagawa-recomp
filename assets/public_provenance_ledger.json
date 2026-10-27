@@ -2327,7 +2327,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "cf147462d736dc348a3775ceb7236a9622dc8bf6abae5b48cd2f38693e1180f9"
+      "sha256": "ded794d34a96365a4f9655e7afe7947fede7c710dc4a0e6e2e1a49e465f23316"
     },
     {
       "path": "fixtures/platform_ladder/README.md",
