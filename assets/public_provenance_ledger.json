@@ -988,7 +988,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b4fff74849a9f8bf137ef5f67dbf13add8ae5d0a2f8e677ec121be3dfb9e6c26"
+      "sha256": "fc23d029e91418a08851b1c8fda1f48efa402c248dab52e29e3b77329ca99ca3"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1009,7 +1009,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e5a36fbfea49f3c7236adcfcc6594e2d04cd1fe70cf3f2021e15b586eb638211"
+      "sha256": "58264fd31be563d71f16d928e4dda8bb668cd4f63ae3dbf7104820a7c5f77e73"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1891,15 +1891,6 @@
       "sha256": "1d40d4cf155465577c4903adbd82c2ad944ccff197cf031b0c88331d14122e61"
     },
     {
-      "path": "docs/images/showcase-ge-scene-v120.png",
-      "classification": "reviewed_documentation",
-      "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
-      },
-      "sha256": "5c71fa553f280aee3d1b4b0b8e48e7b99d9593250eedfcf16f0bf38376561d33"
-    },
-    {
       "path": "docs/images/showcase-ge-scene-v240.png",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1933,7 +1924,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "18f1317bc35cb5403fdcff6efefe8e125dfa6ca1e4b316500140b9e353a8e58f"
+      "sha256": "2dbf23ef3047b9c8b4d2adaf782e332cb3e0b4da2b30b8a9afbe3dae907888cc"
     },
     {
       "path": "docs/provenance/FONT_ORIGINS.md",
