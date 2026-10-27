@@ -188,8 +188,8 @@ static PlayerUiAction draw_disc_case(NkUi *ui, FlowCase which) {
             break;
         case FLOW_DISC_BLOCKED:
             disc.kind = PLAYER_UI_DISC_BLOCKED;
-            disc.reason = "The game's program is encrypted, and Nakagawa doesn't decrypt games. "
-                          "Put a decrypted EBOOT.elf from your own copy in "
+            disc.reason = "Nakagawa couldn't decrypt the game's program: it uses an encryption "
+                          "Nakagawa doesn't cover yet. You can put a decrypted EBOOT.elf from your own copy in "
                           "D:/Synthetic Players/Long User Name/Nakagawa Recomp/data/runtime/"
                           "titles/TEST00007/decrypted. Then open the disc again.";
             /* The checks after the program's: what the player shows for one. */
@@ -416,7 +416,7 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             /* #1280: an experimental disc this version cannot use. */
             wizard.step = 3;
             wizard.experimental = true;
-            wizard.blocked_reason = "EBOOT.BIN is encrypted. Nakagawa does not decrypt games. "
+            wizard.blocked_reason = "EBOOT.BIN is encrypted and built-in decryption stopped. "
                                     "Then open the disc again.";
             wizard.checks[0] = (PlayerUiCheckRow){"Not built yet", "Game build",
                                                   "Not built yet.", 0xDBB024FFu};
@@ -1310,7 +1310,7 @@ static void test_disc_cards(void) {
           "an untested disc says so in plain words");
     CHECK(dump_flow_case(FLOW_DISC_BLOCKED, dump, sizeof(dump)) &&
               strstr(dump, "ADD TO LIBRARY") == NULL &&
-              strstr(dump, "doesn't decrypt games") != NULL &&
+              strstr(dump, "couldn't decrypt the game's program") != NULL &&
               strstr(dump, "can't be played") != NULL,
           "a disc this version cannot use says why, with no Add to library");
     CHECK(dump_flow_case(FLOW_DISC_UNSUPPORTED, dump, sizeof(dump)) &&
@@ -2158,7 +2158,7 @@ static int capture_screens(const char *directory) {
     setup_fixture.library_status_detail =
         "Build the package for this PC before playing. It takes a few minutes.";
     setup_fixture.input_note =
-        "Nakagawa does not decrypt games; it uses decrypted files from your own copy.";
+        "Nakagawa decrypts this game's program from your own disc, on this PC.";
     nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
     if (!capture_one(&rig, "title-needs-setup", NULL, &title)) goto done;
     {
@@ -2301,7 +2301,7 @@ static void test_title_with_a_running_game(void) {
     running.primary_action_label = "STOP GAME";
     running.primary_action = PLAYER_UI_PRIMARY_STOP_GAME;
     running.input_note =
-        "Nakagawa does not decrypt games; it uses decrypted files from your own copy.";
+        "Nakagawa decrypts this game's program from your own disc, on this PC.";
     running.compatibility_expect = "Plays full matches and Story Mode.";
     running.compatibility_known_issues =
         "Known issues: low frame rate, sound drops out, and movies show black.";
@@ -2319,7 +2319,7 @@ static void test_title_with_a_running_game(void) {
           "the package card says the game runs now");
     CHECK(strstr(dump, "not ready yet") == NULL,
           "a running game's ready package is never called not ready");
-    CHECK(strstr(dump, "does not decrypt") == NULL,
+    CHECK(strstr(dump, "decrypts this game's program") == NULL,
           "the decryption note stays off a running game's built package");
     CHECK(strstr(dump, "Plays full matches and Story Mode.") != NULL &&
               strstr(dump, "Known issues: low frame rate") != NULL,
@@ -2365,7 +2365,7 @@ static void test_title_with_a_running_game(void) {
     (void)nk_ui_end(ui);
     (void)nk_ui_dump(ui, dump, sizeof(dump));
     CHECK(strstr(dump, "Starting the game. Its window opens when it is ready.") != NULL &&
-              strstr(dump, "does not decrypt") == NULL,
+              strstr(dump, "decrypts this game's program") == NULL,
           "a starting game gets the starting card and no decryption note");
     running.package_state = PLAYER_UI_PACKAGE_MISSING;
     running.library_status = "Needs setup";
@@ -2373,7 +2373,7 @@ static void test_title_with_a_running_game(void) {
     (void)player_ui_screen_title(ui, &model);
     (void)nk_ui_end(ui);
     (void)nk_ui_dump(ui, dump, sizeof(dump));
-    CHECK(strstr(dump, "not ready yet") != NULL && strstr(dump, "does not decrypt") != NULL,
+    CHECK(strstr(dump, "not ready yet") != NULL && strstr(dump, "decrypts this game's program") != NULL,
           "a missing package keeps its text and the decryption note");
     running.compatibility_category = "Boots to a named boundary";
     nk_ui_begin(ui, 0.0);

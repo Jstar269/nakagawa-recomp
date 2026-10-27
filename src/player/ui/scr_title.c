@@ -1232,8 +1232,8 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         }
         wizard_text(ui, 6u,
                     "Your games stay on this PC. Nakagawa never uploads anything, and downloads "
-                    "only the build tools you approve. It does not decrypt games: it uses the "
-                    "decrypted files from your own copy.",
+                    "only the build tools you approve. It decrypts your own disc here and never "
+                    "touches firmware.",
                     NK_UI_TYPE_CAPTION, theme->muted);
         wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 2u, &result);
         break;
