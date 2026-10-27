@@ -7165,6 +7165,16 @@ static uint32_t h_Memcpy(CpuState *s) {
     return dst;
 }
 
+/* Whether a Memory Stick open may create its file. sceIoOpen takes this from PSP_O_CREAT
+ * (0x0200) and PSP_O_EXCL (0x0800) (#1380); the stdio mode then only says how the stream
+ * reads, writes, truncates and appends. MS0_OPEN_BY_MODE keeps the stdio meaning (r opens
+ * an existing file, w and a create one) for the runtime's own callers. */
+typedef enum {
+    MS0_OPEN_BY_MODE = 0,
+    MS0_OPEN_EXISTING,   /* never create: a missing file fails */
+    MS0_OPEN_NEW,        /* create a new file: an existing name fails */
+} Ms0OpenExistence;
+
 #ifdef _WIN32
 /* ---- checked UTF-8/UTF-16 host-path helpers (issue #223) --------------------------
  *
@@ -7585,8 +7595,10 @@ static int sr_ensure_directory_utf8(const char *path) {
 
 /* Contained FILE* open under the unified Memory Stick root: OPEN -> HANDLE ->
  * FINAL PATH VERIFY, then hand the verified handle to the CRT. Maps the wide
- * fopen mode onto CreateFileW access/disposition (r/w/a/+ and binary). */
-static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
+ * fopen mode onto CreateFileW access/disposition (r/w/a/+ and binary); EXISTENCE
+ * overrides the creation disposition the mode implies. */
+static FILE *ms0_fopen_existence_utf8(const char *host_path, const wchar_t *mode,
+                                      Ms0OpenExistence existence) {
     if (!host_path || !mode || !mode[0]) return NULL;
     wchar_t canonical[MAX_PATH * 2];
     if (!sr_vfs_canonical_root(sr_ms0_root(), canonical,
@@ -7602,7 +7614,9 @@ static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
     DWORD access = GENERIC_READ;
     if (has_w || has_a || has_plus) access |= GENERIC_WRITE;
     DWORD disposition = OPEN_EXISTING;
-    if (has_w) disposition = CREATE_ALWAYS;
+    if (existence == MS0_OPEN_NEW) disposition = CREATE_NEW;
+    else if (existence == MS0_OPEN_EXISTING) disposition = has_w ? TRUNCATE_EXISTING : OPEN_EXISTING;
+    else if (has_w) disposition = CREATE_ALWAYS;
     else if (has_a) disposition = OPEN_ALWAYS;
     HANDLE h = INVALID_HANDLE_VALUE;
     if (!sr_vfs_open_contained_utf8(host_path, access, 0, disposition, canonical, &h))
@@ -7624,6 +7638,10 @@ static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
         return NULL;
     }
     return fp;
+}
+
+static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
+    return ms0_fopen_existence_utf8(host_path, mode, MS0_OPEN_BY_MODE);
 }
 
 #else /* !_WIN32: the same host-path layer expressed with POSIX primitives ----- */
@@ -8101,7 +8119,7 @@ static sr_cd_status ms0_posix_root_open(sr_cd_root *root) {
 }
 
 static FILE *ms0_fopen_rel_utf8(const char *rel, const wchar_t *mode,
-                                sr_cd_status *status_out) {
+                                Ms0OpenExistence existence, sr_cd_status *status_out) {
     if (status_out) *status_out = SR_CD_INVALID_PATH;
     if (!rel || !mode || !mode[0]) return NULL;
     char parent[SR_CD_REL_MAX], leaf[SR_CD_NAME_MAX];
@@ -8115,9 +8133,15 @@ static FILE *ms0_fopen_rel_utf8(const char *rel, const wchar_t *mode,
         else if (*p != L'r' && *p != L'b') return NULL;
     }
     if ((has_w && has_a) || ((has_w || has_a) && !has_plus)) return NULL;
+    if (existence == MS0_OPEN_NEW && !has_plus) return NULL;
     sr_cd_file_mode file_mode = has_w ? SR_CD_FILE_READ_WRITE_TRUNCATE :
                                 has_a ? SR_CD_FILE_READ_WRITE_APPEND :
                                 has_plus ? SR_CD_FILE_READ_WRITE : SR_CD_FILE_READ;
+    if (existence == MS0_OPEN_NEW)
+        file_mode = has_a ? SR_CD_FILE_READ_WRITE_NEW_APPEND : SR_CD_FILE_READ_WRITE_NEW;
+    else if (existence == MS0_OPEN_EXISTING && (has_w || has_a))
+        file_mode = has_w ? SR_CD_FILE_READ_WRITE_EXISTING_TRUNCATE :
+                            SR_CD_FILE_READ_WRITE_EXISTING_APPEND;
 
     sr_cd_root root;
     sr_cd_status st = ms0_posix_root_open(&root);
@@ -8133,14 +8157,14 @@ static FILE *ms0_fopen_rel_utf8(const char *rel, const wchar_t *mode,
 }
 
 static FILE *ms0_fopen_guest_utf8(const char *guest_path, const wchar_t *mode,
-                                  sr_cd_status *status_out) {
+                                  Ms0OpenExistence existence, sr_cd_status *status_out) {
     char rel[SR_CD_REL_MAX];
     sr_cd_status st = ms0_posix_guest_relpath(guest_path, rel, sizeof(rel));
     if (st != SR_CD_OK) {
         if (status_out) *status_out = st;
         return NULL;
     }
-    return ms0_fopen_rel_utf8(rel, mode, status_out);
+    return ms0_fopen_rel_utf8(rel, mode, existence, status_out);
 }
 
 /* Compatibility helper for the legacy-flat import, whose destination was
@@ -8149,7 +8173,7 @@ static FILE *ms0_fopen_guest_utf8(const char *guest_path, const wchar_t *mode,
 static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
     char rel[SR_CD_REL_MAX];
     if (ms0_posix_host_relpath(host_path, rel, sizeof(rel)) != SR_CD_OK) return NULL;
-    return ms0_fopen_rel_utf8(rel, mode, NULL);
+    return ms0_fopen_rel_utf8(rel, mode, MS0_OPEN_BY_MODE, NULL);
 }
 #endif /* _WIN32 */
 
@@ -15464,6 +15488,16 @@ static int data_archive_guest_path_allowed(const char *guest_path) {
             guest_path[4] >= '0' && guest_path[4] <= '9' && guest_path[5] == ':');
 }
 
+/* sceIoOpen with PSP_O_CREAT | PSP_O_EXCL found an existing file (#1380). The PSP-IO-001
+ * oracle group never opens with PSP_O_EXCL, so the console's result is unmeasured: the open
+ * is refused with the named not-supported code and the file is left untouched. */
+static uint32_t io_open_exclusive_existing_boundary(const char *path) {
+    fprintf(stderr,
+            "SEMANTIC_BOUNDARY: IO_OPEN_EXCL_EXISTING: sceIoOpen with PSP_O_CREAT|PSP_O_EXCL "
+            "names an existing file (%s); the PSP result is unmeasured (0x80010086)\n", path);
+    return 0x80010086u;
+}
+
 /* Host-serve a guest file from the extracted-XB data root (SR_DATAROOT).
  *
  * This is the long-term groundwork for the text-loader (.to) fix and any other
@@ -15536,6 +15570,7 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
 
     int writing = (flags & 0x0002) != 0;        /* WRONLY or RDWR */
     int creating = (flags & 0x0200) != 0;
+    int exclusive = creating && (flags & 0x0800) != 0;  /* CREAT | EXCL */
 #ifndef _WIN32
     sr_cd_status open_status = SR_CD_NOT_FOUND;
 #endif
@@ -15543,29 +15578,40 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
     int in_iso = (iso_lookup(path, &lba, &size) == 0);
 
     if (writing || creating || !in_iso) {
-        /* Host-backed file (writable storage). */
+        /* Host-backed file (writable storage). Without CREAT the file must already exist,
+         * and TRUNC or APPEND change it; with CREAT | EXCL only a new file opens (#1380). */
         char *hp = host_path_alloc(path);
         const wchar_t *mode;
         if (flags & 0x0400) mode = L"w+b";            /* TRUNC */
         else if (flags & 0x0100) mode = L"a+b";       /* APPEND */
-        else if (writing || creating) mode = L"r+b"; /* update; fall back to create below */
+        else if (writing || creating) mode = L"r+b"; /* update; CREAT falls back to create below */
         else mode = L"rb";                           /* read-only host file (e.g. a prior save) */
+        Ms0OpenExistence existence = exclusive ? MS0_OPEN_NEW :
+                                     creating ? MS0_OPEN_BY_MODE : MS0_OPEN_EXISTING;
+        int exclusive_found = 0;
 #ifdef _WIN32
-        FILE *fp = hp ? ms0_fopen_utf8(hp, mode) : NULL;
-        if (!fp && (writing || creating) && hp) fp = ms0_fopen_utf8(hp, L"w+b");
+        FILE *fp = hp ? ms0_fopen_existence_utf8(hp, mode, existence) : NULL;
+        if (!fp && creating && !exclusive && hp) fp = ms0_fopen_utf8(hp, L"w+b");
+        if (!fp && exclusive && hp) {
+            FILE *existing = ms0_fopen_utf8(hp, L"rb");
+            exclusive_found = existing != NULL;
+            if (existing) fclose(existing);
+        }
         if (!fp && !writing && !creating && hp && ms0_try_legacy_flat_import(path, hp))
-            fp = ms0_fopen_utf8(hp, mode);
+            fp = ms0_fopen_existence_utf8(hp, mode, existence);
 #else
         FILE *fp = sr_ms0_classify(path, NULL) == SR_MS0_OWNED ?
-                   ms0_fopen_guest_utf8(path, mode, &open_status) : NULL;
-        if (!fp && (writing || creating) && open_status == SR_CD_NOT_FOUND &&
+                   ms0_fopen_guest_utf8(path, mode, existence, &open_status) : NULL;
+        if (!fp && creating && !exclusive && open_status == SR_CD_NOT_FOUND &&
             sr_ms0_classify(path, NULL) == SR_MS0_OWNED)
-            fp = ms0_fopen_guest_utf8(path, L"w+b", &open_status);
+            fp = ms0_fopen_guest_utf8(path, L"w+b", MS0_OPEN_BY_MODE, &open_status);
+        exclusive_found = !fp && exclusive && open_status == SR_CD_ALREADY_EXISTS;
         if (!fp && !writing && !creating && open_status == SR_CD_NOT_FOUND && hp &&
             ms0_try_legacy_flat_import(path, hp))
-            fp = ms0_fopen_guest_utf8(path, mode, &open_status);
+            fp = ms0_fopen_guest_utf8(path, mode, existence, &open_status);
 #endif
         free(hp);
+        if (exclusive_found) return io_open_exclusive_existing_boundary(path);
         if (!fp) {
 #ifndef _WIN32
             if (sr_ms0_classify(path, NULL) == SR_MS0_OWNED &&
@@ -15813,6 +15859,28 @@ static uint32_t h_IoRead(CpuState *s) {
     }
     return done;
 }
+/* Destination of a seek on a file descriptor (#1380). PSP-IO-001 measured SEEK_SET 32,
+ * SEEK_CUR -16 and SEEK_END 0 inside a 64-byte host0 file. A destination before the start
+ * or past the end has no measured result, so it is refused with the named not-supported
+ * code and the position is left unchanged instead of being clamped and reported as success.
+ * WHENCE is already validated (< 3). */
+static uint32_t io_seek_destination(const Fd *f, int64_t offset, uint32_t whence,
+                                    const char *api, uint32_t *position) {
+    static atomic_uint reported;
+    int64_t base = whence == 1u ? (int64_t)f->off : whence == 2u ? (int64_t)f->size : 0;
+    unsigned side = offset < -base ? 1u :
+                    offset > (int64_t)f->size - base ? 2u : 0u;
+    if (side == 0u) {
+        *position = (uint32_t)(base + offset);
+        return 0u;
+    }
+    if (!(atomic_fetch_or_explicit(&reported, side, memory_order_acq_rel) & side))
+        fprintf(stderr,
+                "SEMANTIC_BOUNDARY: IO_LSEEK_OUT_OF_RANGE: %s to a destination %s the file "
+                "is unmeasured (0x80010086)\n",
+                api, side == 1u ? "before the start of" : "past the end of");
+    return 0x80010086u;
+}
 static uint32_t h_IoLseek32(CpuState *s) {
     /* a0=fd, a1=offset, a2=whence. Returns new position (32-bit). */
     uint32_t fd = A0; int32_t off = (int32_t)A1; uint32_t whence = A2;
@@ -15830,9 +15898,10 @@ static uint32_t h_IoLseek32(CpuState *s) {
     if (whence >= 3u) return SCE_ERROR_KERNEL_INVALID_ARGUMENT;
     Fd *f = &s_fds[fd];
     if (f->async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
-    int64_t base = whence == 1 ? f->off : (whence == 2 ? f->size : 0);
-    int64_t np = base + off; if (np < 0) np = 0; if (np > f->size) np = f->size;
-    f->off = (uint32_t)np;
+    uint32_t position = 0;
+    uint32_t refused = io_seek_destination(f, off, whence, "sceIoLseek32", &position);
+    if (refused != 0u) return refused;
+    f->off = position;
     return f->off;
 }
 static uint32_t h_IoLseek(CpuState *s) {
@@ -15862,11 +15931,12 @@ static uint32_t h_IoLseek(CpuState *s) {
     }
     if (whence >= 3u) { s->r[3] = 0xFFFFFFFF; return SCE_ERROR_KERNEL_INVALID_ARGUMENT; }
     Fd *f = &s_fds[fd];
-    int64_t base = whence == 1 ? f->off : (whence == 2 ? f->size : 0);
-    int64_t np = base + off; if (np < 0) np = 0; if (np > f->size) np = f->size;
-    f->off = (uint32_t)np;
-    s->r[3] = (uint32_t)((uint64_t)np >> 32);
-    return (uint32_t)np;
+    uint32_t position = 0;
+    uint32_t refused = io_seek_destination(f, off, whence, "sceIoLseek", &position);
+    if (refused != 0u) { s->r[3] = 0xFFFFFFFF; return refused; }
+    f->off = position;
+    s->r[3] = 0;
+    return position;
 }
 /* sceIoIoctl (NID 0x63632449): device control on an open fd. First hit live
  * 2026-07-18, right after the first real savegame started existing (boot now
@@ -16730,13 +16800,15 @@ static uint32_t io_async_complete_fd(uint32_t fd) {
             else {
                 int64_t offset = (int64_t)(((uint64_t)request.a2 << 32) | request.a1);
                 Fd *file = &s_fds[fd];
-                int64_t base = request.stack0 == 1u ? file->off :
-                               request.stack0 == 2u ? file->size : 0;
-                int64_t position = base + offset;
-                if (position < 0) position = 0;
-                if (position > file->size) position = file->size;
-                file->off = (uint32_t)position;
-                result = position;
+                uint32_t position = 0;
+                uint32_t refused = io_seek_destination(file, offset, request.stack0,
+                                                       "sceIoLseekAsync", &position);
+                if (refused != 0u) {
+                    result = (int64_t)(int32_t)refused;
+                } else {
+                    file->off = position;
+                    result = position;
+                }
             }
         } else if (request.op == IO_ASYNC_IOCTL) {
             result = (int64_t)(int32_t)h_io_ioctl_args(fd, request.a1, request.a2,
