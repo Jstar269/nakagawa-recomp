@@ -12355,7 +12355,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7136afba58d8604ce9b0eba225511d7140a33a55c71199385215b66c20ddfb14"
+      "sha256": "e22d88a501585c7c4bae1177daade614850acfd88a7c5ad8eb3c140ba1f96228"
     },
     {
       "path": "tools/padscript_from_log.py",
@@ -14340,7 +14340,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7987ee1df6f194ab31963e2ee5c8726df46ccf171f30909bbe7e1456db40d341"
+      "sha256": "88edfcf4b61d30142c18912d4a8eb2153b0d5bc47b86b8ece877954bad556950"
     },
     {
       "path": "tools/test_padscript_from_log.py",
