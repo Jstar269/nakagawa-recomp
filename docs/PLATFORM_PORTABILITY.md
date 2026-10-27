@@ -59,10 +59,11 @@ material in this repository.
 
 ## H.264 backend decision record
 
-**Status: awaiting maintainer decision.** The shared stream path uses the project-authored PSMF
-producer for program-stream parsing and AU boundaries; no portable decoder dependency is added.
-The existing Windows backend remains the only real decoder. A build without a usable backend
-returns `H.264 backend unavailable; in the works (#283)` and does not produce a placeholder frame.
+**Status: decided** (maintainer decision, 2026-10-24, #283). The shared stream path uses the
+project-authored PSMF producer for program-stream parsing and AU boundaries, behind the `sr_h264`
+seam. Windows decodes through Media Foundation; elsewhere the vendored FFmpeg H.264 subset in the
+table below is the default backend. A build without a usable backend returns
+`H.264 backend unavailable; in the works (#283)` and does not produce a placeholder frame.
 
 ### Backend conformance contract
 

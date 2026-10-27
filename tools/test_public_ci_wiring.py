@@ -456,6 +456,7 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run strbuf checked-append formatting selftest": "CC=gcc VULKAN_SDK=/ucrt64 strbuf-selftest",
     "Build and run HLE thread selftest": "CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest",
     "Build and run flash0 font device selftest": 'PYTHONPATH=tools "$py" -m unittest -v test_flash0_font',
+    "Build and run the Media Foundation H.264 media selftest": "CC=gcc VULKAN_SDK=/ucrt64 psmf-media-selftest",
     "Build and run synthetic VFPU fuzzer (shard 0 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Build and run synthetic VFPU fuzzer (shard 1 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Prove the fuzz shards cover every case exactly once": 'NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests',
@@ -516,6 +517,35 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
             '          PYTHONPATH=tools "$py" -m unittest -v test_flash0_font',
             step,
         )
+
+    def test_media_foundation_media_selftest_decodes_or_fails(self) -> None:
+        """#283: the source-authored H.264 fixture runs on the Windows backend, Media Foundation.
+
+        The selftest exits 0 with SKIP lines when no decoder instance can be created, so the
+        step must fail on any SKIP line rather than pass without a decode.
+        """
+        name = "Build and run the Media Foundation H.264 media selftest"
+        if name not in self.steps:
+            self.fail(f"windows_runtime has no {name!r} step")
+        self.assertEqual(self.part_of(name), "selftests")
+        step = "\n".join(self.steps[name])
+        self.assertIn("shell: msys2 {0}", step)
+        self.assertIn("set -euo pipefail", step)
+        self.assertNotIn("continue-on-error", step)
+        self.assertNotIn("H264_FFMPEG", step)
+        self.assertIn(
+            "mingw32-make --no-print-directory GAME_NAME=ci BUILD_DIR=build/windows-runtime \\\n"
+            '            CC=gcc VULKAN_SDK=/ucrt64 psmf-media-selftest 2>&1 | tee "$log"\n'
+            "          if grep -F 'SKIP:' \"$log\"; then\n",
+            step,
+        )
+        self.assertRegex(step, r"(?m)^\s+exit 1$")
+        self.assertIn("CC=gcc VULKAN_SDK=/ucrt64 psmf-media-selftest-csc-mutant", step)
+        # The Windows build keeps Media Foundation as its decoder: the FFmpeg subset is off
+        # there by default and the media selftest links the Media Foundation libraries.
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("ifeq ($(OS),Windows_NT)\nH264_FFMPEG ?= 0\nelse\nH264_FFMPEG ?= 1\nendif", makefile)
+        self.assertIn("ifeq ($(OS),Windows_NT)\nPSMF_MEDIA_LIBS := -lmfplat -lole32", makefile)
 
     def test_every_serial_gate_runs_in_exactly_one_declared_part_with_its_command(self) -> None:
         self.assertEqual(len(self.parts), len(set(self.parts)))

@@ -195,7 +195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "442d1ad042fb693b38f65daa436ac55e9b3ce18d99d7f0a4280c4ed22fcde1e1"
+      "sha256": "efa221f3df5f6a5e2099182877fa6600a68f30b4ebd4fd702bd5beeaa51960da"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -1375,7 +1375,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "06fcb21344cd1877ad815a0245dd8d28303dc557c0ece3bd7d4cf9b05db9d0c4"
+      "sha256": "9c74708ee3843a792af789cc86554b0f48a8c8ec9afae4718280e62a5feafc06"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1477,7 +1477,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d07eb75a45bd77bac47efd4ca1b143ccc85dd7ef316b94197237ff04c76460bf"
+      "sha256": "890408ea3cfeba8a15a4bc936e381a98e7dc66462b3e9001e2191152763f5eaa"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -1543,7 +1543,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c31cf9fbaca4607bec7b4dd6730dcdda5220e0a8e949e600196a4a54c3d972a7"
+      "sha256": "63347e0d4c209bae9c37042e7dba731bebc3e90e842d27aae1738e57fcf527d3"
     },
     {
       "path": "docs/PLAYER_UI_DESIGN.md",
@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "cc383e83d255deb74632063370c37ce7eda397447beb257ef148e4b73fdce8d2"
+      "sha256": "c758655fcfcbf0118142db047829d9fca96ab75e20e190ee823c9ebf4f68154e"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8567,7 +8567,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2cd9d72f27302cd4d4866846487cfdbef5dcbd82bcced7df94dbea8d30bed62c"
+      "sha256": "5af93edadb164fd205e3f4b44ebc71e894e648b05888722f8ab71f74fc47dbea"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -14451,7 +14451,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee761f9690d0ec34d362372dfb00823cc3a3009c826e09e4883e65960ae564e8"
+      "sha256": "f99b4c8dba0dc319e53eb7723567c728b690f1714a8156ba5f777cb499b8e4f5"
     },
     {
       "path": "tools/test_public_export.py",
