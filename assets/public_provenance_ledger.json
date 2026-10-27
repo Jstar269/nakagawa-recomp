@@ -1402,7 +1402,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5dfb57b122ebc7c7a1669780d0cdd657206e32d511d02339da568b6ae84415d9"
+      "sha256": "2cff417dd60460889f8c5baddbae657a85995dcd60d037277ebea9216f7a9f92"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1666,7 +1666,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b23728586b7949526f891ef9106c6da9b1a03597ff43df4cc84bcccb0f901f7b"
+      "sha256": "8ab8b2a416d1a32606a0aec8239823b506a433913a8742aea1ff15460744e276"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -8932,7 +8932,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "53cc6c09f6058590ec30eb70adec21e940ad2c443987ce167cecf38bfbed773d"
+      "sha256": "2a4dd81c7f10ddb12cc2677dc48a40e407d991b4273b281288957bb8b7bb8a1c"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -8944,7 +8944,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "783438a164dfcf71357f006543449b09ac9b365b4f6fd372334dcdfe8ef51b1f"
+      "sha256": "7c6fd6a62d8d3bb96f5686762636d2c81a30ac64596ea5dc02c7e9d785eee7f1"
     },
     {
       "path": "src/rt/scripted_input.h",
@@ -11153,7 +11153,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7e5cdd4c2efd7dc2497921453139054286d35433a40c8a279442d6a22e8d1a14"
+      "sha256": "fba22640e245440eed389b4435cdaa45d956359bfacd1a33698094047c5e5903"
     },
     {
       "path": "tools/compiler_compare.py",
