@@ -1402,7 +1402,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "124e99ef14db0763908412efe982e721b0a97f01d7cfc0e250076b5c2514fc2a"
+      "sha256": "fc57fa8286b8881e2683867816dc753e0a5653b3919fec3851bba5092ed878d9"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1513,7 +1513,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "02da0f5eafce5d85b29d71ff437da2065bc7dce53edc90d8259fe21fcba3a9a4"
+      "sha256": "82e377a463e1e34dd6edb01314a4ad59094f17edb39f4f7fb53941f21c1ab8cd"
     },
     {
       "path": "docs/ONLINE_FEATURES.md",
@@ -5384,7 +5384,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "4fb7b2c3377fe9d31d3f9fcd93f6f4fb97c450e7cbacc41f54935002227bc011"
+      "sha256": "d66dc51624e1ec0bdff5f5c8031e0fafaee84ddef5b71c764f383320915a4ac9"
     },
     {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "cc383e83d255deb74632063370c37ce7eda397447beb257ef148e4b73fdce8d2"
+      "sha256": "ddc9a5e7f12c5ecb982e692aaf3233091acc332650170cd44a5b6f6e447327a8"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8443,7 +8443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d78324a7e82071e8e8808ae771aa4ed44a91f2f36f225ef9eb6ffcfec9aced19"
+      "sha256": "6e162b5c2206dcfd68cd3700e9a8e0ac2a8e6ece2589bd399566bf6887b10f1b"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -8736,7 +8736,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "38aac467d0d01be8d7ca18a3b3a1f6a228a017fd32b4b0690d5561f2ffcd82e9"
+      "sha256": "3ab2b893d44e8fc03e1f85d8f93ace20ed749a5826d6ac49564d3801972312b1"
     },
     {
       "path": "src/rt/perf.h",
@@ -8748,7 +8748,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3949526218a97ae50419e9d26d7a53adaa97c7baf186e827a4627b58b7b0f245"
+      "sha256": "c8b4cdbdf7dcf226343fe0ca84a3dc509716a3779cbdb65d51528d40748c5d4d"
     },
     {
       "path": "src/rt/pgd_api.h",
@@ -8808,7 +8808,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a93402ce0b5f21a8aaf4b090a2e48dc3e6270f0094c91545424989a239a4b956"
+      "sha256": "8c4f7237b8fc924adfb69959222cbf90cfdef6c18ffc95785a2ea56e62c33489"
     },
     {
       "path": "src/rt/prx_loader.c",
