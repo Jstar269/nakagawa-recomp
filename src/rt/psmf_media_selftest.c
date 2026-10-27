@@ -965,6 +965,7 @@ static void test_decoded_pixels(void) {
     target.kind = SR_H264_TARGET_HOST;
     target.host_buffer = host;
     target.host_width = 64;
+    target.host_height = 272;
     target.host_stride = 64 * 4;
     for (int guard = 0; guard < 65536 && seen < FIX_PICTURES; guard++) {
         SrPsmfAu au;
@@ -1249,6 +1250,7 @@ static void test_backend_registry_fail_closed(void) {
     target.kind = SR_H264_TARGET_HOST;
     target.host_buffer = (uint8_t *)&info;
     target.host_width = 1;
+    target.host_height = 1;
     target.host_stride = 4;
     CHECK(sr_h264_frame_ex(-1, 1, &target, &info) < 0,
           "an unavailable backend cannot fabricate a frame");
@@ -1968,6 +1970,64 @@ static void test_mpeg_ycbcr_guest_contract(void) {
           "MPEG teardown frees guest YCbCr state");
 }
 
+/* The host picture behind a YCbCr allocation holds exactly the rows sceMpegAvcInitYCbCr
+ * asked for. The fixture's 64x64 pictures decoded into a 64x16 allocation deliver 16 rows;
+ * the host conversion must not write the other 48 past the end of that buffer (the
+ * AddressSanitizer build reports the overflow this guards against). */
+static void test_mpeg_ycbcr_host_rows_bounded(void) {
+    enum {
+        TR_MPEG_DESC = 0x08100000u,
+        TR_MPEG_DATA = 0x08110000u,
+        TR_MPEG_SIZE = 0x08120000u,
+        TR_MPEG_YCBCR = 0x08130000u,
+        TR_MPEG_PTR = 0x08160000u,
+        TR_MPEG_INIT = 0x08170000u,
+        TR_MPEG_AU = 0x08180000u,
+    };
+    const uint32_t width = 64u, height = 16u;
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES], es_len = 0;
+    uint8_t es[65536];
+    CHECK(build_stream(es, sizeof(es), au_off, au_len, &es_len),
+          "host-row fixture builds the synthetic I_PCM stream");
+    if (!es_len) return;
+
+    MEM_W32(TR_MPEG_DESC, 0u);
+    CHECK(mpeg_create(TR_MPEG_DESC, TR_MPEG_DATA, 0x10000u, 0, 64u, 0, 0) == 0,
+          "host-row fixture creates a context");
+    Mpeg *ctx = mpeg_find(TR_MPEG_DESC);
+    CHECK(ctx != NULL, "host-row fixture finds its context");
+    if (!ctx) return;
+    ctx->streamWidth = width;
+    ctx->streamHeight = height;
+    ctx->h264 = sr_h264_create();
+    ctx->h264Init = 1;
+    ctx->totalPackets = 1u;
+    ctx->fedPackets = 1u;
+    if (ctx->h264 < 0) {
+        fprintf(stderr, "SKIP: YCbCr host-row bound needs a real H.264 backend\n");
+        mpeg_finish();
+        return;
+    }
+    for (int i = 0; i < FIX_PICTURES; i++)
+        CHECK(sr_h264_submit_au(ctx->h264, es + au_off[i], au_len[i]) == 0,
+              "64x64 synthetic access unit reaches the decoder");
+
+    CHECK(guest_mpeg_import(0x211a057cu, TR_MPEG_DESC, UINT32_MAX, width, height, TR_MPEG_SIZE) == 0,
+          "a 64x16 YCbCr allocation size is queried");
+    uint32_t allocation_size = MEM_R32(TR_MPEG_SIZE);
+    memset(SR_HOST(TR_MPEG_YCBCR), 0xa5, allocation_size);
+    memset(SR_HOST(TR_MPEG_AU), 0, 24u);
+    CHECK(guest_mpeg_import(0x67179b1bu, TR_MPEG_DESC, UINT32_MAX, width, height, TR_MPEG_YCBCR) == 0,
+          "a 64x16 YCbCr allocation initializes");
+    MEM_W32(TR_MPEG_PTR, TR_MPEG_YCBCR);
+    MEM_W32(TR_MPEG_INIT, 0xdeadbeefu);
+    uint32_t decode_result = guest_mpeg_import(0xf0eb1125u, TR_MPEG_DESC, TR_MPEG_AU,
+                                               TR_MPEG_PTR, TR_MPEG_INIT, 0u);
+    CHECK(decode_result == 0u && MEM_R32(TR_MPEG_INIT) == 1u,
+          "a picture taller than the YCbCr allocation decodes into the rows it holds");
+    mpeg_finish();
+}
+
 /* ---- scePsmfPlayer: A/V presentation timing at the guest boundaries (issue #279) -------- */
 
 /* Latch SR_MPEGLOG before the player's first produce call: hle.c caches the flag the first
@@ -2598,6 +2658,7 @@ int main(int argc, char **argv) {
     test_mpeg_ps_demux_error_fails_closed();
     test_mpeg_ycbcr_fail_closed_paths();
     test_mpeg_ycbcr_guest_contract();
+    test_mpeg_ycbcr_host_rows_bounded();
     test_psmf_log_tick_instance_isolation();
     test_psmf_av_timing_first_principles();
     test_player_av_presentation_timing(AV_LAYOUT_SPLIT);

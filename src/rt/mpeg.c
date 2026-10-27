@@ -947,6 +947,7 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
         target.kind = SR_H264_TARGET_HOST;
         target.host_buffer = b->rgba;
         target.host_width = (int)b->width;
+        target.host_height = (int)b->height;   /* b->rgba holds width * height pixels */
         target.host_stride = (int)b->width * 4;
         int r = sr_h264_frame_ex(ctx->h264, eos, &target, &info);
         if (r > 0) {
