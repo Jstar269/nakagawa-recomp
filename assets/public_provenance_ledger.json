@@ -339,7 +339,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d4ea25fe1a76ba00ed6bc2994f1019da6ef08888210518f517f017ec2f772bb2"
+      "sha256": "5473b637e321951c91bdc2190713551fbbb5e3f6def79e599402aeb49233120b"
     },
     {
       "path": "AGENTS.md",
@@ -453,7 +453,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d7de2a1ec34a9b060f8eb209080593244a72f515d6b193f2cbebb2da94d7f533"
+      "sha256": "80716262e5193c21b65e68d3b628704cbfe0d53f4fefb48b18f2fae6f48aee76"
     },
     {
       "path": "REVIEW.md",
@@ -1039,7 +1039,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e175bb2cf4ed2a37d9e6c5f00a77a39ea2d864d9108fe35dc8b619d359571b29"
+      "sha256": "66e45abbc220c8a9a24c335145c242ef8a15f5d3260d938e092afb7bccec38e5"
     },
     {
       "path": "assets/titles/display-smoke.json",
@@ -1384,7 +1384,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d6813d96c3b01d6f036bc00bb9748731dd1ab38aaf4464faa17fe32b0e794055"
+      "sha256": "8b500733e80b594413afa48f8e944b88448402e276e02f241f9748c80d880376"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1570,7 +1570,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "150223ffa16968e38aea2f80d9481de2772824e256ceb66e0dd73698cb2ebbde"
+      "sha256": "be09a8df17502c3b1497e088dbc23e584b8f1cba3078aa8d7ede907a7ca226b2"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -1666,7 +1666,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "713d2ad3f3529d014aad96365552dfa06d0874aac6508ce5abb9071d1b891740"
+      "sha256": "c136f6de3e294adaa1618318af39241e49e3b8b00168661c3c8ff3547b7e0ce5"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1693,7 +1693,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c1922e4e316ba536c35cefcf82513c18cbd4f0e524532f1ec903e38ad15541bc"
+      "sha256": "76892a0964ae10dd89c2c1a7ca314c8c86ba7ccd45a33cf7809b9df31bae4bfc"
     },
     {
       "path": "docs/SMOKE_TEST.md",
@@ -1702,7 +1702,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c9b75ff671dd10b612169faa8595c86951ebaae8c6297effa2aab200ba788610"
+      "sha256": "aa1a348285a48ad5dba496e916f1a669c081d0d79573a978376486857b93f195"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
