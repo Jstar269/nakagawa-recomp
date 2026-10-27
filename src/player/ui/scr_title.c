@@ -1350,9 +1350,11 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         bool blocked = model->experimental && model->blocked_reason != NULL &&
                        model->blocked_reason[0] != '\0';
         const char *badge = blocked ? "Not playable yet"
+            : model->recorded ? "On the list"
             : (model->experimental ? "Not tested yet"
                : (model->supported ? "Title profiled" : "Profile missing"));
         uint32_t tone = blocked ? theme->error
+            : model->recorded ? theme->ready
             : (model->experimental ? theme->warning
                : (model->supported ? theme->ready : theme->error));
         const char *note;
@@ -1376,6 +1378,9 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         } else if (blocked) {
             note = "This game can't be played in this version of Nakagawa yet.";
             note_tone = theme->error;
+        } else if (model->recorded) {
+            note = "On Nakagawa's compatibility list. Add it to your library, then build it "
+                   "there to play.";
         } else if (model->experimental) {
             note = "Nakagawa hasn't been tested with this game, so it may not start or may "
                    "stop early. You can add it and try.";
@@ -1930,7 +1935,7 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                              settings_on_off(model->vsync), model->vsync, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_VSYNC);
             }
-            if (settings_row(ui, 3u, PLAYER_UI_ID_SETTINGS_FULLSCREEN, "Fullscreen",
+            if (settings_row(ui, 3u, PLAYER_UI_ID_SETTINGS_FULLSCREEN, "Game fullscreen",
                              settings_on_off(model->fullscreen), model->fullscreen,
                              name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_FULLSCREEN);
@@ -1978,7 +1983,7 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                 }
             }
             if (settings_row(ui, 6u, PLAYER_UI_ID_SETTINGS_LAUNCHER_FULLSCREEN,
-                             "Fullscreen (F11)", settings_on_off(model->launcher_fullscreen),
+                             "Launcher fullscreen (F11)", settings_on_off(model->launcher_fullscreen),
                              model->launcher_fullscreen, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN);
             }
