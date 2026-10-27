@@ -1669,7 +1669,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "38e06a96bd0f573e15ca5afd49f0bdee9cf8eeaf0b626736c5323d0cb25afaac"
+      "sha256": "3dcb40a18d8e78f4fa0016b9c8e7f60435a889c508282e70e5bdf60dabc7071a"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1678,7 +1678,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d650a8d4374731053141e0af9a26981d5b8058ccd95a1d3eaa61d01871e1cb35"
+      "sha256": "53ef573681d952ce7e027b439687c1703076752f1985d8fae467f11bb53ddc14"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1696,7 +1696,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "146bb70ffd00b4a0d9975e87509b711950e9eab918d2d1bae5e9811cc422b91f"
+      "sha256": "1d5034df73d39acdabdaf7846a1bba3ef2753b2d7e259b1f79e71cfdb0623ef3"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -5830,7 +5830,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "61f5b97c03ae5cadfb40e932aacbedb54d4b5b33683a52a15f72ff2454772cad"
+      "sha256": "27406ad60d97731bf477a91f5306058433db66eb321cdea8974c2e25726ee3a4"
     },
     {
       "path": "src/rt/h264_ffmpeg.c",
@@ -8726,7 +8726,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ebaeb673054c16449ca28553118d0a63811a3e3530d226fcff3aea0c83799812"
+      "sha256": "b2380bbbdea29e07197f917979e5a84e65ed546f8b2285a7edd238cf69787b65"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8764,7 +8764,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e2aa246b4a70c5c3ec316b614f92f0f2799b2d13a5f5a2b73964c4bf6c017404"
+      "sha256": "c73eb9bd2b2dfb5f13592c3999d7e5264fe1a48ca8f9a799b60318dd71af8f91"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9227,7 +9227,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "356a305155526065ff09955b88f2f81521d0b99e2835b6582dbdf89d214faf2d"
+      "sha256": "cbb76e6b19aefa2b3b33cdaeda4ec9f9a27b530d794b9ff2e6e641218bf08308"
     },
     {
       "path": "src/rt/savedata.c",
