@@ -12531,7 +12531,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "03b3e3ed5cb135f2ca4538524ae2801d3d2a64910d2765b58a11a79d0acdd50e"
+      "sha256": "498a96b9ef2c65faaac64c87f1ee43e342d2e13585a20a0b3d66cd93f52d45a9"
     },
     {
       "path": "tools/provenance_attest_verify.py",
@@ -14598,7 +14598,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3754982c0d345f954c381d6886bcf1928179a9c941386d0a3682e96833652881"
+      "sha256": "dce6b2c133529481e4575486a1e47f5eca2436d40396eb8fe80d1ada1df9ec45"
     },
     {
       "path": "tools/test_progress_tracker.py",
@@ -14610,7 +14610,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d382fdcdfdca04c3f5ebd0e42a6968585da67225cc5ddde88d114d3c12d77f76"
+      "sha256": "373e7bc831a5465aff3ae4c8435aec4e8f5bb2365b9f4266527781321897768d"
     },
     {
       "path": "tools/test_provenance_attest_verify.py",
