@@ -1396,6 +1396,14 @@ ball_table = 0x0030a000;  // type:data (not a function: ignored)
 - A malformed line, an address wider than 32 bits, two different names for one address, or a name that
   would spell a symbol the generator already owns stops codegen with the file and line.
 
+Import stubs can be named without a map. `mingw32-make NAME_IMPORTS=1` passes `--name-imports`, and each
+stub becomes `f_<address>_<function>` after the function its NID imports, for example
+`f_08804120_sceGeListUpdateStallAddr`. The names come from `tools/nid_corpus.json`, the corpus
+`src/rt/nid_names.h` is generated from, so a stub's name and the runtime's NID name never disagree. A stub
+whose NID the corpus does not name keeps `f_<address>`, and a symbol-map name for the same address wins.
+The corpus is a codegen prerequisite while the option is on, and the default (`NAME_IMPORTS=0`) changes
+nothing. Named stubs join the runtime table, so a crash report names a stub the same way.
+
 A map built from a title is private input, like the title itself: keep it with the title's other
 private files and out of the repository.
 
