@@ -1575,7 +1575,8 @@ class EvidenceTierTests(unittest.TestCase):
         self.assertEqual(
             sorted(t["id"] for t in document["tests"] if t.get("hardware_evidence") == "MEASURED"),
             [
-                "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-DISPLAY-001",
+                "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-CPU-TIMING-001",
+                "PSP-DISPLAY-001",
                 "PSP-DISPLAY-002", "PSP-DISPLAY-003", "PSP-DISPLAY-004", "PSP-DMAC-001",
                 "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-FPU-CC-001", "PSP-GE-001",
                 "PSP-GE-CONTROL-001", "PSP-HLE-AUDIO-SRC-001", "PSP-HLE-CTRL-LATCH-001",

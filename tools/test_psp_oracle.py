@@ -2720,6 +2720,23 @@ class PspDmacProbeTests(unittest.TestCase):
                          cases.index("syscall-display-setframebuf") + 1)
         self.assertEqual(counts["cpu-timing-framebuffer"], 5)
 
+    def test_cpu_timing_manifest_row_is_measured_and_cites_every_record(self) -> None:
+        manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+            encoding="utf-8"))
+        row = next(test for test in manifest["tests"] if test["id"] == "PSP-CPU-TIMING-001")
+        spec, _counts = CAMPAIGN_PROBE_CASES["cpu-timing"]
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["case_ids"], list(spec.ordered_cases))
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
+        self.assertEqual(row["evidence_ref"],
+                         "docs/HARDWARE_ORACLE.md#psp-cpu-timing-001-measured-run-2026-10-27")
+        self.assertIn("3a14a88e", row["measurement_note"])
+        # Every record is named in the cited section; the APIs are listed but not cited,
+        # so the row grants no HLE evidence tier.
+        section = hle_manifest.measured_evidence_section(row)
+        self.assertIn("`3a14a88e`", section)
+        self.assertFalse(set(row["apis"]) & set(row["evidence_cases"]))
+
     def test_dmac_cases_are_individually_buildable_and_use_the_real_imports(self) -> None:
         for case in (
             "dma-concurrency",
@@ -3044,6 +3061,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-HLE-AUDIO-SRC-001",
                 # The 2026-10-16 acceptance-eligible PSP-3000 VMIR3 run.
                 "PSP-VRAM-MIRROR-001",
+                # The 2026-10-27 acceptance-eligible cpu-timing run of 3a14a88e (#1296).
+                "PSP-CPU-TIMING-001",
             },
         )
         self.assertEqual(

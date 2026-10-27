@@ -1650,6 +1650,144 @@ not expected PSP values.
 | `hle-issues-batch` | `PSP-HLE-ISSUES-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #356 model getters: `kuKernelGetModel` and the `SysMemUserForUser` `sceKernelGetModel` import (NID `0x6373995d`), each twice with `$v0` preset to `0xA5A5A5A5`, with the import stub's words after loading; the `SysMemForKernel` getter through `sctrlHENFindFunction` and `kuKernelCall` (only for a kernel-RAM address). #326, two passes: `vscmp.s/p/t/q` and the same-register form over six NaN/infinity/signed-zero/denormal operand sets (C200 lanes, VFPU_CC, changed-word census), and one `vrndi.s` step from each of 2 x 448 written RCX states (RCX0-7 after the write and after the step). 1858 result records; register-only VFPU cells and read-only getters. |
 | `hle-intr-cells` | `PSP-HLE-INTR-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #325: VTimer and alarm handlers returning a reschedule interval then 0 (20 ms series, 1 us series, mixed series): the sequence number, scheduled and actual VTimer time and system time of every call, and whether a call follows a return of 0; a VBLANK sub-interrupt handler in the first free slot of 0..15, counted while free, across 20 ms, 50 ms and 20 ms `sceKernelCpuSuspendIntr` windows, and while one entry holds for 25 ms. Every VTimer is stopped and deleted, every alarm cancelled, every suspension resumed, and the handler disabled and released whenever a slot was registered. Risk medium: interrupts suspended for at most 50 ms. |
 
+### PSP-CPU-TIMING-001 measured run 2026-10-27
+
+One acceptance-eligible `cpu-timing` launch, preceded by `transport-write`, ran on the project PSP-3000 / 6.61 /
+ARK-5.1.0 / PSPLink v3.2.1 on 2026-10-27 from commit `3a14a88e`, on boot 49 in standalone PSPLink (game context,
+after a PSPLink soft reset), under the hardware-lock protocol and Nakagawa Link's watchdog. The stream was
+complete under the runner's strict contract (65 semantic records and `cpu-timing-complete`), every record
+`PASS`, with a clean teardown check, in 10.1 s. The raw host0 log and envelope stay private; this entry
+publishes derived values only.
+
+Two earlier launches that day were not acceptance-eligible, although every other record passed: on boot 47
+(`299c0519`) standalone PSPLink displayed no framebuffer, so the display cell was `SKIP`; on boot 48
+(`49ae70f4`) the probe's own framebuffer, set with `PSP_DISPLAY_SETBUF_IMMEDIATE`, was refused with
+`0x80000107` because the set changed the stride. The probe now sets its buffer, and later the null one, on
+the next frame. On boot 49 `cpu-timing-framebuffer` reports that the probe displayed its own 8888 buffer
+(stride 512) at the start of eDRAM and that setting back the null framebuffer returned 0.
+
+Method. The measurements run at 333/166 MHz and the boot clocks are restored afterwards. A `result` is
+hundredths of a CPU cycle per counted instruction or per API call, after subtracting a matched control loop,
+over the median of seven trials on the 1 us system timer ([`fixtures/psp_oracle/README.md`](../fixtures/psp_oracle/README.md)
+describes the bodies). The tables give `result / 100`.
+
+CPU cycles per counted instruction, unrolled bodies of eight:
+
+| Cell | 2048 blocks | 8192 blocks | 32768 blocks |
+| --- | --- | --- | --- |
+| `alu-addu` | 1.01 | 1.01 | 1.01 |
+| `alu-shift` | 1.01 | 1.01 | 1.01 |
+| `alu-logic` | 1.00 | 1.00 | 1.01 |
+| `multu-mflo-pair` | 3.02 | 3.03 | 3.02 |
+| `divu-mflo-pair` | 10.63 | 10.59 | 10.59 |
+| `load-cache-hit` | 1.01 | 1.00 | 1.01 |
+| `store-cache-hit` | 2.76 | 2.76 | 2.77 |
+| `branch-taken-delay` | 2.01 | 2.02 | 2.01 |
+| `branch-not-taken-delay` | 1.01 | 1.01 | 1.01 |
+| `branch-useful-delay` | 2.01 | 2.03 | 2.02 |
+| `fpu-add-s` | 4.52 | 4.56 | 4.54 |
+| `fpu-mul-s` | 4.52 | 4.54 | 4.54 |
+| `fpu-div-s` | 30.68 | 30.64 | 30.63 |
+| `vfpu-add-s` | 4.40 | 4.40 | 4.42 |
+| `vfpu-mul-s` | 4.40 | 4.42 | 4.42 |
+
+Streamed accesses, one cache line apart over a 128 KiB buffer, CPU cycles per access:
+
+| Cell | 32 blocks | 128 blocks | 256 blocks |
+| --- | --- | --- | --- |
+| `load-cache-miss` | 8.78 | 59.14 | 59.12 |
+| `store-cache-miss` | 10.89 | 110.61 | 111.32 |
+
+API calls (the semaphore signal-and-wait and LwMutex lock-and-unlock pairs count as two calls each):
+
+| Cell | CPU cycles per API call | Counted calls per trial | Median measured / control us |
+| --- | --- | --- | --- |
+| `syscall-display-setframebuf` | 419 | 2048 | 2578 / 1 |
+| `syscall-display-accumulated-hcount` | 247 | 2048 | 1522 / 1 |
+| `syscall-ge-drawsync-done` | 0 | 4 | 0 / 0 |
+| `syscall-ge-list-enqueue` | 2331 | 1 | 8 / 1 |
+| `syscall-ge-list-update-stall` | 2997 | 1 | 10 / 1 |
+| `syscall-sema-signal-wait` | 483 | 4096 | 5945 / 1 |
+| `syscall-lwmutex-lock-unlock` | 67 | 4096 | 829 / 1 |
+
+The GE cells use one call per trial, so their 1 us timer resolution is about 333 cycles; four completed
+`sceGeDrawSync(0)` calls stayed below that resolution. `sceDisplayWaitVblankStart` is wall latency, not CPU
+service time: median 16682 us over 7 trials (range 15590 to 16694 us).
+
+Not measured: other instruction classes, dependent versus independent issue, other clocks than 333/166 MHz,
+the VSH context, and any PSP model other than this PSP-3000.
+
+Exact strict result IDs (66 ordered records including the terminal record):
+
+```text
+cpu-timing-clock
+alu-addu-2048
+alu-shift-2048
+alu-logic-2048
+multu-mflo-pair-2048
+divu-mflo-pair-2048
+load-cache-hit-2048
+store-cache-hit-2048
+branch-taken-delay-2048
+branch-not-taken-delay-2048
+branch-useful-delay-2048
+fpu-add-s-2048
+fpu-mul-s-2048
+fpu-div-s-2048
+vfpu-add-s-2048
+vfpu-mul-s-2048
+alu-addu-8192
+alu-shift-8192
+alu-logic-8192
+multu-mflo-pair-8192
+divu-mflo-pair-8192
+load-cache-hit-8192
+store-cache-hit-8192
+branch-taken-delay-8192
+branch-not-taken-delay-8192
+branch-useful-delay-8192
+fpu-add-s-8192
+fpu-mul-s-8192
+fpu-div-s-8192
+vfpu-add-s-8192
+vfpu-mul-s-8192
+alu-addu-32768
+alu-shift-32768
+alu-logic-32768
+multu-mflo-pair-32768
+divu-mflo-pair-32768
+load-cache-hit-32768
+store-cache-hit-32768
+branch-taken-delay-32768
+branch-not-taken-delay-32768
+branch-useful-delay-32768
+fpu-add-s-32768
+fpu-mul-s-32768
+fpu-div-s-32768
+vfpu-add-s-32768
+vfpu-mul-s-32768
+load-cache-miss-32
+store-cache-miss-32
+load-cache-miss-128
+store-cache-miss-128
+load-cache-miss-256
+store-cache-miss-256
+syscall-display-setframebuf
+cpu-timing-framebuffer
+syscall-display-accumulated-hcount
+cpu-timing-ge-idle
+syscall-ge-drawsync-done
+syscall-ge-list-enqueue
+syscall-ge-list-update-stall
+cpu-timing-gu-teardown
+syscall-vblank-start-latency
+cpu-timing-sync-setup
+syscall-sema-signal-wait
+syscall-lwmutex-lock-unlock
+cpu-timing-done
+cpu-timing-complete
+```
+
 ### PSP-UMDIO-001 measured run 2026-10-17
 
 Acceptance-eligible measurement on a PSP-3000 with firmware 6.61 and ARK CFW,
