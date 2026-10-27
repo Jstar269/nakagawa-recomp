@@ -1,62 +1,185 @@
 # AGENTS.md — Nakagawa Recomp
 
-This repository's single operating contract for automated agents. Live source, tests,
-Makefiles, and maintained documents remain authoritative for implementation details.
+This file is for AI coding agents working in this repository: Claude Code, Codex, GitHub Copilot,
+Cursor, Gemini CLI, Jules and the rest. People can read it too; it is the same set of rules a human
+contributor follows, kept in one place. Tool-specific files (`CLAUDE.md`,
+`.github/copilot-instructions.md`) only point here and add no rules of their own.
+
+Codex, Cursor, Jules and most other agents read this file on their own. Claude Code and Copilot
+reach it through those two files. Gemini CLI reads only `GEMINI.md` unless told otherwise: set
+`"context": {"fileName": ["AGENTS.md"]}` in your own `.gemini/settings.json`. With Aider, pass
+`--read AGENTS.md`. Personal instruction files and tool settings stay local; `.gitignore` keeps
+them out of the repository.
+
+How it is laid out:
+
+- **Where to start** is the quick start: what the project is, how to build and test, the hard
+  limits, and what a good pull request looks like. Most tasks need nothing more.
+- **Sections 1 to 11** are the full contract. Code, tests and other documents cite them by number.
+- **Maintainer process**, at the end, applies only to agents the maintainer runs. A contributor's
+  agent can skip it.
+
+When this file and the live source, tests or Makefiles disagree about how something works, the
+source wins. When they disagree about a rule, ask in the issue.
 
 ## Where to start
 
-Work only in the canonical checkout or a registered worktree, never the non-repository
-workspace root. If a session starts at a parent, select the tree and change directory
-before repository work:
+Nakagawa Recomp is a static recompiler for PSP games. It translates a game's MIPS code into C ahead
+of time, compiles that C together with a native runtime that stands in for the PSP's operating system
+and hardware, and runs the result in a native player (C, SDL3 and Vulkan). Users bring their own
+game; this repository contains no game data and never will.
 
-- read-only integration checks: the canonical public checkout;
-- changes: the existing task worktree, or one new registered worktree under Section 8;
-- private-authority work: the private authority checkout, never a public tree.
+Before you change anything:
 
-Read this contract in the selected tree before acting. Tool-specific guidance files may
-only route here.
+1. Read [`README.md`](README.md), then [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the
+   design. [`docs/README.md`](docs/README.md) says which guide covers which area.
+2. Work from an issue. GitHub Issues are where work is agreed; [`ISSUES.md`](ISSUES.md) is a short
+   summary of them. For anything bigger than a small fix, comment on the issue first. Good
+   starting points are labelled `good first issue` and `help wanted`.
+3. Run `git fetch origin` and start a branch from current `origin/main`. Check that the problem is
+   not already fixed there and that no open pull request already covers it.
+4. Make one focused change, with a test that fails before it and passes after it.
+5. Run the checks for the files you changed (below, and Section 9).
+6. Open a **Draft** pull request and fill in the template.
+
+If you were asked only to review or diagnose, report what you found and stop: no branch, commit or
+pull request.
+
+### Build and test
+
+**Windows 11** is the supported desktop platform. You need PowerShell 7.4 or later, MSYS2 UCRT64
+(GCC, GNU Make, SDL3, SDL3_ttf, the Vulkan headers and loader), CPython 3.15 and the Vulkan SDK.
+[`docs/SETUP.md`](docs/SETUP.md) has the full steps, including the
+[`PATH` order](docs/SETUP.md#path-order) that matters on Windows. From the repository root, with
+MSYS2 UCRT64's `bin` folder on `PATH`:
+
+```powershell
+python -m pip install .                                # Python tooling, once
+python tools/nk_doctor.py --scope build                # checks your toolchain
+mingw32-make --no-print-directory display-smoke        # builds and checks the whole pipeline on a synthetic fixture; no game needed
+mingw32-make --no-print-directory native-core-tests    # the native runtime self-tests
+mingw32-make contrib-check                             # the checks that apply to the files you changed
+```
+
+**Linux** (Ubuntu 24.04, native or under WSL 2) builds the runtime and runs the tests headlessly; the
+desktop player is Windows-first. Setup is in
+[`docs/LINUX_DEVELOPMENT.md`](docs/LINUX_DEVELOPMENT.md).
+
+```bash
+make CC=gcc native-core-tests    # the native runtime self-tests, as hosted CI runs them
+make contrib-check               # the checks that apply to the files you changed
+```
+
+On either platform, run one Python test module with `python -m unittest tools.test_<name>`. The whole
+Python suite (`python -m unittest discover -s tools -p "test_*.py"`) is long; hosted CI runs it in
+shards on every pull request, so run it locally only when hosted CI cannot.
+
+`contrib-check` compares your branch with `origin/main` and runs only the gates that apply: Ruff, the
+matching Python tests, a strict C compile of changed C, markdownlint and the documentation lint for
+changed Markdown, and the publication audit. It is a quick local check, not a substitute for hosted
+CI. Each gate reports `PASS`, `FAIL`, `SKIP` (tool not installed: not a pass), `NOT_RUN` or
+`MAINTAINER-SIDE` ([what each means](CONTRIBUTING.md#the-fast-path-one-command)).
+
+### Hard limits
+
+These hold for every file, commit, pull request, issue, log and AI prompt. Sections 3, 5 and 6 give
+the full rules.
+
+- **No game data.** No ISOs, executables, decrypted modules, extracted assets (icons, textures, audio,
+  fonts), saves, game-byte Ghidra databases, or C generated from a retail game (everything under
+  `build/`). The only game images allowed are the curated presentation media Section 5 describes,
+  and the maintainer chooses those.
+- **No keys or credentials.** No console-bound values (fuse ID, secure-install ID, licence files),
+  user keys, tokens or passwords. The public key tables for built-in game decryption live only in
+  `src/core/nk_psp_builtin_keys.c`.
+- **No private captures.** No traces, frame or memory dumps, private logs, or anything showing a
+  user name or local path.
+- **No firmware.** No firmware files, no firmware decryption, and no key that only firmware uses.
+  Decrypting the user's own game disc on their machine is allowed (Section 5).
+- **No hidden failures.** No loop caps, sleeps, forced returns or fake success that hide missing
+  behaviour. Unknown functions and dispatch misses stay visible (Section 6).
+- **No hand edits to generated code.** Never edit `build/<game>/<game>_recomp_*.c`; change the
+  generator, analysis or runtime and regenerate.
+- **No network use** in the player, runtime or tests without a maintainer decision (Section 5).
+- **No invented identity or origin.** An agent never writes a `Signed-off-by:` line, never claims
+  someone wrote something they did not, and never hides where code came from.
+- **No tags, releases, repository settings or rewritten history** (Section 3).
+
+### What a good pull request looks like
+
+- A **Draft** pull request from a branch on your fork, with **Allow edits by maintainers** left on.
+  One focused change; no stacked pull requests.
+- It says what was wrong and links the issue (`Tracks #123`).
+- It adds a test that fails before the change and passes after it. A documentation change runs the
+  documentation gates instead.
+- It lists the exact commands you ran and their results. Say which checks you could not run.
+  "CI is green" is not a result, and a local pass is not hosted CI.
+- Every commit an AI tool helped with ends with one `Assisted-by: <tool> (<model>)` line per tool,
+  for example `Assisted-by: Cursor (Claude Sonnet 5.5)`. Never `Co-Authored-By:` for an AI
+  ([details](docs/AI_USAGE.md#disclosing-ai-help-in-commits)).
+- Every commit carries a DCO sign-off from the human contributor. The agent does not add it: the
+  person reviews the final diff and signs off themselves, with `git commit -s` or
+  `git commit --amend -s --no-edit` before pushing ([DCO policy](docs/DCO_POLICY.md)).
+- It says where every new file came from (next section).
+
+### New files: what to put in the pull request
+
+Every public file has a provenance entry: where it came from, the evidence, and a hash of its bytes.
+The record behind those entries is kept privately by the maintainer, so you cannot add an entry, and
+you do not need to. **The maintainer admits new paths.** For each file you add, say in the pull
+request:
+
+- that you wrote it (with which AI tool, if any); or
+- which project it came from, the exact upstream revision, and its licence. Code from another project
+  must be under a licence compatible with GPL-3.0-or-later, keep its notices, and follow the import
+  rules in Section 4.
+
+The **Trusted provenance attestation** check stays red on a pull request that adds a file until the
+maintainer admits it. That is expected, not something you broke. If you only changed existing files,
+run `make contrib-refresh` (Linux) or `mingw32-make contrib-refresh` (Windows) and commit what it
+stages, or leave that to the maintainer. Never hand-edit `PUBLIC_EXPORT.json` or
+`assets/public_provenance_ledger.json`. If the tool refuses, paste its refusal code in the pull
+request; [`CONTRIBUTING.md`](CONTRIBUTING.md#provenance-controls) says what each code needs from you.
 
 ## 1. Sources and live preflight
 
 - Resolve disagreements in this order: live source/tests/Makefiles, live GitHub Issues,
   `ISSUES.md`, maintained `docs/` contracts, then README/navigation and dated evidence.
-- Before a mutation, run `git fetch origin`, record the exact `BASE_SHA`, inspect
-  `git status`, and verify on current `origin/main` that the task is not already fixed.
-  Without network access, work from the last fetched `origin/main` and report
-  `FETCH: NOT_RUN` with that SHA instead of stopping.
+- Before a change, run `git fetch origin`, record the exact `BASE_SHA`, inspect `git status`, and
+  check on current `origin/main` that the task is not already done. Without network access, work
+  from the last fetched `origin/main` and report `FETCH: NOT_RUN` with that SHA instead of stopping.
 - Development network use is expected: `git fetch`, `gh`, public documentation, specifications
   and upstream repositories, and pushes as Section 8 allows. Section 5's offline rule governs
-  the shipped player, runtime and tests, not development; a mission's "no network" means that
+  the shipped player, runtime and tests, not development; a task's "no network" means that
   product rule unless it names git or GitHub.
-- Inspect open PRs touching the issue or files. Record overlap, expected ownership, new
-  paths, provenance disposition, private-input or hardware needs, and smallest proof.
+- Look at open pull requests that touch the issue or the same files. Note any overlap, new paths,
+  where new code comes from, whether a game or a PSP is needed, and the smallest proof.
 - Stale handoffs, copied chat summaries, ignored local configuration, and research pages
   are not authority when live source or GitHub disagrees.
 - A generated, scoped agent-instruction file is not a policy source, even if a more-specific
-  path would normally win. This is the only agent authority.
+  path would normally win. This file is the only agent authority.
 - Read-only review or diagnosis creates no branch, worktree, commit, PR, or external
   mutation; report the boundary and stop if no implementation was requested.
 
 ## 2. Operating modes and autonomy
 
-- A mutating mission uses one dedicated temporary worktree and branch per pull request.
-  Reuse it when it already starts at the required exact base. A follow-up to a PR handed
-  to integration (Section 8) is a new branch from `origin/main`.
-- Name branches for their topic (`docs/...`, `fix/...`, `lle/...`, `oracle/...`) with a
-  date or issue suffix. There are no persistent per-agent lanes.
-- Keep the mission coherent, avoid stacked PRs, and preserve other agents' unmerged work.
-- Default autonomy is STOP/REPORT after a bounded implementation, tests, or draft PR.
-  An explicit mission may authorize autonomous integration only when the exact head has
-  required hosted CI green, no open review/change request remains, provenance/publication
-  gates pass, no private-input or hardware ambiguity remains, and no human-only operation
-  is needed.
+- One branch per pull request, named for its topic (`docs/...`, `fix/...`, `lle/...`,
+  `oracle/...`) with a date or issue suffix.
+- Keep the change coherent, avoid stacked pull requests, and leave other people's unmerged work
+  alone.
+- By default, stop and report after a bounded implementation, its tests, or a Draft pull request.
+- Only the maintainer's agents ever integrate. An explicit maintainer mission may authorize
+  autonomous integration only when the exact head has required hosted CI green, no open
+  review/change request remains, provenance/publication gates pass, no private-input or hardware
+  ambiguity remains, and no human-only operation is needed.
 - Generic requests to finish, ship, publish, integrate, or do everything do not expand
   mission authority.
 
 ## 3. Human-only hard stops
 
-The following always require explicit maintainer authorization in the current turn, even
-under an otherwise autonomous integration mission:
+A contributor's agent never does any of the following. The maintainer's agents need explicit
+maintainer authorization in the current turn, even under an otherwise autonomous integration
+mission:
 
 - provenance attestation or legal clearance on a maintainer's behalf;
 - inventing a contributor identity, `Signed-off-by:`, DCO attestation, or source lineage;
@@ -73,15 +196,17 @@ maintainer authorization is recorded in the private workspace and the run follow
 revoke it at any time by saying so; agents must then return to per-turn authorization. A standing authorization
 never covers the destructive writes listed above, tags, releases, credentials, or disclosure of private inputs.
 Physical steps that need a person (power cycles, media swaps, cable changes) are requested from the maintainer,
-never simulated or assumed.
+never simulated or assumed. This applies to the maintainer's own PSP; a contributor's agent uses a PSP only as
+its own user directs.
 
 Agents must not create, move, push, or delete Git tags; create, edit, delete, publish, or unpublish GitHub Releases; upload release assets; or change a published version without explicit maintainer authorization in the current turn. Generic instructions such as 'finish', 'ship', 'publish', 'integrate', or 'do everything' do not authorize a version/tag/release operation.
 
 ## 4. Provenance and publication
 
-- Before a new implementation-bearing path, inspect `tools/provenance_ledger.py` and its
-  classifier. Use a genuine path-specific trusted record or stop with
-  `PROVENANCE_UNRESOLVED`.
+- Every public path has a provenance record. A new path is admitted by the maintainer; a pull
+  request that adds one says where each new file came from (see
+  [New files](#new-files-what-to-put-in-the-pull-request)). The maintainer's own steps are under
+  [Maintainer process](#maintainer-process).
 - Deterministic documentation/configuration paths and explicitly synthetic tests may use
   their narrow classes. Never label project implementation as a synthetic fixture.
 - Candidate-controlled policy, ledgers, exports, or marker bytes cannot authorize
@@ -98,34 +223,29 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
 - Write implementation from specifications, public architecture references, and
   project-owned measurements by default. Never copy or line-by-line translate upstream
   source into a new path except under the import rules below.
-- Import rules, maintainer-approved 2026-10-20 and extended 2026-10-22: FFmpeg codec subsets
-  (the `src/rt/atrac3p/` pattern), uofw (github.com/uofw/uofw, MIT), and GPL-compatible
-  emulator source (PPSSPP, GPL-2.0-or-later; JPCSP, GPL-3.0) may be vendored or adapted when
-  they work better or land faster than a rewrite. Each file must be pinned to an exact
-  upstream revision, listed in a `PROVENANCE.md` manifest as byte-identical or LOCAL DELTA,
-  keep its licence and copyright notices, be credited in `CREDITS.md`, and get a trusted
-  record and admission like any new path. An adapted file keeps the upstream copyright
-  header and adds a one-line note that it was modified, as the GPL requires; no special path
-  or naming is needed beyond that. Emulator-derived units are labelled
-  `derived-translated` (`docs/provenance/INDEPENDENCE_MODEL.md`), never "independent".
-  Behaviour claims still need tests, and PSP evidence where hardware semantics are claimed.
-  Since 2026-10-25 the maintainer pre-approves any source under a licence compatible with
-  GPL-3.0-or-later (for example MIT, BSD, Apache-2.0, zlib, or a CC0 or public-domain
-  dedication, such as NVIDIA's MIT-licensed dxvk-remix API): it may be vendored or adapted
-  under these same rules without a further decision. Source under a licence incompatible with
-  GPL-3.0-or-later stays excluded.
+- **Import rules.** Source under any licence compatible with GPL-3.0-or-later may be vendored or
+  adapted when it works better or lands faster than a rewrite: for example FFmpeg codec subsets
+  (the `src/rt/atrac3p/` pattern), uofw (github.com/uofw/uofw, MIT), GPL-compatible emulator
+  source (PPSSPP, GPL-2.0-or-later; JPCSP, GPL-3.0), MIT, BSD, Apache-2.0 or zlib code, and CC0 or
+  public-domain dedications such as NVIDIA's MIT-licensed dxvk-remix API (maintainer decisions of
+  2026-10-20, 2026-10-22 and 2026-10-25; no further decision is needed per import). Each file must
+  be pinned to an exact upstream revision, listed in a `PROVENANCE.md` manifest as byte-identical or
+  LOCAL DELTA, keep its licence and copyright notices, be credited in `CREDITS.md`, and get a trusted
+  record and admission like any new path. An adapted file keeps the upstream copyright header and
+  adds a one-line note that it was modified, as the GPL requires; no special path or naming is
+  needed beyond that. Emulator-derived units are labelled `derived-translated`
+  (`docs/provenance/INDEPENDENCE_MODEL.md`), never "independent". Behaviour claims still need
+  tests, and PSP evidence where hardware semantics are claimed. Source under a licence incompatible
+  with GPL-3.0-or-later stays excluded.
 - Do not rewrite working inherited code only to make it original: replace it when evidence shows
   it is wrong or an LLE path makes it unnecessary (`docs/INDEPENDENCE_CAMPAIGN.md`, re-scope).
 - Do not call code "clean-room" or "independent" unless its trusted record supports that
   label (see `docs/provenance/INDEPENDENCE_MODEL.md`); prefer "project-authored".
-- Adding or removing a public path changes `assets/public_source_profile.json`; hosted
-  attestation accepts that only with a maintainer policy-delta authority in the private
-  authority repository, plus an exact trusted record for a new implementation path.
-  `provenance-refresh` and `tools/contrib_refresh.py` refuse added or removed paths and only
-  re-key admitted ones. A commit carries the regenerated controls for the paths it changes and
-  nothing more; a refresh after merging `main` is a commit of its own. Never hand-edit them.
-- Step by step for a pull request that adds a public path, with the failure each skipped step produces:
-  [`docs/PUBLICATION_READINESS.md`](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path).
+- Adding or removing a public path changes `assets/public_source_profile.json`, which only the
+  maintainer's admission can authorize. `provenance-refresh` and `tools/contrib_refresh.py` refuse
+  added or removed paths and only re-key admitted ones. A commit carries the regenerated controls
+  for the paths it changes and nothing more; a refresh after merging `main` is a commit of its own.
+  Never hand-edit them.
 
 ## 5. Private and public boundaries
 
@@ -217,34 +337,24 @@ the PR numbers are navigation, not substitutes for source evidence:
 
 ## 8. Workspace, branch, and worktree lifecycle
 
-- Before switching or removing anything, inspect `git worktree list --porcelain`, branch,
-  status, untracked files, stashes, and remote heads. A checkout owning local `main` is
-  protected.
-- Fast-forward a named canonical checkout's local `main` only when it is clean, has no
-  unique untracked/stashed/unpushed work, has no dependent worktree, and an ordinary
-  fast-forward is safe. Otherwise leave it untouched and report
-  `BLOCKED_CANONICAL_MAIN`.
-- Preserve unrelated user changes and unique evidence. Never use reset, checkout, clean,
-  or force operations for convenience.
-- Treat a temporary worktree as disposable only after inspecting dirty/untracked state,
-  preserving unique evidence, and removing disposable build/log output. Use ordinary
-  worktree removal, then prune stale administrative records when safe; never establish a
-  routine `git worktree remove --force` rule.
-- Delete a temporary merged/superseded branch only after verifying it is checked out
-  nowhere else, has no unpushed commits, and contains no retained evidence.
+- Before switching or removing anything, look at `git status`, untracked files, stashes and
+  unpushed commits. Preserve unrelated changes and unique evidence. Never use reset, checkout,
+  clean, or force operations for convenience.
 - Never write repository-local Git identity. A checkout `[user]` block silently re-authors
   later commits there and in every worktree sharing its Git directory. Use the host's
   existing identity or stop and report.
-- From hand-off to integration until merge or explicit hand-back, a PR's branch and worktree
-  belong to the integrator, which merges `main`, refreshes provenance and pushes from that same
-  worktree. Do not edit, stage, commit, merge or push there.
-- Push only to `origin` when the mission explicitly includes a PR. Never reconnect public branches
-  to private-history refs.
+- Push only to your own remote (a contributor's fork, or `origin` for the maintainer's agents), and
+  only when the task includes a pull request.
+- The maintainer's workspace rules (canonical checkout, temporary worktrees, hand-off to
+  integration) are under [Maintainer process](#maintainer-process).
 
 ## 9. Validation and gate routing
 
 `docs/CI.md`, `docs/SETUP.md`, and the live workflow define hosted behavior. Local gates
 are not hosted-CI evidence; report each as `PASS`, `FAIL`, `SKIP`, `BLOCKED`, or `NOT_RUN`.
+Start with `make contrib-check` (Linux) or `mingw32-make contrib-check` (Windows), then run the
+focused gate for the area you changed. The table uses the Windows spelling; on Linux, use
+`make CC=gcc` in place of `mingw32-make`.
 
 | Changed surface | Focused first gate |
 | --- | --- |
@@ -282,25 +392,23 @@ handler, run one native self-test, capture frames unattended):
 
 ## 10. PR and integration authorization
 
-- When requested, open one focused Draft PR after the first valid commit. Include exact
-  base/head SHAs, scope, new-path provenance, failing-before evidence, tests,
+- When the task includes a pull request, open one focused Draft PR after the first valid commit.
+  Include exact base/head SHAs, scope, new-path provenance, failing-before evidence, tests,
   uncertainty, private/hardware status, and blockers.
 - Never mark Ready, merge, enable auto-merge, close other PRs, or bypass required checks
   unless Section 2's autonomous-integration conditions hold; local success never means a
-  Draft is hosted-CI green. A substantive correction after Ready returns the PR to Draft
-  and requires fresh exact-head validation.
+  Draft is hosted-CI green. A contributor's agent leaves Ready to its person. A substantive
+  correction after Ready returns the PR to Draft and requires fresh exact-head validation.
 - Before readiness, fetch `origin/main` and merge it when needed; never rebase or
   force-push a pushed branch. Preserve newer-main behavior, regenerate only required
   canonical metadata, rerun affected gates, and freeze the exact validated head.
-- Hand a PR to integration only when its exact head is pushed and every review thread, an
-  advisory bot's included, is answered and resolved. The integrator lands one PR at a time from
-  one landing run. A path-adding PR needs a re-key after another path-adding PR lands unless both
-  were batch-admitted ([landing order](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path)).
-  Never hold a ready pull request for an unrelated one.
+- Answer every review thread, an advisory bot's included. How the maintainer lands pull requests
+  is under [Maintainer process](#maintainer-process).
 
 ## 11. Reporting and cleanup
 
-End an implementation mission with exact facts, not a play-by-play:
+End an implementation task with exact facts, not a play-by-play. Fields that do not apply say
+`N/A`; a contributor's agent puts its branch name in `LANE`.
 
 ```text
 LANE:
@@ -322,8 +430,61 @@ DISCOVERED_FOLLOWUPS:
 READY_QUALITY: YES/NO
 ```
 
-State whether canonical main was fast-forwarded or left `BLOCKED_CANONICAL_MAIN`, what
-worktree/branch was retained or removed, and whether any tag, release, asset, version,
-hardware, or private-input operation was intentionally not performed. Keep `ISSUES.md`
-concise and detailed evidence in the issue or PR. Put build/workspace ergonomics debt in
-maintained workspace documentation, not in this enduring contract.
+Say whether any tag, release, asset, version, hardware, or private-input operation was
+intentionally not performed. Keep `ISSUES.md` concise and detailed evidence in the issue or PR.
+Put build/workspace ergonomics debt in maintained workspace documentation, not in this enduring
+contract.
+
+## Maintainer process
+
+This section applies only to agents the maintainer runs. A contributor's agent can skip it. It
+covers the maintainer's workspace, how new paths are admitted, and how pull requests land.
+
+### Workspace
+
+- Work only in the canonical checkout or a registered worktree, never the non-repository
+  workspace root. If a session starts at a parent folder, select the tree and change directory
+  before repository work: the canonical public checkout for read-only integration checks; the
+  existing task worktree, or one new registered worktree, for changes; the private authority
+  checkout for private-authority work, never a public tree. The workspace root has its own router
+  file that names these places.
+- A mutating mission uses one dedicated temporary worktree and branch per pull request. Reuse it
+  when it already starts at the required exact base. A follow-up to a PR handed to integration is
+  a new branch from `origin/main`. There are no persistent per-agent lanes.
+- Before switching or removing anything, inspect `git worktree list --porcelain`, branch, status,
+  untracked files, stashes, and remote heads. A checkout owning local `main` is protected.
+- Fast-forward a named canonical checkout's local `main` only when it is clean, has no unique
+  untracked/stashed/unpushed work, has no dependent worktree, and an ordinary fast-forward is
+  safe. Otherwise leave it untouched and report `BLOCKED_CANONICAL_MAIN`.
+- Treat a temporary worktree as disposable only after inspecting dirty/untracked state, preserving
+  unique evidence, and removing disposable build/log output. Use ordinary worktree removal, then
+  prune stale administrative records when safe; never establish a routine
+  `git worktree remove --force` rule.
+- Delete a temporary merged/superseded branch only after verifying it is checked out nowhere else,
+  has no unpushed commits, and contains no retained evidence.
+- Never reconnect public branches to private-history refs. The public and private histories stay
+  disjoint.
+
+### Admitting new paths
+
+- Before a new implementation-bearing path, inspect `tools/provenance_ledger.py` and its
+  classifier. Use a genuine path-specific trusted record or stop with `PROVENANCE_UNRESOLVED`.
+- Hosted attestation accepts an added or removed public path only with a maintainer policy-delta
+  authority in the private authority repository, plus an exact trusted record for a new
+  implementation path. Both must be on the private repository's `main` before the hosted
+  attestation runs. Step by step, with the failure each skipped step produces:
+  [`docs/PUBLICATION_READINESS.md`](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path).
+
+### Landing pull requests
+
+- Hand a PR to integration only when its exact head is pushed and every review thread, an
+  advisory bot's included, is answered and resolved.
+- From hand-off to integration until merge or explicit hand-back, a PR's branch and worktree
+  belong to the integrator, which merges `main`, refreshes provenance and pushes from that same
+  worktree. Do not edit, stage, commit, merge or push there.
+- The integrator lands one PR at a time from one landing run. A path-adding PR needs a re-key after
+  another path-adding PR lands unless both were batch-admitted
+  ([landing order](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path)).
+  Never hold a ready pull request for an unrelated one.
+- At the end of a mission, also state whether canonical main was fast-forwarded or left
+  `BLOCKED_CANONICAL_MAIN`, and which worktree and branch were kept or removed.

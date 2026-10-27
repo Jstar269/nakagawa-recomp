@@ -29,7 +29,8 @@ The rules it links to decide whether a change can land, so read them once.
    each refusal.
 7. **Disclose AI help.** If an AI tool helped, follow [docs/AI_USAGE.md](docs/AI_USAGE.md). Add one
    `Assisted-by: <tool> (<model>)` trailer per tool to each commit it helped produce (not `Co-Authored-By:`),
-   and say so in the pull request.
+   and say so in the pull request. If you work with an AI agent, point it at [AGENTS.md](AGENTS.md): its
+   "Where to start" section is written for your agent and covers the same steps as this list.
 8. **Sign off as the human author.** Sign off every commit with `git commit -s`, which adds
    `Signed-off-by: Your Name <you@example.com>`. Only the person who wrote the change may sign it off.
    See [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
@@ -276,8 +277,9 @@ Nakagawa Recomp is a maintainer-led project.
   [code of conduct](CODE_OF_CONDUCT.md). Decisions are made in public issues and pull requests whenever they are not
   security-sensitive.
 - **Contributors**: anyone who opens an issue or pull request under this guide and the DCO.
-- **AI agents**: used by the maintainer as assistants under [`AGENTS.md`](AGENTS.md); their commits say so with an
-  `Assisted-by:` trailer, and a human maintainer remains accountable for everything merged.
+- **AI agents**: used by the maintainer and by contributors as assistants under [`AGENTS.md`](AGENTS.md); their
+  commits say so with an `Assisted-by:` trailer. The person who submits a change is accountable for it, and a human
+  maintainer for everything merged.
 - **Automated reviewers and CI**: required checks gate every merge, but they advise; they do not decide.
 
 **Access to sensitive resources.** Only the maintainer, [@Jstar269](https://github.com/Jstar269), has admin
