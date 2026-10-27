@@ -1711,7 +1711,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1642ef4345f05295c63f703409d8efc980d70f463fafff90615cb1bd555bd663"
+      "sha256": "aae57c1b9e002f1e70ecf2cfa82451bb7e7e9113c7087609f40e54c748c2eeed"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1747,7 +1747,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ceaa944bab58158bd11998d905614bbeac1fa4d2d860f56b36bb38f5dd6bda99"
+      "sha256": "fd38d69731897609c6084fc1b11ede14cfd7e2e7cdf92bb8cb33382d16dfae3e"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
