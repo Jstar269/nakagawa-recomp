@@ -1443,6 +1443,56 @@ KNOWN_NID_ISSUES = {
 # h_SetCompiledSdkVersion under its canonical name (issue #71).
 WAIVERS = ()
 
+# Issue #341 acceptance: no handler the public profile-zero guest imports stays
+# silently `unreviewed`. These are the NIDs the guest built from
+# fixtures/profile_zero/main.c imports today that still route to a dedicated
+# `unreviewed` handler. The list only shrinks:
+#   - tools/hle_manifest.py rejects an entry whose NID is no longer registered,
+#     whose name disagrees with the registration, that does not name #341, or
+#     whose handler is no longer `unreviewed` (graduating a handler retires its
+#     entries in the same change);
+#   - `tools/hle_manifest.py --imports <guest> --check-profile-zero-imports`, run
+#     by the hosted profile_zero_fixture job on the digest-checked build, fails
+#     on an imported unreviewed NID that is missing here and on an entry the
+#     guest no longer imports.
+# Never add an entry to make that gate pass: review the handler instead.
+PROFILE_ZERO_ISSUE = "https://github.com/Jstar269/nakagawa-recomp/issues/341"
+PROFILE_ZERO_UNREVIEWED_IMPORTS = {
+    0x03444EB4: {"name": "sceGeListSync", "issue": PROFILE_ZERO_ISSUE},  # h_GeListSync
+    0x05572A5F: {"name": "sceKernelExitGame", "issue": PROFILE_ZERO_ISSUE},  # h_ExitGame
+    0x05DB22CE: {"name": "sceGeUnsetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeUnsetCallback
+    0x092968F4: {"name": "sceKernelCpuSuspendIntr", "issue": PROFILE_ZERO_ISSUE},  # h_CpuSuspendIntr
+    0x0E20F177: {"name": "sceDisplaySetMode", "issue": PROFILE_ZERO_ISSUE},  # h_DisplaySetMode
+    0x13F592BC: {"name": "sceAudioOutputPannedBlocking", "issue": PROFILE_ZERO_ISSUE},  # h_AudioOutputPannedBlocking
+    0x172D316E: {"name": "sceKernelStdin", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
+    0x1F4011E6: {"name": "sceCtrlSetSamplingMode", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlSetSamplingMode
+    0x1F803938: {"name": "sceCtrlReadBufferPositive", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlReadBuffer
+    0x237DBD4F: {"name": "sceKernelAllocPartitionMemory", "issue": PROFILE_ZERO_ISSUE},  # h_AllocPartitionMemory
+    0x278C0DF5: {"name": "sceKernelWaitThreadEnd", "issue": PROFILE_ZERO_ISSUE},  # h_WaitThreadEnd
+    0x293B45B8: {"name": "sceKernelGetThreadId", "issue": PROFILE_ZERO_ISSUE},  # h_GetThreadIdSched
+    0x446D8DE6: {"name": "sceKernelCreateThread", "issue": PROFILE_ZERO_ISSUE},  # h_CreateThread
+    0x55C20A00: {"name": "sceKernelCreateEventFlag", "issue": PROFILE_ZERO_ISSUE},  # h_CreateEventFlag
+    0x5F10D406: {"name": "sceKernelCpuResumeIntr", "issue": PROFILE_ZERO_ISSUE},  # h_CpuResumeIntr
+    0x6A2774F3: {"name": "sceCtrlSetSamplingCycle", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlSetSamplingCycle
+    0x9D9A5BA1: {"name": "sceKernelGetBlockHeadAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GetBlockHeadAddr
+    0xA291F107: {"name": "sceKernelMaxFreeMemSize", "issue": PROFILE_ZERO_ISSUE},  # h_MaxFreeMemSize
+    0xA4FC06A4: {"name": "sceGeSetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeSetCallback
+    0xA5DA2406: {"name": "sceUtilityGetSystemParamInt", "issue": PROFILE_ZERO_ISSUE},  # h_GetSystemParamInt
+    0xA6BAB2E9: {"name": "sceKernelStdout", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
+    0xACE946E8: {"name": "sceIoGetstat", "issue": PROFILE_ZERO_ISSUE},  # h_IoGetstat
+    0xB287BD61: {"name": "sceGeDrawSync", "issue": PROFILE_ZERO_ISSUE},  # h_GeDrawSync
+    0xB6D61D02: {"name": "sceKernelFreePartitionMemory", "issue": PROFILE_ZERO_ISSUE},  # h_FreePartitionMemory
+    0xBEA46419: {"name": "sceKernelLockLwMutex", "issue": PROFILE_ZERO_ISSUE},  # h_LockLwMutex
+    0xCEADEB47: {"name": "sceKernelDelayThread", "issue": PROFILE_ZERO_ISSUE},  # h_DelayThread
+    0xD675EBB8: {"name": "sceKernelSelfStopUnloadModule", "issue": PROFILE_ZERO_ISSUE},  # h_SelfStopUnloadModule
+    0xE0D68148: {"name": "sceGeListUpdateStallAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GeListUpdateStallAddr
+    0xE3EB004C: {"name": "sceIoDread", "issue": PROFILE_ZERO_ISSUE},  # h_IoDread
+    0xEF9E4C70: {"name": "sceKernelDeleteEventFlag", "issue": PROFILE_ZERO_ISSUE},  # h_DeleteEventFlag
+    0xF0B7DA1C: {"name": "sceKernelDeleteMsgPipe", "issue": PROFILE_ZERO_ISSUE},  # h_DeleteMsgPipe
+    0xF475845D: {"name": "sceKernelStartThread", "issue": PROFILE_ZERO_ISSUE},  # h_StartThread
+    0xF78BA90A: {"name": "sceKernelStderr", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
+}
+
 # Runtime subsystem that owns each registration (issue #307). The split of
 # src/rt/hle.c into subsystem modules needs one obvious owner per registered
 # NID before any handler moves; this map states it. A subsystem is an
@@ -1643,6 +1693,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelGetThreadExitStatus": "kernel_thread",
     "sceKernelGetThreadId": "kernel_thread",
     "sceKernelGetThreadStackFreeSize": "kernel_thread",
+    "sceKernelGetThreadmanIdList": "kernel_thread",
     "sceKernelNotifyCallback": "kernel_thread",
     "sceKernelReferCallbackStatus": "kernel_thread",
     "sceKernelReferGlobalProfiler": "kernel_thread",

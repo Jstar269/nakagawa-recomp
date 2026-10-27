@@ -1794,6 +1794,29 @@ typedef struct SrThreadInfo {
     uint32_t releaseCount;
 } SrThreadInfo;
 int      sched_thread_info(uint32_t uid, SrThreadInfo *out);
+/* sceKernelGetThreadmanIdList list classes: the public PSPSDK SceKernelIdListType values
+ * (pspthreadman.h). Which other values a PSP accepts is UNMEASURED. */
+#define SR_TMID_THREAD                1
+#define SR_TMID_SEMAPHORE             2
+#define SR_TMID_EVENT_FLAG            3
+#define SR_TMID_MBOX                  4
+#define SR_TMID_VPL                   5
+#define SR_TMID_FPL                   6
+#define SR_TMID_MPIPE                 7
+#define SR_TMID_CALLBACK              8
+#define SR_TMID_THREAD_EVENT_HANDLER  9
+#define SR_TMID_ALARM                 10
+#define SR_TMID_VTIMER                11
+#define SR_TMID_SLEEP_THREAD          64
+#define SR_TMID_DELAY_THREAD          65
+#define SR_TMID_SUSPEND_THREAD        66
+#define SR_TMID_DORMANT_THREAD        67
+typedef void (*SrUidVisitor)(uint32_t uid, void *ctx);
+/* Calls visit(uid, ctx), in table order, for every live object of list class `tmid` that
+ * the scheduler owns: threads, the four thread-state lists and alarms. The state lists use
+ * the same status and wait type sceKernelReferThreadStatus reports. Returns 1 when `tmid` is
+ * one of those classes, 0 otherwise (nothing visited). */
+int      sched_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx);
 uint32_t sched_thread_exit_status(uint32_t uid);
 void     sched_set_current_join_target(uint32_t uid);
 void     sched_clear_current_join_target(void);
