@@ -472,6 +472,121 @@ static void test_ge_vram_depth_bit13_absolute_xor(void) {
     }
 }
 
+/* ---- Texture mip levels (#1373) ----
+ * A through-mode sprite samples an 8x8 8888 texture whose levels 0-3 are one colour each,
+ * so the colour drawn names the level the sampler chose. Level 1 stores its 4 texels per
+ * row in a buffer 8 wide with magenta beyond them, which only a sampler ignoring that
+ * level's own buffer width reaches. The PSP's nearest-level rounding, slope formula and
+ * between-level weights are unmeasured (ge.c tex_lod); these cases pin the PSPSDK modes and
+ * keep today's level-0 output wherever mip levels are off. */
+#define MIP_LIST  0x08116000u
+#define MIP_VERTS 0x08118000u
+#define MIP_TEX   0x08320000u
+#define MIP_FB    0x04150000u
+#define MIP_X     16u
+#define MIP_Y     16u
+#define MIP_LEVEL(mode, bias16) ((uint32_t)(mode) | (((uint32_t)(bias16) & 0xFFu) << 16))
+
+static const uint32_t k_mip_color[4] = { 0xFF0000FFu, 0xFF00FF00u, 0xFFFF0000u, 0xFFFFFFFFu };
+
+static uint32_t mip_level_addr(unsigned level) { return MIP_TEX + level * 0x1000u; }
+static unsigned mip_level_bufw(unsigned level) { return level == 1u ? 8u : (8u >> level); }
+
+static void mip_fill_texture(void) {
+    for (unsigned level = 0; level < 4u; level++) {
+        unsigned size = 8u >> level, bufw = mip_level_bufw(level);
+        for (unsigned v = 0; v < size; v++)
+            for (unsigned u = 0; u < bufw; u++)
+                MEM_W32(mip_level_addr(level) + (v * bufw + u) * 4u,
+                        u < size ? k_mip_color[level] : 0xFFFF00FFu);
+    }
+}
+
+/* Draw the texture (UV 0-8) onto a size x size sprite; return the one RGB colour the sprite
+ * holds (framebuffer alpha is the stencil, which these draws leave alone), or 0 when it is
+ * not uniform or the list did not end. */
+static uint32_t mip_draw(uint32_t max_level, uint32_t level_word, uint32_t min_filter,
+                         unsigned size) {
+    const float verts[10] = { 0.0f, 0.0f, (float)MIP_X, (float)MIP_Y, 0.0f,
+                              8.0f, 8.0f, (float)(MIP_X + size), (float)(MIP_Y + size), 0.0f };
+    memcpy(SR_HOST(MIP_VERTS), verts, sizeof verts);
+    for (unsigned y = 0; y < 16u; y++)
+        for (unsigned x = 0; x < 16u; x++)
+            MEM_W32(MIP_FB + ((MIP_Y + y) * 512u + MIP_X + x) * 4u, 0u);
+    s_pc = MIP_LIST;
+    W(0x10, 0x080000u);                     /* BASE */
+    W(0x9C, MIP_FB & 0x00FFFFFFu);          /* FRAMEBUFPTR */
+    W(0x9D, 512u);
+    W(0xD2, 3u);                            /* 8888 */
+    W(0xD4, 0u);
+    W(0xD5, (271u << 10) | 479u);
+    W(0xD3, 0u);                            /* not clear mode */
+    W(0x21, 0u); W(0x22, 0u); W(0x23, 0u); W(0x24, 0u); W(0x27, 0u); W(0x28, 0u);
+    for (unsigned level = 0; level < 4u; level++) {
+        uint32_t addr = mip_level_addr(level), size_log2 = 3u - level;
+        W(0xA0 + level, addr & 0x00FFFFFFu);                         /* TEXADDRn */
+        W(0xA8 + level, ((addr >> 8) & 0x00FF0000u) | mip_level_bufw(level));
+        W(0xB8 + level, (size_log2 << 8) | size_log2);              /* TEXSIZEn */
+    }
+    W(0xC2, max_level << 16);               /* TEXMODE: highest level, unswizzled */
+    W(0xC3, 3u);                            /* TEXFORMAT 8888 */
+    W(0xC6, min_filter);                    /* TEXFILTER, magnification nearest */
+    W(0xC7, 0u);                            /* TEXWRAP repeat */
+    W(0xC8, level_word);                    /* TEXLEVEL */
+    W(0xC9, 3u | 0x100u);                   /* TEXFUNC replace, RGBA */
+    W(0x1E, 1u);                            /* TEXTUREMAPENABLE */
+    W(0x12, 3u | (3u << 7) | (1u << 23));   /* float UV and position, through mode */
+    prim(6u, 2u, MIP_VERTS);
+    W(0x0C, 0u);
+    if (ge_run_list(MIP_LIST, 0) != 0) return 0u;
+    uint32_t first = MEM_R32(MIP_FB + (MIP_Y * 512u + MIP_X) * 4u) & 0x00FFFFFFu;
+    for (unsigned y = 0; y < size; y++)
+        for (unsigned x = 0; x < size; x++)
+            if ((MEM_R32(MIP_FB + ((MIP_Y + y) * 512u + MIP_X + x) * 4u) & 0x00FFFFFFu) != first)
+                return 0u;
+    return first;
+}
+
+static void test_ge_texture_mip_levels(void) {
+    enum { RED = 0, GREEN = 1, BLUE = 2 };
+    static const struct {
+        const char *name;
+        uint32_t max_level, level_word, min_filter;
+        unsigned size;
+        int level;            /* expected level, or -1 for the blend below */
+    } cases[] = {
+        /* Mip levels off: level 0 exactly as before. */
+        { "highest_level_0",  0u, MIP_LEVEL(1, 16),  4u, 8u,  RED },
+        { "non_mip_filter",   3u, MIP_LEVEL(1, 32),  1u, 8u,  RED },
+        { "constant_level_0", 3u, MIP_LEVEL(1, 0),   4u, 8u,  RED },
+        /* Constant: the bias names the level, clamped to the highest level. */
+        { "constant_level_1", 3u, MIP_LEVEL(1, 16),  4u, 8u,  GREEN },
+        { "constant_level_2", 3u, MIP_LEVEL(1, 32),  4u, 8u,  BLUE },
+        { "constant_clamped", 1u, MIP_LEVEL(1, 48),  4u, 8u,  GREEN },
+        /* Automatic: log2 of the texel footprint plus the bias. */
+        { "auto_magnified",   3u, MIP_LEVEL(0, 0),   4u, 16u, RED },
+        { "auto_one_to_one",  3u, MIP_LEVEL(0, 0),   4u, 8u,  RED },
+        { "auto_minified",    3u, MIP_LEVEL(0, 0),   4u, 2u,  BLUE },
+        { "auto_biased",      3u, MIP_LEVEL(0, -16), 4u, 2u,  GREEN },
+        { "auto_clamped",     1u, MIP_LEVEL(0, 0),   4u, 1u,  GREEN },
+        /* Slope: no public formula, so level 0 (unmeasured). */
+        { "slope_level_0",    3u, MIP_LEVEL(2, 16),  4u, 2u,  RED },
+        /* GU_NEAREST_MIPMAP_LINEAR at lod 0.5: half of level 0 and half of level 1. */
+        { "linear_between",   3u, MIP_LEVEL(1, 8),   6u, 8u,  -1 },
+    };
+    mip_fill_texture();
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        uint32_t want = (cases[i].level >= 0 ? k_mip_color[cases[i].level] : 0x007F7Fu) & 0x00FFFFFFu;
+        uint32_t got = mip_draw(cases[i].max_level, cases[i].level_word, cases[i].min_filter,
+                                cases[i].size);
+        char detail[128];
+        snprintf(detail, sizeof detail, "sprite colour 0x%08" PRIx32 ", expected 0x%08" PRIx32,
+                 got, want);
+        expect(got == want, cases[i].name, detail);
+    }
+    printf("MIP cases=%u (software rasterizer)\n", (unsigned)(sizeof cases / sizeof cases[0]));
+}
+
 /* The depth-surface span is cached per (base, stride) because every CPU VRAM access asks for it
  * (#1296). Six surfaces cycled through a smaller cache must keep returning their own bounds, each
  * the exact XOR image of the surface's even addresses (widened by at most one byte per end), and an
@@ -1113,6 +1228,209 @@ static void test_vram_mirror_cpu_stores(void) {
            "vram_mirror_bulk", "contiguous swizzled blocks and the linear mirror stay accessible");
 }
 
+/* ---- BOUNDINGBOX / BJUMP conditional rendering (issue #1372) ----
+ *
+ * The sceGuBeginObject/sceGuEndObject shape inside a CALLed sublist: OFFSETADDR (VADDR and the
+ * BJUMP target are offset-relative, like JUMP's), BASE and VADDR, BOUNDINGBOX, BASE and a BJUMP
+ * past the object, then the object itself (a red sprite at (10,10) and a FRAMEBUFPTR switch)
+ * and RET.  After the RET the main list JUMPs to a tail that draws a green sprite at (30,10);
+ * the JUMP target and the sprite's VADDR need the caller's offset, so the list reaches END and
+ * draws green only if the PC, the call stack and the offset came back intact.  A skipped object leaves no red pixel and no framebuffer switch, so green
+ * lands in framebuffer A; an object that runs draws red and moves green to framebuffer B.
+ * Each case runs on the software rasterizer and again through the GPU hook seam the Vulkan
+ * backend fills, and both must execute the same PRIM commands. */
+
+extern unsigned long g_ge_prim_count;
+
+#define LIST_BBOX       0x08118000u
+#define LIST_BBOX_SUB   0x0811A000u
+#define LIST_BBOX_TAIL  0x0811C000u
+#define BBOX_VERTS      0x08320000u
+#define BBOX_INDICES    0x08328000u
+#define BBOX_SPRITES    0x08329000u
+#define BBOX_FB_A       0x041A0000u
+#define BBOX_FB_B       0x041C0000u
+#define BBOX_SUB_OFFSET 0x00010000u          /* OFFSETADDR 0x000100 in the sublist */
+#define BBOX_SENTINEL   0xFF5A5A5Au
+#define BBOX_RED        0xFF0000FFu
+#define BBOX_GREEN      0xFF00FF00u
+#define BBOX_THROUGH16  ((7u << 2) | (2u << 7) | (1u << 23))
+
+typedef struct {
+    const char *name;
+    uint32_t vtype;     /* VERTEXTYPE in force at BOUNDINGBOX */
+    uint32_t vaddr;     /* box vertices */
+    int count;          /* BOUNDINGBOX count; -1 emits no BOUNDINGBOX at all */
+    int small_scissor;  /* scissor (0,0)-(99,271): the box is beyond its right edge only */
+    int stall;          /* stall the list on the BJUMP word, then resume it */
+    int skip;           /* expected: BJUMP takes its branch */
+} BboxCase;
+
+/* BASE supplies address bits 24-27 and OFFSETADDR is added, as sceGuBeginObject relies on. */
+static uint32_t bbox_sub_base(uint32_t addr) {
+    return (addr >> 8) & 0x0F0000u;
+}
+static uint32_t bbox_sub_rel(uint32_t addr) {
+    return (addr - BBOX_SUB_OFFSET) & 0x00FFFFFFu;
+}
+
+static uint32_t bbox_px(uint32_t fb, unsigned x, unsigned y) {
+    return fb + (y * 512u + x) * 4u;
+}
+
+/* Returns the address of the BJUMP word. */
+static uint32_t build_bbox_list(const BboxCase *c, uint32_t sprite_a, uint32_t sprite_b) {
+    s_pc = LIST_BBOX_SUB;
+    W(0x13, BBOX_SUB_OFFSET >> 8);                     /* OFFSETADDR */
+    W(0x10, bbox_sub_base(c->vaddr));                  /* BASE */
+    W(0x01, bbox_sub_rel(c->vaddr));                   /* VADDR */
+    if (c->count >= 0) W(0x07, (uint32_t)c->count);    /* BOUNDINGBOX */
+    W(0x10, bbox_sub_base(LIST_BBOX_SUB));             /* BASE for the BJUMP target */
+    uint32_t bjump = s_pc;
+    W(0x09, 0);                                        /* BJUMP, patched below */
+    W(0x12, BBOX_THROUGH16);                           /* the object: state and a draw */
+    W(0x01, bbox_sub_rel(sprite_a));
+    W(0x04, (6u << 16) | 2u);                          /* PRIM: sprite A */
+    W(0x9C, BBOX_FB_B & 0xFFFFFFu);                    /* FRAMEBUFPTR -> B */
+    uint32_t after_object = s_pc;
+    W(0x0B, 0);                                        /* RET */
+    uint32_t end_pc = s_pc;
+    s_pc = bjump;                                      /* as sceGuEndObject patches it */
+    W(0x09, bbox_sub_rel(after_object));
+    s_pc = end_pc;
+
+    s_pc = LIST_BBOX_TAIL;
+    W(0x12, BBOX_THROUGH16);
+    prim(6u, 2u, sprite_b);                            /* sprite B */
+    W(0x0F, 0);                                        /* FINISH */
+    W(0x0C, 0);                                        /* END */
+
+    s_pc = LIST_BBOX;
+    emit_setup();
+    W(0x9C, BBOX_FB_A & 0xFFFFFFu); W(0x9D, 512u); W(0xD2, 3u);
+    W(0x1D, 0); W(0x1F, 0); W(0x20, 0); W(0x21, 0); W(0x22, 0);   /* cull, fog, dither, */
+    W(0x24, 0); W(0x27, 0); W(0x28, 0); W(0xD3, 0);               /* blend, tests, logic op, */
+    W(0xE8, 0); W(0xE9, 0);                                       /* clear mode and masks off */
+    if (c->small_scissor) W(0xD5, (271u << 10) | 99u);
+    W(0x12, c->vtype);
+    W(0x02, BBOX_INDICES & 0xFFFFFFu);                 /* IADDR */
+    W(0x0A, LIST_BBOX_SUB & 0xFFFFFFu);                /* CALL */
+    W(0x08, LIST_BBOX_TAIL & 0xFFFFFFu);               /* JUMP */
+    return bjump;
+}
+
+static void test_ge_bounding_box_branch(void) {
+    /* Transform-mode boxes under emit_setup's perspective (w = -z) and 480x272 viewport. */
+    s_vtx = BBOX_VERTS;
+    uint32_t box_on = s_vtx;                           /* centre of the screen */
+    for (int i = 0; i < 8; i++)
+        vtx((i & 1) ? 0.4f : -0.4f, (i & 2) ? 0.4f : -0.4f, (i & 4) ? -6.0f : FRONT);
+    uint32_t box_right = s_vtx;                        /* right after box_on: x >= 520 */
+    for (int i = 0; i < 8; i++)
+        vtx((i & 1) ? 9.0f : 7.0f, (i & 2) ? 0.4f : -0.4f, (i & 4) ? -6.0f : FRONT);
+    uint32_t box_above = s_vtx;                        /* y < -20 */
+    for (int i = 0; i < 8; i++)
+        vtx((i & 1) ? 0.4f : -0.4f, (i & 2) ? 9.0f : 7.0f, (i & 4) ? -6.0f : FRONT);
+    uint32_t box_spans = s_vtx;                        /* beyond the left AND right edges */
+    for (int i = 0; i < 8; i++)
+        vtx((i & 1) ? 9.0f : -9.0f, (i & 2) ? 0.4f : -0.4f, (i & 4) ? -6.0f : FRONT);
+    /* box_right with one corner behind the eye (w = -1) whose projection also lands right of
+     * the screen (x -9 / w -1): only the w test keeps this box visible. */
+    uint32_t box_behind = s_vtx;
+    for (int i = 0; i < 8; i++)
+        vtx(i == 7 ? -9.0f : ((i & 1) ? 9.0f : 7.0f), (i & 2) ? 0.4f : -0.4f,
+            i == 7 ? BEHIND : FRONT);
+    for (uint8_t i = 0; i < 8u; i++) {                 /* 8-bit indices of box_right's corners */
+        uint8_t index = (uint8_t)(8u + i);
+        memcpy(SR_HOST(BBOX_INDICES + i), &index, 1);
+    }
+    uint32_t sprite_a = BBOX_SPRITES;
+    uint32_t v = depth_test_vertex(sprite_a, 10u, 10u, 0u, BBOX_RED);
+    v = depth_test_vertex(v, 14u, 14u, 0u, BBOX_RED);
+    uint32_t sprite_b = v;
+    v = depth_test_vertex(v, 30u, 10u, 0u, BBOX_GREEN);
+    v = depth_test_vertex(v, 34u, 14u, 0u, BBOX_GREEN);
+    uint32_t box_through = v;                          /* through-mode corners at x = 600 */
+    v = depth_test_vertex(v, 600u, 10u, 0u, BBOX_RED);
+    (void)depth_test_vertex(v, 610u, 20u, 0u, BBOX_RED);
+
+    const BboxCase cases[] = {
+        /* Documented: a box with a vertex in view runs the object; a box wholly outside the
+         * scissor region skips it. */
+        { "onscreen",  VT_TRANSFORM, box_on,     8, 0, 0, 0 },
+        { "right",     VT_TRANSFORM, box_right,  8, 0, 0, 1 },
+        /* A fresh list without BOUNDINGBOX does not inherit the previous list's result. */
+        { "no_box",    VT_TRANSFORM, box_on,    -1, 0, 0, 0 },
+        { "above",     VT_TRANSFORM, box_above,  8, 0, 0, 1 },
+        { "scissor",   VT_TRANSFORM, box_on,     8, 1, 0, 1 },
+        { "partial",   VT_TRANSFORM, box_on,    16, 0, 0, 0 },   /* box_on then box_right */
+        { "indexed",   VT_TRANSFORM | VT_INDEX8, box_on, 8, 0, 0, 1 },
+        { "stalled",   VT_TRANSFORM, box_right,  8, 0, 1, 1 },
+        /* UNMEASURED on the PSP, so the object runs (the behaviour before BJUMP was
+         * emulated): no single edge, a corner behind the eye, through mode, zero count. */
+        { "spans",     VT_TRANSFORM, box_spans,  8, 0, 0, 0 },
+        { "behind",    VT_TRANSFORM, box_behind, 8, 0, 0, 0 },
+        { "through",   BBOX_THROUGH16, box_through, 2, 0, 0, 0 },
+        { "zero",      VT_TRANSFORM, box_right,  0, 0, 0, 0 },
+        /* Vertices past the end of guest memory: no test is possible, so the object runs. */
+        { "outside",   VT_TRANSFORM, 0x0BFFFFF0u, 8, 0, 0, 0 },
+    };
+
+    GeGpuHooks hooks;
+    memset(&hooks, 0, sizeof hooks);
+    hooks.tri = hook_tri; hooks.sprite = hook_sprite; hooks.line = hook_line;
+    hooks.point = hook_point; hooks.flush = hook_flush; hooks.vram_dirty = hook_vram_dirty;
+    for (int hooked = 0; hooked < 2; hooked++) {
+        ge_set_gpu_hooks(hooked ? &hooks : NULL);
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            const BboxCase *c = &cases[i];
+            char scenario[64];
+            snprintf(scenario, sizeof scenario, "bbox_%s_%s", c->name,
+                     hooked ? "gpu_hooks" : "software");
+            uint32_t bjump = build_bbox_list(c, sprite_a, sprite_b);
+            static const unsigned xs[2] = { 11u, 31u };
+            for (unsigned k = 0; k < 2u; k++) {
+                MEM_W32(bbox_px(BBOX_FB_A, xs[k], 11u), BBOX_SENTINEL);
+                MEM_W32(bbox_px(BBOX_FB_B, xs[k], 11u), BBOX_SENTINEL);
+            }
+            unsigned hook_prims = s_hook_prims;
+            uint32_t next = LIST_BBOX;
+            int resume = 0;
+            if (c->stall) {
+                g_ge_stall_addr = bjump;
+                next = ge_run_list(next, 0);
+                g_ge_stall_addr = 0;
+                expect(next == bjump, scenario, "list did not stall on the BJUMP word");
+                resume = 1;
+            }
+            expect(ge_run_list(next, resume) == 0, scenario,
+                   "list did not reach END (PC, call stack or offset lost)");
+            unsigned long prims = c->skip ? 1ul : 2ul;
+            expect(g_ge_prim_count == prims, scenario,
+                   c->skip ? "BJUMP did not skip the object's PRIM"
+                           : "the object's PRIM did not run");
+            if (hooked) {
+                expect(s_hook_prims - hook_prims == (unsigned)prims, scenario,
+                       "GPU hooks did not receive the same primitives");
+            } else if (c->skip) {
+                expect(MEM_R32(bbox_px(BBOX_FB_A, 11u, 11u)) == BBOX_SENTINEL, scenario,
+                       "skipped sprite A was drawn");
+                expect(MEM_R32(bbox_px(BBOX_FB_A, 31u, 11u)) == BBOX_GREEN &&
+                       MEM_R32(bbox_px(BBOX_FB_B, 31u, 11u)) == BBOX_SENTINEL, scenario,
+                       "skipped FRAMEBUFPTR changed the target of sprite B");
+            } else {
+                expect(MEM_R32(bbox_px(BBOX_FB_A, 11u, 11u)) == BBOX_RED, scenario,
+                       "sprite A was not drawn");
+                expect(MEM_R32(bbox_px(BBOX_FB_B, 31u, 11u)) == BBOX_GREEN &&
+                       MEM_R32(bbox_px(BBOX_FB_A, 31u, 11u)) == BBOX_SENTINEL, scenario,
+                       "FRAMEBUFPTR in the object did not move sprite B");
+            }
+        }
+    }
+    ge_set_gpu_hooks(NULL);
+    printf("BBOX cases=%u (software and GPU hooks)\n", (unsigned)(sizeof cases / sizeof cases[0]));
+}
+
 int main(int argc, char **argv) {
     int strip_cache = 1;
     if (argc == 2 && strcmp(argv[1], "--strip-cache-disabled") == 0) strip_cache = 0;
@@ -1130,6 +1448,7 @@ int main(int argc, char **argv) {
     g_mem = arena + 0x08000000u;
     test_vram_mirror_cpu_stores();
     test_ge_zbuf_span_bounds_cache();
+    test_ge_texture_mip_levels();
     build_lists();
     expect_api_contract();
 
@@ -1248,6 +1567,7 @@ int main(int argc, char **argv) {
 
     test_ge_vram_cpu_visibility();
     test_ge_vram_depth_bit13_absolute_xor();
+    test_ge_bounding_box_branch();
 
     printf("ge_cpu_profile_validate_selftest: strip_cache=%s scenarios=%u faults=%u failures=%d\n",
            strip_cache ? "on" : "off", s_scenarios, s_faults, s_failures);
