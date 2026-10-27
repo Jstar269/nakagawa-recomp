@@ -450,6 +450,107 @@ def entry_symbol(addr, resume_owners=None):
     return f"r_{addr:08x}" if resume_owners and addr in resume_owners else f"f_{addr:08x}"
 
 
+# --symbol-map=PATH names the generated functions from a guest symbol table, the way
+# a decompilation's symbol file names a static recompilation's functions. The file
+# holds names and addresses only, one GNU ld symbol assignment per line, the form
+# splat's symbol_addrs.txt and matching decompilations use:
+#
+#     name = 0xADDR;  // type:func size:0xNN
+#
+# Blank lines and lines that start with # or // are comments, and any line may end
+# in one. A comment's type: attribute other than func drops the line (data labels);
+# size: gives the function's byte length, which lets crash reports name an address
+# inside it. Addresses are the generated f_<addr> addresses: the primary image and
+# fixed-base extra ELFs at their load addresses (runtime-placed modules keep their
+# m<n>_ names). Without the option nothing below runs and the output is unchanged.
+_SYMBOL_MAP_LINE = re.compile(
+    r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(0[xX][0-9A-Fa-f]+)\s*;\s*(?:(?://|#)(.*))?")
+_SYMBOL_MAP_ATTRIBUTE = re.compile(r"\b(type|size):(\S+)")
+# Every generated reference to a primary-image entry is one of these tokens
+# (entry_symbol); a longer word such as f_<addr>_real is generator-owned.
+_GENERATED_ENTRY_TOKEN = re.compile(r"\b[fr]_[0-9a-f]{8}\b")
+_GENERATOR_SUFFIXED_ENTRY = re.compile(r"\b[fr]_[0-9a-f]{8}_\w+")
+
+
+class SymbolMapError(ValueError):
+    pass
+
+
+def load_symbol_map(path):
+    """Read a guest symbol map into {address: (name, size)}; size 0 is unknown.
+
+    A malformed line, an address that does not fit 32 bits, or two different
+    names (or sizes) for one address is an error naming the file and line.
+    """
+    symbols = {}
+    with open(path, encoding="utf-8") as source:
+        for line_no, line in enumerate(source, 1):
+            text = line.strip()
+            if not text or text.startswith(("#", "//")):
+                continue
+            where = f"{path}:{line_no}"
+            match = _SYMBOL_MAP_LINE.fullmatch(text)
+            if match is None:
+                raise SymbolMapError(f"{where}: expected `name = 0xADDR;`, got {text!r}")
+            name, addr_text, comment = match.groups()
+            attributes = dict(_SYMBOL_MAP_ATTRIBUTE.findall(comment or ""))
+            if attributes.get("type", "func") != "func":
+                continue
+            addr = int(addr_text, 16)
+            if addr > 0xFFFFFFFF:
+                raise SymbolMapError(f"{where}: address {addr_text} does not fit 32 bits")
+            size = 0
+            if "size" in attributes:
+                try:
+                    size = int(attributes["size"], 0)
+                except ValueError:
+                    raise SymbolMapError(
+                        f"{where}: size {attributes['size']!r} is not a number") from None
+                if not 0 < size <= 0x100000000 - addr:
+                    raise SymbolMapError(
+                        f"{where}: size {attributes['size']} does not fit the address space")
+            previous = symbols.get(addr)
+            if previous is not None and previous != (name, size):
+                raise SymbolMapError(
+                    f"{where}: 0x{addr:08x} is already {previous[0]} "
+                    f"(size 0x{previous[1]:x}), not {name} (size 0x{size:x})")
+            symbols[addr] = (name, size)
+    return symbols
+
+
+def symbol_map_renames(symbols, emitted, resume_owners):
+    """Generated-token renames for the entries a symbol map names.
+
+    A callable entry the map names becomes f_<addr>_<name>; the address stays
+    in the symbol, so two static functions that share a name stay distinct. A
+    resume body takes the name of the callable that owns it: r_<addr>_<owner>.
+    """
+    renames = {}
+    for addr in sorted(set(emitted)):
+        if addr in resume_owners:
+            owner = symbols.get(resume_owners[addr])
+            if owner is not None:
+                renames[f"r_{addr:08x}"] = f"r_{addr:08x}_{owner[0]}"
+        elif addr in symbols:
+            renames[f"f_{addr:08x}"] = f"f_{addr:08x}_{symbols[addr][0]}"
+    return renames
+
+
+def symbol_map_collisions(renames, texts):
+    """Renamed symbols that a generator-owned word (f_<addr>_real) already spells."""
+    named = set(renames.values())
+    return sorted({word for text in texts
+                   for word in _GENERATOR_SUFFIXED_ENTRY.findall(text)} & named)
+
+
+def rename_generated_entries(text, renames):
+    """Apply symbol_map_renames to one generated file's text."""
+    if not renames:
+        return text
+    return _GENERATED_ENTRY_TOKEN.sub(
+        lambda match: renames.get(match.group(0), match.group(0)), text)
+
+
 def build_emitted_ownership_map(cfg_report, catalog, emitted):
     """Project the existing CFG onto codegen's entry catalog without steering it."""
     emitted_addresses = set(emitted)
@@ -517,10 +618,11 @@ def build_emitted_ownership_map(cfg_report, catalog, emitted):
     }
 
 
-def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=()):
+def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), renames=None):
     """Write the shared generated declarations with the runtime ABI contract."""
     if resume_owners is None:
         resume_owners = {}
+    renames = renames or {}
     with open(path, "w", encoding="ascii", newline="\n") as f:
         f.write("#ifndef RECOMP_FUNCS_H\n#define RECOMP_FUNCS_H\n")
         f.write('#include "recomp.h"\n\n')
@@ -532,7 +634,8 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=()):
         )
         f.write("#endif\n\n")
         for a in emitted:
-            f.write(f"void {entry_symbol(a, resume_owners)}(CpuState *s);\n")
+            symbol = entry_symbol(a, resume_owners)
+            f.write(f"void {renames.get(symbol, symbol)}(CpuState *s);\n")
         for module in runtime_modules:
             f.write(f"\n/* runtime-placed module {module.name} */\n")
             f.write(f"extern uint32_t {module.base_symbol};\n")
@@ -3158,7 +3261,7 @@ def main(argv):
             "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
             "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
             "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
-            "[--stack-census]\n"
+            "[--stack-census] [--symbol-map=FILE]\n"
             "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
         )
         return 2
@@ -3191,9 +3294,15 @@ def main(argv):
     omit_aot = _OmitAot()
     extra_elfs = []  # list of (elf_path, base_addr)
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
+    symbol_map_path = None
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
+        elif o.startswith("--symbol-map="):
+            symbol_map_path = o.split("=", 1)[1]
+            if not symbol_map_path:
+                sys.stderr.write("--symbol-map requires a path\n")
+                return 2
         elif o.startswith("--extra-span="):
             extra_span_arg = o.split("=", 1)[1]
         elif o.startswith("--cfg-report="):
@@ -3268,6 +3377,15 @@ def main(argv):
         # The dynamic run is meaningful only after the static ownership floor
         # accepts the same image.
         cfg_gate = True
+
+    symbols = {}
+    if symbol_map_path is not None:
+        # Read before the analysis so a bad map fails in a second, not after it.
+        try:
+            symbols = load_symbol_map(symbol_map_path)
+        except (OSError, UnicodeDecodeError, SymbolMapError) as exc:
+            sys.stderr.write(f"codegen: symbol map: {exc}\n")
+            return 2
 
     try:
         extra_specs = build_profile.resolve_list(
@@ -3764,6 +3882,26 @@ def main(argv):
     num_files = len(boundaries)
     base_name = os.path.splitext(out_c)[0]
 
+    # Names from --symbol-map are applied as each file is written, after the
+    # partition, so a map changes symbol spellings and nothing else.
+    renames = {}
+    symbol_table = []
+    if symbol_map_path is not None:
+        renames = symbol_map_renames(symbols, emitted, resume_owners)
+        collisions = symbol_map_collisions(renames, func_texts)
+        if collisions:
+            sys.stderr.write(
+                "codegen: symbol map: a name would spell a generator-owned symbol: "
+                + ", ".join(collisions) + "\n")
+            return 2
+        emitted_set = set(emitted)
+        symbol_table = sorted(
+            (a, name, size) for a, (name, size) in symbols.items() if a in emitted_set)
+        named_resumes = sum(1 for symbol in renames if symbol.startswith("r_"))
+        sys.stderr.write(
+            f"symbol map: {len(symbol_table)} of {len(symbols)} function name(s) name "
+            f"an emitted entry; {named_resumes} resume bodies take their owner's name\n")
+
     # Write the codegen gap report
     with open(f"{base_name}_stubs.txt", "w", encoding="ascii", newline="\n") as f:
         for a, r in sorted(stubbed):
@@ -3776,7 +3914,7 @@ def main(argv):
 
     # Write the shared functions header
     funcs_h_path = f"{base_name}_funcs.h"
-    write_funcs_header(funcs_h_path, emitted, resume_owners, module_translations)
+    write_funcs_header(funcs_h_path, emitted, resume_owners, module_translations, renames)
 
     # The analyzer, not mapped-RAM reachability, owns executable-byte authority.
     # Preserve its exact end-exclusive ranges in generated registration. Exact
@@ -3816,7 +3954,17 @@ def main(argv):
         main_out.append("")
     for module in module_translations:
         main_out.extend(runtime_module_descriptor_lines(module))
+    if symbol_table:
+        main_out.append("")
+        main_out.append("/* Guest function names from --symbol-map: names and addresses only. */")
+        main_out.append("static const SrGuestSymbol sr_guest_symbol_table[] = {")
+        for a, name, size in symbol_table:
+            main_out.append(f'    {{0x{a:08x}u, 0x{size:08x}u, "{name}"}},')
+        main_out.append("};")
     main_out.append("\nvoid sr_register_all(void) {")
+    if symbol_table:
+        main_out.append(
+            f"    sr_guest_symbols_register(sr_guest_symbol_table, {len(symbol_table)}u);")
     if LLE_CPU:
         main_out.append("    sr_cpu_lle_set_enabled(1);")
     main_out.append("    sr_exec_span_reset();")
@@ -3868,25 +4016,26 @@ def main(argv):
     main_out.append('    fprintf(stderr, "sr_register_all: completed\\n");\n}')
 
     with open(out_c, "w", encoding="ascii", newline="\n") as f:
-        f.write("\n".join(main_out))
+        f.write(rename_generated_entries("\n".join(main_out), renames))
 
     for i, chunk in enumerate(boundaries):
+        parts = ["/* Generated by tools/codegen.py. Do not edit by hand. */\n",
+                 f'#include "{os.path.basename(base_name)}_funcs.h"\n#include <math.h>\n#include <string.h>\n#include <stdio.h>\n\n']
+        if SV_ENABLED:
+            parts.append(SR_SV_CHECK + "\n\n")
+        parts.append("\n\n".join(chunk) + "\n\n")
+        parts.append(f"void sr_register_chunk_{i}(void) {{\n")
+        for ft in chunk:
+            if isinstance(ft, ModuleText):
+                continue  # reached through its module descriptor, never at a fixed address
+            m = re.search(r'void ([fr])_([0-9a-fA-F]+)\(', ft)
+            if m:
+                prefix = m.group(1)
+                a_val = int(m.group(2), 16)
+                parts.append(f"    sr_register(0x{a_val:08x}u, {prefix}_{a_val:08x});\n")
+        parts.append("}\n")
         with open(f"{base_name}_{i}.c", "w", encoding="ascii", newline="\n") as f:
-            f.write("/* Generated by tools/codegen.py. Do not edit by hand. */\n")
-            f.write(f'#include "{os.path.basename(base_name)}_funcs.h"\n#include <math.h>\n#include <string.h>\n#include <stdio.h>\n\n')
-            if SV_ENABLED:
-                f.write(SR_SV_CHECK + "\n\n")
-            f.write("\n\n".join(chunk) + "\n\n")
-            f.write(f"void sr_register_chunk_{i}(void) {{\n")
-            for ft in chunk:
-                if isinstance(ft, ModuleText):
-                    continue  # reached through its module descriptor, never at a fixed address
-                m = re.search(r'void ([fr])_([0-9a-fA-F]+)\(', ft)
-                if m:
-                    prefix = m.group(1)
-                    a_val = int(m.group(2), 16)
-                    f.write(f"    sr_register(0x{a_val:08x}u, {prefix}_{a_val:08x});\n")
-            f.write("}\n")
+            f.write(rename_generated_entries("".join(parts), renames))
 
     write_shared_library_sources(os.path.dirname(base_name) or ".", module_translations)
 
@@ -3894,6 +4043,9 @@ def main(argv):
         cfg_report["emitted_ownership_map"] = build_emitted_ownership_map(
             cfg_report, catalog, primary_emitted,
         )
+        for row in cfg_report["emitted_ownership_map"]["regions"]:
+            if row["symbol"] is not None:
+                row["symbol"] = renames.get(row["symbol"], row["symbol"])
         with open(cfg_report_path, "w", encoding="ascii", newline="\n") as output:
             output.write(canonical_cfg_json(cfg_report))
 
