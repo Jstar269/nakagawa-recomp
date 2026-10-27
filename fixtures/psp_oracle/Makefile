@@ -223,6 +223,8 @@ else ifeq ($(CASE),fake-success)
 CASE_ID = 112
 else ifeq ($(CASE),font-userpgf)
 CASE_ID = 113
+else ifeq ($(CASE),ge-timing)
+CASE_ID = 114
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -423,7 +425,7 @@ endif
 PSP_EBOOT_TITLE = Nakagawa PSP Oracle
 PSP_EBOOT_ICON = NULL
 LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
-ifneq ($(filter ge-nan vram-mirror,$(CASE)),)
+ifneq ($(filter ge-nan vram-mirror ge-timing,$(CASE)),)
 LIBS := -lpspgum -lpspgu $(LIBS)
 endif
 # #1096: the AT3 decode probe links the user-mode ATRAC and utility stubs it calls.

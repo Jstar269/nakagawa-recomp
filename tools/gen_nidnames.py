@@ -112,11 +112,14 @@ def check_not_sentinel(nid: int, name: str, derivable: bool) -> None:
         )
 
 
-def render(corpus: dict) -> str:
-    entries = corpus["entries"]
-    resolved: list[tuple[int, str]] = []
+def nid_names(corpus: dict) -> dict[int, str]:
+    """Every corpus entry as {nid: name}, under the checks the header is rendered with.
+
+    tools/codegen.py --name-imports reads the same mapping, so a generated stub name
+    and the runtime's sr_nid_name() never disagree.
+    """
     seen: dict[int, str] = {}
-    for entry in entries:
+    for entry in corpus["entries"]:
         nid, name = resolve(entry)
         check_not_sentinel(nid, name, entry.get("class") in DERIVABLE_CLASSES)
         if nid in seen:
@@ -124,8 +127,11 @@ def render(corpus: dict) -> str:
                 f"duplicate NID 0x{nid:08x}: {seen[nid]!r} and {name!r}"
             )
         seen[nid] = name
-        resolved.append((nid, name))
-    resolved.sort()
+    return seen
+
+
+def render(corpus: dict) -> str:
+    resolved = sorted(nid_names(corpus).items())
 
     counts = corpus["counts"]
     derived = sum(counts[c] for c in sorted(DERIVABLE_CLASSES))
