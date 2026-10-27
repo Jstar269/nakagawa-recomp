@@ -16,7 +16,8 @@ because they change with every pull request.
 | `src/ui/`, `src/player/ui/` | C | The launcher's newer UI toolkit and the screens built with it. |
 | `src/core/` | C | Code the player and the tools share: reading disc images, decryption, title manifests, starting a game. |
 | `tools/` | Python | Analysis and code generation, the `nk_cli.py` command line, and the test suite (`tools/test_*.py`). |
-| `src/rt/` | C | The runtime: everything linked into each built game, standing in for the PSP's system software and hardware. |
+| `src/rt/` | C | The runtime: everything linked into each built game, standing in for the PSP's system software and hardware. The `*_selftest.c` files beside it are native self-tests, built only by test targets such as `native-core-tests`. |
+| `tests/` | C | Fuzz targets and shared helpers for native tests. Most native self-tests still live in `src/rt/`. |
 | `build/` | generated | Generated C and objects. Never committed, never edited by hand. |
 
 ## 1. The user adds a disc
