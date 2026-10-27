@@ -267,7 +267,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "36a88d153cf64d2c9f924d84edb442c50a26ed221a891c0b42e3e7478aec9bd9"
+      "sha256": "59bb7b75dd3f34a230f6fdbe31c55bc945e611c0533ca4d5139e233a4b4ead62"
     },
     {
       "path": ".github/workflows/provenance-attestation-merge-group.yml",
@@ -448,7 +448,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2eaeceefd8118ecf19b5431e249650a2d87c22b1885bb8426f04ace957178d4d"
+      "sha256": "3bc5306e96695dc2a68b06220d29dc77029f9bbd93b9fba39328edd25d5d5819"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -465,7 +465,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fdb101d18a3b0e729f801c945e540893c4066c3e1f3eca82d1f330658d839aa4"
+      "sha256": "60e50448ea5de1527855777aa4b3431938a3a9d0b8e99f4d06344f06edd9cb88"
     },
     {
       "path": "REVIEW.md",
@@ -1012,7 +1012,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "85e7d11b176a6bd5afa4f5f497d0fc02fcd4c3ccf7e9db1fd3f992700f5930cd"
+      "sha256": "9f46efd74ce56c3a1b972be3cdf145c19ff497315cc23d86783346c042c7b07f"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1033,7 +1033,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "c143fecaa3c81b3968de37050641772eb285d648f67a3f3319d02133ad20dd6c"
+      "sha256": "cc2f3c6afc3c40ab759dd4e72bb29623b60d6619cbcb4cf3fdac8064006284d5"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1411,7 +1411,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d3ad5f5eb60ed9ad35b599212845494acb1762b980011eff19724698b0742bbd"
+      "sha256": "b44cece762868e1b3390fe943769f8602636340d07909215f3c41c4807b7536e"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1897,6 +1897,15 @@
       "sha256": "44f7f854397240fb266d50248fca6d7b6e7892a606cc6723838adb1d3267d59a"
     },
     {
+      "path": "docs/images/brand/og-card.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "614698eb0f74bc933fe90d8114a0351beb47e6370ed5da649d077fce23c795ba"
+    },
+    {
       "path": "docs/images/showcase-breakout-v180.png",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1948,7 +1957,16 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9037ae4b7b9fbddde54a07151d98ae3e901a3d5ea394dc2af7b457fdfdd1c5a6"
+      "sha256": "4ab7806bece3f8d097964b0d2d16264867a17e09b12c7d1a6cc88bb6aebc8284"
+    },
+    {
+      "path": "docs/media/hst-title-screen-960.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "8abe8ddfc74d02d04cf74791b3924c8b2ae5daf4000403f3b6e01134a775b878"
     },
     {
       "path": "docs/media/hst-title-screen.png",
@@ -14916,7 +14934,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "003e2c8ee2ed183e57f9bd148673e5dfa289c9123120074f8c65cf8320e8eae0"
+      "sha256": "bb6751f691a7b7e312d14e8cf74ebe03e6d4ac61cf5201e0a502fe84ecd10f51"
     },
     {
       "path": "tools/test_recomp_helper_inventory.py",

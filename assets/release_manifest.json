@@ -737,6 +737,23 @@
       "comment": "Project-authored app icon drawn from docs/images/brand/nakagawa-mark-dark.svg by tools/make_app_icon.py; linked into the Windows executables through assets/brand/nakagawa.rc."
     },
     {
+      "id": "site-og-card",
+      "name": "Website share card (Open Graph image)",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/images/brand/og-card.png",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "614698eb0f74bc933fe90d8114a0351beb47e6370ed5da649d077fce23c795ba"
+      },
+      "comment": "Project-authored link preview: the N1 mark, the site's tennis court and text in Geist (OFL-1.1). No game imagery."
+    },
+    {
       "id": "readme-showcase-ge-scene-v120",
       "name": "README screenshot: GE scene demo at vblank 120",
       "type": "asset",
@@ -891,6 +908,23 @@
         "sha256": "18f1317bc35cb5403fdcff6efefe8e125dfa6ca1e4b316500140b9e353a8e58f"
       },
       "comment": "Presentation capture of Hot Shots Tennis: Get a Grip running in Nakagawa Recomp. The game belongs to its publisher; not licensed under this repository. Admitted under the maintainer authorization of 2026-10-21."
+    },
+    {
+      "id": "site-hst-title-screen-960",
+      "name": "Website presentation screenshot: Hot Shots Tennis title screen, 960 px",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/media/hst-title-screen-960.png",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "8abe8ddfc74d02d04cf74791b3924c8b2ae5daf4000403f3b6e01134a775b878"
+      },
+      "comment": "docs/media/hst-title-screen.png reduced to 960 x 540 and a 256-colour palette for the project website. The game belongs to its publisher; not licensed under this repository. Shown with its notice under the maintainer authorization of 2026-10-21 for presentation screenshots."
     },
     {
       "id": "ui-font-chakrapetch-semibold",
