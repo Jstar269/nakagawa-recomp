@@ -50,7 +50,7 @@ are not evidence that the paths have landed in the current player.
 ### 3.1 Retail EBOOT and PRX Cryptography
 
 * **Input boundary:** `tools/codegen.py` consumes supported MIPS ELF inputs and fails closed on encrypted headers. The player decrypts an encrypted executable or module from the user's disc, refuses one it can't decrypt by name, and accepts decrypted files from the user's own copy ([`docs/SETUP.md`](SETUP.md#encrypted-executables)).
-* **Status:** UMD disc images are decrypted locally with built-in tables; PSN `EBOOT.PBP` packages are not yet ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). PGD-protected game data, guest middleware startup, and any specific title's compatibility remain separate boundaries.
+* **Status:** UMD disc images, and PSN releases of UMD games (an `EBOOT.PBP` holding an NPUMDIMG disc image, converted once into its ISO), are decrypted locally with built-in tables; other PSN (NPDRM) packages are not yet ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). PGD-protected game data, guest middleware startup, and any specific title's compatibility remain separate boundaries.
 
 ---
 

@@ -1033,7 +1033,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d686c83b15a17399c66bab9fcc408edd460a9dd71269012a93839ea4572843a6"
+      "sha256": "b003a8e149d7819b21bf349647b4f840d44420cc087d6ed78e34149fdf25bea8"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1513,7 +1513,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a5fe1c097e589aa4f51b3c1362597d2985bc205d2e8f6785f75c093962e8ae9f"
+      "sha256": "9b3701c4b9448548cfe4626ea9b9cf096f53d34eab5e964b3ad7440d68254382"
     },
     {
       "path": "docs/LINUX_DEVELOPMENT.md",
@@ -1624,7 +1624,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "810a83f4d798c66993dd98e786b06ba6698ed5480ca4fba01f355fa0d4f4a77b"
+      "sha256": "5af83b95914c09e22c2caf44e5dc73f93fb5415ba3018bd303e14847b88d6207"
     },
     {
       "path": "docs/PROVENANCE_MERGE_GATE.md",
@@ -1711,7 +1711,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1642ef4345f05295c63f703409d8efc980d70f463fafff90615cb1bd555bd663"
+      "sha256": "bf38c1da718055be97d262724db4099ce4bdd734508fb008521225bd323814fa"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1747,7 +1747,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ceaa944bab58158bd11998d905614bbeac1fa4d2d860f56b36bb38f5dd6bda99"
+      "sha256": "fd38d69731897609c6084fc1b11ede14cfd7e2e7cdf92bb8cb33382d16dfae3e"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -1804,7 +1804,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3599634e82665cf29a1bf58624a10f7420d4a08bb046e467671bb56f7f53711a"
+      "sha256": "b84d7105cc337ce6cfa2e8c311e5dd8c825867d6e4e5ed58cc7058cc5f398605"
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
@@ -8855,7 +8855,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "eda6d8105b0d116dd2e2661ca8c7acfa35ce9ee8b6fb1a942a8859f36811fb51"
+      "sha256": "14ff20f79336c19c258cd390930678e5def125f37ad0eeaa1274b7a1356e0b00"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8893,7 +8893,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be60556d0fa251b4434177a8e658358921c7835d5563ff2592917686187c0ccf"
+      "sha256": "e0914c22eabac59303232c45ecc911374a08d74911dabfa2a422f51e8dbbe70c"
     },
     {
       "path": "src/rt/intr_conformance.h",

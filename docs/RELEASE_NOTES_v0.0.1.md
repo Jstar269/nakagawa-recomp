@@ -55,6 +55,11 @@ needs something unsupported, missing or not built yet, it stops and tells you cl
   `<user data>/titles/<DISC_ID>/decrypted/`. Nothing is downloaded, and PSP system software (firmware) is never
   decrypted. If a file can't be decrypted, the check names it and the reason, and a plain copy you made from your own
   disc in that folder is used instead ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)).
+- **Add a PSN copy of a UMD game.** Pick its `EBOOT.PBP` the way you pick a disc image. The player turns it back
+  into the disc image once, on your PC, checks that the result is a valid disc whose disc ID matches the package, and
+  then adds it exactly like a disc ([#1535](https://github.com/Jstar269/nakagawa-recomp/pull/1535)). The conversion
+  shows its progress and can be cancelled. PSP minis, games tied to the PSP that bought them, PSOne Classics and
+  PGD-protected data aren't supported yet.
 - **Pause a running game.** Press `Esc`, `F1` or the controller's Guide button: the game stops on its last frame
   under a dark screen with its sound held, and a button you were holding does nothing until you press it again. Press
   the same key to carry on where it stopped. The pause has no menu yet
@@ -109,18 +114,20 @@ They create their synthetic inputs under the ignored `build/` folder.
 
 ## What v0.0.1 is not
 
-- **No games included.** This repository contains no game programs, game assets, firmware modules, decryption keys
-  or private test recordings. Nakagawa Recomp never downloads games or game data, and the release makes no network
+- **No games included.** This repository contains no game programs, game assets, firmware modules, keys bound to a
+  console or a user, or private test recordings. Its only key material is the public game-decryption tables PPSSPP
+  also ships, in `src/core/nk_psp_builtin_keys.c` ([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)).
+  Nakagawa Recomp never downloads games or game data, and the release makes no network
   connection: its build tools are in the ZIP. Only without them, as in a source checkout, does the player offer to
   download the build tools named in the prerequisite manifest, with your consent. You supply your own disc image of a
-  game you own, as an
-  uncompressed standard `.iso` ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+  game you own, as an uncompressed standard `.iso`, or the `EBOOT.PBP` of a PSN release of a UMD game you own
+  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308), [#1535](https://github.com/Jstar269/nakagawa-recomp/pull/1535)).
 - **Not a finished emulator, and not every kind of game file yet.** Nakagawa Recomp is an experimental static
   recompiler. Hot Shots Tennis is the one game rated **Playable**; [`COMPATIBILITY.md`](COMPATIBILITY.md) lists
   what each tested game reaches. The
-  player decrypts UMD disc images (`.iso`); PSN downloads (`EBOOT.PBP` packages) are not decrypted yet, and
-  PGD-protected content is unsupported; broader ISO-to-Play support is in the works
-  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+  player decrypts UMD disc images (`.iso`) and converts PSN releases of UMD games (`EBOOT.PBP`) into disc images.
+  Other PSN downloads and PSOne Classics aren't supported yet, PGD-protected content is unsupported, and
+  broader ISO-to-Play support is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 - **Other games are experimental.** A valid PSP disc with no profile yet is imported as **Experimental**. The card
   says compatibility is unknown, the checklist shows what is missing, and Play stays off until a matching runtime
   package exists. PAC-MAN Championship Edition reaches its menu and plays a stage on the maintainer's copy, through
@@ -258,11 +265,14 @@ Hot Shots Tennis runs with 11 title-specific compatibility patches: the forced b
 - **Some movies show black, and some VRAM reads are wrong.** A movie whose frames pass through a VRAM mirror shows a
   black screen for now, and a CPU read of depth data through a VRAM mirror is still wrong for some depth-buffer
   settings ([#1049](https://github.com/Jstar269/nakagawa-recomp/issues/1049)).
-- **Only one other game has been tried.** PAC-MAN Championship Edition reaches its menu and plays a stage on the
+- **Few other games work yet.** PAC-MAN Championship Edition reaches its menu and plays a stage on the
   maintainer's copy, through general fixes with no title-specific branches
   ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556)).
-  That isn't the full game. Other games tried so far stop at imports Nakagawa doesn't support yet, and work on more
-  games is in the works under [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).
+  That isn't the full game. The other games tried for this release range from gameplay to a black screen: some
+  reach their menus or play, some stop at an import Nakagawa doesn't support yet, and some stay on a black screen.
+  When a game draws no new frame for 30 seconds, the player offers to keep waiting or stop it. A game that keeps
+  drawing a black screen gets no such offer: stop it with **STOP GAME** in the player. The release page lists how far
+  each one got. Work on more games is in the works under [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).
 - **Not every disc can be set up yet.** The player builds and checks a package for a supported game, but it does not
   make every ISO playable: profiles and imports that aren't supported, and PGD-protected data, stop with a message
   that says what is missing. Wider support is in the works
@@ -282,6 +292,10 @@ Hot Shots Tennis runs with 11 title-specific compatibility patches: the forced b
   decoder's behaviour is not yet matched to PSP hardware ([#1096](https://github.com/Jstar269/nakagawa-recomp/issues/1096)).
 - **Movie timing.** The number of decoded pictures and the audio offset are not yet fully accounted for
   ([#279](https://github.com/Jstar269/nakagawa-recomp/issues/279)).
+- **Removing a game keeps its disc copies.** **Remove from library** deletes what Nakagawa built for a game, and its
+  saves if you tick the box, but keeps the disc image converted from a PSN `EBOOT.PBP`
+  (`<user data>/discs/<DISC_ID>/`) and the decrypted files (`<user data>/titles/<DISC_ID>/decrypted/`). Delete those
+  folders yourself to get the space back. Your own `.iso` or `EBOOT.PBP` is never changed.
 - **Not code-signed.** Windows SmartScreen warns on first run because the files have no publisher signature; see
   [Checking your download](#checking-your-download) for how to check a download before you run it. The bundled
   third-party build tools keep their own upstream files and signatures.

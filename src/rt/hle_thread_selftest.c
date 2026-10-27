@@ -6660,6 +6660,14 @@ static void test_io_devctl_memory_stick(void) {
                           0u, 0u, outdata_addr, 4u) == 0u &&
                MEM_R32(outdata_addr) == 4u,
            "sceIoDevctl ready query writes 4 to its validated output span");
+    MEM_W32(outdata_addr, 0u);
+    expect(io_devctl_call(&cpu, second_device_addr, 0x02425823u,
+                          0u, 0u, outdata_addr, 4u) == 0u &&
+               MEM_R32(outdata_addr) == 1u,
+           "sceIoDevctl fatms0: medium check reports an inserted Memory Stick");
+    expect(io_devctl_call(&cpu, second_device_addr, 0x02425823u,
+                          0u, 0u, outdata_addr, 2u) == 0x80010016u,
+           "sceIoDevctl fatms0: medium check refuses an output shorter than one word");
 
     MEM_W32(indata_addr, 0x1234u);
     expect(io_devctl_call(&cpu, second_device_addr, 0x02415821u,
