@@ -159,20 +159,29 @@ choose **More info** and then **Run anyway**, check that the download is the one
 
 2. After extracting, `SHA256SUMS.txt` lists the SHA-256 of every file in the package.
 3. With the [GitHub CLI](https://cli.github.com/), check that each executable and DLL under `bin\` was
-   built by this repository's release workflow from the tagged commit. Each file carries a signed build
-   attestation (SLSA Build Level 2). For one file:
+   built by this repository's release workflow. Each file carries a signed build attestation (SLSA Build
+   Level 2). Set `$Commit` to the full commit the release page names (the commit the `v0.0.1` tag points at),
+   then check one file:
 
    ```powershell
-   gh attestation verify .\bin\nakagawa_player.exe --repo Jstar269/nakagawa-recomp
+   $Commit = '<the 40-character commit from the release page>'
+   gh attestation verify .\bin\nakagawa_player.exe --repo Jstar269/nakagawa-recomp `
+       --signer-workflow Jstar269/nakagawa-recomp/.github/workflows/provenance-attestation.yml `
+       --source-ref refs/heads/main --source-digest $Commit
    ```
 
-   For every file under `bin\` at once:
+   Or every file under `bin\` at once:
 
    ```powershell
    Get-ChildItem .\bin -Recurse -File | ForEach-Object {
-       gh attestation verify $_.FullName --repo Jstar269/nakagawa-recomp
+       gh attestation verify $_.FullName --repo Jstar269/nakagawa-recomp `
+           --signer-workflow Jstar269/nakagawa-recomp/.github/workflows/provenance-attestation.yml `
+           --source-ref refs/heads/main --source-digest $Commit
    }
    ```
+
+   The signer workflow and the commit together prove the file came from this release's build, not from
+   some other workflow run in the repository.
 
 If any check fails, don't run the file; report it as described under [How to report](#how-to-report).
 
