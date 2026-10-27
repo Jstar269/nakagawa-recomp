@@ -970,8 +970,6 @@ static void test_title_config_hle_bindings(void) {
     uint32_t frame_latch = 0;
     uint32_t libfont_uid = 0;
     int has_latch = sr_title_config_frame_latch_addr(&frame_latch);
-    SrTitleReentBindings reent;
-    int has_reent = sr_title_config_reent_bindings(&reent);
     CpuState cpu;
 
     memset(g_mem_base, 0, 0x0c000000u);
@@ -988,12 +986,6 @@ static void test_title_config_hle_bindings(void) {
     expect((has_bringup && has_sync && has_latch) ||
            (!has_bringup && !has_sync && !has_latch),
            "migrated HLE groups are all configured together or all absent");
-    expect(has_reent == (strcmp(cfg->source_id, "hst-ucus98701") == 0),
-           "HST reent compatibility is selected only by the validated HST title config");
-    if (has_reent) {
-        expect(reent.master_reent_addr != 0u && reent.guest_thread_table_addr != 0u,
-               "HST reent compatibility config supplies both required guest addresses");
-    }
 
     s_title_hle_guest_calls = 0;
     s_title_hle_probe = 1;
@@ -13403,14 +13395,6 @@ static void test_explicit_exit_status_exact(int32_t supplied, uint32_t expected)
 #define NID_SCE_KERNEL_CREATE_CALLBACK   0xe81caf8fu
 #define NID_SCE_KERNEL_DELETE_CALLBACK   0xedba5844u
 
-static int guest_hash_contains_uid(uint32_t uid) {
-    uint32_t bucket = uid % 32u;
-    for (uint32_t node = 0x0030aa88u; node != 0u; node = MEM_R32(node)) {
-        if (MEM_R32(node + 0x84u + bucket * 4u) == uid) return 1;
-    }
-    return 0;
-}
-
 static int host_libc_contains_uid(uint32_t uid) {
     for (int i = 0; i < MAXTHREADS; i++)
         if (s_libc_threads[i].in_use && s_libc_threads[i].uid == uid) return 1;
@@ -13465,8 +13449,8 @@ static void test_thread_delete_lifecycle_and_cleanup(void) {
     expect(terminate_delete == 0, "TerminateDeleteThread terminates and removes a target");
     expect(target && target->deleted && target->stack_released && target->resources_released,
            "TerminateDeleteThread marks the object deleted and releases resources once");
-    expect(!host_libc_contains_uid(target_uid) && !guest_hash_contains_uid(target_uid),
-           "TerminateDeleteThread removes host libc and guest reent ownership");
+    expect(!host_libc_contains_uid(target_uid),
+           "TerminateDeleteThread removes host libc ownership");
     expect(!sr_callback_is_valid(callback_uid),
            "TerminateDeleteThread removes callbacks owned by the target");
     expect(joiner->state == TH_READY && joiner->join_result_valid &&

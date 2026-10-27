@@ -2162,95 +2162,10 @@ uint32_t g_master_reent;
 
 /* Host-side registry of live guest threads, keyed by k0, holding (k0, state_ptr) pairs in
  * host memory instead of guest RAM. */
-extern uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra);
 extern void sr_callback_unregister_owner(uint32_t thread_uid);
 extern void sr_hle_release_thread_resources(uint32_t thread_uid);
 
-/* guest_reent_register: insert (uid, state_ptr) into the title-configured guest
- * per-thread reent/state hash for threads that do not call the guest registration
- * routine themselves. The translated routine returns -1 on duplicate UID; this host
- * helper silently overwrites (idempotent refresh on restart). */
-static void guest_reent_register(uint32_t uid, uint32_t state_ptr) {
-    SrTitleReentBindings bindings;
-    if (!sr_title_config_reent_bindings(&bindings)) return;
-    uint32_t bucket = uid % 32;
-    /* Layout: { next(+0x00), state_ptr[32](+0x04..+0x80), uid[32](+0x84..+0x100) }.
-     * Bucket = uid % 32 (signed-safe for positive PSP thread UIDs). */
-    uint32_t node_addr = bindings.guest_thread_table_addr;
-    sr_compat_fired("TITLE_CONFIGURED_SCHEDULER_COMPAT", bindings.guest_thread_table_addr,
-                    "guest thread reent table root");
-
-    if (getenv("SR_REENT_TRACE")) {
-        fprintf(stderr, "REENT_TRACE guest_register: uid=0x%x state_ptr=0x%x bucket=%u\n",
-                uid, state_ptr, bucket);
-    }
-
-    for (;;) {
-        uint32_t key = MEM_R32(node_addr + 0x84u + bucket * 4u);
-
-        if (key == 0u || key == uid) {
-            /* Free slot or same-UID refresh: write key and state_ptr. */
-            MEM_W32(node_addr + 0x84u + bucket * 4u, uid);
-            MEM_W32(node_addr + 0x04u + bucket * 4u, state_ptr);
-            return;
-        }
-
-        /* Slot occupied by a different UID (hash collision): follow the chain. */
-        uint32_t next = MEM_R32(node_addr);
-        if (next == 0u) {
-            /* End of chain; allocate a new node (0x104 bytes to match f_00011710's
-             * f_00010738 allocation). */
-            next = sr_newlib_malloc(260, 0);
-            if (next == 0u) {
-                fprintf(stderr, "FATAL: guest_reent_register: sr_newlib_malloc failed to allocate hash node\n");
-                abort();
-            }
-            for (uint32_t offset = 0; offset < 260; offset += 4) {
-                MEM_W32(next + offset, 0u);
-            }
-            MEM_W32(node_addr, next);
-        }
-        node_addr = next;
-    }
-}
-
-/* guest_reent_unregister: remove the entry for (uid derived from state_ptr+0x37c) from
- * the configured per-thread reent/state hash. Zeroes both the uid key and state_ptr
- * slots so f_00011600 no longer finds this thread. */
-static void guest_reent_unregister(uint32_t state_ptr) {
-    SrTitleReentBindings bindings;
-    if (!sr_title_config_reent_bindings(&bindings)) return;
-    if (!sr_inrange(state_ptr)) return;
-    uint32_t uid = MEM_R32(state_ptr + 0x37cu);
-    if (uid == 0) return;
-
-    uint32_t bucket = uid % 32;
-    uint32_t node_addr = bindings.guest_thread_table_addr;
-
-    if (getenv("SR_REENT_TRACE")) {
-        fprintf(stderr, "REENT_TRACE guest_unregister: uid=0x%x state_ptr=0x%x bucket=%u\n",
-                uid, state_ptr, bucket);
-    }
-
-    while (node_addr != 0u) {
-        uint32_t key = MEM_R32(node_addr + 0x84u + bucket * 4u);
-        if (key == uid) {
-            MEM_W32(node_addr + 0x84u + bucket * 4u, 0u);
-            MEM_W32(node_addr + 0x04u + bucket * 4u, 0u);
-            return;
-        }
-        node_addr = MEM_R32(node_addr);
-    }
-}
-
 static void init_guest_reent(uint32_t state_ptr, uint32_t uid) {
-    SrTitleReentBindings bindings;
-    int has_bindings = sr_title_config_reent_bindings(&bindings);
-    if (has_bindings && g_master_reent == 0u) {
-        g_master_reent = bindings.master_reent_addr;
-        sr_compat_fired("TITLE_CONFIGURED_SCHEDULER_COMPAT", bindings.master_reent_addr,
-                        "master reent fallback address");
-    }
     /* Copy master thread's reent structure to initialize the new thread's reent.
      * This inherits the initialized allocator context. A thread holding the ROOT or
      * LAUNCHER role keeps its own independently-initialized reent: root has the
@@ -2286,9 +2201,9 @@ static void init_guest_reent(uint32_t state_ptr, uint32_t uid) {
 }
 
 /* register_libc_thread: record (k0, state_ptr, uid) in the host-owned s_libc_threads table
- * and initialize the thread's reent structure (init_guest_reent), then pre-register the thread
- * in the configured guest reent/state hash for all threads except the launcher. The launcher's
- * guest entry calls its own registration routine and must see an empty slot.
+ * and initialize the thread's reent structure (init_guest_reent). The runtime writes nothing into
+ * the guest's own per-thread reent table: a guest thread that registers itself does so through
+ * its own code.
  *
  * Returns 0 on success, -1 if the host table is full (structurally impossible in production
  * because s_libc_threads has MAXTHREADS slots and there can never be more live records than
@@ -2333,13 +2248,6 @@ static int register_libc_thread(uint32_t k0, uint32_t state_ptr, uint32_t uid) {
 
     init_guest_reent(state_ptr, uid);
 
-    /* Pre-register in the configured guest hash for every thread except a launcher,
-     * which calls the guest's own registration function from its entry and must find
-     * an empty slot. The accessor makes this compatibility behavior inert otherwise. */
-    if (!sched_uid_is_launcher(uid)) {
-        guest_reent_register(uid, state_ptr);
-    }
-
     if (getenv("SR_THLOG")) {
         fprintf(stderr, "DEBUG: Registered thread uid=0x%x in host libc table slot %d: k0=0x%x state_ptr=0x%x\n",
                 uid, slot, k0, state_ptr);
@@ -2366,7 +2274,6 @@ static void unregister_libc_thread(uint32_t k0) {
                 fprintf(stderr, "REENT_TRACE host_unregister: uid=0x%x k0=0x%x state_ptr=0x%x bucket=%u slot=%d\n",
                         uid, k0, state_ptr, bucket, i);
             }
-            guest_reent_unregister(state_ptr);
             s_libc_threads[i].uid = 0;
             s_libc_threads[i].k0 = 0;
             s_libc_threads[i].state_ptr = 0;
@@ -4683,16 +4590,6 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
      * -- rather than the synthetic thread stack. */
     memcpy(&t0->saved, s_cpu, sizeof(CpuState));
     arglen = s_cpu->r[4]; argp = s_cpu->r[5];
-    /* The HST guest reent hash is initialized only when the validated profile
-     * supplies its typed binding. Other titles receive no guest-memory seed. */
-    SrTitleReentBindings reent_bindings;
-    if (sr_title_config_reent_bindings(&reent_bindings) &&
-        sr_inrange(reent_bindings.guest_thread_table_addr) &&
-        sr_inrange(reent_bindings.guest_thread_table_addr + 4u)) {
-        MEM_W32(reent_bindings.guest_thread_table_addr, 0u);
-        sr_compat_fired("TITLE_CONFIGURED_SCHEDULER_COMPAT", reent_bindings.guest_thread_table_addr,
-                        "guest thread reent table root");
-    }
     sched_start_thread(uid, arglen, argp);
 
     static const char *stn[] = {"DORMANT", "READY", "RUNNING", "WAIT_DELAY", "WAIT_OBJ"};
