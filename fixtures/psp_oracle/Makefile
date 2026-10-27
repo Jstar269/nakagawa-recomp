@@ -14,10 +14,11 @@ PSP_EBOOT_SFO = $(BUILD_DIR)/PARAM.SFO
 # Keep each Tier S/B launch isolated; an unexpected kernel response could
 # terminate it before the complete record set is emitted.
 CASE ?= smoke
-# The hand-authored mutex imports are needed only by the mutex probes. Linking
-# them into unrelated PRXs leaves PSP SDK import stubs out of order.
+# The hand-authored mutex imports are needed by mutex probes and cpu-timing's
+# synchronization cells. Linking them into unrelated PRXs leaves PSP SDK
+# import stubs out of order.
 MUTEX_CASES = mutex-refer-unlocked mutex-timeout-quanta \
-              mutex-priority-inheritance mutex-interrupt-context
+              mutex-priority-inheritance mutex-interrupt-context cpu-timing
 ifneq ($(filter $(MUTEX_CASES),$(CASE)),)
 OBJS += $(BUILD_DIR)/mutex_imports.o
 endif
@@ -223,6 +224,10 @@ else ifeq ($(CASE),fake-success)
 CASE_ID = 112
 else ifeq ($(CASE),font-userpgf)
 CASE_ID = 113
+else ifeq ($(CASE),ge-timing)
+CASE_ID = 114
+else ifeq ($(CASE),cpu-timing)
+CASE_ID = 115
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -423,7 +428,7 @@ endif
 PSP_EBOOT_TITLE = Nakagawa PSP Oracle
 PSP_EBOOT_ICON = NULL
 LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
-ifneq ($(filter ge-nan vram-mirror,$(CASE)),)
+ifneq ($(filter ge-nan vram-mirror ge-timing cpu-timing,$(CASE)),)
 LIBS := -lpspgum -lpspgu $(LIBS)
 endif
 # #1096: the AT3 decode probe links the user-mode ATRAC and utility stubs it calls.
@@ -468,6 +473,11 @@ ifeq ($(CASE),hle-intr-cells)
 USER_MODE_IMPORT_GATE_ARGS += --exact-library InterruptManager=0xCA04A2B9,0xD61E6961,0xFB8E22EC,0x8A389411
 USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0xBEA46419,0x15B6446B
 USER_MODE_IMPORT_GATE_ARGS += --forbid-library KUBridge --forbid-library SystemCtrlForUser
+endif
+ifeq ($(CASE),cpu-timing)
+# The shared probe cleanup checks interrupt state; cpu-timing also calls the
+# lightweight-mutex lock/unlock pair through Kernel_Library.
+USER_MODE_IMPORT_GATE_ARGS += --exact-library Kernel_Library=0x092968F4,0x5F10D406,0x47A0B729,0xB55249D2,0xBEA46419,0x15B6446B
 endif
 # The registry cases may import only the eight read-only sceReg calls, exactly: the gate
 # below fails the build on any other sceReg NID (a set, create, remove or flush call).

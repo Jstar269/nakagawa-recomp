@@ -35,6 +35,10 @@
  *  - Textures decode through ge.c's own sampler (ge_decode_tex_rgba); CLUT/swizzle is
  *    reference-correct by construction. Render-to-texture binds the target image
  *    directly when the address/stride match (a snapshot copy for feedback loops).
+ *  - Mip levels: only level 0 is uploaded and sampled (mipLevels = 1). The software GE
+ *    samples levels 1-7 in the TEXLEVEL constant and automatic modes (ge.c tex_lod), so a
+ *    draw that selects a higher level diverges here until this backend gains them (#1373);
+ *    the coherence selftest pins that divergence.
  *  - 16-bit precision (5650/5551/4444 framebuffers): the fragment shader snaps its
  *    output to the native lattice (pack-by-truncation + expand-by-bit-replication,
  *    identical to ge.c pack_fb/unpack_color) and applies the GE's 4x4 ordered dither,
@@ -287,6 +291,20 @@ static VkSampler s_smp[TEX_FILTER_VARIANTS]; /* shared clamp samplers indexed by
 static VkDescriptorSet s_snap_set[TEX_FILTER_VARIANTS];
 static Target *s_snap_src = NULL;          /* what the snapshot currently holds */
 static uint64_t s_snap_srcgen = 0;
+
+/* Deferred shader-blend snapshots. A shader-blend batch reads the destination snapshot only at
+ * its own fragments (texelFetch(u_dst, gl_FragCoord.xy) in psp.frag), and every fragment a batch
+ * writes or reads lies inside the box of its vertices clipped to its scissor (batch_rect).
+ * s_snap_dirty is the union of the boxes of the render ops drawn into s_snap_src since its last
+ * copy, valid while s_snap_src->render_gen == s_snap_dirty_gen: outside the box the snapshot
+ * equals the target. A shader-blend batch whose box misses the box reads from the snapshot what
+ * a fresh copy would hold, so submit_pending records a copy only when the boxes meet, when the
+ * snapshot holds another target, or when the target changed by any other path (its render_gen
+ * moved on without this bookkeeping). */
+typedef struct { int x0, y0, x1, y1; } SnapRect;   /* guest pixels, half-open; x0 >= x1: empty */
+static SnapRect s_snap_dirty;
+static uint64_t s_snap_dirty_gen;
+static int s_snap_tracked;                 /* s_snap_dirty describes s_snap_src */
 
 static PipeEnt *s_pipes = NULL;
 static int s_pipe_n = 0, s_pipe_cap = 0;
@@ -1073,17 +1091,122 @@ static void batches_reset(void) {
     for (int i = 0; i < s_tex_n; i++) s_tex[i].pending = 0;
 }
 
-/* Render all pending batches into s_cur. Leaves the color image SHADER_READ_ONLY. */
-static int submit_pending(void) {
-    if (!s_nbatch || !s_cur) { if (s_nbatch == 0) batches_reset(); return 1; }
-    Target *t = s_cur;
-    if (!cmd_batch_begin(s_nverts)) { batches_reset(); return 0; }
+static const SnapRect k_snap_rect_empty = { 0, 0, 0, 0 };
+
+static int snap_rect_empty(const SnapRect *r) { return r->x0 >= r->x1 || r->y0 >= r->y1; }
+
+static void snap_rect_union(SnapRect *a, const SnapRect *b) {
+    if (snap_rect_empty(b)) return;
+    if (snap_rect_empty(a)) { *a = *b; return; }
+    if (b->x0 < a->x0) a->x0 = b->x0;
+    if (b->y0 < a->y0) a->y0 = b->y0;
+    if (b->x1 > a->x1) a->x1 = b->x1;
+    if (b->y1 > a->y1) a->y1 = b->y1;
+}
+
+static int snap_rect_overlap(const SnapRect *a, const SnapRect *b) {
+    if (snap_rect_empty(a) || snap_rect_empty(b)) return 0;
+    return a->x0 < b->x1 && b->x0 < a->x1 && a->y0 < b->y1 && b->y0 < a->y1;
+}
+
+/* Guest-pixel box holding every fragment of a batch: its vertices' extent widened by a pixel
+ * on each side, clipped to the batch scissor and the framebuffer. Vertices are guest pixels
+ * (psp.vert maps x/256 - 1, y/136 - 1), and a device fragment at render scale s lies in guest
+ * pixel floor(device / s), which the widened box contains. */
+static SnapRect batch_rect(const Batch *b) {
+    SnapRect r = k_snap_rect_empty;
+    if (!b->count) return r;
+    const GpuVert *v = &s_vcpu[b->first];
+    float x0 = v[0].x, x1 = v[0].x, y0 = v[0].y, y1 = v[0].y;
+    for (uint32_t i = 1; i < b->count; i++) {
+        if (v[i].x < x0) x0 = v[i].x;
+        if (v[i].x > x1) x1 = v[i].x;
+        if (v[i].y < y0) y0 = v[i].y;
+        if (v[i].y > y1) y1 = v[i].y;
+    }
+    int sx0 = b->sx, sy0 = b->sy, sx1 = b->sx + b->sw, sy1 = b->sy + b->sh;
+    if (sx0 < 0) sx0 = 0;
+    if (sy0 < 0) sy0 = 0;
+    if (sx1 > FB_W) sx1 = FB_W;
+    if (sy1 > FB_H) sy1 = FB_H;
+    /* Clamp in float before converting: a guard-band vertex may lie far outside int range. */
+    float fx0 = floorf(x0) - 1.0f, fy0 = floorf(y0) - 1.0f;
+    float fx1 = ceilf(x1) + 2.0f, fy1 = ceilf(y1) + 2.0f;
+    r.x0 = fx0 <= (float)sx0 ? sx0 : (fx0 >= (float)sx1 ? sx1 : (int)fx0);
+    r.y0 = fy0 <= (float)sy0 ? sy0 : (fy0 >= (float)sy1 ? sy1 : (int)fy0);
+    r.x1 = fx1 >= (float)sx1 ? sx1 : (fx1 <= (float)sx0 ? sx0 : (int)fx1);
+    r.y1 = fy1 >= (float)sy1 ? sy1 : (fy1 <= (float)sy0 ? sy0 : (int)fy1);
+    return r;
+}
+
+static int batch_reads_dst(const Batch *b) {
+    return (((uint32_t)b->pc.cfg[0] >> 8) & F_SHBLEND) != 0;
+}
+
+/* Copy target `t` into the snapshot image in the open command buffer: the one copy recipe of
+ * snapshot_refresh and submit_pending. */
+static void snapshot_copy_record(Target *t) {
+    to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
+              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout,
+              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageCopy ic = {0};
+    ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    ic.srcSubresource.layerCount = 1;
+    ic.dstSubresource = ic.srcSubresource;
+    ic.extent.width = SCL_W; ic.extent.height = SCL_H; ic.extent.depth = 1;
+    vkCmdCopyImage(s_cmd, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   s_snapimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+    to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout,
+              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    to_layout(s_cmd, t->img, VK_IMAGE_ASPECT_COLOR_BIT, &t->layout,
+              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+/* The snapshot now holds exactly `t`. */
+static void snapshot_note_copied(Target *t) {
+    s_snap_src = t;
+    s_snap_srcgen = t->render_gen;
+    s_snap_dirty = k_snap_rect_empty;
+    s_snap_dirty_gen = t->render_gen;
+    s_snap_tracked = 1;
+}
+
+/* Would a shader-blend batch with box `box`, drawn after the not yet recorded `before`, read
+ * anything from the snapshot that a fresh copy of `t` would not hold? */
+static int snapshot_stale_for(const Target *t, const SnapRect *box, const SnapRect *before) {
+    if (s_snap_src != t || !s_snap_tracked || s_snap_dirty_gen != t->render_gen) return 1;
+    SnapRect dirty = s_snap_dirty;
+    snap_rect_union(&dirty, before);
+    return snap_rect_overlap(box, &dirty);
+}
+
+/* One destination-snapshot copy op, recorded on the GE chain like snapshot_refresh's. */
+static int snapshot_copy_op(Target *t) {
+    if (!cmd_batch_begin(0)) return 0;
+    uint64_t region_started = cpu_profile_now();
+    snapshot_copy_record(t);
+    cpu_profile_add(GEGPU_CPU_SNAPSHOT_REGION, region_started);
+    if (!cmd_batch_record(SR_PERF_GE_SNAPSHOT_COPY)) return 0;
+    s_replay_stats.snapshot_copies++;
+    if (s_cpu_profile) s_cpu_profile_stats.snapshot_copies++;
+    if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_COPIED, 1);
+    snapshot_note_copied(t);
+    s_cnt_snap++;
+    return 1;
+}
+
+/* Record batches [b0, b1) as one render op into `t`. Leaves the color image SHADER_READ_ONLY. */
+static int submit_range(Target *t, uint32_t b0, uint32_t b1) {
+    const uint32_t v0 = s_batch[b0].first;
+    const uint32_t nverts = s_batch[b1 - 1u].first + s_batch[b1 - 1u].count - v0;
+    if (!cmd_batch_begin(nverts)) return 0;
     uint32_t vertex_base = s_cmd_slot->vused;
     uint64_t memcpy_started = cpu_profile_now();
-    memcpy(s_cmd_slot->vmap + vertex_base, s_vcpu, (size_t)s_nverts * sizeof(GpuVert));
+    memcpy(s_cmd_slot->vmap + vertex_base, s_vcpu + v0, (size_t)nverts * sizeof(GpuVert));
     if (s_cpu_profile) {
         cpu_profile_add(GEGPU_CPU_MEMCPY, memcpy_started);
-        s_cpu_profile_stats.memcpy_bytes += (uint64_t)s_nverts * sizeof(GpuVert);
+        s_cpu_profile_stats.memcpy_bytes += (uint64_t)nverts * sizeof(GpuVert);
     }
 
     uint64_t command_started = cpu_profile_now();
@@ -1112,7 +1235,7 @@ static int submit_pending(void) {
 
     VkPipeline cur = VK_NULL_HANDLE;
     VkDescriptorSet cur_set = VK_NULL_HANDLE;
-    for (uint32_t i = 0; i < s_nbatch; i++) {
+    for (uint32_t i = b0; i < b1; i++) {
         Batch *b = &s_batch[i];
         VkPipeline p = pipe_get(&b->key);
         if (!p) {
@@ -1148,7 +1271,7 @@ static int submit_pending(void) {
             if (b->dset == cur_set) s_cpu_profile_stats.descriptor_bind_redundant++;
         }
         cur_set = b->dset;
-        vkCmdDraw(s_cmd, b->count, 1, b->first, 0);
+        vkCmdDraw(s_cmd, b->count, 1, b->first - v0, 0);
     }
     vkCmdEndRenderPass(s_cmd);
     if (s_cpu_profile) {
@@ -1165,9 +1288,9 @@ static int submit_pending(void) {
     /* render pass final layouts (see init): color -> SHADER_READ_ONLY, depth stays */
     t->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    s_replay_stats.batches += s_nbatch;
-    s_replay_stats.draws += s_nbatch;
-    s_cmd_slot->vused += s_nverts;
+    s_replay_stats.batches += b1 - b0;
+    s_replay_stats.draws += b1 - b0;
+    s_cmd_slot->vused += nverts;
     int ok = cmd_batch_record(SR_PERF_GE_RENDER_BATCH);
     t->gpu_valid = 1;
     t->render_gen++;
@@ -1175,18 +1298,16 @@ static int submit_pending(void) {
     sr_vram_mark_renderer_pending();
     s_cnt_submit++;
     if (s_stats) {
-        s_cnt_batches += s_nbatch;
-        s_cnt_verts += s_nverts;
+        s_cnt_batches += b1 - b0;
+        s_cnt_verts += nverts;
     }
-    for (uint32_t i = 0; i < s_nbatch; i++) {
-        uint32_t flags = (uint32_t)s_batch[i].pc.cfg[0] >> 8;
-        if ((flags & F_SHBLEND) && sr_perf_enabled)
+    for (uint32_t i = b0; i < b1; i++) {
+        if (batch_reads_dst(&s_batch[i]) && sr_perf_enabled)
             sr_perf_ge_event(SR_PERF_GE_SHBLEND_BATCH, 1);
     }
     if (s_log)
         fprintf(stderr, "GEGPU submit #%lu batches=%u verts=%u tgt=0x%08x/%u fmt=%u\n",
-                s_cnt_submit, s_nbatch, s_nverts, t->fba, t->stride, t->fmt);
-    batches_reset();
+                s_cnt_submit, b1 - b0, nverts, t->fba, t->stride, t->fmt);
     /* NOTE: prior revisions wrote MEM[0x331b80]=1 here to fake the GE
      * list-end interrupt and shared a state with mn_replay or sched.c to
      * drive the engine frame-counter. That was a side-effect of a missing
@@ -1197,6 +1318,49 @@ static int submit_pending(void) {
      * Until that lands, the worker's inner spin on the counter stays --
      * intended, so the next debug session sees the real gap instead of a
      * worked-around symptom. */
+    return ok;
+}
+
+/* Render all pending batches into s_cur, as render ops split only where a shader-blend batch
+ * needs a fresh destination snapshot (snapshot_stale_for). The copy is recorded between the
+ * batches before that batch and the batch itself, which is what a copy taken when its state was
+ * built held; every other shader-blend batch reads the snapshot unchanged, because nothing drawn
+ * since its copy touches the pixels it reads. Leaves the color image SHADER_READ_ONLY. */
+static int submit_pending(void) {
+    if (!s_nbatch || !s_cur) { if (s_nbatch == 0) batches_reset(); return 1; }
+    Target *t = s_cur;
+    int ok = 1;
+    uint32_t i = 0;
+    while (ok && i < s_nbatch) {
+        SnapRect box = batch_rect(&s_batch[i]);
+        if (batch_reads_dst(&s_batch[i])) {
+            if (snapshot_stale_for(t, &box, &k_snap_rect_empty)) {
+                if (!snapshot_copy_op(t)) { ok = 0; break; }
+            } else if (sr_perf_enabled) {
+                sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_CACHE_HIT, 1);
+            }
+        }
+        SnapRect drawn = box;
+        uint32_t j = i + 1u;
+        for (; j < s_nbatch; j++) {
+            box = batch_rect(&s_batch[j]);
+            if (batch_reads_dst(&s_batch[j])) {
+                if (snapshot_stale_for(t, &box, &drawn)) break;
+                if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_CACHE_HIT, 1);
+            }
+            snap_rect_union(&drawn, &box);
+        }
+        const int tracked = s_snap_src == t && s_snap_tracked && s_snap_dirty_gen == t->render_gen;
+        ok = submit_range(t, i, j);
+        if (ok && tracked) {
+            /* Outside what this op drew, the snapshot still holds the target. */
+            snap_rect_union(&s_snap_dirty, &drawn);
+            s_snap_dirty_gen = t->render_gen;
+            s_snap_srcgen = snap_rect_empty(&s_snap_dirty) ? t->render_gen : 0;
+        }
+        i = j;
+    }
+    batches_reset();
     return ok;
 }
 
@@ -1985,6 +2149,20 @@ static uint64_t fnv64(uint64_t h, const void *data, size_t n) {
     return h;
 }
 
+/* The FNV-1a step taken a 64-bit word at a time over `n` bytes, a multiple of 8: an eighth
+ * of fnv64's dependent multiplies. Each step is a bijection of the running hash and, for a
+ * given hash, of the word, so a change confined to any one word always changes the result. */
+static uint64_t fnv64_words(uint64_t h, const void *data, size_t n) {
+    const uint8_t *p = (const uint8_t *)data;
+    for (size_t i = 0; i + 8u <= n; i += 8u) {
+        uint64_t w;
+        memcpy(&w, p + i, 8u);
+        h ^= w;
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
 static uint64_t tex_hash(void) {
     uint64_t profile_started = cpu_profile_now();
     uint32_t source_bytes = tex_source_size();
@@ -1995,10 +2173,10 @@ static uint64_t tex_hash(void) {
         return 0;
     }
     uint64_t h = 1469598103934665603ull;
-    h = fnv64(h, &bytes, sizeof(bytes));
+    h = fnv64_words(h, &bytes, sizeof(bytes));
     uint64_t step = bytes / 64; if (step < 16) step = 16;
-    for (uint64_t off = 0; off + 16 <= bytes; off += step) h = fnv64(h, p + off, 16);
-    if (bytes >= 16) h = fnv64(h, p + bytes - 16, 16);
+    for (uint64_t off = 0; off + 16 <= bytes; off += step) h = fnv64_words(h, p + off, 16);
+    if (bytes >= 16) h = fnv64_words(h, p + bytes - 16, 16);
     cpu_profile_add(GEGPU_CPU_OBJECT_LOOKUP, profile_started);
     return h;
 }
@@ -2010,7 +2188,7 @@ static uint64_t tex_hash(void) {
 static uint64_t clut_hash(void) {
     uint64_t profile_started = cpu_profile_now();
     uint64_t h = 1469598103934665603ull;
-    h = fnv64(h, s_ge->clutram, sizeof(s_ge->clutram));
+    h = fnv64_words(h, s_ge->clutram, sizeof(s_ge->clutram));
     h = fnv64(h, &s_ge->clut_fmt, sizeof(s_ge->clut_fmt));
     cpu_profile_add(GEGPU_CPU_OBJECT_LOOKUP, profile_started);
     return h;
@@ -2209,21 +2387,7 @@ static int snapshot_refresh(Target *src) {
         /* Slot recycling/fence retirement happens inside cmd_batch_begin(). Start the
          * CPU-only region timer afterwards so GPU waits stay in boundary telemetry. */
         uint64_t region_started = cpu_profile_now();
-        to_layout(s_cmd, src->img, VK_IMAGE_ASPECT_COLOR_BIT, &src->layout,
-                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout,
-                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        VkImageCopy ic = {0};
-        ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        ic.srcSubresource.layerCount = 1;
-        ic.dstSubresource = ic.srcSubresource;
-        ic.extent.width = SCL_W; ic.extent.height = SCL_H; ic.extent.depth = 1;
-        vkCmdCopyImage(s_cmd, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       s_snapimg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
-        to_layout(s_cmd, s_snapimg, VK_IMAGE_ASPECT_COLOR_BIT, &s_snap_layout,
-                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        to_layout(s_cmd, src->img, VK_IMAGE_ASPECT_COLOR_BIT, &src->layout,
-                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        snapshot_copy_record(src);
         cpu_profile_add(GEGPU_CPU_SNAPSHOT_REGION, region_started);
         if (!cmd_batch_record(SR_PERF_GE_SNAPSHOT_COPY)) return 0;
         s_replay_stats.snapshot_copies++;
@@ -2231,8 +2395,7 @@ static int snapshot_refresh(Target *src) {
         if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_COPIED, 1);
     }
     uint64_t metadata_started = cpu_profile_now();
-    s_snap_src = src;
-    s_snap_srcgen = src->render_gen;
+    snapshot_note_copied(src);
     s_cnt_snap++;
     cpu_profile_add(GEGPU_CPU_SNAPSHOT_METADATA, metadata_started);
     return 1;
@@ -2508,11 +2671,16 @@ static void build_state(int persp, int sprite, Batch *b) {
             b->dset = tex_get();
         }
     }
-    /* Shader blend reads the destination through the snapshot: refresh it LAST so it
-     * reflects every batch submitted while building this state. Draws batched under
-     * this one state then blend against that snapshot (intra-batch overlap reads the
-     * pre-batch destination — the documented shader-blend hazard). */
-    if (shblend) snapshot_refresh(s_cur);
+    /* Shader blend reads the destination through the snapshot. submit_pending copies it right
+     * before this state's batch when the batch reads anything drawn since the last copy, so
+     * the batch reads what a copy taken here would have held. Draws batched under this one
+     * state blend against that snapshot (intra-batch overlap reads the pre-batch destination,
+     * the documented shader-blend hazard). */
+    if (shblend) {
+        s_replay_stats.snapshot_requests++;
+        if (s_cpu_profile) s_cpu_profile_stats.snapshot_requests++;
+        if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SNAPSHOT_REQUEST, 1);
+    }
     b->pc.cfg[0] = (int32_t)((g->tex_func & 7) | ((uint32_t)flags << 8));
 }
 
@@ -2564,10 +2732,24 @@ static void snap_fill(StateSnap *o, int persp, int sprite) {
     o->flushgen = s_flushgen;
 }
 
+/* ge_state_serial() when s_snapst was last filled or matched.  snap_fill reads only GE state,
+ * persp, sprite and s_flushgen, so while none of them moved it would reproduce s_snapst exactly
+ * and the template still applies: the primitives of one draw skip the fill and compare. */
+static uint32_t s_snapst_serial;
+
 static void state_get(int persp, int sprite, Batch *out) {
     uint64_t prep_started = cpu_profile_now();
+    uint32_t serial = ge_state_serial();
+    if (s_tmpl_ok && serial == s_snapst_serial && s_snapst.persp == persp &&
+        s_snapst.sprite == sprite && s_snapst.flushgen == s_flushgen) {
+        *out = s_tmpl;
+        if (s_cpu_profile) s_cpu_profile_stats.state_cache_hits++;
+        cpu_profile_add(GEGPU_CPU_STATE_PREP, prep_started);
+        return;
+    }
     StateSnap sn; snap_fill(&sn, persp, sprite);
     if (s_tmpl_ok && !memcmp(&sn, &s_snapst, sizeof(sn))) {
+        s_snapst_serial = serial;
         *out = s_tmpl;
         if (s_cpu_profile) s_cpu_profile_stats.state_cache_hits++;
         cpu_profile_add(GEGPU_CPU_STATE_PREP, prep_started);
@@ -2581,6 +2763,7 @@ static void state_get(int persp, int sprite, Batch *out) {
     build_state(persp, sprite, &s_tmpl);
     prep_started = cpu_profile_now();
     snap_fill(&s_snapst, persp, sprite);  /* re-fill: build_state may have submitted */
+    s_snapst_serial = serial;             /* build_state runs no GE command */
     s_tmpl_ok = 1;
     *out = s_tmpl;
     if (s_cpu_profile) {
@@ -4382,6 +4565,70 @@ static int coherence_run_tflt_filters(void) {
     return ok;
 }
 
+/* Mip levels (#1373) are chosen only by the software sampler (ge.c tex_lod). This backend
+ * still uploads and samples level 0 alone, so a draw that selects level 1 diverges from
+ * the software GE. The case pins that labelled divergence until the Vulkan slice lands:
+ * the GPU must draw the level-0 columns and the software GE the level-1 colour. */
+static int coherence_run_mip_level_divergence(void) {
+    const uint32_t base = 0x04000000u | 0x00160000u;
+    const uint32_t tex_base = 0x04040000u, level1 = tex_base + 0x1000u;
+    const uint32_t stride = 512u, green = 0xFF00FF00u;
+    coherence_reset_targets();
+    uint8_t *guest = (uint8_t *)SR_HOST(base);
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    uint32_t fixture = coherence_prepare_tflt_fixture(tex_base, 0x004u, 6, 16, 16,
+                                                      0.0f, 0.0f, 8.0f, 8.0f);
+    uint32_t *texels = (uint32_t *)SR_HOST(level1);
+    for (unsigned i = 0; i < 16u; i++) texels[i] = green;
+    sr_gpu_vram_dirty(level1, 16u * 4u);
+    /* Highest level 1, constant level 1, level 1 4x4: then jump into the filter fixture. */
+    const uint32_t list_addr = 0x00100400u;
+    uint32_t *dl = (uint32_t *)SR_HOST(list_addr);
+    int p = 0;
+    #define DL_EMIT(cmd, val) dl[p++] = ((uint32_t)(cmd) << 24) | ((uint32_t)(val) & 0x00FFFFFFu)
+    DL_EMIT(0x10, 0);
+    DL_EMIT(0x13, 0);
+    DL_EMIT(0xA1, level1 & 0x00FFFFFFu);
+    DL_EMIT(0xA9, 4u | ((level1 & 0xFF000000u) >> 8));
+    DL_EMIT(0xB9, (2u << 8) | 2u);
+    DL_EMIT(0xC2, 1u << 16);
+    DL_EMIT(0xC8, 1u | (16u << 16));
+    DL_EMIT(0x08, fixture);
+    #undef DL_EMIT
+    int ok = 1;
+    for (int software = 0; software < 2 && ok; software++) {
+        ge_set_gpu_hooks(software ? NULL : &k_hooks);
+        ge_run_list(list_addr, 0);
+        GeGpuFbDescriptor desc = { .addr = base, .format = 3, .stride = stride,
+                                   .width = 480, .height = 272 };
+        if (!software && !gegpu_sync_guest_fb(&desc)) {
+            fprintf(stderr, "gpu coherence selftest [mip-divergence]: GPU readback failed\n");
+            ok = 0;
+            break;
+        }
+        const uint32_t *fb = (const uint32_t *)guest;
+        for (int y = 0; y < 16 && ok; y++)
+            for (int x = 0; x < 16 && ok; x++) {
+                uint32_t rgb = fb[(COH_TFLT_RECT_Y + y) * stride + COH_TFLT_RECT_X + x] & 0x00FFFFFFu;
+                if (software ? rgb != (green & 0x00FFFFFFu) : (rgb != 0u && rgb != 0x00FFFFFFu)) {
+                    fprintf(stderr, "gpu coherence selftest [mip-divergence]: %s pixel=(%d,%d) %06x\n",
+                            software ? "software" : "gpu", x, y, rgb);
+                    ok = 0;
+                }
+            }
+        memset(guest, 0, stride * FB_H * 4u);
+        sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    }
+    ge_set_gpu_hooks(&k_hooks);
+    s_ge->tex_max_level = 0u;
+    s_ge->tex_level_mode = 0u;
+    s_ge->tex_lod_bias = 0.0f;
+    coherence_reset_targets();
+    if (ok) puts("gpu coherence selftest: PASS mip-level divergence pinned (Vulkan level 0, software level 1)");
+    return ok;
+}
+
 /* ---- ring wrap and blend colour parity (issue #697) -----------------------------------
  *
  * The per-slot vertex arena (VERT_ARENA_VERTS) and per-slot transfer ring are the Vulkan
@@ -4640,6 +4887,141 @@ static int coherence_run_texture_dirty_same_state(void) {
     }
     printf("gpu coherence selftest: PASS %-22s invalidations=1 old=%06x new=%06x\n",
            "texture-dirty-same-state", old_texel & rgb, new_texel & rgb);
+    coherence_reset_targets();
+    return 1;
+}
+
+/* A texture in main RAM changes with no notification (guest CPU stores to main RAM are not
+ * tracked), so the content hash is what finds it: one texel in the upper half of a hashed
+ * 8-byte word turns from red to green between two submissions, and the second draw shows
+ * it. */
+static int coherence_run_texture_ram_unnotified_change(void) {
+    const uint32_t fba = 0x00140000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t tex_base = 0x08530000u;
+    const uint32_t stride = 512u;
+    const uint32_t rgb = 0x00FFFFFFu;
+    const uint32_t red = 0xFF0000FFu, green = 0xFF00FF00u;   /* ABGR */
+    uint32_t *guest = (uint32_t *)SR_HOST(base);
+    uint32_t *tex = (uint32_t *)SR_HOST(tex_base);
+
+    coherence_reset_targets();
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    for (unsigned i = 0; i < 64u; i++) tex[i] = red;
+
+    wrap_state(base, stride);
+    s_ge->tex_enable = 1;
+    s_ge->tex_addr = tex_base;
+    s_ge->tex_bufw = 8;
+    s_ge->tex_fmt = 3;
+    s_ge->tex_w = 8;
+    s_ge->tex_h = 8;
+    s_ge->tex_func = 3;      /* REPLACE: the framebuffer shows the texel */
+    s_ge->tex_filter = 0;    /* NEAREST */
+    ge_set_gpu_hooks(&k_hooks);
+
+    GeVtx p0, p1;
+    const uint32_t white = 0xFFFFFFFFu;
+    wrap_vtx(&p0, 10.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 18.0f, 18.0f, white); p1.u = 8.0f; p1.v = 8.0f;
+    int ok = hook_sprite(&p0, &p1, 0);
+    /* A submission (a frame's present, say) separates the store from the next draw, as in a
+     * title; within one submission an unchanged draw state reuses its template, texture
+     * included. */
+    ok = ok && submit_pending();
+    tex[1] = green;          /* texel (1, 0): bytes 4-7 of the first 8-byte word; no notification */
+    wrap_vtx(&p0, 30.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 38.0f, 18.0f, white); p1.u = 8.0f; p1.v = 8.0f;
+    ok = ok && hook_sprite(&p0, &p1, 0) && s_cur && target_readback(s_cur);
+    if (!ok) {
+        fprintf(stderr, "gpu coherence selftest [texture-ram-unnotified]: draw or readback failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint32_t first = guest[10u * stride + 11u] & rgb;
+    uint32_t second = guest[10u * stride + 31u] & rgb;
+    if (first != (red & rgb) || second != (green & rgb)) {
+        fprintf(stderr,
+                "gpu coherence selftest [texture-ram-unnotified]: first=%06x (want %06x) "
+                "second=%06x (want %06x)%s\n",
+                first, red & rgb, second, green & rgb,
+                second == (red & rgb) ? " -- the second draw reused the stale decode" : "");
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s first=%06x second=%06x\n",
+           "texture-ram-unnotified", first, second);
+    coherence_reset_targets();
+    return 1;
+}
+
+/* One CLUT8 texture drawn twice through the same palette bytes with a different CLUT format
+ * word: the palette identity in the texture cache key covers the format, so the second draw
+ * decodes again (index >> 1 picks another entry) instead of reusing the first decode. */
+static int coherence_run_clut_format_same_palette(void) {
+    const uint32_t fba = 0x00140000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t tex_base = 0x04040000u;
+    const uint32_t stride = 512u;
+    const uint32_t rgb = 0x00FFFFFFu;
+    const uint32_t index = 6u;
+    uint32_t *guest = (uint32_t *)SR_HOST(base);
+    uint8_t *tex = (uint8_t *)SR_HOST(tex_base);
+
+    coherence_reset_targets();
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    memset(tex, (int)index, 16u * 16u);
+    sr_gpu_vram_dirty(tex_base, 16u * 16u);
+
+    wrap_state(base, stride);
+    for (uint32_t j = 0; j < 256u; j++) {
+        uint32_t entry = 0xFF000000u | wrap_hash(0x51u + j);
+        memcpy(&s_ge->clutram[j * 4u], &entry, 4);
+    }
+    uint32_t want_first, want_second;
+    memcpy(&want_first, &s_ge->clutram[index * 4u], 4);
+    memcpy(&want_second, &s_ge->clutram[(index >> 1) * 4u], 4);
+    s_ge->tex_enable = 1;
+    s_ge->tex_addr = tex_base;
+    s_ge->tex_bufw = 16;
+    s_ge->tex_fmt = 5;       /* CLUT8 */
+    s_ge->tex_w = 16;
+    s_ge->tex_h = 16;
+    s_ge->tex_func = 3;      /* REPLACE: the framebuffer shows the texel */
+    s_ge->tex_filter = 0;    /* NEAREST */
+    s_ge->clut_fmt = 3u | (0xFFu << 8);                 /* 8888, shift 0, mask 0xFF */
+    ge_set_gpu_hooks(&k_hooks);
+
+    GeVtx p0, p1;
+    const uint32_t white = 0xFFFFFFFFu;
+    wrap_vtx(&p0, 10.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 26.0f, 26.0f, white); p1.u = 16.0f; p1.v = 16.0f;
+    int ok = hook_sprite(&p0, &p1, 0);
+    s_ge->clut_fmt = 3u | (1u << 2) | (0xFFu << 8);     /* same bytes, shift 1 */
+    wrap_vtx(&p0, 40.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 56.0f, 26.0f, white); p1.u = 16.0f; p1.v = 16.0f;
+    ok = ok && hook_sprite(&p0, &p1, 0) && s_cur && target_readback(s_cur);
+    if (!ok) {
+        fprintf(stderr, "gpu coherence selftest [clut-format-same-palette]: draw or readback failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint32_t first = guest[18u * stride + 18u] & rgb;
+    uint32_t second = guest[18u * stride + 48u] & rgb;
+    if (first != (want_first & rgb) || second != (want_second & rgb)) {
+        fprintf(stderr,
+                "gpu coherence selftest [clut-format-same-palette]: first=%06x (want %06x) "
+                "second=%06x (want %06x)%s\n",
+                first, want_first & rgb, second, want_second & rgb,
+                second == (want_first & rgb)
+                    ? " -- the second draw reused the first format's decode" : "");
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s first=%06x second=%06x\n",
+           "clut-format-same-palette", first, second);
     coherence_reset_targets();
     return 1;
 }
@@ -4907,6 +5289,8 @@ static int coherence_run_blend_parity(void) {
 
 typedef struct SubmitBatchShape {
     uint32_t blend_draws;                  /* overlapping shader-blend sprites */
+    uint32_t spaced_draws;                 /* shader-blend sprites in disjoint cells */
+    uint32_t tail_draws;                   /* shader-blend sprites over the CLUT sprites */
     uint32_t clut_draws;                   /* CLUT8 sprites, one palette reload each */
     uint32_t rewrite_draws;                /* CLUT8 sprites after the block-transfer rewrite */
     uint32_t rtt_rounds;                   /* draw into B, then sample B from A */
@@ -5011,6 +5395,17 @@ static uint32_t submit_batch_prepare(const SubmitBatchShape *sh, uint32_t tex) {
                   0.0f, 0.0f, size, wrap_pixel_rgba(0x5Au, i));
     }
 
+    /* Shader-blend sprites in disjoint cells of a band below and to the right of the
+     * overlapping ones: nothing drawn since the last snapshot copy overlaps any of them (the
+     * drawn region is tracked as one bounding rectangle, so each cell also lies outside the
+     * rectangle around everything before it), and each reads the existing snapshot instead
+     * of copying the target again. */
+    for (uint32_t k = 0; k < sh->spaced_draws; k++) {
+        sb_emit(&l, 0xE0, sb_fixa(sh->blend_draws + k));
+        sb_sprite(&l, 0, (float)(200u + k * 24u), 228.0f, 0.0f, 0.0f, 12.0f,
+                  wrap_pixel_rgba(0x6Bu, k));
+    }
+
     /* CLUT8 sprites, one palette per draw, overlapping one another. */
     sb_emit(&l, 0x21, 0);
     sb_emit(&l, 0x1E, 1);
@@ -5041,6 +5436,18 @@ static uint32_t submit_batch_prepare(const SubmitBatchShape *sh, uint32_t tex) {
         sb_emit(&l, 0xC4, 2);
         sb_sprite(&l, 1, (float)(244u + j * 6u), (float)(150u + j * 4u), 0.0f, 0.0f, 16.0f, 0);
     }
+
+    /* Shader-blend sprites over the first CLUT sprites, which were drawn after the last
+     * snapshot copy: each needs a fresh copy although no blended draw came between. */
+    sb_emit(&l, 0x1E, 0);
+    sb_emit(&l, 0x21, 1);
+    sb_emit(&l, 0x12, colour);
+    for (uint32_t t = 0; t < sh->tail_draws; t++) {
+        sb_emit(&l, 0xE0, sb_fixa(sh->blend_draws + sh->spaced_draws + t));
+        sb_sprite(&l, 0, (float)(236u + t * 9u), 136.0f + (float)t, 0.0f, 0.0f, 24.0f,
+                  wrap_pixel_rgba(0x7Cu, t));
+    }
+    sb_emit(&l, 0x21, 0);
 
     /* Render-to-texture: draw into B, then sample B's newest sprite (and its border) from A. */
     for (uint32_t r = 0; r < sh->rtt_rounds; r++) {
@@ -5123,7 +5530,7 @@ static int submit_batch_same(const char *what, uint32_t cap, const uint32_t *gpu
 }
 
 static int coherence_run_submit_batch(void) {
-    const SubmitBatchShape sh = { 48u, 24u, 6u, 8u, 24u };
+    const SubmitBatchShape sh = { 48u, 8u, 2u, 24u, 6u, 8u, 24u };
     const size_t bytes = (size_t)FB_W * FB_H * 4u;
     uint32_t *ref_a = (uint32_t *)malloc(bytes), *ref_b = (uint32_t *)malloc(bytes);
     if (!ref_a || !ref_b) {
@@ -5159,13 +5566,14 @@ static int coherence_run_submit_batch(void) {
              submit_batch_same("A", cap, (const uint32_t *)SR_HOST(0x04000000u | SB_FBA_A), ref_a) &&
              submit_batch_same("B", cap, (const uint32_t *)SR_HOST(0x04000000u | SB_FBA_B), ref_b);
         if (!ok || i == 0) continue;         /* the warm-up checks frames only */
-        /* Non-vacuous: every blend draw recorded its snapshot copy, and every palette and
-         * rewrite draw uploaded through the GE chain. */
-        if (run.snapshots != sh.blend_draws ||
+        /* Non-vacuous: every overlapping and tail blend draw recorded its snapshot copy, no
+         * spaced blend draw did, and every palette and rewrite draw uploaded through the GE
+         * chain. */
+        if (run.snapshots != sh.blend_draws + sh.tail_draws ||
             run.uploads + run.fallbacks < sh.clut_draws + sh.rewrite_draws) {
             fprintf(stderr, "gpu coherence selftest [submit-batch]: cap=%u snapshots=%llu uploads=%llu "
                             "fallbacks=%llu, want %u snapshots and >= %u uploads\n", cap,
-                    run.snapshots, run.uploads, run.fallbacks, sh.blend_draws,
+                    run.snapshots, run.uploads, run.fallbacks, sh.blend_draws + sh.tail_draws,
                     sh.clut_draws + sh.rewrite_draws);
             ok = 0;
             break;
@@ -5311,10 +5719,13 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_software_sprite_semantics()) ok = 0;
     if (!coherence_run_linear_sprite()) ok = 0;
     if (!coherence_run_tflt_filters()) ok = 0;
+    if (!coherence_run_mip_level_divergence()) ok = 0;
     if (!coherence_run_ring_wrap()) ok = 0;
     if (!coherence_run_submit_batch()) ok = 0;
     if (!coherence_run_upload_sequence()) ok = 0;
     if (!coherence_run_texture_dirty_same_state()) ok = 0;
+    if (!coherence_run_texture_ram_unnotified_change()) ok = 0;
+    if (!coherence_run_clut_format_same_palette()) ok = 0;
     if (!coherence_run_blend_parity()) ok = 0;
     if (!coherence_run_scalar_vram_read(0x04080000u)) ok = 0;
     /* zbp 0x0a2000: bit 13 set, so the absolute XOR differs from the within-buffer form (0x0a6854 vs

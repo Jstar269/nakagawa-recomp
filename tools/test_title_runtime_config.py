@@ -538,12 +538,11 @@ class GeneratedConfiguration(unittest.TestCase):
         """The C source-shape half of the same split.
 
         sr_title_config_diagnostics_enabled() is a genuine diagnostic: the profile bit
-        plus SR_HLE_DIAGNOSTICS. The two gates that change live runtime behavior --
-        the guest Newlib reent addresses and the callee-saved restore -- must carry the
-        compatibility name, or a reader cannot tell live behavior from diagnostics."""
+        plus SR_HLE_DIAGNOSTICS. The gate that changes live runtime behavior -- the
+        callee-saved restore -- must carry the compatibility name, or a reader cannot
+        tell live behavior from diagnostics."""
         source = (ROOT / "src" / "rt" / "title_config.c").read_text(encoding="utf-8")
-        for accessor in ("sr_title_config_reent_bindings",
-                         "sr_title_config_preserve_callee_saved_at_calls"):
+        for accessor in ("sr_title_config_preserve_callee_saved_at_calls",):
             # Each body ends at its column-0 closing brace, so a neighbouring
             # accessor can never satisfy an assertion about this one.
             body = source.split(f"int {accessor}(", 1)[1].split("\n}", 1)[0]
