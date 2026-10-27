@@ -725,7 +725,7 @@
       "type": "asset",
       "relationship": "CONTAINS",
       "presence": "required",
-      "source_path": "docs/images/og-card.png",
+      "source_path": "docs/images/brand/og-card.png",
       "license": "GPL-3.0-or-later",
       "notice_path": "NOTICE.md",
       "disposition": "approved_binary",

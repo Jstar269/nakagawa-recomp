@@ -57,10 +57,10 @@ jobs:
           rm -rf _site
           mkdir -p _site/images/brand _site/media
           cp docs/index.html _site/index.html
-          cp docs/images/brand/nakagawa-mark-light.svg docs/images/brand/nakagawa-mark-dark.svg _site/images/brand/
+          cp docs/images/brand/nakagawa-mark-light.svg docs/images/brand/nakagawa-mark-dark.svg docs/images/brand/og-card.png \
+            _site/images/brand/
           cp docs/images/showcase-ge-scene.gif docs/images/showcase-ge-scene-v240.png _site/images/
           cp docs/images/showcase-breakout.gif docs/images/showcase-breakout-v180.png _site/images/
-          cp docs/images/og-card.png _site/images/
           cp docs/media/hst-title-screen.png docs/media/hst-title-screen-960.png _site/media/
 
       - name: Check that every local reference resolves
