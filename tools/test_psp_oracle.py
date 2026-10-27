@@ -4888,7 +4888,7 @@ class HleMeasureProbeTests(unittest.TestCase):
             "if (sceIoRemove(HLE_PRIVATE_STRINGS_PATH) < 0 || !verified) { s_log_failed = 1; }",
         ]
         positions = [private.find(step) for step in steps]
-        self.assertNotIn(-1, positions, dict(zip(steps, positions)))
+        self.assertNotIn(-1, positions, dict(zip(steps, positions, strict=True)))
         self.assertEqual(positions, sorted(positions))
         # Once the write is issued every path reaches the removal: no return after it, and
         # the read-back result only decides PASS or FAIL.
