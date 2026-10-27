@@ -427,7 +427,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "584a6a52dc9bbac3fc77dc1fbefbcf8da9f7059c14dee9a634d1c4ef85415cf1"
+      "sha256": "612e7b6c58406ae617617848f21850d11f3b33902d9f4023fc58fc1dbee08809"
     },
     {
       "path": "NOTICE.md",
@@ -1402,7 +1402,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9d3df358658cfa6dbcde594fd23dd104b2f9d65f6a669600534dcd6ec8da1e89"
+      "sha256": "5dfb57b122ebc7c7a1669780d0cdd657206e32d511d02339da568b6ae84415d9"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1666,7 +1666,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b23728586b7949526f891ef9106c6da9b1a03597ff43df4cc84bcccb0f901f7b"
+      "sha256": "84c6436299fed057f1c92695e579fc55f9d26088010915ec4b874e95741567ac"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -11128,7 +11128,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "36f361d8cf33a1644c10603cc42541fd523c6d4f10f9a469f728db7fd25eec63"
+      "sha256": "d09401a5bc2fbd07af468c5dea273f6f3dab5f4db6845bd1ad0cd1aa05e23954"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -11153,7 +11153,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7e5cdd4c2efd7dc2497921453139054286d35433a40c8a279442d6a22e8d1a14"
+      "sha256": "e0398c84f3e2b2ae86893a51321f58a590753955baa3efe1af88d5a916cb74b8"
     },
     {
       "path": "tools/compiler_compare.py",
@@ -11419,7 +11419,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e02b14d7328c2142c6d9452a3edc5baa542588f91d8eb4c1d6e397c8ed92320f"
+      "sha256": "7a4379ce451c6f5a4404900b9f84356a3c9f4fcabc9b018189008fdc90474d76"
     },
     {
       "path": "tools/gen_ui_assets.py",
@@ -12661,7 +12661,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f124ea9ddd90fdf52d9aed97d06d88f974f969145df7d471e78fb8d05e0a7d76"
+      "sha256": "5715e73bf8e54cc2858cf81ed7dcf0999cb96eeeaec48491d87c25c8414c3d6e"
     },
     {
       "path": "tools/test_analyze_tailcall.py",
@@ -12841,7 +12841,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d631fce2453af4c0882ca0f430a8c096185b910359d34069661f7e1535776048"
+      "sha256": "8c24d602605e2460baa0a7855d963221398e0c2cbc14289003713a7021ab7df7"
     },
     {
       "path": "tools/test_codegen_fp_convert.py",
@@ -12914,7 +12914,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eae378c284509d0c11f812c4928df89ea2fef2ff126ee1f5b615094670f612e5"
+      "sha256": "0abc22175d4dca1320fc46c024ac2589c386f16675b6e462a556155cb4254b34"
     },
     {
       "path": "tools/test_codegen_retail_allocator.py",
@@ -12986,7 +12986,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6650f140e0c25e72c8b88fb39b0f2c3be309233e7283bb710aa29ea7b115e9d0"
+      "sha256": "984e5e5f54df3a694c89284c2063d9a06fefc66d827c204294db8e8fdd28e900"
     },
     {
       "path": "tools/test_compiler_compare.py",
@@ -13442,7 +13442,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "812a5a2c84e638416b1050c72803c6f3a02cdc61f771047de12dea6647635223"
+      "sha256": "12eae52a2983d1cb4108351c753c836de3a1feef86dd12d16f0b6ad83ba59cd3"
     },
     {
       "path": "tools/test_gen_ui_assets.py",
