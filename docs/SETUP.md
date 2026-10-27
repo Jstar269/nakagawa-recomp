@@ -430,7 +430,7 @@ The font files live in the PSP's system storage, `flash0:/font/`. They are plain
 
 On PRO or LME custom firmware, the VSH menu (press **SELECT** in the XMB) has the same **USB DEVICE** setting: choose **Flash 0**, then follow steps 3 to 6, setting it back to **Memory Stick** afterwards.
 
-You can copy the whole `font` folder. The import reads only the `.pgf` files in it: `gb3s1518.bwfon` and `imagefont.bin` are not read, and `arib.pgf` is listed as refused because no game font slot uses it. The sixteen Latin fonts (`ltn0.pgf` to `ltn15.pgf`) are used exactly. The PSP's Japanese and Korean fonts (`jpn0.pgf` and `kr0.pgf`) are refused for now by the project's font reader, so games use the project's stand-ins for those two ([#1300](https://github.com/Jstar269/nakagawa-recomp/issues/1300)).
+You can copy the whole `font` folder. The import reads only the `.pgf` files in it: `gb3s1518.bwfon` and `imagefont.bin` are not read, and `arib.pgf` is listed as refused because no game font slot uses it. The sixteen Latin fonts (`ltn0.pgf` to `ltn15.pgf`), the Japanese font `jpn0.pgf` and the Korean font `kr0.pgf` are all used exactly, so all 18 game font slots come from your own PSP ([#1536](https://github.com/Jstar269/nakagawa-recomp/pull/1536)). If you imported fonts with an older build, import them again to pick up the Japanese and Korean ones.
 
 #### Importing fonts
 
