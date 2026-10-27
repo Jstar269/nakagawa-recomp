@@ -30,6 +30,8 @@
 #include "nk_title_manifest.h"
 #include "nk_platform.h"
 #include "native_test_isolation.h"
+#include "nk_psp_builtin_keys.h"
+#include "psp_seal_fixture.h"
 #include "pgf_golden_vectors.h"
 #include "../../src/rt/recomp.h"
 
@@ -1117,6 +1119,75 @@ static void write_guest_module_iso(const char *path, const char *name,
     assert(fwrite(image, 1, total, file) == total);
     assert(fclose(file) == 0);
     free(image);
+}
+
+/* A disc whose PSP_GAME/SYSDIR/EBOOT.BIN holds the given bytes. */
+static void write_sysdir_eboot_iso(const char *path, const unsigned char *eboot,
+                                   size_t eboot_size) {
+    enum { SECTOR = 2048, DATA_LBA = 20 };
+    static const uint8_t dot[1] = { 0 };
+    static const uint8_t dotdot[1] = { 1 };
+    size_t data_sectors = (eboot_size + SECTOR - 1) / SECTOR;
+    size_t total = ((size_t)DATA_LBA + data_sectors) * SECTOR;
+    uint8_t *image = (uint8_t *)calloc(1, total);
+    assert(image != NULL);
+    uint8_t *pvd = image + 16 * SECTOR;
+    pvd[0] = 1;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    iso_dir_record(pvd + 156, dot, 1, 17, SECTOR, true);
+    uint8_t *root = image + 17 * SECTOR;
+    size_t off = 0;
+    off += iso_dir_record(root + off, dot, 1, 17, SECTOR, true);
+    off += iso_dir_record(root + off, dotdot, 1, 17, SECTOR, true);
+    off += iso_dir_record(root + off, (const uint8_t *)"PSP_GAME", 8, 18, SECTOR, true);
+    uint8_t *game = image + 18 * SECTOR;
+    off = 0;
+    off += iso_dir_record(game + off, dot, 1, 18, SECTOR, true);
+    off += iso_dir_record(game + off, dotdot, 1, 17, SECTOR, true);
+    off += iso_dir_record(game + off, (const uint8_t *)"SYSDIR", 6, 19, SECTOR, true);
+    uint8_t *sysdir = image + 19 * SECTOR;
+    off = 0;
+    off += iso_dir_record(sysdir + off, dot, 1, 19, SECTOR, true);
+    off += iso_dir_record(sysdir + off, dotdot, 1, 18, SECTOR, true);
+    iso_dir_record(sysdir + off, (const uint8_t *)"EBOOT.BIN", 9, DATA_LBA,
+                   (uint32_t)eboot_size, false);
+    memcpy(image + (size_t)DATA_LBA * SECTOR, eboot, eboot_size);
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(image, 1, total, file) == total);
+    assert(fclose(file) == 0);
+    free(image);
+}
+
+/* One built-in value by name (kirk.cmd1.key, kirk.keyvault.<code>). */
+static const uint8_t *builtin_value(const char *name) {
+    for (size_t i = 0; i < nk_psp_builtin_value_count; i++) {
+        if (strcmp(nk_psp_builtin_values[i].name, name) == 0) {
+            assert(nk_psp_builtin_values[i].len == 16u);
+            return nk_psp_builtin_values[i].bytes;
+        }
+    }
+    assert(!"built-in value missing");
+    return NULL;
+}
+
+/* payload sealed under one built-in game tag recipe, with the built-in
+   keyvault row and command-1 key; seal_tag may differ from recipe_tag to
+   put another tag in the header. */
+static size_t seal_with_builtin_recipe(uint8_t *out, size_t cap, const uint8_t *payload,
+                                       size_t payload_len, uint32_t recipe_tag,
+                                       uint32_t seal_tag) {
+    const NkPspBuiltinTag *recipe = NULL;
+    char vault_name[32];
+    for (size_t i = 0; i < nk_psp_builtin_tag_count; i++) {
+        if (nk_psp_builtin_tags[i].tag == recipe_tag) recipe = &nk_psp_builtin_tags[i];
+    }
+    assert(recipe != NULL && recipe->key != NULL);
+    snprintf(vault_name, sizeof(vault_name), "kirk.keyvault.%d", recipe->code);
+    return psp_seal_type2(out, cap, payload, payload_len, 0, (uint32_t)payload_len,
+                          seal_tag, recipe->key, builtin_value(vault_name),
+                          builtin_value("kirk.cmd1.key"));
 }
 
 static const char *const FIXTURE_SHA256 =
@@ -2977,10 +3048,10 @@ int main(int argc, char **argv) {
         snprintf(self_executable, sizeof(self_executable), "%s", argv[0]);
     }
     {
-        /* Nakagawa does not decrypt games and reads no key file. Leave the old
-         * key-file override pointing at an existing file for the whole run:
-         * the encrypted-executable and encrypted-module checks below must
-         * ignore it, decrypt nothing and never name it. */
+        /* Nakagawa reads no key file: the built-in tables are its only key
+         * source. Leave the old key-file override pointing at an existing file
+         * for the whole run: the encrypted-executable and encrypted-module
+         * checks below must ignore it and never name it. */
         int written = snprintf(g_decoy_key_path, sizeof(g_decoy_key_path),
                                "%s%cdeveloper-keyfile.json",
                                native_test_get_root(), nk_platform_path_separator());
@@ -3972,9 +4043,13 @@ int main(int argc, char **argv) {
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
         assert(check && check->status == PREFLIGHT_UNSUPPORTED);
-        assert(strstr(check->message, "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. "
-                                      "Nakagawa does not decrypt games. Place a decrypted "
-                                      "EBOOT.elf from your own copy in ") != NULL);
+        /* Built-in decryption runs and stops with a named result (this disc's
+           EBOOT.BIN is not a sealed container); the card still names the
+           folder a decrypted copy from the user's own disc can go in. */
+        assert(strstr(check->message, "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and "
+                                      "built-in decryption stopped: ") != NULL);
+        assert(strstr(check->message, "Place a decrypted EBOOT.elf from your own copy in ")
+               != NULL);
         assert(strstr(check->message, decrypted_dir) != NULL);
         assert(strstr(check->message, "key file") == NULL && strstr(check->message, "keyfile") == NULL);
         assert(strstr(check->message, g_decoy_key_path) == NULL);
@@ -4011,6 +4086,85 @@ int main(int argc, char **argv) {
         assert(strstr(check->message, "decryption is in the works") == NULL);
         assert(check->issue_count == 0);
         assert(remove(decrypted_elf) == 0);
+
+        /* Built-in decryption (#295, owner decision 2026-10-27): an EBOOT.BIN
+           sealed under one built-in game tag recipe comes out as a valid
+           EBOOT.elf in the title's folder and the check passes; the next check
+           uses that file; a copy the user put there is never replaced; and a
+           firmware updater tag is refused by name, writing nothing. */
+        {
+            char sealed_iso[1024];
+            char staged_leftover[1300];
+            char saved_iso_path[sizeof(wiz->inspecting_game.iso_path)];
+            unsigned char plain_elf[88];
+            unsigned char user_elf[88];
+            uint8_t sealed[0x150 + 96];
+            unsigned char read_back[128];
+            size_t sealed_len;
+            FILE *produced;
+
+            build_synthetic_mips_elf(plain_elf);
+            sealed_len = seal_with_builtin_recipe(sealed, sizeof(sealed), plain_elf,
+                                                  sizeof(plain_elf), 0xD91613F0u, 0xD91613F0u);
+            snprintf(sealed_iso, sizeof(sealed_iso), "%s%cbuiltin-sealed.iso",
+                     preflight_root, nk_platform_path_separator());
+            write_sysdir_eboot_iso(sealed_iso, sealed, sealed_len);
+            snprintf(saved_iso_path, sizeof(saved_iso_path), "%s",
+                     wiz->inspecting_game.iso_path);
+            snprintf(wiz->inspecting_game.iso_path, sizeof(wiz->inspecting_game.iso_path),
+                     "%s", sealed_iso);
+            snprintf(staged_leftover, sizeof(staged_leftover), "%s.decrypting", decrypted_elf);
+
+            player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+            check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+            assert(check && check->status == PREFLIGHT_OK);
+            assert(strstr(check->message, "decrypted from the disc with the built-in tables") != NULL);
+            produced = fopen(decrypted_elf, "rb");
+            assert(produced != NULL);
+            assert(fread(read_back, 1, sizeof(read_back), produced) == sizeof(plain_elf));
+            assert(fclose(produced) == 0);
+            assert(memcmp(read_back, plain_elf, sizeof(plain_elf)) == 0);
+            assert(!nk_platform_file_exists(staged_leftover));
+
+            /* The next check takes the copy now in the folder as it is. */
+            player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+            check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+            assert(check && check->status == PREFLIGHT_OK);
+            assert(strstr(check->message, "The decrypted EBOOT.elf in the title's folder") != NULL);
+
+            /* A copy the user put there wins and is never replaced. */
+            build_synthetic_mips_elf(user_elf);
+            user_elf[sizeof(user_elf) - 1] ^= 0x5Au; /* differs from the disc's */
+            produced = fopen(decrypted_elf, "wb");
+            assert(produced != NULL);
+            assert(fwrite(user_elf, 1, sizeof(user_elf), produced) == sizeof(user_elf));
+            assert(fclose(produced) == 0);
+            player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+            check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+            assert(check && check->status == PREFLIGHT_OK);
+            produced = fopen(decrypted_elf, "rb");
+            assert(produced != NULL);
+            assert(fread(read_back, 1, sizeof(read_back), produced) == sizeof(user_elf));
+            assert(fclose(produced) == 0);
+            assert(memcmp(read_back, user_elf, sizeof(user_elf)) == 0);
+            assert(remove(decrypted_elf) == 0);
+
+            /* A firmware updater tag is refused before any key is read. */
+            sealed_len = seal_with_builtin_recipe(sealed, sizeof(sealed), plain_elf,
+                                                  sizeof(plain_elf), 0xD91613F0u, 0x0B000000u);
+            write_sysdir_eboot_iso(sealed_iso, sealed, sealed_len);
+            player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+            check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
+            assert(check && check->status == PREFLIGHT_UNSUPPORTED);
+            assert(strstr(check->message, "built-in decryption stopped: FIRMWARE_OUT_OF_SCOPE") != NULL);
+            assert(strstr(check->message, "never decrypts firmware") != NULL);
+            assert(!nk_platform_file_exists(decrypted_elf));
+            assert(!nk_platform_file_exists(staged_leftover));
+
+            assert(remove(sealed_iso) == 0);
+            snprintf(wiz->inspecting_game.iso_path, sizeof(wiz->inspecting_game.iso_path),
+                     "%s", saved_iso_path);
+        }
 
         /* Issue #729: a PSP PRX guest module whose e_entry is the unset
            0xFFFFFFFF is ready under the module rule, as a plain disc copy and
@@ -4079,9 +4233,10 @@ int main(int argc, char **argv) {
                                        sizeof(prx_bytes));
             }
 
-            /* An encrypted disc module with no plain copy is not ready: Nakagawa
-               does not decrypt games and ignores the key-file override, so the
-               check names the module and the folder, and writes nothing. */
+            /* An encrypted disc module with no plain copy that the built-in
+               tables cannot decrypt (this one is not a sealed container) is not
+               ready: the check names the module, the result and the folder,
+               ignores the key-file override, and writes nothing. */
             {
                 unsigned char encrypted_prx[0x100];
                 memset(encrypted_prx, 0, sizeof(encrypted_prx));
@@ -4096,8 +4251,9 @@ int main(int argc, char **argv) {
                 assert(module_check && module_check->status == PREFLIGHT_MISSING);
                 assert(strstr(module_check->message, "Guest modules: 0 of 1 ready; "
                                                      "ENCRYPTED_MODULE: libfont.prx is "
-                                                     "encrypted. Nakagawa does not decrypt "
-                                                     "games. Place a decrypted libfont.prx "
+                                                     "encrypted and built-in decryption "
+                                                     "stopped: MALFORMED_INPUT (") != NULL);
+                assert(strstr(module_check->message, "Place a decrypted libfont.prx "
                                                      "from your own copy in ") != NULL);
                 assert(strstr(module_check->message, module_dir) != NULL);
                 assert(strstr(module_check->message, "key file") == NULL &&
