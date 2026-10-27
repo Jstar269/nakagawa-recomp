@@ -722,7 +722,7 @@ def cache_root(user_data_root: Path | str, disc_id: str) -> Path:
 
 # One short key level under entries/: a default Windows install has no long
 # paths, and <user data>/cache/packages/<DISC>/entries/<64 hex>/<64 hex>/...
-# reached about 290 characters under C:\Users\<name>\AppData\Local. The full
+# reached about 290 characters under a long user profile's local app data. The full
 # AOT and native digests stay in the entry's own cache metadata, which
 # validate_package_cache checks, so a shortened key that collides is rebuilt,
 # never reused.

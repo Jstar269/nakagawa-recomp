@@ -125,7 +125,8 @@ static void tree_path_pop(TreePath *tree, size_t saved) {
     tree->path[saved] = L'\0';
 }
 
-/* The walk works on the extended-length form (\\?\C:\..., \\?\UNC\...), so a
+/* The walk works on the extended-length form (the long-path prefix before a drive or UNC
+ * path), so a
  * tree deeper than MAX_PATH is listed and removed without long-path support in
  * the process manifest or the registry (a default Windows install has
  * neither). That form takes backslashes only and a full path. */
