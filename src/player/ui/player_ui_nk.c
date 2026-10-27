@@ -56,8 +56,9 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
      "Draws the project's moving test pattern. There is nothing to play.", ""},
     {"synthetic-allegrex-v1", "Works", PLAYER_UI_TIER_NONE,
      "Runs the project's test program, then closes.", ""},
-    {"pspdev-phase5-v1", "Boots to a named boundary", PLAYER_UI_TIER_WONT_BOOT,
-     "A project test module. It does not start from the player yet.", ""},
+    {"pspdev-phase5-v1", "Partially works", PLAYER_UI_TIER_WONT_BOOT,
+     "A small test program from the Nakagawa project. It doesn't start from the player yet.",
+     ""},
     {"synthetic-title2-v1", "Works", PLAYER_UI_TIER_NONE,
      "Runs the project's test program, then closes.", ""},
     {"showcase-scene-v1", "Partially works", PLAYER_UI_TIER_PLAYABLE,
@@ -1264,7 +1265,12 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->status_marker = "●";
     }
     out->art_kind = player_ui_art_kind(game);
-    out->badge = out->art_kind != NK_UI_ART_NONE ? "Showcase demo" : "Your disc";
+    /* The showcase packages beside the player are the demos under TEST THIS
+       PC. The --demo fixtures are the project's test programs, not a disc the
+       user added. */
+    out->is_demo = game->is_showcase_package;
+    out->badge = out->is_demo || out->art_kind != NK_UI_ART_NONE ? "Showcase demo"
+               : game->is_sample ? "Test program" : "Your disc";
     out->icon = NULL;
     out->picture = NULL;
     if (out->art_kind == NK_UI_ART_NONE) {
@@ -1447,31 +1453,41 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     } else if (route == PLAYER_UI_ROUTE_LIBRARY) {
         size_t count = app->game_count > 0 ? (size_t)app->game_count : 0u;
         size_t columns = 1u;
-        size_t page_size = player_ui_library_page_size(scale.logical_w,
-                                                       scale.logical_h, &columns);
+        size_t page_size;
+        size_t demo_count;
+        size_t games;
         size_t slots;
         if (count > PLAYER_UI_TITLE_CAP) count = PLAYER_UI_TITLE_CAP;
-        /* The grid ends with the add card, so it has one slot more than titles. */
-        slots = count > 0u ? count + 1u : 0u;
         player_ui_fill_titles(player, app, count);
+        /* The grid holds the user's games and ends with the add card, so it has
+           one slot more than games; the demos sit under it, under TEST THIS PC. */
+        demo_count = player_ui_library_demo_count(player->titles, count);
+        games = count - demo_count;
+        page_size = player_ui_library_page_size_with_demos(scale.logical_w, scale.logical_h,
+                                                           demo_count, &columns);
+        slots = games > 0u ? games + 1u : 0u;
         {
             size_t focused_index = player_ui_focused_title_index(
                 nk_ui_focused(player->ui), count);
             if (focused_index < count) {
+                size_t position = player_ui_library_grid_position(player->titles, count,
+                                                                  focused_index);
                 app->selected_game_index = (int)focused_index;
-                player->library_page = focused_index / page_size;
+                if (position < count) player->library_page = position / page_size;
             }
         }
         if (nk_ui_focused(player->ui) == PLAYER_UI_ID_LIBRARY_ADD && slots > 0u) {
             player->library_page = (slots - 1u) / page_size;
         }
         if (player->library_focus_pending) {
+            size_t position = player_ui_library_grid_position(
+                player->titles, count, player->library_focus_index);
             player->library_focus_pending = false;
-            if (player->library_focus_index < count) {
+            if (position < count) {
                 nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ITEM(player->library_focus_index));
                 app->selected_game_index = (int)player->library_focus_index;
-                player->library_page = player->library_focus_index / page_size;
-            } else if (count > 0u) {
+                player->library_page = position / page_size;
+            } else if (games > 0u) {
                 nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ADD);
                 player->library_page = (slots - 1u) / page_size;
             } else {

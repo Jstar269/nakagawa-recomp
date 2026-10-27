@@ -39,6 +39,11 @@ Importing a disc doesn't change its status. The **EXPERIMENTAL** badge on the ga
   replacement fonts that the project builds with its own converter
   (`tools/ttf2pgf.py`, [#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
 
+Before you add a game, you can check that Nakagawa runs on your PC. When the
+showcase demos come with your copy of the player, the library lists them in
+their own **Test this PC** row, apart from your games. Play one to check that
+graphics, sound and controls work ([`SHOWCASE.md`](SHOWCASE.md)).
+
 What to expect: adding an ISO identifies the disc and shows a checklist of what
 will and won't work. **BUILD PACKAGE** recompiles the game while you watch, and
 **PLAY** starts it once the package checks out. For most retail discs the
@@ -51,8 +56,9 @@ is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308))
 ## What the player does automatically
 
 1. Add the ISO: drag it into the player window, or click **START SETUP WIZARD**
-   (on an empty library) or the **Add a disc image you own** tile. If the disc is already in your
-   library, adding it again keeps the files already unpacked from it, as long as
+   (on an empty library) or the **Add a disc image you own** card at the end of
+   your games. If the disc is already in your library, adding it again keeps the
+   files already unpacked from it, as long as
    the disc ID, version and image size match.
 2. The player reads the disc's own `PARAM.SFO` to find the game's title and disc ID.
    When it starts, the player also loads every title manifest in `<user data>/manifests`

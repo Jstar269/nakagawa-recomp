@@ -203,12 +203,21 @@ Only actions the screen handles appear in its prompt bar.
 ### Library (C5, built)
 
 Top bar with LIBRARY, ABOUT and SETTINGS tabs (SETTINGS opens the Settings view, whose page shows that tab active;
-Start or F1, the menu prompt, opens it too); `LIBRARY` in `DISPLAY` with the count in `CAPTION` beside it ("7 titles · 2 showcase demos"); a pager
+Start or F1, the menu prompt, opens it too); `LIBRARY` in `DISPLAY` with the count of the user's games in `CAPTION` beside it ("7 titles"); a pager
 (small PREVIOUS and NEXT buttons around "PAGE 1 OF 2") on the right of that row when the grid spans pages; the card
-grid, ending with the add card ("Add a disc image you own", "Choose an .iso file"); prompt bar with MOVE, OPEN and
+grid of the user's games, ending with the add card ("Add a disc image you own", "Choose an .iso file"); prompt bar with MOVE, OPEN and
 SETTINGS and no corner text. Empty library: one centred 640 px card with a disc icon, `TITLE` "Add your first game", a `BODY`
 line, the primary START SETUP WIZARD button (the default focus), CHOOSE A DISC IMAGE, and a caption about dropping an
 .iso onto the window.
+
+TEST THIS PC: the demos that come with Nakagawa (the showcase packages beside the player) never join the grid. They
+sit in their own row under it, or under the empty-library card while the user has no games, so the setup wizard is
+offered on a first start even when the demos are there. The row's first grid column holds the `EYEBROW` "TEST THIS
+PC" and one `CAPTION` line ("Play a demo that comes with Nakagawa to check graphics, sound and controls."); each
+demo is a compact 72 px card one grid column wide (its project picture on the left, the name in `TILE_TITLE` over
+two lines at most, and the status in `LABEL_S`). The cards are focusable, never the default focus, and open the
+demo's title page like a game card. The grid gives up rows to fit the row; where the empty-library card and the row
+do not both fit (the 960 x 540 minimum), the card leaves out its icon.
 
 ### Title detail (C5, built)
 

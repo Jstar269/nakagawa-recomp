@@ -37,7 +37,10 @@ title manifest. Each package is checked before it is copied into `build/demos/pa
 The release layout copies the read-only `demos/` folder next to the player executable. When the player starts, it
 looks at its generated public title catalog and lists a `showcase-*` entry only when both the catalogued image and a
 valid package are there. **Play** uses the usual package check and launcher, with the demo folder as the package
-root. The library labels each bundled entry **Showcase demo**. Games you add yourself keep using your own library
+root. The library lists the bundled demos in their own **Test this PC** row, apart from your
+games: under the grid, or under the first-start card while you have no games yet. Play one to check that
+graphics, sound and controls work on your PC before you add a game of your own. Each demo's title page labels
+it **Showcase demo**. Games you add yourself keep using your own library
 and its package folder. The launcher still gives the runtime a writable Memory Stick folder in your user data, so the
 bundled demo folder stays read-only while saving works.
 

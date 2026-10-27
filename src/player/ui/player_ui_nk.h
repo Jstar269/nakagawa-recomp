@@ -155,6 +155,10 @@ typedef struct {
     /* REMOVE FROM LIBRARY is offered: not for a showcase demo, and not while a
        game starts or runs, a package builds or a disc is copied (#1304). */
     bool can_remove;
+    /* A demo that comes with Nakagawa (a showcase package beside the player),
+       not one of the user's games: the Library lists it under TEST THIS PC,
+       apart from the grid. */
+    bool is_demo;
 } PlayerUiTitle;
 
 typedef struct {
@@ -616,6 +620,16 @@ NkUiId nk_ui_router_take_focus_restore(NkUiRouter *router);
    one page shows. */
 size_t player_ui_library_page_size(float logical_width, float logical_height,
                                    size_t *columns_out);
+/* The same with `demo_count` demos under TEST THIS PC, whose rows take their
+   height from the grid's. */
+size_t player_ui_library_page_size_with_demos(float logical_width, float logical_height,
+                                              size_t demo_count, size_t *columns_out);
+/* How many titles are demos (PlayerUiTitle.is_demo). */
+size_t player_ui_library_demo_count(const PlayerUiTitle *titles, size_t count);
+/* Where title `index` sits in the grid of the user's games (titles that are
+   not demos), from 0; `count` for a demo or an index out of range. */
+size_t player_ui_library_grid_position(const PlayerUiTitle *titles, size_t count,
+                                       size_t index);
 
 PlayerUiAction player_ui_screen_library(NkUi *ui,
                                         const PlayerUiLibraryModel *model);
