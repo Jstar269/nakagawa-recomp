@@ -267,7 +267,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ad2c2fa0b8c93ab404f0e849e204ed15e293cfcabf651418aa918c60d36912c0"
+      "sha256": "36a88d153cf64d2c9f924d84edb442c50a26ed221a891c0b42e3e7478aec9bd9"
     },
     {
       "path": ".github/workflows/provenance-attestation-merge-group.yml",
@@ -448,7 +448,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "be4d4a49891c691f57f3b05ef7c7bba7309d22a840790634684485565e794ce9"
+      "sha256": "dc20115f3639f9108f6fde95f70aa7abdbcd8f4c5a13ee392b6a2f29d44c6367"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -465,7 +465,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "517f67d4edb76d108aaf0c57eadf257110e4ecfa4955b20a7c03e4d94fc567b1"
+      "sha256": "f3a496c61f2751f722f2cc67da674155685f8a05f848f9d30b0f14e9fb871a3b"
     },
     {
       "path": "REVIEW.md",
@@ -988,7 +988,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "6a65b02666edfafb7ad0bd941cda041ea016edc75dede14fa2bd6f4e6bcbdd35"
+      "sha256": "43f6c0064b874ca0f98d110c78f2c936eda9710d123483405e452cc38de23c59"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1009,7 +1009,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0ba6e7879b2c7ad3e085039230b6d1b680037818b9c7f6177c283cb21595e0a2"
+      "sha256": "e5a36fbfea49f3c7236adcfcc6594e2d04cd1fe70cf3f2021e15b586eb638211"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1387,7 +1387,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f123ae2153cc8c353d2c4acb23d0b23c51224a43e351100505fe646629258b83"
+      "sha256": "d3ad5f5eb60ed9ad35b599212845494acb1762b980011eff19724698b0742bbd"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1873,15 +1873,6 @@
       "sha256": "44f7f854397240fb266d50248fca6d7b6e7892a606cc6723838adb1d3267d59a"
     },
     {
-      "path": "docs/images/og-card.png",
-      "classification": "reviewed_documentation",
-      "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
-      },
-      "sha256": "614698eb0f74bc933fe90d8114a0351beb47e6370ed5da649d077fce23c795ba"
-    },
-    {
       "path": "docs/images/showcase-breakout-v180.png",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1933,16 +1924,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "391fa446a530bd889803d0b122472948d513723455308c1af8f35048d493a25d"
-    },
-    {
-      "path": "docs/media/hst-title-screen-960.png",
-      "classification": "reviewed_documentation",
-      "evidence": {
-        "source": "public documentation review",
-        "statement": "generic/public documentation; no private operational evidence"
-      },
-      "sha256": "8abe8ddfc74d02d04cf74791b3924c8b2ae5daf4000403f3b6e01134a775b878"
+      "sha256": "9037ae4b7b9fbddde54a07151d98ae3e901a3d5ea394dc2af7b457fdfdd1c5a6"
     },
     {
       "path": "docs/media/hst-title-screen.png",
