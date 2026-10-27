@@ -272,8 +272,9 @@ Semantic handler census: **492** handlers across **25** API families, covering *
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP ioctl timing and callback ordering remain unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoLseek`** (`sceIo`): `sceIoLseek` (0x27eb27b8)
-  - Limitation: PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; large offsets, out-of-range clamping, invalid whence, raw devices and error precedence remain unmeasured (#341)
+  - Limitation: PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; on a file, a destination before the start or past the end fails closed with IO_LSEEK_OUT_OF_RANGE (#1380); large offsets, invalid whence and error precedence remain unmeasured (#341). UMD block-device seeks follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (sector positions, SEEK_END at the last sector, 0x8001b003 for a negative or far-past-the-disc position); the refusal edge between the last sector and the captured far position is inferred
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)
+  - Evidence: src/rt/hle_thread_selftest.c:test_umd_block_device_sectors
 - **`h_IoLseek32Async`** (`sceIo`): `sceIoLseek32Async` (0x1b385d8f)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
@@ -281,7 +282,7 @@ Semantic handler census: **492** handlers across **25** API families, covering *
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; 64-bit seek timing and callback ordering are not hardware-measured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoOpen`** (`sceIo`): `sceIoOpen` (0x109f50bc)
-  - Limitation: measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; other flag combinations, general error precedence and raw UMD data operations remain unmeasured (#341)
+  - Limitation: measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; an open without PSP_O_CREAT never creates a file, and PSP_O_CREAT|PSP_O_EXCL on an existing file fails closed with IO_OPEN_EXCL_EXISTING (#1380); other flag combinations and general error precedence remain unmeasured (#341). UMD block-device reads and seeks are covered under sceIoRead and sceIoLseek
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)
   - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
@@ -292,9 +293,10 @@ Semantic handler census: **492** handlers across **25** API families, covering *
   - Limitation: the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoRead`** (`sceIo`): `sceIoRead` (0x6a638d83)
-  - Limitation: PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); short reads at end of file, zero-length reads, partial-read position advance, unreadable buffers, write-only descriptors, raw UMD data and standard-stream reads remain unmeasured (#341)
+  - Limitation: PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); short reads at end of file, zero-length file reads, partial-read position advance, unreadable buffers, write-only descriptors and standard-stream reads remain unmeasured (#341). UMD block-device reads follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (counts and results in 2048-byte sectors, the position advancing by the count, 0x80010016 for a zero count); a read crossing the last sector stays at the raw-device boundary, and the runtime refuses a destination outside guest memory where the console overran the buffer
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)
   - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
+  - Evidence: src/rt/hle_thread_selftest.c:test_umd_block_device_sectors
 - **`h_IoReadAsync`** (`sceIo`): `sceIoReadAsync` (0xa0b5a7c2)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
@@ -627,11 +629,15 @@ Semantic handler census: **492** handlers across **25** API families, covering *
 - **`h_RegSetKeyValue`** (`sceReg`): `sceRegSetKeyValue` (0x17768e14)
   - Limitation: writes an existing key through a mode-2 category handle (mode 1 is EACCES): INT exactly 4 bytes, a STR takes the size of its new value (string sizes follow their values, measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration), BIN up to its fixed size with the rest zero-filled; persists on a flush; write semantics and the errno-class codes are not hardware measured
 - **`h_RtcConvertLocalToUtc`** (`sceRtc`): `sceRtcConvertLocalTimeToUTC` (0x779242a2)
-  - Limitation: runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)
+  - Limitation: applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)
+  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile
 - **`h_RtcConvertUtcToLocal`** (`sceRtc`): `sceRtcConvertUtcToLocalTime` (0x34885e0d)
-  - Limitation: runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)
+  - Limitation: applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)
+  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile
 - **`h_RtcGetCurrentClockLocal`** (`sceRtc`): `sceRtcGetCurrentClockLocalTime` (0xe7c27d1b)
-  - Limitation: timezone/daylight comes from the fixed UTC constant until #77 adds the settable system profile, so LocalTime matches only a UTC-configured PSP (#77, #80, #341)
+  - Limitation: applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the seed is the oracle console's measured setting, not a factory default, and the 60-minute daylight-saving shift is the setting's meaning, not measured (#1382, #341)
+  - Evidence: src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile
+  - Evidence: src/rt/hle.c:psp_profile_local_offset_minutes
 - **`h_RtcGetTime64_t`** (`sceRtc`): `sceRtcGetTime64_t` (0xe1c93e47)
   - Limitation: out-of-range fields normalise by calendar carry, whose exact seconds are this arithmetic rather than measured; year 0, month 0 and day 0 are refused with 0x800001fe and a refusal leaves the output unwritten, both unmeasured; a NULL or unreadable date and an unwritable non-NULL output take the HLE guest-fault stop
   - Evidence: src/rt/hle_thread_selftest.c:test_psp_measured_rtc_time64_20261024

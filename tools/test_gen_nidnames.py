@@ -109,6 +109,20 @@ class RenderTest(unittest.TestCase):
         data = corpus([{"class": "hash-verified", "name": "sceIoOpen"}])
         self.assertEqual(gen.render(data), gen.render(data))
 
+    def test_nid_names_is_the_rendered_table(self) -> None:
+        # tools/codegen.py --name-imports names stubs from nid_names(), so it must hold
+        # exactly the pairs the header carries, under the same refusals.
+        data = corpus([{"class": "hash-verified", "name": n} for n in ("sceIoOpen", "sceIoClose")])
+        rendered = {int(line.split("{0x")[1][:8], 16): line.split('"')[1]
+                    for line in gen.render(data).splitlines() if line.strip().startswith("{0x")}
+        self.assertEqual(gen.nid_names(data), rendered)
+        self.assertEqual(gen.nid_names(data)[gen.nid_of("sceIoOpen")], "sceIoOpen")
+        with self.assertRaises(gen.CorpusError):
+            gen.nid_names(corpus([
+                {"class": "hash-verified", "name": "sceIoOpen"},
+                {"class": "unresolved", "name": "sceAlias", "nid": f"0x{gen.nid_of('sceIoOpen'):08x}"},
+            ]))
+
 
 class TrackedCorpusTest(unittest.TestCase):
     """The shipped corpus and the shipped header must agree exactly."""

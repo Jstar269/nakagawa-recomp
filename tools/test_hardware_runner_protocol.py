@@ -33,6 +33,7 @@ from __future__ import annotations
 import contextlib
 from datetime import datetime, timedelta, timezone
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -1558,7 +1559,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         )
 
     def test_new_probe_cases_register_strict_runner_completeness(self):
-        for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero"):
+        for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero", "cpu-timing"):
             with self.subTest(case_id=case_id):
                 self.assertEqual(
                     run_psplink_module._campaign_completeness_contract(case_id),
@@ -1567,6 +1568,45 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 self.assertFalse(run_psplink_module._campaign_stream_complete(
                     CAMPAIGN_META, case_id
                 ))
+
+        cpu_spec, cpu_counts = run_psplink_module.CAMPAIGN_PROBE_CASES["cpu-timing"]
+        self.assertEqual(cpu_spec.terminal_case, "cpu-timing-complete")
+        self.assertEqual(cpu_spec.terminal_count, 65)
+        cpu_rows = []
+        for case_id in cpu_spec.ordered_cases:
+            out_count = cpu_counts[case_id]
+            fields = " ".join(
+                f"out{index}=0x{index + 1:08x}" for index in range(out_count)
+            )
+            if case_id == cpu_spec.terminal_case:
+                fields = f"out0=0x{cpu_spec.terminal_count:08x}"
+            cpu_rows.append(
+                f"NAKAGAWA_PSP_TEST schema=1 test_id={cpu_spec.test_id} "
+                f"case_id={case_id} status=PASS result=0x00000000 {fields}\n"
+            )
+        cpu_stream = CAMPAIGN_META + "".join(cpu_rows)
+        self.assertTrue(
+            run_psplink_module._campaign_stream_complete(cpu_stream, "cpu-timing")
+        )
+        self.assertEqual(
+            len(_parse_campaign_records(cpu_stream, "cpu-timing").results),
+            cpu_spec.record_count,
+        )
+        cpu_failure = cpu_stream.replace(
+            "case_id=syscall-ge-list-enqueue status=PASS",
+            "case_id=syscall-ge-list-enqueue status=FAIL",
+            1,
+        )
+        self.assertTrue(
+            run_psplink_module._campaign_stream_complete(cpu_failure, "cpu-timing")
+        )
+        parsed_cpu_failure = _parse_campaign_records(cpu_failure, "cpu-timing")
+        self.assertFalse(all(row.status == "PASS" for row in parsed_cpu_failure.results))
+        self.assertFalse(
+            run_psplink_module._campaign_stream_complete(
+                CAMPAIGN_META + "".join(cpu_rows[:-1]), "cpu-timing"
+            )
+        )
 
         def invalid_cell_row(case_id, *, tier, api, endpoint, delta=0,
                              prefix=0, matches=0, post=0, band=0,
@@ -4012,6 +4052,42 @@ class HardwareLockGateTests(unittest.TestCase):
         self.assertEqual(report["terminal_reason"], "HARDWARE_LOCK_REFUSED")
         self.assertEqual(report["hardware_lock_status"], "HARDWARE_LOCK_SESSION_MISMATCH")
         self.assertEqual(report["envelopes"], [])
+
+    def test_campaign_case_refuses_a_timeout_that_would_stop_ge_timing_mid_stream(self):
+        # 2026-10-26: the 30 s default stopped ge-timing (46 s on a PSP-3000) with GE work in flight; the probe
+        # thread survived the stop, host0 went silent and the device needed a power cycle.
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        minimum = run_psplink_module.CAMPAIGN_CASE_MIN_TIMEOUT_SECONDS["ge-timing"]
+        with tempfile.TemporaryDirectory(prefix="lock-case-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            transport, binary = scratch / "transport-write.prx", scratch / "ge-timing.prx"
+            transport.write_bytes(b"synthetic PRX")
+            binary.write_bytes(b"synthetic PRX")
+            argv = [
+                "--campaign-case", f"transport-write={transport}",
+                "--campaign-case", f"ge-timing={binary}",
+                "--host0-root", str(scratch),
+                "--model", "PSP-3000",
+                "--source-commit", SOURCE_COMMIT,
+                "--session-id", "synthetic-session",
+                "--usbhostfs-argv-json", json.dumps(["nakagawa-missing-usbhostfs-binary"]),
+                "--out", str(scratch / "report.json"),
+            ]
+            with patch.object(run_psplink_module, "_read_hardware_lock",
+                              return_value=(False, "HARDWARE_LOCK_SESSION_MISMATCH", None)) as lock:
+                for too_short in ([], ["--timeout", str(minimum - 1)]):
+                    with self.subTest(timeout=too_short), contextlib.redirect_stderr(io.StringIO()) as stderr:
+                        with self.assertRaises(SystemExit) as raised:
+                            run_psplink_module.main(argv + too_short)
+                        self.assertEqual(raised.exception.code, 2)
+                        self.assertIn("ge-timing needs --timeout", stderr.getvalue())
+                lock.assert_not_called()
+                # At the minimum the arguments are accepted and the run reaches the lock gate.
+                code = run_psplink_module.main(argv + ["--timeout", str(minimum)])
+            report = json.loads((scratch / "report.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(code, 2)
+        self.assertEqual(report["terminal_reason"], "HARDWARE_LOCK_REFUSED")
 
     def test_command_mode_requires_a_session_and_a_held_lock(self):
         with tempfile.TemporaryDirectory() as scratch_name:
