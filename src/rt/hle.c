@@ -11335,8 +11335,10 @@ static int s_osk_status = OSK_NONE;
 static uint32_t s_osk_param = 0;
 static int s_osk_field = 0;           /* the next field to answer */
 static int s_osk_request_open = 0;    /* a person's answer to that field is pending */
-/* The slot's holder is active from its InitStart until its own GetStatus has reported the way
- * back to NONE; only then may another InitStart take the slot. Caller holds dialog_lock. */
+/* The slot's holder is active from its InitStart until it is back at NONE: once its own
+ * GetStatus has reported the way back, or at once for a savedata ShutdownStart from a caller
+ * worse than 0x20 (h_DlgShutdown). Only then may another InitStart take the slot. Caller holds
+ * dialog_lock. */
 static int utility_slot_active_locked(void) {
     switch (s_utility_slot) {
     case UTILITY_SLOT_SAVEDATA:    return s_dlg_status != 0;
