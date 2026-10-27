@@ -89,6 +89,21 @@ byte-matching decompilation, and a general PSP toolkit ([`docs/PROJECT_MODEL.md`
 - **Offline by default.** Nakagawa connects to the internet only when you agree, and today only to fetch build
   tools ([network use](docs/SETUP.md#network-use)).
 
+## The matching decomp behind it
+
+[![hst-decomp code matched](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FJstar269%2Fhst-decomp%2Fmain%2Fdocs%2Fobjdiff-report.json&query=%24.measures.matched_code_percent&suffix=%25&label=hst-decomp%20code%20matched&color=6E9600)](https://github.com/Jstar269/hst-decomp)
+
+Hot Shots Tennis also has a project of its own: [hst-decomp](https://github.com/Jstar269/hst-decomp), a matching
+decompilation that rebuilds the game's code as C and C++ that compiles back to the exact original bytes. On
+27 October 2026 it had 35.9% of the game's code matched (12,199 of 19,634 functions); the badge shows today's
+figure.
+
+The two projects share findings, not code. The decomp's function names can label the C that Nakagawa generates
+([#1495](https://github.com/Jstar269/nakagawa-recomp/pull/1495)), and what it shows about the game helps replace
+Nakagawa's Hot Shots Tennis workarounds with general fixes
+([#363](https://github.com/Jstar269/nakagawa-recomp/issues/363)). No decomp source is copied into Nakagawa,
+which is meant for any PSP game, not just this one.
+
 ## How is it made?
 
 Nakagawa Recomp is developed with AI coding agents, mainly Claude Code and Codex, directed by the maintainer. AI
