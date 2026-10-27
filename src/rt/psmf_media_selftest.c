@@ -2096,11 +2096,19 @@ static int64_t av_audio_pts(int block) {
     return (int64_t)(((uint64_t)block * 2048ull * 90000ull + 22050ull) / 44100ull);
 }
 
+/* Packet layouts of the A/V timing container.  SPLIT cuts every picture across two PES
+ * packets and gives every ATRAC frame its own packet.  PACKED is the shape of a PSP movie:
+ * one timestamped video packet carries two whole pictures and one timestamped audio packet
+ * carries up to AV_AUDIO_PER_PES frames, so only the first unit commencing in each packet owns
+ * that packet's time (ISO/IEC 13818-1 2.4.3.7) and every later one must be extrapolated. */
+enum { AV_LAYOUT_SPLIT = 0, AV_LAYOUT_PACKED = 1 };
+#define AV_AUDIO_PER_PES 3
+
 /* Assemble the A/V timing container: a player-valid PSMF header (presentation base and
  * stream table included -- scePsmfPlayer refuses anything else), the authored I_PCM
- * pictures cut across two PES packets each, and decodable ATRAC3+ frames interleaved with
- * PTS anchors on both tracks. */
-static uint8_t *build_psmf_av(uint32_t *size_out) {
+ * pictures, and decodable ATRAC3+ frames interleaved with PTS anchors on both tracks, in
+ * one of the packet layouts above. */
+static uint8_t *build_psmf_av(uint32_t *size_out, int layout) {
     static uint8_t es[1024u * 1024u];
     uint32_t au_off[AV_PICTURES], au_len[AV_PICTURES];
     ByteOut o;
@@ -2145,26 +2153,53 @@ static uint8_t *build_psmf_av(uint32_t *size_out) {
     for (int i = 0; i < AV_PICTURES; i++) mp4_picture_marks(es + au_off[i], au_len[i], i);
 
     uint8_t frame[64];
+    uint8_t packed_frames[64u * AV_AUDIO_PER_PES];
+    uint32_t frame_bytes = make_audio_frame(frame, sizeof(frame), 0x00, 0x00, 0x00);
+    frame[8] = 0x60u;      /* terminator-first ATRAC unit: a frame the project's own
+                            * ATRAC3+ bridge really decodes (2048 samples, stereo) */
+    for (int i = 0; i < AV_AUDIO_PER_PES; i++)
+        memcpy(packed_frames + (size_t)i * frame_bytes, frame, frame_bytes);
     int audio_next = 0;
-    for (int k = 0; k < AV_PICTURES; k++) {
-        uint32_t half = au_len[k] / 2u;
-        add_video_pes(&b, (k % AV_VIDEO_ANCHOR) == 0,
-                      FIX_BASE + av_video_pts(k), es + au_off[k], half);
-        add_video_pes(&b, 0, 0, es + au_off[k] + half, au_len[k] - half);
-        int upto = (k + 1) * AV_AUDIO_BLOCKS / AV_PICTURES;
-        while (audio_next < upto) {
-            int j = audio_next++;
-            uint32_t n = make_audio_frame(frame, sizeof(frame), 0x00, 0x00, 0x00);
-            frame[8] = 0x60u;      /* terminator-first ATRAC unit: a frame the project's own
-                                    * ATRAC3+ bridge really decodes (2048 samples, stereo) */
-            add_audio_pes_sub(&b, 0x00u, (j % AV_AUDIO_ANCHOR) == 0,
-                              FIX_BASE + av_audio_pts(j), frame, n);
+    if (layout == AV_LAYOUT_PACKED) {
+        CHECK(AV_PICTURES % 2 == 0, "the packed layout pairs every picture");
+        for (int k = 0; k < AV_PICTURES; k += 2) {
+            /* One timestamped packet, two whole pictures: the packet's PTS is picture k's. */
+            uint32_t pair = au_len[k] + au_len[k + 1];
+            CHECK(au_off[k] + au_len[k] == au_off[k + 1], "paired pictures are contiguous");
+            add_video_pes(&b, 1, FIX_BASE + av_video_pts(k), es + au_off[k], pair);
+            int upto = (k + 2) * AV_AUDIO_BLOCKS / AV_PICTURES;
+            if (k + 2 >= AV_PICTURES) upto = AV_AUDIO_BLOCKS;
+            /* Full packets while enough frames are due, the remainder with the last pair. */
+            while (upto - audio_next >= AV_AUDIO_PER_PES ||
+                   (k + 2 >= AV_PICTURES && audio_next < upto)) {
+                int n = upto - audio_next;
+                if (n > AV_AUDIO_PER_PES) n = AV_AUDIO_PER_PES;
+                add_audio_pes_sub(&b, 0x00u, 1, FIX_BASE + av_audio_pts(audio_next),
+                                  packed_frames, (uint32_t)n * frame_bytes);
+                audio_next += n;
+            }
+        }
+    } else {
+        for (int k = 0; k < AV_PICTURES; k++) {
+            uint32_t half = au_len[k] / 2u;
+            add_video_pes(&b, (k % AV_VIDEO_ANCHOR) == 0,
+                          FIX_BASE + av_video_pts(k), es + au_off[k], half);
+            add_video_pes(&b, 0, 0, es + au_off[k] + half, au_len[k] - half);
+            int upto = (k + 1) * AV_AUDIO_BLOCKS / AV_PICTURES;
+            while (audio_next < upto) {
+                int j = audio_next++;
+                add_audio_pes_sub(&b, 0x00u, (j % AV_AUDIO_ANCHOR) == 0,
+                                  FIX_BASE + av_audio_pts(j), frame, frame_bytes);
+            }
         }
     }
     CHECK(audio_next == AV_AUDIO_BLOCKS, "every authored audio block is written");
     be32_at(b.d + 12, b.at - 2048u);
     CHECK(!b.overflow, "A/V timing container fits its buffer");
-    CHECK(pes_count(b.d, b.at) >= (uint32_t)(AV_PICTURES * 2 + AV_AUDIO_BLOCKS),
+    uint32_t packets_written = layout == AV_LAYOUT_PACKED
+        ? (uint32_t)(AV_PICTURES / 2 + (AV_AUDIO_BLOCKS + AV_AUDIO_PER_PES - 1) / AV_AUDIO_PER_PES)
+        : (uint32_t)(AV_PICTURES * 2 + AV_AUDIO_BLOCKS);
+    CHECK(pes_count(b.d, b.at) >= packets_written,
           "the A/V container holds every packet the builder wrote");
     *size_out = b.at;
     return b.d;
@@ -2332,10 +2367,13 @@ static void test_psmf_av_timing_first_principles(void) {
  * assert where each issue #279 acceptance item is actually observable: every decoded
  * picture and audio block classified in every published snapshot, both presentation clocks
  * tracking the authored timeline at the guest getter boundaries, and the A/V separation at
- * those comparable points bounded for the whole run. */
-static void test_player_av_presentation_timing(void) {
+ * those comparable points bounded for the whole run.  Both packet layouts must give the
+ * same presentation times: the packed one is where a packet's PTS used to be handed to
+ * every unit commencing in it (issue #279). */
+static void test_player_av_presentation_timing(int layout) {
     uint32_t size = 0;
-    uint8_t *image = build_psmf_av(&size);
+    int failures_before = failures;
+    uint8_t *image = build_psmf_av(&size, layout);
     if (!image) { CHECK(0, "A/V timing container builds"); return; }
     av_latch_mpeglog();
     s_player_image = image;
@@ -2512,6 +2550,9 @@ cleanup:
     s_player_image = NULL;
     s_player_image_size = 0;
     free(image);
+    if (failures != failures_before)
+        fprintf(stderr, "FAIL: psmf-av: %d failed checks in the %s packet layout\n",
+                failures - failures_before, layout == AV_LAYOUT_PACKED ? "packed" : "split");
 }
 
 int main(int argc, char **argv) {
@@ -2559,7 +2600,8 @@ int main(int argc, char **argv) {
     test_mpeg_ycbcr_guest_contract();
     test_psmf_log_tick_instance_isolation();
     test_psmf_av_timing_first_principles();
-    test_player_av_presentation_timing();
+    test_player_av_presentation_timing(AV_LAYOUT_SPLIT);
+    test_player_av_presentation_timing(AV_LAYOUT_PACKED);
     test_psmf_contract_fragmentation_and_malformed_rejection();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 
