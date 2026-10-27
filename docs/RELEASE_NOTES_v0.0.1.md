@@ -19,8 +19,8 @@ needs something unsupported, missing or not built yet, it stops and tells you cl
 
 - **Play Hot Shots Tennis at full speed.** Hot Shots Tennis (UCUS98701) is rated **Playable**. It is a game that
   draws 30 frames per second, and this release runs it at that rate in menus and in matches on the reference PC
-  named below ([#1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296)). You need your own copy of the
-  game.
+  named below ([#1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296)). Its title file ships with
+  Nakagawa, so the player recognizes your own disc as Hot Shots Tennis. You need your own copy of the game.
 - **Identify a disc from its `PARAM.SFO`.** Drag a PSP `.iso` into the player, or pick one. The player reads
   `PSP_GAME/PARAM.SFO` itself to find the title and disc ID, and checks it against the supported title profiles. It
   never uses an update SFO or the volume ID ([#426](https://github.com/Jstar269/nakagawa-recomp/pull/426)).
