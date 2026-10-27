@@ -165,7 +165,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "02dca41b9de3d5253e756e19baee78bf96045d4226c8f32c7ebdbb28465516fe"
+      "sha256": "4bb05ce769d1eff00fb7bfade6ba89aab3850e16ca3252e8f3e7465702bd50f4"
     },
     {
       "path": ".github/dependabot.yml",
@@ -360,7 +360,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "56b820d3b189d10fc729c84c8f47a381b35f4352237772690fd7d734118337f5"
+      "sha256": "7b2b9cf759e946b3a0d6d0bb74b95b96aa25a8ca3081873139dfae41b7cc16b3"
     },
     {
       "path": "CLAUDE.md",
@@ -369,7 +369,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "18a97a0489eb5aa85a7ec875f1478a644061129cdd6a05a9c2f734925d97255b"
+      "sha256": "670d38850d7c72cf36eac10367a966250e21911f9653c163571f6805680f37c9"
     },
     {
       "path": "CMakeLists.txt",
@@ -399,7 +399,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ec79351d296877754671b5f455251e9a2f50fbd7bb2044c0fe81f0cbc777451d"
+      "sha256": "2d8478c8f7d2e2c17ff7c70da4ee2dcf42cde9ef790282f0976be8ac5e29369d"
     },
     {
       "path": "CREDITS.md",
@@ -1375,7 +1375,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "35c0bf7c02b56a8cfec4e034bfddc527b2b6de3185a6054e5f5fa55eecb7f40e"
+      "sha256": "f5574b15e4e0271d2da627129409c2abdaa7229f207fbf23f9c204e2bee9b49c"
     },
     {
       "path": "docs/AOT_PRODUCTIZATION_ARCHITECTURE.md",
@@ -1681,7 +1681,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c5c48f8a9988bb9f8507c6b6b45e5e2cadbf18990e119eed71b40ae7afd30ef0"
+      "sha256": "b3280b8b567678c0e51f2421abbf703013db9643e84da8867126828263ce6586"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
@@ -11302,7 +11302,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c1d21809a48b19a985da7f633e82edf1270a9b142d41e1aeaff5555f7ef16c46"
+      "sha256": "eb4c840665037f5a614798a70fc8f8a52d4e72b84c6e0893b42fdd4fd2541d1e"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -13463,7 +13463,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d8637babdbadb76cd17d0a472a8025d272efdf7ab8ae734bdb265a4e4914d006"
+      "sha256": "d3f95f076a40c726ade9adf889209242bef278ddaa262778c935afe4a2bce906"
     },
     {
       "path": "tools/test_debug.py",
