@@ -1050,20 +1050,24 @@ uint32_t sr_hle_test_compiled_sdk_version(void) {
 
 /* sceUtilityGetSystemParamInt(id, int *out): write the system setting and return 0. A no-op that
  * leaves *out untouched makes the game read garbage for the language and load the wrong region
- * assets. IDs follow PSP_SYSTEMPARAM_ID_INT_*. LANGUAGE (1, English), BUTTON_PREFERENCE (1, cross
- * = enter), DATE_FORMAT (1), TIME_FORMAT (1) and DAYLIGHTSAVINGS (1) are the values of their
- * registry keys measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration: that console's
- * configured settings, not factory defaults (which are unmeasured). The ad-hoc channel, WLAN power
- * save and time zone values are unmeasured project defaults. The registry (sreg_systemparam_int)
- * is the source sceUtilityGetSystemParamInt reads; this table seeds it. */
+ * assets. IDs follow PSP_SYSTEMPARAM_ID_INT_*. This table seeds the virtual system registry
+ * (sreg_systemparam_int), the one retained system profile every guest-visible reader of these
+ * settings goes through: sceUtilityGetSystemParamInt, sceImpose, and the RTC local-time and
+ * gettimeofday paths (psp_profile_local_offset_minutes, #1382). This is the one place the seed
+ * values and their status are stated. Every value marked measured is the configured setting of the
+ * PSP-3000 6.6.1 oracle console, not a factory default (factory defaults are unmeasured):
+ * LANGUAGE, BUTTON_PREFERENCE, DATE_FORMAT, TIME_FORMAT and DAYLIGHTSAVINGS from the read-only
+ * registry enumeration of 2026-10-09, and ADHOC_CHANNEL, TIMEZONE and LOCK_PARENTAL_LEVEL through
+ * sceUtilityGetSystemParamInt on 2026-10-10 (hle-sysparam). WLAN_POWERSAVE is an unmeasured
+ * project default. */
 static uint32_t systemparam_int_value(uint32_t id) {
     switch (id) {
         case 2:  return 0;   /* ADHOC_CHANNEL: measured 0 (automatic) on the oracle, 2026-10-10 */
-        case 3:  return 0;   /* WLAN_POWERSAVE: off (unmeasured) */
+        case 3:  return 0;   /* WLAN_POWERSAVE: off (unmeasured project default) */
         case 4:  return 1;   /* DATE_FORMAT: measured */
         case 5:  return 1;   /* TIME_FORMAT: measured (1 = 12-hour in the PSPSDK enumeration) */
-        case 6:  return 0xfffffed4u; /* TIMEZONE offset in minutes: measured -300 on the oracle console */
-        case 7:  return 1;   /* DAYLIGHTSAVINGS: measured */
+        case 6:  return 0xfffffed4u; /* TIMEZONE minutes from UTC: measured -300 on the oracle, 2026-10-10 */
+        case 7:  return 1;   /* DAYLIGHTSAVINGS: measured 1 (PSPSDK SAVING) */
         case 8:  return 1;   /* LANGUAGE: measured (English) */
         case 9:  return 1;   /* BUTTON_PREFERENCE: measured */
         case 10: return 9;   /* LOCK_PARENTAL_LEVEL: measured 9 (off) on the oracle, 2026-10-10 */
@@ -12276,16 +12280,26 @@ enum {
     RTC_FILETIME_EPOCH_TICK = 50491123200000000ull,
 };
 
-/* The PSP timezone is a console setting, not the host process timezone.  The
- * current public configuration is UTC/standard time; keeping it explicit makes
- * every RTC/local and gettimeofday path deterministic and leaves the setting in
- * one place.  The retained, settable system-profile owner for timezone/daylight
- * is issue #77 and does not exist yet, so sceRtcGetCurrentClockLocalTime and
- * the UTC/local conversions run on this fixed UTC constant until #77 lands;
- * the explicit-offset sceRtcGetCurrentClock path is complete and independent.
- * #80's LocalTime criterion is therefore BLOCKED BY #77, not complete. */
-static const int32_t s_psp_timezone_minutes = 0;
-static const int32_t s_psp_daylight = 0;
+/* The console's time zone and daylight-saving setting (#1382). It is a console setting, never the
+ * host process timezone, and it lives in the one retained system profile: the virtual system
+ * registry keys /CONFIG/DATE/time_zone_offset and /CONFIG/DATE/summer_time, which
+ * sceUtilityGetSystemParamInt reports as TIMEZONE (6) and DAYLIGHTSAVINGS (7). The RTC local-time
+ * APIs and gettimeofday read them here on every call, so a value a game writes through sceReg, or
+ * the per-user overlay restores, reaches every API at once and the getter and the clocks cannot
+ * disagree. The seed values and their measured status are stated once, at systemparam_int_value.
+ * PSPSDK psputility_sysparam.h: TIMEZONE is the offset from UTC in minutes (EST = -300) and
+ * DAYLIGHTSAVINGS is 0 (STD) or 1 (SAVING). That SAVING moves local time 60 minutes ahead is the
+ * setting's meaning, not a measurement: the firmware's arithmetic is unmeasured, and so is its
+ * handling of other values, which count as SAVING here. The explicit-offset sceRtcGetCurrentClock
+ * path does not use the profile. Returns the local offset in minutes; zone_out and daylight_out,
+ * when not NULL, receive the two settings. */
+static int64_t psp_profile_local_offset_minutes(int32_t *zone_out, uint32_t *daylight_out) {
+    int32_t zone = (int32_t)sreg_systemparam_int(6u);   /* PSP_SYSTEMPARAM_ID_INT_TIMEZONE */
+    uint32_t daylight = sreg_systemparam_int(7u);       /* PSP_SYSTEMPARAM_ID_INT_DAYLIGHTSAVINGS */
+    if (zone_out) *zone_out = zone;
+    if (daylight_out) *daylight_out = daylight;
+    return (int64_t)zone + (daylight ? 60 : 0);
+}
 
 static uint64_t s_rtc_epoch_tick;
 static uint64_t s_rtc_last_tick;
@@ -12409,7 +12423,7 @@ static int rtc_tick_to_datetime(uint64_t tick, RtcDateTime *out) {
     return 0;
 }
 
-static int rtc_add_offset(uint64_t tick, int32_t minutes, uint64_t *out) {
+static int rtc_add_offset(uint64_t tick, int64_t minutes, uint64_t *out) {
     if (!out) return 0;
     int64_t delta = (int64_t)minutes * 60ll * 1000000ll;
     if (delta >= 0) {
@@ -12430,7 +12444,7 @@ static int rtc_add_offset(uint64_t tick, int32_t minutes, uint64_t *out) {
  * an offset that crosses year 1 wraps instead of failing.  ConvertUtcToLocal
  * keeps the checked rtc_add_offset above because its overflow contract is not
  * autotest-verified; only the current-clock path uses the wrap form. */
-static void rtc_add_offset_wrap(uint64_t tick, int32_t minutes, uint64_t *out) {
+static void rtc_add_offset_wrap(uint64_t tick, int64_t minutes, uint64_t *out) {
     int64_t delta = (int64_t)minutes * 60ll * 1000000ll;
     *out = tick + (uint64_t)delta;   /* defined modulo 2^64 for both signs */
 }
@@ -12656,7 +12670,10 @@ static uint32_t h_LibcTime(CpuState *s) {
  * sceKernelGetSystemTime; it is an elapsed guest CPU-time value, not Unix time. */
 static uint32_t h_LibcClock(CpuState *s) { (void)s; return (uint32_t)now_usec(); }
 /* Fill a struct timeval {sec, usec} and struct timezone {minuteswest,dsttime}.
- * Both spans are preflighted before any write. */
+ * Both spans are preflighted before any write. The timezone record carries the
+ * system profile's settings in the BSD shape (minutes west of UTC, standard
+ * offset only, and the daylight flag); what the PSP itself writes there is
+ * unmeasured. */
 static uint32_t h_LibcGettimeofday(CpuState *s) {
     (void)s;
     if (A0 && !sr_guest_span_writable(A0, 8u)) return RTC_ILLEGAL_ADDR;
@@ -12668,8 +12685,11 @@ static uint32_t h_LibcGettimeofday(CpuState *s) {
         MEM_W32(A0 + 4u, (uint32_t)(unix_usec % 1000000u));
     }
     if (A1) {
-        MEM_W32(A1, (uint32_t)(-s_psp_timezone_minutes));
-        MEM_W32(A1 + 4u, (uint32_t)s_psp_daylight);
+        int32_t zone;
+        uint32_t daylight;
+        (void)psp_profile_local_offset_minutes(&zone, &daylight);
+        MEM_W32(A1, 0u - (uint32_t)zone);
+        MEM_W32(A1 + 4u, daylight);
     }
     return 0;
 }
@@ -12688,7 +12708,7 @@ static uint32_t h_RtcGetCurrentClockLocal(CpuState *s) {
     (void)s;
     if (!sr_guest_span_writable(A0, 16u)) return RTC_ILLEGAL_ADDR;
     uint64_t local_tick;
-    rtc_add_offset_wrap(rtc_now_tick(), s_psp_timezone_minutes, &local_tick);
+    rtc_add_offset_wrap(rtc_now_tick(), psp_profile_local_offset_minutes(NULL, NULL), &local_tick);
     RtcDateTime value;
     rtc_tick_to_datetime(local_tick, &value);
     return rtc_write_datetime(A0, &value) ? 0u : RTC_ILLEGAL_ADDR;
@@ -12697,14 +12717,14 @@ static uint32_t h_RtcConvertUtcToLocal(CpuState *s) {
     (void)s;
     uint64_t in, out;
     if (!A0 || !A1 || !rtc_read_u64(A0, &in) || !sr_guest_span_writable(A1, 8u) ||
-        !rtc_add_offset(in, s_psp_timezone_minutes, &out)) return RTC_ILLEGAL_ADDR;
+        !rtc_add_offset(in, psp_profile_local_offset_minutes(NULL, NULL), &out)) return RTC_ILLEGAL_ADDR;
     return rtc_write_u64(A1, out) ? 0u : RTC_ILLEGAL_ADDR;
 }
 static uint32_t h_RtcConvertLocalToUtc(CpuState *s) {
     (void)s;
     uint64_t in, out;
     if (!A0 || !A1 || !rtc_read_u64(A0, &in) || !sr_guest_span_writable(A1, 8u) ||
-        !rtc_add_offset(in, -s_psp_timezone_minutes, &out)) return RTC_ILLEGAL_ADDR;
+        !rtc_add_offset(in, -psp_profile_local_offset_minutes(NULL, NULL), &out)) return RTC_ILLEGAL_ADDR;
     return rtc_write_u64(A1, out) ? 0u : RTC_ILLEGAL_ADDR;
 }
 /* PSP's three std-fd imports intentionally alias the stdout handle (1).  The

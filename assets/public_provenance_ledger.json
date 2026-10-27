@@ -1357,7 +1357,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5a2bd252f384056934f5f7a1cf5923c8a4956366724d2dbc678b190c6a60b9a0"
+      "sha256": "9c13b170b3f7feb8022af414e1e6c79431f97fa410a69977a2b0e25ace6b7fc4"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1450,7 +1450,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "67a3f166a60e29f88ad921dba5951b14747d25d05876d7045446c47f547a24e2"
+      "sha256": "26595dd8ad5413dba181ddfb35589a3350580456304154bb686d52085f87bc2f"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1840,7 +1840,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a2e5edf1c74eab71534e2f0986538b04791ba43b5c0a7c8cbe8157554d49cd90"
+      "sha256": "2a26e67934dec5eacbd02220458793c8cc1bc1dbdaed77b0a871cbd264099ef8"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1945538094b0002465d054df5908fe964e8c88cc89da0fc6967dc8d9cbd79e2f"
+      "sha256": "346e834aacfbbccdcdffdabaa2bd988fc95bff94894fe13a01f37c6d56893aac"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8443,7 +8443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0b033d4ff499c6f06a231a1b98c3add7bfe9c3c30e3c11c9f8f36724a889dd1f"
+      "sha256": "de104130d333e9ed71696ab94348efead3bb508be76536d993f336f0cd3c5c8a"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -11563,7 +11563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "539c779d841edc16c1b807517d185a40bd3a11ed835239449e11457ab56d6eb0"
+      "sha256": "9832cc2af1c7b5d25295d161ad31d3e3684cf229bc37cac6563606cc6a5bf39f"
     },
     {
       "path": "tools/host_stubs.py",

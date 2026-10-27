@@ -212,9 +212,9 @@ and remaining-time computations all derive from this timeline through the
 shared refresh/deadline/block plumbing — no wait object duplicates time
 arithmetic [C1]. Calendar (RTC) reads map the same timeline through a
 one-time epoch offset sampled at first RTC use; thereafter they are pure
-guest-time arithmetic, and timezone handling stays on the fixed UTC
-constant until the missing system-profile owner lands (that single
-conversion criterion is out of scope) [C1]. In turbo mode time is fully
+guest-time arithmetic [C1]. The local-time offset is the console's time
+zone setting, owned outside the scheduler and never the host's (#1382).
+In turbo mode time is fully
 deterministic at scheduler boundaries and never host-dependent [C1].
 
 ### 3.5 Sleep/wakeup banking and join

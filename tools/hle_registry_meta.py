@@ -846,15 +846,25 @@ HANDLER_METADATA = {
     },
     "h_RtcGetCurrentClockLocal": {
         "status": "partial",
-        "limitation": "timezone/daylight comes from the fixed UTC constant until #77 adds the settable system profile, so LocalTime matches only a UTC-configured PSP (#77, #80, #341)",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
+            "src/rt/hle.c:psp_profile_local_offset_minutes",
+        ],
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the seed is the oracle console's measured setting, not a factory default, and the 60-minute daylight-saving shift is the setting's meaning, not measured (#1382, #341)",
     },
     "h_RtcConvertUtcToLocal": {
         "status": "partial",
-        "limitation": "runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
+        ],
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)",
     },
     "h_RtcConvertLocalToUtc": {
         "status": "partial",
-        "limitation": "runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
+        ],
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)",
     },
     "h_RtcGetTick": {
         "status": "complete",
