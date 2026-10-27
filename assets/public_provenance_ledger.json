@@ -129,7 +129,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9660f3e74abbae769998740dc24f365d741e0dc814c19c5d0da80bbd50e7773d"
+      "sha256": "43976772e4aeadc8354570bd9c00c4e58ea3df31b48cf86a22b6a0e9be47e3ed"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/feature_request.yml",
@@ -147,7 +147,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "22734fd44ad1f2e18ae93287d5763c17cd5d9c2bf359d57ab4990467f03f51b4"
+      "sha256": "0c841597fea15bd54d0e52bf7fd2df5dca80e4b425ceb3051d6ed5adb4add9d6"
     },
     {
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
@@ -351,7 +351,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "db09911467067618458b583a43b1429874049c1305e2f1fbbc595b0d5eea8b80"
+      "sha256": "5473b637e321951c91bdc2190713551fbbb5e3f6def79e599402aeb49233120b"
     },
     {
       "path": "AGENTS.md",
@@ -465,7 +465,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f3a496c61f2751f722f2cc67da674155685f8a05f848f9d30b0f14e9fb871a3b"
+      "sha256": "e76fce3fc8eead24f78b4fbe4d8840b28653fd3bca35edf65763af46f432e474"
     },
     {
       "path": "REVIEW.md",
@@ -492,7 +492,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "82aae1d37d4a784b7a6effcd9e048e70c607a487bc2bb522db4e2dcc46343335"
+      "sha256": "62f0559dc41a3824071815efdf3a49847eebce8f205d560b8a2fc4a5dfe61957"
     },
     {
       "path": "THIRD_PARTY_LICENSES/Brotli.txt",
@@ -1051,7 +1051,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e175bb2cf4ed2a37d9e6c5f00a77a39ea2d864d9108fe35dc8b619d359571b29"
+      "sha256": "66e45abbc220c8a9a24c335145c242ef8a15f5d3260d938e092afb7bccec38e5"
     },
     {
       "path": "assets/titles/display-smoke.json",
@@ -1396,7 +1396,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2dd3e3d7cd63e10177f8d7815c1566660f9c4829d94139a1e248f668e39bfd7e"
+      "sha256": "9d34e68ea9eb1706fee687eb08173b566cd30c4bc63fab21629493fddaa0a3ae"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1582,7 +1582,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "84cd3e1b9e2819036542bbc99561a475aae7d214e5f7ba32f6eee40c636d7eda"
+      "sha256": "7ec2cf9be47ebd05b793ddf7cef34f5feac9e51df8364f0d58d9bbb242197aa9"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -1678,7 +1678,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8ab8b2a416d1a32606a0aec8239823b506a433913a8742aea1ff15460744e276"
+      "sha256": "2f24f37533c264745942ad822d29bf386e336fc85d6712796b18ab5f545a3749"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1705,7 +1705,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "00b41716e932ebfcd770d569bef6aa6516b7eab6779bd38a79682182dff0aeec"
+      "sha256": "76892a0964ae10dd89c2c1a7ca314c8c86ba7ccd45a33cf7809b9df31bae4bfc"
     },
     {
       "path": "docs/SMOKE_TEST.md",
@@ -1714,7 +1714,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cf34d05d97b1af361e2a63b514dc131e5e177009ad7bc8824f2c1c4d48c48154"
+      "sha256": "aa1a348285a48ad5dba496e916f1a669c081d0d79573a978376486857b93f195"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -1771,7 +1771,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "692c539c3629e3ac63508a4c299a4c7fbd69b1ba8db76e00e5540de24ca5d557"
+      "sha256": "2030e7f2ec196c4d15d2ea944208960927987342b395db8db32480c1aefd2862"
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
@@ -14124,7 +14124,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4b09c3f361fa79d6b5de1d9add0f595d40d3561222932c61a9a206977097e28c"
+      "sha256": "791e76ebceec85358d21b2f9a700574160864b5a6852965eeea6ea61f140a12b"
     },
     {
       "path": "tools/test_portability_inventory.py",
