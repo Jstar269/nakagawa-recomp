@@ -130,6 +130,7 @@ struct PlayerUiNk {
     size_t library_focus_index;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     bool icon_reported[PLAYER_UI_TITLE_CAP];
+    char status_reported[PLAYER_UI_TITLE_CAP][32]; /* the status word last printed */
     int disc_reported_view;  /* the game-found card whose rows were printed, or -1 */
 #endif
     bool ready;
@@ -1138,10 +1139,22 @@ static bool player_ui_has_seen_boot(const GameRecord *game) {
                             game->status == NK_STATUS_PLAYABLE);
 }
 
+/* An experimental entry nobody has recorded a result for. A disc with a
+   compatibility record (a catalogued game whose title settings are local,
+   such as Hot Shots Tennis) is not called Untested beside its PLAYABLE. */
+static bool player_ui_unrecorded_experimental(const GameRecord *game) {
+    const char *expect;
+    const char *known_issues;
+    PlayerUiTier record_tier;
+    if (game == NULL || !game->is_experimental) return false;
+    (void)player_ui_compatibility_words(game, &expect, &known_issues, &record_tier);
+    return record_tier == PLAYER_UI_TIER_NONE;
+}
+
 static const char *player_ui_library_status_word(const GameRecord *game,
                                                  bool package_ready) {
     if (package_ready) return "Ready";
-    if (game != NULL && game->is_experimental) {
+    if (player_ui_unrecorded_experimental(game)) {
         return player_ui_has_seen_boot(game) ? "Experimental" : "Untested";
     }
     return "Needs setup";
@@ -1152,7 +1165,7 @@ static const char *player_ui_library_status_word(const GameRecord *game,
 static uint32_t player_ui_library_status_color(const GameRecord *game,
                                               bool package_ready) {
     if (package_ready) return PLAYER_UI_READY;
-    if (game != NULL && game->is_experimental) return PLAYER_UI_INFO;
+    if (player_ui_unrecorded_experimental(game)) return PLAYER_UI_INFO;
     return PLAYER_UI_WARNING;
 }
 
@@ -1167,7 +1180,7 @@ static unsigned player_ui_art_kind(const GameRecord *game) {
 static const char *player_ui_library_status_marker(const GameRecord *game,
                                                    bool package_ready) {
     if (package_ready) return "●";
-    if (game != NULL && game->is_experimental) {
+    if (player_ui_unrecorded_experimental(game)) {
         return player_ui_has_seen_boot(game) ? "◆" : "?";
     }
     return "▲";
@@ -1258,6 +1271,13 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->library_status = "Starting";
         out->status_rgba = PLAYER_UI_INFO;
         out->status_marker = "◆";
+    } else if (out->package_state == PLAYER_UI_PACKAGE_CHECKING &&
+               !player_ui_unrecorded_experimental(game)) {
+        /* Launcher review B4: until the background check has looked at the
+           package, the card does not know it needs setup. */
+        out->library_status = "Checking";
+        out->status_rgba = PLAYER_UI_INFO;
+        out->status_marker = "◆";
     } else if (running) {
         out->library_status = "Running";
         out->status_rgba = PLAYER_UI_READY;
@@ -1271,6 +1291,12 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         player_ui_art_get(player->art, game->iso_path, false, &out->icon, NULL);
     }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (strcmp(player->status_reported[index], out->library_status) != 0) {
+        snprintf(player->status_reported[index], sizeof(player->status_reported[index]), "%s",
+                 out->library_status);
+        printf("[PLAYER_UI_TEST] next_ui_library_status index=%d status=%s\n", index,
+               out->library_status);
+    }
     if (out->icon != NULL && !player->icon_reported[index]) {
         player->icon_reported[index] = true;
         printf("[PLAYER_UI_TEST] next_ui_disc_icon index=%d width=%u height=%u\n", index,
