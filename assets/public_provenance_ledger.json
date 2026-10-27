@@ -5747,7 +5747,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b618d12d682ed3998921a883c0ee9ea39507be35afaa65a168f96a3ad58f31e6"
+      "sha256": "07450bcaf177e5f7cbe19c9de3b1bde2dd7c4b6161b5eefbb56578add8a14bf6"
     },
     {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",

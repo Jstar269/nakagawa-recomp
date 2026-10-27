@@ -209,7 +209,32 @@ static void destroy_swapchain(void) {
     if (s_swap) { vkDestroySwapchainKHR(s_dev, s_swap, NULL); s_swap = VK_NULL_HANDLE; }
 }
 
+/* Queue-idle fault seam for the selftest: a nonzero VkResult stands in for the next wait. */
+static VkResult s_idle_fault_result = VK_SUCCESS;
+
+/* A swapchain may be destroyed only once every use of the images acquired from it has completed
+ * (VUID-vkDestroySwapchainKHR-swapchain-01282). The frame fences cover the copies into those
+ * images; the queue idle also covers each present's wait on its semaphore, which no fence covers.
+ * A failed wait (device lost, out of memory) proves nothing idle: the swapchain is then neither
+ * replaced nor destroyed, and the renderer is terminal (#1377). */
+static int wait_swapchain_unused(void) {
+    if (!wait_all_present_frames()) {
+        fprintf(stderr, "sdl3vk: a present frame's fence wait failed; the swapchain is kept\n");
+    } else {
+        VkResult r = s_idle_fault_result != VK_SUCCESS ? s_idle_fault_result
+                                                       : vkQueueWaitIdle(s_queue);
+        s_idle_fault_result = VK_SUCCESS;
+        if (r == VK_SUCCESS) return 1;
+        fprintf(stderr, "sdl3vk: vkQueueWaitIdle failed: %d; the swapchain is kept\n", (int)r);
+    }
+    s_renderer_terminal = 1;
+    return 0;
+}
+
+/* Creates the swapchain, or replaces the current one: the old swapchain is retired into the new
+ * one and destroyed once its images are no longer in use. */
 static int create_swapchain(void) {
+    if (s_swap && !wait_swapchain_unused()) return 0;
     VkSurfaceCapabilitiesKHR caps;
     VK_TRY(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s_pdev, s_surf, &caps));
 
@@ -1413,8 +1438,6 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
         VkResult ar = vkAcquireNextImageKHR(s_dev, s_swap, UINT64_MAX, f->sem_acq,
                                             VK_NULL_HANDLE, &idx);
         if (ar == VK_ERROR_OUT_OF_DATE_KHR || ar == VK_SUBOPTIMAL_KHR) {
-            wait_all_present_frames();
-            vkQueueWaitIdle(s_queue); /* presentation-engine scope; resize path only */
             if (!create_swapchain()) { why = "swapchain recreation failed"; goto fail; }
             continue;
         }
@@ -1583,8 +1606,6 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
 
         case PRESENT_ENQUEUED_REBUILD:
             presented = 1;
-            wait_all_present_frames();
-            vkQueueWaitIdle(s_queue);
             if (!create_swapchain()) {
                 s_renderer_terminal = 1;
                 why = "swapchain rebuild after presentation failed";
@@ -1594,8 +1615,6 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
 
         case PRESENT_OUT_OF_DATE:
             presented = 0;
-            wait_all_present_frames();
-            vkQueueWaitIdle(s_queue);
             create_swapchain();
             why = disp_why;
             goto fail;
@@ -1875,8 +1894,6 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
     uint32_t idx = 0;
     VkResult ar = vkAcquireNextImageKHR(s_dev, s_swap, UINT64_MAX, f->sem_acq, VK_NULL_HANDLE, &idx);
     if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
-        wait_all_present_frames();
-        vkQueueWaitIdle(s_queue); /* presentation-engine scope; resize path only */
         if (!create_swapchain() && !sdl3vk_window_minimized()) return -1;
         return 2;
     }
@@ -1936,8 +1953,6 @@ int sdl3vk_present_overlay(const void *px, int pitch) {
     case PRESENT_ENQUEUED_REBUILD:
     case PRESENT_OUT_OF_DATE:
         s_frame_cursor = (s_frame_cursor + 1) % PRESENT_FRAMES;
-        wait_all_present_frames();
-        vkQueueWaitIdle(s_queue);
         if (!create_swapchain() && !sdl3vk_window_minimized()) {
             s_renderer_terminal = 1;
             fprintf(stderr, "sdl3vk: pause overlay: swapchain rebuild failed\n");
@@ -1981,9 +1996,12 @@ static int cap_test_pattern(int x, int y, int ch) {
     }
 }
 
+/* Sets a variable that sdl3vk_init's getenv reads. On Windows that is the C runtime's copy:
+ * _putenv_s updates it and the process environment, while SetEnvironmentVariableA alone changes
+ * only the process environment, which getenv never sees again (#1377). */
 static int cap_test_setenv(const char *name, const char *value) {
 #ifdef _WIN32
-    return SetEnvironmentVariableA(name, value) ? 1 : 0;
+    return _putenv_s(name, value) == 0;
 #else
     return setenv(name, value, 1) == 0;
 #endif
@@ -2724,6 +2742,11 @@ static int sdl3vk_lifecycle_selftest(void) {
     const int steps = s_init_steps;
     const int errors = sdl3vk_validation_error_count();
     int ok = 1;
+    if (!s_validation_on) {
+        fprintf(stderr, "lifecycle: SR_VULKAN_VALIDATION=1 did not reach sdl3vk_init; "
+                        "the validation layer is off\n");
+        ok = 0;
+    }
     /* The test's own instance keeps the driver loaded between the cycles below: the NVIDIA
      * Windows driver was seen to fault in a worker thread of its own when it is unloaded and
      * loaded again many times in quick succession. It is not one of sdl3vk's objects. */
@@ -2824,7 +2847,10 @@ static int sdl3vk_capture_selftest_body(void) {
             return 77;
         }
     }
-    cap_test_setenv("SR_VULKAN_VALIDATION", "1");
+    if (!cap_test_setenv("SR_VULKAN_VALIDATION", "1")) {
+        fprintf(stderr, "gpu capture selftest: cannot set SR_VULKAN_VALIDATION\n");
+        return 1;
+    }
     const char *terminal_fault = getenv("SR_GPU_CAPTURE_TERMINAL_CASE");
     if (!terminal_fault || !terminal_fault[0]) {
         int lifecycle = sdl3vk_lifecycle_selftest();
@@ -2833,6 +2859,13 @@ static int sdl3vk_capture_selftest_body(void) {
     if (!sdl3vk_init("Nakagawa GPU capture selftest")) {
         fprintf(stderr, "gpu capture selftest: SKIP (Vulkan initialization unavailable)\n");
         return 77;
+    }
+    /* Every "no validation error" check below means something only if the layer is on. */
+    if (!s_validation_on) {
+        fprintf(stderr, "gpu capture selftest: SR_VULKAN_VALIDATION=1 did not reach sdl3vk_init; "
+                        "the validation layer is off\n");
+        sdl3vk_shutdown();
+        return 1;
     }
 
     /* ---- filter selection policy (issue #68) --------------------------------------- */
@@ -3238,6 +3271,37 @@ static int sdl3vk_capture_selftest_body(void) {
             fprintf(stderr, "present recovery: post-OOM normal present failed\n"); ok = 0;
         }
 
+    }
+
+    /* A swapchain replacement with a frame still in flight waits until the old swapchain's
+     * images are unused before destroying it; with validation on, destroying it earlier is
+     * VUID-vkDestroySwapchainKHR-swapchain-01282. A failed wait keeps the swapchain (#1377). */
+    {
+        int in_flight = 0, after = 0;
+        for (int i = 0; i < PRESENT_FRAMES; i++) in_flight += s_frame[i].submitted;
+        uint64_t sc0 = sdl3vk_swapchain_generation();
+        if (!create_swapchain() || sdl3vk_swapchain_generation() <= sc0) {
+            fprintf(stderr, "swapchain: replacement failed\n"); ok = 0;
+        }
+        for (int i = 0; i < PRESENT_FRAMES; i++) after += s_frame[i].submitted;
+        if (in_flight == 0 || after != 0) {
+            fprintf(stderr, "swapchain: replacement with %d frame(s) in flight left %d unwaited\n",
+                    in_flight, after);
+            ok = 0;
+        }
+
+        if (sdl3vk_present_rgba(px) != 1) {
+            fprintf(stderr, "swapchain: present before the failed wait failed\n"); ok = 0;
+        }
+        VkSwapchainKHR kept = s_swap;
+        sc0 = sdl3vk_swapchain_generation();
+        s_idle_fault_result = VK_ERROR_DEVICE_LOST;
+        if (create_swapchain() || s_swap != kept || sdl3vk_swapchain_generation() != sc0 ||
+            !sdl3vk_renderer_terminal() || s_idle_fault_result != VK_SUCCESS) {
+            fprintf(stderr, "swapchain: a failed queue-idle wait must keep the swapchain and "
+                            "make the renderer terminal\n");
+            ok = 0;
+        }
     }
 
     /* Test 4: a quit consumed by a present is not lost. The present path drains the
