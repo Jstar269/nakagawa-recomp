@@ -436,6 +436,18 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         if (event->button.button == SDL_BUTTON_LEFT) input->mouse_down = false;
         return true;
     case SDL_EVENT_KEY_DOWN:
+        if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
+            app->input_settings.device == INPUT_DEVICE_KEYBOARD &&
+            input_settings_is_capturing(&app->input_settings) &&
+            event->key.key != SDLK_ESCAPE) {
+            /* While a PSP button waits for a key, the next key pressed is its
+               key, by position (the scancode). Esc still stops the wait below. */
+            if (!event->key.repeat) {
+                (void)input_settings_feed_capture_key(&app->input_settings,
+                                                      (int)event->key.scancode);
+            }
+            return true;
+        }
         if (!event->key.repeat && event->key.key == SDLK_F12 &&
             app->settings.developer_mode) {
             /* The developer log panel, from any launcher view. */
@@ -586,6 +598,11 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings)) {
             NkBindingSource src;
+            if (app->input_settings.device == INPUT_DEVICE_KEYBOARD) {
+                /* A controller has no keys: its press stops the wait for one. */
+                input_settings_cancel_capture(&app->input_settings);
+                return true;
+            }
             src.type = NK_BINDING_HOST_BUTTON;
             src.index = event->gbutton.button;
             input_settings_feed_capture_source(&app->input_settings, src);
@@ -991,7 +1008,16 @@ static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
                 input->has_save_diagnostic = true;
             }
             break;
-        case PLAYER_UI_CONTROLLER_RESET: input_settings_reset_to_defaults(input); break;
+        case PLAYER_UI_CONTROLLER_RESET:
+            /* The defaults of the device shown: the other device keeps its own. */
+            input_settings_reset_device_to_defaults(input);
+            break;
+        case PLAYER_UI_CONTROLLER_SHOW_CONTROLLER:
+            input_settings_set_device(input, INPUT_DEVICE_CONTROLLER);
+            break;
+        case PLAYER_UI_CONTROLLER_SHOW_KEYBOARD:
+            input_settings_set_device(input, INPUT_DEVICE_KEYBOARD);
+            break;
         case PLAYER_UI_CONTROLLER_BACK:
         case PLAYER_UI_CONTROLLER_CLOSE:
             if (input_settings_is_capturing(input)) input_settings_cancel_capture(input);
@@ -1614,18 +1640,24 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         return 1;
     }
     if (strncmp(token, "KEY_", 4) == 0) {
-        static const struct { const char *name; SDL_Keycode key; } keys[] = {
-            { "ESCAPE", SDLK_ESCAPE }, { "RETURN", SDLK_RETURN },
-            { "TAB", SDLK_TAB }, { "SPACE", SDLK_SPACE }, { "LEFT", SDLK_LEFT },
-            { "RIGHT", SDLK_RIGHT }, { "UP", SDLK_UP }, { "DOWN", SDLK_DOWN },
-            { "HOME", SDLK_HOME }, { "END", SDLK_END },
-            { "PAGEUP", SDLK_PAGEUP }, { "PAGEDOWN", SDLK_PAGEDOWN },
-            { "S", SDLK_S }, { "O", SDLK_O }, { "F1", SDLK_F1 }, { "F12", SDLK_F12 }
+        /* As SDL reports a key: its key code and, on a US layout, its position. */
+        static const struct { const char *name; SDL_Keycode key; SDL_Scancode scancode; } keys[] = {
+            { "ESCAPE", SDLK_ESCAPE, SDL_SCANCODE_ESCAPE },
+            { "RETURN", SDLK_RETURN, SDL_SCANCODE_RETURN }, { "TAB", SDLK_TAB, SDL_SCANCODE_TAB },
+            { "SPACE", SDLK_SPACE, SDL_SCANCODE_SPACE }, { "LEFT", SDLK_LEFT, SDL_SCANCODE_LEFT },
+            { "RIGHT", SDLK_RIGHT, SDL_SCANCODE_RIGHT }, { "UP", SDLK_UP, SDL_SCANCODE_UP },
+            { "DOWN", SDLK_DOWN, SDL_SCANCODE_DOWN }, { "HOME", SDLK_HOME, SDL_SCANCODE_HOME },
+            { "END", SDLK_END, SDL_SCANCODE_END }, { "PAGEUP", SDLK_PAGEUP, SDL_SCANCODE_PAGEUP },
+            { "PAGEDOWN", SDLK_PAGEDOWN, SDL_SCANCODE_PAGEDOWN }, { "C", SDLK_C, SDL_SCANCODE_C },
+            { "S", SDLK_S, SDL_SCANCODE_S }, { "O", SDLK_O, SDL_SCANCODE_O },
+            { "X", SDLK_X, SDL_SCANCODE_X }, { "F1", SDLK_F1, SDL_SCANCODE_F1 },
+            { "F12", SDLK_F12, SDL_SCANCODE_F12 }
         };
         for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             if (strcmp(token + 4, keys[i].name) == 0) {
                 event->type = SDL_EVENT_KEY_DOWN;
                 event->key.key = keys[i].key;
+                event->key.scancode = keys[i].scancode;
                 event->key.down = true;
                 return 1;
             }
@@ -1892,6 +1924,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "error_details_complete=%d error_details_lines=%d error_details_available=%d "
            "select_binding=%d start_binding=%d circle_binding=%d profile_save_notice=%d "
            "input_scope=%s input_titles=%d input_notice=%d "
+           "input_device=%s start_key=%d key_note=%d "
            "selected_experimental=%d selected_prepared=%d selected_staged=%d "
            "selected_runtime=%d selected_package_status=%d "
            "selected_package_check_failed=%d package_check_failed_badge=%d games=%d "
@@ -1940,6 +1973,9 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
                ? input_settings_scope_label(&app->input_settings) : "global",
            app->input_settings.file.title_count,
            app->input_profile_notice[0] ? 1 : 0,
+           app->input_settings.device == INPUT_DEVICE_KEYBOARD ? "keyboard" : "controller",
+           app->input_settings.profile.psp_keys[INPUT_CONTROL_BTN_START].primary,
+           app->input_settings.key_note[0] ? 1 : 0,
            selected && selected->is_experimental ? 1 : 0,
            selected && selected->is_prepared ? 1 : 0,
            selected && selected->assets_staged ? 1 : 0,

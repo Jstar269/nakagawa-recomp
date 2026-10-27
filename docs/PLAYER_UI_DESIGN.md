@@ -298,8 +298,9 @@ page) so every row fits 960 x 540. The tabbed layout below is the target for a l
 
 ### Controller settings (built)
 
-Settings > Controls opens one page under the top bar with SETTINGS active. Under the `CONTROLLER` heading (left out
-below 680 px tall), one status line: a conflict in `error`, a load or save message, the prompt while a button is
+Settings > Controls opens one page under the top bar with SETTINGS active. Under the `CONTROLS` heading (left out
+below 680 px tall), CONTROLLER and KEYBOARD (the one shown filled; Up from the first binding) choose whose bindings the
+page shows, beside one status line: a conflict in `error`, a load or save message, the prompt while a button is
 awaited, or which controller is connected. Two cards side by side:
 
 - BUTTONS: the eyebrow names the mapping being edited (`BUTTONS · GLOBAL MAPPING`, or the game's own in `ready`),
@@ -309,8 +310,15 @@ awaited, or which controller is connected. Two cards side by side:
 - STICK AND TRIGGERS: dead zone and trigger threshold with - and +, CALIBRATE STICK, and LIVE INPUT in `DATA`: the
   raw stick, the PSP value it maps to, the triggers and the buttons held.
 
-Under the cards SAVE PROFILE (primary), RESET TO DEFAULTS and, with a game selected, USE THIS GAME'S OWN MAPPING or
-USE THE GLOBAL MAPPING; BACK sits at the right end, under the stick card. The page opens on the first binding.
+With KEYBOARD (#1299) the rows show each control's keys by their names on a US keyboard (`KEYS · GLOBAL MAPPING`),
+the waiting control shows `Press a key...`, and the next key pressed is its key; Esc or a controller press stops the
+wait. A key another control already uses, or one that cannot be bound (the function keys), is refused and the status
+line says why in `error`: the profile refuses a key bound to two controls, and the runtime keeps Esc, F1 and F3. The
+stick card names the keys Nakagawa keeps and says the analog stick has no keys.
+
+Under the cards SAVE PROFILE (primary), RESET TO DEFAULTS (the device shown only) and, with a game selected, USE THIS
+GAME'S OWN MAPPING or USE THE GLOBAL MAPPING; BACK sits at the right end, under the stick card. The page opens on the
+first binding.
 Calibration replaces the cards with a 720 px dialog card per step: rest (a progress bar, CANCEL only), range
 (FINISH) and result (ACCEPT), each with its live numbers. Esc or East cancels a step and returns to CALIBRATE STICK.
 Every page fits 960 x 540.

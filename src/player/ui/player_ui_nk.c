@@ -624,13 +624,20 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
     const int16_t *axes = app->host_axes_live;
     PlayerUiControllerModel model;
     memset(&model, 0, sizeof(model));
+    model.keyboard = input->device == INPUT_DEVICE_KEYBOARD;
     model.capturing = input->capturing ? input->capture_control : -1;
     for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_BUTTONS; ++i) {
         model.names[i] = input_settings_control_name((int)i);
-        input_settings_format_binding(input, (int)i, player->pad_bindings[i],
-                                      sizeof(player->pad_bindings[i]));
+        if (model.keyboard) {
+            /* A key used twice is refused when it is pressed, so keys never conflict. */
+            input_settings_format_key_binding(input, (int)i, player->pad_bindings[i],
+                                              sizeof(player->pad_bindings[i]));
+        } else {
+            input_settings_format_binding(input, (int)i, player->pad_bindings[i],
+                                          sizeof(player->pad_bindings[i]));
+            model.conflicted[i] = input_settings_is_control_conflicted(input, (int)i);
+        }
         model.bindings[i] = player->pad_bindings[i];
-        model.conflicted[i] = input_settings_is_control_conflicted(input, (int)i);
     }
     model.scope_title = input_settings_is_title_scope(input);
     model.offer_scope = player_app_selected_disc_id(app) != NULL;
@@ -641,7 +648,10 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
         snprintf(player->pad_scope, sizeof(player->pad_scope), "global mapping");
     }
     model.scope = player->pad_scope;
-    if (input_settings_has_conflicts(input)) {
+    if (model.keyboard && input->key_note[0] != '\0') {
+        model.status = input->key_note;
+        model.status_error = true;
+    } else if (!model.keyboard && input_settings_has_conflicts(input)) {
         model.status = input_settings_get_conflict_summary(input);
         model.status_error = true;
     } else if (input->has_load_diagnostic) {
@@ -652,10 +662,14 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
         model.status = player->pad_status;
     } else if (model.capturing >= 0) {
         snprintf(player->pad_status, sizeof(player->pad_status),
-                 "Press the controller button or trigger for %s. %d s left; Esc stops.",
+                 model.keyboard ? "Press the key for %s. %d s left; Esc stops."
+                                : "Press the controller button or trigger for %s. %d s left; "
+                                  "Esc stops.",
                  input_settings_control_name(model.capturing),
                  (input_settings_get_capture_remaining_ms(input) + 999) / 1000);
         model.status = player->pad_status;
+    } else if (model.keyboard) {
+        model.status = "Choose a button, then press the key to use for it.";
     } else if (app->settings.controller_connected) {
         snprintf(player->pad_status, sizeof(player->pad_status),
                  "Connected: %s. Choose a button to change it.",
