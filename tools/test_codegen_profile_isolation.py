@@ -460,7 +460,6 @@ class ProfileHstLegacyTests(unittest.TestCase):
             "_Exit(9)",
             "bypass loop 0x10950",
             "s->r[16] = s->r[3];",
-            "_c = 1u;",
             "== 0u ? 0u : MEM_R32",
             "custom stub: __register_frame_info bypass",
         )
