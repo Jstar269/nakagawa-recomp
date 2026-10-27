@@ -50,6 +50,11 @@ uint32_t iso_physical_lba(uint32_t lba_or_token) {
     return 0;
 }
 
+int iso_sector_count(uint32_t *out_sectors) {
+    (void)out_sectors;
+    return -1;
+}
+
 int iso_list(const char *guest_path, uint32_t index, IsoDirEntry *out) {
     (void)guest_path;
     (void)index;

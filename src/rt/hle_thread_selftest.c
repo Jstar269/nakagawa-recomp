@@ -688,7 +688,33 @@ int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
     (void)guest_path; (void)out_lba; (void)out_size;
     return -1;
 }
+/* The umd-io test's synthetic disc, served only while that test enables it: 64 sectors, with
+ * the ISO 9660 primary volume descriptor header at the start of sector 16 and every other byte
+ * a function of its sector and offset, so a read from the wrong sector is visible. */
+enum { UMD_SYNTHETIC_SECTORS = 64u };
+
+static uint8_t umd_synthetic_byte(uint64_t position) {
+    static const uint8_t pvd[8] = {0x01u, 'C', 'D', '0', '0', '1', 0x01u, 0x00u};
+    const uint64_t sector = position / 2048u, offset = position % 2048u;
+    if (sector == 16u && offset < sizeof(pvd)) return pvd[offset];
+    return (uint8_t)(sector * 31u + offset * 7u + 1u);
+}
+
+int iso_sector_count(uint32_t *out_sectors) {
+    if (!s_umd_io_synthetic_enabled || !out_sectors) return -1;
+    *out_sectors = UMD_SYNTHETIC_SECTORS;
+    return 0;
+}
+
 int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
+    if (s_umd_io_synthetic_enabled && dst) {
+        const uint64_t start = (uint64_t)lba * 2048u + offset;
+        const uint64_t end = (uint64_t)UMD_SYNTHETIC_SECTORS * 2048u;
+        if (start >= end) return 0;
+        uint32_t n = end - start < bytes ? (uint32_t)(end - start) : bytes;
+        for (uint32_t i = 0; i < n; i++) ((uint8_t *)dst)[i] = umd_synthetic_byte(start + i);
+        return (int)n;
+    }
     if (s_psmf_synthetic_enabled && lba == 0u && dst && offset < s_psmf_synthetic_size) {
         uint32_t n = s_psmf_synthetic_size - offset;
         if (n > bytes) n = bytes;
@@ -3362,14 +3388,122 @@ static void test_fd_namespace(void) {
     free(old_root);
 }
 
+/* sceIoLseek takes its 64-bit offset in a2:a3 and whence in t0 and returns the high word in v1. */
+static uint32_t umd_test_seek64(uint32_t fd, int64_t offset, uint32_t whence, uint32_t *high) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[6] = (uint32_t)(uint64_t)offset;
+    cpu.r[7] = (uint32_t)((uint64_t)offset >> 32);
+    cpu.r[8] = whence;
+    const uint32_t low = sr_syscall(&cpu, 0x27eb27b8u);
+    *high = cpu.r[3];
+    return low;
+}
+
+static uint32_t umd_test_seek32(uint32_t fd, int32_t offset, uint32_t whence) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = (uint32_t)offset;
+    cpu.r[6] = whence;
+    return sr_syscall(&cpu, 0x68963324u);
+}
+
+static uint32_t umd_test_read(uint32_t fd, uint32_t dst, uint32_t count) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = dst;
+    cpu.r[6] = count;
+    return sr_syscall(&cpu, 0x6a638d83u);
+}
+
+/* True when guest memory at dst holds the synthetic disc's sectors [sector, sector + count). */
+static int umd_test_sectors_match(uint32_t dst, uint32_t sector, uint32_t count) {
+    for (uint32_t i = 0; i < count * 2048u; i++) {
+        if (MEM_R8(dst + i) != umd_synthetic_byte((uint64_t)sector * 2048u + i)) return 0;
+    }
+    return 1;
+}
+
+/* The UMD block device counts in 2048-byte sectors (PSP-UMDRAW-001 captured cells): seeks
+ * return sector positions and SEEK_END is relative to the last sector; reads take and return
+ * sector counts and advance the position by them; a position below zero or past the last
+ * sector is refused with 0x8001b003 and leaves the position unchanged; a zero count is refused
+ * with 0x80010016. Uncaptured cases stay visible: a read crossing the last sector stops at the
+ * raw-device boundary, and so does every data operation while no disc image is open. */
+static void test_umd_block_device_sectors(uint32_t fd, uint32_t data_addr) {
+    uint32_t high = 0;
+    expect(umd_test_seek64(fd, 0, 0u, &high) == 0u && high == 0u, "UMD SEEK_SET 0 is sector 0");
+    expect(umd_test_seek64(fd, 16, 0u, &high) == 16u && high == 0u,
+           "UMD SEEK_SET 16 returns sector 16");
+    expect(umd_test_seek64(fd, 32, 0u, &high) == 32u && high == 0u,
+           "a UMD seek offset counts sectors, not bytes");
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 32u && high == 0u,
+           "UMD SEEK_CUR 0 reports the current sector");
+    expect(umd_test_seek64(fd, 0, 2u, &high) == UMD_SYNTHETIC_SECTORS - 1u && high == 0u,
+           "UMD SEEK_END 0 is the last sector");
+    expect(umd_test_seek64(fd, 1, 0u, &high) == 1u && high == 0u, "UMD SEEK_SET 1 is sector 1");
+    expect(umd_test_seek64(fd, -1, 0u, &high) == 0x8001b003u && high == 0xffffffffu,
+           "a negative UMD position is refused with 0x8001b003");
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 1u,
+           "a refused UMD seek leaves the position unchanged");
+    expect(umd_test_seek64(fd, 0x7fffffff, 0u, &high) == 0x8001b003u && high == 0xffffffffu,
+           "a UMD position far past the disc is refused with 0x8001b003");
+    expect(umd_test_seek64(fd, UMD_SYNTHETIC_SECTORS, 0u, &high) == 0x8001b003u,
+           "the position after the last UMD sector is refused");
+    expect(umd_test_seek64(fd, INT64_MAX, 1u, &high) == 0x8001b003u,
+           "an overflowing UMD SEEK_CUR is refused");
+    expect(umd_test_seek64(fd, 0, 3u, &high) == 0x80020324u && high == 0xffffffffu,
+           "an unknown UMD whence is refused");
+    expect(umd_test_seek32(fd, 0, 0u) == 0u, "UMD sceIoLseek32 SEEK_SET 0 is sector 0");
+    expect(umd_test_seek32(fd, 16, 0u) == 16u, "UMD sceIoLseek32 SEEK_SET 16 returns sector 16");
+    expect(umd_test_seek32(fd, 0, 2u) == UMD_SYNTHETIC_SECTORS - 1u,
+           "UMD sceIoLseek32 SEEK_END 0 is the last sector");
+    expect(umd_test_seek32(fd, -1, 0u) == 0x8001b003u,
+           "UMD sceIoLseek32 refuses a negative position");
+
+    /* Two consecutive one-sector reads from sector 16 return the descriptor header, then sector
+     * 17, and leave the position at 18. */
+    expect(umd_test_seek32(fd, 16, 0u) == 16u, "UMD read setup seeks to sector 16");
+    expect(umd_test_read(fd, data_addr, 1u) == 1u && umd_test_sectors_match(data_addr, 16u, 1u) &&
+               MEM_R32(data_addr) == 0x30444301u && MEM_R32(data_addr + 4u) == 0x00013130u,
+           "a one-sector UMD read returns 1 and the sector-16 descriptor header");
+    expect(umd_test_read(fd, data_addr, 1u) == 1u && umd_test_sectors_match(data_addr, 17u, 1u),
+           "the next UMD read continues at the next sector");
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 18u && high == 0u,
+           "each UMD read advances the position by its sector count");
+    expect(umd_test_seek32(fd, 20, 0u) == 20u &&
+               umd_test_read(fd, data_addr, 3u) == 3u && umd_test_sectors_match(data_addr, 20u, 3u) &&
+               umd_test_seek32(fd, 0, 1u) == 23u,
+           "a three-sector UMD read copies 6144 bytes and advances three sectors");
+    expect(umd_test_seek32(fd, 16, 0u) == 16u && umd_test_read(fd, data_addr, 0u) == 0x80010016u &&
+               umd_test_seek32(fd, 0, 1u) == 16u,
+           "a zero-count UMD read is refused with 0x80010016 and keeps the position");
+
+    /* A read crossing the last sector is not captured: it stops at the boundary and changes
+     * neither guest memory nor the position. */
+    MEM_W32(data_addr, 0xaabbccddu);
+    expect(umd_test_seek32(fd, (int32_t)UMD_SYNTHETIC_SECTORS - 1, 0u) ==
+               UMD_SYNTHETIC_SECTORS - 1u &&
+               umd_test_read(fd, data_addr, 2u) == 0x80010086u &&
+               MEM_R32(data_addr) == 0xaabbccddu &&
+               umd_test_seek32(fd, 0, 1u) == UMD_SYNTHETIC_SECTORS - 1u,
+           "a UMD read across the last sector stops at the raw-device boundary");
+    expect(umd_test_read(fd, data_addr, 1u) == 1u &&
+               umd_test_sectors_match(data_addr, UMD_SYNTHETIC_SECTORS - 1u, 1u),
+           "the last UMD sector itself is readable");
+    expect(umd_test_seek32(fd, 0, 0u) == 0u && umd_test_read(fd, 0x0bffff00u, 1u) == 0x80010016u &&
+               umd_test_seek32(fd, 0, 1u) == 0u,
+           "a UMD read that would run past the end of guest memory is refused");
+}
+
 static void test_umd_io_console_model(void) {
     enum { PATH_ADDR = 0x09010000u, DATA_ADDR = 0x09012000u, FD_KIND_RAW_DEVICE = 3 };
     static const uint32_t nid_io_open = 0x109f50bcu;
     static const uint32_t nid_io_close = 0x810c4bc3u;
-    static const uint32_t nid_io_read = 0x6a638d83u;
     static const uint32_t nid_io_write = 0x42ec03acu;
-    static const uint32_t nid_io_lseek32 = 0x68963324u;
-    static const uint32_t nid_io_lseek = 0x27eb27b8u;
     static const uint32_t nid_io_ioctl = 0x63632449u;
     static const uint32_t nid_io_getstat = 0xace946e8u;
     static const uint32_t nid_io_devctl = 0x54f5fb11u;
@@ -3476,35 +3610,49 @@ static void test_umd_io_console_model(void) {
         }
     }
 
-    /* The console measurement only covered close. Every other raw-device
-     * operation must stop at a named semantic boundary with a real error. */
-    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    /* Reads and seeks on the UMD block device follow the captured sector cells (above). With no
+     * disc image open they stay at the raw-device boundary, as does every operation no capture
+     * covers. */
+    s_umd_io_synthetic_enabled = 0;
+    fd_set_path(&cpu, PATH_ADDR, "umd1:");
     cpu.r[5] = 1u;
     uint32_t raw_fd = sr_syscall(&cpu, nid_io_open);
     expect(raw_fd == 3u && sr_hle_test_fd_kind(raw_fd) == FD_KIND_RAW_DEVICE,
-           "bare UMD open creates a typed descriptor in the normal table");
+           "a UMD open with no disc image still creates a typed descriptor");
     MEM_W32(DATA_ADDR, 0xaabbccddu);
+    expect(umd_test_read(raw_fd, DATA_ADDR, 1u) == 0x80010086u &&
+               MEM_R32(DATA_ADDR) == 0xaabbccddu,
+           "with no disc image a UMD sceIoRead fails closed without changing guest memory");
+    expect(umd_test_seek32(raw_fd, 16, 0u) == 0x80010086u,
+           "with no disc image a UMD sceIoLseek32 fails closed");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
-    cpu.r[5] = DATA_ADDR;
-    cpu.r[6] = 4u;
-    expect(sr_syscall(&cpu, nid_io_read) == 0x80010086u &&
-               MEM_R32(DATA_ADDR) == 0xaabbccddu,
-           "raw UMD sceIoRead fails closed without changing guest memory");
+    expect(sr_syscall(&cpu, nid_io_close) == 0u, "the image-less UMD descriptor closes");
+    s_umd_io_synthetic_enabled = 1;
+
+    static const char *const umd_devices[] = {"umd0:", "umd1:", "umd:"};
+    for (size_t i = 0; i < sizeof(umd_devices) / sizeof(umd_devices[0]); i++) {
+        fd_set_path(&cpu, PATH_ADDR, umd_devices[i]);
+        cpu.r[5] = i == 0u ? 0x000f0001u : 1u;
+        raw_fd = sr_syscall(&cpu, nid_io_open);
+        expect(raw_fd == 3u, "each UMD block device opens read-only");
+        test_umd_block_device_sectors(raw_fd, DATA_ADDR);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = raw_fd;
+        expect(sr_syscall(&cpu, nid_io_close) == 0u, "each UMD block device closes");
+    }
+
+    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    cpu.r[5] = 1u;
+    raw_fd = sr_syscall(&cpu, nid_io_open);
+    expect(raw_fd == 3u && sr_hle_test_fd_kind(raw_fd) == FD_KIND_RAW_DEVICE,
+           "bare UMD open creates a typed descriptor in the normal table");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     cpu.r[5] = DATA_ADDR;
     cpu.r[6] = 4u;
     expect(sr_syscall(&cpu, nid_io_write) == 0x80010086u,
            "raw UMD sceIoWrite fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_lseek32) == 0x80010086u,
-           "raw UMD sceIoLseek32 fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_lseek) == 0x80010086u,
-           "raw UMD sceIoLseek fails closed");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     expect(sr_syscall(&cpu, nid_io_ioctl) == 0x80010086u,

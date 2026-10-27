@@ -1724,6 +1724,35 @@ resume only after the controller has recovered and requalified PSPLink on a
 newer boot. Physical intervention remains for a hard kernel hang, a dead cable
 or PC, an inert boot, or low battery.
 
+A third bounded run on 2026-10-18, from a local probe variant whose size cells
+stopped at 24,576 units, emitted every remaining record through umdraw-done,
+but the session lost its host0 round-trip afterwards, so teardown is unproven
+and the capture is not acceptance-qualified either. Read together, the
+captured cells show what the console counts:
+
+- Positions are 2048-byte sectors. SEEK_SET 16 returns 16; after SEEK_SET
+  32768 a read returns an all-zero buffer, not the volume descriptor header that
+  starts at byte 32768; SEEK_END 0 returns the inserted disc's last sector, its
+  sector count minus one. sceIoLseek32 returns the same positions.
+- Read counts are sectors too. Two consecutive 2048-unit reads from sector 16
+  each return 2048 and leave the position at 4112 (16 + 2 × 2048). So each size
+  cell of N requested N sectors, N × 2048 bytes, into the 32 KiB buffer. Every
+  cell above 16 wrote past it, up to 64 MiB for the 32,768 cell, which fits the
+  hangs and USB losses at the largest cells.
+- A position of -1 or 0x7fffffff is refused with 0x8001b003 (high word
+  0xffffffff) and leaves the position unchanged. A zero count is refused with
+  0x80010016. One sceIoReadAsync of 2048 returned 0, its immediate poll 1, and
+  its wait 0 with result 2048. sceIoGetstat on umd0: returned 0x80020325. The
+  read-only open (flags 1) seeks the same way.
+
+Do not relaunch this case as written: its size cells must first be expressed
+in sectors, at most 16 for the 32 KiB buffer. The runtime's UMD block device
+(sceIoRead, sceIoLseek and sceIoLseek32 on umd0:, umd1: and umd:) follows these
+captured cells. It keeps a named boundary for a read that crosses the last
+sector and for the asynchronous calls, which no runtime path serves yet, and it
+refuses every position past the last sector: the edge between the last sector
+and 0x7fffffff is inferred from SEEK_END, not captured.
+
 Captured result-record IDs:
 
 ```text

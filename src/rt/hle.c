@@ -13012,6 +13012,7 @@ typedef struct {
     int used;
     FdKind kind;                 /* descriptor identity is independent of its number */
     uint8_t std_stream;          /* 0=stdin, 1=stdout, 2=stderr for FD_KIND_STD */
+    uint8_t raw_umd;             /* 1 = UMD block device: size and off count 2048-byte sectors */
     uint32_t lba, size, off;
     int64_t async_res;
     int writable;
@@ -13063,6 +13064,7 @@ typedef enum {
     IO_RAW_BOUNDARY_ASYNC_CALLBACK,
     IO_RAW_BOUNDARY_DREAD,
     IO_RAW_BOUNDARY_DCLOSE,
+    IO_RAW_BOUNDARY_READ_PAST_END,
 } IoRawDeviceBoundary;
 
 typedef struct {
@@ -13216,6 +13218,61 @@ static uint32_t hle_io_raw_fd_boundary(uint32_t fd, IoRawDeviceBoundary operatio
                                        const char *api) {
     if (!hle_fd_is_raw_device(fd)) return 0u;
     return hle_io_raw_device_boundary(operation, api, s_fds[fd].guest_path, fd);
+}
+
+/* The UMD block device. A read-only descriptor for "umd0:", "umd1:" or "umd:" addresses the
+ * disc image in 2048-byte sectors (PSP-UMDRAW-001 captured cells, docs/HARDWARE_ORACLE.md):
+ * sceIoLseek and sceIoLseek32 return the new position in sectors, SEEK_END is relative to the
+ * last sector, and sceIoRead takes and returns a count of sectors and advances the position by
+ * it. A position below zero or past the last sector is refused with 0x8001b003 and leaves the
+ * position where it was; a zero count is refused with 0x80010016. Two cases stay at a named
+ * boundary because no capture covers them: a read that would cross the last sector, and every
+ * data operation while no disc image is open. The console wrote a whole request even past the
+ * end of a smaller buffer; the runtime refuses a destination that is not writable guest memory. */
+#define IO_UMD_SECTOR_BYTES 2048u
+#define IO_UMD_POSITION_REFUSED 0x8001b003u
+
+static int hle_fd_is_raw_umd(uint32_t fd) {
+    return hle_fd_is_raw_device(fd) && s_fds[fd].raw_umd && s_fds[fd].size != 0u;
+}
+
+static uint32_t hle_io_raw_umd_seek(Fd *f, int64_t offset, uint32_t whence,
+                                    uint32_t *position) {
+    if (whence >= 3u) return SCE_ERROR_KERNEL_INVALID_ARGUMENT;
+    int64_t base = whence == 1u ? (int64_t)f->off :
+                   (whence == 2u ? (int64_t)f->size - 1 : 0);
+    if (offset > INT64_MAX - base) return IO_UMD_POSITION_REFUSED;
+    int64_t target = base + offset;
+    if (target < 0 || target >= (int64_t)f->size) return IO_UMD_POSITION_REFUSED;
+    f->off = (uint32_t)target;
+    *position = f->off;
+    return 0u;
+}
+
+static uint32_t hle_io_raw_umd_read(uint32_t fd, uint32_t dst, uint32_t sectors) {
+    Fd *f = &s_fds[fd];
+    if (sectors == 0u) return 0x80010016u;
+    if (sectors > UINT32_MAX / IO_UMD_SECTOR_BYTES ||
+        !sr_guest_span_writable(dst, sectors * IO_UMD_SECTOR_BYTES))
+        return 0x80010016u;
+    if (sectors > f->size - f->off)
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_READ_PAST_END,
+                                          "sceIoRead past the last disc sector",
+                                          f->guest_path, fd);
+    const uint32_t bytes = sectors * IO_UMD_SECTOR_BYTES;
+    uint8_t tmp[4096];
+    for (uint32_t done = 0; done < bytes;) {
+        uint32_t n = bytes - done;
+        if (n > sizeof(tmp)) n = (uint32_t)sizeof(tmp);
+        if (iso_read(f->off, done, tmp, n) != (int)n) return 0x80010005u;
+        for (uint32_t k = 0; k < n; k++) MEM_W8(dst + done + k, tmp[k]);
+        done += n;
+    }
+    if (getenv("SR_IOLOG"))
+        fprintf(stderr, "Read vbl=%u fd=%u sector=%u sectors=%u dst=0x%08x\n",
+                s_vcount_fwd, fd, f->off, sectors, dst);
+    f->off += sectors;
+    return sectors;
 }
 
 static int hle_fd_allocate(void) {
@@ -15211,6 +15268,13 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
     s_closed_async_state[slot] = IO_ASYNC_IDLE;
 
     if (raw_device != IO_RAW_DEVICE_NONE) {
+        /* The UMD block device sizes itself from the open disc image; with no image its data
+         * operations stay at the raw-device boundary. */
+        if (raw_device != IO_RAW_DEVICE_MSSTOR0P1) {
+            uint32_t sectors = 0;
+            s_fds[slot].raw_umd = 1;
+            if (iso_sector_count(&sectors) == 0) s_fds[slot].size = sectors;
+        }
         s_fds[slot].used = 1;
         return (uint32_t)slot;
     }
@@ -15430,6 +15494,7 @@ static uint32_t h_IoRead(CpuState *s) {
     uint32_t fd = A0, dst = A1, count = A2;
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    if (hle_fd_is_raw_umd(fd)) return hle_io_raw_umd_read(fd, dst, count);
     uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_READ, "sceIoRead");
     if (raw_error != 0u) return raw_error;
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
@@ -15516,6 +15581,11 @@ static uint32_t h_IoLseek32(CpuState *s) {
     uint32_t fd = A0; int32_t off = (int32_t)A1; uint32_t whence = A2;
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    if (hle_fd_is_raw_umd(fd)) {
+        uint32_t position = 0;
+        uint32_t rc = hle_io_raw_umd_seek(&s_fds[fd], off, whence, &position);
+        return rc != 0u ? rc : position;
+    }
     uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK32,
                                                "sceIoLseek32");
     if (raw_error != 0u) return raw_error;
@@ -15535,6 +15605,13 @@ static uint32_t h_IoLseek(CpuState *s) {
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD) {
         s->r[3] = 0;
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    }
+    if (hle_fd_is_raw_umd(fd)) {
+        uint32_t position = 0;
+        uint32_t rc = hle_io_raw_umd_seek(&s_fds[fd], (int64_t)(((uint64_t)A3 << 32) | A2),
+                                          stack_arg(s, 0), &position);
+        s->r[3] = rc != 0u ? 0xffffffffu : 0u;
+        return rc != 0u ? rc : position;
     }
     uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK64,
                                                "sceIoLseek");

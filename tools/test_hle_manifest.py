@@ -863,6 +863,7 @@ class LiveManifestTests(unittest.TestCase):
                 "h_IoLseek",
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
+                    "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
             0x109F50BC: (
@@ -915,6 +916,7 @@ class LiveManifestTests(unittest.TestCase):
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
                     "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                    "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
             0x42EC03AC: (
