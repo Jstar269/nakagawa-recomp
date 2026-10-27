@@ -971,7 +971,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a17611e54b9bbf29e9e143fb0ee6c5927171ff634c83adaeec1e088a7e1bd905"
+      "sha256": "6c41cc116bdc36e5edb3b65d76f1ed290eda00cf82d7524d88fa58d8ecc6cd71"
     },
     {
       "path": "assets/public_provenance_ledger.json",
@@ -1582,7 +1582,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0bec9bc3c07242cd6960c7f0fea7acdc7c7309e706fbcd51143a0a7077b19acd"
+      "sha256": "81e4470d476535988eaf0a80c4ee689a89387e80fdf8ad61256af7b8cc31d1d4"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -1678,7 +1678,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e3bf461ceb3d0fb32dd21706bcb4757e8318afdbe26a9723cdf66d6bddc79133"
+      "sha256": "7a033126df05123995eb0f387157ac58b8268c8532e0fa0b13fe5f70b6fd7323"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1696,7 +1696,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "100ff2283920b68a92a693c4c27edee9a6b045149c5da5feb0fa8eed5bc884bd"
+      "sha256": "9aa24d1eceff647e84e392b49e52d1b23bdb5385d6b831709f333fa8716bf3c7"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -11278,7 +11278,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "db488fbe93b2788cb397fe59b8fc18f669352ce3d312eddccf8245596ac853e0"
+      "sha256": "bac3611b4715e6ff905c933d5613cf7b736dafc12c8e640ff9e665ef4d87da94"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -12259,7 +12259,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "403add85ed8b3351a4972cdf8ce61c2d771186d519293a237b1dac3732b6380f"
+      "sha256": "3181bc3459185607e0337e5af431d735d1df300079230a14a6344d5d44d78959"
     },
     {
       "path": "tools/nk_core/synthetic_disc_ids.py",
@@ -14496,7 +14496,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "967fb0ae0748e4554b88bd7f2261148e9d510221ac5ab775c119997a9d372064"
+      "sha256": "5fe8306b76479fb0f10f6b967dcdf308341b923f1a168bbc7d8a01c3533a32b7"
     },
     {
       "path": "tools/test_production_smoke.py",
