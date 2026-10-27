@@ -4,8 +4,8 @@
 > boundary, a local developer AOT package build, and the library's build-package →
 > validate → launch route are implemented ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)).
 > `tools/nk_cli.py build-package <disc_id>` resolves the executable from a library disc
-> image, or from a decrypted `EBOOT.elf` you supply for an encrypted disc (Nakagawa does not
-> decrypt games; built-in decryption was removed, #295), and the
+> image, or from the decrypted `EBOOT.elf` in the title's folder for an encrypted disc (the
+> player decrypts it from the user's disc, #295), and the
 > player consumes the resulting package. Retail-disc hash validation, installers, and
 > one-click end-user preparation without the developer toolchain (#308) are not built.
 

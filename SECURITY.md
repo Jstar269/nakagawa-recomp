@@ -98,8 +98,11 @@ you are authorized to use.
 
 ## Encrypted PSP files
 
-Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed, so the project carries no PSP cryptography and never reads a key file. An encrypted executable or module
-is refused by name. Every file is treated as untrusted input by the bounds-checked, fuzzed parsers listed in
+The player decrypts the encrypted executable and modules of a disc the user owns, locally, with built-in game tables
+(`src/core/nk_psp_*`, [#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). It never reads a key file and
+never decrypts firmware: firmware containers are refused by name before any key is read. Every container is
+size-bounded, integrity-checked (CMAC, SHA-1 or ECDSA) before its payload is used, and each output is validated as
+ELF32/MIPS before it is kept; one it cannot decrypt is refused by name. Every file is treated as untrusted input by the bounds-checked, fuzzed parsers listed in
 [`docs/PARSER_SAFETY_INVENTORY.json`](docs/PARSER_SAFETY_INVENTORY.json).
 
 ## Digest inventory
@@ -126,6 +129,7 @@ It fails when a file and algorithm pair is missing here or a row names a pair th
 | `tools/make_app_icon.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `tools/nk_cli.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
 | `tools/ppm2png.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
+| `src/core/nk_psp_inflate.c` | CRC-32 | gzip member trailer of a decrypted PSP payload (RFC 1952) | Keep: the format requires it |
 | `tools/codegen.py` | FNV-64 | Staged module identity (`fnv1a64`), mirrored by `src/rt/guest_interp.c` | Candidate: SHA-256 only with a codegen and package identity bump |
 | `src/rt/guest_interp.c` | FNV-64 | Staged module identity (`sr_module_code_fnv1a64`), checked against the staged file | Candidate: SHA-256 only with a codegen and package identity bump |
 | `tools/codegen.py` | FNV-32 | Self-modifying-code block record (`stale_fnv1a`), mirrored by `src/rt/stale_code.c` | Keep: change detector |

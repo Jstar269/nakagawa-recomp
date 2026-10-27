@@ -3009,7 +3009,10 @@ class PspDmacProbeTests(unittest.TestCase):
         manifest = self._oracle_manifest()
         by_id = {entry["id"]: entry for entry in manifest["tests"]}
         for test_id in ("PSP-FPU-001", "PSP-CACHE-001"):
-            self.assertEqual(by_id[test_id]["status"], "planned")
+            self.assertEqual(
+                by_id[test_id]["status"],
+                "implemented" if test_id == "PSP-CACHE-001" else "planned",
+            )
             self.assertEqual(by_id[test_id]["hardware_evidence"], "MEASURED")
             self.assertEqual(
                 by_id[test_id]["evidence_ref"],
@@ -3018,6 +3021,34 @@ class PspDmacProbeTests(unittest.TestCase):
             self.assertEqual(by_id[test_id]["evidence_cases"], by_id[test_id]["case_ids"])
             self.assertIn("f6ccfb33", by_id[test_id]["measurement_note"])
         self.assertEqual(len(by_id), len(manifest["tests"]))
+
+    def test_issue_311_rescoped_groups_read_implemented(self) -> None:
+        """#311 re-scoped its remaining groups to PSP-AUDIO-001 and PSP-CACHE-001.
+
+        Each probe source is complete: a strict stream parser owns its whole case list, the
+        probe flushes that stream under the row's id, and the Makefile builds its campaign case.
+        Each case is cited from an acceptance-eligible run, so the row reads `implemented`.
+        `status` still grants nothing; the tier stays on `hardware_evidence`. The cache row's
+        runtime boundary is named in the measured index, not left implied.
+        """
+        by_id = {entry["id"]: entry for entry in self._oracle_manifest()["tests"]}
+        for test_id, spec, campaign_case in (
+            ("PSP-AUDIO-001", AUDIO_SPEC, "audio-query"),
+            ("PSP-CACHE-001", parse_golden.CACHE_SPEC, "cache-alias"),
+        ):
+            with self.subTest(test_id=test_id):
+                entry = by_id[test_id]
+                self.assertEqual(spec.test_id, test_id)
+                self.assertEqual(entry["case_ids"], list(spec.ordered_cases))
+                self.assertEqual(entry["evidence_cases"], entry["case_ids"])
+                self.assertNotIn("uncited_cases", entry)
+                self.assertEqual(entry["hardware_evidence"], "MEASURED")
+                self.assert_probe_contains(f'flush_deferred(emulated, "{test_id}");')
+                self.assertIn(f"else ifeq ($(CASE),{campaign_case})", self.makefile)
+                self.assertEqual(entry["status"], "implemented")
+        doc = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        self.assertIn("Runtime boundary (`PSP-CACHE-001`)", doc)
+        self.assertIn("coherent", doc[doc.index("Runtime boundary (`PSP-CACHE-001`)"):][:600])
 
     def test_manifest_hardware_evidence_uses_closed_vocabulary(self) -> None:
         manifest = self._oracle_manifest()
@@ -3204,7 +3235,10 @@ class PspDmacProbeTests(unittest.TestCase):
                 if spec is not None:
                     self.assertEqual(entry["case_ids"], list(spec.ordered_cases))
                 if test_id in {"PSP-AUDIO-001", "PSP-GE-001"}:
-                    self.assertEqual(entry["status"], "planned")
+                    self.assertEqual(
+                        entry["status"],
+                        "implemented" if test_id == "PSP-AUDIO-001" else "planned",
+                    )
                     self.assertEqual(entry["hardware_evidence"], "MEASURED")
                     self.assertEqual(entry["evidence_cases"], entry["case_ids"])
         for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero",

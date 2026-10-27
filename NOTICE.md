@@ -10,9 +10,9 @@ Nakagawa Recomp is an independent project. It is not affiliated with or endorsed
 Sony Interactive Entertainment, Clap Hanz, or any game publisher. PlayStation and
 PSP are trademarks of Sony Interactive Entertainment Inc., and game titles are
 trademarks of their owners; they are named only to say what the project works
-with. The repository contains no game files, keys, firmware or system fonts, and
-Nakagawa does not decrypt games: users must supply any external inputs from their
-own copy.
+with. The repository contains no game files, firmware or system fonts. Users
+supply their own game; Nakagawa decrypts it locally with the public game key
+tables PPSSPP ships, never downloads games, and never decrypts firmware.
 
 Rights holders with a concern about anything in this repository can contact the
 maintainer privately through
@@ -34,6 +34,20 @@ We aim to respond promptly and will remove material where appropriate.
   its exact path, revision and notice. The per-file lineage, the pin status (the exact PPSSPP
   revision of the inherited files is unknown) and the 34 GPL-2.0-or-later files under `src/` are
   listed in [`src/rt/PROVENANCE.md`](src/rt/PROVENANCE.md).
+- **PSP game decryption (issue #295)** — `src/core/nk_psp_*`. The KIRK engine
+  (`nk_psp_kirk.*`, GPL-3.0-or-later per its own notice), the AES and SHA-1 cores
+  (`nk_psp_aes.*`, `nk_psp_sha1.*`, public-domain Rijndael and SHA-1 notices
+  retained), KL4E/KL3E decompression (`nk_psp_kle.*`) and the `~PSP` container
+  logic (`nk_psp_prx.*`, which also descends from PPSSPP's PrxDecrypter) are
+  ported from John-K/pspdecrypt at `c156627db7634d395c380c0a9589130f603307fc`,
+  whose licence is GPL version 3 with no later-version grant, so every file ported
+  through it except the KIRK engine is GPL-3.0-only. The built-in game key tables
+  (`nk_psp_builtin_keys.*`) come from PPSSPP at
+  `b4386554795949491a26e51b7d74082bb9b2470f` (GPL-2.0-or-later) and its bundled
+  KIRK-ENGINE (GPL-3.0-or-later), with every firmware entry left out; Nakagawa
+  decrypts a game the user owns, locally, and never decrypts firmware. The
+  keystore, inflate, elliptic-curve and container-framing files are
+  project-authored. Per-file lineage: [`src/core/PROVENANCE.md`](src/core/PROVENANCE.md).
 - **PSPSDK / PSPDEV** — permissive per-component declarations and BSD-family
   notices for public ABI definitions and source-owned fixtures. The applicable
   notices are in `THIRD_PARTY_LICENSES/PSPSDK.txt` and `assets/upstream/`.
@@ -173,7 +187,8 @@ License choices and combination notes:
 The FFmpeg ATRAC3 and ATRAC3+ subsets and, in builds with `H264_FFMPEG=1`, the FFmpeg H.264
 subset (LGPL-2.1-or-later) are statically linked. The whole
 program is distributed under the GNU GPL version 3 (the project's own files are
-GPL-3.0-or-later) with its complete corresponding source, and `SOURCE.txt` names the exact repository commit or tag of each
+GPL-3.0-or-later; the player and `nk_decrypt` also link the GPL-3.0-only decryption files
+listed above) with its complete corresponding source, and `SOURCE.txt` names the exact repository commit or tag of each
 package, which is what lets a user modify and relink it (issue #421).
 
 ## Public-safe exclusions
