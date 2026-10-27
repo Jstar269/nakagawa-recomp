@@ -3418,7 +3418,7 @@ class NativePlayerUiTests(unittest.TestCase):
         dialogs = self.quit_dialogs(str(run["stdout"]))
         self.assertEqual(len(dialogs), 1, run["stdout"])
         self.assertEqual(dialogs[0]["message"],
-                         "PSPDEV Phase 5 Source-Owned Fixture is still running.\nQuitting "
+                         "Nakagawa Test Program is still running.\nQuitting "
                          "closes it, and anything since the game's last save is lost.")
         frames = run["frames"]
         assert isinstance(frames, list)
