@@ -13,7 +13,7 @@ You can send your results with the [Smoke Test Report issue template](https://gi
 - Windows 11 x64 with current Vulkan graphics drivers.
 - The player: build it with `mingw32-make player` (which makes `build/nakagawa_player.exe`), or use the packaged `bin/nakagawa_player.exe` with the `SDL3.dll` beside it.
 - One of the project's synthetic test ISOs or a showcase demo ISO ([#309](https://github.com/Jstar269/nakagawa-recomp/issues/309)).
-- For **BUILD PACKAGE**, either the package's prerequisite consent and download, with an internet connection, or Python, GCC and GNU Make already on `PATH`. Step 8 starts with a clean `PATH` and goes through the consent route ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)).
+- For **BUILD PACKAGE**, one of: the release ZIP's `prereqs/` folder, which the player uses with no consent card and no download ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)); the package's prerequisite consent and download, with an internet connection; or Python, GCC and GNU Make already on `PATH`. Step 8 starts with a clean `PATH`: from the release ZIP it uses the bundled tools, and from a source build it goes through the consent route ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)).
 - For Step 11, the built display smoke fixture (`mingw32-make display-smoke`).
 
 ---
@@ -84,11 +84,11 @@ moves or deletes it.
 ### Step 8: BUILD PACKAGE and prerequisite consent
 
 1. With `PATH` limited to the Windows system folders, select the showcase game and click **BUILD PACKAGE**.
-2. Check that one consent card lists every missing prerequisite, with its version, source, download size and licence, and the total, before anything is downloaded ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)).
-3. Choose **DOWNLOAD** and watch the progress for each item. The player downloads only the pinned entries in its manifest, from their official HTTPS sources, checks each one's size and SHA-256, installs them into the isolated user profile, and then carries on with the build.
+2. **From the release ZIP** (a `prereqs/` folder beside `bin/`): check that no consent card appears and that nothing is downloaded. The build checks the bundled tools against the pinned manifest and uses them ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). Go on to item 4.
+3. **From a source build** (no `prereqs/` folder): check that one consent card lists every missing prerequisite, with its version, source, download size and licence, and the total, before anything is downloaded ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)). Choose **DOWNLOAD** and watch the progress for each item. The player downloads only the pinned entries in its manifest, from their official HTTPS sources, checks each one's size and SHA-256, installs them into the isolated user profile, and then carries on with the build.
 4. Watch the four stages (Preflight, Extract, Compile, Package), the time taken, the output log and the final package check. Cancel one build with **CANCEL BUILD** (or `Esc`), check that you are back in the library, then build again and let it finish.
 
-**Expected result:** On a clean `PATH`, the full consent list appears before anything is downloaded. After you agree, each pinned download checks out, the install shows its progress, and BUILD PACKAGE carries on and passes its package check. Cancelling returns you to the library, and the second build finishes. A game or prerequisite that isn't supported stops on a card that names it; support for games in general is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+**Expected result:** From the release ZIP, BUILD PACKAGE starts with no consent card and no network connection and passes its package check. From a source build on a clean `PATH`, the full consent list appears before anything is downloaded. After you agree, each pinned download checks out, the install shows its progress, and BUILD PACKAGE carries on and passes its package check. Cancelling returns you to the library, and the second build finishes. A game or prerequisite that isn't supported stops on a card that names it; support for games in general is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
 ### Step 9: Play the generated package
 

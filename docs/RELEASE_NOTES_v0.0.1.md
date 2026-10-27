@@ -55,6 +55,11 @@ needs something unsupported, missing or not built yet, it stops and tells you cl
   `<user data>/titles/<DISC_ID>/decrypted/`. Nothing is downloaded, and PSP system software (firmware) is never
   decrypted. If a file can't be decrypted, the check names it and the reason, and a plain copy you made from your own
   disc in that folder is used instead ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)).
+- **Add a PSN copy of a UMD game.** Pick its `EBOOT.PBP` the way you pick a disc image. The player turns it back
+  into the disc image once, on your PC, checks that the result is a valid disc whose disc ID matches the package, and
+  then adds it exactly like a disc ([#1535](https://github.com/Jstar269/nakagawa-recomp/pull/1535)). The conversion
+  shows its progress and can be cancelled. PSP minis, games tied to the PSP that bought them, PSOne Classics and
+  PGD-protected data aren't supported yet.
 - **Pause a running game.** Press `Esc`, `F1` or the controller's Guide button: the game stops on its last frame
   under a dark screen with its sound held, and a button you were holding does nothing until you press it again. Press
   the same key to carry on where it stopped. The pause has no menu yet
@@ -113,14 +118,14 @@ They create their synthetic inputs under the ignored `build/` folder.
   or private test recordings. Nakagawa Recomp never downloads games or game data, and the release makes no network
   connection: its build tools are in the ZIP. Only without them, as in a source checkout, does the player offer to
   download the build tools named in the prerequisite manifest, with your consent. You supply your own disc image of a
-  game you own, as an
-  uncompressed standard `.iso` ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+  game you own, as an uncompressed standard `.iso`, or the `EBOOT.PBP` of a PSN release of a UMD game you own
+  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308), [#1535](https://github.com/Jstar269/nakagawa-recomp/pull/1535)).
 - **Not a finished emulator, and not every kind of game file yet.** Nakagawa Recomp is an experimental static
   recompiler. Hot Shots Tennis is the one game rated **Playable**; [`COMPATIBILITY.md`](COMPATIBILITY.md) lists
   what each tested game reaches. The
-  player decrypts UMD disc images (`.iso`); PSN downloads (`EBOOT.PBP` packages) are not decrypted yet, and
-  PGD-protected content is unsupported; broader ISO-to-Play support is in the works
-  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+  player decrypts UMD disc images (`.iso`) and converts PSN releases of UMD games (`EBOOT.PBP`) into disc images.
+  Other PSN downloads and PSOne Classics aren't supported yet, PGD-protected content is unsupported, and
+  broader ISO-to-Play support is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 - **Other games are experimental.** A valid PSP disc with no profile yet is imported as **Experimental**. The card
   says compatibility is unknown, the checklist shows what is missing, and Play stays off until a matching runtime
   package exists. PAC-MAN Championship Edition reaches its menu and plays a stage on the maintainer's copy, through
