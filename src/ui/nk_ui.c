@@ -1049,15 +1049,24 @@ void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
     if ((flags & NK_UI_BUTTON_ROW) != 0u) {
         entry.flags |= NK_UI_FOCUS_ROW_MEMBER;
     }
+    /* A destructive action is never the default focus (PLAYER_UI_DESIGN.md). */
+    if ((flags & NK_UI_BUTTON_DANGER) != 0u) {
+        entry.flags |= NK_UI_FOCUS_NO_DEFAULT;
+    }
+    /* The page's first enabled control that may take the default is its
+       default, whatever was focused before: when the screen changes and the
+       old focus is gone, focus lands here (the title page's PLAY or BUILD
+       PACKAGE), not on the first control drawn (a top-bar tab). */
     if ((entry.flags & NK_UI_FOCUS_DISABLED) == 0u && ui->focus_entry_count == 0u &&
-        ui->focused == 0u && (flags & NK_UI_BUTTON_NOT_DEFAULT) == 0u) {
+        (flags & (NK_UI_BUTTON_NOT_DEFAULT | NK_UI_BUTTON_DANGER)) == 0u) {
         entry.flags |= NK_UI_FOCUS_DEFAULT;
     }
     entry.scope = NK_UI_SCOPE_ROOT;
     entry.scroller = 0u;
     (void)nk_ui_focus_register(ui->focus_graph, &entry);
-    /* Controls that may not take default focus do not use up the default. */
-    if ((flags & NK_UI_BUTTON_NOT_DEFAULT) == 0u) {
+    /* Controls that may not take default focus, disabled ones included, do
+       not use up the default. */
+    if ((entry.flags & NK_UI_FOCUS_DEFAULT) != 0u) {
         ++ui->focus_entry_count;
     }
 }

@@ -64,6 +64,35 @@ static void grid(NkUiFocusGraph *g, int cols, int count, uint32_t flags, uint32_
     }
 }
 
+/* A destructive entry is never a scope's first focus: with nothing else
+   enabled the scope has no focus, and a move lands on it. A DEFAULT entry
+   still wins over an earlier plain one. */
+static int test_no_default_entry(void) {
+    NkUiFocusGraph *g = nk_ui_focus_graph_create();
+    CHECK(g != NULL, "create graph");
+    nk_ui_focus_begin_frame(g);
+    reg(g, 7u, 0.0f, 0.0f, 100.0f, 40.0f, NK_UI_FOCUS_NO_DEFAULT, NK_UI_SCOPE_ROOT, 0u);
+    nk_ui_focus_end_frame(g);
+    CHECK(nk_ui_focus_current(g) == 0u, "a destructive-only scope starts with no focus");
+    CHECK(nk_ui_focus_move(g, NK_UI_DIR_DOWN) == 7u, "a move from no focus reaches it");
+    nk_ui_focus_begin_frame(g);
+    reg(g, 7u, 0.0f, 0.0f, 100.0f, 40.0f, NK_UI_FOCUS_NO_DEFAULT, NK_UI_SCOPE_ROOT, 0u);
+    nk_ui_focus_end_frame(g);
+    CHECK(nk_ui_focus_current(g) == 7u, "once moved to, it keeps focus");
+    nk_ui_focus_graph_destroy(g);
+
+    g = nk_ui_focus_graph_create();
+    CHECK(g != NULL, "create graph");
+    nk_ui_focus_begin_frame(g);
+    reg(g, 1u, 0.0f, 0.0f, 100.0f, 40.0f, 0u, NK_UI_SCOPE_ROOT, 0u);
+    reg(g, 2u, 0.0f, 50.0f, 100.0f, 40.0f, NK_UI_FOCUS_DEFAULT, NK_UI_SCOPE_ROOT, 0u);
+    reg(g, 3u, 0.0f, 100.0f, 100.0f, 40.0f, NK_UI_FOCUS_NO_DEFAULT, NK_UI_SCOPE_ROOT, 0u);
+    nk_ui_focus_end_frame(g);
+    CHECK(nk_ui_focus_current(g) == 2u, "the DEFAULT entry is the first focus");
+    nk_ui_focus_graph_destroy(g);
+    return 1;
+}
+
 static int test_grid(void) {
     NkUiFocusGraph *g = nk_ui_focus_graph_create();
     CHECK(g != NULL, "create graph");
@@ -1242,7 +1271,7 @@ int main(int argc, char **argv) {
             return 0;
         }
     }
-    if (!test_grid() || !test_ragged_row() || !test_scroll_into_view() ||
+    if (!test_grid() || !test_no_default_entry() || !test_ragged_row() || !test_scroll_into_view() ||
         !test_dialog_trap_and_scope_memory() || !test_tab_cycle_and_repair() ||
         !test_repeat_timing() || !test_stick_hysteresis() || !test_event_construction() ||
         !test_prompt_style_follows_device() ||

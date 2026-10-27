@@ -1949,10 +1949,8 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(last["next_detail"], self.INCOMPATIBLE_REASON)
         run = self.run_player(
             "ready",
-            # Open the title, then Tab past the three top-bar tabs to the primary action.
-            ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", "KEY_TAB", "WAIT_MS=100",
-             "KEY_TAB", "WAIT_MS=100", "KEY_TAB", "WAIT_MS=100", "KEY_RETURN",
-             "WAIT_MS=300"),
+            # Open the title: its primary action has focus (launcher review B6).
+            ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300"),
             incompatible_package=True, wait_background=True, ui_mode="next",
         )
         frames = run["frames"]
@@ -2942,6 +2940,8 @@ class NativePlayerUiTests(unittest.TestCase):
             self.assertEqual(stage_frames[0]["extracting"], "1")
             self.assertEqual(stage_frames[1]["extraction_cancel"], "1", key)
 
+    BUILD_ACTION = str(0x4001)
+
     # The next UI draws the build, build tool download and error screens itself and
     # keeps every action and Back meaning the existing renderer had.
     def test_next_ui_build_screen_cancels_and_returns(self) -> None:
@@ -2952,11 +2952,23 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[0]["package_building"], "1")
         self.assertEqual(frames[1]["package_cancelled"], "1")
         self.assertEqual(frames[1]["view"], "library")
-        cancel = self.run_player("building", ("KEY_RETURN",), ui_mode="next")
+        # Launcher review B6: CANCEL BUILD is never the default focus, so a stray
+        # Enter leaves the build running; a move reaches it.
+        stray = self.run_player("building", ("KEY_RETURN",), ui_mode="next")
+        frames = stray["frames"]
+        assert isinstance(frames, list)
+        self.assertNotEqual(frames[0]["next_focus"], self.BUILD_ACTION,
+                            "CANCEL BUILD is not focused while the build runs")
+        self.assertEqual(frames[1]["package_cancelled"], "0",
+                         "a stray Enter does not cancel the build")
+        self.assertEqual(frames[1]["view"], "building_package")
+        cancel = self.run_player("building", ("KEY_DOWN", "KEY_RETURN"), ui_mode="next")
         frames = cancel["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[1]["package_cancelled"], "1",
-                         "CANCEL BUILD is the focused action while the build runs")
+        self.assertIn(self.BUILD_ACTION, self.focus_trail(cancel),
+                      "a move from no focus reaches CANCEL BUILD")
+        self.assertEqual(frames[-1]["package_cancelled"], "1",
+                         "Enter on CANCEL BUILD cancels the build")
         built = self.run_player("build-ready", ("KEY_RETURN",), ui_mode="next")
         frames = built["frames"]
         assert isinstance(frames, list)
@@ -3051,9 +3063,10 @@ class NativePlayerUiTests(unittest.TestCase):
     PACKAGE_STARTING = "5"
     PACKAGE_RUNNING = "6"
 
-    # Open the ready title, then Tab past the three top-bar tabs to its PLAY.
-    PLAY_READY_TITLE = ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300", "KEY_TAB",
-                        "WAIT_MS=100", "KEY_TAB", "WAIT_MS=100", "KEY_TAB", "WAIT_MS=100")
+    # Open the ready title: its PLAY has focus (launcher review B6), so the next
+    # Enter presses it.
+    PLAY_READY_TITLE = ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300")
+    TITLE_PRIMARY = str(0x2002)
 
     def test_play_keeps_drawing_through_a_slow_start(self) -> None:
         """#1298: PLAY answers at once and the launcher keeps drawing while the game starts.
@@ -3074,6 +3087,8 @@ class NativePlayerUiTests(unittest.TestCase):
         assert isinstance(frames, list)
         before = [frame for frame in frames if frame["next_primary_label"] == "PLAY"]
         self.assertTrue(before, "the synthetic ready package offers PLAY")
+        self.assertEqual(before[-1]["next_focus"], self.TITLE_PRIMARY,
+                         "opening a title focuses PLAY, not the LIBRARY tab")
         pending = [frame for frame in frames if frame["launch_pending"] == "1"]
         self.assertGreater(len(pending), 1, run["stdout"])
         # The frame that took the press drew the title before the launch began;
