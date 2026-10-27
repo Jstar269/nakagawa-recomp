@@ -104,6 +104,8 @@ typedef enum {
     PLAYER_UI_ACTION_REMOVE_TITLE,         /* the title page asks to remove it (#1304) */
     PLAYER_UI_ACTION_REMOVE_TOGGLE_SAVES,  /* the confirm screen's saves box */
     PLAYER_UI_ACTION_REMOVE_CONFIRM,       /* remove it; .primary is 1 to delete saves */
+    PLAYER_UI_ACTION_STALL_KEEP_WAITING,
+    PLAYER_UI_ACTION_STALL_STOP_GAME,
     PLAYER_UI_ACTION_OPEN_BUILD_INPUT_FOLDER, /* fix a package-build preflight blocker */
     PLAYER_UI_ACTION_DISC,             /* a game-found card control; .primary carries the op */
     PLAYER_UI_ACTION_SETTINGS,         /* a Settings control; .primary carries the op */
@@ -494,6 +496,7 @@ typedef struct {
 typedef struct {
     const PlayerUiTitle *title;
     size_t title_index;
+    bool stalled_game_notice_visible;
     float logical_width;    /* 0 selects 1280 */
     float logical_height;   /* 0 selects 800 */
 } PlayerUiTitleModel;
@@ -530,6 +533,8 @@ enum {
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,
     PLAYER_UI_ID_TITLE_SAVE_FOLDER = 0x2003u,
     PLAYER_UI_ID_TITLE_REMOVE = 0x2004u,
+    PLAYER_UI_ID_TITLE_STALL_KEEP_WAITING = 0x2005u,
+    PLAYER_UI_ID_TITLE_STALL_STOP_GAME = 0x2006u,
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,

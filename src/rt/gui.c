@@ -201,18 +201,29 @@ static uint64_t present_period_ns(void) {
     return present_period_for_cap(s_present_cap);
 }
 
-static int present_slot_due(void) {
+/* Output slots sit on a host-time grid one period apart, its phase set by the first present.
+ * A submission takes the slot nearest to it, so one that arrives up to half a period before
+ * the next slot is still presented. Guest VBLANKs reach the host with scheduling jitter: with
+ * a floor rule (present only once the slot has started), every flip that came a little ahead
+ * of the grid's phase was dropped although it was the only flip in its scanout. The grid
+ * still advances one period per present, so the long-run rate never exceeds the cap, and a
+ * second submission inside the same slot is dropped. */
+static int present_slot_due_at(uint64_t now) {
     uint64_t period = present_period_ns();
     if (!period) return 1;
 
-    uint64_t now = SDL_GetTicksNS();
-    if (s_present_next_ns && now < s_present_next_ns) return 0;
+    uint64_t early = period / 2u;
+    if (s_present_next_ns && now + early < s_present_next_ns) return 0;
     if (!s_present_next_ns || now > s_present_next_ns + period * 4u) {
         s_present_next_ns = now + period;
     } else {
         do { s_present_next_ns += period; } while (s_present_next_ns <= now);
     }
     return 1;
+}
+
+static int present_slot_due(void) {
+    return present_slot_due_at(SDL_GetTicksNS());
 }
 
 #ifndef SR_GUI_PRESENT_SELFTEST
@@ -552,6 +563,19 @@ static void convert_fb(uint32_t fbaddr, int fmt, uint32_t stride) {
     }
 }
 
+#if defined(SR_SDL3VK) || defined(_WIN32)
+/* The user closed the window. _Exit skips the atexit perf hook, so write the SR_PERF_JSON
+ * summary and the final partial CSV row first, as the guest-thread exits in hle.c and ge.c
+ * do. No cross-thread handshake is needed: gui_pump, gui_present and the pause overlay's
+ * frame and leave hooks (called from sched.c) run on the scheduler's OS thread (guest threads
+ * are coroutines on it, sr_coro.h), which owns the perf counters and the CSV handle. The call
+ * is idempotent and a no-op without SR_PERF (#1072). */
+static void gui_window_closed_exit(void) {
+    sr_perf_shutdown();
+    _Exit(0);
+}
+#endif
+
 void gui_pump(void) {
     if (!s_on) return;
     if (s_offscreen) return;
@@ -559,14 +583,14 @@ void gui_pump(void) {
     if (s_sdl3) {
         int alive = sdl3vk_poll();
         sync_sdl_input();
-        if (!alive) { _Exit(0); }
+        if (!alive) { gui_window_closed_exit(); }
         return;
     }
 #endif
 #ifdef _WIN32
     MSG msg;
     while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) {
-        if (msg.message == WM_QUIT) { _Exit(0); }
+        if (msg.message == WM_QUIT) { gui_window_closed_exit(); }
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }
@@ -649,7 +673,7 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         int osk_open = sr_osk_overlay_active();
         int res = osk_open ? -1 : gegpu_present(fbaddr, fmt, stride);
         sync_sdl_input();
-        if (res == 0) { _Exit(0); }
+        if (res == 0) { gui_window_closed_exit(); }
         if (res == 1) {
             /* The GPU fast path never reaches convert_fb, which is the only emitter of
              * the first_frame boot milestone. Without this, boot_gate.py can never pass
@@ -714,7 +738,7 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         if (sr_osk_overlay_active()) osk_overlay_paint(sr_osk_overlay_view(), s_px, PSP_W, PSP_H);
         int present_result = sdl3vk_present_rgba(s_px);
         sync_sdl_input();
-        if (present_result == 0) { _Exit(0); }
+        if (present_result == 0) { gui_window_closed_exit(); }
         accepted = present_result == 1;
         goto pace;
     }
@@ -923,7 +947,7 @@ SrPauseFrame gui_pause_frame(void) {
     if (!sdl3vk_window_minimized())
         wait_ms = s_pause_next_ns > now ? (uint32_t)((s_pause_next_ns - now + 999999u) / 1000000u) : 0u;
     if (wait_ms) sdl3vk_wait_events(wait_ms);
-    if (!sdl3vk_poll()) { _Exit(0); }
+    if (!sdl3vk_poll()) { gui_window_closed_exit(); }
     if (s_pause_resume) return SR_PAUSE_FRAME_RESUME;
     now = SDL_GetTicksNS();
     if (sdl3vk_window_minimized() || now < s_pause_next_ns) return SR_PAUSE_FRAME_CONTINUE;
@@ -948,7 +972,7 @@ SrPauseFrame gui_pause_frame(void) {
         s_pause_dirty = 0;
     }
     int presented = sdl3vk_present_overlay(px, pitch);
-    if (presented == 0) { _Exit(0); }
+    if (presented == 0) { gui_window_closed_exit(); }
     if (presented == 2) {
         s_pause_dirty = 1;
         s_pause_next_ns = 0;
@@ -969,7 +993,7 @@ void gui_pause_leave(void) {
     if (!s_sdl3 || !s_pause_open) return;
     /* Events queued since the last frame are still the overlay's; the held state they leave
      * is what the release mask hides. A window close among them still ends the run. */
-    if (!sdl3vk_poll()) { _Exit(0); }
+    if (!sdl3vk_poll()) { gui_window_closed_exit(); }
     sdl3vk_set_input_claim(NULL, NULL);
     sdl3vk_overlay_release();
     gui_pause_free_canvas();
@@ -985,6 +1009,96 @@ void gui_pause_leave(void) {
 /* A gate, not a debug aid: keep the assertions under release CFLAGS. */
 #undef NDEBUG
 #include <assert.h>
+
+/* Synthetic host clock for the slot rule: an arbitrary non-zero origin, PSP scanouts one
+ * period apart, and a submission offset inside its scanout. */
+#define SELFTEST_T0_NS 1000000000000ull
+#define SELFTEST_MS_NS 1000000ull
+
+static void selftest_reset_slots(const char *cap) {
+    s_present_cap = present_cap_from_value(cap);
+    s_present_next_ns = 0;
+}
+
+/* Small deterministic generator (the PCG32 output step over an LCG state) for jitter
+ * that is not a repeating pattern. */
+static uint32_t selftest_next_random(uint64_t *state) {
+    uint64_t old = *state;
+    *state = old * 6364136223846793005ull + 1442695040888963407ull;
+    uint32_t xorshifted = (uint32_t)(((old >> 18u) ^ old) >> 27u);
+    uint32_t rot = (uint32_t)(old >> 59u);
+    return (xorshifted >> rot) | (xorshifted << ((32u - rot) & 31u));
+}
+
+/* One flip per PSP scanout reaching the host with scheduling jitter. The first flip sets
+ * the slot grid's phase; it arrives 3 ms late, so most later flips come earlier in their
+ * scanout than the grid. Each is the only flip in its scanout and must be presented. The
+ * floor rule (present only once the slot has started) dropped every flip that came ahead
+ * of the first one's phase. */
+static void selftest_jittered_scanout_flips_are_all_presented(void) {
+    static const int32_t pattern_ms[] = { 3, -2, 1, -3, 0, 2, -1, -3, 3, -2 };
+    const uint64_t period = PSP_SCANOUT_PERIOD_NS;
+    selftest_reset_slots(NULL);
+    unsigned presented = 0;
+    for (unsigned k = 0; k < 600u; k++) {
+        int64_t jitter = (int64_t)pattern_ms[k % (sizeof pattern_ms / sizeof pattern_ms[0])] *
+                         (int64_t)SELFTEST_MS_NS;
+        uint64_t now = SELFTEST_T0_NS + (uint64_t)k * period + (uint64_t)(jitter + 4 * (int64_t)SELFTEST_MS_NS);
+        presented += (unsigned)present_slot_due_at(now);
+    }
+    assert(presented == 600u);
+
+    /* The same with pseudo-random jitter of up to a fifth of a period either way. */
+    selftest_reset_slots(NULL);
+    uint64_t rng = 0x2c9277b5u;
+    presented = 0;
+    for (unsigned k = 0; k < 3600u; k++) {
+        uint64_t span = (period * 2u) / 5u;
+        uint64_t offset = (uint64_t)selftest_next_random(&rng) % (span + 1u);
+        uint64_t now = SELFTEST_T0_NS + (uint64_t)k * period + offset;
+        presented += (unsigned)present_slot_due_at(now);
+    }
+    assert(presented == 3600u);
+}
+
+/* Two flips in every scanout, a tenth and six tenths of the way through it: the cap still
+ * presents no more than one per period over the run. */
+static void selftest_two_flips_per_scanout_present_once_per_scanout(void) {
+    const uint64_t period = PSP_SCANOUT_PERIOD_NS;
+    selftest_reset_slots(NULL);
+    unsigned presented = 0;
+    const unsigned scanouts = 600u;
+    for (unsigned k = 0; k < scanouts; k++) {
+        uint64_t base = SELFTEST_T0_NS + (uint64_t)k * period;
+        presented += (unsigned)present_slot_due_at(base + period / 10u);
+        presented += (unsigned)present_slot_due_at(base + (period * 6u) / 10u);
+    }
+    assert(presented >= scanouts && presented <= scanouts + 1u);
+}
+
+/* Several submissions within one millisecond take one slot between them. */
+static void selftest_burst_presents_once(void) {
+    selftest_reset_slots(NULL);
+    unsigned presented = 0;
+    for (unsigned i = 0; i < 5u; i++)
+        presented += (unsigned)present_slot_due_at(SELFTEST_T0_NS + (uint64_t)i * 200000ull);
+    assert(presented == 1u);
+}
+
+/* An explicit 30 Hz cap over one jittered flip per scanout presents every other flip. */
+static void selftest_explicit_cap_halves_scanout_flips(void) {
+    static const int32_t pattern_ms[] = { 3, -2, 1, -3, 0, 2, -1, -3, 3, -2 };
+    const uint64_t period = PSP_SCANOUT_PERIOD_NS;
+    selftest_reset_slots("30");
+    unsigned presented = 0;
+    for (unsigned k = 0; k < 600u; k++) {
+        int64_t jitter = (int64_t)pattern_ms[k % (sizeof pattern_ms / sizeof pattern_ms[0])] *
+                         (int64_t)SELFTEST_MS_NS;
+        uint64_t now = SELFTEST_T0_NS + (uint64_t)k * period + (uint64_t)(jitter + 4 * (int64_t)SELFTEST_MS_NS);
+        presented += (unsigned)present_slot_due_at(now);
+    }
+    assert(presented >= 299u && presented <= 301u);
+}
 
 /* The unset SR_FPS_CAP default is the PSP scanout period, not a slower title-specific
  * rate: a guest may submit a framebuffer several times per scanout and every submission
@@ -1007,6 +1121,11 @@ int main(void) {
 
     s_present_cap = present_cap_from_value("30");
     assert(present_period_ns() == 1000000000ull / 30u);
+
+    selftest_jittered_scanout_flips_are_all_presented();
+    selftest_two_flips_per_scanout_present_once_per_scanout();
+    selftest_burst_presents_once();
+    selftest_explicit_cap_halves_scanout_flips();
     return 0;
 }
 #endif

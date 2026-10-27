@@ -595,14 +595,20 @@ dumps its summary at exit; use it as a second run because the instrumentation it
 The manager also takes `-GuestProfilePeriod N` (default 3,600 vblanks) to control bounded periodic
 captures for duration-limited runs; `0` disables periodic dumps.
 
-When `SR_FPS_CAP` is unset, the runtime caps host presentation to the PSP's
+When `SR_FPS_CAP` is unset or `native`, the runtime caps host presentation to the PSP's
 60000/1001 Hz display scanout, so repeated guest framebuffer submissions within one
 scanout do no extra GPU/WSI work. The scheduler and PSP vblank continue at that rate,
-and scenes below the cap are not delayed. That default applies only to a direct runtime
-launch: every launcher exports an explicit cap (the native player and `nk_launch` use
-60, the `nk` CLI and `tools/nk_core/launcher.py` use 30). Set `SR_FPS_CAP=0` for
+and scenes below the cap are not delayed. The launchers use the same scanout pacing by
+default: the native player and `nk_launch`, `python tools/nk_cli.py launch` and
+`tools/nk_core/launcher.py` export `SR_FPS_CAP=native`. Set `SR_FPS_CAP=0` for
 uncapped diagnostics or A/B measurement; a positive value selects that explicit host
 presentation cap.
+
+Output slots sit one cap period apart on the host clock, and a submission takes the slot
+nearest to it: one that arrives up to half a period early is still presented. A guest that
+flips once per VBLANK therefore keeps every frame when its flips reach the host with
+scheduling jitter, while a second submission inside the same slot is still dropped and the
+long-run present rate never exceeds the cap (`gui-present-selftest`).
 
 Runtime logs are written under `logs/`. Use `SR_DEBUG=0xFF` for all categories or consult [DEBUGGING.md](DEBUGGING.md) for targeted logging.
 
@@ -693,8 +699,12 @@ current user's Nakagawa data folder in `prerequisites/`. **Settings → About &
 Licenses** lists installed components, versions, and licence identifiers and
 opens the notice folder. **Settings → Remove Downloaded Build Tools** removes
 that prerequisites folder after confirmation; it does not remove the game
-library, ISO files, saves, or built packages. The consent card marks unresolved
-`NOASSERTION` licence entries as under review in [#304](https://github.com/Jstar269/nakagawa-recomp/issues/304).
+library, ISO files, saves, or built packages. Every pinned entry carries a resolved
+SPDX licence expression ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)): the
+public-domain tzdata and windows-default-manifest packages use `LicenseRef-` identifiers, and
+their `notice_location` names the notice. `test_every_pinned_license_is_a_resolved_spdx_expression`
+in `tools/test_prereq_fetcher.py` refuses `NOASSERTION`; the consent card would still mark such an
+entry as under review in [#304](https://github.com/Jstar269/nakagawa-recomp/issues/304).
 
 This automatic prerequisite flow currently targets Windows x64 with the
 UCRT64 package set. Linux prerequisite installation is in the works
