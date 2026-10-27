@@ -11,6 +11,7 @@ real indirect resume with the owner's frame already active.
 
 from __future__ import annotations
 
+from io import StringIO
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 import unittest.mock
 
@@ -977,7 +979,19 @@ unemitted_fn = 0x{UNEMITTED:08x}; // type:func size:0x10
 MAP_NAMES = ("owner_fn", "adjacent_fn", "tail_target_fn")
 
 
-def _run_codegen(work: Path, symbol_map_text: str | None) -> subprocess.CompletedProcess:
+def _codegen_in_process(argv: list[str]) -> SimpleNamespace:
+    """Run codegen.main unmodified in this process, capturing what it prints."""
+    orig_out, orig_err = sys.stdout, sys.stderr
+    try:
+        sys.stdout, sys.stderr = StringIO(), StringIO()
+        returncode = codegen.main(["codegen.py", *argv])
+        return SimpleNamespace(returncode=returncode, stdout=sys.stdout.getvalue(),
+                               stderr=sys.stderr.getvalue())
+    finally:
+        sys.stdout, sys.stderr = orig_out, orig_err
+
+
+def _run_codegen(work: Path, symbol_map_text: str | None) -> SimpleNamespace:
     """Generate the fixture into `work`, with --symbol-map when a map text is given."""
     work.mkdir()
     elf = work / "fixture.elf"
@@ -985,11 +999,11 @@ def _run_codegen(work: Path, symbol_map_text: str | None) -> subprocess.Complete
         _fixture_words(), OWNER,
         pointers=(TINY_LEAF, INDIRECT_CALLER, TAIL_SOURCE, TAIL_TARGET),
     ))
-    argv = [sys.executable, str(CODEGEN), str(elf), str(work / "fixture.c"), "--profile=hst"]
+    argv = [str(elf), str(work / "fixture.c"), "--profile=hst"]
     if symbol_map_text is not None:
         (work / "symbols.txt").write_text(symbol_map_text, encoding="utf-8")
         argv.append(f"--symbol-map={work / 'symbols.txt'}")
-    return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+    return _codegen_in_process(argv)
 
 
 def _generated_files(work: Path) -> dict[str, str]:
@@ -1178,10 +1192,7 @@ class SymbolMapFileTests(unittest.TestCase):
             bad.write_text("not a symbol line\n", encoding="utf-8")
             elf = Path(tmp) / "fixture.elf"
             elf.write_bytes(_synthetic_elf(_fixture_words(), OWNER))
-            result = subprocess.run(
-                [sys.executable, str(CODEGEN), str(elf), str(Path(tmp) / "out.c"),
-                 f"--symbol-map={bad}"],
-                cwd=ROOT, capture_output=True, text=True)
+            result = _codegen_in_process([str(elf), str(Path(tmp) / "out.c"), f"--symbol-map={bad}"])
             self.assertFalse((Path(tmp) / "out.c").exists())
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertNotIn("SCANNING RANGES", result.stdout)
