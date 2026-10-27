@@ -416,7 +416,7 @@ jobs:
           $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "PYTHON=$pythonPath`n", $utf8NoBom)
 
-      # The runner image puts other MinGW toolchains on PATH (C:\mingw64\bin,
+      # The runner image puts other MinGW toolchains on PATH (its mingw64\bin,
       # Strawberry Perl's c\bin). tools/record_toolchain.py refuses a compiler or
       # Make that also resolves outside UCRT64, and the build and the runtime-DLL
       # staging must not reach one either. Keep every MSYS2 entry and drop each
