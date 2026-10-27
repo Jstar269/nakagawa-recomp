@@ -2576,20 +2576,10 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
         g_launcher_uid = t->uid;
         if (getenv("SR_THLOG")) fprintf(stderr, "LAUNCHER_UID_CAPTURE: launcher uid=0x%x\n", t->uid);
     }
-    /* Priority-inversion guard, applied only to a configured launcher role. A launcher
-     * that spins in a module_start loop with thousands of SR_YIELD escapes per second is
-     * normally the highest-priority user thread (32 < worker pri ~38-40), so the scheduler
-     * always schedules it and starves the worker that drives SetFrameBuf / WaitVblank.
-     * Once the launcher uid is known, demote it below any probable worker priority so the
-     * worker can run. Disable with SR_NO_LAUNCHER_DEMOTE=1 (back to original behaviour).
-     * A build with no configured launcher binding never reaches this. */
-    if (!getenv("SR_NO_LAUNCHER_DEMOTE") && sr_title_config_is_launcher_entry(entry)) {
-        const int demoted_priority = 50;
-        t->priority = demoted_priority;
-        sr_compat_fired("SCHEDULER_HOOKS", entry, "launcher priority demotion");
-        if (getenv("SR_THLOG")) fprintf(stderr, "LAUNCHER_DEMOTE: launcher uid=0x%x -> priority=%d\n",
-                                        t->uid, demoted_priority);
-    }
+    /* A captured role never changes the priority its creator passed. The launcher used to
+     * be demoted to 50 here (#363) against a launcher that out-prioritized the worker and
+     * never blocked; under strict priority (pick_next) a launcher that blocks, for example
+     * in sceKernelSleepThread after starting its worker, lets that worker run on its own. */
     /* Give the thread a stack, the module gp, and a per-thread k0 (r26) area. The PSP kernel
      * sets k0 to a small per-thread control region near the top of the thread stack, and the
      * game's thread bodies use it as a base pointer (e.g. sw r21,4(k0)); leaving it 0 faults.
@@ -2788,7 +2778,7 @@ static void sched_rotation_mark(int head) {
  * numerically lower priority exists. There is no aging/anti-starvation on hardware -- a
  * busy higher-priority thread legitimately starves lower-priority threads. (An earlier
  * "anti-starvation" rotation here forced the first OTHER ready thread -- of any priority --
- * every third decision, which let a demoted priority-50 launcher preempt the priority-3x
+ * every third decision, which let a priority-50 launcher preempt the priority-3x
  * worker; that violated the model and is gone. Do not reintroduce it: if a route livelocks
  * on a busy-wait that hardware would satisfy, fix the subsystem that fails to produce the
  * awaited state.)

@@ -164,7 +164,7 @@ and every field is a guest address:
 | --- | --- |
 | `fallback_entry` | `driver.c` when the image entry is not compiled |
 | `worker_thread_entry` | `sched.c` worker role capture and create-reuse |
-| `launcher_thread_entry` | `sched.c` launcher role capture and priority demotion |
+| `launcher_thread_entry` | `sched.c` launcher role capture (the priority demotion is retired, #363) |
 
 `vblank_frame_counter_addr` and `vblank_vsync_counter_addr` are retired (#643): a delivered
 VBLANK writes no guest memory, and manifests declaring them are refused.
@@ -175,7 +175,7 @@ configured" value, so a configured zero would be ambiguous), and equal worker an
 launcher entries. Omitting the block entirely is valid and configures nothing.
 
 The block may name addresses and roles. It cannot redefine a PSP semantic: what a
-worker entry or a launcher demotion *means* stays in the
+worker entry or a launcher role *means* stays in the
 runtime, and a binding only decides whether — and where — that meaning applies.
 
 ### Typed collections
@@ -306,7 +306,7 @@ which title the tree happens to be building.
 The two public fixtures carry deliberately disjoint source-owned addresses. Each build
 asserts that the scheduler acts at its own configured addresses and that every other
 candidate address — the other fixture's, and the five values the runtime used to
-hardcode — claims no role, is never reused, is never demoted, and never has its counter
+hardcode — claims no role, is never reused, keeps its declared priority, and never has its counter
 word written. The generic build asserts that of all of them. This is production-helper
 (tier-2) evidence: the real `sched_create_thread` and `deliver_vblank` run, but the
 scheduler world is a white-box test fixture rather than a title route.
