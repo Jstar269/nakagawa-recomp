@@ -3461,4 +3461,9 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    # Run as a script this file is `__main__`, and helpers it imports lazily (entry_frame_balance
+    # for linked branches) import it again as `analyze`, which would load a second copy with its
+    # own _SpanIndex class: a span index built by one copy then fails the other's isinstance test.
+    # One module object serves both names.
+    sys.modules.setdefault("analyze", sys.modules[__name__])
     sys.exit(main(sys.argv))
