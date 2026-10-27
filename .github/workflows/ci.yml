@@ -1243,9 +1243,10 @@ jobs:
       # `gcc` becomes a native symlink to the UCRT64 toolchain's own ccache.exe
       # (ccache's masquerade mode), which then runs /ucrt64/bin/gcc. A profile
       # script puts it ahead of /ucrt64/bin for every later MSYS2 step, so CC stays
-      # `gcc` and the toolchain check in tools/nk_doctor_checks.py, which resolves
-      # the compiler into /ucrt64/bin, still holds. The compiler resolution check
-      # above runs before this, against the plain toolchain.
+      # `gcc`, and SDL3 discovery and the toolchain check in
+      # tools/nk_doctor_checks.py, which follow the link into /ucrt64/bin, still
+      # find this toolchain. The compiler resolution check above runs before this,
+      # against the plain toolchain.
       - name: Route this job's compiles through a job-local compiler cache
         shell: msys2 {0}
         run: |

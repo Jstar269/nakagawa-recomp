@@ -594,9 +594,9 @@ go through a job-local `ccache` (#735 item 2). It starts empty under
 of every header, and is never restored, uploaded or shared with another job or
 run. Make still decides what to build; the cache only returns an object for an
 identical compile. `gcc` is a native symlink to the UCRT64 toolchain's
-`ccache.exe`, so `CC` stays `gcc` and the SDL3 toolchain check still resolves the
-compiler into `/ucrt64/bin`. Each part's last step prints the cache statistics
-and fails if no compile went through the cache.
+`ccache.exe`, so `CC` stays `gcc`, and SDL3 discovery and the toolchain check
+(`tools/nk_doctor_checks.py`) follow the link into `/ucrt64/bin`. Each part's last
+step prints the cache statistics and fails if no compile went through the cache.
 
 Hosted GitHub Actions execution is active. The `main` ruleset requires `CI required`,
 `OSV Vulnerability Scan`, `dependency-review`, `Hygiene and security`, and
