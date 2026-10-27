@@ -2296,6 +2296,28 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertLess(shutdown, 2.5,
                         f"closing waited {shutdown:.1f} s for the package check")
 
+    def test_library_card_says_checking_until_the_package_check_ends(self) -> None:
+        """Launcher review B4: a card reads CHECKING, not NEEDS SETUP, while its check runs.
+
+        Failing-before: the showcase demos read NEEDS SETUP for the first 4-9 s of
+        every start, until their checks finished, and then flipped to READY."""
+        run = self.run_player(
+            "ready", ("WAIT_MS=200",), wait_background=True, ui_mode="next",
+            env_extra={"NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS": "1500"},
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        statuses = [
+            line.split("status=", 1)[1]
+            for line in str(run["stdout"]).splitlines()
+            if line.startswith("[PLAYER_UI_TEST] next_ui_library_status index=0 ")
+        ]
+        self.assertTrue(statuses, run["stdout"])
+        self.assertEqual(statuses[0], "Checking", statuses)
+        # The check then decides: this synthetic title has no package to run.
+        self.assertGreaterEqual(len(statuses), 2, statuses)
+        self.assertNotEqual(statuses[-1], "Checking", statuses)
+
     def test_failed_post_build_check_does_not_suppress_later_title_build(self) -> None:
         run = self.run_player(
             "library",
