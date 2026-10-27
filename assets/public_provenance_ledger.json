@@ -21,7 +21,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "98019bc91206fc5e6fce7e7113c4791a16713d090a6ba722c2e00d6b00e12900"
+      "sha256": "366494c7035e218c2447a4283b0cc042a257c9db4b09e9d0a32099528afcc829"
     },
     {
       "path": ".clang-format",
@@ -1996,7 +1996,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "b147817a52b122e2dce4fd60d3a8df952f051ab042a4d7f70c6e6eddb4ed20a3"
+      "sha256": "a0332200707a359945b32ed454fcb5bf07773fae586e07020f9195c1da394a6c"
     },
     {
       "path": "fixtures/cosim/cosim_selftest.c",
@@ -2056,7 +2056,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "af88c1935e3954497497c9c8b2e9aea5c32a38f2637123fcea34f4621a2fff4b"
+      "sha256": "9872f2e982db83a0ccae04e17d3ef00b8bffe5ceb94e36da12f8c189519d7d56"
     },
     {
       "path": "fixtures/display_smoke/generate.py",
@@ -5632,7 +5632,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1b07a1a2b96618e49d8b08c73035a3e8e5e9026a85c3802a673d0f2e94b4b6eb"
+      "sha256": "b07a9c41fe0dd56f0d9c17ab3113caaf199d745fdbe1ca2eab01ae0eafba6b0d"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -12829,7 +12829,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6cc083f6cdb9b1f55deb1547b5c8d338e7768f1e4193ec926c457cde90094e53"
+      "sha256": "d85026f28b009611eb11330218731423c4c477bff4856daf385ec68f6c018326"
     },
     {
       "path": "tools/recomp_helper_inventory.py",
@@ -13370,7 +13370,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "156db31d57e096e854825e2e7af3b13858b54f74232ea523dad767c2829f7a0e"
+      "sha256": "b57d3d39e6784c0e2d3baf81c9cb57fa8e5b8d603005c07ca863e9d4303f70aa"
     },
     {
       "path": "tools/test_cpu_lle.py",
@@ -14835,7 +14835,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5d55d6435e00dd06da294ce45c5c32126806b69cfa423d00f7a8c94880537d0b"
+      "sha256": "f5de20495d1d8491bc0359bf1b607fe15c82300ecc3969858ba46eb910e39eee"
     },
     {
       "path": "tools/test_readme_images.py",
