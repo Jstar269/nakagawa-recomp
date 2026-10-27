@@ -137,10 +137,8 @@ Unsupported interpreter forms remain fail-closed. HST-specific diagnostic probes
 HLE, scheduler, and recompiler were removed; use generic SR_TRACE_PC or SR_WATCH
 instrumentation when those observations are needed. The init-walker r16 save/restore
 no longer names caller addresses in generic dispatch. Real hardware does not restore
-$s0-$s7 or $fp/$s8 for a callee, so a generic title keeps every register write its
-callee makes. Only the HST title configuration arms a restore of those registers at a
-returning CALL (`sr_title_config_preserve_callee_saved_at_calls`), recorded as #363 debt
-until the flagship's clobber is root-caused.
+$s0-$s7 or $fp/$s8 for a callee, so every title keeps every register write its callee
+makes. The HST-only restore of those registers at a returning CALL was retired under #363.
 
 No title profile supplies Newlib master or guest thread-table addresses: the HST reent
 bindings were retired under #363, and the runtime performs no guest-table seeding for any

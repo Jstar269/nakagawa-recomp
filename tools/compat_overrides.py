@@ -385,18 +385,18 @@ RETIRED_DISPATCH_TARGETS = [
 
 # The old INIT_WALKER_GUARD was attached to these caller PCs, but its r16 restore
 # changed guest-visible state. Decision (b): remove the title-address guard from
-# generic dispatch; only the HST title configuration arms a restore of $s0-$s7/$fp
-# at a returning CALL, and every other title keeps its callee's register writes.
+# generic dispatch. The HST-only restore of $s0-$s7/$fp at a returning CALL that
+# replaced it is retired too (#363, 2026-10-27): every title keeps its callee's
+# register writes.
 RETIRED_INIT_WALKER_GUARD = dict(
     caller_pcs=[0x00000f98, 0x00000fdc],
     decision="b",
-    source="src/rt/title_config.c:sr_title_config_preserve_callee_saved_at_calls",
-    reason="#363 debt, HST only: the flagship needs a returning dispatch CALL to restore "
-           "$s0-$s7/$fp (the old guard restored $s0 at these two caller PCs). Real hardware "
-           "does not restore them, so every other title keeps its callee's register writes; "
-           "the restore is armed only by the validated HST title configuration, and no "
-           "caller address remains in generic dispatch. Retire it once the flagship's "
-           "clobber is root-caused.",
+    source="src/rt/recomp.c:dispatch (retired)",
+    reason="#363 debt, HST only: a returning dispatch CALL used to restore $s0-$s7/$fp "
+           "(the old guard restored $s0 at these two caller PCs). Real hardware does not "
+           "restore them. The restore was armed only for a manifest id no local HST manifest "
+           "carries, so the private full-match route ran without it; it is retired and no "
+           "caller address remains in generic dispatch.",
     test="make dispatch-isolation-selftest (a generic title sees its callee's writes)",
 )
 
