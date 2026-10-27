@@ -220,8 +220,17 @@ to issues, or included in a release.
 The PNG file docs/media/hst-title-screen.png is a presentation capture of Hot Shots Tennis: Get a Grip
 running in Nakagawa Recomp on Windows. The game, its logo, artwork and on-screen text belong to their
 owners and are not licensed under this repository's GPL-3.0-or-later declaration; the image is shown
-only to identify the game. The repository contains no game data files, and users need their own copy of
-the game. The file is listed with the SHA-256 of its exact bytes in assets/release_manifest.json.
+only to identify the game. docs/media/hst-title-screen-960.png is the same capture reduced to 960 by 540
+pixels for the project website, under the same terms. The repository contains no game data files, and
+users need their own copy of the game. Both files are listed with the SHA-256 of their exact bytes in
+assets/release_manifest.json.
+
+## Project website share card
+
+The PNG file docs/images/og-card.png is the project-authored link-preview image of the project website:
+the N1 mark, the tennis court drawn for the site, and text set in Geist (SIL Open Font License 1.1,
+assets/fonts/ui/geist/OFL.txt). It shows no game imagery. It is distributed under GPL-3.0-or-later and
+listed with the SHA-256 of its exact bytes in assets/release_manifest.json.
 
 ## Project-authored Nakagawa brand artwork
 

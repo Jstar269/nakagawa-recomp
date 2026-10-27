@@ -78,8 +78,9 @@ retail inputs, or hardware.
 <https://jstar269.github.io/nakagawa-recomp/>, from [`docs/index.html`](index.html). The
 repository's Pages source is "GitHub Actions". The page is one static file with no scripts,
 web fonts or third-party requests. Its images are files the repository already publishes:
-the brand marks, the showcase demo captures and the presentation screenshot
-`docs/media/hst-title-screen.png` with its notice. The build job copies an explicit list of
+the brand marks, the showcase demo captures, the presentation screenshot
+`docs/media/hst-title-screen.png` and its 960 px copy with their notice, and the share card
+`docs/images/og-card.png` that link previews show. The build job copies an explicit list of
 files into the artifact, so nothing else in the tree is published, and fails when the page
 names a local file the list does not copy. A pull request that touches those paths runs the
 build job only; a push to `main`, or a manual run on `main`, also deploys through
