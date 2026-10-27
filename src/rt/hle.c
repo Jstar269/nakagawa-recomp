@@ -16786,6 +16786,7 @@ static uint32_t h_IoDevctl(CpuState *s) {
         IO_DEVCTL_GET_CAPACITY = 0x02425818u,
         IO_DEVCTL_CHECK_INSERTED = 0x02025806u,
         IO_DEVCTL_CHECK_READY = 0x02025801u,
+        IO_DEVCTL_CHECK_MEDIUM = 0x02425823u,
         IO_DEVCTL_REGISTER_CALLBACK = 0x02415821u,
         IO_DEVCTL_UNREGISTER_CALLBACK = 0x02415822u,
         IO_DEVCTL_ERROR_UNSUPPORTED = 0x80010086u,
@@ -16818,13 +16819,18 @@ static uint32_t h_IoDevctl(CpuState *s) {
             for (uint32_t i = 0; i < 5u; i++) MEM_W32(info_addr + i * 4u, info[i]);
             return 0;
         }
+        /* 0x02425823 is the fatms0: medium check games make before saving or
+         * loading ("is a Memory Stick inserted?"). PPSSPP's sceIo.cpp answers it
+         * with 1 while its Memory Stick is inserted, which this runtime's always
+         * is; refusing it told games there was no Memory Stick (#341). */
         case IO_DEVCTL_CHECK_INSERTED:
+        case IO_DEVCTL_CHECK_MEDIUM:
         case IO_DEVCTL_CHECK_READY: {
             if (outlen < 4u || outlen > INT32_MAX)
                 return IO_DEVCTL_ERROR_INVALID_ARGUMENT;
             if (!outdata || !sr_guest_span_writable(outdata, 4u))
                 return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-            MEM_W32(outdata, A1 == IO_DEVCTL_CHECK_INSERTED ? 1u : 4u);
+            MEM_W32(outdata, A1 == IO_DEVCTL_CHECK_READY ? 4u : 1u);
             return 0;
         }
         case IO_DEVCTL_REGISTER_CALLBACK:
