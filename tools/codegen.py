@@ -3514,17 +3514,10 @@ def main(argv):
 }'''
             func_texts.append(text); emitted.append(a); continue
 
-        if hst_profile and a == 0x0001034c:
-            text = f"""void f_0001034c(CpuState *s) {{  /* custom stub: skip corrupted heap-statistics walk */
-    /* This routine only accumulates mallinfo-style counters. The guest free-list can be
-     * incomplete during bring-up; walking it must not block game initialization. */
-   {compat_fired_stmt("CODEGEN_CUSTOM_STUBS", a)}
-    s->r[2] = 0u;
-    s->pc = s->r[31];
-}}"""
-            func_texts.append(text); emitted.append(a); continue
-
-
+        # 0x0001034c (heap-statistics walk skip) and 0x001d9eb0 (title backdrop
+        # chooser postcondition) were retired under #363: the walk runs over the
+        # retail allocator's statically linked, untouched bins once the allocator is
+        # host-bridged, and the chooser never yields 0. Both now translate as written.
 
         if a in SIMPLE_STUBS:
             name, ret_val = SIMPLE_STUBS[a]
@@ -3554,39 +3547,6 @@ def main(argv):
         SR_YIELD(s, 0x000468c8u);
         f_000468c8_real(s);
         SR_TAIL_DRAIN(s);
-    }
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x001d9eb0:
-            # This retail chooser supplies the NN in both menu/095_titleNN.xb and
-            # data/menu/title/title_cNN.gim.  Every shipped title archive is numbered
-            # from 01 upward; 00 does not exist.  Preserve the original selection
-            # routine, but recover from its impossible zero result.  Without this
-            # guard the failed c00 load leaves an unrelated text surface in the title
-            # background buffer.  Archived live traces selected c01/c02 normally, so
-            # this is intentionally a postcondition guard rather than a replacement
-            # chooser or a VFS alias that would conceal bad resource paths globally.
-            func_texts.append("\n".join(emit_function(
-                elf, a, ranges, known, resume_owners=resume_owners,
-                resumable=catalog[a].resumable, profile=profile,
-                dispatch_boundaries=dispatch_boundaries,
-                stack_census=stack_census)))
-            func_texts[-1] = func_texts[-1].replace(
-                "void f_001d9eb0(CpuState *s)", "void f_001d9eb0_real(CpuState *s)")
-            text = """void f_001d9eb0(CpuState *s) {  /* title backdrop selector postcondition */
-    f_001d9eb0_real(s);
-    SR_TAIL_DRAIN(s);
-    if (s->r[2] == 0u) {
-        static int warned = 0;
-        if (!warned) {
-            fprintf(stderr,
-                "TITLE_SELECT: retail chooser returned invalid id 0; using shipped backdrop 01\\n");
-            fflush(stderr);
-            warned = 1;
-        }
-       """ + compat_fired_stmt("CODEGEN_CUSTOM_STUBS", a) + """
-        s->r[2] = 1u;
     }
 }"""
             func_texts.append(text); emitted.append(a); continue

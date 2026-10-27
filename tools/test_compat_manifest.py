@@ -833,7 +833,7 @@ class CompatManifestCoverageTests(unittest.TestCase):
         added with test=\"none\" without an explicit fail-closed exception."""
         # Grandfathered semantic codegen stubs that predate the gate (diagnostic
         # litter, not new). A new temporary_compatibility_patch must name a test.
-        grandfathered_codegen = {0x0001034c, 0x001d9eb0}
+        grandfathered_codegen: set[int] = set()
         for entry in compat_overrides.CODEGEN_CUSTOM_STUBS:
             if entry["category"] != "temporary_compatibility_patch":
                 continue
@@ -999,11 +999,10 @@ class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
         self.assertTrue(patches, "temporary compatibility debt census is empty")
         ids = [patch["id"] for patch in patches]
         self.assertEqual(len(ids), len(set(ids)), "census ids are not unique")
-        # The #363 subject: the forced branches, the walk/backdrop stubs and the
-        # eight static-success HST_SIMPLE_STUBS must all be inventoried.
+        # The #363 subject: the forced branches and the remaining static-success
+        # HST_SIMPLE_STUBS must all be inventoried.
         anchors = {patch["id"].split(":")[1] for patch in patches}
-        for address in ("0x00010950", "0x00048320", "0x0001034c", "0x001d9eb0",
-                        "0x00015f98", "0x0001c604"):
+        for address in ("0x00010950", "0x00048320", "0x0001c010", "0x0001c604"):
             self.assertIn(address, anchors, f"census lost {address}")
 
     def test_every_temporary_patch_has_owner_retirement_and_test(self):
