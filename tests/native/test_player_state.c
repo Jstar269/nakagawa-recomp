@@ -116,6 +116,11 @@ static void seed_entry(NkGameEntry *entry, const char *disc_id, const char *name
     entry->status = NK_STATUS_IDENTIFIED;
 }
 
+static bool test_cancel_always(void *user) {
+    (void)user;
+    return true;
+}
+
 static void write_file(const char *path) {
     FILE *file = fopen(path, "wb");
     assert(file != NULL);
@@ -6294,6 +6299,17 @@ int main(int argc, char **argv) {
         char identity_before[65];
         char identity_after[65];
         char reason[1024];
+        /* Launcher review B5: a player that is closing cancels a validation
+           that is still hashing the package, so the window does not wait for
+           it. The cancelled result says so and is never cached: the next
+           validation hashes the package again and passes. */
+        nk_title_manifest_set_cancel_check(test_cancel_always, NULL);
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &first_info, reason, sizeof(reason)) !=
+               NK_RUNTIME_PACKAGE_OK);
+        assert(strcmp(reason, "Package validation was cancelled.") == 0);
+        assert(!first_info.validation_cache_hit && first_info.package_root[0] == '\0');
+        nk_title_manifest_set_cancel_check(NULL, NULL);
         assert(nk_launch_validate_runtime_package(
                    validation_root, &game, &first_info, reason, sizeof(reason)) ==
                NK_RUNTIME_PACKAGE_OK);

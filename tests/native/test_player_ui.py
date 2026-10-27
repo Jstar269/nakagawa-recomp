@@ -2276,6 +2276,28 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["selected_package_status"], "1",
                          run["stdout"])
 
+    def test_closing_during_the_startup_package_check_exits_promptly(self) -> None:
+        """Launcher review B5: closing does not wait for the package check.
+
+        NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS stands in for a check that
+        hashes a large package (about 4 s for each showcase demo). The run quits
+        300 ms in, while that check runs. Failing-before: shutdown joined the
+        check's thread, so the window stayed up until the check ended (up to
+        about 25 s with three titles); now the check stops at its next read."""
+        run = self.run_player(
+            "ready", ("WAIT_MS=300",), ui_mode="next",
+            env_extra={"NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS": "5000"},
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertGreaterEqual(int(frames[-1]["package_status_thread_attempts"]), 1,
+                                run["stdout"])
+        wall = run["wall_seconds"]
+        assert isinstance(wall, float)
+        shutdown = wall - int(frames[-1]["ticks_ms"]) / 1000.0
+        self.assertLess(shutdown, 2.5,
+                        f"closing waited {shutdown:.1f} s for the package check")
+
     def test_failed_post_build_check_does_not_suppress_later_title_build(self) -> None:
         run = self.run_player(
             "library",

@@ -2115,6 +2115,16 @@ static bool player_package_status_push_completion(SDL_Event *event) {
     return SDL_PushEvent(event) != 0;
 }
 
+/* Set once the launcher is closing. Package validation polls it while it
+   hashes, so closing the window during the startup package check does not
+   wait for every check to finish (launcher review B5). */
+static SDL_AtomicInt s_player_closing;
+
+static bool player_closing(void *user) {
+    (void)user;
+    return SDL_GetAtomicInt(&s_player_closing) != 0;
+}
+
 static int SDLCALL player_package_status_thread_main(void *userdata) {
     PlayerPackageStatusJob *job = (PlayerPackageStatusJob *)userdata;
     if (!job) return 1;
@@ -2123,7 +2133,14 @@ static int SDLCALL player_package_status_thread_main(void *userdata) {
     if (delay_text && delay_text[0]) {
         char *end = NULL;
         unsigned long delay = strtoul(delay_text, &end, 10);
-        if (end && *end == '\0' && delay <= 5000) SDL_Delay((Uint32)delay);
+        /* A slow check, standing in for hashing a large package: it stops
+           when the launcher closes, as the hashing does. */
+        if (end && *end == '\0' && delay <= 5000) {
+            for (unsigned long waited = 0; waited < delay && !player_closing(NULL);
+                 waited += 10u) {
+                SDL_Delay(10);
+            }
+        }
     }
 #endif
     char default_root[NK_MAX_PATH];
@@ -4237,6 +4254,8 @@ int main(int argc, char *argv[]) {
         return player_run_command_line_launch(&app, launch_index, "--launch-index");
     }
 
+    nk_title_manifest_set_cancel_check(player_closing, NULL);
+
     /* Initialize SDL3 */
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
@@ -5272,6 +5291,10 @@ int main(int argc, char *argv[]) {
         }
 #endif
     }
+
+    /* Closing: a package check still hashing stops at its next read, so the
+       window does not hang until every startup check is done. */
+    SDL_SetAtomicInt(&s_player_closing, 1);
 
     /* A launch still on its worker finishes first, so its game is stopped. */
     launch_job = player_launch_job_poll(&app, launch_job, true);
