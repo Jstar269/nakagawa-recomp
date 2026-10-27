@@ -1678,7 +1678,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d650a8d4374731053141e0af9a26981d5b8058ccd95a1d3eaa61d01871e1cb35"
+      "sha256": "53ef573681d952ce7e027b439687c1703076752f1985d8fae467f11bb53ddc14"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1696,7 +1696,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "146bb70ffd00b4a0d9975e87509b711950e9eab918d2d1bae5e9811cc422b91f"
+      "sha256": "1d5034df73d39acdabdaf7846a1bba3ef2753b2d7e259b1f79e71cfdb0623ef3"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -3404,7 +3404,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ab8bca53647a1509f9c299841e537dfc484f892f1b62a6e012a13110460153ab"
+      "sha256": "48a2dba39c1a8f98f9c638114f861f7a2b0469db5c95a0a60ca8ca9dd589bb5b"
     },
     {
       "path": "src/core/nk_psp_aes.c",
@@ -3824,7 +3824,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3de7c4e0c53dc1b20f32f55143cb9c56e40631058857eb3ad1040abef623c384"
+      "sha256": "9d86d1197e4b7c09cbe5764a110c424a133b8690c23e8c67743993f3bdddb5c0"
     },
     {
       "path": "src/player/package_builder.c",
@@ -10383,7 +10383,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8b31f0e581158594983cfafe18a10f99fad384369e1e94699cb7d1ced5a2380c"
+      "sha256": "1da92a138e5237ccf4c6b66880653a000f63aa7512b76976973faccde99fa7bb"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -12139,7 +12139,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b214da83b1812558779655dbf2d5d913909a254326607dfafa030d6df06be50f"
+      "sha256": "136818dd8efeebe3bebf914e4fcacbcc3b15cfa4a2155097e499f66464ad9545"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -12235,7 +12235,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "396cd705988479e28d22f9312d8349437160874c8fedf12bef35406f5db8559c"
+      "sha256": "8f3a3ecf9afe994f4d24d1e505019ee4f4a2ac0711560fcde40c7ea5a08acb9c"
     },
     {
       "path": "tools/nk_core/prep_engine.py",
@@ -14328,7 +14328,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9c250d0cfbe57ec77e773b62c9bdcde2eeca0e58547e4345e90d9fcf228c173b"
+      "sha256": "4b103fcb6d8f8fb0908aac230bd3478a6ceb457158d7a20d2e447cc987c48490"
     },
     {
       "path": "tools/test_package_notices.py",
