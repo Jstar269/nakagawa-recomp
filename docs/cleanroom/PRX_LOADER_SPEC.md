@@ -8,6 +8,11 @@ a derived C port of it that was discarded unadmitted, and the public sources in 
 nothing from the derived files is reproduced here beyond the `SEAM:` identifiers §2
 defines and the ABI facts §9 cites.
 
+**Re-scope (maintainer decision, 2026-10-20).** Rewrite unit G3 is no longer planned for its own
+sake: working inherited code is replaced only when evidence shows it is wrong or an LLE path makes it
+unnecessary (`../INDEPENDENCE_CAMPAIGN.md`), and [#344](https://github.com/Jstar269/nakagawa-recomp/issues/344) was closed as not planned. The spec stays
+as a behaviour reference.
+
 ## 0. Scope, workspace, and reading rule
 
 **In scope.** Loading an already-decrypted PSP module image (a relocatable ELF32
@@ -17,9 +22,9 @@ zero-filling uninitialised tails, applying the two PSP relocation formats, and
 reporting the module's identity, entry point, exported functions, and import stubs so
 the runtime can link and start it.
 
-**Out of scope.** This loader does not decrypt or decompress `~PSP` containers. Nakagawa
-does not decrypt games (built-in decryption was removed, #295); the
-player and CLI refuse an encrypted container without a user-supplied plain copy. Choosing the base address (the title
+**Out of scope.** This loader does not decrypt or decompress `~PSP` containers. The
+player decrypts them before analysis (`src/core/nk_psp_*`, #295); the
+player and CLI refuse an encrypted container that still has no plain copy. Choosing the base address (the title
 manifest's `modules[].load_address`, validated by `tools/title_manifest.py`),
 reserving guest memory (the allocator's exact-address reservation), running
 `module_start`, and resolving imports to handlers (the runtime's HLE registry and

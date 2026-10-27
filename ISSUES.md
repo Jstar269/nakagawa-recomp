@@ -26,15 +26,16 @@ linked live issue, and read counts from the generator cited beside each area.
   synthetic manifests are public-scope. Analyzer executable spans and
   manifest-derived build settings now have one explicit owner
   ([`docs/TITLE_CODEGEN_PLAN.md`](docs/TITLE_CODEGEN_PLAN.md)).
-- PGF/font and PGD/amctrl surfaces remain excluded pending qualified
-  provenance and distribution review.
+- PGD/amctrl surfaces remain excluded pending qualified provenance and
+  distribution review. The derived PGF reader `src/rt/pgf.c` was retired on
+  2026-10-25; the public PGF reader is the project-authored
+  `src/rt/pgf_public.c` ([#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)).
 - Transient model corruption entering the main menu:
   [issue #69](https://github.com/Jstar269/nakagawa-recomp/issues/69) is closed
   as fixed (2026-10-20). The one-frame corruption was traced to VFPU3 compare
   decode and fixed in [#822](https://github.com/Jstar269/nakagawa-recomp/pull/822).
-  A residual observation of a few presented frames at the transition, seen
-  only on the GPU path, is unverified: no public-scope reproduction exists,
-  and the public repository holds no private-title route evidence.
+  The maintainer confirmed on 2026-10-19, in a live playtest with the GPU
+  presenter, that it no longer appears, and again on 2026-10-27.
 
 ## Records of past closures
 
