@@ -387,7 +387,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ec79351d296877754671b5f455251e9a2f50fbd7bb2044c0fe81f0cbc777451d"
+      "sha256": "6a4fb689ab3ef1688e6a5ee7e3687473ef4c5e26f38a1de836cdce5666b11b54"
     },
     {
       "path": "CREDITS.md",
@@ -405,7 +405,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7a63d78b2cbc7da1be646b2100377ed7460abd9c13ef9fd10af4a79452bc7772"
+      "sha256": "c8648a0d1014dfb08af47e7c4cb011a14edb88364252eddf8d9a38d08ff66404"
     },
     {
       "path": "LICENSE",
@@ -471,7 +471,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dfa39680d902a23b93042d1f6c820ebee5463c382f925093f4c48ccba94bf612"
+      "sha256": "c249e670d115e5f5cbe297b11f1dd0752e52d6514887b282344af183d25beb12"
     },
     {
       "path": "SUPPORT.md",
@@ -1357,7 +1357,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "87e2909e37a3a880f95e332f9321d9af7cc35e76f18d0250692a1e6f2828cac5"
+      "sha256": "5a2bd252f384056934f5f7a1cf5923c8a4956366724d2dbc678b190c6a60b9a0"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1486,7 +1486,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f58dbc4267059f9ba3bd64155b7ef909acba727c5c71dd89830f0a38d55dd7f8"
+      "sha256": "727e0caa01e7f3a57c24b8025cbf6b8e380a37ebcf2fbd2e7b6adbf02fff3b4c"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -1513,7 +1513,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2115d102d068364d39c035ee20068b56af6b25797d682b2f1032a039e1178666"
+      "sha256": "02da0f5eafce5d85b29d71ff437da2065bc7dce53edc90d8259fe21fcba3a9a4"
     },
     {
       "path": "docs/ONLINE_FEATURES.md",
@@ -1543,7 +1543,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bc660642e61b074858f42e36fa2ec9923106a6e54b443d646354fcd333f791bb"
+      "sha256": "c31cf9fbaca4607bec7b4dd6730dcdda5220e0a8e949e600196a4a54c3d972a7"
     },
     {
       "path": "docs/PLAYER_UI_DESIGN.md",
@@ -1561,7 +1561,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9d4733d1d1665f75f15692da319c62032dd86502b3c844f65953750d03399259"
+      "sha256": "36df415c03a8323b1823c28855475798c1e4f5d6e2521470dfb41cd7099c5049"
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
@@ -1579,7 +1579,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5cab340a954a3654b1ad70fc2861d4f3db7d6c1f17f2fd784d806714a4ea4b49"
+      "sha256": "87941d617e2eeff499339a409d3cb445ca55a4d429f679ffd0b3a68372b0556a"
     },
     {
       "path": "docs/PROVENANCE_MERGE_GATE.md",
@@ -1645,7 +1645,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9000a3222936140c7cd2405011e28784f23f83d27564d89b80a14f949180839a"
+      "sha256": "f5d872d4538059540601e23e8bf41612e999dfc261420a5527f1dbc2b6825d8d"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
@@ -1675,7 +1675,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "eb4a4a8d830d179d579ee91cd4425f31e901f159c1262e86739ce23629d70d5d"
+      "sha256": "835207099c7314bcb4d317f9988dd2d0bd4179620079e15166fe2a328303915d"
     },
     {
       "path": "docs/SETUP.md",
@@ -1684,7 +1684,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "84fb39789d8f9e2cca63bbf68f5552d5160aecd37eba6917a9d1f47432cec24f"
+      "sha256": "972566ada0b2cfeed48282199fca50482b31d91f0711d695de46a98ca0aae846"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1729,7 +1729,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "14ee1843270ddc6be449d185e2a5eb379b68391fb15f5baedfcefb8de8931b89"
+      "sha256": "2e2ae591f04a91d6a9781d5b2d6582057b58a5ff1074760653ff323ec0701d64"
     },
     {
       "path": "docs/TITLE_TESTING.md",
@@ -1831,7 +1831,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e05cb5dbb3366da98859a5165352437744669c0d4ba4f2d7df7af2824f6a2a13"
+      "sha256": "fb7c9d02796b49619cbcfb1520cb731886797c6a84af799debae5905384f2105"
     },
     {
       "path": "docs/cleanroom/SCHED_SPEC.md",
@@ -1840,7 +1840,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "20f18a082049479ae9b90b355594bf9d92f865232a3c24780a6249e8e9c17193"
+      "sha256": "a2e5edf1c74eab71534e2f0986538b04791ba43b5c0a7c8cbe8157554d49cd90"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -5509,7 +5509,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8784ae96ee26007b08b1fb6e8e972dbac3030c5d602f4b5175c41d50cdbabc1c"
+      "sha256": "7ac226ae28bed4f8adbf68d985447b1ab6d16b5ae5aee943e1d74ae1f8fdb3da"
     },
     {
       "path": "src/rt/h264_ffmpeg.c",
@@ -13755,7 +13755,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f8723c022b119a0a5eeb9e7db395d3f403b49e93adb3bb5ca11ea753a5d3859"
+      "sha256": "8d008a1d1c6727172ccc0eba111d9033f86e77ed31ae342befc3fb70879342fb"
     },
     {
       "path": "tools/test_manager_safety.ps1",
