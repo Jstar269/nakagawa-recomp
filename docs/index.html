@@ -529,7 +529,7 @@
           <div class="tile">
             <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span>
             <h3>Private and offline</h3>
-            <p>No games, firmware or keys are included or downloaded. Nothing made from your game leaves your PC, and
+            <p>No games or firmware are included or downloaded. Nothing made from your game leaves your PC, and
               there’s no tracking.</p>
           </div>
           <div class="tile">
@@ -595,6 +595,7 @@
             <h3>Works today</h3>
             <ul class="marks yes">
               <li>Drag in a disc image and the player recognises the game.</li>
+              <li>Encrypted discs are unlocked on your PC, the way PPSSPP does it.</li>
               <li>One button turns the game into a PC program, with a progress bar and a cancel button.</li>
               <li>Missing tools? The player can fetch them for you, after showing exactly what it will download.</li>
               <li>Gamepads and keyboards, with button remapping and calibration, even per game.</li>
@@ -678,8 +679,8 @@
                 memory (16 GB is better) and 5 GB of free space.</span></li>
               <li><strong>Your own copy of the game</strong><span>As a disc image (<code>.iso</code>). Whether you may
                 make one depends on where you live and the terms you agreed to, so check both.</span></li>
-              <li><strong>Unlocked game files, for most games</strong><span>Most store-bought games need these. See
-                the note about unlocking.</span></li>
+              <li><strong>Nothing else, for most games</strong><span>Most store-bought games keep their code
+                locked. Nakagawa unlocks your own copy on your PC when you add it. See the note about unlocking.</span></li>
               <li><strong>Your PSP’s system fonts (optional)</strong><span>For the original lettering. Without them,
                 Nakagawa uses its own open fonts.</span></li>
             </ul>
@@ -689,11 +690,14 @@
             </p>
           </div>
           <aside class="callout" aria-labelledby="unlock-title">
-            <h3 id="unlock-title">Nakagawa doesn’t unlock games</h3>
-            <p>Most store-bought PSP games keep their code encrypted, which means locked. Public builds of Nakagawa
-              can’t unlock it: they contain no keys and never go looking for any.</p>
-            <p>Instead, you supply unlocked copies of those files, made from your own game. The player shows you
-              exactly where they go, and if a file is still locked, it tells you which one.</p>
+            <h3 id="unlock-title">Unlocking happens on your PC</h3>
+            <p>Most store-bought PSP games keep their code encrypted, which means locked. When you add your disc
+              image, Nakagawa unlocks the game’s code on your PC with the same public game key tables the PPSSPP
+              emulator ships. It never downloads games, never sends anything off your PC, and never touches PSP
+              firmware.</p>
+            <p>Disc images work today; games bought as PlayStation Store downloads don’t yet. If a file can’t be
+              unlocked, the player tells you which one, and you can add an unlocked copy made from your own game
+              instead.</p>
             <p>Rules about unlocking and copying games differ from country to country, so check yours. This isn’t legal
               advice. The <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/YOUR_OWN_GAMES.md">guide to
               playing your own games</a> has the details.</p>
@@ -730,9 +734,10 @@
               a game, the player tells you what it still needs.</p>
           </details>
           <details>
-            <summary>Do you provide games, firmware or keys?</summary>
-            <p>No. Nothing here includes or downloads games, firmware, keys or system fonts. You play your own copy of
-              a game you own.</p>
+            <summary>Do you provide games or firmware?</summary>
+            <p>No. Nothing here includes or downloads games, firmware or system fonts. You play your own copy of a
+              game you own. To read an encrypted disc, Nakagawa uses the public game key tables the PPSSPP emulator
+              also ships, on your PC only.</p>
           </details>
           <details>
             <summary>Does it go online?</summary>
@@ -789,9 +794,10 @@
           </div>
           <div>
             <h3>No game data included</h3>
-            <p>This site and the repository contain no game code, game assets, firmware, keys or system fonts, apart
-              from the one title-screen picture above, and nothing here downloads them. Games belong to their
-              publishers. To play one, you need your own copy.</p>
+            <p>This site and the repository contain no game code, game assets, firmware or system fonts, apart from
+              the one title-screen picture above, and nothing here downloads them. To read your own encrypted disc,
+              Nakagawa includes the public game key tables PPSSPP ships. Games belong to their publishers. To play
+              one, you need your own copy.</p>
           </div>
           <div>
             <h3>Licence and contact</h3>
