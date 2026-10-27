@@ -21,8 +21,8 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
 5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
    LunarG Vulkan SDK 1.4.363.0 is recommended for Windows development.
 6. **Git for Windows**, to clone the repository and fetch optional third-party source.
-7. **Your own copy of the game** as an `.iso`. If its executable is encrypted, you also need the
-   decrypted files from your own copy; see [Encrypted executables](#encrypted-executables).
+7. **Your own copy of the game** as an `.iso`. If its executable is encrypted, the player decrypts it
+   locally; see [Encrypted executables](#encrypted-executables).
    Nothing in this repository ships or downloads a game; see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md).
 
 For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20261001**; see
@@ -342,7 +342,7 @@ are retained as historical evidence in
 ### Plain module inputs
 
 Some titles load additional modules at runtime. The runtime accepts only plain (unencrypted)
-ELF/PRX files. Nakagawa does not decrypt games; it uses decrypted files from your own copy (see [Encrypted executables](#encrypted-executables)). For what the player needs
+ELF/PRX files. The player decrypts a disc's encrypted modules into the per-title folder (see [Encrypted executables](#encrypted-executables)). For what the player needs
 and where your own unencrypted files go, see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). When you already have plain modules from your own
 copy of the game, place them at the paths the local manifest expects, for example:
 
@@ -359,7 +359,7 @@ Git history.
 ### Per-title decrypted input folder (standalone player and CLI)
 
 For the standalone player (`nakagawa_player.exe`) and `tools/nk_cli.py`:
-When an imported ISO contains an encrypted executable (`EBOOT.BIN`), preflight checks in both the player and `nk_cli inspect` direct the user to supply their own decrypted modules in a per-title folder under the per-user data directory:
+When an imported ISO contains an encrypted executable (`EBOOT.BIN`), the player's disc check decrypts it and the disc's encrypted modules into a per-title folder under the per-user data directory, and `nk_cli inspect` and `nk_cli build-package` read them from there (the command-line tools decrypt nothing themselves):
 
 ```text
 <user data>/titles/<DISC_ID>/decrypted/
@@ -373,15 +373,15 @@ Decrypted guest modules in `<user data>/titles/<DISC_ID>/decrypted/` may be name
 
 ### Encrypted executables
 
-Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed, so the player and `nk_cli` never look for or read a key file.
+The player decrypts the encrypted `EBOOT.BIN` and modules of the disc you added, locally, the way PPSSPP does, with the public game key tables in `src/core/nk_psp_builtin_keys.c` ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). It reads no key file and makes no network request. Each output is written beside its destination in the per-title folder above, checked as a PSP ELF32/MIPS program, then renamed into place; a file already there is never replaced. Firmware is never decrypted: an updater archive (PSAR), a bare KIRK block (the boot loader's form) and any module with a firmware-only tag stop as `FIRMWARE_OUT_OF_SCOPE` before any key is read. `nk_decrypt` (built by `tools/nk_core/decrypt_tool.py`) runs the same boundary from the command line.
 
-An encrypted `EBOOT.BIN` (`~PSP`, `~SCE` or PBP) without a valid `EBOOT.elf` in the per-title folder above stops with a named message:
+A file the boundary can't decrypt stops with a named result:
 
 ```text
-ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games. Place a decrypted EBOOT.elf from your own copy in <user data>/titles/<DISC_ID>/decrypted.
+ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption stopped: KEY_REQUIRED (<detail>). Place a decrypted EBOOT.elf from your own copy in <user data>/titles/<DISC_ID>/decrypted.
 ```
 
-An encrypted guest module without a plain copy in the same folder stops the same way with `ENCRYPTED_MODULE: <name> is encrypted.`, naming the module. A plain copy you place there is always used and never overwritten. Nothing is written next to the ISO or into this repository.
+The results are `KEY_REQUIRED` (a tag the built-in tables don't carry), `MALFORMED_INPUT`, `INTEGRITY_FAILURE`, `DECOMPRESS_FAILURE`, `VALIDATION_FAILURE`, `FIRMWARE_OUT_OF_SCOPE`, `IO_FAILURE`, `RESOURCE_LIMIT` and `INTERNAL_ERROR`. An encrypted guest module stops the same way with `ENCRYPTED_MODULE: <name> is encrypted and built-in decryption stopped: ...`, naming the module. A plain copy you place there is always used and never overwritten. Nothing is written next to the ISO or into this repository. PSN `EBOOT.PBP` (NPDRM) packages and PGD-protected data are not decrypted yet.
 
 ### User title manifests (`<user data>/manifests`)
 
@@ -668,6 +668,21 @@ it needs all of the following:
   (`Expand-Archive`) use it; PowerShell 7 remains the development baseline for
   the other repository scripts.
 
+A release folder can carry the pinned prerequisites itself, in `prereqs/` beside `bin/` and
+`source/` ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). BUILD PACKAGE
+then uses that folder ahead of `PATH` and the per-user download, so it shows no consent card
+and opens no network connection. Before each build the player checks the folder against
+`source/assets/prereq_manifest.json`: `prereqs/installed.json` must record exactly the pinned
+artifacts with their pinned version, size and SHA-256, and every file listed in
+`prereqs/bundle-inventory.txt` (one `<sha256> <size> <path>` line per file) must exist with
+its recorded size. A folder that fails the check is refused with
+`PREREQUISITE_BUNDLE_INVALID`, naming the first missing or changed file, and nothing is
+downloaded in its place: extract the release zip again into a short folder path. The player
+does not hash the bundled files, about 7,600 files and 700 MB, because that would hold BUILD
+PACKAGE for seconds; packaging verifies them. **Settings → About & Licenses** then lists the
+bundled components and opens `prereqs/notices`, and **Remove Downloaded Build Tools** never
+touches `prereqs/`.
+
 When a pinned Windows prerequisite is missing, BUILD PACKAGE opens one consent
 card showing each component's name, version, source host, download size, and
 licence, plus the total. Nothing is downloaded until **DOWNLOAD** is selected;
@@ -724,6 +739,9 @@ connection, listed below; any future online feature will be opt-in and added her
 | What | Host | When | Controlled by |
 | --- | --- | --- | --- |
 | Build-tool download | `www.python.org`, `repo.msys2.org` (HTTPS) | Only after you select **DOWNLOAD** on the BUILD PACKAGE consent card | That consent card, per build |
+
+A release folder that carries a verified `prereqs/` tree never makes the build-tool
+download ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)).
 
 There is no update check, telemetry or crash upload. The `network_mode` entry in
 `settings.json` is reserved and always reads `"offline"`; a build treats any other value as
@@ -783,8 +801,7 @@ Two limits are stated rather than implied, because that check does not reach the
   the whole suite instead of the requested mode. The HLE exit-game site was corrected in PR #680 and
   the CPU-LLE and dispatch-isolation sites in PR #681, which also changed all three to decode
   `argv[0]` in the active code page rather than assuming UTF-8, since that is the encoding the CRT
-  produced it in. [Issue #667](https://github.com/Jstar269/nakagawa-recomp/issues/667) tracks the
-  remaining path handling.
+  produced it in. Those fixes closed [issue #667](https://github.com/Jstar269/nakagawa-recomp/issues/667).
 
 `BUILD_DIR` is a narrower contract. GNU Make splits a target or prerequisite name on whitespace, so a
 `BUILD_DIR` containing a space cannot be named by Make at all: the name silently becomes several
@@ -894,7 +911,7 @@ outside the published repository.
 - **Missing Vulkan headers:** pass the correct `-VulkanSdk` path or `VULKAN_SDK=...` Make variable.
 - **`SDL3.dll` missing:** for the release package, keep `bin/SDL3.dll` beside `bin/nakagawa_player.exe`; for a source build, install the MSYS2 UCRT64 SDL3 package so `tools/copy_build_assets.ps1` stages it beside `build/nakagawa_player.exe`.
 - **Retro 8x8 bitmap font in the player UI:** the readable-font path needs `SDL3_ttf.dll` and its dependency closure beside `nakagawa_player.exe` (or on `PATH`). Install the MSYS2 UCRT64 `sdl3-ttf` package and re-run `mingw32-make player`, which stages the whole closure and its licence notices; the workspace doctor reports `RUNTIME_SDL3_TTF`/`RUNTIME_SDL3_TTF_CLOSURE`, and the player itself logs the failing step once to stderr when it falls back. `NK_UI_NO_TTF=1` forces the bitmap fallback on purpose.
-- **`PUBLIC_SAFE=1` active:** the runtime always compiles with `PUBLIC_SAFE=1`; the private-backend mode was retired on 2026-10-25. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime refuses encrypted `~PSP` executables; Nakagawa does not decrypt games (see [Encrypted executables](#encrypted-executables)).
+- **`PUBLIC_SAFE=1` active:** the runtime always compiles with `PUBLIC_SAFE=1`; the private-backend mode was retired on 2026-10-25. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime refuses encrypted `~PSP` executables; the player decrypts them before a build (see [Encrypted executables](#encrypted-executables)).
 - **Missing ISO or missing extracted assets:** `place_game_here/ISO/<game>.iso` must be present, and `place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted` (or configured `SR_DATAROOT`) must be populated. `SR_DATAROOT` may instead hold the read-only `<archive>.xb` archives; the runtime mounts those directly ([#298](https://github.com/Jstar269/nakagawa-recomp/issues/298)).
 - **No late PRX exports / asset lookups fail:** restore the required `place_game_here/EXTRACTED/` layout (decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx`).
 - **PSP font missing or text not rendering:** Run `python tools/nk_cli.py fonts status` to see each slot's source, and `python tools/nk_cli.py fonts import <folder>` for any slot that is missing. Your imported fonts are in `<user data>/fonts/v2/` with a `manifest.json`. See [System fonts](#system-fonts).

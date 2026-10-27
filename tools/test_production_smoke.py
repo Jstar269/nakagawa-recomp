@@ -1048,8 +1048,9 @@ class TestProductionSmokePackage(unittest.TestCase):
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         # The refusal names the per-title folder for user-supplied decrypted inputs.
-        self.assertIn("ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not "
-                      "decrypt games. Place a decrypted EBOOT.elf from your own copy in ",
+        self.assertIn("ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and no decrypted "
+                      "EBOOT.elf is in ", result.stderr)
+        self.assertIn("The player decrypts it from your own disc when it checks the disc",
                       result.stderr)
         self.assertIn(str(Path("titles") / "ULUS99998" / "decrypted"), result.stderr)
         self.assertNotRegex(result.stderr, r"#[0-9]+")
@@ -2858,7 +2859,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(report["reached_stage"], "prepare_import")
         # A still-encrypted "decrypted" copy is not a usable module, and
-        # Nakagawa does not decrypt games (#308).
+        # and the command-line build decrypts nothing (#308).
         self.assertEqual(report["failure_class"], "GUEST_MODULE_DECRYPTION_REQUIRED")
         self.assertEqual(report["issue_numbers"], [308])
         nk_cli.validate_bringup_report(report)
@@ -3381,8 +3382,8 @@ class TestProductStatusCopy(unittest.TestCase):
     clean-room public PGF reader landed in #474, closing #349, so wizard,
     checklist and completion-manifest text that still described those as
     missing was a false product claim. Boundaries that really are unavailable
-    stay named with their tracking issue: PGD-protected data and encrypted
-    executables, which Nakagawa does not decrypt (#308).
+    stay named with their tracking issue: PGD-protected data, and encrypted
+    executables the built-in tables cannot decrypt (#308).
     """
 
     def _source(self, relative: str) -> str:
@@ -3397,8 +3398,8 @@ class TestProductStatusCopy(unittest.TestCase):
 
     def test_wizard_names_the_package_builder_and_the_open_boundaries(self):
         ui = self._source("src/player/ui_renderer.c")
-        self.assertIn("Nakagawa does not decrypt games; it uses decrypted files from "
-                      "your own copy. ", ui)
+        self.assertIn("Nakagawa decrypts your own disc on this PC; it never downloads games "
+                      "or touches firmware. ", ui)
         self.assertIn("It builds runtime packages from the library.", ui)
         self.assertNotIn("key file", ui)
         self.assertIn("packages from the library. Verify also lists font and audio status.", ui)

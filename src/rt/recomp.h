@@ -1014,6 +1014,46 @@ uint32_t sr_register_count(void);  /* number of sr_register() calls performed so
  * never on this path), so enabling detection cannot slow dispatch itself. */
 RecompFn sr_lookup(uint32_t addr);
 
+/* Guest function names from tools/codegen.py --symbol-map (names and addresses only). The
+ * generated sr_register_all() hands over one table sorted by address; size 0 means only the
+ * start address is named. A build without a map registers nothing, so every lookup is NULL
+ * and every report prints exactly what it printed before. */
+typedef struct SrGuestSymbol {
+    uint32_t addr;
+    uint32_t size;
+    const char *name;
+} SrGuestSymbol;
+void sr_guest_symbols_register(const SrGuestSymbol *table, uint32_t count);
+/* The registered symbol naming pc, or NULL. */
+const SrGuestSymbol *sr_guest_symbol_at(uint32_t pc);
+/* "name" or "name+0x<offset>" for pc in buf, or "" when no symbol names it. */
+const char *sr_guest_symbol_label(uint32_t pc, char *buf, size_t len);
+
+/* The entry of a sorted table whose start is pc, or whose nonzero size covers pc. */
+static inline const SrGuestSymbol *sr_guest_symbol_find(const SrGuestSymbol *table,
+                                                        uint32_t count, uint32_t pc) {
+    uint32_t lo = 0u, hi = count;  /* first entry whose start is above pc */
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        if (table[mid].addr <= pc) lo = mid + 1u;
+        else hi = mid;
+    }
+    if (lo == 0u) return NULL;
+    const SrGuestSymbol *sym = &table[lo - 1u];
+    return pc == sym->addr || pc - sym->addr < sym->size ? sym : NULL;
+}
+
+/* sr_guest_symbol_label's text for a symbol found for pc (NULL gives ""). */
+static inline const char *sr_guest_symbol_format(const SrGuestSymbol *sym, uint32_t pc,
+                                                 char *buf, size_t len) {
+    if (len == 0u) return "";
+    buf[0] = '\0';
+    if (!sym) return buf;
+    if (pc == sym->addr) snprintf(buf, len, "%s", sym->name);
+    else snprintf(buf, len, "%s+0x%" PRIx32, sym->name, pc - sym->addr);
+    return buf;
+}
+
 /* Codegen registers exact analyzer-owned, end-exclusive executable spans before
  * guest execution. Mapped RAM alone never grants interpreter fetch authority.
  * Registration validates structural ownership (alignment, non-empty extent) and
@@ -1322,6 +1362,12 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* Opt-in GE time model (ge.c, SR_GE_TIMING; issue #1296), in GE clocks (the bus clock),
+ * measured on a PSP-3000 with CASE=ge-timing: enable charging, the fixed cost of one list
+ * (enqueue to finish of an empty list), and the work the last ge_run_list call executed. */
+void     ge_timing_set_enabled(int on);
+double   ge_timing_list_clk(void);
+double   ge_timing_run_clk(void);
 /* SR_GE_TRANSITION_TRACE late-write check (issue #69): re-hash the vertex and index bytes of
  * every weighted draw recorded since the last check; a no-op unless the trace is armed. */
 void ge_transition_trace_check(const char *why, uint32_t vcount);
@@ -1626,6 +1672,13 @@ int      sched_thread_set_gp(uint32_t uid, uint32_t gp);
 int      sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid);
 typedef void (*SrSchedThreadExitHook)(uint32_t uid);
 void     sched_set_thread_exit_hook(SrSchedThreadExitHook hook);
+/* Opt-in GE completion timing (hle.c, SR_GE_TIMING): the earliest guest-time deadline of a
+ * list the modelled GE is still drawing (SCHED_WAIT_FOREVER-style UINT64_MAX when none), and
+ * the interrupt-service step that completes every due list.  With no hooks registered --
+ * every build that does not link hle.c -- the scheduler behaves as before. */
+typedef uint64_t (*SrSchedGeNextDeadline)(void);
+typedef void (*SrSchedGeServiceDue)(void);
+void     sched_set_ge_timing_hooks(SrSchedGeNextDeadline next_deadline, SrSchedGeServiceDue service_due);
 int      sched_guest_thread_running(void);
 void     sched_request_guest_reset(void);
 void     sched_exit_current(int32_t status);        /* non-delete exit; normalize signed-negative status */

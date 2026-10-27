@@ -366,6 +366,13 @@ def _write_install_record(path: Path, record: dict) -> None:
     os.replace(temporary, path)
 
 
+def _outside_repository(path: Path, what: str) -> Path:
+    path = Path(path).resolve(strict=False)
+    if path == REPOSITORY_ROOT or REPOSITORY_ROOT in path.parents:
+        raise PrerequisiteFetchError(f"INSTALL_ROOT_REJECTED: {what} cannot be stored in the repository.")
+    return path
+
+
 def install_items(
     manifest: dict,
     data_root: Path,
@@ -378,11 +385,30 @@ def install_items(
     """Install all ready artifacts beneath app data and atomically record verified versions."""
     if not isinstance(manifest, dict) or not isinstance(manifest.get("artifacts"), list):
         raise PrerequisiteFetchError("MANIFEST_INVALID: artifacts must be a list.")
-    data_root = Path(data_root).resolve(strict=False)
-    if data_root == REPOSITORY_ROOT or REPOSITORY_ROOT in data_root.parents:
-        raise PrerequisiteFetchError("INSTALL_ROOT_REJECTED: prerequisites cannot be stored in the repository.")
-    install_root = data_root / "prerequisites"
-    downloads_root = install_root / "downloads"
+    install_root = _outside_repository(data_root, "prerequisites") / "prerequisites"
+    return _install_artifacts(
+        manifest, install_root, install_root / "downloads",
+        progress=progress, retries=retries, allow_http=allow_http, cancelled=cancelled,
+        record_each=True,
+    )
+
+
+def _install_artifacts(
+    manifest: dict,
+    install_root: Path,
+    downloads_root: Path,
+    *,
+    progress: ProgressCallback | None,
+    retries: int,
+    allow_http: bool,
+    cancelled: CancelCheck | None,
+    record_each: bool,
+) -> dict:
+    """Download, verify and unpack every ready artifact into install_root's layout.
+
+    record_each rewrites install_root/installed.json after every artifact, so an
+    interrupted per-user install still lists what it finished.
+    """
     binary_root = install_root / "msys64"
     python_root = install_root / "python"
     notices_root = install_root / "notices"
@@ -442,22 +468,229 @@ def install_items(
             if not running_bootstrap_python:
                 _merge_staged_tree(staged_payload, target_root)
             _merge_staged_tree(staged_notices, notices_root)
+            # Record where each notice lives after the merge, relative to the install
+            # root: the staging folder is gone, and a bundle must not carry the
+            # packaging machine's paths.
+            notice_paths = sorted(
+                "notices/" + Path(notice).relative_to(staged_notices).as_posix()
+                for notice in notice_paths
+            )
         records[item["id"]] = {
             "version": item["version"],
             "size_bytes": item["size_bytes"],
             "sha256": item["sha256"],
             "url": item["url"],
             "license": item["license"],
-            "archive": archive.relative_to(install_root).as_posix(),
+            "archive": (archive.relative_to(install_root).as_posix()
+                        if install_root in archive.parents else archive.name),
             "notices": notice_paths,
         }
-        _write_install_record(install_root / "installed.json", {
-            "schema_version": 1,
-            "installed": records,
-        })
+        if record_each:
+            _write_install_record(install_root / "installed.json", {
+                "schema_version": 1,
+                "installed": records,
+            })
     if cancelled and cancelled():
         raise PrerequisiteFetchError("INSTALL_CANCELLED: installation cancelled by the user.")
     return records
+
+
+# ---- Release bundle (#1285) -------------------------------------------------
+# A release zip carries the same tree a per-user install creates, in prereqs/
+# beside bin/ and source/, so BUILD PACKAGE needs no download. The native player
+# (src/player/package_builder.c) checks installed.json against the pinned manifest
+# and every inventory line's presence and size; this module also checks contents.
+
+BUNDLE_RECORD = "installed.json"
+BUNDLE_INVENTORY = "bundle-inventory.txt"
+BUNDLE_TREES = ("msys64", "notices", "python")
+# What BUILD PACKAGE runs from the bundle; a bundle without them is useless.
+BUNDLE_REQUIRED_FILES = (
+    "python/python.exe",
+    "msys64/ucrt64/bin/gcc.exe",
+    "msys64/ucrt64/bin/mingw32-make.exe",
+)
+
+
+def _check_bundle_path(relative: str) -> str:
+    parts = relative.split("/")
+    if (parts[0] not in BUNDLE_TREES or len(parts) < 2
+            or any(part in {"", ".", ".."} for part in parts)
+            or any(ord(ch) < 0x20 or ch in "\x7f\\:" for ch in relative)):
+        raise PrerequisiteFetchError(f"BUNDLE_PATH_REJECTED: {relative!r} cannot be listed in the bundle inventory.")
+    return relative
+
+
+def _materialize_links(root: Path) -> None:
+    """Replace every link under root with a copy of its target: a zip cannot carry links."""
+    while True:
+        links = [Path(directory) / name
+                 for directory, dirnames, filenames in os.walk(root)
+                 for name in dirnames + filenames
+                 if (Path(directory) / name).is_symlink()]
+        if not links:
+            return
+        for link in links:
+            target = link.resolve(strict=False)
+            if target != root and root not in target.parents:
+                raise PrerequisiteFetchError("BUNDLE_LINK_REJECTED: a package link points outside the bundle.")
+            if not target.exists():
+                raise PrerequisiteFetchError("ARCHIVE_LINK_UNRESOLVED: package link target is missing.")
+            link.unlink()
+            if target.is_dir():
+                shutil.copytree(target, link, symlinks=True)
+            else:
+                shutil.copyfile(target, link)
+
+
+def _bundle_files(root: Path) -> list[str]:
+    files: list[str] = []
+    for tree in BUNDLE_TREES:
+        for directory, _dirnames, filenames in os.walk(root / tree):
+            for name in filenames:
+                files.append(_check_bundle_path((Path(directory) / name).relative_to(root).as_posix()))
+    return sorted(files)
+
+
+def _bundle_inventory(root: Path) -> list[tuple[str, int, str]]:
+    return [(_sha256_file(root / relative), (root / relative).stat().st_size, relative)
+            for relative in _bundle_files(root)]
+
+
+def stage_bundle(
+    manifest_path: Path,
+    destination: Path,
+    download_cache: Path,
+    *,
+    progress: ProgressCallback | None = None,
+    retries: int = 3,
+    allow_http: bool = False,
+    required_files: tuple[str, ...] = BUNDLE_REQUIRED_FILES,
+) -> dict:
+    """Stage the verified, unpacked prerequisite tree for a release zip's prereqs/ folder.
+
+    Every artifact is downloaded into download_cache (or reused from it) and checked
+    against its pinned size and SHA-256 before it is unpacked with the per-user
+    installer's own extraction rules. The result is verified again before returning.
+    """
+    manifest_path = Path(manifest_path)
+    manifest_bytes = manifest_path.read_bytes()
+    manifest = json.loads(manifest_bytes)
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("artifacts"), list):
+        raise PrerequisiteFetchError("MANIFEST_INVALID: artifacts must be a list.")
+    destination = _outside_repository(destination, "the prerequisite bundle")
+    download_cache = _outside_repository(download_cache, "the bundle download cache")
+    if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
+        raise PrerequisiteFetchError("BUNDLE_DESTINATION_NOT_EMPTY: stage the bundle into a new, empty folder.")
+    if download_cache == destination or destination in download_cache.parents:
+        raise PrerequisiteFetchError("BUNDLE_CACHE_REJECTED: keep the download cache outside the bundle.")
+    destination.mkdir(parents=True, exist_ok=True)
+    records = _install_artifacts(
+        manifest, destination, download_cache,
+        progress=progress, retries=retries, allow_http=allow_http, cancelled=None,
+        record_each=False,
+    )
+    shutil.rmtree(destination / ".staging", ignore_errors=True)
+    _materialize_links(destination)
+    for required in required_files:
+        if not (destination / required).is_file():
+            raise PrerequisiteFetchError(f"BUNDLE_INCOMPLETE: the pinned artifacts do not provide {required}.")
+    entries = _bundle_inventory(destination)
+    with (destination / BUNDLE_INVENTORY).open("w", encoding="utf-8", newline="\n") as stream:
+        for digest, size, relative in entries:
+            stream.write(f"{digest} {size} {relative}\n")
+    bundle = {
+        "schema_version": 1,
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "inventory": BUNDLE_INVENTORY,
+        "file_count": len(entries),
+        "unpacked_bytes": sum(size for _, size, _ in entries),
+    }
+    _write_install_record(destination / BUNDLE_RECORD, {
+        "schema_version": 1,
+        "bundle": bundle,
+        "installed": records,
+    })
+    return verify_bundle(manifest_path, destination)
+
+
+def verify_bundle(manifest_path: Path, bundle_root: Path) -> dict:
+    """Check a staged or extracted bundle completely, file contents included.
+
+    The record must name the manifest's exact bytes and hold exactly its ready
+    artifacts with their pinned version, size and SHA-256; every inventory line must
+    match its file's size and SHA-256; and no file outside the inventory may exist
+    under python/, msys64/ or notices/. Returns the record's bundle section.
+    """
+    manifest_bytes = Path(manifest_path).read_bytes()
+    manifest = json.loads(manifest_bytes)
+    bundle_root = Path(bundle_root)
+    try:
+        record = json.loads((bundle_root / BUNDLE_RECORD).read_text(encoding="utf-8"))
+        bundle = record["bundle"]
+        installed = record["installed"]
+        if (record.get("schema_version") != 1 or bundle.get("schema_version") != 1
+                or bundle.get("inventory") != BUNDLE_INVENTORY or not isinstance(installed, dict)):
+            raise KeyError("schema")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise PrerequisiteFetchError("BUNDLE_INVALID: installed.json is not a schema 1 bundle record.") from exc
+    if bundle.get("manifest_sha256") != hashlib.sha256(manifest_bytes).hexdigest():
+        raise PrerequisiteFetchError("BUNDLE_INVALID: the bundle was staged from a different manifest.")
+    ready = {item["id"]: item for item in manifest.get("artifacts", []) if item.get("status", "ready") == "ready"}
+    if set(installed) != set(ready):
+        raise PrerequisiteFetchError("BUNDLE_INVALID: the bundle does not hold exactly the pinned artifacts.")
+    for item_id, item in ready.items():
+        entry = installed[item_id]
+        if (entry.get("version") != item["version"] or entry.get("size_bytes") != item["size_bytes"]
+                or str(entry.get("sha256", "")).lower() != item["sha256"].lower()):
+            raise PrerequisiteFetchError(f"BUNDLE_INVALID: {item_id} differs from the pinned manifest.")
+    listed: dict[str, tuple[str, int]] = {}
+    try:
+        lines = (bundle_root / BUNDLE_INVENTORY).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise PrerequisiteFetchError("BUNDLE_INVALID: the file inventory is missing or unreadable.") from exc
+    for number, line in enumerate(lines, 1):
+        digest, _, rest = line.partition(" ")
+        size_text, _, relative = rest.partition(" ")
+        if (len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest)
+                or not size_text.isdigit() or relative in listed):
+            raise PrerequisiteFetchError(f"BUNDLE_INVALID: inventory line {number} is malformed.")
+        listed[_check_bundle_path(relative)] = (digest, int(size_text))
+    if len(listed) != bundle.get("file_count") or sum(size for _, size in listed.values()) != bundle.get("unpacked_bytes"):
+        raise PrerequisiteFetchError("BUNDLE_INVALID: the file inventory does not match its record.")
+    for relative, (digest, size) in listed.items():
+        path = bundle_root / relative
+        if not path.is_file() or path.is_symlink():
+            raise PrerequisiteFetchError(f"BUNDLE_INVALID: {relative} is missing.")
+        if path.stat().st_size != size or _sha256_file(path) != digest:
+            raise PrerequisiteFetchError(f"BUNDLE_INVALID: {relative} does not match its recorded size and SHA-256.")
+    unlisted = sorted(set(_bundle_files(bundle_root)) - set(listed))
+    if unlisted:
+        raise PrerequisiteFetchError(f"BUNDLE_INVALID: {unlisted[0]} is not in the file inventory.")
+    return bundle
+
+
+def _bundle_main(args: argparse.Namespace) -> int:
+    try:
+        if args.bundle_dest:
+            if not args.download_cache:
+                raise PrerequisiteFetchError("BUNDLE_CACHE_REJECTED: --bundle-dest needs --download-cache.")
+            result = stage_bundle(args.manifest, args.bundle_dest, args.download_cache)
+            event = "bundle-staged"
+        else:
+            result = verify_bundle(args.manifest, args.verify_bundle)
+            event = "bundle-verified"
+    except PrerequisiteFetchError as exc:
+        print(json.dumps({"event": "bundle-failed", "code": str(exc).partition(":")[0], "message": str(exc)}))
+        return 2
+    except json.JSONDecodeError as exc:
+        print(json.dumps({"event": "bundle-failed", "code": "MANIFEST_INVALID", "message": str(exc)}))
+        return 2
+    except OSError as exc:
+        print(json.dumps({"event": "bundle-failed", "code": "BUNDLE_IO_FAILED", "message": str(exc)}))
+        return 2
+    print(json.dumps({"event": event, **result}))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -468,7 +701,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cancel-file", type=Path)
     parser.add_argument("--progress-base", type=int, default=0)
     parser.add_argument("--total-bytes", type=int)
+    bundle = parser.add_mutually_exclusive_group()
+    bundle.add_argument("--bundle-dest", type=Path,
+                        help="release packaging: stage the verified tree for the zip's prereqs/ folder here")
+    bundle.add_argument("--verify-bundle", type=Path,
+                        help="check a staged or extracted prereqs/ folder completely, file contents included")
+    parser.add_argument("--download-cache", type=Path,
+                        help="with --bundle-dest: keep and reuse verified archives here, outside the bundle")
     args = parser.parse_args(argv)
+    if args.bundle_dest or args.verify_bundle:
+        return _bundle_main(args)
     progress_stream = args.progress_file.open("a", encoding="utf-8") if args.progress_file else sys.stdout
     received_by_item: dict[str, int] = {}
     total_bytes = args.total_bytes

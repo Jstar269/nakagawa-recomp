@@ -32,9 +32,10 @@ Where this page and the code disagree, the code is current and this page is upda
   that asks for consent (the build-tool download) says exactly what it fetches, from where, and how big it is.
 - **No console trade dress.** No PSP system icons, sounds or names, no XMB-style horizontal category bar. The
   waves, the palette and the seasonal arc are the project's own.
-- **No key-file UI anywhere.** The player does not decrypt games (#1187). No screen, step, setting, dialog or path
-  row asks for, finds or names a key file. A disc whose program is encrypted gets the plain explanation the host
-  already supplies ("Nakagawa does not decrypt games; it uses decrypted files from your own copy").
+- **No key-file UI anywhere.** The player decrypts the user's own disc with built-in tables (#295) and reads no key
+  file. No screen, step, setting, dialog or path row asks for, finds or names a key file. A disc whose program
+  is encrypted gets the plain note the host supplies ("Nakagawa decrypts this game's program from your own disc, on
+  this PC"), and one it can't decrypt gets the named reason.
 
 ## Tokens
 
@@ -297,8 +298,9 @@ page) so every row fits 960 x 540. The tabbed layout below is the target for a l
 
 ### Controller settings (built)
 
-Settings > Controls opens one page under the top bar with SETTINGS active. Under the `CONTROLLER` heading (left out
-below 680 px tall), one status line: a conflict in `error`, a load or save message, the prompt while a button is
+Settings > Controls opens one page under the top bar with SETTINGS active. Under the `CONTROLS` heading (left out
+below 680 px tall), CONTROLLER and KEYBOARD (the one shown filled; Up from the first binding) choose whose bindings the
+page shows, beside one status line: a conflict in `error`, a load or save message, the prompt while a button is
 awaited, or which controller is connected. Two cards side by side:
 
 - BUTTONS: the eyebrow names the mapping being edited (`BUTTONS · GLOBAL MAPPING`, or the game's own in `ready`),
@@ -308,8 +310,15 @@ awaited, or which controller is connected. Two cards side by side:
 - STICK AND TRIGGERS: dead zone and trigger threshold with - and +, CALIBRATE STICK, and LIVE INPUT in `DATA`: the
   raw stick, the PSP value it maps to, the triggers and the buttons held.
 
-Under the cards SAVE PROFILE (primary), RESET TO DEFAULTS and, with a game selected, USE THIS GAME'S OWN MAPPING or
-USE THE GLOBAL MAPPING; BACK sits at the right end, under the stick card. The page opens on the first binding.
+With KEYBOARD (#1299) the rows show each control's keys by their names on a US keyboard (`KEYS · GLOBAL MAPPING`),
+the waiting control shows `Press a key...`, and the next key pressed is its key; Esc or a controller press stops the
+wait. A key another control already uses, or one that cannot be bound (the function keys), is refused and the status
+line says why in `error`: the profile refuses a key bound to two controls, and the runtime keeps Esc, F1 and F3. The
+stick card names the keys Nakagawa keeps and says the analog stick has no keys.
+
+Under the cards SAVE PROFILE (primary), RESET TO DEFAULTS (the device shown only) and, with a game selected, USE THIS
+GAME'S OWN MAPPING or USE THE GLOBAL MAPPING; BACK sits at the right end, under the stick card. The page opens on the
+first binding.
 Calibration replaces the cards with a 720 px dialog card per step: rest (a progress bar, CANCEL only), range
 (FINISH) and result (ACCEPT), each with its live numbers. Esc or East cancels a step and returns to CALIBRATE STICK.
 Every page fits 960 x 540.
@@ -357,7 +366,7 @@ step says the privacy promise once. The left rail below is the target layout for
 - Focus is trapped in the dialog and starts on the first button; BACK closes it with the safe choice.
 - Cases to cover: unreadable or unsupported disc image (a store package is not a disc image), a different release of
   a known game (add as Experimental), build failure (stage named, log path shown), controller disconnected, quit to
-  library. A disc whose program is encrypted gets the "does not decrypt games" explanation, never a request for a
+  library. A disc whose program can't be decrypted gets the plain reason and its folder, never a request for a
   key file.
 
 ## Accessibility

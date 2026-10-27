@@ -449,6 +449,30 @@ else
 CHUNK_BYTES_ARG := --target-chunk-bytes=$(CHUNK_TARGET_BYTES)
 CHUNK_TARGET_PROFILE_LINE := $(NEWLINE)CHUNK_TARGET_BYTES=$(CHUNK_TARGET_BYTES)
 endif
+# Optional guest symbol map (tools/codegen.py --symbol-map, docs/DEBUGGING.md): generated
+# functions, crash reports and host profiles show the map's names. The map is a codegen
+# prerequisite, so editing it regenerates; empty keeps the output and the profile unchanged.
+SYMBOL_MAP ?=
+ifeq ($(strip $(SYMBOL_MAP)),)
+SYMBOL_MAP_ARG :=
+SYMBOL_MAP_PROFILE_LINE :=
+else
+SYMBOL_MAP_ARG := --symbol-map=$(SYMBOL_MAP)
+SYMBOL_MAP_PROFILE_LINE := $(NEWLINE)SYMBOL_MAP=$(SYMBOL_MAP)
+endif
+# NAME_IMPORTS=1 names each import stub after the function its NID imports (tools/codegen.py
+# --name-imports), from the NID corpus src/rt/nid_names.h is generated from. The corpus is then a
+# codegen prerequisite; the default (0) keeps the output and the profile unchanged.
+NAME_IMPORTS ?= 0
+ifeq ($(NAME_IMPORTS),1)
+NAME_IMPORTS_ARG := --name-imports
+NAME_IMPORTS_PREREQ := tools/nid_corpus.json tools/gen_nidnames.py
+NAME_IMPORTS_PROFILE_LINE := $(NEWLINE)NAME_IMPORTS=1
+else
+NAME_IMPORTS_ARG :=
+NAME_IMPORTS_PREREQ :=
+NAME_IMPORTS_PROFILE_LINE :=
+endif
 
 # ---------------------------------------------------------------------------
 # BUILD IDENTITY: the source revision every commit-stamped artifact records --
@@ -1803,7 +1827,7 @@ endif
 # every guest module, and a title with a hundred modules under a long private path
 # overruns the command line a shell will accept. The entries and their order are the
 # ones the --entry form used, so the hash is unchanged.
-export NK_CODEGEN_PROFILE_ENTRIES := GAME_NAME=$(GAME_NAME)$(NEWLINE)GAME_BASE=$(GAME_BASE)$(NEWLINE)CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)$(NEWLINE)EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)$(NEWLINE)EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)$(NEWLINE)FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)$(NEWLINE)CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)$(NEWLINE)CODEGEN_TOOL=$(CODEGEN_TOOL)$(CHUNK_TARGET_PROFILE_LINE)
+export NK_CODEGEN_PROFILE_ENTRIES := GAME_NAME=$(GAME_NAME)$(NEWLINE)GAME_BASE=$(GAME_BASE)$(NEWLINE)CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)$(NEWLINE)EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)$(NEWLINE)EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)$(NEWLINE)FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)$(NEWLINE)CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)$(NEWLINE)CODEGEN_TOOL=$(CODEGEN_TOOL)$(CHUNK_TARGET_PROFILE_LINE)$(SYMBOL_MAP_PROFILE_LINE)$(NAME_IMPORTS_PROFILE_LINE)
 ifdef NK_BUILD_DIR_READY
 $(file >$(BUILD_DIR)/.codegen-profile-entries,$(NK_CODEGEN_PROFILE_ENTRIES))
 $(file >$(BUILD_DIR)/.runtime-profile-entries,$(NK_RUNTIME_PROFILE_ENTRIES))
@@ -1836,8 +1860,8 @@ ifeq ($(NK_AOT_PREGENERATED),1)
 $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h:
 	$(if $(wildcard $@),,$(error NK_AOT_PREGENERATED requires $@))
 else
-$(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_INPUT_PREREQ) $(CODEGEN_TOOL) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP)
-	"$(PYTHON)" $(CODEGEN_TOOL) --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG) $(CODEGEN_USER_ARGS)
+$(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_INPUT_PREREQ) $(CODEGEN_TOOL) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP) $(SYMBOL_MAP) $(NAME_IMPORTS_PREREQ)
+	"$(PYTHON)" $(CODEGEN_TOOL) --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG) $(SYMBOL_MAP_ARG) $(NAME_IMPORTS_ARG) $(CODEGEN_USER_ARGS)
 endif
 
 $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py tools/analyze.py tools/prxload.py
@@ -1969,7 +1993,7 @@ sdl3-check:
 
 PLAYER_EXE ?= $(BUILD_ROOT)/nakagawa_player$(EXE_EXT)
 PLAYER_UI_TEST_EXE ?= $(BUILD_ROOT)/nakagawa_player_ui_test$(EXE_EXT)
-PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_builtin_keys.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c $(NK_UI_PLAYER_C5_SRCS) $(NK_UI_PLAYER_HOST_SRCS)
 # The player's About page shows "v<version> (MM-DD-YYYY)" (the version itself is

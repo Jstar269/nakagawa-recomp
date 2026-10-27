@@ -49,6 +49,17 @@ CORE_SOURCES = [
     "src/core/nk_json.c",
     "src/core/nk_font.c",
     "src/core/nk_input_profile.c",
+    "src/core/nk_psp_crypto.c",
+    "src/core/nk_psp_keystore.c",
+    "src/core/nk_psp_builtin_keys.c",
+    "src/core/nk_psp_aes.c",
+    "src/core/nk_psp_sha1.c",
+    "src/core/nk_psp_ec.c",
+    "src/core/nk_psp_kirk.c",
+    "src/core/nk_psp_prx.c",
+    "src/core/nk_psp_kle.c",
+    "src/core/nk_psp_inflate.c",
+    "src/core/nk_psp_container.c",
     "src/core/generated/nk_title_catalog.c",
 ]
 
@@ -149,6 +160,15 @@ def _build_and_run(
     test_case.assertEqual(
         leaked, [], f"{test_source} wrote into the developer's profile before isolating it")
     return run.stdout
+
+
+def _window_closed_exit_helper(gui: str) -> str:
+    """gui.c's one window-close exit helper, from its definition line to its closing brace."""
+    head = "static void gui_window_closed_exit(void) {"
+    if gui.count(head) != 1:
+        raise AssertionError("the window-close exit helper is missing")
+    start = gui.index(head)
+    return gui[start:gui.index("\n}\n", start) + 3]
 
 
 class NativeHostBackendTests(unittest.TestCase):
@@ -425,30 +445,37 @@ class NativeHostBackendTests(unittest.TestCase):
 
     def test_window_close_exits_write_the_perf_summary_first(self) -> None:
         """Closing the window (SDL3 quit, a Win32 WM_QUIT, or a presenter that reports the window
-        gone) leaves through _Exit, which skips the atexit perf hook, so an SR_PERF run ended by
-        closing the window lost its SR_PERF_JSON summary and the final partial CSV row (#1072, C3).
-        gui_pump, gui_present and the pause overlay's frame and leave hooks (sched.c calls them)
-        run on the scheduler's OS thread: guest threads are coroutines on that one thread
-        (sr_coro.h) and gui.c starts no host thread. That thread owns the counters and the CSV
-        handle, so the shutdown runs there directly, as the hle.c and ge.c exits do. Every
-        window-close site goes through one helper so a new site cannot skip the shutdown."""
+        gone) ends the run, and an SR_PERF run ended that way must still write its SR_PERF_JSON
+        summary and the final partial CSV row (#1072, C3). gui_pump, gui_present and the pause
+        overlay's frame and leave hooks (sched.c calls them) run on the scheduler's OS thread:
+        guest threads are coroutines on that one thread (sr_coro.h) and gui.c starts no host
+        thread. That thread owns the counters, the CSV handle and the presenter, so the shutdown
+        and the presenter release run there directly, the summary first while the GPU GE it
+        samples still exists. Every window-close site goes through one helper so a new site
+        cannot skip them, and the helper leaves through exit(), not _Exit (#1377)."""
         gui = (ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8")
         for spawn in ("CreateThread(", "SDL_CreateThread(", "thrd_create(", "pthread_create("):
             self.assertNotIn(spawn, gui,
                              "gui.c started a host thread; its exits may no longer run on the "
                              "thread that owns the perf counters")
-        helper_head = "static void gui_window_closed_exit(void) {"
-        self.assertEqual(gui.count(helper_head), 1, "the window-close exit helper is missing")
-        helper_start = gui.index(helper_head)
-        helper = gui[helper_start:gui.index("\n}\n", helper_start)]
+        helper = _window_closed_exit_helper(gui)
         shutdown = helper.find("    sr_perf_shutdown();\n")
         self.assertNotEqual(shutdown, -1, "the window-close exit skips the perf shutdown")
-        self.assertLess(shutdown, helper.index("    _Exit(0);"),
-                        "the perf summary must be written before the process exits")
+        release = helper.find("    gui_release_presenter();\n")
+        self.assertGreater(release, shutdown,
+                           "the presenter must be released after the perf summary is written")
+        self.assertLess(release, helper.index("    exit(0);"),
+                        "the presenter must be released before the process exits")
+        release_start = gui.index("static void gui_release_presenter(void) {")
+        release_body = gui[release_start:gui.index("\n}\n", release_start)]
+        order = [release_body.find(call) for call in
+                 ("gui_pause_free_canvas();", "gegpu_shutdown();", "sdl3vk_shutdown();")]
+        self.assertNotIn(-1, order, "the presenter release skips a teardown step")
+        self.assertEqual(order, sorted(order),
+                         "the GPU GE objects live on the presenter's device: release them first")
         exits = [line for line in gui.splitlines()
                  if "_Exit(" in line.split("//", 1)[0] and not line.lstrip().startswith("*")]
-        self.assertEqual(exits, ["    _Exit(0);"],
-                         "every gui.c exit must go through gui_window_closed_exit")
+        self.assertEqual(exits, [], "a gui.c exit skips stdio flushing and the atexit handlers")
         # gui_pump (SDL3, Win32), gui_present (GPU and software presenters), and the pause
         # overlay's frame (poll, present) and leave (poll).
         sites = {"if (!alive) { gui_window_closed_exit(); }": 1,
@@ -461,6 +488,48 @@ class NativeHostBackendTests(unittest.TestCase):
             self.assertEqual(gui.count(site), count, f"window-close site missing: {site}")
         self.assertEqual(gui.count("gui_window_closed_exit();"), sum(sites.values()),
                          "a window-close call site is not pinned here")
+
+    def test_window_close_exit_keeps_buffered_output_and_runs_atexit(self) -> None:
+        """A window close used to leave through _Exit, which runs no atexit handler (the audio
+        device and SR_AUDIODUMP close, the flight-recorder bundle, the end-of-run reports) and,
+        with glibc, also drops what a stdio buffer still holds; the Windows UCRT flushes the
+        buffers as it unloads, but runs no handler either (#1377). This builds gui.c's exit
+        helper exactly as written there, with recording stand-ins for the two runtime calls it
+        makes, and quits with a line still in a fully buffered stdout and an atexit handler
+        registered. The parent must read the line, the perf summary, the presenter release and
+        the handler, in that order, and exit status 0."""
+        if shutil.which("gcc") is None:
+            raise unittest.SkipTest("gcc is unavailable, so the exit helper cannot be built")
+        helper = _window_closed_exit_helper((ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8"))
+        tmp = Path(self.enterContext(scratch_dir.TemporaryDirectory(prefix="nk_backend_quit_")))
+        source = tmp / "window_close_exit.c"
+        source.write_text(
+            "#include <stdio.h>\n#include <stdlib.h>\n"
+            'static void sr_perf_shutdown(void) { fputs("perf summary\\n", stdout); }\n'
+            'static void gui_release_presenter(void) { fputs("presenter released\\n", stdout); }\n'
+            'static void atexit_handler(void) { fputs("atexit handler\\n", stdout); }\n'
+            + helper +
+            "int main(void) {\n"
+            "    setvbuf(stdout, NULL, _IOFBF, 1 << 16);\n"
+            "    atexit(atexit_handler);\n"
+            '    fputs("buffered before the quit\\n", stdout);\n'
+            "    gui_window_closed_exit();\n"
+            '    fputs("the exit returned\\n", stdout);\n'
+            "    return 3;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        exe = tmp / f"window_close_exit{EXE_EXT}"
+        build = subprocess.run(["gcc", "-std=c99", "-Wall", "-o", str(exe), str(source)],
+                               capture_output=True, text=True)
+        self.assertEqual(build.returncode, 0,
+                         f"building the exit helper failed:\n{build.stdout}\n{build.stderr}")
+        run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(
+            (run.returncode, run.stdout.splitlines()),
+            (0, ["buffered before the quit", "perf summary", "presenter released", "atexit handler"]),
+            f"the window-close exit lost buffered output or skipped the atexit handlers:\n{run.stderr}",
+        )
 
 
 if __name__ == "__main__":
