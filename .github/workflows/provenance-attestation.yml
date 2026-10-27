@@ -608,7 +608,11 @@ jobs:
             -ProjectFontDir "$(cygpath -m "$PWD/build/project-font")" \
             -Sdl3DllPath "$(cygpath -m "$MINGW_PREFIX/bin/SDL3.dll")" \
             -ExcludeOptionalFonts
-          "$PYTHON" tools/stage_runtime_dlls.py --target dist/bin
+          # --include-ui-fonts: the player starts its launcher UI only when assets/fonts/ui is
+          # beside it, and otherwise falls back to the old renderer (the Makefile's player
+          # target stages the same set).
+          "$PYTHON" tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts
+          test -s dist/bin/assets/fonts/ui/manifest.json
           cp "$NAKAGAWA_TOOLCHAIN_JSON" dist/toolchain.json
           test -s dist/bin/nakagawa_player.exe
           test -s dist/bin/production_smoke.exe

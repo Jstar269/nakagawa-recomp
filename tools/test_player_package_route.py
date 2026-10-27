@@ -409,6 +409,9 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertIn("-ExcludeOptionalFonts", preview)
         # The job's Windows CPython runs the stager ("$PYTHON", #1522).
         self.assertIn('"$PYTHON" tools/stage_runtime_dlls.py --target dist/bin', workflow)
+        # Without the UI fonts beside it the packaged player silently starts the old launcher UI.
+        self.assertIn("tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts", workflow)
+        self.assertIn("assets/fonts/ui/manifest.json", preview)
         self.assertIn("set -euo pipefail", workflow)
         # The showcase demos ship in bin/demos: PRXs from the locked PSPDEV on Linux,
         # packages built and attested by the candidate job. The release scan exempts

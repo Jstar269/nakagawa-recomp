@@ -85,7 +85,7 @@ mingw32-make --no-print-directory display-smoke
 
 The binary staging step passes `-ExcludeOptionalFonts` to `tools/copy_build_assets.ps1`, so the optional repository font directory is not copied into the attested bundle.
 
-The attestation workflow runs `"$PYTHON" tools/stage_runtime_dlls.py --target dist/bin` (Windows CPython 3.15.1) under `set -euo pipefail`; a nonzero exit aborts the job before artifact upload. Packaging copies the verified runtime files byte-for-byte and does not run the stager again.
+The attestation workflow runs `"$PYTHON" tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts` (Windows CPython 3.15.1) under `set -euo pipefail`; a nonzero exit aborts the job before artifact upload. Packaging copies the verified runtime files byte-for-byte and does not run the stager again.
 
 Complete the exact candidate's local release gates and hosted CI before packaging. The binary bundle must come from the [Trusted provenance attestation workflow](../.github/workflows/provenance-attestation.yml), which runs on `main` only after a maintainer freezes the exact candidate SHA. It checks that the required `candidate_sha` equals the workflow's checked-out commit, builds `nakagawa_player.exe` and `production_smoke.exe`, stages their runtime files and `toolchain.json`, builds the two showcase demos into `dist/bin/demos/` (where the player finds them and lists them under **Test this PC**), creates SLSA Build L2 attestations for every file under `dist/`, and uploads a workflow artifact. The demos' PSP programs need PSPDEV, so its `showcase_prx` job first builds them on Linux with the PSPDEV pinned in `assets/upstream/pspdev.lock.json` (`fixtures/showcase/showcase.py build-prx`); the Windows job then builds their packages from those PRXs with its own toolchain (`showcase.py build --prebuilt-prx-dir`). This workflow does not create a tag, release, or release asset.
 
@@ -200,7 +200,8 @@ New-Item -ItemType Directory -Path $Bin, $PackageDocs -Force | Out-Null
 Get-ChildItem -LiteralPath $AttestedBin -Force | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $Bin -Recurse -Force
 }
-foreach ($Required in @('nakagawa_player.exe', 'production_smoke.exe', 'SDL3.dll', 'SDL3_ttf.dll')) {
+foreach ($Required in @('nakagawa_player.exe', 'production_smoke.exe', 'SDL3.dll', 'SDL3_ttf.dll',
+                       'assets/fonts/ui/manifest.json')) {
     if (-not (Test-Path -LiteralPath (Join-Path $Bin $Required) -PathType Leaf)) {
         throw "The verified binary bundle is missing $Required."
     }
