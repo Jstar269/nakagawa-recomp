@@ -252,8 +252,9 @@ listed with the SHA-256 of its exact bytes in assets/release_manifest.json.
 The files docs/images/brand/nakagawa-mark-light.svg and
 docs/images/brand/nakagawa-mark-dark.svg are the project-authored N1 Block & Branch
 mark, rendered in dark ink for light page themes and light ink for dark page themes.
-The artwork is distributed under GPL-3.0-or-later and listed with the SHA-256 of
-each file's exact bytes in assets/release_manifest.json.
+The file assets/brand/nakagawa.ico is the app icon drawn from that mark by
+tools/make_app_icon.py. The artwork is distributed under GPL-3.0-or-later and listed
+with the SHA-256 of each file's exact bytes in assets/release_manifest.json.
 
 ## Project UI fonts
 

@@ -720,6 +720,23 @@
       "comment": "Project-authored N1 Block & Branch artwork for dark page themes."
     },
     {
+      "id": "app-icon-nakagawa",
+      "name": "App icon: the N1 mark on its ink tile",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "assets/brand/nakagawa.ico",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "5510ec6f1154f9f0eb0f5c3b6c671912d269f2db78703622c6fece3b7b61ef7d"
+      },
+      "comment": "Project-authored app icon drawn from docs/images/brand/nakagawa-mark-dark.svg by tools/make_app_icon.py; linked into the Windows executables through assets/brand/nakagawa.rc."
+    },
+    {
       "id": "site-og-card",
       "name": "Website share card (Open Graph image)",
       "type": "asset",
