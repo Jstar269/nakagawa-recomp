@@ -887,6 +887,11 @@ class PublicExportJobTests(unittest.TestCase):
                                   "Gate profile-zero imports on HLE review status") or [])
         self.assertIn("--imports fixtures/profile_zero/prebuilt/profile_zero_guest.prx", gate)
         self.assertIn("--check-profile-zero-imports", gate)
+        # The PSP font-copy app is built with the same locked PSPDEV, through its import gate.
+        app = "\n".join(_ci_step(self.blocks["profile_zero_fixture"],
+                                 "Build Nakagawa Font Copy") or [])
+        self.assertIn("make --no-print-directory -C src/psp_companion "
+                      'BUILD_DIR="$RUNNER_TEMP/fontcopy"', app)
         for job in ("python_tools", "windows_runtime"):
             with self.subTest(job=job):
                 block = "\n".join(self.blocks[job])

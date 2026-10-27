@@ -8120,6 +8120,150 @@ class IoCasesHostTests(unittest.TestCase):
             self.assertEqual(parse_font_files_output(run.stream).copies[0].sha256,
                              hashlib.sha256(_gen_bytes(size, 11)).hexdigest(), size)
 
+    # --- The font-copy app (src/psp_companion/fontcopy.c), mode fontcopy ---------------------
+
+    _KNOWN = ["jpn0.pgf", "kr0.pgf"] + [f"ltn{index}.pgf" for index in range(16)]
+
+    def _app(self, lines: list[str], argv0: str | None = None) -> SimpleNamespace:
+        if argv0 is not None:
+            lines = [f"option argv0 {_hex(argv0)}"] + lines
+        run = self._run("fontcopy", lines)
+        target = next(line for line in run.lines if line.startswith("TARGET "))
+        fields = dict(item.split("=", 1) for item in target.split()[1:])
+        run.parent, run.folder = fields["parent"], fields["folder"]
+        run.records = parse_output(run.stream).results
+        return run
+
+    def _assert_app_calls_safe(self, run: SimpleNamespace) -> None:
+        """flash0 is only listed, opened read-only and measured; only the app's own folder and
+        its NAKAGAWA parent are created; every write lands in that folder under a safe name."""
+        prefix = run.folder + "/"
+        for name, fields in run.calls:
+            path = fields.get("path", "")
+            if name == "sceIoDopen":
+                self.assertIn(path, ("flash0:/font", "flash0:/font/"))
+            elif name == "sceIoMkdir":
+                self.assertIn(path, (run.parent, run.folder))
+            elif name == "sceIoOpen":
+                flags = int(fields["flags"], 16)
+                if path.startswith("flash0:"):
+                    self.assertEqual(flags, 0x1, path)
+                    self.assertTrue(path.startswith("flash0:/font/"), path)
+                else:
+                    self.assertTrue(path.startswith(prefix), path)
+                    self.assertIn(flags, (0x1, 0x602), path)
+                    self.assertRegex(path[len(prefix):], r"^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,59}\.[pP][gG][fF]$")
+            elif name == "sceIoWrite":
+                self.assertTrue(fields["target"].startswith(prefix), fields)
+                self.assertTrue(fields["target"].lower().endswith(".pgf"), fields)
+            else:
+                self.assertIn(name, ("sceIoDread", "sceIoDclose", "sceIoRead", "sceIoClose",
+                                     "sceIoLseek"))
+        mkdirs = [fields["path"] for name, fields in run.calls if name == "sceIoMkdir"]
+        self.assertIn(mkdirs, ([], [run.parent, run.folder]))
+
+    def test_font_copy_app_copies_only_pgf_files_into_its_own_folder(self) -> None:
+        fonts = {"jpn0.pgf": (90_000, 3), "ltn0.pgf": (70_000, 4), "LTN1.PGF": (100, 5),
+                 "kr0.Pgf": (65_536, 6)}
+        lines = [_entry(name, size, seed) for name, (size, seed) in fonts.items()]
+        lines += [
+            _entry("imagefont.bin", 300, 1), _entry("gb3s1518.bwfon", 300, 2),
+            _entry("pgf", 10, 1), _entry(".pgf", 10, 1), _entry("x.pgf.bak", 10, 1),
+            _entry("sub.pgf", mode=_DIRECTORY), _entry("../up.pgf", 10, 1),
+            _entry("big.pgf", 10, 1, listed=16 * 1024 * 1024 + 1),
+            "option mkdir-parent-rc 0x80010011",
+        ]
+        run = self._app(lines, argv0="ms0:/PSP/GAME/NAKAGAWAFONTS/EBOOT.PBP")
+        self.assertEqual((run.parent, run.folder), ("ms0:/NAKAGAWA", "ms0:/NAKAGAWA/fonts"))
+        self._assert_app_calls_safe(run)
+        entries = [dict(record.values) for record in run.records
+                   if record.case_id.startswith("font-entry-")]
+        self.assertEqual([int(entry["out4"], 16) for entry in entries],
+                         [0, 0, 0, 0, 4, 4, 4, 2, 4, 1, 2, 3])
+        self.assertEqual(set(run.host0), set(fonts))
+        for name, (size, _seed) in fonts.items():
+            self.assertEqual(run.host0[name], (size, True), name)
+        copies = [dict(record.values) for record in run.records
+                  if record.case_id.startswith("font-copy-")]
+        self.assertTrue(all(record.status == "PASS" for record in run.records
+                            if record.case_id.startswith("font-copy-")))
+        for copy in copies:
+            size, seed = fonts[copy["detail"]]
+            digest = hashlib.sha256(_gen_bytes(size, seed)).hexdigest()
+            self.assertEqual((copy["sha256"], copy["readback_sha256"], copy["reread_sha256"]),
+                             (digest, digest, digest))
+        done = dict(run.records[-1].values)
+        self.assertEqual((int(done["out1"], 16), int(done["out2"], 16)), (4, 4))
+        self.assertNotIn("sceIoLseek", [name for name, _ in run.calls])
+        self.assertEqual([record.case_id for record in run.records][:4],
+                         ["font-dir-open", "font-mkdir-parent", "font-mkdir", "font-entry-0000"])
+
+    def test_font_copy_app_writes_to_the_storage_it_started_from(self) -> None:
+        cases = {
+            "ef0:/PSP/GAME/NAKAGAWAFONTS/EBOOT.PBP": "ef0:",
+            "EF0:/PSP/GAME/NAKAGAWAFONTS/EBOOT.PBP": "ef0:",
+            "ms0:/PSP/GAME/NAKAGAWAFONTS/EBOOT.PBP": "ms0:",
+            "host0:/fontcopy.prx": "ms0:",
+            "ef0": "ms0:",
+            "efx:/PSP/GAME/X/EBOOT.PBP": "ms0:",
+            None: "ms0:",
+        }
+        for argv0, device in cases.items():
+            with self.subTest(argv0=argv0):
+                run = self._app([_entry("ltn0.pgf", 100, 1)], argv0=argv0)
+                self.assertEqual((run.parent, run.folder),
+                                 (device + "/NAKAGAWA", device + "/NAKAGAWA/fonts"))
+                self._assert_app_calls_safe(run)
+                self.assertEqual(run.host0, {"ltn0.pgf": (100, True)})
+
+    def test_font_copy_app_opens_the_known_names_when_the_listing_is_refused(self) -> None:
+        present = {"jpn0.pgf": (5_000, 1), "ltn3.pgf": (70_000, 2), "kr0.pgf": (300, 3)}
+        lines = ["fontdir 0x80010002 0x80010002"]
+        lines += [_entry(name, size, seed) for name, (size, seed) in present.items()]
+        lines.append(_entry("imagefont.bin", 50, 4))
+        run = self._app(lines)
+        self._assert_app_calls_safe(run)
+        self.assertNotIn("sceIoDread", [name for name, _ in run.calls])
+        opened = [fields["path"] for name, fields in run.calls
+                  if name == "sceIoOpen" and fields["path"].startswith("flash0:")]
+        self.assertEqual(opened[:len(self._KNOWN)], [f"flash0:/font/{name}" for name in self._KNOWN])
+        self.assertNotIn("flash0:/font/imagefont.bin", opened)
+        known = [dict(record.values) for record in run.records
+                 if record.case_id.startswith("font-known-")]
+        self.assertEqual([entry["detail"] for entry in known], self._KNOWN)
+        for entry in known:
+            if entry["detail"] in present:
+                self.assertEqual(int(entry["out2"], 16), 0)
+                self.assertEqual(int(entry["out0"], 16), present[entry["detail"]][0])
+            else:
+                self.assertEqual((int(entry["out2"], 16), entry["result"]), (5, "0x80010002"))
+        self.assertEqual(len([name for name, _ in run.calls if name == "sceIoLseek"]), 3)
+        self.assertEqual(set(run.host0), set(present))
+        self.assertTrue(all(ok for _size, ok in run.host0.values()))
+        cases = [record.case_id for record in run.records]
+        self.assertLess(cases.index("font-known-0017"), cases.index("font-mkdir-parent"))
+        done = dict(run.records[-1].values)
+        self.assertEqual((int(done["out1"], 16), int(done["out2"], 16)), (3, 3))
+
+    def test_font_copy_app_creates_nothing_when_no_font_can_be_read(self) -> None:
+        run = self._app(["fontdir 0x80010002 0x80010002", _entry("other.bin", 10, 1)])
+        self._assert_app_calls_safe(run)
+        self.assertEqual([name for name, _ in run.calls if name in ("sceIoMkdir", "sceIoWrite")], [])
+        self.assertEqual(run.host0, {})
+        done = dict(run.records[-1].values)
+        self.assertEqual((int(done["out1"], 16), int(done["out2"], 16)), (0, 0))
+
+    def test_font_copy_app_reports_a_folder_it_cannot_write(self) -> None:
+        run = self._app([_entry("ltn0.pgf", 100, 1), _entry("ltn1.pgf", 100, 2),
+                         "option host-open-fails ltn0.pgf 0x80010013",
+                         "option write-fails ltn1.pgf 0x8001001c"])
+        self._assert_app_calls_safe(run)
+        failed = {dict(record.values)["detail"]: dict(record.values)["result"]
+                  for record in run.records
+                  if record.case_id.startswith("font-copy-") and record.status == "FAIL"}
+        self.assertEqual(failed, {"ltn0.pgf": "0x80010013", "ltn1.pgf": "0x8001001c"})
+        self.assertEqual(int(dict(run.records[-1].values)["out2"], 16), 0)
+
 
 class IoCasesSourceTests(unittest.TestCase):
     """Source-level rules for the font-files and umd-io cases."""
@@ -8140,18 +8284,39 @@ class IoCasesSourceTests(unittest.TestCase):
         code = self._code(self.fonts)
         self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", code)),
                          {"sceIoDopen", "sceIoDread", "sceIoDclose", "sceIoOpen", "sceIoRead",
-                          "sceIoWrite", "sceIoClose", "sceIoMkdir"})
+                          "sceIoWrite", "sceIoClose", "sceIoMkdir", "sceIoLseek"})
         opens = re.findall(r"sceIoOpen\(([^;]*?)\);", code, re.DOTALL)
         self.assertEqual([" ".join(item.split()) for item in opens], [
             "path, PSP_O_RDONLY, 0",
             "s_fontfiles_path, PSP_O_RDONLY, 0",
             "s_fontfiles_host, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0644",
+            "s_fontfiles_path, PSP_O_RDONLY, 0",
         ])
         self.assertIn('#define FONTFILES_HOST_DIR "host0:/fonts"', self.fonts)
+        self.assertIn("return f->dest_dir != NULL ? f->dest_dir : FONTFILES_HOST_DIR;", self.fonts)
         self.assertIn('snprintf(s_fontfiles_host, sizeof(s_fontfiles_host), "%s/%.63s", '
-                      'FONTFILES_HOST_DIR, name);', self.fonts)
-        self.assertEqual(re.findall(r"sceIoMkdir\(([^)]*)\)", code), ["FONTFILES_HOST_DIR, 0777"])
+                      'fontfiles_dest(f), name);', self.fonts)
+        self.assertEqual(re.findall(r"sceIoMkdir\((.*?)\);", code),
+                         ["f->dest_parent, 0777", "fontfiles_dest(f), 0777"])
+        self.assertEqual(re.findall(r"sceIoLseek\(([^)]*)\)", code), ["fd, 0, SEEK_END"])
         self.assertNotRegex(code, r"\bmalloc\s*\(|\bcalloc\s*\(|sceIoRemove|sceIoRename")
+
+    def test_font_copy_app_does_its_file_io_only_through_font_files(self) -> None:
+        app_dir = self.root / "src" / "psp_companion"
+        app = self._code((app_dir / "fontcopy.c").read_text(encoding="utf-8"))
+        config = self._code((app_dir / "fontcopy_config.h").read_text(encoding="utf-8"))
+        self.assertEqual(re.findall(r"\bsceIo\w+\s*\(", app + config), [])
+        self.assertIn("fontfiles_run(&s_files);", app)
+        self.assertIn("fontcopy_configure(&s_files, &s_target, s_argv0);", app)
+        self.assertIn('#define FONTCOPY_FOLDER "/NAKAGAWA/fonts"', config)
+        self.assertIn("files->pgf_only = 1u;", config)
+        makefile = (app_dir / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("IMPORT_GATE_ARGS = --forbid-library sceReg", makefile)
+        pinned = next(line for line in makefile.splitlines() if "IoFileMgrForUser=" in line)
+        self.assertEqual(
+            set(pinned.split("IoFileMgrForUser=", 1)[1].split(",")),
+            {"0x109F50BC", "0x6A638D83", "0x42EC03AC", "0x810C4BC3", "0x27EB27B8", "0xB29DDF9C",
+             "0xE3EB004C", "0xEB092469", "0x06A70004", "0x55F4717D", "0xACE946E8"})
 
     def test_device_case_reads_state_only_and_its_lists_match_the_parser(self) -> None:
         code = self._code(self.umd[:self.umd.index("#define UMDRAW_TEST_ID")])
