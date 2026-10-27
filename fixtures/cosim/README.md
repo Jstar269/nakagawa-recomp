@@ -307,6 +307,12 @@ other mutants rebuild the cosim harness through the corresponding Make override.
 A mutant that only breaks the build is reported `INVALID` and fails the campaign:
 a compile error proves the compiler noticed, not the comparator.
 
+Each gate is a serial build, so the campaign runs in parallel lanes, one per CPU
+(`--jobs` overrides the count). Every lane builds beneath its own `BUILD_ROOT` under
+`build/cosim/lanes/` and must pass the unmutated gate there before it judges a
+mutant; the scheduler mutants share one lane. Results are reported in campaign order,
+and the default `build/` trees are left untouched.
+
 Mutating both sides matters. A differential proven against one lane is half
 proven, so one mutant restores the **generator** to its pre-fix
 computed-transfer emission order — the exact production defect this fixture was
