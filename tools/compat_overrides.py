@@ -170,10 +170,10 @@ CODEGEN_TEMPORARY_PATCH_TEST = (
     " + ProfileNoneDecouplingTests.test_every_coupled_address_matches_its_control_copy"
 )
 
-#: The two GUEST_PATCHES instruction overrides are pinned by a different test.
-#: The coupling differential does NOT catch them being switched off: their
+#: The GUEST_PATCHES instruction override (0x10950) is pinned by a different test.
+#: The coupling differential does NOT catch it being switched off: its
 #: static-verify exclusion (_SV_SPECIAL in tools/codegen.py) is keyed on the
-#: same addresses, so a disabled patch still emits address-different text.
+#: same address, so a disabled patch still emits address-different text.
 #: The legacy-emission test asserts the patch's own marker text instead, and
 #: fails when the patch stops applying (verified the same way).
 CODEGEN_GUEST_PATCH_TEST = (
@@ -189,12 +189,6 @@ GUEST_PATCHES = [
          test=CODEGEN_GUEST_PATCH_TEST, owner_issue="#363",
          retirement="reproduce and root-cause the forced-control-flow case: the frame-init loop "
                     "must terminate on its own guest-visible condition, then delete the entry"),
-    dict(address=0x00048320, layer="codegen_instruction", category="temporary_compatibility_patch",
-         source="tools/codegen.py:GUEST_PATCHES", name="force single-iteration pass",
-         reason="inject a forced single-iteration exit at 0x48320",
-         test=CODEGEN_GUEST_PATCH_TEST, owner_issue="#363",
-         retirement="reproduce and root-cause the forced-control-flow case: the guest loop must "
-                    "run its real iteration count, then delete the injected exit"),
     dict(address=0x0004cdc8, layer="codegen_instruction", category="hle_boundary",
          source="tools/codegen.py:GUEST_PATCHES", name="route asset reads through host filesystem",
          reason="force the branch that selects the host0 (sceIoOpen-backed) asset path; "
@@ -244,12 +238,11 @@ CODEGEN_CUSTOM_STUBS = [
                 "native implementation preserves PSP EABI varargs placement (r6..r11, then stack), "
                 "including aligned two-word double arguments for floating conversions",
          test="tools/test_guest_printf.py"),
-    dict(address=0x0001034c, category="temporary_compatibility_patch", name="skip heap-statistics walk",
-         reason="the guest free-list can be incomplete during bring-up; walking it for "
-                "mallinfo-style counters must not block game initialization",
-         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
-         retirement="the guest free-list is complete during bring-up so the real walk no longer "
-                    "blocks initialization; then drop the skip"),
+    # 0x0001034c (heap-statistics walk skip) and 0x001d9eb0 (title backdrop selector
+    # postcondition): retired under #363 (2026-10-26). The walk reads the retail
+    # allocator's statically linked bins, which nothing writes once malloc/free/memalign/
+    # realloc are host-bridged, so it terminates; the chooser never returned 0 on the
+    # private route. Both now translate as written.
     # 0x0001a5f8 / 0x0001c008: constant-return stubs removed 2026-07-18 after a
     # Ghidra-assisted review proved both shadowed real translatable code (a
     # delay-slot setter and a computed-goto resume point). The real translations
@@ -259,13 +252,6 @@ CODEGEN_CUSTOM_STUBS = [
          reason="wraps the real per-frame body in a SR_YIELD loop so the cooperative scheduler "
                 "gets a fiber-switch point every frame; structural, does not alter game logic",
          test="none"),
-    dict(address=0x001d9eb0, category="temporary_compatibility_patch", name="title backdrop selector postcondition",
-         reason="recovers from an impossible id=0 result from the retail chooser (every shipped "
-                "title archive is numbered from 01) instead of leaving a stray text surface in "
-                "the title background",
-         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
-         retirement="root-cause the retail chooser's id=0 result (or translate its real body) so "
-                    "the postcondition recovery is unnecessary"),
     dict(address=0x00011090, category="faithful_abi_bridge", name="memcpy native",
          reason="native memmove-backed reimplementation (sr_native_memmove), same semantics as "
                 "the translated body, including the scalar accessors' VRAM read-back and write "
@@ -315,15 +301,13 @@ HST_ENTRY_ROLES = [
 ]
 
 # --- tools/host_stubs.py: HST_SIMPLE_STUBS ----------------------------------
-# #363 owns all eight: audit each body, prefer translating/executing the guest
-# function, otherwise implement the real generic lower-layer dependency instead
-# of a magic success value.
+# #363 owns the remaining five: audit each body, prefer translating/executing the
+# guest function, otherwise implement the real generic lower-layer dependency
+# instead of a magic success value.
+# Retired under #363 (2026-10-26), each now translated as written:
+#   0x00015f98 and 0x0001c818 -- no call site or address reference reaches them;
+#   0x0001c810 -- an empty function, so the stub only added r2 = 0, which no caller reads.
 HST_SIMPLE_STUBS = [
-    dict(address=0x00015f98, category="temporary_compatibility_patch", name="Config_LoadGameSettings",
-         reason="returns a static success value instead of performing real config load",
-         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
-         retirement="translate and run the real settings-load body (or implement the generic "
-                    "settings dependency) instead of returning a static 1"),
     dict(address=0x0001c010, category="temporary_compatibility_patch", name="VFS_RegisterHeap",
          reason="no-op success; no VFS heap is actually registered",
          test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
@@ -339,16 +323,6 @@ HST_SIMPLE_STUBS = [
          test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
          retirement="translate and run the real profile-load body (or implement the generic "
                     "profile dependency) instead of returning a static 1"),
-    dict(address=0x0001c810, category="temporary_compatibility_patch", name="TexCache_Initialize",
-         reason="no-op success; no texture cache is actually initialized here",
-         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
-         retirement="bring up a real texture cache (or translate the guest body) so the no-op "
-                    "success is unnecessary"),
-    dict(address=0x0001c818, category="temporary_compatibility_patch", name="VFS_RegisterCallback",
-         reason="no-op success; no VFS callback is actually registered",
-         test=CODEGEN_TEMPORARY_PATCH_TEST, owner_issue="#363",
-         retirement="register a real VFS callback through the generic lower layer, then drop the "
-                    "no-op success"),
     dict(address=0x0001c560, category="temporary_compatibility_patch", name="main_GraphicsInit",
          reason="returns a static success value instead of performing real graphics init "
                 "(the real GPU backend is brought up elsewhere in the host runtime)",
@@ -444,22 +418,6 @@ SCHEDULER_HOOKS = [
          owner_issue="#363",
          retirement="prove the guest's create/exit sequence needs no reuse, which retires the "
                     "binding with it"),
-    dict(address=0x0029a174, category="temporary_compatibility_patch", name="launcher priority demotion",
-         source="src/rt/sched.c:sched_create_thread_finish",
-         reason="the launcher thread's declared priority is overridden to 50 (below the "
-                "worker's ~38-40) to prevent it starving the worker via an unconditional "
-                "SR_YIELD-heavy loop; opt-out via SR_NO_LAUNCHER_DEMOTE=1. Flagged in "
-                "ISSUES.md P2 as the leading suspect for movement-triggered rendering "
-                "glitches -- capture with SR_THLOG=1 SR_GELOG=1 before changing "
-                "(SR_ROTLOG was retired with pick_next's rotation, 2026-07-18). The address "
-                "above is no longer compiled into the runtime: it reaches sched.c only as the "
-                "runtime_bindings.launcher_thread_entry of a validated title manifest, so an "
-                 "unconfigured build never demotes anything. Retire by fixing the underlying "
-                 "scheduling inversion, which retires the binding with it.",
-         test="make sched-selftest (generic/fixture-a/fixture-b matrix)",
-         owner_issue="#363",
-         retirement="fix the underlying scheduling inversion that lets the launcher starve the "
-                    "worker, which retires the binding with it"),
     dict(address=0x000468c8, category="temporary_compatibility_patch", name="worker relaunch trampoline",
          source="src/rt/sched.c:deliver_vblank",
          reason="a DORMANT thread holding the WORKER role is restarted on the next VBLANK, "
@@ -491,30 +449,12 @@ SCHEDULER_HOOKS = [
                     "needs no host participation"),
 ]
 
-# HST-only guest Newlib addresses now live behind the validated HST title-config
-# accessor. They are not generic scheduler overrides and are absent from sched.c.
-TITLE_CONFIGURED_SCHEDULER_COMPAT = [
-    dict(address=0x002cf338, category="temporary_compatibility_patch",
-         name="master reent fallback address",
-         source="src/rt/title_config.c:sr_title_config_reent_bindings",
-         title_scope="hst-ucus98701",
-         reason="provides the pre-launcher Newlib master only for the validated HST profile; "
-                "generic and fixture builds receive no address",
-         test="tools/test_hle_title_isolation.py and flagship verification",
-         owner_issue="#363",
-         retirement="model the actual libc/thread bring-up so the pre-launcher master reent needs "
-                    "no host-supplied address; then remove the binding"),
-    dict(address=0x0030aa88, category="temporary_compatibility_patch",
-         name="guest thread reent table root",
-         source="src/rt/title_config.c:sr_title_config_reent_bindings",
-         title_scope="hst-ucus98701",
-         reason="seeds and maintains the guest's legacy per-thread reent hash only for the "
-                "validated HST profile; generic builds perform no guest-table access",
-         test="tools/test_hle_title_isolation.py and flagship verification",
-         owner_issue="#363",
-         retirement="model the guest's own per-thread reent registration so the host stops "
-                    "seeding the guest table; then remove the binding"),
-]
+# HST-only guest Newlib reent bindings. The two entries (0x002cf338 master reent fallback
+# address, 0x0030aa88 guest thread reent table root) were retired under #363 (2026-10-27):
+# they were selected only by a manifest id no local HST manifest carries, so the private
+# full-match route already ran without them. The runtime no longer seeds, maintains or
+# resets the guest's per-thread reent table, and no reent address remains in public source.
+TITLE_CONFIGURED_SCHEDULER_COMPAT: "list[dict]" = []
 
 # --- src/rt/recomp.c: dispatch bindings owned by TITLE CONFIGURATION ----------
 # These three used to be numeric literals compiled into generic dispatch. They are

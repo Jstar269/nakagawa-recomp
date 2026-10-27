@@ -346,13 +346,13 @@ class MutationTests(unittest.TestCase):
                          "live and title-configured inventories must be disjoint")
         self.assertEqual(configured, HST_MIGRATED)
 
-    def test_hst_reent_addresses_live_only_in_title_configuration(self):
-        addresses = {int(item["address"]) for item in
-                     compat_overrides.TITLE_CONFIGURED_SCHEDULER_COMPAT}
-        self.assertEqual(addresses, {0x002cf338, 0x0030aa88})
-        title_config = (ROOT / "src" / "rt" / "title_config.c").read_text(encoding="utf-8")
-        self.assertTrue(all(f"0x{address:08x}u" in title_config for address in addresses))
-        for relative in ("src/rt/hle.c", "src/rt/sched.c", "src/rt/recomp.c"):
+    def test_retired_hst_reent_addresses_are_in_no_runtime_source(self):
+        # #363: the master reent and guest thread-table bindings were retired, so neither
+        # address survives anywhere in the runtime, title configuration included.
+        self.assertEqual(compat_overrides.TITLE_CONFIGURED_SCHEDULER_COMPAT, [])
+        addresses = {0x002cf338, 0x0030aa88}
+        for relative in ("src/rt/hle.c", "src/rt/sched.c", "src/rt/recomp.c",
+                         "src/rt/title_config.c", "src/rt/title_config.h"):
             source = (ROOT / relative).read_text(encoding="utf-8").lower()
             for address in addresses:
                 self.assertNotIn(f"0x{address:08x}", source,

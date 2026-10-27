@@ -59,13 +59,6 @@ typedef struct SrTitleCallbackTerminator {
     uint32_t ra;
 } SrTitleCallbackTerminator;
 
-/* Profile-only Newlib state bindings retained for the HST title. The addresses live
- * in title_config.c behind the validated HST profile gate; generic runtime code sees
- * them only through this typed accessor. */
-typedef struct SrTitleReentBindings {
-    uint32_t master_reent_addr;
-    uint32_t guest_thread_table_addr;
-} SrTitleReentBindings;
 
 typedef struct SrTitleRuntimeConfig {
     unsigned    valid;                        /* OR of the SR_TITLE_CFG_* bits above */
@@ -114,10 +107,6 @@ int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr);
  * An unconfigured build answers 0 for every triple, so the same sentinel at the same
  * site follows ordinary generic dispatch behavior instead. */
 int sr_title_config_is_callback_terminator(uint32_t sentinel, uint32_t pc, uint32_t ra);
-
-/* HST-only legacy Newlib registration addresses. Returns 0 for generic and fixture
- * profiles. */
-int sr_title_config_reent_bindings(SrTitleReentBindings *out);
 
 /* HST-only #363 compatibility debt: 1 when a returning dispatch CALL must restore
  * the callee-saved registers. Returns 0 for generic and fixture profiles. */

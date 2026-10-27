@@ -618,9 +618,6 @@ uint32_t g_frame_prims = 0;
 int sr_title_config_vblank_counters(uint32_t *frame_addr, uint32_t *vsync_addr) {
     (void)frame_addr; (void)vsync_addr; return 0;
 }
-int sr_title_config_reent_bindings(SrTitleReentBindings *out) {
-    (void)out; return 0;
-}
 int sr_title_config_is_worker_entry(uint32_t entry) { (void)entry; return 0; }
 int sr_title_config_is_launcher_entry(uint32_t entry) { (void)entry; return 0; }
 int sr_title_config_preserve_callee_saved_at_calls(void) { return 0; }
