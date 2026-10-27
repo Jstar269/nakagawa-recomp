@@ -3390,12 +3390,36 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
     char gcc_path[NK_MAX_PATH];
     char make_path[NK_MAX_PATH];
     char python_path[NK_MAX_PATH];
-    bool have_python = package_builder_find_python_in_root(user_data_root,
-                                                            python_path, sizeof(python_path));
-    bool have_gcc = package_builder_find_tool_in_root("gcc", user_data_root,
-                                                       gcc_path, sizeof(gcc_path));
-    bool have_make = package_builder_find_tool_in_root("mingw32-make", user_data_root,
-                                                        make_path, sizeof(make_path));
+    /* A release zip's verified prereqs/ tree (#1285) is the pinned toolchain:
+       it outranks PATH and the per-user download, needs no consent card and
+       no network, and a damaged one is refused by name rather than replaced. */
+    PackageBundledTools bundled;
+    PackageBundleStatus bundle_status =
+        package_builder_resolve_bundled_tools(app->install_root, cli_path, &bundled);
+    if (bundle_status == PACKAGE_BUNDLE_INVALID) {
+        player_app_set_error(app, "PREREQUISITE_BUNDLE_INVALID",
+                             "Bundled Build Tools Are Damaged", bundled.error,
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+    bool have_python;
+    bool have_gcc;
+    bool have_make;
+    if (bundle_status == PACKAGE_BUNDLE_VALID) {
+        snprintf(python_path, sizeof(python_path), "%s", bundled.python_path);
+        snprintf(gcc_path, sizeof(gcc_path), "%s", bundled.gcc_path);
+        snprintf(make_path, sizeof(make_path), "%s", bundled.make_path);
+        snprintf(app->build_session.prerequisites_root,
+                 sizeof(app->build_session.prerequisites_root), "%s", bundled.root);
+        have_python = have_gcc = have_make = true;
+    } else {
+        have_python = package_builder_find_python_in_root(user_data_root,
+                                                          python_path, sizeof(python_path));
+        have_gcc = package_builder_find_tool_in_root("gcc", user_data_root,
+                                                     gcc_path, sizeof(gcc_path));
+        have_make = package_builder_find_tool_in_root("mingw32-make", user_data_root,
+                                                      make_path, sizeof(make_path));
+    }
     bool missing_toolchain = !have_gcc || !have_make;
     if (!have_python || missing_toolchain) {
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -3623,8 +3647,21 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
                              "Return to Settings", VIEW_SETTINGS);
         return false;
     }
-    package_builder_mark_prerequisites_installed(&list, data_root);
+    /* A verified release bundle (#1285) is what BUILD PACKAGE uses, so list it
+       and its notices; otherwise list the per-user download. */
+    char bundle_root[NK_MAX_PATH];
+    if (package_builder_bundled_prerequisites_root(app->install_root, bundle_root,
+                                                   sizeof(bundle_root)) &&
+        package_builder_check_bundled_prerequisites(bundle_root, &list, error, sizeof(error)) ==
+            PACKAGE_BUNDLE_VALID) {
+        package_builder_mark_prerequisites_installed_at(&list, bundle_root);
+    } else {
+        bundle_root[0] = '\0';
+        package_builder_mark_prerequisites_installed(&list, data_root);
+    }
     app->prerequisites.items = list;
+    snprintf(app->prerequisites.bundle_root, sizeof(app->prerequisites.bundle_root), "%s",
+             bundle_root);
     app->prerequisites.item_count = 0;
     for (size_t i = 0; i < list.count; i++) {
         if (list.items[i].installed) app->prerequisites.item_count++;
@@ -3651,6 +3688,12 @@ bool player_app_request_license_folder(PlayerApp *app) {
     int n;
     if (!app) return false;
     app->request_open_folder = false;
+    if (app->prerequisites.bundle_root[0]) {
+        n = snprintf(path, sizeof(path), "%s%cnotices", app->prerequisites.bundle_root,
+                     nk_platform_path_separator());
+        if (n < 0 || (size_t)n >= sizeof(path)) return false;
+        return player_app_request_open_folder(app, path);
+    }
     if (!player_app_data_root(app, data_root, sizeof(data_root)) || !data_root[0]) return false;
     n = snprintf(path, sizeof(path),
                  "%s%cprerequisites%cnotices", data_root,

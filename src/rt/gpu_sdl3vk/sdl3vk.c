@@ -331,23 +331,38 @@ int sdl3vk_pick_surface_format(int query, int count, const int *formats) {
 
 /* ---- init --------------------------------------------------------------------------- */
 
+/* Init fault seam for the lifecycle selftest (#1377): armed at step N (1-based), the Nth
+ * fallible step of sdl3vk_init fails without running, so every unwind path can be driven on a
+ * working device. One-shot; 0 is disarmed. */
+static int s_init_fault_step = 0;
+static int s_init_steps = 0;        /* fallible steps the last sdl3vk_init reached */
+static int s_sdl_subsystems = 0;    /* sdl3vk_init's SDL_Init succeeded and is not undone */
+
+static int init_step_fails(void) {
+    if (++s_init_steps != s_init_fault_step) return 0;
+    s_init_fault_step = 0;
+    return 1;
+}
+
+/* A failed step leaves sdl3vk_init through its one unwind (fail:). */
+#define INIT_VK(expr) do { VkResult vr_ = init_step_fails() ? VK_ERROR_INITIALIZATION_FAILED : (expr); \
+    if (vr_ != VK_SUCCESS) { fprintf(stderr, "sdl3vk: %s failed: %d\n", #expr, (int)vr_); goto fail; } } while (0)
+#define INIT_OK(cond, ...) do { if (init_step_fails() || !(cond)) { \
+    fprintf(stderr, __VA_ARGS__); goto fail; } } while (0)
+
 int sdl3vk_init(const char *title) {
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-        fprintf(stderr, "sdl3vk: SDL_Init failed: %s\n", SDL_GetError());
-        return 0;
-    }
+    s_init_steps = 0;
+    INIT_OK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD), "sdl3vk: SDL_Init failed: %s\n", SDL_GetError());
+    s_sdl_subsystems = 1;
     /* SR_WINDOW_HIDDEN=1: the same presenter (Vulkan swapchain, keyboard, frame capture) with
      * a window nobody sees, for headless routes. It is never raised or put in front. */
     const char *hidden_env = getenv("SR_WINDOW_HIDDEN");
     s_window_hidden = hidden_env && hidden_env[0] && strcmp(hidden_env, "0") != 0;
-    s_win = SDL_CreateWindow(title ? title : "Nakagawa Recomp",
-                             PSP_W * 2, PSP_H * 2,
-                             SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
-                             (s_window_hidden ? SDL_WINDOW_HIDDEN : 0));
-    if (!s_win) {
-        fprintf(stderr, "sdl3vk: SDL_CreateWindow failed: %s\n", SDL_GetError());
-        return 0;
-    }
+    INIT_OK((s_win = SDL_CreateWindow(title ? title : "Nakagawa Recomp",
+                                      PSP_W * 2, PSP_H * 2,
+                                      SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
+                                      (s_window_hidden ? SDL_WINDOW_HIDDEN : 0))) != NULL,
+            "sdl3vk: SDL_CreateWindow failed: %s\n", SDL_GetError());
     {
         /* Settings > Fullscreen (SR_FULLSCREEN), applied before the Vulkan
          * surface is created so the swapchain picks up the right extent. */
@@ -382,57 +397,51 @@ int sdl3vk_init(const char *title) {
         if (vkEnumerateInstanceLayerProperties(&n, lp) == VK_SUCCESS)
             for (uint32_t i = 0; i < n; i++)
                 if (strcmp(lp[i].layerName, "VK_LAYER_KHRONOS_validation") == 0) { have = 1; break; }
-        if (!have) {
-            fprintf(stderr, "sdl3vk: SR_VULKAN_VALIDATION set but VK_LAYER_KHRONOS_validation "
-                            "is not installed; refusing to initialize\n");
-            return 0;
-        }
-        if (next >= 16) {
-            fprintf(stderr, "sdl3vk: too many instance extensions to enable VK_EXT_debug_utils\n");
-            return 0;
-        }
+        INIT_OK(have, "sdl3vk: SR_VULKAN_VALIDATION set but VK_LAYER_KHRONOS_validation "
+                      "is not installed; refusing to initialize\n");
+        INIT_OK(next < 16, "sdl3vk: too many instance extensions to enable VK_EXT_debug_utils\n");
         sdl_ext[next++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
         layer_names[0] = "VK_LAYER_KHRONOS_validation";
         n_layers = 1;
     }
+    VkDebugUtilsMessengerCreateInfoEXT mci =
+        { .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
+    mci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+                          VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
+    mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                      VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                      VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    mci.pfnUserCallback = s_validation_cb;
+    /* Chained into the instance, a validation-only copy also covers vkDestroyInstance, which
+     * reports an instance child (surface, device, messenger) the unwind left alive. */
+    VkDebugUtilsMessengerCreateInfoEXT inst_mci = mci;
+    inst_mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
     VkApplicationInfo ai = { .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO };
     ai.pApplicationName = "psp_recomp";
     ai.apiVersion = VK_API_VERSION_1_1;
     VkInstanceCreateInfo ici = { .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
+    ici.pNext = s_validation_on ? &inst_mci : NULL;
     ici.pApplicationInfo = &ai;
     ici.enabledExtensionCount = next;
     ici.ppEnabledExtensionNames = sdl_ext;
     ici.enabledLayerCount = n_layers;
     ici.ppEnabledLayerNames = n_layers ? layer_names : NULL;
-    VK_TRY(vkCreateInstance(&ici, NULL, &s_inst));
+    INIT_VK(vkCreateInstance(&ici, NULL, &s_inst));
     if (s_validation_on) {
         PFN_vkCreateDebugUtilsMessengerEXT create_msgr = (PFN_vkCreateDebugUtilsMessengerEXT)
             vkGetInstanceProcAddr(s_inst, "vkCreateDebugUtilsMessengerEXT");
         s_validation_destroy = (PFN_vkDestroyDebugUtilsMessengerEXT)
             vkGetInstanceProcAddr(s_inst, "vkDestroyDebugUtilsMessengerEXT");
-        VkDebugUtilsMessengerCreateInfoEXT mci =
-            { .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
-        mci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
-                              VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
-        mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                          VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                          VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-        mci.pfnUserCallback = s_validation_cb;
-        if (!create_msgr ||
-            create_msgr(s_inst, &mci, NULL, &s_validation_msgr) != VK_SUCCESS) {
-            fprintf(stderr, "sdl3vk: could not create the validation messenger\n");
-            return 0;
-        }
+        INIT_OK(create_msgr && create_msgr(s_inst, &mci, NULL, &s_validation_msgr) == VK_SUCCESS,
+                "sdl3vk: could not create the validation messenger\n");
     }
 
-    if (!SDL_Vulkan_CreateSurface(s_win, s_inst, NULL, &s_surf)) {
-        fprintf(stderr, "sdl3vk: SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
-        return 0;
-    }
+    INIT_OK(SDL_Vulkan_CreateSurface(s_win, s_inst, NULL, &s_surf),
+            "sdl3vk: SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
 
     /* Physical device: first one with a graphics queue that can present to our surface. */
     VkPhysicalDevice devs[16]; uint32_t nd = 16;
-    VK_TRY(vkEnumeratePhysicalDevices(s_inst, &nd, devs));
+    INIT_VK(vkEnumeratePhysicalDevices(s_inst, &nd, devs));
     s_pdev = VK_NULL_HANDLE;
     for (uint32_t d = 0; d < nd && !s_pdev; d++) {
         VkQueueFamilyProperties qf[16]; uint32_t nq = 16;
@@ -445,7 +454,7 @@ int sdl3vk_init(const char *title) {
             }
         }
     }
-    if (!s_pdev) { fprintf(stderr, "sdl3vk: no usable Vulkan device\n"); return 0; }
+    INIT_OK(s_pdev != VK_NULL_HANDLE, "sdl3vk: no usable Vulkan device\n");
     {
         VkPhysicalDeviceProperties pp;
         vkGetPhysicalDeviceProperties(s_pdev, &pp);
@@ -473,46 +482,46 @@ int sdl3vk_init(const char *title) {
     dci.pQueueCreateInfos = &qci;
     dci.enabledExtensionCount = 1;
     dci.ppEnabledExtensionNames = dev_ext;
-    VK_TRY(vkCreateDevice(s_pdev, &dci, NULL, &s_dev));
+    INIT_VK(vkCreateDevice(s_pdev, &dci, NULL, &s_dev));
     vkGetDeviceQueue(s_dev, s_qfam, 0, &s_queue);
 
     VkCommandPoolCreateInfo cpi = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     cpi.queueFamilyIndex = s_qfam;
-    VK_TRY(vkCreateCommandPool(s_dev, &cpi, NULL, &s_pool));
+    INIT_VK(vkCreateCommandPool(s_dev, &cpi, NULL, &s_pool));
     VkCommandBufferAllocateInfo cbi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
     cbi.commandPool = s_pool;
     cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbi.commandBufferCount = 1;
-    VK_TRY(vkAllocateCommandBuffers(s_dev, &cbi, &s_cmd));
+    INIT_VK(vkAllocateCommandBuffers(s_dev, &cbi, &s_cmd));
 
     VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-    VK_TRY(vkCreateFence(s_dev, &fci, NULL, &s_fence));
+    INIT_VK(vkCreateFence(s_dev, &fci, NULL, &s_fence));
     VkSemaphoreCreateInfo sci2 = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     /* Per-frame command/sync/upload resources.  No resource is reused before its fence. */
     for(int i=0;i<PRESENT_FRAMES;i++){
         PresentFrame *f=&s_frame[i];
         cbi.commandBufferCount=1;
-        VK_TRY(vkAllocateCommandBuffers(s_dev,&cbi,&f->cmd));
-        VK_TRY(vkCreateFence(s_dev,&fci,NULL,&f->fence));
-        VK_TRY(vkCreateSemaphore(s_dev,&sci2,NULL,&f->sem_acq));
-        VK_TRY(vkCreateSemaphore(s_dev,&sci2,NULL,&f->sem_done));
+        INIT_VK(vkAllocateCommandBuffers(s_dev,&cbi,&f->cmd));
+        INIT_VK(vkCreateFence(s_dev,&fci,NULL,&f->fence));
+        INIT_VK(vkCreateSemaphore(s_dev,&sci2,NULL,&f->sem_acq));
+        INIT_VK(vkCreateSemaphore(s_dev,&sci2,NULL,&f->sem_done));
 
         VkBufferCreateInfo bci={.sType=VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bci.size=PSP_W*PSP_H*4;bci.usage=VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        VK_TRY(vkCreateBuffer(s_dev,&bci,NULL,&f->staging));
+        INIT_VK(vkCreateBuffer(s_dev,&bci,NULL,&f->staging));
         VkMemoryRequirements mr;vkGetBufferMemoryRequirements(s_dev,f->staging,&mr);
         VkMemoryAllocateInfo mai={.sType=VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         mai.allocationSize=mr.size;
         mai.memoryTypeIndex=find_mem_type(mr.memoryTypeBits,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        VK_TRY(vkAllocateMemory(s_dev,&mai,NULL,&f->staging_mem));
-        VK_TRY(vkBindBufferMemory(s_dev,f->staging,f->staging_mem,0));
-        VK_TRY(vkMapMemory(s_dev,f->staging_mem,0,VK_WHOLE_SIZE,0,&f->staging_map));
+        INIT_VK(vkAllocateMemory(s_dev,&mai,NULL,&f->staging_mem));
+        INIT_VK(vkBindBufferMemory(s_dev,f->staging,f->staging_mem,0));
+        INIT_VK(vkMapMemory(s_dev,f->staging_mem,0,VK_WHOLE_SIZE,0,&f->staging_map));
 
         VkBufferCreateInfo hbci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         hbci.size = HUD_W * HUD_H * 4;
         hbci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        VK_TRY(vkCreateBuffer(s_dev, &hbci, NULL, &f->hud_staging));
+        INIT_VK(vkCreateBuffer(s_dev, &hbci, NULL, &f->hud_staging));
         VkMemoryRequirements hmr;
         vkGetBufferMemoryRequirements(s_dev, f->hud_staging, &hmr);
         VkMemoryAllocateInfo hmai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
@@ -521,9 +530,9 @@ int sdl3vk_init(const char *title) {
         if (hmai.memoryTypeIndex == UINT32_MAX) {
             hmai.memoryTypeIndex = find_mem_type(hmr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         }
-        VK_TRY(vkAllocateMemory(s_dev, &hmai, NULL, &f->hud_staging_mem));
-        VK_TRY(vkBindBufferMemory(s_dev, f->hud_staging, f->hud_staging_mem, 0));
-        VK_TRY(vkMapMemory(s_dev, f->hud_staging_mem, 0, VK_WHOLE_SIZE, 0, &f->hud_staging_map));
+        INIT_VK(vkAllocateMemory(s_dev, &hmai, NULL, &f->hud_staging_mem));
+        INIT_VK(vkBindBufferMemory(s_dev, f->hud_staging, f->hud_staging_mem, 0));
+        INIT_VK(vkMapMemory(s_dev, f->hud_staging_mem, 0, VK_WHOLE_SIZE, 0, &f->hud_staging_map));
 
         VkImageCreateInfo imi={.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         imi.imageType=VK_IMAGE_TYPE_2D;imi.format=VK_FORMAT_B8G8R8A8_UNORM;
@@ -532,15 +541,15 @@ int sdl3vk_init(const char *title) {
         imi.tiling=VK_IMAGE_TILING_OPTIMAL;
         imi.usage=VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         imi.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED;
-        VK_TRY(vkCreateImage(s_dev,&imi,NULL,&f->fbimg));
+        INIT_VK(vkCreateImage(s_dev,&imi,NULL,&f->fbimg));
         vkGetImageMemoryRequirements(s_dev,f->fbimg,&mr);
         mai.allocationSize=mr.size;
         mai.memoryTypeIndex=find_mem_type(mr.memoryTypeBits,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        VK_TRY(vkAllocateMemory(s_dev,&mai,NULL,&f->fbimg_mem));
-        VK_TRY(vkBindImageMemory(s_dev,f->fbimg,f->fbimg_mem,0));
+        INIT_VK(vkAllocateMemory(s_dev,&mai,NULL,&f->fbimg_mem));
+        INIT_VK(vkBindImageMemory(s_dev,f->fbimg,f->fbimg_mem,0));
     }
 
-    if (!create_swapchain()) return 0;
+    INIT_OK(create_swapchain(), "sdl3vk: no swapchain for the new window\n");
 
     const char *hud_env = getenv("SR_HUD");
     if (hud_env && hud_env[0] && strcmp(hud_env, "0") != 0) {
@@ -557,7 +566,15 @@ int sdl3vk_init(const char *title) {
     fprintf(stderr, "sdl3vk: init ok (%ux%u swapchain, fmt %d, gamepad=%s)\n",
             s_swap_ext.width, s_swap_ext.height, (int)s_swap_fmt, s_pad ? "yes" : "no");
     return 1;
+
+fail:
+    /* Release exactly what the steps above created, in reverse order, so a caller that falls
+     * back to another presenter (gui_init's GDI window) holds no SDL or Vulkan object. */
+    sdl3vk_shutdown();
+    return 0;
 }
+#undef INIT_OK
+#undef INIT_VK
 
 bool sdl3vk_raise_window(void) {
     if (!s_win || s_window_hidden) return false;
@@ -2683,6 +2700,65 @@ int sdl3vk_pause_input_selftest(void) {
 }
 #undef PAUSE_CHECK
 
+/* Objects sdl3vk_init can create, and its SDL subsystems, that are still held. */
+static int lifecycle_live_objects(void) {
+    static const PresentFrame empty;
+    int n = (s_win != NULL) + (s_pad != NULL) + (s_inst != VK_NULL_HANDLE) +
+            (s_validation_msgr != VK_NULL_HANDLE) + (s_surf != VK_NULL_HANDLE) +
+            (s_dev != VK_NULL_HANDLE) + (s_pool != VK_NULL_HANDLE) + (s_cmd != VK_NULL_HANDLE) +
+            (s_fence != VK_NULL_HANDLE) + (s_swap != VK_NULL_HANDLE) + s_sdl_subsystems;
+    for (int i = 0; i < PRESENT_FRAMES; i++)
+        n += memcmp(&s_frame[i], &empty, sizeof empty) != 0;
+    return n + (SDL_WasInit(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD) != 0);
+}
+
+/* Init unwind, repeated shutdown and re-init (#1377). A failure injected at each fallible step
+ * of sdl3vk_init in turn must leave no Vulkan object, window or SDL subsystem alive and raise no
+ * validation error (with validation on, vkDestroyDevice and vkDestroyInstance report any child
+ * the unwind missed). Returns 0, 77 when Vulkan is unavailable, or 1. */
+static int sdl3vk_lifecycle_selftest(void) {
+    if (!sdl3vk_init("Nakagawa GPU lifecycle selftest")) {
+        fprintf(stderr, "gpu capture selftest: SKIP (Vulkan initialization unavailable)\n");
+        return 77;
+    }
+    const int steps = s_init_steps;
+    const int errors = sdl3vk_validation_error_count();
+    int ok = 1;
+    /* The test's own instance keeps the driver loaded between the cycles below: the NVIDIA
+     * Windows driver was seen to fault in a worker thread of its own when it is unloaded and
+     * loaded again many times in quick succession. It is not one of sdl3vk's objects. */
+    VkInstanceCreateInfo keep_ci = { .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
+    VkInstance keep = VK_NULL_HANDLE;
+    (void)vkCreateInstance(&keep_ci, NULL, &keep);
+    sdl3vk_shutdown();
+    sdl3vk_shutdown();
+    if (lifecycle_live_objects() != 0) {
+        fprintf(stderr, "lifecycle: %d object(s) alive after shutdown\n", lifecycle_live_objects());
+        ok = 0;
+    }
+    for (int step = 1; ok && step <= steps; step++) {
+        s_init_fault_step = step;
+        int inited = sdl3vk_init("Nakagawa GPU lifecycle selftest");
+        s_init_fault_step = 0;
+        int live = lifecycle_live_objects();
+        if (inited || s_init_steps != step || live != 0) {
+            fprintf(stderr, "lifecycle: init step %d of %d failed (%s) and left %d object(s) alive\n",
+                    step, steps, inited || s_init_steps != step ? "not where injected" : "as injected",
+                    live);
+            ok = 0;
+        }
+    }
+    if (keep) vkDestroyInstance(keep, NULL);
+    if (sdl3vk_validation_error_count() != errors) {
+        fprintf(stderr, "lifecycle: %d validation error(s) during the unwinds\n",
+                sdl3vk_validation_error_count() - errors);
+        ok = 0;
+    }
+    if (!ok) return 1;
+    printf("gpu lifecycle selftest: init unwind at each of %d steps OK\n", steps);
+    return 0;
+}
+
 static int sdl3vk_capture_selftest_body(void) {
     int ok = 1;
 
@@ -2749,6 +2825,11 @@ static int sdl3vk_capture_selftest_body(void) {
         }
     }
     cap_test_setenv("SR_VULKAN_VALIDATION", "1");
+    const char *terminal_fault = getenv("SR_GPU_CAPTURE_TERMINAL_CASE");
+    if (!terminal_fault || !terminal_fault[0]) {
+        int lifecycle = sdl3vk_lifecycle_selftest();
+        if (lifecycle != 0) return lifecycle;
+    }
     if (!sdl3vk_init("Nakagawa GPU capture selftest")) {
         fprintf(stderr, "gpu capture selftest: SKIP (Vulkan initialization unavailable)\n");
         return 77;
@@ -2794,7 +2875,6 @@ static int sdl3vk_capture_selftest_body(void) {
     /* ---- CPU framebuffer path (B8G8R8A8 fbimg) -------------------------------------- */
     static uint32_t px[PSP_W * PSP_H];
     cap_test_fill_cpu(px, PSP_W, PSP_H);
-    const char *terminal_fault = getenv("SR_GPU_CAPTURE_TERMINAL_CASE");
     if (terminal_fault && terminal_fault[0]) {
         VkResult fault_result;
         if (strcmp(terminal_fault, "surface-lost") == 0) {
@@ -3186,9 +3266,14 @@ static int sdl3vk_capture_selftest_body(void) {
         ok = 0;
     }
     sdl3vk_shutdown();
+    sdl3vk_shutdown();   /* after a full run (swapchain, overlay, capture, prescale): a no-op */
     errors = sdl3vk_validation_error_count();
     if (errors != 0) {
         fprintf(stderr, "validation: %d ERROR-severity teardown messages; expected 0\n", errors);
+        ok = 0;
+    }
+    if (lifecycle_live_objects() != 0) {
+        fprintf(stderr, "shutdown: %d object(s) alive after a full run\n", lifecycle_live_objects());
         ok = 0;
     }
     if (!ok) return 1;
@@ -3223,6 +3308,11 @@ int sdl3vk_capture_selftest(void) {
     return rc;
 }
 
+/* Releases everything sdl3vk_init and the presenter created, in reverse creation order (each
+ * child before its parent), and clears every handle and the renderer state. It is also
+ * sdl3vk_init's unwind, so it acts only on what exists; a second call does nothing (#1377). Its
+ * SDL_Init is undone with SDL_QuitSubSystem, not SDL_Quit, so the audio backend's subsystem
+ * (audio_unavailable.c) stays up until that backend's own cleanup. */
 void sdl3vk_shutdown(void) {
     sdl3vk_overlay_release();
     if (s_dev) {
@@ -3233,29 +3323,40 @@ void sdl3vk_shutdown(void) {
         vkQueueWaitIdle(s_queue);
     }
     destroy_swapchain();
-    for (int i = 0; i < PRESENT_FRAMES; i++) {
-        PresentFrame *f = &s_frame[i];
-        if (f->staging_map) vkUnmapMemory(s_dev, f->staging_mem);
-        if (f->fbimg)       vkDestroyImage(s_dev, f->fbimg, NULL);
-        if (f->fbimg_mem)   vkFreeMemory(s_dev, f->fbimg_mem, NULL);
-        if (f->staging)     vkDestroyBuffer(s_dev, f->staging, NULL);
-        if (f->staging_mem) vkFreeMemory(s_dev, f->staging_mem, NULL);
-        if (f->hud_staging_map) vkUnmapMemory(s_dev, f->hud_staging_mem);
-        if (f->hud_staging)     vkDestroyBuffer(s_dev, f->hud_staging, NULL);
-        if (f->hud_staging_mem) vkFreeMemory(s_dev, f->hud_staging_mem, NULL);
-        if (f->sem_acq)     vkDestroySemaphore(s_dev, f->sem_acq, NULL);
-        if (f->sem_done)    vkDestroySemaphore(s_dev, f->sem_done, NULL);
-        if (f->fence)       vkDestroyFence(s_dev, f->fence, NULL);
-    }
+    s_swap_n = 0;
+    memset(s_swap_img_fence, 0, sizeof(s_swap_img_fence));
     if (s_hud_ren)  { SDL_DestroyRenderer(s_hud_ren); s_hud_ren = NULL; }
     if (s_hud_surf) { SDL_DestroySurface(s_hud_surf); s_hud_surf = NULL; }
     s_hud_fmt = VK_FORMAT_UNDEFINED;
-    if (s_fence)       vkDestroyFence(s_dev, s_fence, NULL);
     cap_free_buffer();
     prescale_free();
+    for (int i = PRESENT_FRAMES - 1; i >= 0; i--) {
+        PresentFrame *f = &s_frame[i];
+        if (f->fbimg)       vkDestroyImage(s_dev, f->fbimg, NULL);
+        if (f->fbimg_mem)   vkFreeMemory(s_dev, f->fbimg_mem, NULL);
+        if (f->hud_staging_map) vkUnmapMemory(s_dev, f->hud_staging_mem);
+        if (f->hud_staging)     vkDestroyBuffer(s_dev, f->hud_staging, NULL);
+        if (f->hud_staging_mem) vkFreeMemory(s_dev, f->hud_staging_mem, NULL);
+        if (f->staging_map) vkUnmapMemory(s_dev, f->staging_mem);
+        if (f->staging)     vkDestroyBuffer(s_dev, f->staging, NULL);
+        if (f->staging_mem) vkFreeMemory(s_dev, f->staging_mem, NULL);
+        if (f->sem_done)    vkDestroySemaphore(s_dev, f->sem_done, NULL);
+        if (f->sem_acq)     vkDestroySemaphore(s_dev, f->sem_acq, NULL);
+        if (f->fence)       vkDestroyFence(s_dev, f->fence, NULL);
+        memset(f, 0, sizeof(*f));   /* its command buffer is freed with the pool */
+    }
+    s_frame_cursor = 0;
+    if (s_fence)       vkDestroyFence(s_dev, s_fence, NULL);
     if (s_pool)        vkDestroyCommandPool(s_dev, s_pool, NULL);
     if (s_dev)         vkDestroyDevice(s_dev, NULL);
+    s_fence = VK_NULL_HANDLE;
+    s_cmd = VK_NULL_HANDLE;
+    s_pool = VK_NULL_HANDLE;
+    s_queue = VK_NULL_HANDLE;
+    s_dev = VK_NULL_HANDLE;
+    s_pdev = VK_NULL_HANDLE;
     if (s_surf)        vkDestroySurfaceKHR(s_inst, s_surf, NULL);
+    s_surf = VK_NULL_HANDLE;
     if (s_validation_msgr && s_validation_destroy) {
         s_validation_destroy(s_inst, s_validation_msgr, NULL);
         s_validation_msgr = VK_NULL_HANDLE;
@@ -3265,8 +3366,13 @@ void sdl3vk_shutdown(void) {
         vkDestroyInstance(s_inst, NULL);
         s_inst = VK_NULL_HANDLE;
     }
-    if (s_pad)         SDL_CloseGamepad(s_pad);
-    if (s_win)         SDL_DestroyWindow(s_win);
+    if (s_pad)         { SDL_CloseGamepad(s_pad); s_pad = NULL; }
+    if (s_win)         { SDL_DestroyWindow(s_win); s_win = NULL; }
+    if (s_sdl_subsystems) {
+        SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
+        s_sdl_subsystems = 0;
+    }
+    s_renderer_terminal = 0;
+    s_quit_requested = 0;
     sdl3vk_reset_input_profile();
-    SDL_Quit();
 }

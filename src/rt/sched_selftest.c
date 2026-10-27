@@ -1121,8 +1121,8 @@ static void test_title_config_configured_roles_act(void) {
         expect(launcher != 0 && g_launcher_uid == launcher,
                "the configured launcher entry claims the launcher uid");
         TCB *lt = tcb_by_uid(launcher);
-        expect(lt && lt->priority == 50,
-               "the configured launcher is demoted out of the worker's way");
+        expect(lt && lt->priority == 32,
+               "the configured launcher keeps the priority its creator passed (#363)");
     }
     if (!cfg_has(SR_TITLE_CFG_WORKER_ENTRY) && !cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
         /* Generic build: no address anywhere can claim a role. */
@@ -1138,6 +1138,40 @@ static void test_title_config_configured_roles_act(void) {
         expect(sr_title_config_fallback_entry() == 0u,
                "the generic build offers no fallback entry");
     }
+}
+
+/* #363: a launcher thread created at a higher priority than the worker it starts keeps
+ * that priority, and strict priority alone decides who runs. While the launcher is READY
+ * the lower-priority worker never runs; once the launcher blocks (a game's main thread
+ * sleeps in sceKernelSleepThread after starting its worker) the worker runs. The launcher
+ * is the configured entry when this build has one, so the creation path that used to
+ * demote it to 50 is the one under test; before the retirement the worker won while the
+ * launcher was still READY. */
+static void test_launcher_keeps_priority_and_worker_runs_after_it_blocks(void) {
+    reset_sched();
+    uint32_t root = sched_create_thread(0x00001000u, 32, 0x1000u);
+    expect(root != 0, "root create succeeds");
+    uint32_t launcher_entry = cfg_role_entry(SR_TITLE_CFG_LAUNCHER_ENTRY, 0x00007000u);
+    uint32_t launcher = sched_create_thread(launcher_entry, 32, 0x1000u);
+    uint32_t worker = sched_create_thread(0x00007100u, 38, 0x1000u);
+    expect(launcher != 0 && worker != 0, "launcher and worker creates succeed");
+    TCB *rt = tcb_by_uid(root);
+    TCB *lt = tcb_by_uid(launcher);
+    TCB *wt = tcb_by_uid(worker);
+    expect(rt && lt && wt, "all three threads exist");
+    if (!rt || !lt || !wt) return;
+    expect(lt->priority == 32 && wt->priority == 38,
+           "each thread keeps the priority its creator passed");
+    rt->state = TH_DORMANT;
+    lt->state = TH_READY;
+    wt->state = TH_READY;
+    for (int i = 0; i < 100; i++)
+        expect(pick_next() == index_of_uid(launcher),
+               "the READY higher-priority launcher always wins over its worker");
+    lt->state = TH_WAIT_OBJ;          /* an untimed sleep: only a wakeup releases it */
+    lt->wake = SCHED_WAIT_FOREVER;
+    expect(pick_next() == index_of_uid(worker),
+           "the worker runs once the launcher blocks");
 }
 
 /* Hits recorded so far for one census id in the fired-patch report, 0 when absent. */
@@ -1166,14 +1200,14 @@ static void test_compat_fired_report_names_applied_patches(void) {
                "a worker reuse appears in the fired-patch report under its census id");
     }
     if (cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
+        /* The retired demotion (#363) must not come back under its old census id. */
         snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:launcher priority demotion",
                  (unsigned)cfg_launcher_entry());
-        unsigned long long before = compat_hits(id);
         reset_sched();
         expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");
         expect(sched_create_thread(cfg_launcher_entry(), 32, 0x1000u) != 0 &&
-               compat_hits(id) == before + 1u,
-               "a launcher demotion appears in the fired-patch report under its census id");
+               compat_hits(id) == 0u,
+               "a launcher create fires no priority-demotion patch");
     }
     if (!cfg_has(SR_TITLE_CFG_WORKER_ENTRY) && !cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
         for (size_t i = 0; i < sizeof(k_candidate_entries) / sizeof(k_candidate_entries[0]); i++) {
@@ -1302,22 +1336,8 @@ static void test_historical_launcher_uid_is_ordinary_when_unconfigured(void) {
     expect(t != NULL, "the 0x111 thread exists");
     if (!t) return;
     uint32_t state_ptr = t->k0_init + 0x10u;
-    /* Launcher-only path: skipped guest-hash registration. An ordinary thread is
-     * registered, so its slot must be findable. */
-    SrTitleReentBindings reent_bindings;
-    if (sr_title_config_reent_bindings(&reent_bindings)) {
-        uint32_t bucket = uid % 32u;
-        uint32_t found = MEM_R32(reent_bindings.guest_thread_table_addr +
-                                 0x84u + bucket * 4u) == uid
-                             ? MEM_R32(reent_bindings.guest_thread_table_addr +
-                                       0x04u + bucket * 4u)
-                             : 0u;
-        expect(found == state_ptr,
-               "UID 0x111 is registered in the configured guest reent hash");
-    } else {
-        expect(MEM_R32(state_ptr + 0x37cu) == uid,
-               "unconfigured guest reent bindings leave the ordinary thread UID intact");
-    }
+    expect(MEM_R32(state_ptr + 0x37cu) == uid,
+           "an ordinary thread's reent carries its own UID");
     /* Launcher-only path: keeping an independently-initialized reent. An ordinary
      * thread inherits the master reent instead. */
     expect(MEM_R32(state_ptr) == 0xFEEDFACEu,
@@ -1377,7 +1397,7 @@ static void test_configured_entry_captures_whatever_uid_it_gets(void) {
     TCB *lt = tcb_by_uid(launcher);
     expect(lt && g_master_reent == lt->k0_init + 0x10u,
            "only the captured launcher seeds the master reent");
-    expect(lt && lt->priority == 50, "only the captured launcher is demoted");
+    expect(lt && lt->priority == 32, "the captured launcher keeps its declared priority");
 }
 
 /* Regression E: root capture is first-created-thread, with no historical default to fall
@@ -3854,6 +3874,108 @@ static void test_alarm_is_a_wake_source_for_the_idle_scheduler(void) {
     expect(st.unwakeable, "with the alarm cancelled the same sleeper is a deadlock again");
 }
 
+/* Opt-in GE completion timing (hle.c, SR_GE_TIMING): the scheduler side is a registered
+ * deadline plus a service step.  These fakes stand in for hle.c's list table. */
+static uint64_t g_ge_fake_deadline = SCHED_WAIT_FOREVER;
+static unsigned g_ge_fake_calls;
+static int g_ge_fake_seen_cur;
+static unsigned g_ge_fake_seen_vblanks;
+static unsigned g_ge_fake_seen_alarms;
+static uint64_t g_ge_fake_seen_time;
+
+static uint64_t ge_fake_next_deadline(void) { return g_ge_fake_deadline; }
+static void ge_fake_service_due(void) {
+    g_ge_fake_calls++;
+    g_ge_fake_seen_cur = s_cur;
+    g_ge_fake_seen_vblanks = g_test_handler_calls;
+    g_ge_fake_seen_alarms = g_alarm_calls;
+    g_ge_fake_seen_time = s_vtime_us;
+    g_ge_fake_deadline = SCHED_WAIT_FOREVER;   /* the due list completed */
+}
+
+static void ge_timing_fixture(void) {
+    alarm_fixture();
+    g_ge_fake_deadline = SCHED_WAIT_FOREVER;
+    g_ge_fake_calls = 0;
+    g_ge_fake_seen_cur = 0;
+    g_ge_fake_seen_vblanks = 0;
+    g_ge_fake_seen_alarms = 0;
+    g_ge_fake_seen_time = 0;
+    sched_set_ge_timing_hooks(ge_fake_next_deadline, ge_fake_service_due);
+}
+
+/* MUTANT: drop scheduler_ge_due() from scheduler_service_pending -- the completion is never
+ *   delivered; service it ahead of the VBLANK batch or after alarms -- the ordering checks fail;
+ *   leave s_cur alone around the hook -- the interrupt-context check fails. */
+static void test_ge_timing_completion_is_an_interrupt_source(void) {
+    ge_timing_fixture();
+    int running = mk(0x260u, TH_RUNNING, 20);
+    s_cur = running;
+
+    g_ge_fake_deadline = 2500u;
+    s_vtime_us = 2499u;
+    scheduler_service_pending();
+    expect(g_ge_fake_calls == 0u, "GE timing: no completion before the modelled time");
+    s_vtime_us = 2500u;
+    scheduler_service_pending();
+    expect(g_ge_fake_calls == 1u && g_ge_fake_seen_time == 2500u,
+           "GE timing: the completion is delivered once the modelled time is reached");
+    expect(g_ge_fake_seen_cur == -1 && s_cur == running,
+           "GE timing: completion runs in interrupt context and the thread is current again");
+    scheduler_service_pending();
+    expect(g_ge_fake_calls == 1u, "GE timing: a delivered completion is not delivered again");
+
+    /* Under a CpuSuspendIntr window it waits for the resume, like an alarm. */
+    g_ge_fake_deadline = 3000u;
+    s_vtime_us = 4000u;
+    uint32_t token = sched_suspend_interrupts();
+    scheduler_service_pending();
+    expect(g_ge_fake_calls == 1u, "GE timing: no completion while interrupts are suspended");
+    expect(sched_ge_wake_deadline() == SCHED_WAIT_FOREVER,
+           "GE timing: an undeliverable completion is not an idle wake source");
+    sched_resume_interrupts(token);
+    expect(g_ge_fake_calls == 2u, "GE timing: the completion is delivered at the resume");
+
+    /* A VBLANK episode, a GE completion and an alarm all due: VBLANK, GE, then the alarm. */
+    ge_timing_fixture();
+    s_cur = mk(0x261u, TH_RUNNING, 20);
+    g_test_vblank_handler = 0x00001234u;
+    sched_alarm_set(10u, ALARM_HANDLER, 0x66u);
+    g_ge_fake_deadline = 10u;
+    s_vtime_us = 20u;
+    sched_raise_interrupt(SCHED_INTR_VBLANK);
+    scheduler_service_pending();
+    expect(g_test_handler_calls == 1u && g_ge_fake_calls == 1u && g_alarm_calls == 1u,
+           "GE timing: all three sources were delivered");
+    expect(g_ge_fake_seen_vblanks == 1u && g_ge_fake_seen_alarms == 0u,
+           "GE timing: the completion runs after the VBLANK episode and before the alarm");
+
+    sched_set_ge_timing_hooks(NULL, NULL);
+}
+
+/* MUTANT: drop the GE deadline from sched_classify_idle -- a thread delayed only by a
+ *   DrawSync whose list is drawing would rely on its own delay; a waiter released by the
+ *   finish callback alone is then reported as a deadlock. */
+static void test_ge_timing_completion_is_an_idle_wake_source(void) {
+    ge_timing_fixture();
+    g_ge_fake_deadline = 7000u;
+    SchedIdleState st = sched_classify_idle();
+    expect(st.soonest == SCHED_WAIT_FOREVER && st.unwakeable,
+           "GE timing: a drawing list with no waiting thread does not keep an idle run alive");
+
+    TCB *sleeper = &s_tcb[mk(0x262u, TH_WAIT_OBJ, 32)];
+    sleeper->wait_obj = 0x53000010u;
+    sleeper->wake = SCHED_WAIT_FOREVER;
+    st = sched_classify_idle();
+    expect(st.soonest == 7000u && !st.unwakeable,
+           "GE timing: a thread waiting on a finish callback sees the completion as its next wake");
+
+    sched_set_ge_timing_hooks(NULL, NULL);
+    st = sched_classify_idle();
+    expect(st.soonest == SCHED_WAIT_FOREVER && st.unwakeable,
+           "GE timing: with no hooks registered the scheduler is unchanged");
+}
+
 static void test_alarm_table_capacity_and_reset(void) {
     alarm_fixture();
     uint32_t uids[SCHED_ALARM_MAX];
@@ -4588,6 +4710,7 @@ int main(int argc, char **argv) {
     test_role_uid_capture();
     test_title_config_foreign_entries_are_inert();
     test_title_config_configured_roles_act();
+    test_launcher_keeps_priority_and_worker_runs_after_it_blocks();
     test_compat_fired_report_names_applied_patches();
     test_delivered_vblank_writes_no_guest_memory();
     test_historical_launcher_uid_is_ordinary_when_unconfigured();
@@ -4655,6 +4778,8 @@ int main(int argc, char **argv) {
     test_alarm_cancel_and_ordering();
     test_alarm_waits_for_enabled_interrupts_and_follows_vblank();
     test_alarm_is_a_wake_source_for_the_idle_scheduler();
+    test_ge_timing_completion_is_an_interrupt_source();
+    test_ge_timing_completion_is_an_idle_wake_source();
     test_alarm_table_capacity_and_reset();
 
     /* Player pause: each case maps to the mutation in the reviewed contract. */
