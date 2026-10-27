@@ -10524,7 +10524,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c1969f0c1ebd90e012a07ff3665642cc32eec851ff1a48771e042ebb657e232b"
+      "sha256": "52d6dd418c65c7898f60a088bc34462425bb456e0632a5dbba15e5e53617bdd0"
     },
     {
       "path": "tests/native/test_player_ui_art.c",
@@ -12496,7 +12496,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e22d88a501585c7c4bae1177daade614850acfd88a7c5ad8eb3c140ba1f96228"
+      "sha256": "adc5a7a3f1f75ca5e200ef41cdc9d01ed5884a8c4cdd5eba65d23c7d51da11e1"
     },
     {
       "path": "tools/padscript_from_log.py",
@@ -14121,7 +14121,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f180300af89b3b657ea9b02078b23d399c492272215719ab0c27776dac7fe73"
+      "sha256": "ccd99ba669fe62352ff3ccc1d2e751dadd06649bcbcaf97185af76b55427b43b"
     },
     {
       "path": "tools/test_hst_title_manifest.py",
@@ -14481,7 +14481,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7ddae00c3cbbeceb49da608595d908ec3a614a0cdd16b462f63d713549ffefcd"
+      "sha256": "3cf1307f173d7775bf974e7b85a422036c512575a8228654f5fbf7f1a781b936"
     },
     {
       "path": "tools/test_package_notices.py",
@@ -14493,7 +14493,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "88edfcf4b61d30142c18912d4a8eb2153b0d5bc47b86b8ece877954bad556950"
+      "sha256": "8e13543a01b6ae9a6bac498285de690a08681ed1fc06dfb49b2dbbde85db268c"
     },
     {
       "path": "tools/test_padscript_from_log.py",
