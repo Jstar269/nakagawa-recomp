@@ -142,6 +142,14 @@ const char *nk_font_latin_index_filename(int index) {
     return (unsigned)index < NK_FONT_LATIN_INDEX_COUNT ? kLatinIndexFile[index] : NULL;
 }
 
+const char *nk_font_slot_psp_filename(NkFontSlot slot) {
+    switch (slot) {
+    case NK_FONT_SLOT_JAPANESE: return "jpn0.pgf";
+    case NK_FONT_SLOT_KOREAN:   return "kr0.pgf";
+    default:                    return NULL;
+    }
+}
+
 int nk_font_latin_index_from_filename(const char *name) {
     if (!name) return -1;
     for (int index = 0; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
@@ -830,6 +838,7 @@ void nk_font_latin_index_states(const char *user_data_root, const char *project_
         const char *requested = nk_font_latin_index_filename(index);
         bool resolved = nk_font_resolve_latin_index(user_data_root, project_font_dir, index, &resolution);
         states[index].source = resolved ? resolution.source : NK_FONT_SOURCE_NONE;
+        states[index].served_index = resolved ? resolution.served_index : -3;
         if (!resolved) {
             snprintf(states[index].detail, sizeof(states[index].detail),
                      "L%d missing %s", index + 1, requested);

@@ -12,6 +12,8 @@
 
 Part of the Nakagawa family, with [hst-decomp](https://github.com/Jstar269/hst-decomp), the matching decompilation of Hot Shots Tennis: Get a Grip.
 
+**[Website](https://jstar269.github.io/nakagawa-recomp/) · [Discussions](https://github.com/Jstar269/nakagawa-recomp/discussions) · [Wiki](https://github.com/Jstar269/nakagawa-recomp/wiki)**
+
 [![CI](https://github.com/Jstar269/nakagawa-recomp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Jstar269/nakagawa-recomp/actions/workflows/ci.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Platform: Windows 11 x64](https://img.shields.io/badge/platform-Windows%2011%20x64-0078D6.svg)](docs/SETUP.md)

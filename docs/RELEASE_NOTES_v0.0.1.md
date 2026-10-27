@@ -63,8 +63,8 @@ needs something unsupported, missing or not built yet, it stops and tells you cl
   through a read-only virtual filesystem (`sceIoOpen`, `sceIoGetstat`, `sceIoDopen`), so you don't have to unpack
   loose files before playing ([#475](https://github.com/Jstar269/nakagawa-recomp/pull/475)).
 - **Use your own PSP's fonts.** Games draw their text with the PSP's system fonts, which come from your own PSP:
-  copy `jpn0.pgf`, `ltn0.pgf`–`ltn15.pgf` and `kr0.pgf` from its `flash0:/font/` folder to your PC. In the player's
-  setup wizard, the **Fonts & System** step has **IMPORT FONTS FOLDER**; from a command line,
+  copy `jpn0.pgf`, `ltn0.pgf`–`ltn15.pgf` and `kr0.pgf` from its `flash0:/font/` folder to your PC. In the player,
+  **Settings > PSP FONTS** has **IMPORT FONTS FOLDER**; from a command line,
   `python tools/nk_cli.py fonts import <folder>` does the same.
   [How to copy the fonts from your PSP](SETUP.md#copying-the-fonts-from-your-psp) walks through it. The importer
   checks each file's header and writes its

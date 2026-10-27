@@ -7,6 +7,7 @@
 #include "ui_renderer.h"
 #include "ui/player_ui_nk.h"
 #include "nk_title_manifest.h"
+#include "nk_ui_widgets.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
@@ -280,6 +281,35 @@ static bool player_refit_to_actual_frame(SDL_Window *window,
     return player_apply_window_geometry(window, requested, usable_rect, frame,
                                         position_valid, fitted);
 }
+
+#if !defined(_WIN32) && !defined(_WIN64)
+/* The app icon (the N1 mark on its ink tile) as the window icon: 32 px, with
+   larger copies SDL picks for high-density displays. Windows needs no call: the
+   executable carries the icon (assets/brand/nakagawa.rc) and SDL gives every
+   window its sizes, where SDL_SetWindowIcon would stretch one bitmap to all. */
+static void player_set_window_icon(SDL_Window *window) {
+    static const int sizes[] = { 32, 48, 64, 128, 256 };
+    SDL_Surface *icon = NULL;
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+        SDL_Surface *image = SDL_CreateSurface(sizes[i], sizes[i], SDL_PIXELFORMAT_RGBA32);
+        if (!image || !nk_ui_app_icon_rgba(sizes[i], (unsigned char *)image->pixels,
+                                           (size_t)image->pitch)) {
+            SDL_DestroySurface(image);
+            break;
+        }
+        if (!icon) {
+            icon = image;
+        } else {
+            SDL_AddSurfaceAlternateImage(icon, image);
+            SDL_DestroySurface(image);
+        }
+    }
+    if (!icon || !SDL_SetWindowIcon(window, icon)) {
+        fprintf(stderr, "The window icon was not set: %s\n", SDL_GetError());
+    }
+    SDL_DestroySurface(icon);
+}
+#endif
 
 static void player_capture_window_settings(PlayerApp *app, SDL_Window *window) {
     if (!app || !window) return;
@@ -4361,6 +4391,9 @@ int main(int argc, char *argv[]) {
         SDL_Quit();
         return 1;
     }
+#if !defined(_WIN32) && !defined(_WIN64)
+    player_set_window_icon(window);
+#endif
     if (interactive_window && have_usable_bounds) {
         SDL_Rect usable = usable_bounds;
         player_apply_window_geometry(
@@ -4936,35 +4969,38 @@ int main(int argc, char *argv[]) {
                      event.type == SDL_EVENT_PEN_UP)) {
                     SDL_ConvertEventToRenderCoordinates(renderer, &event);
                 }
+                /* A pad arriving or leaving updates the player's state first: the
+                   launcher also takes these events for its prompts, and a consumed
+                   event left Settings and the wizard saying "keyboard and mouse"
+                   with a controller attached. */
+                if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
+                    if (!gamepad) {
+                        gamepad = SDL_OpenGamepad(event.gdevice.which);
+                        if (gamepad) {
+                            const char *pad_name = SDL_GetGamepadName(gamepad);
+                            snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
+                                     "%s", pad_name ? pad_name : "Controller");
+                            app.settings.controller_connected = true;
+                            printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
+                        }
+                    }
+                    if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                        player_ui_nk_note_gamepad(next_ui, event.gdevice.which, true);
+                    }
+                } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
+                    player_ui_nk_note_gamepad(next_ui, event.gdevice.which, false);
+                    if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                        SDL_CloseGamepad(gamepad);
+                        gamepad = NULL;
+                        app.settings.controller_name[0] = '\0';
+                        app.settings.controller_connected = false;
+                        printf("[PLAYER] Gamepad disconnected\n");
+                    }
+                }
                 if (!player_dispatch_ui_event(&app, &input, next_ui, window, &running,
                                               &close_request_handled_in_batch,
                                               &event)) {
                     switch (event.type) {
-                    case SDL_EVENT_GAMEPAD_ADDED:
-                        if (!gamepad) {
-                            gamepad = SDL_OpenGamepad(event.gdevice.which);
-                            if (gamepad) {
-                                const char *pad_name = SDL_GetGamepadName(gamepad);
-                                snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
-                                         "%s", pad_name ? pad_name : "Controller");
-                                app.settings.controller_connected = true;
-                                printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
-                            }
-                        }
-                        if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
-                            player_ui_nk_note_gamepad(next_ui, event.gdevice.which, true);
-                        }
-                        break;
-                    case SDL_EVENT_GAMEPAD_REMOVED:
-                        player_ui_nk_note_gamepad(next_ui, event.gdevice.which, false);
-                        if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
-                            SDL_CloseGamepad(gamepad);
-                            gamepad = NULL;
-                            app.settings.controller_name[0] = '\0';
-                            app.settings.controller_connected = false;
-                            printf("[PLAYER] Gamepad disconnected\n");
-                        }
-                        break;
                     case SDL_EVENT_USER:
                         if (ui_renderer_handle_async_event(renderer, &event)) {
                             break;
