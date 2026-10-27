@@ -13,6 +13,7 @@ discovered function count and ``--funcs-per-chunk``/``--target-chunk-bytes``; it
 never a fixed per-title constant.
 """
 
+import bisect
 import struct
 import re
 import os
@@ -542,15 +543,31 @@ def symbol_map_renames(symbols, emitted, resume_owners):
     A callable entry the map names becomes f_<addr>_<name>; the address stays
     in the symbol, so two static functions that share a name stay distinct. A
     resume body takes the name of the callable that owns it: r_<addr>_<owner>.
+    Any other entry inside a function whose size the map gives, past its start,
+    is named after it with an `in_`: f_<addr>_in_<name> (r_<addr>_in_<name> for
+    a resume body whose owner has no name).
     """
+    sized = sorted((addr, size, name) for addr, (name, size) in symbols.items() if size)
+    starts = [addr for addr, _size, _name in sized]
+
+    def containing(addr):
+        i = bisect.bisect_right(starts, addr) - 1
+        if i >= 0 and addr - sized[i][0] < sized[i][1]:
+            return sized[i][2]
+        return None
+
     renames = {}
     for addr in sorted(set(emitted)):
         if addr in resume_owners:
             owner = symbols.get(resume_owners[addr])
             if owner is not None:
                 renames[f"r_{addr:08x}"] = f"r_{addr:08x}_{owner[0]}"
+            elif (inside := containing(addr)) is not None:
+                renames[f"r_{addr:08x}"] = f"r_{addr:08x}_in_{inside}"
         elif addr in symbols:
             renames[f"f_{addr:08x}"] = f"f_{addr:08x}_{symbols[addr][0]}"
+        elif (inside := containing(addr)) is not None:
+            renames[f"f_{addr:08x}"] = f"f_{addr:08x}_in_{inside}"
     return renames
 
 
@@ -3922,14 +3939,27 @@ def main(argv):
                 + ", ".join(collisions) + "\n")
             return 2
         emitted_set = set(emitted)
+        emitted_sorted = sorted(emitted_set)
+
+        def holds_an_entry(a, size):
+            i = bisect.bisect_left(emitted_sorted, a)
+            return i < len(emitted_sorted) and emitted_sorted[i] - a < size
+
+        # The runtime names an address inside a function from this table, so a
+        # function whose own start is not an entry is in it when an entry is inside.
         symbol_table = sorted(
-            (a, name, size) for a, (name, size) in names.items() if a in emitted_set)
+            (a, name, size) for a, (name, size) in names.items()
+            if a in emitted_set or (size and holds_an_entry(a, size)))
         if symbol_map_path is not None:
-            named_resumes = sum(1 for symbol in renames if symbol.startswith("r_"))
+            renamed = [int(symbol[2:], 16) for symbol in renames]
+            named_resumes = sum(1 for a in renamed
+                                if a in resume_owners and resume_owners[a] in names)
+            inside = sum(1 for a in renamed if a not in names
+                         and not (a in resume_owners and resume_owners[a] in names))
             sys.stderr.write(
                 f"symbol map: {sum(1 for a in symbols if a in emitted_set)} of {len(symbols)} "
                 f"function name(s) name an emitted entry; {named_resumes} resume bodies take "
-                "their owner's name\n")
+                f"their owner's name; {inside} entries inside a named function take its name\n")
         if name_imports:
             sys.stderr.write(
                 f"import names: {named_imports} of {len(import_nids)} import stubs named "

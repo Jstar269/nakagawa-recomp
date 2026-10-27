@@ -1146,6 +1146,76 @@ class SymbolMapPipelineTests(unittest.TestCase):
         self.assertEqual(ran.stdout.replace("\r\n", "\n"), expected + "empty=[]\n")
 
 
+# Sized functions whose starts are not all entries: an analyzer entry inside one, past its start,
+# is named after it with `in_`.
+REGION_SIZE = TAIL_SOURCE - TINY_LEAF        # TINY_LEAF .. INDIRECT_CALLER; TAIL_SOURCE is outside
+TAIL_REGION = RESUME - 8                     # not an entry; its 0x10 bytes hold only RESUME
+CONTAINMENT_MAP_TEXT = f"""\
+region_fn = 0x{TINY_LEAF:08x}; // type:func size:0x{REGION_SIZE:x}
+tail_region = 0x{TAIL_REGION:08x}; // type:func size:0x10
+"""
+
+
+class SymbolMapContainmentTests(unittest.TestCase):
+    """An entry inside a sized map function, past its start, is f_<addr>_in_<name>."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = scratch_dir.TemporaryDirectory(prefix="symbol_map_inside_")
+        root = Path(cls._tmp.name)
+        cls.plain_run = _run_codegen(root / "plain", None)
+        cls.inside_run = _run_codegen(root / "inside", CONTAINMENT_MAP_TEXT)
+        for run in (cls.plain_run, cls.inside_run):
+            if run.returncode != 0:
+                raise AssertionError(run.stderr + run.stdout)
+        cls.plain = _generated_files(root / "plain")
+        cls.inside = _generated_files(root / "inside")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def _chunks(self) -> str:
+        return "\n".join(text for name, text in self.inside.items()
+                         if name.startswith("fixture_") and name[8:-2].isdigit())
+
+    def test_entries_inside_take_the_function_name(self):
+        chunks = self._chunks()
+        self.assertIn(f"void f_{TINY_LEAF:08x}_region_fn(CpuState *s) {{", chunks)
+        self.assertIn(f"void f_{INDIRECT_CALLER:08x}_in_region_fn(CpuState *s) {{", chunks)
+        self.assertIn(f"sr_register(0x{INDIRECT_CALLER:08x}u, f_{INDIRECT_CALLER:08x}_in_region_fn);",
+                      chunks)
+        # A resume body whose owner has no name takes the sized function it lies in.
+        self.assertIn(f"void r_{RESUME:08x}_in_tail_region(CpuState *s) {{", chunks)
+        # One past the size, and an entry no sized function holds, keep their addresses.
+        self.assertIn(f"void f_{TAIL_SOURCE:08x}(CpuState *s) {{", chunks)
+        self.assertIn(f"void f_{OWNER:08x}(CpuState *s) {{", chunks)
+        self.assertIn("symbol map: 1 of 2 function name(s) name an emitted entry; 0 resume bodies "
+                      "take their owner's name; 2 entries inside a named function take its name",
+                      self.inside_run.stderr)
+
+    def test_a_function_holding_an_entry_joins_the_runtime_table(self):
+        # tail_region's own start is no entry, but the runtime must still name RESUME.
+        main = self.inside["fixture.c"]
+        self.assertIn(f'    {{0x{TAIL_REGION:08x}u, 0x00000010u, "tail_region"}},\n'
+                      f'    {{0x{TINY_LEAF:08x}u, 0x{REGION_SIZE:08x}u, "region_fn"}},\n}};', main)
+        self.assertIn("    sr_guest_symbols_register(sr_guest_symbol_table, 2u);", main)
+
+    def test_names_change_symbol_spellings_and_nothing_else(self):
+        self.assertEqual(sorted(self.inside), sorted(self.plain))
+        for name, text in self.inside.items():
+            undone = re.sub(r"\b([fr]_[0-9a-f]{8})_(?:in_)?(?:region_fn|tail_region)\b", r"\1", text)
+            if name == "fixture.c":
+                undone = re.sub(
+                    r"\n\n/\* Guest function names from --symbol-map[^\n]*\n"
+                    r"static const SrGuestSymbol sr_guest_symbol_table\[\] = \{\n.*?\n\};",
+                    "", undone, flags=re.S)
+                undone = undone.replace(
+                    "    sr_guest_symbols_register(sr_guest_symbol_table, 2u);\n", "")
+            with self.subTest(file=name):
+                self.assertEqual(undone, self.plain[name])
+
+
 class SymbolMapFileTests(unittest.TestCase):
     """The map format: ld symbol assignments, comments, and refusals with a line number."""
 
