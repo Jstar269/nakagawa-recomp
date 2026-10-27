@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import publication_policy
+import publish_audit
 import test_public_title_isolation
 import title_manifest
 
@@ -44,9 +45,7 @@ PUBLIC_FIELDS = {
 
 
 class HstTitleManifestTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.path = ROOT / REL
+    path = ROOT / REL
 
     def setUp(self) -> None:
         self.raw = self.path.read_bytes()
@@ -149,7 +148,15 @@ class HstTitleManifestTests(unittest.TestCase):
         self.assertTrue(text.isascii(), "the public manifest is plain ASCII")
         lowered = text.lower()
         self.assertNotIn("\\", text, "no Windows paths or escapes")
-        for marker in ("c:/", "/users/", "/home/", "appdata", "jstar", ".iso", "xbdata_extracted"):
+        self.assertNotRegex(text, r"[A-Za-z]:/", "no drive-letter paths")
+        # The publication audit's own user-profile, temp and share path patterns.
+        for pattern in (
+            publish_audit.WINDOWS_USER_PATH, publish_audit.POSIX_USER_PATH, publish_audit.MAC_USER_PATH,
+            publish_audit.WSL_USER_PATH, publish_audit.UNC_PATH, publish_audit.ONEDRIVE_PATH,
+            publish_audit.TEMP_PATH,
+        ):
+            self.assertIsNone(pattern.search(text), pattern.pattern)
+        for marker in ("appdata", ".iso", "xbdata_extracted"):
             self.assertNotIn(marker, lowered, marker)
         policy = publication_policy.load_policy(ROOT / "assets" / "public_source_profile.json")
         for private_root in policy.private_roots:

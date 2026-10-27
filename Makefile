@@ -622,11 +622,9 @@ CPU_STATE_ABI_HEADER := src/rt/recomp.h
 # which every optional binding is disabled -- so `make runtime-objects` needs no game
 # input at all, and no default build inherits any title's addresses.
 #
-# HST binds its real values through the local title manifest
+# HST binds its real values through its title manifest
 # (assets/titles/hst-ucus98701.json, supplied by nk_manager.ps1 -TitleManifest or by
-# TITLE_MANIFEST= on a direct Make command line). That file is intentionally never
-# checked in and is publication-excluded, with a .gitignore accident guard.
-# They are deliberately not encoded here.
+# TITLE_MANIFEST= on a direct Make command line). They are deliberately not encoded here.
 TITLE_MANIFEST ?=
 TITLE_CONFIG_TOOL := tools/title_runtime_config.py
 TITLE_CONFIG_DIR ?= $(BUILD_DIR)

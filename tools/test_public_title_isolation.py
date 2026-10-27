@@ -91,10 +91,8 @@ class PublicTitleIsolationTests(unittest.TestCase):
         """Every tracked title in assets/titles/ must be explicitly INCLUDED by policy.
 
         The contract is about what the repository tracks, so enumerate the index
-        rather than the directory: assets/titles/ also holds the operator's
-        publication-excluded retail manifest on any working tree that can
-        actually run the title, and that exclusion is exactly what keeps it out
-        of the public tree.
+        rather than the directory: assets/titles/ can also hold a developer's
+        untracked private manifest, and only tracked, included files are public.
         """
         json_files = tracked_titles()
         self.assertGreater(len(json_files), 0, "Expected at least one public title manifest")

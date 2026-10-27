@@ -1,6 +1,6 @@
 # Title Profile and Launch Session Architecture
 
-> **Status: CURRENT.** This page describes the public title-manifest and launch contracts visible in source. Private title manifests, game-derived bindings, and acceptance evidence stay outside the public repository.
+> **Status: CURRENT.** This page describes the public title-manifest and launch contracts visible in source. The HST manifest is public (`assets/titles/hst-ucus98701.json`); game inputs, other private title manifests and acceptance evidence stay outside the repository.
 
 ## 1. Goal and current evidence
 
@@ -83,8 +83,8 @@ guest namespace:
 ]
 ```
 
-The private flagship manifest expresses its roots with these same typed entries;
-its local manifest and inputs remain outside this repository. A manifest that
+The flagship manifest, `assets/titles/hst-ucus98701.json`, expresses its roots
+with these same typed entries; its game inputs stay outside this repository. A manifest that
 omits `loose_content_roots` still loads and normalizes to an empty list. That is
 the explicit migration default: no neighboring-directory discovery occurs, so
 profiles that need extra roots must add the field before expecting those files
