@@ -8,11 +8,30 @@ in [`tools/test_hardware_runner_protocol.py`](../tools/test_hardware_runner_prot
 Dynamic `usbipd` discovery/attach and the bounded L0-L2 host recovery path are
 already implemented for this scalar adapter. Boot-time PSPLink autostart,
 standalone L3 relaunch, and the resident framed runner are not yet qualified.
-Campaigns require the source-owned `transport-write` case first. Its host0
-round-trip passed in simulation but failed in the W1-psplink3 live run; that
-run captured an envelope but accepted none.
-The PSP-side resident v2 runner and dual-path result protocol remain unbuilt;
-see [What still requires a human / build order](#9-build-order-and-open-attestation).
+Campaigns require the source-owned `transport-write` case first. It failed in
+the 2026-09-23 W1-psplink3 live run (`HOST0_ROUNDTRIP_FAILED`, no envelope
+accepted; see the table below), and has passed on hardware since: it is
+MEASURED as `PSP-TRANSPORT-001` in the 2026-10-10 PSP-3000 campaign on
+`f6ccfb33`, and the preflight passed on every 2026-10-15 launch, including all
+32 launches of the requalified campaign queue on `f2d6c91a`
+([HARDWARE_ORACLE.md](HARDWARE_ORACLE.md#measured-to-date-index--exact-cells-only-do-not-generalize)).
+A passing preflight qualifies the transport before a case only. The host0
+round-trip after a case can still fail: the 2026-10-10 single-case HLE runs
+failed their post-unload shell qualification and host0 round-trip, and the
+900-second 2026-10-18 raw UMD read run passed the preflight but ended
+`HOST0_ROUNDTRIP_FAILED` at its host case timeout, followed by a transport loss
+([PSP-UMDRAW-001](HARDWARE_ORACLE.md#psp-umdraw-001-raw-umd-read-probe)).
+Resident runner candidate: the Nakagawa Link resident PSP agent. Its source is
+not in this repository; this repository records it only as the watchdog armed
+around the 2026-10-24 `hle-issues-batch` and `hle-intr-cells` launches, which
+ran through a private PSPLink driver, with no runner envelope and no
+`transport-write` preflight, so neither is acceptance-eligible
+([HARDWARE_ORACLE.md](HARDWARE_ORACLE.md#measured-to-date-index--exact-cells-only-do-not-generalize)).
+It is not adopted. Until its source is admitted and a host adapter speaks the
+v2 framing to it, the framed resident runner and the dual-path result protocol
+remain unbuilt here and every PSP case still runs through `run_psplink.py`
+(issue [#352](https://github.com/Jstar269/nakagawa-recomp/issues/352); see
+[What still requires a human / build order](#9-build-order-and-open-attestation)).
 This document extends, and defers to, the implemented scalar-probe subset
 described in [HARDWARE_ORACLE.md](HARDWARE_ORACLE.md) and
 [`fixtures/psp_oracle/README.md`](../fixtures/psp_oracle/README.md).
