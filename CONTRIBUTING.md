@@ -231,11 +231,16 @@ Run checks proportional to the change:
 
 ```powershell
 .\nk_manager.ps1 -Action Test  # uses the public synthetic manifest by default
-.\nk_manager.ps1 -Action BuildFast -TitleManifest assets/titles/hst-ucus98701.json -GameName hst  # runtime-only change
-.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst  # codegen/pipeline change
+mingw32-make --no-print-directory native-core-tests  # runtime change
+mingw32-make --no-print-directory display-smoke      # codegen/pipeline change: full build of a synthetic fixture, no game needed
 python -m unittest discover -s tools -p "test_*.py" -v
 python tools/publish_audit.py --tracked-only --worktree
 ```
+
+To rebuild a game you own, pass its local title manifest:
+`.\nk_manager.ps1 -Action BuildFast -TitleManifest <your manifest> -GameName <name>` for a runtime-only change, or
+`-Action BuildFull` after a codegen or pipeline change ([docs/SETUP.md](docs/SETUP.md#3-build)). Title manifests
+that name a retail game, such as the maintainer's Hot Shots Tennis one, stay local and are not in the repository.
 
 Pass `--worktree` when auditing by hand: it reads the bytes on disk. The bare `--tracked-only`
 form reads staged Git blobs, which is correct for the pre-commit hook (it stashes unstaged

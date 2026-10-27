@@ -399,7 +399,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7291cc171965066e79d04f2da0f8cbac32e52f63233934b9750be2555e0e4e29"
+      "sha256": "fe2cf281c7f9e88c4c81c5689915aa1e7ee0e13298e1dc7cf08b78d509956d82"
     },
     {
       "path": "CREDITS.md",
@@ -11278,7 +11278,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "db488fbe93b2788cb397fe59b8fc18f669352ce3d312eddccf8245596ac853e0"
+      "sha256": "1541198f38e4bf339fecbad12362f34fe001a568088f99801a1449af05786d78"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
