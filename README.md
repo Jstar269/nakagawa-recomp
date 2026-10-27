@@ -58,8 +58,9 @@ To play, you need:
 - **8 GB of RAM** (16 GB recommended) and **5 GB of free disk space**, ideally on an SSD. Building a
   game is the heavy part; [System requirements](docs/SETUP.md#system-requirements) has the measured numbers.
 - **Your own copy of the game**, as an uncompressed `.iso` disc image. Nothing here downloads games, firmware or fonts.
-- **Decrypted files from your own copy** if the game's code is encrypted, as it is on most retail PSP discs.
-  Nakagawa does not decrypt games. [`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md) explains what goes where.
+- Nothing else for most discs. The game's code is encrypted on most retail PSP discs, and Nakagawa decrypts your own
+  disc on your PC when you add it, the way PPSSPP does. It never touches firmware.
+  [`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md) explains what it does and what to do if a file can't be decrypted.
 
 What to expect: one game is far along, one plays a stage, and the rest are untested. The next section has the detail.
 
@@ -108,9 +109,9 @@ This is the developer route, and today the only way to play. New to this? The
    MSYS2 UCRT64).
 2. **Add a game you own.** Start `build\nakagawa_player.exe`, then drag its `.iso` into the player window, or choose
    **START SETUP WIZARD** (later **ADD ANOTHER ISO**).
-3. **Add decrypted files if the game is encrypted.** Nakagawa does not decrypt games; it uses decrypted files from
-   your own copy, and the player names any that are missing ([`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md)
-   shows what goes where).
+3. **Let the player check the disc.** If the game's code is encrypted, Nakagawa decrypts your own disc on your PC
+   into its folder for that game. If a file can't be decrypted, the player says which and why, and you can add a
+   decrypted copy from your own disc instead ([`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md)).
 4. **Press BUILD PACKAGE, then Play.** On a clean PATH, consent once and the player fetches its pinned build tools.
 5. **Optional:** text uses the project's own open fonts ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313));
    for the PSP's original typography, import the fonts from your own PSP with
@@ -145,8 +146,8 @@ FFmpeg. It is not endorsed by those upstream authors. Details: [NOTICE.md](NOTIC
 Nakagawa Recomp is an independent fan project. It is not affiliated with or endorsed by Sony Interactive
 Entertainment, Clap Hanz, or any game publisher. PlayStation and PSP are trademarks of Sony Interactive
 Entertainment Inc., and game titles are trademarks of their owners; they are named here only to say what the project
-works with. This repository contains no game files, keys, firmware or system fonts, and Nakagawa does not decrypt
-games.
+works with. This repository contains no game files, firmware or system fonts. Nakagawa decrypts your own disc
+locally with the public game key tables PPSSPP ships; it never downloads games and never decrypts firmware.
 
 Rights holders with a concern about anything here can contact the maintainer privately through
 [GitHub private reporting](https://github.com/Jstar269/nakagawa-recomp/security/advisories/new) or the contact on

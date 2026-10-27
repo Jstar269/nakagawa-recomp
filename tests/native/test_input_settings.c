@@ -906,6 +906,114 @@ static void test_hostile_profile_files(void) {
     printf("[INPUT_SETTINGS_TEST] Subtest 11 PASSED!\n");
 }
 
+/* -----------------------------------------------------------------------------
+ * 12. Keyboard keys on the Controls page (#1299)
+ * -------------------------------------------------------------------------- */
+static void test_keyboard_keys(void) {
+    printf("[INPUT_SETTINGS_TEST] Subtest 12: keyboard keys listed, rebound, refused, reset, saved...\n");
+
+    /* The profile's default keys (nk_input_profile_init_default) in the page's words. */
+    static const char *const expected[INPUT_CONTROL_DIGITAL_COUNT] = {
+        "Left Shift / Right Shift", "Enter", "Up Arrow", "Right Arrow", "Down Arrow",
+        "Left Arrow", "Q", "W", "S", "Z", "X", "A", "None", "None"
+    };
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/test_keyboard_keys_profile.json";
+    const int key_c = nk_host_key_from_name("c");
+    const int key_x = nk_host_key_from_name("x");
+    char buf[64];
+    char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
+    InputSettingsState state;
+    remove(file_path);
+    input_settings_init(&state);
+    assert(state.device == INPUT_DEVICE_CONTROLLER);
+
+    /* Every PSP button is listed with the key the profile gives it. */
+    for (int i = 0; i < INPUT_CONTROL_DIGITAL_COUNT; i++) {
+        input_settings_format_key_binding(&state, i, buf, sizeof(buf));
+        if (strcmp(buf, expected[i]) != 0) {
+            printf("[INPUT_SETTINGS_TEST] %s shows '%s', expected '%s'\n",
+                   input_settings_control_name(i), buf, expected[i]);
+        }
+        assert(strcmp(buf, expected[i]) == 0);
+    }
+    state.profile.psp_keys[NK_PSP_BTN_HOME].primary = nk_host_key_from_name("kp_5");
+    input_settings_format_key_binding(&state, INPUT_CONTROL_BTN_HOME, buf, sizeof(buf));
+    assert(strcmp(buf, "Keypad 5") == 0);
+    state.profile.psp_keys[NK_PSP_BTN_HOME].primary = NK_HOST_KEY_NONE;
+
+    /* On the keyboard page a chosen button waits for a key, and the key pressed is
+     * its key; a controller input does not answer the wait. */
+    input_settings_set_device(&state, INPUT_DEVICE_KEYBOARD);
+    assert(input_settings_start_capture(&state, INPUT_CONTROL_BTN_START));
+    NkBindingSource south = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_SOUTH };
+    assert(!input_settings_feed_capture_source(&state, south));
+    assert(input_settings_is_capturing(&state));
+    assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_START].primary.index == NK_HOST_BUTTON_START);
+    assert(input_settings_feed_capture_key(&state, key_c));
+    assert(!input_settings_is_capturing(&state));
+    assert(state.profile.psp_keys[NK_PSP_BTN_START].primary == key_c);
+    assert(state.key_note[0] == '\0');
+
+    /* A key another button uses is refused: both keep their keys, and the page says why. */
+    assert(input_settings_start_capture(&state, INPUT_CONTROL_BTN_START));
+    assert(!input_settings_feed_capture_key(&state, key_x));
+    assert(!input_settings_is_capturing(&state));
+    assert(state.profile.psp_keys[NK_PSP_BTN_START].primary == key_c);
+    assert(state.profile.psp_keys[NK_PSP_BTN_CROSS].primary == key_x);
+    assert(strcmp(state.key_note,
+                  "X is already the key for Cross. Choose another key, or change Cross first.") == 0);
+    /* A button's second key counts too, and Escape, F1 and codes past the key table
+     * cannot be bound at all. */
+    assert(!input_settings_assign_key(&state, INPUT_CONTROL_BTN_CIRCLE,
+                                      nk_host_key_from_name("rshift")));
+    assert(!input_settings_assign_key(&state, INPUT_CONTROL_BTN_CIRCLE, 41));
+    assert(!input_settings_assign_key(&state, INPUT_CONTROL_BTN_CIRCLE, 58));
+    assert(!input_settings_assign_key(&state, INPUT_CONTROL_BTN_CIRCLE, NK_HOST_KEY_LIMIT));
+    assert(strstr(state.key_note, "can't be used") != NULL);
+    assert(state.profile.psp_keys[NK_PSP_BTN_CIRCLE].primary == nk_host_key_from_name("z"));
+    assert(nk_input_profile_validate(&state.profile, diag, sizeof(diag)) == NK_OK);
+
+    /* Reset to defaults resets only the device shown. */
+    NkBindingSource left_stick = { NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_LEFT_STICK };
+    assert(input_settings_assign_binding(&state, INPUT_CONTROL_BTN_START, left_stick));
+    input_settings_reset_device_to_defaults(&state);
+    assert(state.profile.psp_keys[NK_PSP_BTN_START].primary == nk_host_key_from_name("return"));
+    assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_START].primary.index ==
+           NK_HOST_BUTTON_LEFT_STICK);
+    assert(state.key_note[0] == '\0');
+    assert(input_settings_assign_key(&state, INPUT_CONTROL_BTN_START, key_c));
+    input_settings_set_device(&state, INPUT_DEVICE_CONTROLLER);
+    input_settings_reset_device_to_defaults(&state);
+    assert(state.profile.psp_buttons[INPUT_CONTROL_BTN_START].primary.index == NK_HOST_BUTTON_START);
+    assert(state.profile.psp_keys[NK_PSP_BTN_START].primary == key_c);
+
+    /* The key is saved with the mapping and loaded back. */
+    assert(input_settings_save(&state, file_path) == NK_OK);
+    InputSettingsState loaded;
+    assert(input_settings_load(&loaded, file_path) == NK_OK);
+    assert(!loaded.has_load_diagnostic);
+    input_settings_format_key_binding(&loaded, INPUT_CONTROL_BTN_START, buf, sizeof(buf));
+    assert(strcmp(buf, "C") == 0);
+
+    /* A game's own keys reach the file the launched game is handed (NK_INPUT_PROFILE). */
+    assert(input_settings_set_scope(&loaded, "UCUS98701"));
+    input_settings_set_device(&loaded, INPUT_DEVICE_KEYBOARD);
+    assert(input_settings_assign_key(&loaded, INPUT_CONTROL_BTN_HOME, nk_host_key_from_name("h")));
+    assert(input_settings_save(&loaded, file_path) == NK_OK);
+    char path[NK_MAX_PATH] = {0};
+    assert(input_settings_write_disc_profile(&loaded, "UCUS98701", path, sizeof(path),
+                                             diag, sizeof(diag)) == NK_OK);
+    assert(native_test_path_within(path, native_test_get_root()));
+    NkInputProfile handed;
+    assert(nk_input_profile_load(&handed, path, diag, sizeof(diag)) == NK_OK);
+    assert(handed.psp_keys[NK_PSP_BTN_START].primary == key_c);
+    assert(handed.psp_keys[NK_PSP_BTN_HOME].primary == nk_host_key_from_name("h"));
+
+    remove(path);
+    remove(file_path);
+    printf("[INPUT_SETTINGS_TEST] Subtest 12 PASSED!\n");
+}
+
 int main(void) {
     /* Unbuffered: a failing case names itself on stdout, and the harness reads
      * that line even when the run aborts on the assert that follows. */
@@ -933,6 +1041,7 @@ int main(void) {
     test_guided_calibration_and_resting_extremes();
     test_per_title_scope_and_atomic_save();
     test_hostile_profile_files();
+    test_keyboard_keys();
 
     native_test_assert_real_config_untouched();
 
