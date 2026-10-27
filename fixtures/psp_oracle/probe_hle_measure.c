@@ -713,24 +713,51 @@ static int hle_run(void)
 /* ------------------------------------------------------------------------- */
 #if PSP_ORACLE_CASE == HLE_CASE_SYSPARAM
 
-/* Private string bytes go to their own host0 file, never into a TEST record. */
+#define HLE_STRING_BYTES 256u
+#define HLE_PRIVATE_STRINGS_PATH "host0:/hle_sysparam_private_strings.txt"
+#define HLE_PRIVATE_HEADER_BYTES 64u
+
+/* Private string bytes go to their own host0 file, never into a TEST record. The file
+   holds the console owner's nickname and no tool reads it, so it must not outlive the
+   case (#1072 M4): the probe reads it back, compares it with what it wrote, and then
+   removes it whatever the comparison found. A failed write, read-back, comparison or
+   removal marks the log failed, so COMPLETE reports FAIL when the bytes did not round
+   trip or the file may still be on the host. */
 static void hle_private_nickname_write(const uint8_t *bytes, uint32_t length)
 {
-    const SceUID fd = sceIoOpen("host0:/hle_sysparam_private_strings.txt",
-                                PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    static uint8_t written[HLE_PRIVATE_HEADER_BYTES + HLE_STRING_BYTES];
+    static uint8_t observed[sizeof(written) + 1u];
+    const int header = snprintf((char *)written, HLE_PRIVATE_HEADER_BYTES,
+                                "NICKNAME_BYTES=%u\n", (unsigned int)length);
+    if (header <= 0 || header >= (int)HLE_PRIVATE_HEADER_BYTES || length > HLE_STRING_BYTES) {
+        s_log_failed = 1;
+        return;
+    }
+    memcpy(written + header, bytes, length);
+    const SceSize total = (SceSize)header + (SceSize)length;
+    SceUID fd = sceIoOpen(HLE_PRIVATE_STRINGS_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
     if (fd < 0) {
         s_log_failed = 1;
         return;
     }
-    static char header[64];
-    snprintf(header, sizeof(header), "NICKNAME_BYTES=%u\n", (unsigned int)length);
-    (void)sceIoWrite(fd, header, strlen(header));
-    if (length > 0) {
-        (void)sceIoWrite(fd, bytes, (SceSize)length);
+    const int wrote = sceIoWrite(fd, written, total);
+    const int write_close = sceIoClose(fd);
+    int verified = wrote == (int)total && write_close >= 0;
+    memset(observed, 0, sizeof(observed));
+    fd = sceIoOpen(HLE_PRIVATE_STRINGS_PATH, PSP_O_RDONLY, 0);
+    if (fd < 0) {
+        verified = 0;
+    } else {
+        const int read = sceIoRead(fd, observed, (SceSize)sizeof(observed));
+        const int read_close = sceIoClose(fd);
+        verified = verified && read == (int)total && read_close >= 0 &&
+                   memcmp(written, observed, total) == 0;
     }
-    if (sceIoClose(fd) < 0) {
+    if (sceIoRemove(HLE_PRIVATE_STRINGS_PATH) < 0 || !verified) {
         s_log_failed = 1;
     }
+    memset(written, 0, sizeof(written));
+    memset(observed, 0, sizeof(observed));
 }
 
 static void hle_int_param(const char *case_id, int id)
@@ -744,8 +771,6 @@ static void hle_int_param(const char *case_id, int id)
     memcpy(&out, &value, sizeof(out));
     hle_record(case_id, "PASS", (uint32_t)rc, &out, 1);
 }
-
-#define HLE_STRING_BYTES 256u
 
 static void hle_string_param(const char *case_id, int id, int length, int keep_private)
 {

@@ -817,6 +817,7 @@
           "sceIoWrite",
           "sceIoRead",
           "sceIoClose",
+          "sceIoRemove",
           "sceKernelSleepThread",
           "sceKernelExitThread",
           "sceKernelWakeupThread",
@@ -842,9 +843,9 @@
           "string-id-1-len-0x04",
           "hle-sysparam-done"
         ],
-        "invariant": "every documented int id (2-9), three unknown int ids, and the documented string id (nickname) with return codes and string lengths; string bytes go to a private host0 file, never a TEST record",
+        "invariant": "every documented int id (2-9), three unknown int ids, and the documented string id (nickname) with return codes and string lengths; string bytes go to a private host0 file, never a TEST record, and the probe removes that file after reading it back",
         "issues": [],
-        "risk": "low; read-only; the nickname is written only to the private host0 scratch",
+        "risk": "low; read-only; the nickname is written only to private host0 scratch, which the probe removes before the case ends",
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
