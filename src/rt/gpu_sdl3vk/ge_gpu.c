@@ -2564,10 +2564,24 @@ static void snap_fill(StateSnap *o, int persp, int sprite) {
     o->flushgen = s_flushgen;
 }
 
+/* ge_state_serial() when s_snapst was last filled or matched.  snap_fill reads only GE state,
+ * persp, sprite and s_flushgen, so while none of them moved it would reproduce s_snapst exactly
+ * and the template still applies: the primitives of one draw skip the fill and compare. */
+static uint32_t s_snapst_serial;
+
 static void state_get(int persp, int sprite, Batch *out) {
     uint64_t prep_started = cpu_profile_now();
+    uint32_t serial = ge_state_serial();
+    if (s_tmpl_ok && serial == s_snapst_serial && s_snapst.persp == persp &&
+        s_snapst.sprite == sprite && s_snapst.flushgen == s_flushgen) {
+        *out = s_tmpl;
+        if (s_cpu_profile) s_cpu_profile_stats.state_cache_hits++;
+        cpu_profile_add(GEGPU_CPU_STATE_PREP, prep_started);
+        return;
+    }
     StateSnap sn; snap_fill(&sn, persp, sprite);
     if (s_tmpl_ok && !memcmp(&sn, &s_snapst, sizeof(sn))) {
+        s_snapst_serial = serial;
         *out = s_tmpl;
         if (s_cpu_profile) s_cpu_profile_stats.state_cache_hits++;
         cpu_profile_add(GEGPU_CPU_STATE_PREP, prep_started);
@@ -2581,6 +2595,7 @@ static void state_get(int persp, int sprite, Batch *out) {
     build_state(persp, sprite, &s_tmpl);
     prep_started = cpu_profile_now();
     snap_fill(&s_snapst, persp, sprite);  /* re-fill: build_state may have submitted */
+    s_snapst_serial = serial;             /* build_state runs no GE command */
     s_tmpl_ok = 1;
     *out = s_tmpl;
     if (s_cpu_profile) {

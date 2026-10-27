@@ -165,6 +165,9 @@ enum {
 
 /* GeState now lives in ge_shared.h (shared with the optional GPU backend). */
 static GeState ge;
+/* Bumped whenever GE state may change (every list command, init, replay restore); state
+ * derived from registers and cached between commands is keyed on it (light_consts). */
+static uint32_t s_ge_state_serial;
 static uint32_t s_ge_command[256];
 static int s_ge_inited = 0;
 static GeCpuProfileStats s_cpu_profile_stats;
@@ -708,6 +711,7 @@ void ge_set_gpu_hooks(const GeGpuHooks *h) {
     s_gpu = h;
 }
 GeState *ge_state_ptr(void) { return &ge; }
+uint32_t ge_state_serial(void) { return s_ge_state_serial; }
 void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) {
     if (s_gpu && s_gpu->vram_dirty) s_gpu->vram_dirty(addr, bytes);
 }
@@ -720,6 +724,7 @@ static float decode_float24(uint32_t data) {
 }
 
 static void ge_state_init(void) {
+    s_ge_state_serial++;
     memset(s_ge_command, 0, sizeof(s_ge_command));
     ge.scis_x2 = 479; ge.scis_y2 = 271;
     ge.maxz = 0xFFFF;
@@ -997,6 +1002,7 @@ uint32_t  ge_zbuf_stride(void) { return zbuf_stride(); }
 void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
     if (!state || !zbuf) return;
     ge = *state;
+    s_ge_state_serial++;
     memcpy(s_zbuf, zbuf, sizeof(s_zbuf));
     s_zbuf_guest_base = state->zbp ? SR_PHYS(state->zbp) : SR_VRAM_CPU_BASE;
     if (s_zbuf_guest_base < 0x00200000u) s_zbuf_guest_base += SR_VRAM_CPU_BASE;
@@ -2797,6 +2803,56 @@ static void mat44_mul(const float *m, float ix, float iy, float iz, float *ox, f
 
 static float c8f(uint32_t col, int chan) { return (float)((col >> (chan*8)) & 0xFF) * (1.0f/255.0f); }
 
+/* Lighting inputs that only depend on GE registers: the material and scene colours as
+ * floats, each light's colours, and a directional light's normalized direction. They are
+ * the same expressions light_vertex used to evaluate for every vertex, computed once after
+ * the GE state last changed (every list command bumps s_ge_state_serial), so every value
+ * is bit-identical to the per-vertex evaluation. */
+typedef struct {
+    int on, comp, type;
+    float lx, ly, lz;            /* direction (normalized) for directional lights, else position */
+    float acol[3], dcol[3], scol[3];
+} LightConst;
+typedef struct {
+    uint32_t serial;
+    int valid;
+    float mat_amb[3], mat_dif[3], mat_spe[3], emissive[3], amb[3];
+    LightConst light[4];
+} LightConsts;
+static LightConsts s_light_consts;
+
+static const LightConsts *light_consts(void) {
+    LightConsts *lc = &s_light_consts;
+    if (lc->valid && lc->serial == s_ge_state_serial) return lc;
+    for (int ch = 0; ch < 3; ch++) {
+        lc->mat_amb[ch] = c8f(ge.material, ch);
+        lc->mat_dif[ch] = c8f(ge.mat_diffuse, ch);
+        lc->mat_spe[ch] = c8f(ge.mat_specular, ch);
+        lc->emissive[ch] = c8f(ge.mat_emissive, ch);
+        lc->amb[ch] = c8f(ge.amb_color, ch);
+    }
+    for (int i = 0; i < 4; i++) {
+        LightConst *l = &lc->light[i];
+        l->on = ge.light_on[i] != 0;
+        l->comp = (int)(ge.light_type[i] & 3);
+        l->type = (int)((ge.light_type[i] >> 8) & 3);
+        float lx = ge.light_pos[i][0], ly = ge.light_pos[i][1], lz = ge.light_pos[i][2];
+        if (l->type == 0) {   /* directional: position register holds the direction */
+            float d = sqrtf(lx*lx + ly*ly + lz*lz);
+            if (d > 0.0f) { lx/=d; ly/=d; lz/=d; }
+        }
+        l->lx = lx; l->ly = ly; l->lz = lz;
+        for (int ch = 0; ch < 3; ch++) {
+            l->acol[ch] = c8f(ge.light_acol[i], ch);
+            l->dcol[ch] = c8f(ge.light_dcol[i], ch);
+            l->scol[ch] = c8f(ge.light_scol[i], ch);
+        }
+    }
+    lc->serial = s_ge_state_serial;
+    lc->valid = 1;
+    return lc;
+}
+
 /* Per-vertex lighting in world space: emissive + scene ambient, plus per-light
  * ambient/diffuse/specular for up to 4 directional/point lights (spot treated as point).
  * Material colours come from the registers or the vertex colour per MATERIALUPDATE bits. */
@@ -2805,6 +2861,7 @@ static float c8f(uint32_t col, int chan) { return (float)((col >> (chan*8)) & 0x
  * primitive closed instead (CVtx::nf). Only a finite result is a defined pixel. */
 static int light_vertex(float wx, float wy, float wz, float nx, float ny, float nz,
                         int vr, int vg, int vb, int va, int *lr, int *lg, int *lb, int *la) {
+    const LightConsts *lc = light_consts();
     float vrf = vr*(1.0f/255.0f), vgf = vg*(1.0f/255.0f), vbf = vb*(1.0f/255.0f);
     /* Lit alpha = material-ambient alpha * scene-ambient alpha; diffuse/specular/emissive never
      * contribute to alpha (PPSSPP Software/Lighting.cpp). With MATERIALUPDATE bit 0 the vertex
@@ -2813,40 +2870,37 @@ static int light_vertex(float wx, float wy, float wz, float nx, float ny, float 
     *la = clamp8((maa * ge.amb_alpha + 127) / 255);
     float mar, mag, mab, mdr, mdg, mdb, msr, msg, msb;
     if (ge.mat_update & 1) { mar=vrf; mag=vgf; mab=vbf; }
-    else { mar=c8f(ge.material,0); mag=c8f(ge.material,1); mab=c8f(ge.material,2); }
+    else { mar=lc->mat_amb[0]; mag=lc->mat_amb[1]; mab=lc->mat_amb[2]; }
     if (ge.mat_update & 2) { mdr=vrf; mdg=vgf; mdb=vbf; }
-    else { mdr=c8f(ge.mat_diffuse,0); mdg=c8f(ge.mat_diffuse,1); mdb=c8f(ge.mat_diffuse,2); }
+    else { mdr=lc->mat_dif[0]; mdg=lc->mat_dif[1]; mdb=lc->mat_dif[2]; }
     if (ge.mat_update & 4) { msr=vrf; msg=vgf; msb=vbf; }
-    else { msr=c8f(ge.mat_specular,0); msg=c8f(ge.mat_specular,1); msb=c8f(ge.mat_specular,2); }
+    else { msr=lc->mat_spe[0]; msg=lc->mat_spe[1]; msb=lc->mat_spe[2]; }
 
-    float r = c8f(ge.mat_emissive,0) + c8f(ge.amb_color,0)*mar;
-    float g = c8f(ge.mat_emissive,1) + c8f(ge.amb_color,1)*mag;
-    float b = c8f(ge.mat_emissive,2) + c8f(ge.amb_color,2)*mab;
+    float r = lc->emissive[0] + lc->amb[0]*mar;
+    float g = lc->emissive[1] + lc->amb[1]*mag;
+    float b = lc->emissive[2] + lc->amb[2]*mab;
 
     for (int i = 0; i < 4; i++) {
-        if (!ge.light_on[i]) continue;
-        int comp = (int)(ge.light_type[i] & 3);
-        int type = (int)((ge.light_type[i] >> 8) & 3);
-        float lx = ge.light_pos[i][0], ly = ge.light_pos[i][1], lz = ge.light_pos[i][2];
+        const LightConst *l = &lc->light[i];
+        if (!l->on) continue;
+        int comp = l->comp;
+        float lx = l->lx, ly = l->ly, lz = l->lz;
         float att = 1.0f;
-        if (type != 0) {  /* point/spot: light vector from vertex, distance attenuation */
+        if (l->type != 0) {  /* point/spot: light vector from vertex, distance attenuation */
             lx -= wx; ly -= wy; lz -= wz;
             float d2 = lx*lx + ly*ly + lz*lz;
             float d = sqrtf(d2);
             float den = ge.light_att[i][0] + ge.light_att[i][1]*d + ge.light_att[i][2]*d2;
             att = den > 0.0f ? clampf01(1.0f/den) : 1.0f;
             if (d > 0.0f) { lx/=d; ly/=d; lz/=d; }
-        } else {          /* directional: position register holds the direction */
-            float d = sqrtf(lx*lx + ly*ly + lz*lz);
-            if (d > 0.0f) { lx/=d; ly/=d; lz/=d; }
         }
         float ndl = nx*lx + ny*ly + nz*lz;
         if (ndl < 0.0f) ndl = 0.0f;
         if (comp == 2 && ge.spec_coef > 0.0f) ndl = powf(ndl, ge.spec_coef);   /* powered diffuse */
 
-        r += att*(c8f(ge.light_acol[i],0)*mar + c8f(ge.light_dcol[i],0)*mdr*ndl);
-        g += att*(c8f(ge.light_acol[i],1)*mag + c8f(ge.light_dcol[i],1)*mdg*ndl);
-        b += att*(c8f(ge.light_acol[i],2)*mab + c8f(ge.light_dcol[i],2)*mdb*ndl);
+        r += att*(l->acol[0]*mar + l->dcol[0]*mdr*ndl);
+        g += att*(l->acol[1]*mag + l->dcol[1]*mdg*ndl);
+        b += att*(l->acol[2]*mab + l->dcol[2]*mdb*ndl);
 
         if ((comp & 1) && ndl > 0.0f) {  /* specular, Blinn half-vector with eye (0,0,1) */
             float hx=lx, hy=ly, hz=lz+1.0f;
@@ -2855,9 +2909,9 @@ static int light_vertex(float wx, float wy, float wz, float nx, float ny, float 
                 float ndh = (nx*hx + ny*hy + nz*hz) / hd;
                 if (ndh > 0.0f) {
                     float s = ge.spec_coef > 0.0f ? powf(ndh, ge.spec_coef) : ndh;
-                    r += att*c8f(ge.light_scol[i],0)*msr*s;
-                    g += att*c8f(ge.light_scol[i],1)*msg*s;
-                    b += att*c8f(ge.light_scol[i],2)*msb*s;
+                    r += att*l->scol[0]*msr*s;
+                    g += att*l->scol[1]*msg*s;
+                    b += att*l->scol[2]*msb*s;
                 }
             }
         }
@@ -4489,6 +4543,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
         }
         uint32_t op=MEM_R32(addr); addr+=4;
         uint32_t cmd=op>>24, data=op&0xFFFFFF;
+        s_ge_state_serial++;   /* any command may change state that light_consts() caches */
         s_ge_command[cmd] = data;
         if (s_cpu_profile) s_cpu_profile_stats.commands++;
         sig=sig*1000003ul+op;
