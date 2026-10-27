@@ -471,7 +471,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dfa39680d902a23b93042d1f6c820ebee5463c382f925093f4c48ccba94bf612"
+      "sha256": "c249e670d115e5f5cbe297b11f1dd0752e52d6514887b282344af183d25beb12"
     },
     {
       "path": "SUPPORT.md",
@@ -13755,7 +13755,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f8723c022b119a0a5eeb9e7db395d3f403b49e93adb3bb5ca11ea753a5d3859"
+      "sha256": "8d008a1d1c6727172ccc0eba111d9033f86e77ed31ae342befc3fb70879342fb"
     },
     {
       "path": "tools/test_manager_safety.ps1",
