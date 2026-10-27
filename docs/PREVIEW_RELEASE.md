@@ -210,6 +210,22 @@ Copy-Item -LiteralPath $ToolchainIdentity -Destination (Join-Path $Stage 'toolch
 Copy-Item LICENSE, NOTICE.md (Join-Path $Stage '.')
 Copy-Item README.md (Join-Path $Stage '.')
 Copy-Item docs\PREVIEW_RELEASE.md, docs\SETUP.md, docs\SMOKE_TEST.md, docs\RELEASE_NOTES_v0.0.1.md $PackageDocs
+# The pictures the root README shows, at the same relative paths, so the packaged README displays them.
+$ReadmeImages = Select-String -LiteralPath README.md -Pattern 'docs/(?:images|media)/[A-Za-z0-9._/-]+' -AllMatches |
+    ForEach-Object { $_.Matches.Value } | Sort-Object -Unique
+foreach ($Image in $ReadmeImages) {
+    $Destination = Join-Path $Stage $Image
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Out-Null
+    Copy-Item -LiteralPath $Image -Destination $Destination
+}
+# One plain pointer at the top of the extracted folder.
+@(
+    "Nakagawa Recomp $Version",
+    '',
+    'To start: open the bin folder and run nakagawa_player.exe.',
+    'To check the download first, see docs\RELEASE_NOTES_v0.0.1.md, "Checking your download".',
+    'You need your own copy of a PSP game; nothing in this folder contains game data.'
+) | Set-Content -LiteralPath (Join-Path $Stage 'START HERE.txt') -Encoding utf8NoBOM
 Copy-Item (Join-Path $Bin 'THIRD_PARTY_NOTICES') $Stage -Recurse
 Copy-Item (Join-Path $Bin 'THIRD_PARTY_NOTICES.txt'), (Join-Path $Bin 'SOURCE.txt'), (Join-Path $Bin 'RELINK.md') $Stage
 

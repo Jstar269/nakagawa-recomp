@@ -65,7 +65,9 @@ needs something unsupported, missing or not built yet, it stops and tells you cl
 - **Use your own PSP's fonts.** Games draw their text with the PSP's system fonts, which come from your own PSP:
   copy `jpn0.pgf`, `ltn0.pgf`–`ltn15.pgf` and `kr0.pgf` from its `flash0:/font/` folder to your PC. In the player's
   setup wizard, the **Fonts & System** step has **IMPORT FONTS FOLDER**; from a command line,
-  `python tools/nk_cli.py fonts import <folder>` does the same. The importer checks each file's header and writes its
+  `python tools/nk_cli.py fonts import <folder>` does the same.
+  [How to copy the fonts from your PSP](SETUP.md#copying-the-fonts-from-your-psp) walks through it. The importer
+  checks each file's header and writes its
   manifest in one safe step, and the project-authored PGF reader draws them
   ([#441](https://github.com/Jstar269/nakagawa-recomp/pull/441), [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)).
   When a game asks for a font you haven't imported, it gets a stand-in, and the Fonts check and the game's log say
@@ -150,17 +152,19 @@ v0.0.1 is not code-signed, so the first time you run `nakagawa_player.exe`, Wind
 signature, not about anything found in the file. Don't turn SmartScreen or your antivirus off. Instead, before you
 choose **More info** and then **Run anyway**, check that the download is the one this project built:
 
-1. Compare the ZIP's SHA-256 with `nakagawa-recomp-0.0.1-windows-x64.zip.sha256`, published next to it
-   on the release page:
+1. Before you extract it, in the folder where you saved the ZIP, compare its SHA-256 with
+   `nakagawa-recomp-0.0.1-windows-x64.zip.sha256`, published next to it on the release page:
 
    ```powershell
    (Get-FileHash .\nakagawa-recomp-0.0.1-windows-x64.zip -Algorithm SHA256).Hash.ToLower()
    ```
 
-2. After extracting, `SHA256SUMS.txt` lists the SHA-256 of every file in the package.
+2. After extracting, open PowerShell in the extracted folder (the one with `bin\` in it).
+   `SHA256SUMS.txt` there lists the SHA-256 of every file in the package.
 3. With the [GitHub CLI](https://cli.github.com/), check that each executable and DLL under `bin\` was
    built by this repository's release workflow. Each file carries a signed build attestation (SLSA Build
-   Level 2). Set `$Commit` to the full commit the release page names (the commit the `v0.0.1` tag points at),
+   Level 2). The GitHub CLI needs you to sign in once first (`gh auth login`). Set `$Commit` to the full commit
+   the release page names (the commit the `v0.0.1` tag points at),
    then check one file:
 
    ```powershell
@@ -290,8 +294,8 @@ Hot Shots Tennis runs with 15 title-specific compatibility patches: the forced b
 
 ## How to report
 
-If something goes wrong in the desktop player (`build/nakagawa_player.exe`), work through the pass/fail steps in
-[`SMOKE_TEST.md`](SMOKE_TEST.md).
+If something goes wrong in the player (`bin\nakagawa_player.exe`), note what you did and what the screen said.
+Testers who want a full pass/fail run can follow [`SMOKE_TEST.md`](SMOKE_TEST.md).
 
 Send smoke test results and bug reports with the
 [Smoke Test Report issue template](https://github.com/Jstar269/nakagawa-recomp/issues/new?template=smoke_test_report.yml).
