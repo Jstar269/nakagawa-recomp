@@ -1652,6 +1652,25 @@ static int sched_dispatch_interrupt_guest(CpuState *cpu, uint32_t entry,
     return 0;
 }
 
+static int sched_env_switch(int *cached, const char *name);
+
+/* Diagnostic switches read on every delivered VBLANK, once per process like the per-call
+ * ones below (sched_env_switch, #1296). */
+static int sched_vblog_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_VBLOG");
+}
+
+static int sched_pcsample_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_PCSAMPLE");
+}
+
+static int sched_cbsnap_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_CBSNAP");
+}
+
 static void deliver_vblank(void) {
     sched_pause_assert_no_guest("deliver_vblank");
     /* Reset the host-clock quantum so the OOB source check in sr_yield won't double-fire. */
@@ -1673,7 +1692,7 @@ static void deliver_vblank(void) {
     uint32_t h = sr_vblank_handler();
     static unsigned long long vb = 0;
     extern uint32_t g_frame_prims;
-    if (getenv("SR_VBLOG") && (++vb % 1) == 0) {
+    if (sched_vblog_on() && (++vb % 1) == 0) {
         fprintf(stderr, "vblank #%llu (handler=0x%x) prims=%u\n", vb, h, g_frame_prims);
     }
     g_frame_prims = 0;
@@ -1692,7 +1711,7 @@ static void deliver_vblank(void) {
     }
     s_vblank_resume_anchor_pending = 0;
     sched_wake(VBLANK_WAIT_OBJ);
-    if (getenv("SR_PCSAMPLE")) {
+    if (sched_pcsample_on()) {
         static unsigned long n = 0;
         if ((n++ % 30) == 0) fprintf(stderr, "PCSAMPLE frame=%lu interrupted_pc=0x%08x ra=0x%08x\n",
                                      n, s_cpu->pc, s_cpu->r[31]);
@@ -1716,7 +1735,7 @@ static void deliver_vblank(void) {
     s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
     s_cpu->pc = h;
     int save_cur = s_cur; s_cur = -1;    /* interrupt context: SR_YIELD must not switch */
-    if (h && getenv("SR_CBSNAP")) {
+    if (h && sched_cbsnap_on()) {
         /* Legacy single-slot VBLANK pre-snapshot. The entry here is the InterruptManager
          * sub-interrupt handler (sub-int 30), not a s_callbacks[] slot. */
         fprintf(stderr, "CBSNAP: legacy-pre entry=0x%08x a0=0x%08x (cpu pc=0x%08x sp=0x%08x)\n",
@@ -1730,7 +1749,7 @@ static void deliver_vblank(void) {
         ? sched_dispatch_interrupt_guest(s_cpu, h, "VBLANK sub-interrupt",
                                          &interrupt_fatal_target)
         : 0;
-    if (h && getenv("SR_CBSNAP")) {
+    if (h && sched_cbsnap_on()) {
         fprintf(stderr, "CBSNAP: legacy-post entry=0x%08x v0=0x%08x a0=0x%08x sp=0x%08x ra=0x%08x\n",
                 h, s_cpu->r[2], s_cpu->r[4], s_cpu->r[29], s_cpu->r[31]);
         fflush(stderr);
@@ -1770,8 +1789,7 @@ static void deliver_vblank(void) {
      * the real PSP's GE list-complete callback that re-arms the game loop. */
     {
         static int relaunch_disabled = -1;
-        if (relaunch_disabled < 0) relaunch_disabled = getenv("SR_NO_RELAUNCH") ? 1 : 0;
-        if (!relaunch_disabled) {
+        if (!sched_env_switch(&relaunch_disabled, "SR_NO_RELAUNCH")) {
             uint32_t wuid = g_worker_uid;
             /* No captured worker role means there is nothing to re-arm. Looking the
              * sentinel up would find no TCB anyway; the explicit guard says why. */

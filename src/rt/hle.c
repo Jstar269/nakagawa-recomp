@@ -277,6 +277,17 @@ static int hle_syslog_on(void) {
     return hle_env_switch(&enabled, "SR_SYSLOG");
 }
 
+/* Read on every controller sample and every presented frame. */
+static int hle_inlog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_INLOG");
+}
+
+static int hle_present_trace_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_PRESENT_TRACE");
+}
+
 static int hle_debug_thread_log_on(void) {
     static int enabled = -1;
     return hle_env_switch(&enabled, "SR_DEBUG_THREAD_LOG");
@@ -19600,7 +19611,7 @@ void sr_ctrl_sample(void) {
      * project choice, not yet measured on hardware. */
     keyboard_took_sample = keyboard_took_sample || sr_osk_overlay_active();
     if (keyboard_took_sample) buttons = 0u;
-    if (getenv("SR_INLOG")) {
+    if (hle_inlog_on()) {
         static uint32_t previous;
         if (buttons != previous) {
             fprintf(stderr, "ctrl_latch: vcount=%u buttons 0x%04x -> 0x%04x lx=%u ly=%u\n",
@@ -19683,11 +19694,11 @@ static uint32_t ctrl_fill_n(uint32_t buf, uint32_t nbufs, int negate, int peek) 
     if (!peek) s_ctrl_r = s_ctrl_w;                /* consume */
     /* Scripted input advances in guest time: this read is what tells the script the guest
      * has seen the state it is holding (scripted_input.h). */
-    if (sr_input_read(&s_input, newest_input) && getenv("SR_INLOG"))
+    if (sr_input_read(&s_input, newest_input) && hle_inlog_on())
         fprintf(stderr, "ctrl_read: vcount=%u guest read scripted 0x%04x (latched %u samples "
                         "since vblank %u)\n",
                 s_vcount_fwd, s_input.seg.mask, s_input.latched, s_input.since);
-    if (getenv("SR_INLOG")) {
+    if (hle_inlog_on()) {
         static unsigned long calls = 0;
         CtrlSample latest = s_ctrl_ring[(s_ctrl_w - 1 + CTRL_RING) % CTRL_RING];
         if ((++calls % 200) == 0 || (latest.btn & 0x8))
@@ -20134,7 +20145,7 @@ static void display_present_frame(void) {
         SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_PRESENT, SR_FLIGHT_KIND_PRESENT_FRAME,
                                s_display_active.addr, (uint32_t)s_display_active.fmt,
                                (uint32_t)s_display_active.stride, s_vcount);
-        if (getenv("SR_PRESENT_TRACE"))
+        if (hle_present_trace_on())
             fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
                     s_vcount, s_display_active.addr, s_display_active.fmt,
                     s_display_active.stride);
