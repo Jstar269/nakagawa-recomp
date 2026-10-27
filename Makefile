@@ -1994,9 +1994,11 @@ PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_sett
 PLAYER_INCLUDES := -Isrc/player -Isrc/player/ui -Isrc/ui -Ithird_party/clay -Isrc/core -Isrc/core/generated -Isrc/rt $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
 
 # Both icon objects come from this one rule; windres finds the icon beside the script.
-%/nakagawa_icon.o: assets/brand/nakagawa.rc assets/brand/nakagawa.ico
+ifeq ($(OS),Windows_NT)
+$(sort $(PLAYER_ICON_OBJ) $(TITLE_ICON_OBJ)): %/nakagawa_icon.o: assets/brand/nakagawa.rc assets/brand/nakagawa.ico
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(@D)').mkdir(parents=True, exist_ok=True)"
 	$(WINDRES) --input-format=rc --output-format=coff -i $< -o $@
+endif
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
