@@ -128,8 +128,18 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
 | Safe area | nothing closer than 16 px to a window edge |
 
 Layout is logical px; the UI scale (Auto follows the display, or 100/125/150/200%) times the text size gives the
-device density, and the logical width decides the columns. Clay clips at most ten containers per layout: shorten
+device density, and the logical width decides the columns. The launcher's screens are laid out on at least its
+1280 x 720 design size (`NkUiViewport.min_logical_w` / `min_logical_h`): a smaller window, down to the 960 x 540
+minimum, lowers the density so the same layout is drawn smaller, instead of pushing buttons and the prompt bar off
+the window. A larger window keeps its density and gains room. Clay clips at most ten containers per layout: shorten
 long text with `nk_ui_text_clamp` instead of clipping it.
+
+Wrapped text keeps its wrapped height when its page is overfull. Clay took a paragraph's minimum height before
+wrapping, as one line, so compressing an overfull column squeezed the paragraph back and the next block painted over
+its later lines; the vendored `clay.h` carries the wrapped height into the minimum (`third_party/clay/PROVENANCE.md`).
+`test_every_screen_fits_the_window` in `tests/native/test_player_screens.c` lays every screen out in launcher windows
+of 1280 x 720, 960 x 540, 1366 x 705 and 853 x 480 pixels and fails when a box or text run leaves the window or text
+is painted over.
 
 ### Motion
 

@@ -2532,6 +2532,10 @@ void Clay__CalculateFinalLayout(void) {
             textElementData->wrappedLines.length++;
         }
         containerElement->dimensions.height = lineHeight * (float)textElementData->wrappedLines.length;
+        /* LOCAL DELTA (Nakagawa Recomp): the minimum height was taken before wrapping, as one line. Keep the
+         * wrapped height as the minimum too, so compressing an overfull parent never squeezes wrapped text back
+         * to one line and lets the next element paint over its later lines. */
+        containerElement->minDimensions.height = CLAY__MAX(containerElement->minDimensions.height, containerElement->dimensions.height);
     }
 
     // Scale vertical heights according to aspect ratio
@@ -2571,6 +2575,32 @@ void Clay__CalculateFinalLayout(void) {
 
         // DFS node has been visited, this is on the way back up to the root
         Clay_LayoutConfig *layoutConfig = currentElement->layoutConfig;
+        /* LOCAL DELTA (Nakagawa Recomp): carry the wrapped minimum heights up the tree with the same rule the
+         * element's close used, so an ancestor's minimum covers its children's wrapped text. A clip container's
+         * minimum does not follow its content, as at close. */
+        {
+            bool clipsVertically = false;
+            float childMinHeight = 0;
+            float topBottomPadding = (float)(layoutConfig->padding.top + layoutConfig->padding.bottom);
+            if (Clay__ElementHasConfig(currentElement, CLAY__ELEMENT_CONFIG_TYPE_CLIP)) {
+                clipsVertically = Clay__FindElementConfigWithType(currentElement, CLAY__ELEMENT_CONFIG_TYPE_CLIP).clipElementConfig->vertical;
+            }
+            if (!clipsVertically && layoutConfig->sizing.height.type != CLAY__SIZING_TYPE_PERCENT) {
+                for (int32_t j = 0; j < currentElement->childrenOrTextContent.children.length; ++j) {
+                    Clay_LayoutElement *childElement = Clay_LayoutElementArray_Get(&context->layoutElements, currentElement->childrenOrTextContent.children.elements[j]);
+                    if (layoutConfig->layoutDirection == CLAY_TOP_TO_BOTTOM) {
+                        childMinHeight += childElement->minDimensions.height;
+                    } else {
+                        childMinHeight = CLAY__MAX(childMinHeight, childElement->minDimensions.height);
+                    }
+                }
+                if (layoutConfig->layoutDirection == CLAY_TOP_TO_BOTTOM) {
+                    childMinHeight += (float)(CLAY__MAX(currentElement->childrenOrTextContent.children.length - 1, 0) * layoutConfig->childGap);
+                }
+                childMinHeight = CLAY__MIN(CLAY__MAX(childMinHeight + topBottomPadding, layoutConfig->sizing.height.size.minMax.min), layoutConfig->sizing.height.size.minMax.max);
+                currentElement->minDimensions.height = CLAY__MAX(currentElement->minDimensions.height, childMinHeight);
+            }
+        }
         if (layoutConfig->layoutDirection == CLAY_LEFT_TO_RIGHT) {
             // Resize any parent containers that have grown in height along their non layout axis
             for (int32_t j = 0; j < currentElement->childrenOrTextContent.children.length; ++j) {
