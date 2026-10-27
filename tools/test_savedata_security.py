@@ -26,8 +26,25 @@ SEAM_H = ROOT / "src" / "rt" / "vfs_contained.h"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 POSIX_PROFILE = [] if os.name == "nt" else ["-D_POSIX_C_SOURCE=200809L"]
 
+# The production write stages each member in a temporary opened through the
+# contained seam and renames it over the member when the whole SAVE is staged
+# (issue #1387).  The by-name mutant swaps only that open for an fopen of the
+# published member, so the rest of the function still compiles and the mutant
+# fails for its semantic reason.
+WRITE_OPEN_BLOCK = (
+    "    FILE *f = NULL;\n"
+    "    sr_cd_status st = sr_cd_open_file(&t->root, t->rel, s->tmp, SR_CD_FILE_WRITE_TRUNCATE, &f);\n"
+)
+UNSAFE_WRITE_OPEN = (
+    "    char path[PATH_MAX];\n"
+    "    if (!path_join(path, sizeof(path), t->dir, s->name)) return 0;\n"
+    "    FILE *f = fopen(path, \"wb\");\n"
+    "    sr_cd_status st = f ? SR_CD_OK : SR_CD_IO_ERROR;\n"
+)
+
 
 SECURITY_HARNESS = r"""
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -158,6 +175,67 @@ static void order_reset(void) {
 static void order_reset(void) { }
 #endif
 
+#ifdef INJECT_INSTRUMENTED
+/* Issue #1387 failure injection.  Every host operation a SAVE performs on its
+ * way to publishing a member -- creating a temporary, writing, flushing,
+ * syncing and closing it, renaming it into place -- is numbered in call order;
+ * g_inject_at = k makes the k-th one fail ('r' marks a rename).  A failed
+ * write first writes half of its bytes, as a full disk does. */
+static int g_inject_at, g_inject_ops;
+static char g_inject_kind;
+static int inject_now(char kind) {
+    if (++g_inject_ops != g_inject_at) return 0;
+    g_inject_kind = kind;
+    return 1;
+}
+
+int __real_openat(int dirfd, const char *path, int flags, ...);
+int __wrap_openat(int dirfd, const char *path, int flags, ...) {
+    if (!(flags & O_CREAT)) return __real_openat(dirfd, path, flags);
+    va_list ap;
+    va_start(ap, flags);
+    mode_t mode = va_arg(ap, mode_t);
+    va_end(ap);
+    if (inject_now('o')) { errno = ENOSPC; return -1; }
+    return __real_openat(dirfd, path, flags, mode);
+}
+
+size_t __real_fwrite(const void *p, size_t size, size_t n, FILE *f);
+size_t __wrap_fwrite(const void *p, size_t size, size_t n, FILE *f) {
+    if (inject_now('w')) {
+        size_t half = __real_fwrite(p, size, n / 2u, f);
+        errno = ENOSPC;
+        return half;
+    }
+    return __real_fwrite(p, size, n, f);
+}
+
+int __real_fflush(FILE *f);
+int __wrap_fflush(FILE *f) {
+    if (inject_now('f')) { errno = ENOSPC; return EOF; }
+    return __real_fflush(f);
+}
+
+int __real_fsync(int fd);
+int __wrap_fsync(int fd) {
+    if (inject_now('s')) { errno = EIO; return -1; }
+    return __real_fsync(fd);
+}
+
+int __real_fclose(FILE *f);
+int __wrap_fclose(FILE *f) {
+    int result = __real_fclose(f);
+    if (inject_now('c')) { errno = EIO; return EOF; }
+    return result;
+}
+
+int __real_renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath);
+int __wrap_renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) {
+    if (inject_now('r')) { errno = EIO; return -1; }
+    return __real_renameat(olddirfd, oldpath, newdirfd, newpath);
+}
+#endif
+
 #include "savedata.c"
 
 /* No GE in this harness: the VRAM coherence hooks the guest accessors call are inert. */
@@ -229,6 +307,18 @@ static int is_dir(const char *path) {
 static int exists_no_follow(const char *path) {
     struct stat st;
     return lstat(path, &st) == 0;
+}
+
+/* Issue #1387: how many ".nakagawa-stage-<n>" temporaries a save directory holds. */
+static int stage_files_in(const char *dir) {
+    DIR *d = opendir(dir);
+    int n = 0;
+    if (!d) return -1;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL)
+        if (!strncmp(de->d_name, ".nakagawa-stage-", 16)) n++;
+    closedir(d);
+    return n;
 }
 
 static int write_file(const char *path, const char *data) {
@@ -509,18 +599,246 @@ static void check_write_order_cases(const char *base) {
 
     /* fdopen failure occurs after the descriptor has been validated and
      * truncated; the untransferred descriptor still must be closed and the
-     * production SAVE must report failure without writing payload bytes. */
+     * production SAVE must report failure.  Issue #1387: the truncated object
+     * is the temporary file, never the published save, so the previous save
+     * survives whole and no temporary is left behind. */
     order_reset();
     g_fail_fdopen = 1;
     CHECK(run_save(root, "DATA.BIN", "ATTACK") != 0,
           "fdopen failure must fail the SAVE");
     CHECK(g_write_fd_close_count == 1,
           "fdopen failure must close the untransferred descriptor");
-    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, ""),
-          "fdopen failure must not write payload bytes");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "KEEP"),
+          "a failed SAVE must keep the previous save intact");
+    char slot[512];
+    snprintf(slot, sizeof(slot), "%s/PSP/SAVEDATA/ULUS99999SLOT00", root);
+    CHECK(stage_files_in(slot) == 0,
+          "a failed SAVE must not leave its temporary file behind");
 #else
     (void)base;
     printf("SKIP: write-order instrumentation requires the POSIX descriptor backend\n");
+#endif
+}
+
+/* Issue #1387: first save, overwrite, failed saves and oversized load over the
+ * production entry point.  A SAVE stages every member in a temporary and only
+ * then renames the temporaries over the members, the data file last; a load
+ * whose data does not fit the guest buffer is refused instead of cut short. */
+static uint32_t run_oversized_load(const char *root, uint32_t mode, uint32_t cap) {
+    set_save_request(root, mode, "DATA.BIN");
+    for (uint32_t i = 0; i < 16u; i++) sr_w8(DATA + i, 0xEE);
+    sr_w32(PARAM + SDP_dataBufSize, cap);
+    sr_w32(PARAM + SDP_dataSize, 0x1234u);
+    return sr_savedata_execute(PARAM);
+}
+
+static int guest_data_untouched(void) {
+    for (uint32_t i = 0; i < 16u; i++)
+        if (MEM_R8(DATA + i) != 0xEE) return 0;
+    return 1;
+}
+
+#define MSDATA 0x08a30000u
+static int file_contains(const char *path, const char *needle) {
+    char buf[8192];
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    ssize_t n = read(fd, buf, sizeof(buf));
+    close(fd);
+    size_t len = strlen(needle);
+    for (ssize_t i = 0; n > 0 && (size_t)i + len <= (size_t)n; i++)
+        if (!memcmp(buf + i, needle, len)) return 1;
+    return 0;
+}
+
+static uint32_t sizes_used_kb(const char *root) {
+    set_save_request(root, SD_SIZES, "");
+    sr_w32(PARAM + SDP_msData, MSDATA);
+    set_guest_string(MSDATA + 0, "ULUS99999");
+    set_guest_string(MSDATA + 16, "SLOT00");
+    (void)sr_savedata_execute(PARAM);
+    return MEM_R32(MSDATA + 40);
+}
+
+static void check_atomic_cases(const char *base) {
+#if defined(SR_CD_BACKEND_POSIX_AT)
+    char root[512], slot[512], path[600], stale0[600], stale5[600], content[64];
+    snprintf(root, sizeof(root), "%s/atomic", base);
+    snprintf(slot, sizeof(slot), "%s/PSP/SAVEDATA/ULUS99999SLOT00", root);
+    snprintf(path, sizeof(path), "%s/DATA.BIN", slot);
+    snprintf(stale0, sizeof(stale0), "%s/.nakagawa-stage-0", slot);
+    snprintf(stale5, sizeof(stale5), "%s/.nakagawa-stage-5", slot);
+
+    /* First save and overwrite publish whole files and leave no temporary. */
+    CHECK(run_save(root, "DATA.BIN", "FIRST-SAVE-LONG") == 0, "first SAVE must succeed");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "FIRST-SAVE-LONG"),
+          "first SAVE must publish its bytes");
+    CHECK(run_save(root, "DATA.BIN", "SECOND") == 0, "overwrite SAVE must succeed");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "SECOND"),
+          "overwrite SAVE must replace the whole file");
+    CHECK(stage_files_in(slot) == 0, "a completed SAVE must not leave a temporary file");
+
+    /* Temporaries an interrupted run left behind are never reported and are
+     * removed by the next SAVE, which publishes exactly its own bytes. */
+    uint32_t used = sizes_used_kb(root);
+    CHECK(write_file(stale0, "STALE-TEMPORARY-CONTENT") && write_file(stale5, "STALE"),
+          "stale temporary setup");
+    CHECK(sizes_used_kb(root) == used, "SIZES must not count stale temporaries (%u KB, then %u KB)",
+          (unsigned)used, (unsigned)sizes_used_kb(root));
+    CHECK(run_save(root, "DATA.BIN", "THIRD") == 0, "SAVE over stale temporaries must succeed");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "THIRD"),
+          "SAVE over a stale temporary must publish exactly its own bytes");
+    CHECK(stage_files_in(slot) == 0, "the stale temporaries must be removed");
+
+    /* A temporary that cannot be created (a directory planted at the name the
+     * PARAM.SFO stage uses) fails the SAVE after the data file was staged; the
+     * staged data is discarded and the published save is untouched. */
+    char planted[600];
+    snprintf(planted, sizeof(planted), "%s/.nakagawa-stage-1", slot);
+    CHECK(make_dir(planted), "planted temporary directory setup");
+    CHECK(run_save(root, "DATA.BIN", "ATTACK") != 0,
+          "a SAVE whose PARAM.SFO cannot be staged must fail");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "THIRD"),
+          "a SAVE that failed while staging must keep the previous data file");
+    CHECK(stage_files_in(slot) == 1, "only the planted directory may remain");
+    CHECK(rmdir(planted) == 0 && run_save(root, "DATA.BIN", "THIRD") == 0,
+          "the SAVE succeeds once the name is free");
+
+    /* A member written twice in one SAVE (a data file named PARAM.SFO) keeps
+     * its later bytes, the PARAM.SFO, as sequential writes did. */
+    char sfo[600];
+    snprintf(sfo, sizeof(sfo), "%s/PARAM.SFO", slot);
+    CHECK(run_save(root, "PARAM.SFO", "DATA-NAMED-LIKE-THE-SFO") == 0,
+          "a data file named PARAM.SFO must save");
+    CHECK(file_contains(sfo, "PSF") && !file_contains(sfo, "DATA-NAMED-LIKE-THE-SFO"),
+          "the later PARAM.SFO bytes must win");
+    CHECK(stage_files_in(slot) == 0, "a repeated member must not leave a temporary");
+
+    /* A buffer that fits exactly still loads. */
+    memset(content, 0, sizeof(content));
+    CHECK(run_load(root, "DATA.BIN", content, 6) == 0 && MEM_R32(PARAM + SDP_dataSize) == 5u,
+          "a LOAD whose buffer holds the whole file must succeed");
+
+    /* Oversized data: LOAD and READDATA both report LOAD_DATA_BROKEN, as
+     * PPSSPP does, write no guest data bytes and report no data size. */
+    uint32_t result = run_oversized_load(root, SD_LOAD, 4u);
+    CHECK(result == 0x80110306u, "oversized LOAD must report 0x80110306, got 0x%08x",
+          (unsigned)result);
+    CHECK(guest_data_untouched(), "oversized LOAD must not write a truncated prefix");
+    CHECK(MEM_R32(PARAM + SDP_dataSize) == 0u, "oversized LOAD must report no data size");
+    result = run_oversized_load(root, SD_READDATA, 4u);
+    CHECK(result == 0x80110306u, "oversized READDATA must report 0x80110306, got 0x%08x",
+          (unsigned)result);
+    CHECK(guest_data_untouched(), "oversized READDATA must not write a truncated prefix");
+    CHECK(MEM_R32(PARAM + SDP_dataSize) == 0u, "oversized READDATA must report no data size");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "THIRD"),
+          "an oversized LOAD must leave the save untouched");
+#else
+    (void)base;
+    printf("SKIP: atomic savedata cases require the POSIX descriptor backend\n");
+#endif
+}
+
+#if defined(INJECT_INSTRUMENTED)
+#define BLOBS 0x08b00000u
+#define SAVE_MEMBERS 6
+/* The five members a full SAVE stages besides PARAM.SFO, and the
+ * PspUtilitySavedataFileData block each blob comes from (0: the data file). */
+static const char *const k_member[SAVE_MEMBERS - 1] = {
+    "DATA.BIN", "ICON0.PNG", "ICON1.PMF", "PIC1.PNG", "SND0.AT3"
+};
+static const uint32_t k_member_fd[SAVE_MEMBERS - 1] = {
+    0, SDP_icon0, SDP_icon1, SDP_pic1, SDP_snd0
+};
+
+/* A SAVE of all six members.  Member i holds "<tag>-<name>"; PARAM.SFO
+ * carries <tag> as its SAVEDATA_TITLE. */
+static uint32_t run_full_save(const char *root, const char *tag) {
+    char text[64];
+    set_save_request(root, SD_SAVE, "DATA.BIN");
+    set_guest_string(PARAM + SDP_sfoSaveTitle, tag);
+    for (int i = 0; i < SAVE_MEMBERS - 1; i++) {
+        int n = snprintf(text, sizeof(text), "%s-%s", tag, k_member[i]);
+        uint32_t addr = i == 0 ? DATA : BLOBS + (uint32_t)i * 0x100u;
+        for (int j = 0; j < n; j++) sr_w8(addr + (uint32_t)j, (uint8_t)text[j]);
+        if (i == 0) {
+            sr_w32(PARAM + SDP_dataSize, (uint32_t)n);
+        } else {
+            sr_w32(PARAM + k_member_fd[i] + 0, addr);
+            sr_w32(PARAM + k_member_fd[i] + 4, 0x100u);
+            sr_w32(PARAM + k_member_fd[i] + 8, (uint32_t)n);
+        }
+    }
+    return sr_savedata_execute(PARAM);
+}
+
+/* Member i (0-4 as k_member, 5 = PARAM.SFO): 1 = whole old version (tag
+ * OLDSAVE), 2 = whole new version (tag NEWSAVE), 0 = torn or missing. */
+static int member_state(const char *slot, int i) {
+    char path[600], content[64], expect[64];
+    if (i == SAVE_MEMBERS - 1) {
+        snprintf(path, sizeof(path), "%s/PARAM.SFO", slot);
+        return file_contains(path, "OLDSAVE") ? 1 : file_contains(path, "NEWSAVE") ? 2 : 0;
+    }
+    snprintf(path, sizeof(path), "%s/%s", slot, k_member[i]);
+    if (!read_file(path, content, sizeof(content))) return 0;
+    snprintf(expect, sizeof(expect), "OLDSAVE-%s", k_member[i]);
+    if (!strcmp(content, expect)) return 1;
+    snprintf(expect, sizeof(expect), "NEWSAVE-%s", k_member[i]);
+    return !strcmp(content, expect) ? 2 : 0;
+}
+#endif
+
+/* Issue #1387 failure injection: every host operation of a six-member SAVE is
+ * failed in turn over a complete previous save.  Each failed SAVE must report
+ * failure, leave no temporary and keep the previous data file; a failure
+ * before the first rename keeps every member, and a failed rename leaves each
+ * member whole (the ones renamed before it are new). */
+static void check_inject_cases(const char *base) {
+#if defined(SR_CD_BACKEND_POSIX_AT) && defined(INJECT_INSTRUMENTED)
+    char root[512], slot[512];
+    snprintf(root, sizeof(root), "%s/inject", base);
+    snprintf(slot, sizeof(slot), "%s/PSP/SAVEDATA/ULUS99999SLOT00", root);
+    g_inject_at = 0;
+    g_inject_ops = 0;
+    CHECK(run_full_save(root, "OLDSAVE") == 0, "the previous SAVE must succeed");
+    int total = g_inject_ops;
+    /* Six members, each created, written, flushed, synced, closed, renamed. */
+    CHECK(total == 6 * SAVE_MEMBERS,
+          "a six-member SAVE must perform %d injectable operations, got %d",
+          6 * SAVE_MEMBERS, total);
+    for (int i = 0; i < SAVE_MEMBERS; i++)
+        CHECK(member_state(slot, i) == 1, "previous SAVE member %d must be published", i);
+    for (int k = 1; k <= total; k++) {
+        g_inject_ops = 0;
+        g_inject_kind = 0;
+        g_inject_at = k;
+        uint32_t r = run_full_save(root, "NEWSAVE");
+        g_inject_at = 0;
+        char kind = g_inject_kind ? g_inject_kind : '?';
+        CHECK(g_inject_kind != 0, "operation %d must be reached", k);
+        CHECK(r == 0x80110381u, "failure %d (%c) must fail the SAVE, got 0x%08x", k, kind,
+              (unsigned)r);
+        CHECK(stage_files_in(slot) == 0, "failure %d (%c) must leave no temporary", k, kind);
+        CHECK(member_state(slot, 0) == 1, "failure %d (%c) must keep the previous data file",
+              k, kind);
+        for (int i = 1; i < SAVE_MEMBERS; i++) {
+            int st = member_state(slot, i);
+            if (kind == 'r')
+                CHECK(st == 1 || st == 2, "rename failure %d must leave member %d whole", k, i);
+            else
+                CHECK(st == 1, "staging failure %d (%c) must keep member %d", k, kind, i);
+        }
+        g_inject_ops = 0;
+        CHECK(run_full_save(root, "OLDSAVE") == 0, "restoring the previous save after %d", k);
+    }
+    CHECK(run_full_save(root, "NEWSAVE") == 0, "an uninjected SAVE must succeed");
+    for (int i = 0; i < SAVE_MEMBERS; i++)
+        CHECK(member_state(slot, i) == 2, "an uninjected SAVE must publish member %d", i);
+    CHECK(stage_files_in(slot) == 0, "an uninjected SAVE must leave no temporary");
+#else
+    (void)base;
+    printf("SKIP: failure injection requires the instrumented POSIX descriptor backend\n");
 #endif
 }
 
@@ -631,6 +949,8 @@ int main(int argc, char **argv) {
     g_mem = arena + 0x08000000u;
     if (!strcmp(argv[1], "open") && argc == 3) check_open_cases(argv[2]);
     else if (!strcmp(argv[1], "order") && argc == 3) check_write_order_cases(argv[2]);
+    else if (!strcmp(argv[1], "atomic") && argc == 3) check_atomic_cases(argv[2]);
+    else if (!strcmp(argv[1], "inject") && argc == 3) check_inject_cases(argv[2]);
     else if (!strcmp(argv[1], "getsize")) check_getsize_cases();
     else if (!strcmp(argv[1], "unsupported")) check_unsupported_host();
     else { free(arena); return 2; }
@@ -642,7 +962,7 @@ int main(int argc, char **argv) {
 
 
 def _build(tmp, savedata_override=None, seam_override=None, hooks=False,
-           unsupported=False, order=False):
+           unsupported=False, order=False, inject=False):
     harness = Path(tmp) / "savedata_security_selftest.c"
     harness.write_text(SECURITY_HARNESS, encoding="utf-8", newline="\n")
     if savedata_override is not None:
@@ -657,6 +977,10 @@ def _build(tmp, savedata_override=None, seam_override=None, hooks=False,
     if order:
         flags += ["-DORDER_INSTRUMENTED", "-Wl,--wrap=openat", "-Wl,--wrap=fstat",
                   "-Wl,--wrap=ftruncate", "-Wl,--wrap=fdopen", "-Wl,--wrap=close"]
+    if inject:
+        flags += ["-DINJECT_INSTRUMENTED"] + [
+            "-Wl,--wrap=" + name
+            for name in ("openat", "fwrite", "fflush", "fsync", "fclose", "renameat")]
     if unsupported:
         flags += ["-DSR_CD_FORCE_UNSUPPORTED_BACKEND", "-DSR_CD_ALLOW_UNSUPPORTED_HOST"]
     flags += ["-I", str(tmp), "-I", str(rt), "-o", str(exe), str(harness),
@@ -730,6 +1054,25 @@ class TestSavedataSecurityProduction(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("security_selftest: OK", run.stdout)
 
+    @unittest.skipIf(os.name == "nt", "atomic-save production harness runs in the WSL POSIX lane")
+    def test_atomic_save_and_oversized_load_regressions(self):
+        with scratch_dir.TemporaryDirectory(prefix="savedata_atomic_") as tmp:
+            exe = _build(tmp)
+            run = _run(exe, "atomic", tmp)
+            self.assertIsNotNone(run, "atomic-save selftest timed out")
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn("security_selftest: OK", run.stdout)
+
+    @unittest.skipIf(os.name == "nt", "failure injection runs in the WSL POSIX lane")
+    def test_every_failed_save_operation_keeps_the_previous_save(self):
+        with scratch_dir.TemporaryDirectory(prefix="savedata_inject_") as tmp:
+            exe = _build(tmp, inject=True)
+            run = _run(exe, "inject", tmp, timeout=60)
+            self.assertIsNotNone(run, "failure-injection selftest timed out")
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn("security_selftest: OK", run.stdout)
+            self.assertNotIn("SKIP", run.stdout)
+
     @unittest.skipIf(os.name == "nt", "GETSIZE production harness runs in the WSL POSIX lane")
     def test_getsize_regressions(self):
         with scratch_dir.TemporaryDirectory(prefix="savedata_getsize_") as tmp:
@@ -753,24 +1096,24 @@ class TestSavedataSecurityProduction(unittest.TestCase):
             self.skipTest("mutant matrix is executed in the WSL POSIX lane")
         original_savedata = SAVEDATA_C.read_text(encoding="utf-8")
         original_seam = SEAM_H.read_text(encoding="utf-8")
-        write_block = (
+        read_block = (
             "    char rel[SR_CD_REL_MAX];\n"
             "    if (!savedata_root_relative(dir, rel, sizeof(rel))) return 0;\n"
             "    sr_cd_root root;\n"
             "    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;\n"
             "    FILE *f = NULL;\n"
-            "    sr_cd_status st = sr_cd_open_file(&root, rel, name, SR_CD_FILE_WRITE_TRUNCATE, &f);\n"
+            "    sr_cd_status st = sr_cd_open_file(&root, rel, name, SR_CD_FILE_READ, &f);\n"
             "    sr_cd_root_close(&root);\n"
             "    if (st != SR_CD_OK || !f) return 0;\n"
         )
-        read_block = write_block.replace("SR_CD_FILE_WRITE_TRUNCATE", "SR_CD_FILE_READ")
-        unsafe_write = (
+        unsafe_read = (
             "    char path[PATH_MAX];\n"
             "    if (!path_join(path, sizeof(path), dir, name)) return 0;\n"
-            "    FILE *f = fopen(path, \"wb\");\n"
+            "    FILE *f = fopen(path, \"rb\");\n"
             "    if (!f) return 0;\n"
         )
-        unsafe_read = unsafe_write.replace("\"wb\"", "\"rb\"")
+        write_block = WRITE_OPEN_BLOCK
+        unsafe_write = UNSAFE_WRITE_OPEN
         self.assertIn(write_block, original_savedata)
         self.assertIn(read_block, original_savedata)
 
@@ -834,22 +1177,8 @@ class TestSavedataSecurityProduction(unittest.TestCase):
         self.assertIn(ftruncate_block, original_seam)
         self.assertIn(regular_check + ftruncate_block, original_seam)
 
-        write_block = (
-            "    char rel[SR_CD_REL_MAX];\n"
-            "    if (!savedata_root_relative(dir, rel, sizeof(rel))) return 0;\n"
-            "    sr_cd_root root;\n"
-            "    if (sr_cd_root_open(ms_root(), &root) != SR_CD_OK) return 0;\n"
-            "    FILE *f = NULL;\n"
-            "    sr_cd_status st = sr_cd_open_file(&root, rel, name, SR_CD_FILE_WRITE_TRUNCATE, &f);\n"
-            "    sr_cd_root_close(&root);\n"
-            "    if (st != SR_CD_OK || !f) return 0;\n"
-        )
-        unsafe_write = (
-            "    char path[PATH_MAX];\n"
-            "    if (!path_join(path, sizeof(path), dir, name)) return 0;\n"
-            "    FILE *f = fopen(path, \"wb\");\n"
-            "    if (!f) return 0;\n"
-        )
+        write_block = WRITE_OPEN_BLOCK
+        unsafe_write = UNSAFE_WRITE_OPEN
         self.assertIn(write_block, original_savedata)
 
         mutants = [

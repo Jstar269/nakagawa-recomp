@@ -1294,3 +1294,195 @@ class TestToolsModuleIndex(unittest.TestCase):
                 [error for error in lint_tools_index(root) if "lists no tool modules" in error],
                 [f"{TOOLS_README.name}: the module index section lists no tool modules"],
             )
+
+
+# Digest inventory guard (#969). SECURITY.md "## Digest inventory" classifies every digest
+# the project's own code computes, by purpose. SHA-256 is the project default and is
+# classified as a whole; every other use is listed as one `path` | algorithm row. The scan
+# reads tracked production files under tools/ and src/ (test files are oracles, not uses)
+# and fails when a detected path/algorithm pair is not listed, or a listed pair is gone.
+DIGEST_DOC = "SECURITY.md"
+DIGEST_SECTION_HEADING = "## Digest inventory"
+DIGEST_SCAN_DIRS = ("tools", "src")
+DIGEST_SCAN_SUFFIXES = frozenset({".py", ".c", ".h", ".cc", ".cpp"})
+DIGEST_DEFAULT_ALGORITHM = "SHA-256"
+DIGEST_HASHLIB_CALL_PAT = re.compile(r"\bhashlib\.([A-Za-z0-9_]+)\s*\(")
+DIGEST_HASHLIB_NAMED_PAT = re.compile(r"""\s*\(\s*(?:[^,()'"]+,\s*)?['"]([A-Za-z0-9_-]+)['"]""")
+DIGEST_HASHLIB_LABELS = {"sha1": "SHA-1", "md5": "MD5", "sha256": "SHA-256"}
+DIGEST_CONSTANT_PATS = (
+    # zlib/binascii checksums named by call.
+    (re.compile(r"\b(?:zlib|binascii)\.crc32\s*\("), "CRC-32"),
+    (re.compile(r"\bzlib\.adler32\s*\("), "Adler-32"),
+    # Hand-rolled helpers named by the constant every variant must use: the FNV primes
+    # (FNV-1 and FNV-1a share them) and the CRC-32 polynomial in either bit order.
+    (re.compile(r"(?<![\w.])(?:16777619|0x0*1000193)[uUlL]*\b", re.IGNORECASE), "FNV-32"),
+    (re.compile(r"(?<![\w.])(?:1099511628211|0x0*100000001b3)[uUlL]*\b", re.IGNORECASE), "FNV-64"),
+    (re.compile(r"(?<![\w.])0x(?:edb88320|04c11db7)[uUlL]*\b", re.IGNORECASE), "CRC-32"),
+)
+DIGEST_ROW_PAT = re.compile(r"^\|\s*`([^`]+)`\s*\|\s*([^|]+?)\s*\|")
+
+
+def digest_uses_in_text(text: str) -> dict[str, int]:
+    """Return {algorithm label: first 1-based line} for the digest uses in one file's text."""
+    found: dict[str, int] = {}
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        labels = []
+        for match in DIGEST_HASHLIB_CALL_PAT.finditer(line):
+            name = match.group(1).lower()
+            if name in {"new", "file_digest"}:
+                named = DIGEST_HASHLIB_NAMED_PAT.match(line, match.end() - 1)
+                # A computed algorithm name cannot be classified, so it is its own label.
+                name = named.group(1).lower().replace("-", "") if named else f"{name}(dynamic)"
+            labels.append(DIGEST_HASHLIB_LABELS.get(name, f"hashlib.{name}"))
+        labels.extend(label for pattern, label in DIGEST_CONSTANT_PATS if pattern.search(line))
+        for label in labels:
+            found.setdefault(label, line_no)
+    return found
+
+
+def digest_inventory_rows(doc_text: str) -> tuple[dict[tuple[str, str], int], list[str]]:
+    """Parse the inventory section's `path` | algorithm rows: ({pair: line}, errors)."""
+    lines = doc_text.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.strip() == DIGEST_SECTION_HEADING]
+    if len(starts) != 1:
+        return {}, [f"{DIGEST_DOC}: needs exactly one '{DIGEST_SECTION_HEADING}' section"]
+    rows: dict[tuple[str, str], int] = {}
+    errors: list[str] = []
+    for index in range(starts[0] + 1, len(lines)):
+        line = lines[index]
+        if line.startswith("## "):
+            break
+        match = DIGEST_ROW_PAT.match(line.strip())
+        if not match:
+            continue
+        pair = (match.group(1), match.group(2))
+        if pair in rows:
+            errors.append(f"{DIGEST_DOC}:{index + 1}: duplicate digest row {pair[0]} / {pair[1]}")
+        rows.setdefault(pair, index + 1)
+    if not rows:
+        errors.append(f"{DIGEST_DOC}: the '{DIGEST_SECTION_HEADING}' section lists no digest uses")
+    return rows, errors
+
+
+def lint_digest_inventory(repo_root: pathlib.Path = ROOT) -> list[str]:
+    """Compare the tracked tree's digest uses with the SECURITY.md inventory."""
+    doc = repo_root / DIGEST_DOC
+    if not doc.is_file():
+        return [f"{DIGEST_DOC}: missing; it holds the digest inventory"]
+    rows, errors = digest_inventory_rows(doc.read_text(encoding="utf-8"))
+    tracked = run_git(["ls-files", "--", *DIGEST_SCAN_DIRS], cwd=repo_root,
+                      capture_output=True, text=True, check=True).stdout.splitlines()
+    detected: dict[tuple[str, str], int] = {}
+    for rel_path in sorted(path.strip().replace("\\", "/") for path in tracked if path.strip()):
+        if PurePosixPath(rel_path).suffix not in DIGEST_SCAN_SUFFIXES or _is_test_file(rel_path):
+            continue
+        source = repo_root / rel_path
+        if not source.is_file():
+            continue
+        uses = digest_uses_in_text(source.read_text(encoding="utf-8", errors="replace"))
+        for label, line_no in uses.items():
+            if label != DIGEST_DEFAULT_ALGORITHM:
+                detected[(rel_path, label)] = line_no
+    for (rel_path, label), line_no in sorted(detected.items()):
+        if (rel_path, label) not in rows:
+            errors.append(f"{rel_path}:{line_no}: {label} digest use is not classified in "
+                          f"{DIGEST_DOC} '{DIGEST_SECTION_HEADING}'; add a `{rel_path}` | {label} row")
+    for (rel_path, label), doc_line in sorted(rows.items()):
+        if (rel_path, label) not in detected:
+            errors.append(f"{DIGEST_DOC}:{doc_line}: lists {rel_path} / {label}, but the scan finds "
+                          "no such use; correct or remove the row")
+    return errors
+
+
+class TestDigestInventory(unittest.TestCase):
+    def test_repository_digest_uses_are_classified(self) -> None:
+        self.assertEqual(lint_digest_inventory(ROOT), [])
+
+    def test_detects_each_algorithm_family(self) -> None:
+        text = "\n".join([
+            "nid = hashlib.sha1(name).digest()",
+            "h = hashlib.md5(usedforsecurity=False)",
+            "ok = hashlib.sha256(data)",
+            "x = hashlib.new('sha512', data)",
+            "y = hashlib.file_digest(handle, \"blake2b\")",
+            "z = hashlib.new(algorithm)",
+            "crc = zlib.crc32(tag + payload)",
+            "a = zlib.adler32(data)",
+            "    h *= 16777619u;",
+            "    h = (h * 0x01000193) & 0xFFFFFFFF",
+            "        hash *= UINT64_C(1099511628211);",
+            "        h *= 0x100000001B3ull;",
+            "#define POLY 0xEDB88320u",
+        ])
+        self.assertEqual(digest_uses_in_text(text), {
+            "SHA-1": 1, "MD5": 2, "SHA-256": 3, "hashlib.sha512": 4, "hashlib.blake2b": 5,
+            "hashlib.new(dynamic)": 6, "CRC-32": 7, "Adler-32": 8, "FNV-32": 9, "FNV-64": 11,
+        })
+
+    def test_ignores_lookalike_numbers(self) -> None:
+        # The constants must stand alone: longer numbers, decimals and identifiers are not uses.
+        text = "\n".join([
+            "x = 167776190", "y = 0.16777619", "v_16777619 = 1", "z = 21099511628211",
+            "w = 0x0100019300", "hashlib_sha1(x)", "my.hashlib.sha1",
+        ])
+        self.assertEqual(digest_uses_in_text(text), {})
+
+    def _make_repo(self, root: pathlib.Path, files: dict[str, str], doc: str | None) -> None:
+        for rel_path, text in files.items():
+            path = root / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        if doc is not None:
+            (root / DIGEST_DOC).write_text(doc, encoding="utf-8")
+        run_git(["init", "-q"], cwd=root, check=True)
+        run_git(["add", "."], cwd=root, check=True)
+
+    @staticmethod
+    def _doc(*rows: str) -> str:
+        table = "\n".join(["| File | Algorithm | Purpose | Disposition |",
+                           "| --- | --- | --- | --- |", *rows])
+        return f"# Security\n\n{DIGEST_SECTION_HEADING}\n\n{table}\n\n## Next\n\n| `x.py` | MD5 | a | b |\n"
+
+    def test_unlisted_and_stale_pairs_fail(self) -> None:
+        files = {
+            "tools/nid.py": "hashlib.sha1(n)\nhashlib.sha256(n)\n",
+            "src/rt/cache.c": "h *= 16777619u;\n",
+            "tools/test_nid.py": "hashlib.md5(n)\n",
+            "src/rt/x_selftest.c": "h *= 1099511628211ull;\n",
+            "tools/notes.md": "hashlib.md5(n)\n",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            self._make_repo(root, files, self._doc(
+                "| `tools/nid.py` | SHA-1 | NID | Keep |",
+                "| `tools/gone.py` | MD5 | old | Keep |",
+            ))
+            errors = lint_digest_inventory(root)
+        self.assertEqual(len(errors), 2, errors)
+        self.assertIn("src/rt/cache.c:1: FNV-32 digest use is not classified", errors[0])
+        self.assertIn("lists tools/gone.py / MD5, but the scan finds no such use", errors[1])
+
+    def test_listed_tree_passes_and_untracked_files_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            self._make_repo(root, {"tools/nid.py": "hashlib.sha1(n)\n"},
+                            self._doc("| `tools/nid.py` | SHA-1 | NID | Keep |"))
+            (root / "tools" / "scratch.py").write_text("hashlib.md5(n)\n", encoding="utf-8")
+            self.assertEqual(lint_digest_inventory(root), [])
+
+    def test_missing_section_or_duplicate_rows_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            self._make_repo(root, {"tools/nid.py": "hashlib.sha1(n)\n"}, "# Security\n")
+            errors = lint_digest_inventory(root)
+            self.assertIn(f"needs exactly one '{DIGEST_SECTION_HEADING}' section", errors[0])
+            (root / DIGEST_DOC).write_text(self._doc(
+                "| `tools/nid.py` | SHA-1 | NID | Keep |",
+                "| `tools/nid.py` | SHA-1 | NID again | Keep |"), encoding="utf-8")
+            self.assertEqual(lint_digest_inventory(root),
+                             [f"{DIGEST_DOC}:8: duplicate digest row tools/nid.py / SHA-1"])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            self._make_repo(root, {}, None)
+            self.assertEqual(lint_digest_inventory(root),
+                             [f"{DIGEST_DOC}: missing; it holds the digest inventory"])

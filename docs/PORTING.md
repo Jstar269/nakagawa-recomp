@@ -86,8 +86,7 @@ inference only activated for the documented `USRDIR`/archive-root layout; the
 manifest now states the root relationship directly. The archived and extracted
 routes have distinct open order: a matching extracted-primary file wins a loose
 file, while a loose filesystem file is checked before an XB archive member.
-This migration and the remaining loose-content integration are tracked as
-**Loose-content root binding — in the works ([#289](https://github.com/Jstar269/nakagawa-recomp/issues/289))**.
+This migration, loose-content root binding, landed under [#289](https://github.com/Jstar269/nakagawa-recomp/issues/289).
 
 For the privately route-validated HST title, the opt-in manager path is
 (private-local-only: it requires a local, publication-excluded copy of the
@@ -339,11 +338,9 @@ its single historical address remains only in the inventory. Retired inventory l
 `tools/compat_overrides.py:HLE_TITLE_CONFIGURED_COMPAT` and is gated by
 `tools/test_hle_title_isolation.py`.
 
-The separate Newlib master/table addresses remain only in the typed
-`SrTitleReentBindings` returned by `sr_title_config_reent_bindings()`. That accessor
-requires the validated `hst` codegen profile and exact HST source id; generic and
-fixture profiles receive no values. This preserves the flagship's configured reent
-compatibility while keeping guest addresses out of generic scheduler code.
+No Newlib master or guest thread-table address remains: the HST reent bindings were
+retired under [#363](https://github.com/Jstar269/nakagawa-recomp/issues/363), and the
+runtime writes nothing into a title's own per-thread reent table.
 
 By bucket (live `hle.c` only):
 
@@ -387,8 +384,8 @@ disabled-profile fail-closed.
    exact trace hooks, target-pattern swallowing, and HST-address diagnostics were
    removed. A synthetic resource-shaped call now fails at the named
    `not-executable` boundary; title-configured HST Newlib bindings remain available
-   to the flagship. The broader second-title boundary remains in the works under
-   [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285).
+   to the flagship. The second-title bring-up landed under [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285); the
+   next milestone, a second title that saves, closes and resumes, is [#1126](https://github.com/Jstar269/nakagawa-recomp/issues/1126).
 
 The former blocker #1, one shared scratch stack for every nested guest call, is
 retired: see C-4.

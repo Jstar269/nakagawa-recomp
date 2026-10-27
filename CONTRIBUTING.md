@@ -34,32 +34,32 @@ The rules it links to decide whether a change can land, so read them once.
    `Signed-off-by: Your Name <you@example.com>`. Only the person who wrote the change may sign it off.
    See [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
 9. **Open the pull request.** Use a draft if it is not finished, fill in the template, and say what is left.
-   Ask questions by opening an issue, or by commenting on the issue you are working on.
+   Ask questions in the [Help](https://github.com/Jstar269/nakagawa-recomp/discussions/categories/help) category
+   of GitHub Discussions, or comment on the issue you are working on.
 
 ## Accessibility
 
 The player's accessibility statement, with what works, what does not and how to report a barrier, is
 [ACCESSIBILITY.md](ACCESSIBILITY.md). If you change the launcher or the documentation, follow its
 "Contributing accessibly" list and update its tables when a change adds, changes or removes a barrier.
-Questions that are not about code go through [SUPPORT.md](SUPPORT.md).
+For questions that are not about code, [SUPPORT.md](SUPPORT.md) says where to go.
 
 ## Licensing
 
-The repository-level project declaration is
-GPL-3.0-or-later. New project-authored source files use `SPDX-License-Identifier: GPL-3.0-or-later`.
-Inherited and third-party files retain the exact SPDX identifier and notices recorded for their source
-lineage; do not relabel upstream-derived code as project-authored or replace its license identifier.
-Specific inherited licensing/provenance questions remain under qualified review; do not introduce
-third-party-derived code without resolving its actual source/license chain.
+The project as a whole is licensed GPL-3.0-or-later, and new files you write yourself use
+`SPDX-License-Identifier: GPL-3.0-or-later`. Files that came from somewhere else keep the exact SPDX
+identifier and notices recorded for where they came from: don't relabel upstream-derived code as
+project-authored, and don't replace its licence identifier. Some questions about inherited licensing and
+provenance are still under qualified review, so don't bring in code derived from a third party until you
+know exactly where it came from and under which licence.
 
 ## Provenance controls
 
 Run `make contrib-refresh`, or leave this to a maintainer. Two files,
 `PUBLIC_EXPORT.json` and `assets/public_provenance_ledger.json`, are generated from a private
-trusted ledger that contributors don't have. Never edit them by hand; they are not hand-written
-files. The ledger records, for each published path, the classification and evidence the public
-export claims for it and the SHA-256 of its bytes; the export is the public-safe inventory and
-digest built from that ledger.
+trusted ledger that contributors don't have, so never edit them by hand. For each published file, the
+ledger records where it came from, the evidence for that, and the SHA-256 of its bytes. The export is
+the list of public files and their digests, built from that ledger.
 
 For the ordinary case — you changed the contents of paths that already have public entries, and you
 added and removed nothing — run:
@@ -210,7 +210,7 @@ template points contributors at it instead). The evidence a pull request needs i
 set on its exact head commit — see [docs/CI.md](docs/CI.md) for which jobs run for which changed
 paths and what each one means.
 
-Every gate reports one of four outcomes, and they are not interchangeable:
+Every gate reports one of these outcomes, and they are not interchangeable:
 
 | Outcome | Meaning |
 | --- | --- |
@@ -320,6 +320,5 @@ evidence. In every substantive pull request:
 A partial PR does not close an issue merely because CI is green. Record which acceptance criteria
 remain unresolved in the issue/PR discussion.
 
-Follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) in all project spaces. Report security issues
-through [SECURITY.md](SECURITY.md), not a public issue when the reporting channel is available and
-appropriate to the repository's current visibility.
+Follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) in all project spaces, including Discussions. Report
+security problems privately through [SECURITY.md](SECURITY.md), never in a public issue or discussion.
