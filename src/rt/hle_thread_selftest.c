@@ -688,7 +688,33 @@ int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
     (void)guest_path; (void)out_lba; (void)out_size;
     return -1;
 }
+/* The umd-io test's synthetic disc, served only while that test enables it: 64 sectors, with
+ * the ISO 9660 primary volume descriptor header at the start of sector 16 and every other byte
+ * a function of its sector and offset, so a read from the wrong sector is visible. */
+enum { UMD_SYNTHETIC_SECTORS = 64u };
+
+static uint8_t umd_synthetic_byte(uint64_t position) {
+    static const uint8_t pvd[8] = {0x01u, 'C', 'D', '0', '0', '1', 0x01u, 0x00u};
+    const uint64_t sector = position / 2048u, offset = position % 2048u;
+    if (sector == 16u && offset < sizeof(pvd)) return pvd[offset];
+    return (uint8_t)(sector * 31u + offset * 7u + 1u);
+}
+
+int iso_sector_count(uint32_t *out_sectors) {
+    if (!s_umd_io_synthetic_enabled || !out_sectors) return -1;
+    *out_sectors = UMD_SYNTHETIC_SECTORS;
+    return 0;
+}
+
 int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
+    if (s_umd_io_synthetic_enabled && dst) {
+        const uint64_t start = (uint64_t)lba * 2048u + offset;
+        const uint64_t end = (uint64_t)UMD_SYNTHETIC_SECTORS * 2048u;
+        if (start >= end) return 0;
+        uint32_t n = end - start < bytes ? (uint32_t)(end - start) : bytes;
+        for (uint32_t i = 0; i < n; i++) ((uint8_t *)dst)[i] = umd_synthetic_byte(start + i);
+        return (int)n;
+    }
     if (s_psmf_synthetic_enabled && lba == 0u && dst && offset < s_psmf_synthetic_size) {
         uint32_t n = s_psmf_synthetic_size - offset;
         if (n > bytes) n = bytes;
@@ -970,8 +996,6 @@ static void test_title_config_hle_bindings(void) {
     uint32_t frame_latch = 0;
     uint32_t libfont_uid = 0;
     int has_latch = sr_title_config_frame_latch_addr(&frame_latch);
-    SrTitleReentBindings reent;
-    int has_reent = sr_title_config_reent_bindings(&reent);
     CpuState cpu;
 
     memset(g_mem_base, 0, 0x0c000000u);
@@ -988,12 +1012,6 @@ static void test_title_config_hle_bindings(void) {
     expect((has_bringup && has_sync && has_latch) ||
            (!has_bringup && !has_sync && !has_latch),
            "migrated HLE groups are all configured together or all absent");
-    expect(has_reent == (strcmp(cfg->source_id, "hst-ucus98701") == 0),
-           "HST reent compatibility is selected only by the validated HST title config");
-    if (has_reent) {
-        expect(reent.master_reent_addr != 0u && reent.guest_thread_table_addr != 0u,
-               "HST reent compatibility config supplies both required guest addresses");
-    }
 
     s_title_hle_guest_calls = 0;
     s_title_hle_probe = 1;
@@ -1717,15 +1735,18 @@ static int write_fixed_module_prx(const char *path, uint32_t link) {
     return written == sizeof(image) && close_result == 0;
 }
 
-static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start);
+static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start,
+                                          uint32_t export_nid);
 
 static int write_runtime_module_prx(const char *path, uint8_t flavour) {
-    return write_runtime_module_prx_entry(path, flavour, 1);
+    return write_runtime_module_prx_entry(path, flavour, 1, RT_EXPORT_NID);
 }
 
 /* with_start == 0 writes a library module with no start routine: the system library
- * exports only module_stop and the ELF entry is 0xFFFFFFFF. */
-static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start) {
+ * exports only module_stop and the ELF entry is 0xFFFFFFFF. The named library exports
+ * one function under `export_nid`. */
+static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start,
+                                          uint32_t export_nid) {
     enum { PHOFF = 0x34u, RELOC_OFFSET = RT_SEG_OFFSET + RT_FILE_SPAN,
            SIZE = RELOC_OFFSET + RT_RELOC_COUNT * 8u };
     /* A start-less module's single system-library address sits at table + 4. */
@@ -1803,7 +1824,7 @@ static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int
         fixture_wr32(seg + RT_SYSLIB_TABLE + 4, RT_STOP);
         fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_STOP);
     }
-    fixture_wr32(seg + RT_LIB_TABLE + 0, RT_EXPORT_NID);
+    fixture_wr32(seg + RT_LIB_TABLE + 0, export_nid);
     fixture_wr32(seg + RT_LIB_TABLE + 4, RT_QUERY);
     memcpy(seg + RT_LIBNAME, "RtPlacedLib", 12);
     fixture_wr32(seg + RT_DATA_PTR, RT_QUERY);
@@ -1876,6 +1897,85 @@ static uint32_t rt_lifecycle(uint32_t (*handler)(CpuState *), uint32_t uid,
     cpu.r[6] = argp;
     cpu.r[7] = status;
     return handler(&cpu);
+}
+
+/* A started module that exports a NID host HLE also serves takes that NID over, and only
+ * while it is started (#286). scePsmfPlayerGetAudioOutSize is the shadowed NID: the host
+ * handler answers a handle it does not know with its status error, and the guest body
+ * answers a0 + RT_START_MARK, so the result names which side ran. Generic loader and
+ * linker paths only; no title address or module name is involved. */
+#define RT_HLE_SHADOW_NID 0x3EA82A4Bu      /* scePsmfPlayerGetAudioOutSize */
+#define RT_HLE_SHADOW_HOST 0x80616001u     /* the host handler's unknown-handle status */
+
+static uint32_t rt_shadow_import(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    return sr_syscall(&cpu, RT_HLE_SHADOW_NID);
+}
+
+static void test_runtime_placed_hle_shadow(const char *alpha_guest, const char *alpha_path) {
+    extern void sr_hle_test_partition_reset(void);
+    uint32_t base = 0;
+    expect(sr_hle_test_is_registered(RT_HLE_SHADOW_NID) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN &&
+               rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: host HLE serves the NID before any module exports it");
+    expect(write_runtime_module_prx_entry(alpha_path, 1u, 1, RT_HLE_SHADOW_NID) &&
+               runtime_module_identity(alpha_path, &s_rt_alpha_code),
+           "runtime placement: the fixture module exports a host-served NID");
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
+    sr_module_code_register(&s_rt_alpha_code);
+    s_rt_start_calls = 0;
+    s_rt_stop_calls = 0;
+
+    /* Shipped default: host HLE implements the export, so the host keeps serving it and
+     * module_start is bypassed; the export never links. */
+    _putenv("SR_REAL_MODULE_START=");
+    uint32_t uid = rt_load(alpha_guest, 0u);
+    expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+               sr_module_code_is_bound(&s_rt_alpha_code, &base) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == base + RT_QUERY,
+           "runtime placement: the shadowing export registers at the placed address");
+    expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_start_calls == 0u && sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u &&
+               rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: by default a host-served module's start leaves the host handler");
+    expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+               rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN,
+           "runtime placement: unloading the unstarted module restores the builtin");
+
+    /* Real module start: before start the host handler runs; once module_start has run the
+     * guest body owns the NID; unload hands it back to the host handler. */
+    _putenv("SR_REAL_MODULE_START=1");
+    uid = rt_load(alpha_guest, 0u);
+    expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+               sr_module_code_is_bound(&s_rt_alpha_code, &base) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+               sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u &&
+               rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: before module start the shadowed import reaches host HLE");
+    expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_start_calls == 1u &&
+               sr_hle_test_started_export(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+               rt_shadow_import() == RT_START_MARK,
+           "runtime placement: after module start the shadowed import runs the guest body");
+    expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_stop_calls == 1u &&
+               rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+               !sr_module_code_is_bound(&s_rt_alpha_code, NULL) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN &&
+               sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u,
+           "runtime placement: unload returns the shadowed NID to the builtin");
+    expect(rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: after unload the shadowed import reaches host HLE again");
+
+    _putenv("SR_REAL_MODULE_START=");
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
 }
 
 static void test_runtime_placed_modules(void) {
@@ -2192,7 +2292,7 @@ static void test_runtime_placed_modules(void) {
         char nostart_path[1024];
         runtime_module_path(nostart_path, sizeof(nostart_path), "rt-nostart.prx");
         s_rt_nostart_code.link_high = RT_MEM_SPAN;
-        expect(write_runtime_module_prx_entry(nostart_path, 5u, 0) &&
+        expect(write_runtime_module_prx_entry(nostart_path, 5u, 0, RT_EXPORT_NID) &&
                    runtime_module_identity(nostart_path, &s_rt_nostart_code),
                "runtime placement: the start-less module fixture is written");
         sr_module_code_register(&s_rt_nostart_code);
@@ -2306,6 +2406,8 @@ static void test_runtime_placed_modules(void) {
                    sr_hle_test_module_count() == 0u,
                "runtime placement: a full partition refuses the load with NO_MEMORY");
     }
+
+    test_runtime_placed_hle_shadow(alpha_guest, alpha_path);
 
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();
@@ -3362,14 +3464,122 @@ static void test_fd_namespace(void) {
     free(old_root);
 }
 
+/* sceIoLseek takes its 64-bit offset in a2:a3 and whence in t0 and returns the high word in v1. */
+static uint32_t umd_test_seek64(uint32_t fd, int64_t offset, uint32_t whence, uint32_t *high) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[6] = (uint32_t)(uint64_t)offset;
+    cpu.r[7] = (uint32_t)((uint64_t)offset >> 32);
+    cpu.r[8] = whence;
+    const uint32_t low = sr_syscall(&cpu, 0x27eb27b8u);
+    *high = cpu.r[3];
+    return low;
+}
+
+static uint32_t umd_test_seek32(uint32_t fd, int32_t offset, uint32_t whence) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = (uint32_t)offset;
+    cpu.r[6] = whence;
+    return sr_syscall(&cpu, 0x68963324u);
+}
+
+static uint32_t umd_test_read(uint32_t fd, uint32_t dst, uint32_t count) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = dst;
+    cpu.r[6] = count;
+    return sr_syscall(&cpu, 0x6a638d83u);
+}
+
+/* True when guest memory at dst holds the synthetic disc's sectors [sector, sector + count). */
+static int umd_test_sectors_match(uint32_t dst, uint32_t sector, uint32_t count) {
+    for (uint32_t i = 0; i < count * 2048u; i++) {
+        if (MEM_R8(dst + i) != umd_synthetic_byte((uint64_t)sector * 2048u + i)) return 0;
+    }
+    return 1;
+}
+
+/* The UMD block device counts in 2048-byte sectors (PSP-UMDRAW-001 captured cells): seeks
+ * return sector positions and SEEK_END is relative to the last sector; reads take and return
+ * sector counts and advance the position by them; a position below zero or past the last
+ * sector is refused with 0x8001b003 and leaves the position unchanged; a zero count is refused
+ * with 0x80010016. Uncaptured cases stay visible: a read crossing the last sector stops at the
+ * raw-device boundary, and so does every data operation while no disc image is open. */
+static void test_umd_block_device_sectors(uint32_t fd, uint32_t data_addr) {
+    uint32_t high = 0;
+    expect(umd_test_seek64(fd, 0, 0u, &high) == 0u && high == 0u, "UMD SEEK_SET 0 is sector 0");
+    expect(umd_test_seek64(fd, 16, 0u, &high) == 16u && high == 0u,
+           "UMD SEEK_SET 16 returns sector 16");
+    expect(umd_test_seek64(fd, 32, 0u, &high) == 32u && high == 0u,
+           "a UMD seek offset counts sectors, not bytes");
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 32u && high == 0u,
+           "UMD SEEK_CUR 0 reports the current sector");
+    expect(umd_test_seek64(fd, 0, 2u, &high) == UMD_SYNTHETIC_SECTORS - 1u && high == 0u,
+           "UMD SEEK_END 0 is the last sector");
+    expect(umd_test_seek64(fd, 1, 0u, &high) == 1u && high == 0u, "UMD SEEK_SET 1 is sector 1");
+    expect(umd_test_seek64(fd, -1, 0u, &high) == 0x8001b003u && high == 0xffffffffu,
+           "a negative UMD position is refused with 0x8001b003");
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 1u,
+           "a refused UMD seek leaves the position unchanged");
+    expect(umd_test_seek64(fd, 0x7fffffff, 0u, &high) == 0x8001b003u && high == 0xffffffffu,
+           "a UMD position far past the disc is refused with 0x8001b003");
+    expect(umd_test_seek64(fd, UMD_SYNTHETIC_SECTORS, 0u, &high) == 0x8001b003u,
+           "the position after the last UMD sector is refused");
+    expect(umd_test_seek64(fd, INT64_MAX, 1u, &high) == 0x8001b003u,
+           "an overflowing UMD SEEK_CUR is refused");
+    expect(umd_test_seek64(fd, 0, 3u, &high) == 0x80020324u && high == 0xffffffffu,
+           "an unknown UMD whence is refused");
+    expect(umd_test_seek32(fd, 0, 0u) == 0u, "UMD sceIoLseek32 SEEK_SET 0 is sector 0");
+    expect(umd_test_seek32(fd, 16, 0u) == 16u, "UMD sceIoLseek32 SEEK_SET 16 returns sector 16");
+    expect(umd_test_seek32(fd, 0, 2u) == UMD_SYNTHETIC_SECTORS - 1u,
+           "UMD sceIoLseek32 SEEK_END 0 is the last sector");
+    expect(umd_test_seek32(fd, -1, 0u) == 0x8001b003u,
+           "UMD sceIoLseek32 refuses a negative position");
+
+    /* Two consecutive one-sector reads from sector 16 return the descriptor header, then sector
+     * 17, and leave the position at 18. */
+    expect(umd_test_seek32(fd, 16, 0u) == 16u, "UMD read setup seeks to sector 16");
+    expect(umd_test_read(fd, data_addr, 1u) == 1u && umd_test_sectors_match(data_addr, 16u, 1u) &&
+               MEM_R32(data_addr) == 0x30444301u && MEM_R32(data_addr + 4u) == 0x00013130u,
+           "a one-sector UMD read returns 1 and the sector-16 descriptor header");
+    expect(umd_test_read(fd, data_addr, 1u) == 1u && umd_test_sectors_match(data_addr, 17u, 1u),
+           "the next UMD read continues at the next sector");
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 18u && high == 0u,
+           "each UMD read advances the position by its sector count");
+    expect(umd_test_seek32(fd, 20, 0u) == 20u &&
+               umd_test_read(fd, data_addr, 3u) == 3u && umd_test_sectors_match(data_addr, 20u, 3u) &&
+               umd_test_seek32(fd, 0, 1u) == 23u,
+           "a three-sector UMD read copies 6144 bytes and advances three sectors");
+    expect(umd_test_seek32(fd, 16, 0u) == 16u && umd_test_read(fd, data_addr, 0u) == 0x80010016u &&
+               umd_test_seek32(fd, 0, 1u) == 16u,
+           "a zero-count UMD read is refused with 0x80010016 and keeps the position");
+
+    /* A read crossing the last sector is not captured: it stops at the boundary and changes
+     * neither guest memory nor the position. */
+    MEM_W32(data_addr, 0xaabbccddu);
+    expect(umd_test_seek32(fd, (int32_t)UMD_SYNTHETIC_SECTORS - 1, 0u) ==
+               UMD_SYNTHETIC_SECTORS - 1u &&
+               umd_test_read(fd, data_addr, 2u) == 0x80010086u &&
+               MEM_R32(data_addr) == 0xaabbccddu &&
+               umd_test_seek32(fd, 0, 1u) == UMD_SYNTHETIC_SECTORS - 1u,
+           "a UMD read across the last sector stops at the raw-device boundary");
+    expect(umd_test_read(fd, data_addr, 1u) == 1u &&
+               umd_test_sectors_match(data_addr, UMD_SYNTHETIC_SECTORS - 1u, 1u),
+           "the last UMD sector itself is readable");
+    expect(umd_test_seek32(fd, 0, 0u) == 0u && umd_test_read(fd, 0x0bffff00u, 1u) == 0x80010016u &&
+               umd_test_seek32(fd, 0, 1u) == 0u,
+           "a UMD read that would run past the end of guest memory is refused");
+}
+
 static void test_umd_io_console_model(void) {
     enum { PATH_ADDR = 0x09010000u, DATA_ADDR = 0x09012000u, FD_KIND_RAW_DEVICE = 3 };
     static const uint32_t nid_io_open = 0x109f50bcu;
     static const uint32_t nid_io_close = 0x810c4bc3u;
-    static const uint32_t nid_io_read = 0x6a638d83u;
     static const uint32_t nid_io_write = 0x42ec03acu;
-    static const uint32_t nid_io_lseek32 = 0x68963324u;
-    static const uint32_t nid_io_lseek = 0x27eb27b8u;
     static const uint32_t nid_io_ioctl = 0x63632449u;
     static const uint32_t nid_io_getstat = 0xace946e8u;
     static const uint32_t nid_io_devctl = 0x54f5fb11u;
@@ -3476,35 +3686,49 @@ static void test_umd_io_console_model(void) {
         }
     }
 
-    /* The console measurement only covered close. Every other raw-device
-     * operation must stop at a named semantic boundary with a real error. */
-    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    /* Reads and seeks on the UMD block device follow the captured sector cells (above). With no
+     * disc image open they stay at the raw-device boundary, as does every operation no capture
+     * covers. */
+    s_umd_io_synthetic_enabled = 0;
+    fd_set_path(&cpu, PATH_ADDR, "umd1:");
     cpu.r[5] = 1u;
     uint32_t raw_fd = sr_syscall(&cpu, nid_io_open);
     expect(raw_fd == 3u && sr_hle_test_fd_kind(raw_fd) == FD_KIND_RAW_DEVICE,
-           "bare UMD open creates a typed descriptor in the normal table");
+           "a UMD open with no disc image still creates a typed descriptor");
     MEM_W32(DATA_ADDR, 0xaabbccddu);
+    expect(umd_test_read(raw_fd, DATA_ADDR, 1u) == 0x80010086u &&
+               MEM_R32(DATA_ADDR) == 0xaabbccddu,
+           "with no disc image a UMD sceIoRead fails closed without changing guest memory");
+    expect(umd_test_seek32(raw_fd, 16, 0u) == 0x80010086u,
+           "with no disc image a UMD sceIoLseek32 fails closed");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
-    cpu.r[5] = DATA_ADDR;
-    cpu.r[6] = 4u;
-    expect(sr_syscall(&cpu, nid_io_read) == 0x80010086u &&
-               MEM_R32(DATA_ADDR) == 0xaabbccddu,
-           "raw UMD sceIoRead fails closed without changing guest memory");
+    expect(sr_syscall(&cpu, nid_io_close) == 0u, "the image-less UMD descriptor closes");
+    s_umd_io_synthetic_enabled = 1;
+
+    static const char *const umd_devices[] = {"umd0:", "umd1:", "umd:"};
+    for (size_t i = 0; i < sizeof(umd_devices) / sizeof(umd_devices[0]); i++) {
+        fd_set_path(&cpu, PATH_ADDR, umd_devices[i]);
+        cpu.r[5] = i == 0u ? 0x000f0001u : 1u;
+        raw_fd = sr_syscall(&cpu, nid_io_open);
+        expect(raw_fd == 3u, "each UMD block device opens read-only");
+        test_umd_block_device_sectors(raw_fd, DATA_ADDR);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = raw_fd;
+        expect(sr_syscall(&cpu, nid_io_close) == 0u, "each UMD block device closes");
+    }
+
+    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    cpu.r[5] = 1u;
+    raw_fd = sr_syscall(&cpu, nid_io_open);
+    expect(raw_fd == 3u && sr_hle_test_fd_kind(raw_fd) == FD_KIND_RAW_DEVICE,
+           "bare UMD open creates a typed descriptor in the normal table");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     cpu.r[5] = DATA_ADDR;
     cpu.r[6] = 4u;
     expect(sr_syscall(&cpu, nid_io_write) == 0x80010086u,
            "raw UMD sceIoWrite fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_lseek32) == 0x80010086u,
-           "raw UMD sceIoLseek32 fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_lseek) == 0x80010086u,
-           "raw UMD sceIoLseek fails closed");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     expect(sr_syscall(&cpu, nid_io_ioctl) == 0x80010086u,
@@ -5873,7 +6097,8 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
                osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
            "after the answer the keyboard accepts shutdown and reaches NONE");
 
-    /* A new keyboard replaces one whose request is still open. */
+    /* One utility dialog slot (#1386): a second keyboard InitStart while one is VISIBLE is
+     * refused, and the running keyboard keeps the slot and the person's open request. */
     osk_person_reset();
     s_osk_person_typing = 1;
     osk_guest_build(1, 16u, 0u);
@@ -5885,40 +6110,228 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
     (void)osk_poll(&cpu);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u && s_osk_abandons == 1,
-           "starting a new keyboard drops the old keyboard's unanswered request");
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0x80110001u && s_osk_abandons == 0 &&
+               s_osk_request_open,
+           "a second keyboard InitStart while the first is VISIBLE returns INVALID_STATUS and "
+           "keeps the person's open request (#1386)");
     s_osk_person_typing = 0;
-    expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u && osk_poll_past_visible(&cpu) == 3u &&
-               s_osk_requests == 2 && osk_guest_out_is(0, n, 1),
-           "the new keyboard asks the person afresh and is answered");
+    expect(osk_poll_past_visible(&cpu) == 3u && s_osk_requests == 1 && osk_guest_out_is(0, n, 1),
+           "the first keyboard is answered through its own request");
     memset(&cpu, 0, sizeof(cpu));
     (void)sr_syscall(&cpu, NID_OSK_SHUTDOWN);
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
 
-    /* Another utility dialog takes the slot while the person is still typing: the keyboard is
-     * no longer polled (GetStatus reports WRONG_TYPE), so its box must not stay open. */
+    /* Another utility dialog cannot take the slot while the person is still typing (#1386):
+     * savedata's InitStart is refused and the keyboard stays VISIBLE with its request open.
+     * Once the keyboard is back at NONE savedata takes the slot, and from then on the
+     * keyboard's GetStatus reports WRONG_TYPE. */
     osk_person_reset();
     s_osk_person_typing = 1;
     osk_guest_build(1, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog will replace starts");
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog asks to replace starts");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
     expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
     memset(&cpu, 0, sizeof(cpu));
     for (uint32_t off = 0; off < 0x600u; off += 4u) MEM_W32(OSK_SAVEDATA_PARAM_ADDR + off, 0u);
+    MEM_W32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu, 0xdeadbeefu);
     cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u && s_osk_abandons == 1 &&
-               !s_osk_request_open,
-           "a savedata dialog taking the slot drops the keyboard's unanswered request");
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0x80110001u && s_osk_abandons == 0 &&
+               s_osk_request_open && MEM_R32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu) == 0xdeadbeefu,
+           "a savedata InitStart while the keyboard is VISIBLE returns INVALID_STATUS and "
+           "changes nothing");
+    expect(osk_poll(&cpu) == 2u, "the keyboard still holds the slot and stays VISIBLE");
+    s_osk_person_typing = 0;
+    expect(osk_poll_past_visible(&cpu) == 3u && sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u &&
+               osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u && osk_guest_out_is(0, n, 1),
+           "the keyboard is answered and winds down to NONE");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u &&
+               MEM_R32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
+           "with the keyboard at NONE a savedata InitStart takes the slot");
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_OSK_STATUS) == 0x80110005u,
-           "the replaced keyboard reports WRONG_TYPE");
-    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
-           "the dropped request writes nothing into the field");
+           "the keyboard that gave up the slot reports WRONG_TYPE");
     osk_person_reset();
+    sr_hle_test_osk_slot_reset();
+}
+
+/* ---- One utility dialog slot (#1386), through the production dispatch. Savedata, message,
+ * netconf, gamedata-install, game-sharing and the OSK share it: a second InitStart while a
+ * dialog is active returns INVALID_STATUS (0x80110001) and leaves both dialogs untouched, a
+ * call for a type that does not hold the slot returns WRONG_TYPE (0x80110005), the OSK's
+ * PSP-measured code (#363), and the holder keeps the slot at NONE after use. The code a PSP
+ * returns for a second InitStart is unmeasured; the #1386 contract names INVALID_STATUS. */
+#define NID_SAVEDATA_DIALOG_STATUS   0x8874dbe0u
+#define NID_SAVEDATA_DIALOG_UPDATE   0xd4b95ffbu
+#define NID_SAVEDATA_DIALOG_SHUTDOWN 0x9790b33cu
+#define NID_MSG_DIALOG_INIT          0x2ad8e239u
+#define NID_MSG_DIALOG_UPDATE        0x95fc253bu
+#define NID_MSG_DIALOG_STATUS        0x9a1c91d7u
+#define NID_MSG_DIALOG_SHUTDOWN      0x67af3428u
+#define NID_NETCONF_DIALOG_INIT      0x4db1e739u
+#define NID_NETCONF_DIALOG_UPDATE    0x91e70e35u
+#define NID_NETCONF_DIALOG_STATUS    0x6332aa39u
+#define NID_NETCONF_DIALOG_SHUTDOWN  0xf88155f6u
+#define NID_GAMEDATA_DIALOG_INIT     0x24ac31ebu
+#define NID_GAMEDATA_DIALOG_UPDATE   0x4aecd179u
+#define NID_GAMEDATA_DIALOG_STATUS   0xb57e95d9u
+#define NID_GAMEDATA_DIALOG_SHUTDOWN 0x32e32dcbu
+#define NID_SHARING_DIALOG_INIT      0xc492f751u
+#define NID_SHARING_DIALOG_UPDATE    0x7853182du
+#define NID_SHARING_DIALOG_STATUS    0x946963f3u
+#define NID_SHARING_DIALOG_SHUTDOWN  0xefc6f80fu
+#define UTILITY_MSG_PARAM_ADDR       0x09034000u
+#define UTILITY_MSG2_PARAM_ADDR      0x09034400u
+#define UTILITY_OTHER_PARAM_ADDR     0x09034800u
+#define UTILITY_SAVEDATA_PARAM_ADDR  0x09035000u /* 0x600 bytes */
+#define UTILITY_RESULT_UNTOUCHED     0xdeadbeefu
+
+typedef struct UtilityDialogNids {
+    const char *name;
+    uint32_t init, update, status, shutdown;
+} UtilityDialogNids;
+
+static uint32_t utility_call(CpuState *cpu, uint32_t nid, uint32_t a0) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = a0;
+    return sr_syscall(cpu, nid);
+}
+
+/* A zeroed parameter block whose common result field (+0x1c) holds a sentinel: an InitStart
+ * that takes the block writes 0 there, so a refused one is visible by the sentinel staying. */
+static void utility_param_block(uint32_t addr, uint32_t size) {
+    for (uint32_t off = 0; off < size; off += 4u) MEM_W32(addr + off, 0u);
+    MEM_W32(addr + 0x1cu, UTILITY_RESULT_UNTOUCHED);
+}
+
+static void test_utility_dialog_single_slot(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
+          NID_SAVEDATA_DIALOG_STATUS, NID_SAVEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityMsgDialog", NID_MSG_DIALOG_INIT, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS,
+          NID_MSG_DIALOG_SHUTDOWN },
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+        { "sceUtilityOsk", NID_OSK_INIT, NID_OSK_UPDATE, NID_OSK_STATUS, NID_OSK_SHUTDOWN },
+    };
+    const size_t count = sizeof(dialogs) / sizeof(dialogs[0]);
+    char what[256];
+    CpuState cpu;
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    osk_person_reset();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+
+    /* No dialog ever opened: every type's Update, GetStatus and ShutdownStart is WRONG_TYPE. */
+    for (size_t i = 0; i < count; i++) {
+        snprintf(what, sizeof(what), "%sUpdate, GetStatus and ShutdownStart with no dialog ever "
+                 "opened return WRONG_TYPE", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].update, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].shutdown, 0u) == 0x80110005u,
+               what);
+    }
+
+    /* The message dialog takes the free slot. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
+           "a message InitStart takes the free slot and clears its result");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 1u, "the message dialog reports INIT");
+
+    /* Repeated init: a second message InitStart neither restarts the running dialog nor takes
+     * its own parameter block. */
+    utility_param_block(UTILITY_MSG2_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG2_PARAM_ADDR) == 0x80110001u &&
+               MEM_R32(UTILITY_MSG2_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "a second message InitStart while one is active returns INVALID_STATUS and leaves "
+           "its parameter block alone");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "the running message dialog was not restarted: it moves on from INIT to RUNNING");
+
+    /* Overlapping types: every other dialog's InitStart is refused while the message dialog is
+     * active, and calls for those types are WRONG_TYPE. */
+    for (size_t i = 0; i < count; i++) {
+        if (dialogs[i].init == NID_MSG_DIALOG_INIT) continue;
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        utility_param_block(block, savedata ? 0x600u : 0x40u);
+        snprintf(what, sizeof(what), "%sInitStart while the message dialog is active returns "
+                 "INVALID_STATUS and leaves its parameter block alone", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0x80110001u &&
+                   MEM_R32(block + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+               what);
+        snprintf(what, sizeof(what), "%sGetStatus while the message dialog holds the slot "
+                 "returns WRONG_TYPE", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].status, 0u) == 0x80110005u, what);
+    }
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "the refused InitStarts left the message dialog RUNNING");
+
+    /* The holder finishes; until its GetStatus reports NONE it still holds the active slot. */
+    expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 3u &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
+           "the message dialog finishes with its own result");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u,
+           "the finished message dialog accepts ShutdownStart");
+    utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "a savedata InitStart before the shut-down message dialog reports NONE is refused");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+           "the message dialog winds down to NONE and keeps the slot there after use");
+
+    /* With the holder at NONE the next type takes the slot, and the old holder's calls become
+     * WRONG_TYPE. */
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
+           "with the message dialog at NONE a savedata InitStart takes the slot");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0x80110005u &&
+               utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110005u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0x80110005u,
+           "the message dialog that gave up the slot answers WRONG_TYPE");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "the savedata dialog reports INIT, then winds down to NONE after ShutdownStart");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a ShutdownStart at NONE does not re-arm the savedata dialog");
+
+    /* Each remaining type takes the free slot in turn and gives it back at NONE. */
+    for (size_t i = 0; i < count; i++) {
+        const uint32_t init = dialogs[i].init;
+        if (init == NID_SAVEDATA_DIALOG_INIT || init == NID_MSG_DIALOG_INIT || init == NID_OSK_INIT)
+            continue;
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x40u);
+        snprintf(what, sizeof(what), "%sInitStart takes the free slot; the dialog reports INIT, "
+                 "then winds down to NONE after ShutdownStart", dialogs[i].name);
+        expect(utility_call(&cpu, init, UTILITY_OTHER_PARAM_ADDR) == 0u &&
+                   MEM_R32(UTILITY_OTHER_PARAM_ADDR + 0x1cu) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
+                   utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 4u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0u,
+               what);
+    }
+    sr_hle_test_osk_slot_reset();
 }
 
 static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
@@ -6900,8 +7313,10 @@ static void test_time_domains_are_coherent(void) {
     uint32_t libc_time = sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_TIME);
     expect(libc_time == MEM_R32(libc_time_out) && libc_time == tv_sec,
            "libc time and gettimeofday share the RTC/Unix epoch");
-    expect(tv_usec < 1000000u && MEM_R32(TZ_OUT) == 0u && MEM_R32(TZ_OUT + 4u) == 0u,
-           "gettimeofday emits a valid deterministic UTC timezone record");
+    uint32_t profile_zone = sysreg_sysparam_int(6u), profile_daylight = sysreg_sysparam_int(7u);
+    int64_t profile_local_minutes = (int64_t)(int32_t)profile_zone + (profile_daylight ? 60 : 0);
+    expect(tv_usec < 1000000u && MEM_R32(TZ_OUT) == 0u - profile_zone && MEM_R32(TZ_OUT + 4u) == profile_daylight,
+           "gettimeofday's timezone record carries the system profile's TIMEZONE and DAYLIGHTSAVINGS (#1382)");
 
     cpu.r[4] = DATE_EXPLICIT;
     cpu.r[5] = 60u; /* explicit PSP timezone offset in minutes */
@@ -6916,8 +7331,9 @@ static void test_time_domains_are_coherent(void) {
     cpu.r[4] = DATE_LOCAL; cpu.r[5] = DATE_TICK_LOCAL;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
            "local current-clock output is a valid RTC datetime");
-    expect(selftest_guest_u64(DATE_TICK_EXPLICIT) - selftest_guest_u64(DATE_TICK_LOCAL) == 3600000000ull,
-           "explicit RTC offset is applied in checked microseconds");
+    expect(selftest_guest_u64(DATE_TICK_EXPLICIT) - selftest_guest_u64(DATE_TICK_LOCAL) ==
+               (uint64_t)((60 - profile_local_minutes) * 60000000ll),
+           "explicit RTC offset and the system profile's local offset are applied in checked microseconds");
 
     expect(s_vtime_us == before,
            "all repeated clock queries leave the scheduler timeline unchanged");
@@ -7954,22 +8370,25 @@ static void test_rtc_pointer_validation_and_measured_conversions(void) {
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "GetCurrentClock rejects an unwritable datetime span");
 
-    /* sceRtcGetCurrentClockLocalTime runs on the fixed UTC console profile
-     * until #77; the local output must equal the explicit tz=0 baseline. */
-    cpu.r[4] = DATE_A; cpu.r[5] = 0u;
+    /* sceRtcGetCurrentClockLocalTime applies the system profile's time zone
+     * and daylight saving (#1382); the local output must equal the explicit
+     * clock at that offset. */
+    uint32_t profile_daylight = sysreg_sysparam_int(7u);
+    int64_t profile_local_minutes = (int64_t)(int32_t)sysreg_sysparam_int(6u) + (profile_daylight ? 60 : 0);
+    cpu.r[4] = DATE_A; cpu.r[5] = (uint32_t)(int32_t)profile_local_minutes;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u,
-           "refreshes the explicit UTC baseline for the LocalTime comparison");
+           "refreshes the explicit baseline at the profile's offset for the LocalTime comparison");
     cpu.r[4] = DATE_B;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == 0u,
-           "GetCurrentClockLocalTime succeeds on the pinned UTC profile");
+           "GetCurrentClockLocalTime succeeds on the system profile");
     cpu.r[4] = DATE_A; cpu.r[5] = TICK_A;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
-           "the refreshed UTC baseline is a valid datetime");
+           "the refreshed explicit baseline is a valid datetime");
     cpu.r[4] = DATE_B; cpu.r[5] = TICK_B;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
            "the LocalTime output is a valid datetime");
     expect(selftest_guest_u64(TICK_A) == selftest_guest_u64(TICK_B),
-           "LocalTime equals the UTC baseline while the console profile is pinned to UTC (#77)");
+           "LocalTime equals the explicit clock at the system profile's offset (#1382)");
     cpu.r[4] = 0u;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "GetCurrentClockLocalTime rejects a NULL datetime pointer fail-closed");
@@ -7982,22 +8401,22 @@ static void test_rtc_pointer_validation_and_measured_conversions(void) {
            "GetCurrentTick rejects a NULL output pointer fail-closed");
     /* ---- sceRtcConvertUtcToLocalTime / sceRtcConvertLocalTimeToUTC ---- */
     /* psprtc.h declares both directions (UTC<->local tick pointers, 0 on
-     * success, <0 on error).  With the console timezone pinned to UTC (#77)
-     * the conversion is the identity; the pointer edges fail closed and never
-     * touch the output. */
+     * success, <0 on error).  The conversion applies the system profile's
+     * local offset (#1382); the pointer edges fail closed and never touch the
+     * output. */
     MEM_W32(TICK_B, (uint32_t)tick_2012);
     MEM_W32(TICK_B + 4u, (uint32_t)(tick_2012 >> 32));
     MEM_W32(TICK_A, 0xDEADBEEFu); MEM_W32(TICK_A + 4u, 0xDEADBEEFu);
     cpu.r[4] = TICK_B; cpu.r[5] = TICK_A;
     expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == 0u,
-           "ConvertUtcToLocalTime succeeds on the pinned UTC profile");
-    expect(selftest_guest_u64(TICK_A) == tick_2012,
-           "ConvertUtcToLocalTime is the identity while the console timezone is UTC (#77)");
+           "ConvertUtcToLocalTime succeeds on the system profile");
+    expect(selftest_guest_u64(TICK_A) == tick_2012 + (uint64_t)(profile_local_minutes * 60000000ll),
+           "ConvertUtcToLocalTime adds the system profile's local offset (#1382)");
     cpu.r[4] = TICK_A; cpu.r[5] = TICK_B;
     expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == 0u,
-           "ConvertLocalTimeToUTC succeeds on the pinned UTC profile");
+           "ConvertLocalTimeToUTC succeeds on the system profile");
     expect(selftest_guest_u64(TICK_B) == tick_2012,
-           "ConvertLocalTimeToUTC inverts the identity on the pinned UTC profile");
+           "ConvertLocalTimeToUTC inverts the system profile's local offset");
 
     MEM_W32(TICK_A, 0xDEADBEEFu); MEM_W32(TICK_A + 4u, 0xDEADBEEFu);
     cpu.r[4] = 0u; cpu.r[5] = TICK_A;
@@ -8027,6 +8446,103 @@ static void test_rtc_pointer_validation_and_measured_conversions(void) {
     cpu.r[4] = TICK_B; cpu.r[5] = BAD_U64;
     expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "ConvertLocalTimeToUTC rejects an unwritable output span fail-closed");
+}
+
+/* Every local-time API agrees with the system profile the guest reads through
+ * sceUtilityGetSystemParamInt: TIMEZONE zone minutes from UTC and
+ * DAYLIGHTSAVINGS daylight, which give a local offset of local_minutes. */
+static void rtc_expect_profile(int32_t zone, uint32_t daylight, int64_t local_minutes, const char *setting) {
+    enum {
+        DATE_LOCAL = 0x00200500u,
+        DATE_EXPLICIT = 0x00200520u,
+        TICK_LOCAL = 0x00200540u,
+        TICK_EXPLICIT = 0x00200548u,
+        TICK_IN = 0x00200550u,
+        TICK_OUT = 0x00200558u,
+        TZ_OUT = 0x00200560u,
+    };
+    const uint64_t tick_2012 = 63483721935000500ull; /* 2012-09-20 07:12:15.500 UTC */
+    const uint64_t local_2012 = tick_2012 + (uint64_t)(local_minutes * 60000000ll);
+    char what[192];
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    snprintf(what, sizeof(what), "%s: sceUtilityGetSystemParamInt reports TIMEZONE %d and DAYLIGHTSAVINGS %u",
+             setting, (int)zone, (unsigned)daylight);
+    expect(sysreg_sysparam_int(6u) == (uint32_t)zone && sysreg_sysparam_int(7u) == daylight, what);
+
+    MEM_W32(TICK_IN, (uint32_t)tick_2012);
+    MEM_W32(TICK_IN + 4u, (uint32_t)(tick_2012 >> 32));
+    cpu.r[4] = TICK_IN; cpu.r[5] = TICK_OUT;
+    snprintf(what, sizeof(what), "%s: sceRtcConvertUtcToLocalTime adds %lld minutes", setting,
+             (long long)local_minutes);
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == 0u && selftest_guest_u64(TICK_OUT) == local_2012,
+           what);
+    cpu.r[4] = TICK_OUT; cpu.r[5] = TICK_IN;
+    snprintf(what, sizeof(what), "%s: sceRtcConvertLocalTimeToUTC takes the same %lld minutes off", setting,
+             (long long)local_minutes);
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == 0u && selftest_guest_u64(TICK_IN) == tick_2012,
+           what);
+
+    cpu.r[4] = DATE_EXPLICIT; cpu.r[5] = (uint32_t)(int32_t)local_minutes;
+    int clocks = sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u;
+    cpu.r[4] = DATE_LOCAL;
+    clocks = clocks && sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == 0u;
+    cpu.r[4] = DATE_EXPLICIT; cpu.r[5] = TICK_EXPLICIT;
+    clocks = clocks && sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u;
+    cpu.r[4] = DATE_LOCAL; cpu.r[5] = TICK_LOCAL;
+    clocks = clocks && sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u;
+    snprintf(what, sizeof(what), "%s: sceRtcGetCurrentClockLocalTime equals sceRtcGetCurrentClock at %lld minutes",
+             setting, (long long)local_minutes);
+    expect(clocks && selftest_guest_u64(TICK_LOCAL) == selftest_guest_u64(TICK_EXPLICIT), what);
+
+    MEM_W32(TZ_OUT, 0xdeadbeefu);
+    MEM_W32(TZ_OUT + 4u, 0xdeadbeefu);
+    cpu.r[4] = 0u; cpu.r[5] = TZ_OUT;
+    snprintf(what, sizeof(what), "%s: gettimeofday reports %d minutes west and dsttime %u", setting,
+             (int)(0u - (uint32_t)zone), (unsigned)daylight);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_GETTIMEOFDAY) == 0u && MEM_R32(TZ_OUT) == 0u - (uint32_t)zone &&
+               MEM_R32(TZ_OUT + 4u) == daylight,
+           what);
+}
+
+/* #1382: the RTC local-time APIs and gettimeofday read the time zone and
+ * daylight-saving setting from the registry keys sceUtilityGetSystemParamInt
+ * reports, so the two can never disagree, and a setting a game writes through
+ * sceReg moves local time at once. Production dispatch only; nothing is
+ * flushed, so the build-scoped overlay file stays absent. */
+static void test_rtc_local_time_follows_the_system_profile(void) {
+    uint32_t r = 0u, reg, cat;
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 0;
+    sysreg_scratch_clean();
+    sysreg_restart();
+
+    /* The seed: TIMEZONE -300 and DAYLIGHTSAVINGS 1, both measured on the oracle console. */
+    rtc_expect_profile(-300, 1u, -240, "the measured seed");
+
+    reg = sysreg_open_registry(2u, &r);
+    expect(r == 0u && reg != 0u, "sceRegOpenRegistry opens the system registry in mode 2");
+    cat = sysreg_open_category(reg, "/CONFIG/DATE", 2u, &r);
+    expect(r == 0u && cat != 0u, "sceRegOpenCategory opens /CONFIG/DATE in mode 2");
+    expect(sysreg_set_int(cat, "time_zone_offset", 540u) == 0u && sysreg_set_int(cat, "summer_time", 0u) == 0u,
+           "sceRegSetKeyValue sets a +540-minute zone with daylight saving off");
+    rtc_expect_profile(540, 0u, 540, "a +540-minute zone written through sceReg");
+    expect(sysreg_set_int(cat, "summer_time", 1u) == 0u, "sceRegSetKeyValue turns daylight saving on");
+    rtc_expect_profile(540, 1u, 600, "the +540-minute zone with daylight saving on");
+    expect(sysreg_set_int(cat, "time_zone_offset", 0u - 210u) == 0u && sysreg_set_int(cat, "summer_time", 0u) == 0u,
+           "sceRegSetKeyValue sets a -210-minute zone with daylight saving off");
+    rtc_expect_profile(-210, 0u, -210, "a -210-minute zone written through sceReg");
+    expect(sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, cat, 0u, 0u, 0u, 0u) == 0u &&
+               sysreg_call(NID_SCE_REG_CLOSE_REGISTRY, reg, 0u, 0u, 0u, 0u) == 0u,
+           "the category and registry handles close");
+
+    /* A new process without a flush serves the seed again. */
+    sysreg_restart();
+    rtc_expect_profile(-300, 1u, -240, "the seed after a restart without a flush");
+    sysreg_scratch_clean();
 }
 
 static void test_unix_time_to_filetime_ticks(void) {
@@ -13403,14 +13919,6 @@ static void test_explicit_exit_status_exact(int32_t supplied, uint32_t expected)
 #define NID_SCE_KERNEL_CREATE_CALLBACK   0xe81caf8fu
 #define NID_SCE_KERNEL_DELETE_CALLBACK   0xedba5844u
 
-static int guest_hash_contains_uid(uint32_t uid) {
-    uint32_t bucket = uid % 32u;
-    for (uint32_t node = 0x0030aa88u; node != 0u; node = MEM_R32(node)) {
-        if (MEM_R32(node + 0x84u + bucket * 4u) == uid) return 1;
-    }
-    return 0;
-}
-
 static int host_libc_contains_uid(uint32_t uid) {
     for (int i = 0; i < MAXTHREADS; i++)
         if (s_libc_threads[i].in_use && s_libc_threads[i].uid == uid) return 1;
@@ -13465,8 +13973,8 @@ static void test_thread_delete_lifecycle_and_cleanup(void) {
     expect(terminate_delete == 0, "TerminateDeleteThread terminates and removes a target");
     expect(target && target->deleted && target->stack_released && target->resources_released,
            "TerminateDeleteThread marks the object deleted and releases resources once");
-    expect(!host_libc_contains_uid(target_uid) && !guest_hash_contains_uid(target_uid),
-           "TerminateDeleteThread removes host libc and guest reent ownership");
+    expect(!host_libc_contains_uid(target_uid),
+           "TerminateDeleteThread removes host libc ownership");
     expect(!sr_callback_is_valid(callback_uid),
            "TerminateDeleteThread removes callbacks owned by the target");
     expect(joiner->state == TH_READY && joiner->join_result_valid &&
@@ -14013,6 +14521,147 @@ static void test_suspend_resume_errors_and_ready_thread(void) {
     expect(sched_terminate_thread(ready->uid) == 0u, "terminate the suspended thread");
     expect(!ready->suspended && ready->state == TH_DORMANT,
            "terminating a suspended thread clears the suspension");
+
+    expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
+    s_cur = -1;
+}
+
+/* -------------------------------------------------------------------------
+ * sceKernelChangeThreadPriority (#1388), entered through sr_syscall.
+ * Expected results are the PSPAutotests threads/threads/change.expected cells:
+ * an unknown, -1 or deleted UID answers UNKNOWN_THID; a never-started or finished
+ * target answers DORMANT; priorities 0x08..0x77 are accepted and -2, -1, 0x01..0x07,
+ * 0x78 and 0x79 answer 0x80020193 without changing the priority; ready, suspended and
+ * waiting targets are changed; priority 0 gives the target the caller's current
+ * priority (0x18 there); a change that leaves another ready thread strictly stronger
+ * than the caller lets it run at the call, an equal one does not; and a caller that
+ * changes its own priority, even to the same value, goes behind its equal-priority
+ * ready peers and yields at the call ("[r] Zero", and the test thread's line before
+ * "Current").
+ * ------------------------------------------------------------------------- */
+#define NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY 0x71bc9871u
+#define SRT_ILLEGAL_PRIORITY 0x80020193u
+
+static uint32_t srt_change_priority(uint32_t uid, uint32_t priority) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = priority;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY);
+}
+
+static void test_change_thread_priority_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x5b0u, TH_RUNNING, 0x18);
+    TCB *ready = fixture_thread(0x5b1u, TH_READY, 0x30);
+    TCB *stopped = fixture_thread(0x5b2u, TH_DORMANT, 0x30);
+    self->started = 1;
+    ready->started = 1;
+    s_cur = (int)(self - s_tcb);
+
+    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY),
+           "ChangeThreadPriority has a production registration");
+
+    /* ---- target errors ------------------------------------------------------ */
+    expect(srt_change_priority(0xffffffffu, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority(-1) returns UNKNOWN_THID");
+    expect(srt_change_priority(0x7fffffu, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority of an unknown UID returns UNKNOWN_THID");
+    expect(srt_change_priority(stopped->uid, 0x20u) == SRT_DORMANT &&
+           stopped->priority == 0x30,
+           "ChangeThreadPriority of a dormant thread returns DORMANT and keeps its priority");
+    uint32_t deleted = sched_create_thread(0x08001000u, 0x30, 0x800u);
+    expect(deleted != 0u && sched_delete_thread(deleted) == 0u, "create and delete a thread");
+    expect(srt_change_priority(deleted, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority of a deleted thread returns UNKNOWN_THID");
+
+    /* ---- suspended and waiting targets are changed and do not take the CPU -- */
+    TCB *suspended = fixture_thread(0x5b3u, TH_READY, 0x30);
+    TCB *waiting = fixture_thread(0x5b4u, TH_WAIT_OBJ, 0x30);
+    suspended->started = 1;
+    suspended->suspended = 1;
+    waiting->started = 1;
+    expect(srt_change_priority(suspended->uid, 0x08u) == 0u && suspended->priority == 0x08 &&
+           self->state == TH_RUNNING,
+           "ChangeThreadPriority of a suspended thread succeeds and it does not preempt");
+    expect(srt_change_priority(waiting->uid, 0x08u) == 0u && waiting->priority == 0x08 &&
+           waiting->state == TH_WAIT_OBJ && self->state == TH_RUNNING,
+           "ChangeThreadPriority of a waiting thread succeeds and it keeps waiting");
+
+    /* ---- illegal priorities are refused and change nothing ------------------ */
+    static const uint32_t illegal[] = { 0xfffffffeu, 0xffffffffu, 0x01u, 0x02u, 0x04u,
+                                        0x05u, 0x06u, 0x07u, 0x78u, 0x79u };
+    for (size_t i = 0; i < sizeof illegal / sizeof illegal[0]; i++) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "priority 0x%x returns ILLEGAL_PRIORITY and keeps 0x30",
+                 illegal[i]);
+        expect(srt_change_priority(ready->uid, illegal[i]) == SRT_ILLEGAL_PRIORITY &&
+               ready->priority == 0x30 && self->state == TH_RUNNING, msg);
+    }
+
+    /* ---- legal priorities are stored; a stronger ready thread runs ---------- */
+    static const uint32_t legal[] = { 0x08u, 0x09u, 0x17u, 0x18u, 0x2fu, 0x30u, 0x31u,
+                                      0x50u, 0x6eu, 0x6fu, 0x77u };
+    for (size_t i = 0; i < sizeof legal / sizeof legal[0]; i++) {
+        char msg[96];
+        int stronger = (int)legal[i] < self->priority;
+        snprintf(msg, sizeof msg, "priority 0x%x is accepted and %s the caller",
+                 legal[i], stronger ? "preempts" : "does not preempt");
+        expect(srt_change_priority(ready->uid, legal[i]) == 0u &&
+               ready->priority == (int)legal[i] &&
+               self->state == (stronger ? TH_READY : TH_RUNNING), msg);
+        self->state = TH_RUNNING;
+    }
+
+    /* ---- priority 0 means the caller's current priority --------------------- */
+    expect(srt_change_priority(ready->uid, 0x21u) == 0u && ready->priority == 0x21,
+           "control: the target is set to 0x21");
+    expect(srt_change_priority(ready->uid, 0u) == 0u && ready->priority == 0x18,
+           "priority 0 gives the target the caller's current priority");
+    expect(self->state == TH_RUNNING, "an equal-priority target does not preempt the caller");
+
+    /* ---- UID 0 is the caller; lowering it lets a stronger ready thread run --- */
+    ready->priority = 0x20;
+    expect(srt_change_priority(0u, 0x18u) == 0u && self->state == TH_RUNNING,
+           "ChangeThreadPriority(0) keeps the caller ahead of a weaker ready thread");
+    expect(srt_change_priority(0u, 0x30u) == 0u && self->priority == 0x30 &&
+           self->state == TH_READY,
+           "lowering the caller below a ready thread reschedules at the call");
+    self->state = TH_RUNNING;
+
+    /* ---- the caller goes behind its equal-priority ready peers -------------- */
+    /* The caller holds slot 0 and the cursor is reset, so without the move to the back
+     * of the queue the next selection at 0x20 would be the caller again. */
+    const int self_idx = (int)(self - s_tcb);
+    const int ready_idx = (int)(ready - s_tcb);
+    self->priority = 0x20;
+    ready->priority = 0x20;
+    s_last_pick = -1;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->priority == 0x20 &&
+           self->state == TH_READY,
+           "ChangeThreadPriority(0) to the caller's own priority yields to an equal ready peer");
+    expect(pick_next() == ready_idx, "the equal-priority peer is selected before the caller");
+    ready->state = TH_READY;
+    self->state = TH_RUNNING;
+    s_cur = self_idx;
+    s_last_pick = -1;
+    expect(srt_change_priority(self->uid, 0x20u) == 0u && self->state == TH_READY,
+           "ChangeThreadPriority of the caller's own UID yields to an equal ready peer");
+    expect(pick_next() == ready_idx, "the peer runs first after the caller's own UID");
+    ready->state = TH_READY;
+    self->state = TH_RUNNING;
+    s_cur = self_idx;
+
+    ready->priority = 0x21;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->state == TH_RUNNING,
+           "with no ready peer at the caller's priority the caller keeps running");
+
+    ready->priority = 0x20;
+    s_dispatch_enabled = 0;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->state == TH_RUNNING,
+           "the yield is deferred while dispatch is disabled");
+    s_dispatch_enabled = 1;
 
     expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
     s_cur = -1;
@@ -18631,6 +19280,133 @@ static void test_atrac_stream_ring_wrap(void) {
     cpu.r[4] = id;
     expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0,
            "streamed context releases cleanly");
+}
+
+/* ---- issue #1291: a streamed reset continues from the guest's refill ----
+ *
+ * A title hands sceAtracSetData its streaming ring, then starts playback the
+ * PSPSDK way: sceAtracGetBufferInfoForResetting(sample 0) says where to write
+ * and from which file offset, the guest writes that refill, and
+ * sceAtracResetPlayPosition passes the byte count it wrote. The guest then
+ * keeps its own file position (refill start + bytes written) and feeds the
+ * ring from it. The HLE used to ignore the refill: its ring and read offset
+ * stayed at the SetData state, so the frames after the refill mixed the stale
+ * ring with the guest's newer bytes, the decoder rejected them, and every
+ * later sceAtracDecodeData returned 0x80630006 while the guest retried.
+ * Synthetic terminator-unit frames as in the #32 fixture; no game data. */
+static void test_atrac_reset_refill_stream(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    atring_build_header();
+
+    cpu.r[4] = AT_RINGBASE;
+    cpu.r[5] = AT_BUFSIZE;
+    uint32_t id = sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA_AND_GET_ID);
+    expect(id < 8u, "#1291: streamed ATRAC3+ track accepted");
+    if (id >= 8u) return;
+
+    const uint32_t INFO = 0x08000300u;
+    const uint32_t WP = 0x08000200u, WB = 0x08000204u, RO = 0x08000208u;
+    const uint32_t DEC = 0x08000210u, FIN = 0x08000214u, REM = 0x08000218u;
+    const uint32_t REMAIN = 0x0800021cu;
+
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = INFO;
+    expect(sr_syscall(&cpu, 0x2dd3e298u) == 0u,
+           "#1291: sceAtracGetBufferInfoForResetting(sample 0) succeeds");
+    uint32_t wp = MEM_R32(INFO + 0u), writable = MEM_R32(INFO + 4u);
+    uint32_t minimum = MEM_R32(INFO + 8u), file_pos = MEM_R32(INFO + 12u);
+    expect(wp == AT_RINGBASE && file_pos == AT_DATAOFF,
+           "#1291: the reset refill starts at the ring start with the first frame");
+    expect(writable >= minimum && writable % AT_ALIGN == 0u,
+           "#1291: the reset refill offers whole frames, at least the minimum");
+
+    /* The guest writes the refill, then reports the byte count. */
+    for (uint32_t b = 0; b < writable; b++)
+        MEM_W8(wp + b, atring_file_byte(file_pos + b));
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0u,
+           "#1291: sceAtracResetPlayPosition accepts the refill it offered");
+
+    cpu.r[4] = id; cpu.r[5] = REMAIN;
+    expect(sr_syscall(&cpu, 0x9ae849a7u) == 0u &&
+               MEM_R32(REMAIN) == writable / AT_ALIGN - 1u,
+           "#1291: after the reset the remaining frames are the refill minus its state-loading frame");
+
+    uint32_t next = file_pos + writable;   /* the guest's own file position */
+    int read_offset_mismatch = 0, decode_failures = 0, decoded_frames = 0;
+    for (int i = 0; i < 30; i++) {
+        cpu.r[4] = id; cpu.r[5] = WP; cpu.r[6] = WB; cpu.r[7] = RO;
+        expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0u,
+               "#1291: sceAtracGetStreamDataInfo succeeds after the reset");
+        uint32_t wb = MEM_R32(WB), ro = MEM_R32(RO);
+        if (next < AT_FILESIZE && wb > 0u) {
+            if (ro != next) read_offset_mismatch++;
+            uint32_t n = wb < AT_FILESIZE - next ? wb : AT_FILESIZE - next;
+            uint32_t at = MEM_R32(WP);
+            for (uint32_t b = 0; b < n; b++)
+                MEM_W8(at + b, atring_file_byte(next + b));
+            cpu.r[4] = id; cpu.r[5] = n; cpu.r[6] = 0u;
+            expect(sr_syscall(&cpu, 0x7db31251u) == 0u,
+                   "#1291: sceAtracAddStreamData accepts the continued feed");
+            next += n;
+        }
+        cpu.r[4] = id; cpu.r[5] = AT_PCMOUT; cpu.r[6] = DEC; cpu.r[7] = FIN;
+        cpu.r[8] = REM;
+        uint32_t ret = sr_syscall(&cpu, 0x6a8c3cd5u);
+        if (ret != 0u) decode_failures++;
+        else if (MEM_R32(DEC) == 2048u) decoded_frames++;
+    }
+    expect(read_offset_mismatch == 0,
+           "#1291: the stream read offset continues after the reset refill");
+    expect(decode_failures == 0,
+           "#1291: no frame after a reset refill is refused by the decoder");
+    expect(decoded_frames == 30,
+           "#1291: every sceAtracDecodeData after the reset returns a full frame");
+
+    /* Counts outside the offered refill are refused and leave the context
+     * unchanged (codes from the public PPSSPP reference, not measured). */
+    uint32_t pos_before = 0, valid_before = 0, pos_after = 0, valid_after = 0;
+    (void)sr_hle_test_atrac_ring(id, &pos_before, NULL, NULL, NULL, &valid_before);
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable + AT_ALIGN; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630016u,
+           "#1291: a refill larger than the offered space is refused (BAD_FIRST_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = minimum - 1u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630016u,
+           "#1291: a refill below the required minimum is refused (BAD_FIRST_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = AT_ALIGN;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630017u,
+           "#1291: a second-buffer count is refused when none was offered (BAD_SECOND_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = AT_FILEFR * 2048u + 1u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630015u,
+           "#1291: a reset past the end sample is refused (BAD_SAMPLE)");
+    cpu.r[4] = 0x7fu; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == ATRAC_ERROR_BAD_ATRACID,
+           "#1291: sceAtracResetPlayPosition on an invalid ID is refused (BAD_ATRACID)");
+    expect(sr_hle_test_atrac_ring(id, &pos_after, NULL, NULL, NULL, &valid_after) == 1 &&
+               pos_after == pos_before && valid_after == valid_before,
+           "#1291: refused resets leave the stream ring unchanged");
+
+    cpu.r[4] = id;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0u,
+           "#1291: streamed context releases cleanly");
+
+    /* An ID without data has no refill to describe or consume. */
+    cpu.r[4] = ATRAC_CODEC_AT3PLUS;
+    uint32_t bare = sr_syscall(&cpu, NID_SCE_ATRAC_GET_ID);
+    expect(bare < 8u, "#1291: sceAtracGetAtracID allocates an empty context");
+    if (bare >= 8u) return;
+    cpu.r[4] = bare; cpu.r[5] = 0u; cpu.r[6] = INFO;
+    expect(sr_syscall(&cpu, 0x2dd3e298u) == 0x80630010u,
+           "#1291: sceAtracGetBufferInfoForResetting without data is refused (NO_DATA)");
+    cpu.r[4] = bare; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630010u,
+           "#1291: sceAtracResetPlayPosition without data is refused (NO_DATA)");
+    cpu.r[4] = bare;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0u,
+           "#1291: empty context releases cleanly");
 }
 
 /* TD-24 batch 3: production-dispatch regressions for four converted Class B
@@ -32139,6 +32915,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_osk_overlay_through_hle_scripted_pad();
     test_osk_overlay_closing_press_stays_with_keyboard();
     test_osk_keyboard_keeps_guest_time_running();
+    test_utility_dialog_single_slot();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
@@ -32186,6 +32963,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_refer_thread_status();
     test_change_current_thread_attr();
     test_suspend_resume_errors_and_ready_thread();
+    test_change_thread_priority_contract();
     test_rotate_ready_queue_selection_order();
     test_rotate_equal_priority_yields_to_peers();
     test_suspended_waiter_keeps_wait_semantics();
@@ -32221,6 +32999,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_display_frame_per_sec_float_return();
     test_rtc_conversion_errors_and_full_range();
     test_rtc_pointer_validation_and_measured_conversions();
+    test_rtc_local_time_follows_the_system_profile();
     test_unix_time_to_filetime_ticks();
     test_bulk_clock_reads_are_side_effect_free();
     test_display_queries_do_not_progress_display();
@@ -32274,6 +33053,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_devkit_version_measured();
     test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();
+    test_atrac_reset_refill_stream();
     test_td24c_atrac_info_batch();
     test_mp3_stream_lifecycle();
     test_mp3_loop_and_mono();

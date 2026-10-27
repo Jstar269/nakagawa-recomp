@@ -2038,6 +2038,11 @@ int iso_list(const char *guest_path, uint32_t index, IsoDirEntry *out) {
 
 uint32_t iso_physical_lba(uint32_t lba_or_token) { return lba_or_token; }
 
+int iso_sector_count(uint32_t *out_sectors) {
+    (void)out_sectors;
+    return -1;
+}
+
 /* scePsmfPlayer NIDs and results (public PSP NIDs; same values the executable HLE harness
  * enters). */
 #define AV_NID_CREATE      0x235d8787u
