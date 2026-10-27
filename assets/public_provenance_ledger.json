@@ -93,7 +93,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "11c4389017974a205e6829966d22ade8588a7552fc7b176b0ea2e91487bb58a8"
+      "sha256": "c7b5d203322562013c288c08cb95d6d1a2a6d83f181637132f9b98dafa6a3163"
     },
     {
       "path": ".github/CODEOWNERS",
@@ -360,7 +360,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "56b820d3b189d10fc729c84c8f47a381b35f4352237772690fd7d734118337f5"
+      "sha256": "dbe01321ad2033fb05bc0b1038179e4c0d6b1abd3451d2ed158bd460c7f5f55e"
     },
     {
       "path": "CLAUDE.md",
@@ -12850,7 +12850,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d85026f28b009611eb11330218731423c4c477bff4856daf385ec68f6c018326"
+      "sha256": "365b5ddf36962c6e45a3ad44da32445fbdd4a6e98e16969b0ab6a98e32196ad1"
     },
     {
       "path": "tools/recomp_helper_inventory.py",
@@ -14856,7 +14856,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f5de20495d1d8491bc0359bf1b607fe15c82300ecc3969858ba46eb910e39eee"
+      "sha256": "d5045a4d1b03ebbeb40947e06b139303577581c8aff34bf4ae89842bc63846ba"
     },
     {
       "path": "tools/test_readme_images.py",
