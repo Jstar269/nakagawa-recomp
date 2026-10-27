@@ -28,9 +28,14 @@
  * byte, which is frequently an earlier packet than the one that closes the AU
  * (and most PSMF video packets carry no PTS at all).  Every append therefore
  * records the byte range it covers together with its PTS, and an AU is emitted
- * with the mark covering its head.  An AU whose packet carried no PTS is
- * reported with has_pts = 0 so the consumer extrapolates from the codec frame
- * step instead of being handed a fabricated time. */
+ * with the mark covering its head.  A packet's PTS/DTS refer only to the first
+ * access unit that commences in that packet (ISO/IEC 13818-1 2.4.3.7), so the
+ * first AU to take a mark's timestamps consumes them: a later AU commencing in
+ * the same packet -- a PSP audio packet carries several ATRAC frames, a video
+ * packet can carry two small pictures -- has no timestamp of its own.  An AU
+ * whose packet carried no PTS for it is reported with has_pts = 0 so the
+ * consumer extrapolates from the codec frame step instead of being handed a
+ * fabricated (or another unit's) time. */
 
 #include "psmf_producer.h"
 #include <limits.h>
@@ -285,7 +290,8 @@ static int track_mark_push(Track *t, uint32_t start, uint32_t end,
         /* Nothing may be discarded while it still covers a buffered byte, so the
          * two oldest marks coalesce into the older one's presentation time.  Only
          * an access unit spanning more than SR_PSMF_MAX_MARKS packets can reach
-         * this, and the head-covering mark always keeps a real PES time. */
+         * this, and the head-covering mark keeps its real PES time until the
+         * access unit commencing in it takes that time. */
         t->mark[0].end = t->mark[1].end;
         memmove(&t->mark[1], &t->mark[2], (size_t)(t->nmarks - 2) * sizeof(PtsMark));
         t->nmarks--;
@@ -333,7 +339,7 @@ static int track_append(Track *t, const uint8_t *p, uint32_t n, uint8_t stream_i
 }
 
 /* Presentation time of the PES packet that contained the current head byte. */
-static const PtsMark *track_head_mark(Track *t) {
+static PtsMark *track_head_mark(Track *t) {
     for (int i = 0; i < t->nmarks; i++)
         if (t->mark[i].end > t->head) return &t->mark[i];
     return NULL;
@@ -403,15 +409,15 @@ have_header:;
 static int emit_au(SrPsmfProducer *p, SrPsmfAuKind kind, uint32_t len) {
     Track *t = &p->track[kind];
     AuQueue *q = &p->queue[kind];
-    const PtsMark *m = track_head_mark(t);
+    PtsMark *m = track_head_mark(t);
     SrPsmfAu au;
     memset(&au, 0, sizeof(au));
     au.kind = kind;
     au.stream_id = m ? m->stream_id : t->stream_id;
-    au.has_pts = (uint8_t)(m ? m->has_pts : 0);
-    au.has_dts = (uint8_t)(m ? m->has_dts : 0);
-    au.raw_pts = m ? m->pts : 0;
-    au.raw_dts = m && m->has_dts ? m->dts : au.raw_pts;
+    au.has_pts = (uint8_t)(m && m->has_pts ? 1 : 0);
+    au.has_dts = (uint8_t)(m && m->has_dts ? 1 : 0);
+    au.raw_pts = au.has_pts ? m->pts : 0;
+    au.raw_dts = au.has_dts ? m->dts : au.raw_pts;
     au.ps_offset = m ? m->ps_offset : 0;
     au.pts = au.raw_pts - p->presentation_base;
     au.dts = au.raw_dts - p->presentation_base;
@@ -434,6 +440,12 @@ static int emit_au(SrPsmfProducer *p, SrPsmfAuKind kind, uint32_t len) {
     if (!queue_push(q, &au)) {           /* caller checked backpressure before calling */
         sr_psmf_au_release(&au);
         return 0;
+    }
+    /* This AU commenced in the head mark's packet and took its timestamps; the next AU
+     * commencing in the same packet must not inherit them (ISO/IEC 13818-1 2.4.3.7). */
+    if (m) {
+        m->has_pts = m->has_dts = 0;
+        m->pts = m->dts = 0;
     }
     if (has_pts) {
         if (!p->stats.have_pts) { p->stats.first_pts = normalized_pts; p->stats.have_pts = 1; }

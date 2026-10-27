@@ -1337,6 +1337,8 @@ When the program crashes (access violation, etc.), the crash reporter dumps:
 3. **Memory watches** — Shows if fault address is in a watched range
 4. **Host registers** — Full x64 register state (RIP, RSP, RAX, etc.)
 5. **Guest registers** — Full PSP CpuState (PC, SP, RA, all GPRs, HI/LO, FCR31)
+6. **Guest symbols** — `PC symbol:` and `RA symbol:` lines, only in a build with a symbol map
+   ([below](#naming-generated-functions-from-a-symbol-map))
 
 Example output:
 
@@ -1356,6 +1358,46 @@ r4=0x0830b000  r5=0x00000100  r6=0x00000004  r7=0x00000000
 ...
 === END CRASH REPORT ===
 ```
+
+## Naming generated functions from a symbol map
+
+By default every generated function is named after its guest address: `f_00222a00` for a callable
+entry and `r_00222b00` for a resume body. A symbol map gives them real names, the way a matching
+decompilation's symbol file names a static recompilation's functions:
+
+```sh
+mingw32-make SYMBOL_MAP=path/to/symbols.txt
+```
+
+`SYMBOL_MAP` passes `--symbol-map=<file>` to `tools/codegen.py`. The file is a codegen prerequisite and
+part of the codegen profile, so editing it, adding it or removing it regenerates the guest C. It holds
+names and addresses only, one GNU ld symbol assignment per line, the form splat's `symbol_addrs.txt` and
+matching decompilations use:
+
+```text
+# comment lines start with # or //
+ball_update = 0x00222a00; // type:func size:0x120
+game_loop = 0x00222b00;   # no size: only the start address is named
+ball_table = 0x0030a000;  // type:data (not a function: ignored)
+```
+
+- Addresses are the ones in the generated names: the primary image at `GAME_BASE` and fixed-base extra
+  ELFs at their load addresses. Runtime-placed modules keep their `m<n>_` names.
+- A named callable becomes `f_<address>_<name>`. The address stays in the name, so two static functions
+  that share a name stay distinct, and searching for the address still finds the function. A resume
+  body takes the name of the callable that owns it: `r_<address>_<owner>`.
+- Every reference is renamed with its definition. Without a map, or with a map that names no generated
+  entry, the generated C is byte-identical to a build without the option.
+- Host tools read the C names, so a link map, a debugger backtrace or a sampling profiler's
+  per-symbol shares show them with no further step.
+- The generated registration file hands the runtime a table of the named functions. The crash report
+  then adds `PC symbol: ball_update+0x40` and `RA symbol: game_loop` lines, and the dispatch trace adds
+  `tgt_sym=` and `ra_sym=`. An address inside a function is named only when the map gives its `size:`.
+- A malformed line, an address wider than 32 bits, two different names for one address, or a name that
+  would spell a symbol the generator already owns stops codegen with the file and line.
+
+A map built from a title is private input, like the title itself: keep it with the title's other
+private files and out of the repository.
 
 ## Debug Output Format
 

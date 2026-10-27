@@ -11,13 +11,16 @@ real indirect resume with the owner's frame already active.
 
 from __future__ import annotations
 
+from io import StringIO
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 import unittest.mock
 
@@ -956,6 +959,265 @@ class EntryCatalogInvariantTests(unittest.TestCase):
         self.assertIn(0x08800000, catalog)
         self.assertIn(0x08800010, catalog)
         self.assertNotIn("hst-profile", catalog[0x08800000].provenance)
+
+
+# A synthetic guest symbol map for the fixture above: names and addresses only, in the
+# `name = 0xADDR; // type:func size:0xNN` form tools/codegen.py --symbol-map reads.
+OWNER_SIZE = RESUME + 16 - OWNER
+DATA_LABEL = 0x00021D00  # the fixture's pointer table (_synthetic_elf's data_addr)
+UNEMITTED = 0x00030000
+SYMBOL_MAP_TEXT = f"""\
+# fixture functions
+owner_fn = 0x{OWNER:08x}; // type:func size:0x{OWNER_SIZE:x}
+adjacent_fn = 0x{ADJACENT:08x};   # no size: only the start address is named
+
+// splat-style attributes; the data label is not a function
+tail_target_fn = 0x{TAIL_TARGET:08x}; // type:func
+pointer_table = 0x{DATA_LABEL:08x}; // type:data size:0x10
+unemitted_fn = 0x{UNEMITTED:08x}; // type:func size:0x10
+"""
+MAP_NAMES = ("owner_fn", "adjacent_fn", "tail_target_fn")
+
+
+def _codegen_in_process(argv: list[str]) -> SimpleNamespace:
+    """Run codegen.main unmodified in this process, capturing what it prints."""
+    orig_out, orig_err = sys.stdout, sys.stderr
+    try:
+        sys.stdout, sys.stderr = StringIO(), StringIO()
+        returncode = codegen.main(["codegen.py", *argv])
+        return SimpleNamespace(returncode=returncode, stdout=sys.stdout.getvalue(),
+                               stderr=sys.stderr.getvalue())
+    finally:
+        sys.stdout, sys.stderr = orig_out, orig_err
+
+
+def _run_codegen(work: Path, symbol_map_text: str | None) -> SimpleNamespace:
+    """Generate the fixture into `work`, with --symbol-map when a map text is given."""
+    work.mkdir()
+    elf = work / "fixture.elf"
+    elf.write_bytes(_synthetic_elf(
+        _fixture_words(), OWNER,
+        pointers=(TINY_LEAF, INDIRECT_CALLER, TAIL_SOURCE, TAIL_TARGET),
+    ))
+    argv = [str(elf), str(work / "fixture.c"), "--profile=hst"]
+    if symbol_map_text is not None:
+        (work / "symbols.txt").write_text(symbol_map_text, encoding="utf-8")
+        argv.append(f"--symbol-map={work / 'symbols.txt'}")
+    return _codegen_in_process(argv)
+
+
+def _generated_files(work: Path) -> dict[str, str]:
+    return {
+        path.name: path.read_text(encoding="ascii")
+        for path in sorted(work.iterdir())
+        if path.name.startswith("fixture") and path.suffix in (".c", ".h", ".txt")
+    }
+
+
+class SymbolMapPipelineTests(unittest.TestCase):
+    """--symbol-map names generated functions and changes nothing else."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = scratch_dir.TemporaryDirectory(prefix="symbol_map_")
+        root = Path(cls._tmp.name)
+        cls.plain_run = _run_codegen(root / "plain", None)
+        cls.named_run = _run_codegen(root / "named", SYMBOL_MAP_TEXT)
+        cls.unused_run = _run_codegen(
+            root / "unused",
+            f"unemitted_fn = 0x{UNEMITTED:08x};\n"
+            f"pointer_table = 0x{DATA_LABEL:08x}; // type:data\n")
+        for run in (cls.plain_run, cls.named_run, cls.unused_run):
+            if run.returncode != 0:
+                raise AssertionError(run.stderr + run.stdout)
+        cls.named_dir = root / "named"
+        cls.plain = _generated_files(root / "plain")
+        cls.named = _generated_files(root / "named")
+        cls.unused = _generated_files(root / "unused")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def _chunks(self, files: dict[str, str]) -> str:
+        return "\n".join(text for name, text in files.items()
+                         if name.startswith("fixture_") and name[8:-2].isdigit())
+
+    def test_named_entries_carry_their_address_and_name(self):
+        chunks = self._chunks(self.named)
+        for symbol in (f"f_{OWNER:08x}_owner_fn", f"f_{ADJACENT:08x}_adjacent_fn",
+                       f"f_{TAIL_TARGET:08x}_tail_target_fn"):
+            with self.subTest(symbol=symbol):
+                self.assertIn(f"void {symbol}(CpuState *s) {{", chunks)
+                self.assertIn(f"void {symbol}(CpuState *s);", self.named["fixture_funcs.h"])
+        # Every reference moved with the definition: no bare spelling is left behind.
+        for addr in (OWNER, ADJACENT, TAIL_TARGET):
+            with self.subTest(addr=hex(addr)):
+                self.assertNotRegex(chunks, rf"\bf_{addr:08x}\b")
+        self.assertIn(f"f_{TINY_LEAF:08x}(CpuState *s) {{", chunks)  # unnamed stays as is
+
+    def test_resume_body_takes_its_owners_name(self):
+        chunks = self._chunks(self.named)
+        self.assertIn(f"void r_{RESUME:08x}_owner_fn(CpuState *s) {{", chunks)
+        self.assertIn(f"sr_register(0x{RESUME:08x}u, r_{RESUME:08x}_owner_fn);", chunks)
+
+    def test_registration_file_hands_the_runtime_a_sorted_table(self):
+        main = self.named["fixture.c"]
+        rows = [f'    {{0x{OWNER:08x}u, 0x{OWNER_SIZE:08x}u, "owner_fn"}},',
+                f'    {{0x{ADJACENT:08x}u, 0x00000000u, "adjacent_fn"}},',
+                f'    {{0x{TAIL_TARGET:08x}u, 0x00000000u, "tail_target_fn"}},']
+        self.assertIn("static const SrGuestSymbol sr_guest_symbol_table[] = {\n"
+                      + "\n".join(rows) + "\n};", main)
+        self.assertIn("    sr_guest_symbols_register(sr_guest_symbol_table, 3u);", main)
+        self.assertNotIn("pointer_table", main)
+        self.assertNotIn("unemitted_fn", main)
+        self.assertIn("symbol map: 3 of 4 function name(s) name an emitted entry; "
+                      "1 resume bodies take their owner's name", self.named_run.stderr)
+
+    def test_names_change_symbol_spellings_and_nothing_else(self):
+        # Undo exactly the documented renames and drop the table: the bytes must be
+        # the run without a map, file for file.
+        names = "|".join(MAP_NAMES)
+        self.assertEqual(sorted(self.named), sorted(self.plain))
+        for name, text in self.named.items():
+            undone = re.sub(rf"\b([fr]_[0-9a-f]{{8}})_(?:{names})\b", r"\1", text)
+            if name == "fixture.c":
+                undone = re.sub(
+                    r"\n\n/\* Guest function names from --symbol-map[^\n]*\n"
+                    r"static const SrGuestSymbol sr_guest_symbol_table\[\] = \{\n.*?\n\};",
+                    "", undone, flags=re.S)
+                undone = undone.replace(
+                    "    sr_guest_symbols_register(sr_guest_symbol_table, 3u);\n", "")
+            with self.subTest(file=name):
+                self.assertEqual(undone, self.plain[name])
+
+    def test_a_map_that_names_no_emitted_entry_changes_no_byte(self):
+        self.assertEqual(self.unused, self.plain)
+        self.assertIn("symbol map: 0 of 1 function name(s)", self.unused_run.stderr)
+
+    def test_no_map_output_mentions_no_symbol_table(self):
+        self.assertNotIn("SrGuestSymbol", "".join(self.plain.values()))
+        self.assertNotIn("symbol map:", self.plain_run.stderr)
+
+    @unittest.skipUnless(CC, "gcc is required to compile the table against src/rt/recomp.h")
+    def test_runtime_names_a_start_an_offset_and_nothing_outside(self):
+        assert CC is not None
+        main = self.named["fixture.c"]
+        table = re.search(r"static const SrGuestSymbol sr_guest_symbol_table\[\] = "
+                          r"\{\n.*?\n\};", main, re.S).group(0)
+        harness = self.named_dir / "lookup.c"
+        queries = {
+            OWNER: "owner_fn",
+            RESUME: f"owner_fn+0x{RESUME - OWNER:x}",  # a resume body is inside its owner
+            OWNER + OWNER_SIZE - 4: f"owner_fn+0x{OWNER_SIZE - 4:x}",
+            OWNER + OWNER_SIZE: "",                  # one past the size is outside
+            OWNER - 4: "",                           # below the first entry
+            ADJACENT: "adjacent_fn",
+            ADJACENT + 4: "",                        # no size: only the start is named
+            TAIL_TARGET: "tail_target_fn",
+        }
+        calls = "\n".join(
+            f'    printf("0x%08x=[%s]\\n", 0x{pc:08x}u, sr_guest_symbol_format('
+            f"sr_guest_symbol_find(sr_guest_symbol_table, n, 0x{pc:08x}u), 0x{pc:08x}u, "
+            f"buf, sizeof buf));" for pc in queries)
+        harness.write_text(
+            f'#include "recomp.h"\n{table}\nint main(void) {{\n    char buf[64];\n'
+            f"    uint32_t n = (uint32_t)(sizeof sr_guest_symbol_table / "
+            f"sizeof sr_guest_symbol_table[0]);\n{calls}\n"
+            f'    printf("empty=[%s]\\n", sr_guest_symbol_format('
+            f"sr_guest_symbol_find(NULL, 0u, 0x{OWNER:08x}u), 0x{OWNER:08x}u, buf, sizeof buf));\n"
+            f"    return 0;\n}}\n", encoding="ascii")
+        exe = self.named_dir / "lookup.exe"
+        compiled = subprocess.run(
+            [CC, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "src" / "rt"),
+             "-I", str(ROOT / "src" / "core"), str(harness), "-o", str(exe)],
+            capture_output=True, text=True)
+        self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        # The whole generated registration file also compiles against the real header.
+        checked = subprocess.run(
+            [CC, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "src" / "rt"),
+             "-I", str(ROOT / "src" / "core"), "-I", str(self.named_dir), "-c",
+             str(self.named_dir / "fixture.c"), "-o", str(self.named_dir / "fixture.o")],
+            capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        ran = subprocess.run([str(exe)], capture_output=True, text=True)
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        expected = "".join(f"0x{pc:08x}=[{label}]\n" for pc, label in queries.items())
+        self.assertEqual(ran.stdout.replace("\r\n", "\n"), expected + "empty=[]\n")
+
+
+class SymbolMapFileTests(unittest.TestCase):
+    """The map format: ld symbol assignments, comments, and refusals with a line number."""
+
+    def _load(self, text: str):
+        with scratch_dir.TemporaryDirectory(prefix="symbol_map_file_") as tmp:
+            path = Path(tmp) / "map.txt"
+            path.write_text(text, encoding="utf-8")
+            return codegen.load_symbol_map(str(path))
+
+    def test_reads_names_sizes_and_comments(self):
+        self.assertEqual(self._load(SYMBOL_MAP_TEXT), {
+            OWNER: ("owner_fn", OWNER_SIZE),
+            ADJACENT: ("adjacent_fn", 0),
+            TAIL_TARGET: ("tail_target_fn", 0),
+            UNEMITTED: ("unemitted_fn", 0x10),
+        })
+
+    def test_repeating_an_entry_is_harmless(self):
+        line = "dup_fn = 0x00001000; // size:0x8\n"
+        self.assertEqual(self._load(line + line), {0x1000: ("dup_fn", 8)})
+
+    def test_refusals_name_the_line(self):
+        cases = {
+            "not an assignment": "ok_fn = 0x10;\nwhat is this\n",
+            "decimal address": "ok_fn = 4096;\n",
+            "missing semicolon": "ok_fn = 0x10\n",
+            "name with a dot": "ok.fn = 0x10;\n",
+            "wide address": "ok_fn = 0x100000000;\n",
+            "two names, one address": "a_fn = 0x10;\nb_fn = 0x10;\n",
+            "two sizes, one address": "a_fn = 0x10; // size:0x4\na_fn = 0x10; // size:0x8\n",
+            "bad size": "a_fn = 0x10; // size:big\n",
+            "zero size": "a_fn = 0x10; // size:0\n",
+            "size past 4 GiB": "a_fn = 0xfffffff0; // size:0x20\n",
+        }
+        for label, text in cases.items():
+            with self.subTest(case=label):
+                with self.assertRaises(codegen.SymbolMapError) as caught:
+                    self._load(text)
+                self.assertRegex(str(caught.exception), r"map\.txt:\d+: ")
+
+    def test_command_line_refuses_a_bad_map_before_the_analysis(self):
+        with scratch_dir.TemporaryDirectory(prefix="symbol_map_cli_") as tmp:
+            bad = Path(tmp) / "bad.txt"
+            bad.write_text("not a symbol line\n", encoding="utf-8")
+            elf = Path(tmp) / "fixture.elf"
+            elf.write_bytes(_synthetic_elf(_fixture_words(), OWNER))
+            result = _codegen_in_process([str(elf), str(Path(tmp) / "out.c"), f"--symbol-map={bad}"])
+            self.assertFalse((Path(tmp) / "out.c").exists())
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertNotIn("SCANNING RANGES", result.stdout)
+        self.assertIn("codegen: symbol map: ", result.stderr)
+        self.assertIn("bad.txt:1: ", result.stderr)
+
+    def test_a_name_may_not_spell_a_generator_owned_symbol(self):
+        # The HST main-loop stub keeps the translated body as f_000468c8_real.
+        renames = codegen.symbol_map_renames({0x000468C8: ("real", 0)}, [0x000468C8], {})
+        self.assertEqual(renames, {"f_000468c8": "f_000468c8_real"})
+        texts = ["void f_000468c8_real(CpuState *s) {", "f_000468c8(s);"]
+        self.assertEqual(codegen.symbol_map_collisions(renames, texts), ["f_000468c8_real"])
+        self.assertEqual(codegen.symbol_map_collisions({"f_000468c8": "f_000468c8_loop"}, texts), [])
+
+    def test_makefile_passes_the_map_and_regenerates_when_it_changes(self):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("SYMBOL_MAP_ARG := --symbol-map=$(SYMBOL_MAP)", makefile)
+        self.assertIn("SYMBOL_MAP_PROFILE_LINE := $(NEWLINE)SYMBOL_MAP=$(SYMBOL_MAP)", makefile)
+        rule = re.search(r"^\$\(BUILD_DIR\)/\$\(GAME_NAME\)_recomp\.c [^\n]*: ([^\n]*)\n\t([^\n]*)",
+                         makefile, re.M)
+        self.assertIsNotNone(rule)
+        self.assertIn("$(SYMBOL_MAP)", rule.group(1).split())
+        self.assertIn("$(SYMBOL_MAP_ARG)", rule.group(2).split())
+        entries = re.search(r"^export NK_CODEGEN_PROFILE_ENTRIES := ([^\n]*)", makefile, re.M)
+        self.assertTrue(entries.group(1).endswith("$(SYMBOL_MAP_PROFILE_LINE)"))
 
 
 if __name__ == "__main__":
