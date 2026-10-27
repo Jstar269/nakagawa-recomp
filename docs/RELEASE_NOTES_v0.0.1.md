@@ -6,7 +6,7 @@ Audience: players and contributors trying the first public build.
 
 ## What v0.0.1 is
 
-Nakagawa Recomp is an experimental static recompiler that translates user-supplied PlayStation Portable (PSP) executables into C, links them with a native C runtime, and runs the resulting binary on Windows via SDL3 and Vulkan. Executables must already be plain (unencrypted) files from your own copy; Nakagawa does not decrypt games. v0.0.1 is the first public build, featuring a standalone desktop player (`build/nakagawa_player.exe`), ahead-of-time (AOT) package building, synthetic verification suites, and a fail-closed runtime architecture where unsupported, missing, or unimplemented behavior halts at a named semantic boundary with a clear message.
+Nakagawa Recomp is an experimental static recompiler that translates user-supplied PlayStation Portable (PSP) executables into C, links them with a native C runtime, and runs the resulting binary on Windows via SDL3 and Vulkan. Encrypted executables on a disc you own are decrypted locally by the player before recompilation. v0.0.1 is the first public build, featuring a standalone desktop player (`build/nakagawa_player.exe`), ahead-of-time (AOT) package building, synthetic verification suites, and a fail-closed runtime architecture where unsupported, missing, or unimplemented behavior halts at a named semantic boundary with a clear message.
 
 ## What you can do
 

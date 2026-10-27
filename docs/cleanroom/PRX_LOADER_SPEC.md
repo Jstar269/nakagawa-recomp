@@ -17,9 +17,9 @@ zero-filling uninitialised tails, applying the two PSP relocation formats, and
 reporting the module's identity, entry point, exported functions, and import stubs so
 the runtime can link and start it.
 
-**Out of scope.** This loader does not decrypt or decompress `~PSP` containers. Nakagawa
-does not decrypt games (built-in decryption was removed, #295); the
-player and CLI refuse an encrypted container without a user-supplied plain copy. Choosing the base address (the title
+**Out of scope.** This loader does not decrypt or decompress `~PSP` containers. The
+player decrypts them before analysis (`src/core/nk_psp_*`, #295); the
+player and CLI refuse an encrypted container that still has no plain copy. Choosing the base address (the title
 manifest's `modules[].load_address`, validated by `tools/title_manifest.py`),
 reserving guest memory (the allocator's exact-address reservation), running
 `module_start`, and resolving imports to handlers (the runtime's HLE registry and

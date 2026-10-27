@@ -1384,7 +1384,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9f82e81e4be968e71088afebf2cf24fcce1c8f49f397fe971916cf781e82cd8c"
+      "sha256": "b4f0f3a6a9a7503c6bc017f4fe4a1a1da5f5ccac1e3f8b10d27911766f9ac6d9"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1459,7 +1459,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6bb263acd1b901a48f9474e39332f9e127745073003e1b3fc06b5c4ac148bf72"
+      "sha256": "fb71d89db05d283794e8f97f25b9ae8ede5cda6144afa2e314e0672aa247e9a1"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -1468,7 +1468,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5e0777487ba3cdbaea7f099e8ccf8e128ab66ccaffea7faeb7d437b563a85af8"
+      "sha256": "aad9b694af8e9753508c8972f2b23fe9e336dd6a673820d00aaf07af42dc5535"
     },
     {
       "path": "docs/LINUX_DEVELOPMENT.md",
@@ -1486,7 +1486,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "727e0caa01e7f3a57c24b8025cbf6b8e380a37ebcf2fbd2e7b6adbf02fff3b4c"
+      "sha256": "4e5f37d06ae1f118d60f24885f0276069114081182ba2d18c1aa05f8eabebd40"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -1495,7 +1495,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a276f2cb3c6e3d485ddb4751371e667596fc6218c77cef3668c6e00cd7cb8aa5"
+      "sha256": "acd2cfb760703e35fedaa8e0b6c9d36394b1ce5a4790c4d734b69a3fefce5728"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -1504,7 +1504,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0d991bfa1447ffb1d4f9119bfd73b5f3f31f47f86646b5dee5721a48c03b26fc"
+      "sha256": "a56f3462629e6acdbf1b4b28d9b9d336239d4631b22ba723950733038df7dd8f"
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",
@@ -1513,7 +1513,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "02da0f5eafce5d85b29d71ff437da2065bc7dce53edc90d8259fe21fcba3a9a4"
+      "sha256": "218c9226646681c6e32f63b16108d88fc161411c954997d8b6e9e7e2e10f3fc5"
     },
     {
       "path": "docs/ONLINE_FEATURES.md",
@@ -1561,7 +1561,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "36df415c03a8323b1823c28855475798c1e4f5d6e2521470dfb41cd7099c5049"
+      "sha256": "829d1ac7bca1b129182f02ce9f588e371cf653787b813da9ef9ee7f0811a9684"
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
@@ -1579,7 +1579,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "87941d617e2eeff499339a409d3cb445ca55a4d429f679ffd0b3a68372b0556a"
+      "sha256": "33f5b3b948dbed18d6ede7cbe40315c514c8eff241278a5c2353e523cbeea645"
     },
     {
       "path": "docs/PROVENANCE_MERGE_GATE.md",
@@ -1645,7 +1645,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f5d872d4538059540601e23e8bf41612e999dfc261420a5527f1dbc2b6825d8d"
+      "sha256": "875dc286345571946e5a32ee36f6f4c756ae905661f6e837b5671061677e850a"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
@@ -1666,7 +1666,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0969b80910a9880b6cb64cbf8075c0cf091115b685fa11053f419043ebdd1e85"
+      "sha256": "0dc4ad44dd6b2d82aeabfe0e096c993aac966c8ca5f0ee887017314bed396928"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1675,7 +1675,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "835207099c7314bcb4d317f9988dd2d0bd4179620079e15166fe2a328303915d"
+      "sha256": "45ff222ec61a293047af5e906882c1968dc84bc394d7c8a452b3cf0f2ed2419c"
     },
     {
       "path": "docs/SETUP.md",
@@ -1684,7 +1684,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "876a9364aa2ac96f4903ec7bb0be153f6eb73923646336483423f3c0f804802a"
+      "sha256": "2be97f39dae612ff6ab64deed946844f169885599132665854df13c857cb2205"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1702,7 +1702,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cf34d05d97b1af361e2a63b514dc131e5e177009ad7bc8824f2c1c4d48c48154"
+      "sha256": "4a9fc520231d542708082914a68725129f16b3e4940f323b67f64e9a5e92013e"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -1831,7 +1831,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fb7c9d02796b49619cbcfb1520cb731886797c6a84af799debae5905384f2105"
+      "sha256": "16d36b25256afd2012df37b9688e92e70e705dcd0d722f13cd46d4d96a30329d"
     },
     {
       "path": "docs/cleanroom/SCHED_SPEC.md",
@@ -10362,7 +10362,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fc3091c08a2c526eabbc739d338c0d8270fd36773c8c36729689c3993d57db0d"
+      "sha256": "c3f1872b1fa92800229a4f39d510f44a7252b2e977bbedda0b7aea686e69b4dc"
     },
     {
       "path": "tests/native/test_player_ui.py",

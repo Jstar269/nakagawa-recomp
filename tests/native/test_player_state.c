@@ -4093,8 +4093,9 @@ int main(int argc, char **argv) {
            uses that file; a copy the user put there is never replaced; and a
            firmware updater tag is refused by name, writing nothing. */
         {
-            char sealed_iso[1024];
+            char sealed_iso[sizeof(wiz->inspecting_game.iso_path)];
             char staged_leftover[1300];
+            int sealed_written;
             char saved_iso_path[sizeof(wiz->inspecting_game.iso_path)];
             unsigned char plain_elf[88];
             unsigned char user_elf[88];
@@ -4106,14 +4107,16 @@ int main(int argc, char **argv) {
             build_synthetic_mips_elf(plain_elf);
             sealed_len = seal_with_builtin_recipe(sealed, sizeof(sealed), plain_elf,
                                                   sizeof(plain_elf), 0xD91613F0u, 0xD91613F0u);
-            snprintf(sealed_iso, sizeof(sealed_iso), "%s%cbuiltin-sealed.iso",
-                     preflight_root, nk_platform_path_separator());
+            sealed_written = snprintf(sealed_iso, sizeof(sealed_iso), "%s%cbuiltin-sealed.iso",
+                                      preflight_root, nk_platform_path_separator());
+            assert(sealed_written > 0 && (size_t)sealed_written < sizeof(sealed_iso));
             write_sysdir_eboot_iso(sealed_iso, sealed, sealed_len);
             snprintf(saved_iso_path, sizeof(saved_iso_path), "%s",
                      wiz->inspecting_game.iso_path);
-            snprintf(wiz->inspecting_game.iso_path, sizeof(wiz->inspecting_game.iso_path),
-                     "%s", sealed_iso);
-            snprintf(staged_leftover, sizeof(staged_leftover), "%s.decrypting", decrypted_elf);
+            memcpy(wiz->inspecting_game.iso_path, sealed_iso, sizeof(sealed_iso));
+            sealed_written = snprintf(staged_leftover, sizeof(staged_leftover), "%s.decrypting",
+                                      decrypted_elf);
+            assert(sealed_written > 0 && (size_t)sealed_written < sizeof(staged_leftover));
 
             player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
             check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
