@@ -720,6 +720,7 @@ void ge_set_gpu_hooks(const GeGpuHooks *h) {
 }
 GeState *ge_state_ptr(void) { return &ge; }
 uint32_t ge_state_serial(void) { return s_ge_state_serial; }
+void ge_state_note_external_write(void) { s_ge_state_serial++; }
 void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) {
     if (s_gpu && s_gpu->vram_dirty) s_gpu->vram_dirty(addr, bytes);
 }

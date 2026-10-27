@@ -152,6 +152,34 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("$(RT_GE_O): src/rt/ge.c", makefile)
         self.assertIn("$(CC) $(GE_CFLAGS)", makefile)
 
+    def test_gpu_coherence_selftest_runs_on_lavapipe_in_linux_ci(self) -> None:
+        """ge_gpu.c's coherence selftest ran on no hosted job, so a #1481 regression went unseen.
+
+        It needs a Vulkan device and a window: the step selects lavapipe and runs under Xvfb as
+        the capture selftest does, and a Make failure (an exit 77 skip included) fails it.
+        """
+        native_tools = _ci_job_blocks()["native_tools"]
+        step_name = "Run GPU coherence selftest on lavapipe"
+        step = _ci_step(native_tools, step_name)
+        self.assertIsNotNone(step, "native_tools must run gpu-coherence-selftest")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertIn("set -euo pipefail", text)
+        self.assertIn("-name 'lvp_icd*.json'", text)
+        self.assertIn('export VK_ICD_FILENAMES="$lvp_icd"', text)
+        self.assertIn('xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11', text)
+        self.assertRegex(text, r"(?m)^\s+make CC=gcc gpu-coherence-selftest$")
+        self.assertNotIn("continue-on-error", text)
+        self.assertNotIn("if:", text)
+        self.assertLess(
+            _ci_step_index(native_tools, "Verify lavapipe and run GPU capture selftest"),
+            _ci_step_index(native_tools, step_name),
+        )
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("gpu-coherence-selftest: $(GPU_COHERENCE_BIN)\n\t$(GPU_COHERENCE_BIN)\n", makefile)
+        docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
+        self.assertIn("`gpu-coherence-selftest`", docs)
+
     def test_ffmpeg_h264_media_selftest_is_wired_in_linux_ci(self) -> None:
         """The vendored H.264 subset must build and execute its real media fixture in CI.
 

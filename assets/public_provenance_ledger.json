@@ -195,7 +195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "442d1ad042fb693b38f65daa436ac55e9b3ce18d99d7f0a4280c4ed22fcde1e1"
+      "sha256": "c670954d1bdbe60fa32eb7b1882f5971b4f95cd92f3a44079542c55b1b164c95"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -1375,7 +1375,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "06fcb21344cd1877ad815a0245dd8d28303dc557c0ece3bd7d4cf9b05db9d0c4"
+      "sha256": "639fe3e5eb95c4558dbaee23bdb1f75da4ea59802e7f8c1effb9b4ea87ad4ac9"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -5101,7 +5101,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "56625f6f458bf6cac8f8dbc574a7497f7f97112b365d08162f6a28e00cb95a7e"
+      "sha256": "69bb4f089daa2d2ec79dadd9dea25d6db0eabd80120fb1d994cb86eda37d92ad"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -5246,7 +5246,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c19ea58a5b24d9be3eeafcbc20cb02925dcdcbc01cd6d7b999b9c4cb3c10482a"
+      "sha256": "5da7551acc4af583aba5a77f3c9a8bb34749571012cdb4b8f38f480594e55329"
     },
     {
       "path": "src/rt/ge_texture_ref.c",
@@ -5332,7 +5332,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7e32098a0b59a9d04e29738ba9f3feff84d55ff92acbd80d6bb2d1c9b8196c66"
+      "sha256": "4e63177ae2503befacefed7cd0e48d92d873927834e94279020ceeb39964a8fe"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -14451,7 +14451,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee761f9690d0ec34d362372dfb00823cc3a3009c826e09e4883e65960ae564e8"
+      "sha256": "f9094f140fefc34e238a2ed13c4c05144388264985f07f66aa2dcb25643ac2b3"
     },
     {
       "path": "tools/test_public_export.py",
