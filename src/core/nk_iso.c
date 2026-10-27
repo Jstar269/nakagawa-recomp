@@ -903,7 +903,7 @@ static NkResult nk_iso_inspect_pbp(FILE *f, uint64_t file_size,
     }
     snprintf(meta->error_message, sizeof(meta->error_message),
              "This is a PlayStation Store package (PBP), not a disc image. "
-             "Nakagawa Recomp can't use these yet.%s", tail);
+             "The player converts PSN UMD games.%s", tail);
     snprintf(meta->boundary_code, sizeof(meta->boundary_code), "PBP_PACKAGE_UNSUPPORTED");
     return NK_ERROR_INVALID_ISO;
 }

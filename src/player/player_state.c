@@ -12,6 +12,7 @@
 #include "nk_platform.h"
 #include "nk_psp_container.h"
 #include "nk_psp_keystore.h"
+#include "nk_psp_npumdimg.h"
 #include "iso_reader.h"
 #include "nk_title_manifest.h"
 #include <errno.h>
@@ -4014,7 +4015,9 @@ void player_app_wizard_back(PlayerApp *app) {
             if (app->wizard.is_extracting) {
                 app->wizard.extraction_cancel_requested = true;
                 snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                         "Cancelling asset extraction...");
+                         "%s", app->psn_conversion_active
+                                   ? "Cancelling the conversion..."
+                                   : "Cancelling asset extraction...");
                 break;
             }
             app->wizard.step = WIZARD_STEP_SELECT_GAME;
@@ -4047,7 +4050,8 @@ void player_app_wizard_cancel(PlayerApp *app) {
     if (app->wizard.is_extracting) {
         app->wizard.extraction_cancel_requested = true;
         snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                 "Cancelling asset extraction...");
+                 "%s", app->psn_conversion_active ? "Cancelling the conversion..."
+                                                  : "Cancelling asset extraction...");
         return;
     }
     app->active_view = VIEW_LIBRARY;
@@ -4568,6 +4572,281 @@ static const char *player_decrypt_disc_eboot(const char *iso_path, const char *d
     }
     return player_decrypt_disc_file(iso_path, lba, size, directory, elf_path, false,
                                     detail, detail_size);
+}
+
+/* ---- PSN releases of UMD games (#295 phase 2) ------------------------------
+ * A PSN EBOOT.PBP whose DATA.PSAR is an NPUMDIMG image holds the game's disc
+ * image. It is converted once into a private ISO under the per-user data root
+ * (<data>/discs/<DISC_ID>/<DISC_ID>.iso) and that ISO is then imported exactly
+ * as a picked disc, so the disc route above runs unchanged. PSOne Classics,
+ * updaters and other packages keep a named refusal. */
+
+bool player_path_is_pbp_package(const char *path) {
+    unsigned char magic[4];
+    FILE *file;
+    bool pbp;
+    if (path == NULL || path[0] == '\0') return false;
+    file = nk_fopen_utf8(path, "rb");
+    if (file == NULL) return false;
+    pbp = fread(magic, 1, sizeof(magic), file) == sizeof(magic) &&
+          memcmp(magic, "\0PBP", 4) == 0;
+    fclose(file);
+    return pbp;
+}
+
+/* Four letters and five digits: the form a disc ID takes, and the only one
+   used as a folder name under the data root. */
+static bool player_psn_disc_id_valid(const char *disc_id) {
+    if (disc_id == NULL || strlen(disc_id) != 9) return false;
+    for (size_t i = 0; i < 9; i++) {
+        unsigned char ch = (unsigned char)disc_id[i];
+        if (i < 4 ? !(ch >= 'A' && ch <= 'Z') : !(ch >= '0' && ch <= '9')) return false;
+    }
+    return true;
+}
+
+static void player_psn_label(const NkPbpInfo *info, char *out, size_t out_size) {
+    if (info->title[0] != '\0' && info->disc_id[0] != '\0') {
+        snprintf(out, out_size, "%.120s (%.15s)", info->title, info->disc_id);
+    } else if (info->disc_id[0] != '\0') {
+        snprintf(out, out_size, "The package %.15s", info->disc_id);
+    } else {
+        snprintf(out, out_size, "This package");
+    }
+}
+
+static void player_psn_result(char *code, size_t code_size, const char *name,
+                              char *message, size_t message_size,
+                              const char *fmt, ...) {
+    va_list args;
+    if (code != NULL && code_size > 0) snprintf(code, code_size, "%s", name);
+    if (message != NULL && message_size > 0) {
+        va_start(args, fmt);
+        vsnprintf(message, message_size, fmt, args);
+        va_end(args);
+    }
+}
+
+bool player_psn_package_inspect(const char *pbp_path, PlayerPsnPackage *package,
+                                char *code, size_t code_size,
+                                char *message, size_t message_size) {
+    NkPspCtx ctx;
+    NkPbpInfo info;
+    char label[160];
+    char data_root[NK_MAX_PATH];
+    char sep = nk_platform_path_separator();
+    int rc;
+    int written;
+    if (code != NULL && code_size > 0) code[0] = '\0';
+    if (message != NULL && message_size > 0) message[0] = '\0';
+    if (package == NULL || pbp_path == NULL) return false;
+    memset(package, 0, sizeof(*package));
+    nk_psp_ctx_init(&ctx, NULL);
+    rc = nk_pbp_identify_file(&ctx, pbp_path, &info);
+    player_psn_label(&info, label, sizeof(label));
+    switch (rc) {
+    case NK_PSP_OK:
+        break;
+    case NK_PSP_ERR_PSONE:
+        player_psn_result(code, code_size, "PSONE_CLASSIC_UNSUPPORTED", message, message_size,
+                          "%s is a PSOne Classic: a PlayStation game for the PSP's PS1 "
+                          "emulator. Nakagawa recompiles PSP games only, so it can't add "
+                          "this package.", label);
+        return false;
+    case NK_PSP_ERR_FIRMWARE:
+        player_psn_result(code, code_size, "FIRMWARE_OUT_OF_SCOPE", message, message_size,
+                          "This package is PSP system software (a firmware update). "
+                          "Nakagawa never decrypts firmware.");
+        return false;
+    case NK_PSP_ERR_UNSUPPORTED:
+        player_psn_result(code, code_size, "PBP_PACKAGE_UNSUPPORTED", message, message_size,
+                          "%s is a PSP package Nakagawa can't open yet. Only PSN releases "
+                          "of UMD games are converted; add a disc image (.iso) of the game "
+                          "instead.", label);
+        return false;
+    case NK_PSP_ERR_INPUT:
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "The package could not be read. Check that the file is complete "
+                          "and try again.");
+        return false;
+    default:
+        player_psn_result(code, code_size, "PBP_PACKAGE_UNSUPPORTED", message, message_size,
+                          "The file is not a PSP package Nakagawa can read: %.200s",
+                          ctx.message);
+        return false;
+    }
+    if (!player_psn_disc_id_valid(info.disc_id)) {
+        player_psn_result(code, code_size, "PBP_PACKAGE_UNSUPPORTED", message, message_size,
+                          "%s does not name a valid disc ID, so Nakagawa can't keep its "
+                          "disc image apart from other games.", label);
+        return false;
+    }
+    if (!nk_platform_get_app_data_dir(data_root, sizeof(data_root))) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "Nakagawa's data folder could not be found.");
+        return false;
+    }
+    written = snprintf(package->iso_path, sizeof(package->iso_path), "%s%cdiscs%c%s%c%s.iso",
+                       data_root, sep, sep, info.disc_id, sep, info.disc_id);
+    if (written < 0 || (size_t)written >= sizeof(package->iso_path) ||
+        strlen(pbp_path) >= sizeof(package->pbp_path)) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "The path to Nakagawa's data folder is too long.");
+        return false;
+    }
+    snprintf(package->pbp_path, sizeof(package->pbp_path), "%s", pbp_path);
+    snprintf(package->disc_id, sizeof(package->disc_id), "%s", info.disc_id);
+    snprintf(package->title, sizeof(package->title), "%s", info.title);
+    if (!nk_platform_path_missing(package->iso_path)) {
+        nk_psp_ctx_init(&ctx, NULL);
+        package->iso_ready =
+            nk_npumdimg_check_iso_file(&ctx, package->iso_path, package->disc_id) == NK_PSP_OK;
+    }
+    return true;
+}
+
+typedef struct {
+    const PlayerPsnConvertCallbacks *callbacks;
+} PlayerPsnBridge;
+
+static void player_psn_bridge_progress(void *user, uint64_t done, uint64_t total) {
+    const PlayerPsnBridge *bridge = (const PlayerPsnBridge *)user;
+    if (bridge->callbacks != NULL && bridge->callbacks->on_progress != NULL) {
+        bridge->callbacks->on_progress(done, total, bridge->callbacks->userdata);
+    }
+}
+
+static int player_psn_bridge_cancelled(void *user) {
+    const PlayerPsnBridge *bridge = (const PlayerPsnBridge *)user;
+    return bridge->callbacks != NULL && bridge->callbacks->is_cancelled != NULL &&
+           bridge->callbacks->is_cancelled(bridge->callbacks->userdata);
+}
+
+bool player_psn_package_convert(const PlayerPsnPackage *package,
+                                const PlayerPsnConvertCallbacks *callbacks,
+                                char *code, size_t code_size,
+                                char *message, size_t message_size) {
+    char directory[NK_MAX_PATH];
+    char key_error[160];
+    char label[160];
+    const char *status;
+    const char *slash;
+    NkKeystore *keys;
+    NkPspCtx ctx;
+    NkPbpInfo info;
+    PlayerPsnBridge bridge;
+    NkNpumdimgCallbacks hooks;
+    size_t length;
+    int rc;
+    if (code != NULL && code_size > 0) code[0] = '\0';
+    if (message != NULL && message_size > 0) message[0] = '\0';
+    if (package == NULL || package->iso_path[0] == '\0' || package->pbp_path[0] == '\0') {
+        player_psn_result(code, code_size, "INTERNAL_ERROR", message, message_size,
+                          "The package was not inspected first.");
+        return false;
+    }
+    slash = strrchr(package->iso_path, nk_platform_path_separator());
+    length = slash != NULL ? (size_t)(slash - package->iso_path) : 0u;
+    if (length == 0u || length >= sizeof(directory)) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "The disc image's folder could not be named.");
+        return false;
+    }
+    memcpy(directory, package->iso_path, length);
+    directory[length] = '\0';
+    if (!nk_platform_mkdir_p_private(directory)) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "The disc image's folder could not be made in Nakagawa's data "
+                          "folder.");
+        return false;
+    }
+    keys = nk_keystore_create();
+    if (keys == NULL ||
+        nk_keystore_load_builtin(keys, key_error, sizeof(key_error)) != NK_PSP_OK) {
+        nk_keystore_free(keys);
+        player_psn_result(code, code_size, "INTERNAL_ERROR", message, message_size,
+                          "%s", keys ? key_error : "Out of memory.");
+        return false;
+    }
+    bridge.callbacks = callbacks;
+    hooks.on_progress = player_psn_bridge_progress;
+    hooks.is_cancelled = player_psn_bridge_cancelled;
+    hooks.user = &bridge;
+    nk_psp_ctx_init(&ctx, keys);
+    rc = nk_npumdimg_convert_file(&ctx, package->pbp_path, package->iso_path, &hooks, &info);
+    nk_keystore_free(keys);
+    if (rc == NK_PSP_OK) return true;
+    status = nk_psp_status_name(rc);
+    if (rc == NK_PSP_ERR_CANCELLED) {
+        player_psn_result(code, code_size, status, message, message_size,
+                          "The conversion was cancelled, and the partial disc image was "
+                          "removed.");
+        return false;
+    }
+    fprintf(stderr, "[PLAYER] PSN package conversion stopped: %s: %s\n", status, ctx.message);
+    player_psn_label(&info, label, sizeof(label));
+    player_psn_result(code, code_size, status, message, message_size,
+                      "%s could not be turned into a disc image: %s. Nothing was kept.",
+                      label, rc == NK_PSP_ERR_CONTEXT
+                          ? "it is tied to the PSP that downloaded it"
+                          : player_decrypt_plain_reason(status));
+    return false;
+}
+
+void player_app_psn_conversion_begin(PlayerApp *app, const PlayerPsnPackage *package) {
+    if (app == NULL || package == NULL) return;
+    app->psn_package = *package;
+    app->psn_conversion_return_view = app->active_view;
+    app->psn_conversion_active = true;
+    app->psn_conversion_requested = true;
+    player_app_wizard_reset_extraction(app);
+    memset(&app->inspecting_game, 0, sizeof(app->inspecting_game));
+    snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "%s",
+             package->disc_id);
+    snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name), "%s",
+             package->title);
+    snprintf(app->inspecting_game.iso_path, sizeof(app->inspecting_game.iso_path), "%s",
+             package->pbp_path);
+    app->active_view = VIEW_SETUP_WIZARD;
+    app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+    app->wizard.iso_selected = false;
+    app->wizard.is_extracting = true;
+    app->wizard.total_files = 1;
+    snprintf(app->wizard.extraction_current_file, sizeof(app->wizard.extraction_current_file),
+             "%s.iso", package->disc_id);
+    snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+             "Converting %.120s (%s) from its PSN package into a disc image on this PC...",
+             package->title[0] ? package->title : "the game", package->disc_id);
+    app->focus_index = 0;
+}
+
+bool player_app_psn_conversion_take_request(PlayerApp *app) {
+    if (app == NULL || !app->psn_conversion_requested) return false;
+    app->psn_conversion_requested = false;
+    return true;
+}
+
+void player_app_psn_conversion_progress(PlayerApp *app, uint64_t done_bytes,
+                                        uint64_t total_bytes) {
+    int percent;
+    if (app == NULL || !app->psn_conversion_active) return;
+    percent = total_bytes > 0u ? (int)((done_bytes * 100u) / total_bytes) : 0;
+    player_app_wizard_set_extraction_progress(app, percent,
+                                              done_bytes >= total_bytes ? 1 : 0, 1, NULL);
+}
+
+void player_app_psn_conversion_finish(PlayerApp *app) {
+    if (app == NULL) return;
+    app->psn_conversion_active = false;
+    app->psn_conversion_requested = false;
+    player_app_wizard_reset_extraction(app);
+    app->wizard.status_message[0] = '\0';
+    app->active_view = app->psn_conversion_return_view;
+    if (app->active_view == VIEW_SETUP_WIZARD) {
+        app->wizard.step = WIZARD_STEP_SELECT_GAME;
+        app->wizard.iso_selected = false;
+    }
+    app->focus_index = 0;
 }
 
 static PlayerDecryptedEbootState player_find_decrypted_eboot(

@@ -1337,7 +1337,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         const char *note;
         uint32_t note_tone = theme->muted;
         if (model->extracting) {
-            badge = "Copying files";
+            badge = model->converting_package ? "Converting package" : "Copying files";
             tone = theme->warning;
         } else if (model->extraction_complete) {
             badge = "Files staged";
@@ -1345,7 +1345,10 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             badge = "Copy failed";
             tone = theme->error;
         }
-        if (model->extracting) {
+        if (model->extracting && model->converting_package) {
+            note = "The PSN package is being turned back into its disc image on this PC. "
+                   "This happens once.";
+        } else if (model->extracting) {
             note = "The disc's files are being copied into a local staging folder.";
         } else if (model->extraction_failed && model->extraction_error != NULL &&
                    model->extraction_error[0] != '\0') {
@@ -1365,7 +1368,8 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             note = "This disc is not listed in the native title catalog.";
             note_tone = theme->warning;
         }
-        wizard_text(ui, 0u, model->extracting ? "Copying the game's files" : "Check the disc",
+        wizard_text(ui, 0u, model->converting_package ? "Converting the PSN package"
+                            : (model->extracting ? "Copying the game's files" : "Check the disc"),
                     NK_UI_TYPE_TITLE_XL, theme->paper);
         if (wizard_box_begin(ui, tone)) {
             NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
@@ -1381,10 +1385,14 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             if (blocked && !model->extracting) {
                 wizard_text(ui, 6u, model->blocked_reason, NK_UI_TYPE_BODY_S, theme->paper);
             }
-            if (model->extracting) {
+            if (model->extracting && model->converting_package) {
+                (void)snprintf(line, sizeof(line), "Converted %d%%", model->extraction_percent);
+            } else if (model->extracting) {
                 (void)snprintf(line, sizeof(line), "Copied %d of %d files" FLOW_MIDDOT "%d%%",
                                model->files_extracted, model->total_files,
                                model->extraction_percent);
+            }
+            if (model->extracting) {
                 wizard_text(ui, 3u, line, NK_UI_TYPE_DATA, theme->paper);
                 nk_ui_progress_bar(ui, WIZ_ID_TEXT + 0x30u, inner - 32.0f,
                                    (float)model->extraction_percent / 100.0f, 0.0);
@@ -1426,11 +1434,16 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             nk_ui_end_container(ui);
         }
         if (model->extracting) {
-            static const WizardButton buttons[] = {
+            static const WizardButton copying[] = {
                 {PLAYER_UI_ID_WIZARD_CANCEL, "Cancel copying", NK_UI_BUTTON_DANGER,
                  PLAYER_UI_WIZARD_CANCEL}
             };
-            wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 1u, &result);
+            static const WizardButton converting[] = {
+                {PLAYER_UI_ID_WIZARD_CANCEL, "Cancel converting", NK_UI_BUTTON_DANGER,
+                 PLAYER_UI_WIZARD_CANCEL}
+            };
+            wizard_buttons(ui, WIZ_ID_BUTTONS,
+                           model->converting_package ? converting : copying, 1u, &result);
         } else if (blocked) {
             /* Adding it would only fail later, at build time (#1280). */
             static const WizardButton buttons[] = {

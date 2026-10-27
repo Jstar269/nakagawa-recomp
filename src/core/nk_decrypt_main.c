@@ -19,6 +19,13 @@
  *          MISSING_KEY_ENTRY / CONTAINER_MALFORMED / INTEGRITY /
  *          KEYFILE_INVALID / DECOMPRESS_FAILED / INPUT_UNREADABLE /
  *          UNSUPPORTED_CONTAINER / FIRMWARE_OUT_OF_SCOPE and exit non-zero.
+ *   npumdimg [--key-file FILE] --in EBOOT.PBP --out FILE.iso
+ *          Turn a PSN release of a UMD game (a PBP whose DATA.PSAR is an
+ *          NPUMDIMG image) back into its ISO: written beside FILE.iso,
+ *          checked (ISO9660 volume descriptor, PARAM.SFO DISC_ID equal to the
+ *          package's), then renamed into place.  A PSOne Classic prints
+ *          PSONE_CLASSIC_UNSUPPORTED and an updater FIRMWARE_OUT_OF_SCOPE
+ *          before any key lookup; console-bound DRM prints CONTEXT_REQUIRED.
  */
 
 #include <stdio.h>
@@ -33,6 +40,7 @@
 #include "nk_psp_container.h"
 #include "nk_psp_crypto.h"
 #include "nk_psp_keystore.h"
+#include "nk_psp_npumdimg.h"
 #include "nk_psp_sha1.h"
 
 /* --------------------------- helpers --------------------------------- */
@@ -157,6 +165,18 @@ static int print_diagnostic(int rc, const NkPspCtx *ctx)
         printf("FIRMWARE_OUT_OF_SCOPE\n");
         if (msg != NULL) printf("%s\n", msg);
         return 10;
+    case NK_PSP_ERR_CONTEXT:
+        printf("CONTEXT_REQUIRED\n");
+        if (msg != NULL) printf("%s\n", msg);
+        return 11;
+    case NK_PSP_ERR_PSONE:
+        printf("PSONE_CLASSIC_UNSUPPORTED\n");
+        if (msg != NULL) printf("%s\n", msg);
+        return 12;
+    case NK_PSP_ERR_CANCELLED:
+        printf("CANCELLED\n");
+        if (msg != NULL) printf("%s\n", msg);
+        return 13;
     default:
         printf("INTERNAL_ERROR\n");
         if (msg != NULL) printf("%s\n", msg);
@@ -414,12 +434,45 @@ static int cmd_decrypt(const char *key_path, const char *in_path,
 
 /* ------------------------------ main ----------------------------------- */
 
+/* ---------------------------- npumdimg --------------------------------- */
+
+static int cmd_npumdimg(const char *key_path, const char *in_path,
+                        const char *out_path)
+{
+    NkKeystore *ks = NULL;
+    NkPspCtx ctx;
+    NkPbpInfo info;
+    int rc;
+
+    if (in_path == NULL || out_path == NULL) {
+        fprintf(stderr, "npumdimg: --in and --out are required\n");
+        return 2;
+    }
+    ks = nk_keystore_create();
+    if (ks == NULL) {
+        printf("INTERNAL_ERROR out of memory\n");
+        return 9;
+    }
+    rc = load_keys(ks, key_path);
+    if (rc != 0) {
+        nk_keystore_free(ks);
+        return rc;
+    }
+    nk_psp_ctx_init(&ctx, ks);
+    rc = nk_npumdimg_convert_file(&ctx, in_path, out_path, NULL, &info);
+    nk_keystore_free(ks);
+    if (rc != NK_PSP_OK) return print_diagnostic(rc, &ctx);
+    printf("NPUMDIMG_OK disc_id=%s\n", info.disc_id);
+    return 0;
+}
+
 static void usage(void)
 {
     fprintf(stderr,
             "usage: nk_decrypt kat --vector {aes-ecb|aes-cbc|aes-cmac|sha1}\n"
             "       nk_decrypt probe --in FILE [--key-file FILE]\n"
-            "       nk_decrypt decrypt [--key-file FILE] --in FILE --out FILE\n");
+            "       nk_decrypt decrypt [--key-file FILE] --in FILE --out FILE\n"
+            "       nk_decrypt npumdimg [--key-file FILE] --in EBOOT.PBP --out FILE.iso\n");
 }
 
 int main(int argc, char **argv)
@@ -456,6 +509,8 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "probe") == 0) return cmd_probe(in_path, key_path);
     if (strcmp(cmd, "decrypt") == 0)
         return cmd_decrypt(key_path, in_path, out_path);
+    if (strcmp(cmd, "npumdimg") == 0)
+        return cmd_npumdimg(key_path, in_path, out_path);
 
     fprintf(stderr, "nk_decrypt: unknown command '%s'\n", cmd);
     usage();
