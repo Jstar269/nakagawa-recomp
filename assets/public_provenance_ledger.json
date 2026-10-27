@@ -1615,7 +1615,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "389deff93c4e22ab016597a64e1a15da80415380b32bebb2300ac6fd88c4c0c6"
+      "sha256": "dd92fe7fb01b06728e40b3190f67a61e4f234c7aeb728b870320f5a2ad91e5ff"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -12280,7 +12280,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "53337670440d7507fcf92f64a1d1ff96f7fd43ffeabcd1309d65a5a9b2591a27"
+      "sha256": "9ddd5f7dbc3668f1717a82243f731488fae4b71f7354e7a132454f405b6afaba"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -14217,7 +14217,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8bc599ac2893bb0f7bd0146f7fd1bb29a6c30c979bf3b97553ae93ef5b7dd74e"
+      "sha256": "e546de1bd1722ee4a6a73e57b8edd3a700e8600d62ea592c4e9c6546c69326f1"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
