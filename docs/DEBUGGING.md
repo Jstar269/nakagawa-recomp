@@ -599,8 +599,10 @@ A scripted answer follows the same status sequence as a person's. `sceUtilityOsk
 returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE` (for as many
 frames as the person takes; one poll for a scripted answer), then `QUIT` (whether the text was
 confirmed or cancelled; each field's result tells them apart) until the title calls
-`sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`. A keyboard the title shuts down,
-or replaces with a new one, before the person answered closes its input box and writes nothing.
+`sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`. Only one utility dialog runs at a
+time: while the keyboard is open, a second `sceUtilityOskInitStart` or another dialog's InitStart
+returns `INVALID_STATUS` (`0x80110001`) and leaves the keyboard and its input box alone
+([#1386](https://github.com/Jstar269/nakagawa-recomp/issues/1386)).
 `sceUtilityOskUpdate` itself keeps its named no-dialog compatibility result
 ([#281](https://github.com/Jstar269/nakagawa-recomp/issues/281)); the runtime owns the
 progression instead.
@@ -1119,6 +1121,7 @@ committed.
 | ---------- | ------------- |
 | `SR_VBLANK_Q_US=N` | Host-clock vblank quantum in microseconds. In the default paced profile it does **not** produce vblanks -- the scheduler's rational 60000/1001 source is the only producer -- and only sets the threshold at which a yield is counted as late vblank *service* (reported as `vbl_late_service_yields` by the spin watchdog). It is an out-of-band vblank source only under `SR_NOVBPACE=1` |
 | `SR_WATCHDOG_EXIT=N` | Abort after N vblanks with no new frame; a firing is a NO-NEW-FLIP observation, not a hang verdict -- classify it with the display counters, thread dump, and MPEG/PSMF activity the watchdog prints |
+| `SR_GE_TIMING=1` | Opt-in GE completion timing (issue #1296), off by default. A display list that reached its END completes -- finish callback, `sceGeDrawSync`, `sceGeListSync` -- only once guest time passes its cost on one serial GE timeline; the callback is delivered as an interrupt, and the peeks read 2 until it is handled. The cost model in `src/rt/ge.c` is in GE clocks (the bus clock, converted at the emulated bus clock) and every coefficient was measured on a PSP-3000 with `CASE=ge-timing` (PR #1321): per list, command word and PRIM, per vertex by format, per span by width and fill state, texel fetch, CLUT loads and block transfers. Classes the measurement did not cover are charged as the nearest measured class and tagged `UNMEASURED_NEAREST` in the source. Startup prints `GE_TIMING: on, GE time model measured on PSP-3000 ...` |
 | `SR_NOAUDIO=1` | Disable audio output |
 | `SR_AUDIODUMP=PATH` | Debug only, off by default. Write the device mix (every channel's stream after the master gain, as SDL is about to submit it) to a 16-bit PCM WAV at the device's own rate and channel count. The header is patched once per second of audio data and at close, and a stats line (`AUDIODUMP: ... frames= silent_frames= clipped_samples= peak= dropped_frames=`) is printed there. `dropped_frames` counts the frames the dump was offered but did not write, whether past its size limit, after a changed device format, or after a failed write; the first refusal prints one line. The file is closed at a normal exit and at `SR_EXIT_AT_VBLANK`, with or without `SR_AUDIOSTAT`; a runtime that is killed, crashes, or ends on another path that skips `atexit` (`sceKernelExitGame`, the watchdog, a route failure) keeps the last once-a-second patch, so up to a second at the end lies past the header's length. It runs on SDL's audio thread and does file I/O there, so it changes host pacing; never compare timing with it on. Audit the file for silence, clipping, gaps and sample rate |
 | `SR_POSTUMD=1` | Post-UMD processing |

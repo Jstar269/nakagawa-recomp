@@ -1939,7 +1939,7 @@ class DecryptedElfRefusalTests(unittest.TestCase):
                 nk_cli._copy_decrypted_elf(source, Path(scratch) / "cache" / "EBOOT.elf")
         message = str(raised.exception)
         self.assertIn("valid decrypted EBOOT.elf from your own copy", message)
-        self.assertIn("does not decrypt games", message)
+        self.assertIn("the player decrypts the disc's own", message)
         self.assertNotIn("key", message.lower())
 
 

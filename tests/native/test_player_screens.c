@@ -129,7 +129,7 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
                FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
                FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_CONTROLLER,
-               FLOW_CONTROLLER_GAME,
+               FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
                FLOW_DEVLOG, FLOW_DEVLOG_EMPTY } FlowCase;
 
@@ -188,8 +188,8 @@ static PlayerUiAction draw_disc_case(NkUi *ui, FlowCase which) {
             break;
         case FLOW_DISC_BLOCKED:
             disc.kind = PLAYER_UI_DISC_BLOCKED;
-            disc.reason = "The game's program is encrypted, and Nakagawa doesn't decrypt games. "
-                          "Put a decrypted EBOOT.elf from your own copy in "
+            disc.reason = "Nakagawa couldn't decrypt the game's program: it uses an encryption "
+                          "Nakagawa doesn't cover yet. You can put a decrypted EBOOT.elf from your own copy in "
                           "D:/Synthetic Players/Long User Name/Nakagawa Recomp/data/runtime/"
                           "titles/TEST00007/decrypted. Then open the disc again.";
             /* The checks after the program's: what the player shows for one. */
@@ -256,6 +256,11 @@ static const char *const k_pad_bindings[PLAYER_UI_CONTROLLER_BUTTONS] = {
     "Button North (Y / Triangle)", "Button East (B / Circle)", "Button South (A / Cross)",
     "Button West (X / Square)", "Guide / Home", "None (Unbound)"
 };
+/* input_settings.c's words for the profile's default keyboard keys (#1299). */
+static const char *const k_key_bindings[PLAYER_UI_CONTROLLER_BUTTONS] = {
+    "Left Shift / Right Shift", "Enter", "Up Arrow", "Right Arrow", "Down Arrow", "Left Arrow",
+    "Q", "W", "S", "Z", "X", "A", "None", "None"
+};
 
 static PlayerUiAction draw_controller_case(NkUi *ui, FlowCase which) {
     PlayerUiControllerModel pad;
@@ -266,7 +271,7 @@ static PlayerUiAction draw_controller_case(NkUi *ui, FlowCase which) {
         : PLAYER_UI_CONTROLLER_PAGE_MAPPING;
     for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_BUTTONS; ++i) {
         pad.names[i] = k_pad_names[i];
-        pad.bindings[i] = k_pad_bindings[i];
+        pad.bindings[i] = which == FLOW_CONTROLLER_KEYS ? k_key_bindings[i] : k_pad_bindings[i];
     }
     pad.capturing = -1;
     pad.scope = "global mapping";
@@ -287,6 +292,14 @@ static PlayerUiAction draw_controller_case(NkUi *ui, FlowCase which) {
         pad.conflicted[11] = true;
         pad.status = "Conflict: Button North (Y / Triangle) bound to both Triangle and Square";
         pad.status_error = true;
+    } else if (which == FLOW_CONTROLLER_KEYS) {
+        /* The keyboard keys of a game's own mapping, with Start waiting for a key. */
+        pad.keyboard = true;
+        pad.scope = "TEST00005 only";
+        pad.scope_title = true;
+        pad.offer_scope = true;
+        pad.capturing = 1;
+        pad.status = "Press the key for Start. 5 s left; Esc stops.";
     } else if (which == FLOW_CALIBRATE_REST) {
         pad.calibration_fraction = 0.4f;
         pad.live_count = 2u;
@@ -403,7 +416,7 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             /* #1280: an experimental disc this version cannot use. */
             wizard.step = 3;
             wizard.experimental = true;
-            wizard.blocked_reason = "EBOOT.BIN is encrypted. Nakagawa does not decrypt games. "
+            wizard.blocked_reason = "EBOOT.BIN is encrypted and built-in decryption stopped. "
                                     "Then open the disc again.";
             wizard.checks[0] = (PlayerUiCheckRow){"Not built yet", "Game build",
                                                   "Not built yet.", 0xDBB024FFu};
@@ -1297,7 +1310,7 @@ static void test_disc_cards(void) {
           "an untested disc says so in plain words");
     CHECK(dump_flow_case(FLOW_DISC_BLOCKED, dump, sizeof(dump)) &&
               strstr(dump, "ADD TO LIBRARY") == NULL &&
-              strstr(dump, "doesn't decrypt games") != NULL &&
+              strstr(dump, "couldn't decrypt the game's program") != NULL &&
               strstr(dump, "can't be played") != NULL,
           "a disc this version cannot use says why, with no Add to library");
     CHECK(dump_flow_case(FLOW_DISC_UNSUPPORTED, dump, sizeof(dump)) &&
@@ -1535,6 +1548,64 @@ static void test_controller_and_developer_log_pages(void) {
     CHECK(flow_case_fits(FLOW_DEVLOG, 960, 540, dump, sizeof(dump)) &&
               strstr(dump, "[255] [runtime]") != NULL && strstr(dump, "\"CLOSE\"") != NULL,
           "the newest log line and Close are on screen at 960 x 540");
+}
+
+/* #1299: the keyboard keys on the Controls page. CONTROLLER and KEYBOARD choose
+   whose bindings the rows show, each row's button rebinds that control's key,
+   and the page names every PSP control with its key and fits the minimum window. */
+static void test_controller_keyboard_page(void) {
+    static char dump[CASE_DUMP_CAP];
+    char quoted[96];
+    CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_SHOW_KEYBOARD,
+                                                FLOW_CONTROLLER),
+                           PLAYER_UI_CONTROLLER_SHOW_KEYBOARD, 0u),
+          "KEYBOARD on the controller buttons shows the keyboard keys");
+    CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_SHOW_PAD,
+                                                FLOW_CONTROLLER_KEYS),
+                           PLAYER_UI_CONTROLLER_SHOW_CONTROLLER, 0u),
+          "CONTROLLER on the keyboard keys shows the controller buttons");
+    CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_RESET, FLOW_CONTROLLER_KEYS),
+                           PLAYER_UI_CONTROLLER_RESET, 0u),
+          "Reset to defaults is offered for the keyboard keys");
+    CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_SAVE, FLOW_CONTROLLER_KEYS),
+                           PLAYER_UI_CONTROLLER_SAVE, 0u),
+          "Save profile saves the keys with the mapping");
+    for (size_t control = 0u; control < PLAYER_UI_CONTROLLER_BUTTONS; ++control) {
+        CHECK(controller_op_is(activate_flow_button(PLAYER_UI_ID_CONTROLLER_BUTTON(control),
+                                                    FLOW_CONTROLLER_KEYS),
+                               PLAYER_UI_CONTROLLER_REBIND, control),
+              "each PSP control's key button rebinds that control's key");
+    }
+    CHECK(activate_flow_button(PLAYER_UI_ID_CONTROLLER_CALIBRATE, FLOW_CONTROLLER_KEYS).kind ==
+              PLAYER_UI_ACTION_NONE,
+          "the keyboard keys offer no stick calibration");
+    CHECK(dump_flow_case(FLOW_CONTROLLER_KEYS, dump, sizeof(dump)), "the keyboard keys draw");
+    for (size_t control = 0u; control < PLAYER_UI_CONTROLLER_BUTTONS; ++control) {
+        size_t n;
+        (void)snprintf(quoted, sizeof(quoted), "\"%s\"", k_pad_names[control]);
+        CHECK(strstr(dump, quoted) != NULL, "every PSP control is named beside its key");
+        if (control == 1u) continue; /* Start waits for its key */
+        n = (size_t)snprintf(quoted, sizeof(quoted), "\"%s\"", k_key_bindings[control]);
+        for (size_t c = 0u; c < n && c < sizeof(quoted); ++c) {
+            if (quoted[c] >= 'a' && quoted[c] <= 'z') quoted[c] = (char)(quoted[c] - 'a' + 'A');
+        }
+        CHECK(strstr(dump, quoted) != NULL, "every PSP control shows its keyboard key");
+    }
+    CHECK(strstr(dump, "\"PRESS A KEY...\"") != NULL &&
+              strstr(dump, "\"KEYS \xC2\xB7 TEST00005 ONLY\"") != NULL,
+          "the control waiting for a key says so, and the mapping being edited is named");
+    CHECK(strstr(dump, "Esc or F1 pauses the game.") != NULL &&
+              strstr(dump, "\"Dead zone 24%\"") == NULL,
+          "for the keyboard the stick card names the keys Nakagawa keeps");
+    CHECK(dump_flow_case(FLOW_CONTROLLER, dump, sizeof(dump)) &&
+              strstr(dump, "\"KEYBOARD\"") != NULL && strstr(dump, "\"Esc or F1") == NULL,
+          "the controller buttons offer the keyboard keys");
+    CHECK(flow_case_fits(FLOW_CONTROLLER_KEYS, 960, 540, dump, sizeof(dump)) &&
+              strstr(dump, "\"Hold\"") != NULL && strstr(dump, "\"RESET TO DEFAULTS\"") != NULL &&
+              strstr(dump, "\"KEYBOARD\"") != NULL,
+          "every key, the device choice and Reset to defaults are on screen at 960 x 540");
+    CHECK(flow_case_fits(FLOW_CONTROLLER_KEYS, 1280, 800, dump, sizeof(dump)),
+          "the keyboard keys fit 1280 x 800");
 }
 
 static void test_error_details_fit_the_minimum_window(void) {
@@ -2087,7 +2158,7 @@ static int capture_screens(const char *directory) {
     setup_fixture.library_status_detail =
         "Build the package for this PC before playing. It takes a few minutes.";
     setup_fixture.input_note =
-        "Nakagawa does not decrypt games; it uses decrypted files from your own copy.";
+        "Nakagawa decrypts this game's program from your own disc, on this PC.";
     nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
     if (!capture_one(&rig, "title-needs-setup", NULL, &title)) goto done;
     {
@@ -2131,6 +2202,7 @@ static int capture_screens(const char *directory) {
              PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES},
             {FLOW_CONTROLLER, "controller", PLAYER_UI_ID_CONTROLLER_BUTTON(0u)},
             {FLOW_CONTROLLER_GAME, "controller-game-mapping", PLAYER_UI_ID_CONTROLLER_BUTTON(10u)},
+            {FLOW_CONTROLLER_KEYS, "controller-keyboard", PLAYER_UI_ID_CONTROLLER_BUTTON(1u)},
             {FLOW_CALIBRATE_REST, "controller-calibrate-rest",
              PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL},
             {FLOW_CALIBRATE_EXTREMES, "controller-calibrate-range",
@@ -2229,7 +2301,7 @@ static void test_title_with_a_running_game(void) {
     running.primary_action_label = "STOP GAME";
     running.primary_action = PLAYER_UI_PRIMARY_STOP_GAME;
     running.input_note =
-        "Nakagawa does not decrypt games; it uses decrypted files from your own copy.";
+        "Nakagawa decrypts this game's program from your own disc, on this PC.";
     running.compatibility_expect = "Plays full matches and Story Mode.";
     running.compatibility_known_issues =
         "Known issues: low frame rate, sound drops out, and movies show black.";
@@ -2247,7 +2319,7 @@ static void test_title_with_a_running_game(void) {
           "the package card says the game runs now");
     CHECK(strstr(dump, "not ready yet") == NULL,
           "a running game's ready package is never called not ready");
-    CHECK(strstr(dump, "does not decrypt") == NULL,
+    CHECK(strstr(dump, "decrypts this game's program") == NULL,
           "the decryption note stays off a running game's built package");
     CHECK(strstr(dump, "Plays full matches and Story Mode.") != NULL &&
               strstr(dump, "Known issues: low frame rate") != NULL,
@@ -2293,7 +2365,7 @@ static void test_title_with_a_running_game(void) {
     (void)nk_ui_end(ui);
     (void)nk_ui_dump(ui, dump, sizeof(dump));
     CHECK(strstr(dump, "Starting the game. Its window opens when it is ready.") != NULL &&
-              strstr(dump, "does not decrypt") == NULL,
+              strstr(dump, "decrypts this game's program") == NULL,
           "a starting game gets the starting card and no decryption note");
     running.package_state = PLAYER_UI_PACKAGE_MISSING;
     running.library_status = "Needs setup";
@@ -2301,7 +2373,7 @@ static void test_title_with_a_running_game(void) {
     (void)player_ui_screen_title(ui, &model);
     (void)nk_ui_end(ui);
     (void)nk_ui_dump(ui, dump, sizeof(dump));
-    CHECK(strstr(dump, "not ready yet") != NULL && strstr(dump, "does not decrypt") != NULL,
+    CHECK(strstr(dump, "not ready yet") != NULL && strstr(dump, "decrypts this game's program") != NULL,
           "a missing package keeps its text and the decryption note");
     running.compatibility_category = "Boots to a named boundary";
     nk_ui_begin(ui, 0.0);
@@ -2526,6 +2598,7 @@ int main(int argc, char **argv) {
     test_disc_cards();
     test_settings_pages();
     test_controller_and_developer_log_pages();
+    test_controller_keyboard_page();
     test_version_line();
     test_design_system_layout();
     test_title_with_a_running_game();

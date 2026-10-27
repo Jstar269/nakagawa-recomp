@@ -1,15 +1,22 @@
 # Architecture Overview
 
-High-level map of the PSP static recompiler: what each major area does, how data flows, and where
-to start when behavior diverges. The live source, Makefile, and tests are authoritative when this
-overview and implementation disagree.
+This page is a map of how Nakagawa Recomp turns a PSP game into a native program: what each major part
+does, how data flows between them, and where to start looking when something behaves differently from a
+PSP. When this page and the code disagree, the live source, Makefile and tests are right.
+
+In short: the tools in `tools/` read the game's program files, find its functions, and translate its MIPS
+machine code into C ahead of time (AOT). That C is compiled together with the native runtime in `src/rt/`,
+which stands in for the PSP's system software, graphics, sound and input. If the running game reaches valid
+code that wasn't translated, a small interpreter runs it, but only inside code the analyzer has claimed;
+anything it can't handle stops the run with a named message instead of guessing. The player in
+`src/player/` puts it all in front of the user.
 
 ## Pipeline
 
 ```mermaid
 flowchart LR
     INTAKE["ISO and EBOOT intake<br/>tools/nk_cli.py<br/>tools/nk_core/iso_inspect.py"]
-    REFUSE["Encrypted input refused by name<br/>ENCRYPTED_EXECUTABLE / ENCRYPTED_MODULE<br/>Nakagawa does not decrypt games"]
+    REFUSE["Encrypted input the player could not decrypt<br/>refused by name: ENCRYPTED_EXECUTABLE / ENCRYPTED_MODULE<br/>(the player decrypts the user's disc, src/core/nk_psp_*)"]
     LOAD["ISO / PRX loading and import mapping<br/>src/core/nk_iso.c<br/>src/player/iso_reader.c<br/>tools/prxload.py<br/>tools/imports.py"]
     ANALYZE["Function-boundary analysis<br/>tools/analyze.py"]
     CODEGEN["AOT code generation to C<br/>tools/codegen.py"]
@@ -41,7 +48,8 @@ oracle traces. Those remain local inputs.
 
 ## PSP core, title profile, and backend boundary
 
-Wave 1 introduces a narrow, versioned contract without changing the HST production path:
+The first wave of this work adds a small, versioned contract between the PSP core, a title's profile and
+the host backends, without changing how Hot Shots Tennis (HST) is built today:
 
 ```text
 validated ProgramImage (tools/prxload.py)
@@ -239,7 +247,8 @@ The runtime executes generated guest functions and implements the host side of P
 | `savedata.c` | Utility savedata mapped to host storage |
 | `pgf_public.c` | Project-authored public PGF reader linked under `PUBLIC_SAFE=1`, written from `docs/cleanroom/PGF_SPEC.md` (#349); the lineage-sensitive private backend `pgf.c` was retired on 2026-10-25 |
 | `h264_mf.c` | Windows Media Foundation video-decode integration |
-| `h264_null.c` | Host-neutral/null video-decoder path used by portability/test builds |
+| `h264_ffmpeg.c` / `h264_ffmpeg_sub/` | Portable H.264 backend: the pinned FFmpeg n4.4 decoder subset, the default off Windows (`H264_FFMPEG=1`, [#1263](https://github.com/Jstar269/nakagawa-recomp/pull/1263)) |
+| `h264_null.c` | Shared H.264 front end (decoder instances, PSMF demux, backend selection) and the null backend, which fails closed with a named boundary when no decoder is built (`H264_FFMPEG=0` off Windows) |
 | `osk_win.c` | Win32 on-screen keyboard input box; it blocks its caller until the person answers, so only the text-entry worker shows it |
 | `osk_text_entry.c` / `osk_text_entry.h` | Project-authored, non-blocking keyboard text entry: answers a field in the game window when the presenter can draw the keyboard, otherwise shows the input box on a worker thread so the keyboard never stops guest time; closes whatever it shows when the title drops the keyboard, and opens nothing under the offscreen presenter |
 | `osk_overlay.c` / `osk_overlay.h` | Project-authored in-window on-screen keyboard: the key grid, cursor, typing, the guest's length bound and inputtype, the UTF-16 answer, and edge-based pad input. Pure C with no host dependency; the session it keeps is the one the HLE keyboard polls and the vblank controller latch feeds |
@@ -707,11 +716,15 @@ Clock ownership:
   works under [#1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159); today `Esc`,
   `F1`, Guide or the controller's back button (East) resumes.
 - **libc time/gettimeofday** — seconds/usec since the standard Unix epoch, converted from the RTC
-  tick. The PSP timezone is a console setting (`s_psp_timezone_minutes`), not the host process
-  timezone. The retained, settable system-profile owner for timezone/daylight does not exist yet:
-  `sceRtcGetCurrentClockLocalTime` and UTC/local conversion therefore run on the fixed UTC
-  constant, and that single UTC/local-conversion criterion stays blocked on the missing owner.
-  The explicit-offset `sceRtcGetCurrentClock` path is complete and independent of it.
+  tick. The PSP timezone is a console setting, not the host process timezone. It lives in the
+  virtual system registry (`/CONFIG/DATE/time_zone_offset` and `summer_time`), the same keys
+  `sceUtilityGetSystemParamInt` reports as TIMEZONE and DAYLIGHTSAVINGS, so
+  `sceRtcGetCurrentClockLocalTime`, the UTC/local conversions and the `gettimeofday` timezone
+  record follow a setting a game writes through `sceReg` and can never disagree with the getter
+  ([#1382](https://github.com/Jstar269/nakagawa-recomp/issues/1382)). The seed is the oracle
+  console's measured setting (-300 minutes, daylight saving on), not a factory default; the
+  60-minute daylight-saving shift is the setting's meaning, not a measurement. The
+  explicit-offset `sceRtcGetCurrentClock` path takes its offset from the caller.
 - **Media** — the PSMF timestamp model (`mpeg.c`) and H.264 PES timestamps are stream-relative media
   domains and are not wall time. The `scePsmfPlayer*` handlers sit above a bounded project-authored
   PSMF producer (`psmf_producer.c`): a normalized access unit carries the stream's own presentation
