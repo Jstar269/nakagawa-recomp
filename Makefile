@@ -781,6 +781,13 @@ PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
 # main.c attaches to a parent terminal console or logs to the logs folder. The UI test binary keeps
 # the console subsystem because its harness reads stdout.
 PLAYER_GUI_LDFLAGS  := -mwindows
+# The app icon as a Windows resource object (assets/brand/nakagawa.rc), linked into the
+# player and each title executable; SDL gives every window the executable's first icon
+# group. Other systems set the same picture at run time (nk_ui_app_icon_rgba in
+# src/ui/nk_ui_widgets.c), so they link no icon object.
+WINDRES             ?= windres
+PLAYER_ICON_OBJ     := $(BUILD_ROOT)/nakagawa_icon.o
+TITLE_ICON_OBJ      = $(BUILD_DIR)/nakagawa_icon.o
 # The player link consumes the Vulkan import library, so like CFLAGS/LDFLAGS it
 # must derive from the shared VULKAN_SDK resolution above (explicit override,
 # environment, then tools/vulkan_sdk.py discovery) rather than naming one
@@ -810,6 +817,8 @@ else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
 PLAYER_PLATFORM_LIBS :=
 PLAYER_GUI_LDFLAGS  :=
+PLAYER_ICON_OBJ     :=
+TITLE_ICON_OBJ      :=
 # The nk_ui draw and wave code calls libm (exp, sinf); glibc keeps it out of libc.
 PLAYER_EXTRA_LIBS   := -lm
 PLAYER_PLAT_SOURCES := $(PLAYER_PLATFORM_SRC)
@@ -2008,11 +2017,18 @@ PLAYER_NK_UI_DEFS = -DNK_UI_WITH_SDL -DNK_UI_WITH_SDL3 $(if $(filter yes,$(SDL3_
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c $(PLAYER_NK_UI_SRCS) $(PLAYER_CORE_SRCS)
 PLAYER_INCLUDES := -Isrc/player -Isrc/player/ui -Isrc/ui -Ithird_party/clay -Isrc/core -Isrc/core/generated -Isrc/rt $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
 
+# Both icon objects come from this one rule; windres finds the icon beside the script.
+ifeq ($(OS),Windows_NT)
+$(sort $(PLAYER_ICON_OBJ) $(TITLE_ICON_OBJ)): %/nakagawa_icon.o: assets/brand/nakagawa.rc assets/brand/nakagawa.ico
+	@"$(PYTHON)" -c "from pathlib import Path; Path('$(@D)').mkdir(parents=True, exist_ok=True)"
+	$(WINDRES) --input-format=rc --output-format=coff -i $< -o $@
+endif
+
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
-$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
+$(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/ui/player_ui_nk.h src/ui/nk_ui.h src/ui/backend/nk_ui_sdlr.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h $(PLAYER_ICON_OBJ)
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
-	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_GUI_LDFLAGS) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
+	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_GUI_LDFLAGS) $(PLAYER_SRCS) $(PLAYER_ICON_OBJ) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 # Stage the SDL3/SDL3_ttf runtime DLL closure and its licence notices beside
 # the player (#421) so launches from Explorer or a plain cmd.exe (no MSYS2 on
@@ -2043,7 +2059,7 @@ LIBRARY_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/nk_lib_*.c))
 # reported a missing ".../atrac3p" input. GCC reads backslashes in a response file
 # as escapes, so the paths are written with forward slashes; BUILD_DIR is already
 # refused when it contains whitespace, so each object stays one argument.
-LINK_OBJECTS = $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(CHUNK_OBJS) $(LIBRARY_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
+LINK_OBJECTS = $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(CHUNK_OBJS) $(LIBRARY_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(TITLE_ICON_OBJ)
 LINK_OBJECTS_RSP = $(BUILD_DIR)/link-objects.rsp
 DEP_FILES = $(patsubst %.o,%.d,$(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(PORTABLE_CORE_OBJS) $(CHUNK_OBJS) $(LIBRARY_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(BUILD_DIR)/vfpu_fuzz.o)
 
@@ -2172,7 +2188,7 @@ compile: | project-fonts
 # The generated headers a compile reads, built on their own first so
 # tools/title_codegen_plan.py can key every object before Make compiles it (#1306).
 compile-inputs: $(TITLE_CONFIG_HEADER)
-compile: shader-verify $(CHUNK_OBJS) $(LIBRARY_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
+compile: shader-verify $(CHUNK_OBJS) $(LIBRARY_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o $(TITLE_ICON_OBJ) | sdl3-check
 	$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT) \
 		@$(LINK_OBJECTS_RSP) \
