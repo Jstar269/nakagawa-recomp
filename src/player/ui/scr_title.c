@@ -154,7 +154,8 @@ static const char *package_state_text(PlayerUiPackageState state) {
         case PLAYER_UI_PACKAGE_STARTING:
             return "Starting the game. Its window opens when it is ready.";
         case PLAYER_UI_PACKAGE_RUNNING:
-            return "Running now. Stop the game to rebuild or change settings.";
+            return "Built, in use by the running game. Stop the game to rebuild or change "
+                   "settings.";
         case PLAYER_UI_PACKAGE_MISSING:
         default: return "The package for this game is not ready yet.";
     }
@@ -214,7 +215,14 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 head.align_y = NK_UI_ALIGN_CENTER;
                 if (nk_ui_begin_container(ui, TITLE_ID_STATUS_HEAD, &head, NULL)) {
                     nk_ui_eyebrow(ui, TITLE_ID_STATUS_EYEBROW, "Package");
-                    if (title->library_status != NULL && title->library_status[0] != '\0') {
+                    if (title->package_state == PLAYER_UI_PACKAGE_STARTING ||
+                        title->package_state == PLAYER_UI_PACKAGE_RUNNING) {
+                        /* The header badge says Starting or Running once; the
+                           package card describes the package. */
+                        nk_ui_status_pill(ui, TITLE_ID_STATUS_PILL, "\xE2\x97\x8F", "Ready",
+                                          theme->ready);
+                    } else if (title->library_status != NULL &&
+                               title->library_status[0] != '\0') {
                         nk_ui_status_pill(ui, TITLE_ID_STATUS_PILL, title->status_marker,
                                           title->library_status, title->status_rgba);
                     }
@@ -311,7 +319,12 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
             row.padding_top = NK_UI_SPACE_2;
             row.padding_bottom = NK_UI_SPACE_2;
             if (nk_ui_begin_container(ui, TITLE_ID_ACTIONS, &row, NULL)) {
-                if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_PRIMARY,
+                /* While the no-new-frames card is up, its STOP GAME is the only
+                   one on the page. */
+                bool stop_in_stall_card = model->stalled_game_notice_visible &&
+                    title->primary_action == PLAYER_UI_PRIMARY_STOP_GAME;
+                if (!stop_in_stall_card &&
+                    nk_ui_button(ui, PLAYER_UI_ID_TITLE_PRIMARY,
                                  safe_text(title->primary_action_label, "Unavailable"),
                                  NK_UI_BUTTON_LARGE |
                                  (title->primary_action_enabled

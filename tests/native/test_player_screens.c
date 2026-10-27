@@ -2863,6 +2863,46 @@ static void test_default_focus_lands_on_the_main_action(void) {
     nk_ui_destroy(ui);
 }
 
+/* The owner: STOP GAME once. While the no-new-frames card is up, its STOP
+   GAME is the only one; the primary row drops its own. */
+static void test_stalled_game_offers_stop_once(void) {
+    static char dump[CASE_DUMP_CAP];
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    PlayerUiTitle running = k_titles[0];
+    PlayerUiTitleModel model;
+    size_t stops = 0u;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the stalled-game title UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    running.library_status = "Running";
+    running.package_state = PLAYER_UI_PACKAGE_RUNNING;
+    running.primary_action_label = "STOP GAME";
+    running.primary_action = PLAYER_UI_PRIMARY_STOP_GAME;
+    memset(&model, 0, sizeof(model));
+    model.title = &running;
+    model.stalled_game_notice_visible = true;
+    model.logical_width = 1280.0f;
+    model.logical_height = 800.0f;
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_title(ui, &model);
+        (void)nk_ui_end(ui);
+    }
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    for (const char *at = strstr(dump, "STOP GAME"); at != NULL; at = strstr(at + 1, "STOP GAME")) {
+        ++stops;
+    }
+    CHECK(stops == 1u, "a stalled game's page offers STOP GAME once");
+    CHECK(strstr(dump, "KEEP WAITING") != NULL, "the stall card keeps Keep waiting");
+    nk_ui_destroy(ui);
+}
+
 static void test_title_with_a_running_game(void) {
     static char dump[CASE_DUMP_CAP];
     NkUiConfig config;
@@ -2896,7 +2936,16 @@ static void test_title_with_a_running_game(void) {
     (void)player_ui_screen_title(ui, &model);
     CHECK(nk_ui_end(ui) != NULL, "draw the running-game title");
     (void)nk_ui_dump(ui, dump, sizeof(dump));
-    CHECK(strstr(dump, "Running now. Stop the game to rebuild or change settings.") != NULL,
+    {
+        /* The owner: "Running" once on the page. The header badge says it; the
+           package card says the package is ready and in use. */
+        size_t running = 0u;
+        for (const char *at = strstr(dump, "RUNNING"); at != NULL; at = strstr(at + 1, "RUNNING")) {
+            ++running;
+        }
+        CHECK(running == 1u, "a running game's title page says RUNNING once");
+    }
+    CHECK(strstr(dump, "Built, in use by the running game.") != NULL,
           "the package card says the game runs now");
     CHECK(strstr(dump, "not ready yet") == NULL,
           "a running game's ready package is never called not ready");
@@ -3185,6 +3234,7 @@ int main(int argc, char **argv) {
     test_version_line();
     test_design_system_layout();
     test_title_with_a_running_game();
+    test_stalled_game_offers_stop_once();
     test_default_focus_lands_on_the_main_action();
     test_tier_table_matches_the_docs();
     test_remove_from_library();
