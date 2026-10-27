@@ -10993,6 +10993,39 @@ static void dialog_unlock(void) {
     atomic_flag_clear_explicit(&s_dialog_lock, memory_order_release);
 }
 
+/* One utility dialog slot (#1386). Savedata, message, netconf, gamedata-install, game-sharing
+ * and the OSK share it: only one utility dialog runs at a time. InitStart takes the slot only
+ * while the dialog holding it is back at NONE, and the type that took it keeps it after it
+ * winds down, so that type's own GetStatus then reports NONE (0) rather than WRONG_TYPE: a
+ * game spinning "while (sceUtilityOskGetStatus() != 0)" after name entry would otherwise wait
+ * forever. A call for any other type returns WRONG_TYPE (0x80110005), the OSK's PSP-measured
+ * result with no keyboard (#363), which the #1386 contract applies to every dialog. An
+ * InitStart while the holder is still active returns INVALID_STATUS (0x80110001) and changes
+ * nothing: the code the #1386 contract names, and the OSK's measured code for a call in the
+ * wrong state. What a PSP returns for a second InitStart is unmeasured, so the slot fails
+ * closed rather than let a new dialog replace one that is still running. */
+#define SCE_ERROR_UTILITY_INVALID_STATUS 0x80110001u
+#define SCE_ERROR_UTILITY_WRONG_TYPE     0x80110005u
+enum {
+    UTILITY_SLOT_NONE = 0, UTILITY_SLOT_SAVEDATA, UTILITY_SLOT_MSG, UTILITY_SLOT_NETCONF,
+    UTILITY_SLOT_GAMEDATA, UTILITY_SLOT_GAMESHARING, UTILITY_SLOT_OSK
+};
+/* The type that last took the slot. Written under dialog_lock, and only by guest syscalls and
+ * the guest resets, so a handler on the guest thread may read it directly. */
+static int s_utility_slot = UTILITY_SLOT_NONE;
+static int utility_slot_active_locked(void);    /* fwd: asks the holder's own state machine */
+/* Take the slot for `type`, or refuse while its holder is active. Caller holds dialog_lock. */
+static uint32_t utility_slot_claim_locked(int type) {
+    if (utility_slot_active_locked()) {
+        if (getenv("SR_DLGLOG"))
+            fprintf(stderr, "utility InitStart (type %d) refused: type %d holds the active slot\n",
+                    type, s_utility_slot);
+        return SCE_ERROR_UTILITY_INVALID_STATUS;
+    }
+    s_utility_slot = type;
+    return 0;
+}
+
 static int s_dlg_status = 0, s_dlg_tick = 0;
 static uint32_t s_dlg_param = 0, s_dlg_result = 0, s_dlg_generation = 0;
 static unsigned s_dlg_work_started, s_dlg_work_done;
@@ -11002,14 +11035,17 @@ int sr_savedata_pause_busy(void) {
     dialog_unlock();
     return busy;
 }
-static int s_osk_current_clear(void);   /* fwd: savedata/msg dialogs take the slot from the OSK */
 static uint32_t h_SavedataInitStart(CpuState *s) {
     if (!A0 || !sr_guest_span_readable(A0, 0x600u) || !sr_guest_span_writable(A0, 0x600u)) return 0x80110004u;
     dialog_lock();
+    const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_SAVEDATA);
+    if (claim) {
+        dialog_unlock();
+        return claim;
+    }
     s_dlg_param = A0; s_dlg_status = 1; s_dlg_tick = 0;
     s_dlg_work_started = s_dlg_work_done = 0;
     s_dlg_generation++;
-    s_osk_current_clear();
     s_dlg_result = 0;
     MEM_W32(A0 + 0x1c, 0);
     dialog_unlock();
@@ -11026,6 +11062,10 @@ static uint32_t h_SavedataInitStart(CpuState *s) {
 static uint32_t h_DlgGetStatus(CpuState *s) {
     (void)s;
     dialog_lock();
+    if (s_utility_slot != UTILITY_SLOT_SAVEDATA) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
     int ret = s_dlg_status;
     if (s_dlg_status == 1) {                              /* INITIALIZE -> RUNNING */
         s_dlg_status = 2; s_dlg_tick = 0;
@@ -11046,6 +11086,10 @@ static uint32_t h_SavedataUpdate(CpuState *s) {
     (void)s;
     uint32_t param = 0, generation = 0;
     dialog_lock();
+    if (s_utility_slot != UTILITY_SLOT_SAVEDATA) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
     if (s_dlg_status == 1) {
         s_dlg_status = 2;
         s_dlg_tick = 0;
@@ -11075,15 +11119,20 @@ static uint32_t h_SavedataUpdate(CpuState *s) {
 static uint32_t h_DlgShutdown(CpuState *s) {
     (void)s;
     dialog_lock();
-    s_dlg_status = 4;
+    if (s_utility_slot != UTILITY_SLOT_SAVEDATA) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
+    if (s_dlg_status) s_dlg_status = 4;  /* NONE stays NONE: a stray call cannot re-arm the slot */
     dialog_unlock();
     if (getenv("SR_DLGLOG")) fprintf(stderr, "DlgShutdownStart\n");
     return 0;
 }
 
-/* Lightweight utility services used during setup. Each service owns an independent state
- * machine so polling netconf cannot consume a message/gamedata transition. Init captures the
- * common parameter block and completes it successfully; Update advances RUNNING->FINISHED. */
+/* Lightweight utility services used during setup. Each service keeps its own state machine,
+ * and the one slot above decides which of them a call reaches, so polling netconf cannot
+ * consume a message/gamedata transition. Init captures the common parameter block and
+ * completes it successfully; Update advances RUNNING->FINISHED. */
 typedef struct UtilityDialog {
     uint32_t param;
     uint32_t result;
@@ -11094,22 +11143,52 @@ typedef struct UtilityDialog {
     unsigned work_started : 1;
     unsigned work_done : 1;
 } UtilityDialog;
-enum { UTILITY_MSG = 0, UTILITY_NETCONF, UTILITY_GAMEDATA, UTILITY_GAMESHARING };
+enum {  /* a dialog's kind is the slot type it claims */
+    UTILITY_MSG = UTILITY_SLOT_MSG, UTILITY_NETCONF = UTILITY_SLOT_NETCONF,
+    UTILITY_GAMEDATA = UTILITY_SLOT_GAMEDATA, UTILITY_GAMESHARING = UTILITY_SLOT_GAMESHARING
+};
 static UtilityDialog s_msg_dialog = {.kind = UTILITY_MSG};
 static UtilityDialog s_net_dialog = {.kind = UTILITY_NETCONF};
 static UtilityDialog s_gamedata_dialog = {.kind = UTILITY_GAMEDATA};
 static UtilityDialog s_sharing_dialog = {.kind = UTILITY_GAMESHARING};
 
+/* Forget every dialog and free the slot. A new generation drops a result whose work is still
+ * running outside the lock. Caller holds dialog_lock. */
+static void utility_dialogs_reset_locked(void) {
+    UtilityDialog *const dialogs[] = { &s_msg_dialog, &s_net_dialog, &s_gamedata_dialog,
+                                       &s_sharing_dialog };
+    s_dlg_status = 0;
+    s_dlg_tick = 0;
+    s_dlg_param = 0u;
+    s_dlg_result = 0u;
+    s_dlg_work_started = s_dlg_work_done = 0u;
+    s_dlg_generation++;
+    for (size_t i = 0; i < sizeof(dialogs) / sizeof(dialogs[0]); i++) {
+        UtilityDialog *d = dialogs[i];
+        d->param = 0u;
+        d->result = 0u;
+        d->generation++;
+        d->status = 0;
+        d->ticks = 0u;
+        d->work_started = d->work_done = 0u;
+    }
+    s_utility_slot = UTILITY_SLOT_NONE;
+}
+
 static uint32_t utility_dialog_init(UtilityDialog *d, uint32_t param) {
     if (!param) return 0x80110004u; /* SCE_ERROR_UTILITY_INVALID_PARAM */
     dialog_lock();
+    const uint32_t claim = utility_slot_claim_locked((int)d->kind);
+    if (claim) {
+        dialog_unlock();
+        return claim;
+    }
     d->param = param;
     d->result = 0;
     d->generation++;
     d->status = 1;
     d->ticks = 0;
     d->work_started = d->work_done = 0;
-    s_osk_current_clear();
     MEM_W32(param + 0x1c, 0);
     dialog_unlock();
     return 0;
@@ -11118,6 +11197,10 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
     uint32_t param = 0, generation = 0, result = 0;
     unsigned kind = 0;
     dialog_lock();
+    if (s_utility_slot != (int)d->kind) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
     if (d->status == 1) { d->status = 2; d->ticks = 0; }
     if (d->status == 2 && !d->work_started) {
         d->work_started = 1;
@@ -11148,6 +11231,10 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
 }
 static uint32_t utility_dialog_status(UtilityDialog *d) {
     dialog_lock();
+    if (s_utility_slot != (int)d->kind) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
     uint32_t ret = (uint32_t)d->status;
     if (d->status == 1) {
         d->status = 2;
@@ -11163,6 +11250,10 @@ static uint32_t utility_dialog_status(UtilityDialog *d) {
 }
 static uint32_t utility_dialog_shutdown(UtilityDialog *d) {
     dialog_lock();
+    if (s_utility_slot != (int)d->kind) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
     if (d->status) d->status = 4;
     dialog_unlock();
     return 0;
@@ -11212,23 +11303,24 @@ static int s_osk_status = OSK_NONE;
 static uint32_t s_osk_param = 0;
 static int s_osk_field = 0;           /* the next field to answer */
 static int s_osk_request_open = 0;    /* a person's answer to that field is pending */
-/* A keyboard keeps the dialog slot after it shuts down, so GetStatus reports NONE(0)
- * rather than SCE_ERROR_UTILITY_WRONG_TYPE (0x80110005) once one has run: a game spinning
- * "while (sceUtilityOskGetStatus() != 0)" after name entry waits on 0 forever otherwise. */
-static int s_osk_current = 0;
+/* The slot's holder is active from its InitStart until its own GetStatus has reported the way
+ * back to NONE; only then may another InitStart take the slot. Caller holds dialog_lock. */
+static int utility_slot_active_locked(void) {
+    switch (s_utility_slot) {
+    case UTILITY_SLOT_SAVEDATA:    return s_dlg_status != 0;
+    case UTILITY_SLOT_MSG:         return s_msg_dialog.status != 0;
+    case UTILITY_SLOT_NETCONF:     return s_net_dialog.status != 0;
+    case UTILITY_SLOT_GAMEDATA:    return s_gamedata_dialog.status != 0;
+    case UTILITY_SLOT_GAMESHARING: return s_sharing_dialog.status != 0;
+    case UTILITY_SLOT_OSK:         return s_osk_status != OSK_NONE;
+    default:                       return 0;
+    }
+}
 static int hle_loadexec_dialog_busy(void) {
     dialog_lock();
-    int busy = s_dlg_status != 0;
+    int busy = s_dlg_status != 0 || s_utility_slot == UTILITY_SLOT_OSK;
     dialog_unlock();
-    return busy || s_osk_status != OSK_NONE || s_osk_current != 0;
-}
-static void osk_abandon_request(void);  /* fwd: defined with the keyboard's field collection */
-/* Another utility dialog takes the slot: the keyboard is no longer polled, so a person's
- * pending answer is dropped and its box closed rather than left open with no poller. */
-static int s_osk_current_clear(void) {
-    osk_abandon_request();
-    s_osk_current = 0;
-    return 0;
+    return busy || s_osk_status != OSK_NONE;
 }
 
 /* ---- Scripted answers, for automation. SR_OSK_SCRIPT=<file> supplies one answer per
@@ -11383,21 +11475,26 @@ static int osk_collect(void) {
     return 1;
 }
 
+/* A keyboard, like every utility dialog, starts only while the slot's holder is at NONE: a
+ * running keyboard or dialog keeps the slot, its open request included (#1386). */
 static uint32_t h_OskInitStart(CpuState *s) {
     if (!A0 || !sr_guest_span_readable(A0, 0x40u)) return 0x80110004u;  /* SceUtilityOskParams */
-    osk_abandon_request();                                 /* a new keyboard replaces the old one */
-    s_osk_param = A0;
-    s_osk_status = OSK_INIT;
-    s_osk_field = 0;
-    s_osk_current = 1;                                     /* the OSK owns the dialog slot */
-    s_osk_script_read = 0;                                 /* a new keyboard re-reads its answers */
-    return 0;
+    dialog_lock();
+    const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_OSK);
+    if (!claim) {
+        s_osk_param = A0;
+        s_osk_status = OSK_INIT;
+        s_osk_field = 0;
+        s_osk_script_read = 0;                             /* a new keyboard re-reads its answers */
+    }
+    dialog_unlock();
+    return claim;
 }
 /* GetStatus with no OSK ever started (e.g. polled every boot frame while a savedata dialog
  * is up) is SCE_ERROR_UTILITY_WRONG_TYPE; once one has run NONE(0) is a real status. */
 static uint32_t h_OskGetStatus(CpuState *s) {
     (void)s;
-    if (!s_osk_current) return 0x80110005u;
+    if (s_utility_slot != UTILITY_SLOT_OSK) return SCE_ERROR_UTILITY_WRONG_TYPE;
     int ret = s_osk_status;
     if (s_osk_status == OSK_INIT) s_osk_status = OSK_VISIBLE;
     else if (s_osk_status == OSK_VISIBLE) { if (osk_collect()) s_osk_status = OSK_QUIT; }
@@ -11409,7 +11506,7 @@ static uint32_t h_OskGetStatus(CpuState *s) {
  * QUIT accepts shutdown; GetStatus keeps the existing wind-down to NONE. */
 static uint32_t h_OskShutdown(CpuState *s) {
     (void)s;
-    if (!s_osk_current) return 0x80110005u;
+    if (s_utility_slot != UTILITY_SLOT_OSK) return SCE_ERROR_UTILITY_WRONG_TYPE;
     if (s_osk_status == OSK_NONE || s_osk_status == OSK_INIT || s_osk_status == OSK_VISIBLE)
         return 0x80110001u;
     osk_abandon_request();
@@ -11420,18 +11517,21 @@ static uint32_t h_OskShutdown(CpuState *s) {
  * returns WRONG_TYPE before a keyboard starts, and INVALID_STATUS in INIT, QUIT and NONE after use. */
 static uint32_t h_OskUpdate(CpuState *s) {
     (void)s;
-    if (!s_osk_current) return 0x80110005u;
+    if (s_utility_slot != UTILITY_SLOT_OSK) return SCE_ERROR_UTILITY_WRONG_TYPE;
     if (s_osk_status == OSK_NONE || s_osk_status == OSK_INIT || s_osk_status == OSK_QUIT)
         return 0x80110001u;
     return 0;
 }
-/* Test-only: forget the keyboard slot, abandoning any answer still pending. */
+/* Test-only: free the utility dialog slot, forgetting the keyboard (abandoning any answer still
+ * pending) and every other dialog, so the next case starts with no dialog ever opened. */
 void sr_hle_test_osk_slot_reset(void) {
     osk_abandon_request();
-    s_osk_current = 0;
     s_osk_status = OSK_NONE;
     s_osk_param = 0;
     s_osk_field = 0;
+    dialog_lock();
+    utility_dialogs_reset_locked();
+    dialog_unlock();
 }
 
 /* Single definition, called by both registry branches, so the executable HLE harness
@@ -11443,6 +11543,31 @@ void hle_register_osk_handlers(void) {
     /* 0xf6269b82 is OskInitStart, NOT GetSystemParamString -- the old string handler wrote
      * A2 bytes through A1, both garbage for this signature. */
     sr_hle_register(0xf6269b82, "sceUtilityOskInitStart", h_OskInitStart);
+}
+
+/* The other utility dialogs share the OSK's slot (#1386); one definition for both registry
+ * branches, so the executable HLE harness dispatches the mapping the game build does.
+ * sceUtilitySavedataInitStart is registered with hle_register_partition_savedata_handlers(). */
+static void hle_register_utility_dialog_handlers(void) {
+    sr_hle_register(0x9790b33c, "sceUtilitySavedataShutdownStart", h_DlgShutdown);
+    sr_hle_register(0x8874dbe0, "sceUtilitySavedataGetStatus", h_DlgGetStatus);
+    sr_hle_register(0xd4b95ffb, "sceUtilitySavedataUpdate", h_SavedataUpdate);
+    sr_hle_register(0x2ad8e239, "sceUtilityMsgDialogInitStart", h_MsgDialogInit);
+    sr_hle_register(0x95fc253b, "sceUtilityMsgDialogUpdate", h_MsgDialogUpdate);
+    sr_hle_register(0x9a1c91d7, "sceUtilityMsgDialogGetStatus", h_MsgDialogStatus);
+    sr_hle_register(0x67af3428, "sceUtilityMsgDialogShutdownStart", h_MsgDialogShutdown);
+    sr_hle_register(0x4db1e739, "sceUtilityNetconfInitStart", h_NetDialogInit);
+    sr_hle_register(0x91e70e35, "sceUtilityNetconfUpdate", h_NetDialogUpdate);
+    sr_hle_register(0x6332aa39, "sceUtilityNetconfGetStatus", h_NetDialogStatus);
+    sr_hle_register(0xf88155f6, "sceUtilityNetconfShutdownStart", h_NetDialogShutdown);
+    sr_hle_register(0x24ac31eb, "sceUtilityGamedataInstallInitStart", h_GamedataDialogInit);
+    sr_hle_register(0x4aecd179, "sceUtilityGamedataInstallUpdate", h_GamedataDialogUpdate);
+    sr_hle_register(0xb57e95d9, "sceUtilityGamedataInstallGetStatus", h_GamedataDialogStatus);
+    sr_hle_register(0x32e32dcb, "sceUtilityGamedataInstallShutdownStart", h_GamedataDialogShutdown);
+    sr_hle_register(0xc492f751, "sceUtilityGameSharingInitStart", h_SharingDialogInit);
+    sr_hle_register(0x7853182d, "sceUtilityGameSharingUpdate", h_SharingDialogUpdate);
+    sr_hle_register(0x946963f3, "sceUtilityGameSharingGetStatus", h_SharingDialogStatus);
+    sr_hle_register(0xefc6f80f, "sceUtilityGameSharingShutdownStart", h_SharingDialogShutdown);
 }
 
 /* sceWlanGetEtherAddr: 6-byte MAC out through a0. Fixed value so save/profile stamps stay
@@ -25691,6 +25816,7 @@ void sr_hle_init(void) {
     hle_register_partition_savedata_handlers();
     hle_register_impose_handlers();
     hle_register_osk_handlers();
+    hle_register_utility_dialog_handlers();
     hle_register_dcache_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
@@ -25732,26 +25858,7 @@ void sr_hle_init(void) {
      * above (the getter had no registration at all before this). */
     hle_register_impose_handlers();
     hle_register_osk_handlers();
-    /* sceUtilitySavedataInitStart registered via hle_register_partition_savedata_handlers() */
-    sr_hle_register(0x9790b33c, "sceUtilitySavedataShutdownStart", h_DlgShutdown);
-    sr_hle_register(0x8874dbe0, "sceUtilitySavedataGetStatus", h_DlgGetStatus);
-    sr_hle_register(0xd4b95ffb, "sceUtilitySavedataUpdate", h_SavedataUpdate);
-    sr_hle_register(0x2ad8e239, "sceUtilityMsgDialogInitStart", h_MsgDialogInit);
-    sr_hle_register(0x95fc253b, "sceUtilityMsgDialogUpdate", h_MsgDialogUpdate);
-    sr_hle_register(0x9a1c91d7, "sceUtilityMsgDialogGetStatus", h_MsgDialogStatus);
-    sr_hle_register(0x67af3428, "sceUtilityMsgDialogShutdownStart", h_MsgDialogShutdown);
-    sr_hle_register(0x4db1e739, "sceUtilityNetconfInitStart", h_NetDialogInit);
-    sr_hle_register(0x91e70e35, "sceUtilityNetconfUpdate", h_NetDialogUpdate);
-    sr_hle_register(0x6332aa39, "sceUtilityNetconfGetStatus", h_NetDialogStatus);
-    sr_hle_register(0xf88155f6, "sceUtilityNetconfShutdownStart", h_NetDialogShutdown);
-    sr_hle_register(0x24ac31eb, "sceUtilityGamedataInstallInitStart", h_GamedataDialogInit);
-    sr_hle_register(0x4aecd179, "sceUtilityGamedataInstallUpdate", h_GamedataDialogUpdate);
-    sr_hle_register(0xb57e95d9, "sceUtilityGamedataInstallGetStatus", h_GamedataDialogStatus);
-    sr_hle_register(0x32e32dcb, "sceUtilityGamedataInstallShutdownStart", h_GamedataDialogShutdown);
-    sr_hle_register(0xc492f751, "sceUtilityGameSharingInitStart", h_SharingDialogInit);
-    sr_hle_register(0x7853182d, "sceUtilityGameSharingUpdate", h_SharingDialogUpdate);
-    sr_hle_register(0x946963f3, "sceUtilityGameSharingGetStatus", h_SharingDialogStatus);
-    sr_hle_register(0xefc6f80f, "sceUtilityGameSharingShutdownStart", h_SharingDialogShutdown);
+    hle_register_utility_dialog_handlers();
     /* sceWlan: the game stamps saves/profiles with the console's MAC. A stable fake works
      * (PPSSPP behaviour); low 2 bits of byte 0 must be clear (locally-administered/multicast
      * OUI bits confuse some games -- PPSSPP masks them too). */
@@ -26135,23 +26242,17 @@ void sr_hle_loadexec_reset_guest_state(void) {
     hle_audio_guest_reset();
     hle_sas_guest_reset();
 
-    if (s_osk_current) (void)s_osk_current_clear();
+    osk_abandon_request();
     s_osk_status = OSK_NONE;
     s_osk_param = 0u;
     s_osk_field = 0;
     s_osk_request_open = 0;
-    s_osk_current = 0;
     s_osk_answer_count = 0;
     s_osk_repeat = NULL;
     s_osk_script_read = 0;
     memset(s_osk_answers, 0, sizeof(s_osk_answers));
     dialog_lock();
-    s_dlg_status = 0;
-    s_dlg_tick = 0;
-    s_dlg_param = 0u;
-    s_dlg_result = 0u;
-    s_dlg_work_started = s_dlg_work_done = 0u;
-    s_dlg_generation++;
+    utility_dialogs_reset_locked();
     dialog_unlock();
 
     s_uid = 0x110u;
