@@ -417,6 +417,25 @@ A file that covers both kana and Hangul, or neither, names no slot and is skippe
 
 Fonts must come only from your own device. The project provides no download links or third-party repositories. The import makes no network request, uses no key, and does no decryption, and it never uploads anything.
 
+#### Copying the fonts from your PSP
+
+The fonts are optional. Without them, games still run, and their text uses the project's own open fonts, which look different from the PSP's.
+
+The font files live in the PSP's system storage, `flash0:/font/`. They are plain files, not encrypted, but the PSP's official firmware doesn't show its system storage to a PC: on a PSP with official firmware only, there is no way to copy them yet. A PSP with custom firmware can show it as a read-only USB drive. These steps are for ARK (ARK-4 or ARK-5); the PSP only reads, and nothing on it changes:
+
+1. On the PSP, open **Settings > Custom Firmware Settings**.
+2. Set **USB Device** to **Flash 0**, and **USB Read-Only** to **On**.
+3. Connect the PSP to your PC with a USB cable, then open **Settings > USB Connection** and press **X**. A new drive appears on the PC. It holds the PSP's system files (folders such as `font`, `kd` and `vsh`), not your Memory Stick. If it shows your Memory Stick's folders (`PSP`, `ISO`) instead, end the connection and check step 2 again.
+4. On the PC, copy the drive's `font` folder to a folder of your own, for example `Documents\PSP fonts`. Copy only: don't delete, rename or add anything on that drive.
+5. On the PSP, press **O** to end the USB connection. In **Custom Firmware Settings**, set **USB Device** back to **Memory Stick**.
+6. In the player, open **Settings**, then **PSP FONTS**, choose **IMPORT FONTS FOLDER**, and pick the folder you copied. The page then says how many fonts it imported and lists where each font comes from.
+
+On PRO or LME custom firmware, the VSH menu (press **SELECT** in the XMB) has the same **USB DEVICE** setting: choose **Flash 0**, then follow steps 3 to 6, setting it back to **Memory Stick** afterwards.
+
+If no drive appears at all, a plugin that uses the USB port, such as PSPLink, is probably running. Turn it off in **Settings > Plugins**, restart the PSP, check step 2 again (after a restart **USB Device** can be back on **Memory Stick**), and repeat from step 3. Turn the plugin back on when you're done.
+
+You can copy the whole `font` folder. The import reads only the `.pgf` files in it: `gb3s1518.bwfon` and `imagefont.bin` are not read, and `arib.pgf` is listed as refused because no game font slot uses it. The sixteen Latin fonts (`ltn0.pgf` to `ltn15.pgf`), the Japanese font `jpn0.pgf` and the Korean font `kr0.pgf` are all used exactly, so all 18 game font slots come from your own PSP ([#1536](https://github.com/Jstar269/nakagawa-recomp/pull/1536)). If you imported fonts with an older build, import them again to pick up the Japanese and Korean ones.
+
 #### Importing fonts
 
 ```powershell
@@ -457,7 +476,7 @@ To verify that system fonts are in place:
 
 1. **CLI:** `python tools/nk_cli.py fonts status` prints Japanese and Korean status plus one line for each of the 16 Latin indices. A line names an exact import, same-size fallback, project fallback, legacy fallback, or missing file.
 2. **Player preflight (#300):** the `SYSTEM_FONTS` check is `OK` when every Japanese, Korean, and Latin registry index resolves to an imported or project font. It is `MISSING` when an index has no source, and its message includes the exact file or fallback for every Latin index. It is `INVALID` (issue #313) when the manifest is malformed or a listed file fails its check. Whenever a font is not your own import, the check's sentence in the player says which fonts in plain words (for example "the Japanese font, 10 of the 16 Latin fonts and the Korean font"), says that games asking for them get a stand-in font that looks different, or no font where nothing stands in, and points to the setup wizard; the check's message in the log keeps the exact file for every font ([#1300](https://github.com/Jstar269/nakagawa-recomp/issues/1300)).
-3. **Player setup wizard:** the **Fonts & System** step shows Japanese and Korean status and all 16 Latin indices, including each fallback, and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that step.
+3. **Player settings:** **Settings > PSP FONTS** shows the Japanese and Korean status and all 16 Latin indices, including each fallback, and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that page.
 
 ## 3. Build
 
@@ -473,7 +492,8 @@ verifies the presented framebuffer, builds the native player, and exercises its 
 route without private input. Use `mingw32-make --no-print-directory display-smoke` for
 the headless build/verification without opening a window. Generated C is split into a
 dynamic number of translation units based on the discovered function count and
-`FUNCS_PER_CHUNK`.
+`FUNCS_PER_CHUNK`, and on `CHUNK_TARGET_BYTES` when it is set (package builds set it to
+4,000,000 bytes).
 
 For a validated local title manifest, use the manager so every title-derived value
 comes from that manifest:
@@ -540,13 +560,14 @@ the finished package to the destination. If neither fallback is available, or if
 characters that Make recipes cannot quote, the route stops with the named `PACKAGE_UNSUPPORTED_PATH`
 boundary tracked by #296.
 
-`assets/titles/hst-ucus98701.json` is the local HST title manifest (intentionally never checked in; publication-excluded with a `.gitignore` accident guard): it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. Its contents are not published; see [`assets/titles/README.md`](../assets/titles/README.md).
+`assets/titles/hst-ucus98701.json` is the HST title manifest, part of the repository since 2026-10-27: it carries HST's guest-address runtime bindings, and a `GAME_NAME=hst` build refuses to compile without it rather than silently producing a runtime with every title binding disabled. See [`assets/titles/README.md`](../assets/titles/README.md).
 
-The local manifest must also declare its build name (`"game_name": "hst"`). Generic launch
-resolution (issue #366) derives every runtime and image path from validated title identity only:
-an HST session reaches `build/hst/hst[.exe]` because HST's own manifest says so, never because a
-launcher defaults to it. A manifest without `game_name` fails closed with a missing-runtime error
-instead of inheriting another title's build.
+The manifest declares no `game_name`, so its build name is derived from its id
+(`hst-ucus98701`); the manager's HST commands pass `-GameName hst`. Generic launch
+resolution (issue #366) derives every runtime and image path from validated title identity only,
+never from a launcher default: a developer runtime is found only under the build name the
+manifest gives, and a missing one fails closed with a missing-runtime error instead of inheriting
+another title's build.
 
 The requirement is enforced incrementally, not only on a clean tree: the generated title-config
 header is keyed to a content-addressed identity of the effective configuration, so dropping
@@ -711,6 +732,16 @@ date in `assets/pypi_tool_metadata_*.json`. `tools/requirements-lock.txt` contai
 build-generation tools; the consumer `build-package` path needs no third-party
 Python packages, and `glslc` is only used by opt-in shader regeneration.
 
+Each artifact also names its corresponding source in the manifest's `sources` list: the MSYS2
+source package (`*.src.tar.zst`) of its pkgbase at the same version, or the CPython source
+release, pinned by URL, size and SHA-256 ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)).
+The CPython entry also names the source releases of the libraries built into its runtime
+(`bundled_sources`), and `source_notices` copies licence files out of the pinned sources for the
+packages whose binaries carry none. The player never downloads them. A release publishes them as one archive next to its zip, and
+the zip's bundled build tools leave out the GFDL-licensed manuals in `share/doc`, `share/info`
+and `share/man` while keeping every licence file; the policy is in
+[`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md#bundled-prerequisite-licensing-policy).
+
 Downloaded tools, verified archives, and extracted licence texts live under the
 current user's Nakagawa data folder in `prerequisites/`. **Settings → About &
 Licenses** lists installed components, versions, and licence identifiers and
@@ -748,7 +779,17 @@ download ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)).
 There is no update check, telemetry or crash upload. The `network_mode` entry in
 `settings.json` is reserved and always reads `"offline"`; a build treats any other value as
 offline. `tools/test_prereq_fetcher.py` fails if shipped code outside the two
-prerequisite downloaders uses a network API.
+prerequisite downloaders uses a network API, or if a pinned download names a host not listed
+in this section.
+
+Release packaging is a maintainer step, not part of the player:
+`python -m tools.nk_core.prereq_fetcher` with `--bundle-dest` or `--source-archive` downloads
+the same pinned archives and their source files to build a release
+([`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md#recreate-the-package)). It uses the two hosts in
+the table and, for the source releases of the libraries built into the CPython runtime, also
+`github.com` (whose downloads redirect to `release-assets.githubusercontent.com` and
+`codeload.github.com`), `www.sqlite.org`, `sourceware.org` and `www.bytereef.org`. The player
+never passes those options.
 
 ### Build lifecycle and cleanup targets
 

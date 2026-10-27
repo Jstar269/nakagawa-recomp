@@ -967,6 +967,8 @@ int player_app_focus_count(const PlayerApp *app) {
                    (app->settings.developer_mode ? 1 : 0) + 1;
         case VIEW_DEVELOPER_LOG:
             return 3; /* copy, save, close */
+        case VIEW_PSP_FONTS:
+            return 3; /* import, remove, back */
         case VIEW_CONTROLLER_SETTINGS:
             if (input_settings_is_calibrating(&app->input_settings)) {
                 switch (input_settings_get_calibration_stage(&app->input_settings)) {
@@ -1521,6 +1523,36 @@ void player_app_note_close_confirmation_failure(PlayerApp *app) {
 bool player_app_take_close_confirmation_fallback(PlayerApp *app) {
     if (!app || !app->close_confirmation_pending) return false;
     app->close_confirmation_pending = false;
+    return true;
+}
+
+bool player_app_quit_confirmation_message(const PlayerApp *app, char *out,
+                                          size_t out_size) {
+    if (!out || out_size == 0) return false;
+    /* A disc title may carry line breaks or tabs; the box shows the name on
+       one line, with each run of them folded to a single space. */
+    char name[NK_MAX_TITLE_LEN];
+    size_t length = 0;
+    if (app) {
+        const char *title = app->launch_session.game_title;
+        bool pending_space = false;
+        for (size_t i = 0; i < sizeof(app->launch_session.game_title) && title[i]; ++i) {
+            unsigned char ch = (unsigned char)title[i];
+            if (ch <= 0x20 || ch == 0x7F) {
+                pending_space = length > 0;
+                continue;
+            }
+            if (pending_space && length + 1 < sizeof(name)) name[length++] = ' ';
+            pending_space = false;
+            if (length + 1 < sizeof(name)) name[length++] = (char)ch;
+        }
+    }
+    name[length] = '\0';
+    /* Two lines: on one, the box grows as wide as the sentence. */
+    snprintf(out, out_size,
+             "%s is still running.\nQuitting closes it, and anything since the "
+             "game's last save is lost.",
+             length > 0 ? name : "A game");
     return true;
 }
 
@@ -2486,7 +2518,7 @@ void player_app_populate_sample_games(PlayerApp *app) {
     memset(&p5, 0, sizeof(p5));
     p5.is_sample = true;
     snprintf(p5.disc_id, sizeof(p5.disc_id), "TEST00005");
-    snprintf(p5.title_name, sizeof(p5.title_name), "PSPDEV Phase 5 Source-Owned Fixture");
+    snprintf(p5.title_name, sizeof(p5.title_name), "Nakagawa Test Program");
     snprintf(p5.disc_version, sizeof(p5.disc_version), "1.00");
     snprintf(p5.iso_path, sizeof(p5.iso_path), "fixtures/pspdev_phase5/disc/game.iso");
     snprintf(p5.prepared_root, sizeof(p5.prepared_root), "fixtures/pspdev_phase5");
@@ -4243,7 +4275,7 @@ const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
                    "setup wizard.";
         }
         return "Some PSP system fonts were not found, so some text may look different. "
-               "You can import your own fonts in the setup wizard.";
+               "You can import your PSP's own fonts in Settings, PSP fonts.";
     } else if (strcmp(check->code, "AUDIO_OUTPUT") == 0) {
         return "Sound plays through your default audio device. With no device, the game "
                "runs silently.";

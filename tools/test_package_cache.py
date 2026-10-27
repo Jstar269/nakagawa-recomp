@@ -1139,7 +1139,7 @@ class PackageCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             user_root = Path(tmp).resolve()
             cache_dir = user_root / "cache"
-            entry_package = cache_dir / "entries" / "a" / "b" / "package"
+            entry_package = cache_dir / "entries" / ("a" * 16) / "package"
             entry_package.mkdir(parents=True)
             (entry_package / "package.json").write_text("{}", encoding="utf-8")
             target_dir = user_root / "packages" / "ABCD12345"
@@ -1314,13 +1314,32 @@ class PackageCacheTests(unittest.TestCase):
                 self.assertEqual(nk_cli.cmd_build_package(args), 0)
             build.assert_called_once()
 
+    def test_cache_entry_paths_fit_a_default_windows_install(self) -> None:
+        """Walkthrough blocker #4: the deepest cache path stays under MAX_PATH.
+
+        A 32-character user name under AppData, the longest disc ID, and the
+        longest name a package build writes inside an entry
+        (.build-package-XXXXXXXX/.title-config-<64 hex>)."""
+        # Joined from parts: tracked files name no real user-profile root (test_workspace_paths, #368).
+        user_root = "\\".join(("C:", "Users", "u" * 32, "AppData", "Local", "Nakagawa", "data"))
+        key = {"aot": {"digest": "a" * 64}, "native": {"digest": "b" * 64}}
+        entry = package_cache.cache_entry_root(
+            "\\".join((user_root, "cache", "packages", "UCUS98701")), key)
+        deepest = str(entry) + "\\.build-package-xxxxxxxx\\.title-config-" + "c" * 64
+        self.assertLess(len(deepest), 240, deepest)
+        self.assertEqual(entry.name, package_cache.cache_entry_key(key))
+        self.assertEqual(len(entry.name), 16)
+        other = {"aot": {"digest": "a" * 64}, "native": {"digest": "c" * 64}}
+        self.assertNotEqual(package_cache.cache_entry_key(other), entry.name)
+
     def test_cache_cleanup_is_bounded_and_preserves_protected_entry(self) -> None:
         cache_root = package_cache.cache_root(self.root / "user-data", "TEST00001")
         entries_root = cache_root / "entries"
-        aot_root = entries_root / ("a" * 64)
+        legacy = entries_root / ("a" * 64) / ("1" * 64) / "package"
+        legacy.mkdir(parents=True)
         entries = []
-        for index, digest in enumerate(("1" * 64, "2" * 64, "3" * 64)):
-            entry = aot_root / digest
+        for index, key in enumerate(("1" * 16, "2" * 16, "3" * 16)):
+            entry = entries_root / key
             (entry / "package").mkdir(parents=True)
             os.utime(entry, (index + 1, index + 1))
             entries.append(entry)
@@ -1334,6 +1353,8 @@ class PackageCacheTests(unittest.TestCase):
         self.assertTrue(entries[0].is_dir())
         self.assertFalse(entries[1].is_dir())
         self.assertTrue(entries[2].is_dir())
+        self.assertFalse((entries_root / ("a" * 64)).exists(),
+                         "the old two-level layout is dropped")
         with self.assertRaises(package_cache.PackageCacheError):
             package_cache.cache_entry_limit({package_cache.CACHE_LIMIT_ENV: "0"})
 
@@ -1925,6 +1946,76 @@ class PackageOptimizationTests(unittest.TestCase):
                 self.assertEqual(cli_flags, planner_flags)
                 self.assertTrue(cli_flags.startswith("|-O2|"), cli_flags)
                 self.assertIn(f"|{recomp}|", cli_flags)
+
+
+class PackageChunkingTests(unittest.TestCase):
+    """A package build chunks generated C by size unless the caller sets a target (#1296),
+    and both package routes name that target in the cache key."""
+
+    def test_default_and_a_caller_set_value(self):
+        self.assertEqual(package_cache.package_chunking({}), {"CHUNK_TARGET_BYTES": "4000000"})
+        self.assertEqual(package_cache.package_chunking({"CHUNK_TARGET_BYTES": ""}),
+                         {"CHUNK_TARGET_BYTES": "4000000"})
+        self.assertEqual(package_cache.package_chunking({"CHUNK_TARGET_BYTES": "123456"}),
+                         {"CHUNK_TARGET_BYTES": "123456"})
+
+    def test_planner_and_player_keys_name_the_package_chunking(self):
+        manifest = {
+            "executable": {"base": 0x08804000, "entry": 0x08804100},
+            "codegen_profile": "hst",
+        }
+        plan = {
+            "environment": {
+                "GAME_BASE": "0x08804000", "GAME_ENTRY": "0x08804100", "TITLE_EXTRA_SPANS": "",
+            },
+            "codegen_profile": "hst",
+        }
+        for environment, expected in (({}, "4000000"), ({"CHUNK_TARGET_BYTES": "123456"}, "123456")):
+            with self.subTest(environment=environment):
+                captured = []
+                with mock.patch.object(
+                    package_cache, "build_cache_key",
+                    side_effect=lambda sink=captured, **kwargs: sink.append(kwargs) or {},
+                ), mock.patch.object(
+                    package_cache, "compiler_identity", return_value="synthetic-compiler"
+                ), mock.patch.object(
+                    package_cache, "compiler_target", return_value="synthetic-target"
+                ), mock.patch.dict(os.environ, environment, clear=True), mock.patch.object(
+                    nk_cli, "_runtime_build_environment", side_effect=lambda **_: dict(os.environ)
+                ), tempfile.TemporaryDirectory(prefix="package_chunks_") as temp_dir:
+                    manifest_path = Path(temp_dir) / "synthetic.json"
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    nk_cli._current_package_cache_key(
+                        manifest, manifest_path, "1" * 64, None, None, {}, public_safe=True,
+                    )
+                    title_codegen_plan._cache_key_for_build(
+                        input_hashes={}, title_input_identity={}, plan=plan,
+                        selected_optional=set(), funcs_per_chunk=2000, public_safe=True,
+                        compiler_name="gcc",
+                    )
+                cli_options, planner_options = (call["codegen_options"] for call in captured)
+                self.assertEqual(cli_options["chunk_target_bytes"], expected)
+                self.assertEqual(planner_options["chunk_target_bytes"], expected)
+
+    def test_both_option_builders_name_the_chunk_target_identically(self):
+        """Any caller of either builder gets the target codegen uses, not only the key routes."""
+        manifest = {"executable": {"base": 0x08804000, "entry": 0x08804100}, "codegen_profile": "hst"}
+        plan = {
+            "environment": {
+                "GAME_BASE": "0x08804000", "GAME_ENTRY": "0x08804100", "TITLE_EXTRA_SPANS": "",
+            },
+            "codegen_profile": "hst",
+        }
+        for environment, expected in (({}, "4000000"), ({"CHUNK_TARGET_BYTES": ""}, "4000000"),
+                                      ({"CHUNK_TARGET_BYTES": "123456"}, "123456")):
+            with self.subTest(environment=environment):
+                cli = nk_cli._package_codegen_options(manifest, environment)
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    planner = title_codegen_plan._cache_codegen_options(
+                        plan, selected_optional=set(), funcs_per_chunk=2000
+                    )
+                self.assertEqual(cli["chunk_target_bytes"], expected)
+                self.assertEqual(planner["chunk_target_bytes"], expected)
 
 
 class DecryptedElfRefusalTests(unittest.TestCase):

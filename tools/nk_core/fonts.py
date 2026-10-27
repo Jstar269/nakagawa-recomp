@@ -165,6 +165,8 @@ class _Image:
         self.metric_counts = [0] * TABLE_COUNT
         self.metric_offsets = [0] * TABLE_COUNT
         self.shadow_map_offset = 0
+        self.subcharmap_offset = 0
+        self.subcharmap_count = 0
         self.char_map_offset = 0
         self.char_pointer_offset = 0
         self.glyph_data_offset = 0
@@ -253,16 +255,30 @@ class _Image:
             self.metric_offsets[i] = add_section(self.metric_counts[i] * 8)
         self.shadow_map_offset = add_section(_packed_size(shadow_count, shadow_bits))
         if header_size == REV3_HEADER_SIZE:
-            add_section(rev3_a * 4)
+            self.subcharmap_offset = add_section(rev3_a * 4)
             add_section(rev3_b * 4)
+            self.subcharmap_count = rev3_a
         self.char_map_offset = add_section(_packed_size(self.char_map_count, char_map_bits))
         self.char_pointer_offset = add_section(_packed_size(pointer_count, pointer_bits))
         self.glyph_data_offset = cursor
 
     # Map, pointers, metrics -----------------------------------------------------------
+    def map_index(self, code: int) -> Optional[int]:
+        """The character-map index of a code, as pgf_map_index computes it (PGF_SPEC.md 3.2)."""
+        if self.subcharmap_count == 0:
+            return code - self.first_glyph if code >= self.first_glyph else None
+        base = 0
+        for i in range(self.subcharmap_count):
+            start = _u16(self.data, self.subcharmap_offset + i * 4)
+            length = _u16(self.data, self.subcharmap_offset + i * 4 + 2)
+            if start <= code < start + length:
+                return base + code - start
+            base += length
+        return None
+
     def map_entry(self, code: int) -> Optional[int]:
-        index = code - self.first_glyph
-        if index < 0 or index >= self.char_map_count:
+        index = self.map_index(code)
+        if index is None or index >= self.char_map_count:
             return None
         span = self.size - self.char_map_offset
         value = _get_bits(self.data, self.char_map_offset, span, index * self.char_map_bits, self.char_map_bits)
@@ -286,9 +302,9 @@ class _Image:
     def table_pair(self, table: int, index: int) -> Optional[Tuple[int, int]]:
         if table >= TABLE_COUNT:
             return None
-        if index == METRIC_MISSING_INDEX and self.metric_counts[table] == METRIC_MISSING_INDEX:
-            # Project decision, unmeasured on PSP: accept 255/255 as a zero pair without
-            # forming a table read; the count has no entry for index 255.
+        if index == METRIC_MISSING_INDEX:
+            # Index 255 is "no entry" whatever the table's count; console font files use it in
+            # shorter tables. The zero pair is a project decision, unmeasured on PSP.
             return (0, 0)
         if index >= self.metric_counts[table]:
             return None
@@ -318,9 +334,13 @@ class _Image:
         adjust_x = bits(28, 7)
         adjust_y = bits(35, 7)
         row_order = bits(42, 2)
-        flags = bits(45, 3)
+        # Bits 44-47: dimension, X, Y and advance groups, 1 = table index, 0 = inline pair; an
+        # inline advance (bit 47 clear) is unmeasured and refused (pgf_primary_glyph).
+        flags = bits(44, 4)
         shadow_id = bits(55, 9)
         if None in (shadow_offset, width, height, adjust_x, adjust_y, row_order, flags, shadow_id):
+            return None
+        if not flags & 8:
             return None
 
         cursor = absolute + 8
@@ -378,7 +398,12 @@ class _Image:
             pos = self.shadow_map_offset + (glyph["shadow_id"] - 1) * 2
             shadow_code = _u16(self.data, pos)
             if self.map_entry(shadow_code) is None:
-                return None
+                # A shadow entry naming character 0, absent from the map, names no shadow glyph;
+                # any other unmapped code is refused (pgf_checked_glyph).
+                if shadow_code != 0:
+                    return None
+                glyph["shadow_row_order"] = 0
+                return self._finish(glyph, allow_composite)
             if glyph["shadow_offset"] < glyph["record_size"]:
                 return None
             target = glyph["record_offset"] + glyph["shadow_offset"]
@@ -395,6 +420,9 @@ class _Image:
                 if shadow_row is None:
                     return None
             glyph["shadow_row_order"] = shadow_row
+        return self._finish(glyph, allow_composite)
+
+    def _finish(self, glyph: Dict[str, Any], allow_composite: bool) -> Optional[Dict[str, Any]]:
         if glyph["row_order"] != 3:
             return glyph
         if not allow_composite:
@@ -404,16 +432,23 @@ class _Image:
     def resolve_composite(self, glyph: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if glyph["bitmap_offset"] > self.size or self.size - glyph["bitmap_offset"] < COMPOSITE_PARTS * 2:
             return None
+        present = 0
         for part in range(COMPOSITE_PARTS):
             code = _u16(self.data, glyph["bitmap_offset"] + part * 2)
             component_id = self.map_entry(code)
             if component_id is None:
-                return None
+                # A code 0 the map does not hold names no component (pgf_resolve_composite).
+                if code != 0:
+                    return None
+                continue
             component = self.checked_glyph(component_id, False)
             if component is None:
                 return None
             if component["row_order"] not in (1, 2) or component["width"] == 0 or component["height"] == 0:
                 return None
+            present += 1
+        if present == 0:
+            return None
         glyph["composite"] = 1
         return glyph
 
@@ -720,7 +755,7 @@ def slot_states(
         if status == "OK" and slot in entries:
             ok, why = _check_slot_file(cdir, slot, entries[slot])
             if ok:
-                states[slot] = {"source": "user", "detail": f"{role}: imported from your PSP."}
+                states[slot] = {"source": "user", "detail": f"{role}: your imported font."}
                 continue
             reason = why
         elif status == "INVALID":

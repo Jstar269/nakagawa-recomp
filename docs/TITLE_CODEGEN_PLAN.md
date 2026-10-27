@@ -133,7 +133,7 @@ Current fail-closed limits are deliberate:
 - only the generator's current `hst` and `none` profile choices are accepted.
 
 The manager adapter is deliberately fail-closed: this slice accepts only the
-local HST retail manifest (publication-excluded, never checked in) for HST manager actions, and it rejects unsupported plan
+HST manifest (`assets/titles/hst-ucus98701.json`) for HST manager actions, and it rejects unsupported plan
 versions, unknown plan fields, malformed digests, projections that disagree with
 the plan's semantics, a manifest that changed after planning, missing required
 private bindings, and unsupported span/profile configurations before Make runs.
@@ -394,13 +394,10 @@ role global or accessor directly.
 
 ### HST
 
-HST's real values live only in the local `assets/titles/hst-ucus98701.json` —
-intentionally never checked in and publication-excluded via
-`assets/public_source_profile.json`, with an explicit `.gitignore` accident
-guard (see the titles README)
-and reach the build through `nk_manager.ps1 -TitleManifest` (or `TITLE_MANIFEST=` on a
+HST's real values live only in `assets/titles/hst-ucus98701.json` (see the
+titles README) and reach the build through `nk_manager.ps1 -TitleManifest` (or `TITLE_MANIFEST=` on a
 direct Make line). They are deliberately not encoded in the `Makefile`, in `src/rt`, or
-in any checked-in manifest.
+in any other checked-in manifest.
 
 A build that explicitly identifies itself as HST (`GAME_NAME=hst`) but supplies no
 `TITLE_MANIFEST` **fails closed** with an actionable message rather than producing an HST

@@ -70,6 +70,12 @@ PACKAGE_BUILD_MAX_JOBS = 8
 #: Memory one compile job may need: one cc1 compiling a large generated chunk peaked
 #: at about 2.9 GB working set on the measured Hot Shots Tennis build.
 PACKAGE_BUILD_JOB_BYTES = 3 * 1024**3
+#: With size-bounded chunks (``CHUNK_TARGET_BYTES``) a job needs memory in proportion to
+#: the chunk size: Hot Shots Tennis chunks of at most 4 MB of C peaked at 440 MB at -O1, so
+#: a job is given 256 bytes per byte of chunk target (about 1 GiB for 4 MB), no less than
+#: PACKAGE_BUILD_MIN_JOB_BYTES and no more than PACKAGE_BUILD_JOB_BYTES.
+PACKAGE_BUILD_JOB_BYTES_PER_CHUNK_BYTE = 256
+PACKAGE_BUILD_MIN_JOB_BYTES = 1024**3
 #: Memory left for the player, the OS and everything else while a package builds.
 PACKAGE_BUILD_RESERVED_BYTES = 4 * 1024**3
 #: Overrides the computed job count (still clamped to 1..PACKAGE_BUILD_MAX_JOBS).
@@ -147,11 +153,30 @@ def available_physical_memory() -> int | None:
         return None
 
 
+def package_job_bytes(chunk_target_bytes: str | None) -> int:
+    """Memory to allow one compile job, from the build's ``CHUNK_TARGET_BYTES``.
+
+    No chunk target (count-based chunks, whose largest is unbounded) keeps the measured
+    worst case, ``PACKAGE_BUILD_JOB_BYTES``.
+    """
+    try:
+        target = int(str(chunk_target_bytes or "").strip())
+    except ValueError:
+        return PACKAGE_BUILD_JOB_BYTES
+    if target <= 0:
+        return PACKAGE_BUILD_JOB_BYTES
+    return max(
+        PACKAGE_BUILD_MIN_JOB_BYTES,
+        min(PACKAGE_BUILD_JOB_BYTES, target * PACKAGE_BUILD_JOB_BYTES_PER_CHUNK_BYTE),
+    )
+
+
 def package_build_jobs(
     *,
     cpu_count: int | None,
     available_bytes: int | None,
     override: str | None = None,
+    job_bytes: int = PACKAGE_BUILD_JOB_BYTES,
 ) -> tuple[int, str]:
     """Choose the Make job count for a package build and say why.
 
@@ -159,8 +184,9 @@ def package_build_jobs(
     translated game code: one cc1 compiling such a chunk peaked at about 2.9 GB, and the
     whole toolchain at about 3.1 GB at ``-j2``. Running out of memory would page or fail
     the build, so the count is what the available physical memory allows after keeping
-    ``PACKAGE_BUILD_RESERVED_BYTES`` for everything else, at
-    ``PACKAGE_BUILD_JOB_BYTES`` per job, bounded by the logical CPUs and by
+    ``PACKAGE_BUILD_RESERVED_BYTES`` for everything else, at ``job_bytes`` per job
+    (``package_job_bytes``; ``PACKAGE_BUILD_JOB_BYTES`` for count-based chunks), bounded by
+    the logical CPUs and by
     ``PACKAGE_BUILD_MAX_JOBS``, and never below one job. Unknown memory keeps the
     earlier fixed count of two. ``override`` (``NK_PACKAGE_JOBS``) replaces the computed
     count but is still clamped to the same range.
@@ -180,7 +206,7 @@ def package_build_jobs(
     if available_bytes is None:
         jobs = max(1, min(cpus, 2, PACKAGE_BUILD_MAX_JOBS))
         return jobs, f"{cpus} logical CPUs, available memory unknown{override_note}"
-    by_memory = (available_bytes - PACKAGE_BUILD_RESERVED_BYTES) // PACKAGE_BUILD_JOB_BYTES
+    by_memory = (available_bytes - PACKAGE_BUILD_RESERVED_BYTES) // max(1, job_bytes)
     jobs = max(1, min(cpus, by_memory, PACKAGE_BUILD_MAX_JOBS))
     return jobs, (
         f"{cpus} logical CPUs, {available_bytes / 1024**3:.1f} GB memory available"
@@ -199,11 +225,12 @@ def object_key_workers(cpu_count: int | None) -> int:
     return max(1, min(cpus, OBJECT_KEY_MAX_WORKERS))
 
 
-def _host_package_build_jobs() -> tuple[int, str]:
+def _host_package_build_jobs(chunk_target_bytes: str | None = None) -> tuple[int, str]:
     return package_build_jobs(
         cpu_count=os.process_cpu_count(),
         available_bytes=available_physical_memory(),
         override=os.environ.get(PACKAGE_BUILD_JOBS_ENV),
+        job_bytes=package_job_bytes(chunk_target_bytes),
     )
 
 
@@ -1493,7 +1520,9 @@ def _cache_codegen_options(
         "stale_code_policy": os.environ.get(
             "STALE_CODE_POLICY", os.environ.get("SR_STALE_POLICY", "")
         ),
-        "chunk_target_bytes": os.environ.get("CHUNK_TARGET_BYTES", ""),
+        # Codegen chunks a package by size unless the caller chose otherwise; the key
+        # names the target it really used.
+        "chunk_target_bytes": package_cache.package_chunking()["CHUNK_TARGET_BYTES"],
     }
     # Mirrors nk_cli._package_codegen_options: the Makefile adds --nan-trap itself, so the
     # options name it only when it is on, leaving untrapped keys unchanged.
@@ -2052,6 +2081,8 @@ def build_package(
         build_environment.update(
             package_cache.package_optimization(plan["codegen_profile"], build_environment)
         )
+        # The chunking the cache key above names is what codegen writes.
+        build_environment.update(package_cache.package_chunking(build_environment))
         build_environment.update({
             "PYTHON": python_command,
             "GAME_NAME": selected_name,
@@ -2075,7 +2106,9 @@ def build_package(
             "PUBLIC_SAFE": "1",
             "NK_AOT_PREGENERATED": "1" if pregenerated else "0",
         })
-        build_jobs, build_jobs_reason = _host_package_build_jobs()
+        build_jobs, build_jobs_reason = _host_package_build_jobs(
+            build_environment["CHUNK_TARGET_BYTES"]
+        )
         print(f"PACKAGE_BUILD_JOBS: {build_jobs} ({build_jobs_reason})", flush=True)
         progress_text = os.environ.get(COMPILE_PROGRESS_FILE_ENV, "")
         progress_file = Path(progress_text) if progress_text else None

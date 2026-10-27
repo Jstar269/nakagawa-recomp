@@ -208,9 +208,9 @@ is complete. These exclusions are enforced by
 reject the capability and do not fabricate fonts, disc reads, playback, keys, or
 success.
 
-The HST-specific title manifest and private engineering/review documents are also
-outside the active public source tree. Synthetic title manifests and generic schemas are
-retained; no game executable, extracted asset, save, key, capture, oracle trace,
+Private engineering/review documents are also outside the active public source tree. The
+HST title manifest (addresses only, no game data), synthetic title manifests and generic
+schemas are retained; no game executable, extracted asset, save, key, capture, oracle trace,
 or generated retail translation unit is part of the public source boundary.
 
 ## Attribution contract

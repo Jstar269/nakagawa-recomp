@@ -23,8 +23,9 @@ run on the development host and are never executed by `hst.exe` at runtime. For 
 4. **`mingw32-make GAME_NAME=<g> GAME_ELF=<elf> GAME_BASE=<b> GAME_ENTRY=<e> all`**
    Drives the two-phase pipeline and compile. Set `VULKAN_SDK` for direct Make invocations; the
    manager discovers and validates it automatically. Do not replace `all` with a single dependency
-   line: generated chunk discovery occurs in the second Make process. For HST, use
-   `.\nk_manager.ps1 -Action BuildFull -TitleManifest assets/titles/hst-ucus98701.json -GameName hst` from the repository root.
+   line: generated chunk discovery occurs in the second Make process. For a title with a local manifest, use
+   `.\nk_manager.ps1 -Action BuildFull -TitleManifest <manifest> -GameName <name>` from the repository root; the
+   maintainer's HST manifest (`assets/titles/hst-ucus98701.json`) is local and not in the repository.
 
 ## Gates
 
@@ -426,7 +427,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_app_icon.py` | The committed app icon is a fresh drawing of the brand SVG, the C drawer draws the same pixels, and the Windows builds link it. |
 | `test_stage_install.py` | The staged player install layout, its ownership guard, icon and shortcut. |
 | `test_prep_fail_closed.py` | Fail-closed preparation regressions. |
-| `test_prereq_fetcher.py` | No-network tests for the pinned prerequisite download and install path. |
+| `test_prereq_fetcher.py` | No-network tests for the pinned prerequisite download and install path, the release bundle and source archive, and the network egress allowlist. |
 | `test_profile_zero_e2e.py` | Manifest-driven production-route checks for the two profile-zero fixtures. |
 | `test_public_title_isolation.py` | Regression suite for public and private title isolation. |
 | `test_second_title_ingest.py` | Multi-title scalability: two distinct profiles ingest through one generic path. |

@@ -5210,6 +5210,9 @@ void ui_render_frame(SDL_Renderer *renderer, PlayerApp *app, const UiInput *inpu
         case VIEW_DEVELOPER_LOG:
             render_developer_log(renderer, app, input);
             break;
+        case VIEW_PSP_FONTS:
+            /* Drawn only by the nk_ui launcher. */
+            break;
         default:
             render_empty_library(renderer, app, input);
             break;

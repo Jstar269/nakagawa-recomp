@@ -51,7 +51,7 @@ static NkUiTextBackend screen_test_text_backend(void) {
 }
 
 static void set_test_viewport(NkUi *ui, int width, int height) {
-    NkUiViewport viewport = {width, height, 1.0f, 100, 100};
+    NkUiViewport viewport = {width, height, 1.0f, 100, 100, 0.0f, 0.0f};
     nk_ui_set_viewport(ui, &viewport);
 }
 
@@ -60,38 +60,77 @@ static const PlayerUiTitle k_titles[] = {
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false},
+     PLAYER_UI_TIER_PLAYABLE, false, false},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PLAYABLE, false},
+     PLAYER_UI_TIER_PLAYABLE, false, false},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "", "",
      "RETRY PACKAGE CHECK", "◆", 0x6CB6FFFFu,
      PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE, true},
+     PLAYER_UI_TIER_NONE, true, false},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "", "",
      "BUILD PACKAGE", "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE, true},
+     PLAYER_UI_TIER_NONE, true, false},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_WONT_BOOT, true},
+     PLAYER_UI_TIER_WONT_BOOT, true, false},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PERFECT, true},
+     PLAYER_UI_TIER_PERFECT, true, false},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PERFECT, true}
+     PLAYER_UI_TIER_PERFECT, true, false}
+};
+
+/* A library with the demos that come with Nakagawa among the user's games, in
+   the order the player keeps them: demos at 0 and 2, games at 1 and 3. */
+static const PlayerUiTitle k_demo_titles[] = {
+    {"Synthetic Breakout Demo", "TEST00008", "Ready", "",
+     "Plays a synthetic game with sound.", "", NULL, "", "", "",
+     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PLAYABLE, false, true},
+    {"Synthetic Title Two", "TEST00002", "Needs setup", "",
+     "Source-owned runtime fixture.", "", NULL, "", "", "",
+     "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
+     PLAYER_UI_TIER_PERFECT, true, false},
+    {"Synthetic Scene Demo", "TEST00007", "Ready", "",
+     "Shows a synthetic cube with sound.", "", NULL, "", "", "",
+     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PLAYABLE, false, true},
+    {"Synthetic Profile", "TEST00001", "Ready", "",
+     "Source-owned runtime fixture.", "", NULL, "", "", "",
+     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PERFECT, true, false}
+};
+
+/* The demos alone: a first start with nothing added yet. */
+static const PlayerUiTitle k_demo_only_titles[] = {
+    {"Synthetic Breakout Demo", "TEST00008", "Ready", "",
+     "Plays a synthetic game with sound.", "", NULL, "", "", "",
+     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PLAYABLE, false, true},
+    {"Synthetic Scene Demo", "TEST00007", "Ready", "",
+     "Shows a synthetic cube with sound.", "", NULL, "", "", "",
+     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PLAYABLE, false, true}
 };
 
 /* What-to-expect cards: a player tier with plain words, with known issues, the
@@ -128,10 +167,14 @@ typedef enum { FLOW_NONE = 0, FLOW_BUILD, FLOW_BUILT, FLOW_BUILD_PARTS, FLOW_CON
                FLOW_WIZ_COPY_FAILED, FLOW_ERROR_STOP, FLOW_DISC_CHECKING, FLOW_DISC_SUPPORTED,
                FLOW_DISC_UNTESTED, FLOW_DISC_FONTS, FLOW_DISC_BLOCKED, FLOW_DISC_UNSUPPORTED,
                FLOW_SETTINGS, FLOW_SETTINGS_ONLINE, FLOW_SETTINGS_NOTICES,
-               FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_CONTROLLER,
+               FLOW_SETTINGS_REMOVE, FLOW_SETTINGS_BUILD_CACHE, FLOW_SETTINGS_FONTS,
+               FLOW_CONTROLLER,
                FLOW_CONTROLLER_GAME, FLOW_CONTROLLER_KEYS,
                FLOW_CALIBRATE_REST, FLOW_CALIBRATE_EXTREMES, FLOW_CALIBRATE_RESULT,
-               FLOW_DEVLOG, FLOW_DEVLOG_EMPTY } FlowCase;
+               FLOW_DEVLOG, FLOW_DEVLOG_EMPTY,
+               /* Whole pages for the window-fit sweep only. */
+               FLOW_PAGE_LIBRARY, FLOW_PAGE_TITLE, FLOW_PAGE_ABOUT, FLOW_PAGE_REMOVE,
+               FLOW_CONSENT_FULL, FLOW_COUNT } FlowCase;
 
 /* The window size the game-found and Settings cases lay out for. */
 static float g_flow_width = 1280.0f;
@@ -210,6 +253,8 @@ static PlayerUiAction draw_disc_case(NkUi *ui, FlowCase which) {
     return player_ui_screen_disc(ui, &disc);
 }
 
+static const char *const k_font_lines[18];
+
 static const char *const k_settings_tools[] = {
     "synthetic-compiler 14.2 \xC2\xB7 GPL-3.0-or-later",
     "synthetic-headers 0.9 \xC2\xB7 licence review in the works"
@@ -222,6 +267,7 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
         : which == FLOW_SETTINGS_NOTICES ? PLAYER_UI_SETTINGS_PAGE_NOTICES
         : which == FLOW_SETTINGS_REMOVE ? PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS
         : which == FLOW_SETTINGS_BUILD_CACHE ? PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
+        : which == FLOW_SETTINGS_FONTS ? PLAYER_UI_SETTINGS_PAGE_FONTS
         : PLAYER_UI_SETTINGS_PAGE_MAIN;
     settings.resolution = "2x (960x544)";
     settings.pacing = "PSP timing";
@@ -235,6 +281,12 @@ static PlayerUiAction draw_settings_case(NkUi *ui, FlowCase which) {
     settings.share_system_libraries = true;
     if (which == FLOW_SETTINGS_BUILD_CACHE) {
         settings.notice = "Shared library cache cleared. The next build compiles its libraries again.";
+    }
+    if (which == FLOW_SETTINGS_FONTS) {
+        for (size_t i = 0u; i < sizeof(k_font_lines) / sizeof(k_font_lines[0]); ++i) {
+            settings.font_lines[settings.font_line_count++] = k_font_lines[i];
+        }
+        settings.font_message = "Imported 3 fonts from C:/synthetic/psp-fonts.";
     }
     settings.tools[0] = k_settings_tools[0];
     settings.tools[1] = k_settings_tools[1];
@@ -332,7 +384,7 @@ static PlayerUiAction draw_developer_log_case(NkUi *ui, FlowCase which) {
     return player_ui_screen_developer_log(ui, &log);
 }
 
-static const char *const k_font_lines[] = {
+static const char *const k_font_lines[18] = {
     "Japanese: synthetic fallback", "Latin 1: synthetic fallback",
     "Latin 2: synthetic fallback", "Latin 3: synthetic fallback",
     "Latin 4: synthetic fallback", "Latin 5: synthetic fallback",
@@ -348,8 +400,8 @@ static const char *const k_font_lines[] = {
 static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
     PlayerUiWizardModel wizard;
     memset(&wizard, 0, sizeof(wizard));
-    wizard.logical_width = 1280.0f;
-    wizard.logical_height = 800.0f;
+    wizard.logical_width = g_flow_width;
+    wizard.logical_height = g_flow_height;
     wizard.disc_id = "TEST00007";
     wizard.title_name = "Synthetic Showcase Scene";
     switch (which) {
@@ -436,6 +488,86 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
     }
     return player_ui_screen_wizard(ui, &wizard);
 }
+/* The build tool consent with as many items as a clean PC downloads. */
+static PlayerUiPrereqItem g_full_prereqs[35];
+
+/* Whole pages at the sweep's window size: the Library with a page of cards,
+   a title page, About, and the remove dialog. */
+static PlayerUiAction draw_page_case(NkUi *ui, FlowCase which) {
+    PlayerUiAction none = {PLAYER_UI_ACTION_NONE, PLAYER_UI_PRIMARY_NONE, 0u};
+    if (which == FLOW_PAGE_LIBRARY) {
+        PlayerUiLibraryModel library;
+        memset(&library, 0, sizeof(library));
+        library.page_size = player_ui_library_page_size(g_flow_width, g_flow_height,
+                                                        &library.columns);
+        library.logical_width = g_flow_width;
+        library.logical_height = g_flow_height;
+        library.titles = k_titles;
+        library.title_count = sizeof(k_titles) / sizeof(k_titles[0]);
+        library.page_label = "Page 1 of 2";
+        return player_ui_screen_library(ui, &library);
+    }
+    if (which == FLOW_PAGE_TITLE) {
+        static PlayerUiTitle fixture;
+        PlayerUiTitleModel title;
+        fixture = k_titles[0];
+        fixture.compatibility_tier = k_compatibility_cases[1].tier;
+        fixture.compatibility_expect = k_compatibility_cases[1].expect;
+        fixture.compatibility_known_issues = k_compatibility_cases[1].known_issues;
+        memset(&title, 0, sizeof(title));
+        title.title = &fixture;
+        title.title_index = 0u;
+        title.logical_width = g_flow_width;
+        title.logical_height = g_flow_height;
+        return player_ui_screen_title(ui, &title);
+    }
+    if (which == FLOW_PAGE_ABOUT) {
+        static char line[64];
+        PlayerUiAboutModel about;
+        player_ui_version_line(NK_PLAYER_VERSION, 1792713600LL, line, sizeof(line));
+        memset(&about, 0, sizeof(about));
+        about.version_line = line;
+        about.build_commit = "0123abc";
+        about.logical_width = g_flow_width;
+        about.logical_height = g_flow_height;
+        return player_ui_screen_about(ui, &about);
+    }
+    if (which == FLOW_PAGE_REMOVE) {
+        static const PlayerUiRemoveItem items[] = {
+            {"Built package", 3u * 1024u * 1024u}, {"Build cache", 512u * 1024u},
+            {"Disc files Nakagawa copied", 40u * 1024u * 1024u}
+        };
+        PlayerUiRemoveModel remove;
+        memset(&remove, 0, sizeof(remove));
+        remove.title = "Synthetic Untested Fixture";
+        remove.disc_id = "TEST00009";
+        remove.has_saves = true;
+        remove.saves_bytes = 2u * 1024u * 1024u;
+        remove.items = items;
+        remove.item_count = sizeof(items) / sizeof(items[0]);
+        remove.logical_width = g_flow_width;
+        remove.logical_height = g_flow_height;
+        return player_ui_screen_remove(ui, &remove);
+    }
+    if (which == FLOW_CONSENT_FULL) {
+        PlayerUiPrereqModel pre;
+        unsigned long long total = 0u;
+        for (size_t i = 0u; i < sizeof(g_full_prereqs) / sizeof(g_full_prereqs[0]); ++i) {
+            g_full_prereqs[i] = k_prereqs[i % 3u];
+            g_full_prereqs[i].name = "synthetic-ucrt-x86_64-toolchain-component-with-a-long-name";
+            total += g_full_prereqs[i].bytes;
+        }
+        memset(&pre, 0, sizeof(pre));
+        pre.items = g_full_prereqs;
+        pre.item_count = sizeof(g_full_prereqs) / sizeof(g_full_prereqs[0]);
+        pre.total_bytes = total;
+        pre.logical_width = g_flow_width;
+        pre.logical_height = g_flow_height;
+        return player_ui_screen_prereq(ui, &pre);
+    }
+    return none;
+}
+
 static FlowCase g_flow_case;
 
 static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
@@ -451,10 +583,11 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         error.recovery_label = "Return to Library";
         error.retry_label = "Restart game";
         error.copy_available = true;
-        error.logical_width = 1280.0f;
-        error.logical_height = 800.0f;
+        error.logical_width = g_flow_width;
+        error.logical_height = g_flow_height;
         return player_ui_screen_error(ui, &error);
     }
+    if (which >= FLOW_PAGE_LIBRARY) return draw_page_case(ui, which);
     if (which >= FLOW_DEVLOG) return draw_developer_log_case(ui, which);
     if (which >= FLOW_CONTROLLER) return draw_controller_case(ui, which);
     if (which >= FLOW_SETTINGS) return draw_settings_case(ui, which);
@@ -479,8 +612,8 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         build.lines[1] = "[compile] chunk 12 of 31";
         build.lines[2] = "[compile] chunk 13 of 31";
         build.line_count = 3u;
-        build.logical_width = 1280.0f;
-        build.logical_height = 800.0f;
+        build.logical_width = g_flow_width;
+        build.logical_height = g_flow_height;
         return player_ui_screen_build(ui, &build);
     }
     if (which == FLOW_CONSENT || which == FLOW_PROGRESS) {
@@ -494,8 +627,8 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         pre.item_received_bytes = 20971520ull;
         pre.item_total_bytes = 52428800ull;
         pre.total_received_bytes = 20971520ull;
-        pre.logical_width = 1280.0f;
-        pre.logical_height = 800.0f;
+        pre.logical_width = g_flow_width;
+        pre.logical_height = g_flow_height;
         return player_ui_screen_prereq(ui, &pre);
     }
     if (which == FLOW_ERROR) {
@@ -508,8 +641,8 @@ static PlayerUiAction draw_flow_case(NkUi *ui, FlowCase which) {
         error.details = "Synthetic details: a source-owned fixture error, shown as data.";
         error.log_path = "C:/synthetic/logs/build.log";
         error.recovery_label = "BACK TO LIBRARY";
-        error.logical_width = 1280.0f;
-        error.logical_height = 800.0f;
+        error.logical_width = g_flow_width;
+        error.logical_height = g_flow_height;
         return player_ui_screen_error(ui, &error);
     }
     return none;
@@ -757,8 +890,247 @@ static bool build_library_golden(char *out, size_t cap, size_t *used) {
         prefs.prompt_style = NK_UI_PROMPT_NEUTRAL;
         nk_ui_set_prefs(ui, &prefs);
     }
+    /* The demos that come with Nakagawa sit under TEST THIS PC: under the
+       first-start card while there are no games, under the grid once there are. */
+    nk_ui_focus(ui, 0u);
+    model.titles = k_demo_only_titles;
+    model.title_count = sizeof(k_demo_only_titles) / sizeof(k_demo_only_titles[0]);
+    model.page_label = NULL;
+    model.page_size = player_ui_library_page_size_with_demos(1280.0f, 800.0f, 2u,
+                                                             &model.columns);
+    if (!append_case(out, cap, used, "library-demos-no-games", ui, &model, NULL)) {
+        nk_ui_destroy(ui);
+        return false;
+    }
+    model.titles = k_demo_titles;
+    model.title_count = sizeof(k_demo_titles) / sizeof(k_demo_titles[0]);
+    nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(1u));
+    if (!append_case(out, cap, used, "library-demos-with-games", ui, &model, NULL)) {
+        nk_ui_destroy(ui);
+        return false;
+    }
     nk_ui_destroy(ui);
     return true;
+}
+
+/* Run one Library frame and return its dump (the draw list as text). */
+static const char *library_frame_dump(NkUi *ui, const PlayerUiLibraryModel *model,
+                                      PlayerUiAction *action_out) {
+    static char dump[CASE_DUMP_CAP];
+    PlayerUiAction action;
+    nk_ui_begin(ui, 0.0);
+    action = player_ui_screen_library(ui, model);
+    if (action_out != NULL) *action_out = action;
+    if (nk_ui_end(ui) == NULL) return "";
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    return dump;
+}
+
+static void push_nav(NkUi *ui, NkUiNavDir dir) {
+    NkUiEvent move;
+    memset(&move, 0, sizeof(move));
+    move.type = NK_UI_EV_NAV;
+    move.dir = dir;
+    nk_ui_push_event(ui, &move);
+}
+
+static bool focused_on_demo(const NkUi *ui, const PlayerUiTitle *titles, size_t count) {
+    for (size_t i = 0u; i < count; ++i) {
+        if (titles[i].is_demo && nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(i)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* TEST THIS PC: the demos that come with Nakagawa are listed apart from the
+   user's games, on the first-start screen and under the grid, and a controller
+   reaches them. */
+static void test_library_demos(void) {
+    NkUiConfig config;
+    NkUi *ui;
+    PlayerUiLibraryModel model;
+    PlayerUiAction action;
+    NkUiTextBackend text = screen_test_text_backend();
+    const char *dump;
+    size_t columns = 0u;
+    const size_t demo_count = sizeof(k_demo_titles) / sizeof(k_demo_titles[0]);
+
+    CHECK(player_ui_library_demo_count(k_demo_titles, demo_count) == 2u &&
+              player_ui_library_demo_count(k_titles, sizeof(k_titles) / sizeof(k_titles[0])) ==
+                  0u &&
+              player_ui_library_demo_count(NULL, 3u) == 0u,
+          "the Library counts the demos that come with Nakagawa");
+    CHECK(player_ui_library_grid_position(k_demo_titles, demo_count, 1u) == 0u &&
+              player_ui_library_grid_position(k_demo_titles, demo_count, 3u) == 1u &&
+              player_ui_library_grid_position(k_demo_titles, demo_count, 0u) == demo_count &&
+              player_ui_library_grid_position(k_demo_titles, demo_count, 2u) == demo_count &&
+              player_ui_library_grid_position(k_demo_titles, demo_count, 9u) == demo_count,
+          "a game's grid position skips the demos, and a demo has none");
+    CHECK(player_ui_library_page_size_with_demos(1280.0f, 800.0f, 0u, &columns) == 8u &&
+              columns == 4u,
+          "without demos a 1280x800 window keeps two rows of four cards");
+    CHECK(player_ui_library_page_size_with_demos(1280.0f, 800.0f, 2u, &columns) == 8u &&
+              columns == 4u,
+          "a 1280x800 window keeps two rows of four cards above TEST THIS PC");
+    CHECK(player_ui_library_page_size_with_demos(1280.0f, 720.0f, 0u, &columns) == 8u &&
+              player_ui_library_page_size_with_demos(1280.0f, 720.0f, 2u, &columns) == 4u &&
+              columns == 4u,
+          "at 1280x720, TEST THIS PC takes the room of the second grid row");
+    CHECK(player_ui_library_page_size_with_demos(1920.0f, 1080.0f, 2u, &columns) == 18u &&
+              columns == 6u,
+          "a 1920x1080 window keeps three rows of six cards above TEST THIS PC");
+    CHECK(player_ui_library_page_size_with_demos(960.0f, 540.0f, 2u, &columns) == 3u &&
+              columns == 3u,
+          "the 960x540 minimum keeps one row of three cards above TEST THIS PC");
+
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create a UI for the TEST THIS PC section");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    memset(&model, 0, sizeof(model));
+    model.logical_width = 1280.0f;
+    model.logical_height = 800.0f;
+
+    /* A first start with only the demos: the setup wizard is still offered and
+       is still the default focus, and the demos are listed under it. */
+    model.titles = k_demo_only_titles;
+    model.title_count = sizeof(k_demo_only_titles) / sizeof(k_demo_only_titles[0]);
+    model.page_size = player_ui_library_page_size_with_demos(1280.0f, 800.0f, 2u,
+                                                             &model.columns);
+    (void)library_frame_dump(ui, &model, NULL);
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD,
+          "with only demos, START SETUP WIZARD is the default focus");
+    CHECK(strstr(dump, "\"Add your first game\"") != NULL &&
+              strstr(dump, "\"No games yet\"") != NULL,
+          "with only demos, the Library still says there are no games yet");
+    CHECK(strstr(dump, "\"TEST THIS PC\"") != NULL &&
+              strstr(dump, "\"Synthetic Breakout Demo\"") != NULL &&
+              strstr(dump, "\"Synthetic Scene Demo\"") != NULL,
+          "the first-start screen lists the demos under TEST THIS PC");
+    CHECK(strstr(dump, "Play a demo that comes with Nakagawa") != NULL,
+          "TEST THIS PC says what the demos are for");
+    CHECK(strstr(dump, "SHOWCASE DEMO") == NULL && strstr(dump, "showcase demo") == NULL,
+          "the count line no longer counts showcase demos as titles");
+    push_nav(ui, NK_UI_DIR_DOWN);
+    (void)library_frame_dump(ui, &model, NULL);
+    CHECK(focused_on_demo(ui, model.titles, model.title_count),
+          "Down from the setup wizard reaches a demo");
+    {
+        NkUiId first_demo = nk_ui_focused(ui);
+        NkUiEvent activate;
+        memset(&activate, 0, sizeof(activate));
+        activate.type = NK_UI_EV_ACTIVATE;
+        activate.down = true;
+        nk_ui_push_event(ui, &activate);
+        (void)library_frame_dump(ui, &model, &action);
+        CHECK(action.kind == PLAYER_UI_ACTION_OPEN_TITLE &&
+                  PLAYER_UI_ID_LIBRARY_ITEM(action.title_index) == first_demo,
+              "a demo opens its own title page, where it plays as today");
+    }
+    push_nav(ui, NK_UI_DIR_UP);
+    (void)library_frame_dump(ui, &model, NULL);
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD ||
+              nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_EMPTY_ADD,
+          "Up from a demo returns to the first-start card");
+
+    /* With games: the grid holds only the games and the add card, and the
+       demos follow under TEST THIS PC. */
+    nk_ui_focus(ui, 0u);
+    model.titles = k_demo_titles;
+    model.title_count = demo_count;
+    model.page_size = player_ui_library_page_size_with_demos(1280.0f, 800.0f, 2u,
+                                                             &model.columns);
+    (void)library_frame_dump(ui, &model, NULL);
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(1u),
+          "the first game, not a demo, is the default focus");
+    CHECK(strstr(dump, "\"2 titles\"") != NULL,
+          "the count names the user's games only");
+    CHECK(strstr(dump, "\"Add your first game\"") == NULL &&
+              strstr(dump, "\"TEST THIS PC\"") != NULL,
+          "with games, the demos sit under the grid");
+    push_nav(ui, NK_UI_DIR_RIGHT);
+    (void)library_frame_dump(ui, &model, NULL);
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(3u),
+          "Right from the first game moves to the next game, past the demo between them");
+    push_nav(ui, NK_UI_DIR_DOWN);
+    (void)library_frame_dump(ui, &model, NULL);
+    CHECK(focused_on_demo(ui, model.titles, model.title_count),
+          "Down from the grid reaches a demo");
+    push_nav(ui, NK_UI_DIR_UP);
+    (void)library_frame_dump(ui, &model, NULL);
+    CHECK(!focused_on_demo(ui, model.titles, model.title_count) &&
+              nk_ui_focused(ui) != 0u,
+          "Up from a demo returns to the grid");
+    {
+        /* The demos are drawn below every card of the grid. */
+        const NkUiDrawList *draw;
+        const NkUiDrawCmd *add = NULL;
+        const NkUiDrawCmd *demo = NULL;
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_library(ui, &model);
+        draw = nk_ui_end(ui);
+        for (uint32_t i = 0u; draw != NULL && i < draw->ncmd; ++i) {
+            const NkUiDrawCmd *cmd = &draw->cmd[i];
+            if (cmd->kind != NK_UI_DRAW_RECTANGLE) continue;
+            if (add == NULL && cmd->element_id == PLAYER_UI_ID_LIBRARY_ADD) add = cmd;
+            if (demo == NULL && cmd->element_id == PLAYER_UI_ID_LIBRARY_ITEM(0u)) demo = cmd;
+        }
+        CHECK(add != NULL && demo != NULL, "the add card and a demo are both drawn");
+        if (add != NULL && demo != NULL) {
+            CHECK(demo->bounds[1] > add->bounds[3],
+                  "TEST THIS PC sits below the grid of games");
+            CHECK(demo->bounds[3] <= 800 - (int)NK_UI_PROMPT_BAR_HEIGHT,
+                  "TEST THIS PC stays above the prompt bar at 1280x800");
+        }
+    }
+    {
+        /* At the 960x540 minimum the first-start card leaves out its icon, so it
+           and TEST THIS PC both fit above the prompt bar. */
+        static const struct { int h; bool icon; } sizes[] = {{540, false}, {720, true}};
+        for (size_t s = 0u; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+            const NkUiDrawList *draw = NULL;
+            int demo_bottom = -1;
+            int card_bottom = -1;
+            bool icon = false;
+            set_test_viewport(ui, sizes[s].h == 540 ? 960 : 1280, sizes[s].h);
+            nk_ui_focus(ui, 0u);
+            model.titles = k_demo_only_titles;
+            model.title_count = sizeof(k_demo_only_titles) / sizeof(k_demo_only_titles[0]);
+            model.logical_width = sizes[s].h == 540 ? 960.0f : 1280.0f;
+            model.logical_height = (float)sizes[s].h;
+            model.page_size = player_ui_library_page_size_with_demos(
+                model.logical_width, model.logical_height, 2u, &model.columns);
+            for (int frame = 0; frame < 2; ++frame) {
+                nk_ui_begin(ui, 0.0);
+                (void)player_ui_screen_library(ui, &model);
+                draw = nk_ui_end(ui);
+            }
+            for (uint32_t i = 0u; draw != NULL && i < draw->ncmd; ++i) {
+                const NkUiDrawCmd *cmd = &draw->cmd[i];
+                if (cmd->element_id == 0x10000060u) icon = true;
+                if (cmd->element_id == 0x10000005u && cmd->bounds[3] > card_bottom) {
+                    card_bottom = cmd->bounds[3];
+                }
+                if ((cmd->element_id == PLAYER_UI_ID_LIBRARY_ITEM(0u) ||
+                     cmd->element_id == PLAYER_UI_ID_LIBRARY_ITEM(1u)) &&
+                    cmd->bounds[3] > demo_bottom) {
+                    demo_bottom = cmd->bounds[3];
+                }
+            }
+            CHECK(icon == sizes[s].icon,
+                  "the first-start card keeps its icon only when there is room for it");
+            CHECK(card_bottom > 0 && demo_bottom > card_bottom &&
+                      demo_bottom <= sizes[s].h - (int)NK_UI_PROMPT_BAR_HEIGHT,
+                  "the first-start card and TEST THIS PC fit above the prompt bar");
+        }
+    }
+    nk_ui_destroy(ui);
 }
 
 static bool build_title_golden(char *out, size_t cap, size_t *used) {
@@ -1204,11 +1576,21 @@ static bool settings_op_is(PlayerUiAction action, PlayerUiSettingsOp op) {
     return action.kind == PLAYER_UI_ACTION_SETTINGS && (PlayerUiSettingsOp)action.primary == op;
 }
 
-/* Lays a flow case out at a window size with glyphs as wide as the mono face,
-   and says whether every text run is inside the window. */
+/* The launcher's viewport for a window of width x height pixels at 100%: its
+   screens keep at least the 1280 x 720 design layout (player_ui_nk.c). */
+static NkUiViewport launcher_viewport(int width, int height, float display_scale) {
+    NkUiViewport viewport = {width, height, display_scale, 0, 100, 1280.0f, 720.0f};
+    return viewport;
+}
+
+/* Lays a flow case out in a launcher window of width x height pixels with
+   glyphs as wide as the mono face, and says whether every box and text run is
+   inside the window and no text is painted over. */
 static bool flow_case_fits(FlowCase which, int width, int height, char *dump, size_t cap) {
     NkUiConfig config;
     NkUiTextBackend text = screen_test_text_backend();
+    NkUiViewport viewport = launcher_viewport(width, height, 1.0f);
+    NkUiScale scale = nk_ui_scale_for_viewport(&viewport);
     const NkUiDrawList *draw = NULL;
     bool inside = true;
     NkUi *ui;
@@ -1218,9 +1600,9 @@ static bool flow_case_fits(FlowCase which, int width, int height, char *dump, si
     config.text = &text;
     ui = nk_ui_create(&config);
     if (ui == NULL) return false;
-    set_test_viewport(ui, width, height);
-    g_flow_width = (float)width;
-    g_flow_height = (float)height;
+    nk_ui_set_viewport(ui, &viewport);
+    g_flow_width = scale.logical_w;
+    g_flow_height = scale.logical_h;
     for (int frame = 0; frame < 2; ++frame) {
         nk_ui_begin(ui, 0.0);
         (void)draw_flow_case(ui, which);
@@ -1229,11 +1611,14 @@ static bool flow_case_fits(FlowCase which, int width, int height, char *dump, si
     if (draw == NULL) inside = false;
     for (uint32_t i = 0u; draw != NULL && i < draw->ncmd; ++i) {
         const NkUiDrawCmd *cmd = &draw->cmd[i];
-        if (cmd->kind != NK_UI_DRAW_TEXT) continue;
-        if (cmd->bounds[0] < 0 || cmd->bounds[1] < 0 || cmd->bounds[2] > width ||
-            cmd->bounds[3] > height) {
+        /* Every box and run is on screen: a page that runs off the bottom
+           pushes the prompt bar (or its own buttons) out of the window. */
+        if (cmd->kind != NK_UI_DRAW_SCISSOR_START && cmd->kind != NK_UI_DRAW_SCISSOR_END &&
+            (cmd->bounds[0] < 0 || cmd->bounds[1] < 0 || cmd->bounds[2] > width ||
+             cmd->bounds[3] > height)) {
             inside = false;
         }
+        if (cmd->kind != NK_UI_DRAW_TEXT) continue;
         /* A squeezed layout draws text, or a box's fill, over earlier text. */
         for (uint32_t j = i + 1u; j < draw->ncmd; ++j) {
             const NkUiDrawCmd *other = &draw->cmd[j];
@@ -1439,6 +1824,34 @@ static void test_settings_pages(void) {
           "build tools and cache shows the switch, tool removal and the clear notice");
 }
 
+/* Walkthrough blocker: Settings > PSP fonts imports and removes the user's
+   PSP fonts and shows every slot's status, with the plain hint. */
+static void test_psp_fonts_page(void) {
+    static char dump[CASE_DUMP_CAP];
+    CHECK(activate_flow_button(PLAYER_UI_ID_SETTINGS_FONTS, FLOW_SETTINGS).kind ==
+              PLAYER_UI_ACTION_SETTINGS &&
+              (PlayerUiSettingsOp)activate_flow_button(PLAYER_UI_ID_SETTINGS_FONTS,
+                                                       FLOW_SETTINGS).primary ==
+              PLAYER_UI_SETTINGS_OPEN_FONTS,
+          "Settings opens PSP fonts");
+    CHECK((PlayerUiSettingsOp)activate_flow_button(PLAYER_UI_ID_SETTINGS_IMPORT_FONTS,
+                                                   FLOW_SETTINGS_FONTS).primary ==
+              PLAYER_UI_SETTINGS_IMPORT_FONTS,
+          "Import fonts folder asks for the folder picker");
+    CHECK((PlayerUiSettingsOp)activate_flow_button(PLAYER_UI_ID_SETTINGS_REMOVE_FONTS,
+                                                   FLOW_SETTINGS_FONTS).primary ==
+              PLAYER_UI_SETTINGS_REMOVE_FONTS,
+          "Remove imported fonts removes them");
+    CHECK(dump_flow_case(FLOW_SETTINGS_FONTS, dump, sizeof(dump)) &&
+              strstr(dump, "Optional.") != NULL && strstr(dump, "flash0:/font") != NULL &&
+              strstr(dump, "Copying the fonts from your PSP") != NULL &&
+              strstr(dump, "Japanese: synthetic fallback") != NULL &&
+              strstr(dump, "Korean: synthetic fallback") != NULL &&
+              strstr(dump, "Latin 16: synthetic fallback") != NULL &&
+              strstr(dump, "Imported 3 fonts") != NULL,
+          "the page says the fonts are optional, how to copy them, and every slot's status");
+}
+
 static bool controller_op_is(PlayerUiAction action, PlayerUiControllerOp op, size_t control) {
     return action.kind == PLAYER_UI_ACTION_CONTROLLER &&
            (PlayerUiControllerOp)action.primary == op && action.title_index == control;
@@ -1606,6 +2019,50 @@ static void test_controller_keyboard_page(void) {
           "every key, the device choice and Reset to defaults are on screen at 960 x 540");
     CHECK(flow_case_fits(FLOW_CONTROLLER_KEYS, 1280, 800, dump, sizeof(dump)),
           "the keyboard keys fit 1280 x 800");
+}
+
+/* Every screen fits the default 1280 x 720 window and the 960 x 540 minimum
+   (logical px): no text outside the window, no text painted over, and so the
+   buttons are all on screen. A wrapped paragraph used to be laid out one line
+   tall when its page was overfull, and the next block painted over its later
+   lines (launcher review B2). */
+static void test_every_screen_fits_the_window(void) {
+    static char dump[CASE_DUMP_CAP];
+    /* The default window, the minimum, a small laptop's maximised window, and
+       the 1280 x 720 pixels of a 150% display (853 x 480 at 1x). */
+    static const struct { int w; int h; } sizes[] = {
+        {1280, 720}, {960, 540}, {1366, 705}, {853, 480}
+    };
+    {
+        /* A window under the design size draws the 1280 x 720 layout smaller;
+           a larger one keeps its density and gains room. */
+        NkUiViewport small = launcher_viewport(960, 540, 1.0f);
+        NkUiViewport hidpi = launcher_viewport(1920, 1080, 1.5f);
+        NkUiViewport hidpi_small = launcher_viewport(1440, 810, 1.5f);
+        NkUiViewport large = launcher_viewport(1920, 1080, 1.0f);
+        NkUiScale a = nk_ui_scale_for_viewport(&small);
+        NkUiScale b = nk_ui_scale_for_viewport(&hidpi);
+        NkUiScale c = nk_ui_scale_for_viewport(&hidpi_small);
+        NkUiScale d = nk_ui_scale_for_viewport(&large);
+        CHECK(a.density == 0.75f && a.logical_w == 1280.0f && a.logical_h == 720.0f,
+              "a 960 x 540 window lays the launcher out at 1280 x 720, drawn at 0.75");
+        CHECK(b.density == 1.5f && b.logical_w == 1280.0f && b.logical_h == 720.0f,
+              "a 1280 x 720 window on a 150% display keeps its density");
+        CHECK(c.density == 1.125f && c.logical_w == 1280.0f && c.logical_h == 720.0f,
+              "the 960 x 540 minimum on a 150% display lays out at 1280 x 720");
+        CHECK(d.density == 1.0f && d.logical_w == 1920.0f && d.logical_h == 1080.0f,
+              "a large window keeps its density and gains room");
+    }
+    for (size_t s = 0u; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+        for (int which = FLOW_BUILD; which < FLOW_COUNT; ++which) {
+            char message[160];
+            if (which == FLOW_DEVLOG) continue; /* cuts its lines to the box by design */
+            (void)snprintf(message, sizeof(message),
+                           "screen case %d fits a %d x %d window", which, sizes[s].w, sizes[s].h);
+            CHECK(flow_case_fits((FlowCase)which, sizes[s].w, sizes[s].h, dump, sizeof(dump)),
+                  message);
+        }
+    }
 }
 
 static void test_error_details_fit_the_minimum_window(void) {
@@ -1943,7 +2400,7 @@ static bool capture_scaled(const char *directory, const NkUiTextBackend *text,
     if (renderer != NULL) ui = nk_ui_create(&config);
     if (ui != NULL) backend = nk_ui_sdlr_create(renderer, text);
     if (backend != NULL) {
-        NkUiViewport viewport = {pixel_w, pixel_h, display_scale, 0, 100};
+        NkUiViewport viewport = launcher_viewport(pixel_w, pixel_h, display_scale);
         NkUiScale scale = nk_ui_scale_for_viewport(&viewport);
         nk_ui_set_viewport(ui, &viewport);
         nk_ui_sdlr_set_scale(backend, scale.density);
@@ -1959,11 +2416,15 @@ static bool capture_scaled(const char *directory, const NkUiTextBackend *text,
             memset(&library, 0, sizeof(library));
             library.titles = titles;
             library.title_count = title_count;
-            library.page_size = player_ui_library_page_size(scale.logical_w, scale.logical_h,
-                                                            &library.columns);
+            size_t demos = player_ui_library_demo_count(titles, title_count);
+            library.page_size = player_ui_library_page_size_with_demos(
+                scale.logical_w, scale.logical_h, demos, &library.columns);
             library.logical_width = scale.logical_w;
             library.logical_height = scale.logical_h;
-            if (library.title_count + 1u > library.page_size) library.page_label = "Page 1 of 2";
+            if (library.title_count - demos > 0u &&
+                library.title_count - demos + 1u > library.page_size) {
+                library.page_label = "Page 1 of 2";
+            }
             ok = capture_one(&rig, name, &library, NULL);
         } else {
             PlayerUiTitleModel model;
@@ -2053,7 +2514,7 @@ static int capture_screens(const char *directory) {
     backend = nk_ui_sdlr_create(renderer, &text);
     if (backend == NULL) goto done;
     {
-        NkUiViewport viewport = {1280, 800, 1.0f, 100, 100};
+        NkUiViewport viewport = {1280, 800, 1.0f, 100, 100, 0.0f, 0.0f};
         nk_ui_set_viewport(ui, &viewport);
         nk_ui_sdlr_set_scale(backend, 1.0f);
     }
@@ -2252,6 +2713,31 @@ static int capture_screens(const char *directory) {
                         k_titles, 0u, &title_fixture, PLAYER_UI_ID_TITLE_PRIMARY)) {
         goto done;
     }
+    {
+        /* TEST THIS PC at the window sizes people start in: the 960x540
+           minimum, the 1280x720 default, a 1366x705 laptop and 1920x1009. */
+        static const struct { const char *name; int w; int h; } sizes[] = {
+            {"960x540", 960, 540}, {"1280x720", 1280, 720},
+            {"1366x705", 1366, 705}, {"1920x1009", 1920, 1009}
+        };
+        for (size_t i = 0u; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+            char name[64];
+            (void)snprintf(name, sizeof(name), "library-demos-no-games-%s", sizes[i].name);
+            if (!capture_scaled(directory, &text, name, sizes[i].w, sizes[i].h, 1.0f,
+                                k_demo_only_titles,
+                                sizeof(k_demo_only_titles) / sizeof(k_demo_only_titles[0]),
+                                NULL, PLAYER_UI_ID_LIBRARY_ITEM(0u))) {
+                goto done;
+            }
+            (void)snprintf(name, sizeof(name), "library-demos-with-games-%s", sizes[i].name);
+            if (!capture_scaled(directory, &text, name, sizes[i].w, sizes[i].h, 1.0f,
+                                k_demo_titles,
+                                sizeof(k_demo_titles) / sizeof(k_demo_titles[0]),
+                                NULL, PLAYER_UI_ID_LIBRARY_ITEM(2u))) {
+                goto done;
+            }
+        }
+    }
     ok = true;
 done:
     if (!ok && SDL_GetError()[0] != '\0') {
@@ -2282,6 +2768,141 @@ static int capture_screens(const char *directory) {
    card said "not ready yet" under a READY pill (its text followed the primary
    action, STOP GAME), the decryption note showed on a built package, and the
    compatibility card carried a "Boots to a named boundary" chip. */
+/* Launcher review B6: focus lands on the page's main action. Opening a title
+   from a focused library card focuses PLAY (or BUILD PACKAGE), not the first
+   control drawn (the LIBRARY tab); with that action off it lands on the next
+   enabled action, still not a tab. A running build focuses nothing, so a
+   stray Enter or South cannot cancel it, and a move reaches CANCEL BUILD. */
+static void test_default_focus_lands_on_the_main_action(void) {
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    PlayerUiLibraryModel library;
+    PlayerUiTitleModel title;
+    PlayerUiTitle off = k_titles[1];
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the default-focus UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    memset(&library, 0, sizeof(library));
+    library.page_size = player_ui_library_page_size(1280.0f, 800.0f, &library.columns);
+    library.titles = k_titles;
+    library.title_count = 3u;
+    library.logical_width = 1280.0f;
+    library.logical_height = 800.0f;
+    nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(0u));
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_library(ui, &library);
+        (void)nk_ui_end(ui);
+    }
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(0u), "the first card has focus");
+    memset(&title, 0, sizeof(title));
+    title.title = &k_titles[0];
+    title.logical_width = 1280.0f;
+    title.logical_height = 800.0f;
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_title(ui, &title);
+        (void)nk_ui_end(ui);
+    }
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_PRIMARY,
+          "opening a title focuses PLAY, not the LIBRARY tab");
+
+    off.primary_action_enabled = false;
+    title.title = &off;
+    nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(1u));
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_title(ui, &title);
+        (void)nk_ui_end(ui);
+    }
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_TITLE_SAVE_FOLDER,
+          "with BUILD PACKAGE off, focus lands on the next action, not a tab");
+
+    {
+        PlayerUiBuildModel build;
+        NkUiEvent move;
+        memset(&build, 0, sizeof(build));
+        build.title_line = "Synthetic Showcase Scene (TEST00007)";
+        build.stage = 2;
+        build.fraction = -1.0f;
+        build.message = "Compiling the translated game for this PC.";
+        build.logical_width = 1280.0f;
+        build.logical_height = 800.0f;
+        nk_ui_focus(ui, 0u);
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_build(ui, &build);
+            (void)nk_ui_end(ui);
+        }
+        CHECK(nk_ui_focused(ui) != PLAYER_UI_ID_BUILD_ACTION,
+              "CANCEL BUILD is never the default focus");
+        memset(&move, 0, sizeof(move));
+        move.type = NK_UI_EV_NAV;
+        move.dir = NK_UI_DIR_DOWN;
+        nk_ui_push_event(ui, &move);
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_build(ui, &build);
+        (void)nk_ui_end(ui);
+        CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_BUILD_ACTION,
+              "a move from no focus reaches CANCEL BUILD");
+        build.built = true;
+        nk_ui_focus(ui, 0u);
+        for (int frame = 0; frame < 2; ++frame) {
+            nk_ui_begin(ui, 0.0);
+            (void)player_ui_screen_build(ui, &build);
+            (void)nk_ui_end(ui);
+        }
+        CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_BUILD_ACTION,
+              "a finished build focuses BACK TO LIBRARY");
+    }
+    nk_ui_destroy(ui);
+}
+
+/* The owner: STOP GAME once. While the no-new-frames card is up, its STOP
+   GAME is the only one; the primary row drops its own. */
+static void test_stalled_game_offers_stop_once(void) {
+    static char dump[CASE_DUMP_CAP];
+    NkUiConfig config;
+    NkUi *ui;
+    NkUiTextBackend text = screen_test_text_backend();
+    PlayerUiTitle running = k_titles[0];
+    PlayerUiTitleModel model;
+    size_t stops = 0u;
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create the stalled-game title UI");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    running.library_status = "Running";
+    running.package_state = PLAYER_UI_PACKAGE_RUNNING;
+    running.primary_action_label = "STOP GAME";
+    running.primary_action = PLAYER_UI_PRIMARY_STOP_GAME;
+    memset(&model, 0, sizeof(model));
+    model.title = &running;
+    model.stalled_game_notice_visible = true;
+    model.logical_width = 1280.0f;
+    model.logical_height = 800.0f;
+    for (int frame = 0; frame < 2; ++frame) {
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_title(ui, &model);
+        (void)nk_ui_end(ui);
+    }
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    for (const char *at = strstr(dump, "STOP GAME"); at != NULL; at = strstr(at + 1, "STOP GAME")) {
+        ++stops;
+    }
+    CHECK(stops == 1u, "a stalled game's page offers STOP GAME once");
+    CHECK(strstr(dump, "KEEP WAITING") != NULL, "the stall card keeps Keep waiting");
+    nk_ui_destroy(ui);
+}
+
 static void test_title_with_a_running_game(void) {
     static char dump[CASE_DUMP_CAP];
     NkUiConfig config;
@@ -2315,7 +2936,16 @@ static void test_title_with_a_running_game(void) {
     (void)player_ui_screen_title(ui, &model);
     CHECK(nk_ui_end(ui) != NULL, "draw the running-game title");
     (void)nk_ui_dump(ui, dump, sizeof(dump));
-    CHECK(strstr(dump, "Running now. Stop the game to rebuild or change settings.") != NULL,
+    {
+        /* The owner: "Running" once on the page. The header badge says it; the
+           package card says the package is ready and in use. */
+        size_t running = 0u;
+        for (const char *at = strstr(dump, "RUNNING"); at != NULL; at = strstr(at + 1, "RUNNING")) {
+            ++running;
+        }
+        CHECK(running == 1u, "a running game's title page says RUNNING once");
+    }
+    CHECK(strstr(dump, "Built, in use by the running game.") != NULL,
           "the package card says the game runs now");
     CHECK(strstr(dump, "not ready yet") == NULL,
           "a running game's ready package is never called not ready");
@@ -2593,6 +3223,8 @@ int main(int argc, char **argv) {
     test_router();
     test_screen_actions();
     test_error_details_fit_the_minimum_window();
+    test_every_screen_fits_the_window();
+    test_psp_fonts_page();
     test_wizard_actions();
     test_plain_cards();
     test_disc_cards();
@@ -2602,9 +3234,12 @@ int main(int argc, char **argv) {
     test_version_line();
     test_design_system_layout();
     test_title_with_a_running_game();
+    test_stalled_game_offers_stop_once();
+    test_default_focus_lands_on_the_main_action();
     test_tier_table_matches_the_docs();
     test_remove_from_library();
     test_build_bar_shows_compiled_parts();
+    test_library_demos();
     CHECK(build_library_golden(library, sizeof(library), &library_size),
           "build Library screen dumps");
     CHECK(build_title_golden(title, sizeof(title), &title_size),

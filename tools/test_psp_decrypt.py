@@ -465,6 +465,58 @@ def seal_type2_psp(payload: bytes, tag: int, tag_key: bytes, kirk_cmd1_key: byte
     return bytes(out)
 
 
+def seal_type01_psp(payload: bytes, tag: int, key144: bytes, kirk_cmd1_key: bytes,
+                    keyvault_key: bytes, *, type1: bool, elf_size: int) -> bytes:
+    """Seal ``payload`` into an encrypted ``~PSP`` type-0 or type-1 container.
+
+    The inverse of the production type-0/1 path (144-byte recipes): the KIRK
+    CMD1 header's first 0x70 bytes go through ``out = kirk7(in ^ key144[0x14:])
+    ^ key144[0x20:]``, the SHA-1 covers ``key144[:0x14]`` plus the view, and
+    type 1 additionally runs a keyvault pass over the 0xA0 bytes from
+    ``sha1 + 0xC``.
+    """
+    assert len(key144) == 144 and len(kirk_cmd1_key) == 16 and len(keyvault_key) == 16
+    data_size = len(payload)
+    data_offset = 0x80
+    chk_size = _round16(data_size)
+    container_size = 0x150 + chk_size
+    prx_header = bytes(build_psp_header(container_size, elf_size, False,
+                                        (elf_size, 0x100, 0, 0)))
+
+    a_key = bytes(x ^ 0xA5 for x in key144[:16])
+    c_key = bytes(x ^ 0x5A for x in key144[:16])
+    hdr_tail = (struct.pack("<I", 1) + bytes(12) +
+                struct.pack("<II", data_size, data_offset) + bytes(8) + bytes(16))
+    enc_payload = aes_cbc_encrypt(a_key, payload + bytes(chk_size - data_size))
+    clear = (aes_cbc_encrypt(kirk_cmd1_key, a_key + c_key) +
+             aes_cmac(c_key, hdr_tail) +
+             aes_cmac(c_key, hdr_tail + prx_header + enc_payload))
+    clear70 = clear + bytes(0x20) + hdr_tail[:0x10]
+    scrambled = aes_cbc_encrypt(
+        keyvault_key, bytes(clear70[i] ^ key144[i + 0x20] for i in range(0x70)))
+    kirk_block = bytes(scrambled[i] ^ key144[i + 0x14] for i in range(0x70)) + hdr_tail[0x10:]
+    unused = bytes(0x28)
+    digest = hashlib.sha1(key144[:0x14] + unused + kirk_block + prx_header).digest()
+
+    # The view, laid out as the decoder reads it: tag, sha1, unused, kirkBlock.
+    view = bytearray(struct.pack("<I", tag) + digest + unused + kirk_block)
+    if type1:
+        view[0x10:0xB0] = aes_cbc_encrypt(keyvault_key, bytes(view[0x10:0xB0]))
+    sha1_field = bytes(view[0x04:0x18])
+    unused_field = bytes(view[0x18:0x40])
+    kirk_field = bytes(view[0x40:0xD0])
+
+    out = bytearray(container_size)
+    out[0x00:0x80] = prx_header
+    out[0x80:0xD0] = kirk_field[0x40:0x90]
+    struct.pack_into("<I", out, 0xD0, tag)
+    out[0xD4:0xE8] = sha1_field
+    out[0xE8:0x110] = unused_field
+    out[0x110:0x150] = kirk_field[0x00:0x40]
+    out[0x150:] = enc_payload
+    return bytes(out)
+
+
 def gzip_payload(data: bytes) -> bytes:
     import gzip
     return gzip.compress(data, mtime=0)
@@ -878,6 +930,9 @@ def builtin_table() -> tuple[dict, dict, dict]:
         name: bytes(int(v, 16) for v in re.findall(r"0x([0-9A-Fa-f]{2})\b", body))
         for name, body in re.findall(r"static const u8 (\w+)\[\] = \{([^}]*)\};", text)
     }
+    for name, body in re.findall(r"static const u32 (\w+)\[\] = \{([^}]*)\};", text):
+        arrays[name] = b"".join(struct.pack("<I", int(v, 16))
+                                for v in re.findall(r"0x([0-9A-Fa-f]{8})\b", body))
     recipes = {}
     for tag, code, key, key144, xor in re.findall(
             r"\{0x([0-9A-F]{8}), 0x([0-9A-F]{2}), (\w+), (\w+), (\w+)\}", text):
@@ -1004,6 +1059,89 @@ class TestBuiltinTables(unittest.TestCase):
         self.assertEqual(out.returncode, 6, out.stdout + out.stderr)
         self.assertIn("unknown key entry name 'psar.k1'", out.stdout)
         self.assertFalse(dst.exists())
+
+
+@unittest.skipUnless(CC, "no C compiler on PATH")
+class TestType01Containers(unittest.TestCase):
+    """Type 0 and type 1 (144-byte recipes) through the production boundary.
+
+    Real discs use both: older executables and modules carry them, next to the
+    type-2 recipes. Synthetic keys first, then the built-in recipe of one real
+    tag of each type, read from the public table at run time.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="nk_psp_type01_"))
+        cls.exe = build_tool()
+        cls.elf = tiny_elf(b"NK295-T01")
+        cls.arrays, cls.recipes, extra = builtin_table()
+        cls.values = extra["values"]
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _decrypt(self, name: str, container: bytes, *extra: str):
+        src = self.tmp / f"{name}.BIN"
+        dst = self.tmp / f"{name}.out"
+        src.write_bytes(container)
+        dst.unlink(missing_ok=True)
+        out = subprocess.run(
+            [str(self.exe), "decrypt", *extra, "--in", str(src), "--out", str(dst)],
+            capture_output=True, text=True)
+        return out, dst
+
+    def _synthetic(self, type1: bool):
+        key144 = os.urandom(144)
+        cmd1 = os.urandom(16)
+        vault = os.urandom(16)
+        keyfile = self.tmp / f"type{int(type1)}-keys.json"
+        write_keyfile(keyfile, {
+            "kirk.cmd1.key": cmd1.hex(),
+            f"kirk.keyvault.{SYNTH_CODE}": vault.hex(),
+            f"prx.tag.0x{SYNTH_TAG:08X}": {"code": SYNTH_CODE, "key144": key144.hex()},
+        })
+        container = seal_type01_psp(self.elf, SYNTH_TAG, key144, cmd1, vault,
+                                    type1=type1, elf_size=len(self.elf))
+        return container, keyfile
+
+    def test_synthetic_type0_and_type1_round_trip(self):
+        for type1 in (False, True):
+            with self.subTest(type=int(type1)):
+                container, keyfile = self._synthetic(type1)
+                out, dst = self._decrypt(f"synth{int(type1)}", container,
+                                         "--key-file", str(keyfile))
+                self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+                self.assertEqual(dst.read_bytes(), self.elf)
+
+    def test_tampered_type0_and_type1_fail_integrity(self):
+        for type1 in (False, True):
+            with self.subTest(type=int(type1)):
+                container, keyfile = self._synthetic(type1)
+                tampered = bytearray(container)
+                tampered[0x160] ^= 0x01  # one payload byte
+                out, dst = self._decrypt(f"tamper{int(type1)}", bytes(tampered),
+                                         "--key-file", str(keyfile))
+                self.assertNotEqual(out.returncode, 0)
+                self.assertIn("INTEGRITY_CHECK_FAILED", out.stdout)
+                self.assertFalse(dst.exists())
+
+    def test_builtin_type0_and_type1_recipes_decrypt_without_a_key_file(self):
+        # One real tag per type from the public table: an older game executable
+        # recipe (type 0) and a newer one (type 1).
+        for tag, type1 in ((0x08000000, False), (0xC0CB167C, True)):
+            with self.subTest(tag=f"0x{tag:08X}"):
+                recipe = self.recipes[tag]
+                self.assertNotEqual(recipe["key144"], "NULL")
+                container = seal_type01_psp(
+                    self.elf, tag, self.arrays[recipe["key144"]],
+                    self.values["kirk.cmd1.key"],
+                    self.values[f"kirk.keyvault.{recipe['code']}"],
+                    type1=type1, elf_size=len(self.elf))
+                out, dst = self._decrypt(f"builtin_{tag:08X}", container)
+                self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+                self.assertEqual(dst.read_bytes(), self.elf)
 
 
 @unittest.skipUnless(CC, "no C compiler on PATH")

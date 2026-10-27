@@ -384,7 +384,13 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertNotIn("#285", readme)
         self.assertIn("in the works", readme.lower())
         self.assertIn("START SETUP WIZARD", readme)
-        self.assertIn("ADD ANOTHER ISO", readme)
+        # The default launcher adds later games through the library's add tile,
+        # not the legacy renderer's ADD ANOTHER ISO button.
+        self.assertIn("Add a disc image you own", readme)
+        self.assertIn(
+            '"Add a disc image you own"',
+            (ROOT / "src" / "player" / "ui" / "scr_library.c").read_text(encoding="utf-8"),
+        )
         self.assertNotIn("click **Add Game**", readme)
         self.assertNotIn("No second verified title.", readme)
         self.assertIn("consent once", readme.lower())
@@ -401,8 +407,24 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertIn("#547", preview)
         self.assertNotIn("automatic prerequisite installation is in the works", preview.lower())
         self.assertIn("-ExcludeOptionalFonts", preview)
-        self.assertIn("python tools/stage_runtime_dlls.py --target dist/bin", workflow)
+        # The job's Windows CPython runs the stager ("$PYTHON", #1522).
+        self.assertIn('"$PYTHON" tools/stage_runtime_dlls.py --target dist/bin', workflow)
+        # Without the UI fonts beside it the packaged player silently starts the old launcher UI.
+        self.assertIn("tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts", workflow)
+        self.assertIn("assets/fonts/ui/manifest.json", preview)
         self.assertIn("set -euo pipefail", workflow)
+        # The showcase demos ship in bin/demos: PRXs from the locked PSPDEV on Linux,
+        # packages built and attested by the candidate job. The release scan exempts
+        # them and the player's own project fonts, and nothing else.
+        self.assertIn("showcase.py build-prx --out-dir", workflow)
+        self.assertIn("NK_SHOWCASE_DEMO_ROOT=dist/bin/demos", workflow)
+        self.assertIn("--prebuilt-prx-dir", workflow)
+        self.assertLess(workflow.index("--prebuilt-prx-dir"),
+                        workflow.index("actions/attest-build-provenance"))
+        self.assertIn("'^\\.(iso|prx|elf|eboot|sav|key|pgf|pgd)$'", preview)
+        self.assertIn("$relative -notmatch '^bin/font/nk[^/]*\\.pgf$'", preview)
+        self.assertIn("$relative -notlike 'bin/demos/*'", preview)
+        self.assertEqual(preview.count("$relative -not"), 2)
         self.assertIn("a nonzero exit aborts the job before artifact upload", preview)
         self.assertIn("does not run the stager again", preview)
         self.assertIn("SDL3.dll", release_notes)

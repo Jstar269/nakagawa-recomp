@@ -328,7 +328,7 @@ def verify_all() -> list[Item]:
                              ordered=[r"DISPLAY_SET_FB:", r"vkQueuePresent"])),
         Item("P2.4", "vkQueuePresentKHR fires", 2, 2,
              _check_log(last_log=latest, patterns=[r"vkQueuePresent"])),
-        Item("P2.5", "sceUmdWaitDriveStat → wakeup linkage",
+        Item("P2.5", "UMD drive-ready callback wakes the sleeping thread",
              2, 2, _check_umd_wakeup(last_log=latest)),
         Item("P2.6", "sceFontNewLib / sceFontOpen logged",
              2, 1,
@@ -395,10 +395,9 @@ def verify_all() -> list[Item]:
     # ─ Phase 5: Frame Rendering ─
     items += [
         Item("P5.1", "GE display list submitted", 5, 3,
-             _check_log(last_log=latest,
-                        patterns=[r"sceGeListEnQueue", r"GE_ENQ", r"ge_run_list"])),
+             _check_ge_list_submitted(last_log=latest)),
         Item("P5.2", "Vulkan command buffer recorded", 5, 2,
-             _check_log(last_log=latest, patterns=[r"vkCmdDraw:"])),
+             _check_command_buffer_recorded(last_log=latest)),
         Item("P5.3", "First frame swapchain-presented", 5, 1,
              _check_present_actually_fires(last_log=latest)),
     ]
@@ -410,7 +409,7 @@ def verify_all() -> list[Item]:
         Item("P6.2", "Lockup watchdog abort (stall indicator; regression when present)", 6, 1,
              _check_watchdog_abort(last_log=latest)),
         Item("P6.3", "Multiple vkCmdDraw in single run", 6, 2,
-             _check_log(last_log=latest, patterns=[r"vkCmdDraw:"])),
+             _check_multi_draw(last_log=latest)),
         Item("P6.4", "Vblank pacing reachable", 6, 1,
              _check_log(last_log=latest,
                         patterns=[r"sceDisplayWaitVblank"])),
@@ -594,35 +593,104 @@ def _check_watchdog_abort(*, last_log: str | None) -> str:
     return "pending"
 
 
-def _check_umd_wakeup(*, last_log: str | None) -> str:
-    """Has WakeupThread been called at least once on the UMD route?
+# Run-log records behind P2.5 (#1376), as src/rt writes them: SR_CBLOG for the UMD
+# callback's registration and notification, SR_WAKELOG for sceKernelWakeupThread's caller,
+# and the unconditional DEBUG_SLEEP/DEBUG_WAKEUP lines of sched.c.
+_UMD_CB_REGISTERED_RE = re.compile(r"CBLOG: UMD callback registered uid=(0x[0-9a-fA-F]+)")
+_CB_NOTIFY_RE = re.compile(
+    r"CBLOG: NotifyCallback uid=(0x[0-9a-fA-F]+) count=\d+ arg=(0x[0-9a-fA-F]+) owner=(0x[0-9a-fA-F]+)")
+_SLEEP_ENTERED_RE = re.compile(r"DEBUG_SLEEP(?:_CB)?: thread=(0x[0-9a-fA-F]+) wakeups=0\b")
+_WAKEUP_CALL_RE = re.compile(r"(?<![A-Za-z_])WAKEUP target=(0x[0-9a-fA-F]+) \(from (0x[0-9a-fA-F]+)\)")
+_WAKEUP_RESULT_RE = re.compile(
+    r"DEBUG_WAKEUP: target=(0x[0-9a-fA-F]+) sleeping=(\d+) state=(\d+) wait_obj=(0x[0-9a-fA-F]+)")
+_UMD_STAT_READY = 0x20  # PSPSDK pspumd.h PSP_UMD_READY
+_TH_WAIT_OBJ = 4  # src/rt/sched.c thread state enum; pinned by test_progress_tracker
 
-    Route-sensitive: a log that never exercises the UMD path (e.g. a headless scheduler
-    run) cannot regress this item. Absence of the wakeup marker is 'pending' (unknown)
-    unless the log proves the UMD route was exercised, in which case it is a regression
-    (#181)."""
+
+def _check_umd_wakeup(*, last_log: str | None) -> str:
+    """P2.5: the UMD drive-ready transition wakes the thread that was waiting for it.
+
+    Verified only from one ordered, uid-correlated chain (#1376):
+
+    1. the wait: a thread enters a sleep (``DEBUG_SLEEP... wakeups=0``; a banked wakeup
+       returns without sleeping);
+    2. the state change: the callback registered with sceUmdRegisterUMDCallBack is
+       notified with a drive state carrying READY while that thread is still asleep;
+    3. the woken thread: the callback's owner thread calls sceKernelWakeupThread on that
+       same thread (``WAKEUP target= (from owner)``) and the scheduler readies it (the
+       next line, ``DEBUG_WAKEUP`` with sleeping=1, the sleep state and its own marker).
+
+    A thread blocked inside sceUmdWaitDriveStat is released by the scheduler, which
+    writes no run-log line, so that wait cannot be correlated from the log and is not
+    credited. A missing chain is 'pending', never a regression: a drive that is already
+    ready needs no wakeup."""
     if not last_log:
         return "pending"
     lines = _log_lines(last_log)
-    if any(re.search(r"WakeupThread|Wakeup wakeup", line) for line in lines):
-        return "verified"
-    route_exercised = any(
-        re.search(r"sceUmd|UMD_|UMD |sceUmdWaitDriveStat|drive status|UMD_INSERTED|umd_", line, re.IGNORECASE)
-        for line in lines
-    )
-    if not route_exercised:
-        return "pending"  # this log did not exercise the UMD route
-    return "regressed"  # UMD route ran but produced no wakeup
-
-
-def _check_dispatch_table() -> str:
-    src = REPO / "src" / "rt" / "recomp.c"
-    if not src.exists():
-        return "pending"
-    text = src.read_text(encoding="utf-8", errors="ignore")
-    if "g_exact_hooks" in text or "DispatchHook" in text:
-        return "verified"
+    umd_callbacks: set[int] = set()
+    asleep: dict[int, int] = {}  # thread uid -> line where its current sleep began
+    asleep_at_ready: dict[int, dict[int, int]] = {}  # callback owner -> sleeps at READY
+    call: tuple[int, int, int] | None = None  # (line, target, caller) of the last call
+    for i, line in enumerate(lines):
+        if m := _UMD_CB_REGISTERED_RE.search(line):
+            umd_callbacks.add(int(m.group(1), 16))
+        elif m := _CB_NOTIFY_RE.search(line):
+            uid, arg, owner = (int(g, 16) for g in m.groups())
+            if uid in umd_callbacks and arg & _UMD_STAT_READY:
+                asleep_at_ready[owner] = dict(asleep)
+        elif m := _SLEEP_ENTERED_RE.search(line):
+            asleep[int(m.group(1), 16)] = i
+        elif m := _WAKEUP_CALL_RE.search(line):
+            call = (i, int(m.group(1), 16), int(m.group(2), 16))
+        elif m := _WAKEUP_RESULT_RE.search(line):
+            target = int(m.group(1), 16)
+            readied = (m.group(2) == "1" and int(m.group(3)) == _TH_WAIT_OBJ
+                       and int(m.group(4), 16) == target)
+            if readied and target in asleep:
+                if (call is not None and call[0] == i - 1 and call[1] == target
+                        and asleep_at_ready.get(call[2], {}).get(target) == asleep[target]):
+                    return "verified"
+                del asleep[target]
+            call = None
     return "pending"
+
+
+def _c_function_body(text: str, head: str) -> str | None:
+    """Body of the column-0 C function whose definition starts with regex `head`, up to
+    its column-0 closing brace (the src/rt layout), or None when it is absent."""
+    m = re.search(r"^" + head + r"[^;{]*\)\s*\{", text, re.MULTILINE)
+    if not m:
+        return None
+    end = text.find("\n}", m.end())
+    return text[m.end():end] if end >= 0 else None
+
+
+def _check_dispatch_table(*, src_rt: Path | None = None) -> str:
+    """P2.7: guest-function registration and lookup go through the dispatch table.
+
+    The contract (issue #45): src/rt/dispatch_table.h defines SrDispatchTable and its
+    sr_dtab_register/sr_dtab_lookup primitives, and src/rt/recomp.c owns the one live
+    table and routes sr_register() and sr_lookup() through it. The g_exact_hooks and
+    DispatchHook markers this item once looked for were removed (#566) and prove
+    nothing (#1376). A source-shape check, so its grade stays heuristic."""
+    root = SRC_RT if src_rt is None else src_rt
+    header = _read_text(root / "dispatch_table.h")
+    recomp = _read_text(root / "recomp.c")
+    if not (re.search(r"\}\s*SrDispatchTable\s*;", header)
+            and re.search(r"\bsr_dtab_register\s*\(\s*SrDispatchTable\s*\*", header)
+            and re.search(r"\bsr_dtab_lookup\s*\(\s*SrDispatchTable\s*\*", header)):
+        return "pending"
+    table = re.search(r"^static\s+SrDispatchTable\s+(\w+)\s*;", recomp, re.MULTILINE)
+    if not (table and re.search(r'^#include\s+"dispatch_table\.h"', recomp, re.MULTILINE)):
+        return "pending"
+    name = re.escape(table.group(1))
+    register = _c_function_body(recomp, r"void\s+sr_register\s*\(")
+    lookup = _c_function_body(recomp, r"RecompFn\s+sr_lookup\s*\(")
+    if not (register and re.search(r"\bsr_dtab_register\s*\(\s*&" + name + r"\s*,", register)):
+        return "pending"
+    if not (lookup and re.search(r"\bsr_dtab_lookup\s*\(\s*&" + name + r"\s*,", lookup)):
+        return "pending"
+    return "verified"
 
 
 def _check_sr_inrange() -> str:
@@ -770,6 +838,78 @@ def _check_stub_called(name: str) -> str:
     if any(name in line or low in line.lower() for line in lines):
         return "verified"
     return "pending"
+
+
+# Run-log records behind P5.1, P5.2 and P6.3 (#1376), as src/rt writes them. An accepted
+# sceGeListEnQueue is `GE_ENQ:` (SR_GELOG/SR_GEDUMP) or a GE_ENQUEUE_TRACE/_RESULT pair
+# (SR_GE_ENQUEUE_TRACE); a render batch recorded into a Vulkan command buffer is
+# `GEGPU submit` (SR_GPU_LOG) and the running totals are `GEGPU stats` (SR_GPU_STATS).
+_GE_ENQ_RE = re.compile(r"GE_ENQ: list_id=(0x[0-9a-fA-F]+) list=(0x[0-9a-fA-F]+) stall=0x[0-9a-fA-F]+ cbid=\d+ -> ")
+_GE_ENQ_TRACE_RE = re.compile(
+    r"GE_ENQUEUE_TRACE frame=\d+ op=enqueue .*?\blist_id=(0x[0-9a-fA-F]+) list=(0x[0-9a-fA-F]+) ")
+_GE_ENQ_RESULT_RE = re.compile(
+    r"GE_ENQUEUE_RESULT frame=\d+ op=enqueue .*?\blist_id=(0x[0-9a-fA-F]+) outcome=(?:done|stalled|deferred)\b")
+_GEGPU_SUBMIT_RE = re.compile(r"GEGPU submit #\d+ batches=(\d+) verts=(\d+) ")
+_GEGPU_STATS_RE = re.compile(r"GEGPU stats: submits=(\d+) batches=(\d+) ")
+_GEGPU_BATCH_DROPPED = "gegpu: pipeline creation failed; a batch was dropped"
+
+
+def _check_ge_list_submitted(*, last_log: str | None) -> str:
+    """P5.1: sceGeListEnQueue accepted a display list (it was given a list id).
+
+    A call line (``HLE: calling sceGeListEnQueue``), a refusal naming the import, or a
+    stall-update line is not a submission (#1376); neither is a list at address 0."""
+    if not last_log:
+        return "pending"
+    traced: set[int] = set()  # list ids of traced enqueues of a non-null list
+    for line in _log_lines(last_log):
+        if m := _GE_ENQ_RE.search(line):
+            if int(m.group(2), 16):
+                return "verified"
+        elif m := _GE_ENQ_TRACE_RE.search(line):
+            if int(m.group(2), 16):
+                traced.add(int(m.group(1), 16))
+        elif (m := _GE_ENQ_RESULT_RE.search(line)) and int(m.group(1), 16) in traced:
+            return "verified"
+    return "pending"
+
+
+def _check_command_buffer_recorded(*, last_log: str | None) -> str:
+    """P5.2: the GPU backend recorded GE render batches into a Vulkan command buffer
+    (``GEGPU submit`` follows the recording of its batches; ``GEGPU stats`` counts them).
+    A GE submission alone records nothing (#1376)."""
+    if not last_log:
+        return "pending"
+    for line in _log_lines(last_log):
+        m = _GEGPU_SUBMIT_RE.search(line) or _GEGPU_STATS_RE.search(line)
+        if m and int(m.group(1)) > 0 and int(m.group(2)) > 0:
+            return "verified"
+    return "pending"
+
+
+def _recorded_draws(lines: list[str]) -> int | None:
+    """vkCmdDraw calls recorded in the run: each recorded batch is one draw. None when a
+    batch was dropped for want of a pipeline: dropped batches record no draw and only the
+    first drop is reported, so the batch total is then no draw count."""
+    if any(_GEGPU_BATCH_DROPPED in line for line in lines):
+        return None
+    submitted = 0
+    reported = 0
+    for line in lines:
+        if m := _GEGPU_SUBMIT_RE.search(line):
+            submitted += int(m.group(1))
+        elif m := _GEGPU_STATS_RE.search(line):
+            reported = max(reported, int(m.group(2)))
+    return max(submitted, reported)
+
+
+def _check_multi_draw(*, last_log: str | None) -> str:
+    """P6.3: more than one vkCmdDraw recorded in the run, counted, not inferred from one
+    matching line (#1376)."""
+    if not last_log:
+        return "pending"
+    draws = _recorded_draws(_log_lines(last_log))
+    return "verified" if draws is not None and draws > 1 else "pending"
 
 
 def _check_present_actually_fires(*, last_log: str | None) -> str:

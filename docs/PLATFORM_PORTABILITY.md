@@ -63,8 +63,9 @@ material in this repository.
 **Status: decided and built.** The maintainer chose the FFmpeg H.264 decoder subset on 2026-10-24
 ([#283](https://github.com/Jstar269/nakagawa-recomp/issues/283)), and it landed in
 [#1263](https://github.com/Jstar269/nakagawa-recomp/pull/1263). The shared stream path uses the
-project-authored PSMF producer for program-stream parsing and AU boundaries. Windows decodes with
-Media Foundation and other hosts with the vendored subset. A build without a usable backend
+project-authored PSMF producer for program-stream parsing and AU boundaries, behind the `sr_h264`
+seam. Windows decodes with Media Foundation; elsewhere the vendored FFmpeg H.264 subset in the
+table below is the default backend. A build without a usable backend
 (`H264_FFMPEG=0` off Windows) returns `H.264 backend unavailable; in the works (#283)` and does not produce a placeholder frame.
 
 ### Backend conformance contract

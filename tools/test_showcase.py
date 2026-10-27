@@ -365,5 +365,115 @@ class ShowcaseImageTests(unittest.TestCase):
         self.assertEqual(metadata.title, "Nakagawa 3D Showcase")
 
 
+
+class ShowcasePrebuiltPrxTests(unittest.TestCase):
+    """The release route: PRXs from a PSPDEV host, packages on a host without PSPDEV."""
+
+    LICENSE = b"PSPSDK three-clause BSD license test notice\n"
+
+    def test_build_prx_writes_each_demo_prx_and_the_license(self) -> None:
+        built: list[str] = []
+
+        def fake_build_prx(demo: dict[str, object], out_dir: Path) -> Path:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            prx = out_dir / f"{demo['target']}.prx"
+            prx.write_bytes(minimal_elf() + str(demo["id"]).encode("ascii"))
+            built.append(str(demo["id"]))
+            return prx
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            out = root / "prx"
+            with mock.patch.object(showcase, "BUILD_ROOT", root / "build"), \
+                    mock.patch.object(showcase, "_check_pspdev") as check, \
+                    mock.patch.object(showcase, "_build_prx", side_effect=fake_build_prx), \
+                    mock.patch.object(showcase, "_check_prx_entry") as entry, \
+                    mock.patch.object(showcase, "_pspsdk_license", return_value=self.LICENSE):
+                self.assertEqual(showcase.main(["build-prx", "--out-dir", str(out)]), 0)
+            check.assert_called_once_with()
+            self.assertEqual(built, [str(demo["id"]) for demo in showcase.DEMOS])
+            self.assertEqual(entry.call_count, len(showcase.DEMOS))
+            self.assertEqual((out / showcase.PSPSDK_LICENSE_NAME).read_bytes(), self.LICENSE)
+            for demo in showcase.DEMOS:
+                self.assertEqual((out / f"{demo['target']}.prx").read_bytes(),
+                                 minimal_elf() + str(demo["id"]).encode("ascii"))
+
+    def _prebuilt(self, root: Path) -> Path:
+        prebuilt = root / "prx"
+        prebuilt.mkdir()
+        for demo in showcase.DEMOS:
+            (prebuilt / f"{demo['target']}.prx").write_bytes(
+                minimal_elf() + str(demo["disc_id"]).encode("ascii"))
+        (prebuilt / showcase.PSPSDK_LICENSE_NAME).write_bytes(self.LICENSE)
+        return prebuilt
+
+    def test_build_from_prebuilt_prxs_needs_no_pspdev(self) -> None:
+        packaged: list[list[str]] = []
+
+        def fake_package(command: list[str], **_: object) -> subprocess.CompletedProcess:
+            packaged.append(command)
+            out = Path(command[command.index("--output-dir") + 1])
+            (out / "package.json").write_text(
+                '{"format": "nakagawa-aot-package", "executable": {"path": "demo.exe"}}',
+                encoding="utf-8")
+            (out / "demo.exe").write_bytes(b"MZ")
+            return subprocess.CompletedProcess(command, 0)
+
+        refused = AssertionError("the prebuilt route must not reach PSPDEV")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            prebuilt = self._prebuilt(root)
+            demos = root / "dist" / "bin" / "demos"
+            with mock.patch.object(showcase, "BUILD_ROOT", root / "showcase"), \
+                    mock.patch.object(showcase, "DEMO_ROOT", demos), \
+                    mock.patch.object(showcase, "_check_pspdev", side_effect=refused), \
+                    mock.patch.object(showcase, "_build_prx", side_effect=refused), \
+                    mock.patch.object(showcase, "_pspsdk_license", side_effect=refused), \
+                    mock.patch.object(showcase, "_check_prx_entry") as entry, \
+                    mock.patch.object(showcase, "_package_fingerprint", return_value="0" * 16), \
+                    mock.patch.object(showcase.subprocess, "run", side_effect=fake_package):
+                self.assertEqual(
+                    showcase.main(["build", "--prebuilt-prx-dir", str(prebuilt)]), 0)
+            self.assertEqual(entry.call_count, len(showcase.DEMOS))
+            self.assertEqual(len(packaged), len(showcase.DEMOS))
+            for demo, command in zip(showcase.DEMOS, packaged, strict=True):
+                staged = (root / "showcase" / str(demo["id"]) / "psp-build" /
+                          f"{demo['target']}.prx")
+                self.assertEqual(Path(command[command.index("--game-elf") + 1]), staged)
+                self.assertEqual(staged.read_bytes(), (prebuilt / staged.name).read_bytes())
+                disc = str(demo["disc_id"])
+                self.assertTrue((demos / "packages" / disc / "demo.exe").is_file())
+                self.assertEqual(inspect_iso(demos / "images" / f"{disc}.iso").disc_id, disc)
+            self.assertEqual(
+                (demos / "THIRD_PARTY_NOTICES" / showcase.PSPSDK_LICENSE_NAME).read_bytes(),
+                self.LICENSE)
+
+    def test_a_missing_prebuilt_prx_or_license_is_named(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            prebuilt = self._prebuilt(root)
+            (prebuilt / f"{BREAKOUT['target']}.prx").unlink()
+            with self.assertRaisesRegex(showcase.ShowcaseError,
+                                        "prebuilt PRX for showcase-breakout-v1 is missing"):
+                showcase._prebuilt_prx(BREAKOUT, prebuilt, root / "stage")
+            (prebuilt / showcase.PSPSDK_LICENSE_NAME).write_bytes(b"")
+            with mock.patch.object(showcase, "_check_pspdev",
+                                   side_effect=AssertionError("no PSPDEV")):
+                with self.assertRaisesRegex(showcase.ShowcaseError,
+                                            "PSPSDK license notice is missing or empty"):
+                    showcase.build_all(prebuilt)
+
+    def test_the_command_line_pairs_each_option_with_its_action(self) -> None:
+        with mock.patch("sys.stderr"):
+            with self.assertRaises(SystemExit):
+                showcase.main(["build-prx"])
+            with self.assertRaises(SystemExit):
+                showcase.main(["smoke", "--prebuilt-prx-dir", "prx"])
+        with mock.patch.object(showcase, "build_all") as build:
+            self.assertEqual(showcase.main(["build"]), 0)
+            self.assertEqual(showcase.main(["build", "--prebuilt-prx-dir", "prx"]), 0)
+        self.assertEqual(build.call_args_list, [mock.call(None), mock.call(Path("prx"))])
+
+
 if __name__ == "__main__":
     unittest.main()

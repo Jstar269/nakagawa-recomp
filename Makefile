@@ -622,11 +622,9 @@ CPU_STATE_ABI_HEADER := src/rt/recomp.h
 # which every optional binding is disabled -- so `make runtime-objects` needs no game
 # input at all, and no default build inherits any title's addresses.
 #
-# HST binds its real values through the local title manifest
+# HST binds its real values through its title manifest
 # (assets/titles/hst-ucus98701.json, supplied by nk_manager.ps1 -TitleManifest or by
-# TITLE_MANIFEST= on a direct Make command line). That file is intentionally never
-# checked in and is publication-excluded, with a .gitignore accident guard.
-# They are deliberately not encoded here.
+# TITLE_MANIFEST= on a direct Make command line). They are deliberately not encoded here.
 TITLE_MANIFEST ?=
 TITLE_CONFIG_TOOL := tools/title_runtime_config.py
 TITLE_CONFIG_DIR ?= $(BUILD_DIR)
@@ -2043,12 +2041,22 @@ $(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
-.PHONY: player-ui-regressions
-# Target-specific export exports NAKAGAWA_PLAYER_UI_TEST_EXE into the recipe's
-# child process environment across platforms, avoiding POSIX shell syntax
-# (e.g. VAR=val cmd) that fails under Windows cmd.exe.
-player-ui-regressions: export NAKAGAWA_PLAYER_UI_TEST_EXE := $(PLAYER_UI_TEST_EXE)
+# The regressions are independent player processes, so they run as parallel shards
+# (tests/native/test_player_ui.py, NAKAGAWA_PLAYER_UI_SHARD): every shard runs side by
+# side and together they run each test exactly once. --output-sync keeps each shard's
+# report in one piece. The shard rules name their targets literally, so an edit to the
+# recipe stays recipe-only for tools/ci_paths.py.
+PLAYER_UI_SHARDS := 0 1 2 3
+.PHONY: player-ui-regressions player-ui-regressions-shard-0 player-ui-regressions-shard-1 player-ui-regressions-shard-2 player-ui-regressions-shard-3
 player-ui-regressions: $(PLAYER_UI_TEST_EXE)
+	$(MAKE) --no-print-directory -j$(words $(PLAYER_UI_SHARDS)) --output-sync=target $(addprefix player-ui-regressions-shard-,$(PLAYER_UI_SHARDS))
+
+# Target-specific export puts the variables into the recipe's child process
+# environment across platforms, avoiding POSIX shell syntax (e.g. VAR=val cmd)
+# that fails under Windows cmd.exe.
+player-ui-regressions-shard-0 player-ui-regressions-shard-1 player-ui-regressions-shard-2 player-ui-regressions-shard-3: export NAKAGAWA_PLAYER_UI_TEST_EXE := $(PLAYER_UI_TEST_EXE)
+player-ui-regressions-shard-0 player-ui-regressions-shard-1 player-ui-regressions-shard-2 player-ui-regressions-shard-3: export NAKAGAWA_PLAYER_UI_SHARD = $(patsubst player-ui-regressions-shard-%,%,$@)/$(words $(PLAYER_UI_SHARDS))
+player-ui-regressions-shard-0 player-ui-regressions-shard-1 player-ui-regressions-shard-2 player-ui-regressions-shard-3:
 	"$(PYTHON)" -m unittest discover -s tests/native -p "test_player_ui.py" -v
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
@@ -3069,7 +3077,7 @@ $(CC) $(NC_CFLAGS_PLAYER) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_P
 endef
 
 define PACKAGE_BUILDER_TEST_BIN_CMD
-$(CC) $(NC_CFLAGS_PLAYER) -DNK_PLAYER_UI_REGRESSION_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/package_builder.c \
+$(CC) $(NC_CFLAGS_PLAYER) -DNK_PLAYER_UI_REGRESSION_TEST -DPYTHON_VERSION_PROBE_TIMEOUT_MS=3000 -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/package_builder.c \
 	tests/native/native_test_isolation.c tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_package_builder$(EXE_EXT)
 endef
 

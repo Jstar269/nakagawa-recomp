@@ -2057,20 +2057,10 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
             return;
         }
     }
-    uint32_t callee_saved[9];
-    /* Only a title configuration that declares the #363 debt restores callee-saved
-     * registers; every other title keeps the callee's architectural writes. */
-    const int has_returning_call_boundary = call_boundary != NULL &&
-                                  sr_title_config_preserve_callee_saved_at_calls();
-    if (has_returning_call_boundary) {
-        for (unsigned reg = 16u; reg <= 23u; reg++)
-            callee_saved[reg - 16u] = s->r[reg];
-        callee_saved[8] = s->r[30];
-    }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
     fn(s);
     /* Complete the body's TAIL chain (#855) where the nested calls used to complete it:
-     * inside this span, before the #363 restore, and before dispatch_after_aot looks for
+     * inside this span, and before dispatch_after_aot looks for
      * exception flow a chained body may raise. A computed step (dispatch_tail_step) runs
      * only its direct successors here, which used to nest inside its dispatch, and leaves
      * the next computed transfer to the enclosing drain, so a chain never nests drains. */
@@ -2079,13 +2069,6 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
         else sr_tail_drain_segment(s);
     }
     if (owns_return_boundary) (void)sr_aot_return_boundary_end(s);
-    /* Exception/ERET transfers are not returns and keep their architectural
-     * register changes. Tail dispatch has no return edge. */
-    if (has_returning_call_boundary && s->flow_kind == SR_FLOW_NONE) {
-        for (unsigned reg = 16u; reg <= 23u; reg++)
-            s->r[reg] = callee_saved[reg - 16u];
-        s->r[30] = callee_saved[8];
-    }
     if (sr_perf_enabled) sr_perf_aot_end();
 }
 

@@ -42,6 +42,37 @@ class NkCliProgressTests(unittest.TestCase):
         for name in ("stage_runtime_dlls", "package_notices", "title_codegen_plan"):
             self.assertNotIn(name, loaded)
 
+    @unittest.skipUnless(os.name == "nt", "the working-directory executable search is Windows behaviour")
+    def test_cli_never_resolves_build_tools_from_the_working_directory(self) -> None:
+        # The player starts the CLI in the player's own working directory. A file there
+        # named like the compiler must not be what the build resolves. The placeholder
+        # is an empty file and is never run: only name resolution is checked.
+        probe = (
+            "import json, os, shutil, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import nk_cli\n"
+            "from nk_core import package_cache\n"
+            "print(json.dumps([shutil.which('gcc'),\n"
+            "                  package_cache._compiler_executable('gcc', os.environ, None)]))\n"
+        )
+        environment = {
+            key: value for key, value in os.environ.items()
+            if key.upper() != "NODEFAULTCURRENTDIRECTORYINEXEPATH"
+        }
+        with tempfile.TemporaryDirectory(prefix="nk_cli_cwd_tool_") as temp:
+            working = Path(temp).resolve()
+            (working / "gcc.exe").write_bytes(b"")
+            proc = subprocess.run(
+                [sys.executable, "-I", "-c", probe, str(ROOT / "tools")],
+                cwd=working, env=environment, capture_output=True, text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            for resolved in json.loads(proc.stdout.strip().splitlines()[-1]):
+                if resolved is None:
+                    continue
+                location = (working / resolved).resolve()
+                self.assertNotEqual(location.parent, working, resolved)
+
     def test_sweep_progress_writer_persists_stage_start_and_finish(self) -> None:
         import nk_cli
 

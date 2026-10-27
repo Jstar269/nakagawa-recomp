@@ -402,28 +402,59 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
         return true;
     }
 
+    /* Short labels: SDL3's Windows box does not widen a button for a long one
+       (PLAYER_DIALOG_BUTTON_LABEL_MAX). Cancel stays the Return and Escape
+       default. */
     const SDL_MessageBoxButtonData buttons[] = {
         { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT |
               SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT,
-          0, "Cancel" },
-        { 0, 1, "Close game and quit" }
+          0, PLAYER_QUIT_DIALOG_CANCEL_LABEL },
+        { 0, 1, PLAYER_QUIT_DIALOG_QUIT_LABEL }
     };
+    char message[NK_MAX_TITLE_LEN + 128];
+    player_app_quit_confirmation_message(app, message, sizeof(message));
     const SDL_MessageBoxData dialog = {
         SDL_MESSAGEBOX_WARNING,
         window,
-        "Game still running",
-        "A game is running. Close it and quit?",
-        2,
+        PLAYER_QUIT_DIALOG_TITLE,
+        message,
+        (int)(sizeof(buttons) / sizeof(buttons[0])),
         buttons,
         NULL
     };
     int button_id = 0;
     bool dialog_shown = false;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* The headless regression cannot open a modal box, so it reads the dialog
+       the host would show from these lines; the message's line break is
+       written as \n to keep it on one. */
+    printf("[PLAYER_UI_TEST] QUIT_DIALOG title=%s\n", dialog.title);
+    printf("[PLAYER_UI_TEST] QUIT_DIALOG message=");
+    for (const char *ch = dialog.message; *ch; ++ch) {
+        if (*ch == '\n') fputs("\\n", stdout);
+        else putchar(*ch);
+    }
+    putchar('\n');
+    for (int i = 0; i < dialog.numbuttons; ++i) {
+        const SDL_MessageBoxButtonData *button = &dialog.buttons[i];
+        printf("[PLAYER_UI_TEST] QUIT_DIALOG button id=%d return_default=%d "
+               "escape_default=%d label=%s\n",
+               button->buttonID,
+               (button->flags & SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT) != 0,
+               (button->flags & SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT) != 0,
+               button->text);
+    }
+    fflush(stdout);
     if (!getenv("NK_UI_TEST_MESSAGEBOX_FAIL")) {
         dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
     }
 #else
+    /* The box is owned by the launcher window: bring that to the front first,
+       or the box opens behind the running game's window. */
+    if (window != NULL) {
+        (void)SDL_RestoreWindow(window);
+        (void)SDL_RaiseWindow(window);
+    }
     dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
 #endif
     if (!dialog_shown) {
@@ -564,6 +595,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                 player_app_set_view(app, VIEW_BUILD_CACHE);
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
                        app->active_view == VIEW_BUILD_CACHE ||
+                       app->active_view == VIEW_PSP_FONTS ||
                        app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -725,6 +757,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                 player_app_set_view(app, VIEW_BUILD_CACHE);
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
                        app->active_view == VIEW_BUILD_CACHE ||
+                       app->active_view == VIEW_PSP_FONTS ||
                        app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -1035,6 +1068,12 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             player_app_clear_shared_library_cache(app);
             break;
         case PLAYER_UI_SETTINGS_KEEP_TOOLS: player_app_set_view(app, VIEW_BUILD_CACHE); break;
+        case PLAYER_UI_SETTINGS_OPEN_FONTS:
+            player_app_refresh_font_status(app);
+            player_app_set_view(app, VIEW_PSP_FONTS);
+            break;
+        case PLAYER_UI_SETTINGS_IMPORT_FONTS: app->request_font_folder_picker = true; break;
+        case PLAYER_UI_SETTINGS_REMOVE_FONTS: player_app_fonts_remove_imports(app); break;
         case PLAYER_UI_SETTINGS_NONE:
         default:
             break;
@@ -1209,6 +1248,11 @@ static void player_ui_nk_apply_action(PlayerApp *app,
         player_app_prereq_cancel(app);
         return;
     }
+    if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER &&
+        app->active_view == VIEW_PREPARING) {
+        player_app_set_view(app, VIEW_LIBRARY);
+        return;
+    }
     if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER) {
         if (app->last_error.return_view == VIEW_PREREQ_CONSENT &&
             app->prerequisites.phase == PLAYER_PREREQ_FAILED) {
@@ -1342,10 +1386,19 @@ static void player_render_active_ui(PlayerUiNk *next_ui, PlayerApp *app,
     if (next) (void)SDL_SetRenderScale(renderer, 1.0f, 1.0f);
     if (next && player_ui_nk_render(next_ui, app, renderer, window, &action)) {
         player_ui_nk_apply_action(app, &action);
-    } else {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    } else if (next_ui == NULL) {
+        /* --ui=legacy, the regression build only. */
         player_use_presentation(app, window, false);
         player_fit_ui_canvas(app, renderer);
         ui_render_frame(renderer, app, input);
+#endif
+    } else {
+        /* The launcher draws every view (player_ui_nk_draws_view); a frame it
+           could not draw is cleared, never handed to another renderer. */
+        (void)input;
+        (void)SDL_SetRenderDrawColor(renderer, 11u, 15u, 20u, 255u);
+        (void)SDL_RenderClear(renderer);
     }
 }
 
@@ -1394,7 +1447,8 @@ static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
         { "prereq_progress", VIEW_PREREQ_PROGRESS },
         { "prereq_about", VIEW_PREREQ_ABOUT },
         { "confirm_remove_tools", VIEW_CONFIRM_REMOVE_TOOLS },
-        { "build_cache", VIEW_BUILD_CACHE }
+        { "build_cache", VIEW_BUILD_CACHE },
+        { "psp_fonts", VIEW_PSP_FONTS }
     };
     if (!names || !names[0] || !mask) return false;
     uint32_t parsed_mask = 0;
@@ -1812,6 +1866,7 @@ static const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_PREREQ_ABOUT: return "prereq_about";
     case VIEW_CONFIRM_REMOVE_TOOLS: return "confirm_remove_tools";
     case VIEW_BUILD_CACHE: return "build_cache";
+    case VIEW_PSP_FONTS: return "psp_fonts";
     case VIEW_ONLINE_SETTINGS: return "online_settings";
     case VIEW_DEVELOPER_LOG: return "developer_log";
     default: return "unknown";
@@ -2158,6 +2213,16 @@ static bool player_package_status_push_completion(SDL_Event *event) {
     return SDL_PushEvent(event) != 0;
 }
 
+/* Set once the launcher is closing. Package validation polls it while it
+   hashes, so closing the window during the startup package check does not
+   wait for every check to finish (launcher review B5). */
+static SDL_AtomicInt s_player_closing;
+
+static bool player_closing(void *user) {
+    (void)user;
+    return SDL_GetAtomicInt(&s_player_closing) != 0;
+}
+
 static int SDLCALL player_package_status_thread_main(void *userdata) {
     PlayerPackageStatusJob *job = (PlayerPackageStatusJob *)userdata;
     if (!job) return 1;
@@ -2166,7 +2231,14 @@ static int SDLCALL player_package_status_thread_main(void *userdata) {
     if (delay_text && delay_text[0]) {
         char *end = NULL;
         unsigned long delay = strtoul(delay_text, &end, 10);
-        if (end && *end == '\0' && delay <= 5000) SDL_Delay((Uint32)delay);
+        /* A slow check, standing in for hashing a large package: it stops
+           when the launcher closes, as the hashing does. */
+        if (end && *end == '\0' && delay <= 5000) {
+            for (unsigned long waited = 0; waited < delay && !player_closing(NULL);
+                 waited += 10u) {
+                SDL_Delay(10);
+            }
+        }
     }
 #endif
     char default_root[NK_MAX_PATH];
@@ -3637,19 +3709,14 @@ int main(int argc, char *argv[]) {
        file, instead of the documented empty-library prompt. */
     bool populate_sample = false;
     bool force_empty = false;
-    /* The next UI is the default. --ui=legacy (or NK_UI=legacy) keeps the
-       existing renderer for one release as the documented fallback; the
-       command line wins over the environment. */
+    /* The nk_ui launcher is the only launcher. The regression-test build keeps
+       the old renderer behind --ui=legacy for the tests that still pin it;
+       the shipped player has no way to reach it. */
     bool ui_next_requested = true;
-    const char *ui_environment = getenv("NK_UI");
-    if (ui_environment != NULL && strcmp(ui_environment, "legacy") == 0) {
-        ui_next_requested = false;
-    }
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nakagawa_player [--user-data-root=<folder>] "
-                   "[--ui=next|--ui=legacy] "
                    "[--iso=<path> [--stage|--stage-only|--launch-now]] "
                    "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>] "
                    "[--width=W --height=H [--render-scale=S]] "
@@ -3657,13 +3724,12 @@ int main(int argc, char *argv[]) {
                    "[--headless-accept-presented-frames=N] "
                    "[--headless-timeout-ms=N]\n");
             return 0;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
         } else if (strcmp(argv[i], "--ui=next") == 0) {
             ui_next_requested = true;
         } else if (strcmp(argv[i], "--ui=legacy") == 0) {
             ui_next_requested = false;
-        } else if (strncmp(argv[i], "--ui=", 5u) == 0) {
-            fprintf(stderr, "[PLAYER] Unknown UI mode. Use --ui=next or --ui=legacy.\n");
-            return 2;
+#endif
         } else if (strncmp(argv[i], "--screenshot=", 13) == 0) {
             screenshot_path = argv[i] + 13;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -4265,6 +4331,9 @@ int main(int argc, char *argv[]) {
             player_app_set_view(&app, VIEW_ONLINE_SETTINGS);
         } else if (strcmp(test_view, "build-cache") == 0) {
             player_app_set_view(&app, VIEW_BUILD_CACHE);
+        } else if (strcmp(test_view, "psp-fonts") == 0) {
+            player_app_refresh_font_status(&app);
+            player_app_set_view(&app, VIEW_PSP_FONTS);
         } else if (strcmp(test_view, "developer-log") == 0) {
             app.settings.developer_mode = true;
             player_dev_log_add(&app, "test", "synthetic developer log line");
@@ -4355,6 +4424,14 @@ int main(int argc, char *argv[]) {
         if (strcmp(disc, "1") != 0) {
             snprintf(app.launch_session.disc_id, sizeof(app.launch_session.disc_id),
                      "%s", disc);
+            /* A launch carries the disc's title, as nk_launch_prepare_session
+               copies it from the library record. */
+            int running_index = player_app_find_game_by_disc_id(&app, disc);
+            if (running_index >= 0) {
+                snprintf(app.launch_session.game_title,
+                         sizeof(app.launch_session.game_title), "%s",
+                         app.games[running_index].title_name);
+            }
             app.child_window_ready = !starting;
         }
     }
@@ -4465,6 +4542,8 @@ int main(int argc, char *argv[]) {
         }
         return player_run_command_line_launch(&app, launch_index, "--launch-index");
     }
+
+    nk_title_manifest_set_cancel_check(player_closing, NULL);
 
     /* Initialize SDL3 */
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -4608,10 +4687,25 @@ int main(int argc, char *argv[]) {
         s_ui_test_next_ui = next_ui;
 #endif
         if (next_ui == NULL) {
-            fprintf(stderr,
-                    "[PLAYER] The next UI could not start: %s. Using the existing player UI.\n",
-                    ui_error[0] != '\0' ? ui_error : "initialization failed");
-            ui_next_requested = false;
+            /* There is no other launcher to fall back to: say why, once, and
+               stop. A missing file means the ZIP was extracted incompletely. */
+            const char *reason = ui_error[0] != '\0' ? ui_error : "it could not initialize";
+            char message[768];
+            (void)snprintf(message, sizeof(message),
+                           "Nakagawa Recomp can't open its launcher: %s.\n\n"
+                           "Some of its files are missing. Extract the ZIP again, keeping "
+                           "every folder, and start nakagawa_player.exe from the extracted "
+                           "folder.", reason);
+            fprintf(stderr, "[PLAYER] LAUNCHER_UNAVAILABLE: %s\n", message);
+            if (interactive_window) {
+                SDL_HideWindow(window);
+                (void)SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+                                               "Nakagawa Recomp can't start", message, NULL);
+            }
+            SDL_DestroyRenderer(renderer);
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+            return 4;
         }
     }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -4620,6 +4714,14 @@ int main(int argc, char *argv[]) {
     }
     if (ui_test_mode && getenv("NK_UI_TEST_REPORT_COMPATIBILITY") != NULL) {
         player_ui_nk_test_report_compatibility();
+    }
+    if (ui_test_mode && getenv("NK_UI_TEST_REPORT_VIEWS") != NULL) {
+        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_PSP_FONTS. */
+        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_PSP_FONTS; ++view) {
+            printf("[PLAYER_UI_TEST] view_coverage value=%d name=%s nk=%d\n", view,
+                   player_ui_test_view_name((PlayerView)view),
+                   player_ui_nk_draws_view(view) ? 1 : 0);
+        }
     }
 #endif
     s_switch_presentation = interactive_window && next_ui != NULL;
@@ -5106,35 +5208,38 @@ int main(int argc, char *argv[]) {
                      event.type == SDL_EVENT_PEN_UP)) {
                     SDL_ConvertEventToRenderCoordinates(renderer, &event);
                 }
+                /* A pad arriving or leaving updates the player's state first: the
+                   launcher also takes these events for its prompts, and a consumed
+                   event left Settings and the wizard saying "keyboard and mouse"
+                   with a controller attached. */
+                if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
+                    if (!gamepad) {
+                        gamepad = SDL_OpenGamepad(event.gdevice.which);
+                        if (gamepad) {
+                            const char *pad_name = SDL_GetGamepadName(gamepad);
+                            snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
+                                     "%s", pad_name ? pad_name : "Controller");
+                            app.settings.controller_connected = true;
+                            printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
+                        }
+                    }
+                    if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                        player_ui_nk_note_gamepad(next_ui, event.gdevice.which, true);
+                    }
+                } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
+                    player_ui_nk_note_gamepad(next_ui, event.gdevice.which, false);
+                    if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                        SDL_CloseGamepad(gamepad);
+                        gamepad = NULL;
+                        app.settings.controller_name[0] = '\0';
+                        app.settings.controller_connected = false;
+                        printf("[PLAYER] Gamepad disconnected\n");
+                    }
+                }
                 if (!player_dispatch_ui_event(&app, &input, next_ui, window, &running,
                                               &close_request_handled_in_batch,
                                               &event)) {
                     switch (event.type) {
-                    case SDL_EVENT_GAMEPAD_ADDED:
-                        if (!gamepad) {
-                            gamepad = SDL_OpenGamepad(event.gdevice.which);
-                            if (gamepad) {
-                                const char *pad_name = SDL_GetGamepadName(gamepad);
-                                snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
-                                         "%s", pad_name ? pad_name : "Controller");
-                                app.settings.controller_connected = true;
-                                printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
-                            }
-                        }
-                        if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
-                            player_ui_nk_note_gamepad(next_ui, event.gdevice.which, true);
-                        }
-                        break;
-                    case SDL_EVENT_GAMEPAD_REMOVED:
-                        player_ui_nk_note_gamepad(next_ui, event.gdevice.which, false);
-                        if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
-                            SDL_CloseGamepad(gamepad);
-                            gamepad = NULL;
-                            app.settings.controller_name[0] = '\0';
-                            app.settings.controller_connected = false;
-                            printf("[PLAYER] Gamepad disconnected\n");
-                        }
-                        break;
                     case SDL_EVENT_USER:
                         if (ui_renderer_handle_async_event(renderer, &event)) {
                             break;
@@ -5524,6 +5629,10 @@ int main(int argc, char *argv[]) {
         }
 #endif
     }
+
+    /* Closing: a package check still hashing stops at its next read, so the
+       window does not hang until every startup check is done. */
+    SDL_SetAtomicInt(&s_player_closing, 1);
 
     /* A launch still on its worker finishes first, so its game is stopped. */
     launch_job = player_launch_job_poll(&app, launch_job, true);

@@ -154,7 +154,8 @@ static const char *package_state_text(PlayerUiPackageState state) {
         case PLAYER_UI_PACKAGE_STARTING:
             return "Starting the game. Its window opens when it is ready.";
         case PLAYER_UI_PACKAGE_RUNNING:
-            return "Running now. Stop the game to rebuild or change settings.";
+            return "Built, in use by the running game. Stop the game to rebuild or change "
+                   "settings.";
         case PLAYER_UI_PACKAGE_MISSING:
         default: return "The package for this game is not ready yet.";
     }
@@ -214,7 +215,14 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
                 head.align_y = NK_UI_ALIGN_CENTER;
                 if (nk_ui_begin_container(ui, TITLE_ID_STATUS_HEAD, &head, NULL)) {
                     nk_ui_eyebrow(ui, TITLE_ID_STATUS_EYEBROW, "Package");
-                    if (title->library_status != NULL && title->library_status[0] != '\0') {
+                    if (title->package_state == PLAYER_UI_PACKAGE_STARTING ||
+                        title->package_state == PLAYER_UI_PACKAGE_RUNNING) {
+                        /* The header badge says Starting or Running once; the
+                           package card describes the package. */
+                        nk_ui_status_pill(ui, TITLE_ID_STATUS_PILL, "\xE2\x97\x8F", "Ready",
+                                          theme->ready);
+                    } else if (title->library_status != NULL &&
+                               title->library_status[0] != '\0') {
                         nk_ui_status_pill(ui, TITLE_ID_STATUS_PILL, title->status_marker,
                                           title->library_status, title->status_rgba);
                     }
@@ -311,7 +319,12 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
             row.padding_top = NK_UI_SPACE_2;
             row.padding_bottom = NK_UI_SPACE_2;
             if (nk_ui_begin_container(ui, TITLE_ID_ACTIONS, &row, NULL)) {
-                if (nk_ui_button(ui, PLAYER_UI_ID_TITLE_PRIMARY,
+                /* While the no-new-frames card is up, its STOP GAME is the only
+                   one on the page. */
+                bool stop_in_stall_card = model->stalled_game_notice_visible &&
+                    title->primary_action == PLAYER_UI_PRIMARY_STOP_GAME;
+                if (!stop_in_stall_card &&
+                    nk_ui_button(ui, PLAYER_UI_ID_TITLE_PRIMARY,
                                  safe_text(title->primary_action_label, "Unavailable"),
                                  NK_UI_BUTTON_LARGE |
                                  (title->primary_action_enabled
@@ -948,6 +961,7 @@ PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model)
 #define ABOUT_ID_NOTICE 0x5000002Bu
 #define ABOUT_ID_LINK 0x5000002Cu
 #define ABOUT_ID_BUILD 0x5000002Du
+#define ABOUT_ID_FOOT 0x5000002Eu
 #define ABOUT_ID_PROMPTS 0x50000040u
 #define ABOUT_ID_WAVES 0x50000050u
 
@@ -1048,12 +1062,19 @@ PlayerUiAction player_ui_screen_about(NkUi *ui, const PlayerUiAboutModel *model)
                             "Not affiliated with or endorsed by Sony Interactive Entertainment. "
                             "PSP is a trademark of its owner. No game data is included.",
                             NK_UI_TYPE_CAPTION, theme->muted);
-            nk_ui_text_role(ui, ABOUT_ID_LINK, "github.com/Jstar269/nakagawa-recomp",
-                            NK_UI_TYPE_DATA, theme->paper);
-            if (model->build_commit != NULL && model->build_commit[0] != '\0') {
-                char build[64];
-                (void)snprintf(build, sizeof(build), "Source commit %s", model->build_commit);
-                nk_ui_text_role(ui, ABOUT_ID_BUILD, build, NK_UI_TYPE_FOOTNOTE, theme->dim);
+            /* The project link and the source commit share one line, so the
+               page fits the 1280 x 720 design size. */
+            row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_6);
+            row.align_y = NK_UI_ALIGN_CENTER;
+            if (nk_ui_begin_container(ui, ABOUT_ID_FOOT, &row, NULL)) {
+                nk_ui_text_role(ui, ABOUT_ID_LINK, "github.com/Jstar269/nakagawa-recomp",
+                                NK_UI_TYPE_DATA, theme->paper);
+                if (model->build_commit != NULL && model->build_commit[0] != '\0') {
+                    char build[64];
+                    (void)snprintf(build, sizeof(build), "Source commit %s", model->build_commit);
+                    nk_ui_text_role(ui, ABOUT_ID_BUILD, build, NK_UI_TYPE_FOOTNOTE, theme->dim);
+                }
+                nk_ui_end_container(ui);
             }
             nk_ui_end_container(ui);
         }
@@ -1329,9 +1350,11 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         bool blocked = model->experimental && model->blocked_reason != NULL &&
                        model->blocked_reason[0] != '\0';
         const char *badge = blocked ? "Not playable yet"
+            : model->recorded ? "On the list"
             : (model->experimental ? "Not tested yet"
                : (model->supported ? "Title profiled" : "Profile missing"));
         uint32_t tone = blocked ? theme->error
+            : model->recorded ? theme->ready
             : (model->experimental ? theme->warning
                : (model->supported ? theme->ready : theme->error));
         const char *note;
@@ -1358,6 +1381,9 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         } else if (blocked) {
             note = "This game can't be played in this version of Nakagawa yet.";
             note_tone = theme->error;
+        } else if (model->recorded) {
+            note = "On Nakagawa's compatibility list. Add it to your library, then build it "
+                   "there to play.";
         } else if (model->experimental) {
             note = "Nakagawa hasn't been tested with this game, so it may not start or may "
                    "stop early. You can add it and try.";
@@ -1922,7 +1948,7 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                              settings_on_off(model->vsync), model->vsync, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_VSYNC);
             }
-            if (settings_row(ui, 3u, PLAYER_UI_ID_SETTINGS_FULLSCREEN, "Fullscreen",
+            if (settings_row(ui, 3u, PLAYER_UI_ID_SETTINGS_FULLSCREEN, "Game fullscreen",
                              settings_on_off(model->fullscreen), model->fullscreen,
                              name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_FULLSCREEN);
@@ -1970,7 +1996,7 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
                 }
             }
             if (settings_row(ui, 6u, PLAYER_UI_ID_SETTINGS_LAUNCHER_FULLSCREEN,
-                             "Fullscreen (F11)", settings_on_off(model->launcher_fullscreen),
+                             "Launcher fullscreen (F11)", settings_on_off(model->launcher_fullscreen),
                              model->launcher_fullscreen, name_width)) {
                 *result = settings_op(PLAYER_UI_SETTINGS_TOGGLE_LAUNCHER_FULLSCREEN);
             }
@@ -2021,6 +2047,9 @@ static void settings_main(NkUi *ui, const PlayerUiSettingsModel *model, float wi
         }
         if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BUILD_CACHE, "Build tools and cache", 0u)) {
             *result = settings_op(PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE);
+        }
+        if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_FONTS, "PSP fonts", 0u)) {
+            *result = settings_op(PLAYER_UI_SETTINGS_OPEN_FONTS);
         }
         nk_ui_end_container(ui);
     }
@@ -2193,6 +2222,69 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
             row.padding_top = NK_UI_SPACE_1;
             if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
                 if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back", NK_UI_BUTTON_PRIMARY)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_BACK);
+                }
+                nk_ui_end_container(ui);
+            }
+        }
+        break;
+    case PLAYER_UI_SETTINGS_PAGE_FONTS:
+        /* Walkthrough blocker: the wizard's Fonts step is not on the Add to
+           library path, so the import lives here, with each slot's status. */
+        flow_eyebrow(ui, FLOW_MARK_DIAMOND, "Settings", theme->accent_dark);
+        nk_ui_text_role(ui, FLOW_ID_TITLE, "PSP fonts", NK_UI_TYPE_TITLE, theme->paper);
+        nk_ui_text_role(ui, FLOW_ID_LEAD,
+                        "Optional. Games look right with your PSP's own fonts: copy the .pgf "
+                        "files from flash0:/font on your PSP to a folder on this PC and import "
+                        "it (docs/SETUP.md, \"Copying the fonts from your PSP\"). Until then "
+                        "similar fonts stand in.",
+                        NK_UI_TYPE_BODY_S, theme->muted);
+        if (wizard_box_begin(ui, 0u)) {
+            NkUiLayout cols = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
+                                          NK_UI_SPACE_4);
+            if (nk_ui_begin_container(ui, SET_ID_TEXT + 0xD0u, &cols, NULL)) {
+                float column = (inner - 32.0f - 2.0f * NK_UI_SPACE_4) / 3.0f;
+                for (int c = 0; c < 3; ++c) {
+                    NkUiLayout col = layout_make(NK_UI_LAYOUT_COLUMN, sizing_fixed(column),
+                                                 sizing_fit(), 2.0f);
+                    if (!nk_ui_begin_container(ui, (NkUiId)(SET_ID_TEXT + 0xD1u + (NkUiId)c),
+                                               &col, NULL)) {
+                        continue;
+                    }
+                    for (size_t r = 0u; r < 6u; ++r) {
+                        size_t item = (size_t)c * 6u + r;
+                        NkUiTextStyle font = nk_ui_type(NK_UI_TYPE_CAPTION, theme->muted);
+                        if (item >= model->font_line_count) break;
+                        nk_ui_text(ui, (NkUiId)(SET_ID_TEXT + 0xE0u + (NkUiId)item),
+                                   nk_ui_text_clamp(ui, safe_text(model->font_lines[item], ""),
+                                                    &font, column, 1), &font);
+                    }
+                    nk_ui_end_container(ui);
+                }
+                nk_ui_end_container(ui);
+            }
+            if (model->font_message != NULL && model->font_message[0] != '\0') {
+                NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION, theme->warning);
+                nk_ui_text(ui, SET_ID_TEXT + 0xDCu,
+                           nk_ui_text_clamp(ui, model->font_message, &text, inner - 32.0f, 2),
+                           &text);
+            }
+            nk_ui_end_container(ui);
+        }
+        {
+            NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                         NK_UI_SPACE_3);
+            row.padding_top = NK_UI_SPACE_1;
+            if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_IMPORT_FONTS, "Import fonts folder",
+                                 NK_UI_BUTTON_PRIMARY)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_IMPORT_FONTS);
+                }
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_REMOVE_FONTS, "Remove imported fonts",
+                                 0u)) {
+                    *result = settings_op(PLAYER_UI_SETTINGS_REMOVE_FONTS);
+                }
+                if (nk_ui_button(ui, PLAYER_UI_ID_SETTINGS_BACK, "Back", 0u)) {
                     *result = settings_op(PLAYER_UI_SETTINGS_BACK);
                 }
                 nk_ui_end_container(ui);

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "name": "nakagawa-recomp",
   "description": "Reproducible release and asset provenance manifest for Nakagawa Recomp public releases",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "license": "GPL-3.0-or-later",
   "license_notice": "Nakagawa Recomp's project-level declared license is GPL-3.0-or-later. That declaration does not resolve component-specific provenance or redistribution questions. Two remain open and each closes on provenance evidence (project-authored replacement code or confirmed license terms), not on the administrative state of any tracker item: (1) PGF/JPCSP/intraFont implementation provenance; (2) replacement PGF font redistribution terms and notices. PGD/amctrl support is engineering work: it is published when it works, and the project ships no keys. See NOTICE.md.",
   "reference_environment": {
@@ -170,10 +170,6 @@
     }
   ],
   "excluded_paths": [
-    {
-      "path": "assets/titles/hst-ucus98701.json",
-      "comment": "Title-specific manifest excluded by the public profile."
-    },
     {
       "path": "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md",
       "comment": "Private title-run acceptance evidence excluded from public scope."
