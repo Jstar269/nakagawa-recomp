@@ -170,10 +170,10 @@ CODEGEN_TEMPORARY_PATCH_TEST = (
     " + ProfileNoneDecouplingTests.test_every_coupled_address_matches_its_control_copy"
 )
 
-#: The two GUEST_PATCHES instruction overrides are pinned by a different test.
-#: The coupling differential does NOT catch them being switched off: their
+#: The GUEST_PATCHES instruction override (0x10950) is pinned by a different test.
+#: The coupling differential does NOT catch it being switched off: its
 #: static-verify exclusion (_SV_SPECIAL in tools/codegen.py) is keyed on the
-#: same addresses, so a disabled patch still emits address-different text.
+#: same address, so a disabled patch still emits address-different text.
 #: The legacy-emission test asserts the patch's own marker text instead, and
 #: fails when the patch stops applying (verified the same way).
 CODEGEN_GUEST_PATCH_TEST = (
@@ -189,12 +189,6 @@ GUEST_PATCHES = [
          test=CODEGEN_GUEST_PATCH_TEST, owner_issue="#363",
          retirement="reproduce and root-cause the forced-control-flow case: the frame-init loop "
                     "must terminate on its own guest-visible condition, then delete the entry"),
-    dict(address=0x00048320, layer="codegen_instruction", category="temporary_compatibility_patch",
-         source="tools/codegen.py:GUEST_PATCHES", name="force single-iteration pass",
-         reason="inject a forced single-iteration exit at 0x48320",
-         test=CODEGEN_GUEST_PATCH_TEST, owner_issue="#363",
-         retirement="reproduce and root-cause the forced-control-flow case: the guest loop must "
-                    "run its real iteration count, then delete the injected exit"),
 ]
 
 # --- tools/codegen.py: custom per-address stubs -----------------------------
@@ -393,22 +387,6 @@ SCHEDULER_HOOKS = [
          owner_issue="#363",
          retirement="prove the guest's create/exit sequence needs no reuse, which retires the "
                     "binding with it"),
-    dict(address=0x0029a174, category="temporary_compatibility_patch", name="launcher priority demotion",
-         source="src/rt/sched.c:sched_create_thread_finish",
-         reason="the launcher thread's declared priority is overridden to 50 (below the "
-                "worker's ~38-40) to prevent it starving the worker via an unconditional "
-                "SR_YIELD-heavy loop; opt-out via SR_NO_LAUNCHER_DEMOTE=1. Flagged in "
-                "ISSUES.md P2 as the leading suspect for movement-triggered rendering "
-                "glitches -- capture with SR_THLOG=1 SR_GELOG=1 before changing "
-                "(SR_ROTLOG was retired with pick_next's rotation, 2026-07-18). The address "
-                "above is no longer compiled into the runtime: it reaches sched.c only as the "
-                "runtime_bindings.launcher_thread_entry of a validated title manifest, so an "
-                 "unconfigured build never demotes anything. Retire by fixing the underlying "
-                 "scheduling inversion, which retires the binding with it.",
-         test="make sched-selftest (generic/fixture-a/fixture-b matrix)",
-         owner_issue="#363",
-         retirement="fix the underlying scheduling inversion that lets the launcher starve the "
-                    "worker, which retires the binding with it"),
     dict(address=0x000468c8, category="temporary_compatibility_patch", name="worker relaunch trampoline",
          source="src/rt/sched.c:deliver_vblank",
          reason="a DORMANT thread holding the WORKER role is restarted on the next VBLANK, "

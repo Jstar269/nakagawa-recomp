@@ -893,7 +893,7 @@ class GateInventoryTests(unittest.TestCase):
 
 #: Independent inventory of retired HST override addresses that must NEVER be
 #: reintroduced as custom stubs, manual callables, resume points, or gated emitters.
-RETIRED_HST_ADDRESSES: frozenset[int] = frozenset({0x00046D14})
+RETIRED_HST_ADDRESSES: frozenset[int] = frozenset({0x00046D14, 0x00048320})
 
 
 def scan_ast_literals_for_addrs(tree: ast.AST, forbidden_addrs: frozenset[int]) -> list[str]:
@@ -940,6 +940,9 @@ class RetiredAddressGuardTests(unittest.TestCase):
     0x00046d14 was retired on 2026-08-29 after static and dynamic analysis
     proved it is an interior basic-block loop header label (L_00046d14) inside
     FUN_000468c8 (main_RunGameLoop), not a standalone function or resume entry.
+    0x00048320 was a GUEST_PATCHES "force single-iteration pass" override that
+    injected `_c = 1u;` into a guest branch; it was retired under #363 after a
+    private route run with the branch's own condition reached the same match.
     These tests enforce independent invariants so that no live metadata, AST
     helper, or classification change can silently revive an override at this
     address.
@@ -1025,6 +1028,38 @@ class RetiredAddressGuardTests(unittest.TestCase):
         self.assertEqual(
             none_lines, hst_lines,
             "Enclosing function containing 0x00046d14 diverged between profile=none and profile=hst",
+        )
+
+    def test_retired_48320_branch_runs_its_guest_condition_in_both_profiles(self):
+        """The branch at 0x00048320 is decided by its own operands under both profiles.
+
+        GUEST_PATCHES used to inject `_c = 1u;` there under profile=hst, forcing the
+        branch taken whatever $s2 held, and recorded a compat firing. Retired (#363),
+        the enclosing function emits the same C under both profiles."""
+        words = {
+            0x00048318: LUI_T0,
+            0x0004831C: NOP,
+            0x00048320: (4 << 26) | (18 << 21) | 3,  # beq $s2, $zero, 0x48330
+            0x00048324: NOP,
+            0x00048328: LUI_T0,
+            0x0004832C: ORI_T0,
+            0x00048330: JR_RA,
+            0x00048334: NOP,
+        }
+        elf = _FakeElf(words)
+        ranges = [(0, 0x00200000)]
+        known = {0x00048318}
+
+        none_lines = codegen.emit_function(elf, 0x00048318, ranges, known, profile="none")
+        hst_lines = codegen.emit_function(elf, 0x00048318, ranges, known, profile="hst")
+        hst_text = "\n".join(hst_lines)
+
+        self.assertIn("L_00048330:", hst_text, "the branch target label is missing")
+        self.assertNotIn("_c = 1u;", hst_text, "profile=hst still forces the 0x48320 branch taken")
+        self.assertNotIn("sr_compat_fired", hst_text, "profile=hst still records a 0x48320 compat firing")
+        self.assertEqual(
+            none_lines, hst_lines,
+            "the function containing the 0x00048320 branch diverged between profile=none and profile=hst",
         )
 
     # --- Mutant kills -----------------------------------------------------
