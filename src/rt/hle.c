@@ -20404,7 +20404,6 @@ static uint32_t h_DisplayGetFramePerSec(CpuState *s) {
 /* Called once per delivered VBLANK... */
 void sr_ctrl_sample(void);
 void ge_set_frame(uint32_t frame);
-void ge_finish_latch_assist(void);   /* defined below (ge_finish_callback area) */
 
 /* Guest-visible VCOUNT advances by elapsed display periods at scheduler
  * source-latch boundaries, decoupled from VBLANK service -- it is not the count
@@ -20464,30 +20463,6 @@ void sr_vblank_tick(void) {
      * rather than one frame late. */
     route_tick(s_vcount_fwd);
     sr_ctrl_sample();   /* latch one controller sample per frame (PPSSPP ring semantics) */
-    /* Last-resort un-wedge for the frame-ready latch: title-qualified.
-     * Generic PSP has no such latch; HST's render loop gates presentation on
-     * MEM[frame_latch]. If it has been stuck above 0 for a sustained stretch
-     * with no list completing to clear it, force it down. This mirrors the
-     * assist in ge_finish_callback but covers lists that never reach a finish
-     * callback. Only when the title configures the latch (issue #98 #5).
-     * Retirement: replace the timer hack with the real guest/runtime event it
-     * approximates (list completion with no registered callback) once that event
-     * is modeled generically. */
-    {
-        static uint32_t latch_stuck = 0;
-        uint32_t latch;
-        if (!sr_title_config_frame_latch_addr(&latch) ||
-            !sr_guest_span_readable(latch, 4) || !sr_guest_span_writable(latch, 4)) {
-            latch_stuck = 0;
-        } else {
-            uint32_t lc = MEM_R32(latch);
-            if (lc > 0) {
-                if (++latch_stuck > 30u) { ge_finish_latch_assist(); latch_stuck = 0; }
-            } else {
-                latch_stuck = 0;
-            }
-        }
-    }
     /* No-frame watchdog: vblanks keep being delivered even when every game thread is
      * blocked, so a stretch with no new sceDisplaySetFrameBuf is a NO-NEW-FLIP
      * observation. It is not by itself a hang, scheduler-stall, or scene-transition
@@ -20762,114 +20737,14 @@ void sr_hle_test_call_guest_void(CpuState *s, uint32_t fn,
 }
 #endif /* SR_HLE_THREAD_SELFTEST */
 
-/* sceDisplaySetMode: on the real PSP this triggers the display driver to
- * initialise the vblank device (written to MEM[0x34B328]) and the render
- * context (global MEM[0x2CFC8C] -> struct at 0x31FC40, whose +0x80 must equal
- * 0x308). The recompiled game never reaches its own display-init path because
- * this syscall was a no-op, so the main render loop (f_00046dec / L_00046f70)
- * spins forever on two unmet conditions:
- *   1. f_000487f4's chk7 requires MEM[MEM[0x2CFC8C]+0x80] == 0x308 (it returns
- *      0 while 0x2CFC8C is still 0, because the render-context init f_0001dc00
- *      was never dispatched).
- *   2. The second poll waits on MEM[0x331B80] (frame-ready counter) which is
- *      never set.
- * We replay the game-owned init by dispatching the real constructors instead of
- * faking the structs by hand. Verified by build/run: expect the first frame to
- * be presented and the intro/menu to become reachable. */
-/* The engine's allocator/render queues enter and leave a short critical section
- * through two callbacks in the global configuration block at 0x333138.  The
- * normal game initializer (f_00081a04) selects the exact pair below from the
- * threading mode at +0x30.  DisplaySetMode is currently the earliest safe
- * point in the native runtime's game-owned initialization replay; seed only a
- * missing pair here, reproducing that initializer's branch table verbatim.
- *
- * Keeping this mapping next to the replay is important: dispatching a null
- * callback happens to be tolerated by the recompiler, but silently skips the
- * critical section and leaves the worker spinning with no display list. */
-static void ensure_runtime_sync_callbacks(CpuState *s);
-
+/* sceDisplaySetMode: the requested mode and size are logged and the call succeeds. The
+ * runtime replays no title display-driver bring-up: a title initializes its own display
+ * state through its own code (#363). */
 static uint32_t h_DisplaySetMode(CpuState *s) {
     uint32_t mode = s->r[4], width = s->r[5], height = s->r[6];
-    (void)mode; (void)width; (void)height;
     fprintf(stderr, "DISPLAY_SET_MODE: mode=%u %ux%u (title %s)\n", mode, width, height,
             sr_title_config()->source_id);
     fflush(stderr);
-
-    ensure_runtime_sync_callbacks(s);
-
-    SrTitleDisplayBringup bringup;
-    if (!sr_title_config_display_bringup(&bringup)) {
-        fprintf(stderr,
-                "DISPLAY_SET_MODE: display bringup not configured (generic PSP semantics, title %s)\n",
-                sr_title_config()->source_id);
-        return 0; /* Generic PSP: mode/width/height already recorded via generic path if needed */
-    }
-
-    if (!sr_guest_span_writable(bringup.render_context_magic_addr, 4) ||
-        !sr_guest_span_writable(bringup.render_table_ready_flag_addr, 1) ||
-        !sr_guest_span_writable(bringup.render_context_word_addr, 4)) {
-        fprintf(stderr,
-                "DISPLAY_SET_MODE: bringup data addrs not writable (title %s), skipping bringup\n",
-                sr_title_config()->source_id);
-        return 0;
-    }
-
-    fprintf(stderr, "DISPLAY_SET_MODE: replaying title display-driver init (title %s)\n",
-            sr_title_config()->source_id);
-    sr_compat_fired("HLE_TITLE_CONFIGURED_COMPAT", bringup.malloc_entry, "display_setmode_guest_init");
-
-    /* Vblank device: allocate the device struct and let the real creator
-     * (guest's vblank device init, normally reached via guest's init dispatcher)
-     * populate it. Title-qualified addresses. */
-    uint32_t dev = ge_call_guest_rv(s, bringup.malloc_entry, 0x40u, 0, 0);
-    if (dev) {
-        ge_call_guest(s, bringup.vblank_device_init_entry, dev, 0, 0);
-    } else {
-        fprintf(stderr, "DISPLAY_SET_MODE: guest malloc returned 0; skipping vblank device init (title %s)\n",
-                sr_title_config()->source_id);
-    }
-
-    /* Render context: guest render-context init fully initialises the context
-     * struct (including the +0x80 magic the poller checks). This is the gate
-     * that unblocks the file load path. */
-    ge_call_guest(s, bringup.render_context_init_entry, 0, 0, 0);
-
-    /* Guarantee magic even if loader state differs. */
-    if (MEM_R32(bringup.render_context_magic_addr) != 0x308u) {
-        fprintf(stderr, "DISPLAY_SET_MODE: forcing render-context magic 0x%08x -> 0x308 (title %s)\n",
-                bringup.render_context_magic_addr, sr_title_config()->source_id);
-        MEM_W32(bringup.render_context_magic_addr, 0x308u);
-    }
-
-    /* Seed the frame-ready counter so the second render-loop wait clears and
-     * the loop proceeds to present frame 0. Title-qualified: only when the
-     * frame latch is configured. */
-    uint32_t latch;
-    if (sr_title_config_frame_latch_addr(&latch)) {
-        if (sr_guest_span_writable(latch, 4)) {
-            MEM_W32(latch, 1u);
-            fprintf(stderr, "DISPLAY_SET_MODE: seeded frame latch 0x%08x <- 1 (title %s)\n",
-                    latch, sr_title_config()->source_id);
-        } else {
-            fprintf(stderr,
-                    "DISPLAY_SET_MODE: frame latch 0x%08x not writable, not seeding (title %s)\n",
-                    latch, sr_title_config()->source_id);
-        }
-    } else {
-        fprintf(stderr,
-                "DISPLAY_SET_MODE: frame latch not configured, not seeding (title %s)\n",
-                sr_title_config()->source_id);
-    }
-
-    /* Render-command table ready flag and context word. On real PSP a
-     * background thread fills the table; our HLE has no background thread. */
-    MEM_W8(bringup.render_table_ready_flag_addr, 1u);
-    MEM_W32(bringup.render_context_word_addr, 1u);
-    fprintf(stderr,
-            "DISPLAY_SET_MODE: seeded table ready 0x%08x <-1 and ctx 0x%08x <-1 (title %s)\n",
-            bringup.render_table_ready_flag_addr, bringup.render_context_word_addr,
-            sr_title_config()->source_id);
-
     return 0; /* SCE_DISPLAY_SET_MODE_SUCCESS */
 }
 
@@ -20878,65 +20753,27 @@ static uint32_t h_DisplaySetMode(CpuState *s) {
 uint32_t sr_hle_test_display_set_mode(CpuState *s) { return h_DisplaySetMode(s); }
 #endif
 
-/* The engine's render loop gates "is a frame ready to present?" on a title-
- * specific counter (HST: MEM[0x331b80], decremented once per completed display
- * list). Title-qualified: the latch address is configuration. Generic titles
- * use the generic GE completion path without latch assist. */
+/* Run the guest's registered finish callback for a completed display list, or log why
+ * none ran. The runtime advances no title counter of its own here. */
 static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t list_id, uint32_t user_arg) {
     const size_t cb_max = sizeof(s_ge_cb) / sizeof(s_ge_cb[0]);
-    uint32_t latch;
-    int has_latch = sr_title_config_frame_latch_addr(&latch) &&
-                    sr_guest_span_readable(latch, 4) && sr_guest_span_writable(latch, 4);
     if (cbid >= (uint32_t)cb_max) {
-        fprintf(stderr, "GE_FINISH_CB: cbid=%u OUT OF RANGE (max %zu) -- no guest cb%s\n",
-                cbid, cb_max, has_latch ? ", advancing latch" : " (generic: no latch)");
-        if (has_latch) ge_finish_latch_assist();
+        fprintf(stderr, "GE_FINISH_CB: cbid=%u OUT OF RANGE (max %zu) -- no guest cb\n",
+                cbid, cb_max);
         return;
     }
     GeCallback *cb = &s_ge_cb[cbid];
     if (!cb->used || !cb->finish_func) {
-        fprintf(stderr, "GE_FINISH_CB: cbid=%u used=%d fn=0x%08x (SKIPPED - %s)%s\n",
-                cbid, cb->used, cb->finish_func, !cb->used ? "not registered" : "no function",
-                has_latch ? " -- advancing latch" : " (generic: no latch)");
-        if (has_latch) ge_finish_latch_assist();
+        fprintf(stderr, "GE_FINISH_CB: cbid=%u used=%d fn=0x%08x (SKIPPED - %s)\n",
+                cbid, cb->used, cb->finish_func, !cb->used ? "not registered" : "no function");
         return;
     }
     if (ge_log_on())
         fprintf(stderr, "GE_FINISH_CB: cbid=%u list=0x%08x fn=0x%08x arg=0x%08x\n",
                 cbid, list_id, cb->finish_func, cb->finish_arg ? cb->finish_arg : user_arg);
-    uint32_t pre_ctr = has_latch ? MEM_R32(latch) : 0u;
     ge_call_guest(s, cb->finish_func, list_id, cb->finish_arg ? cb->finish_arg : user_arg, cbid);
-    if (has_latch) {
-        uint32_t post_ctr = MEM_R32(latch);
-        if (ge_log_on())
-            fprintf(stderr, "GE_FINISH_CB: counter 0x%08x before=%u after=%u\n", latch, pre_ctr, post_ctr);
-        if (post_ctr == pre_ctr && pre_ctr > 0) {
-            MEM_W32(latch, pre_ctr - 1u);
-            sr_compat_fired("HLE_TITLE_CONFIGURED_COMPAT", latch, "frame_ready_latch_assist");
-            if (ge_log_on())
-                fprintf(stderr, "GE_FINISH_CB: counter 0x%08x forcibly decremented to %u\n", latch, pre_ctr - 1u);
-        }
-    }
     if (ge_log_on())
         fprintf(stderr, "GE_FINISH_CB: callback fn=0x%08x returned\n", cb->finish_func);
-}
-
-/* Guarantee the frame-ready latch makes progress on every completed list,
- * even when no guest finish callback ran. Title-qualified: only when the
- * frame latch address is configured and writable; generic titles have no
- * latch to assist. Called from ge_finish_callback and sr_vblank_tick. */
-void ge_finish_latch_assist(void) {
-    uint32_t latch;
-    if (!sr_title_config_frame_latch_addr(&latch)) return;
-    if (!sr_guest_span_readable(latch, 4) || !sr_guest_span_writable(latch, 4)) return;
-    uint32_t pre = MEM_R32(latch);
-    if (pre > 0) {
-        MEM_W32(latch, pre - 1u);
-        sr_compat_fired("HLE_TITLE_CONFIGURED_COMPAT", latch, "frame_ready_latch_assist");
-        if (ge_log_on())
-            fprintf(stderr, "GE_FINISH_LATCH_ASSIST: 0x%08x %u -> %u (title %s)\n",
-                    latch, pre, pre - 1u, sr_title_config()->source_id);
-    }
 }
 
 #define GE_LIST_MAX 64
@@ -23025,105 +22862,6 @@ static uint32_t h_CreateSema(CpuState *s) {
     return m->uid;
 }
 
-/* Complete the small piece of f_00081a04 that the display-init replay reaches
- * before the normal SGX configuration path.  +0x4c0 is written to 1 near the
- * start of that initializer.  When it is still zero, +0x30 is merely BSS and
- * must not be interpreted as an explicit mode 0 selection: the game's
- * "sgx-psp-di-sema" option is read with default 1 at 0x00081c24..0x00081c3c.
- * Mode 1 also owns a count-1 semaphore at +0x0c, created at
- * 0x00081c94..0x00081cb8.  Recreate both pieces together so the callbacks
- * block and wake with the same semantics as the original initializer.
- *
- * Title-qualified (issue #98): the config base, sema name pointer and
- * mode-keyed wrapper pairs are validated title configuration. An unconfigured
- * build performs no sync install at all (generic sceDisplaySetMode has no
- * sync side effects). The pairing and the mode that selects it are part of
- * the meaning and are not flattened. */
-static void ensure_runtime_sync_callbacks(CpuState *s) {
-    uint32_t config_base, sema_name_ptr;
-    const SrTitleRuntimeSyncWrapper *wrappers;
-    unsigned wrapper_count;
-    if (!sr_title_config_runtime_sync(&config_base, &sema_name_ptr, &wrappers, &wrapper_count)) {
-        if (hle_log_on())
-            fprintf(stderr,
-                    "DISPLAY_SET_MODE: runtime sync not configured (generic, title %s)\n",
-                    sr_title_config()->source_id);
-        return;
-    }
-    if (!sr_guest_span_writable(config_base, 0x4c4)) {
-        fprintf(stderr,
-                "DISPLAY_SET_MODE: runtime sync config 0x%08x not writable (title %s), skipping\n",
-                config_base, sr_title_config()->source_id);
-        return;
-    }
-    uint32_t mode = MEM_R32(config_base + 0x30u);
-    uint32_t enter = MEM_R32(config_base + 0x34u);
-    uint32_t leave = MEM_R32(config_base + 0x38u);
-    const int initializer_ran = MEM_R32(config_base + 0x4c0u) != 0;
-
-    if (enter && leave) return;
-    sr_compat_fired("HLE_TITLE_CONFIGURED_COMPAT", config_base, "runtime_sync_callback_config");
-
-    if (!initializer_ran) {
-        mode = 1;
-        MEM_W32(config_base + 0x30u, mode);
-    } else if (mode > 2) {
-        fprintf(stderr,
-                "DISPLAY_SET_MODE: invalid runtime sync mode %u; using game default mode 1 (title %s)\n",
-                mode, sr_title_config()->source_id);
-        mode = 1;
-        MEM_W32(config_base + 0x30u, mode);
-    }
-
-    uint32_t cfg_enter = 0, cfg_leave = 0;
-    int found = sr_title_config_runtime_sync_wrapper_for_mode(mode, &cfg_enter, &cfg_leave);
-    if (!found) {
-        /* Fallback to mode 1 if the requested mode is not in the configured set
-         * (e.g. a synthetic title that only configures mode 0). Mirrors the
-         * historical "invalid mode -> mode 1" fallback. */
-        found = sr_title_config_runtime_sync_wrapper_for_mode(1, &cfg_enter, &cfg_leave);
-        if (!found) {
-            fprintf(stderr,
-                    "DISPLAY_SET_MODE: no runtime sync wrapper for mode %u and no mode 1 fallback (title %s)\n",
-                    mode, sr_title_config()->source_id);
-            return;
-        }
-        fprintf(stderr, "DISPLAY_SET_MODE: mode %u not in config, fallback to mode 1 wrappers (title %s)\n", mode, sr_title_config()->source_id); mode = 1;
-        MEM_W32(config_base + 0x30u, mode);
-    }
-
-    if (mode == 1) {
-        uint32_t sema = MEM_R32(config_base + 0x0cu);
-        if (!sync_find(sema)) {
-            CpuState call = *s;
-            call.r[4] = sema_name_ptr;
-            call.r[5] = 0;
-            call.r[6] = 1;
-            call.r[7] = 1;
-            if (!sr_guest_span_readable(sema_name_ptr, 16)) {
-                fprintf(stderr,
-                        "DISPLAY_SET_MODE: sema name 0x%08x not readable, still creating sema (title %s)\n",
-                        sema_name_ptr, sr_title_config()->source_id);
-            }
-            sema = h_CreateSema(&call);
-            MEM_W32(config_base + 0x0cu, sema);
-            fprintf(stderr,
-                    "DISPLAY_SET_MODE: created runtime sync sema 0x%x for mode 1 (title %s)\n",
-                    sema, sr_title_config()->source_id);
-        }
-        enter = cfg_enter;
-        leave = cfg_leave;
-    } else {
-        enter = cfg_enter;
-        leave = cfg_leave;
-    }
-
-    MEM_W32(config_base + 0x34u, enter);
-    MEM_W32(config_base + 0x38u, leave);
-    fprintf(stderr,
-            "DISPLAY_SET_MODE: runtime sync callbacks mode=%u enter=0x%08x leave=0x%08x (title %s)\n",
-            mode, enter, leave, sr_title_config()->source_id);
-}
 static uint32_t h_DeleteSema(CpuState *s) {
     /* PSP-B1-01 (psp-hw-20260917): unknown or deleted semaphore id is
      * UNKNOWN_SEMID. */

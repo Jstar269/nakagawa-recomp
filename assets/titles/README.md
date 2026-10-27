@@ -77,13 +77,13 @@ fixture reuses any address the runtime previously hardcoded.
 Every binding family inside that block is individually optional, and that is what
 keeps the schema generic: a title needing none of them is a valid title, and no
 family is globally mandatory. Optionality alone, though, cannot tell "this title
-does not use display bring-up" apart from "this title's display bring-up was
+does not use a fallback entry" apart from "this title's fallback entry was
 lost" — the runtime reads both as the same disabled binding and silently falls
 back to generic PSP semantics. `required_runtime_bindings` is the optional
 root-level list where a title names the families it cannot function without:
 
 ```json
-"required_runtime_bindings": ["display_bringup", "frame_ready_latch_addr"]
+"required_runtime_bindings": ["fallback_entry", "worker_thread_entry"]
 ```
 
 Declaring a family makes its loss a validation failure instead of a run-time

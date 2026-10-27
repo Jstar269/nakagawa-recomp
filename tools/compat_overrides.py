@@ -716,10 +716,11 @@ RETIRED_HLE_DIAGNOSTIC_GROUPS = [
 HLE_GUEST_ADDRESS_GROUPS = []
 
 # These four groups were EXPLICIT_COMPATIBILITY_OVERRIDE in generic hle.c before
-# 2026-08-27. Three remain PROFILE_OWNED_CONFIGURATION via runtime_bindings
-# (display_bringup, runtime_sync, frame_ready_latch_addr); libfont readiness
-# injection is retired and remains here as historical evidence. The 46->30 census
-# delta is auditable, but none is part of the live hle.c coupling census.
+# 2026-08-27, then PROFILE_OWNED_CONFIGURATION via runtime_bindings. All four are now
+# retired and remain here as historical evidence: libfont readiness injection (#299),
+# and the frame-ready latch assist, runtime-sync seeding and display bring-up replay
+# (#363, 2026-10-27), whose manifest fields now fail with HLE_TITLE_ASSIST_RETIRED.
+# None is part of the live hle.c coupling census.
 HLE_TITLE_CONFIGURED_COMPAT = [
     dict(name="libfont_ready_flag", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
@@ -751,9 +752,10 @@ HLE_TITLE_CONFIGURED_COMPAT = [
          evidence_tier="SOURCE_SHAPE",
          evidence="title_config gated: generic build has no MEM_R32/MEM_W32(0x00331b80)",
          accidental_inheritance="no -- generic build touches no latch; configured title touches only its own",
-         test="tools/test_hle_title_isolation.py",
+         test="tools/test_hle_title_config_behavior.py:test_retired_hle_assist_bindings_have_a_named_migration_error",
          owner_issue="#363",
-         retirement="model the real list-complete event generically; then the latch address itself may retire"),
+         retirement="retired (2026-10-27); no runtime path advances a title frame latch, and legacy "
+                    "manifest fields fail with HLE_TITLE_ASSIST_RETIRED"),
     dict(name="runtime_sync_callback_config", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
          title_scope="hst-ucus98701",
@@ -766,13 +768,12 @@ HLE_TITLE_CONFIGURED_COMPAT = [
                 "config base with field layout, sema name pointer, and three MODE-KEYED PAIRS. "
                 "Generic builds install nothing.",
          generic_fallback="generic PSP sceDisplaySetMode does not install sync callbacks",
-         retirement="the eight values are typed configuration (base + name ptr + mode-keyed pairs); "
-                    "they must NOT be flattened into scalar runtime_bindings. Host-side replay stays "
-                    "until a generic mechanism exists.",
+         retirement="retired (2026-10-27); sceDisplaySetMode seeds no runtime sync state, and legacy "
+                    "manifest fields fail with HLE_TITLE_ASSIST_RETIRED",
          evidence_tier="SOURCE_SHAPE",
          evidence="title_config gated: generic hle.c has no literal 0x00333138 etc.",
          accidental_inheritance="no -- generic build installs nothing; configured title installs its own pairs",
-         test="tools/test_hle_title_isolation.py",
+         test="tools/test_hle_title_config_behavior.py:test_retired_hle_assist_bindings_have_a_named_migration_error",
          owner_issue="#363"),
     dict(name="display_setmode_guest_init", category="temporary_compatibility_patch",
          title2_bucket="PROFILE_OWNED_CONFIGURATION",
@@ -786,9 +787,10 @@ HLE_TITLE_CONFIGURED_COMPAT = [
          evidence_tier="SOURCE_SHAPE",
          evidence="title_config gated: generic hle.c has no ge_call_guest at those addresses",
          accidental_inheritance="no -- generic build calls nothing; configured title calls its own entries",
-         test="tools/test_hle_title_isolation.py",
+         test="tools/test_hle_title_config_behavior.py:test_retired_hle_assist_bindings_have_a_named_migration_error",
          owner_issue="#363",
-         retirement="model the guest's own display-driver init; retire when generic init suffices"),
+         retirement="retired (2026-10-27); sceDisplaySetMode replays no guest display bring-up, and "
+                    "legacy manifest fields fail with HLE_TITLE_ASSIST_RETIRED"),
 ]
 
 def all_documented_addresses() -> "set[int]":

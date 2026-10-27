@@ -116,7 +116,7 @@ peaked at about 3 GB. The measured numbers are in
 
 ## Title-specific compatibility patches
 
-Hot Shots Tennis runs with 23 title-specific compatibility patches: the forced branches, success stubs and scheduler or display surrogates that `python tools/compat_overrides.py --debt-census` lists. They fire only for that title. The recompiler emits its patches only under that title's profile, and the runtime applies the rest only through that title's validated configuration, so generic runtime code outside the configuration layer carries no title address. They are not fail-closed, so a missing behaviour can look like success on that route. Each run's log names every patch that fired, or says that none did, in its `COMPAT_PATCH_REPORT` lines. Retiring them is v0.0.2 work, tracked in [#363](https://github.com/Jstar269/nakagawa-recomp/issues/363).
+Hot Shots Tennis runs with 20 title-specific compatibility patches: the forced branches, success stubs and scheduler or display surrogates that `python tools/compat_overrides.py --debt-census` lists. They fire only for that title. The recompiler emits its patches only under that title's profile, and the runtime applies the rest only through that title's validated configuration, so generic runtime code outside the configuration layer carries no title address. They are not fail-closed, so a missing behaviour can look like success on that route. Each run's log names every patch that fired, or says that none did, in its `COMPAT_PATCH_REPORT` lines. Retiring them is v0.0.2 work, tracked in [#363](https://github.com/Jstar269/nakagawa-recomp/issues/363).
 
 ## Known issues
 

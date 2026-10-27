@@ -1,18 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
-"""Production-path regressions for the migrated title-qualified HLE bindings.
+"""Production-path regressions for the title-qualified HLE bindings.
 
 The positive case generates a temporary validated synthetic manifest and runs
 the real ``hle.c`` handlers through the existing executable HLE selftest. The
-test does not copy handler logic or mock guest memory. Generic/public fixture
-profiles are also run through that executable and must keep the migrated HLE
-groups absent.
+test does not copy handler logic or mock guest memory. The display bring-up,
+runtime-sync and frame-latch assists are retired (#363): no profile arms them,
+and a manifest that still names one fails with a named migration error.
 """
 
 from __future__ import annotations
 
-import copy
 import json
 import os
 from pathlib import Path
@@ -30,36 +29,28 @@ import title_manifest
 
 FIXTURE = ROOT / "assets" / "titles" / "synthetic.json"
 
-SYNTH_DISPLAY = {
-    "malloc_entry": 0x08901000,
-    "vblank_device_init_entry": 0x08901010,
-    "render_context_init_entry": 0x08901020,
-    "render_context_magic_addr": 0x08902000,
-    "render_table_ready_flag_addr": 0x08902004,
-    "render_context_word_addr": 0x08902008,
+#: Shapes the retired assists used to take; a manifest carrying any of them must fail.
+RETIRED_ASSIST_VALUES = {
+    "display_bringup": {
+        "malloc_entry": 0x08901000,
+        "vblank_device_init_entry": 0x08901010,
+        "render_context_init_entry": 0x08901020,
+        "render_context_magic_addr": 0x08902000,
+        "render_table_ready_flag_addr": 0x08902004,
+        "render_context_word_addr": 0x08902008,
+    },
+    "runtime_sync": {
+        "config_base": 0x08903000,
+        "sema_name_ptr": 0x08903020,
+        "wrappers": [{"mode": 1, "enter": 0x08904010, "leave": 0x08904014}],
+    },
+    "frame_ready_latch_addr": 0x08905004,
 }
-SYNTH_RUNTIME_SYNC = {
-    "config_base": 0x08903000,
-    "sema_name_ptr": 0x08903020,
-    "wrappers": [
-        {"mode": 0, "enter": 0x08904000, "leave": 0x08904004},
-        {"mode": 1, "enter": 0x08904010, "leave": 0x08904014},
-        {"mode": 2, "enter": 0x08904020, "leave": 0x08904024},
-    ],
-}
-SYNTH_FRAME = 0x08905004
 
 
 def synthetic_manifest() -> dict:
     manifest = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    manifest["runtime_bindings"].update(
-        {
-            "display_bringup": dict(SYNTH_DISPLAY),
-            "runtime_sync": copy.deepcopy(SYNTH_RUNTIME_SYNC),
-            "frame_ready_latch_addr": SYNTH_FRAME,
-            "expected_data_file_count": 12345,
-        }
-    )
+    manifest["runtime_bindings"].update({"expected_data_file_count": 12345})
     return manifest
 
 
@@ -141,6 +132,18 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         ):
             title_manifest.validate_manifest(manifest)
 
+    def test_retired_hle_assist_bindings_have_a_named_migration_error(self):
+        for field, value in RETIRED_ASSIST_VALUES.items():
+            with self.subTest(field=field):
+                manifest = synthetic_manifest()
+                manifest["runtime_bindings"][field] = value
+                with self.assertRaisesRegex(ValueError, "HLE_TITLE_ASSIST_RETIRED"):
+                    title_manifest.validate_manifest(manifest)
+                required = synthetic_manifest()
+                required["required_runtime_bindings"] = [field]
+                with self.assertRaisesRegex(ValueError, "HLE_TITLE_ASSIST_RETIRED"):
+                    title_manifest.validate_manifest(required)
+
     def test_libfont_registry_import_is_a_named_issue_299_boundary(self):
         compatibility = (ROOT / "docs" / "COMPATIBILITY.md").read_text(encoding="utf-8")
         heading = "### Issue #299: libfont registry import boundary"
@@ -176,10 +179,10 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         self.assertEqual(config["codegen_profile"], "none")
         header = title_runtime_config.render_header(config).lower()
         self.assertIn("#define sr_title_config_diagnostics_profile 0", header)
-        for value in SYNTH_DISPLAY.values():
-            self.assertIn(f"{value:08x}", header)
-        self.assertIn(f"{SYNTH_FRAME:08x}", header)
-        self.assertNotIn("libfont_ready_flag_addr", header)
+        self.assertIn("#define sr_title_config_expected_data_file_count 12345u", header)
+        for retired in ("libfont_ready_flag_addr", "frame_ready_latch", "display_bringup",
+                        "runtime_sync"):
+            self.assertNotIn(retired, header)
         for address in (0x00000BCC, 0x0029A8BC, 0x0001DC00, 0x00331B80):
             self.assertNotIn(f"{address:08x}", header)
 
@@ -239,23 +242,10 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, output)
         self.assertIn("hle_title_production_selftest:", output)
         self.assertIn("0 failures", output)
-        self.assertIn("replaying title display-driver init", output)
-        boundary_lines = [
-            line for line in output.splitlines()
-            if "LIBFONT_STARTUP_UNAVAILABLE:" in line
-        ]
-        self.assertTrue(boundary_lines, output)
-        self.assertTrue(
-            all("guest libfont startup is not supported yet on this route" in line.lower()
-                for line in boundary_lines),
-            output,
-        )
-        self.assertTrue(
-            any("refusing to synthesize readiness" in line.lower()
-                for line in boundary_lines),
-            output,
-        )
-        self.assertTrue(all("#" not in line for line in boundary_lines), output)
+        self.assertIn("DISPLAY_SET_MODE: mode=0 480x272", output)
+        for retired in ("replaying title display-driver init", "runtime sync callbacks",
+                        "seeded frame latch", "GE_FINISH_LATCH_ASSIST"):
+            self.assertNotIn(retired, output)
 
     def test_libfont_guest_startup_routes_exports_without_ready_binding(self):
         make = shutil.which("mingw32-make")
