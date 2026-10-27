@@ -415,6 +415,23 @@ A file that covers both kana and Hangul, or neither, names no slot and is skippe
 
 Fonts must come only from your own device. The project provides no download links or third-party repositories. The import makes no network request, uses no key, and does no decryption, and it never uploads anything.
 
+#### Copying the fonts from your PSP
+
+The fonts are optional. Without them, games still run, and their text uses the project's own open fonts, which look different from the PSP's.
+
+The font files live in the PSP's system storage, `flash0:/font/`. They are plain files, not encrypted, but the PSP's official firmware doesn't show its system storage to a PC: on a PSP with official firmware only, there is no way to copy them yet. A PSP with custom firmware can show it as a read-only USB drive. These steps are for ARK (ARK-4 or ARK-5); the PSP only reads, and nothing on it changes:
+
+1. On the PSP, open **Settings > Custom Firmware Settings**.
+2. Set **USB Device** to **Flash 0**, and **USB Read-Only** to **On**.
+3. Connect the PSP to your PC with a USB cable, then open **Settings > USB Connection** and press **X**. A new drive appears on the PC. It holds the PSP's system files, not your Memory Stick.
+4. On the PC, copy the drive's `font` folder to a folder of your own, for example `Documents\PSP fonts`. Copy only: don't delete, rename or add anything on that drive.
+5. On the PSP, press **O** to end the USB connection. In **Custom Firmware Settings**, set **USB Device** back to **Memory Stick**.
+6. In the player, open the setup wizard's **Fonts & System** step, choose **IMPORT FONTS FOLDER**, and pick the folder you copied. The step then says how many fonts it imported and lists where each font comes from.
+
+On PRO or LME custom firmware, the VSH menu (press **SELECT** in the XMB) has the same **USB DEVICE** setting: choose **Flash 0**, then follow steps 3 to 6, setting it back to **Memory Stick** afterwards.
+
+You can copy the whole `font` folder. The import reads only the `.pgf` files in it: `gb3s1518.bwfon` and `imagefont.bin` are not read, and `arib.pgf` is listed as refused because no game font slot uses it. The sixteen Latin fonts (`ltn0.pgf` to `ltn15.pgf`) are used exactly. The PSP's Japanese and Korean fonts (`jpn0.pgf` and `kr0.pgf`) are refused for now by the project's font reader, so games use the project's stand-ins for those two ([#1300](https://github.com/Jstar269/nakagawa-recomp/issues/1300)).
+
 #### Importing fonts
 
 ```powershell
