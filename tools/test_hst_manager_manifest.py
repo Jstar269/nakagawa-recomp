@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
-"""Hermetic opt-in HST manager/build planning and precedence tests."""
+"""Hermetic HST manager/build planning and precedence tests against the public HST manifest."""
 
 from __future__ import annotations
 
@@ -25,6 +25,9 @@ MANIFEST = ROOT / "assets" / "titles" / "hst-ucus98701.json"
 SYNTHETIC_MANIFEST = ROOT / "assets" / "titles" / "synthetic.json"
 HELPER = ROOT / "tools" / "title_manager_plan.ps1"
 VULKAN_HELPER = ROOT / "tools" / "vulkan_sdk.ps1"
+#: Every documented HST manager command passes -GameName hst; the manifest itself
+#: carries no game_name, so the player keeps its derived default.
+HST_GAME_NAME = "hst"
 
 
 class HstManagerManifestTests(unittest.TestCase):
@@ -168,7 +171,7 @@ class HstManagerManifestTests(unittest.TestCase):
             str(self.root / "fake-sdk"),
         ]
         if manifest is not None:
-            command.extend(["-TitleManifest", str(manifest)])
+            command.extend(["-TitleManifest", str(manifest), "-GameName", HST_GAME_NAME])
         for key, value in overrides.items():
             command.extend([f"-{key}", str(value)])
         env = os.environ.copy()
@@ -209,7 +212,7 @@ class HstManagerManifestTests(unittest.TestCase):
             f"-VulkanSdk '{self.root / 'fake-sdk'}'"
         )
         if manifest is not None:
-            call += f" -TitleManifest '{manifest}'"
+            call += f" -TitleManifest '{manifest}' -GameName {HST_GAME_NAME}"
         return call
 
     def make_sdk(self, name: str, *, complete: bool = True) -> Path:
@@ -327,14 +330,13 @@ class HstManagerManifestTests(unittest.TestCase):
         self.assertEqual(self.records(), [])
 
     def require_hst_manifest(self) -> None:
-        # Opt-in by *tracked bytes*, never by directory presence: an
-        # ignored developer lookalike must not silently stand in for the
-        # private fixture.
-        if not test_public_title_isolation.private_title_tests_enabled("assets/titles/hst-ucus98701.json"):
-            self.skipTest(
-                "PRIVATE_INPUT: private HST title manifest is unavailable (set NK_PRIVATE_TITLE_TESTS=1 to "
-                "opt in with a local ignored manifest)"
-            )
+        # The HST manifest is public and tracked (owner decision 2026-10-27), so
+        # these routes always run: a missing or untracked manifest is a failure,
+        # never a skip, and an ignored local lookalike cannot stand in for it.
+        self.assertTrue(
+            test_public_title_isolation.is_tracked("assets/titles/hst-ucus98701.json"),
+            "assets/titles/hst-ucus98701.json must be tracked: the HST title manifest is public",
+        )
 
     def test_buildfull_manifest_mode_matches_the_validated_plan(self) -> None:
         self.require_hst_manifest()
@@ -369,7 +371,7 @@ class HstManagerManifestTests(unittest.TestCase):
         self.assertEqual(record["build_dir"], direct_plan["make"]["build_dir"])
         self.assertEqual(record["funcs"], str(direct_plan["make"]["funcs_per_chunk"]))
         self.assertEqual(record["title_extra_spans"], direct_plan["environment"]["TITLE_EXTRA_SPANS"])
-        self.assertIn("Using opt-in title manifest", manifest.stdout)
+        self.assertIn("Using title manifest: hst-ucus98701-v1 (target: hst)", manifest.stdout)
 
     def test_fast_and_test_routes_use_manifest_values(self) -> None:
         self.require_hst_manifest()
@@ -430,7 +432,6 @@ class HstManagerManifestTests(unittest.TestCase):
             ("bad-identity.json", lambda value: value.update(id="other-title-v1")),
             ("bad-base.json", lambda value: value["executable"].update(base=1)),
             ("bad-entry.json", lambda value: value["executable"].update(entry=1)),
-            ("bad-profile.json", lambda value: value.update(codegen_profile="none")),
             ("bad-bss.json", lambda value: value["executable"].update(bss_metadata_source="elf")),
             ("bad-span.json", lambda value: value["executable"].update(
                 extra_executable_spans=[{"start": 1, "end": 2}]
@@ -457,6 +458,18 @@ class HstManagerManifestTests(unittest.TestCase):
                 proc = self.run_manager("BuildFast", path)
                 self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
                 self.assert_no_make()
+
+        # Dropping the hst codegen profile makes the manifest an ordinary generic
+        # title to the manager: it takes the generic route, so none of the HST
+        # adapter's contract (profile argument, -O2/-O1 split) reaches Make.
+        generic = self.write_manifest("generic-profile.json", lambda value: value.update(codegen_profile="none"))
+        proc = self.run_manager("BuildFast", generic)
+        self.assert_manager_success(proc)
+        records = [item for item in self.records() if item["target"] == "all"]
+        self.assertEqual(len(records), 1, proc.stdout + proc.stderr)
+        self.assertEqual(records[0]["profile"], "")
+        self.assertNotEqual((records[0]["runtime"], records[0]["recomp"]), ("-O2", "-O1"))
+        (self.root / "capture.jsonl").unlink()
 
         missing_elf = self.root / "place_game_here" / "EBOOT.elf"
         missing_elf.unlink()

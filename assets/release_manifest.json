@@ -171,10 +171,6 @@
   ],
   "excluded_paths": [
     {
-      "path": "assets/titles/hst-ucus98701.json",
-      "comment": "Title-specific manifest excluded by the public profile."
-    },
-    {
       "path": "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md",
       "comment": "Private title-run acceptance evidence excluded from public scope."
     },
