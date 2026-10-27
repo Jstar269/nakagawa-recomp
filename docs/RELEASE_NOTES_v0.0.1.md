@@ -263,11 +263,14 @@ Hot Shots Tennis runs with 11 title-specific compatibility patches: the forced b
 - **Some movies show black, and some VRAM reads are wrong.** A movie whose frames pass through a VRAM mirror shows a
   black screen for now, and a CPU read of depth data through a VRAM mirror is still wrong for some depth-buffer
   settings ([#1049](https://github.com/Jstar269/nakagawa-recomp/issues/1049)).
-- **Only one other game has been tried.** PAC-MAN Championship Edition reaches its menu and plays a stage on the
+- **Few other games work yet.** PAC-MAN Championship Edition reaches its menu and plays a stage on the
   maintainer's copy, through general fixes with no title-specific branches
   ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556)).
-  That isn't the full game. Other games tried so far stop at imports Nakagawa doesn't support yet, and work on more
-  games is in the works under [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).
+  That isn't the full game. The other games tried for this release range from gameplay to a black screen: some
+  reach their menus or play, some stop at an import Nakagawa doesn't support yet, and some stay on a black screen.
+  When a game draws no new frame for 30 seconds, the player offers to keep waiting or stop it. A game that keeps
+  drawing a black screen gets no such offer: stop it with **STOP GAME** in the player. The release page lists how far
+  each one got. Work on more games is in the works under [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).
 - **Not every disc can be set up yet.** The player builds and checks a package for a supported game, but it does not
   make every ISO playable: profiles and imports that aren't supported, and PGD-protected data, stop with a message
   that says what is missing. Wider support is in the works
