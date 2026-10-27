@@ -358,9 +358,15 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
     bool dialog_shown = false;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     /* The headless regression cannot open a modal box, so it reads the dialog
-       the host would show from these lines. */
+       the host would show from these lines; the message's line break is
+       written as \n to keep it on one. */
     printf("[PLAYER_UI_TEST] QUIT_DIALOG title=%s\n", dialog.title);
-    printf("[PLAYER_UI_TEST] QUIT_DIALOG message=%s\n", dialog.message);
+    printf("[PLAYER_UI_TEST] QUIT_DIALOG message=");
+    for (const char *ch = dialog.message; *ch; ++ch) {
+        if (*ch == '\n') fputs("\\n", stdout);
+        else putchar(*ch);
+    }
+    putchar('\n');
     for (int i = 0; i < dialog.numbuttons; ++i) {
         const SDL_MessageBoxButtonData *button = &dialog.buttons[i];
         printf("[PLAYER_UI_TEST] QUIT_DIALOG button id=%d return_default=%d "

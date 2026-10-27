@@ -3325,7 +3325,7 @@ class NativePlayerUiTests(unittest.TestCase):
         dialogs = self.quit_dialogs(str(run["stdout"]))
         self.assertEqual(len(dialogs), 1, run["stdout"])
         self.assertEqual(dialogs[0]["message"],
-                         "A game is still running. Quitting closes it, and anything "
+                         "A game is still running.\nQuitting closes it, and anything "
                          "since the game's last save is lost.")
 
     # SDL3's Windows message box does not widen a button for a long label: it
@@ -3334,7 +3334,10 @@ class NativePlayerUiTests(unittest.TestCase):
 
     def quit_dialogs(self, stdout: str) -> list[dict[str, object]]:
         """Each quit confirmation the player asked, as the host box would show it,
-        with its buttons checked against what fits and what is the default."""
+        with its buttons checked against what fits and what is the default.
+
+        The player writes the message's line break as a backslash and an n, to
+        keep each report on one line; this turns it back into a line break."""
         dialogs: list[dict[str, object]] = []
         prefix = "[PLAYER_UI_TEST] QUIT_DIALOG "
         for line in stdout.splitlines():
@@ -3344,7 +3347,7 @@ class NativePlayerUiTests(unittest.TestCase):
             if body.startswith("title="):
                 dialogs.append({"title": body[len("title="):], "buttons": []})
             elif body.startswith("message="):
-                dialogs[-1]["message"] = body[len("message="):]
+                dialogs[-1]["message"] = body[len("message="):].replace("\\n", "\n")
             else:
                 match = re.fullmatch(
                     r"button id=(\d+) return_default=([01]) escape_default=([01]) label=(.*)",
@@ -3378,7 +3381,7 @@ class NativePlayerUiTests(unittest.TestCase):
         dialogs = self.quit_dialogs(str(run["stdout"]))
         self.assertEqual(len(dialogs), 1, run["stdout"])
         self.assertEqual(dialogs[0]["message"],
-                         "PSPDEV Phase 5 Source-Owned Fixture is still running. Quitting "
+                         "PSPDEV Phase 5 Source-Owned Fixture is still running.\nQuitting "
                          "closes it, and anything since the game's last save is lost.")
         frames = run["frames"]
         assert isinstance(frames, list)

@@ -752,8 +752,10 @@ bool player_app_take_close_confirmation_fallback(PlayerApp *app);
 #define PLAYER_QUIT_DIALOG_CANCEL_LABEL "Cancel"
 #define PLAYER_QUIT_DIALOG_QUIT_LABEL "Quit"
 /* The quit confirmation's message. It names the running game by the title its
- * launch carries (the disc title the library card shows), on one line, or says
- * "A game" when the launch has none. False only for a missing or empty buffer. */
+ * launch carries (the disc title the library card shows), with its line breaks
+ * folded to spaces, or says "A game" when the launch has none. Two lines: the
+ * first says the game is running, the second what quitting does. False only
+ * for a missing or empty buffer. */
 bool player_app_quit_confirmation_message(const PlayerApp *app, char *out,
                                           size_t out_size);
 bool player_app_boot_event_is_window_ready(const char *line);

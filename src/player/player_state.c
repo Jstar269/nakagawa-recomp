@@ -1545,8 +1545,9 @@ bool player_app_quit_confirmation_message(const PlayerApp *app, char *out,
         }
     }
     name[length] = '\0';
+    /* Two lines: on one, the box grows as wide as the sentence. */
     snprintf(out, out_size,
-             "%s is still running. Quitting closes it, and anything since the "
+             "%s is still running.\nQuitting closes it, and anything since the "
              "game's last save is lost.",
              length > 0 ? name : "A game");
     return true;

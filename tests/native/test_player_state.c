@@ -5389,10 +5389,10 @@ int main(int argc, char **argv) {
         /* Its message names the running game when the launch knows it. */
         {
             static const char unnamed[] =
-                "A game is still running. Quitting closes it, and anything since "
+                "A game is still running.\nQuitting closes it, and anything since "
                 "the game's last save is lost.";
             static const char named[] =
-                "Hot Shots Tennis is still running. Quitting closes it, and anything "
+                "Hot Shots Tennis is still running.\nQuitting closes it, and anything "
                 "since the game's last save is lost.";
             char quit_message[NK_MAX_TITLE_LEN + 128];
             s_app2->launch_session.game_title[0] = '\0';
@@ -5404,7 +5404,8 @@ int main(int argc, char **argv) {
             assert(player_app_quit_confirmation_message(s_app2, quit_message,
                                                         sizeof(quit_message)));
             assert(strcmp(quit_message, named) == 0);
-            /* A title's line breaks and tabs fold to one space, on one line. */
+            /* A title's line breaks and tabs fold to one space, so the only
+               line break is the message's own. */
             snprintf(s_app2->launch_session.game_title,
                      sizeof(s_app2->launch_session.game_title),
                      "  Hot Shots\r\n\tTennis \n");
