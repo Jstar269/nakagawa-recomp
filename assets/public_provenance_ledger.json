@@ -10983,7 +10983,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "eb433fed0e1d82b7f22b365ff7956fe0276b0ff01307a14e44296b2304a02943"
+      "sha256": "54d87f173dc567eae225e7a21f0b863a82a16ecf01a95ed8fb5807b7ac5b808c"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -12697,7 +12697,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "34cecd9ac586612a08ecb24a54316b420583f45d44d3886e2a8d20c214887acc"
+      "sha256": "e0545951535be031629fd99e4640feb556800cd67ed33c6d27282bafa8718f86"
     },
     {
       "path": "tools/test_asset_index_c.py",
