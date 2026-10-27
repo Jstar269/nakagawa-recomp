@@ -134,8 +134,7 @@ def sdl3_headers_missing() -> bool:
         return True
     probe = subprocess.run(
         [compiler, "-E", "-x", "c", "-", "-o", os.devnull],
-        input="#include <SDL3/SDL_timer.h>
-",
+        input="#include <SDL3/SDL_timer.h>\n",
         capture_output=True,
         text=True,
         check=False,
