@@ -123,9 +123,46 @@ static void test_audio_queue_line(void) {
           s_report_count);
 }
 
+/* New game frames versus presents (#1296). Hot Shots Tennis hands each finished frame to the
+ * window twice (the same buffer immediately and for the next frame), so presents ran about twice
+ * its real frame rate and the HUD's FPS read 35-39 where the game drew 18. Here two buffers
+ * alternate, each presented twice, a new frame every 3 VBLANKs: 7 presents, 4 new frames over
+ * 3 intervals of 3 VBLANKs. The forced report closes a 2 s interval. The next interval re-presents
+ * the last buffer (no new frame), then flips 5 VBLANKs after the previous new frame. */
+static void test_new_frames_are_distinct_buffers(void) {
+    sr_perf_init();
+    static const uint32_t buffers[] = { 0x04000000u, 0x04000000u, 0x04044000u, 0x04044000u,
+                                        0x04000000u, 0x04000000u, 0x04044000u };
+    static const uint32_t vcounts[] = { 10u, 10u, 13u, 13u, 16u, 16u, 19u };
+    for (unsigned i = 0; i < sizeof buffers / sizeof buffers[0]; i++) {
+        sr_perf_present_done(0, 1);
+        sr_perf_present_frame(buffers[i], vcounts[i]);
+    }
+    sr_perf_test_force_report();
+    double presents = 0.0, frame_ms = 0.0, vblank_hz = 0.0, game_fps = 0.0, per_frame = 0.0;
+    sr_perf_get_hud_metrics(&presents, &frame_ms, &vblank_hz);
+    sr_perf_get_hud_frames(&game_fps, &per_frame);
+    CHECK(presents == 3.5, "presents per second %.3f (expected 3.5: 7 presents in 2 s)", presents);
+    CHECK(game_fps == 2.0, "game frames per second %.3f (expected 2.0: 4 new frames in 2 s)",
+          game_fps);
+    CHECK(per_frame == 3.0, "VBLANKs per new frame %.3f (expected 3.0)", per_frame);
+
+    sr_perf_present_done(0, 1);
+    sr_perf_present_frame(0x04044000u, 22u);
+    sr_perf_present_done(0, 1);
+    sr_perf_present_frame(0x04000000u, 24u);
+    sr_perf_test_force_report();
+    sr_perf_get_hud_frames(&game_fps, &per_frame);
+    CHECK(game_fps == 0.5, "game frames per second %.3f in the second interval (expected 0.5)",
+          game_fps);
+    CHECK(per_frame == 5.0, "VBLANKs per new frame %.3f in the second interval (expected 5.0)",
+          per_frame);
+}
+
 int main(void) {
     test_telemetry_lines_are_emitted_whole();
     test_audio_queue_line();
+    test_new_frames_are_distinct_buffers();
     sr_profile_test_reset();
 
     /* HST and other zero-based PSP images can legitimately execute PC zero. It must be a

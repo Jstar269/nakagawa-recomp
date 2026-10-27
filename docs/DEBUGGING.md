@@ -51,6 +51,12 @@ are disabled. Runtime seams use one predicted `sr_perf_enabled` branch; `PERF_AO
 removes the generated per-instruction hook entirely. The benchmark command measures the remaining
 runtime branch cost rather than assuming a zero-cost binary.
 
+The CSV's `fps` and `present_submits` columns count presents, re-presents of one finished frame
+included. Its last three columns count new game frames as the overlay does: `new_frames`, and over
+`new_frame_intervals` intervals between them, `new_frame_vblanks` VBlanks. Game frames per second are
+`new_frames` divided by the interval's `wall_ms`, and VBlanks per frame are
+`new_frame_vblanks / new_frame_intervals`.
+
 For sparse GE front-end attribution, build with `GE_FRONTEND_PROFILE=1` (the default is `0`) and
 run with `SR_PERF=1` and `SR_GE_CPU_PROFILE=1`; `command_dispatch` is exported with those two, and
 the per-primitive stages (`draw_setup` through `assembly`, `triangle_total`, `empty_control`) also
@@ -1384,7 +1390,14 @@ The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance
 - **Startup Switch**: Launch with `SR_HUD=1` to have the overlay enabled at startup.
 - **Runtime Toggle**: Press `F3` while the game window is focused to toggle the overlay on or off. (`F1`, like `Esc` and the controller's Guide button, pauses the game; see [Clocks](ARCHITECTURE.md#clocks).)
 - **Telemetry Displayed**:
-  - **FPS & Frame Time**: Presented frames per second and average millisecond latency per presented frame.
+  - **Game FPS**: New game frames per second. A new frame is a present whose guest framebuffer differs from the
+    previous present's, the flip that `tools/perf_attribution.py` counts. This is the frame rate a player sees.
+  - **Per frame**: The mean number of VBlanks between new frames. 2.0 is a game built for 30 frames per second running
+    on time, and 1.0 is a 60-frame game on time. Hot Shots Tennis waits for two VBlanks per frame, so it is a
+    30-frame game, and 3.0 means it is running at two-thirds of its own rate.
+  - **Presents**: Frames handed to the window per second, re-presents of the same finished frame included. Some games
+    set the same buffer twice per frame (once immediately and once for the next frame), so this can be about twice
+    the game's frame rate. It used to be the overlay's "FPS" line.
   - **VBlank Rate**: Cadence of the scheduler's VBlank ticks in Hertz.
   - **Audio Status**: Whether the host audio stream is actively producing output (`Active` vs. `Inactive`).
 - **Timing and Performance Guarantees**:
