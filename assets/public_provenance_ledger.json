@@ -21,7 +21,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "98019bc91206fc5e6fce7e7113c4791a16713d090a6ba722c2e00d6b00e12900"
+      "sha256": "366494c7035e218c2447a4283b0cc042a257c9db4b09e9d0a32099528afcc829"
     },
     {
       "path": ".clang-format",
@@ -12505,7 +12505,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5e7d918a7997192f592cd6afc91b405595366278e437364811f25173c2e53ce2"
+      "sha256": "75e8d35c897c824d348ccb7e5a2b4f08ce8d392cb0ac734a066b845e83aa11fd"
     },
     {
       "path": "tools/recomp_helper_inventory.py",
@@ -14499,7 +14499,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "133ecbbbd5cabf2c9d2ce25af81e8b83ec5c2108499cf3de48ffe756d5984dc1"
+      "sha256": "fa69c4f44472339a209284c712d071b927eb69807697f878d2ee89adadfcb634"
     },
     {
       "path": "tools/test_readme_images.py",
