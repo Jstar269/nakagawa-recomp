@@ -828,6 +828,9 @@ static void player_ui_wizard_apply(PlayerApp *app, PlayerUiWizardOp op) {
         case PLAYER_UI_WIZARD_REMOVE_FONTS:
             player_app_fonts_remove_imports(app);
             break;
+        case PLAYER_UI_WIZARD_PSP_FONTS:
+            player_app_fonts_import_from_psp(app);
+            break;
         case PLAYER_UI_WIZARD_FINISH: {
             bool runtime_ready = app->inspecting_game.is_prepared;
             int idx = player_ui_wizard_save_title(app);

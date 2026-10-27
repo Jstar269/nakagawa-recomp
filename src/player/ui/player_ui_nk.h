@@ -188,7 +188,8 @@ typedef enum {
     PLAYER_UI_WIZARD_GO_TO_LIBRARY,
     PLAYER_UI_WIZARD_TOGGLE_ONLINE,      /* the options step's two switches */
     PLAYER_UI_WIZARD_TOGGLE_DEVELOPER,
-    PLAYER_UI_WIZARD_SKIP_OPTIONS        /* both off, on to the game step */
+    PLAYER_UI_WIZARD_SKIP_OPTIONS,       /* both off, on to the game step */
+    PLAYER_UI_WIZARD_PSP_FONTS           /* find a connected PSP's copied fonts and import them */
 } PlayerUiWizardOp;
 
 typedef struct {
@@ -236,6 +237,8 @@ typedef struct {
     const char *font_lines[PLAYER_UI_WIZARD_FONT_LINES];
     size_t font_line_count;
     const char *font_message;
+    const char *font_summary;       /* how many of the PSP fonts are the user's own */
+    bool fonts_all_own;
     /* Ready */
     bool runtime_ready;
     const char *summary_line;
@@ -532,6 +535,7 @@ enum {
     PLAYER_UI_ID_WIZARD_REMOVE_FONTS = 0x4306u,
     PLAYER_UI_ID_WIZARD_ONLINE = 0x4307u,
     PLAYER_UI_ID_WIZARD_DEVELOPER = 0x4308u,
+    PLAYER_UI_ID_WIZARD_PSP_FONTS = 0x4309u,
     PLAYER_UI_ID_LIBRARY_ITEM_BASE = 0x1100u,
     PLAYER_UI_ID_TITLE_BACK = 0x2001u,
     PLAYER_UI_ID_TITLE_PRIMARY = 0x2002u,

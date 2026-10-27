@@ -455,7 +455,12 @@ To verify that system fonts are in place:
 
 1. **CLI:** `python tools/nk_cli.py fonts status` prints Japanese and Korean status plus one line for each of the 16 Latin indices. A line names an exact import, same-size fallback, project fallback, legacy fallback, or missing file.
 2. **Player preflight (#300):** the `SYSTEM_FONTS` check is `OK` when every Japanese, Korean, and Latin registry index resolves to an imported or project font. It is `MISSING` when an index has no source, and its message includes the exact file or fallback for every Latin index. It is `INVALID` (issue #313) when the manifest is malformed or a listed file fails its check.
-3. **Player setup wizard:** the **Fonts & System** step shows Japanese and Korean status and all 16 Latin indices, including each fallback, and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that step.
+3. **Player setup wizard:** the **Fonts and display** step opens with **Get your PSP's original fonts**: one line says how many of the 18 PSP fonts (Japanese, Korean and the 16 Latin indices) are your PSP's own originals rather than a stand-in, and, until all of them are, how to get them. Below it the step shows Japanese and Korean status and all 16 Latin indices, including each fallback, and has three buttons:
+   - **Get fonts from my PSP** finds the `NAKAGAWA/fonts` folder that Nakagawa Font Copy fills on a PSP connected in USB mode, and imports it. The player looks for that folder at the root of every fixed or removable drive on Windows, in each folder of `/Volumes` on macOS, and in `/media`, `/media/<name>`, `/run/media/<name>` and `/mnt` elsewhere. It only lists folders; nothing leaves the computer. When no such folder is found, the step says what to do on the PSP.
+   - **Choose a fonts folder** imports a folder you pick.
+   - **Remove imported fonts** removes the imports.
+
+   Each button reports its outcome on that step. The wizard's buttons work with a keyboard, a mouse or a controller.
 
 ## 3. Build
 

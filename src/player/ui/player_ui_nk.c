@@ -460,6 +460,8 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
                         : app->wizard.font_latin_index_detail[item - 1];
             }
             model.font_message = app->wizard.font_message;
+            model.font_summary = app->wizard.font_summary;
+            model.fonts_all_own = app->wizard.font_own_count >= NK_FONT_PSP_FONT_COUNT;
             break;
         case WIZARD_STEP_READY_LAUNCH:
             model.runtime_ready = game->is_prepared;

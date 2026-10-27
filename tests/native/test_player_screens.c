@@ -400,6 +400,8 @@ static PlayerUiAction draw_wizard_case(NkUi *ui, FlowCase which) {
             for (size_t i = 0u; i < sizeof(k_font_lines) / sizeof(k_font_lines[0]); ++i) {
                 wizard.font_lines[wizard.font_line_count++] = k_font_lines[i];
             }
+            wizard.font_summary = "None of the 18 PSP fonts is your PSP's original yet, so games "
+                                  "show a stand-in that looks different.";
             break;
         case FLOW_WIZ_READY:
         case FLOW_WIZ_STAGED:
@@ -1092,8 +1094,10 @@ static void test_wizard_actions(void) {
          "Accept and continue confirms the fonts step"},
         {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_SECOND, PLAYER_UI_WIZARD_CYCLE_RESOLUTION,
          "Change resolution cycles the scale"},
+        {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_PSP_FONTS, PLAYER_UI_WIZARD_PSP_FONTS,
+         "Get fonts from my PSP imports a connected PSP's copied fonts"},
         {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_IMPORT_FONTS, PLAYER_UI_WIZARD_IMPORT_FONTS,
-         "Import fonts folder opens the folder picker"},
+         "Choose a fonts folder opens the folder picker"},
         {FLOW_WIZ_FONTS, PLAYER_UI_ID_WIZARD_REMOVE_FONTS, PLAYER_UI_WIZARD_REMOVE_FONTS,
          "Remove imported fonts removes them"},
         {FLOW_WIZ_READY, PLAYER_UI_ID_WIZARD_PRIMARY, PLAYER_UI_WIZARD_FINISH,
@@ -1194,6 +1198,14 @@ static void test_plain_cards(void) {
               strstr(dump, "Synthetic reason") != NULL &&
               strstr(dump, "listed in the native title catalog") == NULL,
           "a failed copy shows its reason in place of the catalog note");
+    /* The fonts step says how to get the PSP's own fonts, in plain words, with its button. */
+    CHECK(dump_flow_case(FLOW_WIZ_FONTS, dump, sizeof(dump)) &&
+              strstr(dump, "GET YOUR PSP'S ORIGINAL FONTS") != NULL &&
+              strstr(dump, "None of the 18 PSP fonts is your PSP's original yet") != NULL &&
+              strstr(dump, "Run Nakagawa Font Copy on your PSP") != NULL &&
+              strstr(dump, "\"GET FONTS FROM MY PSP\"") != NULL &&
+              strstr(dump, "\"CHOOSE A FONTS FOLDER\"") != NULL,
+          "the fonts step explains how to get the PSP's original fonts");
 }
 
 static bool disc_op_is(PlayerUiAction action, PlayerUiDiscOp op) {

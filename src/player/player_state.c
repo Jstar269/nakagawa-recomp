@@ -5045,6 +5045,19 @@ void player_app_refresh_font_status(PlayerApp *app) {
                  sizeof(app->wizard.font_latin_index_detail[index]), "%s",
                  latin_states[index].detail);
     }
+    app->wizard.font_own_count = nk_font_own_font_count(root, project_root);
+    if (app->wizard.font_own_count >= NK_FONT_PSP_FONT_COUNT) {
+        snprintf(app->wizard.font_summary, sizeof(app->wizard.font_summary),
+                 "All %d PSP fonts are your PSP's originals.", NK_FONT_PSP_FONT_COUNT);
+    } else if (app->wizard.font_own_count == 0) {
+        snprintf(app->wizard.font_summary, sizeof(app->wizard.font_summary),
+                 "None of the %d PSP fonts is your PSP's original yet, so games show a "
+                 "stand-in that looks different.", NK_FONT_PSP_FONT_COUNT);
+    } else {
+        snprintf(app->wizard.font_summary, sizeof(app->wizard.font_summary),
+                 "%d of the %d PSP fonts are your PSP's originals; the rest show a stand-in "
+                 "that looks different.", app->wizard.font_own_count, NK_FONT_PSP_FONT_COUNT);
+    }
 }
 
 bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
@@ -5083,6 +5096,34 @@ bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
     }
     player_app_refresh_font_status(app);
     return result.imported_count > 0;
+}
+
+bool player_app_fonts_import_from_psp(PlayerApp *app) {
+    return player_app_fonts_import_from_psp_roots(app, NULL, 0);
+}
+
+bool player_app_fonts_import_from_psp_roots(PlayerApp *app, const char *const *roots,
+                                            int root_count) {
+    char folder[NK_MAX_PATH];
+    char outcome[NK_FONT_TEXT_MAX];
+    int found;
+    bool imported;
+    if (!app) return false;
+    found = roots != NULL ? nk_font_find_psp_folder_in(roots, root_count, folder, sizeof(folder))
+                          : nk_font_find_psp_folder(folder, sizeof(folder));
+    if (found <= 0) {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "No PSP fonts were found. Run Nakagawa Font Copy on your PSP, connect the PSP "
+                 "to this PC with a USB cable, turn on USB Connection on the PSP, then try again.");
+        player_app_refresh_font_status(app);
+        return false;
+    }
+    imported = player_app_fonts_import_folder(app, folder);
+    snprintf(outcome, sizeof(outcome), "%s", app->wizard.font_message);
+    snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+             "From your PSP (%.300s%s): %.400s", folder,
+             found > 1 ? ", the first of several drives with fonts" : "", outcome);
+    return imported;
 }
 
 bool player_app_fonts_remove_imports(PlayerApp *app) {

@@ -925,16 +925,19 @@ typedef struct {
     bool overflow;
 } FontFolderScan;
 
+/* A name of at least one character before ".pgf", in any case. */
+static bool font_name_is_pgf(const char *name) {
+    size_t length = strlen(name);
+    if (length < 5u) return false;
+    return tolower((unsigned char)name[length - 4u]) == '.' &&
+           tolower((unsigned char)name[length - 3u]) == 'p' &&
+           tolower((unsigned char)name[length - 2u]) == 'g' &&
+           tolower((unsigned char)name[length - 1u]) == 'f';
+}
+
 static bool font_collect_pgf(const char *name, void *context) {
     FontFolderScan *scan = (FontFolderScan *)context;
-    size_t length = strlen(name);
-    if (length < 5u) return true;
-    if (tolower((unsigned char)name[length - 4u]) != '.' ||
-        tolower((unsigned char)name[length - 3u]) != 'p' ||
-        tolower((unsigned char)name[length - 2u]) != 'g' ||
-        tolower((unsigned char)name[length - 1u]) != 'f') {
-        return true;
-    }
+    if (!font_name_is_pgf(name)) return true;
     if (scan->count >= NK_FONT_IMPORT_MAX_FILES) {
         scan->overflow = true;
         return false;
@@ -955,6 +958,86 @@ static void font_sort_names(FontFolderScan *scan) {
         }
         memcpy(scan->names[j], held, sizeof(held));
     }
+}
+
+/* -----------------------------------------------------------------------------
+ * The font-copy folder on a connected PSP
+ * -------------------------------------------------------------------------- */
+typedef struct {
+    char *out;
+    size_t out_len;
+    int found;
+} FontPspSearch;
+
+static bool font_any_pgf(const char *name, void *context) {
+    if (!font_name_is_pgf(name)) return true;
+    *(bool *)context = true;
+    return false;
+}
+
+static bool font_psp_root(const char *root, void *context) {
+    FontPspSearch *search = (FontPspSearch *)context;
+    char folder[NK_MAX_PATH];
+    const char separator = nk_platform_path_separator();
+    const size_t length = strlen(root);
+    const bool ends_with_separator = length > 0u &&
+                                     (root[length - 1u] == '/' || root[length - 1u] == '\\');
+    int written;
+    bool any = false;
+    if (length == 0u) return true;
+    written = snprintf(folder, sizeof(folder), "%s%s%s%c%s", root,
+                       ends_with_separator ? "" : (separator == '\\' ? "\\" : "/"),
+                       NK_FONT_PSP_COPY_PARENT, separator, NK_FONT_PSP_COPY_FOLDER);
+    if (written < 0 || (size_t)written >= sizeof(folder)) return true;
+    if (!nk_platform_dir_exists(folder) || !nk_platform_list_files(folder, font_any_pgf, &any) ||
+        !any) {
+        return true;
+    }
+    if (search->found == 0) {
+        if ((size_t)written >= search->out_len) return true;
+        memcpy(search->out, folder, (size_t)written + 1u);
+    }
+    search->found++;
+    return true;
+}
+
+int nk_font_find_psp_folder_in(const char *const *roots, int root_count, char *out,
+                               size_t out_len) {
+    FontPspSearch search = { out, out_len, 0 };
+    if (!out || out_len == 0u) return 0;
+    out[0] = '\0';
+    for (int i = 0; roots && i < root_count; i++) {
+        if (roots[i] != NULL) (void)font_psp_root(roots[i], &search);
+    }
+    return search.found;
+}
+
+int nk_font_find_psp_folder(char *out, size_t out_len) {
+    FontPspSearch search = { out, out_len, 0 };
+    if (!out || out_len == 0u) return 0;
+    out[0] = '\0';
+    nk_platform_list_drive_roots(font_psp_root, &search);
+    return search.found;
+}
+
+int nk_font_own_font_count(const char *user_data_root, const char *project_root) {
+    NkFontSlotState states[NK_FONT_SLOT_COUNT];
+    char project_font_dir[NK_MAX_PATH * 2];
+    int own = 0;
+    nk_font_slot_states(user_data_root, project_root, states);
+    if (states[NK_FONT_SLOT_JAPANESE].source == NK_FONT_SOURCE_USER) own++;
+    if (states[NK_FONT_SLOT_KOREAN].source == NK_FONT_SOURCE_USER) own++;
+    snprintf(project_font_dir, sizeof(project_font_dir), "%s%c%s",
+             project_root ? project_root : ".", nk_platform_path_separator(),
+             NK_FONT_PROJECT_SUBDIR);
+    for (int index = 0; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
+        NkFontLatinResolution resolution;
+        if (nk_font_resolve_latin_index(user_data_root, project_font_dir, index, &resolution) &&
+            resolution.source == NK_FONT_SOURCE_USER && resolution.served_index == index) {
+            own++;
+        }
+    }
+    return own;
 }
 
 bool nk_font_import_folder(const char *user_data_root, const char *folder,

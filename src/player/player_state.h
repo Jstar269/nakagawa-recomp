@@ -361,6 +361,9 @@ typedef struct {
     /* One explicit line per Latin registry index, including the exact file or fallback. */
     char font_latin_index_detail[NK_FONT_LATIN_INDEX_COUNT][160];
     char font_message[NK_FONT_TEXT_MAX];
+    /* How many of the eighteen PSP fonts are the user's own, in plain words, and that count. */
+    char font_summary[160];
+    int font_own_count;
 } SetupWizardState;
 
 typedef struct PlayerApp {
@@ -973,6 +976,12 @@ const PlayerPreflightCheck *player_app_package_build_preflight_blocker(
    per-slot status and the message. Import reads the folder's .pgf files once each, checks
    them with the native reader, and copies each slot's file into the per-user cache. */
 bool player_app_fonts_import_folder(PlayerApp *app, const char *folder);
+/* "Get fonts from my PSP": find the folder Nakagawa Font Copy filled on a PSP connected in USB
+   mode (<drive>/NAKAGAWA/fonts) and import it; says what to do when no such PSP is connected. */
+bool player_app_fonts_import_from_psp(PlayerApp *app);
+/* The same over the given drive roots instead of the mounted drives (tests). */
+bool player_app_fonts_import_from_psp_roots(PlayerApp *app, const char *const *roots,
+                                            int root_count);
 bool player_app_fonts_remove_imports(PlayerApp *app);
 void player_app_refresh_font_status(PlayerApp *app);
 

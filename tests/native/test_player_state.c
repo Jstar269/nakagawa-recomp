@@ -5185,6 +5185,110 @@ int main(int argc, char **argv) {
         assert(test_remove_tree(source));
     }
 
+    /* 14p: "Get fonts from my PSP". The drive roots are folders under a test root, so the result
+       never depends on the drives of the machine running the test: one has no font-copy folder,
+       one has NAKAGAWA/fonts with no .pgf in it, and two hold fonts as Nakagawa Font Copy leaves
+       them (jpn0.pgf, kr0.pgf, ltnN.pgf). The first PSP folder is imported, and the summary
+       counts only fonts that are exactly the user's own. */
+    printf("[PLAYER_STATE_TEST] Subtest 14p: fonts from a connected PSP's font-copy folder\n");
+    fflush(stdout);
+    {
+        char psp_base[512];
+        char psp_test[640];
+        char per_user[768];
+        char drive[4][800];
+        const char *roots[4];
+        char folder[4][1024];
+        char path[1200];
+        char found[1024];
+        char tiny[8];
+        char with_separator[820];
+        const char *one_root[1];
+        const char sep = nk_platform_path_separator();
+
+        assert(nk_platform_get_path(NK_PATH_CACHE, psp_base, sizeof(psp_base)));
+        snprintf(psp_test, sizeof(psp_test), "%s%cpsp_font_copy_test", psp_base, sep);
+        snprintf(per_user, sizeof(per_user), "%s%cper_user", psp_test, sep);
+        assert(nk_platform_mkdir_p(psp_test));
+        assert(test_remove_tree(psp_test));
+        assert(nk_platform_mkdir_p(per_user));
+        for (int d = 0; d < 4; d++) {
+            snprintf(drive[d], sizeof(drive[d]), "%s%cdrive%d", psp_test, sep, d);
+            snprintf(folder[d], sizeof(folder[d]), "%s%c%s%c%s", drive[d], sep,
+                     NK_FONT_PSP_COPY_PARENT, sep, NK_FONT_PSP_COPY_FOLDER);
+            roots[d] = drive[d];
+        }
+        assert(nk_platform_mkdir_p(drive[0]));
+        assert(nk_platform_mkdir_p(folder[1]));
+        snprintf(path, sizeof(path), "%s%cnotes.txt", folder[1], sep);
+        write_text_file(path, "not a font");
+        for (int d = 2; d < 4; d++) {
+            assert(nk_platform_mkdir_p(folder[d]));
+            snprintf(path, sizeof(path), "%s%cjpn0.pgf", folder[d], sep);
+            write_binary_file(path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+            snprintf(path, sizeof(path), "%s%ckr0.pgf", folder[d], sep);
+            write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+            snprintf(path, sizeof(path), "%s%cltn0.pgf", folder[d], sep);
+            write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        }
+
+        assert(nk_font_find_psp_folder_in(roots, 2, found, sizeof(found)) == 0);
+        assert(found[0] == '\0');
+        assert(nk_font_find_psp_folder_in(roots, 4, found, sizeof(found)) == 2);
+        assert(strcmp(found, folder[2]) == 0);
+        snprintf(with_separator, sizeof(with_separator), "%s%c", drive[2], sep);
+        one_root[0] = with_separator;
+        assert(nk_font_find_psp_folder_in(one_root, 1, found, sizeof(found)) == 1);
+        assert(strcmp(found, folder[2]) == 0);
+        assert(nk_font_find_psp_folder_in(one_root, 1, tiny, sizeof(tiny)) == 0);
+        assert(tiny[0] == '\0');
+
+        assert(nk_platform_set_app_data_dir_override(per_user));
+        PlayerApp *psp_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(psp_app != NULL);
+        nk_library_init(&psp_app->library);
+        player_app_set_runtime_root(psp_app, per_user);
+
+        player_app_refresh_font_status(psp_app);
+        assert(psp_app->wizard.font_own_count == 0);
+        assert(strstr(psp_app->wizard.font_summary,
+                      "None of the 18 PSP fonts is your PSP's original yet") != NULL);
+
+        assert(player_app_fonts_import_from_psp_roots(psp_app, roots, 2) == false);
+        assert(strstr(psp_app->wizard.font_message, "No PSP fonts were found. Run Nakagawa Font "
+                                                    "Copy on your PSP") != NULL);
+
+        assert(player_app_fonts_import_from_psp_roots(psp_app, roots, 4));
+        assert(strncmp(psp_app->wizard.font_message, "From your PSP (", 15) == 0);
+        assert(strstr(psp_app->wizard.font_message, folder[2]) != NULL);
+        assert(strstr(psp_app->wizard.font_message, "the first of several drives") != NULL);
+        assert(strstr(psp_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
+        /* Japanese, Korean and Latin index 1 (ltn0.pgf) are the user's own; the other fifteen
+           Latin indices are served by a stand-in. */
+        assert(psp_app->wizard.font_own_count == 3);
+        assert(nk_font_own_font_count(per_user, per_user) == 3);
+        assert(strstr(psp_app->wizard.font_summary,
+                      "3 of the 18 PSP fonts are your PSP's originals") != NULL);
+        assert(strcmp(psp_app->wizard.font_latin_index_detail[0], "L1 exact ltn0.pgf") == 0);
+        assert(strncmp(psp_app->wizard.font_latin_index_detail[1], "L2 missing; fallback ", 21) == 0);
+
+        /* The full set: every one of the eighteen is the user's own. */
+        for (int index = 1; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
+            snprintf(path, sizeof(path), "%s%c%s", folder[2], sep,
+                     nk_font_latin_index_filename(index));
+            write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        }
+        assert(player_app_fonts_import_from_psp_roots(psp_app, roots + 2, 1));
+        assert(strstr(psp_app->wizard.font_message, "Imported 18 PSP font file(s)") != NULL);
+        assert(strstr(psp_app->wizard.font_message, "several drives") == NULL);
+        assert(psp_app->wizard.font_own_count == NK_FONT_PSP_FONT_COUNT);
+        assert(strcmp(psp_app->wizard.font_summary, "All 18 PSP fonts are your PSP's originals.") == 0);
+
+        free(psp_app);
+        assert(nk_platform_set_app_data_dir_override(NULL));
+        assert(test_remove_tree(psp_test));
+    }
+
     /* 14g: no configured runtime root. The preflight falls back to the app-data directory, and
        the Fonts step must read and write that same directory. The directory is also the project
        root the preflight checks, so a project font there is named by both surfaces. */

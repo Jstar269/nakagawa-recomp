@@ -138,6 +138,26 @@ void nk_font_slot_states(const char *user_data_root, const char *project_root,
  * slot, or -1 with the reason in reason. */
 int nk_font_classify_verdict(const PgfVerdict *verdict, char *reason, size_t reason_len);
 
+/* The folder Nakagawa Font Copy (src/psp_companion) fills on a PSP's storage, relative to the
+ * storage's root: NAKAGAWA/fonts. With the PSP in USB mode, the storage is a drive on the PC. */
+#define NK_FONT_PSP_COPY_PARENT "NAKAGAWA"
+#define NK_FONT_PSP_COPY_FOLDER "fonts"
+
+/* Look under each of roots, in order, for <root>/NAKAGAWA/fonts holding at least one .pgf file
+ * directly inside it. The first such folder is written to out (empty when none); returns how
+ * many roots have one. A folder whose path does not fit out is skipped. Nothing is read but
+ * folder listings. */
+int nk_font_find_psp_folder_in(const char *const *roots, int root_count, char *out,
+                               size_t out_len);
+
+/* The same over the drives mounted now (nk_platform_list_drive_roots). */
+int nk_font_find_psp_folder(char *out, size_t out_len);
+
+/* How many of the eighteen PSP system fonts (Japanese, Korean and the sixteen Latin registry
+ * indices) are served by the user's own import of exactly that font, not a stand-in. */
+int nk_font_own_font_count(const char *user_data_root, const char *project_root);
+#define NK_FONT_PSP_FONT_COUNT (NK_FONT_LATIN_INDEX_COUNT + 2)
+
 /* One file the import considered. imported is true when this file's bytes now serve the
  * slot named by slot. */
 typedef struct {

@@ -290,6 +290,24 @@ bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
     return true;
 }
 
+void nk_platform_list_drive_roots(NkDirFileFn fn, void *ctx) {
+    if (!fn) return;
+    const DWORD drives = GetLogicalDrives();
+    /* A card reader with no card answers "not ready" instead of opening a dialog. */
+    DWORD previous_mode = 0;
+    const BOOL mode_set = SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX,
+                                             &previous_mode);
+    for (int letter = 0; letter < 26; letter++) {
+        if ((drives & (1ul << letter)) == 0) continue;
+        const WCHAR wroot[4] = { (WCHAR)(L'A' + letter), L':', L'\\', 0 };
+        const UINT type = GetDriveTypeW(wroot);
+        if (type != DRIVE_REMOVABLE && type != DRIVE_FIXED) continue;
+        const char root[4] = { (char)('A' + letter), ':', '\\', 0 };
+        if (!fn(root, ctx)) break;
+    }
+    if (mode_set) SetThreadErrorMode(previous_mode, NULL);
+}
+
 int64_t nk_platform_get_file_size(const char *path) {
     if (!path) return -1;
     WCHAR wpath[32768];

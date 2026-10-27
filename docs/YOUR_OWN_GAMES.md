@@ -32,8 +32,15 @@ Importing a disc does not change its status. The **EXPERIMENTAL** badge on the g
   PC when it checks the disc (see [Encrypted games](#supplying-unencrypted-files)).
 - **PSP system fonts (optional, recommended for text).** In-game typography
   uses Sony firmware font files (`.pgf`) copied from your own PSP's
-  `flash0:/font/`. The project does not include or distribute them. Copy them
-  to a folder and run `python tools/nk_cli.py fonts import <folder>`. If two
+  `flash0:/font/`. The project does not include or distribute them, and
+  without them games show a stand-in font that looks different
+  ([#1300](https://github.com/Jstar269/nakagawa-recomp/issues/1300)). The
+  simplest way: run Nakagawa Font Copy on your PSP (it needs a PSP that runs
+  homebrew; see [System fonts](SETUP.md#system-fonts)), connect the PSP with a
+  USB cable, turn on **USB Connection**, and choose **Get fonts from my PSP** on
+  the setup wizard's fonts step. You can also copy the fonts to a folder
+  yourself and choose it with **Choose a fonts folder**, or run
+  `python tools/nk_cli.py fonts import <folder>`. If two
   files cover the same slot, pick one with `--choose <slot>=<file>` (slots:
   `japanese`, `latin`, `korean`). Check the result with `python tools/nk_cli.py
   fonts status`. A title's own font library may still draw project fonts as

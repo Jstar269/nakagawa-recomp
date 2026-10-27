@@ -1479,7 +1479,9 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             {PLAYER_UI_ID_WIZARD_CANCEL, "Cancel", 0u, PLAYER_UI_WIZARD_CANCEL}
         };
         static const WizardButton font_buttons[] = {
-            {PLAYER_UI_ID_WIZARD_IMPORT_FONTS, "Import fonts folder", NK_UI_BUTTON_SMALL,
+            {PLAYER_UI_ID_WIZARD_PSP_FONTS, "Get fonts from my PSP", NK_UI_BUTTON_SMALL,
+             PLAYER_UI_WIZARD_PSP_FONTS},
+            {PLAYER_UI_ID_WIZARD_IMPORT_FONTS, "Choose a fonts folder", NK_UI_BUTTON_SMALL,
              PLAYER_UI_WIZARD_IMPORT_FONTS},
             {PLAYER_UI_ID_WIZARD_REMOVE_FONTS, "Remove imported fonts", NK_UI_BUTTON_SMALL,
              PLAYER_UI_WIZARD_REMOVE_FONTS}
@@ -1488,6 +1490,15 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
         if (wizard_box_begin(ui, 0u)) {
             wizard_text(ui, 1u, model->resolution_line, NK_UI_TYPE_BODY, theme->paper);
             wizard_text(ui, 2u, model->controller_line, NK_UI_TYPE_BODY_S, theme->ready);
+            nk_ui_eyebrow(ui, WIZ_ID_TEXT + 5u, "Get your PSP's original fonts");
+            wizard_text(ui, 6u, model->font_summary, NK_UI_TYPE_BODY_S,
+                        model->fonts_all_own ? theme->ready : theme->warning);
+            if (!model->fonts_all_own) {
+                wizard_text(ui, 7u,
+                            "Run Nakagawa Font Copy on your PSP, connect the PSP with a USB cable "
+                            "and turn on USB Connection, then choose Get fonts from my PSP.",
+                            NK_UI_TYPE_CAPTION, theme->muted);
+            }
             nk_ui_eyebrow(ui, WIZ_ID_TEXT + 3u, "PSP font slots (fallbacks shown)");
             {
                 NkUiLayout cols = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(),
@@ -1516,9 +1527,10 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             }
             wizard_text(ui, 4u,
                         safe_text(model->font_message,
-                                  "Importing reads the .pgf files in a folder you choose."),
+                                  "Importing reads only the .pgf files in your PSP's font "
+                                  "folder or a folder you choose."),
                         NK_UI_TYPE_CAPTION, theme->warning);
-            wizard_buttons(ui, WIZ_ID_EXTRA, font_buttons, 2u, &result);
+            wizard_buttons(ui, WIZ_ID_EXTRA, font_buttons, 3u, &result);
             nk_ui_end_container(ui);
         }
         wizard_buttons(ui, WIZ_ID_BUTTONS, buttons, 4u, &result);
