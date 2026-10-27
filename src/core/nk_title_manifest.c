@@ -2202,6 +2202,18 @@ static bool nk_manifest_json_escape(const char *source, char *out, size_t out_le
     return true;
 }
 
+static NkTitleManifestCancelFn s_manifest_cancel_check = NULL;
+static void *s_manifest_cancel_user = NULL;
+
+void nk_title_manifest_set_cancel_check(NkTitleManifestCancelFn cancelled, void *user) {
+    s_manifest_cancel_check = cancelled;
+    s_manifest_cancel_user = user;
+}
+
+static bool manifest_cancelled(void) {
+    return s_manifest_cancel_check != NULL && s_manifest_cancel_check(s_manifest_cancel_user);
+}
+
 static bool nk_manifest_hash_iso_member_reader(NkIsoReader *reader,
                                                const char *relative_path,
                                                char out_hex[65]) {
@@ -2218,7 +2230,7 @@ static bool nk_manifest_hash_iso_member_reader(NkIsoReader *reader,
         uint32_t count = (uint32_t)((uint64_t)size - offset < sizeof(buffer)
             ? (uint64_t)size - offset : sizeof(buffer));
         int read_count = nk_iso_reader_read(reader, lba, offset, buffer, count);
-        if (read_count != (int)count) {
+        if (read_count != (int)count || manifest_cancelled()) {
             ok = false;
             break;
         }
@@ -2840,6 +2852,10 @@ static bool package_hash_file(const char *path, char out_hex[65]) {
     size_t count;
     bool ok = true;
     while ((count = fread(buffer, 1, sizeof(buffer), file)) != 0) {
+        if (manifest_cancelled()) {
+            ok = false;
+            break;
+        }
         nk_sha256_update(&ctx, buffer, count);
     }
     if (ferror(file)) ok = false;
@@ -4771,7 +4787,49 @@ static bool package_catalog_identity_matches(const char *disc_id,
     return matches;
 }
 
+/* A validation the host cancelled fails with that reason, whatever check the
+   abandoned hash fell through to. Only a valid package is ever cached. */
+static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    bool is_experimental,
+    const char *selected_executable,
+    const char *current_disc_version,
+    const char *source_iso_path,
+    uint32_t player_abi_version,
+    NkRuntimePackageInfo *out_info,
+    char *reason,
+    size_t reason_size
+);
+
 NkRuntimePackageStatus nk_title_manifest_validate_aot_package(
+    const char *user_data_root,
+    const char *disc_id,
+    const char *title_id,
+    bool is_experimental,
+    const char *selected_executable,
+    const char *current_disc_version,
+    const char *source_iso_path,
+    uint32_t player_abi_version,
+    NkRuntimePackageInfo *out_info,
+    char *reason,
+    size_t reason_size
+) {
+    NkRuntimePackageStatus status = nk_title_manifest_validate_aot_package_checked(
+        user_data_root, disc_id, title_id, is_experimental, selected_executable,
+        current_disc_version, source_iso_path, player_abi_version, out_info,
+        reason, reason_size);
+    if (status != NK_RUNTIME_PACKAGE_OK && manifest_cancelled()) {
+        if (out_info) memset(out_info, 0, sizeof(*out_info));
+        if (reason && reason_size) {
+            snprintf(reason, reason_size, "Package validation was cancelled.");
+        }
+    }
+    return status;
+}
+
+static NkRuntimePackageStatus nk_title_manifest_validate_aot_package_checked(
     const char *user_data_root,
     const char *disc_id,
     const char *title_id,
