@@ -1684,7 +1684,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b3d3249cdb2488badd295e74a7cf7bb630ce8a56a0a79c13330a136be583245e"
+      "sha256": "972566ada0b2cfeed48282199fca50482b31d91f0711d695de46a98ca0aae846"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -5509,7 +5509,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8784ae96ee26007b08b1fb6e8e972dbac3030c5d602f4b5175c41d50cdbabc1c"
+      "sha256": "7ac226ae28bed4f8adbf68d985447b1ab6d16b5ae5aee943e1d74ae1f8fdb3da"
     },
     {
       "path": "src/rt/h264_ffmpeg.c",
