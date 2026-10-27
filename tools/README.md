@@ -520,6 +520,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_public_export.py` | Public export generation and its gate. |
 | `test_publication_policy_gate.py` | Permanent, self-contained regression suite for the fail-closed publication gate. |
 | `test_publish_audit.py` | Publication audit findings, isolated git environment, text hygiene and canonical writers. |
+| `test_psp_decrypt.py` | Decryption boundary: known answers, synthetic end-to-end, built-in tables and the firmware refusal. |
 | `test_release_manifest.py` | Release manifest basics and generated SPDX ingestion. |
 | `test_sbom.py` | SBOM tooling, Python artifact hashes and toolchain policy verification. |
 | `test_sbom_binding.py` | Regressions for Python lock snapshot binding in generated SBOMs. |

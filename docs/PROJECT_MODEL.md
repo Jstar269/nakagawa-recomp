@@ -101,12 +101,9 @@ The project intends to:
   public-safe summary is published;
 - deliver one-click play from a PSP ISO the user owns, without the developer toolchain
   ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)), within the lawful-input and fail-closed rules;
-- make the native player sharp at any window size, including fullscreen: draw the player UI at the window's real
-  pixel size, and present game frames with integer or sharp-bilinear scaling instead of plain bilinear filtering
-  at fractional sizes, keeping native 480×272 rendering as the verified default
-  ([#1129](https://github.com/Jstar269/nakagawa-recomp/issues/1129));
-- rebuild the player interface (launcher, in-game overlay and settings) as one controller-first UI on SDL3, with the
-  Clay layout library, after the owner reviews its design and Clay is admitted under the provenance rules;
+- finish moving the player interface onto one controller-first UI on SDL3 with the Clay layout library: the launcher,
+  Settings and the setup wizard use it today, and the in-game overlay is next
+  ([#1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159));
 - move more of the runtime from high-level emulation to low-level emulation, measured against a physical PSP;
 - bring the player to Linux, macOS and Android ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306),
   [#329](https://github.com/Jstar269/nakagawa-recomp/issues/329),
@@ -169,7 +166,7 @@ A public source candidate should include only material that has passed all appli
 The repository ships source code, documentation and the notices listed in
 [`NOTICE.md`](../NOTICE.md). It does not ship game executables, game assets,
 firmware files, decryption keys or private traces. The user supplies the game
-files. Nakagawa does not decrypt games; it uses decrypted files from your own copy. This section is not
+files. Nakagawa decrypts the user's own disc locally with built-in tables and never decrypts firmware. This section is not
 legal advice. Check the rules where you live.
 
 The project's operational rules are:

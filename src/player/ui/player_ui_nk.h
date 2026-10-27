@@ -362,8 +362,9 @@ typedef struct {
     float logical_height;
 } PlayerUiSettingsModel;
 
-/* The controller settings page (VIEW_CONTROLLER_SETTINGS): the mapping, or a
-   step of the guided stick and trigger calibration while one runs. */
+/* The controller settings page (VIEW_CONTROLLER_SETTINGS): the controller or
+   keyboard mapping, or a step of the guided stick and trigger calibration while
+   one runs. */
 typedef enum {
     PLAYER_UI_CONTROLLER_PAGE_MAPPING = 0,
     PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_REST,      /* step 1: leave the stick alone */
@@ -389,7 +390,9 @@ typedef enum {
     PLAYER_UI_CONTROLLER_TOGGLE_SCOPE,       /* this game's own mapping, or the global one */
     PLAYER_UI_CONTROLLER_CALIBRATION_FINISH, /* step 2 done: show the result */
     PLAYER_UI_CONTROLLER_CALIBRATION_ACCEPT,
-    PLAYER_UI_CONTROLLER_CALIBRATION_CANCEL
+    PLAYER_UI_CONTROLLER_CALIBRATION_CANCEL,
+    PLAYER_UI_CONTROLLER_SHOW_CONTROLLER,    /* show and edit the controller buttons */
+    PLAYER_UI_CONTROLLER_SHOW_KEYBOARD       /* show and edit the keyboard keys (#1299) */
 } PlayerUiControllerOp;
 
 #define PLAYER_UI_CONTROLLER_BUTTONS 14u   /* INPUT_CONTROL_DIGITAL_COUNT */
@@ -397,6 +400,7 @@ typedef enum {
 
 typedef struct {
     PlayerUiControllerPage page;
+    bool keyboard;                  /* the mapping shows the keyboard keys, not the controller */
     /* Mapping: each PSP control's name and what it is bound to, in words */
     const char *names[PLAYER_UI_CONTROLLER_BUTTONS];
     const char *bindings[PLAYER_UI_CONTROLLER_BUTTONS];
@@ -583,6 +587,8 @@ enum {
     PLAYER_UI_ID_CONTROLLER_SCOPE = 0x4629u,
     PLAYER_UI_ID_CONTROLLER_CALIBRATION_PRIMARY = 0x462Au,
     PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL = 0x462Bu,
+    PLAYER_UI_ID_CONTROLLER_SHOW_PAD = 0x462Cu,
+    PLAYER_UI_ID_CONTROLLER_SHOW_KEYBOARD = 0x462Du,
     PLAYER_UI_ID_DEVELOPER_LOG_COPY = 0x4701u,
     PLAYER_UI_ID_DEVELOPER_LOG_SAVE = 0x4702u,
     PLAYER_UI_ID_DEVELOPER_LOG_CLOSE = 0x4703u
