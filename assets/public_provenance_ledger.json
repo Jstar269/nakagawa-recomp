@@ -3716,7 +3716,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bc9fa94991e8f4121a5072704a96e379bc9331dae8e6774f123ecb0ad8f53d5d"
+      "sha256": "c5cae2c117c9f33192a0745ea13d10f290fed4160528e002cc36871d9b7cfb36"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -3728,7 +3728,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7e82d2276342236afaaee475a6c3f933a8ae508d9184f0c736de1313472d85a2"
+      "sha256": "afd7b4e781f306f4459153353ebaf92275a441808d68a35ccc3f49bcb1bff2ae"
     },
     {
       "path": "src/core/nk_types.h",
@@ -3824,7 +3824,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6389832c1f1b561e1c62395b0faca99425a7fdbed438f3f85d5aab985a0809d7"
+      "sha256": "384c1be419a6ba9063236c9571a2568c707cbd4f447a3ccc861e44629360f2a9"
     },
     {
       "path": "src/player/package_builder.c",
@@ -10383,7 +10383,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "72dd76da7a2346efda3ef641874322aeb725181c39c8e3ee9a79b41fb2328e2d"
+      "sha256": "0f3d3f2c2402a9536ae057afba77b05463696e4c5bc06518b32dbba90311225b"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -10395,7 +10395,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c99dc78d1a863485cf261f821824494181138c2b281a80784772ecad436519ea"
+      "sha256": "e24f51f5e212f3ce257682da6c0f57ffec317020f1b9361622e48fab73f7d05e"
     },
     {
       "path": "tests/native/test_player_ui_art.c",
