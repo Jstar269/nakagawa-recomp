@@ -393,6 +393,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define ATRAC_ERROR_INVALID_CODECTYPE 0x80630004u
 #define ATRAC_ERROR_BAD_ATRACID 0x80630005u
 #define ATRAC_ERROR_UNKNOWN_FORMAT 0x80630006u
+#define ATRAC_ERROR_BUFFER_IS_EMPTY 0x80630023u
 #define ATRAC_ERROR_DECODE_DATA_AFTER_END 0x80630024u
 #define ATRAC_ERROR_SIZE_TOO_SMALL 0x80630011u
 #define NID_SCE_UTILITY_LOAD_MODULE 0x2a2b3de0u
@@ -687,7 +688,33 @@ int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
     (void)guest_path; (void)out_lba; (void)out_size;
     return -1;
 }
+/* The umd-io test's synthetic disc, served only while that test enables it: 64 sectors, with
+ * the ISO 9660 primary volume descriptor header at the start of sector 16 and every other byte
+ * a function of its sector and offset, so a read from the wrong sector is visible. */
+enum { UMD_SYNTHETIC_SECTORS = 64u };
+
+static uint8_t umd_synthetic_byte(uint64_t position) {
+    static const uint8_t pvd[8] = {0x01u, 'C', 'D', '0', '0', '1', 0x01u, 0x00u};
+    const uint64_t sector = position / 2048u, offset = position % 2048u;
+    if (sector == 16u && offset < sizeof(pvd)) return pvd[offset];
+    return (uint8_t)(sector * 31u + offset * 7u + 1u);
+}
+
+int iso_sector_count(uint32_t *out_sectors) {
+    if (!s_umd_io_synthetic_enabled || !out_sectors) return -1;
+    *out_sectors = UMD_SYNTHETIC_SECTORS;
+    return 0;
+}
+
 int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
+    if (s_umd_io_synthetic_enabled && dst) {
+        const uint64_t start = (uint64_t)lba * 2048u + offset;
+        const uint64_t end = (uint64_t)UMD_SYNTHETIC_SECTORS * 2048u;
+        if (start >= end) return 0;
+        uint32_t n = end - start < bytes ? (uint32_t)(end - start) : bytes;
+        for (uint32_t i = 0; i < n; i++) ((uint8_t *)dst)[i] = umd_synthetic_byte(start + i);
+        return (int)n;
+    }
     if (s_psmf_synthetic_enabled && lba == 0u && dst && offset < s_psmf_synthetic_size) {
         uint32_t n = s_psmf_synthetic_size - offset;
         if (n > bytes) n = bytes;
@@ -3361,14 +3388,122 @@ static void test_fd_namespace(void) {
     free(old_root);
 }
 
+/* sceIoLseek takes its 64-bit offset in a2:a3 and whence in t0 and returns the high word in v1. */
+static uint32_t umd_test_seek64(uint32_t fd, int64_t offset, uint32_t whence, uint32_t *high) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[6] = (uint32_t)(uint64_t)offset;
+    cpu.r[7] = (uint32_t)((uint64_t)offset >> 32);
+    cpu.r[8] = whence;
+    const uint32_t low = sr_syscall(&cpu, 0x27eb27b8u);
+    *high = cpu.r[3];
+    return low;
+}
+
+static uint32_t umd_test_seek32(uint32_t fd, int32_t offset, uint32_t whence) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = (uint32_t)offset;
+    cpu.r[6] = whence;
+    return sr_syscall(&cpu, 0x68963324u);
+}
+
+static uint32_t umd_test_read(uint32_t fd, uint32_t dst, uint32_t count) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = dst;
+    cpu.r[6] = count;
+    return sr_syscall(&cpu, 0x6a638d83u);
+}
+
+/* True when guest memory at dst holds the synthetic disc's sectors [sector, sector + count). */
+static int umd_test_sectors_match(uint32_t dst, uint32_t sector, uint32_t count) {
+    for (uint32_t i = 0; i < count * 2048u; i++) {
+        if (MEM_R8(dst + i) != umd_synthetic_byte((uint64_t)sector * 2048u + i)) return 0;
+    }
+    return 1;
+}
+
+/* The UMD block device counts in 2048-byte sectors (PSP-UMDRAW-001 captured cells): seeks
+ * return sector positions and SEEK_END is relative to the last sector; reads take and return
+ * sector counts and advance the position by them; a position below zero or past the last
+ * sector is refused with 0x8001b003 and leaves the position unchanged; a zero count is refused
+ * with 0x80010016. Uncaptured cases stay visible: a read crossing the last sector stops at the
+ * raw-device boundary, and so does every data operation while no disc image is open. */
+static void test_umd_block_device_sectors(uint32_t fd, uint32_t data_addr) {
+    uint32_t high = 0;
+    expect(umd_test_seek64(fd, 0, 0u, &high) == 0u && high == 0u, "UMD SEEK_SET 0 is sector 0");
+    expect(umd_test_seek64(fd, 16, 0u, &high) == 16u && high == 0u,
+           "UMD SEEK_SET 16 returns sector 16");
+    expect(umd_test_seek64(fd, 32, 0u, &high) == 32u && high == 0u,
+           "a UMD seek offset counts sectors, not bytes");
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 32u && high == 0u,
+           "UMD SEEK_CUR 0 reports the current sector");
+    expect(umd_test_seek64(fd, 0, 2u, &high) == UMD_SYNTHETIC_SECTORS - 1u && high == 0u,
+           "UMD SEEK_END 0 is the last sector");
+    expect(umd_test_seek64(fd, 1, 0u, &high) == 1u && high == 0u, "UMD SEEK_SET 1 is sector 1");
+    expect(umd_test_seek64(fd, -1, 0u, &high) == 0x8001b003u && high == 0xffffffffu,
+           "a negative UMD position is refused with 0x8001b003");
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 1u,
+           "a refused UMD seek leaves the position unchanged");
+    expect(umd_test_seek64(fd, 0x7fffffff, 0u, &high) == 0x8001b003u && high == 0xffffffffu,
+           "a UMD position far past the disc is refused with 0x8001b003");
+    expect(umd_test_seek64(fd, UMD_SYNTHETIC_SECTORS, 0u, &high) == 0x8001b003u,
+           "the position after the last UMD sector is refused");
+    expect(umd_test_seek64(fd, INT64_MAX, 1u, &high) == 0x8001b003u,
+           "an overflowing UMD SEEK_CUR is refused");
+    expect(umd_test_seek64(fd, 0, 3u, &high) == 0x80020324u && high == 0xffffffffu,
+           "an unknown UMD whence is refused");
+    expect(umd_test_seek32(fd, 0, 0u) == 0u, "UMD sceIoLseek32 SEEK_SET 0 is sector 0");
+    expect(umd_test_seek32(fd, 16, 0u) == 16u, "UMD sceIoLseek32 SEEK_SET 16 returns sector 16");
+    expect(umd_test_seek32(fd, 0, 2u) == UMD_SYNTHETIC_SECTORS - 1u,
+           "UMD sceIoLseek32 SEEK_END 0 is the last sector");
+    expect(umd_test_seek32(fd, -1, 0u) == 0x8001b003u,
+           "UMD sceIoLseek32 refuses a negative position");
+
+    /* Two consecutive one-sector reads from sector 16 return the descriptor header, then sector
+     * 17, and leave the position at 18. */
+    expect(umd_test_seek32(fd, 16, 0u) == 16u, "UMD read setup seeks to sector 16");
+    expect(umd_test_read(fd, data_addr, 1u) == 1u && umd_test_sectors_match(data_addr, 16u, 1u) &&
+               MEM_R32(data_addr) == 0x30444301u && MEM_R32(data_addr + 4u) == 0x00013130u,
+           "a one-sector UMD read returns 1 and the sector-16 descriptor header");
+    expect(umd_test_read(fd, data_addr, 1u) == 1u && umd_test_sectors_match(data_addr, 17u, 1u),
+           "the next UMD read continues at the next sector");
+    expect(umd_test_seek64(fd, 0, 1u, &high) == 18u && high == 0u,
+           "each UMD read advances the position by its sector count");
+    expect(umd_test_seek32(fd, 20, 0u) == 20u &&
+               umd_test_read(fd, data_addr, 3u) == 3u && umd_test_sectors_match(data_addr, 20u, 3u) &&
+               umd_test_seek32(fd, 0, 1u) == 23u,
+           "a three-sector UMD read copies 6144 bytes and advances three sectors");
+    expect(umd_test_seek32(fd, 16, 0u) == 16u && umd_test_read(fd, data_addr, 0u) == 0x80010016u &&
+               umd_test_seek32(fd, 0, 1u) == 16u,
+           "a zero-count UMD read is refused with 0x80010016 and keeps the position");
+
+    /* A read crossing the last sector is not captured: it stops at the boundary and changes
+     * neither guest memory nor the position. */
+    MEM_W32(data_addr, 0xaabbccddu);
+    expect(umd_test_seek32(fd, (int32_t)UMD_SYNTHETIC_SECTORS - 1, 0u) ==
+               UMD_SYNTHETIC_SECTORS - 1u &&
+               umd_test_read(fd, data_addr, 2u) == 0x80010086u &&
+               MEM_R32(data_addr) == 0xaabbccddu &&
+               umd_test_seek32(fd, 0, 1u) == UMD_SYNTHETIC_SECTORS - 1u,
+           "a UMD read across the last sector stops at the raw-device boundary");
+    expect(umd_test_read(fd, data_addr, 1u) == 1u &&
+               umd_test_sectors_match(data_addr, UMD_SYNTHETIC_SECTORS - 1u, 1u),
+           "the last UMD sector itself is readable");
+    expect(umd_test_seek32(fd, 0, 0u) == 0u && umd_test_read(fd, 0x0bffff00u, 1u) == 0x80010016u &&
+               umd_test_seek32(fd, 0, 1u) == 0u,
+           "a UMD read that would run past the end of guest memory is refused");
+}
+
 static void test_umd_io_console_model(void) {
     enum { PATH_ADDR = 0x09010000u, DATA_ADDR = 0x09012000u, FD_KIND_RAW_DEVICE = 3 };
     static const uint32_t nid_io_open = 0x109f50bcu;
     static const uint32_t nid_io_close = 0x810c4bc3u;
-    static const uint32_t nid_io_read = 0x6a638d83u;
     static const uint32_t nid_io_write = 0x42ec03acu;
-    static const uint32_t nid_io_lseek32 = 0x68963324u;
-    static const uint32_t nid_io_lseek = 0x27eb27b8u;
     static const uint32_t nid_io_ioctl = 0x63632449u;
     static const uint32_t nid_io_getstat = 0xace946e8u;
     static const uint32_t nid_io_devctl = 0x54f5fb11u;
@@ -3475,35 +3610,49 @@ static void test_umd_io_console_model(void) {
         }
     }
 
-    /* The console measurement only covered close. Every other raw-device
-     * operation must stop at a named semantic boundary with a real error. */
-    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    /* Reads and seeks on the UMD block device follow the captured sector cells (above). With no
+     * disc image open they stay at the raw-device boundary, as does every operation no capture
+     * covers. */
+    s_umd_io_synthetic_enabled = 0;
+    fd_set_path(&cpu, PATH_ADDR, "umd1:");
     cpu.r[5] = 1u;
     uint32_t raw_fd = sr_syscall(&cpu, nid_io_open);
     expect(raw_fd == 3u && sr_hle_test_fd_kind(raw_fd) == FD_KIND_RAW_DEVICE,
-           "bare UMD open creates a typed descriptor in the normal table");
+           "a UMD open with no disc image still creates a typed descriptor");
     MEM_W32(DATA_ADDR, 0xaabbccddu);
+    expect(umd_test_read(raw_fd, DATA_ADDR, 1u) == 0x80010086u &&
+               MEM_R32(DATA_ADDR) == 0xaabbccddu,
+           "with no disc image a UMD sceIoRead fails closed without changing guest memory");
+    expect(umd_test_seek32(raw_fd, 16, 0u) == 0x80010086u,
+           "with no disc image a UMD sceIoLseek32 fails closed");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
-    cpu.r[5] = DATA_ADDR;
-    cpu.r[6] = 4u;
-    expect(sr_syscall(&cpu, nid_io_read) == 0x80010086u &&
-               MEM_R32(DATA_ADDR) == 0xaabbccddu,
-           "raw UMD sceIoRead fails closed without changing guest memory");
+    expect(sr_syscall(&cpu, nid_io_close) == 0u, "the image-less UMD descriptor closes");
+    s_umd_io_synthetic_enabled = 1;
+
+    static const char *const umd_devices[] = {"umd0:", "umd1:", "umd:"};
+    for (size_t i = 0; i < sizeof(umd_devices) / sizeof(umd_devices[0]); i++) {
+        fd_set_path(&cpu, PATH_ADDR, umd_devices[i]);
+        cpu.r[5] = i == 0u ? 0x000f0001u : 1u;
+        raw_fd = sr_syscall(&cpu, nid_io_open);
+        expect(raw_fd == 3u, "each UMD block device opens read-only");
+        test_umd_block_device_sectors(raw_fd, DATA_ADDR);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = raw_fd;
+        expect(sr_syscall(&cpu, nid_io_close) == 0u, "each UMD block device closes");
+    }
+
+    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    cpu.r[5] = 1u;
+    raw_fd = sr_syscall(&cpu, nid_io_open);
+    expect(raw_fd == 3u && sr_hle_test_fd_kind(raw_fd) == FD_KIND_RAW_DEVICE,
+           "bare UMD open creates a typed descriptor in the normal table");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     cpu.r[5] = DATA_ADDR;
     cpu.r[6] = 4u;
     expect(sr_syscall(&cpu, nid_io_write) == 0x80010086u,
            "raw UMD sceIoWrite fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_lseek32) == 0x80010086u,
-           "raw UMD sceIoLseek32 fails closed");
-    memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = raw_fd;
-    expect(sr_syscall(&cpu, nid_io_lseek) == 0x80010086u,
-           "raw UMD sceIoLseek fails closed");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = raw_fd;
     expect(sr_syscall(&cpu, nid_io_ioctl) == 0x80010086u,
@@ -5872,7 +6021,8 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
                osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
            "after the answer the keyboard accepts shutdown and reaches NONE");
 
-    /* A new keyboard replaces one whose request is still open. */
+    /* One utility dialog slot (#1386): a second keyboard InitStart while one is VISIBLE is
+     * refused, and the running keyboard keeps the slot and the person's open request. */
     osk_person_reset();
     s_osk_person_typing = 1;
     osk_guest_build(1, 16u, 0u);
@@ -5884,40 +6034,228 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
     (void)osk_poll(&cpu);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u && s_osk_abandons == 1,
-           "starting a new keyboard drops the old keyboard's unanswered request");
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0x80110001u && s_osk_abandons == 0 &&
+               s_osk_request_open,
+           "a second keyboard InitStart while the first is VISIBLE returns INVALID_STATUS and "
+           "keeps the person's open request (#1386)");
     s_osk_person_typing = 0;
-    expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u && osk_poll_past_visible(&cpu) == 3u &&
-               s_osk_requests == 2 && osk_guest_out_is(0, n, 1),
-           "the new keyboard asks the person afresh and is answered");
+    expect(osk_poll_past_visible(&cpu) == 3u && s_osk_requests == 1 && osk_guest_out_is(0, n, 1),
+           "the first keyboard is answered through its own request");
     memset(&cpu, 0, sizeof(cpu));
     (void)sr_syscall(&cpu, NID_OSK_SHUTDOWN);
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
 
-    /* Another utility dialog takes the slot while the person is still typing: the keyboard is
-     * no longer polled (GetStatus reports WRONG_TYPE), so its box must not stay open. */
+    /* Another utility dialog cannot take the slot while the person is still typing (#1386):
+     * savedata's InitStart is refused and the keyboard stays VISIBLE with its request open.
+     * Once the keyboard is back at NONE savedata takes the slot, and from then on the
+     * keyboard's GetStatus reports WRONG_TYPE. */
     osk_person_reset();
     s_osk_person_typing = 1;
     osk_guest_build(1, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog will replace starts");
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog asks to replace starts");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
     expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
     memset(&cpu, 0, sizeof(cpu));
     for (uint32_t off = 0; off < 0x600u; off += 4u) MEM_W32(OSK_SAVEDATA_PARAM_ADDR + off, 0u);
+    MEM_W32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu, 0xdeadbeefu);
     cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u && s_osk_abandons == 1 &&
-               !s_osk_request_open,
-           "a savedata dialog taking the slot drops the keyboard's unanswered request");
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0x80110001u && s_osk_abandons == 0 &&
+               s_osk_request_open && MEM_R32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu) == 0xdeadbeefu,
+           "a savedata InitStart while the keyboard is VISIBLE returns INVALID_STATUS and "
+           "changes nothing");
+    expect(osk_poll(&cpu) == 2u, "the keyboard still holds the slot and stays VISIBLE");
+    s_osk_person_typing = 0;
+    expect(osk_poll_past_visible(&cpu) == 3u && sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u &&
+               osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u && osk_guest_out_is(0, n, 1),
+           "the keyboard is answered and winds down to NONE");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u &&
+               MEM_R32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
+           "with the keyboard at NONE a savedata InitStart takes the slot");
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_OSK_STATUS) == 0x80110005u,
-           "the replaced keyboard reports WRONG_TYPE");
-    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
-           "the dropped request writes nothing into the field");
+           "the keyboard that gave up the slot reports WRONG_TYPE");
     osk_person_reset();
+    sr_hle_test_osk_slot_reset();
+}
+
+/* ---- One utility dialog slot (#1386), through the production dispatch. Savedata, message,
+ * netconf, gamedata-install, game-sharing and the OSK share it: a second InitStart while a
+ * dialog is active returns INVALID_STATUS (0x80110001) and leaves both dialogs untouched, a
+ * call for a type that does not hold the slot returns WRONG_TYPE (0x80110005), the OSK's
+ * PSP-measured code (#363), and the holder keeps the slot at NONE after use. The code a PSP
+ * returns for a second InitStart is unmeasured; the #1386 contract names INVALID_STATUS. */
+#define NID_SAVEDATA_DIALOG_STATUS   0x8874dbe0u
+#define NID_SAVEDATA_DIALOG_UPDATE   0xd4b95ffbu
+#define NID_SAVEDATA_DIALOG_SHUTDOWN 0x9790b33cu
+#define NID_MSG_DIALOG_INIT          0x2ad8e239u
+#define NID_MSG_DIALOG_UPDATE        0x95fc253bu
+#define NID_MSG_DIALOG_STATUS        0x9a1c91d7u
+#define NID_MSG_DIALOG_SHUTDOWN      0x67af3428u
+#define NID_NETCONF_DIALOG_INIT      0x4db1e739u
+#define NID_NETCONF_DIALOG_UPDATE    0x91e70e35u
+#define NID_NETCONF_DIALOG_STATUS    0x6332aa39u
+#define NID_NETCONF_DIALOG_SHUTDOWN  0xf88155f6u
+#define NID_GAMEDATA_DIALOG_INIT     0x24ac31ebu
+#define NID_GAMEDATA_DIALOG_UPDATE   0x4aecd179u
+#define NID_GAMEDATA_DIALOG_STATUS   0xb57e95d9u
+#define NID_GAMEDATA_DIALOG_SHUTDOWN 0x32e32dcbu
+#define NID_SHARING_DIALOG_INIT      0xc492f751u
+#define NID_SHARING_DIALOG_UPDATE    0x7853182du
+#define NID_SHARING_DIALOG_STATUS    0x946963f3u
+#define NID_SHARING_DIALOG_SHUTDOWN  0xefc6f80fu
+#define UTILITY_MSG_PARAM_ADDR       0x09034000u
+#define UTILITY_MSG2_PARAM_ADDR      0x09034400u
+#define UTILITY_OTHER_PARAM_ADDR     0x09034800u
+#define UTILITY_SAVEDATA_PARAM_ADDR  0x09035000u /* 0x600 bytes */
+#define UTILITY_RESULT_UNTOUCHED     0xdeadbeefu
+
+typedef struct UtilityDialogNids {
+    const char *name;
+    uint32_t init, update, status, shutdown;
+} UtilityDialogNids;
+
+static uint32_t utility_call(CpuState *cpu, uint32_t nid, uint32_t a0) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = a0;
+    return sr_syscall(cpu, nid);
+}
+
+/* A zeroed parameter block whose common result field (+0x1c) holds a sentinel: an InitStart
+ * that takes the block writes 0 there, so a refused one is visible by the sentinel staying. */
+static void utility_param_block(uint32_t addr, uint32_t size) {
+    for (uint32_t off = 0; off < size; off += 4u) MEM_W32(addr + off, 0u);
+    MEM_W32(addr + 0x1cu, UTILITY_RESULT_UNTOUCHED);
+}
+
+static void test_utility_dialog_single_slot(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
+          NID_SAVEDATA_DIALOG_STATUS, NID_SAVEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityMsgDialog", NID_MSG_DIALOG_INIT, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS,
+          NID_MSG_DIALOG_SHUTDOWN },
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+        { "sceUtilityOsk", NID_OSK_INIT, NID_OSK_UPDATE, NID_OSK_STATUS, NID_OSK_SHUTDOWN },
+    };
+    const size_t count = sizeof(dialogs) / sizeof(dialogs[0]);
+    char what[256];
+    CpuState cpu;
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    osk_person_reset();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+
+    /* No dialog ever opened: every type's Update, GetStatus and ShutdownStart is WRONG_TYPE. */
+    for (size_t i = 0; i < count; i++) {
+        snprintf(what, sizeof(what), "%sUpdate, GetStatus and ShutdownStart with no dialog ever "
+                 "opened return WRONG_TYPE", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].update, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].shutdown, 0u) == 0x80110005u,
+               what);
+    }
+
+    /* The message dialog takes the free slot. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
+           "a message InitStart takes the free slot and clears its result");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 1u, "the message dialog reports INIT");
+
+    /* Repeated init: a second message InitStart neither restarts the running dialog nor takes
+     * its own parameter block. */
+    utility_param_block(UTILITY_MSG2_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG2_PARAM_ADDR) == 0x80110001u &&
+               MEM_R32(UTILITY_MSG2_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "a second message InitStart while one is active returns INVALID_STATUS and leaves "
+           "its parameter block alone");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "the running message dialog was not restarted: it moves on from INIT to RUNNING");
+
+    /* Overlapping types: every other dialog's InitStart is refused while the message dialog is
+     * active, and calls for those types are WRONG_TYPE. */
+    for (size_t i = 0; i < count; i++) {
+        if (dialogs[i].init == NID_MSG_DIALOG_INIT) continue;
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        utility_param_block(block, savedata ? 0x600u : 0x40u);
+        snprintf(what, sizeof(what), "%sInitStart while the message dialog is active returns "
+                 "INVALID_STATUS and leaves its parameter block alone", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0x80110001u &&
+                   MEM_R32(block + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+               what);
+        snprintf(what, sizeof(what), "%sGetStatus while the message dialog holds the slot "
+                 "returns WRONG_TYPE", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].status, 0u) == 0x80110005u, what);
+    }
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "the refused InitStarts left the message dialog RUNNING");
+
+    /* The holder finishes; until its GetStatus reports NONE it still holds the active slot. */
+    expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 3u &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
+           "the message dialog finishes with its own result");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u,
+           "the finished message dialog accepts ShutdownStart");
+    utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "a savedata InitStart before the shut-down message dialog reports NONE is refused");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+           "the message dialog winds down to NONE and keeps the slot there after use");
+
+    /* With the holder at NONE the next type takes the slot, and the old holder's calls become
+     * WRONG_TYPE. */
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
+           "with the message dialog at NONE a savedata InitStart takes the slot");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0x80110005u &&
+               utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110005u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0x80110005u,
+           "the message dialog that gave up the slot answers WRONG_TYPE");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "the savedata dialog reports INIT, then winds down to NONE after ShutdownStart");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a ShutdownStart at NONE does not re-arm the savedata dialog");
+
+    /* Each remaining type takes the free slot in turn and gives it back at NONE. */
+    for (size_t i = 0; i < count; i++) {
+        const uint32_t init = dialogs[i].init;
+        if (init == NID_SAVEDATA_DIALOG_INIT || init == NID_MSG_DIALOG_INIT || init == NID_OSK_INIT)
+            continue;
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x40u);
+        snprintf(what, sizeof(what), "%sInitStart takes the free slot; the dialog reports INIT, "
+                 "then winds down to NONE after ShutdownStart", dialogs[i].name);
+        expect(utility_call(&cpu, init, UTILITY_OTHER_PARAM_ADDR) == 0u &&
+                   MEM_R32(UTILITY_OTHER_PARAM_ADDR + 0x1cu) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
+                   utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 4u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0u,
+               what);
+    }
+    sr_hle_test_osk_slot_reset();
 }
 
 static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
@@ -6899,8 +7237,10 @@ static void test_time_domains_are_coherent(void) {
     uint32_t libc_time = sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_TIME);
     expect(libc_time == MEM_R32(libc_time_out) && libc_time == tv_sec,
            "libc time and gettimeofday share the RTC/Unix epoch");
-    expect(tv_usec < 1000000u && MEM_R32(TZ_OUT) == 0u && MEM_R32(TZ_OUT + 4u) == 0u,
-           "gettimeofday emits a valid deterministic UTC timezone record");
+    uint32_t profile_zone = sysreg_sysparam_int(6u), profile_daylight = sysreg_sysparam_int(7u);
+    int64_t profile_local_minutes = (int64_t)(int32_t)profile_zone + (profile_daylight ? 60 : 0);
+    expect(tv_usec < 1000000u && MEM_R32(TZ_OUT) == 0u - profile_zone && MEM_R32(TZ_OUT + 4u) == profile_daylight,
+           "gettimeofday's timezone record carries the system profile's TIMEZONE and DAYLIGHTSAVINGS (#1382)");
 
     cpu.r[4] = DATE_EXPLICIT;
     cpu.r[5] = 60u; /* explicit PSP timezone offset in minutes */
@@ -6915,8 +7255,9 @@ static void test_time_domains_are_coherent(void) {
     cpu.r[4] = DATE_LOCAL; cpu.r[5] = DATE_TICK_LOCAL;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
            "local current-clock output is a valid RTC datetime");
-    expect(selftest_guest_u64(DATE_TICK_EXPLICIT) - selftest_guest_u64(DATE_TICK_LOCAL) == 3600000000ull,
-           "explicit RTC offset is applied in checked microseconds");
+    expect(selftest_guest_u64(DATE_TICK_EXPLICIT) - selftest_guest_u64(DATE_TICK_LOCAL) ==
+               (uint64_t)((60 - profile_local_minutes) * 60000000ll),
+           "explicit RTC offset and the system profile's local offset are applied in checked microseconds");
 
     expect(s_vtime_us == before,
            "all repeated clock queries leave the scheduler timeline unchanged");
@@ -7953,22 +8294,25 @@ static void test_rtc_pointer_validation_and_measured_conversions(void) {
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "GetCurrentClock rejects an unwritable datetime span");
 
-    /* sceRtcGetCurrentClockLocalTime runs on the fixed UTC console profile
-     * until #77; the local output must equal the explicit tz=0 baseline. */
-    cpu.r[4] = DATE_A; cpu.r[5] = 0u;
+    /* sceRtcGetCurrentClockLocalTime applies the system profile's time zone
+     * and daylight saving (#1382); the local output must equal the explicit
+     * clock at that offset. */
+    uint32_t profile_daylight = sysreg_sysparam_int(7u);
+    int64_t profile_local_minutes = (int64_t)(int32_t)sysreg_sysparam_int(6u) + (profile_daylight ? 60 : 0);
+    cpu.r[4] = DATE_A; cpu.r[5] = (uint32_t)(int32_t)profile_local_minutes;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u,
-           "refreshes the explicit UTC baseline for the LocalTime comparison");
+           "refreshes the explicit baseline at the profile's offset for the LocalTime comparison");
     cpu.r[4] = DATE_B;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == 0u,
-           "GetCurrentClockLocalTime succeeds on the pinned UTC profile");
+           "GetCurrentClockLocalTime succeeds on the system profile");
     cpu.r[4] = DATE_A; cpu.r[5] = TICK_A;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
-           "the refreshed UTC baseline is a valid datetime");
+           "the refreshed explicit baseline is a valid datetime");
     cpu.r[4] = DATE_B; cpu.r[5] = TICK_B;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u,
            "the LocalTime output is a valid datetime");
     expect(selftest_guest_u64(TICK_A) == selftest_guest_u64(TICK_B),
-           "LocalTime equals the UTC baseline while the console profile is pinned to UTC (#77)");
+           "LocalTime equals the explicit clock at the system profile's offset (#1382)");
     cpu.r[4] = 0u;
     expect(sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "GetCurrentClockLocalTime rejects a NULL datetime pointer fail-closed");
@@ -7981,22 +8325,22 @@ static void test_rtc_pointer_validation_and_measured_conversions(void) {
            "GetCurrentTick rejects a NULL output pointer fail-closed");
     /* ---- sceRtcConvertUtcToLocalTime / sceRtcConvertLocalTimeToUTC ---- */
     /* psprtc.h declares both directions (UTC<->local tick pointers, 0 on
-     * success, <0 on error).  With the console timezone pinned to UTC (#77)
-     * the conversion is the identity; the pointer edges fail closed and never
-     * touch the output. */
+     * success, <0 on error).  The conversion applies the system profile's
+     * local offset (#1382); the pointer edges fail closed and never touch the
+     * output. */
     MEM_W32(TICK_B, (uint32_t)tick_2012);
     MEM_W32(TICK_B + 4u, (uint32_t)(tick_2012 >> 32));
     MEM_W32(TICK_A, 0xDEADBEEFu); MEM_W32(TICK_A + 4u, 0xDEADBEEFu);
     cpu.r[4] = TICK_B; cpu.r[5] = TICK_A;
     expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == 0u,
-           "ConvertUtcToLocalTime succeeds on the pinned UTC profile");
-    expect(selftest_guest_u64(TICK_A) == tick_2012,
-           "ConvertUtcToLocalTime is the identity while the console timezone is UTC (#77)");
+           "ConvertUtcToLocalTime succeeds on the system profile");
+    expect(selftest_guest_u64(TICK_A) == tick_2012 + (uint64_t)(profile_local_minutes * 60000000ll),
+           "ConvertUtcToLocalTime adds the system profile's local offset (#1382)");
     cpu.r[4] = TICK_A; cpu.r[5] = TICK_B;
     expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == 0u,
-           "ConvertLocalTimeToUTC succeeds on the pinned UTC profile");
+           "ConvertLocalTimeToUTC succeeds on the system profile");
     expect(selftest_guest_u64(TICK_B) == tick_2012,
-           "ConvertLocalTimeToUTC inverts the identity on the pinned UTC profile");
+           "ConvertLocalTimeToUTC inverts the system profile's local offset");
 
     MEM_W32(TICK_A, 0xDEADBEEFu); MEM_W32(TICK_A + 4u, 0xDEADBEEFu);
     cpu.r[4] = 0u; cpu.r[5] = TICK_A;
@@ -8026,6 +8370,103 @@ static void test_rtc_pointer_validation_and_measured_conversions(void) {
     cpu.r[4] = TICK_B; cpu.r[5] = BAD_U64;
     expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "ConvertLocalTimeToUTC rejects an unwritable output span fail-closed");
+}
+
+/* Every local-time API agrees with the system profile the guest reads through
+ * sceUtilityGetSystemParamInt: TIMEZONE zone minutes from UTC and
+ * DAYLIGHTSAVINGS daylight, which give a local offset of local_minutes. */
+static void rtc_expect_profile(int32_t zone, uint32_t daylight, int64_t local_minutes, const char *setting) {
+    enum {
+        DATE_LOCAL = 0x00200500u,
+        DATE_EXPLICIT = 0x00200520u,
+        TICK_LOCAL = 0x00200540u,
+        TICK_EXPLICIT = 0x00200548u,
+        TICK_IN = 0x00200550u,
+        TICK_OUT = 0x00200558u,
+        TZ_OUT = 0x00200560u,
+    };
+    const uint64_t tick_2012 = 63483721935000500ull; /* 2012-09-20 07:12:15.500 UTC */
+    const uint64_t local_2012 = tick_2012 + (uint64_t)(local_minutes * 60000000ll);
+    char what[192];
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+
+    snprintf(what, sizeof(what), "%s: sceUtilityGetSystemParamInt reports TIMEZONE %d and DAYLIGHTSAVINGS %u",
+             setting, (int)zone, (unsigned)daylight);
+    expect(sysreg_sysparam_int(6u) == (uint32_t)zone && sysreg_sysparam_int(7u) == daylight, what);
+
+    MEM_W32(TICK_IN, (uint32_t)tick_2012);
+    MEM_W32(TICK_IN + 4u, (uint32_t)(tick_2012 >> 32));
+    cpu.r[4] = TICK_IN; cpu.r[5] = TICK_OUT;
+    snprintf(what, sizeof(what), "%s: sceRtcConvertUtcToLocalTime adds %lld minutes", setting,
+             (long long)local_minutes);
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_UTC_TO_LOCAL) == 0u && selftest_guest_u64(TICK_OUT) == local_2012,
+           what);
+    cpu.r[4] = TICK_OUT; cpu.r[5] = TICK_IN;
+    snprintf(what, sizeof(what), "%s: sceRtcConvertLocalTimeToUTC takes the same %lld minutes off", setting,
+             (long long)local_minutes);
+    expect(sr_syscall(&cpu, NID_SCE_RTC_CONVERT_LOCAL_TO_UTC) == 0u && selftest_guest_u64(TICK_IN) == tick_2012,
+           what);
+
+    cpu.r[4] = DATE_EXPLICIT; cpu.r[5] = (uint32_t)(int32_t)local_minutes;
+    int clocks = sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK) == 0u;
+    cpu.r[4] = DATE_LOCAL;
+    clocks = clocks && sr_syscall(&cpu, NID_SCE_RTC_GET_CURRENT_CLOCK_LOCAL) == 0u;
+    cpu.r[4] = DATE_EXPLICIT; cpu.r[5] = TICK_EXPLICIT;
+    clocks = clocks && sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u;
+    cpu.r[4] = DATE_LOCAL; cpu.r[5] = TICK_LOCAL;
+    clocks = clocks && sr_syscall(&cpu, NID_SCE_RTC_GET_TICK) == 0u;
+    snprintf(what, sizeof(what), "%s: sceRtcGetCurrentClockLocalTime equals sceRtcGetCurrentClock at %lld minutes",
+             setting, (long long)local_minutes);
+    expect(clocks && selftest_guest_u64(TICK_LOCAL) == selftest_guest_u64(TICK_EXPLICIT), what);
+
+    MEM_W32(TZ_OUT, 0xdeadbeefu);
+    MEM_W32(TZ_OUT + 4u, 0xdeadbeefu);
+    cpu.r[4] = 0u; cpu.r[5] = TZ_OUT;
+    snprintf(what, sizeof(what), "%s: gettimeofday reports %d minutes west and dsttime %u", setting,
+             (int)(0u - (uint32_t)zone), (unsigned)daylight);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_LIBC_GETTIMEOFDAY) == 0u && MEM_R32(TZ_OUT) == 0u - (uint32_t)zone &&
+               MEM_R32(TZ_OUT + 4u) == daylight,
+           what);
+}
+
+/* #1382: the RTC local-time APIs and gettimeofday read the time zone and
+ * daylight-saving setting from the registry keys sceUtilityGetSystemParamInt
+ * reports, so the two can never disagree, and a setting a game writes through
+ * sceReg moves local time at once. Production dispatch only; nothing is
+ * flushed, so the build-scoped overlay file stays absent. */
+static void test_rtc_local_time_follows_the_system_profile(void) {
+    uint32_t r = 0u, reg, cat;
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 0;
+    sysreg_scratch_clean();
+    sysreg_restart();
+
+    /* The seed: TIMEZONE -300 and DAYLIGHTSAVINGS 1, both measured on the oracle console. */
+    rtc_expect_profile(-300, 1u, -240, "the measured seed");
+
+    reg = sysreg_open_registry(2u, &r);
+    expect(r == 0u && reg != 0u, "sceRegOpenRegistry opens the system registry in mode 2");
+    cat = sysreg_open_category(reg, "/CONFIG/DATE", 2u, &r);
+    expect(r == 0u && cat != 0u, "sceRegOpenCategory opens /CONFIG/DATE in mode 2");
+    expect(sysreg_set_int(cat, "time_zone_offset", 540u) == 0u && sysreg_set_int(cat, "summer_time", 0u) == 0u,
+           "sceRegSetKeyValue sets a +540-minute zone with daylight saving off");
+    rtc_expect_profile(540, 0u, 540, "a +540-minute zone written through sceReg");
+    expect(sysreg_set_int(cat, "summer_time", 1u) == 0u, "sceRegSetKeyValue turns daylight saving on");
+    rtc_expect_profile(540, 1u, 600, "the +540-minute zone with daylight saving on");
+    expect(sysreg_set_int(cat, "time_zone_offset", 0u - 210u) == 0u && sysreg_set_int(cat, "summer_time", 0u) == 0u,
+           "sceRegSetKeyValue sets a -210-minute zone with daylight saving off");
+    rtc_expect_profile(-210, 0u, -210, "a -210-minute zone written through sceReg");
+    expect(sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, cat, 0u, 0u, 0u, 0u) == 0u &&
+               sysreg_call(NID_SCE_REG_CLOSE_REGISTRY, reg, 0u, 0u, 0u, 0u) == 0u,
+           "the category and registry handles close");
+
+    /* A new process without a flush serves the seed again. */
+    sysreg_restart();
+    rtc_expect_profile(-300, 1u, -240, "the seed after a restart without a flush");
+    sysreg_scratch_clean();
 }
 
 static void test_unix_time_to_filetime_ticks(void) {
@@ -13159,6 +13600,39 @@ static void test_td24b_cheap_hle_batch(void) {
            "ReleaseSubIntrHandler on a non-VBLANK line answers success without effect");
     expect(sr_vblank_handler() == 0u, "non-VBLANK lines leave VBLANK delivery clear");
 
+    /* #1287: a title that re-registers the same VBLANK handler before every frame writes the
+     * registration line once, not once per frame. A changed registration and a register after
+     * Release are written again; SR_HLELOG still writes every call. Return codes are unchanged
+     * (duplicate-register codes are UNMEASURED on the PSP). */
+    {
+        char err[2048];
+        FILE *capture = NULL;
+        int saved = -1;
+        int every = getenv("SR_HLELOG") != NULL;
+        err[0] = '\0';
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        expect(capturing, "the sub-interrupt selftest can capture the runtime's stderr");
+        uint32_t first = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0u);
+        uint32_t again = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0u);
+        uint32_t new_arg = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0x10u);
+        uint32_t release = td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u);
+        uint32_t after = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0x10u);
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        expect(first == 0u && again == 0u && new_arg == 0u && release == 0u && after == 0u,
+               "repeated, changed and post-Release registrations keep their success answers");
+        expect(count_occurrences(err,
+                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000000\n") ==
+                   (every ? 2 : 1),
+               "an identical VBLANK re-registration writes no second registration line");
+        expect(count_occurrences(err,
+                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000010\n") == 2,
+               "a changed arg and a register after Release each write the registration line");
+        expect(sr_vblank_no() == 1u && sr_vblank_arg() == 0x10u,
+               "the quiet path still records the latest registration");
+        expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
+               "the log fixture leaves the VBLANK line released");
+    }
+
     /* ---- 4+5. scePowerSetClockFrequency / 350 ---- */
     reset_fixture();
     sr_hle_init();
@@ -13979,6 +14453,147 @@ static void test_suspend_resume_errors_and_ready_thread(void) {
     expect(sched_terminate_thread(ready->uid) == 0u, "terminate the suspended thread");
     expect(!ready->suspended && ready->state == TH_DORMANT,
            "terminating a suspended thread clears the suspension");
+
+    expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
+    s_cur = -1;
+}
+
+/* -------------------------------------------------------------------------
+ * sceKernelChangeThreadPriority (#1388), entered through sr_syscall.
+ * Expected results are the PSPAutotests threads/threads/change.expected cells:
+ * an unknown, -1 or deleted UID answers UNKNOWN_THID; a never-started or finished
+ * target answers DORMANT; priorities 0x08..0x77 are accepted and -2, -1, 0x01..0x07,
+ * 0x78 and 0x79 answer 0x80020193 without changing the priority; ready, suspended and
+ * waiting targets are changed; priority 0 gives the target the caller's current
+ * priority (0x18 there); a change that leaves another ready thread strictly stronger
+ * than the caller lets it run at the call, an equal one does not; and a caller that
+ * changes its own priority, even to the same value, goes behind its equal-priority
+ * ready peers and yields at the call ("[r] Zero", and the test thread's line before
+ * "Current").
+ * ------------------------------------------------------------------------- */
+#define NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY 0x71bc9871u
+#define SRT_ILLEGAL_PRIORITY 0x80020193u
+
+static uint32_t srt_change_priority(uint32_t uid, uint32_t priority) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = priority;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY);
+}
+
+static void test_change_thread_priority_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x5b0u, TH_RUNNING, 0x18);
+    TCB *ready = fixture_thread(0x5b1u, TH_READY, 0x30);
+    TCB *stopped = fixture_thread(0x5b2u, TH_DORMANT, 0x30);
+    self->started = 1;
+    ready->started = 1;
+    s_cur = (int)(self - s_tcb);
+
+    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY),
+           "ChangeThreadPriority has a production registration");
+
+    /* ---- target errors ------------------------------------------------------ */
+    expect(srt_change_priority(0xffffffffu, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority(-1) returns UNKNOWN_THID");
+    expect(srt_change_priority(0x7fffffu, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority of an unknown UID returns UNKNOWN_THID");
+    expect(srt_change_priority(stopped->uid, 0x20u) == SRT_DORMANT &&
+           stopped->priority == 0x30,
+           "ChangeThreadPriority of a dormant thread returns DORMANT and keeps its priority");
+    uint32_t deleted = sched_create_thread(0x08001000u, 0x30, 0x800u);
+    expect(deleted != 0u && sched_delete_thread(deleted) == 0u, "create and delete a thread");
+    expect(srt_change_priority(deleted, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority of a deleted thread returns UNKNOWN_THID");
+
+    /* ---- suspended and waiting targets are changed and do not take the CPU -- */
+    TCB *suspended = fixture_thread(0x5b3u, TH_READY, 0x30);
+    TCB *waiting = fixture_thread(0x5b4u, TH_WAIT_OBJ, 0x30);
+    suspended->started = 1;
+    suspended->suspended = 1;
+    waiting->started = 1;
+    expect(srt_change_priority(suspended->uid, 0x08u) == 0u && suspended->priority == 0x08 &&
+           self->state == TH_RUNNING,
+           "ChangeThreadPriority of a suspended thread succeeds and it does not preempt");
+    expect(srt_change_priority(waiting->uid, 0x08u) == 0u && waiting->priority == 0x08 &&
+           waiting->state == TH_WAIT_OBJ && self->state == TH_RUNNING,
+           "ChangeThreadPriority of a waiting thread succeeds and it keeps waiting");
+
+    /* ---- illegal priorities are refused and change nothing ------------------ */
+    static const uint32_t illegal[] = { 0xfffffffeu, 0xffffffffu, 0x01u, 0x02u, 0x04u,
+                                        0x05u, 0x06u, 0x07u, 0x78u, 0x79u };
+    for (size_t i = 0; i < sizeof illegal / sizeof illegal[0]; i++) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "priority 0x%x returns ILLEGAL_PRIORITY and keeps 0x30",
+                 illegal[i]);
+        expect(srt_change_priority(ready->uid, illegal[i]) == SRT_ILLEGAL_PRIORITY &&
+               ready->priority == 0x30 && self->state == TH_RUNNING, msg);
+    }
+
+    /* ---- legal priorities are stored; a stronger ready thread runs ---------- */
+    static const uint32_t legal[] = { 0x08u, 0x09u, 0x17u, 0x18u, 0x2fu, 0x30u, 0x31u,
+                                      0x50u, 0x6eu, 0x6fu, 0x77u };
+    for (size_t i = 0; i < sizeof legal / sizeof legal[0]; i++) {
+        char msg[96];
+        int stronger = (int)legal[i] < self->priority;
+        snprintf(msg, sizeof msg, "priority 0x%x is accepted and %s the caller",
+                 legal[i], stronger ? "preempts" : "does not preempt");
+        expect(srt_change_priority(ready->uid, legal[i]) == 0u &&
+               ready->priority == (int)legal[i] &&
+               self->state == (stronger ? TH_READY : TH_RUNNING), msg);
+        self->state = TH_RUNNING;
+    }
+
+    /* ---- priority 0 means the caller's current priority --------------------- */
+    expect(srt_change_priority(ready->uid, 0x21u) == 0u && ready->priority == 0x21,
+           "control: the target is set to 0x21");
+    expect(srt_change_priority(ready->uid, 0u) == 0u && ready->priority == 0x18,
+           "priority 0 gives the target the caller's current priority");
+    expect(self->state == TH_RUNNING, "an equal-priority target does not preempt the caller");
+
+    /* ---- UID 0 is the caller; lowering it lets a stronger ready thread run --- */
+    ready->priority = 0x20;
+    expect(srt_change_priority(0u, 0x18u) == 0u && self->state == TH_RUNNING,
+           "ChangeThreadPriority(0) keeps the caller ahead of a weaker ready thread");
+    expect(srt_change_priority(0u, 0x30u) == 0u && self->priority == 0x30 &&
+           self->state == TH_READY,
+           "lowering the caller below a ready thread reschedules at the call");
+    self->state = TH_RUNNING;
+
+    /* ---- the caller goes behind its equal-priority ready peers -------------- */
+    /* The caller holds slot 0 and the cursor is reset, so without the move to the back
+     * of the queue the next selection at 0x20 would be the caller again. */
+    const int self_idx = (int)(self - s_tcb);
+    const int ready_idx = (int)(ready - s_tcb);
+    self->priority = 0x20;
+    ready->priority = 0x20;
+    s_last_pick = -1;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->priority == 0x20 &&
+           self->state == TH_READY,
+           "ChangeThreadPriority(0) to the caller's own priority yields to an equal ready peer");
+    expect(pick_next() == ready_idx, "the equal-priority peer is selected before the caller");
+    ready->state = TH_READY;
+    self->state = TH_RUNNING;
+    s_cur = self_idx;
+    s_last_pick = -1;
+    expect(srt_change_priority(self->uid, 0x20u) == 0u && self->state == TH_READY,
+           "ChangeThreadPriority of the caller's own UID yields to an equal ready peer");
+    expect(pick_next() == ready_idx, "the peer runs first after the caller's own UID");
+    ready->state = TH_READY;
+    self->state = TH_RUNNING;
+    s_cur = self_idx;
+
+    ready->priority = 0x21;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->state == TH_RUNNING,
+           "with no ready peer at the caller's priority the caller keeps running");
+
+    ready->priority = 0x20;
+    s_dispatch_enabled = 0;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->state == TH_RUNNING,
+           "the yield is deferred while dispatch is disabled");
+    s_dispatch_enabled = 1;
 
     expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
     s_cur = -1;
@@ -18599,6 +19214,133 @@ static void test_atrac_stream_ring_wrap(void) {
            "streamed context releases cleanly");
 }
 
+/* ---- issue #1291: a streamed reset continues from the guest's refill ----
+ *
+ * A title hands sceAtracSetData its streaming ring, then starts playback the
+ * PSPSDK way: sceAtracGetBufferInfoForResetting(sample 0) says where to write
+ * and from which file offset, the guest writes that refill, and
+ * sceAtracResetPlayPosition passes the byte count it wrote. The guest then
+ * keeps its own file position (refill start + bytes written) and feeds the
+ * ring from it. The HLE used to ignore the refill: its ring and read offset
+ * stayed at the SetData state, so the frames after the refill mixed the stale
+ * ring with the guest's newer bytes, the decoder rejected them, and every
+ * later sceAtracDecodeData returned 0x80630006 while the guest retried.
+ * Synthetic terminator-unit frames as in the #32 fixture; no game data. */
+static void test_atrac_reset_refill_stream(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    atring_build_header();
+
+    cpu.r[4] = AT_RINGBASE;
+    cpu.r[5] = AT_BUFSIZE;
+    uint32_t id = sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA_AND_GET_ID);
+    expect(id < 8u, "#1291: streamed ATRAC3+ track accepted");
+    if (id >= 8u) return;
+
+    const uint32_t INFO = 0x08000300u;
+    const uint32_t WP = 0x08000200u, WB = 0x08000204u, RO = 0x08000208u;
+    const uint32_t DEC = 0x08000210u, FIN = 0x08000214u, REM = 0x08000218u;
+    const uint32_t REMAIN = 0x0800021cu;
+
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = INFO;
+    expect(sr_syscall(&cpu, 0x2dd3e298u) == 0u,
+           "#1291: sceAtracGetBufferInfoForResetting(sample 0) succeeds");
+    uint32_t wp = MEM_R32(INFO + 0u), writable = MEM_R32(INFO + 4u);
+    uint32_t minimum = MEM_R32(INFO + 8u), file_pos = MEM_R32(INFO + 12u);
+    expect(wp == AT_RINGBASE && file_pos == AT_DATAOFF,
+           "#1291: the reset refill starts at the ring start with the first frame");
+    expect(writable >= minimum && writable % AT_ALIGN == 0u,
+           "#1291: the reset refill offers whole frames, at least the minimum");
+
+    /* The guest writes the refill, then reports the byte count. */
+    for (uint32_t b = 0; b < writable; b++)
+        MEM_W8(wp + b, atring_file_byte(file_pos + b));
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0u,
+           "#1291: sceAtracResetPlayPosition accepts the refill it offered");
+
+    cpu.r[4] = id; cpu.r[5] = REMAIN;
+    expect(sr_syscall(&cpu, 0x9ae849a7u) == 0u &&
+               MEM_R32(REMAIN) == writable / AT_ALIGN - 1u,
+           "#1291: after the reset the remaining frames are the refill minus its state-loading frame");
+
+    uint32_t next = file_pos + writable;   /* the guest's own file position */
+    int read_offset_mismatch = 0, decode_failures = 0, decoded_frames = 0;
+    for (int i = 0; i < 30; i++) {
+        cpu.r[4] = id; cpu.r[5] = WP; cpu.r[6] = WB; cpu.r[7] = RO;
+        expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0u,
+               "#1291: sceAtracGetStreamDataInfo succeeds after the reset");
+        uint32_t wb = MEM_R32(WB), ro = MEM_R32(RO);
+        if (next < AT_FILESIZE && wb > 0u) {
+            if (ro != next) read_offset_mismatch++;
+            uint32_t n = wb < AT_FILESIZE - next ? wb : AT_FILESIZE - next;
+            uint32_t at = MEM_R32(WP);
+            for (uint32_t b = 0; b < n; b++)
+                MEM_W8(at + b, atring_file_byte(next + b));
+            cpu.r[4] = id; cpu.r[5] = n; cpu.r[6] = 0u;
+            expect(sr_syscall(&cpu, 0x7db31251u) == 0u,
+                   "#1291: sceAtracAddStreamData accepts the continued feed");
+            next += n;
+        }
+        cpu.r[4] = id; cpu.r[5] = AT_PCMOUT; cpu.r[6] = DEC; cpu.r[7] = FIN;
+        cpu.r[8] = REM;
+        uint32_t ret = sr_syscall(&cpu, 0x6a8c3cd5u);
+        if (ret != 0u) decode_failures++;
+        else if (MEM_R32(DEC) == 2048u) decoded_frames++;
+    }
+    expect(read_offset_mismatch == 0,
+           "#1291: the stream read offset continues after the reset refill");
+    expect(decode_failures == 0,
+           "#1291: no frame after a reset refill is refused by the decoder");
+    expect(decoded_frames == 30,
+           "#1291: every sceAtracDecodeData after the reset returns a full frame");
+
+    /* Counts outside the offered refill are refused and leave the context
+     * unchanged (codes from the public PPSSPP reference, not measured). */
+    uint32_t pos_before = 0, valid_before = 0, pos_after = 0, valid_after = 0;
+    (void)sr_hle_test_atrac_ring(id, &pos_before, NULL, NULL, NULL, &valid_before);
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable + AT_ALIGN; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630016u,
+           "#1291: a refill larger than the offered space is refused (BAD_FIRST_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = minimum - 1u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630016u,
+           "#1291: a refill below the required minimum is refused (BAD_FIRST_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = AT_ALIGN;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630017u,
+           "#1291: a second-buffer count is refused when none was offered (BAD_SECOND_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = AT_FILEFR * 2048u + 1u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630015u,
+           "#1291: a reset past the end sample is refused (BAD_SAMPLE)");
+    cpu.r[4] = 0x7fu; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == ATRAC_ERROR_BAD_ATRACID,
+           "#1291: sceAtracResetPlayPosition on an invalid ID is refused (BAD_ATRACID)");
+    expect(sr_hle_test_atrac_ring(id, &pos_after, NULL, NULL, NULL, &valid_after) == 1 &&
+               pos_after == pos_before && valid_after == valid_before,
+           "#1291: refused resets leave the stream ring unchanged");
+
+    cpu.r[4] = id;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0u,
+           "#1291: streamed context releases cleanly");
+
+    /* An ID without data has no refill to describe or consume. */
+    cpu.r[4] = ATRAC_CODEC_AT3PLUS;
+    uint32_t bare = sr_syscall(&cpu, NID_SCE_ATRAC_GET_ID);
+    expect(bare < 8u, "#1291: sceAtracGetAtracID allocates an empty context");
+    if (bare >= 8u) return;
+    cpu.r[4] = bare; cpu.r[5] = 0u; cpu.r[6] = INFO;
+    expect(sr_syscall(&cpu, 0x2dd3e298u) == 0x80630010u,
+           "#1291: sceAtracGetBufferInfoForResetting without data is refused (NO_DATA)");
+    cpu.r[4] = bare; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630010u,
+           "#1291: sceAtracResetPlayPosition without data is refused (NO_DATA)");
+    cpu.r[4] = bare;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0u,
+           "#1291: empty context releases cleanly");
+}
+
 /* TD-24 batch 3: production-dispatch regressions for four converted Class B
  * fake-success handlers. Every leg enters the exact production NID mapping
  * through sr_syscall -- the same path a generated import stub takes -- and
@@ -18640,10 +19382,16 @@ static void td24c_build_track(uint32_t base, uint32_t fileSize, uint32_t avgByte
     td24c_wr32(base + 52u, fileSize - 56u);
 }
 
-/* One-frame, all-zero AT3 data is a synthetic silent frame. It exercises the
- * real FFmpeg decoder and HLE bookkeeping without title/game bytes. */
-static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
-    enum { FILE_SIZE = 380u, FRAME_SIZE = 304u };
+/* All-zero AT3 data with valid sound-unit headers is a synthetic silent
+ * frame. It exercises the real FFmpeg decoder and HLE bookkeeping without
+ * title/game bytes. `frames` such frames follow a 76-byte header; the 8-byte
+ * fact chunk carries `factSamples` and the delay word `factDelay`. */
+enum { TD1096_HEADER = 76u, TD1096_FRAME = 304u };
+static void td1096_build_at3_frames(uint32_t base, uint16_t formatTag,
+                                    uint32_t frames, uint32_t factSamples,
+                                    uint32_t factDelay) {
+    const uint32_t FRAME_SIZE = TD1096_FRAME;
+    const uint32_t FILE_SIZE = TD1096_HEADER + frames * TD1096_FRAME;
     for (uint32_t i = 0; i < FILE_SIZE; i++)
         g_mem[base - 0x08000000u + i] = 0;
     td24c_wr32(base + 0u, 0x46464952u);           /* RIFF */
@@ -18666,14 +19414,35 @@ static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
     td24c_wr16(base + 50u, 0u);                   /* reserved */
     td24c_wr32(base + 52u, 0x74636166u);          /* fact */
     td24c_wr32(base + 56u, 8u);
-    td24c_wr32(base + 60u, ATRAC3_FRAME_SAMPLES);
-    td24c_wr32(base + 64u, 0u);                   /* synthetic, NOT_MEASURED */
+    td24c_wr32(base + 60u, factSamples);
+    td24c_wr32(base + 64u, factDelay);            /* fact delay word */
     td24c_wr32(base + 68u, 0x61746164u);          /* data */
-    td24c_wr32(base + 72u, FRAME_SIZE);
+    td24c_wr32(base + 72u, frames * FRAME_SIZE);
     /* Valid silent joint-stereo sound-unit headers: channel 1 starts with
      * 0x28; reverse-ordered channel 2 carries id 3 at the end of the frame. */
-    g_mem[base - 0x08000000u + 76u] = 0xa0u;
-    g_mem[base - 0x08000000u + 76u + FRAME_SIZE - 2u] = 0x0cu;
+    for (uint32_t f = 0; f < frames; f++) {
+        uint32_t frame = base - 0x08000000u + TD1096_HEADER + f * FRAME_SIZE;
+        g_mem[frame] = 0xa0u;
+        g_mem[frame + FRAME_SIZE - 2u] = 0x0cu;
+    }
+}
+static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
+    td1096_build_at3_frames(base, formatTag, 1u, ATRAC3_FRAME_SAMPLES, 0u);
+}
+/* One sceAtracDecodeData through the production NID with sentinel outputs. */
+static uint32_t td1096_decode(uint32_t id, uint32_t pcm, uint32_t outN,
+                              uint32_t outEnd, uint32_t outRemain) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = id;
+    cpu.r[5] = pcm;
+    cpu.r[6] = outN;
+    cpu.r[7] = outEnd;
+    cpu.r[8] = outRemain;
+    MEM_W32(outN, 0xdeadbeefu);
+    MEM_W32(outEnd, 0xdeadbeefu);
+    MEM_W32(outRemain, 0xdeadbeefu);
+    return sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA);
 }
 
 static void test_at3_synthetic_decode_bookkeeping(void) {
@@ -18735,12 +19504,20 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
     MEM_W32(OUT_N, 0xdeadbeefu);
     MEM_W32(OUT_END, 0xdeadbeefu);
     MEM_W32(OUT_REMAIN, 0xdeadbeefu);
+    /* Sentinel the whole stereo frame so the trimmed write extent is visible. */
+    for (uint32_t i = 0; i < ATRAC3_FRAME_SAMPLES * 2u; i++)
+        MEM_W16(PCM_OUT + i * 2u, 0xa5a5u);
     uint32_t decode_ret = sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA);
+    /* PSP-3000 measurement (fixtures/psp_oracle/README.md `at3-decode`, #1096):
+     * fact delay 0 gives a first call of 955 samples. */
     expect(decode_ret == 0u &&
-               MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+               MEM_R32(OUT_N) == 955u &&
                MEM_R32(OUT_END) == 1u &&
                MEM_R32(OUT_REMAIN) == 0xffffffffu,
-           "AT3 DecodeData returns 1024 samples, final-frame flag, and all-data remain=-1");
+           "AT3 first DecodeData with fact delay 0 returns the measured 955 samples, final-frame flag, and all-data remain=-1");
+    expect(MEM_R16(PCM_OUT + (955u * 2u - 1u) * 2u) != 0xa5a5u &&
+               MEM_R16(PCM_OUT + 955u * 2u * 2u) == 0xa5a5u,
+           "AT3 first DecodeData writes exactly 955 stereo samples of PCM");
 
     cpu.r[4] = id;
     cpu.r[5] = PCM_OUT;
@@ -18757,6 +19534,91 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
            "AT3 DecodeData after the final frame returns 0x80630024 with outN=0");
     expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u) == 0u,
            "AT3 fixture releases its decoder context");
+
+    /* First-call length against the 8-byte fact chunk's delay word, measured
+     * on a PSP-3000 on 2026-10-24 (#1096; fixtures/psp_oracle/README.md
+     * `at3-decode`): delay 0 and 1024 give 955 samples, delay 955 gives 1024,
+     * delay 500 is refused by the first decode with 0x80630002 and 0 samples.
+     * Delay 100 is unmeasured: the complete decoder frame is kept. */
+    {
+        static const struct { uint32_t delay, ret, samples; const char *what; } rows[] = {
+            {0u, 0u, 955u, "AT3 fact delay 0 gives a 955-sample first call"},
+            {1024u, 0u, 955u, "AT3 fact delay 1024 gives a 955-sample first call"},
+            {955u, 0u, 1024u, "AT3 fact delay 955 gives a 1024-sample first call"},
+            {500u, 0x80630002u, 0u, "AT3 fact delay 500 is refused by the first decode with 0x80630002"},
+            {100u, 0u, 1024u, "AT3 unmeasured fact delay 100 keeps the complete decoder frame"},
+        };
+        for (unsigned r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
+            uint32_t rid = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
+                                           0u, 0u, 0u);
+            expect(rid < 8u, "AT3 fact-delay leg allocates a context");
+            if (rid >= 8u) return;
+            td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES,
+                                    rows[r].delay);
+            expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, rid, TRACK, 380u, 0u) == 0u,
+                   "AT3 SetData accepts the fact-delay leg's track");
+            uint32_t ret = td1096_decode(rid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+            expect(ret == rows[r].ret && MEM_R32(OUT_N) == rows[r].samples,
+                   rows[r].what);
+            (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, rid, 0u, 0u, 0u);
+        }
+    }
+
+    /* Buffer exhaustion, measured on a PSP-3000 on 2026-10-22 and 2026-10-24
+     * (#1096; fixtures/psp_oracle/README.md `at3-decode`): with more file data
+     * still to stream, the call after the last buffered frame returns
+     * 0x80630023 with 0 samples and end flag 0. The synthetic file has eight
+     * frames; SetData receives a four-frame prefix, leaving three decodable
+     * frames after the streamed ring's first-frame offset. */
+    {
+        enum { SRC = 0x08006000u, FRAMES = 8u, PREFIX_FRAMES = 4u,
+               WP = 0x08004200u, WB = 0x08004204u, RO = 0x08004208u };
+        const uint32_t prefix = TD1096_HEADER + PREFIX_FRAMES * TD1096_FRAME;
+        uint32_t sid = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
+                                       0u, 0u, 0u);
+        expect(sid < 8u, "AT3 streamed leg allocates a context");
+        if (sid >= 8u) return;
+        td1096_build_at3_frames(SRC, 0x0270u, FRAMES,
+                                FRAMES * ATRAC3_FRAME_SAMPLES, 0u);
+        for (uint32_t b = 0; b < prefix; b++)
+            MEM_W8(TRACK + b, MEM_R8(SRC + b));
+        expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, sid, TRACK, prefix, 0u) == 0u,
+               "AT3 SetData accepts a streamed prefix shorter than the file");
+
+        uint32_t ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+        expect(ret == 0u && MEM_R32(OUT_N) == 955u && MEM_R32(OUT_END) == 0u &&
+                   MEM_R32(OUT_REMAIN) == 2u,
+               "streamed AT3 first decode returns 955 samples with two frames remaining");
+        for (uint32_t left = 1u; left <= 2u; left++) {
+            ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+            expect(ret == 0u && MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+                       MEM_R32(OUT_END) == 0u && MEM_R32(OUT_REMAIN) == 2u - left,
+                   "streamed AT3 later decodes return 1024 samples and count frames down");
+        }
+        ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+        expect(ret == ATRAC_ERROR_BUFFER_IS_EMPTY && MEM_R32(OUT_N) == 0u &&
+                   MEM_R32(OUT_END) == 0u,
+               "streamed AT3 decode after the last buffered frame returns 0x80630023 with 0 samples and end 0");
+
+        /* The exhaustion is not terminal: feeding the next frame resumes. */
+        CpuState cpu2;
+        memset(&cpu2, 0, sizeof(cpu2));
+        cpu2.r[4] = sid; cpu2.r[5] = WP; cpu2.r[6] = WB; cpu2.r[7] = RO;
+        expect(sr_syscall(&cpu2, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0u &&
+                   MEM_R32(WB) >= TD1096_FRAME && MEM_R32(RO) == prefix,
+               "streamed AT3 ring offers room for the next file frame");
+        uint32_t wp = MEM_R32(WP), ro = MEM_R32(RO);
+        for (uint32_t b = 0; b < TD1096_FRAME; b++)
+            MEM_W8(wp + b, MEM_R8(SRC + ro + b));
+        expect(td24b_dispatch4(0x7db31251u, sid, TD1096_FRAME, 0u, 0u) == 0u,
+               "sceAtracAddStreamData accepts the next AT3 frame");
+        ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
+        expect(ret == 0u && MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+                   MEM_R32(OUT_END) == 0u,
+               "streamed AT3 decode resumes after the ring is refilled");
+        expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, sid, 0u, 0u, 0u) == 0u,
+               "AT3 streamed leg releases its context");
+    }
 }
 
 static void test_td24c_atrac_info_batch(void) {
@@ -31783,6 +32645,216 @@ static void test_mp3_error_paths(void) {
            "errors: a second sceMp3TermResource is harmless");
 }
 
+/* sceKernelGetThreadmanIdList(type, readbuf, readbufsize, idcount), issue #1288. The
+ * signature and the list classes are the public PSPSDK ones (pspthreadman.h,
+ * SceKernelIdListType); readbufsize counts SceUIDs. The error codes, the list order and
+ * the return value of a short buffer are UNMEASURED on a PSP, so these checks pin the
+ * runtime's model, not a hardware oracle: the call writes min(readbufsize, total) uids,
+ * stores the total in *idcount when idcount is not NULL, and returns the number written. */
+#define NID_TMID_LIST          0x94416130u
+#define NID_TMID_SET_ALARM     0x6652b8cau
+#define NID_TMID_CANCEL_ALARM  0x7e65b999u
+#define NID_TMID_CREATE_CB     0xe81caf8fu
+#define NID_TMID_DELETE_CB     0xedba5844u
+#define NID_TMID_CREATE_MPP    0x7c0dc2a0u
+#define NID_TMID_DELETE_MPP    0xf0b7da1cu
+#define NID_TMID_CREATE_VT     0x20fff560u
+#define NID_TMID_DELETE_VT     0x328f9e52u
+#define TMID_BUF               0x00252000u
+#define TMID_COUNT             0x00252100u
+#define TMID_NAME              0x00252140u
+#define TMID_LWMUTEX_WA        0x00252200u
+#define TMID_HANDLER           0x08a10000u
+#define TMID_BUF_SLOTS         32u
+#define TMID_SENTINEL          0xa5a5a5a5u
+#define TMID_ILLEGAL_TYPE_ERR  0x800201bbu   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_TYPE */
+#define TMID_ILLEGAL_ADDR_ERR  0x800200d3u   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+#define TMID_ILLEGAL_SIZE_ERR  0x800201bcu   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_SIZE */
+#define TMID_NOT_MODELLED_ERR  0x80020002u   /* the runtime's named refusal */
+
+static uint32_t tmid_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3;
+    return sr_syscall(&cpu, nid);
+}
+
+static uint32_t tmid_list(uint32_t type, uint32_t buf, uint32_t size, uint32_t count) {
+    return tmid_call(NID_TMID_LIST, type, buf, size, count);
+}
+
+static void tmid_fill(void) {
+    for (uint32_t i = 0; i < TMID_BUF_SLOTS; i++) MEM_W32(TMID_BUF + 4u * i, TMID_SENTINEL);
+    MEM_W32(TMID_COUNT, TMID_SENTINEL);
+}
+
+/* The total for `type`, read through idcount with no buffer, or UINT32_MAX on an error. */
+static uint32_t tmid_total(uint32_t type) {
+    MEM_W32(TMID_COUNT, TMID_SENTINEL);
+    return tmid_list(type, 0u, 0u, TMID_COUNT) == 0u ? MEM_R32(TMID_COUNT) : UINT32_MAX;
+}
+
+static int tmid_lists(uint32_t type, uint32_t uid) {
+    tmid_fill();
+    uint32_t n = tmid_list(type, TMID_BUF, TMID_BUF_SLOTS, TMID_COUNT);
+    if (n > TMID_BUF_SLOTS) return 0;
+    for (uint32_t i = 0; i < n; i++)
+        if (MEM_R32(TMID_BUF + 4u * i) == uid) return 1;
+    return 0;
+}
+
+/* One created object of `type`: listed while it lives, gone once deleted, and never
+ * counted under `other`, the class that shares its table or its uid range. */
+static void tmid_check_object(const char *cls, uint32_t type, uint32_t other, uint32_t uid,
+                              uint32_t base, uint32_t other_base, uint32_t delete_nid) {
+    char msg[192];
+    snprintf(msg, sizeof msg, "ThreadmanIdList %s: created object 0x%x is listed once", cls, uid);
+    expect((int32_t)uid > 0 && tmid_total(type) == base + 1u && tmid_lists(type, uid), msg);
+    if (other) {
+        snprintf(msg, sizeof msg, "ThreadmanIdList %s: object is not listed under type %u", cls, other);
+        expect(tmid_total(other) == other_base && !tmid_lists(other, uid), msg);
+    }
+    if ((int32_t)uid <= 0) return;
+    snprintf(msg, sizeof msg, "ThreadmanIdList %s: delete succeeds", cls);
+    expect(tmid_call(delete_nid, uid, 0u, 0u, 0u) == 0u, msg);
+    snprintf(msg, sizeof msg, "ThreadmanIdList %s: deleted object is no longer listed", cls);
+    expect(tmid_total(type) == base && !tmid_lists(type, uid), msg);
+}
+
+static void test_threadman_id_list(void) {
+    char msg[192];
+    (void)wsv_begin();   /* uid 0x1e0, RUNNING, current */
+    expect(sr_hle_test_is_registered(NID_TMID_LIST),
+           "sceKernelGetThreadmanIdList has a production registration");
+    if (!sr_hle_test_is_registered(NID_TMID_LIST)) { s_cur = -1; return; }
+
+    TCB *dormant = fixture_thread(0x1e1u, TH_DORMANT, 32);
+    TCB *sleeper = fixture_thread(0x1e2u, TH_WAIT_OBJ, 32);
+    sleeper->started = 1; sleeper->sleeping = 1; sleeper->wait_obj = 0x1e2u;
+    TCB *delayed = fixture_thread(0x1e3u, TH_WAIT_DELAY, 32);
+    delayed->started = 1;
+    TCB *held = fixture_thread(0x1e4u, TH_READY, 32);
+    held->started = 1; held->suspended = 1;
+    TCB *deleted = fixture_thread(0x1e5u, TH_DORMANT, 32);
+    deleted->deleted = 1;
+    (void)dormant;
+
+    /* Every live thread, in table order; a deleted one is not an object any more. */
+    static const uint32_t live[] = {0x1e0u, 0x1e1u, 0x1e2u, 0x1e3u, 0x1e4u};
+    tmid_fill();
+    uint32_t rc = tmid_list(1u, TMID_BUF, 8u, TMID_COUNT);
+    int order_ok = 1;
+    for (uint32_t i = 0; i < 5u; i++) order_ok &= MEM_R32(TMID_BUF + 4u * i) == live[i];
+    snprintf(msg, sizeof msg, "ThreadmanIdList Thread: returns 5 and lists the live threads (rc=0x%x count=0x%x)",
+             rc, MEM_R32(TMID_COUNT));
+    expect(rc == 5u && MEM_R32(TMID_COUNT) == 5u && order_ok, msg);
+    expect(MEM_R32(TMID_BUF + 20u) == TMID_SENTINEL,
+           "ThreadmanIdList Thread: nothing is written past the listed uids");
+
+    /* The four thread-state lists agree with sceKernelReferThreadStatus. */
+    static const struct { uint32_t type; uint32_t uid; const char *name; } states[] = {
+        {64u, 0x1e2u, "SleepThread"}, {65u, 0x1e3u, "DelayThread"},
+        {66u, 0x1e4u, "SuspendThread"}, {67u, 0x1e1u, "DormantThread"},
+    };
+    for (size_t i = 0; i < sizeof states / sizeof states[0]; i++) {
+        tmid_fill();
+        rc = tmid_list(states[i].type, TMID_BUF, 4u, TMID_COUNT);
+        snprintf(msg, sizeof msg, "ThreadmanIdList %s: lists only uid 0x%x (rc=0x%x first=0x%x)",
+                 states[i].name, states[i].uid, rc, MEM_R32(TMID_BUF));
+        expect(rc == 1u && MEM_R32(TMID_COUNT) == 1u && MEM_R32(TMID_BUF) == states[i].uid &&
+                   MEM_R32(TMID_BUF + 4u) == TMID_SENTINEL, msg);
+    }
+
+    /* Truncation: two slots get the first two uids, idcount still reports the total. */
+    tmid_fill();
+    rc = tmid_list(1u, TMID_BUF, 2u, TMID_COUNT);
+    expect(rc == 2u && MEM_R32(TMID_COUNT) == 5u && MEM_R32(TMID_BUF) == 0x1e0u &&
+               MEM_R32(TMID_BUF + 4u) == 0x1e1u && MEM_R32(TMID_BUF + 8u) == TMID_SENTINEL,
+           "ThreadmanIdList truncation: writes readbufsize uids, idcount holds the total");
+
+    /* A NULL idcount is optional. */
+    tmid_fill();
+    rc = tmid_list(1u, TMID_BUF, 8u, 0u);
+    expect(rc == 5u && MEM_R32(TMID_BUF + 16u) == 0x1e4u && MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList NULL idcount: lists the uids and writes no count");
+
+    /* A count-only query: no buffer, no uids written. */
+    tmid_fill();
+    rc = tmid_list(1u, 0u, 0u, TMID_COUNT);
+    expect(rc == 0u && MEM_R32(TMID_COUNT) == 5u,
+           "ThreadmanIdList count-only: readbufsize 0 returns 0 and idcount holds the total");
+
+    /* Types outside the PSPSDK list are refused before any write. */
+    static const uint32_t illegal[] = {0u, 12u, 63u, 68u, 0xffffffffu};
+    for (size_t i = 0; i < sizeof illegal / sizeof illegal[0]; i++) {
+        tmid_fill();
+        rc = tmid_list(illegal[i], TMID_BUF, 4u, TMID_COUNT);
+        snprintf(msg, sizeof msg, "ThreadmanIdList invalid type %d: ILLEGAL_TYPE, nothing written (rc=0x%x)",
+                 (int)illegal[i], rc);
+        expect(rc == TMID_ILLEGAL_TYPE_ERR && MEM_R32(TMID_COUNT) == TMID_SENTINEL &&
+                   MEM_R32(TMID_BUF) == TMID_SENTINEL, msg);
+    }
+
+    /* Thread event handlers are a PSPSDK class this runtime does not track: a named
+     * refusal, never an empty success. */
+    tmid_fill();
+    rc = tmid_list(9u, TMID_BUF, 4u, TMID_COUNT);
+    expect(rc == TMID_NOT_MODELLED_ERR && MEM_R32(TMID_COUNT) == TMID_SENTINEL &&
+               MEM_R32(TMID_BUF) == TMID_SENTINEL,
+           "ThreadmanIdList ThreadEventHandler: refused by name, nothing written");
+
+    /* Bad guest pointers and sizes are refused before any write. */
+    tmid_fill();
+    expect(tmid_list(1u, 0u, 4u, TMID_COUNT) == TMID_ILLEGAL_ADDR_ERR &&
+               MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList NULL readbuf with a size: ILLEGAL_ADDR, no count written");
+    expect(tmid_list(1u, 0x0bfffff8u, 4u, TMID_COUNT) == TMID_ILLEGAL_ADDR_ERR &&
+               MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList readbuf span past guest memory: ILLEGAL_ADDR, no count written");
+    expect(tmid_list(1u, TMID_BUF, 0xffffffffu, TMID_COUNT) == TMID_ILLEGAL_SIZE_ERR &&
+               MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList negative readbufsize: ILLEGAL_SIZE, no count written");
+    expect(tmid_list(1u, TMID_BUF, 8u, 0x0bfffffeu) == TMID_ILLEGAL_ADDR_ERR &&
+               MEM_R32(TMID_BUF) == TMID_SENTINEL,
+           "ThreadmanIdList unwritable idcount: ILLEGAL_ADDR, no uid written");
+
+    /* The object classes the HLE tables keep. Semaphores, event flags and LwMutexes share
+     * one table, so each create is checked against the other class too. */
+    for (uint32_t i = 0; i < 8u; i++) MEM_W8(TMID_NAME + i, (uint8_t)"tmidobj"[i]);
+    uint32_t sema_base = tmid_total(2u), evf_base = tmid_total(3u);
+    uint32_t uid = tmid_call(NID_CNW_CREATE_SEMA, TMID_NAME, 0u, 1u, 1u);
+    tmid_check_object("Semaphore", 2u, 3u, uid, sema_base, evf_base, NID_WSV_DELETE_SEMA);
+    uid = tmid_call(NID_B1_CREATE_EVF, TMID_NAME, 0u, 0u, 0u);
+    tmid_check_object("EventFlag", 3u, 2u, uid, evf_base, sema_base, NID_B1_DELETE_EVF);
+    expect(tmid_call(NID_B1_CREATE_LWMUTEX, TMID_LWMUTEX_WA, TMID_NAME, 0u, 0u) == 0u &&
+               tmid_total(2u) == sema_base && tmid_total(3u) == evf_base,
+           "ThreadmanIdList: an LwMutex is neither a semaphore nor an event flag");
+    expect(tmid_call(NID_B1_DELETE_LWMUTEX, TMID_LWMUTEX_WA, 0u, 0u, 0u) == 0u,
+           "ThreadmanIdList: LwMutex delete succeeds");
+
+    uint32_t base = tmid_total(4u);
+    tmid_check_object("Mbox", 4u, 0u, tmid_call(NID_MBX_CREATE, TMID_NAME, 0u, 0u, 0u),
+                      base, 0u, NID_MBX_DELETE);
+    uint32_t vpl_base = tmid_total(5u), fpl_base = tmid_total(6u);
+    uid = tmid_call(NID_VPL_CREATE, TMID_NAME, 2u, 0u, 0x400u);
+    tmid_check_object("Vpl", 5u, 6u, uid, vpl_base, fpl_base, NID_VPL_DELETE);
+    uid = fpl_make_pool();
+    tmid_check_object("Fpl", 6u, 5u, uid, fpl_base, vpl_base, NID_FPL_DELETE);
+    base = tmid_total(7u);
+    tmid_check_object("Mpipe", 7u, 0u, tmid_call(NID_TMID_CREATE_MPP, TMID_NAME, 0u, 0u, 64u),
+                      base, 0u, NID_TMID_DELETE_MPP);
+    base = tmid_total(8u);
+    tmid_check_object("Callback", 8u, 0u, tmid_call(NID_TMID_CREATE_CB, TMID_NAME, TMID_HANDLER, 0u, 0u),
+                      base, 0u, NID_TMID_DELETE_CB);
+    base = tmid_total(10u);
+    tmid_check_object("Alarm", 10u, 0u, tmid_call(NID_TMID_SET_ALARM, 1000000000u, TMID_HANDLER, 0u, 0u),
+                      base, 0u, NID_TMID_CANCEL_ALARM);
+    base = tmid_total(11u);
+    tmid_check_object("VTimer", 11u, 0u, tmid_call(NID_TMID_CREATE_VT, TMID_NAME, 0u, 0u, 0u),
+                      base, 0u, NID_TMID_DELETE_VT);
+    s_cur = -1;
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && (strcmp(argv[1], "--psp-oracle") == 0 ||
                      strcmp(argv[1], "--exit-game-poisoned") == 0))
@@ -31883,6 +32955,13 @@ static int hle_selftest_main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+    if (argc > 1 && strcmp(argv[1], "--threadman-idlist") == 0) {
+        test_threadman_id_list();
+        fprintf(stderr, "threadman-idlist: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     if (argc > 1 && strcmp(argv[1], "--b1-kobj") == 0) {
         test_sema_hardware_codes();
         test_lwmutex_hardware_codes();
@@ -31944,6 +33023,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_osk_overlay_through_hle_scripted_pad();
     test_osk_overlay_closing_press_stays_with_keyboard();
     test_osk_keyboard_keeps_guest_time_running();
+    test_utility_dialog_single_slot();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);
@@ -31991,6 +33071,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_refer_thread_status();
     test_change_current_thread_attr();
     test_suspend_resume_errors_and_ready_thread();
+    test_change_thread_priority_contract();
     test_rotate_ready_queue_selection_order();
     test_rotate_equal_priority_yields_to_peers();
     test_suspended_waiter_keeps_wait_semantics();
@@ -32026,6 +33107,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_display_frame_per_sec_float_return();
     test_rtc_conversion_errors_and_full_range();
     test_rtc_pointer_validation_and_measured_conversions();
+    test_rtc_local_time_follows_the_system_profile();
     test_unix_time_to_filetime_ticks();
     test_bulk_clock_reads_are_side_effect_free();
     test_display_queries_do_not_progress_display();
@@ -32062,6 +33144,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vtimer_refusals_are_named();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
+    test_threadman_id_list();
     test_wait_sema_count_validation();
     test_expired_timed_object_waits_enter_strict_priority();
     test_hle_liveness_sema_handoff();
@@ -32078,6 +33161,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_devkit_version_measured();
     test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();
+    test_atrac_reset_refill_stream();
     test_td24c_atrac_info_batch();
     test_mp3_stream_lifecycle();
     test_mp3_loop_and_mono();
