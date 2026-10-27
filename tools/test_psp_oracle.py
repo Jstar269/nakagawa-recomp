@@ -2444,13 +2444,13 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 98)
+        self.assertEqual(len(routes), 99)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107}
-                         | {110, 111, 112, 113, 114}, set(ids))
+                         | {110, 111, 112, 113, 114, 115}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -2469,10 +2469,19 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertIn("OBJS = $(BUILD_DIR)/probe.o\n", self.makefile)
         self.assertIn("MUTEX_CASES = mutex-refer-unlocked mutex-timeout-quanta", self.makefile)
         self.assertIn("mutex-priority-inheritance mutex-interrupt-context", self.makefile)
+        self.assertIn("mutex-interrupt-context cpu-timing", self.makefile)
         self.assertIn("ifneq ($(filter $(MUTEX_CASES),$(CASE)),)\n", self.makefile)
         self.assertIn("OBJS += $(BUILD_DIR)/mutex_imports.o\n", self.makefile)
         self.assertNotIn(
             "OBJS = $(BUILD_DIR)/probe.o $(BUILD_DIR)/mutex_imports.o",
+            self.makefile,
+        )
+
+    def test_cpu_timing_imports_only_the_required_kernel_library_nids(self) -> None:
+        self.assertIn("ifeq ($(CASE),cpu-timing)", self.makefile)
+        self.assertIn(
+            "Kernel_Library=0x092968F4,0x5F10D406,0x47A0B729,0xB55249D2,"
+            "0xBEA46419,0x15B6446B",
             self.makefile,
         )
 
@@ -2653,6 +2662,80 @@ class PspDmacProbeTests(unittest.TestCase):
 
     def assert_probe_contains(self, needle: str) -> None:
         self.assertTrue(needle in self.probe, f"probe is missing required source: {needle}")
+
+    def test_cpu_timing_bounds_blocking_ge_calls_and_stalled_queue_occupancy(self) -> None:
+        self.assertIn("#define CPU_TIMING_DRAW_SYNC_CALLS 4u", self.probe)
+        self.assertIn("s_cpu_timing_drawsync_job.calls = CPU_TIMING_DRAW_SYNC_CALLS;", self.probe)
+        self.assertIn("const uint32_t calls = CPU_TIMING_DRAW_SYNC_CALLS;", self.probe)
+        self.assertIn("#define CPU_TIMING_GE_CALLS_PER_TRIAL 1u", self.probe)
+        self.assertIn("CPU_TIMING_GE_CALLS_PER_TRIAL, &error", self.probe)
+        self.assertIn("sceGuStart(GU_SEND, s_cpu_timing_ge_list);", self.probe)
+        self.assertIn("s_cpu_timing_ge_list_bytes = (uint32_t)list_bytes;", self.probe)
+        self.assertIn("(uintptr_t)s_cpu_timing_ge_list +", self.probe)
+        self.assertIn("(uint32_t)list_bytes <= sizeof(s_cpu_timing_ge_list)", self.probe)
+
+    def test_cpu_timing_tears_down_libpspgu_before_recording_the_ge_cells(self) -> None:
+        bodies = dict(_c_function_list(_c_code(self.probe)))
+        ge = bodies["cpu_timing_measure_ge_calls"]
+        teardown = ge.index("const GeGuTeardown gu_down = ge_gu_teardown(gu_rc, -1);")
+        self.assertLess(ge.index("sceGuInit()"), teardown)
+        self.assertLess(teardown, ge.index("cpu_timing_emit_ge_cell("))
+        self.assertLess(teardown, ge.index('"cpu-timing-gu-teardown"'))
+        # Every path emits the teardown row, so the stream keeps its shape.
+        self.assertIn("cpu_timing_emit_gu_teardown_skip(emulated);\n        return 0;", ge)
+        self.assertIn("cpu_timing_emit_gu_teardown_skip(emulated);", bodies["run_cpu_timing"])
+        self.assertIn("#define CPU_TIMING_RESULT_COUNT 65u", self.probe)
+        mutant = self.probe.replace(
+            "    const int gu_rc = sceGuInit();\n",
+            "    const int gu_rc = sceGuInit();\n    if (gu_rc < 0) {\n        return 0;\n    }\n", 1)
+        self.assertNotEqual(mutant, self.probe)
+        self.assertNotEqual(_gu_teardown_problems(mutant), [])
+
+    def test_cpu_timing_displays_its_own_framebuffer_when_none_is_displayed(self) -> None:
+        # 2026-10-27 (boot 47, standalone PSPLink): sceDisplayGetFrameBuf reported no
+        # framebuffer, so the display cell was SKIP and the capture was not eligible.
+        body = dict(_c_function_list(_c_code(self.probe)))["run_cpu_timing"]
+        order = [
+            body.index("sceDisplayGetFrameBuf("),
+            body.index("if (frame_rc >= 0 && s_cpu_timing_framebuffer == NULL) {"),
+            body.index("s_cpu_timing_framebuffer = sceGeEdramGetAddr();"),
+            body.index("cpu_timing_call_setframebuf, CPU_TIMING_SYSCALL_CALLS"),
+            body.index("sceDisplaySetFrameBuf(NULL, frame_found_stride, frame_found_format,"),
+            body.index('"cpu-timing-framebuffer"'),
+        ]
+        self.assertEqual(order, sorted(order))
+        self.assertIn("if (frame_owned) {", body)
+        # Changing the stride or format with IMMEDIATE returns 0x80000107 (measured on boot
+        # 48), so both changes are NEXTFRAME followed by the latching vblank.
+        own_set = body[order[2]:order[3]]
+        self.assertIn("PSP_DISPLAY_SETBUF_NEXTFRAME);", own_set)
+        self.assertIn("sceDisplayWaitVblankStart();", own_set)
+        self.assertNotIn("PSP_DISPLAY_SETBUF_IMMEDIATE", own_set)
+        restore = body[order[4]:order[5]]
+        self.assertIn("PSP_DISPLAY_SETBUF_NEXTFRAME);", restore)
+        self.assertIn("sceDisplayWaitVblankStart();", restore)
+        spec, counts = CAMPAIGN_PROBE_CASES["cpu-timing"]
+        cases = list(spec.ordered_cases)
+        self.assertEqual(cases.index("cpu-timing-framebuffer"),
+                         cases.index("syscall-display-setframebuf") + 1)
+        self.assertEqual(counts["cpu-timing-framebuffer"], 5)
+
+    def test_cpu_timing_manifest_row_is_measured_and_cites_every_record(self) -> None:
+        manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+            encoding="utf-8"))
+        row = next(test for test in manifest["tests"] if test["id"] == "PSP-CPU-TIMING-001")
+        spec, _counts = CAMPAIGN_PROBE_CASES["cpu-timing"]
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["case_ids"], list(spec.ordered_cases))
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
+        self.assertEqual(row["evidence_ref"],
+                         "docs/HARDWARE_ORACLE.md#psp-cpu-timing-001-measured-run-2026-10-27")
+        self.assertIn("3a14a88e", row["measurement_note"])
+        # Every record is named in the cited section; the APIs are listed but not cited,
+        # so the row grants no HLE evidence tier.
+        section = hle_manifest.measured_evidence_section(row)
+        self.assertIn("`3a14a88e`", section)
+        self.assertFalse(set(row["apis"]) & set(row["evidence_cases"]))
 
     def test_dmac_cases_are_individually_buildable_and_use_the_real_imports(self) -> None:
         for case in (
@@ -2980,6 +3063,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-VRAM-MIRROR-001",
                 # The 2026-10-27 acceptance-eligible ge-timing runs of 8f707fc0 (#1296).
                 "PSP-GE-TIMING-001",
+                # The 2026-10-27 acceptance-eligible cpu-timing run of 3a14a88e (#1296).
+                "PSP-CPU-TIMING-001",
             },
         )
         self.assertEqual(
@@ -3610,7 +3695,8 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
     """Step markers, bounded waits and record shapes of the campaign probes."""
 
     NEW_CASES = ("KERNEL_ALARM", "THREAD_SCHEDULER", "WAIT_OUTCOMES", "GE_BREAK_CONTINUE",
-                 "REFER_STATUS_SIZE", "REGISTRY_READONLY", "KERNEL_MISC", "VFPU_COMPARE")
+                 "REFER_STATUS_SIZE", "REGISTRY_READONLY", "KERNEL_MISC", "VFPU_COMPARE",
+                 "CPU_TIMING")
 
     def setUp(self) -> None:
         self.root = Path(__file__).resolve().parents[1]
@@ -3743,9 +3829,10 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
             self.assertEqual(int(done.group(1)), len(spec.ordered_cases) - 1, case)
 
     def test_no_probe_blocks_on_the_ge_without_a_bound(self) -> None:
-        # A blocking sync is allowed only where it is the measurement (ge-timing's C2/C6):
-        # inside a helper-thread entry whose creator waits for it with a timeout and
-        # terminates it when the wait fails, so a sync that never returns costs one cell.
+        # A blocking sync is allowed only where it is the measurement (ge-timing's C2/C6,
+        # cpu-timing's blocking sceGeDrawSync(0) cell): inside a helper-thread entry whose
+        # creator waits for it with a timeout and terminates it when the wait fails, so a
+        # sync that never returns costs one cell.
         for source in sorted(self.fixture.glob("*.c")):
             text = re.sub(r"/\*.*?\*/|//[^\n]*", "", source.read_text(encoding="utf-8"),
                           flags=re.DOTALL)
@@ -4300,7 +4387,8 @@ class VfpuCompareProbeTests(unittest.TestCase):
         start = self.probe.index(
             "#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \\\n"
             "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE || \\\n"
-            "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS\n"
+            "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS || \\\n"
+            "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING\n"
         )
         attr = self.probe[start:self.probe.index("#else", start)]
         self.assertIn("PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);", attr)
