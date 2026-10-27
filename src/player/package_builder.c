@@ -1506,7 +1506,12 @@ static bool scan_path_for_names(const char *const *names, size_t name_count,
     return false;
 }
 
+/* The native test build sets a shorter bound: its hung-wrapper case then proves the
+ * same bounded wait, termination and rejection without waiting out the production
+ * bound twice on every run. Product builds keep the default. */
+#ifndef PYTHON_VERSION_PROBE_TIMEOUT_MS
 #define PYTHON_VERSION_PROBE_TIMEOUT_MS 10000
+#endif
 
 /* A PATH entry is only a usable Python if it can execute the same version
  * probe used by the package builder. Launch it directly (never through a
