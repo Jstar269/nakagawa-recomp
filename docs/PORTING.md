@@ -86,8 +86,7 @@ inference only activated for the documented `USRDIR`/archive-root layout; the
 manifest now states the root relationship directly. The archived and extracted
 routes have distinct open order: a matching extracted-primary file wins a loose
 file, while a loose filesystem file is checked before an XB archive member.
-This migration and the remaining loose-content integration are tracked as
-**Loose-content root binding — in the works ([#289](https://github.com/Jstar269/nakagawa-recomp/issues/289))**.
+This migration, loose-content root binding, landed under [#289](https://github.com/Jstar269/nakagawa-recomp/issues/289).
 
 For the privately route-validated HST title, the opt-in manager path is
 (private-local-only: it requires a local, publication-excluded copy of the
@@ -387,8 +386,8 @@ disabled-profile fail-closed.
    exact trace hooks, target-pattern swallowing, and HST-address diagnostics were
    removed. A synthetic resource-shaped call now fails at the named
    `not-executable` boundary; title-configured HST Newlib bindings remain available
-   to the flagship. The broader second-title boundary remains in the works under
-   [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285).
+   to the flagship. The second-title bring-up landed under [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285); the
+   next milestone, a second title that saves, closes and resumes, is [#1126](https://github.com/Jstar269/nakagawa-recomp/issues/1126).
 
 The former blocker #1, one shared scratch stack for every nested guest call, is
 retired: see C-4.
