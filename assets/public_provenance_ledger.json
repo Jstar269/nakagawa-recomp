@@ -1384,7 +1384,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "19fa0c3b395f3865fdd15562f3ee25f9f849318d30d673b2eed251f59ec4e372"
+      "sha256": "2dd3e3d7cd63e10177f8d7815c1566660f9c4829d94139a1e248f668e39bfd7e"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -8443,7 +8443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6bc7fe4a0d78476df2ac677fbaa37efdb3ff9102237ce592717bd4e069431071"
+      "sha256": "17c7cd16f1a254b4b33e708e4c16c5ea658239b953e757f597ca1f6687ee5252"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -8919,7 +8919,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "237da3da6f1709591169d66f6fe46f554037da0beb69516ec7bca403a83eb9e5"
+      "sha256": "7f27b88d851cc5289561bd479fd744a3de68d75df1de9972f4d65c9e921a581e"
     },
     {
       "path": "src/rt/sched.c",
@@ -14583,7 +14583,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e4bca06ec0a4b89db19f9fe79aa9b54d6898327ce954e73ac05b463053891e62"
+      "sha256": "b6dc55ab5f2293d05825cbd36c931e750ddbe445ec4a1c2e370f879caa02a81e"
     },
     {
       "path": "tools/test_savedata_spans.py",
@@ -14596,7 +14596,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "4de03c32c3cf4450e30bfe9f65c2b7c56914e33d396669d12c336547b0ea0c41"
+      "sha256": "30ec2b36da7f40c3a60b2be4ee7be9d21a507b87e290febf3e3b294fd15f6109"
     },
     {
       "path": "tools/test_sbom.py",
