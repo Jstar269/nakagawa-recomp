@@ -391,6 +391,11 @@ class TestReleaseDocumentation(unittest.TestCase):
             '"Add a disc image you own"',
             (ROOT / "src" / "player" / "ui" / "scr_library.c").read_text(encoding="utf-8"),
         )
+        # The player decrypts the user's disc itself (#295), so the setup wizard asks for
+        # a disc image, not a decrypted one.
+        wizard = (ROOT / "src" / "player" / "ui" / "scr_title.c").read_text(encoding="utf-8")
+        self.assertIn('"A disc image (.iso) of a PSP game you own"', wizard)
+        self.assertNotIn("A decrypted .iso", wizard)
         self.assertNotIn("click **Add Game**", readme)
         self.assertNotIn("No second verified title.", readme)
         self.assertIn("consent once", readme.lower())
