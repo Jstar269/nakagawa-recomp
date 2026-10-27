@@ -7,6 +7,7 @@
 #include "ui_renderer.h"
 #include "ui/player_ui_nk.h"
 #include "nk_title_manifest.h"
+#include "nk_ui_widgets.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
@@ -280,6 +281,35 @@ static bool player_refit_to_actual_frame(SDL_Window *window,
     return player_apply_window_geometry(window, requested, usable_rect, frame,
                                         position_valid, fitted);
 }
+
+#if !defined(_WIN32) && !defined(_WIN64)
+/* The app icon (the N1 mark on its ink tile) as the window icon: 32 px, with
+   larger copies SDL picks for high-density displays. Windows needs no call: the
+   executable carries the icon (assets/brand/nakagawa.rc) and SDL gives every
+   window its sizes, where SDL_SetWindowIcon would stretch one bitmap to all. */
+static void player_set_window_icon(SDL_Window *window) {
+    static const int sizes[] = { 32, 48, 64, 128, 256 };
+    SDL_Surface *icon = NULL;
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+        SDL_Surface *image = SDL_CreateSurface(sizes[i], sizes[i], SDL_PIXELFORMAT_RGBA32);
+        if (!image || !nk_ui_app_icon_rgba(sizes[i], (unsigned char *)image->pixels,
+                                           (size_t)image->pitch)) {
+            SDL_DestroySurface(image);
+            break;
+        }
+        if (!icon) {
+            icon = image;
+        } else {
+            SDL_AddSurfaceAlternateImage(icon, image);
+            SDL_DestroySurface(image);
+        }
+    }
+    if (!icon || !SDL_SetWindowIcon(window, icon)) {
+        fprintf(stderr, "The window icon was not set: %s\n", SDL_GetError());
+    }
+    SDL_DestroySurface(icon);
+}
+#endif
 
 static void player_capture_window_settings(PlayerApp *app, SDL_Window *window) {
     if (!app || !window) return;
@@ -4361,6 +4391,9 @@ int main(int argc, char *argv[]) {
         SDL_Quit();
         return 1;
     }
+#if !defined(_WIN32) && !defined(_WIN64)
+    player_set_window_icon(window);
+#endif
     if (interactive_window && have_usable_bounds) {
         SDL_Rect usable = usable_bounds;
         player_apply_window_geometry(
