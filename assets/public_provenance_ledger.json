@@ -1450,7 +1450,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c266fca346785e49db03f717e55855a56e2f9b7fa205d04704b22c8a5cea6bee"
+      "sha256": "09558b5b44410fcce8694370523f0103776bdcd6de853881f1fddb17541d4004"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "4dbd7a9fbc75928eca973298706c191ca74de4f43e4a236adf31a9176c69bbab"
+      "sha256": "aa9fa8208061f22dd1797691d2761b9a1e004d37431acdff2e5c2afdf6025bb7"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8443,7 +8443,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d78324a7e82071e8e8808ae771aa4ed44a91f2f36f225ef9eb6ffcfec9aced19"
+      "sha256": "56bf5b1c78f3f2288e02f3d5229f084100aae51716ccf9a9d44fc3ec60826241"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -9222,7 +9222,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "888ace406390f2934055c06c953ff5167bb12367945d7562033f21edcfa511dd"
+      "sha256": "1bae8a25e886ea1de3dda636ce3a17eb845c9440cf5c937f7ac1a763cda4e085"
     },
     {
       "path": "src/rt/vfs_contained_selftest.c",
@@ -9234,7 +9234,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "df94d144f166990e0c1054ce0ac9c1324f024232886dac71c57ac2aec5101ca8"
+      "sha256": "70444df0b178cdca1c233129953bf989e693b85ac816cfa2d53d349ca3fd3deb"
     },
     {
       "path": "src/rt/vfs_path.h",
@@ -11563,7 +11563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f1134bf448136111a12708413c0617627b09ba42e21ebb3961e94c97e9243998"
+      "sha256": "34f682050a4aa70fed29cffb72d84c43d4fc6421e8946091f6cf6d12e2388c98"
     },
     {
       "path": "tools/host_stubs.py",
@@ -15160,7 +15160,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6930376eba6d8eca68d4ad029b9cab91b5a7784388a355cd60b700135e6e489d"
+      "sha256": "3aa6cbee712267d5d600e77a123fda7164edb8ff8c8f880ee30ee1c0fa7ba19b"
     },
     {
       "path": "tools/test_visual_oracle.ps1",
