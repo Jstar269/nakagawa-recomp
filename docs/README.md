@@ -32,6 +32,7 @@ Each row is something you are about to do. Find yours and read what it points to
 | Audit user-supplied parser limits and hostile-input evidence | [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — per-boundary evidence for #319; an inventory is not issue completion |
 | Run the release smoke test on a build | [`SMOKE_TEST.md`](SMOKE_TEST.md) |
 | Qualify a public title through the native player | [`TITLE_TESTING.md`](TITLE_TESTING.md) |
+| Find your way around the code for the first time | [`CODE_TOUR.md`](CODE_TOUR.md) — one game from disc image to a frame on screen, file by file |
 | Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Pick up work, or check whether something is already known | [`ISSUES.md`](../ISSUES.md) (live GitHub Issues win) |
 | **Add a tracked file that did not exist before** | [`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md) — a new implementation path needs its *own* record; blanket records such as `tools/*` are deliberately inert and will not cover it |
@@ -193,6 +194,7 @@ Every substantial document carries one status.
 | Path | Status | Authority / scope |
 | --- | --- | --- |
 | `ARCHITECTURE.md` | CURRENT | Implementation behavior (source/tests remain authoritative) |
+| `CODE_TOUR.md` | CURRENT | Newcomer route through the code, disc image to frame on screen (source remains authoritative) |
 | `ARCHIVE_VFS.md` | CURRENT | Read-only archive-backed VFS: XB mounts, member lookup and loose-content routes (#298) |
 | `SETUP.md` | CURRENT | Supported toolchain; declared authority for setup claims, including the optional local symbol reference (`FindSymbol`) |
 | `YOUR_OWN_GAMES.md` | CURRENT | User guide: own-game input, unencrypted files, ownership and in-the-works boundaries |

@@ -4,7 +4,10 @@
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
 
-/* * to sceCtrl, so the recompiled game runs like a normal app (watch the intro, press START, play).
+/* The game's window: presents the PSP framebuffer each frame and feeds keyboard and gamepad
+ * input to sceCtrl, so the recompiled game runs like a normal app (watch the intro, press START,
+ * play). gui_init() picks the presenter, gui_present() paces and shows a frame, and the
+ * gui_pause_* functions run the pause overlay.
  *
  * The default presenter is SDL3 + Vulkan (src/rt/gpu_sdl3vk), which owns the window and ALL input
  * devices — the comprehensive SDL3 gamepad subsystem plus an SDL keyboard fallback. gui.c simply

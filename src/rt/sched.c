@@ -7,7 +7,8 @@
 /* *
  * PSP threads are priority-scheduled and a busy-waiting thread is preempted by its timeslice
  * so a sibling can run. The recompiled code is straight C, so to suspend a thread mid-call-
- * stack we run each guest thread on its own Windows fiber and switch between them. All threads
+ * stack we run each guest thread on its own coroutine (sr_coro: Win32 fibers on Windows,
+ * ucontext on POSIX) and switch between them. All threads
  * share one CpuState; on a switch its contents are saved into the outgoing thread's control
  * block and the incoming thread's are loaded, so the single register file follows whichever
  * thread is running. SR_YIELD (emitted by codegen at function entry and loop back-edges) burns
