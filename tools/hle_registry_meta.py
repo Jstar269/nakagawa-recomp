@@ -1009,6 +1009,14 @@ HANDLER_METADATA = {
         ],
         "limitation": "the cited cell measures a blocked waiter's WAIT_CANCEL outcome after event cancellation; it does not establish the cancel call's return, pattern assignment, waiter-count output, unknown-ID behavior, pointer errors, or multiple-waiter ordering",
     },
+    "h_CancelMsgPipe": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/msgpipe (cancel case: waiters released with WAIT_CANCEL, counts and remaining timeout written)",
+            "src/rt/hle_thread_selftest.c:test_msgpipe_cancel_and_refer",
+        ],
+        "limitation": "releases every active send and receive waiter with WAIT_CANCEL, writes both waiter counts and each timed waiter's remaining timeout and empties the buffer; a waiter paused inside a callback, the unknown-UID code and error precedence are not hardware measured (#1381)",
+    },
     "h_CancelSema": {
         "status": "partial",
         "evidence": [
@@ -1190,6 +1198,15 @@ HANDLER_METADATA = {
             "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: valid FPL layout, short/zero-size writes, free counts, and refer-after-delete)",
         ],
         "limitation": "valid pool layout and the cited short/zero-size behavior are covered; tick fields, invalid pointers, unknown IDs beyond the after-delete refer, and error precedence are not established",
+    },
+    "h_ReferMsgPipeStatus": {
+        "status": "partial",
+        "evidence": [
+            "public ABI (PSPSDK pspthreadman.h: SceKernelMppInfo, 56 bytes)",
+            "PSPAutotests tests/threads/msgpipe (refer counts beside the cancel and delete cases)",
+            "src/rt/hle_thread_selftest.c:test_msgpipe_cancel_and_refer",
+        ],
+        "limitation": "reports name, attr, buffer size, free size and the active send and receive waiter counts for a known pipe, honours a short or zero size word and checks the whole span before writing; the unknown-UID and NULL-pointer codes and error precedence are source-selftested, not hardware measured (#1381)",
     },
     "h_ReferMutexStatus": {
         "status": "partial",
@@ -1644,6 +1661,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelUnloadModule": "kernel_module",
     # --- kernel: semaphores, event flags, mutexes, message boxes and pipes ---
     "sceKernelCancelEventFlag": "kernel_sync",
+    "sceKernelCancelMsgPipe": "kernel_sync",
     "sceKernelCancelMutex": "kernel_sync",
     "sceKernelCancelReceiveMbx": "kernel_sync",
     "sceKernelCancelSema": "kernel_sync",
@@ -1670,6 +1688,7 @@ SUBSYSTEM_BY_PREFIX = {
     "sceKernelReferEventFlagStatus": "kernel_sync",
     "sceKernelReferLwMutexStatus": "kernel_sync",
     "sceKernelReferMbxStatus": "kernel_sync",
+    "sceKernelReferMsgPipeStatus": "kernel_sync",
     "sceKernelReferMutexStatus": "kernel_sync",
     "sceKernelReferSemaStatus": "kernel_sync",
     "sceKernelSendMbx": "kernel_sync",

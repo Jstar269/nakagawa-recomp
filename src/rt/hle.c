@@ -23137,6 +23137,15 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
             break;
         }
     }
+    /* A cancelled or deleted timed wait reports its remaining timeout, as the
+     * public PSPAutotests threads/msgpipe cancel and delete cases show
+     * (reference output, not measured here). */
+    if (has_timeout && (result == SCE_KERNEL_ERROR_WAIT_CANCEL ||
+                        result == SCE_KERNEL_ERROR_WAIT_DELETE)) {
+        sched_vtime_refresh();
+        uint64_t now = sched_vtime_us();
+        MEM_W32(toptr, now < end_time ? (uint32_t)(end_time - now) : 0u);
+    }
     /* All departures detach/reconsider through the same object hook. Only the
      * normal syscall boundary may preempt; owner abandonment never does here. */
     if (sched_wait_finish(waiter_scope)) sched_preempt();
@@ -23159,6 +23168,120 @@ static uint32_t h_ReceiveMsgPipeCB(CpuState *s) {
     return msg_pipe_blocking_common(s, 0, 1);
 }
 
+/* A waiter counts for Cancel and Refer only while it is its owner's active
+ * wait (blocked, or readied to retry and not yet run), so a thread counts at
+ * most once. An entry stays in p->waiters until its owner finishes, so one
+ * already released with a result (TERMINAL) is no longer a waiter. A
+ * callback-aware wait whose owner is running callbacks is paused, not
+ * waiting: it neither counts nor is cancelled, and resumes waiting when the
+ * callbacks return (the PPSSPP pause model; not measured here). A readied
+ * waiter has not transferred yet, whereas the PSP serves a waiter directly
+ * (docs/HARDWARE_ORACLE.md, PSP-B3-01), so a Cancel or Delete between the
+ * wake and the retry still releases it without its bytes. */
+static int msg_pipe_waiter_waiting(const MsgPipeWaiter *waiter) {
+    SrWaitState state;
+    uint32_t owner;
+    return sched_wait_state(waiter->invocation, &state, &owner) &&
+           (state == SR_WAIT_BLOCKED || state == SR_WAIT_NOTIFIED);
+}
+
+static void msg_pipe_count_waiters(const MsgPipe *p, uint32_t *send_out,
+                                   uint32_t *receive_out) {
+    uint32_t send = 0u, receive = 0u;
+    for (int i = 0; i < p->nwaiters; i++) {
+        if (!msg_pipe_waiter_waiting(&p->waiters[i])) continue;
+        if (p->waiters[i].is_send) send++;
+        else receive++;
+    }
+    *send_out = send;
+    *receive_out = receive;
+}
+
+static uint32_t h_CancelMsgPipe(CpuState *s) {
+    /* a0=uid, a1=numSendWaitThreads out, a2=numReceiveWaitThreads out (issue #1381).
+     * Both output pointers may be NULL; a non-NULL one that is not writable
+     * fails closed with ILLEGAL_ADDR before any waiter or buffer changes
+     * (project choice, as in h_CancelReceiveMbx). Every counted sender and
+     * receiver waiter is released with WAIT_CANCEL. The counts, the emptied
+     * buffer and the remaining timeout a cancelled timed waiter reports follow
+     * the public PSPAutotests threads/msgpipe cancel case and PPSSPP
+     * (reference output and emulator consensus, not measured here). */
+    MsgPipe *p = msg_pipe_find(A0);
+    if (!p) return SCE_KERNEL_ERROR_UNKNOWN_MPPID;
+    uint32_t sendp = A1;
+    uint32_t receivep = A2;
+    if ((sendp && !sr_guest_span_writable(sendp, 4u)) ||
+        (receivep && !sr_guest_span_writable(receivep, 4u)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t senders, receivers;
+    msg_pipe_count_waiters(p, &senders, &receivers);
+    if (sendp) MEM_W32(sendp, senders);
+    if (receivep) MEM_W32(receivep, receivers);
+    p->read_pos = 0u;
+    p->write_pos = 0u;
+    p->count = 0u;
+    if (getenv("SR_MSGLOG"))
+        fprintf(stderr, "HLE: CancelMsgPipe uid=0x%x name='%s' send=%u receive=%u\n",
+                p->uid, p->name, senders, receivers);
+    /* No waiter: no wake result to latch. Completing an invocation records its
+     * result without detaching it, so p->waiters is stable during the walk. */
+    if (senders || receivers) {
+        for (int i = 0; i < p->nwaiters; i++)
+            if (msg_pipe_waiter_waiting(&p->waiters[i]))
+                (void)sched_wait_complete(p->waiters[i].invocation,
+                                          SCE_KERNEL_ERROR_WAIT_CANCEL);
+        sched_preempt();
+    }
+    return 0;
+}
+
+/* SceKernelMppInfo (PSPSDK pspthreadman.h) is 56 bytes: size(0), name[32](4),
+ * attr(36), bufSize(40), freeSize(44), numSendWaitThreads(48),
+ * numReceiveWaitThreads(52). */
+typedef struct {
+    uint32_t size;
+    char     name[32];
+    uint32_t attr;
+    int32_t  bufSize;
+    int32_t  freeSize;
+    int32_t  numSendWaitThreads;
+    int32_t  numReceiveWaitThreads;
+} SceKernelMppInfo;
+
+static uint32_t h_ReferMsgPipeStatus(CpuState *s) {
+    /* a0=uid, a1=info (issue #1381). Same size-field contract as
+     * h_ReferSemaStatus: a zero size writes nothing, otherwise
+     * min(size, sizeof) bytes are written after the whole span is checked. */
+    uint32_t info_addr = A1;
+    if (!info_addr || !sr_guest_span_readable(info_addr, 4u))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MsgPipe *p = msg_pipe_find(A0);
+    if (!p) return SCE_KERNEL_ERROR_UNKNOWN_MPPID;
+    uint32_t input_size = MEM_R32(info_addr);
+    if (input_size == 0u) return 0;
+    uint32_t write_len = input_size < (uint32_t)sizeof(SceKernelMppInfo)
+                         ? input_size : (uint32_t)sizeof(SceKernelMppInfo);
+    if (!sr_guest_span_writable(info_addr, write_len))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t senders, receivers;
+    msg_pipe_count_waiters(p, &senders, &receivers);
+    SceKernelMppInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = (uint32_t)sizeof(SceKernelMppInfo);
+    /* Copy only up to the terminator: create keeps the bytes after it as they
+     * were on the host stack, and they must not reach the guest. */
+    for (size_t i = 0; i + 1u < sizeof(info.name) && p->name[i]; i++)
+        info.name[i] = p->name[i];
+    info.attr = p->attr;
+    info.bufSize = (int32_t)p->capacity;
+    info.freeSize = (int32_t)(p->capacity - p->count);
+    info.numSendWaitThreads = (int32_t)senders;
+    info.numReceiveWaitThreads = (int32_t)receivers;
+    for (uint32_t i = 0; i < write_len; i++)
+        MEM_W8(info_addr + i, ((const uint8_t *)&info)[i]);
+    return 0;
+}
+
 /* Message-pipe NID registrations.  Shared by the production registry and the
  * executable HLE selftest so the test exercises the exact production mapping
  * rather than a duplicate registration list. */
@@ -23171,6 +23294,8 @@ static void hle_register_msgpipe_handlers(void) {
     sr_hle_register(0x7c41f2c2, "sceKernelSendMsgPipeCB", h_SendMsgPipeCB);
     sr_hle_register(0x74829b76, "sceKernelReceiveMsgPipe", h_ReceiveMsgPipe);
     sr_hle_register(0xfbfa697d, "sceKernelReceiveMsgPipeCB", h_ReceiveMsgPipeCB);
+    sr_hle_register(0x349b864d, "sceKernelCancelMsgPipe", h_CancelMsgPipe);
+    sr_hle_register(0x33be4024, "sceKernelReferMsgPipeStatus", h_ReferMsgPipeStatus);
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST

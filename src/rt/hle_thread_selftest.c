@@ -21842,6 +21842,182 @@ static void selftest_msgpipe_waiter_finish(SelftestMsgPipeWaiterCtx *waiter,
         selftest_msgpipe_waiter_resume(waiter);
 }
 
+#define NID_SCE_KERNEL_CANCEL_MSG_PIPE 0x349b864du
+#define NID_SCE_KERNEL_REFER_MSG_PIPE_STATUS 0x33be4024u
+#define MSGPIPE_SELFTEST_INFO_SIZE 56u
+
+static uint32_t selftest_msgpipe_refer(uint32_t uid, uint32_t info) {
+    CpuState cpu = {0};
+    cpu.r[4] = uid;
+    cpu.r[5] = info;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_REFER_MSG_PIPE_STATUS);
+}
+
+static uint32_t selftest_msgpipe_cancel(uint32_t uid, uint32_t sendp, uint32_t receivep) {
+    CpuState cpu = {0};
+    cpu.r[4] = uid;
+    cpu.r[5] = sendp;
+    cpu.r[6] = receivep;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_CANCEL_MSG_PIPE);
+}
+
+/* Issue #1381: sceKernelCancelMsgPipe and sceKernelReferMsgPipeStatus through
+ * production dispatch. Two blocked senders and one blocked receiver share a
+ * half-full pipe; Refer reports them, Cancel releases all three with
+ * WAIT_CANCEL, writes both counts and empties the buffer, and a timed waiter
+ * reports its remaining timeout on cancel and on delete (the public
+ * PSPAutotests threads/msgpipe cancel and delete cases). */
+static void test_msgpipe_cancel_and_refer(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    const uint32_t GUEST_BUF = 0x08010000u;
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_NAME = 0x08030000u;
+    const uint32_t GUEST_RES = 0x08040000u;
+    const uint32_t GUEST_INFO = 0x08050000u;
+    const uint32_t GUEST_COUNTS = 0x08060000u;
+    const uint32_t GUEST_TMO = 0x08070000u;
+    const uint32_t ARENA_END = 0x0c000000u;
+    MEM_W8(GUEST_NAME, 'c'); MEM_W8(GUEST_NAME + 1u, 'r'); MEM_W8(GUEST_NAME + 2u, 0u);
+    for (uint32_t i = 0; i < 8u; i++) MEM_W8(GUEST_BUF + i, (uint8_t)(0x50u + i));
+
+    TCB *owner = fixture_thread(0x13810u, TH_RUNNING, 32);
+    owner->started = 1;
+    int owner_index = (int)(owner - s_tcb);
+    s_cur = owner_index;
+    uint32_t pipe = selftest_msgpipe_create(GUEST_NAME, 0x0100u, 4u);
+    expect(pipe != 0u && pipe < 0x80000000u, "cancel/refer Message Pipe fixture is created");
+    if (!pipe || pipe >= 0x80000000u) return;
+
+    /* Refer: lookup error, NULL and unmapped info, size 0, partial and full sizes. */
+    MEM_W32(GUEST_INFO, MSGPIPE_SELFTEST_INFO_SIZE);
+    expect(selftest_msgpipe_refer(0x7ffffffeu, GUEST_INFO) == SCE_KERNEL_ERROR_UNKNOWN_MPPID,
+           "ReferMsgPipeStatus is registered and rejects an unknown pipe");
+    expect(selftest_msgpipe_refer(pipe, 0u) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "ReferMsgPipeStatus rejects a NULL info pointer");
+    MEM_W32(ARENA_END - 8u, MSGPIPE_SELFTEST_INFO_SIZE);
+    MEM_W32(ARENA_END - 4u, 0xa5a5a5a5u);
+    expect(selftest_msgpipe_refer(pipe, ARENA_END - 8u) == SCE_KERNEL_ERROR_ILLEGAL_ADDR &&
+           MEM_R32(ARENA_END - 8u) == MSGPIPE_SELFTEST_INFO_SIZE &&
+           MEM_R32(ARENA_END - 4u) == 0xa5a5a5a5u,
+           "ReferMsgPipeStatus checks the whole span before writing any byte");
+    for (uint32_t i = 0; i < 64u; i += 4u) MEM_W32(GUEST_INFO + i, 0xeeeeeeeeu);
+    MEM_W32(GUEST_INFO, 0u);
+    expect(selftest_msgpipe_refer(pipe, GUEST_INFO) == 0u && MEM_R32(GUEST_INFO) == 0u &&
+           MEM_R32(GUEST_INFO + 4u) == 0xeeeeeeeeu,
+           "ReferMsgPipeStatus with size zero writes nothing");
+    MEM_W32(GUEST_INFO, 8u);
+    expect(selftest_msgpipe_refer(pipe, GUEST_INFO) == 0u &&
+           MEM_R32(GUEST_INFO) == MSGPIPE_SELFTEST_INFO_SIZE &&
+           MEM_R8(GUEST_INFO + 4u) == 'c' && MEM_R8(GUEST_INFO + 5u) == 'r' &&
+           MEM_R8(GUEST_INFO + 6u) == 0u && MEM_R8(GUEST_INFO + 7u) == 0u &&
+           MEM_R32(GUEST_INFO + 8u) == 0xeeeeeeeeu,
+           "ReferMsgPipeStatus honours a short size field");
+    MEM_W32(GUEST_INFO, MSGPIPE_SELFTEST_INFO_SIZE);
+    expect(selftest_msgpipe_refer(pipe, GUEST_INFO) == 0u &&
+           MEM_R32(GUEST_INFO + 36u) == 0x0100u && MEM_R32(GUEST_INFO + 40u) == 4u &&
+           MEM_R32(GUEST_INFO + 44u) == 4u && MEM_R32(GUEST_INFO + 48u) == 0u &&
+           MEM_R32(GUEST_INFO + 52u) == 0u && MEM_R32(GUEST_INFO + 56u) == 0xeeeeeeeeu,
+           "ReferMsgPipeStatus fills SceKernelMppInfo and stops at 56 bytes");
+
+    /* Half-fill the pipe, then park one receiver and two senders on it. */
+    CpuState cpu;
+    msgpipe_setup(&cpu, pipe, GUEST_BUF, 2u, 0u, GUEST_RES);
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u,
+           "cancel fixture queues two bytes");
+    SelftestMsgPipeWaiterCtx receiver = {0}, sender = {0}, sender_cb = {0};
+    sender.toptr = GUEST_TMO;
+    MEM_W32(GUEST_TMO, 1000000u);
+    selftest_msgpipe_waiter_start_sized(&receiver, 0x13811u, 40, pipe, GUEST_OUT, 4u,
+                                        GUEST_RES, 0, 0);
+    selftest_msgpipe_waiter_start_sized(&sender, 0x13812u, 40, pipe, GUEST_BUF, 4u,
+                                        GUEST_RES + 4u, 1, 0);
+    selftest_msgpipe_waiter_start_sized(&sender_cb, 0x13813u, 40, pipe, GUEST_BUF, 3u,
+                                        GUEST_RES + 8u, 1, 1);
+    s_cur = owner_index;
+    expect(!receiver.returned && receiver.tcb->state == TH_WAIT_OBJ &&
+           !sender.returned && sender.tcb->state == TH_WAIT_OBJ &&
+           !sender_cb.returned && sender_cb.tcb->state == TH_WAIT_OBJ,
+           "a four-byte receive and two oversized sends block on the half-full pipe");
+    /* The kernel read the timeout at entry; poison the word to see the rewrite. */
+    MEM_W32(GUEST_TMO, 0xdeadbeefu);
+    expect(selftest_msgpipe_refer(pipe, GUEST_INFO) == 0u &&
+           MEM_R32(GUEST_INFO + 44u) == 2u && MEM_R32(GUEST_INFO + 48u) == 2u &&
+           MEM_R32(GUEST_INFO + 52u) == 1u,
+           "ReferMsgPipeStatus reports free bytes and both waiter counts");
+
+    /* Cancel: lookup error and output-pointer preflight leave waiters parked. */
+    expect(selftest_msgpipe_cancel(0x7ffffffeu, 0u, 0u) == SCE_KERNEL_ERROR_UNKNOWN_MPPID,
+           "CancelMsgPipe is registered and rejects an unknown pipe");
+    expect(selftest_msgpipe_cancel(pipe, GUEST_COUNTS, ARENA_END - 2u) ==
+               SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "CancelMsgPipe rejects an unwritable receive-count pointer");
+    SrMsgPipeState state;
+    expect(receiver.tcb->state == TH_WAIT_OBJ && sender.tcb->state == TH_WAIT_OBJ &&
+           sender_cb.tcb->state == TH_WAIT_OBJ &&
+           sr_hle_test_msgpipe_state(pipe, &state) == 1 && state.count == 2u,
+           "a rejected CancelMsgPipe releases no waiter and keeps the buffer");
+
+    MEM_W32(GUEST_COUNTS, 0xffffffffu);
+    MEM_W32(GUEST_COUNTS + 4u, 0xffffffffu);
+    expect(selftest_msgpipe_cancel(pipe, GUEST_COUNTS, GUEST_COUNTS + 4u) == 0u,
+           "CancelMsgPipe succeeds with waiters on both sides");
+    expect(MEM_R32(GUEST_COUNTS) == 2u && MEM_R32(GUEST_COUNTS + 4u) == 1u,
+           "CancelMsgPipe writes the send and receive waiter counts");
+    expect(receiver.tcb->state == TH_READY && sender.tcb->state == TH_READY &&
+           sender_cb.tcb->state == TH_READY,
+           "CancelMsgPipe readies every sender and receiver waiter");
+    expect(sr_hle_test_msgpipe_state(pipe, &state) == 1 && state.count == 0u &&
+           state.read_pos == 0u && state.write_pos == 0u,
+           "CancelMsgPipe empties the pipe buffer");
+    selftest_msgpipe_waiter_resume(&receiver);
+    selftest_msgpipe_waiter_resume(&sender);
+    selftest_msgpipe_waiter_resume(&sender_cb);
+    s_cur = owner_index;
+    expect(receiver.returned && receiver.ret == 0x800201a9u && MEM_R32(GUEST_RES) == 0u,
+           "cancelled receiver returns WAIT_CANCEL with no bytes");
+    expect(sender.returned && sender.ret == 0x800201a9u &&
+           sender_cb.returned && sender_cb.ret == 0x800201a9u,
+           "cancelled senders return WAIT_CANCEL");
+    expect(MEM_R32(GUEST_TMO) > 0u && MEM_R32(GUEST_TMO) <= 1000000u,
+           "cancelled timed sender reports its remaining timeout");
+    expect(selftest_msgpipe_refer(pipe, GUEST_INFO) == 0u &&
+           MEM_R32(GUEST_INFO + 44u) == 4u && MEM_R32(GUEST_INFO + 48u) == 0u &&
+           MEM_R32(GUEST_INFO + 52u) == 0u,
+           "ReferMsgPipeStatus after cancel reports an empty pipe with no waiters");
+    expect(selftest_msgpipe_cancel(pipe, 0u, 0u) == 0u,
+           "CancelMsgPipe accepts NULL count pointers on an idle pipe");
+
+    SelftestMsgPipeWaiterCtx *all[] = {&receiver, &sender, &sender_cb};
+    for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+        if (all[i]->tcb && all[i]->tcb->coro) {
+            sr_coro_destroy(all[i]->tcb->coro);
+            all[i]->tcb->coro = NULL;
+        }
+    }
+    SelftestMsgPipeWaiterCtx deleted = {0};
+    deleted.toptr = GUEST_TMO + 4u;
+    MEM_W32(GUEST_TMO + 4u, 1000000u);
+    selftest_msgpipe_waiter_start_sized(&deleted, 0x13814u, 40, pipe, GUEST_OUT, 4u,
+                                        GUEST_RES + 12u, 0, 0);
+    MEM_W32(GUEST_TMO + 4u, 0xdeadbeefu);
+    s_cur = owner_index;
+    cpu = (CpuState){0};
+    cpu.r[4] = pipe;
+    expect(!deleted.returned && sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+           "cancel/refer Message Pipe fixture deletes with a timed receiver parked");
+    selftest_msgpipe_waiter_resume(&deleted);
+    s_cur = owner_index;
+    expect(deleted.returned && deleted.ret == 0x800201b5u &&
+           MEM_R32(GUEST_TMO + 4u) > 0u && MEM_R32(GUEST_TMO + 4u) <= 1000000u,
+           "deleted timed receiver returns WAIT_DELETE and its remaining timeout");
+    if (deleted.tcb && deleted.tcb->coro) {
+        sr_coro_destroy(deleted.tcb->coro);
+        deleted.tcb->coro = NULL;
+    }
+}
+
 /* Priority-ordered Message Pipe wakes must still satisfy the requested transfer
  * amount. A stronger waiter for eight bytes is not eligible after a two-byte
  * edge, so the eligible lower-priority successor must be selected directly;
@@ -23184,6 +23360,49 @@ static void test_msgpipe_nested_callback_wait_scopes(void) {
            "outer receive consumes callback-supplied bytes before it parks again");
     expect(MEM_R32(GUEST_RES + 4u) == 2u,
            "callback try-send reports its completed transfer");
+    selftest_msgpipe_nested_fixture_end(&fixture);
+}
+
+/* Issue #1381: a callback-aware receive whose owner is running a callback is
+ * paused, not waiting. Its nested receive is the thread's one waiter: Refer and
+ * Cancel count the thread once, Cancel releases only the nested receive, and
+ * the outer receive resumes waiting on the emptied pipe. */
+static void test_msgpipe_cancel_skips_paused_callback_wait(void) {
+    const uint32_t GUEST_OUT = 0x08020000u;
+    const uint32_t GUEST_INFO = 0x08050000u;
+    const uint32_t GUEST_COUNTS = 0x08060000u;
+    SelftestMsgPipeNestedFixture fixture;
+    SrMsgPipeState state;
+
+    if (!selftest_msgpipe_nested_fixture_begin(
+        &fixture, 0x13820u, 0x13821u,
+        NID_SCE_KERNEL_RECEIVE_MSG_PIPE, 8u, GUEST_OUT + 16u, 6u)) {
+        selftest_msgpipe_nested_fixture_end(&fixture);
+        return;
+    }
+    s_cur = fixture.owner_index;
+    expect(!s_msgpipe_callback_nested_returned &&
+           fixture.waiter->state == TH_WAIT_OBJ,
+           "nested receive inside the outer receive's callback blocks");
+    MEM_W32(GUEST_INFO, MSGPIPE_SELFTEST_INFO_SIZE);
+    expect(selftest_msgpipe_refer(fixture.pipe_uid, GUEST_INFO) == 0u &&
+           MEM_R32(GUEST_INFO + 48u) == 0u && MEM_R32(GUEST_INFO + 52u) == 1u,
+           "ReferMsgPipeStatus counts a thread with a paused outer wait once");
+    MEM_W32(GUEST_COUNTS, 0xffffffffu);
+    MEM_W32(GUEST_COUNTS + 4u, 0xffffffffu);
+    expect(selftest_msgpipe_cancel(fixture.pipe_uid, GUEST_COUNTS, GUEST_COUNTS + 4u) == 0u &&
+           MEM_R32(GUEST_COUNTS) == 0u && MEM_R32(GUEST_COUNTS + 4u) == 1u &&
+           fixture.waiter->state == TH_READY,
+           "CancelMsgPipe counts and readies only the nested receive");
+    selftest_msgpipe_waiter_resume(&fixture.outer);
+    s_cur = fixture.owner_index;
+    expect(s_msgpipe_callback_nested_returned &&
+           s_msgpipe_callback_nested_ret == 0x800201a9u,
+           "nested receive returns WAIT_CANCEL to its callback");
+    expect(!fixture.outer.returned && fixture.waiter->state == TH_WAIT_OBJ &&
+           sr_hle_test_msgpipe_state(fixture.pipe_uid, &state) == 1 &&
+           state.count == 0u,
+           "paused outer receive resumes waiting on the emptied pipe");
     selftest_msgpipe_nested_fixture_end(&fixture);
 }
 
@@ -33722,6 +33941,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_end_flags_refresh_per_cycle();
     test_msgpipe_safety();
     test_msgpipe_blocking();
+    test_msgpipe_cancel_and_refer();
     test_msgpipe_departure_reconsiders_successor();
     test_msgpipe_invocation_lifetime();
     test_msgpipe_waiter_order();
@@ -33732,6 +33952,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_msgpipe_termination_requeues_readied_waiters();
     test_msgpipe_callback_and_delete();
     test_msgpipe_nested_callback_wait_scopes();
+    test_msgpipe_cancel_skips_paused_callback_wait();
     test_td23_guest_pointer_validation();
     test_kernel_import_sweep_memory_blocks_and_sdk_alias();
     test_td28_partition_free_reuse();

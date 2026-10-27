@@ -815,6 +815,12 @@
     "name": "sceUtilityGamedataInstallShutdownStart",
     "status": "unreviewed"
   },
+  "0x33be4024": {
+    "classification": "dedicated",
+    "handler": "h_ReferMsgPipeStatus",
+    "name": "sceKernelReferMsgPipeStatus",
+    "status": "partial"
+  },
   "0x33d4ab37": {
     "classification": "dedicated",
     "handler": "h_SasRevType",
@@ -844,6 +850,12 @@
     "classification": "dedicated",
     "handler": "h_RtcConvertUtcToLocal",
     "name": "sceRtcConvertUtcToLocalTime",
+    "status": "partial"
+  },
+  "0x349b864d": {
+    "classification": "dedicated",
+    "handler": "h_CancelMsgPipe",
+    "name": "sceKernelCancelMsgPipe",
     "status": "partial"
   },
   "0x349d6d6c": {
