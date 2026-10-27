@@ -1952,6 +1952,33 @@ class TraceMemoTests(unittest.TestCase):
         )
 
 
+class ScriptEntryTests(unittest.TestCase):
+    """analyze.py run as a script is one module with the copy its helpers import."""
+
+    def test_script_traces_a_linked_branch(self) -> None:
+        """A `bal` sends the trace through entry_frame_balance, which imports `analyze`. Run as a
+        script, that import used to load a second copy of this module whose in_ranges did not
+        recognise the script copy's _SpanIndex and failed with "'_SpanIndex' object is not
+        iterable"."""
+        with tempfile.TemporaryDirectory(prefix="nakagawa-analyze-script-") as temp:
+            elf_path = Path(temp) / "linked-branch.elf"
+            write_words_elf(elf_path, [
+                MIPS_PROLOGUE,
+                0x04110003,              # bal +3 (bgezal $zero): a linked call to the jr below
+                MIPS_NOP,
+                MIPS_JR_RA,
+                MIPS_NOP,
+                MIPS_JR_RA,              # the bal target
+                MIPS_NOP,
+            ])
+            result = subprocess.run(
+                [sys.executable, str(TOOLS / "analyze.py"), str(elf_path), "--quiet"],
+                capture_output=True, text=True, cwd=str(ROOT), timeout=120,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertNotIn("Traceback", result.stderr)
+
+
 class SpanIndexMembershipTests(unittest.TestCase):
     """The trace's indexed membership answers exactly as the linear in_ranges scan."""
 
