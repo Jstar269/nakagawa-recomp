@@ -55,6 +55,43 @@ if _PLAYER_EXE_BUILD_PATH.is_file():
     if (PLAYER_EXE.parent / "demos").exists():
         raise RuntimeError("player UI regression executable sandbox contains demos/")
 
+# NAKAGAWA_PLAYER_UI_SHARD=<k>/<n> runs only the tests whose position in test-id order
+# is k modulo n. The Makefile's player-ui-regressions runs all n shards side by side,
+# so together they run every test exactly once; unset, every test runs here.
+PLAYER_UI_SHARD_ENV = "NAKAGAWA_PLAYER_UI_SHARD"
+
+
+def parse_shard(spec: str) -> tuple[int, int]:
+    match = re.fullmatch(r"(0|[1-9][0-9]{0,3})/([1-9][0-9]{0,3})", spec)
+    if match is None or int(match.group(1)) >= int(match.group(2)):
+        raise ValueError(f"{PLAYER_UI_SHARD_ENV} must be k/n with 0 <= k < n, not {spec!r}")
+    return int(match.group(1)), int(match.group(2))
+
+
+def _flatten(suite: unittest.TestSuite):
+    for test in suite:
+        if isinstance(test, unittest.TestSuite):
+            yield from _flatten(test)
+        else:
+            yield test
+
+
+def select_shard(tests: unittest.TestSuite, spec: str) -> unittest.TestSuite:
+    """The tests of shard k/n in test-id order. A shard that admits nothing is refused."""
+    shard, count = parse_shard(spec)
+    ordered = sorted(_flatten(tests), key=lambda test: test.id())
+    selected = [test for index, test in enumerate(ordered) if index % count == shard]
+    if not selected:
+        raise ValueError(f"{PLAYER_UI_SHARD_ENV}={spec} admits none of {len(ordered)} tests")
+    return unittest.TestSuite(selected)
+
+
+def load_tests(loader: unittest.TestLoader, standard_tests: unittest.TestSuite,
+               pattern: str | None) -> unittest.TestSuite:
+    spec = os.environ.get(PLAYER_UI_SHARD_ENV, "").strip()
+    return select_shard(standard_tests, spec) if spec else standard_tests
+
+
 # The player accepts a package only for the CpuState ABI it was compiled with, so a
 # synthetic ready package must name that same version (src/rt/recomp.h).
 CPU_STATE_ABI_VERSION = int(

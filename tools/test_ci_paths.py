@@ -802,10 +802,18 @@ class MakefileRecipeOnlyRoutingTests(unittest.TestCase):
 
     def test_live_makefile_recipe_edit_narrows_and_flag_edit_does_not(self) -> None:
         makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text(encoding="utf-8")
+        # The UI regressions run as four literal shard targets; editing the shared
+        # shard recipe, or the recipe that starts them, stays recipe-only.
         recipe = '\t"$(PYTHON)" -m unittest discover -s tests/native -p "test_player_ui.py" -v\n'
         self.assertIn(recipe, makefile)
         self.assertEqual(
             self.analyse(makefile, makefile.replace(recipe, recipe.replace(" -v", " -v -f"), 1)),
+            tuple(f"player-ui-regressions-shard-{index}" for index in range(4)),
+        )
+        starter = "--output-sync=target $(addprefix player-ui-regressions-shard-,$(PLAYER_UI_SHARDS))"
+        self.assertIn(starter, makefile)
+        self.assertEqual(
+            self.analyse(makefile, makefile.replace(starter, starter + " -k", 1)),
             ("player-ui-regressions",),
         )
         flag = re.search(r"(?m)^PLAYER_EXE \?= .*$", makefile)

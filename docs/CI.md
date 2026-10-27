@@ -157,7 +157,9 @@ TEST00007 ISO to the CMake-built player's bounded `--stage-only` route and requi
 synthetic fixtures. Separately, the job runs `make CC=gcc player-ui-regressions`: scripted native
 player UI event and recovery flows, which are UI evidence rather than staging evidence. The test
 harness (`tests/native/test_player_ui.py`) forces SDL's dummy video and software render drivers for
-every player it spawns, so the gate is headless without any step environment. The CMake player is configured with CMake's default, unoptimized build type, so
+every player it spawns, so the gate is headless without any step environment. The target runs the
+suite as four parallel shards (`PLAYER_UI_SHARDS`, `NAKAGAWA_PLAYER_UI_SHARD`) that together run
+every test exactly once; each test already uses its own temporary data roots. The CMake player is configured with CMake's default, unoptimized build type, so
 the gate covers only that configuration: an optimized Release configuration fails under the global
 `-Werror` on existing truncation warnings in `src/core/nk_launch.c`, a separate defect, and this
 job does not claim that configuration builds. Consumer ISO compatibility remains in the works

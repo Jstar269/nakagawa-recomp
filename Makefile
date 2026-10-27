@@ -2014,12 +2014,22 @@ $(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input
 	@"$(PYTHON)" -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_NK_UI_DEFS) $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
-.PHONY: player-ui-regressions
-# Target-specific export exports NAKAGAWA_PLAYER_UI_TEST_EXE into the recipe's
-# child process environment across platforms, avoiding POSIX shell syntax
-# (e.g. VAR=val cmd) that fails under Windows cmd.exe.
-player-ui-regressions: export NAKAGAWA_PLAYER_UI_TEST_EXE := $(PLAYER_UI_TEST_EXE)
+# The regressions are independent player processes, so they run as parallel shards
+# (tests/native/test_player_ui.py, NAKAGAWA_PLAYER_UI_SHARD): every shard runs side by
+# side and together they run each test exactly once. --output-sync keeps each shard's
+# report in one piece. The shard rule names its targets literally, so an edit to its
+# recipe stays a recipe-only Makefile change for tools/ci_paths.py.
+PLAYER_UI_SHARDS := 0 1 2 3
+.PHONY: player-ui-regressions player-ui-regressions-shard-0 player-ui-regressions-shard-1 player-ui-regressions-shard-2 player-ui-regressions-shard-3
 player-ui-regressions: $(PLAYER_UI_TEST_EXE)
+	$(MAKE) --no-print-directory -j$(words $(PLAYER_UI_SHARDS)) --output-sync=target $(addprefix player-ui-regressions-shard-,$(PLAYER_UI_SHARDS))
+
+# Target-specific export puts the variables into the recipe's child process
+# environment across platforms, avoiding POSIX shell syntax (e.g. VAR=val cmd)
+# that fails under Windows cmd.exe.
+player-ui-regressions-shard-%: export NAKAGAWA_PLAYER_UI_TEST_EXE := $(PLAYER_UI_TEST_EXE)
+player-ui-regressions-shard-%: export NAKAGAWA_PLAYER_UI_SHARD = $(patsubst player-ui-regressions-shard-%,%,$@)/$(words $(PLAYER_UI_SHARDS))
+player-ui-regressions-shard-0 player-ui-regressions-shard-1 player-ui-regressions-shard-2 player-ui-regressions-shard-3:
 	"$(PYTHON)" -m unittest discover -s tests/native -p "test_player_ui.py" -v
 
 CHUNK_OBJS = $(patsubst %.c,%.o,$(wildcard $(BUILD_DIR)/$(GAME_NAME)_recomp_*.c))
