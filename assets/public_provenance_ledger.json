@@ -5842,7 +5842,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "77fd878c5a036d1d0e464f2354db1d444bf03ff690d4b86ce7a3ba8ffbd6bea6"
+      "sha256": "942883e0ef3760c29e48dbbac6bfae51a37c3a0726bfcf781736c09e0b3a15c9"
     },
     {
       "path": "src/rt/h264_ffmpeg_sub/LICENSE.LGPLv2.1.txt",
@@ -8689,7 +8689,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "df5aa79fd2263fc245e77e8e03a0246ca29b4e719500f19d79b40b211662f93a"
+      "sha256": "65af262eeded1d8ed62ee86289ee6e89ee479232681e714ab8981c9050b4f325"
     },
     {
       "path": "src/rt/h264_null.c",
@@ -8701,7 +8701,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e69d851464f50c8e2763113abf3097b07e1abc705763c689e44d567dad9d1983"
+      "sha256": "f52432753f06b3771fdc72df2c26f34a8aa3e82bf6b5d8b9d801a588b8431bb1"
     },
     {
       "path": "src/rt/heap_selftest.c",
@@ -8888,7 +8888,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2cd9d72f27302cd4d4866846487cfdbef5dcbd82bcced7df94dbea8d30bed62c"
+      "sha256": "98c0d8e01571bffb016c451b165768aa760a750b54f722f6dbb6d359ffffd636"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -9165,7 +9165,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1e3e7b1014ac367ce35ae6336d2e0039a29363254e2f6b21f18680d861a62fcd"
+      "sha256": "c55e80d26d820768d342abc2366a5b1810bee1596f1750cc0249c1b165402225"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -9349,7 +9349,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d2ccd0b907fde64d3a32bf0bc21efcb25f5b8d2785595f03bc3f38b125755290"
+      "sha256": "982932f0663800621641ea44f55de82979250aa27cf4a92acf038a539404abe8"
     },
     {
       "path": "src/rt/stale_code.c",
