@@ -24,7 +24,14 @@ import subprocess
 import sys
 from typing import Any
 
-from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root
+# Python's embeddable distribution, which the release ZIP bundles for BUILD PACKAGE, never puts the
+# script's own folder on sys.path (its ._pth file wins). copy_build_assets.ps1 runs this script at
+# the end of every compile, so add tools/ before importing the sibling packages, as nk_cli.py does.
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
+from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
