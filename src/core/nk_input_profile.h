@@ -17,9 +17,15 @@ extern "C" {
  * Schema 2 adds the optional per_title map keyed by disc ID, so one session can
  * give two discs different host mappings without editing a global file (#520).
  * A schema 1 file still loads: it migrates in memory to schema 2 with no
- * per-title entries, so the global mapping keeps working unchanged. */
-#define NK_INPUT_PROFILE_SCHEMA_VERSION 2
+ * per-title entries, so the global mapping keeps working unchanged.
+ * Schema 3 adds the optional keyboard_bindings list to every mapping (#1299). A
+ * schema 1 or 2 file still loads, with the default keyboard keys, and cannot
+ * carry keyboard_bindings: an older build would ignore them silently. */
+#define NK_INPUT_PROFILE_SCHEMA_VERSION 3
 #define NK_INPUT_PROFILE_MIN_SCHEMA_VERSION 1
+/* The schema that introduced each optional member. */
+#define NK_INPUT_PROFILE_PER_TITLE_SCHEMA_VERSION 2
+#define NK_INPUT_PROFILE_KEYBOARD_SCHEMA_VERSION 3
 #define NK_INPUT_GUID_MAX_LEN 64
 #define NK_INPUT_NAME_HINT_MAX_LEN 128
 #define NK_INPUT_DIAGNOSTIC_MAX_LEN 256
@@ -157,6 +163,25 @@ typedef struct {
 } NkDigitalBinding;
 
 /**
+ * Host keyboard keys, identified by their USB HID keyboard usage ID: the physical
+ * key position, independent of the keyboard layout. SDL_Scancode uses the same
+ * values, which src/rt/gpu_sdl3vk/sdl3vk.c checks. Only the keys
+ * named in the profile's key table can be bound; Escape and the function keys are
+ * left out because the runtime keeps them for the pause and its own overlays.
+ */
+#define NK_HOST_KEY_NONE 0
+#define NK_HOST_KEY_LIMIT 512 /* every bindable key code is below this */
+
+/**
+ * Keyboard binding for one PSP button: up to two host keys, NK_HOST_KEY_NONE
+ * when a slot is unbound.
+ */
+typedef struct {
+    int primary;
+    int secondary;
+} NkKeyBinding;
+
+/**
  * Per-axis calibration for analog sticks.
  */
 typedef struct {
@@ -200,6 +225,7 @@ typedef struct {
     NkAxisCalibration axes[NK_PSP_AXIS_COUNT];
     NkDigitalBinding psp_buttons[NK_PSP_BTN_COUNT];
     NkDigitalBinding nav_bindings[NK_NAV_ACTION_COUNT];
+    NkKeyBinding psp_keys[NK_PSP_BTN_COUNT]; /* host keyboard keys per PSP button (schema 3) */
 } NkInputProfile;
 
 /**
@@ -308,6 +334,11 @@ NkHostGamepadAxis nk_host_axis_from_name(const char *name);
 
 const char *nk_nav_action_name(NkNavAction action);
 NkNavAction nk_nav_action_from_name(const char *name);
+
+/* Name of a bindable host key, or NULL when `key` is not one. */
+const char *nk_host_key_name(int key);
+/* Key code for a bindable host key name, or NK_HOST_KEY_NONE when unknown. */
+int nk_host_key_from_name(const char *name);
 
 /**
  * @brief Initialize profile to standard safe defaults matching current runtime.
@@ -492,6 +523,23 @@ void nk_input_profile_eval_analog(
     uint8_t *out_lx,
     uint8_t *out_ly
 );
+
+/**
+ * @brief Evaluate the PSP digital buttons held on the host keyboard.
+ *
+ * `key_down[k]` is true while host key code `k` is held; codes at or beyond
+ * `key_count` read as released.
+ */
+uint32_t nk_input_profile_eval_keys(
+    const NkInputProfile *profile,
+    const bool *key_down,
+    int key_count
+);
+
+/**
+ * @brief PSP button bits bound to one host key, for a key-down event.
+ */
+uint32_t nk_input_profile_key_buttons(const NkInputProfile *profile, int key);
 
 /**
  * @brief Evaluate player navigation actions from host gamepad state.
