@@ -5101,7 +5101,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "56625f6f458bf6cac8f8dbc574a7497f7f97112b365d08162f6a28e00cb95a7e"
+      "sha256": "f4b91431442b8d94e17f43059fbdbb3a48d94dadff38a0dcc91124db544ad601"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -13406,7 +13406,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b3c9ecd001a9e73689d98c324f9d7c2be9455647555453cfff7d50a564ada8d4"
+      "sha256": "2d113fe9fe5582656c73e58018d3cd1c217e4f91d510c24987712f49dbd72719"
     },
     {
       "path": "tools/test_ge_stat_windows.py",
