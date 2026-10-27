@@ -78,13 +78,19 @@ int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && 
             self.assertEqual(ran.returncode, 0, ran.stderr)
 
     def test_vfpu4_public_identity_rows_still_fail_closed(self):
+        # vrnds and the vrndf1/vrndf2 float draws have no recorded rule (issue #326);
+        # vrndi is measured at .s only (PSP-HLE-ISSUES-001), so .p/.t/.q stay closed.
         cases = (
-            (0x01, 0x00, "vrnds"),
-            (0x01, 0x02, "vrndf1"),
+            (0x01, 0x00, 0x0000, "vrnds"),
+            (0x01, 0x02, 0x0000, "vrndf1"),
+            (0x01, 0x03, 0x0000, "vrndf2"),
+            (0x01, 0x01, 0x0080, "vrndi"),
+            (0x01, 0x01, 0x8000, "vrndi"),
+            (0x01, 0x01, 0x8080, "vrndi"),
         )
-        for rs, rt, name in cases:
-            word = (0x34 << 26) | (rs << 21) | (rt << 16)
-            with self.subTest(name=name):
+        for rs, rt, size_bits, name in cases:
+            word = (0x34 << 26) | (rs << 21) | (rt << 16) | size_bits
+            with self.subTest(word=f"0x{word:08x}"):
                 with self.assertRaises(codegen.Unsupported) as caught:
                     codegen.vfpu_effect(0x3400, word)
                 self.assertIn(f"VFPU4 identity {name}", str(caught.exception))
@@ -94,6 +100,70 @@ int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && 
                 self.assertIn("VFPU_UNSUPPORTED", line)
                 self.assertIn("issue=326", line)
                 self.assertIn("return;", line)
+
+    def test_vrndi_single_steps_the_random_unit_directly(self):
+        # vrndi.s follows the PSP-HLE-ISSUES-001 step rule (issue #326): the AOT emits it
+        # without the interpreter, through the shared sr_vfpu_rnd_step kernel.
+        for word, lane in ((0xD0210000, 0), (0xD021006E, 59)):
+            with self.subTest(word=f"0x{word:08x}"):
+                body, saddr, ssize = codegen.vfpu_effect(0x3400, word)
+                self.assertEqual((saddr, ssize), (None, 0))
+                self.assertNotIn("sr_vfpu_interp", body)
+                self.assertIn(f"s->vi[{lane}]=sr_vfpu_rnd_step(&s->vfpuCtrl[8]);", body)
+                for token in ("VFPU_UNSUPPORTED", "issue=326", "sr_unimplemented", "return;"):
+                    self.assertIn(token, body)
+
+    @unittest.skipUnless(CC, "a host C compiler is required")
+    def test_vrndi_single_under_a_prefix_stops_before_following_instruction(self):
+        # A pending S, T or D prefix on vrndi.s is unmeasured: the generated body must stop
+        # the run with the state untouched, as sr_vfpu_interp refuses it. With identity
+        # prefixes it draws once into the destination lane and the next instruction runs.
+        line = codegen.normal_line(0x1234, 0xD021006E)
+        source = f'''#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+typedef struct CpuState {{ uint32_t pc; uint32_t r[32]; uint32_t vi[128]; uint32_t vfpuCtrl[16]; }} CpuState;
+static void sr_begin(CpuState *s, uint32_t pc, uint32_t op) {{ (void)s; (void)pc; (void)op; }}
+static void sr_end(CpuState *s, uint32_t addr, uint32_t size) {{ (void)s; (void)addr; (void)size; }}
+static uint32_t sr_vfpu_rnd_step(uint32_t *rcx) {{ rcx[0] += 1u; return 0x5eed1234u; }}
+static int unsupported;
+static void sr_unimplemented(uint32_t pc, const char *reason) {{ (void)pc; (void)reason; unsupported = 1; }}
+static void generated(CpuState *s) {{ {line} s->r[1] = 0xdeadbeefu; }}
+static int run(uint32_t sp, uint32_t tp, uint32_t dp, int expect_draw) {{
+    CpuState s, before;
+    memset(&s, 0, sizeof(s));
+    s.vfpuCtrl[0] = sp; s.vfpuCtrl[1] = tp; s.vfpuCtrl[2] = dp; s.vfpuCtrl[8] = 7u;
+    before = s;
+    unsupported = 0;
+    generated(&s);
+    if (expect_draw)
+        return !unsupported && s.vi[59] == 0x5eed1234u && s.vfpuCtrl[8] == 8u &&
+               s.r[1] == 0xdeadbeefu && s.pc == 0u && memcmp(s.vfpuCtrl, before.vfpuCtrl, 8 * sizeof(uint32_t)) == 0;
+    return unsupported && s.r[1] == 0u && s.pc == 0x1234u && s.vi[59] == 0u &&
+           memcmp(s.vfpuCtrl, before.vfpuCtrl, sizeof(s.vfpuCtrl)) == 0;
+}}
+int main(void) {{
+    int ok = run(0xe4u, 0xe4u, 0u, 1);
+    ok &= run(0xf00e4u, 0xe4u, 0u, 0);
+    ok &= run(0xe4u, 0x1bu, 0u, 0);
+    ok &= run(0xe4u, 0xe4u, 0x100u, 0);
+    ok &= run(0xe4u, 0xe4u, 0x1u, 0);
+    return ok ? 0 : 1;
+}}
+'''
+        with scratch_dir.TemporaryDirectory(prefix="vfpu_vrndi_prefix_") as tmp:
+            root = Path(tmp)
+            source_path = root / "vrndi.c"
+            exe_path = root / ("vrndi.exe" if Path(CC).suffix.lower() == ".exe" else "vrndi")
+            source_path.write_text(source, encoding="ascii", newline="\n")
+            compiled = subprocess.run(
+                [CC, "-std=c11", "-O0", str(source_path), "-o", str(exe_path)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+            ran = subprocess.run([str(exe_path)], capture_output=True, text=True)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
 
     def test_measured_vfpu9_forms_route_to_the_interpreter(self):
         # vsgn, vbfy1, vbfy2 and vt4444 follow the 2026-10-24 PSP-3000 measurement
