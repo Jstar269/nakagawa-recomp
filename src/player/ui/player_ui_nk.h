@@ -217,6 +217,8 @@ typedef struct {
     const char *status_message;
     /* Verify */
     bool extracting;
+    /* The progress is a PSN package turning back into its disc image (#295). */
+    bool converting_package;
     bool extraction_complete;
     bool extraction_failed;
     bool experimental;

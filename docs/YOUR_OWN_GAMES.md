@@ -139,7 +139,16 @@ cover yet; `MALFORMED_INPUT` and `INTEGRITY_FAILURE` mean the file on the disc
 looks damaged or changed. An encrypted module stops the same way with
 `ENCRYPTED_MODULE: <name> is encrypted and built-in decryption stopped: ...`.
 A plain copy you put in the folder yourself is always used and never replaced.
-PSN downloads (`EBOOT.PBP`) and PGD-protected data aren't decrypted yet.
+
+A PSN release of a UMD game (an `EBOOT.PBP` from the PlayStation Store whose
+game is a disc image inside the package) can be added like a disc: pick the
+`EBOOT.PBP`. The player turns it back into its disc image once, on this PC, in
+`<user data>/discs/<DISC_ID>/<DISC_ID>.iso`, checks that the result is a valid
+disc image whose disc ID matches the package, and then adds that image exactly as
+if you had picked it. The conversion shows its progress and can be cancelled; a
+cancelled or failed conversion keeps nothing. Other PSN downloads (PSP minis and
+games tied to the PSP that bought them), PSOne Classics and PGD-protected data
+aren't supported yet.
 
 ### Supplying title manifests
 
@@ -177,11 +186,15 @@ instead of pretending it worked or crashing without a word.
   ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Images that
   aren't PSP game discs are refused.
 - **PlayStation Store package:** a file that starts with the `PBP` package
-  signature (a store download renamed to `.iso`, for example) isn't a disc image,
-  whatever it is called. The player refuses it before reading any disc data, with
-  the code `PBP_PACKAGE_UNSUPPORTED` and a sentence naming the title and disc ID
-  the package carries. Only the package's own `PARAM.SFO` entry is read to write
-  that sentence; nothing else in the package is opened, installed or run.
+  signature is a package, not a disc image, whatever it is called. The player
+  turns a PSN release of a UMD game into its disc image (see
+  [What an encrypted file reports](#what-an-encrypted-file-reports)). A PSOne Classic is refused as
+  `PSONE_CLASSIC_UNSUPPORTED`, a system software update as `FIRMWARE_OUT_OF_SCOPE`,
+  and any other package as `PBP_PACKAGE_UNSUPPORTED`, each with a sentence naming
+  the title and disc ID, before any key is read. The command-line inspection
+  (`tools/nk_core/iso_inspect.py`) still refuses every package with
+  `PBP_PACKAGE_UNSUPPORTED`; only the package's own `PARAM.SFO` is read to write
+  that sentence.
 - **Encrypted program:** the player decrypts it from your own disc
   ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). If that stops, the checklist
   reports `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` with the reason and names
@@ -223,7 +236,7 @@ every part of the PSP, with the issues that track them.
 
 | Area | Today | Tracking |
 | --- | --- | --- |
-| Encrypted programs and PRX modules | The player decrypts UMD disc images (`.iso`) with built-in tables. A file it can't decrypt is named, and a decrypted copy from your own disc can stand in. PSN `EBOOT.PBP` packages and PGD/amctrl protection aren't decrypted yet. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
+| Encrypted programs and PRX modules | The player decrypts UMD disc images (`.iso`) with built-in tables, and turns PSN releases of UMD games (`EBOOT.PBP`) into their disc image first. A file it can't decrypt is named, and a decrypted copy from your own disc can stand in. Other PSN packages and PGD data aren't decrypted yet. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 | Commercial-game packages in public builds | Packages build with the public runtime, and public builds draw imported PGF fonts through the project-authored reader for supported inputs (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the supported revision and shadow-map variants draw too ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521)); a revision-3 font's compressed character-map subtables, and any other shadow-map width, are still refused by name. | [PGF_SPEC.md §4](cleanroom/PGF_SPEC.md#4-non-requirements-and-named-boundaries) |
 | Games other than the maintainer-tested ones | Other games import with the **EXPERIMENTAL** badge and stay Untested unless someone has seen them start; work on more games goes on. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 

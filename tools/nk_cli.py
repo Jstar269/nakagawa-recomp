@@ -3152,8 +3152,8 @@ def _bringup_human_summary(report: dict) -> str:
     elif report["failure_class"] == "NO_FRAME_SUBMISSIONS":
         detail = " (no validated framebuffer was submitted to the GUI presenter)"
     elif report["failure_class"] == "PBP_PACKAGE_UNSUPPORTED":
-        detail = (" (the file is a PlayStation Store package (PBP), not a disc image, "
-                  "and Nakagawa Recomp cannot use it yet)")
+        detail = (" (the file is a PlayStation Store package (PBP), not a disc image; "
+                  "the player converts PSN releases of UMD games, the command line does not)")
     elif str(report["failure_class"]).startswith("PBP_"):
         detail = (" (the file is a PlayStation Store package (PBP) whose embedded title "
                   "information could not be read)")

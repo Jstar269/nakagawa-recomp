@@ -2665,7 +2665,7 @@ int main(int argc, char **argv) {{
         self.assertEqual(
             message,
             "This is a PlayStation Store package (PBP), not a disc image. "
-            "Nakagawa Recomp can't use these yet. Title: Store Package (ID: TEST00424)",
+            "The player converts PSN UMD games. Title: Store Package (ID: TEST00424)",
         )
         self.assertNotRegex(message, r"#\d+")
         self.assertNotIn("ISO9660", message)

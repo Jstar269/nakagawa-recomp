@@ -40,6 +40,9 @@ set(CORE_SOURCES
     src/core/nk_psp_kle.c
     src/core/nk_psp_inflate.c
     src/core/nk_psp_container.c
+    src/core/nk_psp_amctrl.c
+    src/core/nk_psp_lzrc.c
+    src/core/nk_psp_npumdimg.c
     src/core/generated/nk_title_catalog.c
 )
 
