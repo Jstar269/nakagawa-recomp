@@ -6,11 +6,10 @@ betterleaksMinVersion = "1.9.0"
 # adding another secret-shaped value to tools/ or moving this fixture must still
 # fail the scanner.
 #
-# The second clause is a public OpenPGP fingerprint, not a credential: the XZ Utils
-# maintainer's signing key, which a commit on PR #1460 recorded in the prerequisite
-# manifest as "signing_key_fingerprint" (#1285). The generic-api-key rule reads the
-# key-named 40-hex field as a secret; the reachable history scan still sees that
-# commit. Only that exact value, rule and file are exempt.
+# The prerequisite manifest records the OpenPGP fingerprint of each upstream
+# signing key that verified a pinned source. A fingerprint identifies a public
+# key, so it is not a secret, but generic-api-key matches the XZ maintainer's
+# key next to the word "key". Allow that exact fingerprint in that file only.
 filter = '''
 (attributes["path"] == "tools/test_history_audit.py" &&
  finding["rule_id"] == "github-pat" &&
