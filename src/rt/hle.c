@@ -7088,10 +7088,9 @@ static uint32_t h_DmacTryMemcpy(CpuState *s) {
 static uint32_t h_Memset(CpuState *s) {
     /* a0=dst, a1=byte_val, a2=size */
     uint32_t dst = A0, val = A1 & 0xff, n = A2;
-    if (n && sr_guest_span_writable(dst, n)) {
-        sr_guest_vram_write_prepare_bytes(dst, n);
-        memset(SR_HOST(dst), (int)val, n);
-        sr_guest_vram_write_commit_bytes(dst, n);
+    /* A CPU fill: a span through a swizzled VRAM mirror lands where the
+     * same scalar stores would (sr_guest_fill, #1049). */
+    if (n && sr_guest_fill(dst, (uint8_t)val, n)) {
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, n, 0u);
     } else if (n) {
         sr_oor(dst, val, 1);
@@ -7118,10 +7117,9 @@ static uint32_t h_Strlen(CpuState *s) {
 static uint32_t h_Memcpy(CpuState *s) {
     /* a0=dst, a1=src, a2=size */
     uint32_t dst = A0, src = A1, n = A2;
-    if (n && sr_guest_span_readable_current(src, n) && sr_guest_span_writable(dst, n)) {
-        sr_guest_vram_write_prepare_bytes(dst, n);
-        memmove(SR_HOST(dst), SR_HOST(src), n);
-        sr_guest_vram_write_commit_bytes(dst, n);
+    /* A CPU copy with memmove semantics; spans through a swizzled VRAM
+     * mirror are copied in measured-contiguous pieces (sr_guest_memmove, #1049). */
+    if (n && sr_guest_memmove(dst, src, n)) {
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, n, 0u);
     } else if (n) {
         sr_oor(dst, 0u, 1);
@@ -9215,6 +9213,9 @@ static uint32_t h_MpegAvcDecodeFlush(CpuState *s) {
 #define ATRAC3_SAMPLES_PER_FRAME 1024
 #define ATRAC_CODEC_AT3PLUS 0x1000u
 #define ATRAC_CODEC_AT3 0x1001u
+/* Measured on a PSP-3000 (#1096): the first sceAtracDecodeData of an AT3 stream
+ * whose fact delay is 500 returns this code with 0 samples. */
+#define ATRAC_ERROR_API_FAIL 0x80630002u
 #define ATRAC_ERROR_NO_ATRACID 0x80630003u
 #define ATRAC_ERROR_INVALID_CODECTYPE 0x80630004u
 #define ATRAC_ERROR_BAD_ATRACID 0x80630005u
@@ -9225,6 +9226,9 @@ static uint32_t h_MpegAvcDecodeFlush(CpuState *s) {
 #define ATRAC_ERROR_ADD_DATA_IS_TOO_BIG 0x80630018u
 #define ATRAC_ERROR_NO_LOOP_INFORMATION 0x80630021u
 #define ATRAC_ERROR_ALLDATA_DECODED 0x80630022u
+/* Measured on a PSP-3000 (#1096): sceAtracDecodeData of a streamed AT3 track
+ * after its last buffered frame, with file data still to stream. */
+#define ATRAC_ERROR_BUFFER_IS_EMPTY 0x80630023u
 #define ATRAC_ERROR_DECODE_DATA_AFTER_END 0x80630024u
 #define ATRAC_PSP_ALLDATA_IS_ON_MEMORY 0xFFFFFFFFu
 #define ATRAC_PSP_NONLOOP_STREAM_IS_ON_MEMORY 0xFFFFFFFEu
@@ -9250,8 +9254,9 @@ typedef struct {
     uint32_t avgBytesPerSec;      /* RIFF fmt nAvgBytesPerSec (bitrate source) */
     uint16_t formatTag;           /* RIFF fmt wFormatTag */
     uint8_t at3Extradata[14];     /* validated AT3 WAVEFORMATEX extension */
-    int at3FactDelayPresent;      /* RIFF fact delay exists; trim is NOT_MEASURED */
-    int at3FirstFrameDelayNotMeasured;
+    uint32_t at3FactSize;         /* RIFF fact chunk size (8 or 12) */
+    uint32_t at3FactDelay;        /* fact word after the sample count */
+    int at3FirstFramePending;     /* no frame decoded since SetData */
     int endSample, posSample, loopNum;
     int loopStartSample, loopEndSample;   /* 'smpl' loop points; -1 when absent */
     uint32_t bufferPos;           /* ring offset of the next frame to consume */
@@ -9388,7 +9393,7 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
     uint16_t formatTag = 0;
     uint8_t at3Extradata[14] = {0};
     int hasFmt = 0;
-    int at3FactDelayPresent = 0;
+    uint32_t at3FactSize = 0, at3FactDelay = 0;
     int endSample = 0;
     int loopStartSample = -1, loopEndSample = -1;
     for (uint32_t off = 12u; off <= scan_end - 8u;) {
@@ -9407,7 +9412,8 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
             if (sz < 4u || sz > avail) return 0;
             if (a->codecType == ATRAC_CODEC_AT3) {
                 if (sz != 8u && sz != 12u) return 0;
-                at3FactDelayPresent = 1;
+                at3FactSize = sz;
+                at3FactDelay = MEM_R32(p + 12u);
             }
             uint32_t samples = MEM_R32(p + 8u);
             if (samples == 0u || samples > 0x7fffffffu) return 0;
@@ -9474,7 +9480,8 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
     a->channels = channels;
     a->formatTag = formatTag;
     memcpy(a->at3Extradata, at3Extradata, sizeof(a->at3Extradata));
-    a->at3FactDelayPresent = at3FactDelayPresent;
+    a->at3FactSize = at3FactSize;
+    a->at3FactDelay = at3FactDelay;
     a->endSample = endSample;
     a->loopStartSample = loopStartSample;
     a->loopEndSample = loopEndSample;
@@ -9642,7 +9649,7 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size) {
     }
     (void)atrac_reset_decoder(a);
     a->decodeFailureReported = 0;
-    a->at3FirstFrameDelayNotMeasured = 0;
+    a->at3FirstFramePending = 1;
     if (oldStreamWindow) free(oldStreamWindow);
     a->streamWindow = NULL;
     a->streamWindowSize = 0;
@@ -9880,16 +9887,19 @@ int sr_hle_test_atrac_second_buffer(uint32_t id, uint32_t *addr, uint32_t *size)
     return 1;
 }
 #endif
-/* Decode the next frame through its codec-specific bridge into guest `out`. Returns
- *   1  frame decoded and written (channels*samplesPerFrame interleaved s16),
+/* Decode the next frame through its codec-specific bridge into guest `out`,
+ * dropping its first `skip` samples. *samples_out is the decoder frame length;
+ * (frame - skip) samples are written. Returns
+ *   1  frame decoded and written (channels*(samplesPerFrame-skip) interleaved s16),
  *   0  no frame available right now (streamed ring empty or frame not yet fed),
  *  -1  permanent failure (no decoder, or the frame failed to decode).
  * A -1 is a visible gap: the caller returns an error code instead of
  * fabricating PCM (no fake audio). */
-static int atrac_decode_frame(Atrac *a, uint32_t out, int *samples_out) {
+static int atrac_decode_frame(Atrac *a, uint32_t out, int skip, int *samples_out) {
     uint32_t src;
     int streamed = atrac_streamed_state(a);
     if (samples_out) *samples_out = 0;
+    if (skip < 0 || skip >= atrac_samples_per_frame(a)) return -1;
     if (a->bytesPerFrame == 0u) return 0;   /* ring not sized yet (streaming refill) */
     if (streamed) {
         if (a->bufferValidBytes < a->bytesPerFrame) return 0;
@@ -9933,18 +9943,20 @@ static int atrac_decode_frame(Atrac *a, uint32_t out, int *samples_out) {
         return -1;
     }
     /* Whole-span preflight before the bulk guest write (AGENTS.md guest-memory
-     * hardening): the complete channels*n*2 writable span must be valid, and a
-     * rejected output address must not leave partial PCM behind. */
-    if (out && !sr_guest_span_writable(out, (uint32_t)n * (uint32_t)a->channels * 2u))
+     * hardening): the complete channels*kept*2 writable span must be valid, and
+     * a rejected output address must not leave partial PCM behind. */
+    int kept = n - skip;
+    const int16_t *pcm = a->host_pcm + skip * a->channels;
+    if (out && !sr_guest_span_writable(out, (uint32_t)kept * (uint32_t)a->channels * 2u))
         return -1;
     /* host_pcm is already interleaved channels*n s16 (PR-A contract). */
     if (out)
-        for (int i = 0; i < n * a->channels; i++)
-            MEM_W16(out + (uint32_t)i * 2u, (uint16_t)a->host_pcm[i]);
+        for (int i = 0; i < kept * a->channels; i++)
+            MEM_W16(out + (uint32_t)i * 2u, (uint16_t)pcm[i]);
     if (audio_stat_on()) {
         int pk = 0;
-        for (int i = 0; i < n * a->channels; i++) {
-            int v = a->host_pcm[i];
+        for (int i = 0; i < kept * a->channels; i++) {
+            int v = pcm[i];
             if (v < 0) v = -v;
             if (v > pk) pk = v;
         }
@@ -9957,18 +9969,52 @@ static int atrac_decode_frame(Atrac *a, uint32_t out, int *samples_out) {
     return 1;
 }
 
-/* NOT_MEASURED: the PSP's trimming of the first decoded frame using the RIFF
- * fact-chunk delay has not been measured. Keep the complete decoder frame and
- * report this boundary once; do not infer or apply a delay value. */
-static int atrac3_first_frame_delay_trim_samples(Atrac *a) {
+/* First sceAtracDecodeData of a plain AT3 track against the delay word of an
+ * 8-byte RIFF fact chunk. MEASURED on a PSP-3000 (firmware 6.61) on 2026-10-24
+ * with one 2-channel, 304-byte-block stream launched once per delay, only the
+ * delay word changed (#1096; fixtures/psp_oracle/README.md `at3-decode`):
+ *   delay 0 and 1024 -> 955 samples; delay 955 -> 1024 samples; later calls
+ *   1024 each; delay 500 -> the first decode returns 0x80630002, 0 samples.
+ * Only these delays are modelled. Any other delay, or a 12-byte fact chunk,
+ * keeps the complete decoder frame and reports ATRAC3_NOT_MEASURED once. The
+ * PSP's sceAtracSetData refusal of delay 2048 (0x80630008) is measured but not
+ * modelled here. The sample counts are measured; which samples of the frame
+ * the PSP drops is not public evidence, and the leading ones are dropped
+ * (assumed). */
+static const struct {
+    uint32_t delay;
+    int first_samples;     /* samples returned by the first call; 0 = refused */
+    uint32_t error;        /* first-call return when refused */
+} k_atrac3_first_frame_measured[] = {
+    { 0u, 955, 0u },
+    { 955u, 1024, 0u },
+    { 1024u, 955, 0u },
+    { 500u, 0, ATRAC_ERROR_API_FAIL },
+};
+/* Returns the first-call error for a refused delay (0 otherwise) and sets
+ * *skip to the leading samples the first frame drops. */
+static uint32_t atrac3_first_frame_rule(const Atrac *a, int *skip) {
     static int reported;
-    if (a->codecType != ATRAC_CODEC_AT3 || !a->at3FactDelayPresent ||
-        a->at3FirstFrameDelayNotMeasured)
+    *skip = 0;
+    if (a->codecType != ATRAC_CODEC_AT3 || !a->at3FirstFramePending)
         return 0;
-    a->at3FirstFrameDelayNotMeasured = 1;
+    if (a->at3FactSize == 8u) {
+        for (size_t i = 0; i < sizeof(k_atrac3_first_frame_measured) /
+                                   sizeof(k_atrac3_first_frame_measured[0]); i++) {
+            if (k_atrac3_first_frame_measured[i].delay != a->at3FactDelay)
+                continue;
+            if (k_atrac3_first_frame_measured[i].error)
+                return k_atrac3_first_frame_measured[i].error;
+            *skip = ATRAC3_SAMPLES_PER_FRAME -
+                    k_atrac3_first_frame_measured[i].first_samples;
+            return 0;
+        }
+    }
     if (!reported) {
         fprintf(stderr,
-                "ATRAC3_NOT_MEASURED: first-frame RIFF fact-delay trimming is not applied pending PSP measurement.\n");
+                "ATRAC3_NOT_MEASURED: first-frame length for fact size %u delay %u is not measured; "
+                "the complete decoder frame is kept (#1096).\n",
+                a->at3FactSize, a->at3FactDelay);
         reported = 1;
     }
     return 0;
@@ -9986,9 +10032,17 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
         if (remAddr) MEM_W32(remAddr, atrac_remaining_frames(a));
         return ATRAC_ERROR_DECODE_DATA_AFTER_END;
     }
-    (void)atrac3_first_frame_delay_trim_samples(a);
+    int skip = 0;
+    uint32_t first_err = atrac3_first_frame_rule(a, &skip);
+    if (first_err) {
+        /* Measured: 0 samples. The other outputs are not recorded, and a
+         * repeated call (which refuses again here, nothing being consumed)
+         * was not measured. */
+        if (decAddr) MEM_W32(decAddr, 0u);
+        return first_err;
+    }
     int decoded_samples = 0;
-    int st = atrac_decode_frame(a, out, &decoded_samples);
+    int st = atrac_decode_frame(a, out, skip, &decoded_samples);
     if (st < 0) {
         /* Honest gap: this track cannot produce PCM in this build (unsupported
          * codec, decoder allocation failure, or a frame that failed to decode).
@@ -9999,10 +10053,27 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
         atrac_report_decode_failure(a);
         return ATRAC_ERROR_UNKNOWN_FORMAT;
     }
+    if (st == 0 && a->codecType == ATRAC_CODEC_AT3 &&
+        atrac_streamed_state(a) && a->size < a->fileSize) {
+        /* MEASURED on a PSP-3000 (#1096; fixtures/psp_oracle/README.md
+         * `at3-decode`): once the buffered frames of a streamed AT3 track are
+         * used up and file data remains to be added, DecodeData returns
+         * 0x80630023 with 0 samples and end flag 0. Nothing is consumed, so
+         * sceAtracAddStreamData resumes decoding. */
+        if (decAddr) MEM_W32(decAddr, 0u);
+        if (finAddr) MEM_W32(finAddr, 0u);
+        if (remAddr) MEM_W32(remAddr, atrac_remaining_frames(a));
+        return ATRAC_ERROR_BUFFER_IS_EMPTY;
+    }
     if (st > 0) {
-        n = decoded_samples;
+        /* The guest receives the kept samples. The stream position still
+         * advances by the whole decoder frame, as before this trim existed:
+         * the PSP's position after a shortened first call is NOT_MEASURED
+         * (#1096), so the frame-offset bookkeeping is left unchanged. */
+        n = decoded_samples - skip;
+        a->at3FirstFramePending = 0;
         if (atrac_streamed_state(a)) atrac_consume_frame(a);
-        a->posSample += n;
+        a->posSample += decoded_samples;
         if (atrac_streamed_state(a) && a->loopEndSample > 0 && a->posSample > a->loopEndSample) {
             a->posSample = a->loopStartSample >= 0 ? a->loopStartSample : 0;
             if (a->loopNum > 0) a->loopNum--;
@@ -11502,6 +11573,9 @@ static void hle_register_umd_callback_handlers(void) {
 /* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
  * (it typically wakes the sleeping game thread). PSP_VBLANK_INT = 30. */
 static uint32_t g_vbl_handler = 0, g_vbl_arg = 0, g_vbl_no = 0; static int g_vbl_on = 0;
+/* The slot holds a Register that Release has not cleared; a handler word of 0 is still a
+ * registration. Only h_RegisterSubIntr's log-on-change test reads it (#1287). */
+static int g_vbl_registered = 0;
 
 /* Generic PSP callback objects are kernel objects, not a 16-entry subsystem
  * table. Hardware creates at least 1024 of them. Keep an append-only host array:
@@ -11835,8 +11909,14 @@ static uint32_t h_RegisterSubIntr(CpuState *s) {
      * (PSPSDK pspintrman.h and its vsync sample: `void on_vblank(int sub, void *data)`), so
      * the sub-interrupt number is kept with the handler and its arg. */
     if (A0 == 30) {
-        fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
-        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3;
+        /* Titles re-register the same handler before almost every frame (#1287), so the line
+         * is written only when a registration changes the slot, or always under SR_HLELOG.
+         * The return code is unchanged: duplicate-register codes are UNMEASURED on the PSP. */
+        int changed = !g_vbl_registered || g_vbl_handler != A2 || g_vbl_no != A1 ||
+                      g_vbl_arg != A3;
+        if (changed || hle_log_on())
+            fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
+        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3; g_vbl_registered = 1;
     }
     return 0;
 }
@@ -11856,7 +11936,9 @@ static uint32_t h_DisableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 0; retu
  * Register. Non-VBLANK lines answer success without effect (UNMEASURED), as
  * with Enable/Disable. */
 static uint32_t h_ReleaseSubIntr(CpuState *s) {
-    if (A0 == 30) { g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; }
+    if (A0 == 30) {
+        g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; g_vbl_registered = 0;
+    }
     return 0;
 }
 uint32_t sr_vblank_handler(void) { return g_vbl_on ? g_vbl_handler : 0; }
@@ -19236,6 +19318,21 @@ static unsigned long s_watchdog_fires = 0;
  * s_last_flip_vcount is reset so a fresh stretch starts at bucket 0. */
 static uint32_t s_watchdog_bucket = 0;
 
+/* A resumed frame closes one observed no-frame stretch. stderr is redirected
+ * to the per-run boot-event log by the native launcher, so the parent player
+ * can consume this event while the game is still running. */
+static void hle_watchdog_note_present(void) {
+    if (s_watchdog_bucket > 0u) {
+        uint32_t diff = s_vcount - s_last_flip_vcount;
+        fprintf(stderr,
+                "BOOT_EVENT phase=resumed observation=frame_present "
+                "no_frame_vblanks=%u\n", diff);
+        fflush(stderr);
+    }
+    s_last_flip_vcount = s_vcount;
+    s_watchdog_bucket = 0;
+}
+
 #ifdef SR_HLE_THREAD_SELFTEST
 /* White-box view of the flip accounting for the conformance harness. The counters are
  * file-static because nothing outside this file may steer display state; the regression
@@ -19978,8 +20075,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         s_display_latched_pending = 0;
         s_display_configured = 1;
         s_framebuf = addr;
-        s_last_flip_vcount = s_vcount;
-        s_watchdog_bucket = 0;
+        hle_watchdog_note_present();
         /* Issue #57: arm any due present capture BEFORE the present so the recorded
          * frame is exactly the one being presented. */
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
@@ -20298,8 +20394,7 @@ void sr_vblank_tick(void) {
         s_display_latched_pending = 0;
         s_display_configured = 1;
         s_framebuf = s_display_active.addr;
-        s_last_flip_vcount = s_vcount;
-        s_watchdog_bucket = 0;
+        hle_watchdog_note_present();
         /* Same arm as the sync=0 immediate flip: a NEXTFRAME (sync=1) flip is presented
          * here, so the capture must be armed before this present or the recorded frame
          * is not the presented one. Arming only in the sync=0 branch left every
@@ -20383,9 +20478,15 @@ void sr_vblank_tick(void) {
                 "WATCHDOG: no new frame presented for %u vblanks (~%us) - neutral "
                 "NO-NEW-FLIP observation, not by itself a hang/stall verdict\n",
                 diff, diff / 60);
+        uint32_t ready = 0u, delay = 0u, wait = 0u, spin = 0u;
+        extern void sched_watchdog_summary(uint32_t *, uint32_t *,
+                                           uint32_t *, uint32_t *);
+        sched_watchdog_summary(&ready, &delay, &wait, &spin);
         fprintf(stderr,
-                "BOOT_EVENT phase=stalled observation=no_new_flip no_frame_vblanks=%u seconds=%u\n",
-                diff, diff / 60);
+                "BOOT_EVENT phase=stalled observation=no_new_flip "
+                "no_frame_vblanks=%u seconds=%u ready=%u delay=%u wait=%u spin=%u\n",
+                diff, diff / 60u, ready, delay, wait, spin);
+        fflush(stderr);
         /* Which side of the display handoff stopped presenting: did the guest stop
          * asking for flips, or are its requests being refused? last_vcount vs
          * s_last_flip_vcount separates "no call since the last flip" from "calls
@@ -22852,14 +22953,22 @@ typedef struct {
     int initc;                     /* semaphores: create-time count for CancelSema(-1); LwMutex initialCount */
     uint32_t workarea;             /* LwMutex workarea address */
     char name[32];                 /* LwMutex name */
+    int kind;                      /* SYNC_KIND_*: the object class sharing this table */
 } Sync;
+/* Semaphores, event flags and LwMutexes share s_sync; the kind keeps them apart for
+ * sceKernelGetThreadmanIdList, which lists one class at a time. */
+enum { SYNC_KIND_SEMA = 1, SYNC_KIND_EVENT_FLAG, SYNC_KIND_LWMUTEX };
 static Sync s_sync[128];
 static Sync *sync_find(uint32_t uid) {
     for (int i = 0; i < 128; i++) if (s_sync[i].used && s_sync[i].uid == uid) return &s_sync[i];
     return NULL;
 }
-static Sync *sync_new(void) {
-    for (int i = 0; i < 128; i++) if (!s_sync[i].used) { s_sync[i].used = 1; s_sync[i].uid = sr_alloc_uid(); return &s_sync[i]; }
+static Sync *sync_new(int kind) {
+    for (int i = 0; i < 128; i++)
+        if (!s_sync[i].used) {
+            s_sync[i].used = 1; s_sync[i].uid = sr_alloc_uid(); s_sync[i].kind = kind;
+            return &s_sync[i];
+        }
     return NULL;
 }
 
@@ -22870,7 +22979,7 @@ static uint32_t h_CreateSema(CpuState *s) {
      * maxCount == 0 are accepted on hardware, so no validation is added for
      * either. */
     if (A1 & ~0x3ffu) return 0x80020191u;
-    Sync *m = sync_new(); if (!m) return 0x80020000;
+    Sync *m = sync_new(SYNC_KIND_SEMA); if (!m) return 0x80020000;
     m->count = (int)A2; m->maxc = (int)A3;
     /* PSP-B2-01 (psp-hw-20260917): CancelSema(-1) resets the count to the
      * create-time initial count, not to zero. */
@@ -23368,7 +23477,7 @@ static uint32_t h_CreateLwMutex(CpuState *s) {
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;   /* ILLEGAL_ADDR */
     /* PSP-B1-01: a non-recursive mutex cannot start with more than one lock. */
     if (!(attr & LWMUTEX_ATTR_RECURSIVE) && initial > 1) return 0x800201bdu;
-    Sync *m = sync_new(); if (!m) return 0x80020000;
+    Sync *m = sync_new(SYNC_KIND_LWMUTEX); if (!m) return 0x80020000;
     m->workarea = wa;
     m->attr = attr;
     m->initc = initial;
@@ -24253,7 +24362,7 @@ static uint32_t h_ReferMutexStatus(CpuState *s) {
 
 static uint32_t h_CreateEventFlag(CpuState *s) {
     /* a0=name, a1=attr, a2=initPattern, a3=opt. */
-    Sync *m = sync_new(); if (!m) return 0x80020000;
+    Sync *m = sync_new(SYNC_KIND_EVENT_FLAG); if (!m) return 0x80020000;
     m->pattern = A2;
     m->attr = A1;
     m->init_pattern = A2;
@@ -24447,6 +24556,110 @@ static uint32_t h_ReferEventFlagStatus(CpuState *s) {
     MEM_W32(info + 44, m->pattern);
     MEM_W32(info + 48, 0);
     return 0;
+}
+
+/* ---- sceKernelGetThreadmanIdList(type, readbuf, readbufsize, idcount) ----
+ *
+ * Signature and list classes: the public PSPSDK (pspthreadman.h, SceKernelIdListType);
+ * readbufsize counts SceUIDs. The call writes min(readbufsize, total) uids of the class to
+ * readbuf, stores the total in *idcount when idcount is not NULL, and returns the number
+ * written (issue #1288). Every argument check runs before any guest write.
+ *
+ * UNMEASURED on a PSP: the list order (table order here), whether the return of a short
+ * buffer is the number written or the total (the PSPSDK leaves it open), and the error
+ * codes, which are the PSPSDK pspkerror.h names for each case: ILLEGAL_TYPE for a type
+ * outside SceKernelIdListType, ILLEGAL_SIZE for a negative readbufsize, ILLEGAL_ADDR for
+ * an unwritable readbuf span or idcount. Thread event handlers are a PSPSDK class this
+ * runtime does not track (their registration is not implemented), so that type is a named
+ * refusal, never an empty list. */
+#define THREADMAN_ERROR_ILLEGAL_TYPE 0x800201bbu   /* SCE_KERNEL_ERROR_ILLEGAL_TYPE */
+
+typedef struct {
+    uint32_t readbuf;
+    uint32_t cap;      /* uids readbuf holds */
+    uint32_t total;    /* uids of the class */
+} ThreadmanIdSink;
+
+static void threadman_id_sink(uint32_t uid, void *ctx) {
+    ThreadmanIdSink *sink = (ThreadmanIdSink *)ctx;
+    if (sink->total < sink->cap) MEM_W32(sink->readbuf + 4u * sink->total, uid);
+    sink->total++;
+}
+
+/* The classes the HLE object tables own. Returns 1 when `tmid` is one of them. */
+static int hle_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx) {
+    switch (tmid) {
+        case SR_TMID_SEMAPHORE:
+        case SR_TMID_EVENT_FLAG: {
+            const int kind = tmid == SR_TMID_SEMAPHORE ? SYNC_KIND_SEMA : SYNC_KIND_EVENT_FLAG;
+            for (int i = 0; i < 128; i++)
+                if (s_sync[i].used && s_sync[i].kind == kind) visit(s_sync[i].uid, ctx);
+            return 1;
+        }
+        case SR_TMID_MBOX:
+            for (int i = 0; i < MBX_MAX; i++)
+                if (s_mbx[i].used) visit(s_mbx[i].uid, ctx);
+            return 1;
+        case SR_TMID_VPL:   /* vpl_lookup: uid = 0x600 + slot */
+            for (uint32_t i = 0; i < VPL_MAX; i++)
+                if (s_vpls[i].used) visit(0x600u + i, ctx);
+            return 1;
+        case SR_TMID_FPL:   /* fpl_lookup: uid = 0x500 + slot */
+            for (uint32_t i = 0; i < FPL_MAX; i++)
+                if (s_fpls[i].used) visit(0x500u + i, ctx);
+            return 1;
+        case SR_TMID_MPIPE:
+            for (int i = 0; i < MSG_PIPE_MAX; i++)
+                if (s_msg_pipes[i].used) visit(s_msg_pipes[i].uid, ctx);
+            return 1;
+        case SR_TMID_CALLBACK:
+            for (size_t i = 0; i < s_callbacks_len; i++)
+                if (s_callbacks[i].used) visit(s_callbacks[i].uid, ctx);
+            return 1;
+        case SR_TMID_VTIMER:
+            for (int i = 0; i < VTIMER_MAX; i++)
+                if (s_vtimers[i].used) visit(s_vtimers[i].uid, ctx);
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int threadman_id_type_listed(int tmid) {
+    return (tmid >= SR_TMID_THREAD && tmid <= SR_TMID_VTIMER) ||
+           (tmid >= SR_TMID_SLEEP_THREAD && tmid <= SR_TMID_DORMANT_THREAD);
+}
+
+static uint32_t h_GetThreadmanIdList(CpuState *s) {
+    const int tmid = (int)(int32_t)A0;
+    const uint32_t readbuf = A1;
+    const int32_t readbufsize = (int32_t)A2;
+    const uint32_t idcount = A3;
+    if (!threadman_id_type_listed(tmid)) return THREADMAN_ERROR_ILLEGAL_TYPE;
+    if (tmid == SR_TMID_THREAD_EVENT_HANDLER) {
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelGetThreadmanIdList type %d "
+                        "(ThreadEventHandler): thread event handlers are not modelled, so "
+                        "no list is given\n", tmid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (readbufsize < 0) return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (readbufsize > 0) {
+        const uint64_t bytes = (uint64_t)(uint32_t)readbufsize * 4u;
+        if (!readbuf || bytes > UINT32_MAX || !sr_guest_span_writable(readbuf, (uint32_t)bytes))
+            return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    }
+    if (idcount && !sr_guest_span_writable(idcount, 4u)) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    ThreadmanIdSink sink = { readbuf, (uint32_t)readbufsize, 0u };
+    if (!sched_visit_threadman_ids(tmid, threadman_id_sink, &sink) &&
+        !hle_visit_threadman_ids(tmid, threadman_id_sink, &sink)) {
+        /* A listed PSPSDK class with no owner here: fail closed by name. */
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelGetThreadmanIdList type %d has no "
+                        "object table in this runtime\n", tmid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (idcount) MEM_W32(idcount, sink.total);
+    return sink.total < sink.cap ? sink.total : sink.cap;
 }
 
 static void hle_register_thread_exit_handlers(void) {
@@ -25011,6 +25224,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
     sr_hle_register(0x110dec9au, "sceKernelUSec2SysClock", h_USec2SysClock);
     sr_hle_register(0x7e65b999, "sceKernelCancelAlarm", h_CancelAlarm);
+    sr_hle_register(0x94416130u, "sceKernelGetThreadmanIdList", h_GetThreadmanIdList);
     sr_hle_register(0x034a921fu, "sceKernelGetVTimerTime", h_GetVTimerTime);
     sr_hle_register(0x50f61d8a, "sceKernelFreeMemoryBlock", h_FreeMemoryBlock);
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
@@ -25114,6 +25328,71 @@ static void hle_register_unregistered_import_batch(void) {
     /* sceNetApctl is the access-point control library; with no network stack the runtime refuses its
      * handler calls under the offline network policy (0x80010086). */
     sr_hle_register_unsupported(0x5963991bu, "sceNetApctlDelHandler", 0x80010086u);
+    /* The public ad hoc libraries (#1139 phase 0) sit above sceNet: the PSPSDK prototypes in
+     * pspnet_adhoc.h (22), pspnet_adhocctl.h (21) and pspnet_adhocmatching.h (16), each NID
+     * sha1(name) as tools/nid_corpus.json records for its pspsdk-sourced names. With no network
+     * stack they refuse under the offline network policy, with the runtime's documented
+     * SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED that sceNetInit returns. The code is not a
+     * measured ad hoc result; PSP-visible ad hoc state and errors are unmeasured. */
+    sr_hle_register_unsupported(0x7f75c338u, "sceNetAdhocGameModeCreateMaster", 0x80010086u);
+    sr_hle_register_unsupported(0x3278ab0cu, "sceNetAdhocGameModeCreateReplica", 0x80010086u);
+    sr_hle_register_unsupported(0xa0229362u, "sceNetAdhocGameModeDeleteMaster", 0x80010086u);
+    sr_hle_register_unsupported(0x0b2228e9u, "sceNetAdhocGameModeDeleteReplica", 0x80010086u);
+    sr_hle_register_unsupported(0x98c204c8u, "sceNetAdhocGameModeUpdateMaster", 0x80010086u);
+    sr_hle_register_unsupported(0xfa324b4eu, "sceNetAdhocGameModeUpdateReplica", 0x80010086u);
+    sr_hle_register_unsupported(0xc7c1fc57u, "sceNetAdhocGetPdpStat", 0x80010086u);
+    sr_hle_register_unsupported(0xb9685118u, "sceNetAdhocGetPtpStat", 0x80010086u);
+    sr_hle_register_unsupported(0xe1d621d7u, "sceNetAdhocInit", 0x80010086u);
+    sr_hle_register_unsupported(0x6f92741bu, "sceNetAdhocPdpCreate", 0x80010086u);
+    sr_hle_register_unsupported(0x7f27bb5eu, "sceNetAdhocPdpDelete", 0x80010086u);
+    sr_hle_register_unsupported(0xdfe53e03u, "sceNetAdhocPdpRecv", 0x80010086u);
+    sr_hle_register_unsupported(0xabed3790u, "sceNetAdhocPdpSend", 0x80010086u);
+    sr_hle_register_unsupported(0x9df81198u, "sceNetAdhocPtpAccept", 0x80010086u);
+    sr_hle_register_unsupported(0x157e6225u, "sceNetAdhocPtpClose", 0x80010086u);
+    sr_hle_register_unsupported(0xfc6fc07bu, "sceNetAdhocPtpConnect", 0x80010086u);
+    sr_hle_register_unsupported(0x9ac2eeacu, "sceNetAdhocPtpFlush", 0x80010086u);
+    sr_hle_register_unsupported(0xe08bdac1u, "sceNetAdhocPtpListen", 0x80010086u);
+    sr_hle_register_unsupported(0x877f6d66u, "sceNetAdhocPtpOpen", 0x80010086u);
+    sr_hle_register_unsupported(0x8bea2b3eu, "sceNetAdhocPtpRecv", 0x80010086u);
+    sr_hle_register_unsupported(0x4da4c788u, "sceNetAdhocPtpSend", 0x80010086u);
+    sr_hle_register_unsupported(0xa62c6f57u, "sceNetAdhocTerm", 0x80010086u);
+    sr_hle_register_unsupported(0x20b317a0u, "sceNetAdhocctlAddHandler", 0x80010086u);
+    sr_hle_register_unsupported(0x0ad043edu, "sceNetAdhocctlConnect", 0x80010086u);
+    sr_hle_register_unsupported(0xec0635c1u, "sceNetAdhocctlCreate", 0x80010086u);
+    sr_hle_register_unsupported(0xa5c055ceu, "sceNetAdhocctlCreateEnterGameMode", 0x80010086u);
+    sr_hle_register_unsupported(0x6402490bu, "sceNetAdhocctlDelHandler", 0x80010086u);
+    sr_hle_register_unsupported(0x34401d65u, "sceNetAdhocctlDisconnect", 0x80010086u);
+    sr_hle_register_unsupported(0xcf8e084du, "sceNetAdhocctlExitGameMode", 0x80010086u);
+    sr_hle_register_unsupported(0x99560abeu, "sceNetAdhocctlGetAddrByName", 0x80010086u);
+    sr_hle_register_unsupported(0x362cbe8fu, "sceNetAdhocctlGetAdhocId", 0x80010086u);
+    sr_hle_register_unsupported(0x5a014ce0u, "sceNetAdhocctlGetGameModeInfo", 0x80010086u);
+    sr_hle_register_unsupported(0x8916c003u, "sceNetAdhocctlGetNameByAddr", 0x80010086u);
+    sr_hle_register_unsupported(0xded9d28eu, "sceNetAdhocctlGetParameter", 0x80010086u);
+    sr_hle_register_unsupported(0x8db83fdcu, "sceNetAdhocctlGetPeerInfo", 0x80010086u);
+    sr_hle_register_unsupported(0xe162cb14u, "sceNetAdhocctlGetPeerList", 0x80010086u);
+    sr_hle_register_unsupported(0x81aee1beu, "sceNetAdhocctlGetScanInfo", 0x80010086u);
+    sr_hle_register_unsupported(0x75ecd386u, "sceNetAdhocctlGetState", 0x80010086u);
+    sr_hle_register_unsupported(0xe26f226eu, "sceNetAdhocctlInit", 0x80010086u);
+    sr_hle_register_unsupported(0x5e7f79c9u, "sceNetAdhocctlJoin", 0x80010086u);
+    sr_hle_register_unsupported(0x1ff89745u, "sceNetAdhocctlJoinEnterGameMode", 0x80010086u);
+    sr_hle_register_unsupported(0x08fff7a0u, "sceNetAdhocctlScan", 0x80010086u);
+    sr_hle_register_unsupported(0x9d689e13u, "sceNetAdhocctlTerm", 0x80010086u);
+    sr_hle_register_unsupported(0xec19337du, "sceNetAdhocMatchingAbortSendData", 0x80010086u);
+    sr_hle_register_unsupported(0xea3c6108u, "sceNetAdhocMatchingCancelTarget", 0x80010086u);
+    sr_hle_register_unsupported(0x8f58bedfu, "sceNetAdhocMatchingCancelTargetWithOpt", 0x80010086u);
+    sr_hle_register_unsupported(0xca5eda6fu, "sceNetAdhocMatchingCreate", 0x80010086u);
+    sr_hle_register_unsupported(0xf16eaf4fu, "sceNetAdhocMatchingDelete", 0x80010086u);
+    sr_hle_register_unsupported(0xb5d96c2au, "sceNetAdhocMatchingGetHelloOpt", 0x80010086u);
+    sr_hle_register_unsupported(0xc58bcd9eu, "sceNetAdhocMatchingGetMembers", 0x80010086u);
+    sr_hle_register_unsupported(0x40f8f435u, "sceNetAdhocMatchingGetPoolMaxAlloc", 0x80010086u);
+    sr_hle_register_unsupported(0x9c5cfb7du, "sceNetAdhocMatchingGetPoolStat", 0x80010086u);
+    sr_hle_register_unsupported(0x2a2a1e07u, "sceNetAdhocMatchingInit", 0x80010086u);
+    sr_hle_register_unsupported(0x5e3d4b79u, "sceNetAdhocMatchingSelectTarget", 0x80010086u);
+    sr_hle_register_unsupported(0xf79472d7u, "sceNetAdhocMatchingSendData", 0x80010086u);
+    sr_hle_register_unsupported(0xb58e61b7u, "sceNetAdhocMatchingSetHelloOpt", 0x80010086u);
+    sr_hle_register_unsupported(0x93ef3843u, "sceNetAdhocMatchingStart", 0x80010086u);
+    sr_hle_register_unsupported(0x32b156b3u, "sceNetAdhocMatchingStop", 0x80010086u);
+    sr_hle_register_unsupported(0x7945ecdau, "sceNetAdhocMatchingTerm", 0x80010086u);
     /* sceRtcGetAccumulativeTime (0x011f03c1) is not declared in the PSPSDK RTC header, so its contract
      * is not established here and it is refused under its name rather than guessed. */
     sr_hle_register_unsupported(0x011f03c1u, "sceRtcGetAccumulativeTime", 0x80020002u);

@@ -309,6 +309,7 @@ static HostLibcThreadRecord s_libc_threads[MAXTHREADS];
 static int      s_ntcb = 0;
 static int      s_cur = -1;      /* index of running thread, -1 = scheduler */
 static int      s_last_pick = -1;/* rotation cursor (file-scope so the selftest can reset it) */
+static uint32_t s_watchdog_spin_observations;
 /* CPU-wide PSP interrupt state.  Because scheduling is suppressed while this is
  * false, an interrupt-disabled state cannot migrate to another guest thread. */
 static int      s_interrupts_enabled = 1;
@@ -721,6 +722,7 @@ void sched_init(CpuState *cpu) {
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
+    s_watchdog_spin_observations = 0;
     s_root_seen = 0;
     s_tick = 0;
     s_guest_reset_requested = 0;
@@ -1104,6 +1106,32 @@ void sched_dump_threads(void) {
                 why, deadline, t->is_cb_wait, t->wakeups,
                 t->join_waiting ? t->join_target : 0u);
     }
+}
+
+/* Snapshot scheduler states for the player-facing no-frame event. `spin` is
+ * the number of scheduler spin-watchdog observations since the last snapshot;
+ * it is evidence of busy looping, not a count of PSP threads. */
+void sched_watchdog_summary(uint32_t *ready, uint32_t *delay,
+                            uint32_t *wait, uint32_t *spin) {
+    uint32_t ready_count = 0;
+    uint32_t delay_count = 0;
+    uint32_t wait_count = 0;
+    if (ready) *ready = 0;
+    if (delay) *delay = 0;
+    if (wait) *wait = 0;
+    if (spin) *spin = s_watchdog_spin_observations;
+    for (int i = 0; i < s_ntcb; i++) {
+        switch (s_tcb[i].state) {
+            case TH_READY:      ready_count++; break;
+            case TH_WAIT_DELAY: delay_count++; break;
+            case TH_WAIT_OBJ:   wait_count++; break;
+            default: break;
+        }
+    }
+    if (ready) *ready = ready_count;
+    if (delay) *delay = delay_count;
+    if (wait) *wait = wait_count;
+    s_watchdog_spin_observations = 0;
 }
 
 /* Run the game's VBLANK interrupt handler (a guest function) on a dedicated interrupt context.
@@ -3080,8 +3108,11 @@ void sr_yield(CpuState *s) {
         /* Diagnostic: spin watchdog. */
         static unsigned long long spun = 0;
         static int dumps = 0;
-        if (++spun % 100000ull == 2001 && dumps < 6) {
-            dumps++;
+        if (++spun % 100000ull == 2001) {
+            if (s_watchdog_spin_observations != UINT32_MAX)
+                s_watchdog_spin_observations++;
+            if (dumps < 6) {
+                dumps++;
             static const char *stn[] = {"DORMANT", "READY", "RUNNING", "WAIT_DELAY", "WAIT_OBJ"};
             int ready = 0, delay = 0, dormant = 0, run = 0, waitobj = 0;
             for (int i = 0; i < s_ntcb; i++) {
@@ -3106,6 +3137,7 @@ void sr_yield(CpuState *s) {
                         s_tcb[i].saved.r[19], s_tcb[i].saved.r[2],
                         s_tcb[i].wait_obj, s_tcb[i].wakeups);
             fflush(stderr);
+            }
         }
         return;
     }
@@ -3401,6 +3433,7 @@ int sched_reset_for_loadexec(void) {
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
+    s_watchdog_spin_observations = 0;
     s_root_seen = 0;
     g_root_uid = SR_ROLE_UID_NONE;
     g_worker_uid = SR_ROLE_UID_NONE;
@@ -3898,6 +3931,33 @@ int sched_thread_info(uint32_t uid, SrThreadInfo *out) {
     out->threadPreemptCount = status.threadPreemptCount;
     out->releaseCount = status.releaseCount;
     return 0;
+}
+
+/* sceKernelGetThreadmanIdList's scheduler-owned classes. A deleted thread is no longer a
+ * kernel object, so no list names it. The order is TCB slot order; the PSP's own order is
+ * UNMEASURED. */
+int sched_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx) {
+    if (tmid == SR_TMID_ALARM) {
+        for (unsigned i = 0; i < SCHED_ALARM_MAX; i++)
+            if (s_alarms[i].uid) visit(s_alarms[i].uid, ctx);
+        return 1;
+    }
+    if (tmid != SR_TMID_THREAD && (tmid < SR_TMID_SLEEP_THREAD || tmid > SR_TMID_DORMANT_THREAD))
+        return 0;
+    for (int i = 0; i < s_ntcb; i++) {
+        const TCB *t = &s_tcb[i];
+        if (t->deleted) continue;
+        int listed;
+        switch (tmid) {
+            case SR_TMID_SLEEP_THREAD:   listed = psp_wait_type(t) == PSP_WAIT_SLEEP; break;
+            case SR_TMID_DELAY_THREAD:   listed = psp_wait_type(t) == PSP_WAIT_DELAY; break;
+            case SR_TMID_SUSPEND_THREAD: listed = (psp_thread_status(t) & PSP_THREAD_SUSPEND) != 0; break;
+            case SR_TMID_DORMANT_THREAD: listed = t->state == TH_DORMANT; break;
+            default:                     listed = 1; break;
+        }
+        if (listed) visit(t->uid, ctx);
+    }
+    return 1;
 }
 
 static int sched_pc_in_module(uint32_t pc, uint32_t start, uint32_t end) {
