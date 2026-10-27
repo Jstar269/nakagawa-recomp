@@ -18,7 +18,8 @@
       "path": ".betterleaks.toml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "366494c7035e218c2447a4283b0cc042a257c9db4b09e9d0a32099528afcc829"
     },
@@ -26,7 +27,8 @@
       "path": ".clang-format",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "aae9fa239a902436ce3376d937f94e99660c3f7503223d906f6faaef8d929da4"
     },
@@ -34,7 +36,8 @@
       "path": ".clangd",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "4a82a2ea9f3fb0a2d137420397d881f4076b420d8d4e3058f43dc995c10d737b"
     },
@@ -78,7 +81,8 @@
       "path": ".editorconfig",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "229aa008b1f0fccbec62f72ce3398f087d3dd7dd4e1cbce1e6cc3986f95806f7"
     },
@@ -86,7 +90,8 @@
       "path": ".gitattributes",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "11c4389017974a205e6829966d22ade8588a7552fc7b176b0ea2e91487bb58a8"
     },
@@ -94,7 +99,8 @@
       "path": ".github/CODEOWNERS",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "38a029959232641f51970b830024a031e7bbdd5ca64d8473ba7a8d4c4170a6dc"
     },
@@ -102,7 +108,8 @@
       "path": ".github/ISSUE_TEMPLATE/accessibility.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "1656f16ae524d2328dfa9f67d4a5e503b3158e00c509dca3796372b94c9b2beb"
     },
@@ -110,7 +117,8 @@
       "path": ".github/ISSUE_TEMPLATE/bug_report.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "ad0db549576ce08c7633b49885d03c3e597d4d98faa669156ce728450149360f"
     },
@@ -118,7 +126,8 @@
       "path": ".github/ISSUE_TEMPLATE/config.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "9660f3e74abbae769998740dc24f365d741e0dc814c19c5d0da80bbd50e7773d"
     },
@@ -126,7 +135,8 @@
       "path": ".github/ISSUE_TEMPLATE/feature_request.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "f979064c5092aa7ae2e58c4f2e11da742af59ef2880c8b5fdbc77cf560661899"
     },
@@ -134,7 +144,8 @@
       "path": ".github/ISSUE_TEMPLATE/smoke_test_report.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "22734fd44ad1f2e18ae93287d5763c17cd5d9c2bf359d57ab4990467f03f51b4"
     },
@@ -142,7 +153,8 @@
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "4d27f7677218d9040a8d8049a2a7765928bd3985e5f1fa3c681ead5f936a06cc"
     },
@@ -150,7 +162,8 @@
       "path": ".github/copilot-instructions.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "02dca41b9de3d5253e756e19baee78bf96045d4226c8f32c7ebdbb28465516fe"
     },
@@ -158,7 +171,8 @@
       "path": ".github/dependabot.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "61fc409d5c37ddef2aef565d818903034eb2646c7a78f502b5de23eaa2823265"
     },
@@ -166,7 +180,8 @@
       "path": ".github/instructions/c-generated.instructions.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "8507983071b612722408b12bcb32152335fbe64e3e16a21b3298739761d5ed06"
     },
@@ -294,7 +309,8 @@
       "path": ".gitignore",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "de0cf05860c1bf95ca298283cdc0ea7f13392700833468f83a28eaff8210f085"
     },
@@ -302,7 +318,8 @@
       "path": ".markdownlint-cli2.jsonc",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "cc7454b4e96422aecea59934982d6c075b0c4bc448ea3830e07858c024422e96"
     },
@@ -316,13 +333,14 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0ef45eb8ede0a518e3869306fd9cab59220159bd2820aacfdb11fb37582f5217"
+      "sha256": "958a744e3349313d36132e02e94d9e201b33a1707854151a73eeab10fb107294"
     },
     {
       "path": ".recomp.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "bd1844b244a2553975e5600a058f1da6ba1a5d5fd584ba2229a4c8aedcea2c72"
     },
@@ -330,7 +348,8 @@
       "path": "ACCESSIBILITY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "db09911467067618458b583a43b1429874049c1305e2f1fbbc595b0d5eea8b80"
     },
@@ -338,15 +357,17 @@
       "path": "AGENTS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3b5aeecd9c47a0836e7cb5fd876ae09dd3b9d702702dfcb90222eee73b3042d2"
+      "sha256": "56b820d3b189d10fc729c84c8f47a381b35f4352237772690fd7d734118337f5"
     },
     {
       "path": "CLAUDE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "18a97a0489eb5aa85a7ec875f1478a644061129cdd6a05a9c2f734925d97255b"
     },
@@ -360,13 +381,14 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8e0404bdc4e8394e4d06243d42708b29dcc76b698bcc9aa424ffcabbaf9ab613"
+      "sha256": "b9571242c42c8cc06ef1d096eeca90d5d066f3f61b83eba3c42102605b857a08"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "8e0ac43aabaa4b5ea0c1b5655049a6662602e7246e2e513eb4d0773dce26abd4"
     },
@@ -374,7 +396,8 @@
       "path": "CONTRIBUTING.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "ec79351d296877754671b5f455251e9a2f50fbd7bb2044c0fe81f0cbc777451d"
     },
@@ -382,15 +405,17 @@
       "path": "CREDITS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9bbfbf00f6273c9038fbaaecd4bb17552b61f55d0edbc0c173d096f592208deb"
+      "sha256": "f679c3a5e7b36b2c498a140a2776d972a31354c5d0de96a6b5366ec7ecd8cbf1"
     },
     {
       "path": "ISSUES.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "7a63d78b2cbc7da1be646b2100377ed7460abd9c13ef9fd10af4a79452bc7772"
     },
@@ -398,7 +423,8 @@
       "path": "LICENSE",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
     },
@@ -413,36 +439,40 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "612e7b6c58406ae617617848f21850d11f3b33902d9f4023fc58fc1dbee08809"
+      "sha256": "212fa2b40dd5d4bf4b54d81579c86f1a6ffdafe06b11b2c2bb8f501b83ce11b4"
     },
     {
       "path": "NOTICE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "dc20115f3639f9108f6fde95f70aa7abdbcd8f4c5a13ee392b6a2f29d44c6367"
+      "sha256": "bcdd2cf17b1ec71cabeaa30bc318d3969b2a4b07edc9e4dd41ee00089fd7f1ff"
     },
     {
       "path": "PUBLIC_EXPORT.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       }
     },
     {
       "path": "README.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f3a496c61f2751f722f2cc67da674155685f8a05f848f9d30b0f14e9fb871a3b"
+      "sha256": "fdb101d18a3b0e729f801c945e540893c4066c3e1f3eca82d1f330658d839aa4"
     },
     {
       "path": "REVIEW.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "04ec8bf02e77fe66ec6846711a9d688fd529f8ddf74e226aab27761c94a1072e"
     },
@@ -450,15 +480,17 @@
       "path": "SECURITY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c249e670d115e5f5cbe297b11f1dd0752e52d6514887b282344af183d25beb12"
+      "sha256": "0a0e347a01b0c09ddfea38beeb814fdd38e8a778707be494454bf95e934287c8"
     },
     {
       "path": "SUPPORT.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "82aae1d37d4a784b7a6effcd9e048e70c607a487bc2bb522db4e2dcc46343335"
     },
@@ -479,7 +511,8 @@
       "path": "THIRD_PARTY_LICENSES/FFMPEG_MIPS_FFT.txt",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "7f8e4bf527a9c2f387485429f0bf1cf7982dfb70c7d3e87cc53086dd5ebf202c"
     },
@@ -513,7 +546,8 @@
       "path": "THIRD_PARTY_LICENSES/GPL-2.0.txt",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "7ec0306399fd391c17165cac57361c54da002ebe1b85cbfc49ea83b92867df24"
     },
@@ -664,7 +698,8 @@
       "path": "assets/README.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "5620aee90be59409b5e1b374735f3a4cbd9d605e7543352123ba439d8923b18c"
     },
@@ -838,7 +873,8 @@
       "path": "assets/fonts/ui/manifest.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "93f08a1965eaad90224a11c3b1a8baaba19a27b9a743d08ba905baaf31c9f77a"
     },
@@ -872,7 +908,8 @@
       "path": "assets/ge_corpus.schema.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "2e95fd5b5d7f936b12a364b080661f0a9118bf8d4d3a858a1f32c0fb297246b6"
     },
@@ -940,14 +977,16 @@
       "path": "assets/public_provenance_ledger.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       }
     },
     {
       "path": "assets/public_source_profile.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "b4fff74849a9f8bf137ef5f67dbf13add8ae5d0a2f8e677ec121be3dfb9e6c26"
     },
@@ -967,7 +1006,8 @@
       "path": "assets/release_manifest.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "e5a36fbfea49f3c7236adcfcc6594e2d04cd1fe70cf3f2021e15b586eb638211"
     },
@@ -999,7 +1039,8 @@
       "path": "assets/title_manifest.schema.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "f5f333603cefc7510ff8aceacf46f859d26e976c57db67d32b360672fcc91d6a"
     },
@@ -1007,7 +1048,8 @@
       "path": "assets/titles/README.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "e175bb2cf4ed2a37d9e6c5f00a77a39ea2d864d9108fe35dc8b619d359571b29"
     },
@@ -1015,7 +1057,8 @@
       "path": "assets/titles/display-smoke.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "title-manifest schema and public PSP metadata review",
+        "statement": "manifest contains user-supplied title metadata, not retail content"
       },
       "sha256": "9591b17730eec25675b7ec54da7fd818724c6cf9f625bb86f2911af4d205cfe7"
     },
@@ -1023,7 +1066,8 @@
       "path": "assets/titles/pspdev-phase5.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "title-manifest schema and public PSP metadata review",
+        "statement": "manifest contains user-supplied title metadata, not retail content"
       },
       "sha256": "8713c0c0894ad5fb28ec82c2db95917c895b78cff9fd769577f0cf7895223493"
     },
@@ -1031,7 +1075,8 @@
       "path": "assets/titles/showcase-breakout.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "title-manifest schema and public PSP metadata review",
+        "statement": "manifest contains user-supplied title metadata, not retail content"
       },
       "sha256": "6e243c0d5a5b4222422636d7236a67654ce2ec8ba252041ca108f52f28b73bca"
     },
@@ -1039,7 +1084,8 @@
       "path": "assets/titles/showcase-scene.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "title-manifest schema and public PSP metadata review",
+        "statement": "manifest contains user-supplied title metadata, not retail content"
       },
       "sha256": "487cd80794903bf405b9b79e705a338d827335409e2908af389b46f0e272521a"
     },
@@ -1047,7 +1093,8 @@
       "path": "assets/titles/synthetic-title2.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "title-manifest schema and public PSP metadata review",
+        "statement": "manifest contains user-supplied title metadata, not retail content"
       },
       "sha256": "fae3256f33d20abf4056c99ac7fe34f1e31616b9e2f4e6c5a4f3cf503351b902"
     },
@@ -1055,7 +1102,8 @@
       "path": "assets/titles/synthetic.json",
       "classification": "public_factual_metadata",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "title-manifest schema and public PSP metadata review",
+        "statement": "manifest contains user-supplied title metadata, not retail content"
       },
       "sha256": "0cfe019c231a9c7cfda466465bc02120092cb8ab2d0fc91214416a4c5de7b5e9"
     },
@@ -1102,7 +1150,8 @@
       "path": "assets/vfpu/PROVENANCE.json",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "c7566a3d7d4b83b8cb39fbd2fa7fd8f6e9212b973cc6804c6d66fb7808bd98b7"
     },
@@ -1290,7 +1339,8 @@
       "path": "codecov.yml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "1d36b0167ce01e8212f03cd7672b60319c29a196447acfbb3eb69b488e783391"
     },
@@ -1298,7 +1348,8 @@
       "path": "docs/AI_USAGE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "35c0bf7c02b56a8cfec4e034bfddc527b2b6de3185a6054e5f5fa55eecb7f40e"
     },
@@ -1306,7 +1357,8 @@
       "path": "docs/AOT_PRODUCTIZATION_ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "e06135f3b979ce98cbcfbb1deb63d865dce02e85a6280248a02e023ffd41ed8a"
     },
@@ -1314,15 +1366,17 @@
       "path": "docs/ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bf7b4006fde2d00263d6de8c909151fb510c4e42c39f883f5250ed87ef45c8bd"
+      "sha256": "1ba3e88a324324fd7efc577395636b1db3cceff7927d7f35ecdecf47bdfa056b"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "efb9f862c7cd568112b5b771b3a5d5d1267205b7f83dfd4feb2ebe5a09e19ec1"
     },
@@ -1330,7 +1384,8 @@
       "path": "docs/CI.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "d3ad5f5eb60ed9ad35b599212845494acb1762b980011eff19724698b0742bbd"
     },
@@ -1338,15 +1393,17 @@
       "path": "docs/COMPATIBILITY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2dd3e3d7cd63e10177f8d7815c1566660f9c4829d94139a1e248f668e39bfd7e"
+      "sha256": "c3cabf80a2cd2f2f856216ef7d9c4f2fa576631991f674916edb4f25aa32cccc"
     },
     {
       "path": "docs/DCO_POLICY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "9671cff407e91c350a7a970afb9d1ee5ef958e9473157cf6eddd152231e28bb3"
     },
@@ -1354,7 +1411,8 @@
       "path": "docs/DEBUGGING.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "d13eddf9010598200ad16c758328e4c7ae28583a60bd4416f52d680ea3645355"
     },
@@ -1362,7 +1420,8 @@
       "path": "docs/DECOMPME_INTEGRATION.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "05eefbe2af14d43df1af782e730e269cc3780a65ec1567dcddef1c5b73ad0290"
     },
@@ -1382,7 +1441,8 @@
       "path": "docs/HARDWARE_ORACLE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "b7274657163671b82e4f89f42c1b53da255e9a6b55d54655a3e5e3a7088d8969"
     },
@@ -1390,7 +1450,8 @@
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "7ae5dac1e21650f7e1716ad0ec852c8341137cf4457f0d0b7ed2cfedcedbd1cd"
     },
@@ -1398,7 +1459,8 @@
       "path": "docs/HLE_AND_WORKAROUND_INVENTORY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "5894629fa7eb97d14f8ad18f70886b5d77817f178995dc883b48c26d8d30ca2b"
     },
@@ -1406,23 +1468,26 @@
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6bb263acd1b901a48f9474e39332f9e127745073003e1b3fc06b5c4ac148bf72"
+      "sha256": "fb71d89db05d283794e8f97f25b9ae8ede5cda6144afa2e314e0672aa247e9a1"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5e0777487ba3cdbaea7f099e8ccf8e128ab66ccaffea7faeb7d437b563a85af8"
+      "sha256": "aad9b694af8e9753508c8972f2b23fe9e336dd6a673820d00aaf07af42dc5535"
     },
     {
       "path": "docs/LINUX_DEVELOPMENT.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "d07eb75a45bd77bac47efd4ca1b143ccc85dd7ef316b94197237ff04c76460bf"
     },
@@ -1430,39 +1495,44 @@
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f58dbc4267059f9ba3bd64155b7ef909acba727c5c71dd89830f0a38d55dd7f8"
+      "sha256": "d5bb1803c29ed6ea2956e44015789aa671a5b1a2f50a59c08a38286aebf11c22"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a276f2cb3c6e3d485ddb4751371e667596fc6218c77cef3668c6e00cd7cb8aa5"
+      "sha256": "acd2cfb760703e35fedaa8e0b6c9d36394b1ce5a4790c4d734b69a3fefce5728"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0d991bfa1447ffb1d4f9119bfd73b5f3f31f47f86646b5dee5721a48c03b26fc"
+      "sha256": "a56f3462629e6acdbf1b4b28d9b9d336239d4631b22ba723950733038df7dd8f"
     },
     {
       "path": "docs/NATIVE_UI_REGRESSION_MATRIX.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2115d102d068364d39c035ee20068b56af6b25797d682b2f1032a039e1178666"
+      "sha256": "02f98f446518eac101664089e5366e00afe0c2734b47c4bacb7eecaad5adf615"
     },
     {
       "path": "docs/ONLINE_FEATURES.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "bae8789959691e6231cf5c75ec840ae830821895dae003022210bcfb0cca54e1"
     },
@@ -1482,7 +1552,8 @@
       "path": "docs/PLATFORM_PORTABILITY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "bc660642e61b074858f42e36fa2ec9923106a6e54b443d646354fcd333f791bb"
     },
@@ -1490,39 +1561,44 @@
       "path": "docs/PLAYER_UI_DESIGN.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3e2a54f24f3aea3bd06b03c8f0963a73b0190af484ec0c57157a1751547bea92"
+      "sha256": "d2359fd45902663b4d705866f8ac64adcddb7c95edcc39b0c689c2ce9056abce"
     },
     {
       "path": "docs/PORTING.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "934f1a9952ccc3b6be7333e9f233c78cb3699fa870530ce94bfd9bbead6b8cc9"
+      "sha256": "b132945e7f1f66d6003c511fc4115a04d3ea3e3a8d4a54df9045a651848a8af6"
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "84cd3e1b9e2819036542bbc99561a475aae7d214e5f7ba32f6eee40c636d7eda"
+      "sha256": "0bec9bc3c07242cd6960c7f0fea7acdc7c7309e706fbcd51143a0a7077b19acd"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5cab340a954a3654b1ad70fc2861d4f3db7d6c1f17f2fd784d806714a4ea4b49"
+      "sha256": "810a83f4d798c66993dd98e786b06ba6698ed5480ca4fba01f355fa0d4f4a77b"
     },
     {
       "path": "docs/PROVENANCE_MERGE_GATE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "d54e74574ff8ca7874e10c0090953a73ed9f408776ef524d6293279d932709fe"
     },
@@ -1530,7 +1606,8 @@
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "74dc4dc52215401fb6a6fb8f73d7489f74bdeee331a7bb17ab595c4c5ef07fe8"
     },
@@ -1550,7 +1627,8 @@
       "path": "docs/PSP_INTR_WAITS_MATRIX.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "e7a25a378316ee1acfa855e01210af011b15e89620e4b7e545f1088c4eec94c4"
     },
@@ -1558,7 +1636,8 @@
       "path": "docs/PUBLICATION_READINESS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "3b4197fd38cd8bc893fa3a7a7407dbb72128a8d27edc113eee3719f36ffe31e3"
     },
@@ -1566,7 +1645,8 @@
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "93b77017c883caca9f8eb155b49e1d82aa3bbbec2891e61f4aa6320ca1ed7632"
     },
@@ -1574,9 +1654,10 @@
       "path": "docs/README.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9000a3222936140c7cd2405011e28784f23f83d27564d89b80a14f949180839a"
+      "sha256": "c5c48f8a9988bb9f8507c6b6b45e5e2cadbf18990e119eed71b40ae7afd30ef0"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
@@ -1594,31 +1675,35 @@
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8ab8b2a416d1a32606a0aec8239823b506a433913a8742aea1ff15460744e276"
+      "sha256": "e3bf461ceb3d0fb32dd21706bcb4757e8318afdbe26a9723cdf66d6bddc79133"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "eb4a4a8d830d179d579ee91cd4425f31e901f159c1262e86739ce23629d70d5d"
+      "sha256": "dd24359503b42da5257c2824793e4a948aa371bf2b03174e601eca15af97cf9d"
     },
     {
       "path": "docs/SETUP.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "61ad8775ccd7e3085b8f4937805be18f90f16fb170eb88608498a7be5c44f1e0"
+      "sha256": "100ff2283920b68a92a693c4c27edee9a6b045149c5da5feb0fa8eed5bc884bd"
     },
     {
       "path": "docs/SHOWCASE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "00b41716e932ebfcd770d569bef6aa6516b7eab6779bd38a79682182dff0aeec"
     },
@@ -1626,15 +1711,17 @@
       "path": "docs/SMOKE_TEST.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cf34d05d97b1af361e2a63b514dc131e5e177009ad7bc8824f2c1c4d48c48154"
+      "sha256": "4a9fc520231d542708082914a68725129f16b3e4940f323b67f64e9a5e92013e"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "54fb9d7b179837bd28a2ea22fcff652956e27dc6aef75b646b4fa9dea0f2d451"
     },
@@ -1642,7 +1729,8 @@
       "path": "docs/TITLE_CODEGEN_PLAN.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "b61ef877b5d8992105ba9b0d3c2dd4b9901ab63db0125a7106db3f176cacc02f"
     },
@@ -1650,7 +1738,8 @@
       "path": "docs/TITLE_PROFILE_ARCHITECTURE.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "9511e6a96570a49504ea96a99ed133197dc2107cdf83a45e0bef8de4b91a3bcd"
     },
@@ -1670,7 +1759,8 @@
       "path": "docs/WORKSPACE_DOCTOR.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "b896b52577f47b649455b1dc699267445292ab832b2442f7d18fe72ce0a00b16"
     },
@@ -1678,15 +1768,17 @@
       "path": "docs/YOUR_OWN_GAMES.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "692c539c3629e3ac63508a4c299a4c7fbd69b1ba8db76e00e5540de24ca5d557"
+      "sha256": "f79ad60e5addf91dc2083de843a6b9fa107b8c5b22ce02c508be8f415be2f556"
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "983a29e5c70cfd6e691a019ac2fe5e201bec22c26381d863660b8ee970ca33c8"
     },
@@ -1694,7 +1786,8 @@
       "path": "docs/archive/ISSUE196_DIRECT_XB.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "8e037aeebba1a86e39f272d4e876a2c5dd6341e13eb02919626075d15ca1af9f"
     },
@@ -1702,7 +1795,8 @@
       "path": "docs/archive/TITLE_MANAGER_DECOUPLING.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "5e689f2eb87c38bd5b10b000045a3fde954f19d099cfbfe0ae7fe53ded568db5"
     },
@@ -1710,7 +1804,8 @@
       "path": "docs/archive/TOOLCHAIN_BASELINE_2026-08.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "cd7fc25b1118311ef7014780ee2830a614f27bb70701ecccac20ca43fc64a24d"
     },
@@ -1718,7 +1813,8 @@
       "path": "docs/archive/ui-baseline/README.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "197700d2559aeb7d91b3a2d3d12dd79e929fa34264f47a16cdebd9f8931bd239"
     },
@@ -1726,7 +1822,8 @@
       "path": "docs/cleanroom/PGF_CONVERTER_SPEC.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "621665664948e23d575e95f0c4ac964c40257107f9c23e89f5bb52c369d45829"
     },
@@ -1734,7 +1831,8 @@
       "path": "docs/cleanroom/PGF_SPEC.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "c51fd632e59805c094835a7505c5a9fa5f6c92e18bc808bb7f0a31467c6f63dc"
     },
@@ -1742,15 +1840,17 @@
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e05cb5dbb3366da98859a5165352437744669c0d4ba4f2d7df7af2824f6a2a13"
+      "sha256": "98e4a828931ec2f88a1b5e4a00a31d207a9e05ec5b77cc37327ad6c7019f0b47"
     },
     {
       "path": "docs/cleanroom/SCHED_SPEC.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "8a5fb49f6f922644bddd8acc44e452081f41397decc3af388b7405f95b11b7db"
     },
@@ -1758,7 +1858,8 @@
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "bf3222761674dda813fb9fe3044159f7bc70050175168932ff4548e9b1391f36"
     },
@@ -1766,7 +1867,8 @@
       "path": "docs/images/brand/nakagawa-mark-light.svg",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "44f7f854397240fb266d50248fca6d7b6e7892a606cc6723838adb1d3267d59a"
     },
@@ -1774,7 +1876,8 @@
       "path": "docs/images/showcase-breakout-v180.png",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "bda0e223bc94c7bd44d2d799953dbde8120d2b16ce9f15d281842f6a6de4874b"
     },
@@ -1782,7 +1885,8 @@
       "path": "docs/images/showcase-breakout.gif",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "1d40d4cf155465577c4903adbd82c2ad944ccff197cf031b0c88331d14122e61"
     },
@@ -1790,7 +1894,8 @@
       "path": "docs/images/showcase-ge-scene-v120.png",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "5c71fa553f280aee3d1b4b0b8e48e7b99d9593250eedfcf16f0bf38376561d33"
     },
@@ -1798,7 +1903,8 @@
       "path": "docs/images/showcase-ge-scene-v240.png",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "d258a82c18eb714c30e4cde2402cbe83d20265337231d25feed9c57cd433289b"
     },
@@ -1806,7 +1912,8 @@
       "path": "docs/images/showcase-ge-scene.gif",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "61e2ccdc10b2f0578b858961446fb228ea301bf5ae1ad3433c3b6c181ec47657"
     },
@@ -1814,7 +1921,8 @@
       "path": "docs/index.html",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "9037ae4b7b9fbddde54a07151d98ae3e901a3d5ea394dc2af7b457fdfdd1c5a6"
     },
@@ -1822,7 +1930,8 @@
       "path": "docs/media/hst-title-screen.png",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "18f1317bc35cb5403fdcff6efefe8e125dfa6ca1e4b316500140b9e353a8e58f"
     },
@@ -1830,7 +1939,8 @@
       "path": "docs/provenance/FONT_ORIGINS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "392eec4399cabd9fa355a7de1f3c724ac2429656d000c64d240755e1e94a23e0"
     },
@@ -1838,7 +1948,8 @@
       "path": "docs/provenance/GUEST_INTERP_ATTESTATION.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "0aa6ce0b69b464eced80f0adbb44e1119ad35bf366266896d6af679c71c74d75"
     },
@@ -1846,7 +1957,8 @@
       "path": "docs/provenance/HST_PUBLIC_CENSUS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "5f5d6b0f4dd2d97bbf2bb664419ad81b1a696c46e26bd561d2ad9c48879121a0"
     },
@@ -1854,7 +1966,8 @@
       "path": "docs/provenance/INDEPENDENCE_MODEL.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "7dcbe45729cbfc7ad4d2324c454b56aaacded94140495ef43936b3c05855e942"
     },
@@ -1862,7 +1975,8 @@
       "path": "docs/provenance/MODIFIED_FILE_NOTICES.json",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "c95b8e4f4e68e4857f80d0bceaf30948d248d3063e714bba68d75246e5eeb284"
     },
@@ -1870,7 +1984,8 @@
       "path": "docs/provenance/MODIFIED_FILE_NOTICES.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "cc2282c34f598f5fe5792b05c64c098b60b8e7400e5b9462c3419eab36ce2270"
     },
@@ -1878,7 +1993,8 @@
       "path": "docs/research/PSP_THREADING_SEMANTICS.md",
       "classification": "reviewed_documentation",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "0d1385ce557422a8ff090d355246e1f93eb9b75e8b7f94a42299a3359ae991ad"
     },
@@ -1898,7 +2014,8 @@
       "path": "fixtures/cosim/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "a0332200707a359945b32ed454fcb5bf07773fae586e07020f9195c1da394a6c"
     },
@@ -1978,7 +2095,8 @@
       "path": "fixtures/fonts/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "33aaf8fee26571c52b8f0aa5a8b4585cb056df3ce48e5325c90e8a6319161968"
     },
@@ -2024,7 +2142,8 @@
       "path": "fixtures/fonts/gudea/Gudea-Regular.ttf",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "a4b5410090a821ea17021627312babdf3d8db0271217fd8c4d9f629ef0a2d90b"
     },
@@ -2032,7 +2151,8 @@
       "path": "fixtures/fonts/gudea/OFL.txt",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "315a576cbc7ab61c9e347b5725893bc8498fdcb8fc10831793c6864bc2cefba8"
     },
@@ -2040,7 +2160,8 @@
       "path": "fixtures/fonts/gudea/PIN.json",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "a19584b6598258f80fa90fb95d6d1f70e106bda24c82c3d74dc4a0d5136bf023"
     },
@@ -2134,7 +2255,8 @@
       "path": "fixtures/nk_ui/core_synthetic.golden",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "362d692353539bc2ba3be08dcb7cc310ca9c1a42241a842e3681d3749c7a6e2f"
     },
@@ -2142,7 +2264,8 @@
       "path": "fixtures/nk_ui/library.golden",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "f1a7ae0b5af8c60445424670130a85aece70e72c81e58b6877c203b58f862cd1"
     },
@@ -2150,15 +2273,17 @@
       "path": "fixtures/nk_ui/title.golden",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "a288129e77b7b3c8764a1a5925a546d7b28d467a1fb4fc1628755a052217485c"
+      "sha256": "da3c00ab925d348a38a1fbc4fa6a404139a4026bac03a9aa30f5b03c6b0e30d6"
     },
     {
       "path": "fixtures/platform_ladder/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "8bc6edded6d8aa90f421510b78393164a3995d10db2d8ca4e5758268e1dca863"
     },
@@ -2178,7 +2303,8 @@
       "path": "fixtures/production_smoke/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "69a9daf76418f8920bd7740d1b89b3d547b20789bc2d2645bf8b54100801fb1a"
     },
@@ -2258,7 +2384,8 @@
       "path": "fixtures/psp_oracle/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "e28f0385e008e770206cd74e821f0a98e2b381c8c8620b27e3a700f24dbd4908"
     },
@@ -2302,7 +2429,8 @@
       "path": "fixtures/psp_oracle/ge_corpus.json",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "bb3b7ea498e0e5809d0e3496409b185493bd04e783791d6028a0e9c9f1f06b94"
     },
@@ -2406,7 +2534,8 @@
       "path": "fixtures/psp_oracle/mutex_imports.S",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "42e85786b821939e52e4e8762927873a81be448e6ecaeb835b8aa11aafa9bdb8"
     },
@@ -2546,7 +2675,8 @@
       "path": "fixtures/psp_oracle/threadman_user_imports.S",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "519b9659a580fbe6b51fc43d5f58b6f9b1bca4bb690be444437c8ddb3c590ca9"
     },
@@ -2686,7 +2816,8 @@
       "path": "fixtures/psp_phaseb/mutex_imports.S",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "e7572bce2cb110e525c66622388edcba427a5a694c8ec881308b7da5f1623411"
     },
@@ -2742,7 +2873,8 @@
       "path": "fixtures/psp_threading_oracle/README.md",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "896e48800e215a5ea0790a1619ed74ceded6a5fdaf974f11ea0af6014f7ec128"
     },
@@ -2750,7 +2882,8 @@
       "path": "fixtures/psp_threading_oracle/matrix.json",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "271bba8eda687a263ee08248f3d0cb0916888e1d4670a8789b8bbeeafb2b9587"
     },
@@ -2770,7 +2903,8 @@
       "path": "fixtures/psp_threading_oracle/thread_shim.S",
       "classification": "synthetic_fixture",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "path-reviewed fixture/test census",
+        "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
       "sha256": "95d323028bbf83bd185cc2e9ae583ac1041c66760379ceebae4c7103c4c570d6"
     },
@@ -3015,7 +3149,8 @@
       "path": "pyproject.toml",
       "classification": "reviewed_configuration",
       "evidence": {
-        "source": "trusted detailed implementation ledger"
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "57b547051b9fd4b1505d8b652dcc5c7bceecd018ef83b9592b34d569f5ac1de9"
     },
@@ -3689,7 +3824,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "25f741676b70532d6e80a8fa3444248109007f9e5d9f01f637b184bec08e3076"
+      "sha256": "7defff075613103097677ff49cf86c00bce6c397d80ecc4e48bc1a563fccc377"
     },
     {
       "path": "src/player/package_builder.c",
@@ -3725,7 +3860,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b01c1514e839531050b012970ece872b2abc6ee25cbb4bd0ad1897ccab7d64f9"
+      "sha256": "e8cda15cef8fcd04b788abec36f9064088b8751420079d4fc1a8735df5807113"
     },
     {
       "path": "src/player/player_state.h",
@@ -3797,7 +3932,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d2b1b294acbce632653594fbad0dea89d7beba6bc68203e92a88ff5514ccd479"
+      "sha256": "51d4c11debeed6bc8e35e87ab9444e96268f12584609839a55320d3a828ebda1"
     },
     {
       "path": "src/player/ui/player_ui_nk.h",
@@ -3857,7 +3992,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "784e677e4e56926f93a6ef4f7ab511d4d8c10b26e6611a6256cf75b7b3b48eb5"
+      "sha256": "a14ee639591fc5d48d6d775fb51543b5b267c53302386b69a5b474cdafda1624"
     },
     {
       "path": "src/player/ui/ui_router.c",
@@ -3893,7 +4028,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "287c6c784e3af243b90ac142876ae9176d4c30630f28a46aac11aeb1dfdd0824"
+      "sha256": "0253a000b179a30050fc84f12b509a1bfae34ebd5b087f2a5b7fa47de65f52c9"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -10056,7 +10191,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a07fffc398217054337041029a35e0ce89b6f582cc577f00d08fb050bf1ce59c"
+      "sha256": "eb416d6aabacebfc28ed6f9ee8b8aeba66c5d2a98342d8b7d96aa4a481fd7020"
     },
     {
       "path": "tests/native/test_input_profile.c",
@@ -10092,7 +10227,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "39ae22fd01fb24e162d622829d29891c50e893e84980093974bb18f47f27104c"
+      "sha256": "027c5fc8db356f407ff53ebe0b094551e4f98c3cdebd4a3339557a4d59eac820"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
@@ -10176,7 +10311,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0bcf5ef7ad78705aeae14c593fbfbfe1177b11dd80e8ed7f0b39ef8603f0c8d3"
+      "sha256": "04e469b62cc05db2c38f455cc9519195e6e60a9cffa64582e0f738d2b417da8a"
     },
     {
       "path": "tests/native/test_parsers_hostile.c",
@@ -10236,7 +10371,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b48b442e8a0711bcd7d479cb3c1be3c1feef655b977dd28296a84e0983ac6c52"
+      "sha256": "c70e203b974564d0de56cd25032a0adc335719b38a061805ccca94adf50855ba"
     },
     {
       "path": "tests/native/test_player_state.c",
@@ -10248,7 +10383,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cd5b5669884698c1f91340b57fbd70a6a792517d628fa086323de014e357b04d"
+      "sha256": "72dd76da7a2346efda3ef641874322aeb725181c39c8e3ee9a79b41fb2328e2d"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -11143,7 +11278,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1dc8f099fa6d9445ecaf2eec51af2c1d8221829463145a6e4dc93e0fedb3b966"
+      "sha256": "db488fbe93b2788cb397fe59b8fc18f669352ce3d312eddccf8245596ac853e0"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -11313,7 +11448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "70bf56235a3a053c08f453ada9053d654dddbc36359b24d0e5cb445568524d6a"
+      "sha256": "a2ea0c192b93099e6dd1989a2413fbfa5e19417eb0e20adca921c42ed247a543"
     },
     {
       "path": "tools/codegen.py",
@@ -11870,7 +12005,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee182077c471ded1bd04e68e4484c8ae52b65425272f2718e2b5bcc1d5bff723"
+      "sha256": "2aa9a96d3728f66c2a8642fe7758d0c54fc196ba16935e38b8706541e47ae931"
     },
     {
       "path": "tools/lint_docs.py",
@@ -12004,7 +12139,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ca7687fcf995c122def4e4c1a525e69fc238ab4070f567620abcbd91a76e991f"
+      "sha256": "6a35117b0cad49b19d4449fdfff197ad1d4bcc56c42ea134b92146a282a2620a"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -12064,7 +12199,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a04da36ef811ef5eac252e7bf9b11c57dc616f6337781bc57e46962422e2c814"
+      "sha256": "3d78978e0a913134147b577cef9b8e5864876cff8deb07b07fd387bb2771f94a"
     },
     {
       "path": "tools/nk_core/launcher.py",
@@ -12378,7 +12513,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2196cd0b62648f3fee9014e7766f527512e32731ce78cee1f264226f696e7ddf"
+      "sha256": "cc1c856d053f856a8fa4e1cb3d955eebd3581a7a4adfc6e58ddb74c5133ffa6a"
     },
     {
       "path": "tools/provenance_refresh.py",
@@ -12715,7 +12850,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "75e8d35c897c824d348ccb7e5a2b4f08ce8d392cb0ac734a066b845e83aa11fd"
+      "sha256": "d85026f28b009611eb11330218731423c4c477bff4856daf385ec68f6c018326"
     },
     {
       "path": "tools/recomp_helper_inventory.py",
@@ -13929,7 +14064,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d1733d56d18738ea635f84f7056b9ae32ed1f6e801de202b6be7a6ab75b8c7b9"
+      "sha256": "5ed06710388d0080bc213d16c27ad081b3c3dde20fa1875136d39bf2ad6c3a67"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -14121,7 +14256,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "081cb1de7f1433f917d36dd351a7b302e54f2698d6f3a359ff6e5652f5759fdc"
+      "sha256": "071c5ec0969623d93b9036368e074e4d61fe359cdd57546aa90e0ff29dfe6492"
     },
     {
       "path": "tools/test_nid_name_proof.py",
@@ -14169,7 +14304,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b9f85b21b174503e2f805cab272d845065c3fcaa5c779dc89ed0b5399b1b6127"
+      "sha256": "7d3c0ffb5b23f48bb1d8695c65df94d1bd74f1ac58c3d83a314d272e86ca5860"
     },
     {
       "path": "tools/test_nk_core.py",
@@ -14193,7 +14328,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0d16cf85046976805c3e51e81ba0e22f2676f8c6f4542f68f1715ff790200fbb"
+      "sha256": "9c250d0cfbe57ec77e773b62c9bdcde2eeca0e58547e4345e90d9fcf228c173b"
     },
     {
       "path": "tools/test_package_notices.py",
@@ -14313,7 +14448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4b09c3f361fa79d6b5de1d9add0f595d40d3561222932c61a9a206977097e28c"
+      "sha256": "a6350e3332a9c2166812448f28029a8964279bf5bb503c2825f866a5d45d23bb"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -14349,7 +14484,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e63657145e11b7871d3c4e90747ec37e071a9e75fd25798c74dd9514df1d41f1"
+      "sha256": "1177e33be9a5afcbbaf8f8f8887776ca22829a47ce5f84f8e433a3961e3decd7"
     },
     {
       "path": "tools/test_prereq_fetcher.py",
@@ -14373,7 +14508,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "75595334c9c9ea4f7f37d11ac33e0de77e3876052d3b56eba883c19ad20ccd6a"
+      "sha256": "c823b497344fd2af32671035f99e923b0b4fd0dc517b1797707b6b308816fa99"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
@@ -14469,7 +14604,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a0ad002b10aa1293b8c3e007eb0dc21ebe35668c99800fffc009b8afd79b1e9d"
+      "sha256": "ee67f881305621eafceb06dc9df78bb4f83c302631cdafdf79aed832c9183092"
     },
     {
       "path": "tools/test_provenance_wildcard_regression.py",
@@ -14721,7 +14856,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fa69c4f44472339a209284c712d071b927eb69807697f878d2ee89adadfcb634"
+      "sha256": "f5de20495d1d8491bc0359bf1b607fe15c82300ecc3969858ba46eb910e39eee"
     },
     {
       "path": "tools/test_readme_images.py",
@@ -15746,40 +15881,5 @@
       },
       "sha256": "7fb2e9cac355cf7ca076a6e4c0113eeb3b1174e7b8ea328d14bc5c5ae03eb3b3"
     }
-  ],
-  "admission": {
-    "workflow": "admit-new-reviewed",
-    "trusted_tree": "1c5149e16a53ec32d18204958f898993284f0a12",
-    "candidate_tree": "7e86e2e80aab5d71f3bb79bf3316f64a2ad580dc",
-    "admitted_paths": [
-      "src/core/PROVENANCE.md",
-      "src/core/nk_decrypt_main.c",
-      "src/core/nk_psp_aes.c",
-      "src/core/nk_psp_aes.h",
-      "src/core/nk_psp_builtin_keys.c",
-      "src/core/nk_psp_builtin_keys.h",
-      "src/core/nk_psp_container.c",
-      "src/core/nk_psp_container.h",
-      "src/core/nk_psp_crypto.c",
-      "src/core/nk_psp_crypto.h",
-      "src/core/nk_psp_ec.c",
-      "src/core/nk_psp_ec.h",
-      "src/core/nk_psp_inflate.c",
-      "src/core/nk_psp_inflate.h",
-      "src/core/nk_psp_keystore.c",
-      "src/core/nk_psp_keystore.h",
-      "src/core/nk_psp_kirk.c",
-      "src/core/nk_psp_kirk.h",
-      "src/core/nk_psp_kle.c",
-      "src/core/nk_psp_kle.h",
-      "src/core/nk_psp_prx.c",
-      "src/core/nk_psp_prx.h",
-      "src/core/nk_psp_sha1.c",
-      "src/core/nk_psp_sha1.h",
-      "tests/native/psp_seal_fixture.h",
-      "tools/nk_core/decrypt_tool.py",
-      "tools/test_psp_decrypt.py"
-    ],
-    "authority_sha256": "690fdfc851ca766fd9259caa524d2b5396da3e9c095d559869db2adac50d129b"
-  }
+  ]
 }
