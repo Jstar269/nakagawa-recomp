@@ -417,7 +417,7 @@ Fonts must come only from your own device. The project provides no download link
 
 #### Copying the fonts with your PSP
 
-Nakagawa Font Copy is a small app for your PSP, built from this project's source in `src/psp_companion/`. It needs a PSP that runs homebrew apps (custom firmware). It reads the PSP's font files, which are plain files, not encrypted: it decrypts nothing and changes nothing on the PSP. It writes only to its own folder, `NAKAGAWA/fonts`, on the Memory Stick, or on a PSP Go's internal storage when you start it from there.
+Nakagawa Font Copy is a small app for your PSP (#737), built from this project's source in `src/psp_companion/`. It needs a PSP that runs homebrew apps (custom firmware). It reads the PSP's font files, which are plain files, not encrypted: it decrypts nothing and changes nothing on the PSP. It writes only to its own folder, `NAKAGAWA/fonts`, on the Memory Stick, or on a PSP Go's internal storage when you start it from there.
 
 1. Build the app with the PSPSDK (`make -C src/psp_companion`; see [PSPDEV integration](PSPDEV_LOCAL_VERIFICATION.md)), then copy `src/psp_companion/build/EBOOT.PBP` to `PSP/GAME/NAKAGAWAFONTS/EBOOT.PBP` on the Memory Stick. Releases do not include the app yet.
 2. On the PSP, open **Game > Memory Stick > Nakagawa Font Copy** and press **X**. The app copies every `.pgf` file in `flash0:/font` and checks each copy against the original, then says how many fonts it copied. Running it again replaces the copies.
