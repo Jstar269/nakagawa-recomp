@@ -426,6 +426,11 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertIn("--prebuilt-prx-dir", workflow)
         self.assertLess(workflow.index("--prebuilt-prx-dir"),
                         workflow.index("actions/attest-build-provenance"))
+        # The showcase packages' completion manifests list dot-file build stamps;
+        # without them in the uploaded bundle the player hides both demos as stale.
+        upload = workflow[workflow.index("- name: Upload the attested candidate bundle"):]
+        upload = upload.split("\n      - name:", 1)[0]
+        self.assertIn("include-hidden-files: true", upload)
         self.assertIn("'^\\.(iso|prx|elf|eboot|sav|key|pgf|pgd)$'", preview)
         self.assertIn("$relative -notmatch '^bin/font/nk[^/]*\\.pgf$'", preview)
         self.assertIn("$relative -notlike 'bin/demos/*'", preview)
