@@ -10353,7 +10353,7 @@ static uint32_t atrac_reset_buffer_info(const Atrac *a, uint32_t sample,
                           (uint64_t)(sample / spf) * a->bytesPerFrame;
         uint64_t missing = needed > a->size ? needed - a->size : 0u;
         first->writePos = a->buf + a->size;
-        first->writable = a->fileSize - a->size;
+        first->writable = a->fileSize > a->size ? a->fileSize - a->size : 0u;
         first->minWrite = missing > 0xffffffffu ? 0xffffffffu : (uint32_t)missing;
         first->filePos = a->size;
     } else if (atrac_streamed_state(a)) {
