@@ -21303,6 +21303,7 @@ void ge_finish_latch_assist(void) {
 #define GE_LIST_SYNC_STALLED 3u     /* sceGeListSync(qid, 1) on a list stalled at its start address, read after a BUSY dequeue; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list stalled partway through is UNMEASURED and reads the same value */
 #define GE_LIST_SYNC_PAUSED 4u      /* sceGeListSync(qid, 1) on a list sceGeBreak(0) paused mid-draw; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list paused out of a stall, the only pause the runtime produces, is UNMEASURED and reads the same value */
 #define GE_DRAW_SYNC_STALLED 3u     /* sceGeDrawSync(1) with one list stalled at its start address, read after a BUSY dequeue; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list stalled partway through is UNMEASURED */
+#define GE_SYNC_DRAWING 2u          /* sceGeDrawSync(1) and sceGeListSync(qid, 1) on a list the GE is drawing, until its finish interrupt has been handled, then 0; PSP-3000 CASE=ge-timing C3, measured 2026-10-25 (issue #1296). Used by the opt-in SR_GE_TIMING model */
 #define GE_DRAW_SYNC_PAUSED 2u      /* sceGeDrawSync(1) with a list sceGeBreak(0) paused mid-draw; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list paused out of a stall is UNMEASURED */
 #define GE_ERROR_NO_ACTIVE_LIST 0x80000020u /* sceGeBreak(0) with no active list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
 #define GE_ERROR_INVALID_BREAK_MODE 0x80000107u /* sceGeBreak(-1), parameter untouched; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
@@ -21315,6 +21316,7 @@ enum {
     GE_LIST_COMPLETED = 2,
     GE_LIST_PAUSED = 3,
     GE_LIST_CANCELLED = 4,
+    GE_LIST_DRAWING = 5, /* reached its END; the opt-in timing model has not completed it yet */
 };
 
 typedef struct {
@@ -21326,9 +21328,165 @@ typedef struct {
     uint32_t cbarg;
     int status; // GE_LIST_*
     int executed; // the GE ran this list to its END; a later stall address must not re-run it
+    uint64_t done_us; // GE_LIST_DRAWING: modelled completion time (guest us)
+    uint64_t finish_seq; // GE_LIST_DRAWING: completion order between equal times
 } GeListInfo;
 
 static GeListInfo s_ge_lists[GE_LIST_MAX];
+
+/* ---- opt-in GE completion timing (SR_GE_TIMING=1, issue #1296) ----------------------------
+ *
+ * By default the runtime executes a display list synchronously inside the call that hands it
+ * to the GE (sceGeListEnQueue, sceGeListUpdateStallAddr, sceGeContinue) and completes it
+ * there: the finish callback runs and every later sync reads "done" with no guest time spent.
+ * On a PSP the GE draws while the CPU runs on, and sceGeDrawSync / sceGeListSync wait for it.
+ *
+ * With SR_GE_TIMING=1 a list that reached its END is GE_LIST_DRAWING until its completion
+ * interrupt has been handled:
+ *   - The GE is one serial timeline (s_ge_busy_until_ns).  Each list's fixed cost and each
+ *     executed chunk are charged from max(now, busy-until), so a list queued behind a busy GE
+ *     finishes after it.  Measured (CASE=ge-timing, C5/T15): a list enqueued while the GE is
+ *     busy finishes after the running one, and back-to-back lists show no measurable gap.
+ *   - The cost of each chunk is ge.c's GE time model, in GE clocks, measured on a PSP-3000
+ *     (CASE=ge-timing, PSP-GE-TIMING-001, PR #1321; issue #1296's third comment).  The GE clock
+ *     is the bus clock, so clocks become guest time at the emulated bus clock
+ *     (sr_power_bus_clock_mhz) at the moment the work is charged.
+ *   - Completion is an interrupt source the scheduler delivers (sched_set_ge_timing_hooks):
+ *     the finish callback runs from scheduler_service_pending(), in interrupt context,
+ *     never before the modelled time, due lists in completion order.  Measured (C1): the
+ *     finish callback runs at the end of the list.
+ *   - The peeks sceGeDrawSync(1) and sceGeListSync(qid, 1) read 2 until that interrupt has
+ *     been handled, then 0 (measured, C3).  sceGeDrawSync(0) and sceGeListSync(qid, 0) delay
+ *     the calling thread until the modelled time; the scheduler delivers the due completion
+ *     before the thread runs again, so they return after the callback (measured, C2/C6).
+ *     With CPU interrupts suspended the completion cannot be delivered and a blocking sync
+ *     returns once the time has passed: UNMEASURED.
+ * Known divergences: a SIGNAL with behaviour CONTINUE calls the signal callback mid-list on a
+ * PSP (measured, C4) but signal callbacks are not dispatched here; sceGeBreak(0) does not pause
+ * a drawing list (UNMEASURED); sceGeListEnQueueHead appends to the timeline instead of jumping
+ * the queue (UNMEASURED). */
+static int s_ge_timing = -1;              /* -1 until SR_GE_TIMING is read */
+static uint64_t s_ge_busy_until_ns;       /* the modelled GE is busy until this guest time */
+static unsigned s_ge_timing_drawing;      /* lists in GE_LIST_DRAWING */
+static uint64_t s_ge_timing_seq;          /* completion order between equal times */
+
+static int ge_timing_on(void) {
+    if (s_ge_timing < 0) {
+        const char *on = getenv("SR_GE_TIMING");
+        s_ge_timing = on && strcmp(on, "1") == 0;
+        ge_timing_set_enabled(s_ge_timing);
+        if (s_ge_timing)
+            fprintf(stderr, "GE_TIMING: on, GE time model measured on PSP-3000 (CASE=ge-timing, "
+                            "issue #1296), bus clock %u MHz\n", (unsigned)sr_power_bus_clock_mhz());
+    }
+    return s_ge_timing;
+}
+
+static uint64_t ge_timing_now_ns(void) {
+    sched_vtime_refresh();
+    return sched_vtime_us() * 1000u;
+}
+
+/* Put `clk` GE clocks of work on the timeline, at the current bus clock. */
+static void ge_timing_add_clk(double clk) {
+    uint32_t mhz = sr_power_bus_clock_mhz();
+    /* scePowerSetClockFrequency retains its request verbatim; a zero bus clock, which no PSP
+     * runs at, keeps the boot clock rather than dividing by zero. */
+    if (mhz == 0u) mhz = SR_POWER_BOOT_BUS_MHZ;
+    uint64_t now = ge_timing_now_ns();
+    if (s_ge_busy_until_ns < now) s_ge_busy_until_ns = now;
+    if (clk > 0.0) s_ge_busy_until_ns += (uint64_t)(clk * 1000.0 / (double)mhz + 0.5);  /* nearest ns */
+}
+
+/* Charge the chunk the last ge_run_list call executed. */
+static void ge_timing_charge_run(void) {
+    ge_timing_add_clk(ge_timing_run_clk());
+}
+
+/* The GE ran the list in `slot` to its END.  By default it completes now and its finish
+ * callback runs in this call, as it always has; with the model on it draws until the GE
+ * timeline reaches the end of its work. */
+static void ge_list_reached_end(CpuState *s, int slot) {
+    GeListInfo *l = &s_ge_lists[slot];
+    l->executed = 1;
+    if (ge_timing_on()) {
+        l->status = GE_LIST_DRAWING;
+        l->done_us = (s_ge_busy_until_ns + 999u) / 1000u;
+        l->finish_seq = ++s_ge_timing_seq;
+        s_ge_timing_drawing++;
+        if (ge_log_on())
+            fprintf(stderr, "GE_TIMING: list_id=0x%08x drawing until %llu us\n",
+                    l->uid, (unsigned long long)l->done_us);
+        return;
+    }
+    l->status = GE_LIST_COMPLETED;
+    ge_finish_callback(s, l->cbid, l->uid, l->cbarg);
+}
+
+/* Scheduler hook: the earliest completion time of a drawing list, else UINT64_MAX. */
+static uint64_t ge_timing_next_deadline_us(void) {
+    uint64_t next = UINT64_MAX;
+    if (!s_ge_timing_drawing) return next;
+    for (int i = 0; i < GE_LIST_MAX; i++)
+        if (s_ge_lists[i].status == GE_LIST_DRAWING && s_ge_lists[i].done_us < next)
+            next = s_ge_lists[i].done_us;
+    return next;
+}
+
+/* Scheduler hook, run as an interrupt episode: complete every list whose time has passed,
+ * in completion order, and run its finish callback. */
+static void ge_timing_service_due(void) {
+    while (s_ge_timing_drawing) {
+        uint64_t now = sched_vtime_us();
+        int best = -1;
+        for (int i = 0; i < GE_LIST_MAX; i++) {
+            const GeListInfo *l = &s_ge_lists[i];
+            if (l->status != GE_LIST_DRAWING || l->done_us > now) continue;
+            if (best < 0 || l->done_us < s_ge_lists[best].done_us ||
+                (l->done_us == s_ge_lists[best].done_us && l->finish_seq < s_ge_lists[best].finish_seq))
+                best = i;
+        }
+        if (best < 0) return;
+        GeListInfo *l = &s_ge_lists[best];
+        l->status = GE_LIST_COMPLETED;
+        s_ge_timing_drawing--;
+        if (ge_log_on())
+            fprintf(stderr, "GE_TIMING: list_id=0x%08x completed at %llu us (modelled %llu us)\n",
+                    l->uid, (unsigned long long)now, (unsigned long long)l->done_us);
+        ge_finish_callback(s_cpu, l->cbid, l->uid, l->cbarg);
+    }
+}
+
+/* The latest completion time still ahead of the guest clock among drawing lists (`slot` < 0:
+ * every list), else 0. */
+static uint64_t ge_timing_drawing_until(int slot) {
+    uint64_t now = ge_timing_now_ns() / 1000u;
+    uint64_t until = 0;
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        if (slot >= 0 && i != slot) continue;
+        if (s_ge_lists[i].status == GE_LIST_DRAWING && s_ge_lists[i].done_us > now &&
+            s_ge_lists[i].done_us > until)
+            until = s_ge_lists[i].done_us;
+    }
+    return until;
+}
+
+/* Delay the calling thread until no list (`slot` < 0) or the list in `slot` is still drawing.
+ * A caller with no thread (interrupt context) cannot be delayed and returns at once. */
+static void ge_timing_wait(int slot) {
+    uint64_t until;
+    while (sched_current_uid() != 0u && (until = ge_timing_drawing_until(slot)) != 0u)
+        sched_delay_current(until - sched_vtime_us());
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only switch for the model; resets the GE timeline. */
+void sr_hle_test_ge_timing(int on) {
+    s_ge_timing = on ? 1 : 0;
+    ge_timing_set_enabled(s_ge_timing);
+    s_ge_busy_until_ns = 0;
+}
+#endif
 
 static uint32_t h_GeGetCmd(CpuState *s) {
     (void)s;
@@ -21359,9 +21517,19 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
             break;
         }
     }
+    if (slot == -1 && ge_timing_on()) {
+        /* With lists left drawing, reuse a finished slot first so no completion is lost. */
+        for (int i = 0; i < GE_LIST_MAX; i++) {
+            if (s_ge_lists[i].status == GE_LIST_COMPLETED || s_ge_lists[i].status == GE_LIST_CANCELLED) {
+                slot = i;
+                break;
+            }
+        }
+    }
     if (slot == -1) {
         slot = 0;
     }
+    if (s_ge_lists[slot].status == GE_LIST_DRAWING) s_ge_timing_drawing--;
 
     s_ge_lists[slot].uid = list_id;
     s_ge_lists[slot].start_pc = list;
@@ -21371,6 +21539,7 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     s_ge_lists[slot].cbarg = cbarg;
     s_ge_lists[slot].executed = 0;
     s_ge_lists[slot].status = 1;
+    if (ge_timing_on()) ge_timing_add_clk(ge_timing_list_clk());
 
     /* stall == list means the ring buffer is empty — the game will fill it and advance the
      * stall via sceGeListUpdateStallAddr. Running it now would read uninitialized eDRAM;
@@ -21387,6 +21556,7 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     g_ge_stall_addr = stall;
     uint32_t next_pc = ge_run_list(list, 0);
     g_ge_stall_addr = 0;
+    if (ge_timing_on()) ge_timing_charge_run();
 
     ge_enqueue_trace_result(s, "enqueue", list_id,
                             next_pc == 0 ? "done" : "stalled",
@@ -21397,11 +21567,9 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
                 list_id, list, stall, cbid, next_pc, next_pc == 0 ? "(DONE)" : "(stalled)");
 
     if (next_pc == 0) {
-        s_ge_lists[slot].executed = 1;
-        s_ge_lists[slot].status = 2; // completed
         SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
                                list_id, list, stall, next_pc);
-        ge_finish_callback(s, cbid, list_id, cbarg);
+        ge_list_reached_end(s, slot);
     } else {
         /* List stalled at a non-start stall — game will advance via UpdateStallAddr.
          * Do NOT drain here: that runs past the game's write head into uninitialized eDRAM. */
@@ -21490,6 +21658,7 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
 
     uint32_t next_pc = ge_run_list(s_ge_lists[slot].current_pc, 1); // 1 = resume
     g_ge_stall_addr = 0;
+    if (ge_timing_on()) ge_timing_charge_run();
 
     ge_enqueue_trace_result(s, "update_stall", list_id,
                             next_pc == 0 ? "done" : "stalled",
@@ -21500,14 +21669,12 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
                 next_pc, next_pc == 0 ? "(COMPLETED)" : "(stalled)");
 
     if (next_pc == 0) {
-        s_ge_lists[slot].executed = 1;
-        s_ge_lists[slot].status = 2; // completed
         SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
                                list_id, s_ge_lists[slot].start_pc,
                                s_ge_lists[slot].stall_addr, next_pc);
         if (ge_log_on())
             fprintf(stderr, "GE_UPDATE_STALL: list DONE, firing finish callback cbid=%u\n", s_ge_lists[slot].cbid);
-        ge_finish_callback(s, s_ge_lists[slot].cbid, list_id, s_ge_lists[slot].cbarg);
+        ge_list_reached_end(s, slot);
     } else {
         s_ge_lists[slot].current_pc = next_pc;
     }
@@ -21530,6 +21697,14 @@ static uint32_t h_GeListSync(CpuState *s) {
             if (ge_log_on())
                 fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
                         qid, syncType, s_ge_lists[i].status, s_ge_lists[i].current_pc);
+            if (s_ge_lists[i].status == GE_LIST_DRAWING) {
+                /* Opt-in timing model.  The peek reads 2 until the completion interrupt has
+                 * been handled (PSP-3000, CASE=ge-timing C3). */
+                if (syncType == 1) return GE_SYNC_DRAWING;
+                ge_timing_wait(i);
+                ge_transition_trace_check("listsync", s_vcount);
+                return 0;
+            }
             if (s_ge_lists[i].status == GE_LIST_COMPLETED) {
                 ge_transition_trace_check("listsync", s_vcount);
                 return 0;
@@ -21621,6 +21796,12 @@ static uint32_t h_GeDrawSync(CpuState *s) {
     uint32_t mode = A0;
     int busy = 0;
     int paused = 0;
+    /* Opt-in timing model: wait for every drawing list first.  The peek reads 2 until the
+     * completion interrupt has been handled (PSP-3000, CASE=ge-timing C3). */
+    if (s_ge_timing_drawing) {
+        if (mode == 1u) return GE_SYNC_DRAWING;
+        if (mode != 1u) ge_timing_wait(-1);
+    }
     for (int i = 0; i < GE_LIST_MAX; i++) {
         if (s_ge_lists[i].status == GE_LIST_STALLED) busy = 1;
         if (s_ge_lists[i].status == GE_LIST_PAUSED) paused = 1;
@@ -21683,7 +21864,9 @@ static uint32_t h_GeBreak(CpuState *s) {
          * not that list's queue id. A reset with a paused list is UNMEASURED and returns 0 by
          * the same rule. */
         for (int i = 0; i < GE_LIST_MAX; i++) {
-            if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
+            if (s_ge_lists[i].status == GE_LIST_DRAWING) s_ge_timing_drawing--;
+            if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED ||
+                s_ge_lists[i].status == GE_LIST_DRAWING) {
                 s_ge_lists[i].status = GE_LIST_CANCELLED;
                 if (ge_log_on())
                     fprintf(stderr, "GE_BREAK: cancelled queue list_id=0x%08x\n", s_ge_lists[i].uid);
@@ -21717,15 +21900,13 @@ static uint32_t h_GeContinue(CpuState *s) {
         g_ge_stall_addr = s_ge_lists[paused_slot].stall_addr;
         uint32_t next_pc = ge_run_list(s_ge_lists[paused_slot].current_pc, 1); /* 1 = resume */
         g_ge_stall_addr = 0;
+        if (ge_timing_on()) ge_timing_charge_run();
 
         if (next_pc == 0) {
-            s_ge_lists[paused_slot].executed = 1;
-            s_ge_lists[paused_slot].status = GE_LIST_COMPLETED;
             SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
                                    s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].start_pc,
                                    s_ge_lists[paused_slot].stall_addr, next_pc);
-            ge_finish_callback(s, s_ge_lists[paused_slot].cbid,
-                               s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].cbarg);
+            ge_list_reached_end(s, paused_slot);
         } else {
             s_ge_lists[paused_slot].current_pc = next_pc;
             s_ge_lists[paused_slot].status = GE_LIST_STALLED;
@@ -26059,6 +26240,11 @@ void sr_hle_init(void) {
     hle_register_atrac_handlers();
     hle_register_mp3_handlers();
     hle_register_sas_handlers();
+#endif
+#ifndef SR_MPEG_MEDIA_SELFTEST
+    /* Opt-in GE completion timing: the hooks report nothing unless SR_GE_TIMING=1. */
+    sched_set_ge_timing_hooks(ge_timing_next_deadline_us, ge_timing_service_due);
+    (void)ge_timing_on();
 #endif
     atomic_store_explicit(&s_hle_init_state, 2, memory_order_release);
 }

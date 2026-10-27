@@ -1984,6 +1984,44 @@ static int scheduler_alarm_service_one(void) {
     return 1;
 }
 
+/* ---- opt-in GE completion timing (hle.c, SR_GE_TIMING) ---------------------------------
+ *
+ * With the model on, a GE list that reached its END is not complete until the guest clock
+ * passes its modelled completion time; hle.c owns the model and the list table.  Completion
+ * is an interrupt source like an alarm: it is delivered only from
+ * scheduler_service_pending(), after any owed VBLANK episode and ahead of alarms, in
+ * interrupt context (s_cur == -1), and while somebody waits its deadline is an idle wake
+ * source.  hle.c registers the hooks; a build without it keeps them NULL. */
+static SrSchedGeNextDeadline s_ge_timing_next;
+static SrSchedGeServiceDue s_ge_timing_service;
+
+void sched_set_ge_timing_hooks(SrSchedGeNextDeadline next_deadline, SrSchedGeServiceDue service_due) {
+    s_ge_timing_next = next_deadline;
+    s_ge_timing_service = service_due;
+}
+
+static uint64_t sched_ge_next_deadline(void) {
+    return s_ge_timing_next ? s_ge_timing_next() : SCHED_WAIT_FOREVER;
+}
+
+/* Like an alarm, a GE completion is only a wake source while it can be delivered. */
+static uint64_t sched_ge_wake_deadline(void) {
+    return s_interrupts_enabled ? sched_ge_next_deadline() : SCHED_WAIT_FOREVER;
+}
+
+static int scheduler_ge_due(void) {
+    return s_ge_timing_service && sched_ge_next_deadline() <= s_vtime_us;
+}
+
+/* One interrupt episode: complete every due list.  The completion path saves and restores
+ * the interrupted register file around each guest finish callback itself. */
+static void scheduler_ge_service(void) {
+    int save_cur = s_cur; s_cur = -1;     /* interrupt context: SR_YIELD must not switch */
+    s_ge_timing_service();
+    s_cur = save_cur;
+    sr_cpu_link_clear(s_cpu);
+}
+
 /* The scheduler's idle classification, as a pure read of scheduler state.
  *
  * Factored out of sched_run so the policy is directly testable: the loop it used
@@ -2015,6 +2053,8 @@ static SchedIdleState sched_classify_idle(void) {
     if (any_waiting) {
         uint64_t alarm = sched_alarm_wake_deadline();
         if (alarm < st.soonest) st.soonest = alarm;
+        uint64_t ge = sched_ge_wake_deadline();
+        if (ge < st.soonest) st.soonest = ge;
     }
     /* Object identity alone is not a licence to keep spinning: the source has to
      * still be able to fire and to be serviced. */
@@ -2042,10 +2082,12 @@ static void scheduler_service_pending(void) {
     s_servicing_interrupts = 1;
     while (s_interrupts_enabled &&
            ((s_pending_interrupts & SCHED_INTR_VBLANK) || s_pending_vblanks ||
-            scheduler_alarm_due_slot() >= 0)) {
-        /* Alarms are the lowest-priority source here: only once no VBLANK episode is owed. */
+            scheduler_ge_due() || scheduler_alarm_due_slot() >= 0)) {
+        /* Alarms are the lowest-priority source here: only once no VBLANK episode is owed.
+         * A due GE completion (opt-in model) sits between the two. */
         if (!(s_pending_interrupts & SCHED_INTR_VBLANK) && !s_pending_vblanks) {
-            scheduler_alarm_service_one();
+            if (scheduler_ge_due()) scheduler_ge_service();
+            else scheduler_alarm_service_one();
             continue;
         }
         s_pending_interrupts &= ~SCHED_INTR_VBLANK;
@@ -4669,6 +4711,8 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             /* An armed alarm is a timed wake like a delay, while someone is waiting for it. */
             if (any_waiting && sched_alarm_wake_deadline() < soonest)
                 soonest = sched_alarm_wake_deadline();
+            if (any_waiting && sched_ge_wake_deadline() < soonest)
+                soonest = sched_ge_wake_deadline();
             scheduler_progress_time();
             if (s_pace_on && soonest != (uint64_t)-1 && soonest > s_vtime_us &&
                 soonest - s_vtime_us < vblank_due_us())
@@ -4730,7 +4774,8 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
                 }
                 /* The jump may have reached an alarm deadline: its handler is what readies
                  * the waiter, and it only runs from an interrupt-service step. */
-                if (s_alarm_live) scheduler_service_pending();
+                if (s_alarm_live || sched_ge_next_deadline() != SCHED_WAIT_FOREVER)
+                    scheduler_service_pending();
                 idx = pick_next();
                 if (idx < 0) {
                     fprintf(stderr, "SCHED: no runnable threads left after time jump. Dumping thread states:\n");
