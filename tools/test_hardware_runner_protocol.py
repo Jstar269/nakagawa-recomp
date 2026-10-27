@@ -1559,7 +1559,7 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         )
 
     def test_new_probe_cases_register_strict_runner_completeness(self):
-        for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero"):
+        for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero", "cpu-timing"):
             with self.subTest(case_id=case_id):
                 self.assertEqual(
                     run_psplink_module._campaign_completeness_contract(case_id),
@@ -1568,6 +1568,45 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 self.assertFalse(run_psplink_module._campaign_stream_complete(
                     CAMPAIGN_META, case_id
                 ))
+
+        cpu_spec, cpu_counts = run_psplink_module.CAMPAIGN_PROBE_CASES["cpu-timing"]
+        self.assertEqual(cpu_spec.terminal_case, "cpu-timing-complete")
+        self.assertEqual(cpu_spec.terminal_count, 65)
+        cpu_rows = []
+        for case_id in cpu_spec.ordered_cases:
+            out_count = cpu_counts[case_id]
+            fields = " ".join(
+                f"out{index}=0x{index + 1:08x}" for index in range(out_count)
+            )
+            if case_id == cpu_spec.terminal_case:
+                fields = f"out0=0x{cpu_spec.terminal_count:08x}"
+            cpu_rows.append(
+                f"NAKAGAWA_PSP_TEST schema=1 test_id={cpu_spec.test_id} "
+                f"case_id={case_id} status=PASS result=0x00000000 {fields}\n"
+            )
+        cpu_stream = CAMPAIGN_META + "".join(cpu_rows)
+        self.assertTrue(
+            run_psplink_module._campaign_stream_complete(cpu_stream, "cpu-timing")
+        )
+        self.assertEqual(
+            len(_parse_campaign_records(cpu_stream, "cpu-timing").results),
+            cpu_spec.record_count,
+        )
+        cpu_failure = cpu_stream.replace(
+            "case_id=syscall-ge-list-enqueue status=PASS",
+            "case_id=syscall-ge-list-enqueue status=FAIL",
+            1,
+        )
+        self.assertTrue(
+            run_psplink_module._campaign_stream_complete(cpu_failure, "cpu-timing")
+        )
+        parsed_cpu_failure = _parse_campaign_records(cpu_failure, "cpu-timing")
+        self.assertFalse(all(row.status == "PASS" for row in parsed_cpu_failure.results))
+        self.assertFalse(
+            run_psplink_module._campaign_stream_complete(
+                CAMPAIGN_META + "".join(cpu_rows[:-1]), "cpu-timing"
+            )
+        )
 
         def invalid_cell_row(case_id, *, tier, api, endpoint, delta=0,
                              prefix=0, matches=0, post=0, band=0,

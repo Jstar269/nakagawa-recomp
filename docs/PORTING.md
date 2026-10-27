@@ -339,11 +339,9 @@ its single historical address remains only in the inventory. Retired inventory l
 `tools/compat_overrides.py:HLE_TITLE_CONFIGURED_COMPAT` and is gated by
 `tools/test_hle_title_isolation.py`.
 
-The separate Newlib master/table addresses remain only in the typed
-`SrTitleReentBindings` returned by `sr_title_config_reent_bindings()`. That accessor
-requires the validated `hst` codegen profile and exact HST source id; generic and
-fixture profiles receive no values. This preserves the flagship's configured reent
-compatibility while keeping guest addresses out of generic scheduler code.
+No Newlib master or guest thread-table address remains: the HST reent bindings were
+retired under [#363](https://github.com/Jstar269/nakagawa-recomp/issues/363), and the
+runtime writes nothing into a title's own per-thread reent table.
 
 By bucket (live `hle.c` only):
 

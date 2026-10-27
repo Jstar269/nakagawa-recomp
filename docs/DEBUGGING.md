@@ -599,8 +599,10 @@ A scripted answer follows the same status sequence as a person's. `sceUtilityOsk
 returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE` (for as many
 frames as the person takes; one poll for a scripted answer), then `QUIT` (whether the text was
 confirmed or cancelled; each field's result tells them apart) until the title calls
-`sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`. A keyboard the title shuts down,
-or replaces with a new one, before the person answered closes its input box and writes nothing.
+`sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`. Only one utility dialog runs at a
+time: while the keyboard is open, a second `sceUtilityOskInitStart` or another dialog's InitStart
+returns `INVALID_STATUS` (`0x80110001`) and leaves the keyboard and its input box alone
+([#1386](https://github.com/Jstar269/nakagawa-recomp/issues/1386)).
 `sceUtilityOskUpdate` itself keeps its named no-dialog compatibility result
 ([#281](https://github.com/Jstar269/nakagawa-recomp/issues/281)); the runtime owns the
 progression instead.
@@ -1395,6 +1397,14 @@ ball_table = 0x0030a000;  // type:data (not a function: ignored)
   `tgt_sym=` and `ra_sym=`. An address inside a function is named only when the map gives its `size:`.
 - A malformed line, an address wider than 32 bits, two different names for one address, or a name that
   would spell a symbol the generator already owns stops codegen with the file and line.
+
+Import stubs can be named without a map. `mingw32-make NAME_IMPORTS=1` passes `--name-imports`, and each
+stub becomes `f_<address>_<function>` after the function its NID imports, for example
+`f_08804120_sceGeListUpdateStallAddr`. The names come from `tools/nid_corpus.json`, the corpus
+`src/rt/nid_names.h` is generated from, so a stub's name and the runtime's NID name never disagree. A stub
+whose NID the corpus does not name keeps `f_<address>`, and a symbol-map name for the same address wins.
+The corpus is a codegen prerequisite while the option is on, and the default (`NAME_IMPORTS=0`) changes
+nothing. Named stubs join the runtime table, so a crash report names a stub the same way.
 
 A map built from a title is private input, like the title itself: keep it with the title's other
 private files and out of the repository.

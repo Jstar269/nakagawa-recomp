@@ -973,6 +973,290 @@ static void test_clear_shared_library_cache_keeps_other_caches(void) {
     assert(native_test_remove_tree(data_root));
 }
 
+/* ---- Bundled prerequisite tree (#1285) ---------------------------------- */
+
+#if defined(_WIN32) || defined(_WIN64)
+#define BUNDLE_TEST_EXE ".exe"
+#else
+#define BUNDLE_TEST_EXE ""
+#endif
+
+/* Synthetic pins. The player compares them with the record and never hashes
+   bundled file contents, so the inventory's digest column is a placeholder. */
+static const char kBundlePythonSha[] =
+    "1111111111111111111111111111111111111111111111111111111111111111";
+static const char kBundleGccSha[] =
+    "2222222222222222222222222222222222222222222222222222222222222222";
+static const char kBundleOtherSha[] =
+    "3333333333333333333333333333333333333333333333333333333333333333";
+static const char *const kBundleFiles[] = {
+    "python/python" BUNDLE_TEST_EXE,
+    "msys64/ucrt64/bin/gcc" BUNDLE_TEST_EXE,
+    "msys64/ucrt64/bin/mingw32-make" BUNDLE_TEST_EXE,
+    "notices/mingw-w64-ucrt-x86_64-gcc/COPYING",
+};
+
+typedef struct {
+    char root[NATIVE_TEST_PATH_MAX];
+    char install_root[NATIVE_TEST_PATH_MAX];
+    char cli_path[NATIVE_TEST_PATH_MAX];
+    char prereqs[NATIVE_TEST_PATH_MAX];
+    int64_t file_count;
+    int64_t unpacked_bytes;
+} BundleFixture;
+
+typedef struct {
+    const char *python_version;
+    const char *gcc_sha256;
+    int64_t file_count_delta;
+    bool extra_record;
+    bool drop_gcc_record;
+    bool no_bundle_section;
+} BundleRecordOptions;
+
+static void bundle_test_path(char *out, size_t out_size, const char *base, const char *relative) {
+    int n = snprintf(out, out_size, "%s%c%s", base, nk_platform_path_separator(), relative);
+    assert(n > 0 && (size_t)n < out_size);
+    for (char *p = out + strlen(base); *p; p++) {
+        if (*p == '/') *p = nk_platform_path_separator();
+    }
+}
+
+static FILE *bundle_test_open(const char *base, const char *relative, const char *mode) {
+    char path[NATIVE_TEST_PATH_MAX];
+    char parent[NATIVE_TEST_PATH_MAX];
+    bundle_test_path(path, sizeof(path), base, relative);
+    snprintf(parent, sizeof(parent), "%s", path);
+    char *slash = strrchr(parent, nk_platform_path_separator());
+    assert(slash != NULL);
+    *slash = '\0';
+    assert(nk_platform_mkdir_p(parent));
+    FILE *file = nk_fopen_utf8(path, mode);
+    assert(file != NULL);
+    return file;
+}
+
+static void bundle_test_write(const char *base, const char *relative, const char *text) {
+    FILE *file = bundle_test_open(base, relative, "wb");
+    assert(fputs(text, file) >= 0);
+    assert(fclose(file) == 0);
+}
+
+static void bundle_write_record(const BundleFixture *fx, const BundleRecordOptions *options) {
+    FILE *record = bundle_test_open(fx->prereqs, "installed.json", "wb");
+    fprintf(record, "{\"schema_version\": 1,\n");
+    if (!options->no_bundle_section) {
+        fprintf(record, " \"bundle\": {\"schema_version\": 1, \"inventory\": \"bundle-inventory.txt\", "
+                        "\"file_count\": %lld, \"unpacked_bytes\": %lld},\n",
+                (long long)(fx->file_count + options->file_count_delta),
+                (long long)fx->unpacked_bytes);
+    }
+    fprintf(record, " \"installed\": {\n  \"cpython-embed-amd64\": {\"version\": \"%s\", "
+                    "\"size_bytes\": 100, \"sha256\": \"%s\", \"license\": \"PSF-2.0\", "
+                    "\"notices\": []}",
+            options->python_version ? options->python_version : "3.15.1", kBundlePythonSha);
+    if (!options->drop_gcc_record) {
+        fprintf(record, ",\n  \"mingw-w64-ucrt-x86_64-gcc\": {\"version\": \"16.2.0-6\", "
+                        "\"size_bytes\": 200, \"sha256\": \"%s\", \"license\": \"GPL-3.0-or-later\", "
+                        "\"notices\": [\"notices/mingw-w64-ucrt-x86_64-gcc/COPYING\"]}",
+                options->gcc_sha256 ? options->gcc_sha256 : kBundleGccSha);
+    }
+    if (options->extra_record) {
+        fprintf(record, ",\n  \"unpinned-extra\": {\"version\": \"1\", \"size_bytes\": 1, "
+                        "\"sha256\": \"%s\", \"license\": \"MIT\", \"notices\": []}",
+                kBundleOtherSha);
+    }
+    fprintf(record, "\n }\n}\n");
+    assert(fclose(record) == 0);
+}
+
+/* <root>/<tag>/{bin, source/tools/nk_cli.py, source/assets/prereq_manifest.json,
+   prereqs/...}: the release layout with a two-artifact pinned set. */
+static void bundle_fixture_create(BundleFixture *fx, const char *tag) {
+    memset(fx, 0, sizeof(*fx));
+    char sep = nk_platform_path_separator();
+    int n = snprintf(fx->root, sizeof(fx->root), "%s%c%s", native_test_get_root(), sep, tag);
+    assert(n > 0 && (size_t)n < sizeof(fx->root));
+    if (nk_platform_dir_exists(fx->root)) assert(native_test_remove_tree(fx->root));
+    bundle_test_path(fx->install_root, sizeof(fx->install_root), fx->root, "bin");
+    assert(nk_platform_mkdir_p(fx->install_root));
+    bundle_test_path(fx->cli_path, sizeof(fx->cli_path), fx->root, "source/tools/nk_cli.py");
+    bundle_test_write(fx->root, "source/tools/nk_cli.py", "# synthetic CLI\n");
+    bundle_test_write(fx->root, "source/assets/prereq_manifest.json",
+        "{\"schema_version\": 1, \"total_download_bytes\": 300, \"artifacts\": [\n"
+        " {\"id\": \"cpython-embed-amd64\", \"name\": \"Synthetic CPython\", \"version\": \"3.15.1\",\n"
+        "  \"url\": \"https://www.python.org/ftp/synthetic.zip\", \"allowed_hosts\": [\"www.python.org\"],\n"
+        "  \"filename\": \"synthetic.zip\", \"size_bytes\": 100,\n"
+        "  \"sha256\": \"1111111111111111111111111111111111111111111111111111111111111111\",\n"
+        "  \"license\": \"PSF-2.0\", \"status\": \"ready\"},\n"
+        " {\"id\": \"mingw-w64-ucrt-x86_64-gcc\", \"name\": \"Synthetic GCC\", \"version\": \"16.2.0-6\",\n"
+        "  \"url\": \"https://repo.msys2.org/synthetic.pkg.tar.zst\", \"allowed_hosts\": [\"repo.msys2.org\"],\n"
+        "  \"filename\": \"synthetic.pkg.tar.zst\", \"size_bytes\": 200,\n"
+        "  \"sha256\": \"2222222222222222222222222222222222222222222222222222222222222222\",\n"
+        "  \"license\": \"GPL-3.0-or-later\", \"status\": \"ready\"}\n"
+        "]}\n");
+    bundle_test_path(fx->prereqs, sizeof(fx->prereqs), fx->root, "prereqs");
+    char python_path[NATIVE_TEST_PATH_MAX];
+    bundle_test_path(python_path, sizeof(python_path), fx->prereqs, kBundleFiles[0]);
+    fclose(bundle_test_open(fx->prereqs, kBundleFiles[0], "wb"));
+    copy_self_executable(python_path);
+    bundle_test_write(fx->prereqs, kBundleFiles[1], "synthetic gcc\n");
+    bundle_test_write(fx->prereqs, kBundleFiles[2], "synthetic make\n");
+    bundle_test_write(fx->prereqs, kBundleFiles[3], "synthetic licence text\n");
+    FILE *inventory = bundle_test_open(fx->prereqs, "bundle-inventory.txt", "wb");
+    for (size_t i = 0; i < sizeof(kBundleFiles) / sizeof(kBundleFiles[0]); i++) {
+        char path[NATIVE_TEST_PATH_MAX];
+        bundle_test_path(path, sizeof(path), fx->prereqs, kBundleFiles[i]);
+        int64_t size = nk_platform_get_file_size(path);
+        assert(size > 0);
+        fprintf(inventory, "%s %lld %s\n", kBundleOtherSha, (long long)size, kBundleFiles[i]);
+        fx->file_count++;
+        fx->unpacked_bytes += size;
+    }
+    assert(fclose(inventory) == 0);
+    BundleRecordOptions defaults = { 0 };
+    bundle_write_record(fx, &defaults);
+}
+
+static void assert_bundle_refused(const BundleFixture *fx, const char *case_name,
+                                  const char *expected_detail) {
+    PackageBundledTools tools;
+    PackageBundleStatus status = package_builder_resolve_bundled_tools(fx->install_root,
+                                                                       fx->cli_path, &tools);
+    printf("[PACKAGE_BUILDER_BUNDLE] case=%s status=%d error=%s\n", case_name, (int)status, tools.error);
+    fflush(stdout);
+    assert(status == PACKAGE_BUNDLE_INVALID);
+    assert(strncmp(tools.error, "PREREQUISITE_BUNDLE_INVALID: ", 29) == 0);
+    assert(strstr(tools.error, expected_detail) != NULL);
+    assert(strstr(tools.error, "Extract the release zip again") != NULL);
+    assert(tools.python_path[0] == '\0' && tools.gcc_path[0] == '\0' && tools.make_path[0] == '\0');
+}
+
+static void test_bundled_prerequisites(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 12: bundled prerequisite tree\n");
+    char *saved_path = copy_env_value("PATH");
+    char *saved_python = copy_env_value("PYTHON");
+    char *saved_isolation = copy_env_value("NAKAGAWA_PLAYER_UI_TEST_NO_HOST_PYTHON");
+    char *saved_mode = copy_env_value("NAKAGAWA_TEST_PYTHON_STUB_MODE");
+    /* No host tool can stand in: PATH is empty and PYTHON unset. */
+    native_test_set_env("PATH", "");
+    native_test_set_env("PYTHON", NULL);
+    native_test_set_env("NAKAGAWA_PLAYER_UI_TEST_NO_HOST_PYTHON", "1");
+    native_test_set_env("NAKAGAWA_TEST_PYTHON_STUB_MODE", "cpython-315");
+
+    BundleFixture fx;
+    bundle_fixture_create(&fx, "bundle-release");
+    PackageBundledTools tools;
+    char expected[NK_MAX_PATH];
+    char relative[NK_MAX_PATH];
+
+    /* The bundle sits beside bin/: <install root>/../prereqs. */
+    char root[NK_MAX_PATH];
+    assert(package_builder_bundled_prerequisites_root(fx.install_root, root, sizeof(root)));
+    assert(nk_platform_absolute_path(fx.prereqs, expected, sizeof(expected)));
+    assert(strcmp(root, expected) == 0);
+
+    /* No prereqs/ folder: the per-user download flow stays in charge. */
+    char other_install[NATIVE_TEST_PATH_MAX];
+    bundle_test_path(other_install, sizeof(other_install), fx.root, "source/tools");
+    assert(package_builder_resolve_bundled_tools(other_install, fx.cli_path, &tools) ==
+           PACKAGE_BUNDLE_ABSENT);
+    assert(tools.root[0] == '\0' && tools.error[0] == '\0' && tools.python_path[0] == '\0');
+
+    /* A complete bundle resolves all three tools inside it, with no download. */
+    assert(package_builder_resolve_bundled_tools(fx.install_root, fx.cli_path, &tools) ==
+           PACKAGE_BUNDLE_VALID);
+    assert(tools.error[0] == '\0');
+    assert(strcmp(tools.root, expected) == 0);
+    bundle_test_path(relative, sizeof(relative), fx.prereqs, kBundleFiles[0]);
+    assert(nk_platform_absolute_path(relative, expected, sizeof(expected)));
+    assert(strcmp(tools.python_path, expected) == 0);
+    bundle_test_path(relative, sizeof(relative), fx.prereqs, kBundleFiles[1]);
+    assert(nk_platform_absolute_path(relative, expected, sizeof(expected)));
+    assert(strcmp(tools.gcc_path, expected) == 0);
+    bundle_test_path(relative, sizeof(relative), fx.prereqs, kBundleFiles[2]);
+    assert(nk_platform_absolute_path(relative, expected, sizeof(expected)));
+    assert(strcmp(tools.make_path, expected) == 0);
+    char app_data[NK_MAX_PATH];
+    char app_prereqs[NK_MAX_PATH];
+    assert(nk_platform_get_app_data_dir(app_data, sizeof(app_data)));
+    bundle_test_path(app_prereqs, sizeof(app_prereqs), app_data, "prerequisites");
+    assert(!nk_platform_dir_exists(app_prereqs));
+
+    /* The About screen lists the bundle's records and notices. */
+    PackagePrerequisiteList pinned;
+    char error[256];
+    assert(package_builder_load_prerequisites(fx.cli_path, &pinned, error, sizeof(error)));
+    assert(package_builder_check_bundled_prerequisites(tools.root, &pinned, error, sizeof(error)) ==
+           PACKAGE_BUNDLE_VALID);
+    package_builder_mark_prerequisites_installed_at(&pinned, tools.root);
+    assert(pinned.items[0].installed && pinned.items[1].installed);
+    assert(strcmp(pinned.items[1].notice_path, "notices/mingw-w64-ucrt-x86_64-gcc/COPYING") == 0);
+
+    /* Tampered or incomplete bundles are refused by name, never repaired. */
+    BundleRecordOptions options = { 0 };
+    options.gcc_sha256 = kBundleOtherSha;
+    bundle_write_record(&fx, &options);
+    assert_bundle_refused(&fx, "record-sha256", "differs from the pinned manifest: mingw-w64-ucrt-x86_64-gcc");
+    memset(&options, 0, sizeof(options));
+    options.python_version = "3.15.0";
+    bundle_write_record(&fx, &options);
+    assert_bundle_refused(&fx, "record-version", "differs from the pinned manifest: cpython-embed-amd64");
+    memset(&options, 0, sizeof(options));
+    options.drop_gcc_record = true;
+    bundle_write_record(&fx, &options);
+    assert_bundle_refused(&fx, "record-missing", "exactly the pinned artifacts");
+    memset(&options, 0, sizeof(options));
+    options.extra_record = true;
+    bundle_write_record(&fx, &options);
+    assert_bundle_refused(&fx, "record-extra", "exactly the pinned artifacts");
+    memset(&options, 0, sizeof(options));
+    options.no_bundle_section = true;
+    bundle_write_record(&fx, &options);
+    assert_bundle_refused(&fx, "record-not-a-bundle", "not a schema 1 bundle record");
+    memset(&options, 0, sizeof(options));
+    options.file_count_delta = 1;
+    bundle_write_record(&fx, &options);
+    assert_bundle_refused(&fx, "inventory-count", "does not match its record");
+
+    bundle_fixture_create(&fx, "bundle-release");
+    bundle_test_path(relative, sizeof(relative), fx.prereqs, "installed.json");
+    assert(nk_remove_utf8(relative) == 0);
+    assert_bundle_refused(&fx, "record-absent", "bundle record is missing");
+
+    bundle_fixture_create(&fx, "bundle-release");
+    bundle_test_path(relative, sizeof(relative), fx.prereqs, kBundleFiles[1]);
+    assert(nk_remove_utf8(relative) == 0);
+    assert_bundle_refused(&fx, "file-missing", "missing: msys64/ucrt64/bin/gcc");
+
+    bundle_fixture_create(&fx, "bundle-release");
+    FILE *grown = bundle_test_open(fx.prereqs, kBundleFiles[3], "ab");
+    assert(fputs("x", grown) >= 0);
+    assert(fclose(grown) == 0);
+    assert_bundle_refused(&fx, "file-size", "wrong size: notices/mingw-w64-ucrt-x86_64-gcc/COPYING");
+
+    bundle_fixture_create(&fx, "bundle-release");
+    FILE *inventory = bundle_test_open(fx.prereqs, "bundle-inventory.txt", "ab");
+    fprintf(inventory, "%s 15 msys64/../../outside.txt\n", kBundleOtherSha);
+    assert(fclose(inventory) == 0);
+    assert_bundle_refused(&fx, "inventory-escape", "malformed: line 5");
+
+    bundle_fixture_create(&fx, "bundle-release");
+    native_test_set_env("NAKAGAWA_TEST_PYTHON_STUB_MODE", "wrong-version");
+    assert_bundle_refused(&fx, "python-probe", "CPython 3.15 is missing or did not run");
+    native_test_set_env("NAKAGAWA_TEST_PYTHON_STUB_MODE", "cpython-315");
+
+    assert(native_test_remove_tree(fx.root));
+    restore_env_value("PATH", saved_path);
+    restore_env_value("PYTHON", saved_python);
+    restore_env_value("NAKAGAWA_PLAYER_UI_TEST_NO_HOST_PYTHON", saved_isolation);
+    restore_env_value("NAKAGAWA_TEST_PYTHON_STUB_MODE", saved_mode);
+    free(saved_path);
+    free(saved_python);
+    free(saved_isolation);
+    free(saved_mode);
+}
+
 int main(int argc, char *argv[]) {
     if (argc == 2 && strcmp(argv[1], "--child-exit-zero") == 0) return 0;
     if (argc == 3 && strcmp(argv[1], "-c") == 0) return run_python_probe_stub(argc, argv);
@@ -1012,6 +1296,7 @@ int main(int argc, char *argv[]) {
     test_pinned_prerequisite_manifest();
     test_remove_downloaded_tools_preserves_other_app_data();
     test_clear_shared_library_cache_keeps_other_caches();
+    test_bundled_prerequisites();
 #if defined(_WIN32) || defined(_WIN64)
     test_native_download_verification();
 #else

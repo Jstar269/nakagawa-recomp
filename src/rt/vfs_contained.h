@@ -228,7 +228,14 @@ typedef enum sr_cd_file_mode {
     SR_CD_FILE_WRITE_TRUNCATE = 1,
     SR_CD_FILE_READ_WRITE = 2,
     SR_CD_FILE_READ_WRITE_TRUNCATE = 3,
-    SR_CD_FILE_READ_WRITE_APPEND = 4
+    SR_CD_FILE_READ_WRITE_APPEND = 4,
+    /* sceIoOpen without PSP_O_CREAT: change an existing file, never create one. */
+    SR_CD_FILE_READ_WRITE_EXISTING_TRUNCATE = 5,
+    SR_CD_FILE_READ_WRITE_EXISTING_APPEND = 6,
+    /* sceIoOpen with PSP_O_CREAT | PSP_O_EXCL: create a new file, never open an existing
+     * one (SR_CD_ALREADY_EXISTS). */
+    SR_CD_FILE_READ_WRITE_NEW = 7,
+    SR_CD_FILE_READ_WRITE_NEW_APPEND = 8
 } sr_cd_file_mode;
 
 /* CALLER CONTRACT: treat EVERY non-OK status as failure.
@@ -954,6 +961,18 @@ static inline sr_cd_status sr_cd_open_file(const sr_cd_root *root, const char *r
     } else if (mode == SR_CD_FILE_READ_WRITE_APPEND) {
         flags |= O_RDWR | O_CREAT | O_APPEND;
         stdio_mode = "a+b";
+    } else if (mode == SR_CD_FILE_READ_WRITE_EXISTING_TRUNCATE) {
+        flags |= O_RDWR;          /* truncated below, once the object is a regular file */
+        stdio_mode = "w+b";       /* fdopen never truncates or creates */
+    } else if (mode == SR_CD_FILE_READ_WRITE_EXISTING_APPEND) {
+        flags |= O_RDWR | O_APPEND;
+        stdio_mode = "a+b";
+    } else if (mode == SR_CD_FILE_READ_WRITE_NEW) {
+        flags |= O_RDWR | O_CREAT | O_EXCL;
+        stdio_mode = "w+b";
+    } else if (mode == SR_CD_FILE_READ_WRITE_NEW_APPEND) {
+        flags |= O_RDWR | O_CREAT | O_EXCL | O_APPEND;
+        stdio_mode = "a+b";
     } else {
         close(dir_fd);
         return SR_CD_INVALID_PATH;
@@ -961,7 +980,8 @@ static inline sr_cd_status sr_cd_open_file(const sr_cd_root *root, const char *r
 
     int fd = openat(dir_fd, leaf, flags, 0666);
     if (fd < 0) {
-        st = sr_cd__at_open_fail();
+        /* O_EXCL refuses any existing name, a planted link included, without following it. */
+        st = (flags & O_EXCL) && errno == EEXIST ? SR_CD_ALREADY_EXISTS : sr_cd__at_open_fail();
         close(dir_fd);
         return st;
     }
@@ -980,7 +1000,8 @@ static inline sr_cd_status sr_cd_open_file(const sr_cd_root *root, const char *r
         close(fd);
         return SR_CD_IO_ERROR;
     }
-    if (mode == SR_CD_FILE_READ_WRITE_TRUNCATE && ftruncate(fd, 0) != 0) {
+    if ((mode == SR_CD_FILE_READ_WRITE_TRUNCATE ||
+         mode == SR_CD_FILE_READ_WRITE_EXISTING_TRUNCATE) && ftruncate(fd, 0) != 0) {
         close(fd);
         return SR_CD_IO_ERROR;
     }

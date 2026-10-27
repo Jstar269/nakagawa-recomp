@@ -707,11 +707,15 @@ Clock ownership:
   works under [#1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159); today `Esc`,
   `F1`, Guide or the controller's back button (East) resumes.
 - **libc time/gettimeofday** — seconds/usec since the standard Unix epoch, converted from the RTC
-  tick. The PSP timezone is a console setting (`s_psp_timezone_minutes`), not the host process
-  timezone. The retained, settable system-profile owner for timezone/daylight does not exist yet:
-  `sceRtcGetCurrentClockLocalTime` and UTC/local conversion therefore run on the fixed UTC
-  constant, and that single UTC/local-conversion criterion stays blocked on the missing owner.
-  The explicit-offset `sceRtcGetCurrentClock` path is complete and independent of it.
+  tick. The PSP timezone is a console setting, not the host process timezone. It lives in the
+  virtual system registry (`/CONFIG/DATE/time_zone_offset` and `summer_time`), the same keys
+  `sceUtilityGetSystemParamInt` reports as TIMEZONE and DAYLIGHTSAVINGS, so
+  `sceRtcGetCurrentClockLocalTime`, the UTC/local conversions and the `gettimeofday` timezone
+  record follow a setting a game writes through `sceReg` and can never disagree with the getter
+  ([#1382](https://github.com/Jstar269/nakagawa-recomp/issues/1382)). The seed is the oracle
+  console's measured setting (-300 minutes, daylight saving on), not a factory default; the
+  60-minute daylight-saving shift is the setting's meaning, not a measurement. The
+  explicit-offset `sceRtcGetCurrentClock` path takes its offset from the caller.
 - **Media** — the PSMF timestamp model (`mpeg.c`) and H.264 PES timestamps are stream-relative media
   domains and are not wall time. The `scePsmfPlayer*` handlers sit above a bounded project-authored
   PSMF producer (`psmf_producer.c`): a normalized access unit carries the stream's own presentation

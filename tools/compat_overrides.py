@@ -170,10 +170,10 @@ CODEGEN_TEMPORARY_PATCH_TEST = (
     " + ProfileNoneDecouplingTests.test_every_coupled_address_matches_its_control_copy"
 )
 
-#: The two GUEST_PATCHES instruction overrides are pinned by a different test.
-#: The coupling differential does NOT catch them being switched off: their
+#: The GUEST_PATCHES instruction override (0x10950) is pinned by a different test.
+#: The coupling differential does NOT catch it being switched off: its
 #: static-verify exclusion (_SV_SPECIAL in tools/codegen.py) is keyed on the
-#: same addresses, so a disabled patch still emits address-different text.
+#: same address, so a disabled patch still emits address-different text.
 #: The legacy-emission test asserts the patch's own marker text instead, and
 #: fails when the patch stops applying (verified the same way).
 CODEGEN_GUEST_PATCH_TEST = (
@@ -189,12 +189,6 @@ GUEST_PATCHES = [
          test=CODEGEN_GUEST_PATCH_TEST, owner_issue="#363",
          retirement="reproduce and root-cause the forced-control-flow case: the frame-init loop "
                     "must terminate on its own guest-visible condition, then delete the entry"),
-    dict(address=0x00048320, layer="codegen_instruction", category="temporary_compatibility_patch",
-         source="tools/codegen.py:GUEST_PATCHES", name="force single-iteration pass",
-         reason="inject a forced single-iteration exit at 0x48320",
-         test=CODEGEN_GUEST_PATCH_TEST, owner_issue="#363",
-         retirement="reproduce and root-cause the forced-control-flow case: the guest loop must "
-                    "run its real iteration count, then delete the injected exit"),
     dict(address=0x0004cdc8, layer="codegen_instruction", category="hle_boundary",
          source="tools/codegen.py:GUEST_PATCHES", name="route asset reads through host filesystem",
          reason="force the branch that selects the host0 (sceIoOpen-backed) asset path; "
@@ -455,30 +449,12 @@ SCHEDULER_HOOKS = [
                     "needs no host participation"),
 ]
 
-# HST-only guest Newlib addresses now live behind the validated HST title-config
-# accessor. They are not generic scheduler overrides and are absent from sched.c.
-TITLE_CONFIGURED_SCHEDULER_COMPAT = [
-    dict(address=0x002cf338, category="temporary_compatibility_patch",
-         name="master reent fallback address",
-         source="src/rt/title_config.c:sr_title_config_reent_bindings",
-         title_scope="hst-ucus98701",
-         reason="provides the pre-launcher Newlib master only for the validated HST profile; "
-                "generic and fixture builds receive no address",
-         test="tools/test_hle_title_isolation.py and flagship verification",
-         owner_issue="#363",
-         retirement="model the actual libc/thread bring-up so the pre-launcher master reent needs "
-                    "no host-supplied address; then remove the binding"),
-    dict(address=0x0030aa88, category="temporary_compatibility_patch",
-         name="guest thread reent table root",
-         source="src/rt/title_config.c:sr_title_config_reent_bindings",
-         title_scope="hst-ucus98701",
-         reason="seeds and maintains the guest's legacy per-thread reent hash only for the "
-                "validated HST profile; generic builds perform no guest-table access",
-         test="tools/test_hle_title_isolation.py and flagship verification",
-         owner_issue="#363",
-         retirement="model the guest's own per-thread reent registration so the host stops "
-                    "seeding the guest table; then remove the binding"),
-]
+# HST-only guest Newlib reent bindings. The two entries (0x002cf338 master reent fallback
+# address, 0x0030aa88 guest thread reent table root) were retired under #363 (2026-10-27):
+# they were selected only by a manifest id no local HST manifest carries, so the private
+# full-match route already ran without them. The runtime no longer seeds, maintains or
+# resets the guest's per-thread reent table, and no reent address remains in public source.
+TITLE_CONFIGURED_SCHEDULER_COMPAT: "list[dict]" = []
 
 # --- src/rt/recomp.c: dispatch bindings owned by TITLE CONFIGURATION ----------
 # These three used to be numeric literals compiled into generic dispatch. They are
