@@ -411,6 +411,12 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
         dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
     }
 #else
+    /* The box is owned by the launcher window: bring that to the front first,
+       or the box opens behind the running game's window. */
+    if (window != NULL) {
+        (void)SDL_RestoreWindow(window);
+        (void)SDL_RaiseWindow(window);
+    }
     dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
 #endif
     if (!dialog_shown) {
