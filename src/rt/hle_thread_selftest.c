@@ -1255,6 +1255,7 @@ static int hle_data_stderr_capture_begin(FILE **capture, int *saved_fd);
 static size_t hle_data_stderr_capture_end(FILE *capture, int saved_fd,
                                           char *output, size_t output_size);
 static int count_occurrences(const char *haystack, const char *needle);
+uint32_t sr_hle_test_libfont_startup_stops(void);
 
 /* sceKernelStartModule for the synthetic libfont handle, with the argument and status
  * pointers the production ABI documents. */
@@ -1493,8 +1494,14 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
            "SR_REAL_MODULE_START=1 runs the translated libfont module_start");
 
     /* Phase 4: SR_REAL_MODULE_START=0 is the environmental kill switch. It has to cover
-     * libfont too: no entry runs, the call fails closed, and readiness remains guest-owned.
-     * Phase 5 repeats unavailable startup so the diagnostic latch is observed. */
+     * libfont too: no entry runs, readiness remains guest-owned, and the run stops by name
+     * (the harness counts the stop and returns the refusal). Phase 5 repeats it for an
+     * untranslated entry. Every stop writes the player's semantic-boundary event line. */
+    const char *events_path = HLE_BUILD_ROOT "/hle_libfont_stop_events.txt";
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    remove(events_path);
+    _putenv_s("SR_BOOT_EVENT_FILE", events_path);
+    uint32_t stops_before = sr_hle_test_libfont_startup_stops();
     _putenv("SR_REAL_MODULE_START=0");
     sr_hle_test_module_reset();
     uint32_t uid_off = sr_hle_test_register_module("disc0:/PSP_GAME/USRDIR/libfont.prx",
@@ -1545,14 +1552,30 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     expect(libfont_start_call(&cpu, uid_lookalike) == 0u &&
                s_synth_libfont_start_calls == starts_before,
            "a module whose name only contains libfont.prx does not take the libfont gate");
+    expect(sr_hle_test_libfont_startup_stops() == stops_before + 4u,
+           "each unavailable libfont start takes the named run stop");
+    {
+        char events[1024] = "";
+        FILE *ev = fopen(events_path, "rb");
+        size_t got = ev ? fread(events, 1, sizeof(events) - 1u, ev) : 0u;
+        if (ev) fclose(ev);
+        events[got] = '\0';
+        expect(count_occurrences(events, "BOOT_EVENT phase=stop reason=semantic-boundary "
+                                         "boundary=libfont-startup-unavailable issue=299\n") == 4,
+               "each libfont stop writes the player's semantic-boundary event line");
+    }
+    _putenv_s("SR_BOOT_EVENT_FILE", "");
+    remove(events_path);
     if (capturing) {
         captured[0] = '\0';
         hle_data_stderr_capture_end(capture, saved_fd, captured, sizeof(captured));
         /* Replay the captured window so the boundary text a consumer would read from
          * stderr stays observable in the run output the regressions assert on. */
         fprintf(stderr, "%s", captured);
-        expect(count_occurrences(captured, "LIBFONT_STARTUP_UNAVAILABLE") == 2,
-               "repeated unavailable libfont starts log the boundary exactly once per reason");
+        expect(count_occurrences(captured, "LIBFONT_STARTUP_UNAVAILABLE") == 4,
+               "every unavailable libfont start names its boundary before the run stops");
+        expect(count_occurrences(captured, "the run stops at libfont-startup-unavailable") == 4,
+               "the libfont diagnostic names the run stop");
         expect(strstr(captured, "SR_REAL_MODULE_START=0 disabled guest startup") != NULL,
                "the libfont diagnostic names the kill switch as its boundary");
         expect(strstr(captured, "entry untranslated") != NULL,
