@@ -4096,8 +4096,10 @@ static uint32_t h_DelaySysClockThreadCB(CpuState *s) {
     if (result != 0u) return result;
     return h_DelayThreadCBForUsec(usec);
 }
+/* sceKernelChangeThreadPriority(thid, priority).  Validation, the stored value and the
+ * scheduling boundary at the call (the PSPAutotests threads/threads/change.expected
+ * cells) are sched_set_priority's. */
 static uint32_t h_ChangeThreadPriority(CpuState *s) {
-    /* PSP-B3-01 (psp-hw-20260917): a dormant target answers DORMANT. */
     return sched_set_priority(A0, (int)A1);
 }
 
@@ -25310,6 +25312,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x912354a7, "sceKernelRotateThreadReadyQueue", h_RotateThreadReadyQueue);
     sr_hle_register(0x75156e8f, "sceKernelResumeThread", h_ResumeThread);
     sr_hle_register(0x9944f31f, "sceKernelSuspendThread", h_SuspendThread);
+    sr_hle_register(0x71bc9871, "sceKernelChangeThreadPriority", h_ChangeThreadPriority);
     sr_hle_register(0x6652b8ca, "sceKernelSetAlarm", h_SetAlarm);
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
     sr_hle_register(0x110dec9au, "sceKernelUSec2SysClock", h_USec2SysClock);
@@ -25624,7 +25627,6 @@ void sr_hle_init(void) {
     sr_hle_register(0x0ed48fe2, "sceKernelDeleteNotifyCallback", h_DeleteNotifyCallback);
     sr_hle_register(0x94aa61ee, "sceKernelGetThreadCurrentPriority", h_GetThreadPriority);
     sr_hle_register(0xfccfad26, "sceKernelCancelWakeupThread", h_CancelWakeupThread);
-    sr_hle_register(0x71bc9871, "sceKernelChangeThreadPriority", h_ChangeThreadPriority);
     sr_hle_register(0xffc36a14, "sceKernelReferThreadRunStatus", h_ReferThreadRunStatus);
     sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleId);
     /* Boot setup batch (return success / reference value). */
