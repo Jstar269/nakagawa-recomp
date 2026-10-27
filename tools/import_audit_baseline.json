@@ -819,7 +819,7 @@
     "classification": "dedicated",
     "handler": "h_ReferMsgPipeStatus",
     "name": "sceKernelReferMsgPipeStatus",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x33d4ab37": {
     "classification": "dedicated",
@@ -856,7 +856,7 @@
     "classification": "dedicated",
     "handler": "h_CancelMsgPipe",
     "name": "sceKernelCancelMsgPipe",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x349d6d6c": {
     "classification": "dedicated",
