@@ -2444,13 +2444,13 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 97)
+        self.assertEqual(len(routes), 99)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {106, 107}
-                         | {110, 111, 112, 113}, set(ids))
+                         | {110, 111, 112, 113, 114, 115}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -2469,10 +2469,19 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         self.assertIn("OBJS = $(BUILD_DIR)/probe.o\n", self.makefile)
         self.assertIn("MUTEX_CASES = mutex-refer-unlocked mutex-timeout-quanta", self.makefile)
         self.assertIn("mutex-priority-inheritance mutex-interrupt-context", self.makefile)
+        self.assertIn("mutex-interrupt-context cpu-timing", self.makefile)
         self.assertIn("ifneq ($(filter $(MUTEX_CASES),$(CASE)),)\n", self.makefile)
         self.assertIn("OBJS += $(BUILD_DIR)/mutex_imports.o\n", self.makefile)
         self.assertNotIn(
             "OBJS = $(BUILD_DIR)/probe.o $(BUILD_DIR)/mutex_imports.o",
+            self.makefile,
+        )
+
+    def test_cpu_timing_imports_only_the_required_kernel_library_nids(self) -> None:
+        self.assertIn("ifeq ($(CASE),cpu-timing)", self.makefile)
+        self.assertIn(
+            "Kernel_Library=0x092968F4,0x5F10D406,0x47A0B729,0xB55249D2,"
+            "0xBEA46419,0x15B6446B",
             self.makefile,
         )
 
@@ -2653,6 +2662,80 @@ class PspDmacProbeTests(unittest.TestCase):
 
     def assert_probe_contains(self, needle: str) -> None:
         self.assertTrue(needle in self.probe, f"probe is missing required source: {needle}")
+
+    def test_cpu_timing_bounds_blocking_ge_calls_and_stalled_queue_occupancy(self) -> None:
+        self.assertIn("#define CPU_TIMING_DRAW_SYNC_CALLS 4u", self.probe)
+        self.assertIn("s_cpu_timing_drawsync_job.calls = CPU_TIMING_DRAW_SYNC_CALLS;", self.probe)
+        self.assertIn("const uint32_t calls = CPU_TIMING_DRAW_SYNC_CALLS;", self.probe)
+        self.assertIn("#define CPU_TIMING_GE_CALLS_PER_TRIAL 1u", self.probe)
+        self.assertIn("CPU_TIMING_GE_CALLS_PER_TRIAL, &error", self.probe)
+        self.assertIn("sceGuStart(GU_SEND, s_cpu_timing_ge_list);", self.probe)
+        self.assertIn("s_cpu_timing_ge_list_bytes = (uint32_t)list_bytes;", self.probe)
+        self.assertIn("(uintptr_t)s_cpu_timing_ge_list +", self.probe)
+        self.assertIn("(uint32_t)list_bytes <= sizeof(s_cpu_timing_ge_list)", self.probe)
+
+    def test_cpu_timing_tears_down_libpspgu_before_recording_the_ge_cells(self) -> None:
+        bodies = dict(_c_function_list(_c_code(self.probe)))
+        ge = bodies["cpu_timing_measure_ge_calls"]
+        teardown = ge.index("const GeGuTeardown gu_down = ge_gu_teardown(gu_rc, -1);")
+        self.assertLess(ge.index("sceGuInit()"), teardown)
+        self.assertLess(teardown, ge.index("cpu_timing_emit_ge_cell("))
+        self.assertLess(teardown, ge.index('"cpu-timing-gu-teardown"'))
+        # Every path emits the teardown row, so the stream keeps its shape.
+        self.assertIn("cpu_timing_emit_gu_teardown_skip(emulated);\n        return 0;", ge)
+        self.assertIn("cpu_timing_emit_gu_teardown_skip(emulated);", bodies["run_cpu_timing"])
+        self.assertIn("#define CPU_TIMING_RESULT_COUNT 65u", self.probe)
+        mutant = self.probe.replace(
+            "    const int gu_rc = sceGuInit();\n",
+            "    const int gu_rc = sceGuInit();\n    if (gu_rc < 0) {\n        return 0;\n    }\n", 1)
+        self.assertNotEqual(mutant, self.probe)
+        self.assertNotEqual(_gu_teardown_problems(mutant), [])
+
+    def test_cpu_timing_displays_its_own_framebuffer_when_none_is_displayed(self) -> None:
+        # 2026-10-27 (boot 47, standalone PSPLink): sceDisplayGetFrameBuf reported no
+        # framebuffer, so the display cell was SKIP and the capture was not eligible.
+        body = dict(_c_function_list(_c_code(self.probe)))["run_cpu_timing"]
+        order = [
+            body.index("sceDisplayGetFrameBuf("),
+            body.index("if (frame_rc >= 0 && s_cpu_timing_framebuffer == NULL) {"),
+            body.index("s_cpu_timing_framebuffer = sceGeEdramGetAddr();"),
+            body.index("cpu_timing_call_setframebuf, CPU_TIMING_SYSCALL_CALLS"),
+            body.index("sceDisplaySetFrameBuf(NULL, frame_found_stride, frame_found_format,"),
+            body.index('"cpu-timing-framebuffer"'),
+        ]
+        self.assertEqual(order, sorted(order))
+        self.assertIn("if (frame_owned) {", body)
+        # Changing the stride or format with IMMEDIATE returns 0x80000107 (measured on boot
+        # 48), so both changes are NEXTFRAME followed by the latching vblank.
+        own_set = body[order[2]:order[3]]
+        self.assertIn("PSP_DISPLAY_SETBUF_NEXTFRAME);", own_set)
+        self.assertIn("sceDisplayWaitVblankStart();", own_set)
+        self.assertNotIn("PSP_DISPLAY_SETBUF_IMMEDIATE", own_set)
+        restore = body[order[4]:order[5]]
+        self.assertIn("PSP_DISPLAY_SETBUF_NEXTFRAME);", restore)
+        self.assertIn("sceDisplayWaitVblankStart();", restore)
+        spec, counts = CAMPAIGN_PROBE_CASES["cpu-timing"]
+        cases = list(spec.ordered_cases)
+        self.assertEqual(cases.index("cpu-timing-framebuffer"),
+                         cases.index("syscall-display-setframebuf") + 1)
+        self.assertEqual(counts["cpu-timing-framebuffer"], 5)
+
+    def test_cpu_timing_manifest_row_is_measured_and_cites_every_record(self) -> None:
+        manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+            encoding="utf-8"))
+        row = next(test for test in manifest["tests"] if test["id"] == "PSP-CPU-TIMING-001")
+        spec, _counts = CAMPAIGN_PROBE_CASES["cpu-timing"]
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["case_ids"], list(spec.ordered_cases))
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
+        self.assertEqual(row["evidence_ref"],
+                         "docs/HARDWARE_ORACLE.md#psp-cpu-timing-001-measured-run-2026-10-27")
+        self.assertIn("3a14a88e", row["measurement_note"])
+        # Every record is named in the cited section; the APIs are listed but not cited,
+        # so the row grants no HLE evidence tier.
+        section = hle_manifest.measured_evidence_section(row)
+        self.assertIn("`3a14a88e`", section)
+        self.assertFalse(set(row["apis"]) & set(row["evidence_cases"]))
 
     def test_dmac_cases_are_individually_buildable_and_use_the_real_imports(self) -> None:
         for case in (
@@ -3009,6 +3092,10 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-HLE-AUDIO-SRC-001",
                 # The 2026-10-16 acceptance-eligible PSP-3000 VMIR3 run.
                 "PSP-VRAM-MIRROR-001",
+                # The 2026-10-27 acceptance-eligible ge-timing runs of 8f707fc0 (#1296).
+                "PSP-GE-TIMING-001",
+                # The 2026-10-27 acceptance-eligible cpu-timing run of 3a14a88e (#1296).
+                "PSP-CPU-TIMING-001",
             },
         )
         self.assertEqual(
@@ -3642,7 +3729,8 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
     """Step markers, bounded waits and record shapes of the campaign probes."""
 
     NEW_CASES = ("KERNEL_ALARM", "THREAD_SCHEDULER", "WAIT_OUTCOMES", "GE_BREAK_CONTINUE",
-                 "REFER_STATUS_SIZE", "REGISTRY_READONLY", "KERNEL_MISC", "VFPU_COMPARE")
+                 "REFER_STATUS_SIZE", "REGISTRY_READONLY", "KERNEL_MISC", "VFPU_COMPARE",
+                 "CPU_TIMING")
 
     def setUp(self) -> None:
         self.root = Path(__file__).resolve().parents[1]
@@ -3775,11 +3863,24 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
             self.assertEqual(int(done.group(1)), len(spec.ordered_cases) - 1, case)
 
     def test_no_probe_blocks_on_the_ge_without_a_bound(self) -> None:
+        # A blocking sync is allowed only where it is the measurement (ge-timing's C2/C6,
+        # cpu-timing's blocking sceGeDrawSync(0) cell): inside a helper-thread entry whose
+        # creator waits for it with a timeout and terminates it when the wait fails, so a
+        # sync that never returns costs one cell.
         for source in sorted(self.fixture.glob("*.c")):
             text = re.sub(r"/\*.*?\*/|//[^\n]*", "", source.read_text(encoding="utf-8"),
                           flags=re.DOTALL)
-            self.assertIsNone(re.search(r"sceGeListSync\([^;]*,\s*0\s*\)", text), source.name)
-            self.assertIsNone(re.search(r"sceGeDrawSync\(\s*0\s*\)", text), source.name)
+            for call in re.finditer(r"sceGeListSync\([^;]*,\s*0\s*\)|sceGeDrawSync\(\s*0\s*\)", text):
+                head = text.rfind("\nstatic ", 0, call.start())
+                entry = re.match(r"\nstatic int (\w+)\(SceSize \w+, void \*\w+\) \{",
+                                 text[head:text.index("{", head) + 1])
+                self.assertIsNotNone(entry, f"{source.name}: {call.group(0)} outside a helper thread")
+                create = re.search(r"sceKernelCreateThread\([^;]*\b%s\b" % entry.group(1), text)
+                self.assertIsNotNone(create, f"{source.name}: {entry.group(1)} is never started")
+                caller_head = text.rfind("\nstatic ", 0, create.start())
+                caller = text[caller_head:text.index("\n}\n", create.start())]
+                self.assertRegex(caller, r"sceKernelWaitThreadEnd\(\s*\w+\s*,\s*&\w+\s*\)", source.name)
+                self.assertIn("sceKernelTerminateDeleteThread(", caller, source.name)
             self.assertNotIn("sceGuSync(", text, source.name)
 
     def test_ge_break_continue_writes_the_list_back_before_enqueueing_it(self) -> None:
@@ -3817,6 +3918,272 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
             self.assertLess(body.index(earlier), bad, earlier)
         self.assertLess(bad, body.index("sceRegGetKeysNum((REGHANDLE)0xffffffffu"))
         self.assertLess(body.index('"registry-bad-handle"'), body.index('"registry-done"'))
+
+
+def _c_function_list(code: str) -> list[tuple[str, str]]:
+    """(name, body with braces) of every top-level function definition, in source order.
+
+    A list rather than a mapping: different case blocks of probe.c may reuse a name.
+    """
+    found = []
+    for match in re.finditer(r"^(?:static\s+)?[A-Za-z_][\w \t\*]*?\b(\w+)\s*\(([^;{}]*)\)\s*\{",
+                             code, re.MULTILINE):
+        if match.group(1) in _C_NOT_CALLS:
+            continue
+        brace = code.index("{", match.end() - 1)
+        found.append((match.group(1), code[brace:_c_close(code, brace) + 1]))
+    return found
+
+
+def _c_depth(body: str, at: int) -> int:
+    """Brace depth at index `at` of a function body that starts at its opening brace."""
+    text = re.sub(r'"(?:[^"\\]|\\.)*"', '""', body[:at])
+    return text.count("{") - text.count("}")
+
+
+def _gu_teardown_problems(source: str) -> list[str]:
+    """Paths of a PSP oracle source that can unload with a GE callback still registered.
+
+    sceGuInit registers libpspgu's GE signal and finish callbacks (PSPSDK src/gu/sceGuInit.c)
+    and only sceGuTerm removes them (src/gu/sceGuTerm.c); a callback a case registers itself is
+    removed only by sceGeUnsetCallback.  The runner unloads the probe after the case returns, so
+    a registration left behind points the next GE interrupt at freed code.  Checked on the
+    comment-free text, per function:
+
+    - a function that calls sceGuInit passes its result to ge_gu_teardown in a statement at the
+      function's top level, with no return or goto between the two;
+    - a function that calls sceGeSetCallback passes that ID to ge_gu_teardown, or to
+      sceGeUnsetCallback after a bounded GE wait, the same way;
+    - ge_gu_teardown waits for idle with the bound, resets the queues when the GE is still
+      busy, unregisters the case's callback, and only then calls sceGuTerm, with no return
+      before it; sceGuTerm is called nowhere else.
+    """
+    code = _c_code(source)
+    functions = _c_function_list(code)
+    problems: list[str] = []
+    if "sceGuInit(" not in code and "sceGeSetCallback(" not in code:
+        return problems
+
+    def reaches(name: str, body: str, start: int, pattern: str, what: str) -> int:
+        """Index of the first top-level `pattern` after `start` with no exit in between, or -1."""
+        for match in re.finditer(pattern, body[start:]):
+            at = start + match.start()
+            statement = body[max(body.rfind(c, 0, at) for c in ";{}") + 1:at]
+            if _c_depth(body, at) != 1 or re.search(r"\b(?:if|else|for|while|do|case)\b|\?", statement):
+                continue  # inside a block or a conditional statement: not every path
+            if re.search(r"\b(?:return|goto)\b", body[start:at]):
+                problems.append(f"{name} can return before {what}")
+            return at
+        problems.append(f"{name} never reaches {what} at its top level")
+        return -1
+
+    term_owners = [name for name, body in functions if "sceGuTerm(" in body]
+    if term_owners != ["ge_gu_teardown"]:
+        problems.append(f"sceGuTerm is called from {term_owners}, not only from ge_gu_teardown")
+    helpers = [body for name, body in functions if name == "ge_gu_teardown"]
+    if len(helpers) != 1:
+        problems.append(f"{len(helpers)} definitions of ge_gu_teardown, not one")
+    else:
+        helper = helpers[0]
+        steps = [re.search(pattern, helper) for pattern in (
+            r"ge_wait_idle\(\s*-1\s*,\s*GE_IDLE_DEADLINE_US\s*\)",
+            r"if \(!\w+\.idle\) \{[^{}]*ge_reset_queues\(",
+            r"sceGeUnsetCallback\(\s*own_cbid\s*\)",
+            r"if \(init_rc >= 0\) \{\s*sceGuTerm\(\);",
+        )]
+        if not all(steps):
+            problems.append("ge_gu_teardown lacks the bounded wait, the reset, the callback "
+                            "unregistration or the guarded sceGuTerm")
+        elif [step.start() for step in steps] != sorted(step.start() for step in steps):
+            problems.append("ge_gu_teardown does not wait, reset and unregister before sceGuTerm")
+        elif re.search(r"\breturn\b", helper[:steps[-1].start()]):
+            problems.append("ge_gu_teardown can return before sceGuTerm")
+
+    for name, body in functions:
+        if name == "ge_gu_teardown":
+            continue
+        for call in re.finditer(r"\b(\w+) = sceGuInit\(\)", body):
+            reaches(name, body, call.end(),
+                    r"ge_gu_teardown\(\s*%s\s*," % re.escape(call.group(1)),
+                    f"ge_gu_teardown({call.group(1)}, ...)")
+        if body.count("sceGuInit(") != len(re.findall(r"\b\w+ = sceGuInit\(\)", body)):
+            problems.append(f"{name} calls sceGuInit without keeping its result")
+        for call in re.finditer(r"\b(\w+) = sceGeSetCallback\(", body):
+            cbid = re.escape(call.group(1))
+            at = reaches(name, body, call.end(),
+                         r"ge_gu_teardown\([^;]*,\s*%s\s*\)|sceGeUnsetCallback\(\s*%s\s*\)" % (cbid, cbid),
+                         f"the unregistration of {call.group(1)}")
+            if at >= 0 and not body[at:].startswith("ge_gu_teardown(") and \
+                    "ge_wait_idle(" not in body[call.end():at]:
+                problems.append(f"{name} unregisters {call.group(1)} without a bounded GE wait")
+        if body.count("sceGeSetCallback(") != len(re.findall(r"\b\w+ = sceGeSetCallback\(", body)):
+            problems.append(f"{name} calls sceGeSetCallback without keeping its ID")
+    return problems
+
+
+class GuTeardownContractTests(unittest.TestCase):
+    """#1296: no probe unloads with a libpspgu or probe-owned GE callback still registered."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+        self.probe = (self.fixture / "probe.c").read_text(encoding="utf-8")
+
+    def test_every_gu_init_and_ge_callback_is_torn_down_on_every_path(self) -> None:
+        for source in sorted(self.fixture.glob("*.c")):
+            with self.subTest(source=source.name):
+                self.assertEqual(_gu_teardown_problems(source.read_text(encoding="utf-8")), [])
+        code = _c_code(self.probe)
+        owners = {name for name, body in _c_function_list(code) if "sceGuInit(" in body}
+        self.assertIn("run_ge_nan", owners)
+        self.assertIn("run_vram_mirror", owners)
+        self.assertIn("ge_run_case", {name for name, body in _c_function_list(code)
+                                      if "sceGeSetCallback(" in body})
+
+    def test_the_teardown_check_refuses_each_leak(self) -> None:
+        helper_term = "    if (init_rc >= 0) {\n        sceGuTerm();\n        t.term_called = 1u;\n    }\n"
+        helper_wait = "    GeIdleWait w = ge_wait_idle(-1, GE_IDLE_DEADLINE_US);\n"
+        nan_init = "    const int init_rc = sceGuInit();\n    s_ge_nan_frame"
+        vram_down = "const GeGuTeardown gu_down = ge_gu_teardown(gu_init_rc, -1);"
+        mask_unset = "    sceGeUnsetCallback(cbid);\n"
+        mask_set = "    const int cbid = sceGeSetCallback(&cb);\n"
+        for anchor in (helper_term, helper_wait, nan_init, vram_down, mask_unset, mask_set):
+            self.assertEqual(self.probe.count(anchor), 1, anchor)
+        mutants = {
+            # The shape every sceGuInit case had before #1296 round 3: no teardown at all.
+            "no-teardown": re.sub(r"const GeGuTeardown gu_down = ge_gu_teardown\([^;]*\);",
+                                  "const GeGuTeardown gu_down = {0};", self.probe),
+            "no-term": self.probe.replace(helper_term, ""),
+            "term-before-wait": self.probe.replace(helper_term, "").replace(
+                helper_wait, helper_term.replace("t.term_called", "unused") + helper_wait),
+            "no-reset": self.probe.replace("t.reset_rc = ge_reset_queues(&w);", "", 1),
+            "term-elsewhere": self.probe.replace(nan_init, nan_init.replace(
+                "sceGuInit();\n", "sceGuInit();\n    sceGuTerm();\n")),
+            "early-return": self.probe.replace(nan_init, nan_init.replace(
+                "sceGuInit();\n", "sceGuInit();\n    if (init_rc < 0) {\n        return;\n    }\n")),
+            "result-dropped": self.probe.replace(nan_init, nan_init.replace(
+                "const int init_rc = sceGuInit();", "const int init_rc = 0;\n    sceGuInit();")),
+            "conditional-teardown": self.probe.replace(
+                vram_down, "GeGuTeardown gu_down = {0};\n    if (clear.completed)\n        gu_down = "
+                "ge_gu_teardown(gu_init_rc, -1);"),
+            "nested-teardown": self.probe.replace(
+                vram_down, "GeGuTeardown gu_down = {0};\n    if (clear.completed) {\n        gu_down = "
+                "ge_gu_teardown(gu_init_rc, -1);\n    }"),
+            "callback-kept": self.probe.replace(mask_unset, ""),
+            "callback-early-return": self.probe.replace(
+                mask_set, mask_set + "    if (cbid < 0) {\n        return;\n    }\n"),
+        }
+        for name, mutant in mutants.items():
+            with self.subTest(mutant=name):
+                self.assertNotEqual(mutant, self.probe)
+                self.assertNotEqual(_gu_teardown_problems(mutant), [], name)
+
+    def test_ge_nan_and_vram_mirror_record_the_teardown(self) -> None:
+        bodies = dict(_c_function_list(_c_code(self.probe)))
+        nan = bodies["run_ge_nan"]
+        self.assertRegex(nan, r'defer_record\("ge-nan-done", gu_down\.idle \? "PASS" : "TIMEOUT",')
+        self.assertLess(nan.index("ge_gu_teardown("), nan.index('"ge-nan-done"'))
+        vram = bodies["run_vram_mirror"]
+        self.assertIn("const int ge_idle = sprite_c.ge_idle && gu_down.idle;", vram)
+        self.assertLess(vram.index("ge_gu_teardown("), vram.index("restore-vram"))
+
+    def test_ge_timing_unregisters_its_callback_through_the_teardown(self) -> None:
+        gt_down = "const GeGuTeardown gu_down = ge_gu_teardown(init_rc, s_gt_cbid);"
+        self.assertEqual(self.probe.count(gt_down), 1)
+        gt = dict(_c_function_list(_c_code(self.probe)))["run_ge_timing"]
+        self.assertLess(gt.index("ge_gu_teardown("), gt.index('"gt-gu-teardown"'))
+        self.assertLess(gt.index('"gt-gu-teardown"'), gt.index('"gt-done"'))
+        self.assertNotIn("sceGeUnsetCallback(", gt)
+        for name, mutant in {
+            "callback-kept": self.probe.replace(gt_down, gt_down.replace("s_gt_cbid", "-1")),
+            "only-after-passes": self.probe.replace(
+                gt_down, "GeGuTeardown gu_down = {0};\n    if (passes)\n        gu_down = "
+                "ge_gu_teardown(init_rc, s_gt_cbid);"),
+        }.items():
+            with self.subTest(mutant=name):
+                self.assertNotEqual(_gu_teardown_problems(mutant), [], name)
+
+
+class GeTimingContractTests(unittest.TestCase):
+    """#1296: the ge-timing stream has a strict ordered completion contract."""
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.probe = (self.root / "fixtures" / "psp_oracle" / "probe.c").read_text(encoding="utf-8")
+        self.spec, self.counts = CAMPAIGN_PROBE_CASES["ge-timing"]
+
+    def test_contract_is_strict_and_counts_the_records(self) -> None:
+        self.assertEqual(_campaign_completeness_contract("ge-timing"),
+                         "strict-golden-sequence")
+        self.assertEqual(self.spec.test_id, "PSP-GE-TIMING-001")
+        self.assertEqual(self.spec.terminal_case, "ge-timing-done")
+        # gt-setup, 334 cells per clock pass, the teardown and gt-done.
+        self.assertEqual(self.spec.terminal_count, 1 + 2 * 334 + 2)
+        self.assertEqual(self.spec.ordered_cases[:2], ("gt-setup", "gt-b111-t0-empty-0"))
+        self.assertEqual(self.spec.ordered_cases[-3:], ("gt-gu-teardown", "gt-done", "ge-timing-done"))
+        self.assertEqual(
+            [case[len("gt-b111-"):] for case in self.spec.ordered_cases if case.startswith("gt-b111-")],
+            [case[len("gt-b166-"):] for case in self.spec.ordered_cases if case.startswith("gt-b166-")])
+
+    def test_every_record_is_counted_by_the_completion_record(self) -> None:
+        block = self.probe[self.probe.index("#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_TIMING\n/* GE execution"):]
+        block = _c_code(block[:block.index("\n#endif")])
+        emits = re.findall(r'emit_record_extended\(emulated, "PSP-GE-TIMING-001", ([^,]+),', block)
+        self.assertEqual(emits, ["case_id", '"ge-timing-done"'])
+        wrapper = dict(_c_function_list(block))["gt_record"]
+        self.assertIn("s_gt_records++;", wrapper)
+        run = dict(_c_function_list(block))["run_ge_timing"]
+        self.assertLess(run.index('gt_record(emulated, "gt-done"'), run.index('"ge-timing-done"'))
+        self.assertIn("const uint32_t records = s_gt_records;", run)
+
+    def test_contract_names_only_cells_the_probe_emits(self) -> None:
+        self.assertIn('snprintf(s_gt_clk, sizeof(s_gt_clk), "b%u", (unsigned int)bus);', self.probe)
+        self.assertIn("gt_pass(emulated, 222, 222, 111);", self.probe)
+        self.assertIn("gt_pass(emulated, 333, 333, 166);", self.probe)
+        cells = {re.match(r"[a-z]\d+-", case[len("gt-b111-"):]).group(0)
+                 for case in self.spec.ordered_cases if case.startswith("gt-b111-")}
+        # t0-t15, s1-s4 and the completion cells c13, c2, c4, c5 and c6.
+        self.assertEqual(len(cells), 16 + 4 + 5)
+        for cell in sorted(cells):
+            with self.subTest(cell=cell):
+                self.assertRegex(self.probe, r'["-]%s' % re.escape(cell))
+
+    def test_the_measured_order_parses_and_a_reordered_stream_does_not(self) -> None:
+        rows = []
+        for case_id in self.spec.ordered_cases:
+            out = " ".join(f"out{i}=0x00000000" for i in range(self.counts[case_id]))
+            if case_id == self.spec.terminal_case:
+                out = f"out0=0x{self.spec.terminal_count:08x}"
+            rows.append(f"NAKAGAWA_PSP_TEST schema=1 test_id=PSP-GE-TIMING-001 case_id={case_id} "
+                        f"status=PASS result=0x00000000 {out}\n")
+        meta = ("NAKAGAWA_PSP_META schema=1 source=psp model=PSP-3000 firmware=6.6.1 "
+                "binary_sha256=" + "0" * 64 + " source_commit=" + "0" * 40 + "\n")
+        self.assertTrue(parse_campaign_probe_output(meta + "".join(rows), "ge-timing").complete)
+        swapped = rows[:]
+        swapped[1], swapped[2] = swapped[2], swapped[1]
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(meta + "".join(swapped), "ge-timing")
+        clock_skip = ("NAKAGAWA_PSP_TEST schema=1 test_id=PSP-GE-TIMING-001 case_id=gt-b166-clock "
+                      "status=SKIP result=0x80000107 out0=0x80000107 out1=0x000000de out2=0x0000006f\n")
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(meta + "".join(rows[:335]) + clock_skip, "ge-timing",
+                                        require_complete=False)
+
+    def test_manifest_row_is_measured_and_cites_every_record(self) -> None:
+        manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+            encoding="utf-8"))
+        row = next(test for test in manifest["tests"] if test["id"] == "PSP-GE-TIMING-001")
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["case_ids"], list(self.spec.ordered_cases))
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
+        self.assertEqual(row["evidence_ref"],
+                         "docs/HARDWARE_ORACLE.md#psp-ge-timing-001-measured-runs-2026-10-27")
+        self.assertIn("8f707fc0", row["measurement_note"])
+        # The cited section names every record; the probe's APIs are listed but not cited, so
+        # this row grants no HLE evidence tier.
+        section = hle_manifest.measured_evidence_section(row)
+        self.assertIn("`8f707fc0`", section)
+        self.assertFalse(set(row["apis"]) & set(row["evidence_cases"]))
 
 
 class CampaignHost0LogTests(unittest.TestCase):
@@ -4054,7 +4421,8 @@ class VfpuCompareProbeTests(unittest.TestCase):
         start = self.probe.index(
             "#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \\\n"
             "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE || \\\n"
-            "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS\n"
+            "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS || \\\n"
+            "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_CPU_TIMING\n"
         )
         attr = self.probe[start:self.probe.index("#else", start)]
         self.assertIn("PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);", attr)
