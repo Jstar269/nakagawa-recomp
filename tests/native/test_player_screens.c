@@ -60,38 +60,77 @@ static const PlayerUiTitle k_titles[] = {
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      NK_UI_ART_SHOWCASE_SCENE, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PLAYABLE, false},
+     PLAYER_UI_TIER_PLAYABLE, false, false},
     {"Synthetic Showcase Breakout", "TEST00008", "Needs setup", "",
      "Showcase profile-zero acceptance remains open.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      NK_UI_ART_SHOWCASE_BREAKOUT, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PLAYABLE, false},
+     PLAYER_UI_TIER_PLAYABLE, false, false},
     {"Synthetic Experimental Fixture", "TEST00006", "Experimental", "",
      "Source-owned compatibility fixture.", "", NULL, "", "", "",
      "RETRY PACKAGE CHECK", "◆", 0x6CB6FFFFu,
      PLAYER_UI_PRIMARY_RETRY_PACKAGE_CHECK, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE, true},
+     PLAYER_UI_TIER_NONE, true, false},
     {"Synthetic Untested Fixture", "TEST00005", "Untested", "",
      "No compatibility record exists.", "", NULL, "", "", "",
      "BUILD PACKAGE", "?", 0x6CB6FFFFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_NONE, true},
+     PLAYER_UI_TIER_NONE, true, false},
     {"Synthetic Phase Five", "TEST00004", "Needs setup", "",
      "Player launch stops at the package boundary.", "", NULL, "",
      "", "", "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_WONT_BOOT, true},
+     PLAYER_UI_TIER_WONT_BOOT, true, false},
     {"Synthetic Title Two", "TEST00002", "Needs setup", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
-     PLAYER_UI_TIER_PERFECT, true},
+     PLAYER_UI_TIER_PERFECT, true, false},
     {"Synthetic Profile", "TEST00001", "Ready", "",
      "Source-owned runtime fixture.", "", NULL, "", "", "",
      "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
      0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
-     PLAYER_UI_TIER_PERFECT, true}
+     PLAYER_UI_TIER_PERFECT, true, false}
+};
+
+/* A library with the demos that come with Nakagawa among the user's games, in
+   the order the player keeps them: demos at 0 and 2, games at 1 and 3. */
+static const PlayerUiTitle k_demo_titles[] = {
+    {"Synthetic Breakout Demo", "TEST00008", "Ready", "",
+     "Plays a synthetic game with sound.", "", NULL, "", "", "",
+     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PLAYABLE, false, true},
+    {"Synthetic Title Two", "TEST00002", "Needs setup", "",
+     "Source-owned runtime fixture.", "", NULL, "", "", "",
+     "BUILD PACKAGE", "▲", 0xDBB024FFu, PLAYER_UI_PRIMARY_BUILD, true, true,
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_MISSING,
+     PLAYER_UI_TIER_PERFECT, true, false},
+    {"Synthetic Scene Demo", "TEST00007", "Ready", "",
+     "Shows a synthetic cube with sound.", "", NULL, "", "", "",
+     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PLAYABLE, false, true},
+    {"Synthetic Profile", "TEST00001", "Ready", "",
+     "Source-owned runtime fixture.", "", NULL, "", "", "",
+     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     0u, NULL, NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PERFECT, true, false}
+};
+
+/* The demos alone: a first start with nothing added yet. */
+static const PlayerUiTitle k_demo_only_titles[] = {
+    {"Synthetic Breakout Demo", "TEST00008", "Ready", "",
+     "Plays a synthetic game with sound.", "", NULL, "", "", "",
+     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     NK_UI_ART_SHOWCASE_BREAKOUT, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PLAYABLE, false, true},
+    {"Synthetic Scene Demo", "TEST00007", "Ready", "",
+     "Shows a synthetic cube with sound.", "", NULL, "", "", "",
+     "PLAY", "●", 0x2DD4BFFFu, PLAYER_UI_PRIMARY_PLAY, true, true,
+     NK_UI_ART_SHOWCASE_SCENE, "Showcase demo", NULL, NULL, PLAYER_UI_PACKAGE_READY,
+     PLAYER_UI_TIER_PLAYABLE, false, true}
 };
 
 /* What-to-expect cards: a player tier with plain words, with known issues, the
@@ -757,8 +796,247 @@ static bool build_library_golden(char *out, size_t cap, size_t *used) {
         prefs.prompt_style = NK_UI_PROMPT_NEUTRAL;
         nk_ui_set_prefs(ui, &prefs);
     }
+    /* The demos that come with Nakagawa sit under TEST THIS PC: under the
+       first-start card while there are no games, under the grid once there are. */
+    nk_ui_focus(ui, 0u);
+    model.titles = k_demo_only_titles;
+    model.title_count = sizeof(k_demo_only_titles) / sizeof(k_demo_only_titles[0]);
+    model.page_label = NULL;
+    model.page_size = player_ui_library_page_size_with_demos(1280.0f, 800.0f, 2u,
+                                                             &model.columns);
+    if (!append_case(out, cap, used, "library-demos-no-games", ui, &model, NULL)) {
+        nk_ui_destroy(ui);
+        return false;
+    }
+    model.titles = k_demo_titles;
+    model.title_count = sizeof(k_demo_titles) / sizeof(k_demo_titles[0]);
+    nk_ui_focus(ui, PLAYER_UI_ID_LIBRARY_ITEM(1u));
+    if (!append_case(out, cap, used, "library-demos-with-games", ui, &model, NULL)) {
+        nk_ui_destroy(ui);
+        return false;
+    }
     nk_ui_destroy(ui);
     return true;
+}
+
+/* Run one Library frame and return its dump (the draw list as text). */
+static const char *library_frame_dump(NkUi *ui, const PlayerUiLibraryModel *model,
+                                      PlayerUiAction *action_out) {
+    static char dump[CASE_DUMP_CAP];
+    PlayerUiAction action;
+    nk_ui_begin(ui, 0.0);
+    action = player_ui_screen_library(ui, model);
+    if (action_out != NULL) *action_out = action;
+    if (nk_ui_end(ui) == NULL) return "";
+    (void)nk_ui_dump(ui, dump, sizeof(dump));
+    return dump;
+}
+
+static void push_nav(NkUi *ui, NkUiNavDir dir) {
+    NkUiEvent move;
+    memset(&move, 0, sizeof(move));
+    move.type = NK_UI_EV_NAV;
+    move.dir = dir;
+    nk_ui_push_event(ui, &move);
+}
+
+static bool focused_on_demo(const NkUi *ui, const PlayerUiTitle *titles, size_t count) {
+    for (size_t i = 0u; i < count; ++i) {
+        if (titles[i].is_demo && nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(i)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* TEST THIS PC: the demos that come with Nakagawa are listed apart from the
+   user's games, on the first-start screen and under the grid, and a controller
+   reaches them. */
+static void test_library_demos(void) {
+    NkUiConfig config;
+    NkUi *ui;
+    PlayerUiLibraryModel model;
+    PlayerUiAction action;
+    NkUiTextBackend text = screen_test_text_backend();
+    const char *dump;
+    size_t columns = 0u;
+    const size_t demo_count = sizeof(k_demo_titles) / sizeof(k_demo_titles[0]);
+
+    CHECK(player_ui_library_demo_count(k_demo_titles, demo_count) == 2u &&
+              player_ui_library_demo_count(k_titles, sizeof(k_titles) / sizeof(k_titles[0])) ==
+                  0u &&
+              player_ui_library_demo_count(NULL, 3u) == 0u,
+          "the Library counts the demos that come with Nakagawa");
+    CHECK(player_ui_library_grid_position(k_demo_titles, demo_count, 1u) == 0u &&
+              player_ui_library_grid_position(k_demo_titles, demo_count, 3u) == 1u &&
+              player_ui_library_grid_position(k_demo_titles, demo_count, 0u) == demo_count &&
+              player_ui_library_grid_position(k_demo_titles, demo_count, 2u) == demo_count &&
+              player_ui_library_grid_position(k_demo_titles, demo_count, 9u) == demo_count,
+          "a game's grid position skips the demos, and a demo has none");
+    CHECK(player_ui_library_page_size_with_demos(1280.0f, 800.0f, 0u, &columns) == 8u &&
+              columns == 4u,
+          "without demos a 1280x800 window keeps two rows of four cards");
+    CHECK(player_ui_library_page_size_with_demos(1280.0f, 800.0f, 2u, &columns) == 8u &&
+              columns == 4u,
+          "a 1280x800 window keeps two rows of four cards above TEST THIS PC");
+    CHECK(player_ui_library_page_size_with_demos(1280.0f, 720.0f, 0u, &columns) == 8u &&
+              player_ui_library_page_size_with_demos(1280.0f, 720.0f, 2u, &columns) == 4u &&
+              columns == 4u,
+          "at 1280x720, TEST THIS PC takes the room of the second grid row");
+    CHECK(player_ui_library_page_size_with_demos(1920.0f, 1080.0f, 2u, &columns) == 18u &&
+              columns == 6u,
+          "a 1920x1080 window keeps three rows of six cards above TEST THIS PC");
+    CHECK(player_ui_library_page_size_with_demos(960.0f, 540.0f, 2u, &columns) == 3u &&
+              columns == 3u,
+          "the 960x540 minimum keeps one row of three cards above TEST THIS PC");
+
+    memset(&config, 0, sizeof(config));
+    config.host = NK_UI_HOST_LAUNCHER;
+    config.text = &text;
+    ui = nk_ui_create(&config);
+    CHECK(ui != NULL, "create a UI for the TEST THIS PC section");
+    if (ui == NULL) return;
+    set_test_viewport(ui, 1280, 800);
+    memset(&model, 0, sizeof(model));
+    model.logical_width = 1280.0f;
+    model.logical_height = 800.0f;
+
+    /* A first start with only the demos: the setup wizard is still offered and
+       is still the default focus, and the demos are listed under it. */
+    model.titles = k_demo_only_titles;
+    model.title_count = sizeof(k_demo_only_titles) / sizeof(k_demo_only_titles[0]);
+    model.page_size = player_ui_library_page_size_with_demos(1280.0f, 800.0f, 2u,
+                                                             &model.columns);
+    (void)library_frame_dump(ui, &model, NULL);
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD,
+          "with only demos, START SETUP WIZARD is the default focus");
+    CHECK(strstr(dump, "\"Add your first game\"") != NULL &&
+              strstr(dump, "\"No games yet\"") != NULL,
+          "with only demos, the Library still says there are no games yet");
+    CHECK(strstr(dump, "\"TEST THIS PC\"") != NULL &&
+              strstr(dump, "\"Synthetic Breakout Demo\"") != NULL &&
+              strstr(dump, "\"Synthetic Scene Demo\"") != NULL,
+          "the first-start screen lists the demos under TEST THIS PC");
+    CHECK(strstr(dump, "Play a demo that comes with Nakagawa") != NULL,
+          "TEST THIS PC says what the demos are for");
+    CHECK(strstr(dump, "SHOWCASE DEMO") == NULL && strstr(dump, "showcase demo") == NULL,
+          "the count line no longer counts showcase demos as titles");
+    push_nav(ui, NK_UI_DIR_DOWN);
+    (void)library_frame_dump(ui, &model, NULL);
+    CHECK(focused_on_demo(ui, model.titles, model.title_count),
+          "Down from the setup wizard reaches a demo");
+    {
+        NkUiId first_demo = nk_ui_focused(ui);
+        NkUiEvent activate;
+        memset(&activate, 0, sizeof(activate));
+        activate.type = NK_UI_EV_ACTIVATE;
+        activate.down = true;
+        nk_ui_push_event(ui, &activate);
+        (void)library_frame_dump(ui, &model, &action);
+        CHECK(action.kind == PLAYER_UI_ACTION_OPEN_TITLE &&
+                  PLAYER_UI_ID_LIBRARY_ITEM(action.title_index) == first_demo,
+              "a demo opens its own title page, where it plays as today");
+    }
+    push_nav(ui, NK_UI_DIR_UP);
+    (void)library_frame_dump(ui, &model, NULL);
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_EMPTY_WIZARD ||
+              nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_EMPTY_ADD,
+          "Up from a demo returns to the first-start card");
+
+    /* With games: the grid holds only the games and the add card, and the
+       demos follow under TEST THIS PC. */
+    nk_ui_focus(ui, 0u);
+    model.titles = k_demo_titles;
+    model.title_count = demo_count;
+    model.page_size = player_ui_library_page_size_with_demos(1280.0f, 800.0f, 2u,
+                                                             &model.columns);
+    (void)library_frame_dump(ui, &model, NULL);
+    dump = library_frame_dump(ui, &model, NULL);
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(1u),
+          "the first game, not a demo, is the default focus");
+    CHECK(strstr(dump, "\"2 titles\"") != NULL,
+          "the count names the user's games only");
+    CHECK(strstr(dump, "\"Add your first game\"") == NULL &&
+              strstr(dump, "\"TEST THIS PC\"") != NULL,
+          "with games, the demos sit under the grid");
+    push_nav(ui, NK_UI_DIR_RIGHT);
+    (void)library_frame_dump(ui, &model, NULL);
+    CHECK(nk_ui_focused(ui) == PLAYER_UI_ID_LIBRARY_ITEM(3u),
+          "Right from the first game moves to the next game, past the demo between them");
+    push_nav(ui, NK_UI_DIR_DOWN);
+    (void)library_frame_dump(ui, &model, NULL);
+    CHECK(focused_on_demo(ui, model.titles, model.title_count),
+          "Down from the grid reaches a demo");
+    push_nav(ui, NK_UI_DIR_UP);
+    (void)library_frame_dump(ui, &model, NULL);
+    CHECK(!focused_on_demo(ui, model.titles, model.title_count) &&
+              nk_ui_focused(ui) != 0u,
+          "Up from a demo returns to the grid");
+    {
+        /* The demos are drawn below every card of the grid. */
+        const NkUiDrawList *draw;
+        const NkUiDrawCmd *add = NULL;
+        const NkUiDrawCmd *demo = NULL;
+        nk_ui_begin(ui, 0.0);
+        (void)player_ui_screen_library(ui, &model);
+        draw = nk_ui_end(ui);
+        for (uint32_t i = 0u; draw != NULL && i < draw->ncmd; ++i) {
+            const NkUiDrawCmd *cmd = &draw->cmd[i];
+            if (cmd->kind != NK_UI_DRAW_RECTANGLE) continue;
+            if (add == NULL && cmd->element_id == PLAYER_UI_ID_LIBRARY_ADD) add = cmd;
+            if (demo == NULL && cmd->element_id == PLAYER_UI_ID_LIBRARY_ITEM(0u)) demo = cmd;
+        }
+        CHECK(add != NULL && demo != NULL, "the add card and a demo are both drawn");
+        if (add != NULL && demo != NULL) {
+            CHECK(demo->bounds[1] > add->bounds[3],
+                  "TEST THIS PC sits below the grid of games");
+            CHECK(demo->bounds[3] <= 800 - (int)NK_UI_PROMPT_BAR_HEIGHT,
+                  "TEST THIS PC stays above the prompt bar at 1280x800");
+        }
+    }
+    {
+        /* At the 960x540 minimum the first-start card leaves out its icon, so it
+           and TEST THIS PC both fit above the prompt bar. */
+        static const struct { int h; bool icon; } sizes[] = {{540, false}, {720, true}};
+        for (size_t s = 0u; s < sizeof(sizes) / sizeof(sizes[0]); ++s) {
+            const NkUiDrawList *draw = NULL;
+            int demo_bottom = -1;
+            int card_bottom = -1;
+            bool icon = false;
+            set_test_viewport(ui, sizes[s].h == 540 ? 960 : 1280, sizes[s].h);
+            nk_ui_focus(ui, 0u);
+            model.titles = k_demo_only_titles;
+            model.title_count = sizeof(k_demo_only_titles) / sizeof(k_demo_only_titles[0]);
+            model.logical_width = sizes[s].h == 540 ? 960.0f : 1280.0f;
+            model.logical_height = (float)sizes[s].h;
+            model.page_size = player_ui_library_page_size_with_demos(
+                model.logical_width, model.logical_height, 2u, &model.columns);
+            for (int frame = 0; frame < 2; ++frame) {
+                nk_ui_begin(ui, 0.0);
+                (void)player_ui_screen_library(ui, &model);
+                draw = nk_ui_end(ui);
+            }
+            for (uint32_t i = 0u; draw != NULL && i < draw->ncmd; ++i) {
+                const NkUiDrawCmd *cmd = &draw->cmd[i];
+                if (cmd->element_id == 0x10000060u) icon = true;
+                if (cmd->element_id == 0x10000005u && cmd->bounds[3] > card_bottom) {
+                    card_bottom = cmd->bounds[3];
+                }
+                if ((cmd->element_id == PLAYER_UI_ID_LIBRARY_ITEM(0u) ||
+                     cmd->element_id == PLAYER_UI_ID_LIBRARY_ITEM(1u)) &&
+                    cmd->bounds[3] > demo_bottom) {
+                    demo_bottom = cmd->bounds[3];
+                }
+            }
+            CHECK(icon == sizes[s].icon,
+                  "the first-start card keeps its icon only when there is room for it");
+            CHECK(card_bottom > 0 && demo_bottom > card_bottom &&
+                      demo_bottom <= sizes[s].h - (int)NK_UI_PROMPT_BAR_HEIGHT,
+                  "the first-start card and TEST THIS PC fit above the prompt bar");
+        }
+    }
+    nk_ui_destroy(ui);
 }
 
 static bool build_title_golden(char *out, size_t cap, size_t *used) {
@@ -1959,11 +2237,15 @@ static bool capture_scaled(const char *directory, const NkUiTextBackend *text,
             memset(&library, 0, sizeof(library));
             library.titles = titles;
             library.title_count = title_count;
-            library.page_size = player_ui_library_page_size(scale.logical_w, scale.logical_h,
-                                                            &library.columns);
+            size_t demos = player_ui_library_demo_count(titles, title_count);
+            library.page_size = player_ui_library_page_size_with_demos(
+                scale.logical_w, scale.logical_h, demos, &library.columns);
             library.logical_width = scale.logical_w;
             library.logical_height = scale.logical_h;
-            if (library.title_count + 1u > library.page_size) library.page_label = "Page 1 of 2";
+            if (library.title_count - demos > 0u &&
+                library.title_count - demos + 1u > library.page_size) {
+                library.page_label = "Page 1 of 2";
+            }
             ok = capture_one(&rig, name, &library, NULL);
         } else {
             PlayerUiTitleModel model;
@@ -2251,6 +2533,31 @@ static int capture_screens(const char *directory) {
         !capture_scaled(directory, &text, "title-960x600", 960, 600, 1.0f,
                         k_titles, 0u, &title_fixture, PLAYER_UI_ID_TITLE_PRIMARY)) {
         goto done;
+    }
+    {
+        /* TEST THIS PC at the window sizes people start in: the 960x540
+           minimum, the 1280x720 default, a 1366x705 laptop and 1920x1009. */
+        static const struct { const char *name; int w; int h; } sizes[] = {
+            {"960x540", 960, 540}, {"1280x720", 1280, 720},
+            {"1366x705", 1366, 705}, {"1920x1009", 1920, 1009}
+        };
+        for (size_t i = 0u; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+            char name[64];
+            (void)snprintf(name, sizeof(name), "library-demos-no-games-%s", sizes[i].name);
+            if (!capture_scaled(directory, &text, name, sizes[i].w, sizes[i].h, 1.0f,
+                                k_demo_only_titles,
+                                sizeof(k_demo_only_titles) / sizeof(k_demo_only_titles[0]),
+                                NULL, PLAYER_UI_ID_LIBRARY_ITEM(0u))) {
+                goto done;
+            }
+            (void)snprintf(name, sizeof(name), "library-demos-with-games-%s", sizes[i].name);
+            if (!capture_scaled(directory, &text, name, sizes[i].w, sizes[i].h, 1.0f,
+                                k_demo_titles,
+                                sizeof(k_demo_titles) / sizeof(k_demo_titles[0]),
+                                NULL, PLAYER_UI_ID_LIBRARY_ITEM(2u))) {
+                goto done;
+            }
+        }
     }
     ok = true;
 done:
@@ -2605,6 +2912,7 @@ int main(int argc, char **argv) {
     test_tier_table_matches_the_docs();
     test_remove_from_library();
     test_build_bar_shows_compiled_parts();
+    test_library_demos();
     CHECK(build_library_golden(library, sizeof(library), &library_size),
           "build Library screen dumps");
     CHECK(build_title_golden(title, sizeof(title), &title_size),

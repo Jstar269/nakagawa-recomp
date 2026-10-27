@@ -2485,7 +2485,7 @@ void player_app_populate_sample_games(PlayerApp *app) {
     memset(&p5, 0, sizeof(p5));
     p5.is_sample = true;
     snprintf(p5.disc_id, sizeof(p5.disc_id), "TEST00005");
-    snprintf(p5.title_name, sizeof(p5.title_name), "PSPDEV Phase 5 Source-Owned Fixture");
+    snprintf(p5.title_name, sizeof(p5.title_name), "Nakagawa Test Program");
     snprintf(p5.disc_version, sizeof(p5.disc_version), "1.00");
     snprintf(p5.iso_path, sizeof(p5.iso_path), "fixtures/pspdev_phase5/disc/game.iso");
     snprintf(p5.prepared_root, sizeof(p5.prepared_root), "fixtures/pspdev_phase5");

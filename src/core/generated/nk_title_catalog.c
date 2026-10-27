@@ -306,7 +306,7 @@ const NkTitleEntry nk_title_catalog_entries[] = {
     {
         "pspdev-phase5-v1",
         "pspdev-phase5",
-        "PSPDEV Phase 5 Source-Owned Fixture",
+        "Nakagawa Test Program",
         NK_TITLE_KIND_SYNTHETIC,
         "TEST00005",
         NULL,

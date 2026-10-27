@@ -46,9 +46,13 @@ The release layout copies the read-only `demos/` directory next to the player
 executable. At startup the player consults its generated public title catalog
 and discovers `showcase-*` entries only when both the catalogued image and a
 valid package are present. The `Play` action uses the existing package
-validator and launcher with the demo directory as the package root. The GUI
-labels each bundled entry **Showcase demo**. User-added titles keep using the
-user library and its package root. The launcher continues to pass a writable
+validator and launcher with the demo directory as the package root. The
+library lists the bundled demos in their own **Test this PC** row, apart from
+the user's games: under the grid, or under the first-start card while there are
+no games yet. A user can play one to check that graphics, sound and controls
+work on their PC before adding a game of their own. Each demo's title page
+labels it **Showcase demo**. User-added titles keep using the user library and
+its package root. The launcher continues to pass a writable
 per-user memory-stick root to the runtime, so the bundled demo directory stays
 read-only while savedata works.
 
