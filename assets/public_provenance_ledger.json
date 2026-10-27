@@ -258,6 +258,18 @@
       "sha256": "49323542f941220d96049b41d3353ec01218d55a3ae911c0b5399109df736a4e"
     },
     {
+      "path": ".github/workflows/pages.yml",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "pages_site_workflow_20261026",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "36a88d153cf64d2c9f924d84edb442c50a26ed221a891c0b42e3e7478aec9bd9"
+    },
+    {
       "path": ".github/workflows/provenance-attestation-merge-group.yml",
       "classification": "project_authored_attested",
       "evidence": {
@@ -453,7 +465,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a7bc9ed0f6b65aa854b6cca401e21bc3c6a596d065800c6e8368500bb4d73940"
+      "sha256": "f3a496c61f2751f722f2cc67da674155685f8a05f848f9d30b0f14e9fb871a3b"
     },
     {
       "path": "REVIEW.md",
@@ -976,7 +988,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b1ab61f8eec6175106c2de47e7f6c1467d11fbcdce82515365afc7bbc18adaff"
+      "sha256": "43f6c0064b874ca0f98d110c78f2c936eda9710d123483405e452cc38de23c59"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1375,7 +1387,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "06fcb21344cd1877ad815a0245dd8d28303dc557c0ece3bd7d4cf9b05db9d0c4"
+      "sha256": "d3ad5f5eb60ed9ad35b599212845494acb1762b980011eff19724698b0742bbd"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1904,6 +1916,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "61e2ccdc10b2f0578b858961446fb228ea301bf5ae1ad3433c3b6c181ec47657"
+    },
+    {
+      "path": "docs/index.html",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "9037ae4b7b9fbddde54a07151d98ae3e901a3d5ea394dc2af7b457fdfdd1c5a6"
     },
     {
       "path": "docs/media/hst-title-screen.png",
