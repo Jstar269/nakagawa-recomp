@@ -1523,6 +1523,36 @@ bool player_app_take_close_confirmation_fallback(PlayerApp *app) {
     return true;
 }
 
+bool player_app_quit_confirmation_message(const PlayerApp *app, char *out,
+                                          size_t out_size) {
+    if (!out || out_size == 0) return false;
+    /* A disc title may carry line breaks or tabs; the box shows the name on
+       one line, with each run of them folded to a single space. */
+    char name[NK_MAX_TITLE_LEN];
+    size_t length = 0;
+    if (app) {
+        const char *title = app->launch_session.game_title;
+        bool pending_space = false;
+        for (size_t i = 0; i < sizeof(app->launch_session.game_title) && title[i]; ++i) {
+            unsigned char ch = (unsigned char)title[i];
+            if (ch <= 0x20 || ch == 0x7F) {
+                pending_space = length > 0;
+                continue;
+            }
+            if (pending_space && length + 1 < sizeof(name)) name[length++] = ' ';
+            pending_space = false;
+            if (length + 1 < sizeof(name)) name[length++] = (char)ch;
+        }
+    }
+    name[length] = '\0';
+    /* Two lines: on one, the box grows as wide as the sentence. */
+    snprintf(out, out_size,
+             "%s is still running.\nQuitting closes it, and anything since the "
+             "game's last save is lost.",
+             length > 0 ? name : "A game");
+    return true;
+}
+
 bool player_settings_uses_two_columns(int window_width, int window_height) {
     float width = (float)window_width;
     float card_width = width - 64.0f;

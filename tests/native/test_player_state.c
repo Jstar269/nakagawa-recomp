@@ -5378,6 +5378,64 @@ int main(int argc, char **argv) {
         assert(player_app_take_close_confirmation_fallback(s_app2));
         assert(!player_app_take_close_confirmation_fallback(s_app2));
 
+        /* The quit confirmation's buttons fit SDL3's Windows message box,
+           which showed "Close game and quit" as "ose game and qu". */
+        assert(PLAYER_DIALOG_BUTTON_LABEL_MAX <= 12);
+        assert(strcmp(PLAYER_QUIT_DIALOG_TITLE, "Quit Nakagawa?") == 0);
+        assert(strcmp(PLAYER_QUIT_DIALOG_QUIT_LABEL, "Quit") == 0);
+        assert(strcmp(PLAYER_QUIT_DIALOG_CANCEL_LABEL, "Cancel") == 0);
+        assert(strlen(PLAYER_QUIT_DIALOG_QUIT_LABEL) <= PLAYER_DIALOG_BUTTON_LABEL_MAX);
+        assert(strlen(PLAYER_QUIT_DIALOG_CANCEL_LABEL) <= PLAYER_DIALOG_BUTTON_LABEL_MAX);
+        /* Its message names the running game when the launch knows it. */
+        {
+            static const char unnamed[] =
+                "A game is still running.\nQuitting closes it, and anything since "
+                "the game's last save is lost.";
+            static const char named[] =
+                "Hot Shots Tennis is still running.\nQuitting closes it, and anything "
+                "since the game's last save is lost.";
+            char quit_message[NK_MAX_TITLE_LEN + 128];
+            s_app2->launch_session.game_title[0] = '\0';
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, unnamed) == 0);
+            snprintf(s_app2->launch_session.game_title,
+                     sizeof(s_app2->launch_session.game_title), "Hot Shots Tennis");
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, named) == 0);
+            /* A title's line breaks and tabs fold to one space, so the only
+               line break is the message's own. */
+            snprintf(s_app2->launch_session.game_title,
+                     sizeof(s_app2->launch_session.game_title),
+                     "  Hot Shots\r\n\tTennis \n");
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, named) == 0);
+            /* A title that is only blanks is no name. */
+            snprintf(s_app2->launch_session.game_title,
+                     sizeof(s_app2->launch_session.game_title), " \r\n\t ");
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, unnamed) == 0);
+            /* The longest title still fits the caller's buffer whole. */
+            memset(s_app2->launch_session.game_title, 'T',
+                   sizeof(s_app2->launch_session.game_title) - 1);
+            s_app2->launch_session.game_title[
+                sizeof(s_app2->launch_session.game_title) - 1] = '\0';
+            assert(player_app_quit_confirmation_message(s_app2, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strlen(quit_message) ==
+                   (sizeof(s_app2->launch_session.game_title) - 1) +
+                       (sizeof(unnamed) - 1) - strlen("A game"));
+            assert(player_app_quit_confirmation_message(NULL, quit_message,
+                                                        sizeof(quit_message)));
+            assert(strcmp(quit_message, unnamed) == 0);
+            assert(!player_app_quit_confirmation_message(s_app2, NULL, 16));
+            assert(!player_app_quit_confirmation_message(s_app2, quit_message, 0));
+            s_app2->launch_session.game_title[0] = '\0';
+        }
+
         /* One host close may enter SDL as both QUIT and WINDOW_CLOSE_REQUESTED.
            Canceling the first confirmation leaves the child running, but a
            second close event in that drained batch must not ask again. */
