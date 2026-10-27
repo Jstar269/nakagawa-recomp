@@ -120,8 +120,8 @@ make CC=gcc GAME_NAME=ci BUILD_DIR=build/slt-check \
 ```
 
 `psmf-media-selftest` builds the vendored FFmpeg H.264 subset by default on Linux
-(`H264_FFMPEG=1`). Hosted `native_tools` runs it with that backend, and the Windows job runs it
-on Media Foundation ([CI](CI.md)).
+(`H264_FFMPEG=1`). When a change routes the native jobs, hosted `native_tools` runs it with that
+backend and the Windows job runs it on Media Foundation ([CI](CI.md)).
 
 ### Python test suites
 

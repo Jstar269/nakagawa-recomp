@@ -1375,7 +1375,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9c74708ee3843a792af789cc86554b0f48a8c8ec9afae4718280e62a5feafc06"
+      "sha256": "2a1d34d58184da716013c22bb01c22b95a985f208024369397f59fad5b2f41d6"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1477,7 +1477,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "890408ea3cfeba8a15a4bc936e381a98e7dc66462b3e9001e2191152763f5eaa"
+      "sha256": "d4109ba11137afd9c01114b8154f492b74792d174909b8f59a9ddad07f5c2883"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
