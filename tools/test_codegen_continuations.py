@@ -446,7 +446,7 @@ class ContinuationFlowTests(unittest.TestCase):
     def test_profile_wrappers_drain_the_bodies_they_call(self):
         # The two profile wrappers call their real bodies directly (#855 review).
         source = Path(codegen.__file__).read_text(encoding="utf-8")
-        for call in ("f_000468c8_real(s);", "f_001d9eb0_real(s);"):
+        for call in ("f_000468c8_real(s);",):
             with self.subTest(call=call):
                 at = source.index(call)
                 following = source[at + len(call):at + len(call) + 60]

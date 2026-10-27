@@ -73,12 +73,37 @@ class TestGuestmemSelftestC(unittest.TestCase):
 
 class TestSpanHelperWiring(unittest.TestCase):
     def test_span_helpers_delegate_to_overflow_safe_check(self):
-        for name in ("sr_guest_span_readable", "sr_guest_span_writable"):
+        for name in ("sr_guest_span_readable_at", "sr_guest_span_writable_at"):
             body = _body(RECOMP_H, name)
             self.assertIn("sr_inrange_n", body,
                           f"{name} must delegate to the overflow-safe sr_inrange_n")
             self.assertNotRegex(body, r"addr\s*\+\s*size",
                                 f"{name} must not use naive addr+size arithmetic")
+
+    def test_span_predicates_tag_the_refused_caller(self):
+        # #1049: call sites keep the short names, and the boundary report names
+        # the function that asked for the span.
+        for name in ("sr_guest_span_readable", "sr_guest_span_writable",
+                     "sr_guest_span_readable_current"):
+            self.assertRegex(
+                RECOMP_H,
+                rf"#define {name}\(addr, size\) \\\s*{name}_at\(\(addr\), \(size\), __func__\)",
+            )
+        report = _body(RECOMP_H, "sr_guest_span_report_vram_mirror_boundary")
+        self.assertIn("(caller: %s)", report)
+
+    def test_mirror_copy_helpers_split_at_the_measured_runs(self):
+        # #1049: one host pointer covers one aligned 64-byte block of the
+        # 0x04200000 view and one aligned 32-byte block of the 0x04600000 view.
+        self.assertIn("#define SR_VRAM_MIRROR_XOR_RUN    0x40u", RECOMP_H)
+        self.assertIn("#define SR_VRAM_MIRROR_ROTATE_RUN 0x20u", RECOMP_H)
+        for name in ("sr_guest_copy_in", "sr_guest_copy_out", "sr_guest_fill"):
+            body = _body(RECOMP_H, name)
+            self.assertIn("sr_inrange_n", body)
+            self.assertIn("sr_guest_host_run", body)
+        memmove = _body(RECOMP_H, "sr_guest_memmove")
+        self.assertIn("sr_guest_copy_in(staged, src, size)", memmove)
+        self.assertIn("sr_guest_copy_out(dst, staged, size)", memmove)
 
     def test_checked_arith_helpers_exist(self):
         self.assertIn("sr_size_add_ok", RECOMP_H)
