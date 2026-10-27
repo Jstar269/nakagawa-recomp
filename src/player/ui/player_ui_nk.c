@@ -409,6 +409,7 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
             break;
         case WIZARD_STEP_INSPECT_VERIFY:
             model.extracting = app->wizard.is_extracting;
+            model.converting_package = app->psn_conversion_active;
             model.extraction_complete = app->wizard.extraction_complete;
             model.extraction_failed = app->wizard.extraction_failed;
             model.experimental = game->is_experimental;

@@ -30,6 +30,7 @@ Run just this suite::
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -98,6 +99,8 @@ SHA1_ABC_DIGEST = bytes.fromhex("a9993e364706816aba3e25717850c26c9cd0d89d")
 # and RFC 4493; no key material beyond the per-run fake keys lives here.
 # ---------------------------------------------------------------------------
 
+# Memoised: the PSN-image fixtures run a few thousand blocks through this.
+@functools.lru_cache(maxsize=None)
 def _gmul(a: int, b: int) -> int:
     out = 0
     for _ in range(8):
@@ -145,6 +148,7 @@ def _xtime(a: int) -> int:
     return ((a << 1) ^ 0x1B) & 0xFF if a & 0x80 else a << 1
 
 
+@functools.lru_cache(maxsize=64)
 def _expand_key(key: bytes) -> list[list[int]]:
     assert len(key) == 16
     words = [list(key[i:i + 4]) for i in range(0, 16, 4)]
@@ -880,7 +884,7 @@ def builtin_table() -> tuple[dict, dict, dict]:
         recipes[int(tag, 16)] = {"code": int(code, 16), "key": key, "key144": key144,
                                  "xor": xor}
     values = {name: arrays[cname]
-              for name, cname in re.findall(r'\{"([a-z0-9.]+)", (\w+), sizeof', text)}
+              for name, cname in re.findall(r'\{"([A-Za-z0-9._]+)", (\w+), sizeof', text)}
     firmware = {int(tag, 16): what
                 for tag, what in re.findall(r'\{0x([0-9A-F]{8}), "([^"]+)"\}', text)}
     return arrays, recipes, {"values": values, "firmware": firmware}
@@ -982,7 +986,12 @@ class TestBuiltinTables(unittest.TestCase):
         used = {recipe["code"] for recipe in self.recipes.values()}
         rows = {int(name.rsplit(".", 1)[1]) for name in self.values
                 if name.startswith("kirk.keyvault.")}
-        self.assertEqual(rows, used)
+        # The recipes' rows, plus the three the DRM BB MAC and cipher use for PSN
+        # UMD images (amctrl: 0x38, 0x39, 0x63).
+        self.assertEqual(rows, used | {NP_MAC_ROW, NP_CIPHER_ROW, NP_WRAP_ROW})
+        self.assertEqual({name for name in self.values if name.startswith("amctrl.")},
+                         set(NP_VALUES))
+        self.assertTrue(all(len(self.values[name]) == 16 for name in NP_VALUES))
         # The updater (0x4E) and Media Engine image (0x52) keyvault rows are not carried.
         self.assertNotIn(0x4E, rows)
         self.assertNotIn(0x52, rows)
@@ -1360,6 +1369,620 @@ class TestKeystoreErasure(unittest.TestCase):
         report = self._report(self._run(_ERASE_KEYFILE_JSON))
         self.assertEqual(report["pre_free_matches"], 3)
         self.assertGreater(report["post_wipe_scan_bytes"], 0)
+
+
+# ---------------------------------------------------------------------------
+# PSN releases of UMD games (NPUMDIMG, issue #295 phase 2)
+#
+# A synthetic encoder: the inverse of the reader in src/core/nk_psp_npumdimg.c.
+# The DRM BB cipher is an XOR keystream, so encrypting is the same operation as
+# decrypting; the type-3 BB MAC is AES-CMAC under keyvault row 0x38 XOR
+# amctrl's loc_1CD4, wrapped twice (rows 0x38 and 0x63) with the version key.
+# Every key, row and amctrl constant here is per-run random bytes in a
+# throwaway key file; the images are tiny project-authored ISO9660 trees.
+# ---------------------------------------------------------------------------
+
+NP_MAC_ROW = 0x38      # MAC type 3 (fixed key)
+NP_CIPHER_ROW = 0x39   # cipher type 1 (fixed key)
+NP_WRAP_ROW = 0x63     # BB MAC wrap and keystream
+NP_SECTOR = 2048
+NP_VALUES = ("amctrl.loc_1CD4", "amctrl.loc_1CE4", "amctrl.loc_1CF4")
+
+
+def _xor(a: bytes, b: bytes) -> bytes:
+    return bytes(x ^ y for x, y in zip(a, b, strict=True))
+
+
+def npumdimg_entries() -> dict:
+    """A clearly-fake key set for the NPUMDIMG path (rows and amctrl values)."""
+    entries = {f"kirk.keyvault.{row}": fake_hex(16)
+               for row in (NP_MAC_ROW, NP_CIPHER_ROW, NP_WRAP_ROW)}
+    entries.update({name: fake_hex(16) for name in NP_VALUES})
+    return entries
+
+
+def _np_value(entries: dict, name: str) -> bytes:
+    return bytes.fromhex(entries[name])
+
+
+def _np_row(entries: dict, row: int) -> bytes:
+    return bytes.fromhex(entries[f"kirk.keyvault.{row}"])
+
+
+def bb_mac_type3(entries: dict, data: bytes, version: bytes) -> bytes:
+    """The 16 bytes bbmac_getkey turns back into ``version`` for ``data``."""
+    mac = _xor(aes_cmac(_np_row(entries, NP_MAC_ROW), data),
+               _np_value(entries, "amctrl.loc_1CD4"))
+    inner = aes_ecb_encrypt(_np_row(entries, NP_MAC_ROW), _xor(mac, version))
+    return aes_ecb_encrypt(_np_row(entries, NP_WRAP_ROW), inner)
+
+
+def bb_cipher_type1(entries: dict, data: bytes, header: bytes, version: bytes,
+                    seed: int) -> bytes:
+    """sceDrmBBCipher type 1: XOR with the counter keystream from seed + 1."""
+    mixed = _xor(_xor(header, version), _np_value(entries, "amctrl.loc_1CF4"))
+    base = _xor(_decrypt_block(_np_row(entries, NP_CIPHER_ROW), mixed),
+                _np_value(entries, "amctrl.loc_1CE4"))[:12]
+    wrap = _np_row(entries, NP_WRAP_ROW)
+    out = bytearray(data)
+    counter = seed + 1
+    for pos in range(0, len(out), 16):
+        block = base + struct.pack("<I", counter)
+        prev = bytes(16) if counter == 1 else base + struct.pack("<I", counter - 1)
+        stream = _xor(_decrypt_block(wrap, block), prev)
+        for i in range(min(16, len(out) - pos)):
+            out[pos + i] ^= stream[i]
+        counter += 1
+    return bytes(out)
+
+
+def scramble_table_row(mac: bytes, offset: int, size: int, flag: int, unk: int) -> bytes:
+    """One block-table row as the package stores it (the descramble is its own inverse)."""
+    w = list(struct.unpack("<4I", mac)) + [offset & 0xFFFFFFFF, size & 0xFFFFFFFF,
+                                          flag & 0xFFFFFFFF, unk & 0xFFFFFFFF]
+    k0, k1, k2, k3 = w[0] ^ w[1], w[1] ^ w[2], w[0] ^ w[3], w[2] ^ w[3]
+    w[4] ^= k3
+    w[5] ^= k1
+    w[6] ^= k2
+    w[7] ^= k0
+    return struct.pack("<8I", *w)
+
+
+class LzrcLiteralWriter:
+    """An LZRC stream of raw characters and the end marker (no matches).
+
+    The inverse of nk_psp_lzrc.c's range decoder for those two symbols: a range
+    encoder that normalises before each bit, as the decoder does, and whose
+    'bit 1' is the lower part of the range.
+    """
+
+    def __init__(self, lc: int = 5):
+        self.lc = lc
+        self.low, self.range = 0, 0xFFFFFFFF
+        self.cache, self.cache_size = 0, 1
+        self.out = bytearray()
+        self.state = 0
+        self.last = 0
+        self.count = 0
+        self.literal_probs = [[0x80] * 256 for _ in range(8)]
+        self.match_probs = [[0x80] * 8 for _ in range(8)]
+        self.len_probs = [[0x80] * 31 for _ in range(8)]
+
+    def _shift_low(self) -> None:
+        if (self.low & 0xFFFFFFFF) < 0xFF000000 or (self.low >> 32) != 0:
+            carry = self.low >> 32
+            temp = self.cache
+            while True:
+                self.out.append((temp + carry) & 0xFF)
+                temp = 0xFF
+                self.cache_size -= 1
+                if self.cache_size == 0:
+                    break
+            self.cache = (self.low >> 24) & 0xFF
+        self.cache_size += 1
+        self.low = (self.low & 0x00FFFFFF) << 8
+
+    def _normalize(self) -> None:
+        if self.range < 0x01000000:
+            self.range = (self.range << 8) & 0xFFFFFFFF
+            self._shift_low()
+
+    def _bit(self, probs: list, index: int, bit: int) -> None:
+        self._normalize()
+        prob = probs[index]
+        bound = (self.range >> 8) * prob
+        prob -= prob >> 3
+        if bit:
+            self.range = bound
+            prob += 31
+        else:
+            self.low += bound
+            self.range -= bound
+        probs[index] = prob & 0xFF
+
+    def literal(self, byte: int) -> None:
+        self._bit(self.match_probs[self.state], 0, 0)
+        if self.state > 0:
+            self.state -= 1
+        probs = self.literal_probs[(self.last >> self.lc) & 7 if self.lc < 8 else 0]
+        number = 1
+        for shift in range(7, -1, -1):
+            bit = (byte >> shift) & 1
+            self._bit(probs, number, bit)
+            number = (number << 1) | bit
+        self.last = byte
+        self.count += 1
+
+    def finish(self) -> bytes:
+        probs = self.match_probs[self.state]
+        for step in range(8):          # a match, then seven length bits of 1
+            self._bit(probs, step, 1)
+        lens = self.len_probs[self.state]
+        base = (6 << 2) + ((self.count << 6) & 3)
+        self._bit(lens, base + 3, 1)   # a length of 0xFF ends the stream
+        self._bit(lens, base + 3, 1)
+        self._normalize()
+        for _ in range(2):             # two direct bits, both 1
+            self.range >>= 1
+        for index in (0, 1, 2):
+            self._bit(lens, base + index, 1)
+        for _ in range(5):
+            self._shift_low()
+        return bytes([self.lc]) + bytes(self.out[1:])
+
+
+def lzrc_literals(data: bytes) -> bytes:
+    writer = LzrcLiteralWriter()
+    for byte in data:
+        writer.literal(byte)
+    return writer.finish()
+
+
+def build_sfo(fields: dict) -> bytes:
+    """A PARAM.SFO with string values (keys sorted, as the PSP writes them)."""
+    keys, values, index = bytearray(), bytearray(), bytearray()
+    names = sorted(fields)
+    for name in names:
+        value = fields[name].encode("utf-8") + b"\0"
+        index += struct.pack("<HHIII", len(keys), 0x0204, len(value),
+                             (len(value) + 3) & ~3, len(values))
+        keys += name.encode("ascii") + b"\0"
+        values += value + bytes((-len(value)) % 4)
+    while (20 + len(index) + len(keys)) % 4:
+        keys.append(0)
+    key_start = 20 + len(index)
+    return (b"\0PSF" + struct.pack("<IIII", 0x0101, key_start, key_start + len(keys),
+                                   len(names)) + bytes(index) + bytes(keys) + bytes(values))
+
+
+def _iso_record(name: bytes, lba: int, size: int, is_dir: bool) -> bytes:
+    rec = bytearray(33 + len(name) + (0 if len(name) % 2 else 1))
+    rec[0] = len(rec)
+    struct.pack_into("<I", rec, 2, lba)
+    struct.pack_into(">I", rec, 6, lba)
+    struct.pack_into("<I", rec, 10, size)
+    struct.pack_into(">I", rec, 14, size)
+    rec[25] = 0x02 if is_dir else 0x00
+    struct.pack_into("<H", rec, 28, 1)
+    struct.pack_into(">H", rec, 30, 1)
+    rec[32] = len(name)
+    rec[33:33 + len(name)] = name
+    return bytes(rec)
+
+
+def build_tiny_iso(disc_id: str, sectors: int = 26, *, pvd: bool = True) -> bytes:
+    """A small ISO9660 image holding PSP_GAME/PARAM.SFO and patterned filler."""
+    data = bytearray(sectors * NP_SECTOR)
+    for lba in range(21, sectors):                  # filler a block can compress
+        pattern = struct.pack("<I", 0x4E4B0000 | lba) * 8
+        data[lba * NP_SECTOR:lba * NP_SECTOR + len(pattern)] = pattern
+    sfo = build_sfo({"DISC_ID": disc_id, "DISC_VERSION": "1.00", "CATEGORY": "UG",
+                     "TITLE": "Synthetic NPUMDIMG"})
+    root, game, sfo_lba = 18, 19, 20
+    data[sfo_lba * NP_SECTOR:sfo_lba * NP_SECTOR + len(sfo)] = sfo
+    root_dir = (_iso_record(b"\0", root, NP_SECTOR, True) + _iso_record(b"\1", root, NP_SECTOR, True)
+                + _iso_record(b"PSP_GAME", game, NP_SECTOR, True))
+    game_dir = (_iso_record(b"\0", game, NP_SECTOR, True) + _iso_record(b"\1", root, NP_SECTOR, True)
+                + _iso_record(b"PARAM.SFO;1", sfo_lba, len(sfo), False))
+    data[root * NP_SECTOR:root * NP_SECTOR + len(root_dir)] = root_dir
+    data[game * NP_SECTOR:game * NP_SECTOR + len(game_dir)] = game_dir
+    if pvd:
+        at = 16 * NP_SECTOR
+        data[at:at + 7] = b"\x01CD001\x01"
+        data[at + 40:at + 48] = b"SYNTHVOL"
+        struct.pack_into("<I", data, at + 80, sectors)
+        struct.pack_into(">I", data, at + 84, sectors)
+        data[at + 156:at + 190] = _iso_record(b"\0", root, NP_SECTOR, True)
+        data[17 * NP_SECTOR:17 * NP_SECTOR + 7] = b"\xffCD001\x01"
+    return bytes(data)
+
+
+def build_pbp(sfo: bytes, data_psp: bytes, data_psar: bytes) -> bytes:
+    """A PBP package: PARAM.SFO, empty art sections, DATA.PSP and DATA.PSAR."""
+    sfo_at = 0x28
+    psp_at = (sfo_at + len(sfo) + 15) & ~15
+    psar_at = (psp_at + len(data_psp) + 15) & ~15
+    head = b"\0PBP" + struct.pack("<I", 0x00010001)
+    head += struct.pack("<8I", sfo_at, *([psp_at] * 6), psar_at)
+    body = bytearray(head + sfo)
+    body += bytes(psp_at - len(body)) + data_psp
+    body += bytes(psar_at - len(body)) + data_psar
+    return bytes(body)
+
+
+def build_npumdimg(iso: bytes, entries: dict, *, block_lbas: int = 4,
+                   compress: tuple = (0,), plain: tuple = (), rows=None,
+                   header_edit=None) -> bytes:
+    """The DATA.PSAR of a PSN UMD image holding ``iso``.
+
+    Blocks named in ``compress`` are LZRC streams, those in ``plain`` carry
+    flag 4 (stored unencrypted), the rest are full encrypted blocks.  ``rows``
+    may edit each (offset, size, flag, unk) row before scrambling, and
+    ``header_edit`` the finished 256-byte header (after its MAC).
+    """
+    lbas = len(iso) // NP_SECTOR
+    block_size = block_lbas * NP_SECTOR
+    blocks = (lbas + block_lbas - 1) // block_lbas
+    version, header_key = os.urandom(16), os.urandom(16)
+    table_at = 0x100
+    at = (table_at + blocks * 32 + 15) & ~15
+    payloads, table = bytearray(), bytearray()
+    for index in range(blocks):
+        clear = iso[index * block_size:(index + 1) * block_size]
+        clear += bytes(block_size - len(clear))
+        flag = 4 if index in plain else 0
+        body = lzrc_literals(clear) if index in compress else clear
+        assert len(body) <= block_size, "a compressed fixture block must shrink"
+        offset = at + len(payloads)
+        if not flag & 4:
+            body = bb_cipher_type1(entries, body, header_key, version, offset >> 4)
+        row = (offset, len(body), flag, 0)
+        if rows is not None:
+            row = rows(index, row)
+        table += scramble_table_row(os.urandom(16), *row)
+        payloads += body + bytes((-len(body)) % 16)
+    header = bytearray(0x100)
+    header[0:8] = b"NPUMDIMG"
+    struct.pack_into("<II", header, 8, 3, block_lbas)
+    header[0x10:0x34] = b"UP9999-TEST89999_00-SYNTHETIC0000000"
+    region = bytearray(0x60)
+    struct.pack_into("<I", region, 0x54 - 0x40, 0)
+    struct.pack_into("<I", region, 0x64 - 0x40, lbas - 1)
+    struct.pack_into("<I", region, 0x6C - 0x40, table_at)
+    header[0x40:0xA0] = bb_cipher_type1(entries, bytes(region), header_key, version, 0)
+    header[0xA0:0xB0] = header_key
+    header[0xC0:0xD0] = bb_mac_type3(entries, bytes(header[:0xC0]), version)
+    if header_edit is not None:
+        header_edit(header)
+    psar = bytes(header) + bytes(table)
+    psar += bytes(at - len(psar)) + bytes(payloads)
+    return psar
+
+
+def npumdimg_pbp(disc_id: str, psar: bytes, *, category: str = "EG",
+                 data_psp: bytes = b"NKSTUB" + bytes(0x1FA)) -> bytes:
+    sfo = build_sfo({"DISC_ID": disc_id, "DISC_VERSION": "1.00", "CATEGORY": category,
+                     "TITLE": "Synthetic PSN package"})
+    return build_pbp(sfo, data_psp, psar)
+
+
+@unittest.skipUnless(CC, "no C compiler on PATH")
+class TestNpumdimg(unittest.TestCase):
+    """nk_decrypt npumdimg turns a synthetic PSN UMD package back into its ISO,
+    and refuses PSOne Classics, updaters, damaged headers and tables by name."""
+
+    DISC = "TEST80901"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="nk_psp_npumdimg_"))
+        cls.exe = build_tool()
+        cls.entries = npumdimg_entries()
+        cls.keyfile = cls.tmp / "np_keys.json"
+        write_keyfile(cls.keyfile, cls.entries)
+        cls.iso = build_tiny_iso(cls.DISC)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _run(self, name: str, pbp: bytes, *extra: str, keyfile: Path | None = None):
+        src = self.tmp / f"{name}.PBP"
+        dst = self.tmp / f"{name}.iso"
+        src.write_bytes(pbp)
+        dst.unlink(missing_ok=True)
+        keys = ("--key-file", str(keyfile if keyfile is not None else self.keyfile))
+        out = subprocess.run([str(self.exe), "npumdimg", *keys, *extra,
+                              "--in", str(src), "--out", str(dst)],
+                             capture_output=True, text=True)
+        self.assertFalse(Path(str(dst) + ".converting").exists(),
+                         "a partial image was left behind")
+        return out, dst
+
+    def _refused(self, out, dst, code: int, name: str):
+        self.assertEqual(out.returncode, code, out.stdout + out.stderr)
+        self.assertIn(name, out.stdout)
+        self.assertFalse(dst.exists())
+
+    def test_round_trip_restores_the_iso(self):
+        psar = build_npumdimg(self.iso, self.entries, compress=(0, 3), plain=(5,))
+        out, dst = self._run("round_trip", npumdimg_pbp(self.DISC, psar))
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn(f"NPUMDIMG_OK disc_id={self.DISC}", out.stdout)
+        self.assertEqual(dst.read_bytes(), self.iso)
+
+    def test_uncompressed_blocks_round_trip(self):
+        psar = build_npumdimg(self.iso, self.entries, block_lbas=16, compress=())
+        out, dst = self._run("uncompressed", npumdimg_pbp(self.DISC, psar))
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(dst.read_bytes(), self.iso)
+
+    def test_a_changed_header_fails_closed(self):
+        def at(offset):
+            def edit(header):
+                header[offset] ^= 0x01
+            return edit
+        for name, offset in (("content_id", 0x12), ("encrypted", 0x60),
+                             ("header_key", 0xA4), ("bbmac", 0xC3)):
+            with self.subTest(byte=name):
+                psar = build_npumdimg(self.iso, self.entries, header_edit=at(offset))
+                out, dst = self._run(f"tamper_{name}", npumdimg_pbp(self.DISC, psar))
+                self.assertNotEqual(out.returncode, 0, out.stdout)
+                self.assertFalse(dst.exists())
+                self.assertTrue(any(word in out.stdout for word in (
+                    "INTEGRITY_CHECK_FAILED", "DECOMPRESS_FAILED")), out.stdout)
+
+    def test_a_bad_block_table_fails_closed_before_any_output(self):
+        size = 4 * NP_SECTOR
+        cases = {
+            "size_past_block": (lambda i, r: (r[0], size + 16, r[2], r[3]) if i == 1 else r,
+                                5, "INTEGRITY_CHECK_FAILED"),
+            "offset_past_file": (lambda i, r: (0x7FFFFFF0, r[1], r[2], r[3]) if i == 2 else r,
+                                 5, "INTEGRITY_CHECK_FAILED"),
+            "zero_size": (lambda i, r: (r[0], 0, r[2], r[3]) if i == 0 else r,
+                          5, "INTEGRITY_CHECK_FAILED"),
+            "tool_marked": (lambda i, r: (r[0], r[1], r[2], 1) if i == 6 else r,
+                            7, "UNSUPPORTED_CONTAINER"),
+        }
+        for name, (rows, code, word) in cases.items():
+            with self.subTest(table=name):
+                psar = build_npumdimg(self.iso, self.entries, rows=rows)
+                out, dst = self._run(f"table_{name}", npumdimg_pbp(self.DISC, psar))
+                self._refused(out, dst, code, word)
+
+    def test_a_table_outside_the_file_fails_closed(self):
+        psar = build_npumdimg(self.iso, self.entries)
+        out, dst = self._run("table_cut", npumdimg_pbp(self.DISC, psar[:0x140]))
+        self._refused(out, dst, 5, "INTEGRITY_CHECK_FAILED")
+
+    def test_an_oversized_or_zero_block_size_is_refused_before_any_key(self):
+        empty = self.tmp / "no-such-np-keys.json"
+        for lbas in (4097, 0, 0xFFFFFFFF):
+            with self.subTest(block_lbas=lbas):
+                psar = build_npumdimg(self.iso, self.entries, header_edit=lambda h, v=lbas:
+                                      struct.pack_into("<I", h, 0x0C, v))
+                out, dst = self._run(f"block_{lbas:x}", npumdimg_pbp(self.DISC, psar),
+                                     keyfile=empty)
+                self._refused(out, dst, 4, "CONTAINER_MALFORMED")
+                self.assertIn("impossible block size", out.stdout)
+                self.assertNotIn("MISSING_KEY_ENTRY", out.stdout)
+
+    def test_a_garbled_compressed_block_fails_closed(self):
+        psar = bytearray(build_npumdimg(self.iso, self.entries, compress=(1,)))
+        # Overwrite block 1's stream (its row is the second in the table).
+        row = struct.unpack_from("<8I", psar, 0x100 + 32)
+        w = list(row)
+        offset = w[4] ^ (w[2] ^ w[3])
+        size = w[5] ^ (w[1] ^ w[2])
+        psar[offset:offset + size] = os.urandom(size)
+        out, dst = self._run("garbled", npumdimg_pbp(self.DISC, bytes(psar)))
+        self.assertNotEqual(out.returncode, 0, out.stdout)
+        self.assertFalse(dst.exists())
+        self.assertTrue(any(word in out.stdout for word in (
+            "DECOMPRESS_FAILED", "INTEGRITY_CHECK_FAILED")), out.stdout)
+
+    def test_the_result_must_be_the_packages_own_disc(self):
+        other = build_npumdimg(build_tiny_iso("TEST80902"), self.entries)
+        out, dst = self._run("wrong_disc", npumdimg_pbp(self.DISC, other))
+        self._refused(out, dst, 5, "INTEGRITY_CHECK_FAILED")
+        self.assertIn("TEST80902", out.stdout)
+        no_pvd = build_npumdimg(build_tiny_iso(self.DISC, pvd=False), self.entries)
+        out, dst = self._run("no_pvd", npumdimg_pbp(self.DISC, no_pvd))
+        self._refused(out, dst, 5, "INTEGRITY_CHECK_FAILED")
+        self.assertIn("volume descriptor", out.stdout)
+
+    def test_a_missing_row_is_named(self):
+        keyfile = self.tmp / "np_keys_partial.json"
+        partial = dict(self.entries)
+        partial.pop(f"kirk.keyvault.{NP_WRAP_ROW}")
+        write_keyfile(keyfile, partial)
+        psar = build_npumdimg(self.iso, self.entries)
+        out, dst = self._run("missing_row", npumdimg_pbp(self.DISC, psar), keyfile=keyfile)
+        self._refused(out, dst, 3, f"MISSING_KEY_ENTRY kirk.keyvault.{NP_WRAP_ROW}")
+
+    def test_psone_classics_are_refused_by_name_before_any_key(self):
+        empty = self.tmp / "no-such-np-keys.json"
+        for magic in (b"PSISOIMG0000", b"PSTITLEIMG000000"):
+            with self.subTest(magic=magic):
+                pbp = npumdimg_pbp("SLUS99999", magic + bytes(0x400), category="ME")
+                out, dst = self._run(f"psone_{magic[:6].decode()}", pbp, keyfile=empty)
+                self._refused(out, dst, 12, "PSONE_CLASSIC_UNSUPPORTED")
+                self.assertNotIn("MISSING_KEY_ENTRY", out.stdout)
+
+    def test_updaters_stay_firmware_out_of_scope(self):
+        empty = self.tmp / "no-such-np-keys.json"
+        updater_psp = bytearray(0x200)
+        updater_psp[0:4] = b"~PSP"
+        struct.pack_into("<I", updater_psp, 0xD0, 0x0B000000)
+        cases = {
+            "category_mg": npumdimg_pbp("MSTKUPDATE", b"NPUMDIMG" + bytes(0x400), category="MG"),
+            "psar_archive": npumdimg_pbp("MSTKUPDATE", b"PSAR" + bytes(0x400)),
+            "updater_tag": npumdimg_pbp("MSTKUPDATE", b"NPUMDIMG" + bytes(0x400),
+                                        data_psp=bytes(updater_psp)),
+        }
+        for name, pbp in cases.items():
+            with self.subTest(updater=name):
+                out, dst = self._run(f"updater_{name}", pbp, keyfile=empty)
+                self._refused(out, dst, 10, "FIRMWARE_OUT_OF_SCOPE")
+                self.assertIn("never decrypts firmware", out.stdout)
+
+    def test_other_packages_are_refused_by_name(self):
+        out, dst = self._run("homebrew", npumdimg_pbp("TEST80903", b"\0" * 0x40))
+        self._refused(out, dst, 7, "UNSUPPORTED_CONTAINER")
+        out, dst = self._run("not_pbp", self.iso)
+        self._refused(out, dst, 4, "CONTAINER_MALFORMED")
+
+
+# The DRM BB fuse-ID types and the LZRC decoder's bounds, through the C API.
+_AMCTRL_HARNESS_C = r"""
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "nk_psp_amctrl.h"
+#include "nk_psp_keystore.h"
+#include "nk_psp_lzrc.h"
+
+#define GUARD 64
+#define CAP 4096
+
+static unsigned long long rng = 0x5EED2951u;
+static unsigned rnd(void) {
+    rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+    return (unsigned)(rng >> 33);
+}
+
+int main(void) {
+    NkPspCtx ctx;
+    MAC_KEY mac;
+    CIPHER_KEY cipher;
+    unsigned char key16[16] = {0};
+    unsigned char *out = malloc(CAP + 2 * GUARD);
+    unsigned char in[512];
+    int mac2, cipher2, mac1, mode1, worst = 0, overruns = 0, accepted = 0;
+    nk_psp_ctx_init(&ctx, NULL);
+    mac2 = sceDrmBBMacInit(&ctx, &mac, 2);
+    printf("mac2 %s %s\n", nk_psp_status_name(mac2), ctx.message);
+    nk_psp_ctx_init(&ctx, NULL);
+    cipher2 = sceDrmBBCipherInit(&ctx, &cipher, 2, 2, key16, NULL, 0);
+    printf("cipher2 %s %s\n", nk_psp_status_name(cipher2), ctx.message);
+    nk_psp_ctx_init(&ctx, NULL);
+    mac1 = sceDrmBBMacInit(&ctx, &mac, 1);
+    printf("mac1 %s\n", nk_psp_status_name(mac1));
+    nk_psp_ctx_init(&ctx, NULL);
+    mode1 = sceDrmBBCipherInit(&ctx, &cipher, 1, 1, key16, NULL, 0);
+    printf("encrypt %s\n", nk_psp_status_name(mode1));
+    if (out == NULL) return 2;
+    for (int iter = 0; iter < 20000; iter++) {
+        size_t in_len = (size_t)(rnd() % sizeof(in));
+        size_t out_len = (size_t)(rnd() % CAP);
+        int got;
+        for (size_t i = 0; i < in_len; i++) in[i] = (unsigned char)rnd();
+        if (in_len > 0 && (iter & 1)) in[0] &= 0x7F; /* mostly coded streams */
+        memset(out, 0xA5, CAP + 2 * GUARD);
+        got = nk_psp_lzrc_decompress(out + GUARD, out_len, in, in_len);
+        if (got > (int)out_len) worst = got;
+        if (got >= 0) accepted++;
+        for (size_t i = 0; i < GUARD; i++) {
+            if (out[i] != 0xA5 || out[GUARD + out_len + i] != 0xA5) { overruns++; break; }
+        }
+    }
+    printf("lzrc accepted=%d past_len=%d overruns=%d\n", accepted, worst, overruns);
+    free(out);
+    return 0;
+}
+"""
+
+
+@unittest.skipUnless(CC, "no C compiler on PATH")
+class TestAmctrlAndLzrcBounds(unittest.TestCase):
+    """The fuse-ID DRM types are refused as CONTEXT_REQUIRED, and malformed LZRC
+    streams fail closed without writing outside the caller's buffer."""
+
+    @classmethod
+    def setUpClass(cls):
+        from tools.nk_core import decrypt_tool
+
+        cls.tmp = Path(tempfile.mkdtemp(prefix="nk_psp_amctrl_"))
+        source = cls.tmp / "amctrl_harness.c"
+        source.write_text(_AMCTRL_HARNESS_C, encoding="utf-8")
+        exe = cls.tmp / "amctrl_harness.exe"
+        cmd = [CC, "-std=c99", "-O2", "-Wall", "-Wextra", "-I", str(ROOT / "src" / "core"),
+               str(source)]
+        cmd.extend(str(ROOT / rel) for rel in decrypt_tool.SOURCES
+                   if not rel.endswith("nk_decrypt_main.c"))
+        cmd.extend(["-o", str(exe)])
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        cls.out = subprocess.run([str(exe)], capture_output=True, text=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_fuse_id_types_need_the_console(self):
+        self.assertEqual(self.out.returncode, 0, self.out.stdout + self.out.stderr)
+        lines = dict(line.split(" ", 1) for line in self.out.stdout.splitlines())
+        for name in ("mac2", "cipher2"):
+            self.assertTrue(lines[name].startswith("CONTEXT_REQUIRED "), lines[name])
+            self.assertIn("fuse ID", lines[name])
+            self.assertIn("never uses a default", lines[name])
+        self.assertEqual(lines["mac1"], "UNSUPPORTED_SCHEME")
+        self.assertEqual(lines["encrypt"], "UNSUPPORTED_SCHEME")
+
+    def test_malformed_lzrc_streams_stay_inside_the_buffer(self):
+        self.assertEqual(self.out.returncode, 0, self.out.stdout + self.out.stderr)
+        report = self.out.stdout.splitlines()[-1]
+        self.assertTrue(report.startswith("lzrc "), report)
+        fields = dict(item.split("=") for item in report.split()[1:])
+        self.assertEqual(fields["past_len"], "0")
+        self.assertEqual(fields["overruns"], "0")
+
+    def test_the_literal_writer_round_trips_through_the_decoder(self):
+        from tools.nk_core import decrypt_tool
+
+        harness = self.tmp / "lzrc_roundtrip.c"
+        harness.write_text(r"""
+#include <stdio.h>
+#include <stdlib.h>
+#include "nk_psp_lzrc.h"
+int main(int argc, char **argv) {
+    static unsigned char in[1 << 16], out[1 << 16];
+    FILE *f;
+    size_t n;
+    long want;
+    int got;
+    if (argc != 4) return 2;
+    f = fopen(argv[1], "rb");
+    if (f == NULL) return 2;
+    n = fread(in, 1, sizeof(in), f);
+    fclose(f);
+    want = strtol(argv[2], NULL, 10);
+    got = nk_psp_lzrc_decompress(out, (size_t)want, in, n);
+    if (got != want) { printf("got %d\n", got); return 1; }
+    f = fopen(argv[3], "wb");
+    if (f == NULL || fwrite(out, 1, (size_t)got, f) != (size_t)got) return 2;
+    return fclose(f) == 0 ? 0 : 2;
+}
+""", encoding="utf-8")
+        exe = self.tmp / "lzrc_roundtrip.exe"
+        proc = subprocess.run([CC, "-std=c99", "-O2", "-I", str(ROOT / "src" / "core"),
+                               str(harness), str(ROOT / "src" / "core" / "nk_psp_lzrc.c"),
+                               "-o", str(exe)], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("src/core/nk_psp_lzrc.c", decrypt_tool.SOURCES)
+        clear = bytes(3000) + bytes(range(256)) * 4 + b"NK295" * 40
+        stream = self.tmp / "stream.bin"
+        result = self.tmp / "stream.out"
+        stream.write_bytes(lzrc_literals(clear))
+        out = subprocess.run([str(exe), str(stream), str(len(clear)), str(result)],
+                             capture_output=True)
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertEqual(result.read_bytes(), clear)
+        # One byte short of room: the decoder refuses rather than truncating.
+        out = subprocess.run([str(exe), str(stream), str(len(clear) - 1), str(result)],
+                             capture_output=True)
+        self.assertEqual(out.returncode, 1, out.stdout)
 
 
 if __name__ == "__main__":

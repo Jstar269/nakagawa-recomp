@@ -142,6 +142,9 @@ static int flat_entry_length(const char *name)
         {"kirk.ecdsa.gy2", 20},
         {"kirk.ecdsa.px1", 20},
         {"kirk.ecdsa.py1", 20},
+        {"amctrl.loc_1CD4", 16},
+        {"amctrl.loc_1CE4", 16},
+        {"amctrl.loc_1CF4", 16},
     };
     for (size_t i = 0; i < sizeof(exact) / sizeof(exact[0]); i++) {
         if (strcmp(name, exact[i].name) == 0) return exact[i].len;

@@ -138,7 +138,16 @@ cover yet; `MALFORMED_INPUT` and `INTEGRITY_FAILURE` mean the file on the disc
 looks damaged or changed. An encrypted module stops the same way with
 `ENCRYPTED_MODULE: <name> is encrypted and built-in decryption stopped: ...`.
 A plain copy you put in the folder yourself is always used and never replaced.
-PSN downloads (`EBOOT.PBP`) and PGD-protected data are not decrypted yet.
+
+A PSN release of a UMD game (an `EBOOT.PBP` from the PlayStation Store whose
+game is a disc image inside the package) can be added like a disc: pick the
+`EBOOT.PBP`. The player turns it back into its disc image once, on this PC, in
+`<user data>/discs/<DISC_ID>/<DISC_ID>.iso`, checks that the result is a valid
+disc image whose disc ID matches the package, and then adds that image exactly as
+if you had picked it. The conversion shows its progress and can be cancelled; a
+cancelled or failed conversion keeps nothing. Other PSN downloads (PSP minis and
+games tied to the PSP that bought them), PSOne Classics and PGD-protected data are
+not supported yet.
 
 ### Supplying title manifests
 
@@ -178,11 +187,15 @@ crashes.
   ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Images that
   are not PSP game discs are refused.
 - **PlayStation Store package:** a file whose first bytes are the `PBP` package
-  magic (a store download renamed to `.iso`, for example) is not a disc image,
-  however it is named. It is refused before any disc reading with the boundary
-  `PBP_PACKAGE_UNSUPPORTED` and a sentence naming the title and disc ID the
-  package carries. Only the package's own `PARAM.SFO` entry is read to form that
-  sentence; no other package section is opened, installed, or executed.
+  magic is a package, not a disc image, however it is named. The player converts
+  a PSN release of a UMD game into its disc image (see
+  [What an encrypted file reports](#what-an-encrypted-file-reports)). A PSOne Classic is refused as
+  `PSONE_CLASSIC_UNSUPPORTED`, a system software update as `FIRMWARE_OUT_OF_SCOPE`,
+  and any other package as `PBP_PACKAGE_UNSUPPORTED`, each with a sentence naming
+  the title and disc ID, before any key is read. The command-line inspection
+  (`tools/nk_core/iso_inspect.py`) still refuses every package with
+  `PBP_PACKAGE_UNSUPPORTED`; only the package's own `PARAM.SFO` is read to form
+  that sentence.
 - **Encrypted executable:** the player decrypts it from your own disc
   ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). When that
   stops, the checklist reports `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` with
@@ -223,7 +236,7 @@ subsystem breakdown with tracking issues.
 
 | Area | Today | Tracking |
 | --- | --- | --- |
-| Encrypted executables and PRX modules | The player decrypts UMD disc images (`.iso`) with built-in tables; a file it can't decrypt is named, and a decrypted copy from your own disc can stand in. PSN `EBOOT.PBP` packages and PGD/amctrl are not decrypted yet. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
+| Encrypted executables and PRX modules | The player decrypts UMD disc images (`.iso`) with built-in tables, and converts PSN releases of UMD games (`EBOOT.PBP`) into their disc image first; a file it can't decrypt is named, and a decrypted copy from your own disc can stand in. Other PSN packages and PGD data are not decrypted yet. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 | Commercial-game packages in public builds | Packages build with the public runtime, and public builds render imported PGF fonts through the project-authored reader for supported inputs (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the supported revision and shadow-map variants render too ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521)); a revision-3 font's compressed character-map subtables and any other shadow-map width are still refused by name. | [PGF_SPEC.md §4](cleanroom/PGF_SPEC.md#4-non-requirements-and-named-boundaries) |
 | Title font libraries | A title's own font library may draw project fonts as dashes; see [What you need](#what-you-need). | [#1055](https://github.com/Jstar269/nakagawa-recomp/issues/1055) |
 | Games other than the maintainer-tested titles | Other games import with the **EXPERIMENTAL** badge and stay Untested unless someone has seen them boot; bring-up of further titles is ongoing. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |

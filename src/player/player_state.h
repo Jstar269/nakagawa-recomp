@@ -363,6 +363,25 @@ typedef struct {
     char font_message[NK_FONT_TEXT_MAX];
 } SetupWizardState;
 
+/* A PSN release of a UMD game (an EBOOT.PBP whose DATA.PSAR is an NPUMDIMG
+ * image, #295 phase 2). The player converts it once into a private ISO under
+ * the per-user data root, <data>/discs/<DISC_ID>/<DISC_ID>.iso, and then
+ * imports that ISO exactly as a picked disc image. */
+typedef struct {
+    char pbp_path[MAX_PATH_LEN];
+    char iso_path[MAX_PATH_LEN];
+    char disc_id[MAX_DISC_ID_LEN];
+    char title[MAX_TITLE_LEN];
+    /* A checked conversion is already at iso_path. */
+    bool iso_ready;
+} PlayerPsnPackage;
+
+typedef struct {
+    void (*on_progress)(uint64_t done_bytes, uint64_t total_bytes, void *userdata);
+    bool (*is_cancelled)(void *userdata);
+    void *userdata;
+} PlayerPsnConvertCallbacks;
+
 typedef struct PlayerApp {
     PlayerView active_view;
     GameRecord games[MAX_LIBRARY_GAMES];
@@ -496,6 +515,14 @@ typedef struct PlayerApp {
        and shown only with developer mode on. Lines are redacted (profile path
        and user name replaced) when they are added. */
     PlayerDevLog dev_log;
+
+    /* A PSN package being converted to its disc image on a worker the event
+       loop in main.c owns. Progress and cancel use the setup wizard's panel;
+       return_view is where the picked disc continues once it is done. */
+    PlayerPsnPackage psn_package;
+    bool psn_conversion_active;
+    bool psn_conversion_requested;
+    PlayerView psn_conversion_return_view;
 } PlayerApp;
 
 /* State management API */
@@ -945,6 +972,33 @@ bool player_app_add_inspected_game(PlayerApp *app);
 
 /* Start the wizard's staging worker for the inspected disc. */
 void player_app_wizard_begin_extraction(PlayerApp *app);
+
+/* PSN releases of UMD games (#295 phase 2). */
+/* True when the file starts with the PBP package magic. */
+bool player_path_is_pbp_package(const char *path);
+/* Identify a picked package with no key lookup and name its private ISO.
+ * True for a PSN release of a UMD game; otherwise false with the named code
+ * (PSONE_CLASSIC_UNSUPPORTED, FIRMWARE_OUT_OF_SCOPE, PBP_PACKAGE_UNSUPPORTED or
+ * IO_FAILURE) and a plain sentence. */
+bool player_psn_package_inspect(const char *pbp_path, PlayerPsnPackage *package,
+                                char *code, size_t code_size,
+                                char *message, size_t message_size);
+/* Convert the package into package->iso_path: written beside it, checked
+ * (ISO9660 volume descriptor and the package's DISC_ID), then renamed into
+ * place; a failure or a cancel removes the partial file. On failure code is
+ * the boundary's named result (CANCELLED for a cancel). */
+bool player_psn_package_convert(const PlayerPsnPackage *package,
+                                const PlayerPsnConvertCallbacks *callbacks,
+                                char *code, size_t code_size,
+                                char *message, size_t message_size);
+/* The wizard's progress panel shows the conversion; the event loop starts the
+ * worker once it takes the request. finish restores the view the package was
+ * picked from, so the ISO is then imported exactly as a picked disc. */
+void player_app_psn_conversion_begin(PlayerApp *app, const PlayerPsnPackage *package);
+bool player_app_psn_conversion_take_request(PlayerApp *app);
+void player_app_psn_conversion_progress(PlayerApp *app, uint64_t done_bytes,
+                                        uint64_t total_bytes);
+void player_app_psn_conversion_finish(PlayerApp *app);
 
 /* Setup Wizard API */
 void player_app_start_setup_wizard(PlayerApp *app);
