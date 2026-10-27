@@ -258,6 +258,37 @@ static int hle_log_on(void) {
     return enabled;
 }
 
+/* The other diagnostic switches on the per-call path follow the same rule (#1296). An
+ * uncached getenv takes the C runtime's environment lock and compares the name against
+ * every variable, and sr_syscall() plus the CpuSuspendIntr/CpuResumeIntr pair a guest
+ * allocator brackets each allocation with read up to four of them per call. */
+static int hle_env_switch(int *cached, const char *name) {
+    if (*cached < 0) *cached = getenv(name) != NULL;
+    return *cached;
+}
+
+static int hle_nidlog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_NIDLOG");
+}
+
+static int hle_syslog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_SYSLOG");
+}
+
+static int hle_debug_thread_log_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_DEBUG_THREAD_LOG");
+}
+
+/* Thread sleep, wakeup and run-status calls and every UID allocation report under
+ * SR_WAKELOG; a guest can make those calls every frame. */
+static int hle_wakelog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_WAKELOG");
+}
+
 /* Display-list tracing is extremely verbose (several writes per presented
  * frame).  Keep Standard mode quiet; Diagnostics enables SR_GEDUMP, and the
  * public SR_DEBUG GE bit (0x08) remains an equivalent opt-in. */
@@ -504,7 +535,7 @@ static uint32_t s_uid = 0x110;
 uint32_t sr_alloc_uid(void) {
     while (s_uid == 0u || s_uid == SR_ROLE_UID_NONE) s_uid++;
     uint32_t uid = s_uid++;
-    if (getenv("SR_WAKELOG")) fprintf(stderr, "ALLOC_UID: 0x%x\n", uid);
+    if (hle_wakelog_on()) fprintf(stderr, "ALLOC_UID: 0x%x\n", uid);
     return uid;
 }
 
@@ -1019,20 +1050,24 @@ uint32_t sr_hle_test_compiled_sdk_version(void) {
 
 /* sceUtilityGetSystemParamInt(id, int *out): write the system setting and return 0. A no-op that
  * leaves *out untouched makes the game read garbage for the language and load the wrong region
- * assets. IDs follow PSP_SYSTEMPARAM_ID_INT_*. LANGUAGE (1, English), BUTTON_PREFERENCE (1, cross
- * = enter), DATE_FORMAT (1), TIME_FORMAT (1) and DAYLIGHTSAVINGS (1) are the values of their
- * registry keys measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration: that console's
- * configured settings, not factory defaults (which are unmeasured). The ad-hoc channel, WLAN power
- * save and time zone values are unmeasured project defaults. The registry (sreg_systemparam_int)
- * is the source sceUtilityGetSystemParamInt reads; this table seeds it. */
+ * assets. IDs follow PSP_SYSTEMPARAM_ID_INT_*. This table seeds the virtual system registry
+ * (sreg_systemparam_int), the one retained system profile every guest-visible reader of these
+ * settings goes through: sceUtilityGetSystemParamInt, sceImpose, and the RTC local-time and
+ * gettimeofday paths (psp_profile_local_offset_minutes, #1382). This is the one place the seed
+ * values and their status are stated. Every value marked measured is the configured setting of the
+ * PSP-3000 6.6.1 oracle console, not a factory default (factory defaults are unmeasured):
+ * LANGUAGE, BUTTON_PREFERENCE, DATE_FORMAT, TIME_FORMAT and DAYLIGHTSAVINGS from the read-only
+ * registry enumeration of 2026-10-09, and ADHOC_CHANNEL, TIMEZONE and LOCK_PARENTAL_LEVEL through
+ * sceUtilityGetSystemParamInt on 2026-10-10 (hle-sysparam). WLAN_POWERSAVE is an unmeasured
+ * project default. */
 static uint32_t systemparam_int_value(uint32_t id) {
     switch (id) {
         case 2:  return 0;   /* ADHOC_CHANNEL: measured 0 (automatic) on the oracle, 2026-10-10 */
-        case 3:  return 0;   /* WLAN_POWERSAVE: off (unmeasured) */
+        case 3:  return 0;   /* WLAN_POWERSAVE: off (unmeasured project default) */
         case 4:  return 1;   /* DATE_FORMAT: measured */
         case 5:  return 1;   /* TIME_FORMAT: measured (1 = 12-hour in the PSPSDK enumeration) */
-        case 6:  return 0xfffffed4u; /* TIMEZONE offset in minutes: measured -300 on the oracle console */
-        case 7:  return 1;   /* DAYLIGHTSAVINGS: measured */
+        case 6:  return 0xfffffed4u; /* TIMEZONE minutes from UTC: measured -300 on the oracle, 2026-10-10 */
+        case 7:  return 1;   /* DAYLIGHTSAVINGS: measured 1 (PSPSDK SAVING) */
         case 8:  return 1;   /* LANGUAGE: measured (English) */
         case 9:  return 1;   /* BUTTON_PREFERENCE: measured */
         case 10: return 9;   /* LOCK_PARENTAL_LEVEL: measured 9 (off) on the oracle, 2026-10-10 */
@@ -4065,8 +4100,10 @@ static uint32_t h_DelaySysClockThreadCB(CpuState *s) {
     if (result != 0u) return result;
     return h_DelayThreadCBForUsec(usec);
 }
+/* sceKernelChangeThreadPriority(thid, priority).  Validation, the stored value and the
+ * scheduling boundary at the call (the PSPAutotests threads/threads/change.expected
+ * cells) are sched_set_priority's. */
 static uint32_t h_ChangeThreadPriority(CpuState *s) {
-    /* PSP-B3-01 (psp-hw-20260917): a dormant target answers DORMANT. */
     return sched_set_priority(A0, (int)A1);
 }
 
@@ -4163,7 +4200,7 @@ static uint32_t h_GetThreadStackFreeSize(CpuState *s) {
 static uint32_t h_SleepThread(CpuState *s) {
     (void)s;
     uint32_t uid = sched_current_uid();
-    if (getenv("SR_WAKELOG")) {
+    if (hle_wakelog_on()) {
         static int n=0;
         if (n++<8) fprintf(stderr, "SLEEP uid=0x%x\n", uid);
     }
@@ -4175,7 +4212,7 @@ static uint32_t h_SleepThread(CpuState *s) {
 static uint32_t h_SleepThreadCB(CpuState *s) {
     (void)s;
     uint32_t uid = sched_current_uid();
-    if (getenv("SR_WAKELOG")) {
+    if (hle_wakelog_on()) {
         static int n=0;
         if (n++<8) fprintf(stderr, "SLEEP_CB uid=0x%x\n", uid);
     }
@@ -4185,14 +4222,14 @@ static uint32_t h_SleepThreadCB(CpuState *s) {
     return 0;
 }
 static uint32_t h_WakeupThread(CpuState *s) {
-    if (getenv("SR_WAKELOG")) { static int n=0; if (n++<8) fprintf(stderr, "WAKEUP target=0x%x (from 0x%x)\n", A0, sched_current_uid()); }
+    if (hle_wakelog_on()) { static int n=0; if (n++<8) fprintf(stderr, "WAKEUP target=0x%x (from 0x%x)\n", A0, sched_current_uid()); }
     uint32_t result = sched_thread_wakeup(A0);
     if (result == 0) sched_preempt();
     return result;
 }
 static uint32_t h_CancelWakeupThread(CpuState *s) {
     int old = sched_thread_cancel_wakeup(A0);
-    if (getenv("SR_WAKELOG")) { static int n=0; if (n++<8) fprintf(stderr, "CANCEL_WAKE target=0x%x old=%d (from 0x%x)\n", A0, old, sched_current_uid()); }
+    if (hle_wakelog_on()) { static int n=0; if (n++<8) fprintf(stderr, "CANCEL_WAKE target=0x%x old=%d (from 0x%x)\n", A0, old, sched_current_uid()); }
     return old < 0 ? 0x800201a0u : (uint32_t)old;
 }
 static uint32_t h_WaitThreadEnd_impl(CpuState *s, int is_cb) {
@@ -4274,7 +4311,7 @@ static uint32_t h_ReferThreadRunStatus(CpuState *s) {
         MEM_W32(out + 0x20, rs.intrPreemptCount);
         MEM_W32(out + 0x24, rs.threadPreemptCount);
         MEM_W32(out + 0x28, rs.releaseCount);
-        if (getenv("SR_WAKELOG")) { static int n=0; if (n++<12) fprintf(stderr,
+        if (hle_wakelog_on()) { static int n=0; if (n++<12) fprintf(stderr,
             "REFER_RUN target=0x%x status=%u pri=%u waitType=%u waitId=0x%x wakeups=%u\n",
             A0, rs.status, rs.currentPriority, rs.waitType, rs.waitId, rs.wakeupCount); }
     }
@@ -6922,10 +6959,10 @@ static uint32_t h_StopUnloadSelfModuleWithStatus(CpuState *s) {
  * on reaching zero, calls ResumeIntr. The spinlock at 0x10974 polls 0x30aa80 via bne. */
 static uint32_t h_CpuSuspendIntr(CpuState *s) {
     (void)s;
-    if (getenv("SR_SYSLOG")) {
+    if (hle_syslog_on()) {
         fprintf(stderr, "HLE: sceKernelCpuSuspendIntr called\n");
     }
-    if (getenv("SR_DEBUG_THREAD_LOG")) {
+    if (hle_debug_thread_log_on()) {
         /* Role-resolved rather than UID-literal (the historical literals drifted and
          * left these diagnostics permanently silent). A build with no worker/launcher
          * binding has no role to report, so both branches stay quiet. */
@@ -6947,10 +6984,10 @@ static uint32_t h_CpuSuspendIntr(CpuState *s) {
 }
 
 static uint32_t h_CpuResumeIntr(CpuState *s) {
-    if (getenv("SR_SYSLOG")) {
+    if (hle_syslog_on()) {
         fprintf(stderr, "HLE: sceKernelCpuResumeIntr called\n");
     }
-    if (getenv("SR_DEBUG_THREAD_LOG")) {
+    if (hle_debug_thread_log_on()) {
         /* Role-resolved (see h_CpuSuspendIntr). */
         if (sched_current_is_worker()) {
             fprintf(stderr, "DEBUG: CpuResumeIntr worker=0x%x: r2 (v0)=0x%x, r6 (a2)=0x%x, r16 (s0)=0x%x, r26 (k0)=0x%x, ra=0x%x, sp=0x%x\n  Stack:",
@@ -10282,11 +10319,109 @@ static uint32_t h_AtracGetLoopStatus(CpuState *s) {
     return 0;
 }
 static uint32_t h_AtracSetLoopNum(CpuState *s) { Atrac *a = atrac_of(A0); if (a) a->loopNum = (int)A1; return 0; }
+/* sceAtracGetBufferInfoForResetting and sceAtracResetPlayPosition share one
+ * description of the refill that a reset to `sample` needs: one span of the
+ * 32-byte PSPSDK pspatrac3.h PspBufferInfo (write address, bytes the guest
+ * may write, bytes it must write, file offset of the first byte). */
+typedef struct {
+    uint32_t writePos, writable, minWrite, filePos;
+} AtracResetSpan;
+/* Error codes of the reset pair. They follow the public PPSSPP reference
+ * (Core/HLE/ErrorCodes.h) and are not measured on a PSP here (#1096). */
+#define ATRAC_ERROR_SECOND_BUFFER_NEEDED 0x80630012u
+#define ATRAC_ERROR_BAD_SAMPLE 0x80630015u
+#define ATRAC_ERROR_BAD_FIRST_RESET_SIZE 0x80630016u
+#define ATRAC_ERROR_BAD_SECOND_RESET_SIZE 0x80630017u
+/* The refill for a reset to `sample`, or the error both reset calls return.
+ * A streamed track is refilled from the ring start with the frame before the
+ * one that holds the sample, so the refill begins with a state-loading frame;
+ * the guest may write the frame-aligned ring capacity (at most the rest of
+ * the file) and must write two frames. A halfway buffer continues after its
+ * fed prefix up to the sample's frame. The reset never needs the second
+ * buffer. */
+static uint32_t atrac_reset_buffer_info(const Atrac *a, uint32_t sample,
+                                        AtracResetSpan *first,
+                                        AtracResetSpan *second) {
+    if (a->bufferState != ATRAC_STATE_ALL_DATA_LOADED &&
+        a->bufferState != ATRAC_STATE_HALFWAY_BUFFER && !atrac_streamed_state(a))
+        return ATRAC_ERROR_NO_DATA;
+    if (a->bufferState == ATRAC_STATE_STREAMED_LOOP_TRAILER && !a->secondBuf)
+        return ATRAC_ERROR_SECOND_BUFFER_NEEDED;
+    if (sample > (uint32_t)a->endSample)
+        return ATRAC_ERROR_BAD_SAMPLE;
+    uint32_t spf = (uint32_t)atrac_samples_per_frame(a);
+    first->writePos = a->buf;
+    first->writable = 0u;
+    first->minWrite = 0u;
+    first->filePos = 0u;
+    if (a->bufferState == ATRAC_STATE_HALFWAY_BUFFER) {
+        uint64_t needed = (uint64_t)a->dataByteOffset +
+                          (uint64_t)(sample / spf) * a->bytesPerFrame;
+        uint64_t missing = needed > a->size ? needed - a->size : 0u;
+        first->writePos = a->buf + a->size;
+        first->writable = a->fileSize > a->size ? a->fileSize - a->size : 0u;
+        first->minWrite = missing > 0xffffffffu ? 0xffffffffu : (uint32_t)missing;
+        first->filePos = a->size;
+    } else if (atrac_streamed_state(a)) {
+        uint64_t off = a->dataByteOffset;
+        if (sample >= spf)
+            off += (uint64_t)((sample - spf) / spf) * a->bytesPerFrame;
+        uint32_t fileOff = off > 0xffffffffu ? 0xffffffffu : (uint32_t)off;
+        uint32_t ringBytes = a->bufferMaxSize / a->bytesPerFrame * a->bytesPerFrame;
+        uint32_t rest = a->fileSize > fileOff ? a->fileSize - fileOff : 0u;
+        first->writable = rest < ringBytes ? rest : ringBytes;
+        first->minWrite = a->bytesPerFrame * 2u;
+        first->filePos = fileOff;
+    }
+    second->writePos = a->secondBuf ? a->secondBuf : a->buf;
+    second->writable = 0u;
+    second->minWrite = 0u;
+    second->filePos = 0u;
+    return 0;
+}
+/* sceAtracResetPlayPosition(id, sample, writtenFirstBuf, writtenSecondBuf).
+ * PSPSDK pspatrac3.h contract: the guest first asks
+ * sceAtracGetBufferInfoForResetting where to write, writes the file bytes from
+ * the reported file position to the reported write position, and then passes
+ * the byte counts it wrote here. The library continues from that refill, so a
+ * streamed context drops its old ring contents: the refill sits at the start
+ * of the buffer (no RIFF prefix), the file read position continues after it,
+ * and the decode cursor skips the refill's state-loading first frame exactly
+ * as sceAtracSetData does for sample 0. Keeping the old ring (#1291) made the
+ * next frames mix the stale ring with the guest's refill, which the decoder
+ * rejects. A halfway buffer gains the bytes written after its fed prefix.
+ * Counts outside what sceAtracGetBufferInfoForResetting offered are refused
+ * and leave the context unchanged. Whether the PSP decodes the state-loading
+ * frame to prime the decoder is not measured; like sceAtracSetData, the HLE
+ * skips it. */
 static uint32_t h_AtracResetPlayPosition(CpuState *s) {
     Atrac *a = atrac_of(A0);
-    if (!a) return 0;
-    a->posSample = (int)A1;
+    if (!a) return ATRAC_ERROR_BAD_ATRACID;
+    uint32_t sample = A1, wroteFirst = A2, wroteSecond = A3;
+    AtracResetSpan first, second;
+    uint32_t err = atrac_reset_buffer_info(a, sample, &first, &second);
+    if (err) return err;
+    if (wroteFirst < first.minWrite || wroteFirst > first.writable)
+        return ATRAC_ERROR_BAD_FIRST_RESET_SIZE;
+    if (wroteSecond < second.minWrite || wroteSecond > second.writable)
+        return ATRAC_ERROR_BAD_SECOND_RESET_SIZE;
+    if (atrac_streamed_state(a)) {
+        /* first.writable bounds the refill by the ring and the file end. */
+        a->size = first.filePos + wroteFirst;
+        a->bufferHeaderSize = 0;
+        a->bufferPos = a->bytesPerFrame;
+        a->bufferValidBytes = wroteFirst - a->bytesPerFrame;
+        (void)atrac_stream_window_init(a);
+        atrac_update_buffer_state(a);
+    } else if (a->bufferState == ATRAC_STATE_HALFWAY_BUFFER) {
+        a->size += wroteFirst;   /* first.writable is the rest of the file */
+        atrac_update_buffer_state(a);
+    }
+    a->posSample = (int)sample;
     (void)atrac_reset_decoder(a);
+    if (atrac_log_on())
+        fprintf(stderr, "ATRAC_RESET: id=%u sample=%u wrote=%u size=%u pos=%u avail=%u state=%d\n",
+                A0, sample, wroteFirst, a->size, a->bufferPos, a->bufferValidBytes, a->bufferState);
     return 0;
 }
 
@@ -10319,60 +10454,21 @@ static uint32_t h_AtracGetSecondBufferInfo(CpuState *s) {
  * obtains the buffer information required to seek to a sample position before
  * sceAtracResetPlayPosition. Public behaviour reference: PSPSDK pspatrac3.h
  * (PspBufferInfo, 32 bytes) and PPSSPP Core/HLE/sceAtrac.cpp.
- * Fills the 8-word PspBufferInfo describing the first and second buffer spans. */
+ * Fills the 8-word PspBufferInfo describing the first and second buffer spans;
+ * h_AtracResetPlayPosition accepts exactly the refill reported here. */
 static uint32_t h_AtracGetBufferInfoForResetting(CpuState *s) {
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     if (!A2 || !sr_guest_span_writable(A2, 32u)) return 0x80000103u; /* ILLEGAL_ADDR */
-    if (a->bufferState == ATRAC_STATE_STREAMED_LOOP_TRAILER && !a->secondBuf)
-        return 0x80630012u; /* SECOND_BUFFER_NEEDED */
-    if (a->endSample >= 0 && (int)A1 > a->endSample)
-        return 0x80630015u; /* BAD_SAMPLE */
-
-    uint32_t writePos1 = a->buf;
-    uint32_t writable1 = 0u;
-    uint32_t minWrite1 = 0u;
-    uint32_t filePos1 = 0u;
-
-    if (a->bufferState == ATRAC_STATE_ALL_DATA_LOADED) {
-        writePos1 = a->buf;
-        writable1 = 0u;
-        minWrite1 = 0u;
-        filePos1 = 0u;
-    } else if (a->bufferState == ATRAC_STATE_HALFWAY_BUFFER) {
-        writePos1 = a->buf + a->size;
-        writable1 = (a->fileSize > a->size) ? (a->fileSize - a->size) : 0u;
-        uint32_t needed = a->dataByteOffset;
-        if (a->bytesPerFrame > 0)
-            needed += (A1 / (uint32_t)atrac_samples_per_frame(a)) * a->bytesPerFrame;
-        minWrite1 = (needed > a->size) ? (needed - a->size) : 0u;
-        filePos1 = a->size;
-    } else {
-        /* Streamed mode */
-        uint32_t sampleFileOffset = a->dataByteOffset;
-        uint32_t samplesPerFrame = (uint32_t)atrac_samples_per_frame(a);
-        if (a->bytesPerFrame > 0 && A1 >= samplesPerFrame) {
-            sampleFileOffset += ((A1 - samplesPerFrame) / samplesPerFrame) * a->bytesPerFrame;
-        }
-        uint32_t bSize = a->bytesPerFrame > 0 ? (a->bufferMaxSize / a->bytesPerFrame * a->bytesPerFrame) : a->bufferMaxSize;
-        writePos1 = a->buf;
-        writable1 = (a->fileSize > sampleFileOffset) ? (a->fileSize - sampleFileOffset) : 0u;
-        if (writable1 > bSize) writable1 = bSize;
-        minWrite1 = a->bytesPerFrame > 0 ? a->bytesPerFrame * 2u : 0u;
-        filePos1 = sampleFileOffset;
+    AtracResetSpan first, second;
+    uint32_t err = atrac_reset_buffer_info(a, A1, &first, &second);
+    if (err) return err;
+    const AtracResetSpan *spans[2] = { &first, &second };
+    for (uint32_t i = 0; i < 2u; i++) {
+        MEM_W32(A2 + i * 16u + 0u, spans[i]->writePos);
+        MEM_W32(A2 + i * 16u + 4u, spans[i]->writable);
+        MEM_W32(A2 + i * 16u + 8u, spans[i]->minWrite);
+        MEM_W32(A2 + i * 16u + 12u, spans[i]->filePos);
     }
-
-    /* First buffer info */
-    MEM_W32(A2 + 0u, writePos1);
-    MEM_W32(A2 + 4u, writable1);
-    MEM_W32(A2 + 8u, minWrite1);
-    MEM_W32(A2 + 12u, filePos1);
-
-    /* Second buffer info: reset never needs a second buffer write */
-    MEM_W32(A2 + 16u, a->secondBuf ? a->secondBuf : a->buf);
-    MEM_W32(A2 + 20u, 0u);
-    MEM_W32(A2 + 24u, 0u);
-    MEM_W32(A2 + 28u, 0u);
-
     return 0;
 }
 
@@ -11698,6 +11794,9 @@ static void hle_register_umd_callback_handlers(void) {
 /* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
  * (it typically wakes the sleeping game thread). PSP_VBLANK_INT = 30. */
 static uint32_t g_vbl_handler = 0, g_vbl_arg = 0, g_vbl_no = 0; static int g_vbl_on = 0;
+/* The slot holds a Register that Release has not cleared; a handler word of 0 is still a
+ * registration. Only h_RegisterSubIntr's log-on-change test reads it (#1287). */
+static int g_vbl_registered = 0;
 
 /* Generic PSP callback objects are kernel objects, not a 16-entry subsystem
  * table. Hardware creates at least 1024 of them. Keep an append-only host array:
@@ -12031,8 +12130,14 @@ static uint32_t h_RegisterSubIntr(CpuState *s) {
      * (PSPSDK pspintrman.h and its vsync sample: `void on_vblank(int sub, void *data)`), so
      * the sub-interrupt number is kept with the handler and its arg. */
     if (A0 == 30) {
-        fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
-        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3;
+        /* Titles re-register the same handler before almost every frame (#1287), so the line
+         * is written only when a registration changes the slot, or always under SR_HLELOG.
+         * The return code is unchanged: duplicate-register codes are UNMEASURED on the PSP. */
+        int changed = !g_vbl_registered || g_vbl_handler != A2 || g_vbl_no != A1 ||
+                      g_vbl_arg != A3;
+        if (changed || hle_log_on())
+            fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
+        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3; g_vbl_registered = 1;
     }
     return 0;
 }
@@ -12052,7 +12157,9 @@ static uint32_t h_DisableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 0; retu
  * Register. Non-VBLANK lines answer success without effect (UNMEASURED), as
  * with Enable/Disable. */
 static uint32_t h_ReleaseSubIntr(CpuState *s) {
-    if (A0 == 30) { g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; }
+    if (A0 == 30) {
+        g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; g_vbl_registered = 0;
+    }
     return 0;
 }
 uint32_t sr_vblank_handler(void) { return g_vbl_on ? g_vbl_handler : 0; }
@@ -12298,16 +12405,26 @@ enum {
     RTC_FILETIME_EPOCH_TICK = 50491123200000000ull,
 };
 
-/* The PSP timezone is a console setting, not the host process timezone.  The
- * current public configuration is UTC/standard time; keeping it explicit makes
- * every RTC/local and gettimeofday path deterministic and leaves the setting in
- * one place.  The retained, settable system-profile owner for timezone/daylight
- * is issue #77 and does not exist yet, so sceRtcGetCurrentClockLocalTime and
- * the UTC/local conversions run on this fixed UTC constant until #77 lands;
- * the explicit-offset sceRtcGetCurrentClock path is complete and independent.
- * #80's LocalTime criterion is therefore BLOCKED BY #77, not complete. */
-static const int32_t s_psp_timezone_minutes = 0;
-static const int32_t s_psp_daylight = 0;
+/* The console's time zone and daylight-saving setting (#1382). It is a console setting, never the
+ * host process timezone, and it lives in the one retained system profile: the virtual system
+ * registry keys /CONFIG/DATE/time_zone_offset and /CONFIG/DATE/summer_time, which
+ * sceUtilityGetSystemParamInt reports as TIMEZONE (6) and DAYLIGHTSAVINGS (7). The RTC local-time
+ * APIs and gettimeofday read them here on every call, so a value a game writes through sceReg, or
+ * the per-user overlay restores, reaches every API at once and the getter and the clocks cannot
+ * disagree. The seed values and their measured status are stated once, at systemparam_int_value.
+ * PSPSDK psputility_sysparam.h: TIMEZONE is the offset from UTC in minutes (EST = -300) and
+ * DAYLIGHTSAVINGS is 0 (STD) or 1 (SAVING). That SAVING moves local time 60 minutes ahead is the
+ * setting's meaning, not a measurement: the firmware's arithmetic is unmeasured, and so is its
+ * handling of other values, which count as SAVING here. The explicit-offset sceRtcGetCurrentClock
+ * path does not use the profile. Returns the local offset in minutes; zone_out and daylight_out,
+ * when not NULL, receive the two settings. */
+static int64_t psp_profile_local_offset_minutes(int32_t *zone_out, uint32_t *daylight_out) {
+    int32_t zone = (int32_t)sreg_systemparam_int(6u);   /* PSP_SYSTEMPARAM_ID_INT_TIMEZONE */
+    uint32_t daylight = sreg_systemparam_int(7u);       /* PSP_SYSTEMPARAM_ID_INT_DAYLIGHTSAVINGS */
+    if (zone_out) *zone_out = zone;
+    if (daylight_out) *daylight_out = daylight;
+    return (int64_t)zone + (daylight ? 60 : 0);
+}
 
 static uint64_t s_rtc_epoch_tick;
 static uint64_t s_rtc_last_tick;
@@ -12431,7 +12548,7 @@ static int rtc_tick_to_datetime(uint64_t tick, RtcDateTime *out) {
     return 0;
 }
 
-static int rtc_add_offset(uint64_t tick, int32_t minutes, uint64_t *out) {
+static int rtc_add_offset(uint64_t tick, int64_t minutes, uint64_t *out) {
     if (!out) return 0;
     int64_t delta = (int64_t)minutes * 60ll * 1000000ll;
     if (delta >= 0) {
@@ -12452,7 +12569,7 @@ static int rtc_add_offset(uint64_t tick, int32_t minutes, uint64_t *out) {
  * an offset that crosses year 1 wraps instead of failing.  ConvertUtcToLocal
  * keeps the checked rtc_add_offset above because its overflow contract is not
  * autotest-verified; only the current-clock path uses the wrap form. */
-static void rtc_add_offset_wrap(uint64_t tick, int32_t minutes, uint64_t *out) {
+static void rtc_add_offset_wrap(uint64_t tick, int64_t minutes, uint64_t *out) {
     int64_t delta = (int64_t)minutes * 60ll * 1000000ll;
     *out = tick + (uint64_t)delta;   /* defined modulo 2^64 for both signs */
 }
@@ -12678,7 +12795,10 @@ static uint32_t h_LibcTime(CpuState *s) {
  * sceKernelGetSystemTime; it is an elapsed guest CPU-time value, not Unix time. */
 static uint32_t h_LibcClock(CpuState *s) { (void)s; return (uint32_t)now_usec(); }
 /* Fill a struct timeval {sec, usec} and struct timezone {minuteswest,dsttime}.
- * Both spans are preflighted before any write. */
+ * Both spans are preflighted before any write. The timezone record carries the
+ * system profile's settings in the BSD shape (minutes west of UTC, standard
+ * offset only, and the daylight flag); what the PSP itself writes there is
+ * unmeasured. */
 static uint32_t h_LibcGettimeofday(CpuState *s) {
     (void)s;
     if (A0 && !sr_guest_span_writable(A0, 8u)) return RTC_ILLEGAL_ADDR;
@@ -12690,8 +12810,11 @@ static uint32_t h_LibcGettimeofday(CpuState *s) {
         MEM_W32(A0 + 4u, (uint32_t)(unix_usec % 1000000u));
     }
     if (A1) {
-        MEM_W32(A1, (uint32_t)(-s_psp_timezone_minutes));
-        MEM_W32(A1 + 4u, (uint32_t)s_psp_daylight);
+        int32_t zone;
+        uint32_t daylight;
+        (void)psp_profile_local_offset_minutes(&zone, &daylight);
+        MEM_W32(A1, 0u - (uint32_t)zone);
+        MEM_W32(A1 + 4u, daylight);
     }
     return 0;
 }
@@ -12710,7 +12833,7 @@ static uint32_t h_RtcGetCurrentClockLocal(CpuState *s) {
     (void)s;
     if (!sr_guest_span_writable(A0, 16u)) return RTC_ILLEGAL_ADDR;
     uint64_t local_tick;
-    rtc_add_offset_wrap(rtc_now_tick(), s_psp_timezone_minutes, &local_tick);
+    rtc_add_offset_wrap(rtc_now_tick(), psp_profile_local_offset_minutes(NULL, NULL), &local_tick);
     RtcDateTime value;
     rtc_tick_to_datetime(local_tick, &value);
     return rtc_write_datetime(A0, &value) ? 0u : RTC_ILLEGAL_ADDR;
@@ -12719,14 +12842,14 @@ static uint32_t h_RtcConvertUtcToLocal(CpuState *s) {
     (void)s;
     uint64_t in, out;
     if (!A0 || !A1 || !rtc_read_u64(A0, &in) || !sr_guest_span_writable(A1, 8u) ||
-        !rtc_add_offset(in, s_psp_timezone_minutes, &out)) return RTC_ILLEGAL_ADDR;
+        !rtc_add_offset(in, psp_profile_local_offset_minutes(NULL, NULL), &out)) return RTC_ILLEGAL_ADDR;
     return rtc_write_u64(A1, out) ? 0u : RTC_ILLEGAL_ADDR;
 }
 static uint32_t h_RtcConvertLocalToUtc(CpuState *s) {
     (void)s;
     uint64_t in, out;
     if (!A0 || !A1 || !rtc_read_u64(A0, &in) || !sr_guest_span_writable(A1, 8u) ||
-        !rtc_add_offset(in, -s_psp_timezone_minutes, &out)) return RTC_ILLEGAL_ADDR;
+        !rtc_add_offset(in, -psp_profile_local_offset_minutes(NULL, NULL), &out)) return RTC_ILLEGAL_ADDR;
     return rtc_write_u64(A1, out) ? 0u : RTC_ILLEGAL_ADDR;
 }
 /* PSP's three std-fd imports intentionally alias the stdout handle (1).  The
@@ -13126,6 +13249,7 @@ typedef struct {
     int used;
     FdKind kind;                 /* descriptor identity is independent of its number */
     uint8_t std_stream;          /* 0=stdin, 1=stdout, 2=stderr for FD_KIND_STD */
+    uint8_t raw_umd;             /* 1 = UMD block device: size and off count 2048-byte sectors */
     uint32_t lba, size, off;
     int64_t async_res;
     int writable;
@@ -13177,6 +13301,7 @@ typedef enum {
     IO_RAW_BOUNDARY_ASYNC_CALLBACK,
     IO_RAW_BOUNDARY_DREAD,
     IO_RAW_BOUNDARY_DCLOSE,
+    IO_RAW_BOUNDARY_READ_PAST_END,
 } IoRawDeviceBoundary;
 
 typedef struct {
@@ -13330,6 +13455,61 @@ static uint32_t hle_io_raw_fd_boundary(uint32_t fd, IoRawDeviceBoundary operatio
                                        const char *api) {
     if (!hle_fd_is_raw_device(fd)) return 0u;
     return hle_io_raw_device_boundary(operation, api, s_fds[fd].guest_path, fd);
+}
+
+/* The UMD block device. A read-only descriptor for "umd0:", "umd1:" or "umd:" addresses the
+ * disc image in 2048-byte sectors (PSP-UMDRAW-001 captured cells, docs/HARDWARE_ORACLE.md):
+ * sceIoLseek and sceIoLseek32 return the new position in sectors, SEEK_END is relative to the
+ * last sector, and sceIoRead takes and returns a count of sectors and advances the position by
+ * it. A position below zero or past the last sector is refused with 0x8001b003 and leaves the
+ * position where it was; a zero count is refused with 0x80010016. Two cases stay at a named
+ * boundary because no capture covers them: a read that would cross the last sector, and every
+ * data operation while no disc image is open. The console wrote a whole request even past the
+ * end of a smaller buffer; the runtime refuses a destination that is not writable guest memory. */
+#define IO_UMD_SECTOR_BYTES 2048u
+#define IO_UMD_POSITION_REFUSED 0x8001b003u
+
+static int hle_fd_is_raw_umd(uint32_t fd) {
+    return hle_fd_is_raw_device(fd) && s_fds[fd].raw_umd && s_fds[fd].size != 0u;
+}
+
+static uint32_t hle_io_raw_umd_seek(Fd *f, int64_t offset, uint32_t whence,
+                                    uint32_t *position) {
+    if (whence >= 3u) return SCE_ERROR_KERNEL_INVALID_ARGUMENT;
+    int64_t base = whence == 1u ? (int64_t)f->off :
+                   (whence == 2u ? (int64_t)f->size - 1 : 0);
+    if (offset > INT64_MAX - base) return IO_UMD_POSITION_REFUSED;
+    int64_t target = base + offset;
+    if (target < 0 || target >= (int64_t)f->size) return IO_UMD_POSITION_REFUSED;
+    f->off = (uint32_t)target;
+    *position = f->off;
+    return 0u;
+}
+
+static uint32_t hle_io_raw_umd_read(uint32_t fd, uint32_t dst, uint32_t sectors) {
+    Fd *f = &s_fds[fd];
+    if (sectors == 0u) return 0x80010016u;
+    if (sectors > UINT32_MAX / IO_UMD_SECTOR_BYTES ||
+        !sr_guest_span_writable(dst, sectors * IO_UMD_SECTOR_BYTES))
+        return 0x80010016u;
+    if (sectors > f->size - f->off)
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_READ_PAST_END,
+                                          "sceIoRead past the last disc sector",
+                                          f->guest_path, fd);
+    const uint32_t bytes = sectors * IO_UMD_SECTOR_BYTES;
+    uint8_t tmp[4096];
+    for (uint32_t done = 0; done < bytes;) {
+        uint32_t n = bytes - done;
+        if (n > sizeof(tmp)) n = (uint32_t)sizeof(tmp);
+        if (iso_read(f->off, done, tmp, n) != (int)n) return 0x80010005u;
+        for (uint32_t k = 0; k < n; k++) MEM_W8(dst + done + k, tmp[k]);
+        done += n;
+    }
+    if (getenv("SR_IOLOG"))
+        fprintf(stderr, "Read vbl=%u fd=%u sector=%u sectors=%u dst=0x%08x\n",
+                s_vcount_fwd, fd, f->off, sectors, dst);
+    f->off += sectors;
+    return sectors;
 }
 
 static int hle_fd_allocate(void) {
@@ -15325,6 +15505,13 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
     s_closed_async_state[slot] = IO_ASYNC_IDLE;
 
     if (raw_device != IO_RAW_DEVICE_NONE) {
+        /* The UMD block device sizes itself from the open disc image; with no image its data
+         * operations stay at the raw-device boundary. */
+        if (raw_device != IO_RAW_DEVICE_MSSTOR0P1) {
+            uint32_t sectors = 0;
+            s_fds[slot].raw_umd = 1;
+            if (iso_sector_count(&sectors) == 0) s_fds[slot].size = sectors;
+        }
         s_fds[slot].used = 1;
         return (uint32_t)slot;
     }
@@ -15544,6 +15731,7 @@ static uint32_t h_IoRead(CpuState *s) {
     uint32_t fd = A0, dst = A1, count = A2;
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    if (hle_fd_is_raw_umd(fd)) return hle_io_raw_umd_read(fd, dst, count);
     uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_READ, "sceIoRead");
     if (raw_error != 0u) return raw_error;
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
@@ -15630,6 +15818,11 @@ static uint32_t h_IoLseek32(CpuState *s) {
     uint32_t fd = A0; int32_t off = (int32_t)A1; uint32_t whence = A2;
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    if (hle_fd_is_raw_umd(fd)) {
+        uint32_t position = 0;
+        uint32_t rc = hle_io_raw_umd_seek(&s_fds[fd], off, whence, &position);
+        return rc != 0u ? rc : position;
+    }
     uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK32,
                                                "sceIoLseek32");
     if (raw_error != 0u) return raw_error;
@@ -15649,6 +15842,13 @@ static uint32_t h_IoLseek(CpuState *s) {
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD) {
         s->r[3] = 0;
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    }
+    if (hle_fd_is_raw_umd(fd)) {
+        uint32_t position = 0;
+        uint32_t rc = hle_io_raw_umd_seek(&s_fds[fd], (int64_t)(((uint64_t)A3 << 32) | A2),
+                                          stack_arg(s, 0), &position);
+        s->r[3] = rc != 0u ? 0xffffffffu : 0u;
+        return rc != 0u ? rc : position;
     }
     uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK64,
                                                "sceIoLseek");
@@ -23067,14 +23267,22 @@ typedef struct {
     int initc;                     /* semaphores: create-time count for CancelSema(-1); LwMutex initialCount */
     uint32_t workarea;             /* LwMutex workarea address */
     char name[32];                 /* LwMutex name */
+    int kind;                      /* SYNC_KIND_*: the object class sharing this table */
 } Sync;
+/* Semaphores, event flags and LwMutexes share s_sync; the kind keeps them apart for
+ * sceKernelGetThreadmanIdList, which lists one class at a time. */
+enum { SYNC_KIND_SEMA = 1, SYNC_KIND_EVENT_FLAG, SYNC_KIND_LWMUTEX };
 static Sync s_sync[128];
 static Sync *sync_find(uint32_t uid) {
     for (int i = 0; i < 128; i++) if (s_sync[i].used && s_sync[i].uid == uid) return &s_sync[i];
     return NULL;
 }
-static Sync *sync_new(void) {
-    for (int i = 0; i < 128; i++) if (!s_sync[i].used) { s_sync[i].used = 1; s_sync[i].uid = sr_alloc_uid(); return &s_sync[i]; }
+static Sync *sync_new(int kind) {
+    for (int i = 0; i < 128; i++)
+        if (!s_sync[i].used) {
+            s_sync[i].used = 1; s_sync[i].uid = sr_alloc_uid(); s_sync[i].kind = kind;
+            return &s_sync[i];
+        }
     return NULL;
 }
 
@@ -23085,7 +23293,7 @@ static uint32_t h_CreateSema(CpuState *s) {
      * maxCount == 0 are accepted on hardware, so no validation is added for
      * either. */
     if (A1 & ~0x3ffu) return 0x80020191u;
-    Sync *m = sync_new(); if (!m) return 0x80020000;
+    Sync *m = sync_new(SYNC_KIND_SEMA); if (!m) return 0x80020000;
     m->count = (int)A2; m->maxc = (int)A3;
     /* PSP-B2-01 (psp-hw-20260917): CancelSema(-1) resets the count to the
      * create-time initial count, not to zero. */
@@ -23583,7 +23791,7 @@ static uint32_t h_CreateLwMutex(CpuState *s) {
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;   /* ILLEGAL_ADDR */
     /* PSP-B1-01: a non-recursive mutex cannot start with more than one lock. */
     if (!(attr & LWMUTEX_ATTR_RECURSIVE) && initial > 1) return 0x800201bdu;
-    Sync *m = sync_new(); if (!m) return 0x80020000;
+    Sync *m = sync_new(SYNC_KIND_LWMUTEX); if (!m) return 0x80020000;
     m->workarea = wa;
     m->attr = attr;
     m->initc = initial;
@@ -24468,7 +24676,7 @@ static uint32_t h_ReferMutexStatus(CpuState *s) {
 
 static uint32_t h_CreateEventFlag(CpuState *s) {
     /* a0=name, a1=attr, a2=initPattern, a3=opt. */
-    Sync *m = sync_new(); if (!m) return 0x80020000;
+    Sync *m = sync_new(SYNC_KIND_EVENT_FLAG); if (!m) return 0x80020000;
     m->pattern = A2;
     m->attr = A1;
     m->init_pattern = A2;
@@ -24662,6 +24870,110 @@ static uint32_t h_ReferEventFlagStatus(CpuState *s) {
     MEM_W32(info + 44, m->pattern);
     MEM_W32(info + 48, 0);
     return 0;
+}
+
+/* ---- sceKernelGetThreadmanIdList(type, readbuf, readbufsize, idcount) ----
+ *
+ * Signature and list classes: the public PSPSDK (pspthreadman.h, SceKernelIdListType);
+ * readbufsize counts SceUIDs. The call writes min(readbufsize, total) uids of the class to
+ * readbuf, stores the total in *idcount when idcount is not NULL, and returns the number
+ * written (issue #1288). Every argument check runs before any guest write.
+ *
+ * UNMEASURED on a PSP: the list order (table order here), whether the return of a short
+ * buffer is the number written or the total (the PSPSDK leaves it open), and the error
+ * codes, which are the PSPSDK pspkerror.h names for each case: ILLEGAL_TYPE for a type
+ * outside SceKernelIdListType, ILLEGAL_SIZE for a negative readbufsize, ILLEGAL_ADDR for
+ * an unwritable readbuf span or idcount. Thread event handlers are a PSPSDK class this
+ * runtime does not track (their registration is not implemented), so that type is a named
+ * refusal, never an empty list. */
+#define THREADMAN_ERROR_ILLEGAL_TYPE 0x800201bbu   /* SCE_KERNEL_ERROR_ILLEGAL_TYPE */
+
+typedef struct {
+    uint32_t readbuf;
+    uint32_t cap;      /* uids readbuf holds */
+    uint32_t total;    /* uids of the class */
+} ThreadmanIdSink;
+
+static void threadman_id_sink(uint32_t uid, void *ctx) {
+    ThreadmanIdSink *sink = (ThreadmanIdSink *)ctx;
+    if (sink->total < sink->cap) MEM_W32(sink->readbuf + 4u * sink->total, uid);
+    sink->total++;
+}
+
+/* The classes the HLE object tables own. Returns 1 when `tmid` is one of them. */
+static int hle_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx) {
+    switch (tmid) {
+        case SR_TMID_SEMAPHORE:
+        case SR_TMID_EVENT_FLAG: {
+            const int kind = tmid == SR_TMID_SEMAPHORE ? SYNC_KIND_SEMA : SYNC_KIND_EVENT_FLAG;
+            for (int i = 0; i < 128; i++)
+                if (s_sync[i].used && s_sync[i].kind == kind) visit(s_sync[i].uid, ctx);
+            return 1;
+        }
+        case SR_TMID_MBOX:
+            for (int i = 0; i < MBX_MAX; i++)
+                if (s_mbx[i].used) visit(s_mbx[i].uid, ctx);
+            return 1;
+        case SR_TMID_VPL:   /* vpl_lookup: uid = 0x600 + slot */
+            for (uint32_t i = 0; i < VPL_MAX; i++)
+                if (s_vpls[i].used) visit(0x600u + i, ctx);
+            return 1;
+        case SR_TMID_FPL:   /* fpl_lookup: uid = 0x500 + slot */
+            for (uint32_t i = 0; i < FPL_MAX; i++)
+                if (s_fpls[i].used) visit(0x500u + i, ctx);
+            return 1;
+        case SR_TMID_MPIPE:
+            for (int i = 0; i < MSG_PIPE_MAX; i++)
+                if (s_msg_pipes[i].used) visit(s_msg_pipes[i].uid, ctx);
+            return 1;
+        case SR_TMID_CALLBACK:
+            for (size_t i = 0; i < s_callbacks_len; i++)
+                if (s_callbacks[i].used) visit(s_callbacks[i].uid, ctx);
+            return 1;
+        case SR_TMID_VTIMER:
+            for (int i = 0; i < VTIMER_MAX; i++)
+                if (s_vtimers[i].used) visit(s_vtimers[i].uid, ctx);
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int threadman_id_type_listed(int tmid) {
+    return (tmid >= SR_TMID_THREAD && tmid <= SR_TMID_VTIMER) ||
+           (tmid >= SR_TMID_SLEEP_THREAD && tmid <= SR_TMID_DORMANT_THREAD);
+}
+
+static uint32_t h_GetThreadmanIdList(CpuState *s) {
+    const int tmid = (int)(int32_t)A0;
+    const uint32_t readbuf = A1;
+    const int32_t readbufsize = (int32_t)A2;
+    const uint32_t idcount = A3;
+    if (!threadman_id_type_listed(tmid)) return THREADMAN_ERROR_ILLEGAL_TYPE;
+    if (tmid == SR_TMID_THREAD_EVENT_HANDLER) {
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelGetThreadmanIdList type %d "
+                        "(ThreadEventHandler): thread event handlers are not modelled, so "
+                        "no list is given\n", tmid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (readbufsize < 0) return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (readbufsize > 0) {
+        const uint64_t bytes = (uint64_t)(uint32_t)readbufsize * 4u;
+        if (!readbuf || bytes > UINT32_MAX || !sr_guest_span_writable(readbuf, (uint32_t)bytes))
+            return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    }
+    if (idcount && !sr_guest_span_writable(idcount, 4u)) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    ThreadmanIdSink sink = { readbuf, (uint32_t)readbufsize, 0u };
+    if (!sched_visit_threadman_ids(tmid, threadman_id_sink, &sink) &&
+        !hle_visit_threadman_ids(tmid, threadman_id_sink, &sink)) {
+        /* A listed PSPSDK class with no owner here: fail closed by name. */
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelGetThreadmanIdList type %d has no "
+                        "object table in this runtime\n", tmid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (idcount) MEM_W32(idcount, sink.total);
+    return sink.total < sink.cap ? sink.total : sink.cap;
 }
 
 static void hle_register_thread_exit_handlers(void) {
@@ -25222,10 +25534,12 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x912354a7, "sceKernelRotateThreadReadyQueue", h_RotateThreadReadyQueue);
     sr_hle_register(0x75156e8f, "sceKernelResumeThread", h_ResumeThread);
     sr_hle_register(0x9944f31f, "sceKernelSuspendThread", h_SuspendThread);
+    sr_hle_register(0x71bc9871, "sceKernelChangeThreadPriority", h_ChangeThreadPriority);
     sr_hle_register(0x6652b8ca, "sceKernelSetAlarm", h_SetAlarm);
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
     sr_hle_register(0x110dec9au, "sceKernelUSec2SysClock", h_USec2SysClock);
     sr_hle_register(0x7e65b999, "sceKernelCancelAlarm", h_CancelAlarm);
+    sr_hle_register(0x94416130u, "sceKernelGetThreadmanIdList", h_GetThreadmanIdList);
     sr_hle_register(0x034a921fu, "sceKernelGetVTimerTime", h_GetVTimerTime);
     sr_hle_register(0x50f61d8a, "sceKernelFreeMemoryBlock", h_FreeMemoryBlock);
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
@@ -25536,7 +25850,6 @@ void sr_hle_init(void) {
     sr_hle_register(0x0ed48fe2, "sceKernelDeleteNotifyCallback", h_DeleteNotifyCallback);
     sr_hle_register(0x94aa61ee, "sceKernelGetThreadCurrentPriority", h_GetThreadPriority);
     sr_hle_register(0xfccfad26, "sceKernelCancelWakeupThread", h_CancelWakeupThread);
-    sr_hle_register(0x71bc9871, "sceKernelChangeThreadPriority", h_ChangeThreadPriority);
     sr_hle_register(0xffc36a14, "sceKernelReferThreadRunStatus", h_ReferThreadRunStatus);
     sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleId);
     /* Boot setup batch (return success / reference value). */
@@ -25760,7 +26073,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         sr_flight_hle_arguments(flight_sequence, s->r[4], s->r[5], s->r[6], s->r[7]);
     }
     sr_last_nid = nid;
-    if (getenv("SR_NIDLOG")) {
+    if (hle_nidlog_on()) {
         static FILE *nf = NULL; static unsigned long nc = 0;
         if (!nf) nf = fopen("nidseq_mine.txt", "w");
         if (nf) { fprintf(nf, "0x%08x 0x%x %u\n", nid, sched_current_uid(), s_vcount);
@@ -25800,7 +26113,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         if (sr_sched_on) { sr_trace_close(); sr_compat_report(); sr_perf_shutdown(); fflush(stderr); _Exit(7); }
         longjmp(g_hle_jmp, 1);
     }
-    if (getenv("SR_SYSLOG")) {
+    if (hle_syslog_on()) {
         /* Log the first time each (thread, nid) pair occurs, to see what each thread does. */
         static struct { uint32_t uid, nid; } seen[4096]; static int nseen = 0;
         uint32_t cur = sched_current_uid(); int known = 0;

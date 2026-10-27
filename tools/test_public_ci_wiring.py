@@ -882,6 +882,11 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertIn("sha256sum --check --strict SHA256SUMS", fixture)
         self.assertIn("name: profile-zero-fixture", fixture)
         self.assertIn("if-no-files-found: error", fixture)
+        # #341: the verified guest's imports are gated on HLE review status.
+        gate = "\n".join(_ci_step(self.blocks["profile_zero_fixture"],
+                                  "Gate profile-zero imports on HLE review status") or [])
+        self.assertIn("--imports fixtures/profile_zero/prebuilt/profile_zero_guest.prx", gate)
+        self.assertIn("--check-profile-zero-imports", gate)
         for job in ("python_tools", "windows_runtime"):
             with self.subTest(job=job):
                 block = "\n".join(self.blocks[job])

@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -118,6 +119,14 @@ class TitleCodegenPlanTests(unittest.TestCase):
         chosen, reason = jobs(cpu_count=24, available_bytes=22 * gib, override="many")
         self.assertEqual(chosen, 6)
         self.assertIn("ignored NK_PACKAGE_JOBS='many'", reason)
+
+    def test_object_key_workers_follow_cpus_not_memory(self) -> None:
+        workers = title_codegen_plan.object_key_workers
+        self.assertEqual(workers(24), title_codegen_plan.OBJECT_KEY_MAX_WORKERS)
+        self.assertEqual(workers(6), 6)
+        self.assertEqual(workers(1), 1)
+        self.assertEqual(workers(None), 1)
+        self.assertEqual(workers(0), 1)
 
     def test_host_package_build_jobs_reads_the_environment(self) -> None:
         with mock.patch.dict(os.environ, {"NK_PACKAGE_JOBS": "3"}):
@@ -683,7 +692,7 @@ class CompileObjectReuseTests(unittest.TestCase):
         self.cache = package_cache.ObjectCache(self.root / "cache")
 
     def compile(self, build: str, opt: str = "-O0", *, extra: str = "",
-                library_cache=None) -> tuple[int, str]:
+                library_cache=None, jobs: int = 2) -> tuple[int, str]:
         build_dir = (self.root / build).as_posix()
         env = dict(os.environ, BUILD_DIR=build_dir, OPT=opt,
                    EXTRA=f"{build_dir}/{extra}" if extra else "")
@@ -692,7 +701,7 @@ class CompileObjectReuseTests(unittest.TestCase):
             returncode = title_codegen_plan._run_compile_phase(
                 self.make,
                 env=env,
-                jobs=2,
+                jobs=jobs,
                 progress_file=None,
                 object_cache=self.cache,
                 library_cache=library_cache,
@@ -726,6 +735,25 @@ class CompileObjectReuseTests(unittest.TestCase):
         returncode, log = self.compile("four", opt="-O2")
         self.assertEqual(returncode, 0, log)
         self.assertIn("OBJECT_CACHE: reused 0 of 2 objects", log)
+
+    def test_keys_are_taken_concurrently_when_make_runs_one_job(self) -> None:
+        # A key only preprocesses, so a build that memory limits to one Make job still
+        # keys its objects on several CPUs: each key here waits for the other one.
+        together = threading.Barrier(2, timeout=20)
+        take_key = title_codegen_plan.CompiledObjectReuse._key
+
+        def key_together(reuse, command):
+            together.wait()
+            return take_key(reuse, command)
+
+        with mock.patch.object(title_codegen_plan.CompiledObjectReuse, "_key", key_together),                 mock.patch("title_codegen_plan.os.process_cpu_count", return_value=4):
+            returncode, log = self.compile("one", jobs=1)
+        self.assertEqual(returncode, 0, log)
+        self.assertIn("OBJECT_CACHE: reused 0 of 2 objects", log)
+        self.assertIn("OBJECT_CACHE: stored 2 objects", log)
+        returncode, log = self.compile("two", jobs=1)
+        self.assertEqual(returncode, 0, log)
+        self.assertIn("OBJECT_CACHE: reused 2 of 2 objects", log)
 
     def test_system_libraries_use_their_own_cache_and_are_named(self) -> None:
         library = "nk_lib_0123456789abcdef"
