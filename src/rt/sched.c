@@ -696,6 +696,7 @@ static void stack_range_release(uint32_t base, uint32_t size) {
  *   - sr_sched_on (set here, never reset after init). */
 static uint32_t sr_rt_current_pc(void);
 static uint32_t sr_rt_current_uid(void);
+static void sched_transfer_reset(void);
 
 void sched_init(CpuState *cpu) {
     sr_flight_init();
@@ -726,6 +727,7 @@ void sched_init(CpuState *cpu) {
     s_root_seen = 0;
     s_tick = 0;
     s_guest_reset_requested = 0;
+    sched_transfer_reset();
     s_pause_requested = 0;
     s_pause_active = 0;
     s_pause_source = SR_PAUSE_SRC_USER;
@@ -2733,6 +2735,64 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
     return 0;
 }
 
+/* ---- device transfer window (#303) --------------------------------------------------
+ * sceDmacMemcpy and sceDmacTryMemcpy block their caller for the whole transfer, and while
+ * it is pending another thread's Try returns BUSY and its blocking call waits for it
+ * (PSP-3000 / 6.6.1, 64/64 for each combination; tools/psp_oracle/manifest.json
+ * PSP-DMAC-001). The runtime copies at once, and no guest-time duration was measured
+ * (the probe recorded caller wall time only), so this window carries NO time. It is an
+ * explicit, UNMEASURED ordering window:
+ *
+ *   - it opens when the current thread starts a transfer (sched_transfer_begin);
+ *   - it stays open through the next scheduling decision that hands the CPU to another
+ *     thread, so exactly one dispatch of another runnable thread sees it pending;
+ *   - it closes at the decision after that dispatch, or at once when no other thread is
+ *     runnable, so a lone caller waits for nothing but its own transfer (never for a
+ *     VBLANK or a timer).
+ *
+ * Closing it wakes every thread blocked on the transfer's object: the owner and any
+ * blocking caller queued behind it. The scheduler owns only who and until when; the
+ * device HLE owns the transfer itself. One window at a time: the two APIs share one
+ * modelled channel. */
+static uint32_t s_xfer_obj;        /* the pending transfer's wait object; 0 = none */
+static uint32_t s_xfer_owner_uid;  /* the thread that started it */
+static int      s_xfer_dispatched; /* another thread was selected while it was open */
+
+static void sched_transfer_reset(void) {
+    s_xfer_obj = 0u;
+    s_xfer_owner_uid = 0u;
+    s_xfer_dispatched = 0;
+}
+
+int sched_transfer_begin(uint32_t obj) {
+    if (obj == 0u || s_xfer_obj != 0u || s_cur < 0) return 0;
+    s_xfer_obj = obj;
+    s_xfer_owner_uid = s_tcb[s_cur].uid;
+    s_xfer_dispatched = 0;
+    return 1;
+}
+
+int sched_transfer_pending(uint32_t obj, uint32_t *owner_uid) {
+    if (obj == 0u || s_xfer_obj != obj) return 0;
+    if (owner_uid) *owner_uid = s_xfer_owner_uid;
+    return 1;
+}
+
+/* Part of every scheduling decision, like an expired deadline: closing a window that
+ * has run its course restores who is runnable and decides nothing about who runs. */
+static void sched_transfer_window_step(void) {
+    if (s_xfer_obj == 0u) return;
+    if (!s_xfer_dispatched) {
+        for (int i = 0; i < s_ntcb; i++)
+            if (s_tcb[i].state == TH_READY && !s_tcb[i].suspended &&
+                s_tcb[i].uid != s_xfer_owner_uid)
+                return;   /* another runnable thread gets the CPU first */
+    }
+    const uint32_t obj = s_xfer_obj;
+    sched_transfer_reset();
+    sched_wake(obj);
+}
+
 /* A timed wait whose deadline has passed -- an elapsed sceKernelDelayThread, or a timed
  * sema/event wait that timed out -- describes a thread the kernel owes the CPU to, not a
  * blocked one. Promoting it is therefore part of EVERY scheduling decision, not a private
@@ -2802,6 +2862,7 @@ static void sched_rotation_mark(int head) {
  * state yields an identical decision. Returns an index or -1 if nothing is runnable. */
 static int pick_next(void) {
     sched_promote_expired_waits();
+    sched_transfer_window_step();
     int best_pri = 0;
     int have_ready = 0;
     for (int i = 0; i < s_ntcb; i++) {
@@ -2822,6 +2883,7 @@ static int pick_next(void) {
         int i = (start + step) % s_ntcb;
         if (s_tcb[i].state == TH_READY && !s_tcb[i].suspended && s_tcb[i].priority == best_pri) {
             s_last_pick = i;
+            if (s_xfer_obj != 0u && s_tcb[i].uid != s_xfer_owner_uid) s_xfer_dispatched = 1;
             /* A rotation at this priority is consumed by this selection. */
             for (int j = 0; j < s_ntcb; j++)
                 if (s_tcb[j].priority == best_pri) s_tcb[j].rot_head = 0;
@@ -3460,6 +3522,7 @@ int sched_reset_for_loadexec(void) {
     s_tick = 0;
     s_gp = 0u;
     s_guest_reset_requested = 0;
+    sched_transfer_reset();
     s_sched_coro = sr_coro_main();
     sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
     sr_dispatch_host_stack_top = sr_coro_stack_top;
