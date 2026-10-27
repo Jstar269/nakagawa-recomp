@@ -1666,7 +1666,7 @@ STALE_CONTROL_FIX = (
 #: nothing about the real cause. Naming the cause turns a confusing hash failure
 #: into a one-line diagnosis.
 TEXT_HYGIENE_EXEMPT_SUFFIXES = frozenset({".dat", ".bin", ".png", ".jpg", ".jpeg",
-                                          ".gif", ".ico", ".pdf", ".zip", ".ttf",
+                                          ".gif", ".ico", ".mp4", ".pdf", ".zip", ".ttf",
                                           ".otf", ".woff", ".woff2", ".spv", ".wav",
                                           ".prx", ".pbp", ".elf"})
 

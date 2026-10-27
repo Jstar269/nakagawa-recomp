@@ -1926,6 +1926,13 @@ class TextHygieneTests(unittest.TestCase):
     def test_exempt_binary_suffix_is_skipped(self):
         self.assertEqual(self._codes(b"a" + CRLF + b"b", path="assets/x.dat"), [])
 
+    def test_presentation_clip_is_binary_but_its_text_neighbours_are_not(self):
+        # Bytes that are neither UTF-8 nor NUL-bearing: governed text would report them, an .mp4 clip does not.
+        clip = b"ftypisom" + bytes(range(0x80, 0x100))
+        self.assertEqual(self._codes(clip, path="docs/media/clip.mp4"), [])
+        self.assertEqual(self._codes(clip, path="docs/media/clip.mp4.txt"), ["TEXT_ENCODING_UNDECODABLE"])
+        self.assertEqual(self._codes(b"a" + CRLF + b"b" + CRLF, path="docs/media/clip.md"), ["TEXT_LINE_ENDING_CRLF"])
+
     def test_empty_file_is_silent(self):
         self.assertEqual(self._codes(b""), [])
 
