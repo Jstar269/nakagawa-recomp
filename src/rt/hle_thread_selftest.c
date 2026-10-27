@@ -13314,6 +13314,39 @@ static void test_td24b_cheap_hle_batch(void) {
            "ReleaseSubIntrHandler on a non-VBLANK line answers success without effect");
     expect(sr_vblank_handler() == 0u, "non-VBLANK lines leave VBLANK delivery clear");
 
+    /* #1287: a title that re-registers the same VBLANK handler before every frame writes the
+     * registration line once, not once per frame. A changed registration and a register after
+     * Release are written again; SR_HLELOG still writes every call. Return codes are unchanged
+     * (duplicate-register codes are UNMEASURED on the PSP). */
+    {
+        char err[2048];
+        FILE *capture = NULL;
+        int saved = -1;
+        int every = getenv("SR_HLELOG") != NULL;
+        err[0] = '\0';
+        int capturing = hle_data_stderr_capture_begin(&capture, &saved);
+        expect(capturing, "the sub-interrupt selftest can capture the runtime's stderr");
+        uint32_t first = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0u);
+        uint32_t again = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0u);
+        uint32_t new_arg = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0x10u);
+        uint32_t release = td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u);
+        uint32_t after = td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 1u, 0x08002000u, 0x10u);
+        if (capturing) hle_data_stderr_capture_end(capture, saved, err, sizeof err);
+        expect(first == 0u && again == 0u && new_arg == 0u && release == 0u && after == 0u,
+               "repeated, changed and post-Release registrations keep their success answers");
+        expect(count_occurrences(err,
+                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000000\n") ==
+                   (every ? 2 : 1),
+               "an identical VBLANK re-registration writes no second registration line");
+        expect(count_occurrences(err,
+                   "HLE: registering VBLANK handler 0x08002000 no 1 arg 0x00000010\n") == 2,
+               "a changed arg and a register after Release each write the registration line");
+        expect(sr_vblank_no() == 1u && sr_vblank_arg() == 0x10u,
+               "the quiet path still records the latest registration");
+        expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 1u, 0u, 0u) == 0u,
+               "the log fixture leaves the VBLANK line released");
+    }
+
     /* ---- 4+5. scePowerSetClockFrequency / 350 ---- */
     reset_fixture();
     sr_hle_init();
@@ -31882,6 +31915,216 @@ static void test_mp3_error_paths(void) {
            "errors: a second sceMp3TermResource is harmless");
 }
 
+/* sceKernelGetThreadmanIdList(type, readbuf, readbufsize, idcount), issue #1288. The
+ * signature and the list classes are the public PSPSDK ones (pspthreadman.h,
+ * SceKernelIdListType); readbufsize counts SceUIDs. The error codes, the list order and
+ * the return value of a short buffer are UNMEASURED on a PSP, so these checks pin the
+ * runtime's model, not a hardware oracle: the call writes min(readbufsize, total) uids,
+ * stores the total in *idcount when idcount is not NULL, and returns the number written. */
+#define NID_TMID_LIST          0x94416130u
+#define NID_TMID_SET_ALARM     0x6652b8cau
+#define NID_TMID_CANCEL_ALARM  0x7e65b999u
+#define NID_TMID_CREATE_CB     0xe81caf8fu
+#define NID_TMID_DELETE_CB     0xedba5844u
+#define NID_TMID_CREATE_MPP    0x7c0dc2a0u
+#define NID_TMID_DELETE_MPP    0xf0b7da1cu
+#define NID_TMID_CREATE_VT     0x20fff560u
+#define NID_TMID_DELETE_VT     0x328f9e52u
+#define TMID_BUF               0x00252000u
+#define TMID_COUNT             0x00252100u
+#define TMID_NAME              0x00252140u
+#define TMID_LWMUTEX_WA        0x00252200u
+#define TMID_HANDLER           0x08a10000u
+#define TMID_BUF_SLOTS         32u
+#define TMID_SENTINEL          0xa5a5a5a5u
+#define TMID_ILLEGAL_TYPE_ERR  0x800201bbu   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_TYPE */
+#define TMID_ILLEGAL_ADDR_ERR  0x800200d3u   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+#define TMID_ILLEGAL_SIZE_ERR  0x800201bcu   /* PSPSDK SCE_KERNEL_ERROR_ILLEGAL_SIZE */
+#define TMID_NOT_MODELLED_ERR  0x80020002u   /* the runtime's named refusal */
+
+static uint32_t tmid_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3;
+    return sr_syscall(&cpu, nid);
+}
+
+static uint32_t tmid_list(uint32_t type, uint32_t buf, uint32_t size, uint32_t count) {
+    return tmid_call(NID_TMID_LIST, type, buf, size, count);
+}
+
+static void tmid_fill(void) {
+    for (uint32_t i = 0; i < TMID_BUF_SLOTS; i++) MEM_W32(TMID_BUF + 4u * i, TMID_SENTINEL);
+    MEM_W32(TMID_COUNT, TMID_SENTINEL);
+}
+
+/* The total for `type`, read through idcount with no buffer, or UINT32_MAX on an error. */
+static uint32_t tmid_total(uint32_t type) {
+    MEM_W32(TMID_COUNT, TMID_SENTINEL);
+    return tmid_list(type, 0u, 0u, TMID_COUNT) == 0u ? MEM_R32(TMID_COUNT) : UINT32_MAX;
+}
+
+static int tmid_lists(uint32_t type, uint32_t uid) {
+    tmid_fill();
+    uint32_t n = tmid_list(type, TMID_BUF, TMID_BUF_SLOTS, TMID_COUNT);
+    if (n > TMID_BUF_SLOTS) return 0;
+    for (uint32_t i = 0; i < n; i++)
+        if (MEM_R32(TMID_BUF + 4u * i) == uid) return 1;
+    return 0;
+}
+
+/* One created object of `type`: listed while it lives, gone once deleted, and never
+ * counted under `other`, the class that shares its table or its uid range. */
+static void tmid_check_object(const char *cls, uint32_t type, uint32_t other, uint32_t uid,
+                              uint32_t base, uint32_t other_base, uint32_t delete_nid) {
+    char msg[192];
+    snprintf(msg, sizeof msg, "ThreadmanIdList %s: created object 0x%x is listed once", cls, uid);
+    expect((int32_t)uid > 0 && tmid_total(type) == base + 1u && tmid_lists(type, uid), msg);
+    if (other) {
+        snprintf(msg, sizeof msg, "ThreadmanIdList %s: object is not listed under type %u", cls, other);
+        expect(tmid_total(other) == other_base && !tmid_lists(other, uid), msg);
+    }
+    if ((int32_t)uid <= 0) return;
+    snprintf(msg, sizeof msg, "ThreadmanIdList %s: delete succeeds", cls);
+    expect(tmid_call(delete_nid, uid, 0u, 0u, 0u) == 0u, msg);
+    snprintf(msg, sizeof msg, "ThreadmanIdList %s: deleted object is no longer listed", cls);
+    expect(tmid_total(type) == base && !tmid_lists(type, uid), msg);
+}
+
+static void test_threadman_id_list(void) {
+    char msg[192];
+    (void)wsv_begin();   /* uid 0x1e0, RUNNING, current */
+    expect(sr_hle_test_is_registered(NID_TMID_LIST),
+           "sceKernelGetThreadmanIdList has a production registration");
+    if (!sr_hle_test_is_registered(NID_TMID_LIST)) { s_cur = -1; return; }
+
+    TCB *dormant = fixture_thread(0x1e1u, TH_DORMANT, 32);
+    TCB *sleeper = fixture_thread(0x1e2u, TH_WAIT_OBJ, 32);
+    sleeper->started = 1; sleeper->sleeping = 1; sleeper->wait_obj = 0x1e2u;
+    TCB *delayed = fixture_thread(0x1e3u, TH_WAIT_DELAY, 32);
+    delayed->started = 1;
+    TCB *held = fixture_thread(0x1e4u, TH_READY, 32);
+    held->started = 1; held->suspended = 1;
+    TCB *deleted = fixture_thread(0x1e5u, TH_DORMANT, 32);
+    deleted->deleted = 1;
+    (void)dormant;
+
+    /* Every live thread, in table order; a deleted one is not an object any more. */
+    static const uint32_t live[] = {0x1e0u, 0x1e1u, 0x1e2u, 0x1e3u, 0x1e4u};
+    tmid_fill();
+    uint32_t rc = tmid_list(1u, TMID_BUF, 8u, TMID_COUNT);
+    int order_ok = 1;
+    for (uint32_t i = 0; i < 5u; i++) order_ok &= MEM_R32(TMID_BUF + 4u * i) == live[i];
+    snprintf(msg, sizeof msg, "ThreadmanIdList Thread: returns 5 and lists the live threads (rc=0x%x count=0x%x)",
+             rc, MEM_R32(TMID_COUNT));
+    expect(rc == 5u && MEM_R32(TMID_COUNT) == 5u && order_ok, msg);
+    expect(MEM_R32(TMID_BUF + 20u) == TMID_SENTINEL,
+           "ThreadmanIdList Thread: nothing is written past the listed uids");
+
+    /* The four thread-state lists agree with sceKernelReferThreadStatus. */
+    static const struct { uint32_t type; uint32_t uid; const char *name; } states[] = {
+        {64u, 0x1e2u, "SleepThread"}, {65u, 0x1e3u, "DelayThread"},
+        {66u, 0x1e4u, "SuspendThread"}, {67u, 0x1e1u, "DormantThread"},
+    };
+    for (size_t i = 0; i < sizeof states / sizeof states[0]; i++) {
+        tmid_fill();
+        rc = tmid_list(states[i].type, TMID_BUF, 4u, TMID_COUNT);
+        snprintf(msg, sizeof msg, "ThreadmanIdList %s: lists only uid 0x%x (rc=0x%x first=0x%x)",
+                 states[i].name, states[i].uid, rc, MEM_R32(TMID_BUF));
+        expect(rc == 1u && MEM_R32(TMID_COUNT) == 1u && MEM_R32(TMID_BUF) == states[i].uid &&
+                   MEM_R32(TMID_BUF + 4u) == TMID_SENTINEL, msg);
+    }
+
+    /* Truncation: two slots get the first two uids, idcount still reports the total. */
+    tmid_fill();
+    rc = tmid_list(1u, TMID_BUF, 2u, TMID_COUNT);
+    expect(rc == 2u && MEM_R32(TMID_COUNT) == 5u && MEM_R32(TMID_BUF) == 0x1e0u &&
+               MEM_R32(TMID_BUF + 4u) == 0x1e1u && MEM_R32(TMID_BUF + 8u) == TMID_SENTINEL,
+           "ThreadmanIdList truncation: writes readbufsize uids, idcount holds the total");
+
+    /* A NULL idcount is optional. */
+    tmid_fill();
+    rc = tmid_list(1u, TMID_BUF, 8u, 0u);
+    expect(rc == 5u && MEM_R32(TMID_BUF + 16u) == 0x1e4u && MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList NULL idcount: lists the uids and writes no count");
+
+    /* A count-only query: no buffer, no uids written. */
+    tmid_fill();
+    rc = tmid_list(1u, 0u, 0u, TMID_COUNT);
+    expect(rc == 0u && MEM_R32(TMID_COUNT) == 5u,
+           "ThreadmanIdList count-only: readbufsize 0 returns 0 and idcount holds the total");
+
+    /* Types outside the PSPSDK list are refused before any write. */
+    static const uint32_t illegal[] = {0u, 12u, 63u, 68u, 0xffffffffu};
+    for (size_t i = 0; i < sizeof illegal / sizeof illegal[0]; i++) {
+        tmid_fill();
+        rc = tmid_list(illegal[i], TMID_BUF, 4u, TMID_COUNT);
+        snprintf(msg, sizeof msg, "ThreadmanIdList invalid type %d: ILLEGAL_TYPE, nothing written (rc=0x%x)",
+                 (int)illegal[i], rc);
+        expect(rc == TMID_ILLEGAL_TYPE_ERR && MEM_R32(TMID_COUNT) == TMID_SENTINEL &&
+                   MEM_R32(TMID_BUF) == TMID_SENTINEL, msg);
+    }
+
+    /* Thread event handlers are a PSPSDK class this runtime does not track: a named
+     * refusal, never an empty success. */
+    tmid_fill();
+    rc = tmid_list(9u, TMID_BUF, 4u, TMID_COUNT);
+    expect(rc == TMID_NOT_MODELLED_ERR && MEM_R32(TMID_COUNT) == TMID_SENTINEL &&
+               MEM_R32(TMID_BUF) == TMID_SENTINEL,
+           "ThreadmanIdList ThreadEventHandler: refused by name, nothing written");
+
+    /* Bad guest pointers and sizes are refused before any write. */
+    tmid_fill();
+    expect(tmid_list(1u, 0u, 4u, TMID_COUNT) == TMID_ILLEGAL_ADDR_ERR &&
+               MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList NULL readbuf with a size: ILLEGAL_ADDR, no count written");
+    expect(tmid_list(1u, 0x0bfffff8u, 4u, TMID_COUNT) == TMID_ILLEGAL_ADDR_ERR &&
+               MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList readbuf span past guest memory: ILLEGAL_ADDR, no count written");
+    expect(tmid_list(1u, TMID_BUF, 0xffffffffu, TMID_COUNT) == TMID_ILLEGAL_SIZE_ERR &&
+               MEM_R32(TMID_COUNT) == TMID_SENTINEL,
+           "ThreadmanIdList negative readbufsize: ILLEGAL_SIZE, no count written");
+    expect(tmid_list(1u, TMID_BUF, 8u, 0x0bfffffeu) == TMID_ILLEGAL_ADDR_ERR &&
+               MEM_R32(TMID_BUF) == TMID_SENTINEL,
+           "ThreadmanIdList unwritable idcount: ILLEGAL_ADDR, no uid written");
+
+    /* The object classes the HLE tables keep. Semaphores, event flags and LwMutexes share
+     * one table, so each create is checked against the other class too. */
+    for (uint32_t i = 0; i < 8u; i++) MEM_W8(TMID_NAME + i, (uint8_t)"tmidobj"[i]);
+    uint32_t sema_base = tmid_total(2u), evf_base = tmid_total(3u);
+    uint32_t uid = tmid_call(NID_CNW_CREATE_SEMA, TMID_NAME, 0u, 1u, 1u);
+    tmid_check_object("Semaphore", 2u, 3u, uid, sema_base, evf_base, NID_WSV_DELETE_SEMA);
+    uid = tmid_call(NID_B1_CREATE_EVF, TMID_NAME, 0u, 0u, 0u);
+    tmid_check_object("EventFlag", 3u, 2u, uid, evf_base, sema_base, NID_B1_DELETE_EVF);
+    expect(tmid_call(NID_B1_CREATE_LWMUTEX, TMID_LWMUTEX_WA, TMID_NAME, 0u, 0u) == 0u &&
+               tmid_total(2u) == sema_base && tmid_total(3u) == evf_base,
+           "ThreadmanIdList: an LwMutex is neither a semaphore nor an event flag");
+    expect(tmid_call(NID_B1_DELETE_LWMUTEX, TMID_LWMUTEX_WA, 0u, 0u, 0u) == 0u,
+           "ThreadmanIdList: LwMutex delete succeeds");
+
+    uint32_t base = tmid_total(4u);
+    tmid_check_object("Mbox", 4u, 0u, tmid_call(NID_MBX_CREATE, TMID_NAME, 0u, 0u, 0u),
+                      base, 0u, NID_MBX_DELETE);
+    uint32_t vpl_base = tmid_total(5u), fpl_base = tmid_total(6u);
+    uid = tmid_call(NID_VPL_CREATE, TMID_NAME, 2u, 0u, 0x400u);
+    tmid_check_object("Vpl", 5u, 6u, uid, vpl_base, fpl_base, NID_VPL_DELETE);
+    uid = fpl_make_pool();
+    tmid_check_object("Fpl", 6u, 5u, uid, fpl_base, vpl_base, NID_FPL_DELETE);
+    base = tmid_total(7u);
+    tmid_check_object("Mpipe", 7u, 0u, tmid_call(NID_TMID_CREATE_MPP, TMID_NAME, 0u, 0u, 64u),
+                      base, 0u, NID_TMID_DELETE_MPP);
+    base = tmid_total(8u);
+    tmid_check_object("Callback", 8u, 0u, tmid_call(NID_TMID_CREATE_CB, TMID_NAME, TMID_HANDLER, 0u, 0u),
+                      base, 0u, NID_TMID_DELETE_CB);
+    base = tmid_total(10u);
+    tmid_check_object("Alarm", 10u, 0u, tmid_call(NID_TMID_SET_ALARM, 1000000000u, TMID_HANDLER, 0u, 0u),
+                      base, 0u, NID_TMID_CANCEL_ALARM);
+    base = tmid_total(11u);
+    tmid_check_object("VTimer", 11u, 0u, tmid_call(NID_TMID_CREATE_VT, TMID_NAME, 0u, 0u, 0u),
+                      base, 0u, NID_TMID_DELETE_VT);
+    s_cur = -1;
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && (strcmp(argv[1], "--psp-oracle") == 0 ||
                      strcmp(argv[1], "--exit-game-poisoned") == 0))
@@ -31978,6 +32221,13 @@ static int hle_selftest_main(int argc, char **argv) {
         test_kernel_nested_join();
         test_kernel_nested_mutex();
         fprintf(stderr, "kernel-nested-sync: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--threadman-idlist") == 0) {
+        test_threadman_id_list();
+        fprintf(stderr, "threadman-idlist: %d checks, %d failures\n", s_checks, s_failures);
         free(g_mem_base);
         return s_failures ? 1 : 0;
     }
@@ -32161,6 +32411,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vtimer_refusals_are_named();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
+    test_threadman_id_list();
     test_wait_sema_count_validation();
     test_expired_timed_object_waits_enter_strict_priority();
     test_hle_liveness_sema_handoff();
