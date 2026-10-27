@@ -25551,7 +25551,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xb448ec0d, "sceGeBreak", h_GeBreak);
     sr_hle_register(0x5fb86ab0, "sceGeListDeQueue", h_GeListDeQueue);
     /* sceGeSaveContext / sceGeRestoreContext are refused, not faked. The modeled GE state
-     * (GeState in ge_shared.h, 3364 bytes) carries 2048 bytes of CLUT RAM plus matrix banks
+     * (GeState in ge_shared.h, 3452 bytes) carries 2048 bytes of CLUT RAM plus matrix banks
      * and derived fields, so it cannot fit a 2048-byte PspGeContext, and the 256-entry
      * command register file alone does not capture matrices or CLUT contents. A restore
      * therefore cannot reinstate what a save would need, so both refuse with the GE

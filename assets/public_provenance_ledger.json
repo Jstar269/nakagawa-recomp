@@ -5101,7 +5101,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "56625f6f458bf6cac8f8dbc574a7497f7f97112b365d08162f6a28e00cb95a7e"
+      "sha256": "1c4910d95f144d2ade1ddf8f0c10f8a88d89f5a4e56f7b7c09debeeb774d66a7"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -5149,7 +5149,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "27b375000c40721240c21a8da3eae14d21577ebd9be7a94481a10980f646fa4f"
+      "sha256": "1a74c5d93da4e9c7108e3421f808cc3a5171170b0910fb42f82bef37086e3403"
     },
     {
       "path": "src/rt/ge_float24.c",
@@ -5246,7 +5246,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c19ea58a5b24d9be3eeafcbc20cb02925dcdcbc01cd6d7b999b9c4cb3c10482a"
+      "sha256": "a99360d8521bcf5d991f1f36fbd706e2423f447a4afc4d70b1132490a09fd6c0"
     },
     {
       "path": "src/rt/ge_texture_ref.c",
@@ -5332,7 +5332,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7e32098a0b59a9d04e29738ba9f3feff84d55ff92acbd80d6bb2d1c9b8196c66"
+      "sha256": "203b96e368eab29c865b1455f0d793ad4298a0d0af3cafb723c7435427e665fe"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -8405,7 +8405,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "738af1fd0c3403fa8aaef9dc3b530e873f99ad80db62f12e9599c3d904f07923"
+      "sha256": "90163c3a09c4cb97d7acc7911aa77ec18a20c7938fcf4f7a7cdc991189dc0a8b"
     },
     {
       "path": "src/rt/hle_power.c",
