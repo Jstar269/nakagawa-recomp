@@ -370,11 +370,19 @@ class Elf:
             return None
         # Otherwise read from the loaded image via PT_LOAD program headers. Sections are not
         # used here because non-code allocated sections (.reginfo, .MIPS.abiflags) can share a
-        # vaddr with .text and would otherwise shadow the real instruction bytes.
-        for seg in self.segments:
-            if seg["type"] == 1 and seg["vaddr"] <= vaddr < seg["vaddr"] + seg["filesz"]:
-                off = seg["off"] + (vaddr - seg["vaddr"])
-                return self.data[off:off + n]
+        # vaddr with .text and would otherwise shadow the real instruction bytes. The PT_LOAD
+        # spans are taken once, in program-header order, so the first match is unchanged;
+        # codegen reads millions of instruction words through here.
+        loads = getattr(self, "_load_spans", None)
+        if loads is None:
+            loads = self._load_spans = tuple(
+                (seg["vaddr"], seg["vaddr"] + seg["filesz"], seg["off"])
+                for seg in self.segments if seg["type"] == 1
+            )
+        for lo, hi, off in loads:
+            if lo <= vaddr < hi:
+                start = off + (vaddr - lo)
+                return self.data[start:start + n]
         return None
 
     def func_symbols(self):
@@ -530,7 +538,12 @@ def exec_ranges(elf, extra_spans=None):
 def in_ranges(addr, ranges):
     if isinstance(ranges, _SpanIndex):
         return addr in ranges
-    return any(lo <= addr < hi for lo, hi in ranges)
+    # A plain loop rather than any(<generator>): the same answer without building a
+    # generator per call, and analysis plus codegen make millions of these calls.
+    for lo, hi in ranges:
+        if lo <= addr < hi:
+            return True
+    return False
 
 
 class _SpanIndex:
@@ -3448,4 +3461,9 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    # Run as a script this file is `__main__`, and helpers it imports lazily (entry_frame_balance
+    # for linked branches) import it again as `analyze`, which would load a second copy with its
+    # own _SpanIndex class: a span index built by one copy then fails the other's isinstance test.
+    # One module object serves both names.
+    sys.modules.setdefault("analyze", sys.modules[__name__])
     sys.exit(main(sys.argv))

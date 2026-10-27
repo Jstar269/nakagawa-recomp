@@ -26,7 +26,11 @@
  * morph blending (up to 8 targets, read_pos/read_tc/read_nrm/read_color), plus Bezier and
  * B-spline patch primitives tessellated by the active PATCHDIVISION factors (draw_patch).
  *
- * Not emulated: mipmaps (level 0 only), the BJUMP bounding-box test.
+ * Conditional rendering: BOUNDINGBOX records whether its box can be visible and BJUMP skips
+ * the object when it cannot (ge_bounding_box_visible); the exact PSP visibility test is
+ * unmeasured, so only a box wholly beyond one scissor edge is skipped.
+ *
+ * Not emulated: mipmaps (level 0 only).
  */
 
 /*
@@ -165,6 +169,9 @@ enum {
 
 /* GeState now lives in ge_shared.h (shared with the optional GPU backend). */
 static GeState ge;
+/* Bumped whenever GE state may change (every list command, init, replay restore); state
+ * derived from registers and cached between commands is keyed on it (light_consts). */
+static uint32_t s_ge_state_serial;
 static uint32_t s_ge_command[256];
 static int s_ge_inited = 0;
 static GeCpuProfileStats s_cpu_profile_stats;
@@ -694,6 +701,10 @@ uint32_t ge_cpu_profile_validate(const GeCpuProfileStats *s, char *detail, size_
 uint32_t g_ge_stall_addr = 0;
 static uint32_t s_stack_pc[32], s_stack_offset[32];
 static int s_sp = 0;
+/* Result of the last BOUNDINGBOX, read by BJUMP (ge_bounding_box_visible). A list starts
+ * with "visible", so a BJUMP before any BOUNDINGBOX falls through; the PSP's value there is
+ * unmeasured. */
+static int s_bbox_visible = 1;
 
 /* Optional GPU rasterizer hooks (ge_shared.h). NULL = pure software (the GDI build
  * never registers any; the SDL3 build registers them only under SR_GPU_GE=1). */
@@ -708,6 +719,7 @@ void ge_set_gpu_hooks(const GeGpuHooks *h) {
     s_gpu = h;
 }
 GeState *ge_state_ptr(void) { return &ge; }
+uint32_t ge_state_serial(void) { return s_ge_state_serial; }
 void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) {
     if (s_gpu && s_gpu->vram_dirty) s_gpu->vram_dirty(addr, bytes);
 }
@@ -720,6 +732,7 @@ static float decode_float24(uint32_t data) {
 }
 
 static void ge_state_init(void) {
+    s_ge_state_serial++;
     memset(s_ge_command, 0, sizeof(s_ge_command));
     ge.scis_x2 = 479; ge.scis_y2 = 271;
     ge.maxz = 0xFFFF;
@@ -997,6 +1010,7 @@ uint32_t  ge_zbuf_stride(void) { return zbuf_stride(); }
 void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
     if (!state || !zbuf) return;
     ge = *state;
+    s_ge_state_serial++;
     memcpy(s_zbuf, zbuf, sizeof(s_zbuf));
     s_zbuf_guest_base = state->zbp ? SR_PHYS(state->zbp) : SR_VRAM_CPU_BASE;
     if (s_zbuf_guest_base < 0x00200000u) s_zbuf_guest_base += SR_VRAM_CPU_BASE;
@@ -1007,6 +1021,7 @@ void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
     if (s_tr_enabled > 0) ge_transition_trace_sync_written();
     s_ge_inited = 1;
     s_sp = 0;
+    s_bbox_visible = 1;
     g_ge_stall_addr = 0;
 }
 
@@ -2797,6 +2812,56 @@ static void mat44_mul(const float *m, float ix, float iy, float iz, float *ox, f
 
 static float c8f(uint32_t col, int chan) { return (float)((col >> (chan*8)) & 0xFF) * (1.0f/255.0f); }
 
+/* Lighting inputs that only depend on GE registers: the material and scene colours as
+ * floats, each light's colours, and a directional light's normalized direction. They are
+ * the same expressions light_vertex used to evaluate for every vertex, computed once after
+ * the GE state last changed (every list command bumps s_ge_state_serial), so every value
+ * is bit-identical to the per-vertex evaluation. */
+typedef struct {
+    int on, comp, type;
+    float lx, ly, lz;            /* direction (normalized) for directional lights, else position */
+    float acol[3], dcol[3], scol[3];
+} LightConst;
+typedef struct {
+    uint32_t serial;
+    int valid;
+    float mat_amb[3], mat_dif[3], mat_spe[3], emissive[3], amb[3];
+    LightConst light[4];
+} LightConsts;
+static LightConsts s_light_consts;
+
+static const LightConsts *light_consts(void) {
+    LightConsts *lc = &s_light_consts;
+    if (lc->valid && lc->serial == s_ge_state_serial) return lc;
+    for (int ch = 0; ch < 3; ch++) {
+        lc->mat_amb[ch] = c8f(ge.material, ch);
+        lc->mat_dif[ch] = c8f(ge.mat_diffuse, ch);
+        lc->mat_spe[ch] = c8f(ge.mat_specular, ch);
+        lc->emissive[ch] = c8f(ge.mat_emissive, ch);
+        lc->amb[ch] = c8f(ge.amb_color, ch);
+    }
+    for (int i = 0; i < 4; i++) {
+        LightConst *l = &lc->light[i];
+        l->on = ge.light_on[i] != 0;
+        l->comp = (int)(ge.light_type[i] & 3);
+        l->type = (int)((ge.light_type[i] >> 8) & 3);
+        float lx = ge.light_pos[i][0], ly = ge.light_pos[i][1], lz = ge.light_pos[i][2];
+        if (l->type == 0) {   /* directional: position register holds the direction */
+            float d = sqrtf(lx*lx + ly*ly + lz*lz);
+            if (d > 0.0f) { lx/=d; ly/=d; lz/=d; }
+        }
+        l->lx = lx; l->ly = ly; l->lz = lz;
+        for (int ch = 0; ch < 3; ch++) {
+            l->acol[ch] = c8f(ge.light_acol[i], ch);
+            l->dcol[ch] = c8f(ge.light_dcol[i], ch);
+            l->scol[ch] = c8f(ge.light_scol[i], ch);
+        }
+    }
+    lc->serial = s_ge_state_serial;
+    lc->valid = 1;
+    return lc;
+}
+
 /* Per-vertex lighting in world space: emissive + scene ambient, plus per-light
  * ambient/diffuse/specular for up to 4 directional/point lights (spot treated as point).
  * Material colours come from the registers or the vertex colour per MATERIALUPDATE bits. */
@@ -2805,6 +2870,7 @@ static float c8f(uint32_t col, int chan) { return (float)((col >> (chan*8)) & 0x
  * primitive closed instead (CVtx::nf). Only a finite result is a defined pixel. */
 static int light_vertex(float wx, float wy, float wz, float nx, float ny, float nz,
                         int vr, int vg, int vb, int va, int *lr, int *lg, int *lb, int *la) {
+    const LightConsts *lc = light_consts();
     float vrf = vr*(1.0f/255.0f), vgf = vg*(1.0f/255.0f), vbf = vb*(1.0f/255.0f);
     /* Lit alpha = material-ambient alpha * scene-ambient alpha; diffuse/specular/emissive never
      * contribute to alpha (PPSSPP Software/Lighting.cpp). With MATERIALUPDATE bit 0 the vertex
@@ -2813,40 +2879,37 @@ static int light_vertex(float wx, float wy, float wz, float nx, float ny, float 
     *la = clamp8((maa * ge.amb_alpha + 127) / 255);
     float mar, mag, mab, mdr, mdg, mdb, msr, msg, msb;
     if (ge.mat_update & 1) { mar=vrf; mag=vgf; mab=vbf; }
-    else { mar=c8f(ge.material,0); mag=c8f(ge.material,1); mab=c8f(ge.material,2); }
+    else { mar=lc->mat_amb[0]; mag=lc->mat_amb[1]; mab=lc->mat_amb[2]; }
     if (ge.mat_update & 2) { mdr=vrf; mdg=vgf; mdb=vbf; }
-    else { mdr=c8f(ge.mat_diffuse,0); mdg=c8f(ge.mat_diffuse,1); mdb=c8f(ge.mat_diffuse,2); }
+    else { mdr=lc->mat_dif[0]; mdg=lc->mat_dif[1]; mdb=lc->mat_dif[2]; }
     if (ge.mat_update & 4) { msr=vrf; msg=vgf; msb=vbf; }
-    else { msr=c8f(ge.mat_specular,0); msg=c8f(ge.mat_specular,1); msb=c8f(ge.mat_specular,2); }
+    else { msr=lc->mat_spe[0]; msg=lc->mat_spe[1]; msb=lc->mat_spe[2]; }
 
-    float r = c8f(ge.mat_emissive,0) + c8f(ge.amb_color,0)*mar;
-    float g = c8f(ge.mat_emissive,1) + c8f(ge.amb_color,1)*mag;
-    float b = c8f(ge.mat_emissive,2) + c8f(ge.amb_color,2)*mab;
+    float r = lc->emissive[0] + lc->amb[0]*mar;
+    float g = lc->emissive[1] + lc->amb[1]*mag;
+    float b = lc->emissive[2] + lc->amb[2]*mab;
 
     for (int i = 0; i < 4; i++) {
-        if (!ge.light_on[i]) continue;
-        int comp = (int)(ge.light_type[i] & 3);
-        int type = (int)((ge.light_type[i] >> 8) & 3);
-        float lx = ge.light_pos[i][0], ly = ge.light_pos[i][1], lz = ge.light_pos[i][2];
+        const LightConst *l = &lc->light[i];
+        if (!l->on) continue;
+        int comp = l->comp;
+        float lx = l->lx, ly = l->ly, lz = l->lz;
         float att = 1.0f;
-        if (type != 0) {  /* point/spot: light vector from vertex, distance attenuation */
+        if (l->type != 0) {  /* point/spot: light vector from vertex, distance attenuation */
             lx -= wx; ly -= wy; lz -= wz;
             float d2 = lx*lx + ly*ly + lz*lz;
             float d = sqrtf(d2);
             float den = ge.light_att[i][0] + ge.light_att[i][1]*d + ge.light_att[i][2]*d2;
             att = den > 0.0f ? clampf01(1.0f/den) : 1.0f;
             if (d > 0.0f) { lx/=d; ly/=d; lz/=d; }
-        } else {          /* directional: position register holds the direction */
-            float d = sqrtf(lx*lx + ly*ly + lz*lz);
-            if (d > 0.0f) { lx/=d; ly/=d; lz/=d; }
         }
         float ndl = nx*lx + ny*ly + nz*lz;
         if (ndl < 0.0f) ndl = 0.0f;
         if (comp == 2 && ge.spec_coef > 0.0f) ndl = powf(ndl, ge.spec_coef);   /* powered diffuse */
 
-        r += att*(c8f(ge.light_acol[i],0)*mar + c8f(ge.light_dcol[i],0)*mdr*ndl);
-        g += att*(c8f(ge.light_acol[i],1)*mag + c8f(ge.light_dcol[i],1)*mdg*ndl);
-        b += att*(c8f(ge.light_acol[i],2)*mab + c8f(ge.light_dcol[i],2)*mdb*ndl);
+        r += att*(l->acol[0]*mar + l->dcol[0]*mdr*ndl);
+        g += att*(l->acol[1]*mag + l->dcol[1]*mdg*ndl);
+        b += att*(l->acol[2]*mab + l->dcol[2]*mdb*ndl);
 
         if ((comp & 1) && ndl > 0.0f) {  /* specular, Blinn half-vector with eye (0,0,1) */
             float hx=lx, hy=ly, hz=lz+1.0f;
@@ -2855,9 +2918,9 @@ static int light_vertex(float wx, float wy, float wz, float nx, float ny, float 
                 float ndh = (nx*hx + ny*hy + nz*hz) / hd;
                 if (ndh > 0.0f) {
                     float s = ge.spec_coef > 0.0f ? powf(ndh, ge.spec_coef) : ndh;
-                    r += att*c8f(ge.light_scol[i],0)*msr*s;
-                    g += att*c8f(ge.light_scol[i],1)*msg*s;
-                    b += att*c8f(ge.light_scol[i],2)*msb*s;
+                    r += att*l->scol[0]*msr*s;
+                    g += att*l->scol[1]*msg*s;
+                    b += att*l->scol[2]*msb*s;
                 }
             }
         }
@@ -3142,6 +3205,80 @@ static int transform_vtx_3d(uint32_t addr, const VFmt *vf, Vtx *o) {
     }
     project_cvtx(&c, o);
     return 1;
+}
+
+/* BOUNDINGBOX (0x07): does the box submitted in the current vertex format possibly reach
+ * the screen?  Returns 0 (not visible: BJUMP takes its branch) or 1 (visible: BJUMP falls
+ * through and the object's commands run).
+ *
+ * Contract (PSPSDK pspgu.h and the sceGuBeginObject/sceGuEndObject sources): the list sets
+ * VERTEXTYPE and VADDR (and IADDR for an indexed box), issues BOUNDINGBOX with the vertex
+ * count, then a BASE/BJUMP pair that sceGuEndObject points past the object's commands.  The
+ * documented outcome is that the object is skipped when none of the submitted vertices lies
+ * inside the scissor region.
+ *
+ * Implemented: the part every reading of that contract agrees on.  The box is not visible
+ * only when every vertex projects (finite, clip w > 0) strictly beyond the same scissor edge,
+ * with a one-pixel guard because the rasterizer's rounding at that edge is unmeasured.  The
+ * vertices go through the same decode (morph, skinning) and world/view/projection/viewport
+ * transform as a draw, and through the index buffer when the vertex type has one.  The
+ * result is state of its own: the scissor is only read, and neither scissor nor region
+ * fragment clipping is changed by the test.
+ *
+ * UNMEASURED, so resolved as "visible" (the commands run, as before BJUMP was emulated):
+ * a box with no vertex inside the scissor that is not wholly beyond one edge (for example a
+ * box enclosing the view), a vertex at or behind the eye (w <= 0) or non-finite, the depth
+ * range and the near/far planes, the drawing region, through-mode vertex types, a zero
+ * count, a vertex or index span outside guest memory, and the PSP's handling of counts
+ * above 0x100 (every vertex is tested here).  Whether BOUNDINGBOX advances VADDR/IADDR as PRIM does is also unmeasured;
+ * it leaves them unchanged. */
+#define GE_BBOX_GUARD_PX 1.0f
+static int ge_bounding_box_visible(uint32_t count) {
+    VFmt vf;
+    decode_vtype(ge.vtype, &vf);
+    if (count == 0u || vf.through) return 1;
+    int idxfmt = (int)((ge.vtype >> 11) & 3u);
+    uint32_t stride = (uint32_t)vf.stride;
+    static unsigned s_bbox_span_reports;   /* each refusal is reported, at most 8 times */
+    if (idxfmt && !sr_inrange_n(ge.iaddr, count << (idxfmt - 1))) {
+        if (s_bbox_span_reports++ < 8u)
+            fprintf(stderr, "GE BOUNDINGBOX: index span iaddr=0x%08" PRIx32 " count=%" PRIu32
+                    " outside guest memory, box treated as visible\n", ge.iaddr, count);
+        return 1;
+    }
+    float vp_xs = decode_float24(ge.viewport_raw[0]), vp_ys = decode_float24(ge.viewport_raw[1]);
+    float vp_xc = decode_float24(ge.viewport_raw[3]), vp_yc = decode_float24(ge.viewport_raw[4]);
+    float off_x = (float)(ge.offsetx & 0xFFFF) / 16.0f, off_y = (float)(ge.offsety & 0xFFFF) / 16.0f;
+    /* Pixel (x, y) is written when scis_x1 <= x <= scis_x2 and scis_y1 <= y <= scis_y2. */
+    float left = (float)ge.scis_x1 - GE_BBOX_GUARD_PX;
+    float right = (float)ge.scis_x2 + 1.0f + GE_BBOX_GUARD_PX;
+    float top = (float)ge.scis_y1 - GE_BBOX_GUARD_PX;
+    float bottom = (float)ge.scis_y2 + 1.0f + GE_BBOX_GUARD_PX;
+    unsigned beyond_all = 0xFu;   /* edges every vertex so far lies beyond */
+    for (uint32_t i = 0; i < count && beyond_all; i++) {
+        uint32_t vi = idxfmt ? index_value(ge.iaddr, idxfmt, (int)i) : i;
+        uint32_t addr = ge.vaddr + vi * stride;
+        if (!sr_inrange_n(addr, stride)) {
+            if (s_bbox_span_reports++ < 8u)
+                fprintf(stderr, "GE BOUNDINGBOX: vertex 0x%08" PRIx32 " (index %" PRIu32
+                        ") outside guest memory, box treated as visible\n", addr, vi);
+            return 1;
+        }
+        ModelVtx m;
+        decode_model_vtx(addr, &vf, &m);
+        float wx, wy, wz, ex, ey, ez, cx, cy, cz, cw;
+        mat43_mul(ge.world, m.x, m.y, m.z, &wx, &wy, &wz);
+        mat43_mul(ge.view, wx, wy, wz, &ex, &ey, &ez);
+        mat44_mul(ge.proj, ex, ey, ez, &cx, &cy, &cz, &cw);
+        if (!(cw > 0.0f) || !isfinite(cw)) return 1;
+        float sx = cx / cw * vp_xs + vp_xc - off_x;
+        float sy = cy / cw * vp_ys + vp_yc - off_y;
+        if (!isfinite(sx) || !isfinite(sy)) return 1;
+        unsigned beyond = (sx < left ? 1u : 0u) | (sx >= right ? 2u : 0u) |
+                          (sy < top ? 4u : 0u) | (sy >= bottom ? 8u : 0u);
+        beyond_all &= beyond;
+    }
+    return beyond_all == 0u;
 }
 
 static void clip_lerp_cvtx(const CVtx *a, const CVtx *b, float t, CVtx *o) {
@@ -4446,6 +4583,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     if (!s_ge_inited) ge_state_init();
     if (!resume) {
         s_sp = 0;
+        s_bbox_visible = 1;
     }
     static int snap=-1; if(snap<0) snap=(getenv("SR_FBDUMP")||getenv("SR_GEDUMP"))?1:0;
     uint32_t list_addr=addr;
@@ -4489,6 +4627,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
         }
         uint32_t op=MEM_R32(addr); addr+=4;
         uint32_t cmd=op>>24, data=op&0xFFFFFF;
+        s_ge_state_serial++;   /* any command may change state that light_consts() caches */
         s_ge_command[cmd] = data;
         if (s_cpu_profile) s_cpu_profile_stats.commands++;
         sig=sig*1000003ul+op;
@@ -4801,8 +4940,12 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 break;
             }
             case GE_JUMP: addr=ge_rel_addr(data&0x00FFFFFCu); break;
-            case GE_BJUMP: break;  /* no bounding-box test result kept; draw everything */
-            case GE_BOUNDINGBOX: break;
+            /* Conditional object rendering (sceGuBeginObject/sceGuEndObject): BJUMP branches,
+             * addressed like JUMP, when the last BOUNDINGBOX found its box not visible. */
+            case GE_BJUMP:
+                if (!s_bbox_visible) addr=ge_rel_addr(data&0x00FFFFFCu);
+                break;
+            case GE_BOUNDINGBOX: s_bbox_visible = ge_bounding_box_visible(data & 0xFFFFu); break;
             case GE_CALL:
                 if (s_sp<(int)(sizeof(s_stack_pc)/sizeof(s_stack_pc[0]))) {
                     s_stack_pc[s_sp]=addr; s_stack_offset[s_sp]=ge.offset; s_sp++;
