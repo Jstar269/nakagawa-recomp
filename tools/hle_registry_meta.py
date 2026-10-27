@@ -484,7 +484,7 @@ HANDLER_METADATA = {
     # command pairs remain visible per pair and are tracked under issue #341.
     "h_IoDevctl": {
         "status": "partial",
-        "limitation": "Memory Stick devctl callback events unmodeled (#341)",
+        "limitation": "Memory Stick insert/eject callbacks are notified once, with argument 1, when registered; no later insert or eject event exists, and the 32-entry bound, duplicate entries and 0x80010016 refusals follow PPSSPP's model, not a hardware measurement (#1378)",
     },
     "h_IoDopen": {
         "status": "partial",
