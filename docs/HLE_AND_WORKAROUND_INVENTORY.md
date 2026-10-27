@@ -272,8 +272,9 @@ Semantic handler census: **492** handlers across **25** API families, covering *
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP ioctl timing and callback ordering remain unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoLseek`** (`sceIo`): `sceIoLseek` (0x27eb27b8)
-  - Limitation: PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; large offsets, out-of-range clamping, invalid whence, raw devices and error precedence remain unmeasured (#341)
+  - Limitation: PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; large offsets, out-of-range clamping, invalid whence and error precedence remain unmeasured (#341). UMD block-device seeks follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (sector positions, SEEK_END at the last sector, 0x8001b003 for a negative or far-past-the-disc position); the refusal edge between the last sector and the captured far position is inferred
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)
+  - Evidence: src/rt/hle_thread_selftest.c:test_umd_block_device_sectors
 - **`h_IoLseek32Async`** (`sceIo`): `sceIoLseek32Async` (0x1b385d8f)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
@@ -281,7 +282,7 @@ Semantic handler census: **492** handlers across **25** API families, covering *
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; 64-bit seek timing and callback ordering are not hardware-measured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoOpen`** (`sceIo`): `sceIoOpen` (0x109f50bc)
-  - Limitation: measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; other flag combinations, general error precedence and raw UMD data operations remain unmeasured (#341)
+  - Limitation: measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; other flag combinations and general error precedence remain unmeasured (#341). UMD block-device reads and seeks are covered under sceIoRead and sceIoLseek
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)
   - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
@@ -292,9 +293,10 @@ Semantic handler census: **492** handlers across **25** API families, covering *
   - Limitation: the pending interval is a deterministic synthetic import-boundary policy, not PSP-measured timing
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoRead`** (`sceIo`): `sceIoRead` (0x6a638d83)
-  - Limitation: PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); short reads at end of file, zero-length reads, partial-read position advance, unreadable buffers, write-only descriptors, raw UMD data and standard-stream reads remain unmeasured (#341)
+  - Limitation: PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); short reads at end of file, zero-length file reads, partial-read position advance, unreadable buffers, write-only descriptors and standard-stream reads remain unmeasured (#341). UMD block-device reads follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (counts and results in 2048-byte sectors, the position advancing by the count, 0x80010016 for a zero count); a read crossing the last sector stays at the raw-device boundary, and the runtime refuses a destination outside guest memory where the console overran the buffer
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)
   - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
+  - Evidence: src/rt/hle_thread_selftest.c:test_umd_block_device_sectors
 - **`h_IoReadAsync`** (`sceIo`): `sceIoReadAsync` (0xa0b5a7c2)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; PSP timing and callback ordering remain unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
