@@ -102,8 +102,8 @@ They create their synthetic inputs under the ignored `build/` folder.
   finished emulator for everyone. No commercial PSP game is claimed to play end to end from an ISO alone. Most retail
   PSP programs (`EBOOT.BIN` and `.prx` modules) are encrypted; the player decrypts them from a UMD disc image you own,
   on your PC, with built-in tables ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). One it can't decrypt is named and
-  stops there. PSN `EBOOT.PBP` packages aren't decrypted yet, and PGD-protected content is unsupported; broader
-  ISO-to-Play support is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+  stops there. PSN `EBOOT.PBP` packages aren't decrypted yet, and PGD-protected content is unsupported;
+  broader ISO-to-Play support is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 - **Other games are experimental.** A valid PSP disc with no profile yet is imported as **Experimental**. The card
   says compatibility is unknown, the checklist shows what is missing, and Play stays off until a matching runtime
   package exists. PAC-MAN Championship Edition reaches its menu and plays a stage on the maintainer's copy, through
