@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import argparse
 import ast
+from collections import Counter
 import csv
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 import os
@@ -510,6 +511,10 @@ def _get_git_entries(
 ) -> list[GitEntry]:
     raw_ls = _git_output(["ls-files", "-s", "-z"], repo_root=repo_root)
     entries: list[GitEntry] = []
+    # Positions in `entries` of indexed blobs to probe for an LFS pointer, read
+    # afterwards through one `git cat-file --batch` rather than one git process
+    # per file.
+    indexed_probes: list[int] = []
 
     if raw_ls:
         for item in raw_ls.split("\0"):
@@ -533,15 +538,14 @@ def _get_git_entries(
                 elif full_p.is_file():
                     st = full_p.stat()
                     working_mode = "100755" if (st.st_mode & 0o111) else "100644"
-                    if kind == "file":
+                    if kind == "file" and content_source == CONTENT_WORKTREE:
                         probe = GitEntry(mode, sha, stage, rel_path, kind)
-                        if content_source == CONTENT_WORKTREE:
-                            raw_blob, _ = read_candidate_file(probe, repo_root)
-                        else:
-                            raw_blob, _ = read_indexed_blob(probe, repo_root)
+                        raw_blob, _ = read_candidate_file(probe, repo_root)
                         txt = _decode_text_safe(raw_blob)
                         if txt and is_git_lfs_pointer(txt):
                             kind = "lfs_pointer"
+                    elif kind == "file":
+                        indexed_probes.append(len(entries))
 
                 entries.append(
                     GitEntry(
@@ -553,6 +557,22 @@ def _get_git_entries(
                         working_mode=working_mode,
                     )
                 )
+
+    if indexed_probes:
+        # The batch result is keyed by path. An unmerged index lists one path at
+        # several stages, so a repeated path is read one stage at a time instead.
+        stages = Counter(entries[position].path for position in indexed_probes)
+        blobs = read_indexed_blobs_batch(
+            [entries[position] for position in indexed_probes if stages[entries[position].path] == 1],
+            repo_root,
+        )
+        for position in indexed_probes:
+            probe = entries[position]
+            raw_blob = (blobs[probe.path][0] if stages[probe.path] == 1
+                        else read_indexed_blob(probe, repo_root)[0])
+            txt = _decode_text_safe(raw_blob)
+            if txt and is_git_lfs_pointer(txt):
+                entries[position] = replace(probe, kind="lfs_pointer")
 
     if not tracked_only:
         raw_others = _git_output(["ls-files", "-o", "--exclude-standard", "-z"], repo_root=repo_root)
@@ -910,6 +930,10 @@ def _decode_text_safe(data: bytes | None) -> str | None:
         return None
 
 
+#: C0 control bytes other than tab, line feed and carriage return.
+_NON_PRINTABLE_CONTROL_BYTES = bytes(byte for byte in range(32) if byte not in b"\t\n\r")
+
+
 def _is_binary_bytes(data: bytes) -> bool:
     if b"\x00" in data:
         return True
@@ -917,7 +941,10 @@ def _is_binary_bytes(data: bytes) -> bool:
         decoded = data.decode("utf-8")
         if not decoded:
             return False
-        non_printable = sum(1 for ch in decoded if ord(ch) < 32 and ch not in "\t\n\r")
+        # In valid UTF-8 a code point below 32 is that one byte, and no byte below
+        # 0x80 occurs inside a multi-byte sequence, so counting the control bytes
+        # counts the control characters exactly.
+        non_printable = len(data) - len(data.translate(None, _NON_PRINTABLE_CONTROL_BYTES))
         return (non_printable / len(decoded)) > 0.05
     except UnicodeDecodeError:
         return True
