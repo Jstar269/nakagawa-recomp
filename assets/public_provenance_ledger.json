@@ -291,7 +291,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "70ed6db7b2d6f3d3a0ffb8ca5ddbd3153bab3982afc13f56d407ad4a187f66c7"
+      "sha256": "c8a7fb5e4956a151f5f11daaccc2f15293351127a9c09b70aed13c7c1860751a"
     },
     {
       "path": ".github/workflows/scorecards.yml",
@@ -1582,7 +1582,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b1db5150d7fbe29bacf8b4916ff69aba55f1f10e484d92f04400d953cd268059"
+      "sha256": "389deff93c4e22ab016597a64e1a15da80415380b32bebb2300ac6fd88c4c0c6"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -14448,7 +14448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c8e595c41d8dbd409ac77066b6ae7fdd9d43ab9a2cfbea961d577237b702cc73"
+      "sha256": "43562a9a8c8cb22548e06bced7f1bbf6a8adb5ec4dbcaafae51d46ecd258c617"
     },
     {
       "path": "tools/test_portability_inventory.py",
