@@ -12,6 +12,14 @@ Nakagawa has since substantially extended and modified that codebase. This repos
 ## Other upstreams
 
 - **FFmpeg n4.4 — the FFmpeg developers** — LGPL-2.1-or-later. The ATRAC3 and ATRAC3+ decoder subsets in [`src/rt/atrac3p/`](src/rt/atrac3p/) and the H.264 video decoder subset in [`src/rt/h264_ffmpeg_sub/`](src/rt/h264_ffmpeg_sub/); two imported ATRAC files also carry a MIPS Technologies, Inc. BSD-3-Clause notice.
+- **pspdecrypt — John Kelley (John-K) and contributors** — GNU GPL version 3, pinned at
+  `c156627db7634d395c380c0a9589130f603307fc`. The ported `~PSP` container, KIRK, AES, SHA-1 and KL4E/KL3E code of the
+  built-in game decryption in [`src/core/`](src/core/PROVENANCE.md); its KIRK engine is Draan's KIRK-ENGINE
+  (GPL-3.0-or-later).
+- **PPSSPP game key tables** — the built-in game-decryption tables in
+  [`src/core/nk_psp_builtin_keys.c`](src/core/PROVENANCE.md) are taken from PPSSPP at
+  `b4386554795949491a26e51b7d74082bb9b2470f` (`Core/ELF/PrxDecrypter.cpp`, GPL-2.0-or-later, and
+  `ext/libkirk/kirk_engine.c`, KIRK-ENGINE by Draan, GPL-3.0-or-later), firmware entries left out.
 - **minimp3 — lieff (Lion) and contributors** — CC0-1.0 public-domain dedication. The MPEG audio decoder header in [`src/rt/minimp3/`](src/rt/minimp3/), pinned to upstream commit `ea99364f61c14656440e8d77e9c233ccf3124633` and kept byte-identical; it backs the `sceMp3` library.
 - **Clay — Nic Barker** — zlib. The layout library in [`third_party/clay/`](third_party/clay/).
 - **Portable Snippets — Evan Nemerson** — CC0-1.0 (public domain). The overflow-checked arithmetic header in [`third_party/portable-snippets/`](third_party/portable-snippets/).

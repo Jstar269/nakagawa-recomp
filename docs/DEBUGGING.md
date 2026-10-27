@@ -599,8 +599,10 @@ A scripted answer follows the same status sequence as a person's. `sceUtilityOsk
 returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE` (for as many
 frames as the person takes; one poll for a scripted answer), then `QUIT` (whether the text was
 confirmed or cancelled; each field's result tells them apart) until the title calls
-`sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`. A keyboard the title shuts down,
-or replaces with a new one, before the person answered closes its input box and writes nothing.
+`sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`. Only one utility dialog runs at a
+time: while the keyboard is open, a second `sceUtilityOskInitStart` or another dialog's InitStart
+returns `INVALID_STATUS` (`0x80110001`) and leaves the keyboard and its input box alone
+([#1386](https://github.com/Jstar269/nakagawa-recomp/issues/1386)).
 `sceUtilityOskUpdate` itself keeps its named no-dialog compatibility result
 ([#281](https://github.com/Jstar269/nakagawa-recomp/issues/281)); the runtime owns the
 progression instead.
@@ -1119,6 +1121,7 @@ committed.
 | ---------- | ------------- |
 | `SR_VBLANK_Q_US=N` | Host-clock vblank quantum in microseconds. In the default paced profile it does **not** produce vblanks -- the scheduler's rational 60000/1001 source is the only producer -- and only sets the threshold at which a yield is counted as late vblank *service* (reported as `vbl_late_service_yields` by the spin watchdog). It is an out-of-band vblank source only under `SR_NOVBPACE=1` |
 | `SR_WATCHDOG_EXIT=N` | Abort after N vblanks with no new frame; a firing is a NO-NEW-FLIP observation, not a hang verdict -- classify it with the display counters, thread dump, and MPEG/PSMF activity the watchdog prints |
+| `SR_GE_TIMING=1` | Opt-in GE completion timing (issue #1296), off by default. A display list that reached its END completes -- finish callback, `sceGeDrawSync`, `sceGeListSync` -- only once guest time passes its cost on one serial GE timeline; the callback is delivered as an interrupt, and the peeks read 2 until it is handled. The cost model in `src/rt/ge.c` is in GE clocks (the bus clock, converted at the emulated bus clock) and every coefficient was measured on a PSP-3000 with `CASE=ge-timing` (PR #1321): per list, command word and PRIM, per vertex by format, per span by width and fill state, texel fetch, CLUT loads and block transfers. Classes the measurement did not cover are charged as the nearest measured class and tagged `UNMEASURED_NEAREST` in the source. Startup prints `GE_TIMING: on, GE time model measured on PSP-3000 ...` |
 | `SR_NO_RELAUNCH=1` | Disable thread relaunch |
 | `SR_NO_THREAD_REUSE=1` | Disable thread reuse |
 | `SR_NOAUDIO=1` | Disable audio output |

@@ -72,6 +72,22 @@ Clang/libFuzzer build is defined by `.clusterfuzzlite/Dockerfile` and
 at 60 seconds with a 4 KiB maximum input. The target does not use title files,
 retail inputs, or hardware.
 
+### Project website (GitHub Pages)
+
+`.github/workflows/pages.yml` publishes the project website,
+<https://jstar269.github.io/nakagawa-recomp/>, from [`docs/index.html`](index.html). The
+repository's Pages source is "GitHub Actions". The page is one static file with no scripts,
+web fonts or third-party requests. Its images are files the repository already publishes:
+the brand marks, the showcase demo captures and the presentation screenshot
+`docs/media/hst-title-screen.png` with its notice. The build job copies an explicit list of
+files into the artifact, so nothing else in the tree is published, and fails when the page
+names a local file the list does not copy. A pull request that touches those paths runs the
+build job only; a push to `main`, or a manual run on `main`, also deploys through
+`actions/deploy-pages`. Only the deploy job holds `pages: write` and `id-token: write`, and
+the `github-pages` environment accepts deployments from `main` alone. To preview the site,
+open `docs/index.html` from a checkout: its relative image paths resolve the same way. Keep
+the page's status text in step with `README.md`, `docs/COMPATIBILITY.md` and the release notes.
+
 ### Hygiene beside the substantive gates
 
 The Python, native and Windows jobs wait only for `classify` and the

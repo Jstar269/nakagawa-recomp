@@ -996,8 +996,6 @@ static void test_title_config_hle_bindings(void) {
     uint32_t frame_latch = 0;
     uint32_t libfont_uid = 0;
     int has_latch = sr_title_config_frame_latch_addr(&frame_latch);
-    SrTitleReentBindings reent;
-    int has_reent = sr_title_config_reent_bindings(&reent);
     CpuState cpu;
 
     memset(g_mem_base, 0, 0x0c000000u);
@@ -1014,12 +1012,6 @@ static void test_title_config_hle_bindings(void) {
     expect((has_bringup && has_sync && has_latch) ||
            (!has_bringup && !has_sync && !has_latch),
            "migrated HLE groups are all configured together or all absent");
-    expect(has_reent == (strcmp(cfg->source_id, "hst-ucus98701") == 0),
-           "HST reent compatibility is selected only by the validated HST title config");
-    if (has_reent) {
-        expect(reent.master_reent_addr != 0u && reent.guest_thread_table_addr != 0u,
-               "HST reent compatibility config supplies both required guest addresses");
-    }
 
     s_title_hle_guest_calls = 0;
     s_title_hle_probe = 1;
@@ -1743,15 +1735,18 @@ static int write_fixed_module_prx(const char *path, uint32_t link) {
     return written == sizeof(image) && close_result == 0;
 }
 
-static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start);
+static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start,
+                                          uint32_t export_nid);
 
 static int write_runtime_module_prx(const char *path, uint8_t flavour) {
-    return write_runtime_module_prx_entry(path, flavour, 1);
+    return write_runtime_module_prx_entry(path, flavour, 1, RT_EXPORT_NID);
 }
 
 /* with_start == 0 writes a library module with no start routine: the system library
- * exports only module_stop and the ELF entry is 0xFFFFFFFF. */
-static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start) {
+ * exports only module_stop and the ELF entry is 0xFFFFFFFF. The named library exports
+ * one function under `export_nid`. */
+static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start,
+                                          uint32_t export_nid) {
     enum { PHOFF = 0x34u, RELOC_OFFSET = RT_SEG_OFFSET + RT_FILE_SPAN,
            SIZE = RELOC_OFFSET + RT_RELOC_COUNT * 8u };
     /* A start-less module's single system-library address sits at table + 4. */
@@ -1829,7 +1824,7 @@ static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int
         fixture_wr32(seg + RT_SYSLIB_TABLE + 4, RT_STOP);
         fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_STOP);
     }
-    fixture_wr32(seg + RT_LIB_TABLE + 0, RT_EXPORT_NID);
+    fixture_wr32(seg + RT_LIB_TABLE + 0, export_nid);
     fixture_wr32(seg + RT_LIB_TABLE + 4, RT_QUERY);
     memcpy(seg + RT_LIBNAME, "RtPlacedLib", 12);
     fixture_wr32(seg + RT_DATA_PTR, RT_QUERY);
@@ -1902,6 +1897,85 @@ static uint32_t rt_lifecycle(uint32_t (*handler)(CpuState *), uint32_t uid,
     cpu.r[6] = argp;
     cpu.r[7] = status;
     return handler(&cpu);
+}
+
+/* A started module that exports a NID host HLE also serves takes that NID over, and only
+ * while it is started (#286). scePsmfPlayerGetAudioOutSize is the shadowed NID: the host
+ * handler answers a handle it does not know with its status error, and the guest body
+ * answers a0 + RT_START_MARK, so the result names which side ran. Generic loader and
+ * linker paths only; no title address or module name is involved. */
+#define RT_HLE_SHADOW_NID 0x3EA82A4Bu      /* scePsmfPlayerGetAudioOutSize */
+#define RT_HLE_SHADOW_HOST 0x80616001u     /* the host handler's unknown-handle status */
+
+static uint32_t rt_shadow_import(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    return sr_syscall(&cpu, RT_HLE_SHADOW_NID);
+}
+
+static void test_runtime_placed_hle_shadow(const char *alpha_guest, const char *alpha_path) {
+    extern void sr_hle_test_partition_reset(void);
+    uint32_t base = 0;
+    expect(sr_hle_test_is_registered(RT_HLE_SHADOW_NID) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN &&
+               rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: host HLE serves the NID before any module exports it");
+    expect(write_runtime_module_prx_entry(alpha_path, 1u, 1, RT_HLE_SHADOW_NID) &&
+               runtime_module_identity(alpha_path, &s_rt_alpha_code),
+           "runtime placement: the fixture module exports a host-served NID");
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
+    sr_module_code_register(&s_rt_alpha_code);
+    s_rt_start_calls = 0;
+    s_rt_stop_calls = 0;
+
+    /* Shipped default: host HLE implements the export, so the host keeps serving it and
+     * module_start is bypassed; the export never links. */
+    _putenv("SR_REAL_MODULE_START=");
+    uint32_t uid = rt_load(alpha_guest, 0u);
+    expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+               sr_module_code_is_bound(&s_rt_alpha_code, &base) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == base + RT_QUERY,
+           "runtime placement: the shadowing export registers at the placed address");
+    expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_start_calls == 0u && sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u &&
+               rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: by default a host-served module's start leaves the host handler");
+    expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+               rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN,
+           "runtime placement: unloading the unstarted module restores the builtin");
+
+    /* Real module start: before start the host handler runs; once module_start has run the
+     * guest body owns the NID; unload hands it back to the host handler. */
+    _putenv("SR_REAL_MODULE_START=1");
+    uid = rt_load(alpha_guest, 0u);
+    expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+               sr_module_code_is_bound(&s_rt_alpha_code, &base) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+               sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u &&
+               rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: before module start the shadowed import reaches host HLE");
+    expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_start_calls == 1u &&
+               sr_hle_test_started_export(RT_HLE_SHADOW_NID) == base + RT_QUERY &&
+               rt_shadow_import() == RT_START_MARK,
+           "runtime placement: after module start the shadowed import runs the guest body");
+    expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_stop_calls == 1u &&
+               rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+               !sr_module_code_is_bound(&s_rt_alpha_code, NULL) &&
+               sr_hle_resolve_late_import(RT_HLE_SHADOW_NID) == SR_HLE_LATE_BUILTIN &&
+               sr_hle_test_started_export(RT_HLE_SHADOW_NID) == 0u,
+           "runtime placement: unload returns the shadowed NID to the builtin");
+    expect(rt_shadow_import() == RT_HLE_SHADOW_HOST,
+           "runtime placement: after unload the shadowed import reaches host HLE again");
+
+    _putenv("SR_REAL_MODULE_START=");
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
 }
 
 static void test_runtime_placed_modules(void) {
@@ -2218,7 +2292,7 @@ static void test_runtime_placed_modules(void) {
         char nostart_path[1024];
         runtime_module_path(nostart_path, sizeof(nostart_path), "rt-nostart.prx");
         s_rt_nostart_code.link_high = RT_MEM_SPAN;
-        expect(write_runtime_module_prx_entry(nostart_path, 5u, 0) &&
+        expect(write_runtime_module_prx_entry(nostart_path, 5u, 0, RT_EXPORT_NID) &&
                    runtime_module_identity(nostart_path, &s_rt_nostart_code),
                "runtime placement: the start-less module fixture is written");
         sr_module_code_register(&s_rt_nostart_code);
@@ -2332,6 +2406,8 @@ static void test_runtime_placed_modules(void) {
                    sr_hle_test_module_count() == 0u,
                "runtime placement: a full partition refuses the load with NO_MEMORY");
     }
+
+    test_runtime_placed_hle_shadow(alpha_guest, alpha_path);
 
     sr_hle_test_module_reset();
     sr_hle_test_partition_reset();
@@ -2683,6 +2759,30 @@ static void test_io_async_and_path_imports(void) {
     expect(sr_hle_test_io_poll_async(&cpu) == 0u && MEM_R32(RESULT_ADDR) == 2u,
            "sceIoLseekAsync returns its resulting position through the async result");
 
+    /* A past-the-end destination is refused through the async result too (#1380). */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[6] = 4u;  /* one past the three-byte file */
+    cpu.r[7] = 0u;
+    cpu.r[8] = 0u;  /* SEEK_SET */
+    expect(sr_hle_test_io_lseek_async(&cpu) == 0u,
+           "sceIoLseekAsync queues a past-the-end destination");
+    sr_hle_test_io_async_import_boundary();
+    sr_hle_test_io_async_import_boundary();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = RESULT_ADDR;
+    expect(sr_hle_test_io_poll_async(&cpu) == 0u &&
+               MEM_R32(RESULT_ADDR) == IO_ERROR_FUNCTION_NOT_SUPPORTED &&
+               MEM_R32(RESULT_ADDR + 4u) == 0xffffffffu,
+           "sceIoLseekAsync refuses a past-the-end destination instead of clamping it");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    cpu.r[5] = 0u;
+    cpu.r[6] = 1u;
+    expect(sr_hle_test_io_lseek32(&cpu) == 2u,
+           "the refused asynchronous seek leaves the position unchanged");
+
     MEM_W32(IOCTL_OUT_ADDR, 0xaaaaaaaau);
     MEM_W32(RESULT_ADDR, 0xfeedfaceu);
     memset(&cpu, 0, sizeof(cpu));
@@ -2884,7 +2984,8 @@ static void test_fd_namespace(void) {
         FD_KIND_FILE = 2,
         SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR = 0x80020323u,
         SCE_KERNEL_ERROR_TOO_MANY_OPEN_FILES = 0x80020320u,
-        SCE_KERNEL_ERROR_INVALID_ARGUMENT = 0x80020324u
+        SCE_KERNEL_ERROR_INVALID_ARGUMENT = 0x80020324u,
+        IO_ERROR_FUNCTION_NOT_SUPPORTED = 0x80010086u
     };
     const uint32_t path_addr = 0x09010000u;
     const uint32_t payload_addr = 0x09011000u;
@@ -2978,6 +3079,82 @@ static void test_fd_namespace(void) {
     cpu.r[5] = 1u;
     expect(sr_hle_test_io_open(&cpu) == 0x80010002u,
            "open non-existent file returns driver errno 0x80010002");
+
+    /* PSP_O_CREAT (0x0200) and PSP_O_EXCL (0x0800), #1380. PSP-IO-001 measured only that a
+     * read-only open of a missing file fails; a write open without PSP_O_CREAT fails the same
+     * way and creates nothing. An exclusive create of an existing file has no measured
+     * result, so it is refused with the named boundary and the file is left intact. */
+    {
+        static const char flags_guest[] = "ms0:/NAKAGAWA_OPEN_FLAGS.TXT";
+        static const uint32_t no_create[] = {
+            0x0002u, 0x0003u, 0x0402u, 0x0102u, 0x0802u  /* WRONLY, RDWR, +TRUNC, +APPEND, +EXCL */
+        };
+        static const uint32_t exclusive_existing[] = {
+            0x0A02u, 0x0E02u, 0x0B02u  /* WRONLY|CREAT|EXCL, +TRUNC, +APPEND */
+        };
+        char flags_host[256];
+        fd_host_path(flags_host, sizeof(flags_host), flags_guest);
+        DeleteFileA(flags_host);
+        for (size_t i = 0; i < sizeof(no_create) / sizeof(no_create[0]); i++) {
+            fd_set_path(&cpu, path_addr, flags_guest);
+            cpu.r[5] = no_create[i];
+            uint32_t rc = sr_hle_test_io_open(&cpu);
+            if (rc < 64u) {
+                memset(&cpu, 0, sizeof(cpu));
+                cpu.r[4] = rc;
+                (void)sr_hle_test_io_close(&cpu);
+            }
+            expect(rc == 0x80010002u && GetFileAttributesA(flags_host) == INVALID_FILE_ATTRIBUTES,
+                   "an open without PSP_O_CREAT of a missing file fails and creates nothing");
+            DeleteFileA(flags_host);
+        }
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0A02u;
+        uint32_t excl_fd = sr_hle_test_io_open(&cpu);
+        expect(excl_fd < 64u, "PSP_O_CREAT|PSP_O_EXCL creates a missing file");
+        fd_guest_copy(payload_addr, "abc", 3u);
+        fd_set_write(&cpu, excl_fd, payload_addr, 3u);
+        expect(sr_hle_test_io_write(&cpu) == 3u, "the exclusively created file takes bytes");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = excl_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u, "the exclusively created file closes");
+        for (size_t i = 0; i < sizeof(exclusive_existing) / sizeof(exclusive_existing[0]); i++) {
+            fd_set_path(&cpu, path_addr, flags_guest);
+            cpu.r[5] = exclusive_existing[i];
+            uint32_t rc = sr_hle_test_io_open(&cpu);
+            if (rc < 64u) {
+                memset(&cpu, 0, sizeof(cpu));
+                cpu.r[4] = rc;
+                (void)sr_hle_test_io_close(&cpu);
+            }
+            expect(rc == IO_ERROR_FUNCTION_NOT_SUPPORTED &&
+                       fd_host_bytes_equal(flags_host, (const uint8_t *)"abc", 3u),
+                   "PSP_O_CREAT|PSP_O_EXCL on an existing file is refused and leaves it intact");
+        }
+        /* Without PSP_O_CREAT an existing file still opens, and APPEND and TRUNC apply. */
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0102u;
+        uint32_t append_fd = sr_hle_test_io_open(&cpu);
+        expect(append_fd < 64u, "WRONLY|APPEND opens an existing file without PSP_O_CREAT");
+        fd_guest_copy(payload_addr, "de", 2u);
+        fd_set_write(&cpu, append_fd, payload_addr, 2u);
+        expect(sr_hle_test_io_write(&cpu) == 2u, "the append descriptor takes bytes");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = append_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u &&
+                   fd_host_bytes_equal(flags_host, (const uint8_t *)"abcde", 5u),
+               "APPEND without PSP_O_CREAT appends to the existing file");
+        fd_set_path(&cpu, path_addr, flags_guest);
+        cpu.r[5] = 0x0402u;
+        uint32_t trunc_fd = sr_hle_test_io_open(&cpu);
+        expect(trunc_fd < 64u, "WRONLY|TRUNC opens an existing file without PSP_O_CREAT");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = trunc_fd;
+        expect(sr_hle_test_io_close(&cpu) == 0u &&
+                   fd_host_bytes_equal(flags_host, (const uint8_t *)"", 0u),
+               "TRUNC without PSP_O_CREAT truncates the existing file");
+        DeleteFileA(flags_host);
+    }
 
     /* DOS device names (join rule): create-open is not-found, matching the POSIX open
      * branch in hle.c; remove and mkdir refuse as an illegal path. Pins the cross-host
@@ -3183,6 +3360,59 @@ static void test_fd_namespace(void) {
     cpu.r[8] = 2u;     /* SEEK_END */
     cpu.r[6] = 0u;
     expect(sr_hle_test_io_lseek(&cpu) == sizeof(payload) - 1u && cpu.r[3] == 0u, "lseek SEEK_END succeeds");
+
+    /* Seek destinations are no longer clamped (#1380). PSP-IO-001 measured destinations
+     * inside the file only; one before the start or past the end has no measured result,
+     * so it is refused with the named boundary and the position stays where it was. */
+    {
+        const uint32_t file_size = (uint32_t)(sizeof(payload) - 1u);
+        static const struct { uint32_t offset, whence; } bad32[] = {
+            {0xffffffffu, 0u}, {0xfffffffau, 1u}, {1u, 2u}, {(uint32_t)(sizeof(payload) - 1u), 1u},
+        };
+        static const struct { uint32_t low, high, whence; } bad64[] = {
+            {0u, 1u, 0u},                    /* 2^32 from the start */
+            {0xfffffff0u, 0xffffffffu, 1u},  /* -16 from 5 */
+            {0xffffffffu, 0x7fffffffu, 1u},  /* INT64_MAX from 5: no overflow */
+            {0u, 0x80000000u, 2u},           /* INT64_MIN from the end */
+            {1u, 0u, 2u},                    /* one past the end */
+        };
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        cpu.r[5] = file_size;
+        cpu.r[6] = 0u;
+        expect(sr_hle_test_io_lseek32(&cpu) == file_size,
+               "lseek32 to the end of the file itself succeeds");
+        for (size_t i = 0; i < sizeof(bad32) / sizeof(bad32[0]) + sizeof(bad64) / sizeof(bad64[0]); i++) {
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = 5u;
+            cpu.r[6] = 0u;
+            expect(sr_hle_test_io_lseek32(&cpu) == 5u, "lseek32 places the descriptor at 5");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            uint32_t rc;
+            if (i < sizeof(bad32) / sizeof(bad32[0])) {
+                cpu.r[5] = bad32[i].offset;
+                cpu.r[6] = bad32[i].whence;
+                rc = sr_hle_test_io_lseek32(&cpu);
+            } else {
+                size_t j = i - sizeof(bad32) / sizeof(bad32[0]);
+                cpu.r[6] = bad64[j].low;
+                cpu.r[7] = bad64[j].high;
+                cpu.r[8] = bad64[j].whence;
+                rc = sr_hle_test_io_lseek(&cpu);
+                expect(cpu.r[3] == 0xffffffffu, "a refused lseek reports an error high word");
+            }
+            expect(rc == IO_ERROR_FUNCTION_NOT_SUPPORTED,
+                   "a seek before the start or past the end is refused, not clamped");
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = fd;
+            cpu.r[5] = 0u;
+            cpu.r[6] = 1u;
+            expect(sr_hle_test_io_lseek32(&cpu) == 5u,
+                   "a refused seek leaves the descriptor position unchanged");
+        }
+    }
 
     /* Closed descriptor behavior */
     memset(&cpu, 0, sizeof(cpu));
@@ -3953,6 +4183,79 @@ static void test_ms0_unified_namespace(void) {
             cpu.r[4] = sfd;
             sr_hle_test_io_close(&cpu);
         }
+
+        /* Issue #1387 on the Windows handle route.  A shorter overwrite made
+         * while a guest descriptor holds the old file open replaces the file
+         * whole (the open descriptor keeps reading the old bytes, as on POSIX)
+         * and leaves no temporary.  A temporary that cannot be created fails
+         * the SAVE and keeps the previous save.  A load whose buffer is too
+         * small is refused instead of truncated. */
+        static const char shorter[] = "NEW\n";
+        char save_host[512], stage_glob[600], planted[600];
+        fd_host_path(save_host, sizeof save_host, guest_open);
+        char *slot_end = strrchr(save_host, '\\');
+        expect(slot_end != NULL, "savedata host path names its save directory");
+        if (slot_end) *slot_end = '\0';
+        snprintf(stage_glob, sizeof stage_glob, "%s\\.nakagawa-stage-*", save_host);
+        snprintf(planted, sizeof planted, "%s\\.nakagawa-stage-1", save_host);
+        if (slot_end) *slot_end = '\\';
+
+        fd_set_path(&cpu, PATH_ADDR, guest_open);
+        cpu.r[5] = 1u; /* O_RDONLY */
+        uint32_t held = sr_hle_test_io_open(&cpu);
+        expect(held < 64u, "a guest descriptor holds the save file open");
+        fd_guest_copy(DATA_ADDR, shorter, sizeof(shorter) - 1u);
+        MEM_W32(PARAM_ADDR + 0x30, 3u); /* SD_SAVE */
+        MEM_W32(PARAM_ADDR + 0x7c, (uint32_t)(sizeof(shorter) - 1u));
+        expect(sr_savedata_execute(PARAM_ADDR) == 0u,
+               "savedata overwrite of a file a guest descriptor holds open succeeds");
+        if (held < 64u) {
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = held;
+            cpu.r[5] = DATA_ADDR + 0x100u;
+            cpu.r[6] = (uint32_t)(sizeof(data) - 1u);
+            expect(sr_hle_test_io_read(&cpu) == sizeof(data) - 1u &&
+                       MEM_R8(DATA_ADDR + 0x100u) == (uint8_t)'S',
+                   "the held descriptor keeps reading the previous bytes");
+            memset(&cpu, 0, sizeof cpu);
+            cpu.r[4] = held;
+            sr_hle_test_io_close(&cpu);
+        }
+        WIN32_FILE_ATTRIBUTE_DATA fad;
+        expect(GetFileAttributesExA(save_host, GetFileExInfoStandard, &fad) &&
+                   fad.nFileSizeHigh == 0u && fad.nFileSizeLow == sizeof(shorter) - 1u,
+               "savedata overwrite replaces the whole file, no stale tail");
+        WIN32_FIND_DATAA found;
+        HANDLE scan = FindFirstFileA(stage_glob, &found);
+        expect(scan == INVALID_HANDLE_VALUE,
+               "savedata overwrite leaves no temporary file behind");
+        if (scan != INVALID_HANDLE_VALUE) FindClose(scan);
+
+        expect(CreateDirectoryA(planted, NULL) != 0,
+               "a directory planted at a temporary's name");
+        fd_guest_copy(DATA_ADDR, data, sizeof(data) - 1u);
+        MEM_W32(PARAM_ADDR + 0x7c, (uint32_t)(sizeof(data) - 1u));
+        expect(sr_savedata_execute(PARAM_ADDR) == 0x80110381u,
+               "a SAVE whose PARAM.SFO cannot be staged fails");
+        expect(GetFileAttributesExA(save_host, GetFileExInfoStandard, &fad) &&
+                   fad.nFileSizeLow == sizeof(shorter) - 1u,
+               "a SAVE that failed while staging keeps the previous data file");
+        scan = FindFirstFileA(stage_glob, &found);
+        int stage_entries = 0;
+        if (scan != INVALID_HANDLE_VALUE) {
+            do stage_entries++; while (FindNextFileA(scan, &found));
+            FindClose(scan);
+        }
+        expect(stage_entries == 1, "a failed SAVE leaves only the planted directory");
+        RemoveDirectoryA(planted);
+
+        MEM_W32(PARAM_ADDR + 0x30, 2u); /* SD_LOAD */
+        MEM_W32(PARAM_ADDR + 0x78, 2u);
+        MEM_W32(PARAM_ADDR + 0x7c, 0x1234u);
+        MEM_W8(DATA_ADDR, 0xEEu);
+        expect(sr_savedata_execute(PARAM_ADDR) == 0x80110306u &&
+                   MEM_R32(PARAM_ADDR + 0x7c) == 0u && MEM_R8(DATA_ADDR) == 0xEEu,
+               "savedata load refuses data larger than the guest buffer");
     }
 
     /* --- junction rejection: open through a planted link fails closed --- */
@@ -6021,7 +6324,8 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
                osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
            "after the answer the keyboard accepts shutdown and reaches NONE");
 
-    /* A new keyboard replaces one whose request is still open. */
+    /* One utility dialog slot (#1386): a second keyboard InitStart while one is VISIBLE is
+     * refused, and the running keyboard keeps the slot and the person's open request. */
     osk_person_reset();
     s_osk_person_typing = 1;
     osk_guest_build(1, 16u, 0u);
@@ -6033,40 +6337,228 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
     (void)osk_poll(&cpu);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u && s_osk_abandons == 1,
-           "starting a new keyboard drops the old keyboard's unanswered request");
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0x80110001u && s_osk_abandons == 0 &&
+               s_osk_request_open,
+           "a second keyboard InitStart while the first is VISIBLE returns INVALID_STATUS and "
+           "keeps the person's open request (#1386)");
     s_osk_person_typing = 0;
-    expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u && osk_poll_past_visible(&cpu) == 3u &&
-               s_osk_requests == 2 && osk_guest_out_is(0, n, 1),
-           "the new keyboard asks the person afresh and is answered");
+    expect(osk_poll_past_visible(&cpu) == 3u && s_osk_requests == 1 && osk_guest_out_is(0, n, 1),
+           "the first keyboard is answered through its own request");
     memset(&cpu, 0, sizeof(cpu));
     (void)sr_syscall(&cpu, NID_OSK_SHUTDOWN);
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
 
-    /* Another utility dialog takes the slot while the person is still typing: the keyboard is
-     * no longer polled (GetStatus reports WRONG_TYPE), so its box must not stay open. */
+    /* Another utility dialog cannot take the slot while the person is still typing (#1386):
+     * savedata's InitStart is refused and the keyboard stays VISIBLE with its request open.
+     * Once the keyboard is back at NONE savedata takes the slot, and from then on the
+     * keyboard's GetStatus reports WRONG_TYPE. */
     osk_person_reset();
     s_osk_person_typing = 1;
     osk_guest_build(1, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog will replace starts");
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard another dialog asks to replace starts");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
     expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
     memset(&cpu, 0, sizeof(cpu));
     for (uint32_t off = 0; off < 0x600u; off += 4u) MEM_W32(OSK_SAVEDATA_PARAM_ADDR + off, 0u);
+    MEM_W32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu, 0xdeadbeefu);
     cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u && s_osk_abandons == 1 &&
-               !s_osk_request_open,
-           "a savedata dialog taking the slot drops the keyboard's unanswered request");
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0x80110001u && s_osk_abandons == 0 &&
+               s_osk_request_open && MEM_R32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu) == 0xdeadbeefu,
+           "a savedata InitStart while the keyboard is VISIBLE returns INVALID_STATUS and "
+           "changes nothing");
+    expect(osk_poll(&cpu) == 2u, "the keyboard still holds the slot and stays VISIBLE");
+    s_osk_person_typing = 0;
+    expect(osk_poll_past_visible(&cpu) == 3u && sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u &&
+               osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u && osk_guest_out_is(0, n, 1),
+           "the keyboard is answered and winds down to NONE");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_SAVEDATA_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_SAVEDATA_DIALOG_INIT) == 0u &&
+               MEM_R32(OSK_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
+           "with the keyboard at NONE a savedata InitStart takes the slot");
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_OSK_STATUS) == 0x80110005u,
-           "the replaced keyboard reports WRONG_TYPE");
-    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
-           "the dropped request writes nothing into the field");
+           "the keyboard that gave up the slot reports WRONG_TYPE");
     osk_person_reset();
+    sr_hle_test_osk_slot_reset();
+}
+
+/* ---- One utility dialog slot (#1386), through the production dispatch. Savedata, message,
+ * netconf, gamedata-install, game-sharing and the OSK share it: a second InitStart while a
+ * dialog is active returns INVALID_STATUS (0x80110001) and leaves both dialogs untouched, a
+ * call for a type that does not hold the slot returns WRONG_TYPE (0x80110005), the OSK's
+ * PSP-measured code (#363), and the holder keeps the slot at NONE after use. The code a PSP
+ * returns for a second InitStart is unmeasured; the #1386 contract names INVALID_STATUS. */
+#define NID_SAVEDATA_DIALOG_STATUS   0x8874dbe0u
+#define NID_SAVEDATA_DIALOG_UPDATE   0xd4b95ffbu
+#define NID_SAVEDATA_DIALOG_SHUTDOWN 0x9790b33cu
+#define NID_MSG_DIALOG_INIT          0x2ad8e239u
+#define NID_MSG_DIALOG_UPDATE        0x95fc253bu
+#define NID_MSG_DIALOG_STATUS        0x9a1c91d7u
+#define NID_MSG_DIALOG_SHUTDOWN      0x67af3428u
+#define NID_NETCONF_DIALOG_INIT      0x4db1e739u
+#define NID_NETCONF_DIALOG_UPDATE    0x91e70e35u
+#define NID_NETCONF_DIALOG_STATUS    0x6332aa39u
+#define NID_NETCONF_DIALOG_SHUTDOWN  0xf88155f6u
+#define NID_GAMEDATA_DIALOG_INIT     0x24ac31ebu
+#define NID_GAMEDATA_DIALOG_UPDATE   0x4aecd179u
+#define NID_GAMEDATA_DIALOG_STATUS   0xb57e95d9u
+#define NID_GAMEDATA_DIALOG_SHUTDOWN 0x32e32dcbu
+#define NID_SHARING_DIALOG_INIT      0xc492f751u
+#define NID_SHARING_DIALOG_UPDATE    0x7853182du
+#define NID_SHARING_DIALOG_STATUS    0x946963f3u
+#define NID_SHARING_DIALOG_SHUTDOWN  0xefc6f80fu
+#define UTILITY_MSG_PARAM_ADDR       0x09034000u
+#define UTILITY_MSG2_PARAM_ADDR      0x09034400u
+#define UTILITY_OTHER_PARAM_ADDR     0x09034800u
+#define UTILITY_SAVEDATA_PARAM_ADDR  0x09035000u /* 0x600 bytes */
+#define UTILITY_RESULT_UNTOUCHED     0xdeadbeefu
+
+typedef struct UtilityDialogNids {
+    const char *name;
+    uint32_t init, update, status, shutdown;
+} UtilityDialogNids;
+
+static uint32_t utility_call(CpuState *cpu, uint32_t nid, uint32_t a0) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = a0;
+    return sr_syscall(cpu, nid);
+}
+
+/* A zeroed parameter block whose common result field (+0x1c) holds a sentinel: an InitStart
+ * that takes the block writes 0 there, so a refused one is visible by the sentinel staying. */
+static void utility_param_block(uint32_t addr, uint32_t size) {
+    for (uint32_t off = 0; off < size; off += 4u) MEM_W32(addr + off, 0u);
+    MEM_W32(addr + 0x1cu, UTILITY_RESULT_UNTOUCHED);
+}
+
+static void test_utility_dialog_single_slot(void) {
+    static const UtilityDialogNids dialogs[] = {
+        { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
+          NID_SAVEDATA_DIALOG_STATUS, NID_SAVEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityMsgDialog", NID_MSG_DIALOG_INIT, NID_MSG_DIALOG_UPDATE, NID_MSG_DIALOG_STATUS,
+          NID_MSG_DIALOG_SHUTDOWN },
+        { "sceUtilityNetconf", NID_NETCONF_DIALOG_INIT, NID_NETCONF_DIALOG_UPDATE,
+          NID_NETCONF_DIALOG_STATUS, NID_NETCONF_DIALOG_SHUTDOWN },
+        { "sceUtilityGamedataInstall", NID_GAMEDATA_DIALOG_INIT, NID_GAMEDATA_DIALOG_UPDATE,
+          NID_GAMEDATA_DIALOG_STATUS, NID_GAMEDATA_DIALOG_SHUTDOWN },
+        { "sceUtilityGameSharing", NID_SHARING_DIALOG_INIT, NID_SHARING_DIALOG_UPDATE,
+          NID_SHARING_DIALOG_STATUS, NID_SHARING_DIALOG_SHUTDOWN },
+        { "sceUtilityOsk", NID_OSK_INIT, NID_OSK_UPDATE, NID_OSK_STATUS, NID_OSK_SHUTDOWN },
+    };
+    const size_t count = sizeof(dialogs) / sizeof(dialogs[0]);
+    char what[256];
+    CpuState cpu;
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    osk_person_reset();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+
+    /* No dialog ever opened: every type's Update, GetStatus and ShutdownStart is WRONG_TYPE. */
+    for (size_t i = 0; i < count; i++) {
+        snprintf(what, sizeof(what), "%sUpdate, GetStatus and ShutdownStart with no dialog ever "
+                 "opened return WRONG_TYPE", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].update, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].shutdown, 0u) == 0x80110005u,
+               what);
+    }
+
+    /* The message dialog takes the free slot. */
+    utility_param_block(UTILITY_MSG_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG_PARAM_ADDR) == 0u &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
+           "a message InitStart takes the free slot and clears its result");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 1u, "the message dialog reports INIT");
+
+    /* Repeated init: a second message InitStart neither restarts the running dialog nor takes
+     * its own parameter block. */
+    utility_param_block(UTILITY_MSG2_PARAM_ADDR, 0x40u);
+    expect(utility_call(&cpu, NID_MSG_DIALOG_INIT, UTILITY_MSG2_PARAM_ADDR) == 0x80110001u &&
+               MEM_R32(UTILITY_MSG2_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "a second message InitStart while one is active returns INVALID_STATUS and leaves "
+           "its parameter block alone");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "the running message dialog was not restarted: it moves on from INIT to RUNNING");
+
+    /* Overlapping types: every other dialog's InitStart is refused while the message dialog is
+     * active, and calls for those types are WRONG_TYPE. */
+    for (size_t i = 0; i < count; i++) {
+        if (dialogs[i].init == NID_MSG_DIALOG_INIT) continue;
+        const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
+        const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
+        utility_param_block(block, savedata ? 0x600u : 0x40u);
+        snprintf(what, sizeof(what), "%sInitStart while the message dialog is active returns "
+                 "INVALID_STATUS and leaves its parameter block alone", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].init, block) == 0x80110001u &&
+                   MEM_R32(block + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+               what);
+        snprintf(what, sizeof(what), "%sGetStatus while the message dialog holds the slot "
+                 "returns WRONG_TYPE", dialogs[i].name);
+        expect(utility_call(&cpu, dialogs[i].status, 0u) == 0x80110005u, what);
+    }
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 2u,
+           "the refused InitStarts left the message dialog RUNNING");
+
+    /* The holder finishes; until its GetStatus reports NONE it still holds the active slot. */
+    expect(utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 3u &&
+               MEM_R32(UTILITY_MSG_PARAM_ADDR + 0x1cu) == 0u,
+           "the message dialog finishes with its own result");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0u,
+           "the finished message dialog accepts ShutdownStart");
+    utility_param_block(UTILITY_SAVEDATA_PARAM_ADDR, 0x600u);
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0x80110001u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == UTILITY_RESULT_UNTOUCHED,
+           "a savedata InitStart before the shut-down message dialog reports NONE is refused");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u &&
+               utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0u,
+           "the message dialog winds down to NONE and keeps the slot there after use");
+
+    /* With the holder at NONE the next type takes the slot, and the old holder's calls become
+     * WRONG_TYPE. */
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_INIT, UTILITY_SAVEDATA_PARAM_ADDR) == 0u &&
+               MEM_R32(UTILITY_SAVEDATA_PARAM_ADDR + 0x1cu) == 0u,
+           "with the message dialog at NONE a savedata InitStart takes the slot");
+    expect(utility_call(&cpu, NID_MSG_DIALOG_STATUS, 0u) == 0x80110005u &&
+               utility_call(&cpu, NID_MSG_DIALOG_SHUTDOWN, 0u) == 0x80110005u &&
+               utility_call(&cpu, NID_MSG_DIALOG_UPDATE, 0u) == 0x80110005u,
+           "the message dialog that gave up the slot answers WRONG_TYPE");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "the savedata dialog reports INIT, then winds down to NONE after ShutdownStart");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
+           "a ShutdownStart at NONE does not re-arm the savedata dialog");
+
+    /* Each remaining type takes the free slot in turn and gives it back at NONE. */
+    for (size_t i = 0; i < count; i++) {
+        const uint32_t init = dialogs[i].init;
+        if (init == NID_SAVEDATA_DIALOG_INIT || init == NID_MSG_DIALOG_INIT || init == NID_OSK_INIT)
+            continue;
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x40u);
+        snprintf(what, sizeof(what), "%sInitStart takes the free slot; the dialog reports INIT, "
+                 "then winds down to NONE after ShutdownStart", dialogs[i].name);
+        expect(utility_call(&cpu, init, UTILITY_OTHER_PARAM_ADDR) == 0u &&
+                   MEM_R32(UTILITY_OTHER_PARAM_ADDR + 0x1cu) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 1u &&
+                   utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0x80110005u &&
+                   utility_call(&cpu, dialogs[i].shutdown, 0u) == 0u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 4u &&
+                   utility_call(&cpu, dialogs[i].status, 0u) == 0u,
+               what);
+    }
+    sr_hle_test_osk_slot_reset();
 }
 
 static uint32_t io_devctl_call(CpuState *cpu, uint32_t device, uint32_t command,
@@ -13654,14 +14146,6 @@ static void test_explicit_exit_status_exact(int32_t supplied, uint32_t expected)
 #define NID_SCE_KERNEL_CREATE_CALLBACK   0xe81caf8fu
 #define NID_SCE_KERNEL_DELETE_CALLBACK   0xedba5844u
 
-static int guest_hash_contains_uid(uint32_t uid) {
-    uint32_t bucket = uid % 32u;
-    for (uint32_t node = 0x0030aa88u; node != 0u; node = MEM_R32(node)) {
-        if (MEM_R32(node + 0x84u + bucket * 4u) == uid) return 1;
-    }
-    return 0;
-}
-
 static int host_libc_contains_uid(uint32_t uid) {
     for (int i = 0; i < MAXTHREADS; i++)
         if (s_libc_threads[i].in_use && s_libc_threads[i].uid == uid) return 1;
@@ -13716,8 +14200,8 @@ static void test_thread_delete_lifecycle_and_cleanup(void) {
     expect(terminate_delete == 0, "TerminateDeleteThread terminates and removes a target");
     expect(target && target->deleted && target->stack_released && target->resources_released,
            "TerminateDeleteThread marks the object deleted and releases resources once");
-    expect(!host_libc_contains_uid(target_uid) && !guest_hash_contains_uid(target_uid),
-           "TerminateDeleteThread removes host libc and guest reent ownership");
+    expect(!host_libc_contains_uid(target_uid),
+           "TerminateDeleteThread removes host libc ownership");
     expect(!sr_callback_is_valid(callback_uid),
            "TerminateDeleteThread removes callbacks owned by the target");
     expect(joiner->state == TH_READY && joiner->join_result_valid &&
@@ -17933,6 +18417,415 @@ static void test_ge_break_continue(void) {
     cpu.r[5] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0x80000100u,
            "ListSync peek on a paused list the mode 1 break removed returns 0x80000100 (same rule)");
+}
+
+/* Opt-in GE completion timing (SR_GE_TIMING=1, hle.c + ge.c).  With the model on, a list that
+ * reached its END completes -- finish callback, DrawSync, ListSync -- only once the guest clock
+ * passes the time ge.c's GE model charges for it.  The expected times below are computed from
+ * the measured cells themselves: PSP-3000 (firmware 6.6x), CASE=ge-timing, PSP-GE-TIMING-001
+ * (PR #1321), issue #1296's third comment, all in bus clocks at the emulated bus clock. */
+extern void sr_hle_test_ge_timing(int on);
+#define GE_TIM_CELL_T0_LIST   1665.0  /* T0: empty list, enqueue to finish */
+#define GE_TIM_CELL_WORD      2.03    /* T1: one command word */
+#define GE_TIM_CELL_PRIM      58.0    /* one PRIM beyond its word */
+#define GE_TIM_CELL_THRU_TRI  18.3    /* T6: through-mode 1-pixel triangle */
+#define GE_TIM_CELL_POS_F32   6.1     /* T7: transformed vertex, position f32 */
+#define GE_TIM_CELL_INDEX16   38.9    /* T7: indexed (u16) transformed vertex */
+#define GE_TIM_CELL_COLOR     2.0     /* T8: + colour 8888 */
+#define GE_TIM_CELL_UV        4.05    /* T8: + uv f32 */
+#define GE_TIM_CELL_NORMAL    6.1     /* T8: + normal f32 */
+#define GE_TIM_CELL_ROW32(w)  (1.0 + 0.274 * (w))  /* T5: 8888 sprite row up to 32 px */
+#define GE_TIM_CELL_PX64      0.52    /* T5: 8888 row from 64 px, per pixel */
+enum {
+    GE_TIM_DL = 0x08938000u,
+    GE_TIM_DL2 = 0x08940000u,       /* room for long lists */
+    GE_TIM_VTX = 0x08960000u,
+    GE_TIM_IDX = 0x08968000u,
+    GE_TIM_INFO = 0x08939000u,
+    GE_TIM_FINISH_FN = 0x08a38000u,
+    GE_TIM_ENTRY = 0x08a38040u,
+    GE_TIM_FINISH_ARG = 0x0000abcdu,
+};
+static unsigned s_ge_tim_calls;
+static uint64_t s_ge_tim_fired_at[4];
+static uint32_t s_ge_tim_list[4];
+static uint32_t s_ge_tim_arg;
+static int s_ge_tim_intr_ctx;
+static uint32_t s_ge_tim_cbid;
+
+static void ge_tim_finish_fn(CpuState *cpu) {
+    if (s_ge_tim_calls < 4u) {
+        s_ge_tim_fired_at[s_ge_tim_calls] = s_vtime_us;
+        s_ge_tim_list[s_ge_tim_calls] = cpu->r[4];
+    }
+    s_ge_tim_calls++;
+    s_ge_tim_arg = cpu->r[5];
+    s_ge_tim_intr_ctx = sched_is_intr_context();
+    cpu->r[2] = 0u;
+}
+
+static void ge_tim_write_list(uint32_t base, unsigned nops) {
+    for (unsigned i = 0; i < nops; i++) MEM_W32(base + 4u * i, 0x00000000u); /* NOP */
+    MEM_W32(base + 4u * nops, 0x0f000000u);       /* FINISH */
+    MEM_W32(base + 4u * nops + 4u, 0x0c000000u);  /* END */
+}
+
+/* The guest time, in us, at which a list enqueued at `enq_us` and charged `run_clk` beyond the
+ * T0 list cost completes at `mhz`: each charge lands on the GE timeline to the nearest ns, and
+ * the completion is the first whole us at or after it. */
+static uint64_t ge_tim_expect_us(uint64_t enq_us, double run_clk, unsigned mhz) {
+    uint64_t ns = enq_us * 1000u + (uint64_t)(GE_TIM_CELL_T0_LIST * 1000.0 / mhz + 0.5);
+    if (run_clk > 0.0) ns += (uint64_t)(run_clk * 1000.0 / mhz + 0.5);
+    return (ns + 999u) / 1000u;
+}
+
+static uint32_t ge_tim_enqueue(CpuState *cpu, uint32_t list) {
+    cpu->r[4] = list;
+    cpu->r[5] = 0u;            /* no stall: the list runs to its END */
+    cpu->r[6] = s_ge_tim_cbid;
+    cpu->r[7] = 0u;
+    return sr_syscall(cpu, NID_SCE_GE_LIST_ENQUEUE);
+}
+
+static uint32_t ge_tim_sync(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1) {
+    cpu->r[4] = a0;
+    cpu->r[5] = a1;
+    return sr_syscall(cpu, nid);
+}
+
+/* scePowerSetClockFrequency through the real handler. */
+static void ge_tim_set_clock(uint32_t pll, uint32_t cpu_mhz, uint32_t bus) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = pll;
+    cpu.r[5] = cpu_mhz;
+    cpu.r[6] = bus;
+    expect(sr_syscall(&cpu, NID_SCE_POWER_SET_CLOCK) == 0u, "GE timing: scePowerSetClockFrequency accepted");
+}
+
+static void ge_tim_setup(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(GE_TIM_FINISH_FN, ge_tim_finish_fn);
+    s_ge_tim_calls = 0;
+    memset(s_ge_tim_fired_at, 0, sizeof(s_ge_tim_fired_at));
+    memset(s_ge_tim_list, 0, sizeof(s_ge_tim_list));
+    s_ge_tim_arg = 0;
+    s_ge_tim_intr_ctx = 0;
+    MEM_W32(GE_TIM_INFO + 0u, 0u);                 /* signal func */
+    MEM_W32(GE_TIM_INFO + 4u, 0u);                 /* signal arg */
+    MEM_W32(GE_TIM_INFO + 8u, GE_TIM_FINISH_FN);   /* finish func */
+    MEM_W32(GE_TIM_INFO + 12u, GE_TIM_FINISH_ARG); /* finish arg */
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = GE_TIM_INFO;
+    s_ge_tim_cbid = sr_syscall(&cpu, NID_SCE_GE_SET_CALLBACK);
+}
+
+static void ge_tim_teardown(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = s_ge_tim_cbid;
+    (void)sr_syscall(&cpu, NID_SCE_GE_UNSET_CALLBACK);
+    sr_hle_test_ge_timing(0);
+    sr_hle_test_power_reset();
+    sr_test_guest_fn_reset();
+}
+
+/* Enqueue `list` at guest time `enq` with the model on, and check that its finish callback is
+ * delivered at exactly `due`: still drawing one us earlier, complete at `due` itself. */
+static void ge_tim_expect_completion(uint32_t list, uint64_t enq, uint64_t due, const char *what) {
+    CpuState cpu;
+    char msg[256];
+    memset(&cpu, 0, sizeof(cpu));
+    s_ge_tim_calls = 0;
+    s_vtime_us = enq;
+    uint32_t qid = ge_tim_enqueue(&cpu, list);
+    s_vtime_us = due - 1u;
+    scheduler_service_pending();
+    snprintf(msg, sizeof msg, "GE timing: %s is still drawing 1 us before %llu us", what,
+             (unsigned long long)(due - enq));
+    expect(s_ge_tim_calls == 0u && ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 2u, msg);
+    s_vtime_us = due;
+    scheduler_service_pending();
+    snprintf(msg, sizeof msg, "GE timing: %s completes at %llu us", what,
+             (unsigned long long)(due - enq));
+    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == due && s_ge_tim_list[0] == qid, msg);
+}
+
+/* A display-list builder for the measured-cell lists. */
+static uint32_t *s_ge_tim_dl;
+static unsigned s_ge_tim_words;
+static void ge_tim_cmd(uint32_t cmd, uint32_t data) {
+    s_ge_tim_dl[s_ge_tim_words++] = (cmd << 24) | (data & 0x00FFFFFFu);
+}
+/* Common state: framebuffer 0x04000000 / 512 / 8888, full-screen scissor, no clear, depth,
+ * texture, lighting or culling; vertices at GE_TIM_VTX, indices at GE_TIM_IDX. */
+static void ge_tim_begin_list(uint32_t base) {
+    s_ge_tim_dl = (uint32_t *)SR_HOST(base);
+    s_ge_tim_words = 0;
+    ge_tim_cmd(0x13, 0);                                    /* OFFSETADDR */
+    ge_tim_cmd(0x10, (GE_TIM_VTX >> 8) & 0x000F0000u);      /* BASE */
+    ge_tim_cmd(0x9C, 0);                                    /* FBP = 0x04000000 */
+    ge_tim_cmd(0x9D, 512u | (0x04000000u >> 8));            /* FBW = 512 */
+    ge_tim_cmd(0xD2, 3);                                    /* FBFMT = 8888 */
+    ge_tim_cmd(0xD4, 0);                                    /* SCISSOR1 = (0,0) */
+    ge_tim_cmd(0xD5, 479u | (271u << 10));                  /* SCISSOR2 = (479,271) */
+    ge_tim_cmd(0xD3, 0);                                    /* CLEARMODE off */
+    ge_tim_cmd(0x23, 0);                                    /* ZTESTENABLE off */
+    ge_tim_cmd(0x1E, 0);                                    /* TEXTUREMAPENABLE off */
+    ge_tim_cmd(0x17, 0);                                    /* LIGHTINGENABLE off */
+    ge_tim_cmd(0x1D, 0);                                    /* CULLFACEENABLE off */
+    ge_tim_cmd(0x01, GE_TIM_VTX & 0x00FFFFFFu);             /* VADDR */
+    ge_tim_cmd(0x02, GE_TIM_IDX & 0x00FFFFFFu);             /* IADDR */
+}
+/* FINISH and END are part of the T0 list cost; returns the charged words before them. */
+static unsigned ge_tim_end_list(void) {
+    unsigned words = s_ge_tim_words;
+    ge_tim_cmd(0x0F, 0);
+    ge_tim_cmd(0x0C, 0);
+    return words;
+}
+
+/* The thread half: DrawSync(0) and ListSync(qid, 0) delay the caller until the modelled time,
+ * and the finish callback has run by the time either returns. */
+static uint64_t s_ge_tim_t_enq[2], s_ge_tim_t_ret[2];
+static uint32_t s_ge_tim_peek_list, s_ge_tim_peek_draw, s_ge_tim_rc[2];
+static unsigned s_ge_tim_calls_at_peek, s_ge_tim_calls_at_ret[2];
+static unsigned s_ge_tim_entry_done;
+
+static void ge_tim_entry_fn(CpuState *cpu) {
+    CpuState sc;
+    memset(&sc, 0, sizeof(sc));
+    s_ge_tim_t_enq[0] = s_vtime_us;
+    uint32_t qid = ge_tim_enqueue(&sc, GE_TIM_DL);
+    s_ge_tim_calls_at_peek = s_ge_tim_calls;
+    s_ge_tim_peek_list = ge_tim_sync(&sc, NID_SCE_GE_LIST_SYNC, qid, 1u);
+    s_ge_tim_peek_draw = ge_tim_sync(&sc, NID_SCE_GE_DRAW_SYNC, 1u, 0u);
+    s_ge_tim_rc[0] = ge_tim_sync(cpu, NID_SCE_GE_DRAW_SYNC, 0u, 0u);
+    s_ge_tim_t_ret[0] = s_vtime_us;
+    s_ge_tim_calls_at_ret[0] = s_ge_tim_calls;
+
+    memset(&sc, 0, sizeof(sc));
+    s_ge_tim_t_enq[1] = s_vtime_us;
+    qid = ge_tim_enqueue(&sc, GE_TIM_DL2);
+    s_ge_tim_rc[1] = ge_tim_sync(cpu, NID_SCE_GE_LIST_SYNC, qid, 0u);
+    s_ge_tim_t_ret[1] = s_vtime_us;
+    s_ge_tim_calls_at_ret[1] = s_ge_tim_calls;
+    s_ge_tim_entry_done = 1u;
+    cpu->r[2] = 0u;
+}
+
+/* MUTANT: the synthetic placeholder model this replaced (2000 ns per list, 6 ns per word, 30 ns
+ *   per vertex, 1.5 ps per pixel of primitive area) completes every list below early, so the
+ *   "still drawing 1 us before" and "completes at" checks fail; converting clocks at a fixed
+ *   111 MHz instead of the emulated bus clock fails the 166 MHz checks; dropping the T0 list
+ *   cost, the PRIM cost, a vertex term or the span-width fill term fails the matching cell. */
+static void test_ge_completion_timing(void) {
+    CpuState cpu;
+
+    /* Default (model off): the list completes inside sceGeListEnQueue, as before. */
+    ge_tim_setup();
+    ge_tim_write_list(GE_TIM_DL, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    expect(s_ge_tim_calls == 1u && s_ge_tim_list[0] == qid,
+           "GE timing off: the finish callback runs inside sceGeListEnQueue");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 0u &&
+           ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
+           "GE timing off: the syncs read the list as complete at once");
+    ge_tim_teardown();
+
+    /* T0 at the boot bus clock (111 MHz): an empty list is 1665 clk = 15 us. */
+    ge_tim_setup();
+    sr_hle_test_ge_timing(1);
+    ge_tim_write_list(GE_TIM_DL, 0u);
+    expect(ge_tim_expect_us(1000u, 0.0, 111u) == 1015u,
+           "GE timing: an empty list is 1665 bus clk = 15 us at 111 MHz (T0)");
+    s_vtime_us = 1000u;
+    memset(&cpu, 0, sizeof(cpu));
+    qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    expect((qid & 0xff000000u) == 0x35000000u, "GE timing: the list is queued");
+    expect(s_ge_tim_calls == 0u, "GE timing: no finish callback inside sceGeListEnQueue");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 2u,
+           "GE timing: the ListSync peek reads the list as drawing (2, measured C3)");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 2u,
+           "GE timing: the DrawSync peek reads the GE as drawing (2, measured C3)");
+    s_vtime_us = 1014u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 0u, "GE timing: no finish callback 1 us before the T0 time");
+    s_vtime_us = 1015u;
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 2u &&
+           ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 2u,
+           "GE timing: the peeks read 2 until the completion interrupt is handled (C3)");
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 1u && s_ge_tim_fired_at[0] == 1015u && s_ge_tim_list[0] == qid,
+           "GE timing: the empty list's finish callback runs at 15 us");
+    expect(s_ge_tim_intr_ctx == 1 && s_ge_tim_arg == GE_TIM_FINISH_ARG,
+           "GE timing: the callback runs in interrupt context with its registered argument");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 0u &&
+           ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
+           "GE timing: both peeks read 0 once the interrupt is handled");
+    s_vtime_us = 50000u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 1u, "GE timing: a completed list's callback never runs again");
+
+    /* One serial GE (C5, T15): a list queued behind a busy GE finishes after it, no gap. */
+    s_ge_tim_calls = 0;
+    s_vtime_us = 60000u;
+    uint32_t qa = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    uint32_t qb = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    s_vtime_us = 60015u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 1u && s_ge_tim_list[0] == qa,
+           "GE timing: the first list completes after its own 15 us");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qb, 1u) == 2u,
+           "GE timing: the second list is still drawing behind it");
+    s_vtime_us = 60029u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 1u, "GE timing: the second list is not done 1 us before 30 us");
+    s_vtime_us = 60030u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 2u && s_ge_tim_list[1] == qb && s_ge_tim_fired_at[1] == 60030u,
+           "GE timing: the second list completes 15 us after the first");
+
+    /* T1: 1000 NOP words cost 2.03 clk each on top of T0. */
+    ge_tim_write_list(GE_TIM_DL2, 1000u);
+    ge_tim_expect_completion(GE_TIM_DL2, 70000u,
+                             ge_tim_expect_us(70000u, 1000.0 * GE_TIM_CELL_WORD, 111u),
+                             "a 1000-word NOP list at 111 MHz");
+
+    /* T7/T8: transformed vertices.  999 vertices that all sit at the origin draw nothing, so
+     * the cost is the words, the PRIM and the vertex work alone. */
+    memset(SR_HOST(GE_TIM_VTX), 0, 0x8000u);
+    memset(SR_HOST(GE_TIM_IDX), 0, 0x1000u);
+    static const struct {
+        uint32_t vtype;
+        uint32_t prim;
+        double per_vertex;
+        const char *what;
+    } vcell[] = {
+        { 3u << 7, 3u, GE_TIM_CELL_POS_F32, "999 transformed f32 vertices as a triangle list" },
+        { 3u << 7, 4u, GE_TIM_CELL_POS_F32, "999 transformed f32 vertices as a strip" },
+        { (3u << 0) | (7u << 2) | (3u << 5) | (3u << 7), 3u,
+          GE_TIM_CELL_POS_F32 + GE_TIM_CELL_COLOR + GE_TIM_CELL_UV + GE_TIM_CELL_NORMAL,
+          "999 vertices with colour 8888, uv f32 and normal f32" },
+        { (3u << 7) | (2u << 11), 3u, GE_TIM_CELL_INDEX16, "999 indexed (u16) f32 vertices" },
+    };
+    for (unsigned c = 0; c < sizeof vcell / sizeof vcell[0]; c++) {
+        ge_tim_begin_list(GE_TIM_DL2);
+        ge_tim_cmd(0x12, vcell[c].vtype);
+        ge_tim_cmd(0x04, (vcell[c].prim << 16) | 999u);
+        unsigned words = ge_tim_end_list();
+        double run = words * GE_TIM_CELL_WORD + GE_TIM_CELL_PRIM + 999.0 * vcell[c].per_vertex;
+        uint64_t enq = 100000u + 10000u * c;
+        ge_tim_expect_completion(GE_TIM_DL2, enq, ge_tim_expect_us(enq, run, 111u), vcell[c].what);
+    }
+
+    /* T6: 300 through-mode one-pixel triangles cost 18.3 clk each. */
+    for (unsigned t = 0; t < 300u; t++) {
+        uint32_t v = GE_TIM_VTX + t * 18u;          /* three s16 xyz vertices, stride 6 */
+        uint16_t x = (uint16_t)(t % 400u), y = (uint16_t)(2u * (t / 400u));
+        MEM_W16(v + 0u, x);       MEM_W16(v + 2u, y);       MEM_W16(v + 4u, 0u);
+        MEM_W16(v + 6u, x + 1u);  MEM_W16(v + 8u, y);       MEM_W16(v + 10u, 0u);
+        MEM_W16(v + 12u, x);      MEM_W16(v + 14u, y + 1u); MEM_W16(v + 16u, 0u);
+    }
+    ge_tim_begin_list(GE_TIM_DL2);
+    ge_tim_cmd(0x12, (2u << 7) | (1u << 23));       /* s16 position, through mode */
+    ge_tim_cmd(0x04, (3u << 16) | 900u);
+    unsigned words = ge_tim_end_list();
+    double run = words * GE_TIM_CELL_WORD + GE_TIM_CELL_PRIM + 300.0 * GE_TIM_CELL_THRU_TRI;
+    ge_tim_expect_completion(GE_TIM_DL2, 200000u, ge_tim_expect_us(200000u, run, 111u),
+                             "300 through-mode one-pixel triangles");
+
+    /* T5: 8888 fill by span width.  256x256 tiled with eight 32x256 sprites is 256 rows of
+     * 1 + 0.274*32 clk per sprite (the measured 180 us at 111 MHz); with four 64x256 sprites
+     * it is 0.52 clk/px (about 305 us).  The two vertices of a sprite overlap its fill. */
+    static const struct { unsigned w; double fill_us; const char *what; } scell[] = {
+        { 32u, 180.0, "256x256 tiled with 32x256 8888 sprites" },
+        { 64u, 305.0, "256x256 tiled with 64x256 8888 sprites" },
+    };
+    for (unsigned c = 0; c < sizeof scell / sizeof scell[0]; c++) {
+        unsigned n = 256u / scell[c].w;
+        for (unsigned i = 0; i < n; i++) {
+            uint32_t v = GE_TIM_VTX + i * 12u;
+            MEM_W16(v + 0u, (uint16_t)(i * scell[c].w));        MEM_W16(v + 2u, 0u);   MEM_W16(v + 4u, 0u);
+            MEM_W16(v + 6u, (uint16_t)((i + 1u) * scell[c].w)); MEM_W16(v + 8u, 256u); MEM_W16(v + 10u, 0u);
+        }
+        ge_tim_begin_list(GE_TIM_DL2);
+        ge_tim_cmd(0x12, (2u << 7) | (1u << 23));   /* s16 position, through mode */
+        ge_tim_cmd(0x04, (6u << 16) | (2u * n));
+        words = ge_tim_end_list();
+        double row = scell[c].w <= 32u ? GE_TIM_CELL_ROW32(scell[c].w) : GE_TIM_CELL_PX64 * scell[c].w;
+        double fill = (double)n * 256.0 * row;
+        expect(fill / 111.0 > scell[c].fill_us - 3.0 && fill / 111.0 < scell[c].fill_us + 3.0,
+               "GE timing: the sprite cell's fill is the measured microseconds at 111 MHz");
+        run = words * GE_TIM_CELL_WORD + GE_TIM_CELL_PRIM + fill;
+        uint64_t enq = 300000u + 10000u * c;
+        ge_tim_expect_completion(GE_TIM_DL2, enq, ge_tim_expect_us(enq, run, 111u), scell[c].what);
+    }
+
+    /* The GE clock is the bus clock: at 333/166 every cost is 0.665x.  An empty list is
+     * 1665 clk = 10.03 us at 166 MHz, and the 1000-word NOP list scales the same way. */
+    ge_tim_set_clock(333u, 333u, 166u);
+    ge_tim_write_list(GE_TIM_DL, 0u);
+    expect(ge_tim_expect_us(400000u, 0.0, 166u) == 400011u,
+           "GE timing: an empty list is 1665 bus clk = 10.03 us at 166 MHz");
+    ge_tim_expect_completion(GE_TIM_DL, 400000u, 400011u, "an empty list at 166 MHz");
+    ge_tim_write_list(GE_TIM_DL2, 1000u);
+    ge_tim_expect_completion(GE_TIM_DL2, 410000u,
+                             ge_tim_expect_us(410000u, 1000.0 * GE_TIM_CELL_WORD, 166u),
+                             "a 1000-word NOP list at 166 MHz");
+    ge_tim_set_clock(222u, 222u, 111u);
+
+    /* A reset (sceGeBreak(1)) cancels a drawing list: its callback never runs. */
+    s_ge_tim_calls = 0;
+    s_vtime_us = 500000u;
+    qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_BREAK, 1u, 0u) == 0u, "GE timing: the reset returns 0");
+    s_vtime_us = 510000u;
+    scheduler_service_pending();
+    expect(s_ge_tim_calls == 0u, "GE timing: a cancelled drawing list fires no callback");
+    expect(ge_tim_sync(&cpu, NID_SCE_GE_DRAW_SYNC, 1u, 0u) == 0u,
+           "GE timing: the GE is idle after the reset");
+    ge_tim_teardown();
+
+    /* Model on, on a thread: the blocking syncs delay the caller until the modelled time and
+     * return after the finish callback (C2, C6).  The exact completion times are pinned above;
+     * here an idle turbo scheduler advances by whole VBLANK periods before it reaches a nearer
+     * deadline, so only "not early, and the callback first" is the model's claim. */
+    ge_tim_setup();
+    sr_hle_test_ge_timing(1);
+    ge_tim_write_list(GE_TIM_DL, 0u);
+    ge_tim_write_list(GE_TIM_DL2, 1000u);
+    memset(s_ge_tim_t_enq, 0, sizeof(s_ge_tim_t_enq));
+    memset(s_ge_tim_t_ret, 0, sizeof(s_ge_tim_t_ret));
+    memset(s_ge_tim_rc, 0xff, sizeof(s_ge_tim_rc));
+    memset(s_ge_tim_calls_at_ret, 0, sizeof(s_ge_tim_calls_at_ret));
+    s_ge_tim_peek_list = s_ge_tim_peek_draw = 0xffffffffu;
+    s_ge_tim_calls_at_peek = 99u;
+    s_ge_tim_entry_done = 0u;
+    sr_test_register_guest_fn(GE_TIM_ENTRY, ge_tim_entry_fn);
+    g_worker_uid = SR_ROLE_UID_NONE;
+    memset(s_cpu, 0, sizeof(*s_cpu));
+    sched_run(GE_TIM_ENTRY, 0u, 0u);
+
+    uint64_t due0 = ge_tim_expect_us(s_ge_tim_t_enq[0], 0.0, 111u);
+    uint64_t due1 = ge_tim_expect_us(s_ge_tim_t_enq[1], 1000.0 * GE_TIM_CELL_WORD, 111u);
+    expect(s_ge_tim_entry_done == 1u, "GE timing: the waiting thread finished");
+    expect(s_ge_tim_calls_at_peek == 0u && s_ge_tim_peek_list == 2u && s_ge_tim_peek_draw == 2u,
+           "GE timing: on a thread the list is drawing right after the enqueue");
+    expect(s_ge_tim_rc[0] == 0u && s_ge_tim_t_ret[0] >= due0,
+           "GE timing: sceGeDrawSync(0) returns only after the T0 time");
+    expect(s_ge_tim_calls_at_ret[0] == 1u && s_ge_tim_fired_at[0] >= due0,
+           "GE timing: the finish callback ran, not before the T0 time, before DrawSync returned");
+    expect(s_ge_tim_rc[1] == 0u && s_ge_tim_t_ret[1] >= due1,
+           "GE timing: sceGeListSync(qid, 0) returns only after the 1000-word list's time");
+    expect(s_ge_tim_calls_at_ret[1] == 2u && s_ge_tim_fired_at[1] >= due1,
+           "GE timing: the second callback ran, not before its modelled time, before ListSync returned");
+    ge_tim_teardown();
 }
 
 /* A display list the GE already ran to its END is consumed, and a stall address
@@ -32652,12 +33545,14 @@ static int hle_selftest_main(int argc, char **argv) {
     test_unregistered_batch_profiler_refer_null();
     test_kernel_import_sweep_ge_head();
     test_ge_break_continue();
+    test_ge_completion_timing();
     test_volatile_mem_output_preflight();
     test_osk_update_and_shutdown_init_states();
     test_osk_scripted_answer();
     test_osk_overlay_through_hle_scripted_pad();
     test_osk_overlay_closing_press_stays_with_keyboard();
     test_osk_keyboard_keeps_guest_time_running();
+    test_utility_dialog_single_slot();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
     test_exit_thread_does_not_wake_launcher(2);

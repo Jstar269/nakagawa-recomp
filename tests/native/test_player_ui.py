@@ -990,6 +990,7 @@ class NativePlayerUiTests(unittest.TestCase):
                 "frames": frames,
                 "bmp": bmp,
                 "profile_exists": profile.is_file(),
+                "profile_text": profile.read_text(encoding="utf-8") if profile.is_file() else "",
                 "stdout": completed.stdout,
                 "wall_seconds": wall_seconds,
                 "stderr": completed.stderr,
@@ -1519,6 +1520,50 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual([view for view, _ in self.screens(back)], ["controller", "settings"])
         self.assertEqual(self.focus_trail(back)[-1], self.SETTINGS_FOCUS["controller"],
                          "Back returns to Settings on Controls")
+
+    def test_next_ui_keyboard_keys_rebind_refuse_reset_and_save(self) -> None:
+        """#1299: KEYBOARD shows the keys; a chosen button takes the next key pressed,
+        a key another button uses is refused, Reset to defaults resets the keys, and
+        Save profile writes them to the profile the game is handed."""
+        # Up from the first binding is KEYBOARD; Down twice from it is Start's key.
+        to_start = ("WAIT_MS=100", "KEY_UP", "KEY_RETURN", "WAIT_MS=100", "KEY_DOWN", "KEY_DOWN")
+        # Down from L Trigger, the last row of the first column, is Reset to defaults.
+        to_reset = ("KEY_DOWN",) * 6
+        save = self.next_ui_run(
+            "controller",
+            to_start + ("KEY_RETURN", "KEY_C", "WAIT_MS=100") + to_reset +
+            ("KEY_LEFT", "KEY_RETURN", "WAIT_MS=100"),
+        )
+        frames = save["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(self.focus_trail(save)[1:4], [str(0x462D), str(0x4600), str(0x4601)])
+        self.assertEqual(frames[0]["input_device"], "controller")
+        self.assertEqual(frames[-1]["input_device"], "keyboard")
+        self.assertIn("1", [frame["controller_capturing"] for frame in frames],
+                      "choosing Start's key waits for a key")
+        self.assertEqual((frames[0]["start_key"], frames[-1]["start_key"]), ("40", "6"),
+                         "the C key pressed is Start's key, not routed to the page")
+        self.assertEqual(frames[-1]["profile_save_notice"], "1")
+        profile = json.loads(str(save["profile_text"]))
+        keys = {entry["control"]: entry["primary"] for entry in profile["keyboard_bindings"]}
+        self.assertEqual(keys["start"], "c")
+
+        refuse = self.next_ui_run(
+            "controller",
+            to_start + ("KEY_RETURN", "KEY_X", "WAIT_MS=100", "KEY_RETURN", "PAD_SOUTH",
+                        "WAIT_MS=100", "KEY_RETURN", "KEY_C", "WAIT_MS=100") + to_reset +
+            ("KEY_RETURN", "WAIT_MS=100"),
+        )
+        frames = refuse["frames"]
+        assert isinstance(frames, list)
+        refused = [frame for frame in frames if frame["key_note"] == "1"]
+        self.assertTrue(refused, "X, Cross's key, is refused with a note")
+        self.assertEqual({frame["start_key"] for frame in refused}, {"40"})
+        self.assertEqual({frame["controller_capturing"] for frame in refused}, {"0"})
+        self.assertIn("6", [frame["start_key"] for frame in frames])
+        self.assertEqual(frames[-1]["start_key"], "40", "Reset to defaults resets the keys")
+        self.assertEqual(frames[-1]["start_binding"], frames[0]["start_binding"])
+        self.assertEqual(frames[-1]["view"], "controller")
 
     def test_next_ui_settings_opens_controls_and_esc_returns(self) -> None:
         """Settings > Controls opens the next UI's controller page; Esc comes back.

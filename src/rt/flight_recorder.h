@@ -212,7 +212,7 @@ void sr_flight_snapshot(SrFlightSnapshot *out);
 int sr_flight_event_count(void);
 int sr_flight_event_at(uint32_t index, SrFlightEvent *out);
 
-#if defined(SR_HLE_THREAD_SELFTEST)
+#if defined(SR_HLE_THREAD_SELFTEST) || defined(SR_SCHED_LIVENESS_TEST)
 void sr_flight_test_reset(uint32_t enabled_classes, uint32_t limit);
 void sr_flight_test_disable(void);
 #endif
@@ -345,7 +345,7 @@ static inline int sr_flight_event_at(uint32_t index, SrFlightEvent *out) {
     (void)out;
     return 0;
 }
-#if defined(SR_HLE_THREAD_SELFTEST)
+#if defined(SR_HLE_THREAD_SELFTEST) || defined(SR_SCHED_LIVENESS_TEST)
 static inline void sr_flight_test_reset(uint32_t enabled_classes, uint32_t limit) {
     (void)enabled_classes;
     (void)limit;

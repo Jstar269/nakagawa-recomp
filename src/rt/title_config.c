@@ -252,24 +252,6 @@ int sr_title_config_runtime_sync_wrapper_for_mode(uint32_t mode,
     return 0;
 }
 
-int sr_title_config_reent_bindings(SrTitleReentBindings *out) {
-#if SR_TITLE_CONFIG_COMPAT_PROFILE
-    /* #363 compatibility debt, HST only: live runtime behavior, not a diagnostic.
-     * The validated manifest selects the flagship profile and its exact source id.
-     * Keep this legacy guest-layout knowledge inside the title-config boundary. */
-    if (s_config.valid != 0u && strcmp(s_config.source_id, "hst-ucus98701") == 0) {
-        if (out) {
-            out->master_reent_addr = 0x002cf338u;
-            out->guest_thread_table_addr = 0x0030aa88u;
-        }
-        return 1;
-    }
-#else
-    (void)out;
-#endif
-    return 0;
-}
-
 int sr_title_config_preserve_callee_saved_at_calls(void) {
 #if SR_TITLE_CONFIG_COMPAT_PROFILE
     /* #363 compatibility debt, HST only: a returning dispatch CALL restores the

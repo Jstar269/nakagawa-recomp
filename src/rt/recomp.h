@@ -1362,6 +1362,12 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* Opt-in GE time model (ge.c, SR_GE_TIMING; issue #1296), in GE clocks (the bus clock),
+ * measured on a PSP-3000 with CASE=ge-timing: enable charging, the fixed cost of one list
+ * (enqueue to finish of an empty list), and the work the last ge_run_list call executed. */
+void     ge_timing_set_enabled(int on);
+double   ge_timing_list_clk(void);
+double   ge_timing_run_clk(void);
 /* SR_GE_TRANSITION_TRACE late-write check (issue #69): re-hash the vertex and index bytes of
  * every weighted draw recorded since the last check; a no-op unless the trace is armed. */
 void ge_transition_trace_check(const char *why, uint32_t vcount);
@@ -1666,6 +1672,13 @@ int      sched_thread_set_gp(uint32_t uid, uint32_t gp);
 int      sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid);
 typedef void (*SrSchedThreadExitHook)(uint32_t uid);
 void     sched_set_thread_exit_hook(SrSchedThreadExitHook hook);
+/* Opt-in GE completion timing (hle.c, SR_GE_TIMING): the earliest guest-time deadline of a
+ * list the modelled GE is still drawing (SCHED_WAIT_FOREVER-style UINT64_MAX when none), and
+ * the interrupt-service step that completes every due list.  With no hooks registered --
+ * every build that does not link hle.c -- the scheduler behaves as before. */
+typedef uint64_t (*SrSchedGeNextDeadline)(void);
+typedef void (*SrSchedGeServiceDue)(void);
+void     sched_set_ge_timing_hooks(SrSchedGeNextDeadline next_deadline, SrSchedGeServiceDue service_due);
 int      sched_guest_thread_running(void);
 void     sched_request_guest_reset(void);
 void     sched_exit_current(int32_t status);        /* non-delete exit; normalize signed-negative status */
