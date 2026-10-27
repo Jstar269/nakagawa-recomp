@@ -2255,7 +2255,7 @@ static void test_error_cards_are_plain(void) {
     snprintf(check->code, sizeof(check->code), "EXECUTABLE");
     check->status = PREFLIGHT_UNSUPPORTED;
     snprintf(check->message, sizeof(check->message),
-             "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.");
+             "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption stopped: KEY_REQUIRED.");
     assert(strcmp(player_preflight_label(check), "Game program") == 0);
     assert(strcmp(player_preflight_status_word(check), "Can't use") == 0);
     assert(strcmp(player_preflight_plain_message(check),
@@ -5716,14 +5716,14 @@ int main(int argc, char **argv) {
 
         /* Set build error with stage, boundary text, and log path */
         player_app_set_build_error(bapp, "preflight",
-                                   "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.",
+                                   "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption stopped: KEY_REQUIRED.",
                                    "C:/logs/build_TEST80001.log");
         assert(bapp->active_view == VIEW_ERROR);
         /* #1286: a preflight refusal is not a failed build. The card leads with
            the reason, without its code. */
         assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_REFUSED") == 0);
         assert(strcmp(bapp->last_error.title, "Build Not Started") == 0);
-        assert(strncmp(bapp->last_error.message, "EBOOT.BIN is encrypted.", 23) == 0);
+        assert(strncmp(bapp->last_error.message, "EBOOT.BIN is encrypted and built-in", 35) == 0);
         assert(strstr(bapp->last_error.message, "ENCRYPTED_EXECUTABLE") == NULL);
         assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
         assert(strstr(bapp->last_error.boundary_text, "ENCRYPTED_EXECUTABLE") != NULL);

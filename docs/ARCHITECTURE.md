@@ -9,7 +9,7 @@ overview and implementation disagree.
 ```mermaid
 flowchart LR
     INTAKE["ISO and EBOOT intake<br/>tools/nk_cli.py<br/>tools/nk_core/iso_inspect.py"]
-    REFUSE["Encrypted input refused by name<br/>ENCRYPTED_EXECUTABLE / ENCRYPTED_MODULE<br/>Nakagawa does not decrypt games"]
+    REFUSE["Encrypted input the player could not decrypt<br/>refused by name: ENCRYPTED_EXECUTABLE / ENCRYPTED_MODULE<br/>(the player decrypts the user's disc, src/core/nk_psp_*)"]
     LOAD["ISO / PRX loading and import mapping<br/>src/core/nk_iso.c<br/>src/player/iso_reader.c<br/>tools/prxload.py<br/>tools/imports.py"]
     ANALYZE["Function-boundary analysis<br/>tools/analyze.py"]
     CODEGEN["AOT code generation to C<br/>tools/codegen.py"]

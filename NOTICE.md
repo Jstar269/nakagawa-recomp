@@ -10,9 +10,9 @@ Nakagawa Recomp is an independent project. It is not affiliated with or endorsed
 Sony Interactive Entertainment, Clap Hanz, or any game publisher. PlayStation and
 PSP are trademarks of Sony Interactive Entertainment Inc., and game titles are
 trademarks of their owners; they are named only to say what the project works
-with. The repository contains no game files, keys, firmware or system fonts, and
-Nakagawa does not decrypt games: users must supply any external inputs from their
-own copy.
+with. The repository contains no game files, firmware or system fonts. Users
+supply their own game; Nakagawa decrypts it locally with the public game key
+tables PPSSPP ships, never downloads games, and never decrypts firmware.
 
 Rights holders with a concern about anything in this repository can contact the
 maintainer privately through

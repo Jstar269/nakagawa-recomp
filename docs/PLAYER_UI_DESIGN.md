@@ -32,9 +32,10 @@ Where this page and the code disagree, the code is current and this page is upda
   that asks for consent (the build-tool download) says exactly what it fetches, from where, and how big it is.
 - **No console trade dress.** No PSP system icons, sounds or names, no XMB-style horizontal category bar. The
   waves, the palette and the seasonal arc are the project's own.
-- **No key-file UI anywhere.** The player does not decrypt games (#1187). No screen, step, setting, dialog or path
-  row asks for, finds or names a key file. A disc whose program is encrypted gets the plain explanation the host
-  already supplies ("Nakagawa does not decrypt games; it uses decrypted files from your own copy").
+- **No key-file UI anywhere.** The player decrypts the user's own disc with built-in tables (#295) and reads no key
+  file. No screen, step, setting, dialog or path row asks for, finds or names a key file. A disc whose program
+  is encrypted gets the plain note the host supplies ("Nakagawa decrypts this game's program from your own disc, on
+  this PC"), and one it can't decrypt gets the named reason.
 
 ## Tokens
 
@@ -357,7 +358,7 @@ step says the privacy promise once. The left rail below is the target layout for
 - Focus is trapped in the dialog and starts on the first button; BACK closes it with the safe choice.
 - Cases to cover: unreadable or unsupported disc image (a store package is not a disc image), a different release of
   a known game (add as Experimental), build failure (stage named, log path shown), controller disconnected, quit to
-  library. A disc whose program is encrypted gets the "does not decrypt games" explanation, never a request for a
+  library. A disc whose program can't be decrypted gets the plain reason and its folder, never a request for a
   key file.
 
 ## Accessibility

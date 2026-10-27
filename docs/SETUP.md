@@ -21,8 +21,8 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
 5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
    LunarG Vulkan SDK 1.4.363.0 is recommended for Windows development.
 6. **Git for Windows**, to clone the repository and fetch optional third-party source.
-7. **Your own copy of the game** as an `.iso`. If its executable is encrypted, you also need the
-   decrypted files from your own copy; see [Encrypted executables](#encrypted-executables).
+7. **Your own copy of the game** as an `.iso`. If its executable is encrypted, the player decrypts it
+   locally; see [Encrypted executables](#encrypted-executables).
    Nothing in this repository ships or downloads a game; see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md).
 
 For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20261001**; see
@@ -342,7 +342,7 @@ are retained as historical evidence in
 ### Plain module inputs
 
 Some titles load additional modules at runtime. The runtime accepts only plain (unencrypted)
-ELF/PRX files. Nakagawa does not decrypt games; it uses decrypted files from your own copy (see [Encrypted executables](#encrypted-executables)). For what the player needs
+ELF/PRX files. The player decrypts a disc's encrypted modules into the per-title folder (see [Encrypted executables](#encrypted-executables)). For what the player needs
 and where your own unencrypted files go, see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). When you already have plain modules from your own
 copy of the game, place them at the paths the local manifest expects, for example:
 
@@ -359,7 +359,7 @@ Git history.
 ### Per-title decrypted input folder (standalone player and CLI)
 
 For the standalone player (`nakagawa_player.exe`) and `tools/nk_cli.py`:
-When an imported ISO contains an encrypted executable (`EBOOT.BIN`), preflight checks in both the player and `nk_cli inspect` direct the user to supply their own decrypted modules in a per-title folder under the per-user data directory:
+When an imported ISO contains an encrypted executable (`EBOOT.BIN`), the player's disc check decrypts it and the disc's encrypted modules into a per-title folder under the per-user data directory, and `nk_cli inspect` and `nk_cli build-package` read them from there (the command-line tools decrypt nothing themselves):
 
 ```text
 <user data>/titles/<DISC_ID>/decrypted/
@@ -373,15 +373,15 @@ Decrypted guest modules in `<user data>/titles/<DISC_ID>/decrypted/` may be name
 
 ### Encrypted executables
 
-Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed, so the player and `nk_cli` never look for or read a key file.
+The player decrypts the encrypted `EBOOT.BIN` and modules of the disc you added, locally, the way PPSSPP does, with the public game key tables in `src/core/nk_psp_builtin_keys.c` ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). It reads no key file and makes no network request. Each output is written beside its destination in the per-title folder above, checked as a PSP ELF32/MIPS program, then renamed into place; a file already there is never replaced. Firmware is never decrypted: an updater archive (PSAR), a bare KIRK block (the boot loader's form) and any module with a firmware-only tag stop as `FIRMWARE_OUT_OF_SCOPE` before any key is read. `nk_decrypt` (built by `tools/nk_core/decrypt_tool.py`) runs the same boundary from the command line.
 
-An encrypted `EBOOT.BIN` (`~PSP`, `~SCE` or PBP) without a valid `EBOOT.elf` in the per-title folder above stops with a named message:
+A file the boundary can't decrypt stops with a named result:
 
 ```text
-ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games. Place a decrypted EBOOT.elf from your own copy in <user data>/titles/<DISC_ID>/decrypted.
+ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption stopped: KEY_REQUIRED (<detail>). Place a decrypted EBOOT.elf from your own copy in <user data>/titles/<DISC_ID>/decrypted.
 ```
 
-An encrypted guest module without a plain copy in the same folder stops the same way with `ENCRYPTED_MODULE: <name> is encrypted.`, naming the module. A plain copy you place there is always used and never overwritten. Nothing is written next to the ISO or into this repository.
+The results are `KEY_REQUIRED` (a tag the built-in tables don't carry), `MALFORMED_INPUT`, `INTEGRITY_FAILURE`, `DECOMPRESS_FAILURE`, `VALIDATION_FAILURE`, `FIRMWARE_OUT_OF_SCOPE`, `IO_FAILURE`, `RESOURCE_LIMIT` and `INTERNAL_ERROR`. An encrypted guest module stops the same way with `ENCRYPTED_MODULE: <name> is encrypted and built-in decryption stopped: ...`, naming the module. A plain copy you place there is always used and never overwritten. Nothing is written next to the ISO or into this repository. PSN `EBOOT.PBP` (NPDRM) packages and PGD-protected data are not decrypted yet.
 
 ### User title manifests (`<user data>/manifests`)
 
