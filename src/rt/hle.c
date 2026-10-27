@@ -10971,13 +10971,26 @@ void sr_hle_test_set_compiled_sdk_version(uint32_t version) {
 }
 #endif
 
-/* sceUtility dialogs (savedata/msg). The public contract is a poll-driven status machine:
+/* sceUtility dialogs (savedata/msg). The public contract is a status machine the game polls:
  * InitStart arms it, Update refreshes it, GetStatus reports where it is and ShutdownStart
- * removes it, and result is the common-header field at param+0x1c. A game that polls is
- * entitled to see every step on the way, so the status only ever advances one step per
- * GetStatus call: an earlier guess jumped straight to RUNNING and to NONE, skipping steps a
- * game that waits to observe them would hang on. The OSK is a separate utility with its own
- * state enum and is handled with the rest of it below. */
+ * removes it, and result is the common-header field at param+0x1c. Each transition belongs
+ * to the call or event that drives it on a PSP (#1386), from the PSPAutotests hardware
+ * captures (hrydgard/pspautotests e2d098fc, tests/utility/savedata/{initstatus,noupdate,
+ * shutdownstatus}.expected and tests/utility/dialog/{status,priority}.expected):
+ *  - INIT -> RUNNING is the dialog's own start-up. Every caller priority from 16 to 111 sees
+ *    INIT on the GetStatus right after InitStart, and RUNNING follows with no Update call.
+ *    Update does not move it: a message Update during INIT returns INVALID_STATUS, and
+ *    savedata's (unmeasured) fails closed the same way. How long INIT lasts is unmeasured, so
+ *    here start-up completes once a GetStatus has reported INIT.
+ *  - RUNNING -> FINISHED needs Update: a savedata dialog polled for two seconds without one
+ *    stays RUNNING. The first Update does the work; FINISHED comes after the work and two more
+ *    Updates, a count no capture measures.
+ *  - SHUTDOWN -> NONE is the shutdown's own completion. A message dialog shows SHUTDOWN to
+ *    every caller priority measured; a savedata shutdown ends at priority 0x20, so a caller
+ *    at 0x20 sees SHUTDOWN and a worse one sees NONE at once (h_DlgShutdown). When NONE
+ *    follows a reported SHUTDOWN is unmeasured: here on the next GetStatus.
+ * The OSK is a separate utility with its own state enum and is handled with the rest of it
+ * below. */
 static int guest_cstr(uint32_t addr, char *out, int max);
 
 /* sceUtilitySavedata: real persistence on a virtual memory stick (src/rt/savedata.c). */
@@ -11067,9 +11080,9 @@ static uint32_t h_DlgGetStatus(CpuState *s) {
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
     int ret = s_dlg_status;
-    if (s_dlg_status == 1) {                              /* INITIALIZE -> RUNNING */
+    if (s_dlg_status == 1) {              /* INIT reported: start-up completes, RUNNING */
         s_dlg_status = 2; s_dlg_tick = 0;
-    } else if (s_dlg_status == 4) {                       /* SHUTDOWN -> NONE */
+    } else if (s_dlg_status == 4) {       /* SHUTDOWN reported: the shutdown completes, NONE */
         s_dlg_status = 0;
     }
     if (getenv("SR_DLGLOG")) {                            /* log transitions only (unbounded) */
@@ -11090,9 +11103,9 @@ static uint32_t h_SavedataUpdate(CpuState *s) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
-    if (s_dlg_status == 1) {
-        s_dlg_status = 2;
-        s_dlg_tick = 0;
+    if (s_dlg_status == 1) {      /* still starting up: Update does not move INIT (#1386) */
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_INVALID_STATUS;
     }
     if (s_dlg_status == 2 && !s_dlg_work_started) {
         s_dlg_work_started = 1;
@@ -11116,14 +11129,27 @@ static uint32_t h_SavedataUpdate(CpuState *s) {
     }
     return 0;
 }
+/* A savedata shutdown ends on a priority-0x20 thread, whatever the dialog's own thread
+ * priorities (PSPAutotests tests/utility/savedata/shutdownstatus.expected, SIZES on a save
+ * that exists and on one that does not): a caller at 0x20 keeps the CPU, so its next GetStatus
+ * reports SHUTDOWN and a later one NONE, while a caller at 0x21-0x24 or 0x6F is preempted until
+ * the shutdown is over and sees only NONE. Such a caller can therefore start the next dialog
+ * straight after ShutdownStart. A caller better than 0x20 is unmeasured and sees SHUTDOWN, as
+ * one at 0x20 does. Only a shutdown from FINISHED is measured; ShutdownStart during INIT or
+ * RUNNING keeps the reported SHUTDOWN. */
+#define UTILITY_SAVEDATA_SHUTDOWN_PRIORITY 0x20
 static uint32_t h_DlgShutdown(CpuState *s) {
     (void)s;
+    const int caller_priority = sched_current_priority();
     dialog_lock();
     if (s_utility_slot != UTILITY_SLOT_SAVEDATA) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
-    if (s_dlg_status) s_dlg_status = 4;  /* NONE stays NONE: a stray call cannot re-arm the slot */
+    if (s_dlg_status == 3 && caller_priority > UTILITY_SAVEDATA_SHUTDOWN_PRIORITY)
+        s_dlg_status = 0;                /* the shutdown ran before the caller got the CPU back */
+    else if (s_dlg_status)
+        s_dlg_status = 4;                /* NONE stays NONE: a stray call cannot re-arm the slot */
     dialog_unlock();
     if (getenv("SR_DLGLOG")) fprintf(stderr, "DlgShutdownStart\n");
     return 0;
@@ -11132,7 +11158,10 @@ static uint32_t h_DlgShutdown(CpuState *s) {
 /* Lightweight utility services used during setup. Each service keeps its own state machine,
  * and the one slot above decides which of them a call reaches, so polling netconf cannot
  * consume a message/gamedata transition. Init captures the common parameter block and
- * completes it successfully; Update advances RUNNING->FINISHED. */
+ * completes it successfully; Update advances RUNNING->FINISHED. Update during INIT returns
+ * INVALID_STATUS and changes nothing: measured for the message dialog (PSPAutotests
+ * tests/utility/dialog/status.expected) and the OSK (#363), unmeasured for netconf,
+ * gamedata-install and game-sharing, which fail closed the same way. */
 typedef struct UtilityDialog {
     uint32_t param;
     uint32_t result;
@@ -11201,7 +11230,10 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
-    if (d->status == 1) { d->status = 2; d->ticks = 0; }
+    if (d->status == 1) {  /* still starting up: Update does not move INIT (#1386) */
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_INVALID_STATUS;
+    }
     if (d->status == 2 && !d->work_started) {
         d->work_started = 1;
         param = d->param;
