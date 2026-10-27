@@ -2007,8 +2007,22 @@ int main(int argc, char **argv) {{
         self.assertEqual(c_meta.get("MATCHED_ID"), py_meta.matched_profile.id)
 
     def test_uncataloged_retail_iso_parity(self) -> None:
-        """Verify retail disc IDs are uncataloged in public mode by both inspectors."""
+        """Verify an uncatalogued retail disc ID is uncatalogued in public mode by both inspectors."""
         iso_file = self.temp_dir / "retail_mock.iso"
+        create_test_iso(iso_file, disc_id="UCES01402", title="Retail Placeholder", volume_id="UCES01402")
+
+        py_meta = inspect_iso(iso_file)
+        c_meta = self._run_native_inspect(iso_file)
+
+        self.assertEqual(c_meta.get("RESULT"), "OK")
+        self.assertEqual(c_meta.get("DISC_ID"), "UCES01402")
+        self.assertEqual(c_meta.get("SUPPORTED"), "0")
+        self.assertEqual(c_meta.get("MATCHED_ID"), "NONE")
+        self.assertIsNone(py_meta.matched_profile)
+
+    def test_public_hst_manifest_is_catalogued_by_both_inspectors(self) -> None:
+        """UCUS98701 resolves to the built-in hst title in both inspectors (public manifest)."""
+        iso_file = self.temp_dir / "hst_mock.iso"
         create_test_iso(iso_file, disc_id="UCUS98701", title="Hot Shots Tennis", volume_id="UCUS98701")
 
         py_meta = inspect_iso(iso_file)
@@ -2016,9 +2030,11 @@ int main(int argc, char **argv) {{
 
         self.assertEqual(c_meta.get("RESULT"), "OK")
         self.assertEqual(c_meta.get("DISC_ID"), "UCUS98701")
-        self.assertEqual(c_meta.get("SUPPORTED"), "0")
-        self.assertEqual(c_meta.get("MATCHED_ID"), "NONE")
-        self.assertIsNone(py_meta.matched_profile)
+        self.assertEqual(c_meta.get("SUPPORTED"), "1")
+        self.assertEqual(c_meta.get("MATCHED_ID"), "hst-ucus98701-v1")
+        self.assertIsNotNone(py_meta.matched_profile)
+        self.assertEqual(py_meta.matched_profile.id, "hst-ucus98701-v1")
+        self.assertEqual(py_meta.matched_profile.codegen_profile, "hst")
 
     def test_uncatalogued_param_sfo_disc_is_experimental(self) -> None:
         """Unknown PSP discs get validated local identity profiles and stay launch-gated."""
@@ -2649,7 +2665,7 @@ int main(int argc, char **argv) {{
         self.assertEqual(
             message,
             "This is a PlayStation Store package (PBP), not a disc image. "
-            "Nakagawa Recomp can't use these yet. Title: Store Package (ID: TEST00424)",
+            "The player converts PSN UMD games. Title: Store Package (ID: TEST00424)",
         )
         self.assertNotRegex(message, r"#\d+")
         self.assertNotIn("ISO9660", message)
@@ -2870,14 +2886,25 @@ int main(int argc, char **argv) {{
         # launching the guest at a hard-coded 0x0029a060 with a zero base: an
         # address belonging to no public title, so the runtime was started at a
         # constant rather than at anything the catalog knew. A public-safe tree
-        # has no addresses for a retail identity and must say so.
+        # has no addresses for an uncatalogued retail identity and must say so.
+        cmd = [str(self.exe_path), "launch_test", str(mock_root), str(mock_iso),
+               "UCES01402", "private-retail-lookalike-v1"]
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        self.assertEqual(res.returncode, 0, f"Launch plan test failed: {res.stderr}")
+        self.assertIn("LAUNCH_PREPARE_ERROR", res.stdout)
+        self.assertNotIn("LAUNCH_PREPARE_OK", res.stdout)
+        self.assertIn("No catalog entry", res.stdout)
+
+        # The public HST manifest is catalogued, so its identity resolves, but a
+        # tree without its runtime still refuses by name rather than starting at
+        # any address of its own.
         cmd = [str(self.exe_path), "launch_test", str(mock_root), str(mock_iso),
                "UCUS98701", "hst-ucus98701-v1"]
         res = subprocess.run(cmd, capture_output=True, text=True, env=env)
         self.assertEqual(res.returncode, 0, f"Launch plan test failed: {res.stderr}")
         self.assertIn("LAUNCH_PREPARE_ERROR", res.stdout)
         self.assertNotIn("LAUNCH_PREPARE_OK", res.stdout)
-        self.assertIn("No catalog entry", res.stdout)
+        self.assertIn("Runtime binary not found for title hst-ucus98701-v1", res.stdout)
 
     def test_duplicate_sfo_keys_parity(self) -> None:
         """Verify identical duplicate SFO keys accepted and conflicting rejected by both Python and C."""

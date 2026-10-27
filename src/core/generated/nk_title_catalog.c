@@ -268,15 +268,25 @@ bool nk_title_catalog_get_overlay(NkTitleEntrySnapshot *out_snapshot) {
     return found;
 }
 
-static const NkModuleDefinition s_modules_title_4[] = {
-    { "synthetic.prx", 0x08c00000U, false },
+static const NkModuleDefinition s_modules_title_1[] = {
+    { "libfont.prx", 0x09ebfc00U, true },
+    { "scePsmf_library.prx", 0x09ed6000U, true },
+    { "scePsmfP_library.prx", 0x09ec7f00U, true },
 };
 
 static const NkModuleDefinition s_modules_title_5[] = {
+    { "synthetic.prx", 0x08c00000U, false },
+};
+
+static const NkModuleDefinition s_modules_title_6[] = {
     { "synthetic2.prx", 0x09400000U, false },
 };
 
-const int nk_title_catalog_count = 6;
+static const NkLooseContentRoot s_loose_roots_title_1[] = {
+    { ".", "", 0U, true, NULL, 0 },
+};
+
+const int nk_title_catalog_count = 7;
 const NkTitleEntry nk_title_catalog_entries[] = {
     {
         "display-smoke-v1",
@@ -302,6 +312,31 @@ const NkTitleEntry nk_title_catalog_entries[] = {
         false,
         NULL,
         0
+    },
+    {
+        "hst-ucus98701-v1",
+        "hst-ucus98701",
+        "Hot Shots Tennis: Get a Grip (UCUS98701)",
+        NK_TITLE_KIND_RETAIL,
+        "UCUS98701",
+        NULL,
+        0x00000000U,
+        0x00000000U,
+        true,
+        true,
+        0x0029a060U,
+        "psp-header",
+        "xbdata",
+        s_loose_roots_title_1,
+        1,
+        "memstick",
+        "hst-current",
+        "hst",
+        0U,
+        false,
+        false,
+        s_modules_title_1,
+        3
     },
     {
         "pspdev-phase5-v1",
@@ -400,7 +435,7 @@ const NkTitleEntry nk_title_catalog_entries[] = {
         0U,
         false,
         false,
-        s_modules_title_4,
+        s_modules_title_5,
         1
     },
     {
@@ -425,7 +460,7 @@ const NkTitleEntry nk_title_catalog_entries[] = {
         0U,
         false,
         false,
-        s_modules_title_5,
+        s_modules_title_6,
         1
     },
 };

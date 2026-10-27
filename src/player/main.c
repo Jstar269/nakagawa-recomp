@@ -87,20 +87,23 @@ static bool player_populate_inspected_game(PlayerApp *app, const char *iso_path,
     return true;
 }
 
-static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *filelist, int filter) {
-    (void)filter;
-    PlayerApp *app = (PlayerApp *)userdata;
-    if (!app || !filelist || !filelist[0]) {
-        return;
+/* A picked file the player refuses by name: the wizard's status line, or the
+   error card everywhere else. */
+static void player_show_picked_refusal(PlayerApp *app, const char *code, const char *title,
+                                       const char *message) {
+    if (app->active_view == VIEW_SETUP_WIZARD) {
+        player_app_wizard_reset_extraction(app);
+        app->wizard.iso_selected = false;
+        snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                 "%.48s: %.200s", code, message);
+    } else {
+        player_app_set_error(app, code, title, message, "Try Another File", VIEW_LIBRARY);
     }
-    if (app->wizard.is_extracting) {
-        /* A second ISO cannot replace the source while the worker owns the
-           current staging transaction. */
-        return;
-    }
-    const char *selected_path = filelist[0];
-    printf("[PLAYER] ISO Selected: %s\n", selected_path);
+}
 
+/* A picked (or converted) disc image: inspect it and continue in the view it
+   was picked from. */
+static void player_take_picked_disc(PlayerApp *app, const char *selected_path) {
     IsoInspectResult res;
     if (iso_inspect_file(selected_path, &res)) {
         char profile_error[256] = "";
@@ -150,30 +153,65 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
         const char *message = res.error_message[0]
             ? res.error_message
             : "The selected file is not a valid ISO9660 disc image.";
-        if (app->active_view == VIEW_SETUP_WIZARD) {
+        if (app->active_view == VIEW_SETUP_WIZARD && !named_boundary) {
             player_app_wizard_reset_extraction(app);
             app->wizard.iso_selected = false;
-            if (named_boundary) {
-                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                         "%.48s: %.200s", res.boundary_code, message);
-            } else {
-                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                         "%s", k_invalid_disc_message);
-            }
+            snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                     "%s", k_invalid_disc_message);
+        } else if (named_boundary) {
+            player_show_picked_refusal(app, res.boundary_code, "Not a Disc Image", message);
         } else {
-            player_app_set_error(
-                app,
-                named_boundary ? res.boundary_code : "ISO_CORRUPT",
-                named_boundary ? "Not a Disc Image" : "Not a PSP Disc Image",
-                named_boundary ? message : k_invalid_disc_message,
-                "Try Another File", VIEW_LIBRARY);
+            player_app_set_error(app, "ISO_CORRUPT", "Not a PSP Disc Image",
+                                 k_invalid_disc_message, "Try Another File", VIEW_LIBRARY);
         }
     }
 }
 
+/* A PSN release of a UMD game (#295 phase 2): converted once into a private
+   ISO on the conversion worker, then imported exactly as a picked disc. A
+   conversion already in place is used as it is; other packages are refused by
+   name. */
+static void player_take_picked_package(PlayerApp *app, const char *path) {
+    PlayerPsnPackage package;
+    char code[48];
+    char message[512];
+    if (!player_psn_package_inspect(path, &package, code, sizeof(code), message,
+                                    sizeof(message))) {
+        player_show_picked_refusal(app, code, "Package Not Supported", message);
+        return;
+    }
+    if (package.iso_ready) {
+        printf("[PLAYER] PSN package %s: using its converted disc image\n", package.disc_id);
+        player_take_picked_disc(app, package.iso_path);
+        return;
+    }
+    printf("[PLAYER] PSN package %s: converting it into a disc image\n", package.disc_id);
+    player_app_psn_conversion_begin(app, &package);
+}
+
+static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *filelist, int filter) {
+    (void)filter;
+    PlayerApp *app = (PlayerApp *)userdata;
+    if (!app || !filelist || !filelist[0]) {
+        return;
+    }
+    if (app->wizard.is_extracting || app->psn_conversion_active) {
+        /* A second file cannot replace the source while a worker owns the
+           current staging transaction or conversion. */
+        return;
+    }
+    const char *selected_path = filelist[0];
+    printf("[PLAYER] ISO Selected: %s\n", selected_path);
+    if (player_path_is_pbp_package(selected_path)) {
+        player_take_picked_package(app, selected_path);
+        return;
+    }
+    player_take_picked_disc(app, selected_path);
+}
+
 static void trigger_file_picker(SDL_Window *window, PlayerApp *app) {
     SDL_DialogFileFilter filters[] = {
-        { "PSP Disc Images (*.iso)", "iso" },
+        { "PSP Disc Images and PSN Packages (*.iso, EBOOT.PBP)", "iso;pbp" },
         { "All Files (*.*)", "*" }
     };
     SDL_ShowOpenFileDialog(on_file_dialog_callback, app, window, filters, 2, NULL, false);
@@ -2850,6 +2888,160 @@ static void finish_staging_job(PlayerApp *app, PlayerStagingJob *job) {
     job->completion_handled = true;
 }
 
+/* A PSN package's conversion into its disc image (#295 phase 2), on a worker
+   like ADD TO LIBRARY staging: progress and completion come back as SDL user
+   events (data1 is the job), and the wizard's cancel stops it. A cancel or a
+   failure removes the partial file. */
+typedef struct {
+    SDL_Thread *thread;
+    SDL_Mutex *mutex;
+    PlayerPsnPackage package;
+    bool cancel_requested;
+    bool finished;
+    bool completion_handled;
+    bool ok;
+    int percent;
+    uint64_t done_bytes;
+    uint64_t total_bytes;
+    char code[48];
+    char message[512];
+} PlayerPsnJob;
+
+static void psn_job_push_event(PlayerPsnJob *job, int code) {
+    SDL_Event event;
+    memset(&event, 0, sizeof(event));
+    event.type = SDL_EVENT_USER;
+    event.user.code = code;
+    event.user.data1 = job;
+    SDL_PushEvent(&event);
+}
+
+static bool psn_job_cancelled(void *userdata) {
+    PlayerPsnJob *job = (PlayerPsnJob *)userdata;
+    if (!job || !job->mutex) return true;
+    SDL_LockMutex(job->mutex);
+    bool cancelled = job->cancel_requested;
+    SDL_UnlockMutex(job->mutex);
+    return cancelled;
+}
+
+static void psn_job_progress(uint64_t done_bytes, uint64_t total_bytes, void *userdata) {
+    PlayerPsnJob *job = (PlayerPsnJob *)userdata;
+    int percent = total_bytes ? (int)((done_bytes * 100u) / total_bytes) : 0;
+    bool changed;
+    if (!job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    changed = job->percent != percent;
+    job->percent = percent;
+    job->done_bytes = done_bytes;
+    job->total_bytes = total_bytes;
+    SDL_UnlockMutex(job->mutex);
+    if (changed) psn_job_push_event(job, PLAYER_STAGING_EVENT_PROGRESS);
+}
+
+static int SDLCALL psn_job_thread_main(void *userdata) {
+    PlayerPsnJob *job = (PlayerPsnJob *)userdata;
+    if (!job) return -1;
+    PlayerPsnConvertCallbacks callbacks = { psn_job_progress, psn_job_cancelled, job };
+    char code[sizeof(job->code)];
+    char message[sizeof(job->message)];
+    bool ok = player_psn_package_convert(&job->package, &callbacks, code, sizeof(code),
+                                         message, sizeof(message));
+    SDL_LockMutex(job->mutex);
+    job->ok = ok;
+    snprintf(job->code, sizeof(job->code), "%s", code);
+    snprintf(job->message, sizeof(job->message), "%s", message);
+    job->finished = true;
+    SDL_UnlockMutex(job->mutex);
+    psn_job_push_event(job, PLAYER_STAGING_EVENT_COMPLETE);
+    return ok ? 0 : 1;
+}
+
+static void request_psn_cancel(PlayerPsnJob *job) {
+    if (!job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    job->cancel_requested = true;
+    SDL_UnlockMutex(job->mutex);
+}
+
+static bool psn_job_finished(PlayerPsnJob *job) {
+    if (!job || !job->mutex || job->completion_handled) return false;
+    SDL_LockMutex(job->mutex);
+    bool finished = job->finished;
+    SDL_UnlockMutex(job->mutex);
+    return finished;
+}
+
+static void start_psn_job(PlayerApp *app, PlayerPsnJob **job_slot) {
+    if (!app || !job_slot) return;
+    if (*job_slot) {
+        if (!(*job_slot)->completion_handled) return;
+        SDL_DestroyMutex((*job_slot)->mutex);
+        free(*job_slot);
+        *job_slot = NULL;
+    }
+    PlayerPsnJob *job = (PlayerPsnJob *)calloc(1, sizeof(*job));
+    if (job) {
+        job->package = app->psn_package;
+        job->mutex = SDL_CreateMutex();
+    }
+    if (job && job->mutex) {
+        job->thread = SDL_CreateThread(psn_job_thread_main, "nakagawa-psn-convert", job);
+    }
+    if (!job || !job->mutex || !job->thread) {
+        if (job && job->mutex) SDL_DestroyMutex(job->mutex);
+        free(job);
+        player_app_psn_conversion_finish(app);
+        player_show_picked_refusal(app, "INTERNAL_ERROR", "Package Not Converted",
+                                   "Nakagawa could not start converting the package. Try again.");
+        return;
+    }
+    *job_slot = job;
+}
+
+static void sync_psn_progress(PlayerApp *app, PlayerPsnJob *job) {
+    if (!app || !job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    uint64_t done = job->done_bytes;
+    uint64_t total = job->total_bytes;
+    SDL_UnlockMutex(job->mutex);
+    player_app_psn_conversion_progress(app, done, total);
+}
+
+static void finish_psn_job(PlayerApp *app, PlayerPsnJob *job) {
+    if (!psn_job_finished(job)) return;
+    if (job->thread) {
+        SDL_WaitThread(job->thread, NULL);
+        job->thread = NULL;
+    }
+    job->completion_handled = true;
+    player_app_psn_conversion_finish(app);
+    if (job->ok) {
+        printf("[PLAYER] PSN package %s converted into its disc image\n", job->package.disc_id);
+        player_take_picked_disc(app, job->package.iso_path);
+    } else if (strcmp(job->code, "CANCELLED") == 0) {
+        if (app->active_view == VIEW_SETUP_WIZARD) {
+            snprintf(app->wizard.status_message, sizeof(app->wizard.status_message), "%.200s",
+                     job->message);
+        }
+    } else {
+        player_show_picked_refusal(app, job->code, "Package Not Converted", job->message);
+    }
+}
+
+static void destroy_psn_job(PlayerPsnJob **job_slot) {
+    if (!job_slot || !*job_slot) return;
+    PlayerPsnJob *job = *job_slot;
+    request_psn_cancel(job);
+    if (job->thread) {
+        SDL_WaitThread(job->thread, NULL);
+        job->thread = NULL;
+    }
+    if (job->mutex) SDL_DestroyMutex(job->mutex);
+    free(job);
+    *job_slot = NULL;
+}
+
 static void destroy_staging_job(PlayerStagingJob **job_slot) {
     if (!job_slot || !*job_slot) return;
     PlayerStagingJob *job = *job_slot;
@@ -2874,6 +3066,16 @@ static void staging_console_progress(const char *current_path, int percent,
     *last_percent = percent;
     printf("[PLAYER] STAGING_PROGRESS percent=%d files=%zu/%zu\n", percent,
            files_extracted, total_files);
+    fflush(stdout);
+}
+
+/* Console progress for a PSN package given as --iso: one line per ten percent. */
+static void psn_console_progress(uint64_t done_bytes, uint64_t total_bytes, void *userdata) {
+    int *last_percent = (int *)userdata;
+    int percent = total_bytes ? (int)((done_bytes * 100u) / total_bytes) : 0;
+    if (!last_percent || percent / 10 <= *last_percent / 10) return;
+    *last_percent = percent;
+    printf("[PLAYER] PSN_CONVERT_PROGRESS percent=%d\n", percent);
     fflush(stdout);
 }
 
@@ -3731,6 +3933,36 @@ int main(int argc, char *argv[]) {
         } else {
             fprintf(stderr, "[PLAYER] Failed to load external manifest overlay: %s\n", err_msg);
             return 1;
+        }
+    }
+
+    /* A PSN package given as --iso converts once, here, and its disc image is
+       then inspected like any --iso (#295 phase 2). */
+    char converted_iso_path[NK_MAX_PATH];
+    if (initial_iso_path && player_path_is_pbp_package(initial_iso_path)) {
+        PlayerPsnPackage package;
+        char code[48];
+        char message[512];
+        bool ok = player_psn_package_inspect(initial_iso_path, &package, code, sizeof(code),
+                                             message, sizeof(message));
+        if (ok && !package.iso_ready) {
+            int last_percent = -1;
+            PlayerPsnConvertCallbacks hooks = { psn_console_progress, NULL, &last_percent };
+            printf("[PLAYER] Converting PSN package %s into its disc image...\n",
+                   package.disc_id);
+            ok = player_psn_package_convert(&package, &hooks, code, sizeof(code), message,
+                                            sizeof(message));
+        }
+        if (!ok) {
+            fprintf(stderr, "[PLAYER] %s: %s\n", code, message);
+            if (stage_only || app.launch_headless) return 1;
+            populate_sample = false;
+            player_app_set_error(&app, code, "Package Not Supported", message,
+                                 "Try Another File", VIEW_LIBRARY);
+            initial_iso_path = NULL;
+        } else {
+            snprintf(converted_iso_path, sizeof(converted_iso_path), "%s", package.iso_path);
+            initial_iso_path = converted_iso_path;
         }
     }
 
@@ -4607,6 +4839,7 @@ int main(int argc, char *argv[]) {
         SDL_free(ids);
     }
     PlayerStagingJob *staging_job = NULL;
+    PlayerPsnJob *psn_job = NULL;
     PlayerPackageStatusJob *package_status_job = NULL;
     bool package_status_requested[MAX_LIBRARY_GAMES] = { false };
     bool package_status_force_requested[MAX_LIBRARY_GAMES] = { false };
@@ -5022,6 +5255,12 @@ int main(int argc, char *argv[]) {
                                 &build_check_session_generation,
                                 &build_check_cache_generation,
                                 &build_check_pending);
+                        } else if (psn_job && event.user.data1 == psn_job) {
+                            if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
+                                sync_psn_progress(&app, psn_job);
+                            } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
+                                finish_psn_job(&app, psn_job);
+                            }
                         } else if (event.user.data1 == staging_job) {
                             if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
                                 sync_staging_progress(&app, staging_job);
@@ -5106,6 +5345,19 @@ int main(int argc, char *argv[]) {
         if (staging_job && app.wizard.is_extracting &&
             player_app_wizard_cancel_requested(&app)) {
             request_staging_cancel(staging_job);
+        }
+        /* A picked PSN package converts on its own worker; the wizard's cancel
+           reaches it the same way. A completion whose event was lost is
+           finished here. */
+        if (player_app_psn_conversion_take_request(&app)) {
+            start_psn_job(&app, &psn_job);
+        }
+        if (psn_job && app.psn_conversion_active &&
+            player_app_wizard_cancel_requested(&app)) {
+            request_psn_cancel(psn_job);
+        }
+        if (psn_job_finished(psn_job)) {
+            finish_psn_job(&app, psn_job);
         }
 
         if (app.selected_game_index != last_package_selection) {
@@ -5410,6 +5662,7 @@ int main(int argc, char *argv[]) {
     }
 
     destroy_staging_job(&staging_job);
+    destroy_psn_job(&psn_job);
     if (package_status_job) {
         if (package_status_job->thread) {
             SDL_WaitThread(package_status_job->thread, NULL);

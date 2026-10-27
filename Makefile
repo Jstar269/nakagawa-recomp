@@ -622,11 +622,9 @@ CPU_STATE_ABI_HEADER := src/rt/recomp.h
 # which every optional binding is disabled -- so `make runtime-objects` needs no game
 # input at all, and no default build inherits any title's addresses.
 #
-# HST binds its real values through the local title manifest
+# HST binds its real values through its title manifest
 # (assets/titles/hst-ucus98701.json, supplied by nk_manager.ps1 -TitleManifest or by
-# TITLE_MANIFEST= on a direct Make command line). That file is intentionally never
-# checked in and is publication-excluded, with a .gitignore accident guard.
-# They are deliberately not encoded here.
+# TITLE_MANIFEST= on a direct Make command line). They are deliberately not encoded here.
 TITLE_MANIFEST ?=
 TITLE_CONFIG_TOOL := tools/title_runtime_config.py
 TITLE_CONFIG_DIR ?= $(BUILD_DIR)
@@ -2002,7 +2000,7 @@ sdl3-check:
 
 PLAYER_EXE ?= $(BUILD_ROOT)/nakagawa_player$(EXE_EXT)
 PLAYER_UI_TEST_EXE ?= $(BUILD_ROOT)/nakagawa_player_ui_test$(EXE_EXT)
-PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_builtin_keys.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/generated/nk_title_catalog.c
+PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_builtin_keys.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/nk_psp_amctrl.c src/core/nk_psp_lzrc.c src/core/nk_psp_npumdimg.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_NK_UI_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) src/ui/backend/nk_ui_sdlr.c $(NK_UI_PLAYER_C5_SRCS) $(NK_UI_PLAYER_HOST_SRCS)
 # The player's About page shows "v<version> (MM-DD-YYYY)" (the version itself is

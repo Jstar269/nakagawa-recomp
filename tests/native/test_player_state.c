@@ -31,6 +31,7 @@
 #include "nk_platform.h"
 #include "native_test_isolation.h"
 #include "nk_psp_builtin_keys.h"
+#include "nk_psp_keystore.h"
 #include "psp_seal_fixture.h"
 #include "pgf_golden_vectors.h"
 #include "../../src/rt/recomp.h"
@@ -3253,6 +3254,212 @@ static void test_bundled_prerequisite_build(const char *self_executable) {
     printf("[PLAYER_STATE_TEST] bundled prerequisites PASS\n");
 }
 
+/* ---- PSN releases of UMD games (#295 phase 2) ---------------------------- */
+
+typedef struct {
+    int calls;
+    uint64_t done;
+    uint64_t total;
+} PsnTestProgress;
+
+static void psn_test_progress(uint64_t done, uint64_t total, void *userdata) {
+    PsnTestProgress *progress = (PsnTestProgress *)userdata;
+    progress->calls++;
+    progress->done = done;
+    progress->total = total;
+}
+
+static bool psn_test_never(void *userdata) {
+    (void)userdata;
+    return false;
+}
+
+static bool psn_test_cancel_now(void *userdata) {
+    (void)userdata;
+    return true;
+}
+
+static uint8_t *psn_test_read_file(const char *path, size_t *size) {
+    FILE *file = fopen(path, "rb");
+    long length;
+    uint8_t *bytes;
+    assert(file != NULL);
+    assert(fseek(file, 0, SEEK_END) == 0);
+    length = ftell(file);
+    assert(length > 0);
+    assert(fseek(file, 0, SEEK_SET) == 0);
+    bytes = (uint8_t *)malloc((size_t)length);
+    assert(bytes != NULL);
+    assert(fread(bytes, 1, (size_t)length, file) == (size_t)length);
+    fclose(file);
+    *size = (size_t)length;
+    return bytes;
+}
+
+/* A refused package: the named code, a plain sentence, nothing written. */
+static void psn_test_refused(const char *path, const char *want_code, const char *want_text) {
+    PlayerPsnPackage package;
+    char code[64];
+    char message[512];
+    assert(!player_psn_package_inspect(path, &package, code, sizeof(code),
+                                       message, sizeof(message)));
+    assert(strcmp(code, want_code) == 0);
+    assert(strstr(message, want_text) != NULL);
+    assert(package.iso_path[0] == '\0');
+}
+
+/* A synthetic PSN package imports as its ISO: converted once into
+   <data>/discs/<ID>/<ID>.iso byte for byte, with progress, a cancel that keeps
+   nothing, reuse of a checked conversion, and the wizard panel returning to
+   the view the package was picked from. PSOne Classics, updaters and other
+   packages are refused by name before any key lookup. */
+static void test_psn_package_imports_as_its_iso(void) {
+    const char sep = nk_platform_path_separator();
+    char cache_root[NK_MAX_PATH];
+    char base[NATIVE_TEST_PATH_MAX + 64];
+    char data_root[NATIVE_TEST_PATH_MAX + 96];
+    char source_iso[NATIVE_TEST_PATH_MAX + 96];
+    char pbp_path[NATIVE_TEST_PATH_MAX + 96];
+    char other_path[NATIVE_TEST_PATH_MAX + 96];
+    char expected_iso[NATIVE_TEST_PATH_MAX + 160];
+    char partial[NATIVE_TEST_PATH_MAX + 192];
+    char key_error[160];
+    char code[64];
+    char message[512];
+    uint8_t *iso;
+    uint8_t *pbp;
+    uint8_t *converted;
+    size_t iso_len = 0, pbp_len = 0, converted_len = 0;
+    NkKeystore *keys;
+    NkPspCtx ctx;
+    PlayerPsnPackage package;
+    PlayerPsnPackage again;
+    PsnTestProgress progress;
+    PlayerPsnConvertCallbacks cancel_hooks = { NULL, psn_test_cancel_now, NULL };
+    PlayerPsnConvertCallbacks hooks = { psn_test_progress, psn_test_never, NULL };
+    IsoInspectResult inspected;
+    PlayerApp *app;
+
+    printf("[PLAYER_STATE_TEST] Subtest: a PSN package (NPUMDIMG) imports as its ISO\n");
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(base, sizeof(base), "%s%cpsn-package-state", cache_root, sep);
+    assert(test_remove_tree(base));
+    snprintf(data_root, sizeof(data_root), "%s%cdata", base, sep);
+    assert(nk_platform_mkdir_p(data_root));
+    snprintf(source_iso, sizeof(source_iso), "%s%csource.iso", base, sep);
+    snprintf(pbp_path, sizeof(pbp_path), "%s%cEBOOT.PBP", base, sep);
+    snprintf(expected_iso, sizeof(expected_iso), "%s%cdiscs%cTEST80901%cTEST80901.iso",
+             data_root, sep, sep, sep);
+    snprintf(partial, sizeof(partial), "%s.converting", expected_iso);
+
+    write_player_package_preflight_iso(source_iso, "TEST80901", "Synthetic PSN Game", false);
+    iso = psn_test_read_file(source_iso, &iso_len);
+    keys = nk_keystore_create();
+    assert(keys != NULL);
+    assert(nk_keystore_load_builtin(keys, key_error, sizeof(key_error)) == NK_PSP_OK);
+    nk_psp_ctx_init(&ctx, keys);
+    pbp = psp_seal_npumdimg_pbp(&ctx, "TEST80901", iso, iso_len, 4u, &pbp_len);
+    nk_keystore_free(keys);
+    write_binary_file(pbp_path, pbp, pbp_len);
+    free(pbp);
+    assert(nk_platform_set_app_data_dir_override(data_root));
+
+    assert(player_path_is_pbp_package(pbp_path));
+    assert(!player_path_is_pbp_package(source_iso));
+    assert(player_psn_package_inspect(pbp_path, &package, code, sizeof(code),
+                                      message, sizeof(message)));
+    assert(strcmp(package.iso_path, expected_iso) == 0);
+    assert(strcmp(package.disc_id, "TEST80901") == 0);
+    assert(strcmp(package.title, "Synthetic PSN package") == 0);
+    assert(!package.iso_ready);
+
+    /* A cancel removes the partial image and keeps nothing. */
+    assert(!player_psn_package_convert(&package, &cancel_hooks, code, sizeof(code),
+                                       message, sizeof(message)));
+    assert(strcmp(code, "CANCELLED") == 0);
+    assert(strstr(message, "partial disc image was removed") != NULL);
+    assert(nk_platform_path_missing(expected_iso));
+    assert(nk_platform_path_missing(partial));
+
+    /* The conversion restores the ISO byte for byte, reporting progress. */
+    memset(&progress, 0, sizeof(progress));
+    hooks.userdata = &progress;
+    assert(player_psn_package_convert(&package, &hooks, code, sizeof(code),
+                                      message, sizeof(message)));
+    assert(progress.calls == (int)((iso_len / 2048u + 3u) / 4u));
+    assert(progress.done == progress.total && progress.total == iso_len);
+    assert(nk_platform_path_missing(partial));
+    converted = psn_test_read_file(expected_iso, &converted_len);
+    assert(converted_len == iso_len && memcmp(converted, iso, iso_len) == 0);
+    free(converted);
+
+    /* The ISO is then imported exactly as a picked disc image. */
+    assert(iso_inspect_file(package.iso_path, &inspected));
+    assert(strcmp(inspected.disc_id, "TEST80901") == 0);
+    assert(strcmp(inspected.title_name, "Synthetic PSN Game") == 0);
+
+    /* Picking the package again reuses the checked conversion. */
+    assert(player_psn_package_inspect(pbp_path, &again, code, sizeof(code),
+                                      message, sizeof(message)));
+    assert(again.iso_ready);
+
+    /* The wizard's panel shows the conversion and hands back the view the
+       package was picked from. */
+    app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    app->active_view = VIEW_LIBRARY;
+    player_app_psn_conversion_begin(app, &package);
+    assert(app->active_view == VIEW_SETUP_WIZARD);
+    assert(app->wizard.step == WIZARD_STEP_INSPECT_VERIFY);
+    assert(app->wizard.is_extracting && app->psn_conversion_active);
+    assert(strcmp(app->inspecting_game.disc_id, "TEST80901") == 0);
+    assert(strstr(app->wizard.status_message, "PSN package") != NULL);
+    assert(player_app_psn_conversion_take_request(app));
+    assert(!player_app_psn_conversion_take_request(app));
+    player_app_psn_conversion_progress(app, iso_len / 2u, iso_len);
+    assert(app->wizard.extraction_percent == 50);
+    player_app_wizard_cancel(app);
+    assert(player_app_wizard_cancel_requested(app));
+    assert(strcmp(app->wizard.status_message, "Cancelling the conversion...") == 0);
+    player_app_psn_conversion_finish(app);
+    assert(app->active_view == VIEW_LIBRARY);
+    assert(!app->wizard.is_extracting && !app->psn_conversion_active);
+    assert(!player_app_wizard_cancel_requested(app));
+    free(app);
+
+    /* PSOne Classics, updaters and other packages keep a named refusal. */
+    snprintf(other_path, sizeof(other_path), "%s%cOTHER.PBP", base, sep);
+    {
+        static const char *const magics[3] = { "PSISOIMG0000", "PSTITLEIMG000000", "NOTANIMAGE" };
+        static const char *const categories[3] = { "ME", "ME", "EG" };
+        static const char *const codes[3] = { "PSONE_CLASSIC_UNSUPPORTED",
+                                               "PSONE_CLASSIC_UNSUPPORTED",
+                                               "PBP_PACKAGE_UNSUPPORTED" };
+        static const char *const texts[3] = { "is a PSOne Classic", "is a PSOne Classic",
+                                              "Only PSN releases of UMD games" };
+        uint8_t psar[0x400];
+        for (unsigned i = 0; i < 3u; i++) {
+            memset(psar, 0, sizeof(psar));
+            memcpy(psar, magics[i], strlen(magics[i]));
+            pbp = psp_seal_pbp(categories[i], "SLUS99999", psar, sizeof(psar), &pbp_len);
+            write_binary_file(other_path, pbp, pbp_len);
+            free(pbp);
+            psn_test_refused(other_path, codes[i], texts[i]);
+        }
+        memset(psar, 0, sizeof(psar));
+        memcpy(psar, "PSAR", 4);
+        pbp = psp_seal_pbp("MG", "MSTKUPDAT", psar, sizeof(psar), &pbp_len);
+        write_binary_file(other_path, pbp, pbp_len);
+        free(pbp);
+        psn_test_refused(other_path, "FIRMWARE_OUT_OF_SCOPE", "never decrypts firmware");
+    }
+    psn_test_refused(source_iso, "PBP_PACKAGE_UNSUPPORTED", "not a PSP package");
+
+    assert(nk_platform_set_app_data_dir_override(NULL));
+    free(iso);
+    assert(test_remove_tree(base));
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -3329,6 +3536,7 @@ int main(int argc, char **argv) {
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
 
+    test_psn_package_imports_as_its_iso();
     test_stage_discard_removes_a_deep_tree();
     test_tree_helpers_walk_a_deep_tree();
 #if defined(_WIN32) || defined(_WIN64)

@@ -46,8 +46,14 @@ We aim to respond promptly and will remove material where appropriate.
   `b4386554795949491a26e51b7d74082bb9b2470f` (GPL-2.0-or-later) and its bundled
   KIRK-ENGINE (GPL-3.0-or-later), with every firmware entry left out; Nakagawa
   decrypts a game the user owns, locally, and never decrypts firmware. The
-  keystore, inflate, elliptic-curve and container-framing files are
-  project-authored. Per-file lineage: [`src/core/PROVENANCE.md`](src/core/PROVENANCE.md).
+  PSN UMD image reader is adapted from the same PPSSPP revision:
+  `nk_psp_amctrl.*` from `ext/libkirk/amctrl.c` (written by tpu, shipped with
+  no notice of its own; conveyed as GPL-3.0-or-later), `nk_psp_lzrc.*` from
+  `Core/FileSystems/tlzrc.cpp` (Copyright (c) 2012- PPSSPP Project,
+  GPL-2.0-or-later, kept GPL-2.0-or-later) and `nk_psp_npumdimg.*` from
+  `Core/FileSystems/BlockDevices.cpp` (GPL-2.0-or-later, conveyed as
+  GPL-3.0-or-later). The keystore, inflate, elliptic-curve and
+  container-framing files are project-authored. Per-file lineage: [`src/core/PROVENANCE.md`](src/core/PROVENANCE.md).
 - **PSPSDK / PSPDEV** — permissive per-component declarations and BSD-family
   notices for public ABI definitions and source-owned fixtures. The applicable
   notices are in `THIRD_PARTY_LICENSES/PSPSDK.txt` and `assets/upstream/`.
@@ -202,9 +208,9 @@ is complete. These exclusions are enforced by
 reject the capability and do not fabricate fonts, disc reads, playback, keys, or
 success.
 
-The HST-specific title manifest and private engineering/review documents are also
-outside the active public source tree. Synthetic title manifests and generic schemas are
-retained; no game executable, extracted asset, save, key, capture, oracle trace,
+Private engineering/review documents are also outside the active public source tree. The
+HST title manifest (addresses only, no game data), synthetic title manifests and generic
+schemas are retained; no game executable, extracted asset, save, key, capture, oracle trace,
 or generated retail translation unit is part of the public source boundary.
 
 ## Attribution contract
