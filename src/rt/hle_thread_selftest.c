@@ -14018,6 +14018,147 @@ static void test_suspend_resume_errors_and_ready_thread(void) {
     s_cur = -1;
 }
 
+/* -------------------------------------------------------------------------
+ * sceKernelChangeThreadPriority (#1388), entered through sr_syscall.
+ * Expected results are the PSPAutotests threads/threads/change.expected cells:
+ * an unknown, -1 or deleted UID answers UNKNOWN_THID; a never-started or finished
+ * target answers DORMANT; priorities 0x08..0x77 are accepted and -2, -1, 0x01..0x07,
+ * 0x78 and 0x79 answer 0x80020193 without changing the priority; ready, suspended and
+ * waiting targets are changed; priority 0 gives the target the caller's current
+ * priority (0x18 there); a change that leaves another ready thread strictly stronger
+ * than the caller lets it run at the call, an equal one does not; and a caller that
+ * changes its own priority, even to the same value, goes behind its equal-priority
+ * ready peers and yields at the call ("[r] Zero", and the test thread's line before
+ * "Current").
+ * ------------------------------------------------------------------------- */
+#define NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY 0x71bc9871u
+#define SRT_ILLEGAL_PRIORITY 0x80020193u
+
+static uint32_t srt_change_priority(uint32_t uid, uint32_t priority) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = priority;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY);
+}
+
+static void test_change_thread_priority_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x5b0u, TH_RUNNING, 0x18);
+    TCB *ready = fixture_thread(0x5b1u, TH_READY, 0x30);
+    TCB *stopped = fixture_thread(0x5b2u, TH_DORMANT, 0x30);
+    self->started = 1;
+    ready->started = 1;
+    s_cur = (int)(self - s_tcb);
+
+    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY),
+           "ChangeThreadPriority has a production registration");
+
+    /* ---- target errors ------------------------------------------------------ */
+    expect(srt_change_priority(0xffffffffu, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority(-1) returns UNKNOWN_THID");
+    expect(srt_change_priority(0x7fffffu, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority of an unknown UID returns UNKNOWN_THID");
+    expect(srt_change_priority(stopped->uid, 0x20u) == SRT_DORMANT &&
+           stopped->priority == 0x30,
+           "ChangeThreadPriority of a dormant thread returns DORMANT and keeps its priority");
+    uint32_t deleted = sched_create_thread(0x08001000u, 0x30, 0x800u);
+    expect(deleted != 0u && sched_delete_thread(deleted) == 0u, "create and delete a thread");
+    expect(srt_change_priority(deleted, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority of a deleted thread returns UNKNOWN_THID");
+
+    /* ---- suspended and waiting targets are changed and do not take the CPU -- */
+    TCB *suspended = fixture_thread(0x5b3u, TH_READY, 0x30);
+    TCB *waiting = fixture_thread(0x5b4u, TH_WAIT_OBJ, 0x30);
+    suspended->started = 1;
+    suspended->suspended = 1;
+    waiting->started = 1;
+    expect(srt_change_priority(suspended->uid, 0x08u) == 0u && suspended->priority == 0x08 &&
+           self->state == TH_RUNNING,
+           "ChangeThreadPriority of a suspended thread succeeds and it does not preempt");
+    expect(srt_change_priority(waiting->uid, 0x08u) == 0u && waiting->priority == 0x08 &&
+           waiting->state == TH_WAIT_OBJ && self->state == TH_RUNNING,
+           "ChangeThreadPriority of a waiting thread succeeds and it keeps waiting");
+
+    /* ---- illegal priorities are refused and change nothing ------------------ */
+    static const uint32_t illegal[] = { 0xfffffffeu, 0xffffffffu, 0x01u, 0x02u, 0x04u,
+                                        0x05u, 0x06u, 0x07u, 0x78u, 0x79u };
+    for (size_t i = 0; i < sizeof illegal / sizeof illegal[0]; i++) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "priority 0x%x returns ILLEGAL_PRIORITY and keeps 0x30",
+                 illegal[i]);
+        expect(srt_change_priority(ready->uid, illegal[i]) == SRT_ILLEGAL_PRIORITY &&
+               ready->priority == 0x30 && self->state == TH_RUNNING, msg);
+    }
+
+    /* ---- legal priorities are stored; a stronger ready thread runs ---------- */
+    static const uint32_t legal[] = { 0x08u, 0x09u, 0x17u, 0x18u, 0x2fu, 0x30u, 0x31u,
+                                      0x50u, 0x6eu, 0x6fu, 0x77u };
+    for (size_t i = 0; i < sizeof legal / sizeof legal[0]; i++) {
+        char msg[96];
+        int stronger = (int)legal[i] < self->priority;
+        snprintf(msg, sizeof msg, "priority 0x%x is accepted and %s the caller",
+                 legal[i], stronger ? "preempts" : "does not preempt");
+        expect(srt_change_priority(ready->uid, legal[i]) == 0u &&
+               ready->priority == (int)legal[i] &&
+               self->state == (stronger ? TH_READY : TH_RUNNING), msg);
+        self->state = TH_RUNNING;
+    }
+
+    /* ---- priority 0 means the caller's current priority --------------------- */
+    expect(srt_change_priority(ready->uid, 0x21u) == 0u && ready->priority == 0x21,
+           "control: the target is set to 0x21");
+    expect(srt_change_priority(ready->uid, 0u) == 0u && ready->priority == 0x18,
+           "priority 0 gives the target the caller's current priority");
+    expect(self->state == TH_RUNNING, "an equal-priority target does not preempt the caller");
+
+    /* ---- UID 0 is the caller; lowering it lets a stronger ready thread run --- */
+    ready->priority = 0x20;
+    expect(srt_change_priority(0u, 0x18u) == 0u && self->state == TH_RUNNING,
+           "ChangeThreadPriority(0) keeps the caller ahead of a weaker ready thread");
+    expect(srt_change_priority(0u, 0x30u) == 0u && self->priority == 0x30 &&
+           self->state == TH_READY,
+           "lowering the caller below a ready thread reschedules at the call");
+    self->state = TH_RUNNING;
+
+    /* ---- the caller goes behind its equal-priority ready peers -------------- */
+    /* The caller holds slot 0 and the cursor is reset, so without the move to the back
+     * of the queue the next selection at 0x20 would be the caller again. */
+    const int self_idx = (int)(self - s_tcb);
+    const int ready_idx = (int)(ready - s_tcb);
+    self->priority = 0x20;
+    ready->priority = 0x20;
+    s_last_pick = -1;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->priority == 0x20 &&
+           self->state == TH_READY,
+           "ChangeThreadPriority(0) to the caller's own priority yields to an equal ready peer");
+    expect(pick_next() == ready_idx, "the equal-priority peer is selected before the caller");
+    ready->state = TH_READY;
+    self->state = TH_RUNNING;
+    s_cur = self_idx;
+    s_last_pick = -1;
+    expect(srt_change_priority(self->uid, 0x20u) == 0u && self->state == TH_READY,
+           "ChangeThreadPriority of the caller's own UID yields to an equal ready peer");
+    expect(pick_next() == ready_idx, "the peer runs first after the caller's own UID");
+    ready->state = TH_READY;
+    self->state = TH_RUNNING;
+    s_cur = self_idx;
+
+    ready->priority = 0x21;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->state == TH_RUNNING,
+           "with no ready peer at the caller's priority the caller keeps running");
+
+    ready->priority = 0x20;
+    s_dispatch_enabled = 0;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->state == TH_RUNNING,
+           "the yield is deferred while dispatch is disabled");
+    s_dispatch_enabled = 1;
+
+    expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
+    s_cur = -1;
+}
+
 /* A rotated queue is observed through the selection order, not the rotation flag:
  * `order` runs the real pick_next() over three READY peers and records which slots
  * it chooses, re-READYing each one the way a thread that yields would. */
@@ -32186,6 +32327,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_refer_thread_status();
     test_change_current_thread_attr();
     test_suspend_resume_errors_and_ready_thread();
+    test_change_thread_priority_contract();
     test_rotate_ready_queue_selection_order();
     test_rotate_equal_priority_yields_to_peers();
     test_suspended_waiter_keeps_wait_semantics();
