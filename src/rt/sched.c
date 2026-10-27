@@ -3088,7 +3088,7 @@ void sr_yield(CpuState *s) {
     s_pause_switch_from_yield = 1;
     switch_to_scheduler();
     s_pause_switch_from_yield = 0;
-    /* resumed later: our registers were restored into *s by the scheduler before SwitchToFiber */
+    /* resumed later: the scheduler restored our registers into *s before switching back to this coroutine */
 }
 
 /* PSP scheduling is strict-priority preemptive: the moment a higher-priority thread becomes
@@ -3960,17 +3960,11 @@ static void sched_exit_current_impl(int32_t status, int delete_object) {
     t->exit_status = status;
     sched_release_thread_resources(t);
     if (getenv("SR_SYSLOG")) fprintf(stderr, "thr 0x%x EXIT (entry 0x%08x)\n", uid, s_tcb[s_cur].entry);
-    /* TCB/fiber leak fix: when a thread exits, free its fiber. The fiber was allocated
-     * by CreateFiberEx in sched_run; without DeleteFiber we leaked one fiber handle
-     * (and its reserved 64 MB virtual address space) per terminated thread over the
-     * entire game session. The fiber cannot be deleted from inside its own body, so we
-     * mark the thread DORMANT here and the scheduler loop will DeleteFiber/NULL
-     * before the next time it would have switched away OR before the fiber is reused.
-     *
-     * SwitchToFiber pulls us out of the live fiber context cleanly; the scheduler
-     * resumes on its main fiber and observes the DORMANT state, then deletes the
-     * fiber (see sched_run's relaunch path -- it already deletes on restart -- and
-     * the reaper loop added below). */
+    /* A coroutine cannot destroy itself while it runs, so the exiting thread only marks
+     * itself DORMANT here and switches to the scheduler. The scheduler destroys the
+     * coroutine and its host stack (sched_destroy_thread_coro) when the slot is reused,
+     * the thread is restarted or deleted, or the scheduler resets. Without that, every
+     * finished thread would keep its 64 MB stack reservation for the whole session. */
     t->state = TH_DORMANT;
     t->suspended = 0;
     t->rot_head = 0;
@@ -3989,12 +3983,10 @@ static void sched_exit_current_impl(int32_t status, int delete_object) {
     sched_wake_thread_joiners(uid, (uint32_t)status);
     sched_wake(uid);             /* release threads in sceKernelWaitThreadEnd on this thread */
     switch_to_scheduler();
-    /* after switch_to_scheduler returns, we are running on this fiber again because the
-     * scheduler relaunch could have reused us (sched_start_thread's DORMANT restart path).
-     * That's safe -- it deleted the old fiber and made a new one in its place, but in
-     * the intermediate window this fiber was "live-but-DORMANT". Returning from the
-     * dispatch() body in fiber_proc is the clean-exit voice of a thread -- it falls
-     * into the for(;;) loop's body which SwitchToFiber back to the scheduler anyway. */
+    /* switch_to_scheduler() is not expected to return here: a restart of this DORMANT
+     * thread recreates its coroutine instead of resuming this one. If it does return,
+     * we fall back into coro_body's loop, which is the defensive path coro_body
+     * describes. */
 }
 
 void sched_exit_current(int32_t status) {
@@ -4808,15 +4800,12 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         if (!t->started) {
             t->started = 1;
             /* Guest calls become native C calls, so a deep guest call chain needs a deep host
-             * stack. Reserve a large fiber stack (committed on demand) to match.
+             * stack. Reserve a large coroutine stack (committed on demand) to match.
              *
-             * NOTE: CreateFiberEx reserves the requested commit/ReservationSize lazily, but a
-             * 1.5 GB total reservation footprint (64MB * ~96 threads after several
-             * launch/relaunch cycles) can return ERROR_NOT_ENOUGH_MEMORY on hosts whose
-             * page file is constrained. We must NULL-check the return before calling
-             * SwitchToFiber -- a NULL fiber would deref garbage and tear the process down.
-             * On failure we surface a clean error and abort (there's no game-state left to
-             * save -- the scheduler loop has no way to recover a thread that never started). */
+             * The reservation is lazy, but 64 MB for each of many threads can still fail on a
+             * host whose page file or address space is constrained, so sr_coro_create may
+             * return NULL. Switching to a NULL coroutine would crash, so a failure is reported
+             * and the run aborts: a thread that never started cannot be recovered. */
             t->coro = sr_coro_create(coro_body, t, SR_GUEST_FIBER_STACK_SIZE);
             if (!t->coro) {
                 fprintf(stderr, "sched_run: sr_coro_create failed for uid=0x%x entry=0x%08x "

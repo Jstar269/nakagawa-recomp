@@ -8,6 +8,10 @@
  * title's runtime-package status, so the library does not re-check every
  * package on every frame. main.c and the screens read and change it through
  * the player_app_* functions.
+ *
+ * It also holds the compatibility preflight that checks a title before it is
+ * built (player_build_compatibility_preflight_for_game), which decrypts an
+ * encrypted EBOOT.BIN from the user's own disc (player_decrypt_disc_eboot).
  */
 
 /* fileno/fsync are POSIX: without this, -std=c99 on glibc leaves them undeclared. */

@@ -39,11 +39,14 @@ player runs it on a worker thread (`start_staging_job()` in `main.c`), which cal
 `nk_iso_extract_game()` from `nk_iso.c`. The disc image is untrusted input, so every size, offset and file name read from it
 is checked before use.
 
-Most retail games ship an encrypted executable. The built-in decryption decrypts it locally,
-from the user's own disc, the way PPSSPP does: the Python tooling (`tools/nk_core/decrypt_tool.py`)
-calls the `nk_decrypt` program (`src/core/nk_decrypt_main.c`), which uses `src/core/nk_psp_*.c`.
-Firmware files are refused by name before any decryption step. Decrypted output never leaves the
-user's machine.
+Most retail games ship an encrypted executable. The player decrypts it locally, from the user's
+own disc, the way PPSSPP does. Before a title is built, the player checks it
+(`player_build_compatibility_preflight_for_game()` in `src/player/player_state.c`); for an
+encrypted `EBOOT.BIN` that check calls `player_decrypt_disc_eboot()`, which reads the file from
+the image and decrypts it with `nk_container_decrypt()` in `src/core/nk_psp_container.c` and the
+other `src/core/nk_psp_*.c` files. The same code is also a command-line program, `nk_decrypt`
+(`src/core/nk_decrypt_main.c`). Firmware files are refused by name before any decryption step,
+and decrypted output never leaves the user's machine.
 
 ## 3. Building the runtime package
 

@@ -26,7 +26,7 @@
  * module loading, decoders, DMA, sceMpeg, sceMp3, the on-screen keyboard, timers, file I/O,
  * audio/display/GE/SAS, message pipes, mailboxes, semaphores and event flags, thread lists),
  * with the acceptance-route and frame-capture instrumentation between them; and last
- * sr_syscall(), which finds a NID's handler (hle_find) and calls it. Each group starts with
+ * sr_syscall(), which finds a NID's handler (hle_find) and calls it. Most groups start with
  * a "---- <name>" banner comment, so search for that, or for a function's name from
  * nid_names.h.
  */
