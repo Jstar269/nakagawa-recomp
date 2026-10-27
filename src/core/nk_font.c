@@ -712,7 +712,7 @@ void nk_font_slot_states(const char *user_data_root, const char *project_root,
         if (manifest_status == NK_FONT_STATUS_OK && manifest.present[slot]) {
             if (font_check_slot_file(cache_dir, slot, &manifest, reason, sizeof(reason))) {
                 state->source = NK_FONT_SOURCE_USER;
-                snprintf(state->detail, sizeof(state->detail), "%s: imported from your PSP.", kSlotRole[slot]);
+                snprintf(state->detail, sizeof(state->detail), "%s: your imported font.", kSlotRole[slot]);
                 continue;
             }
         } else if (manifest_status == NK_FONT_STATUS_INVALID) {
