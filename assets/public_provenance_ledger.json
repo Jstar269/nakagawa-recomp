@@ -1396,7 +1396,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4a16723f1ab2ff322f3b8745c67a48bd25e9f6bd06b152a418d31b05b41df235"
+      "sha256": "fb7bc73ff48bd8b917d3fa536f1c6b930ab3d8e875a83b34a2cd3b5b09c2202f"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1414,7 +1414,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d13eddf9010598200ad16c758328e4c7ae28583a60bd4416f52d680ea3645355"
+      "sha256": "dea7faeebf675f303ed624e869e96d87a13d7acace2266983f4e224e73d000a7"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1462,7 +1462,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5894629fa7eb97d14f8ad18f70886b5d77817f178995dc883b48c26d8d30ca2b"
+      "sha256": "0c40cd9264d3e994747c6346b1f2b793d7872814111ea118fa51bc1e20d43425"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1480,7 +1480,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "aad9b694af8e9753508c8972f2b23fe9e336dd6a673820d00aaf07af42dc5535"
+      "sha256": "37be5d967fcf71854d00d73aa563aab3f2c6c36939306bc3fffb8ad682d38284"
     },
     {
       "path": "docs/LINUX_DEVELOPMENT.md",
@@ -1678,7 +1678,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d650a8d4374731053141e0af9a26981d5b8058ccd95a1d3eaa61d01871e1cb35"
+      "sha256": "b774998d586367d2bc6054acc65b8237c8fe76085a61955486d8894f7e124965"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1771,7 +1771,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "537e4eb1a156648e73bfa62f1bb7781ffe9f2aecb82137756f4af6a31f989079"
+      "sha256": "2f39d4a5c5dc7e211153cd58c5523cc02be8be1e97a6552d6cc12ffd7819c005"
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
@@ -8726,7 +8726,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ebaeb673054c16449ca28553118d0a63811a3e3530d226fcff3aea0c83799812"
+      "sha256": "9d962bea8565434b0aa6f5ed8c7b2a9e51d93dd9e11bffe72abb0c8fc78d7062"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8764,7 +8764,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e2aa246b4a70c5c3ec316b614f92f0f2799b2d13a5f5a2b73964c4bf6c017404"
+      "sha256": "c0ce8f6d7238c27b6002df7e49e9c761fe9f927b3dd3d4217898aed1a38e3c5e"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -12139,7 +12139,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b214da83b1812558779655dbf2d5d913909a254326607dfafa030d6df06be50f"
+      "sha256": "9ae6392a07214b012e7d005a4c66dc293ddfd5e1f891f6fb313e42f05779d258"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -14064,7 +14064,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5ed06710388d0080bc213d16c27ad081b3c3dde20fa1875136d39bf2ad6c3a67"
+      "sha256": "601d5c2e53168a29c137191308f8dfbc4de46ec50e12eb0034587c772cce12ef"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
