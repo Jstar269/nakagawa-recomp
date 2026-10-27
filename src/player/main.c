@@ -4133,8 +4133,8 @@ int main(int argc, char *argv[]) {
             const char *disc = app.game_count > 0 ? app.games[0].disc_id : "TEST80001";
             package_builder_init_session(&app.build_session, disc, "Synthetic Package Fixture");
             player_app_set_build_error(&app, "preflight",
-                                       "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa "
-                                       "does not decrypt games.",
+                                       "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and "
+                                       "built-in decryption stopped: KEY_REQUIRED.",
                                        NULL);
         } else {
             player_app_set_error(&app, ui_test_error_code, ui_test_error_code,

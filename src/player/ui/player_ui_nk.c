@@ -1244,12 +1244,13 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         game, &out->compatibility_expect, &out->compatibility_known_issues,
         &out->compatibility_tier);
     if (!app->settings.developer_mode) out->compatibility_category = NULL;
-    /* The disc's executable is encrypted and no decrypted copy was found. The
-       title screen shows this only while the package still needs it. */
+    /* The disc's executable is encrypted: the player decrypts it from the
+       disc (#295). The title screen shows this only while the package still
+       needs it. */
     out->input_note =
         game->executable_eboot_kind == NK_ISO_EXEC_PSP_ENCRYPTED &&
         game->executable_selection == NK_ISO_EXEC_SELECTION_NONE
-            ? "Nakagawa does not decrypt games; it uses decrypted files from your own copy."
+            ? "Nakagawa decrypts this game's program from your own disc, on this PC."
             : "";
     out->status_rgba = player_ui_library_status_color(game, package_ready);
     out->status_marker = player_ui_library_status_marker(game, package_ready);

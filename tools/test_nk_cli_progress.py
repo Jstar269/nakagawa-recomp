@@ -382,10 +382,10 @@ class NkCliProgressTests(unittest.TestCase):
             events = [json.loads(line) for line in lines]
             fail_event = events[-1]
             self.assertEqual(fail_event["status"], "FAIL")
-            # Built-in decryption was removed: an encrypted executable fails closed with a named,
-            # plain instruction to supply a decrypted copy, never a decryption attempt.
+            # The command-line build decrypts nothing: an encrypted executable with no
+            # decrypted copy fails closed by name and points at the player's disc check.
             self.assertIn("ENCRYPTED_EXECUTABLE", fail_event["message"])
-            self.assertIn("does not decrypt games", fail_event["message"])
+            self.assertIn("The player decrypts it from your own disc", fail_event["message"])
             self.assertNotRegex(fail_event["message"], r"#[0-9]+")
 
 
