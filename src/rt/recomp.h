@@ -1014,6 +1014,46 @@ uint32_t sr_register_count(void);  /* number of sr_register() calls performed so
  * never on this path), so enabling detection cannot slow dispatch itself. */
 RecompFn sr_lookup(uint32_t addr);
 
+/* Guest function names from tools/codegen.py --symbol-map (names and addresses only). The
+ * generated sr_register_all() hands over one table sorted by address; size 0 means only the
+ * start address is named. A build without a map registers nothing, so every lookup is NULL
+ * and every report prints exactly what it printed before. */
+typedef struct SrGuestSymbol {
+    uint32_t addr;
+    uint32_t size;
+    const char *name;
+} SrGuestSymbol;
+void sr_guest_symbols_register(const SrGuestSymbol *table, uint32_t count);
+/* The registered symbol naming pc, or NULL. */
+const SrGuestSymbol *sr_guest_symbol_at(uint32_t pc);
+/* "name" or "name+0x<offset>" for pc in buf, or "" when no symbol names it. */
+const char *sr_guest_symbol_label(uint32_t pc, char *buf, size_t len);
+
+/* The entry of a sorted table whose start is pc, or whose nonzero size covers pc. */
+static inline const SrGuestSymbol *sr_guest_symbol_find(const SrGuestSymbol *table,
+                                                        uint32_t count, uint32_t pc) {
+    uint32_t lo = 0u, hi = count;  /* first entry whose start is above pc */
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        if (table[mid].addr <= pc) lo = mid + 1u;
+        else hi = mid;
+    }
+    if (lo == 0u) return NULL;
+    const SrGuestSymbol *sym = &table[lo - 1u];
+    return pc == sym->addr || pc - sym->addr < sym->size ? sym : NULL;
+}
+
+/* sr_guest_symbol_label's text for a symbol found for pc (NULL gives ""). */
+static inline const char *sr_guest_symbol_format(const SrGuestSymbol *sym, uint32_t pc,
+                                                 char *buf, size_t len) {
+    if (len == 0u) return "";
+    buf[0] = '\0';
+    if (!sym) return buf;
+    if (pc == sym->addr) snprintf(buf, len, "%s", sym->name);
+    else snprintf(buf, len, "%s+0x%" PRIx32, sym->name, pc - sym->addr);
+    return buf;
+}
+
 /* Codegen registers exact analyzer-owned, end-exclusive executable spans before
  * guest execution. Mapped RAM alone never grants interpreter fetch authority.
  * Registration validates structural ownership (alignment, non-empty extent) and
@@ -1794,6 +1834,29 @@ typedef struct SrThreadInfo {
     uint32_t releaseCount;
 } SrThreadInfo;
 int      sched_thread_info(uint32_t uid, SrThreadInfo *out);
+/* sceKernelGetThreadmanIdList list classes: the public PSPSDK SceKernelIdListType values
+ * (pspthreadman.h). Which other values a PSP accepts is UNMEASURED. */
+#define SR_TMID_THREAD                1
+#define SR_TMID_SEMAPHORE             2
+#define SR_TMID_EVENT_FLAG            3
+#define SR_TMID_MBOX                  4
+#define SR_TMID_VPL                   5
+#define SR_TMID_FPL                   6
+#define SR_TMID_MPIPE                 7
+#define SR_TMID_CALLBACK              8
+#define SR_TMID_THREAD_EVENT_HANDLER  9
+#define SR_TMID_ALARM                 10
+#define SR_TMID_VTIMER                11
+#define SR_TMID_SLEEP_THREAD          64
+#define SR_TMID_DELAY_THREAD          65
+#define SR_TMID_SUSPEND_THREAD        66
+#define SR_TMID_DORMANT_THREAD        67
+typedef void (*SrUidVisitor)(uint32_t uid, void *ctx);
+/* Calls visit(uid, ctx), in table order, for every live object of list class `tmid` that
+ * the scheduler owns: threads, the four thread-state lists and alarms. The state lists use
+ * the same status and wait type sceKernelReferThreadStatus reports. Returns 1 when `tmid` is
+ * one of those classes, 0 otherwise (nothing visited). */
+int      sched_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx);
 uint32_t sched_thread_exit_status(uint32_t uid);
 void     sched_set_current_join_target(uint32_t uid);
 void     sched_clear_current_join_target(void);

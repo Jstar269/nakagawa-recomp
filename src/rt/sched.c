@@ -2577,20 +2577,10 @@ static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority,
         g_launcher_uid = t->uid;
         if (getenv("SR_THLOG")) fprintf(stderr, "LAUNCHER_UID_CAPTURE: launcher uid=0x%x\n", t->uid);
     }
-    /* Priority-inversion guard, applied only to a configured launcher role. A launcher
-     * that spins in a module_start loop with thousands of SR_YIELD escapes per second is
-     * normally the highest-priority user thread (32 < worker pri ~38-40), so the scheduler
-     * always schedules it and starves the worker that drives SetFrameBuf / WaitVblank.
-     * Once the launcher uid is known, demote it below any probable worker priority so the
-     * worker can run. Disable with SR_NO_LAUNCHER_DEMOTE=1 (back to original behaviour).
-     * A build with no configured launcher binding never reaches this. */
-    if (!getenv("SR_NO_LAUNCHER_DEMOTE") && sr_title_config_is_launcher_entry(entry)) {
-        const int demoted_priority = 50;
-        t->priority = demoted_priority;
-        sr_compat_fired("SCHEDULER_HOOKS", entry, "launcher priority demotion");
-        if (getenv("SR_THLOG")) fprintf(stderr, "LAUNCHER_DEMOTE: launcher uid=0x%x -> priority=%d\n",
-                                        t->uid, demoted_priority);
-    }
+    /* A captured role never changes the priority its creator passed. The launcher used to
+     * be demoted to 50 here (#363) against a launcher that out-prioritized the worker and
+     * never blocked; under strict priority (pick_next) a launcher that blocks, for example
+     * in sceKernelSleepThread after starting its worker, lets that worker run on its own. */
     /* Give the thread a stack, the module gp, and a per-thread k0 (r26) area. The PSP kernel
      * sets k0 to a small per-thread control region near the top of the thread stack, and the
      * game's thread bodies use it as a base pointer (e.g. sw r21,4(k0)); leaving it 0 faults.
@@ -2789,7 +2779,7 @@ static void sched_rotation_mark(int head) {
  * numerically lower priority exists. There is no aging/anti-starvation on hardware -- a
  * busy higher-priority thread legitimately starves lower-priority threads. (An earlier
  * "anti-starvation" rotation here forced the first OTHER ready thread -- of any priority --
- * every third decision, which let a demoted priority-50 launcher preempt the priority-3x
+ * every third decision, which let a priority-50 launcher preempt the priority-3x
  * worker; that violated the model and is gone. Do not reintroduce it: if a route livelocks
  * on a busy-wait that hardware would satisfy, fix the subsystem that fails to produce the
  * awaited state.)
@@ -3196,17 +3186,35 @@ void sched_preempt(void) {
 #endif
 }
 
+/* Diagnostic switches read on every block, delay or scheduler pass. The environment is
+ * fixed once the process starts, and an uncached getenv takes the C runtime's environment
+ * lock and compares the name against every variable (#1296), so each is read once. */
+static int sched_env_switch(int *cached, const char *name) {
+    if (*cached < 0) *cached = getenv(name) != NULL;
+    return *cached;
+}
+
+static int sched_delaylog_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_DELAYLOG");
+}
+
+static int sched_blocklog_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_BLOCKLOG");
+}
+
 void sched_delay_current(uint64_t usec) {
     if (s_cur < 0) return;
     TCB *t = &s_tcb[s_cur];
     uint64_t duration = usec ? usec : 1u;
     vtime_refresh();
     uint64_t wake = scheduler_deadline_after(duration);
-    if (getenv("SR_DELAYLOG"))
+    if (sched_delaylog_on())
         fprintf(stderr, "DELAY uid=0x%x entry=0x%08x usec=%llu (%.1fs) wake=%llu\n",
                 t->uid, t->entry, (unsigned long long)usec,
                 (double)usec / 1e6, (unsigned long long)wake);
-    if (usec > 2000000u && getenv("SR_DELAYLOG"))   /* > 2s: catch a bogus huge delay */
+    if (usec > 2000000u && sched_delaylog_on())   /* > 2s: catch a bogus huge delay */
         fprintf(stderr, "BIG DELAY uid=0x%x entry=0x%08x usec=%llu (%.1fs)\n",
                 t->uid, t->entry, (unsigned long long)usec, (double)usec / 1e6);
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
@@ -3221,7 +3229,7 @@ void sched_delay_current(uint64_t usec) {
 void sched_block_on(uint32_t obj) {
     if (s_cur < 0) return;
     TCB *t = &s_tcb[s_cur];
-    if (getenv("SR_BLOCKLOG")) fprintf(stderr, "BLOCK: uid 0x%x on obj 0x%x (pc=0x%x ra=0x%x)\n", t->uid, obj, s_cpu->pc, s_cpu->r[31]);
+    if (sched_blocklog_on()) fprintf(stderr, "BLOCK: uid 0x%x on obj 0x%x (pc=0x%x ra=0x%x)\n", t->uid, obj, s_cpu->pc, s_cpu->r[31]);
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, obj);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, obj, 0u);
@@ -3769,7 +3777,8 @@ void sched_thread_sleep(void) {
 void sched_thread_sleep_cb(void) {
     if (s_cur < 0) return;
     TCB *t = &s_tcb[s_cur];
-    if (getenv("SR_WAKELOG")) {
+    static int wakelog = -1;
+    if (sched_env_switch(&wakelog, "SR_WAKELOG")) {
         fprintf(stderr, "DEBUG_SLEEP_CB: thread=0x%x wakeups=%d state=%d\n", t->uid, t->wakeups, t->state);
     }
     if (t->wakeups > 0) {
@@ -3932,6 +3941,33 @@ int sched_thread_info(uint32_t uid, SrThreadInfo *out) {
     out->threadPreemptCount = status.threadPreemptCount;
     out->releaseCount = status.releaseCount;
     return 0;
+}
+
+/* sceKernelGetThreadmanIdList's scheduler-owned classes. A deleted thread is no longer a
+ * kernel object, so no list names it. The order is TCB slot order; the PSP's own order is
+ * UNMEASURED. */
+int sched_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx) {
+    if (tmid == SR_TMID_ALARM) {
+        for (unsigned i = 0; i < SCHED_ALARM_MAX; i++)
+            if (s_alarms[i].uid) visit(s_alarms[i].uid, ctx);
+        return 1;
+    }
+    if (tmid != SR_TMID_THREAD && (tmid < SR_TMID_SLEEP_THREAD || tmid > SR_TMID_DORMANT_THREAD))
+        return 0;
+    for (int i = 0; i < s_ntcb; i++) {
+        const TCB *t = &s_tcb[i];
+        if (t->deleted) continue;
+        int listed;
+        switch (tmid) {
+            case SR_TMID_SLEEP_THREAD:   listed = psp_wait_type(t) == PSP_WAIT_SLEEP; break;
+            case SR_TMID_DELAY_THREAD:   listed = psp_wait_type(t) == PSP_WAIT_DELAY; break;
+            case SR_TMID_SUSPEND_THREAD: listed = (psp_thread_status(t) & PSP_THREAD_SUSPEND) != 0; break;
+            case SR_TMID_DORMANT_THREAD: listed = t->state == TH_DORMANT; break;
+            default:                     listed = 1; break;
+        }
+        if (listed) visit(t->uid, ctx);
+    }
+    return 1;
 }
 
 static int sched_pc_in_module(uint32_t pc, uint32_t start, uint32_t end) {
@@ -4701,6 +4737,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
 
     static const char *stn[] = {"DORMANT", "READY", "RUNNING", "WAIT_DELAY", "WAIT_OBJ"};
     unsigned long long iters = 0;
+    const int sched_dump = getenv("SCHED_DUMP") != NULL;   /* once, not per pass (#1296) */
     /* Idle no-progress accounting; see the guard in the idle path below. */
     uint64_t idle_vbl_mark = s_vbl_count;
     int idle_no_progress = 0;
@@ -4711,7 +4748,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
          * successful window presentations. The guest is not resumed again. */
         if (sr_sched_stop_requested && sr_sched_stop_requested()) break;
         if (s_pause_requested && sched_pause_run() == SR_PAUSE_EXIT_STOP) break;
-        if (getenv("SCHED_DUMP") && (++iters % 400000) == 0) {
+        if (sched_dump && (++iters % 400000) == 0) {
             fprintf(stderr, "--- sched dump (tick=%llu) ---\n", (unsigned long long)s_tick);
             for (int i = 0; i < s_ntcb; i++)
                 fprintf(stderr, "  uid 0x%x entry 0x%08x %s prio %d wait_obj 0x%x\n",
