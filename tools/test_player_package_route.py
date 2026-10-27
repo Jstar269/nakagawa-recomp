@@ -384,7 +384,13 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertNotIn("#285", readme)
         self.assertIn("in the works", readme.lower())
         self.assertIn("START SETUP WIZARD", readme)
-        self.assertIn("ADD ANOTHER ISO", readme)
+        # The default launcher adds later games through the library's add tile,
+        # not the legacy renderer's ADD ANOTHER ISO button.
+        self.assertIn("Add a disc image you own", readme)
+        self.assertIn(
+            '"Add a disc image you own"',
+            (ROOT / "src" / "player" / "ui" / "scr_library.c").read_text(encoding="utf-8"),
+        )
         self.assertNotIn("click **Add Game**", readme)
         self.assertNotIn("No second verified title.", readme)
         self.assertIn("consent once", readme.lower())

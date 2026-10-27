@@ -13,8 +13,8 @@ documentation, not what a game itself shows or plays.
 
 ## What we aim for
 
-The launcher (the library, the setup wizard, the error screens and About) follows a written design system,
-[`docs/PLAYER_UI_DESIGN.md`](docs/PLAYER_UI_DESIGN.md). Its accessibility rules are:
+The launcher (the library, the setup wizard, Settings, Controller settings, the error screens and About) follows a
+written design system, [`docs/PLAYER_UI_DESIGN.md`](docs/PLAYER_UI_DESIGN.md). Its accessibility rules are:
 
 - **Controller first, keyboard and mouse equal.** Every launcher action is reachable with a D-pad (or arrow keys) and
   two buttons, focus is always visible, and nothing needs a pointer or hover.
@@ -62,9 +62,9 @@ so we use its contrast and target-size values as a guide for the launcher only.
   900 pixels, and there is a minimum window size.
 - **Display scale** follows your operating system's scale for the window automatically, so text and targets grow with
   Windows' "Scale" setting.
-- **Reduce motion.** *Settings > Reduce motion (UI only)* freezes the animated background waves and turns pulses and
+- **Reduce motion.** *Settings > Reduce motion* freezes the animated background waves and turns pulses and
   sweeps into cuts. It is saved as `reduce_motion` in the player's `settings.json`.
-- **Volume** has its own setting (*Settings > Master volume*), separate from the game.
+- **Volume** has its own setting (*Settings > Game volume*), separate from any volume setting inside a game.
 - **Status and errors are words first.** Every error screen has a plain-language title, a "what to do" sentence and
   a named recovery button. A disc the player cannot use is explained, not just refused.
 
@@ -85,8 +85,7 @@ We know about each of these. They are open work, not a promise of dates. Each is
 | **No user control of text size, UI scale or contrast.** The design system can scale the layout 90% to 150% for text and 100% to 200% for the UI, and has a high-contrast focus ring. The player does not expose these yet: text size is fixed at 100%, scale follows the display, and the focus ring is the standard one. | You cannot make launcher text larger than your operating system's display scale makes it. | Raise Windows' display scale or resolution. |
 | **The player ignores system preferences** for high contrast, reduced motion and text size. | Windows' own settings for these do not change the player. | Turn on *Reduce motion* in the player's Settings. |
 | **No light theme and no colour-blind palette.** | The launcher is always the dark theme. Status is already word-and-shape, so meaning is kept, but the accent and status colours are fixed. | None yet. |
-| **Settings and Controller settings use the older launcher screens.** They are not yet drawn with the new design system, so their spacing, focus treatment and text rendering differ from the rest. If the typography library is missing they fall back to a small bitmap font. | These screens can be harder to read than the rest. | None yet. |
-| **Launcher shortcuts and in-game keyboard keys are fixed.** Remapping applies to controller inputs only. The in-game keyboard layout mirrors a PSP (`X`, `Z`, `A`, `S`, `Q`, `W`, Enter, Shift, arrow keys; see [`docs/SETUP.md`](docs/SETUP.md)). | One-handed or alternative-key setups need a controller or an external remapping tool. | Use a controller (any SDL3 pad), or a system-level key remapper. |
+| **Launcher shortcuts are fixed.** The in-game keys mirror a PSP by default (`X`, `Z`, `A`, `S`, `Q`, `W`, Enter, Shift, arrow keys; see [`docs/SETUP.md`](docs/SETUP.md)), and you can change them on the Controls page in Settings (choose **KEYBOARD**, [#1467](https://github.com/Jstar269/nakagawa-recomp/pull/1467)). The launcher's own keys, and Esc, F1 and F3 in a game, can't be changed. | Moving around the launcher with other keys needs a controller or an external remapping tool. | Use a controller (any SDL3 pad), or a system-level key remapper. |
 | **No captions, subtitles or transcripts.** The player shows whatever a game shows. Spoken or musical content in a game is not captioned. | If a game relies on sound for information, the player adds nothing to replace it. | None. |
 | **No photosensitivity protection.** The player does not limit flashing or motion in a running game. *Reduce motion* affects the launcher only. | A game that flashes will flash. | Check the game's own content warnings before playing. |
 | **Launcher text is English only.** | No translation. | None yet. |
@@ -128,7 +127,7 @@ If your change adds, changes or removes a barrier, update the tables above in th
 
 Open an issue with the
 [**Accessibility barrier** form](https://github.com/Jstar269/nakagawa-recomp/issues/new?template=accessibility.yml).
-It labels the issue `accessibility`. Please keep accessibility reports separate from general bugs so they can be
+Its title starts with `[Accessibility]:`. Please keep accessibility reports separate from general bugs so they can be
 triaged for what they block.
 
 It helps if you tell us:
@@ -139,8 +138,9 @@ It helps if you tell us:
 - your Windows version, display size and scale, and the player's revision;
 - how bad it is (below), and any workaround you found.
 
-You do not need to diagnose the cause, or to know any technical term. If a form is itself a barrier, comment on any
-open issue, or use [GitHub private reporting](https://github.com/Jstar269/nakagawa-recomp/security/advisories/new)
+You do not need to diagnose the cause, or to know any technical term. If a form is itself a barrier, post in the
+[Help](https://github.com/Jstar269/nakagawa-recomp/discussions/categories/help) category of Discussions or comment on
+any open issue, or use [GitHub private reporting](https://github.com/Jstar269/nakagawa-recomp/security/advisories/new)
 if the report contains something private, and say it is an accessibility report. Do not attach game files, private
 paths or personal data.
 
