@@ -285,7 +285,7 @@ The source archive step writes `nakagawa-recomp-<version>-prerequisite-sources.z
 Before a maintainer treats the zip as publishable, inspect it with:
 
 ```powershell
-$files = Get-ChildItem -LiteralPath $Stage -Recurse -File
+$files = Get-ChildItem -LiteralPath $Stage -Recurse -File -Force
 $forbidden = @($files | Where-Object {
     $relative = [System.IO.Path]::GetRelativePath($Stage, $_.FullName).Replace('\', '/')
     $_.Extension -match '^\.(iso|prx|elf|eboot|sav|key|pgf|pgd)$' -and
@@ -296,8 +296,19 @@ if ($forbidden.Count -ne 0) {
     $forbidden | ForEach-Object { Write-Error $_.FullName }
     throw 'forbidden package file found'
 }
+# Every top-level entry except source/: both publish-audit legs below check source/, and its
+# tests carry synthetic private-path strings on purpose. Fixed strings catch this machine's
+# own folders in backslash, slash and JSON-escaped spelling; add any other folder you build from.
+$roots = @($env:USERPROFILE, [IO.Path]::GetTempPath().TrimEnd('\')) |
+    Where-Object { $_ } |
+    ForEach-Object { $_; $_.Replace('\', '/'); $_.Replace('\', '\\') } |
+    Sort-Object -Unique
+$targets = @(Get-ChildItem -LiteralPath $Stage -Force |
+    Where-Object Name -ne 'source' | ForEach-Object FullName)
 $privateMatches = @(
-    rg -a -l -i '[A-Z]:[\\/][^\\r\\n]*[\\/](private|\\.codex)([\\/]|$)' $Stage 2>$null
+    @(foreach ($root in $roots) { rg -a -l -i -F -- $root @targets 2>$null }) +
+    @(rg -a -l -i '[A-Z]:([\\/][^\r\n]*)?[\\/](private|\.codex)([\\/]|$)' @targets 2>$null) |
+        Sort-Object -Unique
 )
 if ($privateMatches.Count -ne 0) {
     $privateMatches | ForEach-Object { Write-Error $_ }
