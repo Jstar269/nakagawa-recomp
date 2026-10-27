@@ -153,8 +153,8 @@ capability layers rather than being reimplemented in the launcher.
 The flow below is the complete productization target, not a description of the current
 executable. Today the player opens a native SDL file picker, inspects a selected ISO, runs
 bounded ISO/XB staging for supported inputs, builds a runtime package from the library with
-live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). The player and CLI use decrypted
-files from your own copy and do not decrypt games ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); retail-disc hash validation
+live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). The player decrypts the encrypted
+executable and modules of a UMD disc image you own, locally, when it checks the disc ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); retail-disc hash validation
 and one-click play from an arbitrary ISO without the developer toolchain remain unbuilt
 ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
@@ -185,7 +185,7 @@ and one-click play from an arbitrary ISO without the developer toolchain remain 
      under those roots (for example `xbdata`) must be present, or the disc is
      refused with `[STAGE_DATA_FOLDER_MISSING]` before anything is promoted.
    - Native project-authored XB parsing validates FST spans, names, bounds, and nested LZS/Huffman payloads before writing members under the runtime-compatible `<archive>.xb.d/` directories.
-   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`. This staging step does not decrypt files, and neither does any other part of the player ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`. This staging step does not decrypt files; the disc check before it decrypts the encrypted `EBOOT.BIN` and modules that have no plain copy yet ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
    - Atomic directory promotion occurs only after the worker completes; failed/cancelled staging is discarded.
    - The promoted root is registered with a persistent asset census and becomes
      the launch session's preferred `SR_DATAROOT`/`SR_MEMSTICK` source.

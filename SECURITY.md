@@ -2,26 +2,23 @@
 
 ## Supported versions
 
-The unreleased `main` branch is currently the only supported development line. There are no supported
-release versions yet, and the project does not claim a release-grade security posture: treat arbitrary
+`main` and the latest release, v0.0.1, are supported. The project does not claim a release-grade security posture: treat arbitrary
 PSP and game inputs as untrusted until the parser and guest-span hardening work tracked in GitHub Issues
 is complete.
 
 | Version | Supported | Status / Support Policy |
 | :--- | :--- | :--- |
 | `main` | :white_check_mark: | Active development line. Fixes for all security reports land here. |
-| `< v0.0.1` | :x: | No earlier release has been published. |
-| `v0.0.1` | :hourglass: | Planned first experimental platform release ([#278](https://github.com/Jstar269/nakagawa-recomp/issues/278)); not yet published. |
+| `v0.0.1` | :white_check_mark: | First experimental release ([#278](https://github.com/Jstar269/nakagawa-recomp/issues/278)). Fixes land on `main` and ship in the next release; no backported point releases. |
 
-### Release policy transition (v0.0.1)
+### Release policy
 
-When the first formal experimental platform release (`v0.0.1`) ships:
+Since the first experimental release, `v0.0.1`:
 
 - The `main` branch remains the primary supported development line.
 - `v0.0.1` is an experimental prerelease milestone, not an LTS or patch-supported line: fixes for security issues identified in `v0.0.1` land on `main` and flow into subsequent releases rather than receiving backported security point releases.
 - A release stops receiving security updates as soon as the next release is published; move to the newest
   release or to `main` to keep receiving fixes.
-- Release qualification authority [issue #278](https://github.com/Jstar269/nakagawa-recomp/issues/278) owns updating this policy and marking `v0.0.1` active atomically at release publication time. No release has been published.
 
 ## Report a vulnerability
 

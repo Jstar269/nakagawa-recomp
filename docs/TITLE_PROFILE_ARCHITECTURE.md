@@ -184,5 +184,5 @@ For the native player’s current implementation boundary and process lifecycle,
 - Temporary profile-owned compatibility bindings remain visible debt under #363.
 - HST reent-table configuration remains title-gated compatibility debt under #363; generic
   dispatch rejection and diagnostic cleanup do not establish full second-title support.
-- The first release is v0.0.1 (#333); reconciling the root release metadata at the approved candidate is #513.
+- The first release is v0.0.1 (#333); its root release metadata was set to 0.0.1 at the candidate freeze (#513).
 - Private title inputs and private acceptance remain separate from public schema and synthetic-fixture results.

@@ -46,9 +46,10 @@ are just starting.
 
 ## Can I play it?
 
-**Not as a simple download yet.** No release is out today. The first one, v0.0.1, is being prepared
-([#1094](https://github.com/Jstar269/nakagawa-recomp/pull/1094), [#278](https://github.com/Jstar269/nakagawa-recomp/issues/278)),
-and there's no date yet. Until then you build the player from source yourself: see [Build it yourself](#build-it-yourself).
+**Yes, with your own copy of a supported game.** Download v0.0.1, the first release, from its
+[release page](https://github.com/Jstar269/nakagawa-recomp/releases/tag/v0.0.1): one ZIP for Windows 11 that already holds the build tools, so it needs
+no other download. The [release notes](docs/RELEASE_NOTES_v0.0.1.md) say what works, what doesn't yet, and how to
+check the download. You can also [build it yourself](#build-it-yourself).
 
 To play, you need:
 

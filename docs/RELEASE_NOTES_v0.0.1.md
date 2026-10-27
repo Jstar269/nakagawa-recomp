@@ -1,6 +1,6 @@
 # Nakagawa Recomp v0.0.1 Release Notes
 
-Status: DRAFT. Not released yet.
+Status: CURRENT. These are the notes of the v0.0.1 release; its release page names the exact commit.
 Release qualification authority: [issue #278](https://github.com/Jstar269/nakagawa-recomp/issues/278).
 Audience: players and contributors trying the first public build.
 
@@ -8,8 +8,8 @@ Audience: players and contributors trying the first public build.
 
 Nakagawa Recomp is an experimental static recompiler. It takes the program code of a PlayStation Portable (PSP) game
 you own, translates it into C, links it with a native C runtime, and runs the result as a Windows program through
-SDL3 and Vulkan. If the game's code is encrypted on a disc you own, the player decrypts it on your PC before
-recompiling it.
+SDL3 and Vulkan. Most PSP games keep their program files encrypted; the player decrypts them from your own disc image,
+on your PC, the way the PPSSPP emulator does ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
 
 v0.0.1 is the first public build. It brings a standalone desktop player (`build/nakagawa_player.exe`), ahead-of-time
 (AOT) package building, test suites you can run yourself, and a runtime that never fakes what it can't do: when a game
@@ -17,13 +17,18 @@ needs something unsupported, missing or not built yet, it stops and tells you cl
 
 ## What you can do
 
+- **Play Hot Shots Tennis at full speed.** Hot Shots Tennis (UCUS98701) is rated **Playable**. It is a game that
+  draws 30 frames per second, and this release runs it at that rate in menus and in matches on the reference PC
+  named below ([#1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296)). You need your own copy of the
+  game.
 - **Identify a disc from its `PARAM.SFO`.** Drag a PSP `.iso` into the player, or pick one. The player reads
   `PSP_GAME/PARAM.SFO` itself to find the title and disc ID, and checks it against the supported title profiles. It
   never uses an update SFO or the volume ID ([#426](https://github.com/Jstar269/nakagawa-recomp/pull/426)).
 - **Play the showcase demos.** Two PSP demos the project wrote itself, a lit, textured 3D scene and a Breakout game
   with paddle input, sound effects and a saved high score, are built from source into the same plaintext ISOs and
-  packages every time. The player finds them on its own and shows their icons
-  ([#477](https://github.com/Jstar269/nakagawa-recomp/pull/477)).
+  packages every time. The library lists them in their own **Test this PC** row, apart from your games, so you can
+  check that graphics, sound and controls work before you add a game
+  ([#477](https://github.com/Jstar269/nakagawa-recomp/pull/477), [#1534](https://github.com/Jstar269/nakagawa-recomp/pull/1534)).
 - **Set up and calibrate controllers in the player.** Open Controller Settings (`VIEW_CONTROLLER_SETTINGS`) from
   Settings to remap the 14 digital PSP controls and the analog stick. It warns about conflicts, sets the dead zone and
   trigger threshold, shows your inputs live, and saves the profile safely to `input_profile.json`
@@ -33,30 +38,38 @@ needs something unsupported, missing or not built yet, it stops and tells you cl
   time taken, and you can cancel, which stops every process the build started. In a running game, `F3` shows a
   performance overlay ([#465](https://github.com/Jstar269/nakagawa-recomp/pull/465),
   [#469](https://github.com/Jstar269/nakagawa-recomp/pull/469)).
-- **Get the build tools with one consent.** If your PC doesn't have the tools **BUILD PACKAGE** needs, the player
-  shows one consent card listing each pinned tool's version, source, size and licence, and the total. Once you agree,
-  it downloads them, checks each one, and carries on with the build
-  ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)). You can also install Python, GNU Make and the
-  MSYS2 UCRT64 compiler yourself.
+- **Build with no download.** The release ZIP carries the pinned build tools **BUILD PACKAGE** needs (CPython 3.15.1,
+  and the MSYS2 UCRT64 compiler, GNU Make, SDL3 and their libraries) in `prereqs/`. The player checks that folder
+  against the pinned manifest before each build and then uses it, with no consent card and no network connection
+  ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). Without that folder, as in a source checkout,
+  the player offers one consent card for the same pinned tools, listing each one's version, source, size and licence,
+  then downloads and checks them ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)). You can also
+  install Python, GNU Make and the MSYS2 UCRT64 compiler yourself.
 - **See real disc icons, and keep your settings.** Library cards show the disc's own `ICON0.PNG` over a dimmed
   `PIC1.PNG` background, read safely from the ISO, with a lettered badge if there is none. Your settings (resolution
   scale, frame cap, VSync, reduce motion) are saved safely to `settings.json` and come back after a restart, and the
   status messages match what is really happening ([#458](https://github.com/Jstar269/nakagawa-recomp/pull/458)).
-- **Encrypted discs are decrypted on your PC.** The player decrypts your own disc's encrypted `EBOOT.BIN` and modules
-  locally, the way PPSSPP does, into `<user data>/titles/<DISC_ID>/decrypted/` ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). It
-  never downloads games and never decrypts firmware. A file it can't decrypt stops with a message that names it and
-  says why, and a plain copy from your own disc placed in that folder is used instead
-  ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)). Built-in decryption first came in [#548](https://github.com/Jstar269/nakagawa-recomp/pull/548) and
-  [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550), was removed in [#1187](https://github.com/Jstar269/nakagawa-recomp/pull/1187), and is back since
-  [#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494).
+- **Use an encrypted disc as it is.** When you add a UMD disc image you own, the player decrypts its encrypted
+  `EBOOT.BIN` and the encrypted modules it needs, on your PC, with tables built into the program, the way PPSSPP does
+  ([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)). The decrypted files stay on your PC, in
+  `<user data>/titles/<DISC_ID>/decrypted/`. Nothing is downloaded, and PSP system software (firmware) is never
+  decrypted. If a file can't be decrypted, the check names it and the reason, and a plain copy you made from your own
+  disc in that folder is used instead ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)).
+- **Pause a running game.** Press `Esc`, `F1` or the controller's Guide button: the game stops on its last frame
+  under a dark screen with its sound held, and a button you were holding does nothing until you press it again. Press
+  the same key to carry on where it stopped. The pause has no menu yet
+  ([#1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159)).
 - **Read game files straight from archives.** The runtime serves game data directly from validated `.xb` archives
   through a read-only virtual filesystem (`sceIoOpen`, `sceIoGetstat`, `sceIoDopen`), so you don't have to unpack
   loose files before playing ([#475](https://github.com/Jstar269/nakagawa-recomp/pull/475)).
-- **Import the PSP's own fonts.** Copy the system fonts from your own PSP (`jpn0.pgf`, `ltn0.pgf`–`ltn15.pgf`,
-  `kr0.pgf`) and import them into `<user data>/fonts/v2/` with `python tools/nk_cli.py fonts import <folder>`. The
-  importer checks each file's header, writes its manifest in one safe step, and the project-authored public PGF
-  reader draws them ([#441](https://github.com/Jstar269/nakagawa-recomp/pull/441),
-  [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)).
+- **Use your own PSP's fonts.** Games draw their text with the PSP's system fonts, which come from your own PSP:
+  copy `jpn0.pgf`, `ltn0.pgf`–`ltn15.pgf` and `kr0.pgf` from its `flash0:/font/` folder to your PC. In the player's
+  setup wizard, the **Fonts & System** step has **IMPORT FONTS FOLDER**; from a command line,
+  `python tools/nk_cli.py fonts import <folder>` does the same. The importer checks each file's header and writes its
+  manifest in one safe step, and the project-authored PGF reader draws them
+  ([#441](https://github.com/Jstar269/nakagawa-recomp/pull/441), [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)).
+  When a game asks for a font you haven't imported, it gets a stand-in, and the Fonts check and the game's log say
+  which one ([#1469](https://github.com/Jstar269/nakagawa-recomp/pull/1469)).
 
 ## Public verification you can reproduce
 
@@ -94,29 +107,30 @@ They create their synthetic inputs under the ignored `build/` folder.
 
 ## What v0.0.1 is not
 
-- **No games included.** This repository contains no game programs, game assets, firmware modules or private test
-  recordings. Nakagawa Recomp never downloads games or game data. With your consent, it downloads only
-  the build tools named in the prerequisite manifest. You supply your own disc image of a game you own, as an
+- **No games included.** This repository contains no game programs, game assets, firmware modules, decryption keys
+  or private test recordings. Nakagawa Recomp never downloads games or game data, and the release makes no network
+  connection: its build tools are in the ZIP. Only without them, as in a source checkout, does the player offer to
+  download the build tools named in the prerequisite manifest, with your consent. You supply your own disc image of a
+  game you own, as an
   uncompressed standard `.iso` ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
-- **Encrypted games are decrypted from your own disc.** Nakagawa Recomp is an experimental static recompiler, not a
-  finished emulator for everyone. No commercial PSP game is claimed to play end to end from an ISO alone. Most retail
-  PSP programs (`EBOOT.BIN` and `.prx` modules) are encrypted; the player decrypts them from a UMD disc image you own,
-  on your PC, with built-in tables ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). One it can't decrypt is named and
-  stops there. PSN `EBOOT.PBP` packages aren't decrypted yet, and PGD-protected content is unsupported;
-  broader ISO-to-Play support is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
+- **Not a finished emulator, and not every kind of game file yet.** Nakagawa Recomp is an experimental static
+  recompiler. Hot Shots Tennis is the one game rated **Playable**; [`COMPATIBILITY.md`](COMPATIBILITY.md) lists
+  what each tested game reaches. The
+  player decrypts UMD disc images (`.iso`); PSN downloads (`EBOOT.PBP` packages) are not decrypted yet, and
+  PGD-protected content is unsupported; broader ISO-to-Play support is in the works
+  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 - **Other games are experimental.** A valid PSP disc with no profile yet is imported as **Experimental**. The card
   says compatibility is unknown, the checklist shows what is missing, and Play stays off until a matching runtime
   package exists. PAC-MAN Championship Edition reaches its menu and plays a stage on the maintainer's copy, through
   general fixes with no title-specific branch ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552),
   [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556)); the full game and other games are in the works
   ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Images that aren't PSP discs are refused.
-- **The PSP's own lettering needs your own fonts.** To see a game's text in the PSP's own fonts, you need the Sony
-  font files (`jpn0.pgf`, `ltn0.pgf`) copied from a real PSP (`flash0:/font/`). The project doesn't include or share
-  them; you copy them from your own PSP and import them with `python tools/nk_cli.py fonts import <folder>`
-  ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300)). Public builds read them with the project-authored
-  PGF reader ([#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). The project's own built-in fonts are made
-  from open font files by its own converter, `tools/ttf2pgf.py`
-  ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
+- **No PSP fonts included.** The PSP's own fonts belong to Sony, so the project doesn't include or share them; you
+  import them from your own PSP ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300)). Without them a game
+  shows the project's own fonts, made from open font files by its converter `tools/ttf2pgf.py`
+  ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)). They look close to the PSP's, but not the same
+  ([#1300](https://github.com/Jstar269/nakagawa-recomp/issues/1300)). All 18 of the PSP's own system fonts import
+  ([#1536](https://github.com/Jstar269/nakagawa-recomp/pull/1536)).
 - **Windows only for playing; Linux is for development.** The desktop player supports only Windows 11 x64 today.
   Linux support for the runtime and player is in progress and follows the work to make the backend seams portable
   ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306)), with macOS on Apple Silicon
@@ -131,9 +145,10 @@ They create their synthetic inputs under the ignored `build/` folder.
 
 ## Checking your download
 
-v0.0.1 is not code-signed. The first time you run `nakagawa_player.exe`, Windows SmartScreen may say
-"Windows protected your PC" because the file has no publisher signature yet. Before you choose
-**More info** and then **Run anyway**, check that the download is the one this project built:
+v0.0.1 is not code-signed, so the first time you run `nakagawa_player.exe`, Windows SmartScreen may say
+"Windows protected your PC", because the file has no publisher signature. That warning is about the missing
+signature, not about anything found in the file. Don't turn SmartScreen or your antivirus off. Instead, before you
+choose **More info** and then **Run anyway**, check that the download is the one this project built:
 
 1. Compare the ZIP's SHA-256 with `nakagawa-recomp-0.0.1-windows-x64.zip.sha256`, published next to it
    on the release page:
@@ -144,13 +159,32 @@ v0.0.1 is not code-signed. The first time you run `nakagawa_player.exe`, Windows
 
 2. After extracting, `SHA256SUMS.txt` lists the SHA-256 of every file in the package.
 3. With the [GitHub CLI](https://cli.github.com/), check that each executable and DLL under `bin\` was
-   built by this repository's release workflow:
+   built by this repository's release workflow from the tagged commit. Each file carries a signed build
+   attestation (SLSA Build Level 2). For one file:
 
    ```powershell
    gh attestation verify .\bin\nakagawa_player.exe --repo Jstar269/nakagawa-recomp
    ```
 
+   For every file under `bin\` at once:
+
+   ```powershell
+   Get-ChildItem .\bin -Recurse -File | ForEach-Object {
+       gh attestation verify $_.FullName --repo Jstar269/nakagawa-recomp
+   }
+   ```
+
 If any check fails, don't run the file; report it as described under [How to report](#how-to-report).
+
+### Source of the bundled build tools
+
+The source of the build tools in `prereqs/` is published next to the ZIP as
+`nakagawa-recomp-0.0.1-prerequisite-sources.zip`, with its own `.sha256`: the MSYS2 source package of each MSYS2
+package, the CPython source release, and the source releases of the libraries built into the CPython runtime
+(OpenSSL, libffi, SQLite and others). The Microsoft C runtime that comes with CPython has no public source; its
+redistribution terms are in `prereqs/notices`. `prereqs/notices/SOURCES.txt` in the ZIP names each file of the source
+archive with its SHA-256, and `prereqs/notices` holds every bundled package's licence files. The bundled tools leave
+out their manuals (`share/doc`, `share/info`, `share/man`), which a build never reads; the source archive has them.
 
 ## Requirements when running the packaged player
 
@@ -165,9 +199,14 @@ Vulkan-capable graphics driver come from your own system:
 - **Text in the player:** the package puts `SDL3_ttf.dll` and the DLLs it depends on beside the executable when they
   are available, so the player's readable font loads from the package without a toolchain on `PATH`. The notices and
   SBOM list every library shipped.
-- **BUILD PACKAGE:** recompiling a game needs the full developer toolchain, which the player can install after one
-  consent if your PC doesn't have it. The consent card lists each pinned tool and downloads only from the official
-  sources named in the manifest ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)).
+- **BUILD PACKAGE:** recompiling a game needs Python, GCC and GNU Make. The package carries the pinned ones in
+  `prereqs/`, next to `bin/` and `source/`. Before each build the player checks them against
+  `source/assets/prereq_manifest.json`, then uses them with no consent card and no download
+  ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). If that folder is damaged, the player names the
+  first missing or changed file (`PREREQUISITE_BUNDLE_INVALID`) instead of downloading a replacement: extract the ZIP
+  again. Without `prereqs/`, the player can install the pinned tools after one consent; the consent card lists each
+  one and downloads only from the official sources named in the manifest
+  ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)).
 
   The player looks for `tools/nk_cli.py` in this order: the folder named by the `NK_INSTALL_ROOT` environment
   variable (a folder that contains `tools/`), beside the executable, `<exe dir>/../tools`,
@@ -176,8 +215,8 @@ Vulkan-capable graphics driver come from your own system:
   [`SETUP.md`](SETUP.md).
 
   A missing piece is always named: `CLI_NOT_FOUND` lists every place it looked and the `NK_INSTALL_ROOT` fix,
-  `BUILD_TOOLCHAIN_MISSING` names the missing tool, and `PYTHON_NOT_FOUND` names the missing interpreter. In the
-  package, these lead you to the consent card (prerequisite installation landed in #547). If you run the player
+  `BUILD_TOOLCHAIN_MISSING` names the missing tool, and `PYTHON_NOT_FOUND` names the missing interpreter. Without
+  `prereqs/`, these lead you to the consent card (prerequisite installation landed in #547). If you run the player
   outside the package, set `NK_INSTALL_ROOT` to the unzipped `source/` folder so the player uses this package's CLI.
 
 The exact packaging command and the check that stops it on any problem are in [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md).
@@ -187,15 +226,22 @@ disk space (10 GB on an SSD recommended). Building a game is the heavy part: one
 peaked at about 3 GB. The measured numbers are in
 [`SETUP.md`](SETUP.md#system-requirements).
 
+**Reference PC:** the speeds in these notes were measured on Windows 11 with an AMD Ryzen 9 5900X and an NVIDIA
+GeForce RTX 3080. Slower PCs have not been measured yet.
+
+**Download size:** the build tools in the ZIP's `prereqs/` unpack to 7,299 files and 697 MB. Their source is a
+separate 525 MB download next to the ZIP; see
+[Source of the bundled build tools](#source-of-the-bundled-build-tools). The release page gives the ZIP's own size.
+
 ## Title-specific compatibility patches
 
-Hot Shots Tennis runs with 14 title-specific compatibility patches: the forced branches, success stubs and scheduler or display surrogates that `python tools/compat_overrides.py --debt-census` lists. They fire only for that title. The recompiler emits its patches only under that title's profile, and the runtime applies the rest only through that title's validated configuration, so generic runtime code outside the configuration layer carries no title address. They are not fail-closed, so a missing behaviour can look like success on that route. Each run's log names every patch that fired, or says that none did, in its `COMPAT_PATCH_REPORT` lines. Retiring them is v0.0.2 work, tracked in [#363](https://github.com/Jstar269/nakagawa-recomp/issues/363).
+Hot Shots Tennis runs with 15 title-specific compatibility patches: the forced branches, success stubs and scheduler or display surrogates that `python tools/compat_overrides.py --debt-census` lists. They fire only for that title. The recompiler emits its patches only under that title's profile, and the runtime applies the rest only through that title's validated configuration, so generic runtime code outside the configuration layer carries no title address. They are not fail-closed, so a missing behaviour can look like success on that route. Each run's log names every patch that fired, or says that none did, in its `COMPAT_PATCH_REPORT` lines. Retiring them is v0.0.2 work, tracked in [#363](https://github.com/Jstar269/nakagawa-recomp/issues/363).
 
 ## Known issues
 
-- **Hot Shots Tennis runs slowly.** It runs at about 15 to 20 frames per second, and sound effects and text clicks
-  drop out, because its work runs on one busy host thread
-  ([#1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296)).
+- **A few late sound wakes while loading.** Sound threads in Hot Shots Tennis now rarely wait behind the game's busy
+  thread, which is what dropped sound effects and text clicks in earlier builds. A few late wakes remain, mostly
+  while the game loads ([#1296](https://github.com/Jstar269/nakagawa-recomp/issues/1296)).
 - **Some movies show black, and some VRAM reads are wrong.** A movie whose frames pass through a VRAM mirror shows a
   black screen for now, and a CPU read of depth data through a VRAM mirror is still wrong for some depth-buffer
   settings ([#1049](https://github.com/Jstar269/nakagawa-recomp/issues/1049)).
@@ -217,15 +263,16 @@ Hot Shots Tennis runs with 14 title-specific compatibility patches: the forced b
   infrastructure mode return unsupported, with no fake connections
   ([#1139](https://github.com/Jstar269/nakagawa-recomp/issues/1139), [#307](https://github.com/Jstar269/nakagawa-recomp/issues/307)).
 - **Controller mapping is global unless you choose otherwise.** Controller settings save your mapping and calibration
-  to `input_profile.json`. A custom mapping for one game is optional. The same Controls page changes the keyboard keys
-  ([#1467](https://github.com/Jstar269/nakagawa-recomp/pull/1467)), but you can't set up a controller from a running game's pause
-  overlay yet.
+  to `input_profile.json`. A custom mapping for one game is optional. The Controls page shows and rebinds the
+  keyboard keys ([#1467](https://github.com/Jstar269/nakagawa-recomp/pull/1467)), but you can't change them from a paused game yet: use
+  the launcher's Controls page.
 - **ATRAC3 sound effects.** A private replay still reports ATRAC3 decode failures for some sound effects, and the
   decoder's behaviour is not yet matched to PSP hardware ([#1096](https://github.com/Jstar269/nakagawa-recomp/issues/1096)).
 - **Movie timing.** The number of decoded pictures and the audio offset are not yet fully accounted for
   ([#279](https://github.com/Jstar269/nakagawa-recomp/issues/279)).
-- **Not code-signed yet.** Windows SmartScreen warns on first run until releases are signed; see
-  [Checking your download](#checking-your-download) for how to check a download before you run it.
+- **Not code-signed.** Windows SmartScreen warns on first run because the files have no publisher signature; see
+  [Checking your download](#checking-your-download) for how to check a download before you run it. The bundled
+  third-party build tools keep their own upstream files and signatures.
 - **Fixed: one-frame glitch in skinned characters.** The glitch at the switch from the title screen to the main menu
   was traced to a VFPU3 compare-decode error and fixed in [#822](https://github.com/Jstar269/nakagawa-recomp/pull/822).
   The maintainer confirmed on 2026-10-19 that it no longer appears with the GPU presenter, and
@@ -263,5 +310,8 @@ Thank you to the people outside the maintainer team who contributed to this rele
   ([#869](https://github.com/Jstar269/nakagawa-recomp/pull/869)), and the original portable FFmpeg/libavcodec H.264
   backend ([#888](https://github.com/Jstar269/nakagawa-recomp/pull/888)), which inspired the maintained backend that
   landed in [#1087](https://github.com/Jstar269/nakagawa-recomp/pull/1087).
+- [@Nitjsefnie](https://github.com/Nitjsefnie): the on-screen keyboard (OSK) utility handlers return the
+  PSP-measured state codes ([#1215](https://github.com/Jstar269/nakagawa-recomp/pull/1215), landed with their commits
+  in [#1219](https://github.com/Jstar269/nakagawa-recomp/pull/1219)).
 - [@Apurvbkt](https://github.com/Apurvbkt): closing out a stale entry in `ISSUES.md`
   ([#1162](https://github.com/Jstar269/nakagawa-recomp/pull/1162)).
