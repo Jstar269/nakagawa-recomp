@@ -422,7 +422,7 @@ Nakagawa Font Copy is a small app for your PSP (#737), built from this project's
 1. Build the app with the PSPSDK (`make -C src/psp_companion`; see [PSPDEV integration](PSPDEV_LOCAL_VERIFICATION.md)), then copy `src/psp_companion/build/EBOOT.PBP` to `PSP/GAME/NAKAGAWAFONTS/EBOOT.PBP` on the Memory Stick. Releases do not include the app yet.
 2. On the PSP, open **Game > Memory Stick > Nakagawa Font Copy** and press **X**. The app copies every `.pgf` file in `flash0:/font` and checks each copy against the original, then says how many fonts it copied. Running it again replaces the copies.
 3. Leave the app, connect the PSP to your PC with a USB cable, and turn on **Settings > USB Connection** on the PSP. The Memory Stick appears on the PC as a drive.
-4. Import the folder: `python tools/nk_cli.py fonts import E:\NAKAGAWA\fonts`, with your PSP's drive letter in place of `E:`, or choose that folder with **Import fonts folder** in the player's setup wizard.
+4. Import the folder: `python tools/nk_cli.py fonts import E:\NAKAGAWA\fonts`, with your PSP's drive letter in place of `E:`, or import it from the fonts step of the player's setup wizard.
 
 The app only lists `flash0:/font` and opens its files read-only. If the PSP does not let it list the folder, it opens the eighteen firmware font files (`jpn0.pgf`, `kr0.pgf` and `ltn0.pgf` to `ltn15.pgf`) by name instead. Its build pins the file calls it may make, so no remove, rename or file-control call can be in it. The copy code is the hardware oracle's `font-files` case ([`HARDWARE_ORACLE.md`](HARDWARE_ORACLE.md)), and `tools/test_psp_oracle.py` checks which files the app selects and that it writes only inside its folder.
 
