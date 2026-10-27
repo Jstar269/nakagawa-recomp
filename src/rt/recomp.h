@@ -1472,6 +1472,7 @@ static inline bool sr_gui_request_launcher_foreground_once(
 }
 void     gui_init(const char *title);
 int      gui_on(void);
+int      gui_interactive(void);                  /* 1 when a person is at a real window: not offscreen, headless or acceptance */
 uint32_t gui_buttons(void);
 void     gui_consume_button_pulses(void);          /* after one PSP VBLANK sample */
 /* Gamepad buttons that went down since the last call, as PSP button bits: the on-screen

@@ -19335,13 +19335,28 @@ int sr_route_test_sample(uint8_t *out);
  * function-static) so the selftest can reset and query it; production semantics are the
  * same either way. */
 static int s_live_input_seen = 0;
+/* The user asked for synthetic pad input by name: SR_PAD (the mask) or one of the pulse's
+ * cadence knobs. An empty value is not a request. */
+static int ctrl_pulse_requested(void) {
+    static const char *const knobs[] = { "SR_PAD", "SR_PADPERIOD", "SR_PADWIDTH", "SR_PADSTART" };
+    for (size_t i = 0; i < sizeof knobs / sizeof knobs[0]; i++) {
+        const char *v = getenv(knobs[i]);
+        if (v && v[0]) return 1;
+    }
+    return 0;
+}
 /* One-directional evidence gate: any nonzero live key mask proves a human is driving,
  * while a quiet frame proves nothing. Returns nonzero when the synthetic pulse must be
  * suppressed. Reads SR_NOINPUT and gui_pad_present() on every call so hotplug and
- * keyboard-first/gamepad-later sequences need no extra state. */
+ * keyboard-first/gamepad-later sequences need no extra state.
+ *
+ * A person at a real window (gui_interactive(): not the offscreen sink, a headless host or an
+ * acceptance launch) never gets a pulse they did not ask for, even before their first key:
+ * the pulse is fake input there, and a demo that quits on START closes on its first frame. */
 static int ctrl_pulse_suppressed(uint32_t keys) {
     if (keys) s_live_input_seen = 1;
     if (getenv("SR_NOINPUT") || gui_pad_present() || s_live_input_seen) return 1;
+    if (gui_interactive() && !ctrl_pulse_requested()) return 1;
     return 0;
 }
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -19409,6 +19424,14 @@ static uint32_t h_CtrlButtons(void) {
     /* The auto-START pulse below only exists to advance the intro/attract in headless or no-input
      * runs. When a real controller is connected the player drives input themselves, so suppress the
      * pulse (otherwise a phantom START every few seconds would keep opening the pause menu).
+     *
+     * The same holds from the first vblank in a real window (gui_interactive()): the pulse
+     * starts at vblank 0 and fires for 4 vblanks every 240, so a player who has not yet touched a
+     * key would still be handed a phantom START -- the "Test this PC" demos quit on START and
+     * closed on their first frame (walkthrough B16, reproduced with a plain mouse click). There
+     * the pulse runs only when the user named it (SR_PAD, SR_PADPERIOD, SR_PADWIDTH or
+     * SR_PADSTART). Headless runs (the offscreen sink, a dummy video driver, an acceptance
+     * launch) and runs with an explicit SR_PAD or a route/pad script keep today's behaviour.
      *
      * A connected pad is not the only way a human drives this runtime: the keyboard path is
      * equally live, and gui_pad_present() is false for it (it reports gamepad presence only;
