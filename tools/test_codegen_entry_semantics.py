@@ -1217,7 +1217,7 @@ class SymbolMapFileTests(unittest.TestCase):
         self.assertIn("$(SYMBOL_MAP)", rule.group(1).split())
         self.assertIn("$(SYMBOL_MAP_ARG)", rule.group(2).split())
         entries = re.search(r"^export NK_CODEGEN_PROFILE_ENTRIES := ([^\n]*)", makefile, re.M)
-        self.assertTrue(entries.group(1).endswith("$(SYMBOL_MAP_PROFILE_LINE)"))
+        self.assertIn("$(SYMBOL_MAP_PROFILE_LINE)", entries.group(1))
 
 
 if __name__ == "__main__":

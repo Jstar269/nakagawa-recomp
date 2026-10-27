@@ -518,6 +518,24 @@ def load_symbol_map(path):
     return symbols
 
 
+_C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def import_stub_names(import_nids):
+    """--name-imports: {stub address: (name, 0)} for the stubs whose NID the corpus names.
+
+    The names come from tools/nid_corpus.json through gen_nidnames.nid_names, the
+    mapping src/rt/nid_names.h is generated from. A NID the corpus does not name, or
+    a name that is not a C identifier, leaves its stub as f_<address>.
+    """
+    import json
+    import gen_nidnames
+    corpus = json.loads(gen_nidnames.CORPUS.read_text(encoding="utf-8"))
+    names = gen_nidnames.nid_names(corpus)
+    return {addr: (names[nid], 0) for addr, nid in import_nids.items()
+            if nid in names and _C_IDENTIFIER.fullmatch(names[nid])}
+
+
 def symbol_map_renames(symbols, emitted, resume_owners):
     """Generated-token renames for the entries a symbol map names.
 
@@ -3261,7 +3279,7 @@ def main(argv):
             "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
             "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
             "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
-            "[--stack-census] [--symbol-map=FILE]\n"
+            "[--stack-census] [--symbol-map=FILE] [--name-imports]\n"
             "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
         )
         return 2
@@ -3295,9 +3313,14 @@ def main(argv):
     extra_elfs = []  # list of (elf_path, base_addr)
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
     symbol_map_path = None
+    name_imports = False
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
+        elif o == "--name-imports":
+            # Name each import stub after the function its NID imports (import_stub_names).
+            # Default (absent) leaves every stub f_<address>: the output is unchanged.
+            name_imports = True
         elif o.startswith("--symbol-map="):
             symbol_map_path = o.split("=", 1)[1]
             if not symbol_map_path:
@@ -3496,6 +3519,7 @@ def main(argv):
     stubbed = []
     func_texts = []
     stale_funcs = []  # TD-27: primary-image addresses with real translations
+    import_nids = {}  # import stub address -> NID, for --name-imports
 
     # Semantic name overrides for known HST functions. Single source of truth is
     # host_stubs.HST_SIMPLE_STUBS: addr -> (name, retflag). retflag=1 means the
@@ -3712,6 +3736,7 @@ def main(argv):
             if lib_nid is not None:
                 lib, nid = lib_nid
                 text = import_stub_text(a, lib, nid)
+                import_nids[a] = nid
             else:
                 text = f"void f_{a:08x}(CpuState *s) {{  /* import stub without NID mapping */\n"
                 text += f"    sr_unimplemented(0x{a:08x}u, \"import stub without NID mapping\");\n}}"
@@ -3806,6 +3831,7 @@ def main(argv):
                 if lib_nid is not None:
                     lib, nid = lib_nid
                     text = import_stub_text(a, lib, nid)
+                    import_nids[a] = nid
                 else:
                     text = f"void f_{a:08x}(CpuState *s) {{  /* import stub -> HLE boundary */\n"
                     text += f"    sr_hle_call(s, 0u);\n}}"
@@ -3882,12 +3908,16 @@ def main(argv):
     num_files = len(boundaries)
     base_name = os.path.splitext(out_c)[0]
 
-    # Names from --symbol-map are applied as each file is written, after the
-    # partition, so a map changes symbol spellings and nothing else.
+    # Names from --symbol-map and --name-imports are applied as each file is
+    # written, after the partition, so they change symbol spellings and nothing
+    # else. A map's name for an address wins over the stub's NID name.
     renames = {}
     symbol_table = []
-    if symbol_map_path is not None:
-        renames = symbol_map_renames(symbols, emitted, resume_owners)
+    if symbol_map_path is not None or name_imports:
+        names = import_stub_names(import_nids) if name_imports else {}
+        named_imports = sum(1 for a in names if a not in symbols)
+        names.update(symbols)
+        renames = symbol_map_renames(names, emitted, resume_owners)
         collisions = symbol_map_collisions(renames, func_texts)
         if collisions:
             sys.stderr.write(
@@ -3896,11 +3926,17 @@ def main(argv):
             return 2
         emitted_set = set(emitted)
         symbol_table = sorted(
-            (a, name, size) for a, (name, size) in symbols.items() if a in emitted_set)
-        named_resumes = sum(1 for symbol in renames if symbol.startswith("r_"))
-        sys.stderr.write(
-            f"symbol map: {len(symbol_table)} of {len(symbols)} function name(s) name "
-            f"an emitted entry; {named_resumes} resume bodies take their owner's name\n")
+            (a, name, size) for a, (name, size) in names.items() if a in emitted_set)
+        if symbol_map_path is not None:
+            named_resumes = sum(1 for symbol in renames if symbol.startswith("r_"))
+            sys.stderr.write(
+                f"symbol map: {sum(1 for a in symbols if a in emitted_set)} of {len(symbols)} "
+                f"function name(s) name an emitted entry; {named_resumes} resume bodies take "
+                "their owner's name\n")
+        if name_imports:
+            sys.stderr.write(
+                f"import names: {named_imports} of {len(import_nids)} import stubs named "
+                "from the NID corpus\n")
 
     # Write the codegen gap report
     with open(f"{base_name}_stubs.txt", "w", encoding="ascii", newline="\n") as f:
@@ -3956,7 +3992,8 @@ def main(argv):
         main_out.extend(runtime_module_descriptor_lines(module))
     if symbol_table:
         main_out.append("")
-        main_out.append("/* Guest function names from --symbol-map: names and addresses only. */")
+        main_out.append("/* Guest function names from --symbol-map and --name-imports: "
+                        "names and addresses only. */")
         main_out.append("static const SrGuestSymbol sr_guest_symbol_table[] = {")
         for a, name, size in symbol_table:
             main_out.append(f'    {{0x{a:08x}u, 0x{size:08x}u, "{name}"}},')
