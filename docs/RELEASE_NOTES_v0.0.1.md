@@ -114,8 +114,10 @@ They create their synthetic inputs under the ignored `build/` folder.
 
 ## What v0.0.1 is not
 
-- **No games included.** This repository contains no game programs, game assets, firmware modules, decryption keys
-  or private test recordings. Nakagawa Recomp never downloads games or game data, and the release makes no network
+- **No games included.** This repository contains no game programs, game assets, firmware modules, keys bound to a
+  console or a user, or private test recordings. Its only key material is the public game-decryption tables PPSSPP
+  also ships, in `src/core/nk_psp_builtin_keys.c` ([#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494)).
+  Nakagawa Recomp never downloads games or game data, and the release makes no network
   connection: its build tools are in the ZIP. Only without them, as in a source checkout, does the player offer to
   download the build tools named in the prerequisite manifest, with your consent. You supply your own disc image of a
   game you own, as an uncompressed standard `.iso`, or the `EBOOT.PBP` of a PSN release of a UMD game you own
@@ -290,6 +292,10 @@ Hot Shots Tennis runs with 11 title-specific compatibility patches: the forced b
   decoder's behaviour is not yet matched to PSP hardware ([#1096](https://github.com/Jstar269/nakagawa-recomp/issues/1096)).
 - **Movie timing.** The number of decoded pictures and the audio offset are not yet fully accounted for
   ([#279](https://github.com/Jstar269/nakagawa-recomp/issues/279)).
+- **Removing a game keeps its disc copies.** **Remove from library** deletes what Nakagawa built for a game, and its
+  saves if you tick the box, but keeps the disc image converted from a PSN `EBOOT.PBP`
+  (`<user data>/discs/<DISC_ID>/`) and the decrypted files (`<user data>/titles/<DISC_ID>/decrypted/`). Delete those
+  folders yourself to get the space back. Your own `.iso` or `EBOOT.PBP` is never changed.
 - **Not code-signed.** Windows SmartScreen warns on first run because the files have no publisher signature; see
   [Checking your download](#checking-your-download) for how to check a download before you run it. The bundled
   third-party build tools keep their own upstream files and signatures.
