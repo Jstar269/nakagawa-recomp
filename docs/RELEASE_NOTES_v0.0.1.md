@@ -8,8 +8,8 @@ Audience: players and contributors trying the first public build.
 
 Nakagawa Recomp is an experimental static recompiler. It takes the program code of a PlayStation Portable (PSP) game
 you own, translates it into C, links it with a native C runtime, and runs the result as a Windows program through
-SDL3 and Vulkan. The game's program files must already be plain (unencrypted) files from your own copy; Nakagawa does
-not decrypt games.
+SDL3 and Vulkan. If the game's code is encrypted on a disc you own, the player decrypts it on your PC before
+recompiling it.
 
 v0.0.1 is the first public build. It brings a standalone desktop player (`build/nakagawa_player.exe`), ahead-of-time
 (AOT) package building, test suites you can run yourself, and a runtime that never fakes what it can't do: when a game
@@ -42,12 +42,13 @@ needs something unsupported, missing or not built yet, it stops and tells you cl
   `PIC1.PNG` background, read safely from the ISO, with a lettered badge if there is none. Your settings (resolution
   scale, frame cap, VSync, reduce motion) are saved safely to `settings.json` and come back after a restart, and the
   status messages match what is really happening ([#458](https://github.com/Jstar269/nakagawa-recomp/pull/458)).
-- **Use plain program files from your own copy.** Nakagawa does not decrypt games; it uses decrypted files from your
-  own copy. Put `EBOOT.elf` and the PRX modules the game needs in `<user data>/titles/<DISC_ID>/decrypted/`. An
-  encrypted program or module with no plain copy stops with a message that names it. Built-in decryption, added in
-  [#548](https://github.com/Jstar269/nakagawa-recomp/pull/548) and [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550),
-  was removed in [#1187](https://github.com/Jstar269/nakagawa-recomp/pull/1187); the folder for your own decrypted
-  files came with [#428](https://github.com/Jstar269/nakagawa-recomp/pull/428).
+- **Encrypted discs are decrypted on your PC.** The player decrypts your own disc's encrypted `EBOOT.BIN` and modules
+  locally, the way PPSSPP does, into `<user data>/titles/<DISC_ID>/decrypted/` ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). It
+  never downloads games and never decrypts firmware. A file it can't decrypt stops with a message that names it and
+  says why, and a plain copy from your own disc placed in that folder is used instead
+  ([#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)). Built-in decryption first came in [#548](https://github.com/Jstar269/nakagawa-recomp/pull/548) and
+  [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550), was removed in [#1187](https://github.com/Jstar269/nakagawa-recomp/pull/1187), and is back since
+  [#1494](https://github.com/Jstar269/nakagawa-recomp/pull/1494).
 - **Read game files straight from archives.** The runtime serves game data directly from validated `.xb` archives
   through a read-only virtual filesystem (`sceIoOpen`, `sceIoGetstat`, `sceIoDopen`), so you don't have to unpack
   loose files before playing ([#475](https://github.com/Jstar269/nakagawa-recomp/pull/475)).
@@ -93,17 +94,16 @@ They create their synthetic inputs under the ignored `build/` folder.
 
 ## What v0.0.1 is not
 
-- **No games included.** This repository contains no game programs, game assets, firmware modules, decryption keys
-  or private test recordings. Nakagawa Recomp never downloads games or game data. With your consent, it downloads only
+- **No games included.** This repository contains no game programs, game assets, firmware modules or private test
+  recordings. Nakagawa Recomp never downloads games or game data. With your consent, it downloads only
   the build tools named in the prerequisite manifest. You supply your own disc image of a game you own, as an
   uncompressed standard `.iso` ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
-- **Encrypted games need decrypted files from your own copy.** Nakagawa Recomp is an experimental static recompiler,
-  not a finished emulator for everyone. No commercial PSP game is claimed to play end to end from an ISO alone. Most
-  retail PSP programs (`EBOOT.BIN` and `.prx` modules) are encrypted. Nakagawa does not decrypt games; it uses
-  decrypted files from your own copy, placed in `<user data>/titles/<DISC_ID>/decrypted/`. An encrypted program or
-  module with no plain copy is named and stops there. PGD-protected content is unsupported; broader ISO-to-Play support is in the works
-  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Built-in decryption was removed
-  in [#1187](https://github.com/Jstar269/nakagawa-recomp/pull/1187).
+- **Encrypted games are decrypted from your own disc.** Nakagawa Recomp is an experimental static recompiler, not a
+  finished emulator for everyone. No commercial PSP game is claimed to play end to end from an ISO alone. Most retail
+  PSP programs (`EBOOT.BIN` and `.prx` modules) are encrypted; the player decrypts them from a UMD disc image you own,
+  on your PC, with built-in tables ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). One it can't decrypt is named and
+  stops there. PSN `EBOOT.PBP` packages aren't decrypted yet, and PGD-protected content is unsupported; broader
+  ISO-to-Play support is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 - **Other games are experimental.** A valid PSP disc with no profile yet is imported as **Experimental**. The card
   says compatibility is unknown, the checklist shows what is missing, and Play stays off until a matching runtime
   package exists. PAC-MAN Championship Edition reaches its menu and plays a stage on the maintainer's copy, through
@@ -217,9 +217,9 @@ Hot Shots Tennis runs with 14 title-specific compatibility patches: the forced b
   infrastructure mode return unsupported, with no fake connections
   ([#1139](https://github.com/Jstar269/nakagawa-recomp/issues/1139), [#307](https://github.com/Jstar269/nakagawa-recomp/issues/307)).
 - **Controller mapping is global unless you choose otherwise.** Controller settings save your mapping and calibration
-  to `input_profile.json`. A custom mapping for one game is optional. You can't change keyboard keys in the player yet
-  ([#1299](https://github.com/Jstar269/nakagawa-recomp/issues/1299)), and you can't set up a controller from a running
-  game's pause overlay yet.
+  to `input_profile.json`. A custom mapping for one game is optional. The same Controls page changes the keyboard keys
+  ([#1467](https://github.com/Jstar269/nakagawa-recomp/pull/1467)), but you can't set up a controller from a running game's pause
+  overlay yet.
 - **ATRAC3 sound effects.** A private replay still reports ATRAC3 decode failures for some sound effects, and the
   decoder's behaviour is not yet matched to PSP hardware ([#1096](https://github.com/Jstar269/nakagawa-recomp/issues/1096)).
 - **Movie timing.** The number of decoded pictures and the audio offset are not yet fully accounted for

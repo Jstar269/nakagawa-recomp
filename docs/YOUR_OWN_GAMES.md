@@ -24,12 +24,11 @@ Importing a disc doesn't change its status. The **EXPERIMENTAL** badge on the ga
   a disc, or of a digital purchase, depends on where you live and on the terms
   you accepted. Check both. Nakagawa Recomp never downloads games and contains no
   game data. Don't use copies you don't own.
-- **The game's program in unencrypted form, for most commercial games.**
-  Nakagawa turns the game's own program code into a native program on your
-  computer, so it has to be able to read that code. Most retail PSP programs
-  (`EBOOT.BIN` and some `.prx` modules) are encrypted. Nakagawa does not
-  decrypt games; it uses decrypted files from your own copy, placed in
-  the game's own folder (see [Supplying unencrypted files](#supplying-unencrypted-files)).
+- **Nothing else, for most commercial games.** Nakagawa turns the game's own
+  program code into a native program on your computer, so it has to be able to
+  read that code. Most retail PSP programs (`EBOOT.BIN` and some `.prx` modules)
+  are encrypted, and Nakagawa decrypts them from your own disc on your PC when it
+  checks the disc (see [Encrypted games](#supplying-unencrypted-files)).
 - **PSP system fonts (optional, recommended for in-game text).** To see a
   game's text in the PSP's own lettering, copy the Sony font files (`.pgf`)
   from your own PSP's `flash0:/font/`. The project doesn't include or share
@@ -42,8 +41,8 @@ Importing a disc doesn't change its status. The **EXPERIMENTAL** badge on the ga
 
 What to expect: adding an ISO identifies the disc and shows a checklist of what
 will and won't work. **BUILD PACKAGE** recompiles the game while you watch, and
-**PLAY** starts it once the package checks out. For most retail discs you
-also need an unencrypted program file made from your own copy. Building needs a
+**PLAY** starts it once the package checks out. For most retail discs the
+player first decrypts the game's program from your own disc, on your PC. Building needs a
 C toolchain (Python, GCC and GNU Make). The player can download the exact
 versions it needs after you agree once, or you can install them yourself
 ([`SETUP.md`](SETUP.md)). Playing straight from an ISO with no local toolchain
@@ -63,10 +62,10 @@ is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308))
    - An **unencrypted** program, including a disc that carries an unencrypted
      `BOOT.BIN`, is picked automatically. Homebrew and the project's showcase
      demos are in this group.
-   - For an **encrypted** program, the game card says so and names the folder
-     where the player looks for your unencrypted files (`<user data>/titles/<DISC_ID>/decrypted/`).
-     If the game was added while its program was still encrypted, an `EBOOT.elf`
-     you put in that folder later is picked up automatically when you build.
+   - An **encrypted** program is decrypted from your own disc on your PC, into
+     the game's folder (`<user data>/titles/<DISC_ID>/decrypted/`). If a file can't
+     be decrypted, the game card says which one and why, and an `EBOOT.elf` you
+     put in that folder later is picked up automatically when you build.
 4. Once an unencrypted program is available, click **BUILD PACKAGE**
    (or **REBUILD PACKAGE** when the package is out of date).
    - If the manifest reads BSS metadata from the disc's `~PSP` program header,
@@ -84,14 +83,21 @@ is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308))
 
 ## Supplying unencrypted files
 
-Nakagawa does not decrypt games; it uses decrypted files from your own
-copy. It contains no decryption keys and never looks for a key file.
+When the player checks a disc you added (when you add it, on Check again, and
+before BUILD PACKAGE), it decrypts the disc's encrypted `EBOOT.BIN` and
+encrypted modules on your PC, the way PPSSPP does, with the public game key
+tables it carries. Each decrypted file goes into the per-title folder below
+only after it checks out as a valid PSP program. Nothing is downloaded or
+uploaded, and nothing leaves your PC. Nakagawa never reads a key file and never
+decrypts PSP firmware: an updater, the boot loader or other system software is
+refused by name. You only need to put files there yourself when a file can't be
+decrypted.
 
 This is not legal advice. Laws on decrypting and copying games differ by
 country. Check the rules where you live.
 
-Put the unencrypted files in the game's folder that the player shows on the game
-card:
+When you do, put the unencrypted files in the game's folder that the player shows
+on the game card:
 
 ```text
 <user data>/titles/<DISC_ID>/decrypted/
@@ -116,16 +122,18 @@ build error message shows both names.
 
 ### What an encrypted file reports
 
-An encrypted `EBOOT.BIN` with no valid `EBOOT.elf` in the game's folder
-stops with:
+A file Nakagawa can't decrypt stops with a named reason, for example:
 
 ```text
-ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games. Place a decrypted EBOOT.elf from your own copy in <dir>.
+ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption stopped: KEY_REQUIRED (<detail>). Place a decrypted EBOOT.elf from your own copy in <dir>.
 ```
 
-An encrypted module with no plain copy there stops with
-`ENCRYPTED_MODULE: <name> is encrypted.` and the same advice. A plain copy you
-put in the folder yourself is always used and never overwritten.
+`KEY_REQUIRED` means the game uses an encryption the built-in tables don't
+cover yet; `MALFORMED_INPUT` and `INTEGRITY_FAILURE` mean the file on the disc
+looks damaged or changed. An encrypted module stops the same way with
+`ENCRYPTED_MODULE: <name> is encrypted and built-in decryption stopped: ...`.
+A plain copy you put in the folder yourself is always used and never replaced.
+PSN downloads (`EBOOT.PBP`) and PGD-protected data aren't decrypted yet.
 
 ### Supplying title manifests
 
@@ -145,7 +153,7 @@ finds the same title the player does.
 
 - Only use games you own.
 - Don't share decrypted files, generated packages or disc images. Everything
-  Nakagawa builds stays in your user data folder.
+  Nakagawa decrypts or builds stays in your user data folder.
 - Issues, pull requests and project discussions must never contain game files,
   keys, or links to downloads or decryption tools.
 
@@ -168,12 +176,12 @@ instead of pretending it worked or crashing without a word.
   the code `PBP_PACKAGE_UNSUPPORTED` and a sentence naming the title and disc ID
   the package carries. Only the package's own `PARAM.SFO` entry is read to write
   that sentence; nothing else in the package is opened, installed or run.
-- **Encrypted program:** Nakagawa does not decrypt games (built-in decryption
-  was removed, [#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
-  The checklist reports `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` and names the
-  game's folder. If the disc has an unencrypted `BOOT.BIN`, or a valid
-  `EBOOT.elf` you supplied is in that folder, it is picked automatically.
-  PGD/amctrl protection is not supported.
+- **Encrypted program:** the player decrypts it from your own disc
+  ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). If that stops, the checklist
+  reports `ENCRYPTED_EXECUTABLE` or `ENCRYPTED_MODULE` with the reason and names
+  the game's folder. An unencrypted `BOOT.BIN` on the disc, or a valid
+  `EBOOT.elf` already in that folder, is used as it is. PGD/amctrl protection is
+  not supported.
 - **No package built yet:** if a game has been identified and set up but there
   is no valid package for it in `<user data>/packages/<DISC_ID>/`, the
   checklist marks `RUNTIME_PACKAGE` as missing and the card offers
@@ -209,7 +217,7 @@ every part of the PSP, with the issues that track them.
 
 | Area | Today | Tracking |
 | --- | --- | --- |
-| Encrypted programs and PRX modules | Built-in decryption was removed. A plain `BOOT.BIN`, or an `EBOOT.elf` and decrypted modules from your own copy, are used. PGD/amctrl protection is not supported. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
+| Encrypted programs and PRX modules | The player decrypts UMD disc images (`.iso`) with built-in tables. A file it can't decrypt is named, and a decrypted copy from your own disc can stand in. PSN `EBOOT.PBP` packages and PGD/amctrl protection aren't decrypted yet. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 | Commercial-game packages in public builds | Packages build with the public runtime, and public builds draw imported PGF fonts through the project-authored reader for supported inputs (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the supported revision and shadow-map variants draw too ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521)); a revision-3 font's compressed character-map subtables, and any other shadow-map width, are still refused by name. | [PGF_SPEC.md §4](cleanroom/PGF_SPEC.md#4-non-requirements-and-named-boundaries) |
 | Games other than the maintainer-tested ones | Other games import with the **EXPERIMENTAL** badge and stay Untested unless someone has seen them start; work on more games goes on. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 

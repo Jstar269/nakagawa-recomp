@@ -79,7 +79,7 @@ moves or deletes it.
 2. Check that the game card and checklist report `ENCRYPTED_EXECUTABLE` (or `ENCRYPTED_MODULE`) and name `%LOCALAPPDATA%\Nakagawa\data\titles\<DISC_ID>\decrypted`, and that nothing is written to that folder.
 3. If the showcase image is the only one you have, record this step as **NOT RUN**: its plain program file doesn't go through the encrypted path.
 
-**Expected result:** Pass when the encrypted test file stops with the named message. Nakagawa does not decrypt games; built-in decryption was removed in [#1187](https://github.com/Jstar269/nakagawa-recomp/pull/1187).
+**Expected result:** Pass when the encrypted test file stops with the named message. The command-line build doesn't decrypt anything; the player decrypts when it checks a disc ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
 
 ### Step 8: BUILD PACKAGE and prerequisite consent
 

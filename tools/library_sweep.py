@@ -492,7 +492,7 @@ def _wait_for_machine_idle(
 
 
 def _route_environment() -> dict[str, str]:
-    # Nakagawa does not decrypt games: the route uses only the decrypted files
+    # This route decrypts nothing: it uses only the decrypted files
     # the user placed in each title's folder, so no key file is located here.
     environment = os.environ.copy()
     environment["MAKEFLAGS"] = "-j4"

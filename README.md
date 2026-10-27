@@ -56,8 +56,9 @@ To play, you need:
 - **8 GB of RAM** (16 GB recommended) and **5 GB of free disk space**, ideally on an SSD. Building a
   game is the heavy part; [System requirements](docs/SETUP.md#system-requirements) has the measured numbers.
 - **Your own copy of the game**, as an uncompressed `.iso` disc image. Nothing here downloads games, firmware or fonts.
-- **Decrypted files from your own copy** if the game's code is encrypted, as it is on most retail PSP discs.
-  Nakagawa does not decrypt games. [`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md) explains what goes where.
+- **Nothing else, for most discs.** The game's code is encrypted on most retail PSP discs, and Nakagawa decrypts your
+  own disc on your PC when you add it, the way PPSSPP does. It never touches firmware.
+  [`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md) explains what it does and what to do if a file can't be decrypted.
 
 What to expect: one game plays on the maintainer's setup, one plays a stage, and the rest are untested. The next
 section has the detail.
@@ -66,7 +67,7 @@ section has the detail.
 
 | Game | In the player | What to expect |
 | --- | --- | --- |
-| *Hot Shots Tennis: Get a Grip* | Playable | The game the project is built around. On the maintainer's own copy it plays full matches and Story Mode, but the frame rate is low, sound drops out and movies show black. Setting it up today takes decrypted files from your own copy and a title manifest (a file that describes the game to Nakagawa) that the project does not publish, so most people can't run it yet. Going straight from your own disc to a running game is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). |
+| *Hot Shots Tennis: Get a Grip* | Playable | The game the project is built around. On the maintainer's own copy it plays full matches and Story Mode, but the frame rate is low, sound drops out and movies show black. Setting it up today takes a title manifest (a file that describes the game to Nakagawa) that the project does not publish, so most people can't run it yet. Going straight from your own disc to a running game is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). |
 | PAC-MAN Championship Edition | In-game | Reaches its menu and plays a stage on the maintainer's own copy, through general fixes with no game-specific code ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556)). The rest of the game hasn't been tried yet. |
 | Any other PSP game | Not rated yet | **Experimental** if someone has seen it start, **Untested** if no one has tried it. The player imports it and tells you what's missing. |
 | The two showcase demos above | Playable | Two small demos the project wrote itself as tests. They build and run without any game files. |
@@ -81,7 +82,7 @@ byte-matching decompilation, and a general PSP toolkit ([`docs/PROJECT_MODEL.md`
   Windows program. A built-in runtime stands in for the PSP's system software, sound and graphics (SDL3 and Vulkan).
 - **It tells you what it can't do.** When a game needs something that isn't supported yet, the player stops and names
   the missing piece in a plain message. It never pretends something worked when it didn't.
-- **Bring your own game.** No games, firmware, keys or system fonts ship here, and no game data is ever downloaded.
+- **Bring your own game.** No games, firmware or system fonts ship here, and no game data is ever downloaded.
 - **Offline by default.** Nakagawa connects to the internet only when you agree, and today only to fetch build
   tools ([network use](docs/SETUP.md#network-use)).
 
@@ -107,9 +108,9 @@ This is the developer route, and today the only way to play. New to this? The
    MSYS2 UCRT64).
 2. **Add a game you own.** Start `build\nakagawa_player.exe`, then drag its `.iso` into the player window, or choose
    **START SETUP WIZARD**. Later games go in through the **Add a disc image you own** tile in the library.
-3. **Add decrypted files if the game is encrypted.** Nakagawa does not decrypt games; it uses decrypted files from
-   your own copy, and the player tells you which ones are missing ([`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md)
-   shows what goes where).
+3. **Let the player check the disc.** If the game's code is encrypted, Nakagawa decrypts your own disc on your PC
+   into that game's folder. If a file can't be decrypted, the player tells you which one and why, and you can add a
+   decrypted copy from your own disc instead ([`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md)).
 4. **Press BUILD PACKAGE, then PLAY.** If your PC doesn't have the build tools yet, consent once and the player
    downloads the exact versions it needs.
 5. **Optional:** text uses the project's own open fonts ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313));
@@ -146,8 +147,8 @@ decoders come from FFmpeg. It is not endorsed by those upstream authors. Details
 Nakagawa Recomp is an independent fan project. It is not affiliated with or endorsed by Sony Interactive
 Entertainment, Clap Hanz, or any game publisher. PlayStation and PSP are trademarks of Sony Interactive
 Entertainment Inc., and game titles are trademarks of their owners; they are named here only to say what the project
-works with. This repository contains no game files, keys, firmware or system fonts, and Nakagawa does not decrypt
-games.
+works with. This repository contains no game files, firmware or system fonts. Nakagawa decrypts your own disc
+locally with the public game key tables PPSSPP ships; it never downloads games and never decrypts firmware.
 
 Rights holders with a concern about anything here can contact the maintainer privately through
 [GitHub private reporting](https://github.com/Jstar269/nakagawa-recomp/security/advisories/new) or the contact on
