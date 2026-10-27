@@ -148,7 +148,7 @@ static bool tree_path_extend(TreePath *tree) {
         return false;
     }
     if (full[0] == L'\\' && full[1] == L'\\') {
-        /* \\server\share\... becomes \\?\UNC\server\share\... */
+        /* A network path takes the UNC form of the prefix. */
         if (wcslen(unc_prefix) + wcslen(full + 2) + 1u > TREE_PATH_CAP) {
             free(full);
             return false;
