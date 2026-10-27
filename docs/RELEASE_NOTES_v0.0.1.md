@@ -11,7 +11,7 @@ you own, translates it into C, links it with a native C runtime, and runs the re
 SDL3 and Vulkan. Most PSP games keep their program files encrypted; the player decrypts them from your own disc image,
 on your PC, the way the PPSSPP emulator does ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
 
-v0.0.1 is the first public build. It brings a standalone desktop player (`build/nakagawa_player.exe`), ahead-of-time
+v0.0.1 is the first public build. It brings a standalone desktop player (`bin\nakagawa_player.exe` in the ZIP), ahead-of-time
 (AOT) package building, test suites you can run yourself, and a runtime that never fakes what it can't do: when a game
 needs something unsupported, missing or not built yet, it stops and tells you clearly what is missing.
 
@@ -29,8 +29,8 @@ needs something unsupported, missing or not built yet, it stops and tells you cl
   packages every time. The library lists them in their own **Test this PC** row, apart from your games, so you can
   check that graphics, sound and controls work before you add a game
   ([#477](https://github.com/Jstar269/nakagawa-recomp/pull/477), [#1534](https://github.com/Jstar269/nakagawa-recomp/pull/1534)).
-- **Set up and calibrate controllers in the player.** Open Controller Settings (`VIEW_CONTROLLER_SETTINGS`) from
-  Settings to remap the 14 digital PSP controls and the analog stick. It warns about conflicts, sets the dead zone and
+- **Set up and calibrate controllers in the player.** Open **Settings**, then **CONTROLLER SETTINGS**,
+  to remap the 14 digital PSP controls and the analog stick. It warns about conflicts, sets the dead zone and
   trigger threshold, shows your inputs live, and saves the profile safely to `input_profile.json`
   ([#455](https://github.com/Jstar269/nakagawa-recomp/pull/455)).
 - **Build a game's package and watch it happen.** Click **BUILD PACKAGE** (or **REBUILD PACKAGE**) to recompile a
@@ -82,7 +82,7 @@ You can check these parts of v0.0.1 yourself, with no retail ISO, PRX, save, key
   a gamepad.
 - **Display smoke test:** `mingw32-make display-smoke` checks the two-phase pipeline, the loader, NID imports, VBLANK
   delivery, the display latch and the off-screen window check. The version that goes through the player,
-  `mingw32-make display-smoke-player`, doesn't pass on `main` yet.
+  `mingw32-make display-smoke-player`, doesn't pass in this release yet.
 - **Production smoke test:** `mingw32-make production-smoke` makes a synthetic PSP PRX, recompiles it from MIPS to C
   to native code, then checks and runs the result.
 - **Fail-closed dispatch:** `mingw32-make production-smoke-gap` leaves one synthetic function out of the translated
@@ -263,9 +263,8 @@ Hot Shots Tennis runs with 15 title-specific compatibility patches: the forced b
   ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556)).
   That isn't the full game. Other games tried so far stop at imports Nakagawa doesn't support yet, and work on more
   games is in the works under [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).
-- **Not every disc can be set up yet.** After one consent the player can install its pinned build tools, then build
-  and check a package for a supported game ([#547](https://github.com/Jstar269/nakagawa-recomp/pull/547)). It does
-  not make every ISO playable: profiles and imports that aren't supported, and PGD-protected data, stop with a message
+- **Not every disc can be set up yet.** The player builds and checks a package for a supported game, but it does not
+  make every ISO playable: profiles and imports that aren't supported, and PGD-protected data, stop with a message
   that says what is missing. Wider support is in the works
   ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 - **3D work stays on the CPU.** In-game rendering transforms vertices in software and presents through Vulkan.
@@ -308,7 +307,8 @@ When you report a problem:
 1. Say which step in [`docs/SMOKE_TEST.md`](SMOKE_TEST.md) failed and what the error card said. **Copy details** on
    the card puts a short report on the clipboard, including the error code (for example `ISO_CORRUPT`).
 2. Attach the build logs from `%LOCALAPPDATA%\Nakagawa\data\logs` (`build_<DISC_ID>_progress.jsonl` and
-   `build_<DISC_ID>.log`) and the console output from the terminal.
+   `build_<DISC_ID>.log`), and the player's own output, `player-output.txt` in `%LOCALAPPDATA%\Nakagawa\logs`.
+   There are two log folders: builds write to `Nakagawa\data\logs`, the player and games to `Nakagawa\logs`.
    For a problem during play, attach `game-<DISC_ID>-last.txt` from the player's logs folder
    (`%LOCALAPPDATA%\Nakagawa\logs`): the output of the last game session, kept after the game exits. The run before it
    is `game-<DISC_ID>-prev.txt`. **Copy details** on the error card names the file.
