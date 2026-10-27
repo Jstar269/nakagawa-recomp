@@ -678,6 +678,183 @@ def _stage_iso_modules(
                 raise
     return module_dir
 
+
+class ExperimentalModuleIntakeError(PackageBuildError):
+    """A named refusal while declaring an experimental title's own disc modules.
+
+    ``lines`` are the per-module lines a caller prints; ``log_lines`` the lines it
+    keeps in its private module-layout log.
+    """
+
+    def __init__(self, boundary_code: str, detail: str, *,
+                 lines: tuple[str, ...] = (), log_lines: tuple[str, ...] = ()):
+        self.boundary_code = boundary_code
+        self.lines = lines
+        self.log_lines = log_lines
+        super().__init__(f"{boundary_code}: {detail}")
+
+
+def _declare_experimental_disc_modules(
+    iso_path: Path, user_root: Path, disc_id: str, candidates: list[dict],
+    selected_elf: Path, module_report: dict,
+) -> tuple[list[dict], list[dict], Path | None]:
+    """Plan the guest modules an experimental title loads from its own disc (#308).
+
+    Every candidate must resolve to a plain module: a valid plain copy in the
+    per-title decrypted folder wins (the player's disc check decrypts the disc's
+    own there, #295); otherwise an already plain disc copy is used. Anything else
+    stops by name. The plain copies are staged in a private folder under
+    ``experimental/<DISC_ID>`` and planned by plan_guest_module_layout, which
+    declares each module that runs as translated guest code as runtime-placed and
+    leaves out the ones the runtime serves completely.
+
+    Returns (declared modules, deferred items, staged folder); the folder is None
+    when no candidate needed staging.
+    """
+    title_folder = decrypted_module_dir(user_root, disc_id)
+    module_sources: list[tuple[dict, str, Path | None]] = []
+    unready: list[dict] = []
+    for candidate in candidates:
+        folder_copy = None
+        if title_folder is not None:
+            candidate_file = title_folder / candidate["name"]
+            if candidate_file.is_file() and \
+                    _classify_decrypted_elf_file(candidate_file, module=True) == "PLAIN_MIPS_ELF32":
+                folder_copy = candidate_file
+        if folder_copy is not None:
+            module_sources.append((candidate, "folder", folder_copy))
+        elif candidate["kind"] == "plain-elf":
+            module_sources.append((candidate, "iso", None))
+        else:
+            unready.append(candidate)
+    # CFW patch modules stay excluded, whichever copy supplies them.
+    module_sources = [
+        (candidate, source, folder_copy)
+        for candidate, source, folder_copy in module_sources
+        if source != "folder" or not _has_cfw_or_kernel_only_imports(
+            folder_copy.read_bytes() if folder_copy is not None else b""
+        )
+    ]
+    encrypted = [candidate for candidate in unready if candidate["kind"] == "encrypted-prx"]
+    if encrypted:
+        lines = []
+        for candidate in encrypted:
+            detail = next(
+                (result["detail"] for result in module_report.get("results", [])
+                 if result["name"] == candidate["name"] and result.get("detail")),
+                "the module is still encrypted",
+            )
+            lines.append(f"MODULE {candidate['name']}: not ready ({detail})")
+        raise ExperimentalModuleIntakeError(
+            "GUEST_MODULE_DECRYPTION_REQUIRED",
+            "; ".join(lines), lines=tuple(lines),
+        )
+    if unready:
+        lines = tuple(_unready_module_lines(unready))
+        raise ExperimentalModuleIntakeError(
+            "GUEST_MODULE_FORMAT_UNSUPPORTED", "; ".join(lines),
+            lines=lines, log_lines=lines,
+        )
+    if not module_sources:
+        return [], [], None
+    try:
+        module_dir = _stage_iso_modules(
+            iso_path, user_root, disc_id,
+            [candidate for candidate, source, _copy in module_sources if source == "iso"],
+        )
+        for candidate, source, folder_copy in module_sources:
+            if source == "folder" and folder_copy is not None:
+                _write_private_file(module_dir / candidate["name"], folder_copy.read_bytes())
+    except (OSError, IsoInspectionError, PackageBuildError) as exc:
+        raise ExperimentalModuleIntakeError("GUEST_MODULE_STAGE_FAILED", str(exc)) from exc
+    try:
+        module_inputs = [
+            (
+                candidate["name"],
+                module_dir / candidate["name"],
+                "disc0:/" + "/".join((*candidate["directory"], candidate["name"])),
+            )
+            for candidate, _source, _folder_copy in module_sources
+        ]
+        bindings, deferred = plan_guest_module_layout(selected_elf, module_inputs)
+    except (IsoInspectionError, OSError) as exc:
+        boundary_code = (
+            getattr(exc, "boundary_code", None)
+            or "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE"
+        )
+        raise ExperimentalModuleIntakeError(
+            boundary_code, str(exc), log_lines=(f"{boundary_code}: {exc}",),
+        ) from exc
+    return bindings, deferred, module_dir
+
+
+#: The player-safe sentence for each named stop of the experimental module intake.
+_EXPERIMENTAL_MODULE_SENTENCES = {
+    "GUEST_MODULE_DISCOVERY_FAILED":
+        "Nakagawa couldn't list the game's own program files on this disc; this disc "
+        "layout isn't supported yet.",
+    "GUEST_MODULE_DECRYPTION_REQUIRED":
+        "One of the game's own program files on the disc is still encrypted. Check the "
+        "disc again so Nakagawa can decrypt it from your copy, then build again.",
+    "GUEST_MODULE_STAGE_FAILED":
+        "The game's own program files couldn't be copied for the build. Check the free "
+        "space in your user data folder, then build again.",
+}
+_EXPERIMENTAL_MODULE_UNSUPPORTED_SENTENCE = (
+    "One of the game's own program files on the disc isn't in a form this version of "
+    "Nakagawa can build yet."
+)
+
+
+def _experimental_build_modules(
+    iso_path: Path, user_root: Path, disc_id: str, selected: str,
+    selected_elf: Path, profile_path: Path, preflight: dict,
+) -> dict:
+    """Declare an experimental title's own disc modules for the player's build.
+
+    The player's build route takes the same module intake as ``bringup``: the disc's
+    modules become runtime-placed guest modules in the experimental profile, so the
+    build translates them and the runtime runs their module_start when the game
+    loads them (a disc libfont included, #299). Returns the profile's manifest.
+    """
+    try:
+        candidates = _discover_iso_module_candidates(iso_path, selected)
+        bindings, deferred, staged = _declare_experimental_disc_modules(
+            iso_path, user_root, disc_id, candidates, selected_elf,
+            preflight.get("module_decryption") or {},
+        )
+    except ExperimentalModuleIntakeError as exc:
+        raise ExperimentalProfileBuildError(
+            exc.boundary_code, 308,
+            _EXPERIMENTAL_MODULE_SENTENCES.get(
+                exc.boundary_code, _EXPERIMENTAL_MODULE_UNSUPPORTED_SENTENCE),
+            str(exc),
+        ) from exc
+    except (OSError, IsoInspectionError, PackageBuildError) as exc:
+        raise ExperimentalProfileBuildError(
+            "GUEST_MODULE_DISCOVERY_FAILED", 308,
+            _EXPERIMENTAL_MODULE_SENTENCES["GUEST_MODULE_DISCOVERY_FAILED"], str(exc),
+        ) from exc
+    if staged is not None:
+        # The plain copies were staged only to plan them; the package cache takes
+        # its own copies from the same sources (_copy_optional_modules).
+        shutil.rmtree(staged, ignore_errors=True)
+    for item in deferred:
+        print(f"DEFERRED_MODULE {item['name']}: {item['reason']}", file=sys.stderr)
+    try:
+        profile = package_cache.read_bounded_json(profile_path, max_bytes=256 * 1024)
+        if not isinstance(profile, dict):
+            raise ValueError("the experimental profile is not an object")
+        if not bindings:
+            return title_manifest.validate_manifest(profile["manifest"])
+        return _write_experimental_module_bindings(profile_path, profile, bindings)
+    except (OSError, KeyError, ValueError) as exc:
+        raise ExperimentalProfileBuildError(
+            "GUEST_MODULE_STAGE_FAILED", 308,
+            _EXPERIMENTAL_MODULE_SENTENCES["GUEST_MODULE_STAGE_FAILED"], str(exc),
+        ) from exc
+
+
 def _copy_decrypted_elf(source: Path, destination: Path) -> str:
     """Copy one bounded user ELF into the private package cache after validation."""
     try:
@@ -2013,6 +2190,14 @@ def _build_package(args: argparse.Namespace, stage_observer,
         )
         if expected_hash and actual_hash != expected_hash:
             raise PackageBuildError("Selected executable SHA-256 differs from the experimental profile; re-import the ISO before rebuilding.")
+        if entry.get("is_experimental") and not manifest.get("modules"):
+            # A profile that declares no guest modules gets the disc's own: the
+            # modules the game loads from its disc are translated like the main
+            # executable, so their module_start runs as guest code (#299, #308).
+            manifest = _experimental_build_modules(
+                iso_path, user_root, disc_id, manifest_selected, elf_path,
+                manifest_source, preflight,
+            )
 
         manifest_cache_path = cache_dir / "manifest.json"
         if manifest_source == manifest_cache_path:
@@ -3769,131 +3954,41 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 candidate["kind"] == "encrypted-prx" for candidate in module_candidates
             )
             _update_issues(report, [308])
-            # Every candidate must resolve to a plain module. A plain copy on
-            # disc is staged from the image; an encrypted container (or any
-            # candidate the intake cannot classify) is satisfied by a valid
-            # plain copy the user supplied in the per-title decrypted folder
-            # (the player's disc check decrypts, #295). A user-supplied plain module
-            # always wins, and CFW patch modules stay excluded.
-            title_folder = decrypted_module_dir(user_root, metadata.disc_id)
-            module_sources: list[tuple[dict, str, Path | None]] = []
-            unready: list[dict] = []
-            for candidate in module_candidates:
-                folder_copy = None
-                if title_folder is not None:
-                    candidate_file = title_folder / candidate["name"]
-                    if candidate_file.is_file() and \
-                            _classify_decrypted_elf_file(candidate_file, module=True) == "PLAIN_MIPS_ELF32":
-                        folder_copy = candidate_file
-                if folder_copy is not None:
-                    module_sources.append((candidate, "folder", folder_copy))
-                elif candidate["kind"] == "plain-elf":
-                    module_sources.append((candidate, "iso", None))
-                else:
-                    unready.append(candidate)
-            module_sources = [
-                (candidate, source, folder_copy)
-                for candidate, source, folder_copy in module_sources
-                if source != "folder" or not _has_cfw_or_kernel_only_imports(
-                    folder_copy.read_bytes() if folder_copy is not None else b""
-                )
-            ]
-            module_report = preflight.get("module_decryption") or {}
-            unresolved = [
-                candidate for candidate in unready
-                if candidate["kind"] == "encrypted-prx"
-            ]
-            if unresolved:
-                for candidate in unresolved:
-                    detail = next(
-                        (result["detail"] for result in module_report.get("results", [])
-                         if result["name"] == candidate["name"] and result.get("detail")),
-                        "the module is still encrypted",
+            # Every candidate must resolve to a plain module; the shared intake
+            # (_declare_experimental_disc_modules) is the player's build route's too.
+            try:
+                module_bindings, deferred_modules, module_dir = \
+                    _declare_experimental_disc_modules(
+                        iso_path, user_root, metadata.disc_id, module_candidates,
+                        selected_elf, preflight.get("module_decryption") or {},
                     )
-                    print(f"MODULE {candidate['name']}: not ready ({detail})")
-                fail_stage(
-                    report, "prepare_import", "GUEST_MODULE_DECRYPTION_REQUIRED",
-                    [308], int((time.perf_counter() - started) * 1000),
-                )
-                _write_bringup_report(report, report_path)
-                print(_bringup_human_summary(report))
-                return 1
-            if unready:
-                unready_lines = _unready_module_lines(unready)
-                for line in unready_lines:
+            except ExperimentalModuleIntakeError as exc:
+                for line in exc.lines:
                     print(line)
-                _write_private_file(
-                    work_dir / "bringup-module-layout.log",
-                    ("\n".join(unready_lines) + "\n").encode("utf-8"),
-                )
-                fail_stage(
-                    report, "prepare_import", "GUEST_MODULE_FORMAT_UNSUPPORTED",
-                    [308], int((time.perf_counter() - started) * 1000),
-                )
-                _write_bringup_report(report, report_path)
-                print(_bringup_human_summary(report))
-                return 1
-            if module_sources:
-                plain_modules = [
-                    candidate for candidate, source, _folder_copy in module_sources
-                    if source == "iso"
-                ]
-                try:
-                    module_dir = _stage_iso_modules(
-                        iso_path, user_root, metadata.disc_id, plain_modules
-                    )
-                except (OSError, IsoInspectionError, PackageBuildError):
-                    fail_stage(
-                        report, "prepare_import", "GUEST_MODULE_STAGE_FAILED",
-                        [308], int((time.perf_counter() - started) * 1000),
-                    )
-                    _write_bringup_report(report, report_path)
-                    print(_bringup_human_summary(report))
-                    return 1
-                for candidate, source, folder_copy in module_sources:
-                    if source == "folder" and folder_copy is not None:
-                        _write_private_file(
-                            module_dir / candidate["name"], folder_copy.read_bytes()
-                        )
-                try:
-                    module_inputs = [
-                        (
-                            candidate["name"],
-                            module_dir / candidate["name"],
-                            "disc0:/" + "/".join((*candidate["directory"], candidate["name"])),
-                        )
-                        for candidate, _source, _folder_copy in module_sources
-                    ]
-                    module_bindings, deferred_modules = plan_guest_module_layout(
-                        selected_elf, module_inputs
-                    )
-                    if deferred_modules:
-                        deferred_lines = [
-                            f"DEFERRED_MODULE {item['name']}: {item['reason']}"
-                            for item in deferred_modules
-                        ]
-                        for line in deferred_lines:
-                            print(line)
-                        _write_private_file(
-                            work_dir / "bringup-module-deferred.log",
-                            ("\n".join(deferred_lines) + "\n").encode("utf-8"),
-                        )
-                except (IsoInspectionError, OSError) as exc:
-                    boundary_code = (
-                        getattr(exc, "boundary_code", None)
-                        or "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE"
-                    )
-                    fail_stage(
-                        report, "prepare_import", boundary_code,
-                        [308], int((time.perf_counter() - started) * 1000),
-                    )
+                if exc.log_lines:
                     _write_private_file(
                         work_dir / "bringup-module-layout.log",
-                        f"{boundary_code}: {exc}\n".encode("utf-8"),
+                        ("\n".join(exc.log_lines) + "\n").encode("utf-8"),
                     )
-                    _write_bringup_report(report, report_path)
-                    print(_bringup_human_summary(report))
-                    return 1
+                fail_stage(
+                    report, "prepare_import", exc.boundary_code,
+                    [308], int((time.perf_counter() - started) * 1000),
+                )
+                _write_bringup_report(report, report_path)
+                print(_bringup_human_summary(report))
+                return 1
+            if deferred_modules:
+                deferred_lines = [
+                    f"DEFERRED_MODULE {item['name']}: {item['reason']}"
+                    for item in deferred_modules
+                ]
+                for line in deferred_lines:
+                    print(line)
+                _write_private_file(
+                    work_dir / "bringup-module-deferred.log",
+                    ("\n".join(deferred_lines) + "\n").encode("utf-8"),
+                )
+            if module_dir is not None:
                 if profile_path is None or profile is None:
                     raise PackageBuildError("Experimental guest-module profile is unavailable.")
                 try:

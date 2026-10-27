@@ -4493,7 +4493,7 @@ static int real_module_start_enabled(void) {
  *   unset  - translated libfont module_start runs, so the guest owns its own
  *             readiness, and so does a guest-placed module's unless host HLE serves
  *             its exports; every other module keeps the host bypass in h_StartModule.
- *   "0"    - no module_start runs for any module; libfont reports a named refusal
+ *   "0"    - no module_start runs for any module; libfont stops the run by name
  *             instead of synthesizing guest readiness.
  * Any other value is refused rather than guessed, and the refusal is named once. */
 typedef enum {
@@ -5056,6 +5056,50 @@ static uint32_t guest_module_boundary(const char *boundary, const char *file, co
     return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
 }
 
+/* Libfont's readiness belongs to its own module_start (#299). When that cannot run -- the
+ * build did not translate it, its image was refused, it records no entry, or the operator's
+ * SR_REAL_MODULE_START=0 kill switch keeps module_start off -- the game waits for readiness
+ * nothing will ever set. The runtime never synthesizes it, so the run stops by name: one
+ * semantic-boundary line in SR_BOOT_EVENT_FILE (the shape the dispatcher and the
+ * unsupported-import stop write), which the player turns into its stopped-early card
+ * instead of a frozen game, then its own exit status. The selftest harness counts the stop
+ * and returns the named refusal, so a test can assert it. */
+#define HLE_LIBFONT_STARTUP_STOP_EXIT 11
+#define HLE_LIBFONT_STARTUP_BOUNDARY "libfont-startup-unavailable"
+#ifdef SR_HLE_THREAD_SELFTEST
+static uint32_t s_hle_libfont_startup_stops;
+uint32_t sr_hle_test_libfont_startup_stops(void) { return s_hle_libfont_startup_stops; }
+#endif
+static uint32_t hle_libfont_startup_stop(const char *reason) {
+    fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; translated guest libfont startup is not "
+                    "supported yet on this route; refusing to synthesize readiness, so the run "
+                    "stops at %s\n", reason, HLE_LIBFONT_STARTUP_BOUNDARY);
+    const char *path = getenv("SR_BOOT_EVENT_FILE");
+    if (path && path[0]) {
+        FILE *events = fopen(path, "ab");
+        if (events) {
+            fprintf(events,
+                    "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=%u\n",
+                    HLE_LIBFONT_STARTUP_BOUNDARY, 299u);
+            fclose(events);
+        }
+    }
+#ifdef SR_HLE_THREAD_SELFTEST
+    s_hle_libfont_startup_stops++;
+    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+#else
+    sr_hit_hle = 1;
+    if (sr_sched_on) {
+        sr_trace_close();
+        sr_compat_report();
+        sr_perf_shutdown();
+        fflush(stderr);
+        _Exit(HLE_LIBFONT_STARTUP_STOP_EXIT);
+    }
+    longjmp(g_hle_jmp, 1);
+#endif
+}
+
 static uint32_t read_guest_module_option(uint32_t option, GuestModuleLoadOption *out) {
     memset(out, 0, sizeof(*out));
     if (!option) return 0;
@@ -5322,6 +5366,10 @@ static uint32_t load_module_by_guest_path(const char *path, uint32_t option) {
         if (error) {
             retire_loaded_module(mod);
             fprintf(stderr, "sceKernelLoadModule(\"%s\") -> 0x%08x\n", path, error);
+            /* A named boundary refused libfont's translated image: its module_start can
+             * never run, so the run stops by name rather than leave the game waiting. */
+            if (error == HLE_KERNEL_ERROR_NOT_IMPLEMENTED && module_path_is(path, "libfont.prx"))
+                return hle_libfont_startup_stop("the translated libfont image was refused at load");
             return error;
         }
     } else if (declared && !populate_guest_module(file, base, required)) {
@@ -13203,7 +13251,9 @@ static uint32_t h_StartModule(CpuState *s) {
         snprintf(detail, sizeof(detail), "module_start 0x%08x has no translated body",
                  mod->module_start);
         mod->state = previous_state;
-        return guest_module_boundary("guest-module-start-untranslated", mod->code->name, detail);
+        uint32_t refused = guest_module_boundary("guest-module-start-untranslated",
+                                                 mod->code->name, detail);
+        return is_libfont ? hle_libfont_startup_stop("entry untranslated") : refused;
     }
 
     if (allow_entry && mod->module_start != 0 && sr_lookup(mod->module_start) != NULL) {
@@ -13221,24 +13271,15 @@ static uint32_t h_StartModule(CpuState *s) {
     }
 
     /* Guest startup is unavailable: the entry is not translated, the image recorded none,
-     * or the operator disabled module_start. Libfont readiness belongs to guest code; do
-     * not synthesize it when translated startup cannot run. */
+     * or the operator disabled module_start. Libfont readiness belongs to guest code and is
+     * never synthesized, so the run stops by name (hle_libfont_startup_stop); the module
+     * keeps its previous state for a harness that observes the refusal. */
     if (is_libfont) {
         const char *reason = !allow_entry ? "SR_REAL_MODULE_START=0 disabled guest startup"
                          : (mod->module_start == 0) ? "no module_start entry recorded"
                                                     : "entry untranslated";
-        unsigned reason_index = !allow_entry ? 0u : (mod->module_start == 0 ? 1u : 2u);
-        /* The diagnostic is latched per named boundary while a failed start remains
-         * retryable in its previous module state. */
-        static int s_logged_libfont_unavailable[3];
-        if (!s_logged_libfont_unavailable[reason_index]) {
-            s_logged_libfont_unavailable[reason_index] = 1;
-            fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; translated guest libfont "
-                            "startup is not supported yet on this route; refusing to "
-                            "synthesize readiness\n", reason);
-        }
         mod->state = previous_state;
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        return hle_libfont_startup_stop(reason);
     }
 
     static int s_logged_untranslated = 0;
