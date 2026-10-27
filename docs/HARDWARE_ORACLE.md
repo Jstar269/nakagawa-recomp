@@ -1601,6 +1601,867 @@ vram-restore
 vram-mirror-done
 ```
 
+### PSP-GE-TIMING-001 measured runs 2026-10-27
+
+Two acceptance-eligible `ge-timing` launches ran on the project PSP-3000 / 6.61 / ARK-5.1.0 / PSPLink v3.2.1 on
+2026-10-27 from commit `8f707fc0`, each preceded by `transport-write` and each on its own boot, under the
+hardware-lock protocol and Nakagawa Link's watchdog:
+
+- boot 46, standalone PSPLink after a PSPLink soft reset (game context): 47.9 s;
+- boot 45, PSPLink in the XMB (VSH context): 44.5 s.
+
+Each stream was complete under the runner's strict contract (671 records and `ge-timing-done`), every record
+`PASS`, no timing-cell timeout or enqueue error, and a clean teardown check. The raw host0 logs and envelopes
+stay private; this entry publishes derived values only. The game-context run agrees with the 2026-10-25
+game-context capture of probe `e9ad91d9` (run without a runner envelope) to a median of 0.0% over 579 common
+timing cells, 95th percentile 8.4%; the largest differences are the 256-entry CLUT loads (up to 16%) and DXT1
+512-px textures (up to 11%).
+
+The two contexts differ systematically, so every model value below names its context. Against the game
+context, the VSH run's command-word, float-vertex, texel-fetch and RAM-to-eDRAM transfer costs are 5 to 10%
+lower, its eDRAM fill 4 to 5% higher, and a busy enqueue returns in 16 us instead of 66 us; 16-bit positions and
+skinning weights cost the same in both. Games run in the game context.
+
+A 2026-10-26 launch of `3a5c57c0` got the runner's default 30 s case timeout: the runner stopped the probe at
+266 records with GE work in flight, the probe thread survived the stop, host0 went silent and the PSP needed a
+power cycle. The runner now refuses a `ge-timing` case with `--timeout` below 180 s.
+
+Method. Times are microseconds from just before `sceGeListEnQueue` on the 1 us system timer; a cost in bus
+clocks (clk) is the time multiplied by the bus clock in MHz (111 or 166). For a cell family, clk/unit is the
+least-squares slope of the median finish time over the family's three sizes in the 222/111 MHz pass, so it
+excludes the fixed per-list cost. The probe's cell names and units are described in
+[`fixtures/psp_oracle/README.md`](../fixtures/psp_oracle/README.md).
+
+| Item | Game (boot 46) | VSH (boot 45) |
+| --- | --- | --- |
+| `t0` empty list, enqueue to finish, b111 | 16 us (1776 clk) | 10 us (1110 clk) |
+| `t0` empty list, enqueue to finish, b166 | 10 us (1660 clk) | 7 us (1162 clk) |
+| b166/b111 finish-time ratio, cells of 200 us or more | 0.649 (0.616-0.674, 263 cells) | 0.654 (0.644-0.667, 264 cells) |
+
+The GE runs on the bus clock: from 222/111 to 333/166 MHz the finish time of every cell of 200 us or more
+scales by 0.62 to 0.67, against a bus-period ratio of 0.669.
+
+| Cell family (b111 pass) | Unit | Game (boot 46) clk/unit | VSH (boot 45) clk/unit |
+| --- | --- | --- | --- |
+| `t1-nop` | command word | 2.062 | 1.851 |
+| `t2-state` | command word | 2.029 | 1.851 |
+| `t3-matrix` | command word | 2.039 | 1.855 |
+| `t4-clear-c8888` | px | 0.478 | 0.500 |
+| `t4-clear-cz8888` | px | 0.756 | 0.794 |
+| `t4-clear-c5650` | px | 0.270 | 0.285 |
+| `t4-clear-cz5650` | px | 0.282 | 0.298 |
+| `t6-tri1px` | triangle | 18.38 | 16.56 |
+| `t6-tri1px-perprim` | triangle | 82.91 | 75.38 |
+| `t7-list` | vertex | 6.17 | 5.54 |
+| `t7-strip` | vertex | 6.09 | 5.55 |
+| `t7-indexed` | vertex | 38.73 | 34.49 |
+| `t8-pos16` | vertex | 5.02 | 5.03 |
+| `t8-pos8` | vertex | 9.39 | 8.37 |
+| `t8-color` | vertex | 8.14 | 7.39 |
+| `t8-uv` | vertex | 10.17 | 9.23 |
+| `t8-normal` | vertex | 12.22 | 11.07 |
+| `t8-full` | vertex | 18.34 | 16.59 |
+| `t9-lights0` | vertex | 12.21 | 11.08 |
+| `t9-lights1` | vertex | 12.23 | 11.07 |
+| `t9-lights4` | vertex | 13.38 | 12.30 |
+| `t10-weights1` | vertex | 10.66 | 10.12 |
+| `t10-weights4` | vertex | 31.26 | 31.17 |
+| `t10-weights8` | vertex | 59.35 | 59.31 |
+| `t11-5650-64-nearest` | px | 0.478 | 0.502 |
+| `t11-5650-64-linear` | px | 0.478 | 0.502 |
+| `t11-5650-512-nearest` | px | 3.60 | 3.39 |
+| `t11-5650-512-linear` | px | 4.11 | 3.89 |
+| `t11-5650s-64-nearest` | px | 0.478 | 0.502 |
+| `t11-5650s-64-linear` | px | 0.478 | 0.502 |
+| `t11-5650s-512-nearest` | px | 1.260 | 1.174 |
+| `t11-5650s-512-linear` | px | 1.426 | 1.311 |
+| `t11-8888-64-nearest` | px | 5.17 | 4.83 |
+| `t11-8888-64-linear` | px | 5.25 | 4.90 |
+| `t11-8888-512-nearest` | px | 7.77 | 7.36 |
+| `t11-8888-512-linear` | px | 8.50 | 8.05 |
+| `t11-8888s-64-nearest` | px | 1.878 | 1.718 |
+| `t11-8888s-64-linear` | px | 1.904 | 1.739 |
+| `t11-8888s-512-nearest` | px | 2.044 | 1.869 |
+| `t11-8888s-512-linear` | px | 2.185 | 2.052 |
+| `t11-t4-64-nearest` | px | 0.478 | 0.502 |
+| `t11-t4-64-linear` | px | 0.478 | 0.502 |
+| `t11-t4-512-nearest` | px | 1.139 | 1.076 |
+| `t11-t4-512-linear` | px | 1.490 | 1.434 |
+| `t11-t4s-64-nearest` | px | 0.478 | 0.501 |
+| `t11-t4s-64-linear` | px | 0.478 | 0.501 |
+| `t11-t4s-512-nearest` | px | 0.654 | 0.645 |
+| `t11-t4s-512-linear` | px | 0.775 | 0.749 |
+| `t11-t8-64-nearest` | px | 0.478 | 0.502 |
+| `t11-t8-64-linear` | px | 0.478 | 0.502 |
+| `t11-t8-512-nearest` | px | 1.870 | 1.791 |
+| `t11-t8-512-linear` | px | 2.324 | 2.200 |
+| `t11-t8s-64-nearest` | px | 0.478 | 0.502 |
+| `t11-t8s-64-linear` | px | 0.479 | 0.501 |
+| `t11-t8s-512-nearest` | px | 0.857 | 0.815 |
+| `t11-t8s-512-linear` | px | 0.991 | 0.937 |
+| `t11-dxt1-64-nearest` | px | 2.194 | 2.099 |
+| `t11-dxt1-64-linear` | px | 2.221 | 2.124 |
+| `t11-dxt1-512-nearest` | px | 2.425 | 2.305 |
+| `t11-dxt1-512-linear` | px | 2.609 | 2.512 |
+| `t12-base` | px | 0.478 | 0.501 |
+| `t12-blend` | px | 0.478 | 0.500 |
+| `t12-alphatest` | px | 0.478 | 0.502 |
+| `t12-depth` | px | 0.756 | 0.794 |
+| `t12-dither` | px | 0.478 | 0.501 |
+| `t12-xfbase` | px | 0.478 | 0.500 |
+| `t12-fog` | px | 0.478 | 0.502 |
+| `t13-clut16` | entry | 5.25 | 4.80 |
+| `t13-clut256` | entry | 0.886 | 0.813 |
+| `t14-copy-ram` | byte | 0.677 | 0.621 |
+| `t14-copy-vram` | byte | 0.442 | 0.463 |
+| `s3-tex-8888-128` | px | 6.24 | 5.84 |
+| `s3-tex-8888-256` | px | 6.74 | 6.35 |
+| `s3-tex-8888s-128` | px | 2.045 | 1.869 |
+| `s3-tex-8888s-256` | px | 2.045 | 1.869 |
+| `s3-tex-5650-128` | px | 3.00 | 2.817 |
+| `s3-tex-5650-256` | px | 3.32 | 3.15 |
+| `s3-tex-t8-128` | px | 1.041 | 1.018 |
+| `s3-tex-t8-256` | px | 1.791 | 1.681 |
+| `s3-tex-dxt1-128` | px | 2.405 | 2.292 |
+| `s3-tex-dxt1-256` | px | 2.411 | 2.293 |
+
+Derived, game context, 222/111 MHz pass:
+
+- A command word costs about 2.03 to 2.06 clk, NOP, state and matrix alike (1.85 in the VSH context).
+- One PRIM costs about 56 clk beyond its command words (`t6-tri1px-perprim` against `t6-tri1px`, less four
+  words per triangle); a one-pixel triangle inside one PRIM costs 18.4 clk.
+- Per transformed vertex: 6.1 clk for a float position in a list or strip, 5.0 for 16-bit and 9.4 for 8-bit
+  positions, 38.7 indexed (u16). A colour 8888 adds 2.0, a float uv 4.0, a float normal 6.1. One float weight
+  costs 10.7 and each further weight about 7.0. One light adds nothing over none; four lights add 1.2.
+- Untextured 8888 fill costs 0.478 clk/px; colour plus depth 0.756; 5650 0.270 and 0.282. Blend, alpha test,
+  dither, the transform-base state and fog add nothing on 8888; depth test and write match the colour+depth cost.
+- A 64-px texture in 5650, T4 or T8, plain or swizzled, draws at the untextured fill rate. At 512 px the
+  per-format costs are in the table; swizzling cuts 8888 from 7.77 to 2.04 clk/px. Linear filtering adds 7%
+  (swizzled 8888) to 31% (T4) at 512 px.
+- A CLUT load costs 5.25 clk per entry at 16 entries and 0.89 at 256. A block transfer costs 0.68 clk/byte from
+  RAM to eDRAM and 0.44 from eDRAM to eDRAM.
+
+Through-mode sprites tiling 256x256 (`s1`, every height from 8 to 256 px at each width) depend on the sprite
+width only:
+
+| s1 sprite width (256x256 tiled, b111) | Game (boot 46) us (clk/px) | VSH (boot 45) us (clk/px) |
+| --- | --- | --- |
+| 8 | 236-236 (0.40-0.40) | 243-245 (0.41-0.41) |
+| 16 | 198-200 (0.34-0.34) | 205-207 (0.35-0.35) |
+| 32 | 180-182 (0.30-0.31) | 187-188 (0.32-0.32) |
+| 64 | 302-305 (0.51-0.52) | 314-314 (0.53-0.53) |
+| 128 | 307-307 (0.52-0.52) | 319-319 (0.54-0.54) |
+| 256 | 309-311 (0.52-0.53) | 321-324 (0.54-0.55) |
+
+| Completion (median over 8 reps, us from before the enqueue) | Game (boot 46) | VSH (boot 45) |
+| --- | --- | --- |
+| c13: finish callback | 5404.5 | 5638.5 |
+| c13: last pixel visible in eDRAM | 5423.0 | 5647.0 |
+| c13: sceGeDrawSync(1) first change | 5426.0 | 5648.5 |
+| c13: sceGeListSync(qid,1) first change | 5424.5 | 5648.0 |
+| c4: SIGNAL callback | 2734.5 | 2800.0 |
+| c4: finish callback | 5393.0 | 5601.5 |
+| c5: second enqueue returned (GE busy) | 66.0 | 16.0 |
+| c5: first list finish | 5399.5 | 5598.5 |
+| c5: second list finish | 5424.0 | 5612.0 |
+| c2: sceGeDrawSync(0) returned | 5464.0 | 5633.0 |
+| c2: finish callback | 5397.5 | 5605.0 |
+| c6: sceGeListSync(qid,0) returned | 5439.0 | 5619.0 |
+| c6: finish callback | 5399.5 | 5601.0 |
+| c13: list/draw state at the first poll after the callback ran | list [0, 2], draw [0, 2] | list [0, 2], draw [0, 2] |
+| c2/c6: finish callbacks counted when the blocking sync returned | [1] | [1] |
+
+Completion, both contexts: the finish callback runs at the end of the list, and the final pixel is visible
+through the uncached eDRAM mirror 8 to 19 us (median) after the callback's own timestamp. At the first poll after
+the callback ran, `sceGeListSync(qid, 1)` and `sceGeDrawSync(1)` read 2 (drawing) in some reps and 0 in others.
+A blocking `sceGeDrawSync(0)` or `sceGeListSync(qid, 0)` returns after the callback has run (one callback counted
+in every rep). A `SIGNAL` with behaviour CONTINUE calls the signal callback halfway through the list and the list
+continues. A list enqueued while the GE is busy finishes after the running one.
+
+Not measured, so not model values: vertex formats uv 8/16, colour 5650/5551/4444, normal 8/16, weights 8/16,
+index8 and morph; 16-bit fill and depth against span width; the texture-cache geometry behind the size steps;
+lines, points and fans; any PSP model other than this PSP-3000.
+
+Probe APIs cited: `sceGeListEnQueue`, `sceGeDrawSync`, `sceGeListSync`, `sceGeBreak`, `sceGuInit`, `sceGuTerm`,
+`scePowerSetClockFrequency`, `sceKernelGetSystemTimeLow`.
+
+Exact strict result IDs (672 ordered records including the terminal record):
+
+```text
+gt-setup
+gt-b111-t0-empty-0
+gt-b111-t1-nop-1024
+gt-b111-t2-state-1024
+gt-b111-t3-matrix-1024
+gt-b111-t1-nop-4096
+gt-b111-t2-state-4096
+gt-b111-t3-matrix-4096
+gt-b111-t1-nop-16384
+gt-b111-t2-state-16384
+gt-b111-t3-matrix-16384
+gt-b111-t4-clear-c8888-1
+gt-b111-t4-clear-c8888-4
+gt-b111-t4-clear-c8888-16
+gt-b111-t4-clear-cz8888-1
+gt-b111-t4-clear-cz8888-4
+gt-b111-t4-clear-cz8888-16
+gt-b111-t4-clear-c5650-1
+gt-b111-t4-clear-c5650-4
+gt-b111-t4-clear-c5650-16
+gt-b111-t4-clear-cz5650-1
+gt-b111-t4-clear-cz5650-4
+gt-b111-t4-clear-cz5650-16
+gt-b111-t5-sprite-8
+gt-b111-t5-sprite-perprim-8
+gt-b111-t5-sprite-32
+gt-b111-t5-sprite-perprim-32
+gt-b111-t5-sprite-128
+gt-b111-t5-sprite-perprim-128
+gt-b111-t6-tri1px-1024
+gt-b111-t6-tri1px-perprim-1024
+gt-b111-t6-tri1px-4096
+gt-b111-t6-tri1px-perprim-4096
+gt-b111-t6-tri1px-16384
+gt-b111-t6-tri1px-perprim-16384
+gt-b111-t7-list-1536
+gt-b111-t7-strip-1536
+gt-b111-t7-indexed-1536
+gt-b111-t8-pos16-1536
+gt-b111-t8-pos8-1536
+gt-b111-t8-color-1536
+gt-b111-t8-uv-1536
+gt-b111-t8-normal-1536
+gt-b111-t8-full-1536
+gt-b111-t9-lights0-1536
+gt-b111-t9-lights1-1536
+gt-b111-t9-lights4-1536
+gt-b111-t10-weights1-1536
+gt-b111-t10-weights4-1536
+gt-b111-t10-weights8-1536
+gt-b111-t7-list-6144
+gt-b111-t7-strip-6144
+gt-b111-t7-indexed-6144
+gt-b111-t8-pos16-6144
+gt-b111-t8-pos8-6144
+gt-b111-t8-color-6144
+gt-b111-t8-uv-6144
+gt-b111-t8-normal-6144
+gt-b111-t8-full-6144
+gt-b111-t9-lights0-6144
+gt-b111-t9-lights1-6144
+gt-b111-t9-lights4-6144
+gt-b111-t10-weights1-6144
+gt-b111-t10-weights4-6144
+gt-b111-t10-weights8-6144
+gt-b111-t7-list-18432
+gt-b111-t7-strip-18432
+gt-b111-t7-indexed-18432
+gt-b111-t8-pos16-18432
+gt-b111-t8-pos8-18432
+gt-b111-t8-color-18432
+gt-b111-t8-uv-18432
+gt-b111-t8-normal-18432
+gt-b111-t8-full-18432
+gt-b111-t9-lights0-18432
+gt-b111-t9-lights1-18432
+gt-b111-t9-lights4-18432
+gt-b111-t10-weights1-18432
+gt-b111-t10-weights4-18432
+gt-b111-t10-weights8-18432
+gt-b111-t11-5650-64-nearest-1
+gt-b111-t11-5650-64-nearest-4
+gt-b111-t11-5650-64-nearest-16
+gt-b111-t11-5650-64-linear-1
+gt-b111-t11-5650-64-linear-4
+gt-b111-t11-5650-64-linear-16
+gt-b111-t11-5650-512-nearest-1
+gt-b111-t11-5650-512-nearest-4
+gt-b111-t11-5650-512-nearest-16
+gt-b111-t11-5650-512-linear-1
+gt-b111-t11-5650-512-linear-4
+gt-b111-t11-5650-512-linear-16
+gt-b111-t11-5650s-64-nearest-1
+gt-b111-t11-5650s-64-nearest-4
+gt-b111-t11-5650s-64-nearest-16
+gt-b111-t11-5650s-64-linear-1
+gt-b111-t11-5650s-64-linear-4
+gt-b111-t11-5650s-64-linear-16
+gt-b111-t11-5650s-512-nearest-1
+gt-b111-t11-5650s-512-nearest-4
+gt-b111-t11-5650s-512-nearest-16
+gt-b111-t11-5650s-512-linear-1
+gt-b111-t11-5650s-512-linear-4
+gt-b111-t11-5650s-512-linear-16
+gt-b111-t11-8888-64-nearest-1
+gt-b111-t11-8888-64-nearest-4
+gt-b111-t11-8888-64-nearest-16
+gt-b111-t11-8888-64-linear-1
+gt-b111-t11-8888-64-linear-4
+gt-b111-t11-8888-64-linear-16
+gt-b111-t11-8888-512-nearest-1
+gt-b111-t11-8888-512-nearest-4
+gt-b111-t11-8888-512-nearest-16
+gt-b111-t11-8888-512-linear-1
+gt-b111-t11-8888-512-linear-4
+gt-b111-t11-8888-512-linear-16
+gt-b111-t11-8888s-64-nearest-1
+gt-b111-t11-8888s-64-nearest-4
+gt-b111-t11-8888s-64-nearest-16
+gt-b111-t11-8888s-64-linear-1
+gt-b111-t11-8888s-64-linear-4
+gt-b111-t11-8888s-64-linear-16
+gt-b111-t11-8888s-512-nearest-1
+gt-b111-t11-8888s-512-nearest-4
+gt-b111-t11-8888s-512-nearest-16
+gt-b111-t11-8888s-512-linear-1
+gt-b111-t11-8888s-512-linear-4
+gt-b111-t11-8888s-512-linear-16
+gt-b111-t11-t4-64-nearest-1
+gt-b111-t11-t4-64-nearest-4
+gt-b111-t11-t4-64-nearest-16
+gt-b111-t11-t4-64-linear-1
+gt-b111-t11-t4-64-linear-4
+gt-b111-t11-t4-64-linear-16
+gt-b111-t11-t4-512-nearest-1
+gt-b111-t11-t4-512-nearest-4
+gt-b111-t11-t4-512-nearest-16
+gt-b111-t11-t4-512-linear-1
+gt-b111-t11-t4-512-linear-4
+gt-b111-t11-t4-512-linear-16
+gt-b111-t11-t4s-64-nearest-1
+gt-b111-t11-t4s-64-nearest-4
+gt-b111-t11-t4s-64-nearest-16
+gt-b111-t11-t4s-64-linear-1
+gt-b111-t11-t4s-64-linear-4
+gt-b111-t11-t4s-64-linear-16
+gt-b111-t11-t4s-512-nearest-1
+gt-b111-t11-t4s-512-nearest-4
+gt-b111-t11-t4s-512-nearest-16
+gt-b111-t11-t4s-512-linear-1
+gt-b111-t11-t4s-512-linear-4
+gt-b111-t11-t4s-512-linear-16
+gt-b111-t11-t8-64-nearest-1
+gt-b111-t11-t8-64-nearest-4
+gt-b111-t11-t8-64-nearest-16
+gt-b111-t11-t8-64-linear-1
+gt-b111-t11-t8-64-linear-4
+gt-b111-t11-t8-64-linear-16
+gt-b111-t11-t8-512-nearest-1
+gt-b111-t11-t8-512-nearest-4
+gt-b111-t11-t8-512-nearest-16
+gt-b111-t11-t8-512-linear-1
+gt-b111-t11-t8-512-linear-4
+gt-b111-t11-t8-512-linear-16
+gt-b111-t11-t8s-64-nearest-1
+gt-b111-t11-t8s-64-nearest-4
+gt-b111-t11-t8s-64-nearest-16
+gt-b111-t11-t8s-64-linear-1
+gt-b111-t11-t8s-64-linear-4
+gt-b111-t11-t8s-64-linear-16
+gt-b111-t11-t8s-512-nearest-1
+gt-b111-t11-t8s-512-nearest-4
+gt-b111-t11-t8s-512-nearest-16
+gt-b111-t11-t8s-512-linear-1
+gt-b111-t11-t8s-512-linear-4
+gt-b111-t11-t8s-512-linear-16
+gt-b111-t11-dxt1-64-nearest-1
+gt-b111-t11-dxt1-64-nearest-4
+gt-b111-t11-dxt1-64-nearest-16
+gt-b111-t11-dxt1-64-linear-1
+gt-b111-t11-dxt1-64-linear-4
+gt-b111-t11-dxt1-64-linear-16
+gt-b111-t11-dxt1-512-nearest-1
+gt-b111-t11-dxt1-512-nearest-4
+gt-b111-t11-dxt1-512-nearest-16
+gt-b111-t11-dxt1-512-linear-1
+gt-b111-t11-dxt1-512-linear-4
+gt-b111-t11-dxt1-512-linear-16
+gt-b111-t12-base-1
+gt-b111-t12-base-4
+gt-b111-t12-base-16
+gt-b111-t12-blend-1
+gt-b111-t12-blend-4
+gt-b111-t12-blend-16
+gt-b111-t12-alphatest-1
+gt-b111-t12-alphatest-4
+gt-b111-t12-alphatest-16
+gt-b111-t12-depth-1
+gt-b111-t12-depth-4
+gt-b111-t12-depth-16
+gt-b111-t12-dither-1
+gt-b111-t12-dither-4
+gt-b111-t12-dither-16
+gt-b111-t12-xfbase-1
+gt-b111-t12-xfbase-4
+gt-b111-t12-xfbase-16
+gt-b111-t12-fog-1
+gt-b111-t12-fog-4
+gt-b111-t12-fog-16
+gt-b111-t13-clut16-64
+gt-b111-t13-clut16-256
+gt-b111-t13-clut16-1024
+gt-b111-t13-clut256-64
+gt-b111-t13-clut256-256
+gt-b111-t13-clut256-1024
+gt-b111-t14-copy-ram-64
+gt-b111-t14-copy-ram-256
+gt-b111-t14-copy-ram-480
+gt-b111-t14-copy-vram-64
+gt-b111-t14-copy-vram-256
+gt-b111-t14-copy-vram-480
+gt-b111-t15-twolists-32
+gt-b111-s1-sprite-8x8-1024
+gt-b111-s1-sprite-8x16-512
+gt-b111-s1-sprite-8x32-256
+gt-b111-s1-sprite-8x64-128
+gt-b111-s1-sprite-8x128-64
+gt-b111-s1-sprite-8x256-32
+gt-b111-s1-sprite-16x8-512
+gt-b111-s1-sprite-16x16-256
+gt-b111-s1-sprite-16x32-128
+gt-b111-s1-sprite-16x64-64
+gt-b111-s1-sprite-16x128-32
+gt-b111-s1-sprite-16x256-16
+gt-b111-s1-sprite-32x8-256
+gt-b111-s1-sprite-32x16-128
+gt-b111-s1-sprite-32x32-64
+gt-b111-s1-sprite-32x64-32
+gt-b111-s1-sprite-32x128-16
+gt-b111-s1-sprite-32x256-8
+gt-b111-s1-sprite-64x8-128
+gt-b111-s1-sprite-64x16-64
+gt-b111-s1-sprite-64x32-32
+gt-b111-s1-sprite-64x64-16
+gt-b111-s1-sprite-64x128-8
+gt-b111-s1-sprite-64x256-4
+gt-b111-s1-sprite-128x8-64
+gt-b111-s1-sprite-128x16-32
+gt-b111-s1-sprite-128x32-16
+gt-b111-s1-sprite-128x64-8
+gt-b111-s1-sprite-128x128-4
+gt-b111-s1-sprite-128x256-2
+gt-b111-s1-sprite-256x8-32
+gt-b111-s1-sprite-256x16-16
+gt-b111-s1-sprite-256x32-8
+gt-b111-s1-sprite-256x64-4
+gt-b111-s1-sprite-256x128-2
+gt-b111-s1-sprite-256x256-1
+gt-b111-s2-triquad-8-2048
+gt-b111-s2-triquad-16-512
+gt-b111-s2-triquad-32-128
+gt-b111-s2-triquad-64-32
+gt-b111-s2-triquad-128-8
+gt-b111-s2-triquad-256-2
+gt-b111-s3-tex-8888-128-1
+gt-b111-s3-tex-8888-128-4
+gt-b111-s3-tex-8888-128-16
+gt-b111-s3-tex-8888-256-1
+gt-b111-s3-tex-8888-256-4
+gt-b111-s3-tex-8888-256-16
+gt-b111-s3-tex-8888s-128-1
+gt-b111-s3-tex-8888s-128-4
+gt-b111-s3-tex-8888s-128-16
+gt-b111-s3-tex-8888s-256-1
+gt-b111-s3-tex-8888s-256-4
+gt-b111-s3-tex-8888s-256-16
+gt-b111-s3-tex-5650-128-1
+gt-b111-s3-tex-5650-128-4
+gt-b111-s3-tex-5650-128-16
+gt-b111-s3-tex-5650-256-1
+gt-b111-s3-tex-5650-256-4
+gt-b111-s3-tex-5650-256-16
+gt-b111-s3-tex-t8-128-1
+gt-b111-s3-tex-t8-128-4
+gt-b111-s3-tex-t8-128-16
+gt-b111-s3-tex-t8-256-1
+gt-b111-s3-tex-t8-256-4
+gt-b111-s3-tex-t8-256-16
+gt-b111-s3-tex-dxt1-128-1
+gt-b111-s3-tex-dxt1-128-4
+gt-b111-s3-tex-dxt1-128-16
+gt-b111-s3-tex-dxt1-256-1
+gt-b111-s3-tex-dxt1-256-4
+gt-b111-s3-tex-dxt1-256-16
+gt-b111-s4-mix-vertex-fill-0
+gt-b111-c13-peeks-r0
+gt-b111-c13-peeks-r1
+gt-b111-c13-peeks-r2
+gt-b111-c13-peeks-r3
+gt-b111-c13-peeks-r4
+gt-b111-c13-peeks-r5
+gt-b111-c13-peeks-r6
+gt-b111-c13-peeks-r7
+gt-b111-c4-signal-r0
+gt-b111-c4-signal-r1
+gt-b111-c4-signal-r2
+gt-b111-c4-signal-r3
+gt-b111-c4-signal-r4
+gt-b111-c4-signal-r5
+gt-b111-c4-signal-r6
+gt-b111-c4-signal-r7
+gt-b111-c5-busyenq-r0
+gt-b111-c5-busyenq-r1
+gt-b111-c5-busyenq-r2
+gt-b111-c5-busyenq-r3
+gt-b111-c5-busyenq-r4
+gt-b111-c5-busyenq-r5
+gt-b111-c5-busyenq-r6
+gt-b111-c5-busyenq-r7
+gt-b111-c2-drawsync-r0
+gt-b111-c2-drawsync-r1
+gt-b111-c2-drawsync-r2
+gt-b111-c2-drawsync-r3
+gt-b111-c2-drawsync-r4
+gt-b111-c2-drawsync-r5
+gt-b111-c2-drawsync-r6
+gt-b111-c2-drawsync-r7
+gt-b111-c6-listsync-r0
+gt-b111-c6-listsync-r1
+gt-b111-c6-listsync-r2
+gt-b111-c6-listsync-r3
+gt-b111-c6-listsync-r4
+gt-b111-c6-listsync-r5
+gt-b111-c6-listsync-r6
+gt-b111-c6-listsync-r7
+gt-b166-t0-empty-0
+gt-b166-t1-nop-1024
+gt-b166-t2-state-1024
+gt-b166-t3-matrix-1024
+gt-b166-t1-nop-4096
+gt-b166-t2-state-4096
+gt-b166-t3-matrix-4096
+gt-b166-t1-nop-16384
+gt-b166-t2-state-16384
+gt-b166-t3-matrix-16384
+gt-b166-t4-clear-c8888-1
+gt-b166-t4-clear-c8888-4
+gt-b166-t4-clear-c8888-16
+gt-b166-t4-clear-cz8888-1
+gt-b166-t4-clear-cz8888-4
+gt-b166-t4-clear-cz8888-16
+gt-b166-t4-clear-c5650-1
+gt-b166-t4-clear-c5650-4
+gt-b166-t4-clear-c5650-16
+gt-b166-t4-clear-cz5650-1
+gt-b166-t4-clear-cz5650-4
+gt-b166-t4-clear-cz5650-16
+gt-b166-t5-sprite-8
+gt-b166-t5-sprite-perprim-8
+gt-b166-t5-sprite-32
+gt-b166-t5-sprite-perprim-32
+gt-b166-t5-sprite-128
+gt-b166-t5-sprite-perprim-128
+gt-b166-t6-tri1px-1024
+gt-b166-t6-tri1px-perprim-1024
+gt-b166-t6-tri1px-4096
+gt-b166-t6-tri1px-perprim-4096
+gt-b166-t6-tri1px-16384
+gt-b166-t6-tri1px-perprim-16384
+gt-b166-t7-list-1536
+gt-b166-t7-strip-1536
+gt-b166-t7-indexed-1536
+gt-b166-t8-pos16-1536
+gt-b166-t8-pos8-1536
+gt-b166-t8-color-1536
+gt-b166-t8-uv-1536
+gt-b166-t8-normal-1536
+gt-b166-t8-full-1536
+gt-b166-t9-lights0-1536
+gt-b166-t9-lights1-1536
+gt-b166-t9-lights4-1536
+gt-b166-t10-weights1-1536
+gt-b166-t10-weights4-1536
+gt-b166-t10-weights8-1536
+gt-b166-t7-list-6144
+gt-b166-t7-strip-6144
+gt-b166-t7-indexed-6144
+gt-b166-t8-pos16-6144
+gt-b166-t8-pos8-6144
+gt-b166-t8-color-6144
+gt-b166-t8-uv-6144
+gt-b166-t8-normal-6144
+gt-b166-t8-full-6144
+gt-b166-t9-lights0-6144
+gt-b166-t9-lights1-6144
+gt-b166-t9-lights4-6144
+gt-b166-t10-weights1-6144
+gt-b166-t10-weights4-6144
+gt-b166-t10-weights8-6144
+gt-b166-t7-list-18432
+gt-b166-t7-strip-18432
+gt-b166-t7-indexed-18432
+gt-b166-t8-pos16-18432
+gt-b166-t8-pos8-18432
+gt-b166-t8-color-18432
+gt-b166-t8-uv-18432
+gt-b166-t8-normal-18432
+gt-b166-t8-full-18432
+gt-b166-t9-lights0-18432
+gt-b166-t9-lights1-18432
+gt-b166-t9-lights4-18432
+gt-b166-t10-weights1-18432
+gt-b166-t10-weights4-18432
+gt-b166-t10-weights8-18432
+gt-b166-t11-5650-64-nearest-1
+gt-b166-t11-5650-64-nearest-4
+gt-b166-t11-5650-64-nearest-16
+gt-b166-t11-5650-64-linear-1
+gt-b166-t11-5650-64-linear-4
+gt-b166-t11-5650-64-linear-16
+gt-b166-t11-5650-512-nearest-1
+gt-b166-t11-5650-512-nearest-4
+gt-b166-t11-5650-512-nearest-16
+gt-b166-t11-5650-512-linear-1
+gt-b166-t11-5650-512-linear-4
+gt-b166-t11-5650-512-linear-16
+gt-b166-t11-5650s-64-nearest-1
+gt-b166-t11-5650s-64-nearest-4
+gt-b166-t11-5650s-64-nearest-16
+gt-b166-t11-5650s-64-linear-1
+gt-b166-t11-5650s-64-linear-4
+gt-b166-t11-5650s-64-linear-16
+gt-b166-t11-5650s-512-nearest-1
+gt-b166-t11-5650s-512-nearest-4
+gt-b166-t11-5650s-512-nearest-16
+gt-b166-t11-5650s-512-linear-1
+gt-b166-t11-5650s-512-linear-4
+gt-b166-t11-5650s-512-linear-16
+gt-b166-t11-8888-64-nearest-1
+gt-b166-t11-8888-64-nearest-4
+gt-b166-t11-8888-64-nearest-16
+gt-b166-t11-8888-64-linear-1
+gt-b166-t11-8888-64-linear-4
+gt-b166-t11-8888-64-linear-16
+gt-b166-t11-8888-512-nearest-1
+gt-b166-t11-8888-512-nearest-4
+gt-b166-t11-8888-512-nearest-16
+gt-b166-t11-8888-512-linear-1
+gt-b166-t11-8888-512-linear-4
+gt-b166-t11-8888-512-linear-16
+gt-b166-t11-8888s-64-nearest-1
+gt-b166-t11-8888s-64-nearest-4
+gt-b166-t11-8888s-64-nearest-16
+gt-b166-t11-8888s-64-linear-1
+gt-b166-t11-8888s-64-linear-4
+gt-b166-t11-8888s-64-linear-16
+gt-b166-t11-8888s-512-nearest-1
+gt-b166-t11-8888s-512-nearest-4
+gt-b166-t11-8888s-512-nearest-16
+gt-b166-t11-8888s-512-linear-1
+gt-b166-t11-8888s-512-linear-4
+gt-b166-t11-8888s-512-linear-16
+gt-b166-t11-t4-64-nearest-1
+gt-b166-t11-t4-64-nearest-4
+gt-b166-t11-t4-64-nearest-16
+gt-b166-t11-t4-64-linear-1
+gt-b166-t11-t4-64-linear-4
+gt-b166-t11-t4-64-linear-16
+gt-b166-t11-t4-512-nearest-1
+gt-b166-t11-t4-512-nearest-4
+gt-b166-t11-t4-512-nearest-16
+gt-b166-t11-t4-512-linear-1
+gt-b166-t11-t4-512-linear-4
+gt-b166-t11-t4-512-linear-16
+gt-b166-t11-t4s-64-nearest-1
+gt-b166-t11-t4s-64-nearest-4
+gt-b166-t11-t4s-64-nearest-16
+gt-b166-t11-t4s-64-linear-1
+gt-b166-t11-t4s-64-linear-4
+gt-b166-t11-t4s-64-linear-16
+gt-b166-t11-t4s-512-nearest-1
+gt-b166-t11-t4s-512-nearest-4
+gt-b166-t11-t4s-512-nearest-16
+gt-b166-t11-t4s-512-linear-1
+gt-b166-t11-t4s-512-linear-4
+gt-b166-t11-t4s-512-linear-16
+gt-b166-t11-t8-64-nearest-1
+gt-b166-t11-t8-64-nearest-4
+gt-b166-t11-t8-64-nearest-16
+gt-b166-t11-t8-64-linear-1
+gt-b166-t11-t8-64-linear-4
+gt-b166-t11-t8-64-linear-16
+gt-b166-t11-t8-512-nearest-1
+gt-b166-t11-t8-512-nearest-4
+gt-b166-t11-t8-512-nearest-16
+gt-b166-t11-t8-512-linear-1
+gt-b166-t11-t8-512-linear-4
+gt-b166-t11-t8-512-linear-16
+gt-b166-t11-t8s-64-nearest-1
+gt-b166-t11-t8s-64-nearest-4
+gt-b166-t11-t8s-64-nearest-16
+gt-b166-t11-t8s-64-linear-1
+gt-b166-t11-t8s-64-linear-4
+gt-b166-t11-t8s-64-linear-16
+gt-b166-t11-t8s-512-nearest-1
+gt-b166-t11-t8s-512-nearest-4
+gt-b166-t11-t8s-512-nearest-16
+gt-b166-t11-t8s-512-linear-1
+gt-b166-t11-t8s-512-linear-4
+gt-b166-t11-t8s-512-linear-16
+gt-b166-t11-dxt1-64-nearest-1
+gt-b166-t11-dxt1-64-nearest-4
+gt-b166-t11-dxt1-64-nearest-16
+gt-b166-t11-dxt1-64-linear-1
+gt-b166-t11-dxt1-64-linear-4
+gt-b166-t11-dxt1-64-linear-16
+gt-b166-t11-dxt1-512-nearest-1
+gt-b166-t11-dxt1-512-nearest-4
+gt-b166-t11-dxt1-512-nearest-16
+gt-b166-t11-dxt1-512-linear-1
+gt-b166-t11-dxt1-512-linear-4
+gt-b166-t11-dxt1-512-linear-16
+gt-b166-t12-base-1
+gt-b166-t12-base-4
+gt-b166-t12-base-16
+gt-b166-t12-blend-1
+gt-b166-t12-blend-4
+gt-b166-t12-blend-16
+gt-b166-t12-alphatest-1
+gt-b166-t12-alphatest-4
+gt-b166-t12-alphatest-16
+gt-b166-t12-depth-1
+gt-b166-t12-depth-4
+gt-b166-t12-depth-16
+gt-b166-t12-dither-1
+gt-b166-t12-dither-4
+gt-b166-t12-dither-16
+gt-b166-t12-xfbase-1
+gt-b166-t12-xfbase-4
+gt-b166-t12-xfbase-16
+gt-b166-t12-fog-1
+gt-b166-t12-fog-4
+gt-b166-t12-fog-16
+gt-b166-t13-clut16-64
+gt-b166-t13-clut16-256
+gt-b166-t13-clut16-1024
+gt-b166-t13-clut256-64
+gt-b166-t13-clut256-256
+gt-b166-t13-clut256-1024
+gt-b166-t14-copy-ram-64
+gt-b166-t14-copy-ram-256
+gt-b166-t14-copy-ram-480
+gt-b166-t14-copy-vram-64
+gt-b166-t14-copy-vram-256
+gt-b166-t14-copy-vram-480
+gt-b166-t15-twolists-32
+gt-b166-s1-sprite-8x8-1024
+gt-b166-s1-sprite-8x16-512
+gt-b166-s1-sprite-8x32-256
+gt-b166-s1-sprite-8x64-128
+gt-b166-s1-sprite-8x128-64
+gt-b166-s1-sprite-8x256-32
+gt-b166-s1-sprite-16x8-512
+gt-b166-s1-sprite-16x16-256
+gt-b166-s1-sprite-16x32-128
+gt-b166-s1-sprite-16x64-64
+gt-b166-s1-sprite-16x128-32
+gt-b166-s1-sprite-16x256-16
+gt-b166-s1-sprite-32x8-256
+gt-b166-s1-sprite-32x16-128
+gt-b166-s1-sprite-32x32-64
+gt-b166-s1-sprite-32x64-32
+gt-b166-s1-sprite-32x128-16
+gt-b166-s1-sprite-32x256-8
+gt-b166-s1-sprite-64x8-128
+gt-b166-s1-sprite-64x16-64
+gt-b166-s1-sprite-64x32-32
+gt-b166-s1-sprite-64x64-16
+gt-b166-s1-sprite-64x128-8
+gt-b166-s1-sprite-64x256-4
+gt-b166-s1-sprite-128x8-64
+gt-b166-s1-sprite-128x16-32
+gt-b166-s1-sprite-128x32-16
+gt-b166-s1-sprite-128x64-8
+gt-b166-s1-sprite-128x128-4
+gt-b166-s1-sprite-128x256-2
+gt-b166-s1-sprite-256x8-32
+gt-b166-s1-sprite-256x16-16
+gt-b166-s1-sprite-256x32-8
+gt-b166-s1-sprite-256x64-4
+gt-b166-s1-sprite-256x128-2
+gt-b166-s1-sprite-256x256-1
+gt-b166-s2-triquad-8-2048
+gt-b166-s2-triquad-16-512
+gt-b166-s2-triquad-32-128
+gt-b166-s2-triquad-64-32
+gt-b166-s2-triquad-128-8
+gt-b166-s2-triquad-256-2
+gt-b166-s3-tex-8888-128-1
+gt-b166-s3-tex-8888-128-4
+gt-b166-s3-tex-8888-128-16
+gt-b166-s3-tex-8888-256-1
+gt-b166-s3-tex-8888-256-4
+gt-b166-s3-tex-8888-256-16
+gt-b166-s3-tex-8888s-128-1
+gt-b166-s3-tex-8888s-128-4
+gt-b166-s3-tex-8888s-128-16
+gt-b166-s3-tex-8888s-256-1
+gt-b166-s3-tex-8888s-256-4
+gt-b166-s3-tex-8888s-256-16
+gt-b166-s3-tex-5650-128-1
+gt-b166-s3-tex-5650-128-4
+gt-b166-s3-tex-5650-128-16
+gt-b166-s3-tex-5650-256-1
+gt-b166-s3-tex-5650-256-4
+gt-b166-s3-tex-5650-256-16
+gt-b166-s3-tex-t8-128-1
+gt-b166-s3-tex-t8-128-4
+gt-b166-s3-tex-t8-128-16
+gt-b166-s3-tex-t8-256-1
+gt-b166-s3-tex-t8-256-4
+gt-b166-s3-tex-t8-256-16
+gt-b166-s3-tex-dxt1-128-1
+gt-b166-s3-tex-dxt1-128-4
+gt-b166-s3-tex-dxt1-128-16
+gt-b166-s3-tex-dxt1-256-1
+gt-b166-s3-tex-dxt1-256-4
+gt-b166-s3-tex-dxt1-256-16
+gt-b166-s4-mix-vertex-fill-0
+gt-b166-c13-peeks-r0
+gt-b166-c13-peeks-r1
+gt-b166-c13-peeks-r2
+gt-b166-c13-peeks-r3
+gt-b166-c13-peeks-r4
+gt-b166-c13-peeks-r5
+gt-b166-c13-peeks-r6
+gt-b166-c13-peeks-r7
+gt-b166-c4-signal-r0
+gt-b166-c4-signal-r1
+gt-b166-c4-signal-r2
+gt-b166-c4-signal-r3
+gt-b166-c4-signal-r4
+gt-b166-c4-signal-r5
+gt-b166-c4-signal-r6
+gt-b166-c4-signal-r7
+gt-b166-c5-busyenq-r0
+gt-b166-c5-busyenq-r1
+gt-b166-c5-busyenq-r2
+gt-b166-c5-busyenq-r3
+gt-b166-c5-busyenq-r4
+gt-b166-c5-busyenq-r5
+gt-b166-c5-busyenq-r6
+gt-b166-c5-busyenq-r7
+gt-b166-c2-drawsync-r0
+gt-b166-c2-drawsync-r1
+gt-b166-c2-drawsync-r2
+gt-b166-c2-drawsync-r3
+gt-b166-c2-drawsync-r4
+gt-b166-c2-drawsync-r5
+gt-b166-c2-drawsync-r6
+gt-b166-c2-drawsync-r7
+gt-b166-c6-listsync-r0
+gt-b166-c6-listsync-r1
+gt-b166-c6-listsync-r2
+gt-b166-c6-listsync-r3
+gt-b166-c6-listsync-r4
+gt-b166-c6-listsync-r5
+gt-b166-c6-listsync-r6
+gt-b166-c6-listsync-r7
+gt-gu-teardown
+gt-done
+ge-timing-done
+```
+
 ## Pending PSP-3000 measurement campaign
 
 The following twenty-three source-owned cases are in the PSP-3000 / 6.61 measurement

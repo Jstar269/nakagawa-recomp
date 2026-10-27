@@ -14166,6 +14166,147 @@ static void test_suspend_resume_errors_and_ready_thread(void) {
     s_cur = -1;
 }
 
+/* -------------------------------------------------------------------------
+ * sceKernelChangeThreadPriority (#1388), entered through sr_syscall.
+ * Expected results are the PSPAutotests threads/threads/change.expected cells:
+ * an unknown, -1 or deleted UID answers UNKNOWN_THID; a never-started or finished
+ * target answers DORMANT; priorities 0x08..0x77 are accepted and -2, -1, 0x01..0x07,
+ * 0x78 and 0x79 answer 0x80020193 without changing the priority; ready, suspended and
+ * waiting targets are changed; priority 0 gives the target the caller's current
+ * priority (0x18 there); a change that leaves another ready thread strictly stronger
+ * than the caller lets it run at the call, an equal one does not; and a caller that
+ * changes its own priority, even to the same value, goes behind its equal-priority
+ * ready peers and yields at the call ("[r] Zero", and the test thread's line before
+ * "Current").
+ * ------------------------------------------------------------------------- */
+#define NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY 0x71bc9871u
+#define SRT_ILLEGAL_PRIORITY 0x80020193u
+
+static uint32_t srt_change_priority(uint32_t uid, uint32_t priority) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid;
+    cpu.r[5] = priority;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY);
+}
+
+static void test_change_thread_priority_contract(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *self = fixture_thread(0x5b0u, TH_RUNNING, 0x18);
+    TCB *ready = fixture_thread(0x5b1u, TH_READY, 0x30);
+    TCB *stopped = fixture_thread(0x5b2u, TH_DORMANT, 0x30);
+    self->started = 1;
+    ready->started = 1;
+    s_cur = (int)(self - s_tcb);
+
+    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_CHANGE_THREAD_PRIORITY),
+           "ChangeThreadPriority has a production registration");
+
+    /* ---- target errors ------------------------------------------------------ */
+    expect(srt_change_priority(0xffffffffu, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority(-1) returns UNKNOWN_THID");
+    expect(srt_change_priority(0x7fffffu, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority of an unknown UID returns UNKNOWN_THID");
+    expect(srt_change_priority(stopped->uid, 0x20u) == SRT_DORMANT &&
+           stopped->priority == 0x30,
+           "ChangeThreadPriority of a dormant thread returns DORMANT and keeps its priority");
+    uint32_t deleted = sched_create_thread(0x08001000u, 0x30, 0x800u);
+    expect(deleted != 0u && sched_delete_thread(deleted) == 0u, "create and delete a thread");
+    expect(srt_change_priority(deleted, 0x20u) == SRT_UNKNOWN_THID,
+           "ChangeThreadPriority of a deleted thread returns UNKNOWN_THID");
+
+    /* ---- suspended and waiting targets are changed and do not take the CPU -- */
+    TCB *suspended = fixture_thread(0x5b3u, TH_READY, 0x30);
+    TCB *waiting = fixture_thread(0x5b4u, TH_WAIT_OBJ, 0x30);
+    suspended->started = 1;
+    suspended->suspended = 1;
+    waiting->started = 1;
+    expect(srt_change_priority(suspended->uid, 0x08u) == 0u && suspended->priority == 0x08 &&
+           self->state == TH_RUNNING,
+           "ChangeThreadPriority of a suspended thread succeeds and it does not preempt");
+    expect(srt_change_priority(waiting->uid, 0x08u) == 0u && waiting->priority == 0x08 &&
+           waiting->state == TH_WAIT_OBJ && self->state == TH_RUNNING,
+           "ChangeThreadPriority of a waiting thread succeeds and it keeps waiting");
+
+    /* ---- illegal priorities are refused and change nothing ------------------ */
+    static const uint32_t illegal[] = { 0xfffffffeu, 0xffffffffu, 0x01u, 0x02u, 0x04u,
+                                        0x05u, 0x06u, 0x07u, 0x78u, 0x79u };
+    for (size_t i = 0; i < sizeof illegal / sizeof illegal[0]; i++) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "priority 0x%x returns ILLEGAL_PRIORITY and keeps 0x30",
+                 illegal[i]);
+        expect(srt_change_priority(ready->uid, illegal[i]) == SRT_ILLEGAL_PRIORITY &&
+               ready->priority == 0x30 && self->state == TH_RUNNING, msg);
+    }
+
+    /* ---- legal priorities are stored; a stronger ready thread runs ---------- */
+    static const uint32_t legal[] = { 0x08u, 0x09u, 0x17u, 0x18u, 0x2fu, 0x30u, 0x31u,
+                                      0x50u, 0x6eu, 0x6fu, 0x77u };
+    for (size_t i = 0; i < sizeof legal / sizeof legal[0]; i++) {
+        char msg[96];
+        int stronger = (int)legal[i] < self->priority;
+        snprintf(msg, sizeof msg, "priority 0x%x is accepted and %s the caller",
+                 legal[i], stronger ? "preempts" : "does not preempt");
+        expect(srt_change_priority(ready->uid, legal[i]) == 0u &&
+               ready->priority == (int)legal[i] &&
+               self->state == (stronger ? TH_READY : TH_RUNNING), msg);
+        self->state = TH_RUNNING;
+    }
+
+    /* ---- priority 0 means the caller's current priority --------------------- */
+    expect(srt_change_priority(ready->uid, 0x21u) == 0u && ready->priority == 0x21,
+           "control: the target is set to 0x21");
+    expect(srt_change_priority(ready->uid, 0u) == 0u && ready->priority == 0x18,
+           "priority 0 gives the target the caller's current priority");
+    expect(self->state == TH_RUNNING, "an equal-priority target does not preempt the caller");
+
+    /* ---- UID 0 is the caller; lowering it lets a stronger ready thread run --- */
+    ready->priority = 0x20;
+    expect(srt_change_priority(0u, 0x18u) == 0u && self->state == TH_RUNNING,
+           "ChangeThreadPriority(0) keeps the caller ahead of a weaker ready thread");
+    expect(srt_change_priority(0u, 0x30u) == 0u && self->priority == 0x30 &&
+           self->state == TH_READY,
+           "lowering the caller below a ready thread reschedules at the call");
+    self->state = TH_RUNNING;
+
+    /* ---- the caller goes behind its equal-priority ready peers -------------- */
+    /* The caller holds slot 0 and the cursor is reset, so without the move to the back
+     * of the queue the next selection at 0x20 would be the caller again. */
+    const int self_idx = (int)(self - s_tcb);
+    const int ready_idx = (int)(ready - s_tcb);
+    self->priority = 0x20;
+    ready->priority = 0x20;
+    s_last_pick = -1;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->priority == 0x20 &&
+           self->state == TH_READY,
+           "ChangeThreadPriority(0) to the caller's own priority yields to an equal ready peer");
+    expect(pick_next() == ready_idx, "the equal-priority peer is selected before the caller");
+    ready->state = TH_READY;
+    self->state = TH_RUNNING;
+    s_cur = self_idx;
+    s_last_pick = -1;
+    expect(srt_change_priority(self->uid, 0x20u) == 0u && self->state == TH_READY,
+           "ChangeThreadPriority of the caller's own UID yields to an equal ready peer");
+    expect(pick_next() == ready_idx, "the peer runs first after the caller's own UID");
+    ready->state = TH_READY;
+    self->state = TH_RUNNING;
+    s_cur = self_idx;
+
+    ready->priority = 0x21;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->state == TH_RUNNING,
+           "with no ready peer at the caller's priority the caller keeps running");
+
+    ready->priority = 0x20;
+    s_dispatch_enabled = 0;
+    expect(srt_change_priority(0u, 0x20u) == 0u && self->state == TH_RUNNING,
+           "the yield is deferred while dispatch is disabled");
+    s_dispatch_enabled = 1;
+
+    expect(!srt_running_off_cpu(), "no thread is marked RUNNING while off the CPU");
+    s_cur = -1;
+}
+
 /* A rotated queue is observed through the selection order, not the rotation flag:
  * `order` runs the real pick_next() over three READY peers and records which slots
  * it chooses, re-READYing each one the way a thread that yields would. */
@@ -18779,6 +18920,133 @@ static void test_atrac_stream_ring_wrap(void) {
     cpu.r[4] = id;
     expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0,
            "streamed context releases cleanly");
+}
+
+/* ---- issue #1291: a streamed reset continues from the guest's refill ----
+ *
+ * A title hands sceAtracSetData its streaming ring, then starts playback the
+ * PSPSDK way: sceAtracGetBufferInfoForResetting(sample 0) says where to write
+ * and from which file offset, the guest writes that refill, and
+ * sceAtracResetPlayPosition passes the byte count it wrote. The guest then
+ * keeps its own file position (refill start + bytes written) and feeds the
+ * ring from it. The HLE used to ignore the refill: its ring and read offset
+ * stayed at the SetData state, so the frames after the refill mixed the stale
+ * ring with the guest's newer bytes, the decoder rejected them, and every
+ * later sceAtracDecodeData returned 0x80630006 while the guest retried.
+ * Synthetic terminator-unit frames as in the #32 fixture; no game data. */
+static void test_atrac_reset_refill_stream(void) {
+    reset_fixture();
+    sr_hle_init();
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    atring_build_header();
+
+    cpu.r[4] = AT_RINGBASE;
+    cpu.r[5] = AT_BUFSIZE;
+    uint32_t id = sr_syscall(&cpu, NID_SCE_ATRAC_SET_DATA_AND_GET_ID);
+    expect(id < 8u, "#1291: streamed ATRAC3+ track accepted");
+    if (id >= 8u) return;
+
+    const uint32_t INFO = 0x08000300u;
+    const uint32_t WP = 0x08000200u, WB = 0x08000204u, RO = 0x08000208u;
+    const uint32_t DEC = 0x08000210u, FIN = 0x08000214u, REM = 0x08000218u;
+    const uint32_t REMAIN = 0x0800021cu;
+
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = INFO;
+    expect(sr_syscall(&cpu, 0x2dd3e298u) == 0u,
+           "#1291: sceAtracGetBufferInfoForResetting(sample 0) succeeds");
+    uint32_t wp = MEM_R32(INFO + 0u), writable = MEM_R32(INFO + 4u);
+    uint32_t minimum = MEM_R32(INFO + 8u), file_pos = MEM_R32(INFO + 12u);
+    expect(wp == AT_RINGBASE && file_pos == AT_DATAOFF,
+           "#1291: the reset refill starts at the ring start with the first frame");
+    expect(writable >= minimum && writable % AT_ALIGN == 0u,
+           "#1291: the reset refill offers whole frames, at least the minimum");
+
+    /* The guest writes the refill, then reports the byte count. */
+    for (uint32_t b = 0; b < writable; b++)
+        MEM_W8(wp + b, atring_file_byte(file_pos + b));
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0u,
+           "#1291: sceAtracResetPlayPosition accepts the refill it offered");
+
+    cpu.r[4] = id; cpu.r[5] = REMAIN;
+    expect(sr_syscall(&cpu, 0x9ae849a7u) == 0u &&
+               MEM_R32(REMAIN) == writable / AT_ALIGN - 1u,
+           "#1291: after the reset the remaining frames are the refill minus its state-loading frame");
+
+    uint32_t next = file_pos + writable;   /* the guest's own file position */
+    int read_offset_mismatch = 0, decode_failures = 0, decoded_frames = 0;
+    for (int i = 0; i < 30; i++) {
+        cpu.r[4] = id; cpu.r[5] = WP; cpu.r[6] = WB; cpu.r[7] = RO;
+        expect(sr_syscall(&cpu, NID_SCE_ATRAC_GET_STREAM_DATA_INFO) == 0u,
+               "#1291: sceAtracGetStreamDataInfo succeeds after the reset");
+        uint32_t wb = MEM_R32(WB), ro = MEM_R32(RO);
+        if (next < AT_FILESIZE && wb > 0u) {
+            if (ro != next) read_offset_mismatch++;
+            uint32_t n = wb < AT_FILESIZE - next ? wb : AT_FILESIZE - next;
+            uint32_t at = MEM_R32(WP);
+            for (uint32_t b = 0; b < n; b++)
+                MEM_W8(at + b, atring_file_byte(next + b));
+            cpu.r[4] = id; cpu.r[5] = n; cpu.r[6] = 0u;
+            expect(sr_syscall(&cpu, 0x7db31251u) == 0u,
+                   "#1291: sceAtracAddStreamData accepts the continued feed");
+            next += n;
+        }
+        cpu.r[4] = id; cpu.r[5] = AT_PCMOUT; cpu.r[6] = DEC; cpu.r[7] = FIN;
+        cpu.r[8] = REM;
+        uint32_t ret = sr_syscall(&cpu, 0x6a8c3cd5u);
+        if (ret != 0u) decode_failures++;
+        else if (MEM_R32(DEC) == 2048u) decoded_frames++;
+    }
+    expect(read_offset_mismatch == 0,
+           "#1291: the stream read offset continues after the reset refill");
+    expect(decode_failures == 0,
+           "#1291: no frame after a reset refill is refused by the decoder");
+    expect(decoded_frames == 30,
+           "#1291: every sceAtracDecodeData after the reset returns a full frame");
+
+    /* Counts outside the offered refill are refused and leave the context
+     * unchanged (codes from the public PPSSPP reference, not measured). */
+    uint32_t pos_before = 0, valid_before = 0, pos_after = 0, valid_after = 0;
+    (void)sr_hle_test_atrac_ring(id, &pos_before, NULL, NULL, NULL, &valid_before);
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable + AT_ALIGN; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630016u,
+           "#1291: a refill larger than the offered space is refused (BAD_FIRST_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = minimum - 1u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630016u,
+           "#1291: a refill below the required minimum is refused (BAD_FIRST_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = AT_ALIGN;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630017u,
+           "#1291: a second-buffer count is refused when none was offered (BAD_SECOND_RESET_SIZE)");
+    cpu.r[4] = id; cpu.r[5] = AT_FILEFR * 2048u + 1u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630015u,
+           "#1291: a reset past the end sample is refused (BAD_SAMPLE)");
+    cpu.r[4] = 0x7fu; cpu.r[5] = 0u; cpu.r[6] = writable; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == ATRAC_ERROR_BAD_ATRACID,
+           "#1291: sceAtracResetPlayPosition on an invalid ID is refused (BAD_ATRACID)");
+    expect(sr_hle_test_atrac_ring(id, &pos_after, NULL, NULL, NULL, &valid_after) == 1 &&
+               pos_after == pos_before && valid_after == valid_before,
+           "#1291: refused resets leave the stream ring unchanged");
+
+    cpu.r[4] = id;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0u,
+           "#1291: streamed context releases cleanly");
+
+    /* An ID without data has no refill to describe or consume. */
+    cpu.r[4] = ATRAC_CODEC_AT3PLUS;
+    uint32_t bare = sr_syscall(&cpu, NID_SCE_ATRAC_GET_ID);
+    expect(bare < 8u, "#1291: sceAtracGetAtracID allocates an empty context");
+    if (bare >= 8u) return;
+    cpu.r[4] = bare; cpu.r[5] = 0u; cpu.r[6] = INFO;
+    expect(sr_syscall(&cpu, 0x2dd3e298u) == 0x80630010u,
+           "#1291: sceAtracGetBufferInfoForResetting without data is refused (NO_DATA)");
+    cpu.r[4] = bare; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0u;
+    expect(sr_syscall(&cpu, 0x644e5607u) == 0x80630010u,
+           "#1291: sceAtracResetPlayPosition without data is refused (NO_DATA)");
+    cpu.r[4] = bare;
+    expect(sr_syscall(&cpu, NID_SCE_ATRAC_RELEASE_ID) == 0u,
+           "#1291: empty context releases cleanly");
 }
 
 /* TD-24 batch 3: production-dispatch regressions for four converted Class B
@@ -32334,6 +32602,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_refer_thread_status();
     test_change_current_thread_attr();
     test_suspend_resume_errors_and_ready_thread();
+    test_change_thread_priority_contract();
     test_rotate_ready_queue_selection_order();
     test_rotate_equal_priority_yields_to_peers();
     test_suspended_waiter_keeps_wait_semantics();
@@ -32422,6 +32691,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_devkit_version_measured();
     test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();
+    test_atrac_reset_refill_stream();
     test_td24c_atrac_info_batch();
     test_mp3_stream_lifecycle();
     test_mp3_loop_and_mono();
