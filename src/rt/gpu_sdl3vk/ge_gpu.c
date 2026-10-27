@@ -2145,6 +2145,20 @@ static uint64_t fnv64(uint64_t h, const void *data, size_t n) {
     return h;
 }
 
+/* The FNV-1a step taken a 64-bit word at a time over `n` bytes, a multiple of 8: an eighth
+ * of fnv64's dependent multiplies. Each step is a bijection of the running hash and, for a
+ * given hash, of the word, so a change confined to any one word always changes the result. */
+static uint64_t fnv64_words(uint64_t h, const void *data, size_t n) {
+    const uint8_t *p = (const uint8_t *)data;
+    for (size_t i = 0; i + 8u <= n; i += 8u) {
+        uint64_t w;
+        memcpy(&w, p + i, 8u);
+        h ^= w;
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
 static uint64_t tex_hash(void) {
     uint64_t profile_started = cpu_profile_now();
     uint32_t source_bytes = tex_source_size();
@@ -2155,10 +2169,10 @@ static uint64_t tex_hash(void) {
         return 0;
     }
     uint64_t h = 1469598103934665603ull;
-    h = fnv64(h, &bytes, sizeof(bytes));
+    h = fnv64_words(h, &bytes, sizeof(bytes));
     uint64_t step = bytes / 64; if (step < 16) step = 16;
-    for (uint64_t off = 0; off + 16 <= bytes; off += step) h = fnv64(h, p + off, 16);
-    if (bytes >= 16) h = fnv64(h, p + bytes - 16, 16);
+    for (uint64_t off = 0; off + 16 <= bytes; off += step) h = fnv64_words(h, p + off, 16);
+    if (bytes >= 16) h = fnv64_words(h, p + bytes - 16, 16);
     cpu_profile_add(GEGPU_CPU_OBJECT_LOOKUP, profile_started);
     return h;
 }
@@ -2170,7 +2184,7 @@ static uint64_t tex_hash(void) {
 static uint64_t clut_hash(void) {
     uint64_t profile_started = cpu_profile_now();
     uint64_t h = 1469598103934665603ull;
-    h = fnv64(h, s_ge->clutram, sizeof(s_ge->clutram));
+    h = fnv64_words(h, s_ge->clutram, sizeof(s_ge->clutram));
     h = fnv64(h, &s_ge->clut_fmt, sizeof(s_ge->clut_fmt));
     cpu_profile_add(GEGPU_CPU_OBJECT_LOOKUP, profile_started);
     return h;
@@ -4794,6 +4808,141 @@ static int coherence_run_texture_dirty_same_state(void) {
     return 1;
 }
 
+/* A texture in main RAM changes with no notification (guest CPU stores to main RAM are not
+ * tracked), so the content hash is what finds it: one texel in the upper half of a hashed
+ * 8-byte word turns from red to green between two submissions, and the second draw shows
+ * it. */
+static int coherence_run_texture_ram_unnotified_change(void) {
+    const uint32_t fba = 0x00140000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t tex_base = 0x08530000u;
+    const uint32_t stride = 512u;
+    const uint32_t rgb = 0x00FFFFFFu;
+    const uint32_t red = 0xFF0000FFu, green = 0xFF00FF00u;   /* ABGR */
+    uint32_t *guest = (uint32_t *)SR_HOST(base);
+    uint32_t *tex = (uint32_t *)SR_HOST(tex_base);
+
+    coherence_reset_targets();
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    for (unsigned i = 0; i < 64u; i++) tex[i] = red;
+
+    wrap_state(base, stride);
+    s_ge->tex_enable = 1;
+    s_ge->tex_addr = tex_base;
+    s_ge->tex_bufw = 8;
+    s_ge->tex_fmt = 3;
+    s_ge->tex_w = 8;
+    s_ge->tex_h = 8;
+    s_ge->tex_func = 3;      /* REPLACE: the framebuffer shows the texel */
+    s_ge->tex_filter = 0;    /* NEAREST */
+    ge_set_gpu_hooks(&k_hooks);
+
+    GeVtx p0, p1;
+    const uint32_t white = 0xFFFFFFFFu;
+    wrap_vtx(&p0, 10.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 18.0f, 18.0f, white); p1.u = 8.0f; p1.v = 8.0f;
+    int ok = hook_sprite(&p0, &p1, 0);
+    /* A submission (a frame's present, say) separates the store from the next draw, as in a
+     * title; within one submission an unchanged draw state reuses its template, texture
+     * included. */
+    ok = ok && submit_pending();
+    tex[1] = green;          /* texel (1, 0): bytes 4-7 of the first 8-byte word; no notification */
+    wrap_vtx(&p0, 30.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 38.0f, 18.0f, white); p1.u = 8.0f; p1.v = 8.0f;
+    ok = ok && hook_sprite(&p0, &p1, 0) && s_cur && target_readback(s_cur);
+    if (!ok) {
+        fprintf(stderr, "gpu coherence selftest [texture-ram-unnotified]: draw or readback failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint32_t first = guest[10u * stride + 11u] & rgb;
+    uint32_t second = guest[10u * stride + 31u] & rgb;
+    if (first != (red & rgb) || second != (green & rgb)) {
+        fprintf(stderr,
+                "gpu coherence selftest [texture-ram-unnotified]: first=%06x (want %06x) "
+                "second=%06x (want %06x)%s\n",
+                first, red & rgb, second, green & rgb,
+                second == (red & rgb) ? " -- the second draw reused the stale decode" : "");
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s first=%06x second=%06x\n",
+           "texture-ram-unnotified", first, second);
+    coherence_reset_targets();
+    return 1;
+}
+
+/* One CLUT8 texture drawn twice through the same palette bytes with a different CLUT format
+ * word: the palette identity in the texture cache key covers the format, so the second draw
+ * decodes again (index >> 1 picks another entry) instead of reusing the first decode. */
+static int coherence_run_clut_format_same_palette(void) {
+    const uint32_t fba = 0x00140000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t tex_base = 0x04040000u;
+    const uint32_t stride = 512u;
+    const uint32_t rgb = 0x00FFFFFFu;
+    const uint32_t index = 6u;
+    uint32_t *guest = (uint32_t *)SR_HOST(base);
+    uint8_t *tex = (uint8_t *)SR_HOST(tex_base);
+
+    coherence_reset_targets();
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    memset(tex, (int)index, 16u * 16u);
+    sr_gpu_vram_dirty(tex_base, 16u * 16u);
+
+    wrap_state(base, stride);
+    for (uint32_t j = 0; j < 256u; j++) {
+        uint32_t entry = 0xFF000000u | wrap_hash(0x51u + j);
+        memcpy(&s_ge->clutram[j * 4u], &entry, 4);
+    }
+    uint32_t want_first, want_second;
+    memcpy(&want_first, &s_ge->clutram[index * 4u], 4);
+    memcpy(&want_second, &s_ge->clutram[(index >> 1) * 4u], 4);
+    s_ge->tex_enable = 1;
+    s_ge->tex_addr = tex_base;
+    s_ge->tex_bufw = 16;
+    s_ge->tex_fmt = 5;       /* CLUT8 */
+    s_ge->tex_w = 16;
+    s_ge->tex_h = 16;
+    s_ge->tex_func = 3;      /* REPLACE: the framebuffer shows the texel */
+    s_ge->tex_filter = 0;    /* NEAREST */
+    s_ge->clut_fmt = 3u | (0xFFu << 8);                 /* 8888, shift 0, mask 0xFF */
+    ge_set_gpu_hooks(&k_hooks);
+
+    GeVtx p0, p1;
+    const uint32_t white = 0xFFFFFFFFu;
+    wrap_vtx(&p0, 10.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 26.0f, 26.0f, white); p1.u = 16.0f; p1.v = 16.0f;
+    int ok = hook_sprite(&p0, &p1, 0);
+    s_ge->clut_fmt = 3u | (1u << 2) | (0xFFu << 8);     /* same bytes, shift 1 */
+    wrap_vtx(&p0, 40.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 56.0f, 26.0f, white); p1.u = 16.0f; p1.v = 16.0f;
+    ok = ok && hook_sprite(&p0, &p1, 0) && s_cur && target_readback(s_cur);
+    if (!ok) {
+        fprintf(stderr, "gpu coherence selftest [clut-format-same-palette]: draw or readback failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint32_t first = guest[18u * stride + 18u] & rgb;
+    uint32_t second = guest[18u * stride + 48u] & rgb;
+    if (first != (want_first & rgb) || second != (want_second & rgb)) {
+        fprintf(stderr,
+                "gpu coherence selftest [clut-format-same-palette]: first=%06x (want %06x) "
+                "second=%06x (want %06x)%s\n",
+                first, want_first & rgb, second, want_second & rgb,
+                second == (want_first & rgb)
+                    ? " -- the second draw reused the first format's decode" : "");
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s first=%06x second=%06x\n",
+           "clut-format-same-palette", first, second);
+    coherence_reset_targets();
+    return 1;
+}
+
 /* ---- blend parity: Vulkan vs ge.c (arbiter) vs the R6 colour product --------------------- */
 
 #define PARITY_GRID 16u                  /* 16 x 16 sprites, 4x4 pixels each */
@@ -5491,6 +5640,8 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_submit_batch()) ok = 0;
     if (!coherence_run_upload_sequence()) ok = 0;
     if (!coherence_run_texture_dirty_same_state()) ok = 0;
+    if (!coherence_run_texture_ram_unnotified_change()) ok = 0;
+    if (!coherence_run_clut_format_same_palette()) ok = 0;
     if (!coherence_run_blend_parity()) ok = 0;
     if (!coherence_run_scalar_vram_read(0x04080000u)) ok = 0;
     /* zbp 0x0a2000: bit 13 set, so the absolute XOR differs from the within-buffer form (0x0a6854 vs
