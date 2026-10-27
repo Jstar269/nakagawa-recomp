@@ -3933,6 +3933,33 @@ int sched_thread_info(uint32_t uid, SrThreadInfo *out) {
     return 0;
 }
 
+/* sceKernelGetThreadmanIdList's scheduler-owned classes. A deleted thread is no longer a
+ * kernel object, so no list names it. The order is TCB slot order; the PSP's own order is
+ * UNMEASURED. */
+int sched_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx) {
+    if (tmid == SR_TMID_ALARM) {
+        for (unsigned i = 0; i < SCHED_ALARM_MAX; i++)
+            if (s_alarms[i].uid) visit(s_alarms[i].uid, ctx);
+        return 1;
+    }
+    if (tmid != SR_TMID_THREAD && (tmid < SR_TMID_SLEEP_THREAD || tmid > SR_TMID_DORMANT_THREAD))
+        return 0;
+    for (int i = 0; i < s_ntcb; i++) {
+        const TCB *t = &s_tcb[i];
+        if (t->deleted) continue;
+        int listed;
+        switch (tmid) {
+            case SR_TMID_SLEEP_THREAD:   listed = psp_wait_type(t) == PSP_WAIT_SLEEP; break;
+            case SR_TMID_DELAY_THREAD:   listed = psp_wait_type(t) == PSP_WAIT_DELAY; break;
+            case SR_TMID_SUSPEND_THREAD: listed = (psp_thread_status(t) & PSP_THREAD_SUSPEND) != 0; break;
+            case SR_TMID_DORMANT_THREAD: listed = t->state == TH_DORMANT; break;
+            default:                     listed = 1; break;
+        }
+        if (listed) visit(t->uid, ctx);
+    }
+    return 1;
+}
+
 static int sched_pc_in_module(uint32_t pc, uint32_t start, uint32_t end) {
     return pc >= start && pc < end;
 }
