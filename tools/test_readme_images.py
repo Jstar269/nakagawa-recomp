@@ -41,6 +41,10 @@ BRAND_MARKS = {
     "docs/images/brand/nakagawa-mark-dark.svg",
     "docs/images/brand/nakagawa-mark-light.svg",
 }
+# The website's link-preview card: brand art, sized for Open Graph, not a framebuffer.
+SHARE_CARD = "docs/images/brand/og-card.png"
+SHARE_CARD_SIZE = (1200, 630)
+MAX_SHARE_CARD_BYTES = 300 * 1024
 BADGE_URL_RES = (
     re.compile(r"https://github\.com/Jstar269/nakagawa-recomp/actions/workflows/[\w.-]+\.ya?ml/badge\.svg(\?[\w=&%.-]*)?"),
     re.compile(r"https://img\.shields\.io/[\w./%+-]+(\?[\w=&%.:/-]*)?"),
@@ -197,6 +201,13 @@ class ReadmeImageTests(unittest.TestCase):
                 self.assertLess(len(data), MAX_GIF_BYTES,
                                 f"{image.name} is larger than {MAX_GIF_BYTES} bytes")
 
+    def test_share_card_is_open_graph_sized_and_small(self) -> None:
+        data = (ROOT / SHARE_CARD).read_bytes()
+        width, height, bit_depth, _ = read_png_size(data)
+        self.assertEqual((width, height), SHARE_CARD_SIZE)
+        self.assertEqual(bit_depth, 8)
+        self.assertLess(len(data), MAX_SHARE_CARD_BYTES)
+
     def test_publication_policy_admits_exactly_the_published_images(self) -> None:
         include_paths = json.loads(PROFILE.read_text(encoding="utf-8"))["include_paths"]
         published = {
@@ -205,6 +216,7 @@ class ReadmeImageTests(unittest.TestCase):
             for path in IMAGES.glob(pattern)
         }
         published.update(BRAND_MARKS)
+        published.add(SHARE_CARD)
         self.assertEqual(
             sorted(path for path in include_paths if path.startswith("docs/images/")),
             sorted(published),
