@@ -4810,35 +4810,31 @@ static void player_font_append(char *out, size_t out_len, const char *text) {
     out[used + room] = '\0';
 }
 
-/* The PSP system fonts in registry order: jpn0.pgf, ltn0.pgf to ltn15.pgf, kr0.pgf. */
+/* The PSP system fonts in registry order: Japanese, the 16 Latin indices, Korean. */
 #define PLAYER_PSP_FONT_COUNT (NK_FONT_LATIN_INDEX_COUNT + 2)
 
-static const char *player_psp_font_name(int font) {
-    if (font == 0) return nk_font_slot_psp_filename(NK_FONT_SLOT_JAPANESE);
-    if (font == PLAYER_PSP_FONT_COUNT - 1) return nk_font_slot_psp_filename(NK_FONT_SLOT_KOREAN);
-    return nk_font_latin_index_filename(font - 1);
-}
-
-/* The fonts flagged in `wanted`, by their PSP file names: "a, b and c". A run of three or more
-   Latin files reads as "ltn7.pgf to ltn15.pgf". */
+/* The fonts flagged in `wanted`, in plain words: "the Japanese font, 10 of the 16 Latin fonts and
+   the Korean font". The player's rows never show file names (#1302); the check's developer
+   message keeps the exact file and fallback for every font. */
 static void player_font_append_names(char *out, size_t out_len,
                                      const bool wanted[PLAYER_PSP_FONT_COUNT]) {
-    char items[PLAYER_PSP_FONT_COUNT][32];
+    char items[3][48];
     size_t count = 0;
-    for (int font = 0; font < PLAYER_PSP_FONT_COUNT; font++) {
-        int last = font;
-        if (!wanted[font]) continue;
-        if (font >= 1 && font <= NK_FONT_LATIN_INDEX_COUNT) {
-            while (last + 1 <= NK_FONT_LATIN_INDEX_COUNT && wanted[last + 1]) last++;
-        }
-        if (last - font >= 2) {
-            snprintf(items[count++], sizeof(items[0]), "%s to %s", player_psp_font_name(font),
-                     player_psp_font_name(last));
-            font = last;
-        } else {
-            snprintf(items[count++], sizeof(items[0]), "%s", player_psp_font_name(font));
-        }
+    int latin = 0;
+    for (int font = 1; font <= NK_FONT_LATIN_INDEX_COUNT; font++) {
+        if (wanted[font]) latin++;
     }
+    if (wanted[0]) snprintf(items[count++], sizeof(items[0]), "the Japanese font");
+    if (latin == NK_FONT_LATIN_INDEX_COUNT) {
+        snprintf(items[count++], sizeof(items[0]), "all %d Latin fonts", NK_FONT_LATIN_INDEX_COUNT);
+    } else if (latin == 1) {
+        snprintf(items[count++], sizeof(items[0]), "one of the %d Latin fonts",
+                 NK_FONT_LATIN_INDEX_COUNT);
+    } else if (latin > 1) {
+        snprintf(items[count++], sizeof(items[0]), "%d of the %d Latin fonts", latin,
+                 NK_FONT_LATIN_INDEX_COUNT);
+    }
+    if (wanted[PLAYER_PSP_FONT_COUNT - 1]) snprintf(items[count++], sizeof(items[0]), "the Korean font");
     for (size_t i = 0; i < count; i++) {
         if (i > 0) player_font_append(out, out_len, i + 1 == count ? " and " : ", ");
         player_font_append(out, out_len, items[i]);
@@ -4887,15 +4883,14 @@ static void player_font_missing_sentence(char *out, size_t out_len,
     } else {
         player_font_append(out, out_len, "a stand-in font that looks different");
         if (unserved_count > 0) {
-            player_font_append(out, out_len, ", and no font at all for ");
+            player_font_append(out, out_len, "; for ");
             player_font_append_names(out, out_len, unserved);
+            player_font_append(out, out_len, " they get no font at all");
         }
         player_font_append(out, out_len, ". ");
     }
     player_font_append(out, out_len, one ? "Import it" : "Import them");
-    player_font_append(out, out_len,
-                       " from your own PSP in the setup wizard; System fonts in docs/SETUP.md "
-                       "says how.");
+    player_font_append(out, out_len, " from your own PSP in the setup wizard.");
 }
 
 void player_app_refresh_font_status(PlayerApp *app) {

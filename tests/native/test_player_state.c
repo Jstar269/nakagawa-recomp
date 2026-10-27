@@ -5016,11 +5016,10 @@ int main(int argc, char **argv) {
         fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
         assert(fcheck != NULL && fcheck->status == PREFLIGHT_MISSING);
         assert(strcmp(player_preflight_plain_message(fcheck),
-                      "These PSP system fonts were not found: ltn3.pgf, ltn7.pgf to ltn15.pgf "
-                      "and kr0.pgf. Games that ask for them get a stand-in font that looks "
-                      "different, and no font at all for ltn8.pgf to ltn15.pgf and kr0.pgf. "
-                      "Import them from your own PSP in the setup wizard; System fonts in "
-                      "docs/SETUP.md says how.") == 0);
+                      "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
+                      "Korean font. Games that ask for them get a stand-in font that looks "
+                      "different; for 8 of the 16 Latin fonts and the Korean font they get no "
+                      "font at all. Import them from your own PSP in the setup wizard.") == 0);
 
         /* 2. Project fonts stand in for the rest: every font resolves, so the check is OK, and
            it still names the fonts a game gets a stand-in for. */
@@ -5034,10 +5033,9 @@ int main(int argc, char **argv) {
         fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
         assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
         assert(strcmp(player_preflight_plain_message(fcheck),
-                      "These PSP system fonts were not found: ltn3.pgf, ltn7.pgf to ltn15.pgf "
-                      "and kr0.pgf. Games that ask for them get a stand-in font that looks "
-                      "different. Import them from your own PSP in the setup wizard; System "
-                      "fonts in docs/SETUP.md says how.") == 0);
+                      "These PSP system fonts were not found: 10 of the 16 Latin fonts and the "
+                      "Korean font. Games that ask for them get a stand-in font that looks "
+                      "different. Import them from your own PSP in the setup wizard.") == 0);
 
         /* 3. Every Latin file imported: only the Korean font is named. */
         assert(player_app_fonts_import_folder(missing_app, rest));
@@ -5045,9 +5043,9 @@ int main(int argc, char **argv) {
         fcheck = find_preflight_check(&missing_app->wizard.preflight, "SYSTEM_FONTS");
         assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
         assert(strcmp(player_preflight_plain_message(fcheck),
-                      "This PSP system font was not found: kr0.pgf. Games that ask for it get a "
-                      "stand-in font that looks different. Import it from your own PSP in the "
-                      "setup wizard; System fonts in docs/SETUP.md says how.") == 0);
+                      "This PSP system font was not found: the Korean font. Games that ask for it "
+                      "get a stand-in font that looks different. Import it from your own PSP in "
+                      "the setup wizard.") == 0);
 
         /* 4. Every font is the user's own: nothing is named. */
         assert(player_app_fonts_import_folder(missing_app, korean));
