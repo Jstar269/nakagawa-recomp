@@ -35,7 +35,8 @@ Before you change anything:
    design. [`docs/README.md`](docs/README.md) says which guide covers which area.
 2. Work from an issue. GitHub Issues are where work is agreed; [`ISSUES.md`](ISSUES.md) is a short
    summary of them. For anything bigger than a small fix, comment on the issue first. Good
-   starting points are labelled `good first issue` and `help wanted`.
+   starting points are labelled `good first issue` and `help wanted`. An issue you file carries at least
+   one label and a milestone ([which milestone](CONTRIBUTING.md#start-here)).
 3. Run `git fetch origin` and start a branch from current `origin/main`. Check that the problem is
    not already fixed there and that no open pull request already covers it.
 4. Make one focused change, with a test that fails before it and passes after it.

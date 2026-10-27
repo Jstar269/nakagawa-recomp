@@ -360,7 +360,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ad7b42395d13905d4226945e8c88652db852fb92954ac91755f0d802c55a4e92"
+      "sha256": "7b2b9cf759e946b3a0d6d0bb74b95b96aa25a8ca3081873139dfae41b7cc16b3"
     },
     {
       "path": "CLAUDE.md",
@@ -399,7 +399,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fe2cf281c7f9e88c4c81c5689915aa1e7ee0e13298e1dc7cf08b78d509956d82"
+      "sha256": "2d8478c8f7d2e2c17ff7c70da4ee2dcf42cde9ef790282f0976be8ac5e29369d"
     },
     {
       "path": "CREDITS.md",
