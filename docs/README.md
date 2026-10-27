@@ -33,7 +33,7 @@ Each row is something you are about to do. Find yours and read what it points to
 | Run the release smoke test on a build | [`SMOKE_TEST.md`](SMOKE_TEST.md) |
 | Qualify a public title through the native player | [`TITLE_TESTING.md`](TITLE_TESTING.md) |
 | Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
-| Pick up work, or check whether something is already known | [`ISSUES.md`](../ISSUES.md) (live GitHub Issues win) |
+| Pick up work, or check whether something is already known | [`STATUS.md`](STATUS.md) (live GitHub Issues win) |
 | **Add a tracked file that did not exist before** | [`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md) — a new implementation path needs its *own* record; blanket records such as `tools/*` are deliberately inert and will not cover it |
 | **Change a `*_posix.c` / `*_win32.c` pair, or code behind a `!_WIN32` guard** | [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — hosted CI compiles the POSIX backend on Linux; a Windows-green change can still fail there |
 | Change what the public tree ships | [`PUBLICATION_READINESS.md`](PUBLICATION_READINESS.md), [`PUBLIC_SOURCE_PROFILE.md`](PUBLIC_SOURCE_PROFILE.md) |
@@ -197,6 +197,7 @@ Every substantial document carries one status.
 | `SETUP.md` | CURRENT | Supported toolchain; declared authority for setup claims, including the optional local symbol reference (`FindSymbol`) |
 | `YOUR_OWN_GAMES.md` | CURRENT | User guide: own-game input, unencrypted files, ownership and in-the-works boundaries |
 | `COMPATIBILITY.md` | CURRENT | Per-title and subsystem compatibility states and semantic boundaries |
+| `STATUS.md` | CURRENT | Project status summary: live work areas, execution-contract state and evidence boundary; live GitHub Issues win |
 | `SMOKE_TEST.md` | CURRENT | Numbered pass/fail release smoke test for the native player |
 | `TITLE_TESTING.md` | CURRENT | Public title qualification: manifest and input-profile validation, sandboxed native-player smoke, bring-up-schema report and sweep vocabulary (#699) |
 | `SHOWCASE.md` | CURRENT | Source-owned showcase demos: sources, packaging, player discovery and notices (#309) |
@@ -268,7 +269,7 @@ These facts must not be hand-maintained in prose — Generate, Link, or Remove,
 preferring removal when the duplicate adds no value:
 
 - issue open/closed state: link the live issue, never restate its state
-  (`ISSUES.md` carries no state labels; `audit_public_issue_links.py`
+  (`STATUS.md` carries no state labels; `audit_public_issue_links.py`
   enforces the At-a-glance rule where that section exists);
 - HLE address/site/bucket and compatibility-override counts: cite
   `tools/test_compat_manifest.py` over `tools/compat_overrides.py`;

@@ -455,7 +455,7 @@ jobs:
           python -m coverage xml -o coverage-python.xml
 
       # Informational only: `fail_ci_if_error: false` and the Codecov status checks
-      # are non-blocking (codecov.yml), so an upload or Codecov outage never fails
+      # are non-blocking (.github/codecov.yml), so an upload or Codecov outage never fails
       # the Python gate. Each shard uploads its own partial report under the same
       # `python` flag, which Codecov merges for the commit.
       - name: Upload Python coverage to Codecov
@@ -808,7 +808,7 @@ jobs:
           test "${#reports[@]}" -gt 0
           echo "C coverage: ${#reports[@]} gcov reports"
 
-      # Informational only: the C number never gates a merge (codecov.yml). The reports
+      # Informational only: the C number never gates a merge (.github/codecov.yml). The reports
       # are already generated above, so the action only uploads them (plugins: noop).
       - name: Upload C coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1

@@ -111,7 +111,7 @@ correctness; those claims require their own qualified evidence.
 
 The table below lists source-owned fixtures, showcase demos, the maintainer-tested
 flagship, and a row for every other retail disc. Nakagawa Recomp makes no claim of
-retail title playability out of the box from an ISO alone ([`ISSUES.md`](../ISSUES.md)).
+retail title playability out of the box from an ISO alone ([`STATUS.md`](STATUS.md)).
 Uncatalogued discs import with a fail-closed checklist; their status is **Untested**
 unless someone has seen them boot (see [Status words](#status-words)).
 

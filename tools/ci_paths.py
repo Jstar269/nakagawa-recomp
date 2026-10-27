@@ -51,7 +51,7 @@ def _is_docs(path: str) -> bool:
         path.startswith("docs/")
         or path.startswith(".github/ISSUE_TEMPLATE/")
         or path.startswith(".github/PULL_REQUEST_TEMPLATE")
-        or path in {"README.md", "ISSUES.md", "AGENTS.md", ".github/copilot-instructions.md"}
+        or path in {"README.md", "AGENTS.md", ".github/copilot-instructions.md"}
         or _is_markdown(path)
     )
 

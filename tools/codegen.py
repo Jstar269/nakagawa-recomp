@@ -3577,7 +3577,7 @@ def main(argv):
 
         if hst_profile and a == 0x0000f538:
             text = """void f_0000f538(CpuState *s) {  /* custom stub: _free_r(reent, ptr) -> sr_newlib_free bridge
-     * Reinstated 2026-07-16 alongside f_00010738 -- see that stub's comment and ISSUES.md P0. */
+     * Reinstated 2026-07-16 alongside f_00010738 -- see that stub's comment. */
     uint32_t owner_ra = s->r[31] == 0x00010500u
         ? MEM_R32(s->r[29] + 0x00000004u) : s->r[31];
     if (owner_ra == 0x00000a14u)
@@ -3668,7 +3668,7 @@ def main(argv):
             func_texts.append(text); emitted.append(a); continue
 
         # 0x0001a5f8 and 0x0001c008 had constant-return custom stubs here until
-        # 2026-07-18. Ghidra-assisted review (ISSUES.md) showed both shadow real,
+        # 2026-07-18. A Ghidra-assisted review showed both shadow real,
         # fully-translatable code: 0x1c008 is `jr ra; sw a1,0x4028(a0)` (the stub
         # dropped the delay-slot store) and 0x1a5f8 is a computed-goto resume
         # point reached via .data pointer tables. Both are discovered entries and

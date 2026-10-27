@@ -19,7 +19,7 @@ only route here.
 ## 1. Sources and live preflight
 
 - Resolve disagreements in this order: live source/tests/Makefiles, live GitHub Issues,
-  `ISSUES.md`, maintained `docs/` contracts, then README/navigation and dated evidence.
+  `docs/STATUS.md`, maintained `docs/` contracts, then README/navigation and dated evidence.
 - Before a mutation, run `git fetch origin`, record the exact `BASE_SHA`, inspect
   `git status`, and verify on current `origin/main` that the task is not already fixed.
   Without network access, work from the last fetched `origin/main` and report
@@ -324,6 +324,6 @@ READY_QUALITY: YES/NO
 
 State whether canonical main was fast-forwarded or left `BLOCKED_CANONICAL_MAIN`, what
 worktree/branch was retained or removed, and whether any tag, release, asset, version,
-hardware, or private-input operation was intentionally not performed. Keep `ISSUES.md`
+hardware, or private-input operation was intentionally not performed. Keep `docs/STATUS.md`
 concise and detailed evidence in the issue or PR. Put build/workspace ergonomics debt in
 maintained workspace documentation, not in this enduring contract.

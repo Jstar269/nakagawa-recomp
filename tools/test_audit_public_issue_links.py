@@ -170,9 +170,11 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         self.assertEqual(findings, [])
 
     def test_at_a_glance_open_row_linking_closed_issue_fails(self) -> None:
-        # Regression: ISSUES.md used to declare an "Open" portable-float-to-word row
-        # that pointed at #38 after the fix had merged (the follow-on was #40).
-        doc = self.repo_path / "ISSUES.md"
+        # Regression: the status summary (then ISSUES.md) used to declare an "Open"
+        # portable-float-to-word row that pointed at #38 after the fix had merged
+        # (the follow-on was #40).
+        doc = self.repo_path / "docs" / "STATUS.md"
+        doc.parent.mkdir(exist_ok=True)
         doc.write_text(
             "# Status\n\n"
             "## At a glance\n\n"
@@ -198,7 +200,8 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         self.assertTrue(any("State 'Open'" in finding[3] for finding in findings))
 
     def test_at_a_glance_open_row_linking_open_issue_passes(self) -> None:
-        doc = self.repo_path / "ISSUES.md"
+        doc = self.repo_path / "docs" / "STATUS.md"
+        doc.parent.mkdir(exist_ok=True)
         doc.write_text(
             "# Status\n\n"
             "## At a glance\n\n"
@@ -222,7 +225,8 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         self.assertTrue(all(finding[4] for finding in findings))
 
     def test_at_a_glance_non_open_rows_are_not_checked(self) -> None:
-        doc = self.repo_path / "ISSUES.md"
+        doc = self.repo_path / "docs" / "STATUS.md"
+        doc.parent.mkdir(exist_ok=True)
         doc.write_text(
             "# Status\n\n"
             "## At a glance\n\n"
@@ -281,7 +285,8 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
                 self.assertIn("HISTORICAL EVIDENCE REFERENCE", findings[0][3])
 
     def test_tracker_state_label_mismatch_fails(self) -> None:
-        doc = self.repo_path / "ISSUES.md"
+        doc = self.repo_path / "docs" / "STATUS.md"
+        doc.parent.mkdir(exist_ok=True)
         doc.write_text(
             "# Status\n\n"
             "## Current public tracker\n\n"
@@ -305,7 +310,8 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         self.assertTrue(any("STALE TRACKER STATUS" in finding[3] for finding in findings))
 
     def test_open_pr_tracker_label_passes(self) -> None:
-        doc = self.repo_path / "ISSUES.md"
+        doc = self.repo_path / "docs" / "STATUS.md"
+        doc.parent.mkdir(exist_ok=True)
         doc.write_text(
             "# Status\n\n"
             "## Current public tracker\n\n"

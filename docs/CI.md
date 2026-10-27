@@ -512,7 +512,7 @@ under `flags: python` and `flags: c`, authenticated with the job's OIDC identity
 `id-token: write` beside `contents: read`). `fail_ci_if_error: false` keeps an
 upload or Codecov outage from failing the job.
 
-**The numbers are informational.** [`codecov.yml`](../codecov.yml) marks the
+**The numbers are informational.** [`.github/codecov.yml`](../.github/codecov.yml) marks the
 project and patch status checks `informational: true`, so neither can block a
 merge, and sets `carryforward: true` for both flags, so a run that measures only
 one surface keeps the other flag's last report. The OpenSSF Best Practices
@@ -520,7 +520,7 @@ Silver criterion "statement coverage >= 80%" is the target these numbers are
 watched against; it is not a gate, and promoting either status to a required
 check is a separate maintainer decision. Python's `coverage` package is installed
 from `tools/requirements-lock.txt` with `--require-hashes`; the C reports come
-from the runner's own `gcov` and add no Python dependency. A change to `codecov.yml` matches no classifier
+from the runner's own `gcov` and add no Python dependency. A change to `.github/codecov.yml` matches no classifier
 predicate, so it fails closed to the full matrix like any other unknown path.
 
 ## Classifier invariants

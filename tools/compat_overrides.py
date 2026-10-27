@@ -52,7 +52,7 @@ Categories (pick exactly one per entry):
                                   wrong.
 
 Every entry's `test` field names the regression test that pins it, or "none" if
-it does not have one yet (a real gap -- see ISSUES.md, not silently swept in).
+it does not have one yet (a real gap, recorded here rather than silently swept in).
 For a `temporary_compatibility_patch` that gap is a CI failure: the debt gate in
 tools/test_compat_manifest.py also requires a live `owner_issue` and an explicit
 `retirement` condition, and only its reviewed allowlist can waive the test.
@@ -193,7 +193,7 @@ GUEST_PATCHES = [
          source="tools/codegen.py:GUEST_PATCHES", name="route asset reads through host filesystem",
          reason="force the branch that selects the host0 (sceIoOpen-backed) asset path; "
                 "the guest-only host filesystem implementation does not exist to select instead",
-         test="none", owner_issue="ISSUES.md P0 table root 0x0034a84c"),
+         test="none", owner_issue="#363"),
 ]
 
 # --- tools/codegen.py: custom per-address stubs -----------------------------
@@ -760,8 +760,8 @@ def all_documented_addresses() -> "set[int]":
 #: reader reaches first.
 AGGREGATE_COLLECTIONS = frozenset({"OVERRIDES"})
 
-#: An owner must LEAD with a live GitHub issue number.  An ISSUES.md anchor
-#: such as "ISSUES.md #5.1" is a documentation pointer, not an owner, and does
+#: An owner must LEAD with a live GitHub issue number.  A status-page anchor
+#: such as "docs/STATUS.md #5.1" is a documentation pointer, not an owner, and does
 #: not satisfy it.
 OWNER_ISSUE_RE = re.compile(r"#\d+\b")
 
