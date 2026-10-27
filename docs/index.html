@@ -270,6 +270,7 @@
     .callout { padding: var(--s6) var(--s5); border-radius: var(--radius); background: var(--callout-bg); border: 1px solid var(--line); border-left: 5px solid var(--callout-line); }
     .callout h3 { margin-bottom: var(--s3); }
     .callout p:last-child { margin-bottom: 0; }
+    .callout.spaced { margin-top: var(--s6); }
     .tagline { display: flex; align-items: center; gap: var(--s3); margin: var(--s5) 0 0; padding: var(--s4) var(--s5); border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--line); font-weight: 650; }
     .tagline svg { flex: none; width: 1.6rem; height: 1.6rem; }
 
@@ -596,6 +597,17 @@
         </ol>
         <a class="row-link" href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/ARCHITECTURE.md"><span>Read the
           technical guide</span><span aria-hidden="true">&#8599;</span></a>
+        <div class="callout spaced">
+          <h3>The matching decomp behind it</h3>
+          <p>Hot Shots Tennis also has a project of its own: <a href="https://github.com/Jstar269/hst-decomp">hst-decomp</a>,
+            a matching decompilation that rebuilds the game’s code as C and C++ that compiles back to the exact
+            original bytes. On 27 October 2026 it had <strong>35.9%</strong> of the game’s code matched (12,199 of
+            19,634 functions).</p>
+          <p>The two projects share findings, not code. The decomp’s function names can label the C that Nakagawa
+            generates, and what it shows about the game helps replace Nakagawa’s Hot Shots Tennis workarounds with
+            general fixes. No decomp source is copied into Nakagawa, which is meant for any PSP game, not just this
+            one.</p>
+        </div>
       </div>
     </section>
 
