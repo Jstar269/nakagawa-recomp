@@ -227,6 +227,20 @@ int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
     return rc;
 }
 
+int iso_sector_count(uint32_t *out_sectors) {
+    if (!out_sectors) return -1;
+    ISO_LOCK();
+    if (ensure_reader_locked() != 0) {
+        ISO_UNLOCK();
+        return -1;
+    }
+    uint64_t sectors = nk_iso_reader_file_size(s_reader) / 2048u;
+    ISO_UNLOCK();
+    if (sectors == 0u || sectors > UINT32_MAX) return -1;
+    *out_sectors = (uint32_t)sectors;
+    return 0;
+}
+
 uint32_t iso_physical_lba(uint32_t lba_or_token) {
     /* Single extent supported; token is the physical sector LBA directly.
      * Document multi-extent status: multi-extent ISO files would require an
