@@ -820,6 +820,13 @@ jobs:
           mkdir -p "$build_dir"
           make --no-print-directory CC=gcc BUILD_DIR="$build_dir" GE_FRONTEND_PROFILE=1 "$build_dir/ge.o"
 
+      # The executable production-HLE suite (src/rt/hle_thread_selftest.c) links the real
+      # src/rt/hle.c, so this is hle.c's Linux behavioural gate, not only a compile: the
+      # POSIX file, directory and host-data arms run here and the Win32 arms in the
+      # windows_runtime selftests part (#306). It links SDL3 (sched.c's host clock).
+      - name: Build and run HLE thread selftest (links SDL3)
+        run: make CC=gcc -j4 hle-thread-selftest
+
       - name: Run host present pacing selftest (links SDL3)
         run: make CC=gcc gui-present-selftest
 

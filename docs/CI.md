@@ -128,6 +128,14 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
+Both hosts run `hle-thread-selftest`, the executable production-HLE suite that links
+`src/rt/hle.c` (#306): the Windows job in its `selftests` part, and the Linux `native_tools` job
+after the pinned SDL3 install, because the suite links SDL3 for the scheduler's host clock. Each
+host runs its own arms of `hle.c`'s file, directory and host-data seams. A few checks exist on
+Windows only, because what they check is Win32: the `FindFirstFileW` error classifier, the
+`CreateProcessW` command-line quoting of the exit-game respawn, and the `mklink` junction (Linux
+plants a symbolic link in its place).
+
 Most Linux jobs run on Ubuntu 26.04. The `native_tools` job stays on Ubuntu 24.04 because its
 translation gate installs `gcc-mipsel-linux-gnu`, which is absent from the Ubuntu 26.04 package
 archive ([Ubuntu 24.04 package](https://packages.ubuntu.com/noble/gcc-mipsel-linux-gnu)). The job

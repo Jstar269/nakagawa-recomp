@@ -921,7 +921,10 @@ static inline sr_cd_status sr_cd_open_file(const sr_cd_root *root, const char *r
     if (out) *out = NULL;
     if (!root || root->fd < 0 || !out || !leaf)
         return SR_CD_NOT_CONTAINED;
-    if (!sr_cd_rel_is_acceptable(rel_dir) ||
+    /* An empty rel_dir is the root itself: the parent sr_cd_rel_split gives a
+     * single-component path, which sr_cd__at_walk resolves to the root descriptor
+     * (mkdir, rename and remove already walk it). */
+    if (!rel_dir || (rel_dir[0] && !sr_cd_rel_is_acceptable(rel_dir)) ||
         !sr_cd_name_is_acceptable(leaf, strlen(leaf)))
         return SR_CD_INVALID_PATH;
 

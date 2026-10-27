@@ -27,7 +27,7 @@ after an import, and checks that the project source does not serve the cache's f
 is named on stderr once per slot and reason, however many opens resolve the slot. The selftest also
 checks that ``SR_USER_DATA_ROOT`` names the user source (its per-user directory is an empty decoy
 there), and that a relative value is named once and skips that source instead of falling back. The native part
-needs mingw32-make. The contract tests need no compiler: they check the fixture, the Python
+needs make (mingw32-make on Windows) and, off Windows, the SDL3 headers. The contract tests need no compiler: they check the fixture, the Python
 checker's verdict for each case, and that every link that compiles the device also supplies
 src/core/nk_font.c.
 """
@@ -117,10 +117,30 @@ BUILD_DIR = "build/mygame"
 
 # hle-thread-selftest-build writes hle_thread_selftest.exe on every host: the output name is
 # spelled in the recipe, not taken from EXE_EXT. Only the make program varies by platform.
-# The harness includes <windows.h> without a _WIN32 guard and calls Win32 file APIs, so it does
-# not build off Windows. Until it is ported, that is a named SKIP there, decided from the source
-# before any build (docs/LINUX_DEVELOPMENT.md lists the gap). The check retires itself: once the
-# include is guarded, the same test builds the selftest with make.
+# The harness once included <windows.h> without a _WIN32 guard, which was a named SKIP off
+# Windows decided from the source; since #306 it is guarded and the selftest builds on Linux.
+# Off Windows it needs the SDL3 headers (sched.c's host clock), which a host without SDL3,
+# such as the hosted python_tools job, reports as a SKIP; native_tools runs the selftest itself.
+
+
+def sdl3_headers_missing() -> bool:
+    """True off Windows when the C compiler cannot include SDL3, which the selftest links.
+
+    MSYS2's UCRT64 toolchain carries SDL3, so a Windows host never skips here."""
+    if sys.platform == "win32":
+        return False
+    compiler = shutil.which("gcc") or shutil.which("cc")
+    if not compiler:
+        return True
+    probe = subprocess.run(
+        [compiler, "-E", "-x", "c", "-", "-o", os.devnull],
+        input="#include <SDL3/SDL_timer.h>
+",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return probe.returncode != 0
 
 
 def unguarded_windows_include(source: str) -> bool:
@@ -779,6 +799,10 @@ class Flash0FontDeviceTests(unittest.TestCase):
                 f"selftest does not build on {sys.platform} yet "
                 "(docs/LINUX_DEVELOPMENT.md, 'What doesn't yet')"
             )
+        if sdl3_headers_missing():
+            raise unittest.SkipTest(
+                "SDL3 headers are not installed: hle-thread-selftest links SDL3 (sched.c's host clock)"
+            )
         make_tool = "mingw32-make" if sys.platform == "win32" else "make"
         make = shutil.which(make_tool)
         if not make:
@@ -835,6 +859,10 @@ class Flash0FontDeviceTests(unittest.TestCase):
                 f"WINDOWS_ONLY: {SELFTEST_SOURCE.name} includes <windows.h> without a _WIN32 guard, so the "
                 f"selftest does not build on {sys.platform} yet "
                 "(docs/LINUX_DEVELOPMENT.md, 'What doesn't yet')"
+            )
+        if sdl3_headers_missing():
+            raise unittest.SkipTest(
+                "SDL3 headers are not installed: hle-thread-selftest links SDL3 (sched.c's host clock)"
             )
         make_tool = "mingw32-make" if sys.platform == "win32" else "make"
         make = shutil.which(make_tool)

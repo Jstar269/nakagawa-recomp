@@ -177,6 +177,37 @@ class PublicCiWiringTests(unittest.TestCase):
             _ci_step_index(native_tools, step_name),
         )
 
+    def test_hle_thread_selftest_runs_on_linux_and_windows(self) -> None:
+        """The production-HLE suite links src/rt/hle.c, so it is hle.c's behavioural gate.
+
+        Linux runs the POSIX arms of hle.c's host seams and Windows the Win32 arms; built on
+        Windows alone, the Linux arms had no behavioural coverage beyond compiling (#306).
+        """
+        jobs = _ci_job_blocks()
+        native_tools = jobs["native_tools"]
+        step_name = "Build and run HLE thread selftest (links SDL3)"
+        step = _ci_step(native_tools, step_name)
+        self.assertIsNotNone(step, "native_tools must build and run hle-thread-selftest")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertRegex(text, r"(?m)^\s+run: make CC=gcc -j\d+ hle-thread-selftest$")
+        self.assertNotIn("continue-on-error", text)
+        self.assertNotIn("if:", text)
+        self.assertLess(
+            _ci_step_index(native_tools, "Install the pinned SDL3 into the Linux prefix"),
+            _ci_step_index(native_tools, step_name),
+        )
+        windows = _ci_step(jobs["windows_runtime"], "Build and run HLE thread selftest")
+        self.assertIsNotNone(windows, "the Windows selftests part must keep hle-thread-selftest")
+        assert windows is not None
+        self.assertIn("hle-thread-selftest", "\n".join(windows))
+        # GNU ld has no --no-insert-timestamp: the link names the per-host reproducible flag.
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        start = makefile.index("\nhle-thread-selftest-build:")
+        recipe = makefile[start:makefile.index("\nhle-thread-selftest:", start)]
+        self.assertIn("$(REPRODUCIBLE_LINK_FLAG)", recipe)
+        self.assertNotIn("--no-insert-timestamp", recipe)
+
     def test_failed_linux_showcase_smoke_uploads_its_runtime_log(self) -> None:
         """A failed smoke names runtime.log; the run must keep it to diagnose a flake."""
         native_tools = _ci_job_blocks()["native_tools"]

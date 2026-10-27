@@ -921,6 +921,15 @@ static void case_posix_guest_file_operations(void) {
               "contained file reads the written bytes");
         fclose(stream);
     }
+    /* ms0:/NAME.TXT splits into the empty parent, which is the root itself. */
+    stream = NULL;
+    CHECK_ST(sr_cd_open_file(&r, "", "ROOT.BIN", SR_CD_FILE_READ_WRITE_TRUNCATE, &stream),
+             SR_CD_OK);
+    CHECK(stream != NULL, "a root-level file opens through the empty parent");
+    if (stream) fclose(stream);
+    fp(file_path, sizeof(file_path), "%s/ROOT.BIN", root);
+    CHECK(exists(file_path), "the root-level file is created in the root itself");
+    CHECK_ST(sr_cd_delete_file(&r, "ROOT.BIN"), SR_CD_OK);
     CHECK_ST(sr_cd_set_mode(&r, "PSP/SAVEDATA/NEW-DIR/DATA.BIN",
                             0x2000u | 0600u), SR_CD_OK);
     CHECK_ST(sr_cd_set_mode(&r, "PSP/SAVEDATA/NEW-DIR/DATA.BIN",
