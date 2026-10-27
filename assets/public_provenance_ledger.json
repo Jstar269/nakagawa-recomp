@@ -291,7 +291,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce7d29a0e6eda5f4b9a6006dbc580e7d3f9ac7c624376a85bc25708a5636f881"
+      "sha256": "54e9a4fd4af231518ba23a850d19ec76ff7607fb14973bd4b07c93b09bc7e84f"
     },
     {
       "path": ".github/workflows/scorecards.yml",
