@@ -1110,8 +1110,9 @@ static void test_title_config_configured_roles_act(void) {
         uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
         expect(worker != 0 && g_worker_uid == worker,
                "the configured worker entry claims the worker uid");
-        expect(sched_create_thread(cfg_worker_entry(), 36, 0x1000u) == worker,
-               "a repeat create at the configured worker entry reuses the worker thread");
+        uint32_t second = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+        expect(second != 0 && second != worker,
+               "a repeat create at the configured worker entry creates a second thread");
     }
     if (cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
         reset_sched();
@@ -1155,15 +1156,14 @@ static unsigned long long compat_hits(const char *id) {
 static void test_compat_fired_report_names_applied_patches(void) {
     char id[160];
     if (cfg_has(SR_TITLE_CFG_WORKER_ENTRY)) {
-        snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:worker thread reuse", (unsigned)cfg_worker_entry());
-        unsigned long long before = compat_hits(id);
+        /* The worker reuse hook is retired (#363): a repeat create at the worker entry
+         * records no firing any more. */
         reset_sched();
         expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");
-        uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
-        expect(compat_hits(id) == before, "the first worker create is not a reuse");
-        expect(sched_create_thread(cfg_worker_entry(), 36, 0x1000u) == worker &&
-               compat_hits(id) == before + 1u,
-               "a worker reuse appears in the fired-patch report under its census id");
+        (void)sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+        (void)sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+        snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:worker thread reuse", (unsigned)cfg_worker_entry());
+        expect(compat_hits(id) == 0u, "a repeat worker create records no reuse firing");
     }
     if (cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
         snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:launcher priority demotion",
@@ -1204,6 +1204,28 @@ static void test_delivered_vblank_writes_no_guest_memory(void) {
         expect(MEM_R32(k_candidate_counters[i]) == 0u,
                "a candidate counter word is untouched by a delivered VBLANK");
     }
+}
+
+/* #363: a dormant worker stays dormant. The runtime used to restart a DORMANT thread
+ * holding the worker role on the next VBLANK, as a surrogate for a callback that re-arms
+ * the guest's frame loop; nothing on the PSP restarts an exited thread, so a delivered
+ * VBLANK must leave it DORMANT and record no firing. */
+static void test_dormant_worker_is_not_relaunched_at_vblank(void) {
+    if (!cfg_has(SR_TITLE_CFG_WORKER_ENTRY)) return;
+    char id[160];
+    snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:worker relaunch trampoline",
+             (unsigned)cfg_worker_entry());
+    reset_sched();
+    expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");
+    uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+    TCB *w = tcb_by_uid(worker);
+    expect(w != NULL && g_worker_uid == worker, "the configured worker entry claims the worker uid");
+    if (!w) return;
+    w->state = TH_DORMANT;
+    deliver_vblank();
+    deliver_vblank();
+    expect(w->state == TH_DORMANT, "a delivered VBLANK leaves a dormant worker dormant");
+    expect(compat_hits(id) == 0u, "a dormant worker at VBLANK records no relaunch firing");
 }
 
 /* ---- role-UID capture tests -------------------------------------------------------- */
@@ -1338,8 +1360,7 @@ static void test_historical_worker_uid_is_ordinary_when_unconfigured(void) {
            "UID 0x114 is not the worker when no worker entry is configured");
     expect(g_worker_uid == SR_ROLE_UID_NONE,
            "the worker role stays uncaptured in a build with no worker binding");
-    /* Worker-only path: create-reuse. An ordinary thread at the same entry gets a
-     * second TCB. */
+    /* No entry reuses a thread: another create at the same entry gets a second TCB. */
     TCB *t = tcb_by_uid(uid);
     expect(t != NULL, "the 0x114 thread exists");
     if (!t) return;
@@ -4590,6 +4611,7 @@ int main(int argc, char **argv) {
     test_title_config_configured_roles_act();
     test_compat_fired_report_names_applied_patches();
     test_delivered_vblank_writes_no_guest_memory();
+    test_dormant_worker_is_not_relaunched_at_vblank();
     test_historical_launcher_uid_is_ordinary_when_unconfigured();
     test_historical_worker_uid_is_ordinary_when_unconfigured();
     test_configured_entry_captures_whatever_uid_it_gets();
