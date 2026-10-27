@@ -170,25 +170,12 @@ CODEGEN_TEMPORARY_PATCH_TEST = (
     " + ProfileNoneDecouplingTests.test_every_coupled_address_matches_its_control_copy"
 )
 
-#: The GUEST_PATCHES instruction override (0x10950) is pinned by a different test.
-#: The coupling differential does NOT catch it being switched off: its
-#: static-verify exclusion (_SV_SPECIAL in tools/codegen.py) is keyed on the
-#: same address, so a disabled patch still emits address-different text.
-#: The legacy-emission test asserts the patch's own marker text instead, and
-#: fails when the patch stops applying (verified the same way).
-CODEGEN_GUEST_PATCH_TEST = (
-    "tools/test_codegen_profile_isolation.py"
-    "::ProfileHstLegacyTests::test_legacy_hst_emission_is_unchanged"
-)
 
 # --- tools/codegen.py: GUEST_PATCHES (instruction-level overrides) ----------
+# 0x00048320 (force single-iteration pass) and 0x00010950 (bypass worker frame-init spin
+# loop) were retired under #363. 0x00010950 sat inside the retail allocator body that the
+# runtime host-bridges, so its patched branch was never emitted into the title C.
 GUEST_PATCHES = [
-    dict(address=0x00010950, layer="codegen_instruction", category="temporary_compatibility_patch",
-         source="tools/codegen.py:GUEST_PATCHES", name="bypass worker frame-init spin loop",
-         reason="force the branch condition to skip a spin loop at 0x10950 (worker frame init)",
-         test=CODEGEN_GUEST_PATCH_TEST, owner_issue="#363",
-         retirement="reproduce and root-cause the forced-control-flow case: the frame-init loop "
-                    "must terminate on its own guest-visible condition, then delete the entry"),
     dict(address=0x0004cdc8, layer="codegen_instruction", category="hle_boundary",
          source="tools/codegen.py:GUEST_PATCHES", name="route asset reads through host filesystem",
          reason="force the branch that selects the host0 (sceIoOpen-backed) asset path; "
