@@ -44,9 +44,10 @@ needs something unsupported, missing or not built yet, it stops and tells you cl
   status messages match what is really happening ([#458](https://github.com/Jstar269/nakagawa-recomp/pull/458)).
 - **Use plain program files from your own copy.** Nakagawa does not decrypt games; it uses decrypted files from your
   own copy. Put `EBOOT.elf` and the PRX modules the game needs in `<user data>/titles/<DISC_ID>/decrypted/`. An
-  encrypted program or module with no plain copy stops with a message that names it. Built-in decryption was removed
-  ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550),
-  [#428](https://github.com/Jstar269/nakagawa-recomp/pull/428)).
+  encrypted program or module with no plain copy stops with a message that names it. Built-in decryption, added in
+  [#548](https://github.com/Jstar269/nakagawa-recomp/pull/548) and [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550),
+  was removed in [#1187](https://github.com/Jstar269/nakagawa-recomp/pull/1187); the folder for your own decrypted
+  files came with [#428](https://github.com/Jstar269/nakagawa-recomp/pull/428).
 - **Read game files straight from archives.** The runtime serves game data directly from validated `.xb` archives
   through a read-only virtual filesystem (`sceIoOpen`, `sceIoGetstat`, `sceIoDopen`), so you don't have to unpack
   loose files before playing ([#475](https://github.com/Jstar269/nakagawa-recomp/pull/475)).
@@ -101,9 +102,8 @@ They create their synthetic inputs under the ignored `build/` folder.
   retail PSP programs (`EBOOT.BIN` and `.prx` modules) are encrypted. Nakagawa does not decrypt games; it uses
   decrypted files from your own copy, placed in `<user data>/titles/<DISC_ID>/decrypted/`. An encrypted program or
   module with no plain copy is named and stops there. PGD-protected content is unsupported; broader ISO-to-Play support is in the works
-  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Built-in decryption
-  ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550))
-  was removed.
+  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Built-in decryption was removed
+  in [#1187](https://github.com/Jstar269/nakagawa-recomp/pull/1187).
 - **Other games are experimental.** A valid PSP disc with no profile yet is imported as **Experimental**. The card
   says compatibility is unknown, the checklist shows what is missing, and Play stays off until a matching runtime
   package exists. PAC-MAN Championship Edition reaches its menu and plays a stage on the maintainer's copy, through

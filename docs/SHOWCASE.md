@@ -82,7 +82,7 @@ bytes. Sound goes through `sceAudio` and the public SDL3 audio output.
 Some limits remain. An import that isn't supported yet stops by name instead of being faked (see #281), and so
 does an Allegrex instruction form the interpreter floor doesn't handle (see #118). `sceKernelReferThreadStatus`
 reports the modelled scheduler state, but its run clock is the host scheduler's time, and its interrupt-preemption,
-thread-preemption and release counters are not measured PSP behaviour yet (see #309). The profile-zero production
+thread-preemption and release counters are not measured PSP behaviour yet. The profile-zero production
 ladder and its second-title checks are described under #309.
 
 PSPDEV/PSPSDK is BSD-licensed. Any demo image or package you share that contains linked PSPSDK library code must carry

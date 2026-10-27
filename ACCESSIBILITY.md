@@ -127,7 +127,7 @@ If your change adds, changes or removes a barrier, update the tables above in th
 
 Open an issue with the
 [**Accessibility barrier** form](https://github.com/Jstar269/nakagawa-recomp/issues/new?template=accessibility.yml).
-It labels the issue `accessibility`. Please keep accessibility reports separate from general bugs so they can be
+Its title starts with `[Accessibility]:`. Please keep accessibility reports separate from general bugs so they can be
 triaged for what they block.
 
 It helps if you tell us:

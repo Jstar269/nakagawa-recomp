@@ -137,8 +137,9 @@ No game at hand? `mingw32-make player showcase` (on Windows it needs WSL 2 and P
 
 GPL-3.0-or-later ([LICENSE](LICENSE)); some files keep GPL-2.0-or-later or their upstream terms. The project began as
 a fork of [sal063's PSP Recompilation Project](https://github.com/sal063/PSP-recompilation-project) and still contains
-code from it and code adapted from [PPSSPP](https://github.com/hrydgard/ppsspp); the ATRAC audio decoders come from
-FFmpeg. It is not endorsed by those upstream authors. Details: [NOTICE.md](NOTICE.md) and [CREDITS.md](CREDITS.md).
+code from it and code adapted from [PPSSPP](https://github.com/hrydgard/ppsspp); the ATRAC audio and H.264 video
+decoders come from FFmpeg. It is not endorsed by those upstream authors. Details: [NOTICE.md](NOTICE.md) and
+[CREDITS.md](CREDITS.md).
 
 ## Legal
 

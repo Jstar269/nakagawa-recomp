@@ -57,8 +57,8 @@ names the key to add.
   and points its source/build binding at `fixtures/profile_zero`. All seven
   acceptance cases are implemented with the proving gate named as
   `profile-zero-e2e`; the manifest is runnable after the route passed for both
-  source-owned fixtures. Broader title intake remains tracked by
-  [#309](https://github.com/Jstar269/nakagawa-recomp/issues/309).
+  source-owned fixtures. Broader title intake is tracked by
+  [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).
 - `pspdev-phase5.json` is a second wholly source-owned fixture whose sources live
   in `fixtures/pspdev_phase5` (a standard PSPDEV/PSPSDK `BUILD_PRX=1` module). It
   is deliberately configured *differently* from `synthetic.json` — the canonical
@@ -117,8 +117,9 @@ Titles that omit the key are unaffected.
 - `showcase-scene.json` (TEST00007) and `showcase-breakout.json` (TEST00008) are
   the source-owned showcase demos: a lit, textured 3D scene and Breakout, built
   from `fixtures/showcase/` with PSPDEV and packaged by `fixtures/showcase/showcase.py`
-  (see [`docs/SHOWCASE.md`](../../docs/SHOWCASE.md)). Their acceptance profiles are
-  scaffold until #309 evidence exists. Publication-safe and deterministic.
+  (see [`docs/SHOWCASE.md`](../../docs/SHOWCASE.md)). Their acceptance profiles stay
+  `scaffold` until their public evidence matrix is complete; no open issue tracks
+  that yet. Publication-safe and deterministic.
 
 The analyzer applies **no** title-specific executable span by default: a raw
 base-zero image never silently inherits another title's span. An extra executable
