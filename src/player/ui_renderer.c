@@ -2156,7 +2156,7 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
             game->executable_selection == NK_ISO_EXEC_SELECTION_NONE &&
             !package_ready) {
             snprintf(experimental_reason, sizeof(experimental_reason),
-                     "ENCRYPTED_EXECUTABLE: Nakagawa does not decrypt games. Add a decrypted EBOOT.elf from your own copy. Build the runtime package from the library.");
+                     "ENCRYPTED_EXECUTABLE: Nakagawa decrypts EBOOT.BIN from your own disc when it checks it. Build the runtime package from the library.");
         } else if (game->selected_executable[0]) {
             snprintf(experimental_reason, sizeof(experimental_reason),
                      "%s selected. Build the runtime package from the library.",
@@ -4660,7 +4660,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                               " • A PSP game ISO you own\n"
                               " • Windows PC with a supported graphics driver\n"
                               " • Keyboard and mouse; a gamepad is optional\n\n"
-                              "Nakagawa does not decrypt games; it uses decrypted files from your own copy. "
+                              "Nakagawa decrypts your own disc on this PC; it never downloads games or touches firmware. "
                               "It builds runtime packages from the library. Verify also lists font and audio status.",
                               1.1f, COLOR_TEXT_MUTED, 8);
 

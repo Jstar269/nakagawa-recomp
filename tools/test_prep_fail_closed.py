@@ -399,7 +399,7 @@ class PrepPreflightSideEffectTests(PreparationFailClosedCase):
         create_test_iso_with_executables(
             iso_file, build_psp_container(), disc_id=RAW_ISO
         )
-        # Nakagawa does not decrypt games: a key file beside the ISO and the old
+        # Preparation decrypts nothing: a key file beside the ISO and the old
         # override pointing at it are both ignored, and nothing is written.
         synthetic_key = source_dir / "keys" / "psp-keyfile.json"
         synthetic_key.parent.mkdir()

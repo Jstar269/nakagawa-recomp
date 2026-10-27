@@ -1688,8 +1688,9 @@ int main(int argc, char **argv) {{
         self.assertEqual(executable["status"], "UNSUPPORTED")
         self.assertEqual(
             executable["message"],
-            "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt "
-            f"games. Place a decrypted EBOOT.elf from your own copy in {decrypted_dir}.",
+            "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and no decrypted EBOOT.elf is in "
+            f"{decrypted_dir}. The player decrypts it from your own disc when it checks the "
+            "disc; you can also place a decrypted EBOOT.elf from your own copy there.",
         )
         self.assertNotRegex(executable["message"], r"#[0-9]+")
         cli = subprocess.run(
@@ -3275,7 +3276,7 @@ class GuestModuleElfRuleTests(unittest.TestCase):
         self.assertEqual(_classify_decrypted_elf_file(main_prx), "UNKNOWN")
 
     def test_encrypted_disc_fails_closed_and_never_reads_a_key_file(self) -> None:
-        """Nakagawa does not decrypt games: key files are ignored, nothing is written.
+        """The command-line check decrypts nothing: key files are ignored, nothing is written.
 
         A key file at the old default location and the old override pointing at
         another existing file are both present. The encrypted executable and the
@@ -3367,15 +3368,16 @@ class GuestModuleElfRuleTests(unittest.TestCase):
         self.assertEqual(checks["EXECUTABLE"]["status"], "UNSUPPORTED")
         self.assertEqual(
             checks["EXECUTABLE"]["message"],
-            "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt "
-            f"games. Place a decrypted EBOOT.elf from your own copy in {decrypted_dir}.",
+            "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and no decrypted EBOOT.elf is in "
+            f"{decrypted_dir}. The player decrypts it from your own disc when it checks the "
+            "disc; you can also place a decrypted EBOOT.elf from your own copy there.",
         )
         self.assertEqual(checks["GUEST_MODULES"]["status"], "MISSING")
         self.assertEqual(
             checks["GUEST_MODULES"]["message"],
             "Guest modules: 0 of 1 ready; ENCRYPTED_MODULE: alpha.prx is encrypted. "
-            "Nakagawa does not decrypt games. Place a decrypted alpha.prx from your "
-            f"own copy in {decrypted_dir}.",
+            "The player decrypts it from your own disc when it checks the disc; you can "
+            f"also place a decrypted alpha.prx from your own copy in {decrypted_dir}.",
         )
         results = report["module_decryption"]["results"]
         self.assertEqual([(r["name"], r["status"], r["reason"]) for r in results],
@@ -3405,9 +3407,9 @@ class GuestModuleElfRuleTests(unittest.TestCase):
         self.assertEqual(
             str(raised.exception),
             "ENCRYPTED_MODULE: Required guest PRX alpha.prx (sceAlpha_library.prx) is "
-            "encrypted. Nakagawa does not decrypt games. Place a decrypted alpha.prx "
-            "(or sceAlpha_library.prx) from your own copy in "
-            f"{decrypted_module_dir(user_root, 'TEST00001')}.",
+            "encrypted. The player decrypts it from your own disc when it checks the disc; "
+            "you can also place a decrypted alpha.prx (or sceAlpha_library.prx) from your "
+            f"own copy in {decrypted_module_dir(user_root, 'TEST00001')}.",
         )
         self.assertFalse(
             (self.temp_dir / "encrypted-cache" / "modules" / "sceAlpha_library.prx").exists()

@@ -272,13 +272,13 @@ static void test_state_machine_transitions(void) {
     /* Test failure transition */
     PackageBuildSession fail_session;
     package_builder_init_session(&fail_session, "TEST80002", "Encrypted Title");
-    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.\"}";
+    const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption stopped: KEY_REQUIRED.\"}";
     assert(package_builder_parse_progress_line(l_err, strlen(l_err), &ev));
     package_builder_apply_event(&fail_session, &ev);
     assert(fail_session.current_stage == PACKAGE_BUILD_STAGE_FAILED);
     assert(fail_session.is_failed);
     assert(!fail_session.is_complete);
-    assert(strcmp(fail_session.failure_boundary, "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.") == 0);
+    assert(strcmp(fail_session.failure_boundary, "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption stopped: KEY_REQUIRED.") == 0);
 }
 
 static void test_output_line_circular_buffer(void) {

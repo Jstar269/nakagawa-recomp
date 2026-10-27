@@ -687,9 +687,9 @@ def _copy_decrypted_elf(source: Path, destination: Path) -> str:
         if _classify_decrypted_elf_file(temporary) != "PLAIN_MIPS_ELF32":
             temporary.unlink(missing_ok=True)
             raise PackageBuildError(
-                "User-supplied decrypted EBOOT.elf is not a usable MIPS ELF32; "
-                "replace it with a valid decrypted EBOOT.elf from your own copy. "
-                "Nakagawa does not decrypt games."
+                "Decrypted EBOOT.elf is not a usable MIPS ELF32; replace it with a "
+                "valid decrypted EBOOT.elf from your own copy, or remove it so the "
+                "player decrypts the disc's own when it checks the disc."
             )
         if os.name != "nt":
             temporary.chmod(0o600)
@@ -908,7 +908,8 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
     """Copy every required guest PRX into the package cache as a plain module.
 
     A plain copy in the per-title decrypted folder wins; otherwise the disc copy
-    is used when it is already plain. Nakagawa does not decrypt games and reads
+    is used when it is already plain. This route decrypts nothing (the player's disc
+    check does, #295) and reads
     no key file: an encrypted module without a plain copy fails closed as
     ENCRYPTED_MODULE, naming both spellings the folder accepts.
     """
@@ -954,9 +955,10 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                 token = "ENCRYPTED_MODULE: " if magic in (b"~PSP", b"~SCE") else ""
                 raise PackageBuildError(
                     f"{token}Required guest PRX {_module_label(name, disc_name)} at "
-                    f"{source_path} is not a decrypted ELF. Nakagawa does not decrypt "
-                    f"games. Place a decrypted {_module_spellings(name, disc_name)} "
-                    f"from your own copy in {suggested}."
+                    f"{source_path} is not a decrypted ELF. Place a decrypted "
+                    f"{_module_spellings(name, disc_name)} from your own copy in "
+                    f"{suggested}, or let the player decrypt the disc's own when it "
+                    "checks the disc."
                 )
             _write_private_file(destination, source_path.read_bytes())
             _require_plain_guest_module(destination, name, disc_name)
@@ -1016,8 +1018,9 @@ def _copy_optional_modules(iso_path: Path, manifest: dict, cache_dir: Path,
                         if magic in (b"~PSP", b"~SCE"):
                             raise PackageBuildError(
                                 f"ENCRYPTED_MODULE: Required guest PRX "
-                                f"{_module_label(name, disc_name)} is encrypted. Nakagawa "
-                                "does not decrypt games. Place a decrypted "
+                                f"{_module_label(name, disc_name)} is encrypted. The player "
+                                "decrypts it from your own disc when it checks the disc; "
+                                "you can also place a decrypted "
                                 f"{_module_spellings(name, disc_name)} from your own copy "
                                 f"in {suggested}."
                             )
@@ -3754,7 +3757,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
             # disc is staged from the image; an encrypted container (or any
             # candidate the intake cannot classify) is satisfied by a valid
             # plain copy the user supplied in the per-title decrypted folder
-            # (Nakagawa does not decrypt games). A user-supplied plain module
+            # (the player's disc check decrypts, #295). A user-supplied plain module
             # always wins, and CFW patch modules stay excluded.
             title_folder = decrypted_module_dir(user_root, metadata.disc_id)
             module_sources: list[tuple[dict, str, Path | None]] = []

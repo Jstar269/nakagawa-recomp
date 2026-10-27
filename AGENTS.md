@@ -130,8 +130,17 @@ Agents must not create, move, push, or delete Git tags; create, edit, delete, pu
 ## 5. Private and public boundaries
 
 - Never commit or publish retail executables/ISOs/assets, decrypted modules, generated
-  retail C, saves, keys, game-byte Ghidra databases, private traces/captures, or private
-  paths, except as the presentation-media bullet below allows.
+  retail C, saves, console-unique or user-specific keys, game-byte Ghidra databases, private
+  traces/captures, or private paths, except as the presentation-media bullet below allows.
+- Built-in game decryption (maintainer decision, 2026-10-27, the way PPSSPP does it): the player
+  and tools decrypt the encrypted executable and modules of a game the user owns, locally, from
+  the user's own disc image, into the private per-title folder. The public key tables PPSSPP
+  ships may be carried, in the reviewed table `src/core/nk_psp_builtin_keys.c` only (the one path
+  the publication audit lets hold key literals). Console-bound values (fuse ID, secure-install
+  ID, licence files) come only from the user, locally, and are never committed. Decrypted output
+  stays on the user's machine under the rules below. Firmware is never decrypted, even privately:
+  updater PSAR archives, the IPL, the Media Engine image and system-menu files are refused by
+  name before any decryption step runs, and no key only firmware uses is carried.
 - Presentation screenshots and short clips are the exception (maintainer policy deltas of 2026-10-21 for screenshots
   and 2026-10-27 for clips, following established recomp practice in Zelda64Recomp, Unleashed Recompiled and Ship of
   Harkinian): curated PNGs, and H.264 MP4 clips of about 60 seconds at most with the game's own sound, of a title
