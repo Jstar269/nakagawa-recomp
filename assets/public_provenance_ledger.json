@@ -1414,7 +1414,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "05374f481a678cbb261472f93afb7f81ab6db65754f8714deff832e719d17943"
+      "sha256": "d13eddf9010598200ad16c758328e4c7ae28583a60bd4416f52d680ea3645355"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1669,7 +1669,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "0bb354a5368bf27847cfa04d6ade7e72275df85a109e5edae8d8b5b32f7c70ee"
+      "sha256": "38e06a96bd0f573e15ca5afd49f0bdee9cf8eeaf0b626736c5323d0cb25afaac"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -1852,7 +1852,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "70b0874731fe86731e7bfdafd1267f81e1bc12c9ced8183fb0abf85cc6551f69"
+      "sha256": "8a5fb49f6f922644bddd8acc44e452081f41397decc3af388b7405f95b11b7db"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
@@ -5122,7 +5122,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1c4910d95f144d2ade1ddf8f0c10f8a88d89f5a4e56f7b7c09debeeb774d66a7"
+      "sha256": "23ce08a4a81abe7da69c44d783e701666546f81ead626bc85e3e37c55804de92"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -8426,7 +8426,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "79c51e3338e109916fcd096a6556d5c5183655692f557da2739a66048bd16bf8"
+      "sha256": "ebaeb673054c16449ca28553118d0a63811a3e3530d226fcff3aea0c83799812"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8439,7 +8439,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5e1ded5d02b1098324f475ec218031092b254bd049a65d2e9793e1404691b9ed"
+      "sha256": "468865e523ff62557293bdb13524e6f8c450f27dfdab5ef7b6eeb823fce64db5"
     },
     {
       "path": "src/rt/hle_power.h",
@@ -8452,7 +8452,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b69ea53ba698fe6cd7914596a7716dbf18da05bfd7961013a8e7b5ad322eb47f"
+      "sha256": "b1cf896800a16404e84dd9c0c78d89663d8845021dd67dbda3ef9909adc8f853"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -8464,7 +8464,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "17c7cd16f1a254b4b33e708e4c16c5ea658239b953e757f597ca1f6687ee5252"
+      "sha256": "e2aa246b4a70c5c3ec316b614f92f0f2799b2d13a5f5a2b73964c4bf6c017404"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -8927,7 +8927,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "29129ec62842f05256e4f44995445cc2e84fe3195b231930b19bd275ef63ad4d"
+      "sha256": "356a305155526065ff09955b88f2f81521d0b99e2835b6582dbdf89d214faf2d"
     },
     {
       "path": "src/rt/savedata.c",
@@ -8953,7 +8953,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "05823ff1a48eb7eb4e3110c070f58ff0507acd99a0a3623c7e596008c3f89973"
+      "sha256": "6e4ffc82f494671f9eb943789d579cabc3155793b89ec89b912d73fbaac2e638"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -8965,7 +8965,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "646587a23a597ad0e96faf62dd91254e941657bde29cf044f1d0f0dec6d7f243"
+      "sha256": "596f4d5e026921a312a17f22a977a4f5380ffb569be6884dc54cafcf0f04ff40"
     },
     {
       "path": "src/rt/scripted_input.h",
