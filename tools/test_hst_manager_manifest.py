@@ -112,7 +112,8 @@ class HstManagerManifestTests(unittest.TestCase):
                 with (Path("capture.jsonl")).open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps(record, sort_keys=True) + "\\n")
                 if target == "all":
-                    output = Path(build_dir) / f"{game_name}.exe"
+                    # The manager expects the host's executable name: .exe on Windows only.
+                    output = Path(build_dir) / (game_name + (".exe" if os.name == "nt" else ""))
                     output.parent.mkdir(parents=True, exist_ok=True)
                     output.write_bytes(b"synthetic manager output")
                 """

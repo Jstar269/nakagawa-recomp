@@ -25,7 +25,7 @@ import sys
 from typing import Any
 
 # Python's embeddable distribution, which the release ZIP bundles for BUILD PACKAGE, never puts the
-# script's own folder on sys.path (its ._pth file wins). copy_build_assets.ps1 runs this script at
+# script's own folder on sys.path (its ._pth file wins). tools/copy_build_assets.ps1 runs this script at
 # the end of every compile, so add tools/ before importing the sibling packages, as nk_cli.py does.
 _TOOLS_DIR = str(Path(__file__).resolve().parent)
 if _TOOLS_DIR not in sys.path:

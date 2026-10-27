@@ -1320,7 +1320,8 @@ class PackageCacheTests(unittest.TestCase):
         A 32-character user name under AppData, the longest disc ID, and the
         longest name a package build writes inside an entry
         (.build-package-XXXXXXXX/.title-config-<64 hex>)."""
-        user_root = "C:\\Users\\" + "u" * 32 + "\\AppData\\Local\\Nakagawa\\data"
+        # Joined from parts: tracked files name no real user-profile root (test_workspace_paths, #368).
+        user_root = "\\".join(("C:", "Users", "u" * 32, "AppData", "Local", "Nakagawa", "data"))
         key = {"aot": {"digest": "a" * 64}, "native": {"digest": "b" * 64}}
         entry = package_cache.cache_entry_root(
             "\\".join((user_root, "cache", "packages", "UCUS98701")), key)

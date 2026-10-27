@@ -1184,7 +1184,10 @@ class NativePlayerUiTests(unittest.TestCase):
             scratch = Path(tmp)
             env = os.environ.copy()
             env.update({
-                "SDL_VIDEODRIVER": env.get("SDL_VIDEODRIVER", ""),
+                # The same headless drivers as run_player: a hosted Linux runner has no display,
+                # and SDL must start for the player to reach its launcher check.
+                "SDL_VIDEODRIVER": "dummy",
+                "SDL_RENDER_DRIVER": "software",
                 "SDL_AUDIO_DRIVER": "dummy",
                 "LOCALAPPDATA": str(scratch),
                 "APPDATA": str(scratch),
