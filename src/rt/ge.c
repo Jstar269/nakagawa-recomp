@@ -106,6 +106,57 @@ static uint32_t ge_vram_cli_read32(uint32_t addr) {
 #define MEM_W32(a, v) (g_ge_capture_active ? ge_capture_w32((a), (uint32_t)(v)) : sr_w32((a), (uint32_t)(v)))
 #endif
 
+/* Vertex fetch (#1296). decode_model_vtx and load_vtx read a vertex field by field, and every
+ * MEM_R* is a full accessor call. When the whole vertex lies in plain guest RAM (inside the
+ * arena and clear of the VRAM aperture, whose reads need coherence and swizzle handling) and no
+ * fixture capture is recording reads, the bytes an accessor would return are the host bytes at
+ * SR_HOST_LINEAR, so the field readers load them directly. A read outside the validated span,
+ * and every read while no span is set, still goes through MEM_R*. */
+static const uint8_t *s_vtx_host;   /* host bytes of the validated vertex, or NULL */
+static uint32_t s_vtx_guest, s_vtx_len;
+
+static void vtx_span_begin(uint32_t addr, uint32_t len) {
+    s_vtx_host = NULL;
+#ifndef SR_GE_VRAM_DECODER_CLI
+    if (!g_ge_capture_active && len && sr_inrange_n(addr, len) &&
+        !sr_vram_cpu_span_touches(addr, len)) {
+        s_vtx_host = SR_HOST_LINEAR(addr);
+        s_vtx_guest = addr;
+        s_vtx_len = len;
+    }
+#else
+    (void)addr; (void)len;
+#endif
+}
+
+static void vtx_span_end(void) { s_vtx_host = NULL; }
+
+/* Host offset of a `width`-byte read inside the validated vertex, or -1. */
+static inline int32_t vtx_span_offset(uint32_t a, uint32_t width) {
+    uint32_t off = a - s_vtx_guest;
+    if (!s_vtx_host || off >= s_vtx_len || s_vtx_len - off < width) return -1;
+    return (int32_t)off;
+}
+
+static inline uint8_t VR8(uint32_t a) {
+    int32_t off = vtx_span_offset(a, 1u);
+    return off >= 0 ? s_vtx_host[off] : MEM_R8(a);
+}
+
+static inline uint16_t VR16(uint32_t a) {
+    int32_t off = vtx_span_offset(a, 2u);
+    if (off < 0) return MEM_R16(a);
+    uint16_t v; memcpy(&v, s_vtx_host + off, sizeof v);
+    return v;
+}
+
+static inline uint32_t VR32(uint32_t a) {
+    int32_t off = vtx_span_offset(a, 4u);
+    if (off < 0) return MEM_R32(a);
+    uint32_t v; memcpy(&v, s_vtx_host + off, sizeof v);
+    return v;
+}
+
 /* Wall-clock ms (MinGW clock() is wall time with CLOCKS_PER_SEC=1000). */
 static unsigned long wall_ms(void) { return (unsigned long)(clock() * 1000ull / CLOCKS_PER_SEC); }
 
@@ -1139,27 +1190,27 @@ static void decode_vtype(uint32_t vt, VFmt *v) {
 static void read_pos_one(uint32_t addr, const VFmt *v, float *x, float *y, float *z) {
     uint32_t a = addr + (uint32_t)v->pos_off;
     if (v->pos_fmt == 3) {
-        uint32_t xi = MEM_R32(a), yi = MEM_R32(a+4), zi = MEM_R32(a+8);
+        uint32_t xi = VR32(a), yi = VR32(a+4), zi = VR32(a+8);
         memcpy(x, &xi, 4); memcpy(y, &yi, 4); memcpy(z, &zi, 4);
     } else if (v->pos_fmt == 2) {
         if (v->through) {
-            *x = (float)(int16_t)MEM_R16(a);
-            *y = (float)(int16_t)MEM_R16(a+2);
-            *z = (float)(uint16_t)MEM_R16(a+4);
+            *x = (float)(int16_t)VR16(a);
+            *y = (float)(int16_t)VR16(a+2);
+            *z = (float)(uint16_t)VR16(a+4);
         } else {
-            *x = (float)(int16_t)MEM_R16(a)   * (1.0f / 32768.0f);
-            *y = (float)(int16_t)MEM_R16(a+2) * (1.0f / 32768.0f);
-            *z = (float)(int16_t)MEM_R16(a+4) * (1.0f / 32768.0f);
+            *x = (float)(int16_t)VR16(a)   * (1.0f / 32768.0f);
+            *y = (float)(int16_t)VR16(a+2) * (1.0f / 32768.0f);
+            *z = (float)(int16_t)VR16(a+4) * (1.0f / 32768.0f);
         }
     } else {
         if (v->through) {
-            *x = (float)(int8_t)MEM_R8(a);
-            *y = (float)(int8_t)MEM_R8(a+1);
-            *z = (float)(uint8_t)MEM_R8(a+2);
+            *x = (float)(int8_t)VR8(a);
+            *y = (float)(int8_t)VR8(a+1);
+            *z = (float)(uint8_t)VR8(a+2);
         } else {
-            *x = (float)(int8_t)MEM_R8(a)   * (1.0f / 128.0f);
-            *y = (float)(int8_t)MEM_R8(a+1) * (1.0f / 128.0f);
-            *z = (float)(int8_t)MEM_R8(a+2) * (1.0f / 128.0f);
+            *x = (float)(int8_t)VR8(a)   * (1.0f / 128.0f);
+            *y = (float)(int8_t)VR8(a+1) * (1.0f / 128.0f);
+            *z = (float)(int8_t)VR8(a+2) * (1.0f / 128.0f);
         }
     }
 }
@@ -1183,23 +1234,23 @@ static void read_tc_one(uint32_t addr, const VFmt *v, float *u, float *tv) {
     if (v->tc_off < 0) { *u = 0; *tv = 0; return; }
     uint32_t a = addr + (uint32_t)v->tc_off;
     if (v->tc_fmt == 3) {
-        uint32_t ui = MEM_R32(a), vi = MEM_R32(a+4);
+        uint32_t ui = VR32(a), vi = VR32(a+4);
         memcpy(u, &ui, 4); memcpy(tv, &vi, 4);
     } else if (v->tc_fmt == 2) {
         if (v->through) {
-            *u  = (float)(uint16_t)MEM_R16(a);
-            *tv = (float)(uint16_t)MEM_R16(a+2);
+            *u  = (float)(uint16_t)VR16(a);
+            *tv = (float)(uint16_t)VR16(a+2);
         } else {
-            *u  = (float)(uint16_t)MEM_R16(a)  * (1.0f / 32768.0f);
-            *tv = (float)(uint16_t)MEM_R16(a+2) * (1.0f / 32768.0f);
+            *u  = (float)(uint16_t)VR16(a)  * (1.0f / 32768.0f);
+            *tv = (float)(uint16_t)VR16(a+2) * (1.0f / 32768.0f);
         }
     } else {
         if (v->through) {
-            *u  = (float)MEM_R8(a);
-            *tv = (float)MEM_R8(a+1);
+            *u  = (float)VR8(a);
+            *tv = (float)VR8(a+1);
         } else {
-            *u  = (float)MEM_R8(a)  * (1.0f / 128.0f);
-            *tv = (float)MEM_R8(a+1) * (1.0f / 128.0f);
+            *u  = (float)VR8(a)  * (1.0f / 128.0f);
+            *tv = (float)VR8(a+1) * (1.0f / 128.0f);
         }
     }
 }
@@ -1221,16 +1272,16 @@ static void read_nrm_one(uint32_t addr, const VFmt *v, float *x, float *y, float
     if (v->nrm_off < 0) { *x = 0; *y = 0; *z = 1; return; }
     uint32_t a = addr + (uint32_t)v->nrm_off;
     if (v->nrm_fmt == 3) {
-        uint32_t xi = MEM_R32(a), yi = MEM_R32(a+4), zi = MEM_R32(a+8);
+        uint32_t xi = VR32(a), yi = VR32(a+4), zi = VR32(a+8);
         memcpy(x, &xi, 4); memcpy(y, &yi, 4); memcpy(z, &zi, 4);
     } else if (v->nrm_fmt == 2) {
-        *x = (float)(int16_t)MEM_R16(a)   * (1.0f / 32768.0f);
-        *y = (float)(int16_t)MEM_R16(a+2) * (1.0f / 32768.0f);
-        *z = (float)(int16_t)MEM_R16(a+4) * (1.0f / 32768.0f);
+        *x = (float)(int16_t)VR16(a)   * (1.0f / 32768.0f);
+        *y = (float)(int16_t)VR16(a+2) * (1.0f / 32768.0f);
+        *z = (float)(int16_t)VR16(a+4) * (1.0f / 32768.0f);
     } else {
-        *x = (float)(int8_t)MEM_R8(a)   * (1.0f / 128.0f);
-        *y = (float)(int8_t)MEM_R8(a+1) * (1.0f / 128.0f);
-        *z = (float)(int8_t)MEM_R8(a+2) * (1.0f / 128.0f);
+        *x = (float)(int8_t)VR8(a)   * (1.0f / 128.0f);
+        *y = (float)(int8_t)VR8(a+1) * (1.0f / 128.0f);
+        *z = (float)(int8_t)VR8(a+2) * (1.0f / 128.0f);
     }
 }
 
@@ -1254,9 +1305,9 @@ static void read_nrm(uint32_t addr, const VFmt *v, float *x, float *y, float *z)
 static void read_weights(uint32_t addr, const VFmt *v, float *w) {
     uint32_t a = addr + (uint32_t)v->w_off;
     for (int i = 0; i < v->w_n; i++) {
-        if (v->w_fmt == 3) { uint32_t t = MEM_R32(a + 4u*(uint32_t)i); memcpy(&w[i], &t, 4); }
-        else if (v->w_fmt == 2) w[i] = (float)MEM_R16(a + 2u*(uint32_t)i) * (1.0f / 32768.0f);
-        else                    w[i] = (float)MEM_R8(a + (uint32_t)i)     * (1.0f / 128.0f);
+        if (v->w_fmt == 3) { uint32_t t = VR32(a + 4u*(uint32_t)i); memcpy(&w[i], &t, 4); }
+        else if (v->w_fmt == 2) w[i] = (float)VR16(a + 2u*(uint32_t)i) * (1.0f / 32768.0f);
+        else                    w[i] = (float)VR8(a + (uint32_t)i)     * (1.0f / 128.0f);
     }
 }
 
@@ -1291,8 +1342,8 @@ static void read_color_one(uint32_t addr, const VFmt *v, int *r, int *g, int *b,
         return;
     }
     uint32_t ca = addr + (uint32_t)v->col_off;
-    if (v->col_fmt == 7) unpack_color(MEM_R32(ca), 3, r, g, b, a);
-    else unpack_color(MEM_R16(ca), v->col_fmt - 4, r, g, b, a);
+    if (v->col_fmt == 7) unpack_color(VR32(ca), 3, r, g, b, a);
+    else unpack_color(VR16(ca), v->col_fmt - 4, r, g, b, a);
 }
 
 static void read_color(uint32_t addr, const VFmt *v, int *r, int *g, int *b, int *a) {
@@ -1304,11 +1355,11 @@ static void read_color(uint32_t addr, const VFmt *v, int *r, int *g, int *b, int
         uint32_t ca=addr+(uint32_t)(i*v->one_stride+v->col_off);
         float w=ge.morph_weight[i], q[4];
         if (v->col_fmt==7) {
-            uint32_t x=MEM_R32(ca);
+            uint32_t x=VR32(ca);
             q[0]=(float)(x&255); q[1]=(float)((x>>8)&255);
             q[2]=(float)((x>>16)&255); q[3]=(float)((x>>24)&255);
         } else {
-            uint32_t x=MEM_R16(ca);
+            uint32_t x=VR16(ca);
             if (v->col_fmt==4) {
                 q[0]=(float)(x&31)*(255.0f/31.0f); q[1]=(float)((x>>5)&63)*(255.0f/63.0f);
                 q[2]=(float)((x>>11)&31)*(255.0f/31.0f); q[3]=255.0f;
@@ -2311,10 +2362,12 @@ static void put_px_rgba_tested(int x, int y, uint16_t pz, int use_z,
 typedef GeVtx Vtx;
 
 static void load_vtx(uint32_t addr, const VFmt *vf, Vtx *o) {
+    vtx_span_begin(addr, (uint32_t)vf->stride);
     float pz; read_pos(addr, vf, &o->x, &o->y, &pz);
     o->z = pz; o->rw = 1.0f; o->fog = 1.0f;
     read_tc(addr, vf, &o->u, &o->v);
     read_color(addr, vf, &o->r, &o->g, &o->b, &o->a);
+    vtx_span_end();
     if (s_primitive_profile_counting) {
         s_cpu_profile_stats.primitive_profile_actual_decoded_vertices++;
         s_cpu_profile_stats.primitive_profile_actual_through_vertices++;
@@ -2940,6 +2993,7 @@ typedef struct {
 /* Decode morph targets first, then apply all active bone weights.  Patch tessellation consumes
  * these model-space values; doing either operation after tessellation changes the surface. */
 static void decode_model_vtx(uint32_t addr, const VFmt *vf, ModelVtx *m) {
+    vtx_span_begin(addr, (uint32_t)vf->stride);
     read_pos(addr,vf,&m->x,&m->y,&m->z);
     read_nrm(addr,vf,&m->nx,&m->ny,&m->nz);
     read_tc(addr,vf,&m->u,&m->v);
@@ -2957,6 +3011,7 @@ static void decode_model_vtx(uint32_t addr, const VFmt *vf, ModelVtx *m) {
         }
         m->x=px; m->y=py; m->z=pz; m->nx=nx; m->ny=ny; m->nz=nz;
     }
+    vtx_span_end();
     if (s_primitive_profile_counting)
         primitive_profile_finish_fetch();
 }

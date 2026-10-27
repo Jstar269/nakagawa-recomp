@@ -667,5 +667,95 @@ class TestNonFiniteVertex(unittest.TestCase):
         self.assertIn("NOT_MEASURED", entry[:1200])
 
 
+
+# White-box harness: ge.c is included into this translation unit so its static vertex decoders
+# can be called directly. The same random vertex bytes are decoded from plain RAM, where the
+# span-validated loads read host memory, and from the linear VRAM view, where every field goes
+# through the scalar accessors; the decoded structures must match byte for byte.
+VERTEX_FETCH_C = GE_HARNESS_PRELUDE_C + r"""
+#include "ge.c"
+
+static uint32_t s_rng = 0x2c9277b5u;
+/* The LCG's high 24 bits: its low bits cycle with a short period. */
+static uint32_t rnd(void) { s_rng = s_rng * 1664525u + 1013904223u; return s_rng >> 8; }
+static float rnd_float(void) { return (float)((int32_t)rnd() - 0x800000) / 65536.0f; }
+
+int main(void) {
+    uint8_t *arena = (uint8_t *)calloc(0x0c000000u, 1);
+    if (!arena) return 2;
+    g_mem = arena + 0x08000000u;
+    static const uint32_t cols[5] = { 0u, 4u, 5u, 6u, 7u };
+    unsigned checked = 0, mismatch = 0, morphs = 0, skinned = 0;
+    for (int t = 0; t < 6000; t++) {
+        uint32_t vt = (rnd() & 3u) | (cols[rnd() % 5u] << 2) | ((rnd() & 3u) << 5) |
+                      ((rnd() & 3u) << 7) | ((rnd() & 3u) << 9) | ((rnd() & 7u) << 14) |
+                      ((rnd() & 7u) << 18) | ((rnd() & 1u) << 23);
+        VFmt vf;
+        decode_vtype(vt, &vf);
+        ge.vtype = vt;
+        for (int i = 0; i < 8; i++) ge.morph_weight[i] = rnd_float();
+        for (int i = 0; i < 96; i++) ge.bone[i] = rnd_float();
+        ge.reverse_normal = (int)(rnd() & 1u);
+        ge.material_set = (int)(rnd() & 1u);
+        ge.material = rnd();
+        ge.material_alpha_set = (int)(rnd() & 1u);
+        ge.material_alpha = (int)(rnd() & 255u);
+        uint32_t ram = 0x08900000u + (rnd() % 4096u) * 4u;
+        uint32_t vram = 0x04180000u + (ram & 0xFFFFu);
+        for (int k = 0; k < vf.stride; k++) {
+            uint8_t b = (uint8_t)rnd();
+            SR_HOST(ram)[k] = b;
+            SR_HOST(vram)[k] = b;
+        }
+        ModelVtx a, b;
+        memset(&a, 0, sizeof a); memset(&b, 0, sizeof b);
+        decode_model_vtx(ram, &vf, &a);
+        decode_model_vtx(vram, &vf, &b);
+        Vtx la, lb;
+        memset(&la, 0, sizeof la); memset(&lb, 0, sizeof lb);
+        load_vtx(ram, &vf, &la);
+        load_vtx(vram, &vf, &lb);
+        checked++;
+        morphs += vf.morph_n > 1 && !vf.through;
+        skinned += vf.w_n > 0 && !vf.through;
+        if (memcmp(&a, &b, sizeof a) != 0 || memcmp(&la, &lb, sizeof la) != 0) {
+            if (mismatch < 5) printf("MISMATCH vtype=0x%06x stride=%d\n", vt, vf.stride);
+            mismatch++;
+        }
+    }
+    printf("CHECKED=%u MORPHS=%u SKINNED=%u MISMATCH=%u\n", checked, morphs, skinned, mismatch);
+    free(arena);
+    return 0;
+}
+"""
+
+
+class VertexFetchSpanTests(unittest.TestCase):
+    """Span-validated vertex loads read exactly what the scalar accessors read (#1296)."""
+
+    def test_ram_and_vram_decodes_match_for_every_vertex_format(self) -> None:
+        if CC is None:
+            self.skipTest("no C compiler")
+        with tempfile.TemporaryDirectory(prefix="nakagawa-vertex-fetch-") as temp:
+            tmp = Path(temp)
+            harness_c = tmp / "vertex_fetch.c"
+            harness_c.write_text(VERTEX_FETCH_C, encoding="utf-8")
+            exe = tmp / "vertex_fetch.exe"
+            build = subprocess.run(
+                [CC, "-std=c11", "-O1", "-Isrc/rt", "-DSR_SDL3VK", "-o", os.fspath(exe),
+                 os.fspath(harness_c), os.fspath(RT / "ge_capture.c"), os.fspath(RT / "perf.c"),
+                 "-lm"],
+                capture_output=True, text=True, cwd=ROOT,
+            )
+            self.assertEqual(build.returncode, 0, build.stderr[-3000:])
+            run = subprocess.run([os.fspath(exe)], capture_output=True, text=True, timeout=120)
+        self.assertEqual(run.returncode, 0, run.stderr[-2000:])
+        counts = dict(re.findall(r"(\w+)=(\d+)", run.stdout))
+        self.assertEqual(counts.get("CHECKED"), "6000", run.stdout)
+        self.assertGreater(int(counts.get("MORPHS", "0")), 0, run.stdout)
+        self.assertGreater(int(counts.get("SKINNED", "0")), 0, run.stdout)
+        self.assertEqual(counts.get("MISMATCH"), "0", run.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
