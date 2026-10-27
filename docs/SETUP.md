@@ -821,8 +821,7 @@ Two limits are stated rather than implied, because that check does not reach the
   the whole suite instead of the requested mode. The HLE exit-game site was corrected in PR #680 and
   the CPU-LLE and dispatch-isolation sites in PR #681, which also changed all three to decode
   `argv[0]` in the active code page rather than assuming UTF-8, since that is the encoding the CRT
-  produced it in. [Issue #667](https://github.com/Jstar269/nakagawa-recomp/issues/667) tracks the
-  remaining path handling.
+  produced it in. Those fixes closed [issue #667](https://github.com/Jstar269/nakagawa-recomp/issues/667).
 
 `BUILD_DIR` is a narrower contract. GNU Make splits a target or prerequisite name on whitespace, so a
 `BUILD_DIR` containing a space cannot be named by Make at all: the name silently becomes several
