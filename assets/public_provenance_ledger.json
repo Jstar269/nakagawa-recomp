@@ -2276,7 +2276,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8f6301d5c3ddb84df78cab0a188b27319e1741a36adc28e0112551e9e2e085b8"
+      "sha256": "cf147462d736dc348a3775ceb7236a9622dc8bf6abae5b48cd2f38693e1180f9"
     },
     {
       "path": "fixtures/platform_ladder/README.md",
@@ -3992,7 +3992,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ba3e5c09fb2086274926ab38334e97d931ef720c63ed1982c99d5eca209bad08"
+      "sha256": "2bde2049b46b26145b24a62aec3894bc0b6ae3b9634cfb4b34c1c927c5d54723"
     },
     {
       "path": "src/player/ui/ui_router.c",
@@ -10371,7 +10371,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1b6dcb2c0210f61d91ff9e13f62473a48b43a3367623d634e8f2d5b083f892e3"
+      "sha256": "f832e154242a0185c36f1d171a19ff3e3062c7343ad6c147962528a63be7d666"
     },
     {
       "path": "tests/native/test_player_state.c",
