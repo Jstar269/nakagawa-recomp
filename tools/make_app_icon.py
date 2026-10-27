@@ -81,7 +81,9 @@ def load_mark(svg_path: Path = ROOT / MARK_SVG) -> tuple[tuple[float, float, flo
             shapes.append((fill, [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]))
         elif tag == "polygon":
             numbers = [float(v) for v in element.attrib["points"].replace(",", " ").split()]
-            shapes.append((fill, list(zip(numbers[0::2], numbers[1::2]))))
+            if len(numbers) % 2:
+                raise ValueError("make_app_icon: a polygon point is missing its y")
+            shapes.append((fill, list(zip(numbers[0::2], numbers[1::2], strict=True))))
         else:
             raise ValueError(f"make_app_icon: unexpected <{tag}> in the mark")
     return view_box, shapes  # type: ignore[return-value]

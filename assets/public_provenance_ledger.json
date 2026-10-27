@@ -11720,7 +11720,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "01b51fa6aecf819fb185258e3b5ea693fedbdcad48869092935d32d56efa1c64"
+      "sha256": "942d42f3e41029247124b754a9823118454d8dd1a8e345f8c567ed84964a6e2c"
     },
     {
       "path": "tools/make_showcase_animation.py",
@@ -12745,7 +12745,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "05fc37af6dd8ba71e6e6504f5856319b34b0bec9afd224d81ff381551b92a223"
+      "sha256": "d28f7418f1bd2c5b389b86b66747e8e02fbb6b3a5ae1f58c013fd61914ff65bb"
     },
     {
       "path": "tools/test_asset_index_c.py",

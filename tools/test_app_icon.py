@@ -111,12 +111,12 @@ class CDrawerTests(unittest.TestCase):
                 x, y, w, h = values
                 points = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
             else:
-                points = list(zip(values[0::2], values[1::2]))
+                points = list(zip(values[0::2], values[1::2], strict=True))
             colour = {"NK_UI_ACCENT_RGBA": (0xD7, 0xF2, 0x4A), "NK_UI_PAPER_RGBA": (0xF5, 0xF7, 0xFA)}[rgba]
             shapes.append((colour, points))
         _, svg_shapes = make_app_icon.load_mark()
         self.assertEqual(len(shapes), len(svg_shapes))
-        for (colour, points), (svg_colour, svg_points) in zip(shapes, svg_shapes):
+        for (colour, points), (svg_colour, svg_points) in zip(shapes, svg_shapes, strict=True):
             self.assertEqual(colour, svg_colour)
             for (x, y), (sx, sy) in zip(points, svg_points, strict=True):
                 self.assertAlmostEqual(x, sx, places=4)
@@ -144,7 +144,7 @@ class CDrawerTests(unittest.TestCase):
                 self.assertEqual(len(drawn), len(committed[size]))
                 # The C mark stores floats and the SVG decimals, so a channel may round
                 # the other way; nothing more.
-                worst = max((abs(a - b) for a, b in zip(drawn, committed[size])), default=0)
+                worst = max((abs(a - b) for a, b in zip(drawn, committed[size], strict=True)), default=0)
                 self.assertLessEqual(worst, 1, f"{size} px")
 
 
