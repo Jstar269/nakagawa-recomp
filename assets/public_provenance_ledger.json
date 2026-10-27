@@ -439,7 +439,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "612e7b6c58406ae617617848f21850d11f3b33902d9f4023fc58fc1dbee08809"
+      "sha256": "6c07297ec137724d00443ad78bb83441304ee895e1105b86f0c41b90bec5f266"
     },
     {
       "path": "NOTICE.md",
@@ -3536,7 +3536,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e9ea72cb31f651bbc4621ec08fc8130b3e6c1f7e2e6456647a5017bd545381f4"
+      "sha256": "6cf15c95bc7f5daf20241903752616831130f0f45ba3fa4b2241ace231afb8b8"
     },
     {
       "path": "src/player/package_builder.h",
@@ -13896,7 +13896,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a9cef25b283c111e2bdc553619d3bd74b9e7890a65bdae3d1f039974532e526c"
+      "sha256": "22a0c26a2927ae075b585674fa605c46809e196e16ae4ab6bb03f75f4b4ebfa8"
     },
     {
       "path": "tools/test_native_driver_hardening.py",
