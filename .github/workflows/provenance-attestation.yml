@@ -378,6 +378,13 @@ jobs:
               throw "Checked-out commit $checkedOutSha does not match the dispatched commit $env:GITHUB_SHA."
           }
 
+      - name: Set up Windows CPython 3.15.1
+        id: windows-cpython
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.15.1"
+          architecture: x64
+
       - name: Set up MSYS2 UCRT64
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
@@ -392,16 +399,69 @@ jobs:
             mingw-w64-ucrt-x86_64-vulkan-headers
             mingw-w64-ucrt-x86_64-vulkan-loader
 
+      # MSYS2 still ships Python 3.14.8; the release manifest's toolchain policy
+      # is Python 3.15. As in the CI Windows job, repository tools and Make recipes
+      # use the separately installed Windows CPython 3.15.1 through PYTHON, and the
+      # toolchain record names that interpreter.
+      - name: Pin the Windows Python toolchain (CPython 3.15.1)
+        shell: pwsh
+        env:
+          PYTHON_EXE: ${{ steps.windows-cpython.outputs.python-path }}
+        run: |
+          $version = & $env:PYTHON_EXE -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"
+          if ($LASTEXITCODE -ne 0 -or $version -ne "3.15.1") {
+            throw "Expected Windows CPython 3.15.1, got '$version'"
+          }
+          $pythonPath = $env:PYTHON_EXE.Replace('\', '/')
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "PYTHON=$pythonPath`n", $utf8NoBom)
+
+      # The runner image puts other MinGW toolchains on PATH (C:\mingw64\bin,
+      # Strawberry Perl's c\bin). tools/record_toolchain.py refuses a compiler or
+      # Make that also resolves outside UCRT64, and the build and the runtime-DLL
+      # staging must not reach one either. Keep every MSYS2 entry and drop each
+      # other PATH entry that provides gcc, g++ or a Make; the steps below run
+      # with exactly this PATH, so the record describes the tools they use.
+      - name: Keep only the UCRT64 toolchain on PATH
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          set -euo pipefail
+          IFS=';' read -r -a exts <<< "${PATHEXT:-.COM;.EXE;.BAT;.CMD}"
+          exts=('' "${exts[@]}")
+          kept=()
+          IFS=: read -r -a entries <<< "$PATH"
+          for dir in "${entries[@]}"; do
+            case "$dir" in
+              '') continue ;;
+              "$MINGW_PREFIX"/*|/usr/*|/bin) kept+=("$dir"); continue ;;
+            esac
+            for tool in gcc g++ make mingw32-make; do
+              for ext in "${exts[@]}"; do
+                if [ -e "$dir/$tool$ext" ]; then
+                  echo "dropped from PATH: $dir ($tool$ext)"
+                  continue 3
+                fi
+              done
+            done
+            kept+=("$dir")
+          done
+          (IFS=:; printf '%s' "${kept[*]}") > "$(cygpath -u "$RUNNER_TEMP")/nk-toolchain-path"
+
       - name: Record the toolchain used for these binaries
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
         run: |
           set -euo pipefail
+          PATH="$(cat "$(cygpath -u "$RUNNER_TEMP")/nk-toolchain-path")"
+          export PATH
           command -v git
-          command -v python
+          command -v gcc mingw32-make
+          "$PYTHON" --version
           toolchain_json="$(cygpath -u "$RUNNER_TEMP")/nakagawa-toolchain.json"
-          python tools/record_toolchain.py \
+          "$PYTHON" tools/record_toolchain.py \
             --require-clean-tree \
             --output "$toolchain_json" \
             --msys-path "$(cygpath -m "$MINGW_PREFIX/bin")" \
@@ -415,6 +475,8 @@ jobs:
           MSYS2_PATH_TYPE: inherit
         run: |
           set -euo pipefail
+          PATH="$(cat "$(cygpath -u "$RUNNER_TEMP")/nk-toolchain-path")"
+          export PATH
           command -v pwsh
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 production-smoke
@@ -425,6 +487,8 @@ jobs:
           MSYS2_PATH_TYPE: inherit
         run: |
           set -euo pipefail
+          PATH="$(cat "$(cygpath -u "$RUNNER_TEMP")/nk-toolchain-path")"
+          export PATH
           mkdir -p dist/bin
           cp build/nakagawa_player.exe build/production-smoke/production_smoke.exe dist/bin/
           pwsh -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1 \
@@ -432,7 +496,7 @@ jobs:
             -ProjectFontDir "$(cygpath -m "$PWD/build/project-font")" \
             -Sdl3DllPath "$(cygpath -m "$MINGW_PREFIX/bin/SDL3.dll")" \
             -ExcludeOptionalFonts
-          python tools/stage_runtime_dlls.py --target dist/bin
+          "$PYTHON" tools/stage_runtime_dlls.py --target dist/bin
           cp "$NAKAGAWA_TOOLCHAIN_JSON" dist/toolchain.json
           test -s dist/bin/nakagawa_player.exe
           test -s dist/bin/production_smoke.exe
