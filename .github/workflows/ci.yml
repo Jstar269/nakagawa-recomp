@@ -336,6 +336,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Gate profile-zero imports on HLE review status
+        # #341: every NID the verified guest imports that routes to a dedicated `unreviewed`
+        # handler must be listed in PROFILE_ZERO_UNREVIEWED_IMPORTS (tools/hle_registry_meta.py),
+        # and every entry there must still be imported and unreviewed, so the list only shrinks.
+        # The step follows the upload, so a failing gate still leaves the bytes to inspect.
+        run: >-
+          python3 tools/hle_manifest.py --out "$RUNNER_TEMP/hle_manifest.json"
+          --imports fixtures/profile_zero/prebuilt/profile_zero_guest.prx
+          --check-profile-zero-imports
+
   python_tools:
     name: Python tooling gates
     runs-on: ubuntu-24.04
