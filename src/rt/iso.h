@@ -17,6 +17,9 @@ int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes);
 
 /* Return the first physical LBA for an iso_lookup token (multi-extent tokens are opaque). */
 uint32_t iso_physical_lba(uint32_t lba_or_token);
+/* Number of whole 2048-byte sectors in the open disc image. Returns 0 on success, -1 when no
+ * image is open. */
+int iso_sector_count(uint32_t *out_sectors);
 
 typedef struct IsoDirEntry {
     char name[256];
