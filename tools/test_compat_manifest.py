@@ -1582,15 +1582,18 @@ class GenericRuntimeTitleAddressGuardTests(unittest.TestCase):
                 contaminated, inventory[relative_path])
             self.assertIn(address, found, relative_path)
 
-    def test_init_walker_guard_is_title_gated_not_generic(self) -> None:
+    def test_init_walker_guard_and_its_restore_are_retired(self) -> None:
         inventory = compat_overrides.RETIRED_INIT_WALKER_GUARD
         self.assertEqual(inventory["decision"], "b")
         self.assertIn("HST only", inventory["reason"])
         source = RECOMP_C.read_text(encoding="utf-8")
         self.assertNotIn("INIT_WALKER_GUARD", source)
-        # The restore in generic dispatch is armed only through the title configuration.
-        self.assertIn("sr_title_config_preserve_callee_saved_at_calls()", source)
-        self.assertIn("s->r[reg] = callee_saved", source)
+        # #363: no title configuration restores callee-saved registers at a CALL any more.
+        self.assertNotIn("sr_title_config_preserve_callee_saved_at_calls", source)
+        self.assertNotIn("callee_saved[", source)
+        for header in ("title_config.c", "title_config.h"):
+            text = (ROOT / "src" / "rt" / header).read_text(encoding="utf-8")
+            self.assertNotIn("sr_title_config_preserve_callee_saved_at_calls", text, header)
 
 
 class DiagnosticGroupConsistencyTests(unittest.TestCase):
