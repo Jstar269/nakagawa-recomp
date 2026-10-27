@@ -363,6 +363,44 @@ class StackAllocationTests(unittest.TestCase):
         self.assertIn("0x80020190", body, "a failed create must surface NO_MEMORY to the guest")
 
 
+class PerCallPathsReadNoEnvironmentTests(unittest.TestCase):
+    """Diagnostic switches on a per-call path are read once per process (#1296).
+
+    An uncached getenv takes the C runtime's environment lock and compares the name with
+    every environment variable. sr_syscall() runs for every guest import, a guest allocator
+    brackets each allocation with sceKernelCpuSuspendIntr/sceKernelCpuResumeIntr, a guest
+    can sleep, wake and query threads and create objects every frame, and the delay, block
+    and sleep paths and the scheduler loop run on every context switch, so a
+    getenv in any of them is paid on the busy host thread thousands of times a second. The
+    switches keep their meaning (set before launch, they still enable their logs); only the
+    repeated environment search goes.
+    """
+
+    PER_CALL = (
+        ("hle.c", HLE, (
+            "sr_syscall", "h_CpuSuspendIntr", "h_CpuResumeIntr", "sr_alloc_uid",
+            "h_SleepThread", "h_SleepThreadCB", "h_WakeupThread", "h_CancelWakeupThread",
+            "h_ReferThreadRunStatus",
+        )),
+        ("sched.c", SCHED, ("sched_delay_current", "sched_block_on", "sched_thread_sleep_cb")),
+    )
+
+    def test_per_call_paths_do_not_search_the_environment(self):
+        for file_name, source, functions in self.PER_CALL:
+            for name in functions:
+                body = strip_comments(function_body(source, name))
+                self.assertNotIn(
+                    "getenv(", body,
+                    f"{file_name}:{name} runs per call; read its switches once (#1296)",
+                )
+
+    def test_scheduler_loop_reads_its_dump_switch_once(self):
+        body = strip_comments(function_body(SCHED, "sched_run"))
+        loop = body[body.index("for (;;)"):]
+        self.assertNotIn("getenv(", loop, "sched_run must not search the environment per pass")
+        self.assertIn('getenv("SCHED_DUMP")', body[: body.index("for (;;)")])
+
+
 class NovbpaceSemanticsTests(unittest.TestCase):
     """SR_NOVBPACE must enforce value semantics: unset/empty/'0' = paced, '1' = turbo, any other refused."""
 
