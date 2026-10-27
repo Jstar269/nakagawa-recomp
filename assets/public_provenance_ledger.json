@@ -5653,7 +5653,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "99a3f6d6866b16983a1b671efa4aad88b4112237cf1e4e52bc06074b8a96079f"
+      "sha256": "1ffe993354a9872a5b795447ca3863c28aa85356d91958744333a3c560daa101"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
