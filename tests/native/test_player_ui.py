@@ -3321,6 +3321,68 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[-1]["running"], "0")
         self.assertIn("Repeat the close request", run["stderr"])
         self.assertIn("explicit force-quit", run["stderr"])
+        # The first close asked; the second, after the box failed, did not.
+        dialogs = self.quit_dialogs(str(run["stdout"]))
+        self.assertEqual(len(dialogs), 1, run["stdout"])
+        self.assertEqual(dialogs[0]["message"],
+                         "A game is still running. Quitting closes it, and anything "
+                         "since the game's last save is lost.")
+
+    # SDL3's Windows message box does not widen a button for a long label: it
+    # showed "Close game and quit" as "ose game and qu". Labels this short fit.
+    DIALOG_BUTTON_LABEL_MAX = 12
+
+    def quit_dialogs(self, stdout: str) -> list[dict[str, object]]:
+        """Each quit confirmation the player asked, as the host box would show it,
+        with its buttons checked against what fits and what is the default."""
+        dialogs: list[dict[str, object]] = []
+        prefix = "[PLAYER_UI_TEST] QUIT_DIALOG "
+        for line in stdout.splitlines():
+            if not line.startswith(prefix):
+                continue
+            body = line[len(prefix):]
+            if body.startswith("title="):
+                dialogs.append({"title": body[len("title="):], "buttons": []})
+            elif body.startswith("message="):
+                dialogs[-1]["message"] = body[len("message="):]
+            else:
+                match = re.fullmatch(
+                    r"button id=(\d+) return_default=([01]) escape_default=([01]) label=(.*)",
+                    body)
+                self.assertIsNotNone(match, line)
+                assert match is not None
+                buttons = dialogs[-1]["buttons"]
+                assert isinstance(buttons, list)
+                buttons.append(match.groups())
+        for dialog in dialogs:
+            self.assertEqual(dialog["title"], "Quit Nakagawa?")
+            # Cancel is the Return and Escape default, so a stray Enter never
+            # ends the game; Quit is button 1, which the player acts on.
+            self.assertEqual(dialog["buttons"],
+                             [("0", "1", "1", "Cancel"), ("1", "0", "0", "Quit")])
+            buttons = dialog["buttons"]
+            assert isinstance(buttons, list)
+            for button in buttons:
+                self.assertLessEqual(len(button[3]), self.DIALOG_BUTTON_LABEL_MAX, button)
+        return dialogs
+
+    def test_quit_confirmation_names_the_running_game(self) -> None:
+        run = self.run_player(
+            "library",
+            ("CLOSE",),
+            env_extra={
+                "NK_UI_TEST_GAME_RUNNING": "TEST00005",
+                "NK_UI_TEST_MESSAGEBOX_FAIL": "1",
+            },
+        )
+        dialogs = self.quit_dialogs(str(run["stdout"]))
+        self.assertEqual(len(dialogs), 1, run["stdout"])
+        self.assertEqual(dialogs[0]["message"],
+                         "PSPDEV Phase 5 Source-Owned Fixture is still running. Quitting "
+                         "closes it, and anything since the game's last save is lost.")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["game_running"], "1")
 
     def test_font_fallback_reason_is_reported(self) -> None:
         """Every frame names the active text path and, on fallback, why (#421)."""

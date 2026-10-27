@@ -334,24 +334,43 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
         return true;
     }
 
+    /* Short labels: SDL3's Windows box does not widen a button for a long one
+       (PLAYER_DIALOG_BUTTON_LABEL_MAX). Cancel stays the Return and Escape
+       default. */
     const SDL_MessageBoxButtonData buttons[] = {
         { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT |
               SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT,
-          0, "Cancel" },
-        { 0, 1, "Close game and quit" }
+          0, PLAYER_QUIT_DIALOG_CANCEL_LABEL },
+        { 0, 1, PLAYER_QUIT_DIALOG_QUIT_LABEL }
     };
+    char message[NK_MAX_TITLE_LEN + 128];
+    player_app_quit_confirmation_message(app, message, sizeof(message));
     const SDL_MessageBoxData dialog = {
         SDL_MESSAGEBOX_WARNING,
         window,
-        "Game still running",
-        "A game is running. Close it and quit?",
-        2,
+        PLAYER_QUIT_DIALOG_TITLE,
+        message,
+        (int)(sizeof(buttons) / sizeof(buttons[0])),
         buttons,
         NULL
     };
     int button_id = 0;
     bool dialog_shown = false;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* The headless regression cannot open a modal box, so it reads the dialog
+       the host would show from these lines. */
+    printf("[PLAYER_UI_TEST] QUIT_DIALOG title=%s\n", dialog.title);
+    printf("[PLAYER_UI_TEST] QUIT_DIALOG message=%s\n", dialog.message);
+    for (int i = 0; i < dialog.numbuttons; ++i) {
+        const SDL_MessageBoxButtonData *button = &dialog.buttons[i];
+        printf("[PLAYER_UI_TEST] QUIT_DIALOG button id=%d return_default=%d "
+               "escape_default=%d label=%s\n",
+               button->buttonID,
+               (button->flags & SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT) != 0,
+               (button->flags & SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT) != 0,
+               button->text);
+    }
+    fflush(stdout);
     if (!getenv("NK_UI_TEST_MESSAGEBOX_FAIL")) {
         dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
     }
@@ -4093,6 +4112,14 @@ int main(int argc, char *argv[]) {
         if (strcmp(disc, "1") != 0) {
             snprintf(app.launch_session.disc_id, sizeof(app.launch_session.disc_id),
                      "%s", disc);
+            /* A launch carries the disc's title, as nk_launch_prepare_session
+               copies it from the library record. */
+            int running_index = player_app_find_game_by_disc_id(&app, disc);
+            if (running_index >= 0) {
+                snprintf(app.launch_session.game_title,
+                         sizeof(app.launch_session.game_title), "%s",
+                         app.games[running_index].title_name);
+            }
             app.child_window_ready = !starting;
         }
     }

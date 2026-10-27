@@ -742,6 +742,20 @@ bool player_app_close_request_batch_claim(bool *close_request_handled);
  * alive and require a second explicit close request before forcing quit. */
 void player_app_note_close_confirmation_failure(PlayerApp *app);
 bool player_app_take_close_confirmation_fallback(PlayerApp *app);
+/* The quit confirmation is the host's native message box. SDL3's Windows box
+ * does not widen a button for a long label: "Close game and quit" showed as
+ * "ose game and qu". Every button label stays within
+ * PLAYER_DIALOG_BUTTON_LABEL_MAX characters. Cancel is the Return and Escape
+ * default, so a stray Enter never ends the game. */
+#define PLAYER_DIALOG_BUTTON_LABEL_MAX 12
+#define PLAYER_QUIT_DIALOG_TITLE "Quit Nakagawa?"
+#define PLAYER_QUIT_DIALOG_CANCEL_LABEL "Cancel"
+#define PLAYER_QUIT_DIALOG_QUIT_LABEL "Quit"
+/* The quit confirmation's message. It names the running game by the title its
+ * launch carries (the disc title the library card shows), on one line, or says
+ * "A game" when the launch has none. False only for a missing or empty buffer. */
+bool player_app_quit_confirmation_message(const PlayerApp *app, char *out,
+                                          size_t out_size);
 bool player_app_boot_event_is_window_ready(const char *line);
 bool player_app_child_window_ready(PlayerApp *app);
 /* Fit a requested client rectangle into a display. `usable` is the display's
