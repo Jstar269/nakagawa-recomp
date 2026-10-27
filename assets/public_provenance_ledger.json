@@ -387,7 +387,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6a4fb689ab3ef1688e6a5ee7e3687473ef4c5e26f38a1de836cdce5666b11b54"
+      "sha256": "ec79351d296877754671b5f455251e9a2f50fbd7bb2044c0fe81f0cbc777451d"
     },
     {
       "path": "CREDITS.md",
@@ -405,7 +405,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c8648a0d1014dfb08af47e7c4cb011a14edb88364252eddf8d9a38d08ff66404"
+      "sha256": "7a63d78b2cbc7da1be646b2100377ed7460abd9c13ef9fd10af4a79452bc7772"
     },
     {
       "path": "LICENSE",
@@ -1357,7 +1357,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5a2bd252f384056934f5f7a1cf5923c8a4956366724d2dbc678b190c6a60b9a0"
+      "sha256": "87e2909e37a3a880f95e332f9321d9af7cc35e76f18d0250692a1e6f2828cac5"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1486,7 +1486,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "727e0caa01e7f3a57c24b8025cbf6b8e380a37ebcf2fbd2e7b6adbf02fff3b4c"
+      "sha256": "f58dbc4267059f9ba3bd64155b7ef909acba727c5c71dd89830f0a38d55dd7f8"
     },
     {
       "path": "docs/NATIVE_PLAYER_ARCHITECTURE.md",
@@ -1513,7 +1513,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "02da0f5eafce5d85b29d71ff437da2065bc7dce53edc90d8259fe21fcba3a9a4"
+      "sha256": "2115d102d068364d39c035ee20068b56af6b25797d682b2f1032a039e1178666"
     },
     {
       "path": "docs/ONLINE_FEATURES.md",
@@ -1543,7 +1543,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c31cf9fbaca4607bec7b4dd6730dcdda5220e0a8e949e600196a4a54c3d972a7"
+      "sha256": "bc660642e61b074858f42e36fa2ec9923106a6e54b443d646354fcd333f791bb"
     },
     {
       "path": "docs/PLAYER_UI_DESIGN.md",
@@ -1561,7 +1561,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "36df415c03a8323b1823c28855475798c1e4f5d6e2521470dfb41cd7099c5049"
+      "sha256": "9d4733d1d1665f75f15692da319c62032dd86502b3c844f65953750d03399259"
     },
     {
       "path": "docs/PREVIEW_RELEASE.md",
@@ -1579,7 +1579,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "87941d617e2eeff499339a409d3cb445ca55a4d429f679ffd0b3a68372b0556a"
+      "sha256": "5cab340a954a3654b1ad70fc2861d4f3db7d6c1f17f2fd784d806714a4ea4b49"
     },
     {
       "path": "docs/PROVENANCE_MERGE_GATE.md",
@@ -1645,7 +1645,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f5d872d4538059540601e23e8bf41612e999dfc261420a5527f1dbc2b6825d8d"
+      "sha256": "9000a3222936140c7cd2405011e28784f23f83d27564d89b80a14f949180839a"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
@@ -1675,7 +1675,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "835207099c7314bcb4d317f9988dd2d0bd4179620079e15166fe2a328303915d"
+      "sha256": "eb4a4a8d830d179d579ee91cd4425f31e901f159c1262e86739ce23629d70d5d"
     },
     {
       "path": "docs/SETUP.md",
@@ -1684,7 +1684,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "972566ada0b2cfeed48282199fca50482b31d91f0711d695de46a98ca0aae846"
+      "sha256": "cde960f47b6fd33999a8d5d4e3b52b4bd34ea1b84a86be1f2d8c9acadf8914df"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1729,7 +1729,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2e2ae591f04a91d6a9781d5b2d6582057b58a5ff1074760653ff323ec0701d64"
+      "sha256": "14ee1843270ddc6be449d185e2a5eb379b68391fb15f5baedfcefb8de8931b89"
     },
     {
       "path": "docs/TITLE_TESTING.md",
@@ -1831,7 +1831,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fb7c9d02796b49619cbcfb1520cb731886797c6a84af799debae5905384f2105"
+      "sha256": "e05cb5dbb3366da98859a5165352437744669c0d4ba4f2d7df7af2824f6a2a13"
     },
     {
       "path": "docs/cleanroom/SCHED_SPEC.md",
@@ -1840,7 +1840,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a2e5edf1c74eab71534e2f0986538b04791ba43b5c0a7c8cbe8157554d49cd90"
+      "sha256": "20f18a082049479ae9b90b355594bf9d92f865232a3c24780a6249e8e9c17193"
     },
     {
       "path": "docs/images/brand/nakagawa-mark-dark.svg",
