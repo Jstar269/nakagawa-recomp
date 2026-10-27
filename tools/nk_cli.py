@@ -1997,8 +1997,9 @@ def _build_package(args: argparse.Namespace, stage_observer,
         cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         marker = cache_dir / PACKAGE_CACHE_MARKER
         if not marker.exists():
-            if any(cache_dir.iterdir()):
-                raise PackageBuildError("Package cache contains files without a recognized ownership marker; refusing to replace it.")
+            # The folder is the player's own (cache/packages/<DISC> under its
+            # data root, checked above): one whose marker was lost, for example
+            # by a removal that stopped part-way, is adopted, never a dead end.
             marker.write_text("Nakagawa Recomp package cache v1\n", encoding="ascii")
         else:
             if marker.read_text(encoding="ascii") != "Nakagawa Recomp package cache v1\n":
@@ -2128,9 +2129,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 print("CACHE_CHANGED: " + ", ".join(decision.reasons))
             reporter.log("CACHE_CHANGED: " + ", ".join(decision.reasons))
 
-        entry_root = (
-            cache_dir / "entries" / cache_key["aot"]["digest"] / cache_key["native"]["digest"]
-        )
+        entry_root = package_cache.cache_entry_root(cache_dir, cache_key)
         entry_package = entry_root / "package"
         if entry_root.is_symlink():
             raise PackageBuildError("Package cache entry is a symlink; refusing to reuse it.")

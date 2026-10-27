@@ -125,6 +125,47 @@ static void tree_path_pop(TreePath *tree, size_t saved) {
     tree->path[saved] = L'\0';
 }
 
+/* The walk works on the extended-length form (\\?\C:\..., \\?\UNC\...), so a
+ * tree deeper than MAX_PATH is listed and removed without long-path support in
+ * the process manifest or the registry (a default Windows install has
+ * neither). That form takes backslashes only and a full path. */
+static bool tree_path_extend(TreePath *tree) {
+    static const WCHAR prefix[] = L"\\\\?\\";
+    static const WCHAR unc_prefix[] = L"\\\\?\\UNC\\";
+    WCHAR *full;
+    DWORD full_length;
+    size_t i;
+    if (wcsncmp(tree->path, prefix, 4) == 0) return true;
+    for (i = 0; tree->path[i]; ++i) {
+        if (tree->path[i] == L'/') tree->path[i] = L'\\';
+    }
+    full = (WCHAR *)malloc(TREE_PATH_CAP * sizeof(WCHAR));
+    if (!full) return false;
+    full_length = GetFullPathNameW(tree->path, TREE_PATH_CAP, full, NULL);
+    if (full_length == 0 || full_length >= TREE_PATH_CAP - 8u) {
+        free(full);
+        return false;
+    }
+    if (full[0] == L'\\' && full[1] == L'\\') {
+        /* \\server\share\... becomes \\?\UNC\server\share\... */
+        if (wcslen(unc_prefix) + wcslen(full + 2) + 1u > TREE_PATH_CAP) {
+            free(full);
+            return false;
+        }
+        wcscpy(tree->path, unc_prefix);
+        wcscat(tree->path, full + 2);
+    } else {
+        wcscpy(tree->path, prefix);
+        wcscat(tree->path, full);
+    }
+    free(full);
+    tree->length = wcslen(tree->path);
+    while (tree->length > 7u && tree->path[tree->length - 1u] == L'\\') {
+        tree->path[--tree->length] = L'\0';
+    }
+    return true;
+}
+
 static bool tree_name_is_dot(const WCHAR *name) {
     return wcscmp(name, L".") == 0 || wcscmp(name, L"..") == 0;
 }
@@ -189,13 +230,19 @@ static bool tree_remove_at(TreePath *tree, void *ctx) {
                                                        : DeleteFileW(tree->path) != 0;
     }
     if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) return DeleteFileW(tree->path) != 0;
-    WIN32_FIND_DATAW data;
-    HANDLE find = tree_find_first(tree, &data);
-    if (find != INVALID_HANDLE_VALUE) {
+    /* Subfolders first, then the files beside them: a removal that stops in a
+       subfolder keeps this folder's own files, such as the package cache's
+       ownership marker, so what is left is still recognised. */
+    for (int pass = 0; pass < 2; ++pass) {
+        WIN32_FIND_DATAW data;
+        HANDLE find = tree_find_first(tree, &data);
+        if (find == INVALID_HANDLE_VALUE) continue;
         bool ok = true;
         do {
             size_t saved;
+            bool directory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
             if (tree_name_is_dot(data.cFileName)) continue;
+            if (directory != (pass == 0)) continue;
             if (!tree_path_push(tree, data.cFileName, &saved)) {
                 ok = false;
                 break;
@@ -220,6 +267,9 @@ static bool tree_walk_top(const char *path, const char *skip_child,
     bool ok = utf8_to_wide(path, tree.path, TREE_PATH_CAP);
     if (ok) {
         tree.length = wcslen(tree.path);
+        ok = tree_path_extend(&tree);
+    }
+    if (ok) {
         DWORD attributes = GetFileAttributesW(tree.path);
         WCHAR wskip[1024];
         if (!skip_child || attributes == INVALID_FILE_ATTRIBUTES ||

@@ -1139,7 +1139,7 @@ class PackageCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             user_root = Path(tmp).resolve()
             cache_dir = user_root / "cache"
-            entry_package = cache_dir / "entries" / "a" / "b" / "package"
+            entry_package = cache_dir / "entries" / ("a" * 16) / "package"
             entry_package.mkdir(parents=True)
             (entry_package / "package.json").write_text("{}", encoding="utf-8")
             target_dir = user_root / "packages" / "ABCD12345"
@@ -1314,13 +1314,31 @@ class PackageCacheTests(unittest.TestCase):
                 self.assertEqual(nk_cli.cmd_build_package(args), 0)
             build.assert_called_once()
 
+    def test_cache_entry_paths_fit_a_default_windows_install(self) -> None:
+        """Walkthrough blocker #4: the deepest cache path stays under MAX_PATH.
+
+        A 32-character user name under AppData, the longest disc ID, and the
+        longest name a package build writes inside an entry
+        (.build-package-XXXXXXXX/.title-config-<64 hex>)."""
+        user_root = "C:\\Users\\" + "u" * 32 + "\\AppData\\Local\\Nakagawa\\data"
+        key = {"aot": {"digest": "a" * 64}, "native": {"digest": "b" * 64}}
+        entry = package_cache.cache_entry_root(
+            "\\".join((user_root, "cache", "packages", "UCUS98701")), key)
+        deepest = str(entry) + "\\.build-package-xxxxxxxx\\.title-config-" + "c" * 64
+        self.assertLess(len(deepest), 240, deepest)
+        self.assertEqual(entry.name, package_cache.cache_entry_key(key))
+        self.assertEqual(len(entry.name), 16)
+        other = {"aot": {"digest": "a" * 64}, "native": {"digest": "c" * 64}}
+        self.assertNotEqual(package_cache.cache_entry_key(other), entry.name)
+
     def test_cache_cleanup_is_bounded_and_preserves_protected_entry(self) -> None:
         cache_root = package_cache.cache_root(self.root / "user-data", "TEST00001")
         entries_root = cache_root / "entries"
-        aot_root = entries_root / ("a" * 64)
+        legacy = entries_root / ("a" * 64) / ("1" * 64) / "package"
+        legacy.mkdir(parents=True)
         entries = []
-        for index, digest in enumerate(("1" * 64, "2" * 64, "3" * 64)):
-            entry = aot_root / digest
+        for index, key in enumerate(("1" * 16, "2" * 16, "3" * 16)):
+            entry = entries_root / key
             (entry / "package").mkdir(parents=True)
             os.utime(entry, (index + 1, index + 1))
             entries.append(entry)
@@ -1334,6 +1352,8 @@ class PackageCacheTests(unittest.TestCase):
         self.assertTrue(entries[0].is_dir())
         self.assertFalse(entries[1].is_dir())
         self.assertTrue(entries[2].is_dir())
+        self.assertFalse((entries_root / ("a" * 64)).exists(),
+                         "the old two-level layout is dropped")
         with self.assertRaises(package_cache.PackageCacheError):
             package_cache.cache_entry_limit({package_cache.CACHE_LIMIT_ENV: "0"})
 

@@ -2919,6 +2919,82 @@ static void test_tree_helpers_walk_a_deep_tree(void) {
     printf("PASS: tree size and removal walk a 48-level tree and keep the named child\n");
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+/* Walkthrough blocker #4: Remove from library on a package cache deeper than
+   MAX_PATH. The player has no long-path manifest and a default Windows install
+   has long paths off, so the plain path API could neither list nor delete the
+   tree: removal failed after deleting the cache's ownership marker, leaving a
+   game that could neither rebuild nor be removed. The tree is made here with
+   extended-length paths, as the package build makes it. */
+static bool long_tree_mkdir(const WCHAR *path) {
+    return CreateDirectoryW(path, NULL) != 0 || GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+static void long_tree_file(const WCHAR *dir, const WCHAR *name) {
+    WCHAR file[2048];
+    HANDLE handle;
+    DWORD written = 0;
+    _snwprintf(file, sizeof(file) / sizeof(file[0]), L"%ls\\%ls", dir, name);
+    file[sizeof(file) / sizeof(file[0]) - 1u] = L'\0';
+    handle = CreateFileW(file, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(handle != INVALID_HANDLE_VALUE);
+    assert(WriteFile(handle, "x", 1, &written, NULL) && written == 1);
+    assert(CloseHandle(handle));
+}
+
+static void test_remove_tree_deeper_than_max_path(void) {
+    char root[NK_MAX_PATH];
+    char marker[NK_MAX_PATH * 2];
+    WCHAR wroot[1024];
+    WCHAR deep[2048];
+    WCHAR held[2048];
+    HANDLE open_file;
+    removal_test_path(root, sizeof(root), native_test_get_root(), "cache-long-paths", NULL, NULL);
+    assert(MultiByteToWideChar(CP_UTF8, 0, root, -1, wroot, 1024) > 0);
+    for (WCHAR *c = wroot; *c; ++c) if (*c == L'/') *c = L'\\';
+    _snwprintf(deep, sizeof(deep) / sizeof(deep[0]), L"\\\\?\\%ls", wroot);
+    deep[sizeof(deep) / sizeof(deep[0]) - 1u] = L'\0';
+    assert(long_tree_mkdir(deep));
+    long_tree_file(deep, L".nk-aot-package-cache-v1");
+    removal_test_path(marker, sizeof(marker), root, ".nk-aot-package-cache-v1", NULL, NULL);
+    /* entries\<64 hex>\<64 hex>\package\.build-package-xxxxxxxx: the old
+       layout, well past 260 characters. */
+    {
+        static const WCHAR *const parts[] = {
+            L"entries",
+            L"859fc2090e790b33178fbc2fac7cad1f4373b8329d93853391bbaec122ff47c4",
+            L"b1d2d67321a0b2f2256602e755b7ba5ab15922486ecfb74cced10098475e51ac",
+            L"package", L".build-package-9vu6x8d0"
+        };
+        for (size_t i = 0u; i < sizeof(parts) / sizeof(parts[0]); ++i) {
+            size_t length = wcslen(deep);
+            _snwprintf(deep + length, sizeof(deep) / sizeof(deep[0]) - length, L"\\%ls", parts[i]);
+            deep[sizeof(deep) / sizeof(deep[0]) - 1u] = L'\0';
+            assert(long_tree_mkdir(deep));
+        }
+    }
+    long_tree_file(deep, L".title-config-0545df4ab68e93462714bd56795427e73b204d45fff70335feb0224c247cd081");
+
+    /* A file still open stops the removal; the folder's own files, the
+       ownership marker among them, are left for the next try. */
+    _snwprintf(held, sizeof(held) / sizeof(held[0]),
+               L"%ls\\.title-config-0545df4ab68e93462714bd56795427e73b204d45fff70335feb0224c247cd081",
+               deep);
+    held[sizeof(held) / sizeof(held[0]) - 1u] = L'\0';
+    assert(wcslen(held) - 4u > 280u); /* well past MAX_PATH without the prefix */
+    open_file = CreateFileW(held, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(open_file != INVALID_HANDLE_VALUE);
+    assert(!nk_platform_remove_tree(root, NULL));
+    assert(nk_platform_file_exists(marker));
+    assert(CloseHandle(open_file));
+
+    assert(nk_platform_remove_tree(root, NULL));
+    assert(nk_platform_path_missing(root));
+    printf("PASS: removal deletes a cache tree deeper than MAX_PATH, marker last\n");
+}
+#endif
+
 /* #1304: Remove from library deletes the package, the build cache and the disc
    files Nakagawa copied, keeps the saves unless asked, and never touches the
    disc image, the user's decrypted files or another title's data. */
@@ -3255,6 +3331,9 @@ int main(int argc, char **argv) {
 
     test_stage_discard_removes_a_deep_tree();
     test_tree_helpers_walk_a_deep_tree();
+#if defined(_WIN32) || defined(_WIN64)
+    test_remove_tree_deeper_than_max_path();
+#endif
     test_remove_from_library_deletes_what_nakagawa_built();
     test_package_build_lifecycle(self_executable);
     test_bundled_prerequisite_build(self_executable);
