@@ -2187,7 +2187,9 @@ _SV_SPECIAL = {0x0006e9bc, 0x0006ea1c, 0x00108630, 0x0010433c}
 #   "inject" : unconditionally inject `stmt` into the branch block.
 #   "probe"  : emit a one-shot fprintf probe at function entry (no semantic
 #              change; diagnostic only).
-_GUEST_PATCH_KEYS = {0x00010950, 0x00048320, 0x0004cdc8}
+_GUEST_PATCH_KEYS = {0x00010950, 0x00048320}
+# 0x0004cdc8 (forced host0 asset route) retired under #363 (2026-10-27): with the UMD block
+# device readable in sectors, the title's own archive reader serves every asset.
 GUEST_PATCHES = {
     0x00010950: {"kind": "cond", "value": "0 /* bypass loop 0x10950 */",
                  "stmt": " s->r[16] = s->r[3];",
@@ -2196,9 +2198,6 @@ GUEST_PATCHES = {
     0x00048320: {"kind": "inject", "stmt": " _c = 1u;",
                  "why": "force single-iteration pass at 0x48320",
                  "issue": "#5.1"},
-    0x0004cdc8: {"kind": "cond", "value": "1u",
-                 "why": "route host0 asset reads through sceIoOpen so HLE can serve extracted XB files; the guest-only host filesystem is unavailable",
-                 "issue": "P0 table root 0x0034a84c"},
 }
 # Static-verify exclusions: the four stand-alone specials plus every patched addr.
 _SV_SPECIAL |= _GUEST_PATCH_KEYS
