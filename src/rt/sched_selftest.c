@@ -1336,22 +1336,8 @@ static void test_historical_launcher_uid_is_ordinary_when_unconfigured(void) {
     expect(t != NULL, "the 0x111 thread exists");
     if (!t) return;
     uint32_t state_ptr = t->k0_init + 0x10u;
-    /* Launcher-only path: skipped guest-hash registration. An ordinary thread is
-     * registered, so its slot must be findable. */
-    SrTitleReentBindings reent_bindings;
-    if (sr_title_config_reent_bindings(&reent_bindings)) {
-        uint32_t bucket = uid % 32u;
-        uint32_t found = MEM_R32(reent_bindings.guest_thread_table_addr +
-                                 0x84u + bucket * 4u) == uid
-                             ? MEM_R32(reent_bindings.guest_thread_table_addr +
-                                       0x04u + bucket * 4u)
-                             : 0u;
-        expect(found == state_ptr,
-               "UID 0x111 is registered in the configured guest reent hash");
-    } else {
-        expect(MEM_R32(state_ptr + 0x37cu) == uid,
-               "unconfigured guest reent bindings leave the ordinary thread UID intact");
-    }
+    expect(MEM_R32(state_ptr + 0x37cu) == uid,
+           "an ordinary thread's reent carries its own UID");
     /* Launcher-only path: keeping an independently-initialized reent. An ordinary
      * thread inherits the master reent instead. */
     expect(MEM_R32(state_ptr) == 0xFEEDFACEu,
