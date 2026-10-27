@@ -3229,13 +3229,6 @@ static int hook_point(const GeVtx *A, int persp) {
 
 /* ---- CPU writes: invalidate overlapping textures; merge bytes into overlapping targets ---- */
 
-/* Whether a texture source range meets the canonical dirty range [dirty0, dirty1). */
-static int tex_span_dirty(uint32_t addr, uint32_t bytes, uint64_t dirty0, uint64_t dirty1) {
-    uint32_t tex_addr = sr_vram_cpu_aperture(addr) ? sr_vram_cpu_address(addr) : SR_PHYS(addr);
-    uint64_t tex0 = tex_addr, tex1 = tex0 + bytes;
-    return dirty0 < tex1 && tex0 < dirty1;
-}
-
 static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
     if (!s_ready || !bytes) return;
     /* CPU HLE calls may use any PSP address alias (KSEG mirrors for RAM or the
@@ -3248,10 +3241,17 @@ static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
     uint64_t dirty0 = canonical_addr, dirty1 = dirty0 + bytes;
     for (int i = 0; i < s_tex_n; i++) {
         TexEnt *e = &s_tex[i];
-        /* A mip chain (#1373) is stale when any of its levels is written. */
-        int dirty = tex_span_dirty(e->addr, e->bytes, dirty0, dirty1);
-        for (uint32_t l = 0; !dirty && l < e->mip.max_level; l++)
-            dirty = tex_span_dirty(e->mip.addr[l], e->mip_bytes[l], dirty0, dirty1);
+        uint32_t tex_addr = sr_vram_cpu_aperture(e->addr)
+                          ? sr_vram_cpu_address(e->addr) : SR_PHYS(e->addr);
+        uint64_t tex0 = tex_addr, tex1 = tex0 + e->bytes;
+        int dirty = dirty0 < tex1 && tex0 < dirty1;
+        /* A mip chain (#1373) is stale when any of its levels is written: the same
+         * canonical comparison against each level's own source range. */
+        for (uint32_t l = 0; !dirty && l < e->mip.max_level; l++) {
+            uint32_t level_addr = sr_vram_cpu_aperture(e->mip.addr[l])
+                                ? sr_vram_cpu_address(e->mip.addr[l]) : SR_PHYS(e->mip.addr[l]);
+            dirty = dirty0 < (uint64_t)level_addr + e->mip_bytes[l] && level_addr < dirty1;
+        }
         if (dirty) {
             if (e->content_valid) {
                 s_cnt_tex_invalidations++;
