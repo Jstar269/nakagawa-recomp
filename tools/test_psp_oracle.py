@@ -2978,6 +2978,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-HLE-AUDIO-SRC-001",
                 # The 2026-10-16 acceptance-eligible PSP-3000 VMIR3 run.
                 "PSP-VRAM-MIRROR-001",
+                # The 2026-10-27 acceptance-eligible ge-timing runs of 8f707fc0 (#1296).
+                "PSP-GE-TIMING-001",
             },
         )
         self.assertEqual(
@@ -4045,6 +4047,22 @@ class GeTimingContractTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             parse_campaign_probe_output(meta + "".join(rows[:335]) + clock_skip, "ge-timing",
                                         require_complete=False)
+
+    def test_manifest_row_is_measured_and_cites_every_record(self) -> None:
+        manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+            encoding="utf-8"))
+        row = next(test for test in manifest["tests"] if test["id"] == "PSP-GE-TIMING-001")
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["case_ids"], list(self.spec.ordered_cases))
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
+        self.assertEqual(row["evidence_ref"],
+                         "docs/HARDWARE_ORACLE.md#psp-ge-timing-001-measured-runs-2026-10-27")
+        self.assertIn("8f707fc0", row["measurement_note"])
+        # The cited section names every record; the probe's APIs are listed but not cited, so
+        # this row grants no HLE evidence tier.
+        section = hle_manifest.measured_evidence_section(row)
+        self.assertIn("`8f707fc0`", section)
+        self.assertFalse(set(row["apis"]) & set(row["evidence_cases"]))
 
 
 class CampaignHost0LogTests(unittest.TestCase):
