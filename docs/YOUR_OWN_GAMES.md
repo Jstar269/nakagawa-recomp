@@ -206,10 +206,12 @@ instead of pretending it worked or crashing without a word.
   limited wait.
 - **Missing firmware fonts:** if the player reports a missing system font, use
   the import step in [What you need](#what-you-need) and the font notes there.
-  A game's translated `libfont` starts through its own entry point. When that
-  can't run (an untranslated entry, or `SR_REAL_MODULE_START=0`), the runtime
-  reports `LIBFONT_STARTUP_UNAVAILABLE`, returns an error instead of pretending,
-  and leaves the library's ready state unchanged. Manifests that still set `libfont_ready_flag_addr`
+  A game's translated `libfont` starts through its own entry point; **BUILD
+  PACKAGE** translates the copy on the game's disc too. When that can't run (an
+  untranslated entry, or `SR_REAL_MODULE_START=0`), the runtime reports
+  `LIBFONT_STARTUP_UNAVAILABLE`, never pretends the library is ready, and stops
+  the game; the player then shows that the game stopped early instead of a
+  frozen screen. Manifests that still set `libfont_ready_flag_addr`
   fail with `LIBFONT_READY_FLAG_RETIRED`; remove the field and let the game's
   own startup run. Checking that startup with real games is in the works
   ([#299](https://github.com/Jstar269/nakagawa-recomp/issues/299)). The
