@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import hashlib
+import io
 import os
 from pathlib import Path
 import re
@@ -1874,6 +1876,122 @@ int main(int argc, char **argv) {{
                 iso_file, manifest, user_root / "bad-module-cache", None,
                 decrypted_dir,
             )
+
+    def _experimental_module_build(
+        self, disc_id: str, usrdir_modules: dict[str, bytes],
+        decrypted_modules: dict[str, bytes] | None = None,
+    ) -> tuple[int, Path, list[str], str]:
+        """Press BUILD PACKAGE for an uncatalogued disc whose USRDIR ships modules.
+
+        The library entry and profile are what an imported uncatalogued disc gets
+        (write_experimental_profile: no guest modules declared). The fake planner
+        stops the build at its first codegen step, after the module intake, and
+        records its command. Returns (exit code, user root, command, stderr).
+        """
+        iso_file = self.temp_dir / f"{disc_id}-experimental-modules.iso"
+        user_root = self.temp_dir / f"{disc_id}-user-data"
+        user_root.mkdir()
+        create_test_iso_with_modules(
+            iso_file, build_plain_mips_elf(e_type=2, memsz=0x40000),
+            sysdir_modules={}, usrdir_modules=usrdir_modules, disc_id=disc_id,
+            title="Synthetic Experimental Modules",
+        )
+        profile_path = write_experimental_profile(iso_file, user_root)
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        self.assertEqual(profile["manifest"]["modules"], [])
+        (user_root / "library.json").write_text(json.dumps({
+            "schema_version": 1,
+            "games": [{
+                "disc_id": disc_id,
+                "title_id": profile["manifest"]["id"],
+                "iso_path": str(iso_file),
+                "selected_executable": "EBOOT.BIN",
+                "is_experimental": True,
+            }],
+        }), encoding="utf-8")
+        if decrypted_modules:
+            decrypted_dir = user_root / "titles" / disc_id / "decrypted"
+            decrypted_dir.mkdir(parents=True)
+            for name, contents in decrypted_modules.items():
+                (decrypted_dir / name).write_bytes(contents)
+        captured: list[str] = []
+
+        def stop_at_codegen(command, **kwargs):
+            if _is_compiler_target_query(command):
+                return _REAL_SUBPROCESS_RUN(command, **kwargs)
+            captured.extend(command)
+            raise nk_cli.PackageBuildError("TEST_STOP_AFTER_MODULE_INTAKE")
+
+        args = type("BuildArgs", (), {
+            "disc_id": disc_id,
+            "user_data_root": user_root,
+            "module_dir": None,
+            "psp_header": None,
+        })()
+        stderr = io.StringIO()
+        with patch.object(nk_cli.subprocess, "run", side_effect=stop_at_codegen), \
+             patch.object(nk_cli, "_stage_runtime_assets"), \
+             contextlib.redirect_stderr(stderr):
+            result = nk_cli.cmd_build_package(args)
+        return result, user_root, captured, stderr.getvalue()
+
+    def test_experimental_build_declares_usrdir_prx_as_runtime_placed_module(self) -> None:
+        # The player's build route (#308): a PRX the game ships in USRDIR is declared as a
+        # runtime-placed guest module, so it is translated and its module_start runs when
+        # the game loads it (#299). Before, the route kept the profile's empty module list
+        # and the build translated the main executable only.
+        disc_id = "TEST00071"
+        module_bytes = build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x1000)
+        result, user_root, command, stderr = self._experimental_module_build(
+            disc_id, {"libfont.prx": module_bytes},
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("TEST_STOP_AFTER_MODULE_INTAKE", stderr)
+        profile = json.loads(
+            (user_root / "experimental" / disc_id / "profile.json").read_text(encoding="utf-8")
+        )
+        declared = [{
+            "name": "libfont.prx", "required": True, "role": "guest-prx",
+            "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/libfont.prx",
+        }]
+        self.assertEqual(profile["manifest"]["modules"], declared)
+        manifest = json.loads(
+            (user_root / "cache" / "packages" / disc_id / "manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["modules"], declared)
+        module_dir = Path(command[command.index("--module-dir") + 1])
+        self.assertEqual((module_dir / "libfont.prx").read_bytes(), module_bytes)
+        # The planning copies are not left behind in the profile folder.
+        self.assertEqual(
+            list((user_root / "experimental" / disc_id).glob("module-stage-*")), []
+        )
+
+    def test_experimental_build_uses_the_disc_checks_decrypted_module(self) -> None:
+        # An encrypted disc module resolves to the plain copy the player's disc check
+        # decrypted into the per-title folder; without one the build stops by name.
+        disc_id = "TEST00072"
+        plain = build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x1000)
+        result, user_root, command, stderr = self._experimental_module_build(
+            disc_id, {"libfont.prx": build_psp_container()},
+            decrypted_modules={"libfont.prx": plain},
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("TEST_STOP_AFTER_MODULE_INTAKE", stderr)
+        module_dir = Path(command[command.index("--module-dir") + 1])
+        self.assertEqual((module_dir / "libfont.prx").read_bytes(), plain)
+
+        disc_id = "TEST00073"
+        result, user_root, command, stderr = self._experimental_module_build(
+            disc_id, {"libfont.prx": build_psp_container()},
+        )
+        self.assertEqual(result, 1)
+        self.assertEqual(command, [])
+        self.assertIn("still encrypted", stderr)
+        self.assertNotIn("TEST_STOP_AFTER_MODULE_INTAKE", stderr)
+        profile = json.loads(
+            (user_root / "experimental" / disc_id / "profile.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(profile["manifest"]["modules"], [])
 
     def test_package_build_public_backends_and_limits(self) -> None:
         disc_id = "TEST00004"
