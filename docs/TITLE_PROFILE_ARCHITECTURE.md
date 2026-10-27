@@ -142,10 +142,9 @@ callee makes. Only the HST title configuration arms a restore of those registers
 returning CALL (`sr_title_config_preserve_callee_saved_at_calls`), recorded as #363 debt
 until the flagship's clobber is root-caused.
 
-The HST Newlib master and guest thread-table addresses are isolated behind the typed
-SrTitleReentBindings accessor in src/rt/title_config.c. It returns values only for the
-validated hst codegen profile with the matching HST source id. Other profiles receive no
-addresses and perform no guest-table seeding.
+No title profile supplies Newlib master or guest thread-table addresses: the HST reent
+bindings were retired under #363, and the runtime performs no guest-table seeding for any
+profile.
 
 ## 3. Catalog identity and generic launch resolution
 
