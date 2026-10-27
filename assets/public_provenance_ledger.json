@@ -1582,7 +1582,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0bec9bc3c07242cd6960c7f0fea7acdc7c7309e706fbcd51143a0a7077b19acd"
+      "sha256": "b599a294e0a6132632ad7276ae6d225d396833dc94175ed8734cdf524c17b6e3"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -14448,7 +14448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a6350e3332a9c2166812448f28029a8964279bf5bb503c2825f866a5d45d23bb"
+      "sha256": "7f79afe02176bce04cab340c233caeb9fbbe148b0a3e570dc737f0af425f512c"
     },
     {
       "path": "tools/test_portability_inventory.py",
