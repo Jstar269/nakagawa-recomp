@@ -691,7 +691,9 @@ Python packages, and `glslc` is only used by opt-in shader regeneration.
 Each artifact also names its corresponding source in the manifest's `sources` list: the MSYS2
 source package (`*.src.tar.zst`) of its pkgbase at the same version, or the CPython source
 release, pinned by URL, size and SHA-256 ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)).
-The player never downloads them. A release publishes them as one archive next to its zip, and
+The CPython entry also names the source releases of the libraries built into its runtime
+(`bundled_sources`), and `source_notices` copies licence files out of the pinned sources for the
+packages whose binaries carry none. The player never downloads them. A release publishes them as one archive next to its zip, and
 the zip's bundled build tools leave out the GFDL-licensed manuals in `share/doc`, `share/info`
 and `share/man` while keeping every licence file; the policy is in
 [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md#bundled-prerequisite-licensing-policy).
@@ -730,14 +732,17 @@ connection, listed below; any future online feature will be opt-in and added her
 There is no update check, telemetry or crash upload. The `network_mode` entry in
 `settings.json` is reserved and always reads `"offline"`; a build treats any other value as
 offline. `tools/test_prereq_fetcher.py` fails if shipped code outside the two
-prerequisite downloaders uses a network API, or if a pinned download names a host outside the
-table above.
+prerequisite downloaders uses a network API, or if a pinned download names a host not listed
+in this section.
 
 Release packaging is a maintainer step, not part of the player:
 `python -m tools.nk_core.prereq_fetcher` with `--bundle-dest` or `--source-archive` downloads
-the same pinned archives and their source files from the same two hosts to build a release
-([`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md#recreate-the-package)). The player never passes
-those options.
+the same pinned archives and their source files to build a release
+([`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md#recreate-the-package)). It uses the two hosts in
+the table and, for the source releases of the libraries built into the CPython runtime, also
+`github.com` (whose downloads redirect to `release-assets.githubusercontent.com` and
+`codeload.github.com`), `www.sqlite.org`, `sourceware.org` and `www.bytereef.org`. The player
+never passes those options.
 
 ### Build lifecycle and cleanup targets
 

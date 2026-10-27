@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import errno
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -645,6 +646,12 @@ def stage_bundle(
     shutil.rmtree(destination / ".staging", ignore_errors=True)
     _materialize_links(destination)
     stripped = _strip_documentation(destination)
+    by_id = {source["id"]: source for source in sources}
+    copied = _stage_source_notices(manifest, by_id, destination, download_cache,
+                                   progress=progress, retries=retries, allow_http=allow_http)
+    for item_id, paths in copied.items():
+        records[item_id]["notices"] = sorted(records[item_id]["notices"] + paths)
+    _check_bundled_libraries(manifest, by_id, destination)
     for required in required_files:
         if not (destination / required).is_file():
             raise PrerequisiteFetchError(f"BUNDLE_INCOMPLETE: the pinned artifacts do not provide {required}.")
@@ -734,21 +741,97 @@ def verify_bundle(manifest_path: Path, bundle_root: Path) -> dict:
     if (BUNDLE_SOURCE_NOTICE not in listed or (bundle_root / BUNDLE_SOURCE_NOTICE).read_bytes()
             != _source_notice(manifest_bytes, manifest, sources).encode("utf-8")):
         raise PrerequisiteFetchError(f"BUNDLE_INVALID: {BUNDLE_SOURCE_NOTICE} does not name the pinned sources.")
+    for item in _ready_artifacts(manifest):
+        for notice in item.get("source_notices", []):
+            relative = _source_notice_path(item["id"], notice)
+            if listed.get(relative) != (notice["sha256"].lower(), notice["size_bytes"]):
+                raise PrerequisiteFetchError(f"BUNDLE_INVALID: {relative} is not the pinned licence file.")
+    _check_bundled_libraries(manifest, {source["id"]: source for source in sources}, bundle_root)
     return bundle
 
 
 # ---- Corresponding source (#1285) -------------------------------------------
-# Owner decision (2026-10-26): the release ships the source of every bundled
-# package, not only the copyleft ones, as one archive published next to the zip,
-# instead of a written offer. Every ready artifact names an entry of the
-# manifest's "sources" list: the MSYS2 source package (*.src.tar.zst) of its
-# pkgbase at the same version, or the python.org source release of CPython. Each
-# entry is pinned by URL, size and SHA-256 like the binaries, and a version bump
-# that leaves an artifact's source behind is refused.
+# Owner decisions (2026-10-26 and 2026-10-27): the release ships the source of
+# every bundled package, not only the copyleft ones, as one archive published
+# next to the zip, instead of a written offer. Every ready artifact names an
+# entry of the manifest's "sources" list in "source": the MSYS2 source package
+# (*.src.tar.zst) of its pkgbase at the same version, or the python.org source
+# release of CPython. An artifact that carries libraries built from other
+# projects names their source releases in "bundled_sources"; each such entry
+# lists the artifact files it "provides" and the "artifact_version" it was
+# checked against, and the artifact lists its "libraries_from_source", so a
+# library that nothing accounts for is refused. A library with no public source
+# (the Microsoft C runtime) is named in "no_source" with the notice holding its
+# redistribution terms. "source_notices" copies licence files out of the pinned
+# sources into notices/ where the binary package carries none. Every entry is
+# pinned by URL, size and SHA-256 like the binaries, and a version bump that
+# leaves a source behind is refused.
 
 SOURCE_ARCHIVE_NOTICE = "SOURCES.txt"
 # Fixed member metadata, so the archive's bytes depend only on the pinned files.
 _SOURCE_ARCHIVE_TIME = (1980, 1, 1, 0, 0, 0)
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(ch in "0123456789abcdef" for ch in value.lower())
+
+
+def _simple_names(value: object) -> bool:
+    return (isinstance(value, list) and bool(value)
+            and all(isinstance(name, str) and name not in {"", ".", ".."} and "\\" not in name
+                    and PurePosixPath(name).name == name for name in value))
+
+
+def _ready_artifacts(manifest: dict) -> list[dict]:
+    return [item for item in manifest["artifacts"] if item.get("status", "ready") == "ready"]
+
+
+def _check_artifact_sources(item: dict, by_id: dict[str, dict]) -> set[str]:
+    """Check one artifact's source references; return the source ids it names."""
+    source = by_id.get(item.get("source"))
+    if source is None:
+        raise PrerequisiteFetchError(f"SOURCE_UNPINNED: {item.get('id')} names no pinned source.")
+    if source["version"] != item.get("version"):
+        raise PrerequisiteFetchError(
+            f"SOURCE_VERSION_MISMATCH: {item['id']} {item.get('version')} names source "
+            f"{source['id']} {source['version']}."
+        )
+    bundled = item.get("bundled_sources", [])
+    if not isinstance(bundled, list):
+        raise PrerequisiteFetchError(f"MANIFEST_INVALID: {item['id']} bundled_sources must be a list.")
+    for source_id in bundled:
+        library = by_id.get(source_id)
+        if library is None:
+            raise PrerequisiteFetchError(f"SOURCE_UNPINNED: {item['id']} names no pinned source {source_id!r}.")
+        if library.get("artifact_version") != item.get("version"):
+            raise PrerequisiteFetchError(
+                f"SOURCE_VERSION_MISMATCH: {source_id} was checked against {item['id']} "
+                f"{library.get('artifact_version')}, not {item.get('version')}."
+            )
+        if not _simple_names(library.get("provides")):
+            raise PrerequisiteFetchError(f"MANIFEST_INVALID: source {source_id} must name the files it provides.")
+    if bundled and not _simple_names(item.get("libraries_from_source")):
+        raise PrerequisiteFetchError(f"MANIFEST_INVALID: {item['id']} must name the libraries built from its source.")
+    no_source = item.get("no_source")
+    if no_source is not None and (
+            not isinstance(no_source, dict) or not _simple_names(no_source.get("files"))
+            or not isinstance(no_source.get("notice"), str) or not no_source.get("terms")
+            or not isinstance(no_source["terms"], str)):
+        raise PrerequisiteFetchError(f"MANIFEST_INVALID: {item['id']} no_source needs files, a notice and terms.")
+    if no_source is not None:
+        _safe_relative_path(no_source["notice"])
+    named = {source["id"], *bundled}
+    notices = item.get("source_notices", [])
+    if not isinstance(notices, list):
+        raise PrerequisiteFetchError(f"MANIFEST_INVALID: {item['id']} source_notices must be a list.")
+    for notice in notices:
+        if (not isinstance(notice, dict) or notice.get("source") not in named or not _is_sha256(notice.get("sha256"))
+                or not isinstance(notice.get("size_bytes"), int) or notice["size_bytes"] <= 0):
+            raise PrerequisiteFetchError(f"MANIFEST_INVALID: {item['id']} has a malformed source notice.")
+        _safe_relative_path(notice.get("member"))
+        if "inner" in notice:
+            _safe_relative_path(notice["inner"])
+    return named
 
 
 def _pinned_sources(manifest: dict, *, allow_http: bool) -> list[dict]:
@@ -773,18 +856,8 @@ def _pinned_sources(manifest: dict, *, allow_http: bool) -> list[dict]:
         by_id[source["id"]] = source
         filenames.add(filename)
     named: set[str] = set()
-    for item in manifest["artifacts"]:
-        if item.get("status", "ready") != "ready":
-            continue
-        source = by_id.get(item.get("source"))
-        if source is None:
-            raise PrerequisiteFetchError(f"SOURCE_UNPINNED: {item.get('id')} names no pinned source.")
-        if source["version"] != item.get("version"):
-            raise PrerequisiteFetchError(
-                f"SOURCE_VERSION_MISMATCH: {item['id']} {item.get('version')} names source "
-                f"{source['id']} {source['version']}."
-            )
-        named.add(source["id"])
+    for item in _ready_artifacts(manifest):
+        named |= _check_artifact_sources(item, by_id)
     unused = sorted(set(by_id) - named)
     if unused:
         raise PrerequisiteFetchError(f"MANIFEST_INVALID: source {unused[0]} is not named by any bundled artifact.")
@@ -793,10 +866,16 @@ def _pinned_sources(manifest: dict, *, allow_http: bool) -> list[dict]:
 
 def _source_notice(manifest_bytes: bytes, manifest: dict, sources: list[dict]) -> str:
     """The text of notices/SOURCES.txt and of the source archive's SOURCES.txt."""
-    built_from: dict[str, list[dict]] = {}
-    for item in manifest["artifacts"]:
-        if item.get("status", "ready") == "ready":
-            built_from.setdefault(item["source"], []).append(item)
+    by_id = {source["id"]: source for source in sources}
+    uses: dict[str, list[str]] = {}
+    for item in _ready_artifacts(manifest):
+        uses.setdefault(item["source"], []).append(
+            f"Source of: {item['id']} {item['version']} ({item.get('license', 'no licence recorded')})")
+        for source_id in item.get("bundled_sources", []):
+            library = by_id[source_id]
+            uses.setdefault(source_id, []).append(
+                f"Bundled in: {item['id']} {item['version']} as {', '.join(library['provides'])} "
+                f"({library.get('license', 'no licence recorded')})")
     lines = [
         "Corresponding source of the bundled build prerequisites",
         "",
@@ -804,10 +883,11 @@ def _source_notice(manifest_bytes: bytes, manifest: dict, sources: list[dict]) -
         "pinned in source/assets/prereq_manifest.json. The source of every one of them is",
         "published with the same release as one archive next to the zip,",
         "nakagawa-recomp-<version>-prerequisite-sources.zip: the MSYS2 source package",
-        "(*.src.tar.zst) of each MSYS2 package and the python.org source release of CPython.",
-        "Each file below is pinned by size and SHA-256 in that manifest. The documentation",
-        "folders share/doc, share/info and share/man are not shipped in prereqs/; the",
-        "licence and copying files of every package are in prereqs/notices.",
+        "(*.src.tar.zst) of each MSYS2 package, the python.org source release of CPython, and",
+        "the source releases of the libraries built into the CPython runtime. Each file below",
+        "is pinned by size and SHA-256 in that manifest. The documentation folders share/doc,",
+        "share/info and share/man are not shipped in prereqs/; the licence and copying files",
+        "of every package are in prereqs/notices.",
         "",
         f"Manifest SHA-256: {hashlib.sha256(manifest_bytes).hexdigest()}",
     ]
@@ -819,9 +899,114 @@ def _source_notice(manifest_bytes: bytes, manifest: dict, sources: list[dict]) -
             f"  Size: {source['size_bytes']} bytes",
             f"  From: {source['url']}",
         ]
-        lines += [f"  Source of: {item['id']} {item['version']} ({item.get('license', 'no licence recorded')})"
-                  for item in built_from[source["id"]]]
+        lines += [f"  {use}" for use in uses[source["id"]]]
+    for item in _ready_artifacts(manifest):
+        no_source = item.get("no_source")
+        if no_source:
+            lines += [
+                "",
+                f"No public source: {', '.join(no_source['files'])} in {item['id']} {item['version']}",
+                f"  Redistributed under: notices/{item['id']}/{no_source['notice']}, "
+                f"section \"{no_source['terms']}\"",
+            ]
     return "\n".join(lines) + "\n"
+
+
+def _read_archive_member(archive: Path | io.BytesIO, member: str, label: str) -> bytes:
+    """Read one member of a zip or of a tar in any compression tarfile reads."""
+    try:
+        if zipfile.is_zipfile(archive):
+            with zipfile.ZipFile(archive) as package:
+                return package.read(member)
+        if isinstance(archive, io.BytesIO):
+            archive.seek(0)
+            package = tarfile.open(fileobj=archive, mode="r:*")
+        else:
+            package = tarfile.open(archive, mode="r:*")
+        with package:
+            stream = package.extractfile(member)
+            if stream is None:
+                raise KeyError(member)
+            return stream.read()
+    except (KeyError, OSError, EOFError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        raise PrerequisiteFetchError(f"SOURCE_NOTICE_MISSING: {label} has no {member}.") from exc
+
+
+def _source_notice_path(item_id: str, notice: dict) -> str:
+    """Where a copied licence file lands: notices/<artifact>/sources/<source>/<path>."""
+    return "/".join(("notices", item_id, "sources", notice["source"], notice.get("inner") or notice["member"]))
+
+
+def _stage_source_notices(
+    manifest: dict,
+    by_id: dict[str, dict],
+    destination: Path,
+    download_cache: Path,
+    *,
+    progress: ProgressCallback | None,
+    retries: int,
+    allow_http: bool,
+) -> dict[str, list[str]]:
+    """Copy each pinned licence file out of its verified source into notices/."""
+    copied: dict[str, list[str]] = {}
+    members: dict[tuple[str, str], bytes] = {}
+    for item in _ready_artifacts(manifest):
+        for notice in item.get("source_notices", []):
+            source = by_id[notice["source"]]
+            key = (source["id"], notice["member"])
+            if key not in members:
+                path = download_verified_item(
+                    source, download_cache / "sources" / source["id"] / source["filename"],
+                    progress=progress, retries=retries, allow_http=allow_http,
+                )
+                members[key] = _read_archive_member(path, notice["member"], source["filename"])
+            data = members[key]
+            if "inner" in notice:
+                data = _read_archive_member(io.BytesIO(data), notice["inner"], notice["member"])
+            if len(data) != notice["size_bytes"] or hashlib.sha256(data).hexdigest() != notice["sha256"].lower():
+                raise PrerequisiteFetchError(
+                    f"SOURCE_NOTICE_MISMATCH: {notice.get('inner') or notice['member']} in {source['filename']} "
+                    "does not match its pinned size and SHA-256."
+                )
+            relative = _source_notice_path(item["id"], notice)
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            copied.setdefault(item["id"], []).append(relative)
+    return copied
+
+
+def _check_bundled_libraries(manifest: dict, by_id: dict[str, dict], root: Path) -> None:
+    """Every library a bundled runtime ships is accounted for by a pinned source or a notice."""
+    for item in _ready_artifacts(manifest):
+        bundled = item.get("bundled_sources", [])
+        no_source = item.get("no_source")
+        if not bundled and not no_source:
+            continue
+        install_root = root / item.get("install_subdir", "msys64")
+        accounted = set(item.get("libraries_from_source", []))
+        for source_id in bundled:
+            for name in by_id[source_id]["provides"]:
+                if not (install_root / name).is_file():
+                    raise PrerequisiteFetchError(
+                        f"BUNDLE_SOURCE_DRIFT: {item['id']} does not ship {name}, which source {source_id} provides.")
+                accounted.add(name)
+        if no_source:
+            for name in no_source["files"]:
+                if not (install_root / name).is_file():
+                    raise PrerequisiteFetchError(f"BUNDLE_SOURCE_DRIFT: {item['id']} does not ship {name}.")
+                accounted.add(name)
+            notice = root / "notices" / item["id"] / no_source["notice"]
+            if not notice.is_file() or no_source["terms"] not in notice.read_text(encoding="utf-8", errors="replace"):
+                raise PrerequisiteFetchError(
+                    f"BUNDLE_NOTICE_MISSING: notices/{item['id']}/{no_source['notice']} does not carry "
+                    f"\"{no_source['terms']}\".")
+        if bundled:
+            for library in sorted(path.name for path in install_root.glob("*.dll")):
+                if library not in accounted:
+                    raise PrerequisiteFetchError(
+                        f"BUNDLE_SOURCE_UNACCOUNTED: {item['id']} ships {library}, which no pinned source or "
+                        "notice accounts for.")
 
 
 def _source_archive_info(name: str, size: int) -> zipfile.ZipInfo:

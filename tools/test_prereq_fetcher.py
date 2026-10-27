@@ -361,12 +361,19 @@ class TestPrerequisiteFetcher(unittest.TestCase):
     # ---- Release bundle (#1285) ----------------------------------------------
 
     def bundle_manifest(self, *, msys_members: dict[str, bytes] | None = None,
+                        python_members: dict[str, bytes] | None = None,
+                        source_bodies: dict[str, bytes] | None = None,
+                        extra_sources: dict[str, tuple[str, bytes]] | None = None,
                         edit: Callable[[dict], None] | None = None) -> Path:
         """A two-artifact manifest served by the test server, with a pinned source for each."""
         python_zip = io.BytesIO()
+        python_files = python_members if python_members is not None else {
+            "python.exe": b"synthetic python\n",
+            "LICENSE.txt": b"Python license text\n",
+        }
         with zipfile.ZipFile(python_zip, "w") as archive:
-            archive.writestr("python.exe", b"synthetic python\n")
-            archive.writestr("LICENSE.txt", "Python license text\n")
+            for name, data in python_files.items():
+                archive.writestr(name, data)
         members = msys_members if msys_members is not None else {
             "ucrt64/bin/gcc.exe": b"synthetic gcc\n",
             "ucrt64/bin/mingw32-make.exe": b"synthetic make\n",
@@ -399,10 +406,14 @@ class TestPrerequisiteFetcher(unittest.TestCase):
                 "source": source, "status": "ready",
             })
         sources = []
-        for source_id, filename, body in (
-            ("cpython", "Python-1.0-test.tar.xz", b"synthetic CPython source release\n"),
-            ("mingw-w64-gcc", "mingw-w64-gcc-1.0-test.src.tar.zst", b"synthetic gcc source package\n"),
-        ):
+        files = {
+            "cpython": ("Python-1.0-test.tar.xz", b"synthetic CPython source release\n"),
+            "mingw-w64-gcc": ("mingw-w64-gcc-1.0-test.src.tar.zst", b"synthetic gcc source package\n"),
+        }
+        for source_id, body in (source_bodies or {}).items():
+            files[source_id] = (files[source_id][0], body)
+        files.update(extra_sources or {})
+        for source_id, (filename, body) in files.items():
             _PayloadHandler.payloads[f"/sources/{filename}"] = body
             sources.append({
                 "id": source_id, "name": source_id, "version": "1.0-test",
@@ -763,6 +774,136 @@ class TestPrerequisiteFetcher(unittest.TestCase):
                                            str(archive_path)]), 0)
         self.assertEqual(json.loads(out.getvalue()), {"event": "sources-verified", **result})
 
+    @staticmethod
+    def _tar(members: dict[str, bytes], mode: str) -> bytes:
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode=mode) as archive:
+            for name, data in members.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+        return stream.getvalue()
+
+    def test_bundle_copies_pinned_licence_files_out_of_the_sources(self) -> None:
+        # Owner decision (2026-10-27, #1285): a package whose binary carries no licence
+        # file (MSYS2 cc-libs, gmp, isl, mpc, windows-default-manifest) gets the one
+        # from its pinned source package, nested upstream tarball included.
+        copying = b"GNU GENERAL PUBLIC LICENSE Version 3\n"
+        pkgbuild = b"license=('custom:Public Domain')\n"
+        upstream = self._tar({"gcc-1.0/COPYING3": copying, "gcc-1.0/gcc/main.c": b"int main;\n"}, "w:xz")
+        package = self._tar({"mingw-w64-gcc/PKGBUILD": pkgbuild, "mingw-w64-gcc/gcc-1.0.tar.xz": upstream}, "w:gz")
+        notices = [
+            {"source": "mingw-w64-gcc", "member": "mingw-w64-gcc/gcc-1.0.tar.xz", "inner": "gcc-1.0/COPYING3",
+             "size_bytes": len(copying), "sha256": hashlib.sha256(copying).hexdigest()},
+            {"source": "mingw-w64-gcc", "member": "mingw-w64-gcc/PKGBUILD",
+             "size_bytes": len(pkgbuild), "sha256": hashlib.sha256(pkgbuild).hexdigest()},
+        ]
+
+        def with_notices(entries: list[dict]) -> Callable[[dict], None]:
+            def edit(data: dict) -> None:
+                data["artifacts"][1]["source_notices"] = entries
+            return edit
+
+        manifest = self.bundle_manifest(source_bodies={"mingw-w64-gcc": package}, edit=with_notices(notices))
+        dest = self.root / "notices"
+        stage_bundle(manifest, dest, self.root / "cache", allow_http=True)
+        copied = dest / "notices" / "mingw-w64-ucrt-x86_64-gcc" / "sources" / "mingw-w64-gcc"
+        self.assertEqual((copied / "gcc-1.0" / "COPYING3").read_bytes(), copying)
+        self.assertEqual((copied / "mingw-w64-gcc" / "PKGBUILD").read_bytes(), pkgbuild)
+        record = json.loads((dest / "installed.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["installed"]["mingw-w64-ucrt-x86_64-gcc"]["notices"], [
+            "notices/mingw-w64-ucrt-x86_64-gcc/sources/mingw-w64-gcc/gcc-1.0/COPYING3",
+            "notices/mingw-w64-ucrt-x86_64-gcc/sources/mingw-w64-gcc/mingw-w64-gcc/PKGBUILD",
+            "notices/mingw-w64-ucrt-x86_64-gcc/ucrt64/share/licenses/gcc/COPYING",
+        ])
+        verify_bundle(manifest, dest)
+        # A swapped licence file is refused even with a consistent inventory and record.
+        swapped = copied / "gcc-1.0" / "COPYING3"
+        swapped.write_bytes(b"GNU GENERAL PUBLIC LICENSE Version 2\n")
+        lines = [f"{hashlib.sha256(swapped.read_bytes()).hexdigest()} {swapped.stat().st_size} {line.split(' ', 2)[2]}"
+                 if line.endswith("/gcc-1.0/COPYING3") else line
+                 for line in (dest / "bundle-inventory.txt").read_text(encoding="utf-8").splitlines()]
+        (dest / "bundle-inventory.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(PrerequisiteFetchError, "gcc-1.0/COPYING3 is not the pinned licence file"):
+            verify_bundle(manifest, dest)
+        for name, entries, message in (
+            ("mismatch", [{**notices[0], "sha256": hashlib.sha256(b"other").hexdigest()}],
+             "SOURCE_NOTICE_MISMATCH: gcc-1.0/COPYING3 in mingw-w64-gcc-1.0-test.src.tar.zst"),
+            ("missing-inner", [{**notices[0], "inner": "gcc-1.0/COPYING.LIB"}],
+             "SOURCE_NOTICE_MISSING: mingw-w64-gcc/gcc-1.0.tar.xz has no gcc-1.0/COPYING.LIB"),
+            ("missing-member", [{**notices[1], "member": "mingw-w64-gcc/LICENSE"}],
+             "SOURCE_NOTICE_MISSING: mingw-w64-gcc-1.0-test.src.tar.zst has no mingw-w64-gcc/LICENSE"),
+            ("other-source", [{**notices[1], "source": "cpython"}], "has a malformed source notice"),
+            ("escape", [{**notices[1], "member": "../PKGBUILD"}], "ARCHIVE_PATH_REJECTED"),
+        ):
+            with self.subTest(case=name):
+                manifest = self.bundle_manifest(source_bodies={"mingw-w64-gcc": package}, edit=with_notices(entries))
+                with self.assertRaisesRegex(PrerequisiteFetchError, message):
+                    stage_bundle(manifest, self.root / f"refused-{name}", self.root / "cache", allow_http=True)
+
+    def test_bundled_runtime_libraries_are_accounted_for(self) -> None:
+        # Owner decision (2026-10-27, #1285): the libraries built into the CPython
+        # runtime ship their own source releases; a library without a public source
+        # (the Microsoft C runtime) ships its redistribution terms; and a library that
+        # neither accounts for is refused, so a CPython update cannot add one silently.
+        terms = "Additional Conditions for this Windows binary build"
+        runtime = {
+            "python.exe": b"synthetic python\n",
+            "python3.dll": b"synthetic stable ABI\n",
+            "libfoo.dll": b"synthetic bundled library\n",
+            "vcruntime140.dll": b"synthetic C runtime\n",
+            "LICENSE.txt": f"Python license text\n\n{terms}\n----\n".encode(),
+        }
+
+        def bundled(**changes: object) -> Callable[[dict], None]:
+            def edit(data: dict) -> None:
+                cpython = data["artifacts"][0]
+                cpython["bundled_sources"] = ["foo"]
+                cpython["libraries_from_source"] = ["python3.dll"]
+                cpython["no_source"] = {"files": ["vcruntime140.dll"], "notice": "LICENSE.txt", "terms": terms}
+                foo = next(source for source in data["sources"] if source["id"] == "foo")
+                foo.update({"version": "2.0", "license": "MIT", "provides": ["libfoo.dll"],
+                            "artifact_version": "1.0-test"})
+                for key, value in changes.items():
+                    target = foo if key in {"provides", "artifact_version"} else cpython
+                    if value is None:
+                        del target[key]
+                    else:
+                        target[key] = value
+            return edit
+
+        extra = {"foo": ("foo-2.0.tar.gz", b"synthetic foo source release\n")}
+        manifest = self.bundle_manifest(python_members=runtime, extra_sources=extra, edit=bundled())
+        dest = self.root / "runtime"
+        stage_bundle(manifest, dest, self.root / "cache", allow_http=True)
+        notice = (dest / "notices" / "SOURCES.txt").read_text(encoding="utf-8")
+        self.assertIn("\nfoo-2.0.tar.gz\n", notice)
+        self.assertIn("  Bundled in: cpython-embed-amd64 1.0-test as libfoo.dll (MIT)\n", notice)
+        self.assertIn("No public source: vcruntime140.dll in cpython-embed-amd64 1.0-test\n"
+                      f"  Redistributed under: notices/cpython-embed-amd64/LICENSE.txt, section \"{terms}\"\n", notice)
+        archive = self.root / "runtime-sources.zip"
+        stage_sources(manifest, archive, self.root / "cache", allow_http=True)
+        with zipfile.ZipFile(archive) as package:
+            self.assertIn("runtime-sources/foo-2.0.tar.gz", package.namelist())
+        verify_bundle(manifest, dest)
+        for name, members, edit, message in (
+            ("unaccounted", {**runtime, "libbar.dll": b"x"}, bundled(),
+             "BUNDLE_SOURCE_UNACCOUNTED: cpython-embed-amd64 ships libbar.dll"),
+            ("drift", runtime, bundled(provides=["libfoo.dll", "libgone.dll"]),
+             "BUNDLE_SOURCE_DRIFT: cpython-embed-amd64 does not ship libgone.dll, which source foo provides"),
+            ("no-terms", {**runtime, "LICENSE.txt": b"Python license text\n"}, bundled(),
+             "BUNDLE_NOTICE_MISSING: notices/cpython-embed-amd64/LICENSE.txt"),
+            ("stale", runtime, bundled(artifact_version="0.9-test"),
+             "SOURCE_VERSION_MISMATCH: foo was checked against cpython-embed-amd64 0.9-test, not 1.0-test"),
+            ("own-unnamed", runtime, bundled(libraries_from_source=None),
+             "cpython-embed-amd64 must name the libraries built from its source"),
+            ("no-provides", runtime, bundled(provides=[]), "source foo must name the files it provides"),
+        ):
+            with self.subTest(case=name):
+                manifest = self.bundle_manifest(python_members=members, extra_sources=extra, edit=edit)
+                with self.assertRaisesRegex(PrerequisiteFetchError, message):
+                    stage_bundle(manifest, self.root / f"refused-{name}", self.root / f"cache-{name}", allow_http=True)
+
     def test_offline_failure_names_network_boundary(self) -> None:
         self.server.shutdown()
         self.server.server_close()
@@ -937,6 +1078,44 @@ class TestPrerequisiteFetcher(unittest.TestCase):
                 self.assertTrue(source["url"].endswith("/" + source["filename"]))
                 self.assertRegex(pin["retrieved_utc"], r"^\d{4}-\d{2}-\d{2}$")
 
+    def test_runtime_libraries_and_missing_licence_files_are_pinned(self) -> None:
+        """The CPython runtime's own libraries and the packages without licence files (#1285).
+
+        Owner decisions (2026-10-27): the source archive also carries the source
+        releases of the third-party libraries inside the CPython 3.15.1 embeddable
+        runtime (CPython's PCbuild/get_externals.bat, checked against the shipped
+        binaries), the Microsoft C runtime ships its redistribution terms instead, and
+        the five MSYS2 packages whose binaries carry no licence file get theirs from
+        their pinned source packages.
+        """
+        manifest_path = Path(__file__).resolve().parents[1] / "assets" / "prereq_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        sources = {source["id"]: source for source in _pinned_sources(manifest, allow_http=False)}
+        artifacts = {item["id"]: item for item in manifest["artifacts"]}
+        cpython = artifacts["cpython-embed-amd64"]
+        self.assertEqual(set(cpython["bundled_sources"]),
+                         {"openssl", "libffi", "sqlite", "bzip2", "xz", "zlib-ng", "zstd", "mpdecimal", "tcl"})
+        provided = {name for source_id in cpython["bundled_sources"] for name in sources[source_id]["provides"]}
+        self.assertLessEqual({"libcrypto-3.dll", "libssl-3.dll", "libffi-8.dll", "sqlite3.dll", "libtommath.dll"},
+                             provided)
+        self.assertEqual(cpython["no_source"]["files"], ["vcruntime140.dll", "vcruntime140_1.dll"])
+        noticed = {notice["source"] for notice in cpython["source_notices"]}
+        for source_id in cpython["bundled_sources"]:
+            with self.subTest(source=source_id):
+                source = sources[source_id]
+                self.assertEqual(source["artifact_version"], cpython["version"])
+                self.assertTrue(source["license"])
+                self.assertTrue(source["sha256_source"]["method"])
+                # Every bundled library's licence file ships in notices/; SQLite has none
+                # (its source carries a public-domain blessing instead).
+                self.assertEqual(source_id in noticed, source["license"] != "blessing")
+        for name in ("cc-libs", "gmp", "isl", "mpc", "windows-default-manifest"):
+            item = artifacts[f"mingw-w64-ucrt-x86_64-{name}"]
+            with self.subTest(artifact=name):
+                self.assertTrue(item["source_notices"])
+                self.assertEqual({notice["source"] for notice in item["source_notices"]}, {item["source"]})
+                self.assertIn("source_notices", item["notice_location"])
+
     def test_synthetic_installed_toolchain_resolves_the_font_closure(self) -> None:
         """The installer's extracted layout must resolve the closure (#421).
 
@@ -1017,9 +1196,17 @@ NETWORK_EGRESS_ALLOWLIST = frozenset({
     "tools/nk_core/prereq_fetcher.py",
 })
 
-# The only hosts those downloads reach: the "Network use" table in docs/SETUP.md.
-# Every manifest pin, the corresponding-source pins included, stays on them.
+# The only hosts the player's consented download reaches: the "Network use" table in
+# docs/SETUP.md. Every artifact pin stays on them.
 PREREQUISITE_HOSTS = frozenset({"www.python.org", "repo.msys2.org"})
+# Maintainer-only release staging (--source-archive) also fetches the upstream source
+# releases of the libraries built into the CPython runtime from these official hosts
+# (and GitHub's download hosts its releases redirect to). The player never reaches them;
+# docs/SETUP.md lists them under "Network use".
+RELEASE_SOURCE_HOSTS = frozenset({
+    "github.com", "release-assets.githubusercontent.com", "codeload.github.com",
+    "www.sqlite.org", "sourceware.org", "www.bytereef.org",
+})
 
 # Shipped code: everything under src/ and the Python the player runs. Maintainer
 # tools elsewhere in tools/ (SBOM and issue-link audits) never ship and are not
@@ -1054,15 +1241,19 @@ class TestNetworkEgressAllowlist(unittest.TestCase):
     def test_pinned_downloads_reach_only_the_documented_hosts(self) -> None:
         # Release staging and the consented download fetch only manifest pins over
         # HTTPS; a pin on another host would be a new egress (AGENTS.md section 5).
+        # Artifacts, which the player may download, stay on the player's two hosts;
+        # source pins, which only release staging fetches, may also use the release hosts.
         manifest = json.loads((REPO_ROOT / "assets" / "prereq_manifest.json").read_text(encoding="utf-8"))
-        for entry in manifest["artifacts"] + manifest["sources"]:
-            with self.subTest(entry=entry["id"]):
-                url = urlsplit(entry["url"])
-                self.assertEqual(url.scheme, "https")
-                self.assertLessEqual(set(entry["allowed_hosts"]), PREREQUISITE_HOSTS)
-                self.assertIn(url.hostname, entry["allowed_hosts"])
+        for entries, hosts in ((manifest["artifacts"], PREREQUISITE_HOSTS),
+                               (manifest["sources"], PREREQUISITE_HOSTS | RELEASE_SOURCE_HOSTS)):
+            for entry in entries:
+                with self.subTest(entry=entry["id"]):
+                    url = urlsplit(entry["url"])
+                    self.assertEqual(url.scheme, "https")
+                    self.assertLessEqual(set(entry["allowed_hosts"]), hosts)
+                    self.assertIn(url.hostname, entry["allowed_hosts"])
         setup = (REPO_ROOT / "docs" / "SETUP.md").read_text(encoding="utf-8")
-        for host in sorted(PREREQUISITE_HOSTS):
+        for host in sorted(PREREQUISITE_HOSTS | RELEASE_SOURCE_HOSTS):
             self.assertIn(f"`{host}`", setup)
 
     def test_allowlisted_downloaders_still_exist(self) -> None:

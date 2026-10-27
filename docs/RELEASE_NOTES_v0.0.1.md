@@ -79,7 +79,9 @@ If any check fails, don't run the file; report it as described under [How to rep
 
 The source of the bundled build tools is published next to the ZIP as
 `nakagawa-recomp-0.0.1-prerequisite-sources.zip`, with its own `.sha256`: the MSYS2 source package of
-each MSYS2 package and the CPython source release. `prereqs/notices/SOURCES.txt` in the ZIP names each
+each MSYS2 package, the CPython source release, and the source releases of the libraries built into
+the CPython runtime (OpenSSL, libffi, SQLite and others). The Microsoft C runtime inside it has no
+public source; its redistribution terms are in `prereqs/notices`. `prereqs/notices/SOURCES.txt` in the ZIP names each
 file in it with its SHA-256, and `prereqs/notices` holds every bundled package's licence files. The
 bundled tools leave out their manuals (`share/doc`, `share/info`, `share/man`), which a build never
 reads; the source archive has them.
