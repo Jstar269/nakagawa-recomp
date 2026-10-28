@@ -195,7 +195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "94974fbd34f62f64a4ab64929b252b2a037ed4f75f4b7e6269f82e18e21b3388"
+      "sha256": "c215a171935d86cfc932770e9c852930c55f47cf9168abcb2e849dabf6aa40c3"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -312,7 +312,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "6a262d6339dae2c816a722435af078458ffa0be9f46148eb979806dbfba513a5"
+      "sha256": "ac8a50c7269db4c7c1900c0a646b1195d3080da044d9cbde60d51f5ab5edba00"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -1012,7 +1012,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "acece4e21d28e38acd46bf7e80458473ab1352e233a5231d4083174df3fbce33"
+      "sha256": "272e867629d74597611848edc98bbbd61832dd800cd5bdeeec6f643429335c04"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1420,7 +1420,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c97de5ee76c9e1863eaa51a7bb91812f1c0525a6a6550693574a821c08ad68de"
+      "sha256": "f7fb8f1b3927a27e75d39712d1cd6b1bdea74e889a8222e753e5967353eb3d1c"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1477,7 +1477,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0da9a712cb5622e1423898f790179fa76c152bd47bf9f45cf0638af58eaa6192"
+      "sha256": "d831166e1db494270b36357fd11189ae71ba06fe608d4bf1d0e0262ba1afe747"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1729,7 +1729,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7361d60b2eab294402b5a0c89208140f63f59c9429fd74b4f41164fd1113fd1c"
+      "sha256": "9bf7648d5e2d0f3179593d0c481dcd64a7db10fbcf9fa8df24652eebe7f68298"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -2507,7 +2507,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "da0dce9ac26ecb5a6544fc6965745d9cb58d1c7905de70125f4da7a11e2ccc57"
+      "sha256": "e4f078682cec16b41b9d4bd6d4d3ebe0c26f43fd41adf60c2d4d6d1ef7fc64f7"
     },
     {
       "path": "fixtures/psp_oracle/font_list.h",
@@ -2612,7 +2612,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "26c4b72d89655cf4d1a0557acddabd0079c7f8bf3aea1f4567e083d4f6c258fd"
+      "sha256": "f82821edbedae7f5544b4a2b06914c329feab1ef3c5aa88bccc71236ca01353c"
     },
     {
       "path": "fixtures/psp_oracle/libfont_imports.S",
@@ -4215,6 +4215,42 @@
         "upstream_attribution": null
       },
       "sha256": "c3012bceace7184e466dc345fa9cc7ca8f70034ba5bdf90530d4718249949a57"
+    },
+    {
+      "path": "src/psp_companion/Makefile",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "psp_companion_fontcopy_20261027",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "92aa245a511c3cb309eb2965d27cabe550cc7e19899ea5c70ff44c49b7244169"
+    },
+    {
+      "path": "src/psp_companion/fontcopy.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "psp_companion_fontcopy_20261027",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "8a63635ddec04098e08210cf660542a02440f8c67e95105f6d1121256d420772"
+    },
+    {
+      "path": "src/psp_companion/fontcopy_config.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "psp_companion_fontcopy_20261027",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "2658862b01ee18298a95c1a144e766624bb8a0464510b2020db98b9193f96ae0"
     },
     {
       "path": "src/ref/cpu.h",
@@ -15030,7 +15066,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2282016b5c566709353ed9892fe4171d914cb932bf73ac38762832bc2ae9f2e0"
+      "sha256": "ec38f882f10fdd8959be4ff65580872b990400791683a18eae19dad321b5a15b"
     },
     {
       "path": "tools/test_psp_parsers.py",
@@ -15126,7 +15162,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7d4ae56728940f444d9af908921de4aa655e95c4df003b497fd3b69fd46fdaa2"
+      "sha256": "0530b3ad0d7f88bd60a6beffd76e7b90eb61084f35b35adae269ed88310f83ef"
     },
     {
       "path": "tools/test_public_export.py",
