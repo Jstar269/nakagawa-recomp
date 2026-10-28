@@ -10275,6 +10275,50 @@ static void at3_pcm0_dump(int emulated, int samples) {
     }
 }
 
+/* The same timing and blocking measurement for an ATRAC3+ stream (#1296: the codec most music
+   uses), when a second private input is staged in host0. Runs between the AT3 pass and unload. */
+#define AT3P_DECODE_INPUT_PATH "host0:/at3p-input-buffer.bin"
+#define AT3P_DECODE_CALLS 10
+static void run_at3p_timing(int emulated) {
+    SceUID fd = sceIoOpen(AT3P_DECODE_INPUT_PATH, PSP_O_RDONLY, 0);
+    if (fd < 0) return;   /* not staged: the AT3 pass alone */
+    uint32_t total = 0;
+    while (total < AT3_DECODE_BYTES) {
+        const int n = sceIoRead(fd, s_at3_input + total, AT3_DECODE_BYTES - total);
+        if (n <= 0) break;
+        total += (uint32_t)n;
+    }
+    (void)sceIoClose(fd);
+    probe_step(emulated, "at3-decode", "at3p-get-atracid");
+    const int id = total == AT3_DECODE_BYTES ? sceAtracGetAtracID(PSP_ATRAC_AT3PLUS) : -2;
+    at3_result(emulated, "at3p-get-atracid", id);
+    if (id < 0) return;
+    probe_step(emulated, "at3-decode", "at3p-set-data");
+    const int set_rc = sceAtracSetData(id, s_at3_input, AT3_DECODE_BYTES);
+    at3_result(emulated, "at3p-set-data", set_rc);
+    if (set_rc == 0) {
+        const SceUID peer = at3_peer_start(emulated);
+        int end_flag = 0;
+        for (int call = 0; call < AT3P_DECODE_CALLS && end_flag == 0; call++) {
+            char step[24];
+            int samples = -1, remain = -1, rc;
+            (void)snprintf(step, sizeof(step), "at3p-decode%d", call);
+            probe_step(emulated, "at3-decode", step);
+            rc = at3_timed_decode(emulated, step, id, &samples, &end_flag, &remain);
+            char line[200];
+            (void)snprintf(line, sizeof(line),
+                           "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3p-result-%d status=RC "
+                           "result=0x%08x samples=%d end=%d remain=%d\n",
+                           call, (unsigned int)rc, samples, end_flag, remain);
+            probe_emit_durable(emulated, line, strlen(line));
+            if (rc != 0) break;
+        }
+        at3_peer_stop(peer);
+    }
+    probe_step(emulated, "at3-decode", "at3p-release-atracid");
+    at3_result(emulated, "at3p-release-atracid", sceAtracReleaseAtracID(id));
+}
+
 static void run_at3_decode(int emulated) {
     int input_rc = -1;
     int input_read = 0;
@@ -10373,6 +10417,7 @@ static void run_at3_decode(int emulated) {
                     release_rc = sceAtracReleaseAtracID(atrac_id);
                     at3_result(emulated, "release-atracid", release_rc);
                 }
+                run_at3p_timing(emulated);
                 probe_step(emulated, "at3-decode", "unload-atrac3plus");
                 atrac_unload_rc = sceUtilityUnloadAvModule(PSP_AV_MODULE_ATRAC3PLUS);
                 at3_result(emulated, "unload-atrac3plus", atrac_unload_rc);
