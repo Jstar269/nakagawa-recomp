@@ -120,6 +120,13 @@ bool nk_platform_resolve_windows_data_base(
  * they have already confirmed. */
 bool nk_platform_absolute_path(const char *path, char *out_path, size_t max_len);
 
+/* Whether `path` is longer than the file APIs this process uses accept, so a
+ * create or open of it fails for its length alone. On Win32 that is MAX_PATH
+ * (260 with the terminator; 248 for a new directory) unless the process has
+ * long paths enabled; on POSIX, PATH_MAX. A caller asks only after the create
+ * or open failed, to tell a too-long path apart from a damaged input. */
+bool nk_platform_path_exceeds_limit(const char *path, bool is_directory);
+
 /* Process handle abstraction */
 typedef struct {
     void *native_handle;
@@ -133,7 +140,32 @@ typedef struct {
        code on demand, so it never sets these. */
     bool has_cached_exit;
     int cached_exit_code;
+    /* Why the last nk_platform_spawn_process into this handle failed, as the
+       OS said it: GetLastError() after CreateProcessW on Win32, errno on POSIX.
+       0 when the spawn succeeded or failed before the OS was asked. */
+    int spawn_error;
 } NkProcessHandle;
+
+/* What the OS error a refused process start carries says about the refusal.
+   Only Win32 reports these; every POSIX error reads as NK_SPAWN_BLOCK_NONE. */
+typedef enum {
+    NK_SPAWN_BLOCK_NONE = 0,
+    /* ERROR_ACCESS_DENIED. Microsoft Defender's attack surface reduction rules
+       refuse a program this way, as do file permissions. */
+    NK_SPAWN_BLOCK_ACCESS_DENIED,
+    /* ERROR_VIRUS_INFECTED or ERROR_VIRUS_DELETED: the antivirus found a threat. */
+    NK_SPAWN_BLOCK_THREAT,
+    /* ERROR_ACCESS_DISABLED_BY_POLICY, ERROR_ACCESS_DISABLED_NO_SAFER_UI_BY_POLICY or
+       ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION: a software restriction, AppLocker or
+       App Control policy. */
+    NK_SPAWN_BLOCK_POLICY
+} NkSpawnBlock;
+
+NkSpawnBlock nk_platform_spawn_block(int os_error);
+
+/* The OS's own one-line text for an error code (FormatMessageW on Win32,
+   strerror on POSIX), without a trailing newline. False when it has none. */
+bool nk_platform_describe_os_error(int os_error, char *out, size_t out_size);
 
 /* Spawn a child process with specified arguments, environment variables, and working directory.
  * argv: NULL-terminated array of arguments (argv[0] is program path)
