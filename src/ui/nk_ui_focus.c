@@ -253,6 +253,19 @@ static NkUiId nk_ui_focus_enter_scope(const NkUiFocusGraph *graph, int scope) {
     }
     for (i = 0; i < graph->count; ++i) {
         const NkUiFocusEntry *e = &graph->entries[i];
+        if ((int)e->scope == scope && nk_ui_focus_enabled(e) &&
+            (e->flags & NK_UI_FOCUS_NO_DEFAULT) == 0u) {
+            return e->id;
+        }
+    }
+    return 0u;
+}
+
+/* The scope's first enabled entry, a destructive one included. */
+static NkUiId nk_ui_focus_first_enabled(const NkUiFocusGraph *graph, int scope) {
+    size_t i;
+    for (i = 0; i < graph->count; ++i) {
+        const NkUiFocusEntry *e = &graph->entries[i];
         if ((int)e->scope == scope && nk_ui_focus_enabled(e)) {
             return e->id;
         }
@@ -400,7 +413,17 @@ NkUiId nk_ui_focus_move(NkUiFocusGraph *graph, NkUiNavDir direction) {
     cur = nk_ui_focus_find(graph->entries, graph->count, graph->focused);
     if (cur < 0 || (int)graph->entries[cur].scope != top ||
         !nk_ui_focus_enabled(&graph->entries[cur])) {
-        return 0u;
+        /* Nothing usable has focus, as on a screen whose only control is
+           destructive: a move lands on the scope's first focus. */
+        NkUiId first = nk_ui_focus_enter_scope(graph, top);
+        if (first == 0u) {
+            first = nk_ui_focus_first_enabled(graph, top);
+        }
+        if (first == 0u) {
+            return 0u;
+        }
+        nk_ui_focus_commit(graph, first, top);
+        return graph->focused;
     }
     next = nk_ui_focus_pick(graph->entries, graph->count, (size_t)cur, direction);
     if (next < 0) {

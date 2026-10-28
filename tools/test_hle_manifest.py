@@ -12,6 +12,9 @@ and reproducibility of the committed classification baseline.
 from __future__ import annotations
 
 import ast
+import contextlib
+import hashlib
+import io
 import json
 from pathlib import Path
 import re
@@ -24,6 +27,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import hle_manifest
 import hle_registry_meta as meta
+from import_fixtures import build_import_elf
 import nid_name_proof
 from hle_manifest import (
     DEFAULT_BASELINE,
@@ -49,6 +53,21 @@ static void init(void) {
         sr_hle_register(sas_ok[i], "__sceSas_ok", h_ok);
 }
 """
+
+
+def pspsdk_adhoc_refusals() -> dict[str, tuple[str, str]]:
+    """The public ad hoc surface (#1139 phase 0): NID -> (name, refusal code).
+
+    Names are the tracked corpus's ``pspsdk-sourced`` entries (present in the pinned PSPSDK
+    headers pspnet_adhoc.h, pspnet_adhocctl.h and pspnet_adhocmatching.h); each NID is
+    recomputed from its name, so nothing here is copied from another project's table.
+    """
+    corpus = json.loads((ROOT / "tools" / "nid_corpus.json").read_text(encoding="utf-8"))
+    names = [
+        e["name"] for e in corpus["entries"]
+        if e["class"] == "pspsdk-sourced" and e["name"].startswith("sceNetAdhoc")
+    ]
+    return {f"0x{nid_name_proof.nid_of(n):08x}": (n, "0x80010086") for n in names}
 
 
 class ExtractionTests(unittest.TestCase):
@@ -342,6 +361,80 @@ class RegistrationOwnerFileTests(unittest.TestCase):
             extract_registrations(SYNTH_SOURCE, [("src/rt/hle.c", "static void other(void) {}\n")])
 
 
+class RegistrationSubsystemTests(unittest.TestCase):
+    """Every registration has exactly one subsystem owner for the HLE split (#307).
+
+    tools/hle_registry_meta.py SUBSYSTEM_BY_PREFIX decides it by longest prefix.
+    The manifest fails closed on a registration no key claims, on a key that
+    decides nothing, and on a subsystem outside SUBSYSTEMS.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.manifest = build_manifest()
+        cls.raw_regs = extract_registrations(hle_manifest.runtime_hle_source())
+
+    def test_every_registration_has_exactly_one_known_subsystem(self) -> None:
+        for r in self.manifest["registrations"]:
+            subsystem = r.get("subsystem")
+            self.assertIsInstance(subsystem, str, f"{r['nid']} {r['name']} has no subsystem")
+            self.assertIn(subsystem, meta.SUBSYSTEMS, f"{r['nid']} {r['name']} has unknown subsystem {subsystem!r}")
+
+    def test_no_prefix_is_written_twice(self) -> None:
+        """A dict literal keeps only the last value of a repeated key, so one prefix could name two subsystems."""
+        tree = ast.parse((ROOT / "tools" / "hle_registry_meta.py").read_text(encoding="utf-8"))
+        literals = [
+            node.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "SUBSYSTEM_BY_PREFIX" for t in node.targets)
+        ]
+        self.assertEqual(len(literals), 1, "SUBSYSTEM_BY_PREFIX must be one dict literal")
+        self.assertIsInstance(literals[0], ast.Dict)
+        keys = [k.value for k in literals[0].keys if isinstance(k, ast.Constant)]
+        self.assertEqual(len(keys), len(literals[0].keys), "every SUBSYSTEM_BY_PREFIX key must be a string literal")
+        repeated = sorted({k for k in keys if keys.count(k) > 1})
+        self.assertEqual(repeated, [], f"SUBSYSTEM_BY_PREFIX keys written more than once: {repeated}")
+
+    def test_the_longest_prefix_decides(self) -> None:
+        self.assertEqual(hle_manifest.subsystem_for("sceAudioChReserve"), "audio")
+        self.assertEqual(hle_manifest.subsystem_for("sceAudiocodecDecode"), "audio_codec")
+        self.assertEqual(hle_manifest.subsystem_for("sceKernelPowerLock"), "power")
+        self.assertEqual(hle_manifest.subsystem_for("sceKernelLockLwMutexCB"), "kernel_sync")
+        self.assertEqual(hle_manifest.subsystem_for("_sceKernelLockLwMutex"), "kernel_sync")
+        self.assertEqual(hle_manifest.subsystem_for("__sceSasCore"), "audio")
+        self.assertEqual(hle_manifest.subsystem_for("sceKernelDelaySysClockThreadCB"), "kernel_thread")
+        self.assertIsNone(hle_manifest.subsystem_for("synthUnowned"))
+
+    def test_every_hle_power_c_registration_is_in_the_power_subsystem(self) -> None:
+        """The one unit already split out agrees with the map. The reverse need not hold yet:
+        hle.c still registers the scePower_469989ad controlled refusal."""
+        by_owner = {r["name"]: r["subsystem"] for r in self.manifest["registrations"]
+                    if r["owner_file"] == "src/rt/hle_power.c"}
+        self.assertTrue(by_owner)
+        self.assertEqual({name: "power" for name in by_owner}, by_owner)
+
+    def test_registration_no_prefix_claims_fails_closed(self) -> None:
+        trimmed = {k: v for k, v in meta.SUBSYSTEM_BY_PREFIX.items() if k != "sceUmd"}
+        with mock.patch.object(meta, "SUBSYSTEM_BY_PREFIX", trimmed):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("no SUBSYSTEM_BY_PREFIX key claims", str(ctx.exception))
+        self.assertIn("sceUmdActivate", str(ctx.exception))
+
+    def test_prefix_that_decides_no_registration_is_stale(self) -> None:
+        with mock.patch.dict(meta.SUBSYSTEM_BY_PREFIX, {"sceSynthNoSuchModule": "io"}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("sceSynthNoSuchModule", str(ctx.exception))
+
+    def test_subsystem_outside_the_closed_set_fails(self) -> None:
+        with mock.patch.dict(meta.SUBSYSTEM_BY_PREFIX, {"sceUmd": "umd_typo"}):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+        self.assertIn("umd_typo", str(ctx.exception))
+
+
 class LiveManifestTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -373,16 +466,15 @@ class LiveManifestTests(unittest.TestCase):
     #:
     #: sceAtracGetChannel (0x31668bba -> 0x31668baa) was a member and was
     #: corrected: a single-nibble slip whose canonical value the table already
-    #: carried, so the fix was mechanical. The two below are not near-misses of
-    #: their canonical values and route real dedicated handlers, so correcting
-    #: them is a routing change that needs evidence, not a transcription fix.
-    #: Absence from the table is not itself proof a NID is fabricated -- the
-    #: table has ~1615 entries and the PSP exports more than that -- so what
-    #: these registrations actually reach is an open question, not a finding.
-    REVERSE_NID_DEBT = {
-        0x1579A30A: ("sceUtilityUnloadModule", 0xE49BFE92, 324),
-        0x2A6117A5: ("sceUtilityLoadModule", 0x2A2B3DE0, 324),
-    }
+    #: carried, so the fix was mechanical. The sceUtilityLoadModule and
+    #: sceUtilityUnloadModule aliases 0x2a6117a5 and 0x1579a30a were members
+    #: until #1393 dropped them: neither is SHA-1 derivable from its name, and
+    #: neither appears in the PPSSPP-seeded corpus behind nid_names.h or in the
+    #: pspsdk libpsputility stubs, which bind only 0x2a2b3de0 and 0xe49bfe92.
+    #: A title importing either alias now meets the unknown-NID path.
+    #: Absence from the table is not by itself proof a NID is fabricated, so a
+    #: future member needs that kind of evidence before it is removed.
+    REVERSE_NID_DEBT: dict[int, tuple[str, int, int]] = {}
 
     def test_no_new_registration_contradicts_the_canonical_table_by_name(self) -> None:
         """Fail closed on registrations the canonical table assigns elsewhere.
@@ -425,6 +517,21 @@ class LiveManifestTests(unittest.TestCase):
         for nid, (name, canonical_nid, _issue) in self.REVERSE_NID_DEBT.items():
             self.assertEqual(nids_by_name[name], {canonical_nid})
             self.assertNotIn(nid, table)
+
+    def test_utility_module_loaders_register_only_their_canonical_nids(self) -> None:
+        """Regression for #1393: no alias NID routes the module loaders."""
+        loaders = {
+            nid: r["name"]
+            for nid, r in self.regs.items()
+            if r["name"] in ("sceUtilityLoadModule", "sceUtilityUnloadModule")
+        }
+        self.assertEqual(
+            loaders,
+            {0x2A2B3DE0: "sceUtilityLoadModule", 0xE49BFE92: "sceUtilityUnloadModule"},
+        )
+        for nid, name in loaders.items():
+            digest = hashlib.sha1(name.encode("ascii")).digest()
+            self.assertEqual(int.from_bytes(digest[:4], "little"), nid)
 
     def test_sce_atrac_get_channel_uses_the_canonical_nid(self) -> None:
         """Regression for the 0x31668bba -> 0x31668baa transcription fix."""
@@ -771,6 +878,7 @@ class LiveManifestTests(unittest.TestCase):
                 "h_IoLseek",
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
+                    "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
             0x109F50BC: (
@@ -823,6 +931,7 @@ class LiveManifestTests(unittest.TestCase):
                 [
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
                     "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                    "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
                 ],
             ),
             0x42EC03AC: (
@@ -889,6 +998,45 @@ citations (PSP-B1-01, no-colon forms) need their own check.
         # pointing at a live-but-wrong tracker object.
         source = Path(meta.__file__).read_text(encoding="utf-8")
         self.assertNotIn("issue #31", source)
+
+    def test_public_adhoc_surface_is_refused_by_name(self) -> None:
+        """#1139 phase 0: every public PSPSDK ad hoc NID is a named refusal, not an unknown NID.
+
+        The split is the three public headers' prototype counts (22, 21 and 16). Network HLE
+        stays fail-closed (AGENTS.md section 5): each one refuses with the runtime's documented
+        SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED, the sceNetInit code, not a measured result.
+        """
+        expected = pspsdk_adhoc_refusals()
+        names = [name for name, _ in expected.values()]
+        self.assertEqual(
+            (
+                sum(1 for n in names if n.startswith("sceNetAdhocctl")),
+                sum(1 for n in names if n.startswith("sceNetAdhocMatching")),
+                len(names),
+            ),
+            (21, 16, 59),
+        )
+        baseline = json.loads(DEFAULT_BASELINE.read_text(encoding="ascii"))
+        for nid, (name, error) in sorted(expected.items()):
+            with self.subTest(nid=nid, name=name):
+                self.assertTrue(
+                    nid in baseline, f"{nid} {name} is missing from tools/import_audit_baseline.json"
+                )
+                self.assertEqual(
+                    {k: baseline[nid].get(k) for k in ("name", "classification", "refusal_error", "status")},
+                    {
+                        "name": name,
+                        "classification": "controlled_unsupported",
+                        "refusal_error": error,
+                        "status": "controlled_unsupported",
+                    },
+                )
+                reg = self.regs.get(int(nid, 16))
+                self.assertIsNotNone(reg, "public ad hoc NID has no production registration")
+                self.assertEqual(
+                    (reg["origin"], reg["handler"], reg["owner_file"]),
+                    ("static_unsupported", "h_ControlledUnsupported", "src/rt/hle.c"),
+                )
 
     def test_committed_baseline_is_current_and_reproducible(self) -> None:
         baseline = json.loads(DEFAULT_BASELINE.read_text(encoding="ascii"))
@@ -1093,6 +1241,8 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0xe3ee2c81": ("sceMp3LowLevelDecode", "0x80010086"),
                 "0x8ab81558": ("sceMp3StartEntry", "0x80010086"),
                 "0x732b042a": ("sceMp3EndEntry", "0x80010086"),
+                # The 59 public PSPSDK ad hoc entry points refuse under the offline network policy (#1139).
+                **pspsdk_adhoc_refusals(),
             },
         )
         self.assertEqual(
@@ -1445,10 +1595,12 @@ class EvidenceTierTests(unittest.TestCase):
         self.assertEqual(
             sorted(t["id"] for t in document["tests"] if t.get("hardware_evidence") == "MEASURED"),
             [
-                "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-DISPLAY-001",
+                "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-CPU-TIMING-001",
+                "PSP-DISPLAY-001",
                 "PSP-DISPLAY-002", "PSP-DISPLAY-003", "PSP-DISPLAY-004", "PSP-DMAC-001",
                 "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-FPU-CC-001", "PSP-GE-001",
-                "PSP-GE-CONTROL-001", "PSP-HLE-AUDIO-SRC-001", "PSP-HLE-CTRL-LATCH-001",
+                "PSP-GE-CONTROL-001", "PSP-GE-TIMING-001", "PSP-HLE-AUDIO-SRC-001",
+                "PSP-HLE-CTRL-LATCH-001",
                 "PSP-HLE-GE-EDRAM-001", "PSP-HLE-HPRM-001", "PSP-HLE-KERNEL-STATUS-001",
                 "PSP-HLE-POWER-001", "PSP-HLE-POWER-002", "PSP-HLE-SYSPARAM-001",
                 "PSP-HLE-TIMER-ORDER-001", "PSP-HLE-VTIMER-001", "PSP-HLE-VTIMER-002",
@@ -1549,6 +1701,153 @@ class LiveEvidenceChainTests(unittest.TestCase):
                 entry = next(e for e in self.chain["entries"] if e["canonical_name"] == api)
                 self.assertEqual(entry["exercised"]["psp_oracle_probes"], probes)
 
+
+
+class ProfileZeroImportGateTests(unittest.TestCase):
+    """#341 acceptance item 2: profile-zero imports may not silently stay unreviewed."""
+
+    SYNTH_MANIFEST = {
+        "registrations": [
+            {"nid": "0x00000010", "name": "synthUnreviewed", "handler": "h_Alpha",
+             "classification": "dedicated", "status": "unreviewed"},
+            {"nid": "0x00000020", "name": "synthPartial", "handler": "h_Beta",
+             "classification": "dedicated", "status": "partial"},
+            {"nid": "0x00000030", "name": "synthStub", "handler": "h_ok",
+             "classification": "fake_success", "status": "stub"},
+        ],
+    }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.manifest = build_manifest()
+        cls.live_unreviewed = sorted(
+            int(r["nid"], 16) for r in cls.manifest["registrations"]
+            if r["classification"] == "dedicated" and r["status"] == "unreviewed"
+        )
+
+    def _module(self, tmp: str, nids: list[int]) -> Path:
+        path = Path(tmp) / "guest.prx"
+        path.write_bytes(build_import_elf([("SynthImports", nids)]))
+        return path
+
+    def _main(self, *argv: str) -> tuple[int, str]:
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = hle_manifest.main(list(argv))
+        return rc, err.getvalue()
+
+    def test_an_unreviewed_import_missing_from_the_allowlist_fails(self) -> None:
+        gate = hle_manifest.unreviewed_import_gate(self.SYNTH_MANIFEST, {0x10, 0x20, 0x30, 0x99}, {})
+        self.assertEqual([r["nid"] for r in gate["imported_unreviewed"]], ["0x00000010"])
+        self.assertEqual([r["nid"] for r in gate["unallowed"]], ["0x00000010"])
+        self.assertEqual(gate["stale"], [])
+
+    def test_an_allowlisted_unreviewed_import_passes(self) -> None:
+        allow = {0x10: {"name": "synthUnreviewed", "issue": meta.PROFILE_ZERO_ISSUE}}
+        gate = hle_manifest.unreviewed_import_gate(self.SYNTH_MANIFEST, {0x10, 0x20}, allow)
+        self.assertEqual((gate["unallowed"], gate["stale"]), ([], []))
+
+    def test_an_entry_that_is_no_longer_unreviewed_is_stale(self) -> None:
+        allow = {
+            0x20: {"name": "synthPartial", "issue": meta.PROFILE_ZERO_ISSUE},
+            0x30: {"name": "synthStub", "issue": meta.PROFILE_ZERO_ISSUE},
+        }
+        gate = hle_manifest.unreviewed_import_gate(self.SYNTH_MANIFEST, {0x20, 0x30}, allow)
+        self.assertEqual([r["nid"] for r in gate["stale"]], ["0x00000020", "0x00000030"])
+        self.assertIn("no longer unreviewed", gate["stale"][0]["reason"])
+
+    def test_an_entry_the_module_no_longer_imports_is_stale(self) -> None:
+        allow = {0x10: {"name": "synthUnreviewed", "issue": meta.PROFILE_ZERO_ISSUE}}
+        gate = hle_manifest.unreviewed_import_gate(self.SYNTH_MANIFEST, {0x20}, allow)
+        self.assertEqual([(r["nid"], r["reason"]) for r in gate["stale"]],
+                         [("0x00000010", "not imported by the module")])
+
+    def test_an_empty_import_set_fails_closed(self) -> None:
+        with self.assertRaises(ManifestError):
+            hle_manifest.unreviewed_import_gate(self.SYNTH_MANIFEST, set(), {})
+
+    def test_a_psp_module_supplies_its_imported_nids(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            imports = hle_manifest.load_imports(self._module(tmp, [0x11111111, 0x22222222]))
+        link = {"source": "psp module import table"}
+        self.assertEqual(imports, {0x11111111: link, 0x22222222: link})
+
+    def test_an_unreadable_module_import_table_is_an_error(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "guest.prx"
+            path.write_bytes(build_import_elf([("SynthImports", [0x11111111])], corrupt="null_nid_table"))
+            with self.assertRaises(ManifestError):
+                hle_manifest.load_imports(path)
+
+    def test_the_live_allowlist_names_341_and_only_unreviewed_registrations(self) -> None:
+        self.assertTrue(meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+        by_nid = {int(r["nid"], 16): r for r in self.manifest["registrations"]}
+        for nid, entry in meta.PROFILE_ZERO_UNREVIEWED_IMPORTS.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                self.assertEqual(entry["issue"], "https://github.com/Jstar269/nakagawa-recomp/issues/341")
+                self.assertEqual(entry["name"], by_nid[nid]["name"])
+                self.assertTrue(hle_manifest.is_dedicated_unreviewed(by_nid[nid]))
+
+    def test_metadata_rejects_an_allowlist_entry_whose_handler_was_reviewed(self) -> None:
+        reviewed = next(
+            r for r in self.manifest["registrations"]
+            if r["classification"] == "dedicated" and r["status"] == "partial"
+        )
+        stale = {int(reviewed["nid"], 16): {"name": reviewed["name"], "issue": meta.PROFILE_ZERO_ISSUE}}
+        with mock.patch.object(meta, "PROFILE_ZERO_UNREVIEWED_IMPORTS", stale):
+            with self.assertRaisesRegex(ManifestError, "is stale"):
+                build_manifest()
+
+    def test_metadata_rejects_an_allowlist_entry_without_the_tracking_issue(self) -> None:
+        nid = self.live_unreviewed[0]
+        name = next(r["name"] for r in self.manifest["registrations"] if int(r["nid"], 16) == nid)
+        with mock.patch.object(meta, "PROFILE_ZERO_UNREVIEWED_IMPORTS", {nid: {"name": name, "issue": ""}}):
+            with self.assertRaisesRegex(ManifestError, "tracking issue"):
+                build_manifest()
+
+    def test_the_cli_fails_on_an_unallowlisted_unreviewed_import(self) -> None:
+        import tempfile
+        extra = next(n for n in self.live_unreviewed if n not in meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+        with tempfile.TemporaryDirectory() as tmp:
+            module = self._module(tmp, sorted(meta.PROFILE_ZERO_UNREVIEWED_IMPORTS) + [extra])
+            rc, err = self._main("--out", str(Path(tmp) / "m.json"), "--imports", str(module),
+                                 "--check-profile-zero-imports")
+        self.assertEqual(rc, 1)
+        self.assertIn(f"0x{extra:08x}", err)
+        self.assertIn("not on PROFILE_ZERO_UNREVIEWED_IMPORTS", err)
+
+    def test_the_cli_fails_on_a_stale_allowlist_entry(self) -> None:
+        import tempfile
+        allowlisted = sorted(meta.PROFILE_ZERO_UNREVIEWED_IMPORTS)
+        with tempfile.TemporaryDirectory() as tmp:
+            module = self._module(tmp, allowlisted[1:])
+            rc, err = self._main("--out", str(Path(tmp) / "m.json"), "--imports", str(module),
+                                 "--check-profile-zero-imports")
+        self.assertEqual(rc, 1)
+        self.assertIn(f"stale PROFILE_ZERO_UNREVIEWED_IMPORTS entry 0x{allowlisted[0]:08x}", err)
+
+    def test_the_cli_passes_when_every_unreviewed_import_is_allowlisted(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            module = self._module(tmp, sorted(meta.PROFILE_ZERO_UNREVIEWED_IMPORTS))
+            rc, err = self._main("--out", str(Path(tmp) / "m.json"), "--imports", str(module),
+                                 "--check-profile-zero-imports")
+        self.assertEqual((rc, err), (0, ""))
+
+    def test_the_cli_requires_an_import_source(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            hle_manifest.main(["--check-profile-zero-imports"])
+
+    def test_the_evidence_chain_lists_imported_unreviewed_handlers(self) -> None:
+        import tempfile
+        nid = self.live_unreviewed[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            chain = hle_manifest.build_evidence_chain(self.manifest, self._module(tmp, [nid]))
+        self.assertEqual([r["nid"] for r in chain["summary"]["imported_unreviewed"]], [f"0x{nid:08x}"])
+        entry = next(e for e in chain["entries"] if e["nid"] == f"0x{nid:08x}")
+        self.assertEqual(entry["imported"], {"source": "psp module import table"})
 
 
 class ModuleBucketTests(unittest.TestCase):

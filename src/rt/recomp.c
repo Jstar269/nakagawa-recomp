@@ -154,9 +154,16 @@ static void dump_dispatch_trace(void) {
          * null/indirect dispatch -- and must be printable, not mistaken for an empty
          * record (issue #45). */
         if (!g_dtrace[idx].used) continue;
-        fprintf(stderr, "  [%2d] tgt=0x%08" PRIx32 " pc=0x%08" PRIx32 " ra=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
+        fprintf(stderr, "  [%2d] tgt=0x%08" PRIx32 " pc=0x%08" PRIx32 " ra=0x%08" PRIx32 " uid=0x%" PRIx32,
                 i, g_dtrace[idx].target, g_dtrace[idx].pc,
                 g_dtrace[idx].ra, g_dtrace[idx].uid);
+        /* Names only when a symbol map was built in (sr_guest_symbols_register). */
+        char tgt_name[160], ra_name[160];
+        sr_guest_symbol_label(g_dtrace[idx].target, tgt_name, sizeof tgt_name);
+        sr_guest_symbol_label(g_dtrace[idx].ra, ra_name, sizeof ra_name);
+        if (tgt_name[0]) fprintf(stderr, " tgt_sym=%s", tgt_name);
+        if (ra_name[0]) fprintf(stderr, " ra_sym=%s", ra_name);
+        fputc('\n', stderr);
     }
     fprintf(stderr, "--- end dispatch trace ---\n");
     fflush(stderr);
@@ -245,6 +252,14 @@ static uint32_t g_loaded_end = 0;   /* highest guest address written by the load
 
 uint32_t sr_loaded_end(void) { return g_loaded_end; }
 
+/* The lowest address the host loader wrote: with sr_loaded_end() it bounds the main
+ * module's image, the range sceKernelGetModuleIdByAddress resolves to the main module. */
+static uint32_t g_loaded_base = UINT32_MAX;
+uint32_t sr_loaded_base(void) { return g_loaded_base; }
+
+/* Seeds only the end: the loader's allocation floor for a program LoadExec boots. The base
+ * stays UINT32_MAX until the host loader writes a segment, so no host-loaded main image
+ * exists; the booted program is a module record and resolves through the module table. */
 void sr_loaded_end_set(uint32_t end) {
     g_loaded_end = end;
 }
@@ -254,6 +269,7 @@ void sr_mem_reset(void) {
     /* g_mem points at guest RAM 0x08000000 inside the full physical arena. */
     memset(g_mem - 0x08000000u, 0, 0x0c000000u);
     g_loaded_end = 0u;
+    g_loaded_base = UINT32_MAX;
     sr_exec_span_reset();
 }
 
@@ -285,6 +301,7 @@ void sr_load_segment(uint32_t vaddr, const void *data, uint32_t len) {
     fprintf(stderr, "sr_load_segment: vaddr=0x%08" PRIx32 " len=0x%08" PRIx32 " SR_HOST=0x%p\n", vaddr, len, SR_HOST(vaddr));
     memcpy(SR_HOST(vaddr), data, len);
     if (vaddr + len > g_loaded_end) g_loaded_end = vaddr + len;
+    if (vaddr < g_loaded_base) g_loaded_base = vaddr;
 }
 
 /* Newlib malloc/free backing store (guest addresses 0x00010738 / 0x000104e0 in
@@ -1364,6 +1381,23 @@ RecompFn sr_lookup(uint32_t addr) {
     return fn && sr_exec_span_owns_fetch(addr) ? fn : NULL;
 }
 
+/* Registered once from sr_register_all() before any guest thread runs; read-only after. */
+static const SrGuestSymbol *s_guest_symbols;
+static uint32_t s_guest_symbol_count;
+
+void sr_guest_symbols_register(const SrGuestSymbol *table, uint32_t count) {
+    s_guest_symbols = table;
+    s_guest_symbol_count = count;
+}
+
+const SrGuestSymbol *sr_guest_symbol_at(uint32_t pc) {
+    return sr_guest_symbol_find(s_guest_symbols, s_guest_symbol_count, pc);
+}
+
+const char *sr_guest_symbol_label(uint32_t pc, char *buf, size_t len) {
+    return sr_guest_symbol_format(sr_guest_symbol_at(pc), pc, buf, len);
+}
+
 #if defined(SR_STACK_CENSUS_ENABLED)
 /* The stack census is enabled only by the opt-in codegen flag. The expected
  * address vector is generated, sorted, and immutable for the process lifetime;
@@ -2033,20 +2067,10 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
             return;
         }
     }
-    uint32_t callee_saved[9];
-    /* Only a title configuration that declares the #363 debt restores callee-saved
-     * registers; every other title keeps the callee's architectural writes. */
-    const int has_returning_call_boundary = call_boundary != NULL &&
-                                  sr_title_config_preserve_callee_saved_at_calls();
-    if (has_returning_call_boundary) {
-        for (unsigned reg = 16u; reg <= 23u; reg++)
-            callee_saved[reg - 16u] = s->r[reg];
-        callee_saved[8] = s->r[30];
-    }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
     fn(s);
     /* Complete the body's TAIL chain (#855) where the nested calls used to complete it:
-     * inside this span, before the #363 restore, and before dispatch_after_aot looks for
+     * inside this span, and before dispatch_after_aot looks for
      * exception flow a chained body may raise. A computed step (dispatch_tail_step) runs
      * only its direct successors here, which used to nest inside its dispatch, and leaves
      * the next computed transfer to the enclosing drain, so a chain never nests drains. */
@@ -2055,13 +2079,6 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
         else sr_tail_drain_segment(s);
     }
     if (owns_return_boundary) (void)sr_aot_return_boundary_end(s);
-    /* Exception/ERET transfers are not returns and keep their architectural
-     * register changes. Tail dispatch has no return edge. */
-    if (has_returning_call_boundary && s->flow_kind == SR_FLOW_NONE) {
-        for (unsigned reg = 16u; reg <= 23u; reg++)
-            s->r[reg] = callee_saved[reg - 16u];
-        s->r[30] = callee_saved[8];
-    }
     if (sr_perf_enabled) sr_perf_aot_end();
 }
 
@@ -2155,10 +2172,9 @@ static int dispatch_try_with_boundary(
      *
      * The every-100-dispatch sr_timeslice=0 resets that used to sit here (one for the
      * worker thread, one for every other thread) were a defensive backstop against
-     * priority inversion predating LAUNCHER_DEMOTE (src/rt/sched.c, ~line 597): the
-     * launcher thread is unconditionally demoted below the worker's priority at thread
-     * creation now, which is the real fix. Removed per Phase 1.4 — pure dispatch overhead
-     * once the primary fix is in place. */
+     * priority inversion. Removed per Phase 1.4 — pure dispatch overhead. The launcher
+     * demotion that replaced them is retired too (#363): pick_next is strict priority, and
+     * every thread keeps the priority its creator passed. */
     SR_YIELD(s, s->pc);
 
     /* Phase 2.6 / BUG1: pc=0 in dispatch() means the thread lost its state somewhere

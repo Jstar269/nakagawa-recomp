@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "id": "hst-ucus98701-v1",
+  "display_name": "Hot Shots Tennis: Get a Grip (UCUS98701)",
+  "kind": "retail",
+  "disc": {
+    "id": "UCUS98701",
+    "region": "NA",
+    "revision_policy": "exact-disc-id"
+  },
+  "executable": {
+    "base": 0,
+    "entry": 0,
+    "bss_metadata_source": "psp-header",
+    "extra_executable_spans": [
+      {"start": 3158420, "end": 3173924}
+    ]
+  },
+  "modules": [
+    {
+      "name": "libfont.prx",
+      "load_address": 166460416,
+      "required": true,
+      "role": "guest-prx",
+      "guest_path": "disc0:/PSP_GAME/USRDIR/module/libfont.prx",
+      "load_address_evidence": "provisional"
+    },
+    {
+      "name": "scePsmf_library.prx",
+      "load_address": 166551552,
+      "required": true,
+      "role": "guest-prx",
+      "guest_path": "disc0:/PSP_GAME/USRDIR/module/psmf.prx",
+      "load_address_evidence": "measured-ppsspp"
+    },
+    {
+      "name": "scePsmfP_library.prx",
+      "load_address": 166493952,
+      "required": true,
+      "role": "guest-prx",
+      "guest_path": "disc0:/PSP_GAME/USRDIR/module/libpsmfplayer.prx",
+      "load_address_evidence": "measured-ppsspp"
+    }
+  ],
+  "filesystem": {
+    "data_root": "xbdata",
+    "memory_stick_root": "memstick",
+    "device_prefixes": ["fatms0:", "host0:", "ms0:"],
+    "executable": "place_game_here/EBOOT.elf",
+    "module_dir": "place_game_here/EXTRACTED/decrypted",
+    "psp_header": "place_game_here/EXTRACTED/PSP_GAME/SYSDIR/EBOOT.BIN",
+    "loose_content_roots": [
+      {"root": ".", "mount": "", "precedence": 0, "skip_primary_root": true}
+    ]
+  },
+  "hle_profile": "hst-current",
+  "codegen_profile": "hst",
+  "feature_requirements": ["allegrex-core", "host-filesystem", "psp-hle", "sdl3", "vulkan", "windows-runtime"],
+  "verification_profile": "hst-native-player-package",
+  "runtime_bindings": {
+    "schema_version": 1,
+    "fallback_entry": 2728032,
+    "worker_thread_entry": 288968,
+    "launcher_thread_entry": 2728308,
+    "dispatch_aliases": [
+      {"from": 198992, "to": 198984}
+    ],
+    "callback_terminators": [
+      {"sentinel": 0, "ra": 254060},
+      {"sentinel": 4294967295, "pc": 2699168, "ra": 293388}
+    ]
+  },
+  "notes": "Hot Shots Tennis (UCUS98701) title configuration: disc identity, guest module names and load addresses, and runtime bindings, all given as addresses. Contains no retail bytes, hashes, keys, recovered source, or private evidence. The executable, module_dir and psp_header entries name the repository's standard place_game_here/ input layout for the HST manager, which uses this manifest when -TitleManifest names it; the player uses it to recognize the disc as the built-in hst title."
+}

@@ -45,7 +45,8 @@ typedef enum {
     VIEW_CONFIRM_REMOVE_TOOLS,
     VIEW_ONLINE_SETTINGS,   /* Settings > Online and developer options */
     VIEW_BUILD_CACHE,       /* Settings > Build tools and cache (#1306) */
-    VIEW_DEVELOPER_LOG      /* the developer log panel (developer mode, F12) */
+    VIEW_DEVELOPER_LOG,     /* the developer log panel (developer mode, F12) */
+    VIEW_PSP_FONTS          /* Settings > PSP fonts: import your PSP's own fonts; the last value */
 } PlayerView;
 
 typedef enum {
@@ -185,6 +186,7 @@ typedef struct {
     bool online_news;      /* the news strip, when online mode ships */
     bool online_reports;   /* user-sent reports, when online mode ships */
     bool developer_mode;   /* shows the developer log panel (F12, Select + R) */
+    bool experimental_60hz; /* experimental opt-in: native 60 Hz frame-rate rescaled game logic (default: off) */
     /* Builds keep the compiled system libraries a disc carries in the data folder and
        reuse them for other games with the same library (#1306). On by default; the
        copies never leave this PC. */
@@ -219,6 +221,9 @@ typedef struct {
     bool cancel_requested;
     bool bootstrap_python;
     bool resume_build_pending;
+    /* The verified release bundle (#1285) the About screen listed, or empty
+       when it listed the per-user download; licence texts open from here. */
+    char bundle_root[NK_MAX_PATH];
 } PlayerPrerequisiteState;
 
 /* Room for a diagnostic that names up to three searched paths plus
@@ -360,6 +365,25 @@ typedef struct {
     char font_message[NK_FONT_TEXT_MAX];
 } SetupWizardState;
 
+/* A PSN release of a UMD game (an EBOOT.PBP whose DATA.PSAR is an NPUMDIMG
+ * image, #295 phase 2). The player converts it once into a private ISO under
+ * the per-user data root, <data>/discs/<DISC_ID>/<DISC_ID>.iso, and then
+ * imports that ISO exactly as a picked disc image. */
+typedef struct {
+    char pbp_path[MAX_PATH_LEN];
+    char iso_path[MAX_PATH_LEN];
+    char disc_id[MAX_DISC_ID_LEN];
+    char title[MAX_TITLE_LEN];
+    /* A checked conversion is already at iso_path. */
+    bool iso_ready;
+} PlayerPsnPackage;
+
+typedef struct {
+    void (*on_progress)(uint64_t done_bytes, uint64_t total_bytes, void *userdata);
+    bool (*is_cancelled)(void *userdata);
+    void *userdata;
+} PlayerPsnConvertCallbacks;
+
 typedef struct PlayerApp {
     PlayerView active_view;
     GameRecord games[MAX_LIBRARY_GAMES];
@@ -411,6 +435,17 @@ typedef struct PlayerApp {
     int showcase_count;
     bool is_game_running;
     uint64_t launch_time_ms;
+    uint64_t boot_event_read_offset;
+    bool stalled_game_notice_visible;
+    bool stalled_game_notice_dismissed;
+    bool stalled_game_notice_raise_requested;
+    bool stalled_game_restore_game_front_requested;
+    uint32_t stalled_game_no_frame_vblanks;
+    uint32_t stalled_game_seconds;
+    uint32_t stalled_game_ready;
+    uint32_t stalled_game_delay;
+    uint32_t stalled_game_wait;
+    uint32_t stalled_game_spin;
     /* Keep the launcher UI headless. An explicit presented-frame acceptance
        request may still open a window in the child runtime. */
     bool launch_headless;
@@ -459,6 +494,9 @@ typedef struct PlayerApp {
 
     /* Settings persistence */
     char settings_path[MAX_PATH_LEN];
+    /* --experimental-60hz on the command line: launches of this session opt in to
+       an enhancement-package build's 60 Hz logic. Never saved with the settings. */
+    bool experimental_60hz_session;
     char settings_notice[128];
 
     /* Window & layout metrics */
@@ -468,6 +506,12 @@ typedef struct PlayerApp {
     bool logical_ui;
     bool enable_focus_handoff;
     bool child_window_ready;
+    /* Start watch for the running launch (#1290): the first running check was
+       logged, the child wrote its first boot event, and the "still no boot
+       event" developer-log note was written. Cleared by each launch. */
+    bool launch_running_check_logged;
+    bool child_boot_event_seen;
+    bool child_boot_wait_noted;
     bool close_confirmation_pending;
     char boot_event_file_path[MAX_PATH_LEN];
     bool should_quit;
@@ -476,6 +520,14 @@ typedef struct PlayerApp {
        and shown only with developer mode on. Lines are redacted (profile path
        and user name replaced) when they are added. */
     PlayerDevLog dev_log;
+
+    /* A PSN package being converted to its disc image on a worker the event
+       loop in main.c owns. Progress and cancel use the setup wizard's panel;
+       return_view is where the picked disc continues once it is done. */
+    PlayerPsnPackage psn_package;
+    bool psn_conversion_active;
+    bool psn_conversion_requested;
+    PlayerView psn_conversion_return_view;
 } PlayerApp;
 
 /* State management API */
@@ -591,8 +643,10 @@ const char *player_plain_reason(const char *text);
 const char *player_runtime_stop_feature(const char *boundary);
 /* The cards for a game that ended on its own: RUNTIME_SEMANTIC_BOUNDARY (the
    runtime stopped at a named boundary, tracked by issue when non-zero),
-   RUNTIME_PREMATURE_EXIT and RUNTIME_ERROR_EXIT. The raw boundary and the exit
-   code go into the details, never the headline. */
+   RUNTIME_PREMATURE_EXIT, RUNTIME_ERROR_EXIT, and RUNTIME_START_TIMEOUT (the
+   launcher stopped a child that wrote no boot event in time; elapsed_ms is how
+   long it waited). The raw boundary and the exit code go into the details,
+   never the headline. */
 void player_app_set_game_stop_error(PlayerApp *app, const char *code,
                                     const char *boundary, unsigned int issue,
                                     int exit_code, uint64_t elapsed_ms,
@@ -720,6 +774,22 @@ bool player_app_close_request_batch_claim(bool *close_request_handled);
  * alive and require a second explicit close request before forcing quit. */
 void player_app_note_close_confirmation_failure(PlayerApp *app);
 bool player_app_take_close_confirmation_fallback(PlayerApp *app);
+/* The quit confirmation is the host's native message box. SDL3's Windows box
+ * does not widen a button for a long label: "Close game and quit" showed as
+ * "ose game and qu". Every button label stays within
+ * PLAYER_DIALOG_BUTTON_LABEL_MAX characters. Cancel is the Return and Escape
+ * default, so a stray Enter never ends the game. */
+#define PLAYER_DIALOG_BUTTON_LABEL_MAX 12
+#define PLAYER_QUIT_DIALOG_TITLE "Quit Nakagawa?"
+#define PLAYER_QUIT_DIALOG_CANCEL_LABEL "Cancel"
+#define PLAYER_QUIT_DIALOG_QUIT_LABEL "Quit"
+/* The quit confirmation's message. It names the running game by the title its
+ * launch carries (the disc title the library card shows), with its line breaks
+ * folded to spaces, or says "A game" when the launch has none. Two lines: the
+ * first says the game is running, the second what quitting does. False only
+ * for a missing or empty buffer. */
+bool player_app_quit_confirmation_message(const PlayerApp *app, char *out,
+                                          size_t out_size);
 bool player_app_boot_event_is_window_ready(const char *line);
 bool player_app_child_window_ready(PlayerApp *app);
 /* Fit a requested client rectangle into a display. `usable` is the display's
@@ -746,6 +816,14 @@ bool player_ui_canvas_fit(int pixel_width, int pixel_height,
 void player_app_toggle_vsync(PlayerApp *app);
 void player_app_toggle_reduce_motion(PlayerApp *app);
 void player_app_toggle_ui_sounds(PlayerApp *app);
+void player_app_toggle_experimental_60hz(PlayerApp *app);
+void player_app_set_experimental_60hz(PlayerApp *app, bool on);
+/* A session-only opt-in (the --experimental-60hz flag): unlike the setter above it
+   is not written to the settings file. */
+void player_app_set_experimental_60hz_session(PlayerApp *app, bool on);
+/* Whether a launch now exports SR_EXPERIMENTAL_60HZ=1: the saved setting or the
+   session override. */
+bool player_app_experimental_60hz_active(const PlayerApp *app);
 void player_app_toggle_share_system_libraries(PlayerApp *app);
 void player_app_adjust_volume(PlayerApp *app, int delta);
 void player_app_move_focus(PlayerApp *app, int delta, int focus_count);
@@ -801,6 +879,8 @@ int player_app_focus_count(const PlayerApp *app);
 /* Process launch integration */
 bool player_app_launch_game(PlayerApp *app, int game_index);
 void player_app_stop_game(PlayerApp *app);
+void player_app_stop_stalled_game(PlayerApp *app);
+void player_app_keep_waiting_for_stalled_game(PlayerApp *app);
 
 /* One PLAY, split so its slow part can leave the UI thread (#1298). Checking a
  * package hashes every artifact it lists (hundreds of MB for a retail title),
@@ -872,10 +952,15 @@ NkResult player_app_apply_input_profile_to_session(PlayerApp *app, const GameRec
  * Returns true when this tick observed the child's exit and finalized the
  * session. A child that exits before 500 ms of wall time is reported through
  * the structured RUNTIME_PREMATURE_EXIT error; a later non-zero exit becomes
- * RUNTIME_ERROR_EXIT. Either way the session's process handles are released
- * and is_game_running is false before returning, so a subsequent launch
- * starts from clean state. Pure state logic (no SDL): the caller supplies the
- * clock so tests can drive classification deterministically. */
+ * RUNTIME_ERROR_EXIT. A child still running PLAYER_GAME_START_TIMEOUT_MS
+ * after launch without having written a single boot event never started: the
+ * tick stops it, reports RUNTIME_START_TIMEOUT and returns true (#1290).
+ * Either way the session's process handles are released and is_game_running
+ * is false before returning, so a subsequent launch starts from clean state.
+ * Pure state logic (no SDL): the caller supplies the clock so tests can drive
+ * classification deterministically. */
+#define PLAYER_GAME_START_NOTE_MS 5000u
+#define PLAYER_GAME_START_TIMEOUT_MS 15000u
 bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms);
 
 /* Commit the inspected, successfully staged title to the persistent library
@@ -917,6 +1002,33 @@ bool player_app_add_inspected_game(PlayerApp *app);
 
 /* Start the wizard's staging worker for the inspected disc. */
 void player_app_wizard_begin_extraction(PlayerApp *app);
+
+/* PSN releases of UMD games (#295 phase 2). */
+/* True when the file starts with the PBP package magic. */
+bool player_path_is_pbp_package(const char *path);
+/* Identify a picked package with no key lookup and name its private ISO.
+ * True for a PSN release of a UMD game; otherwise false with the named code
+ * (PSONE_CLASSIC_UNSUPPORTED, FIRMWARE_OUT_OF_SCOPE, PBP_PACKAGE_UNSUPPORTED or
+ * IO_FAILURE) and a plain sentence. */
+bool player_psn_package_inspect(const char *pbp_path, PlayerPsnPackage *package,
+                                char *code, size_t code_size,
+                                char *message, size_t message_size);
+/* Convert the package into package->iso_path: written beside it, checked
+ * (ISO9660 volume descriptor and the package's DISC_ID), then renamed into
+ * place; a failure or a cancel removes the partial file. On failure code is
+ * the boundary's named result (CANCELLED for a cancel). */
+bool player_psn_package_convert(const PlayerPsnPackage *package,
+                                const PlayerPsnConvertCallbacks *callbacks,
+                                char *code, size_t code_size,
+                                char *message, size_t message_size);
+/* The wizard's progress panel shows the conversion; the event loop starts the
+ * worker once it takes the request. finish restores the view the package was
+ * picked from, so the ISO is then imported exactly as a picked disc. */
+void player_app_psn_conversion_begin(PlayerApp *app, const PlayerPsnPackage *package);
+bool player_app_psn_conversion_take_request(PlayerApp *app);
+void player_app_psn_conversion_progress(PlayerApp *app, uint64_t done_bytes,
+                                        uint64_t total_bytes);
+void player_app_psn_conversion_finish(PlayerApp *app);
 
 /* Setup Wizard API */
 void player_app_start_setup_wizard(PlayerApp *app);

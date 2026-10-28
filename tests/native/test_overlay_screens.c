@@ -50,7 +50,7 @@ static NkUiTextBackend g_text;
 static NkUi *overlay_ui(int width, int height, float display_scale) {
     NkUiConfig config;
     NkUi *ui;
-    NkUiViewport viewport = {width, height, display_scale, 0, 100};
+    NkUiViewport viewport = {width, height, display_scale, 0, 100, 0.0f, 0.0f};
     g_text = nk_ui_text_fixed();
     g_text.raster = test_raster;
     memset(&config, 0, sizeof(config));
@@ -413,15 +413,15 @@ static bool row_is(const NkOverlayControls *controls, const char *psp, const cha
 
 /* The rows come from the mapping in force, and the controller's buttons are named
    for the pad's family. */
+static void key(NkInputProfile *profile, NkPspButton button, const char *primary,
+                const char *secondary) {
+    profile->psp_keys[button].primary =
+        primary != NULL ? nk_host_key_from_name(primary) : NK_HOST_KEY_NONE;
+    profile->psp_keys[button].secondary =
+        secondary != NULL ? nk_host_key_from_name(secondary) : NK_HOST_KEY_NONE;
+}
+
 static void test_describe_controls(void) {
-    static const NkOverlayKey keys[] = {
-        {NK_PSP_BTN_START_BIT, "Enter"}, {NK_PSP_BTN_SELECT_BIT, "Shift"},
-        {NK_PSP_BTN_CROSS_BIT, "X"}, {NK_PSP_BTN_CIRCLE_BIT, "Z"},
-        {NK_PSP_BTN_SQUARE_BIT, "A"}, {NK_PSP_BTN_TRIANGLE_BIT, "S"},
-        {NK_PSP_BTN_LTRIGGER_BIT, "Q"}, {NK_PSP_BTN_RTRIGGER_BIT, "W"},
-        {NK_PSP_BTN_UP_BIT, "Arrow keys"}, {NK_PSP_BTN_DOWN_BIT, "Arrow keys"},
-        {NK_PSP_BTN_LEFT_BIT, "Arrow keys"}, {NK_PSP_BTN_RIGHT_BIT, "Arrow keys"}
-    };
     NkInputProfile profile;
     static NkOverlayControls controls;
     memset(&profile, 0, sizeof(profile));
@@ -440,9 +440,21 @@ static void test_describe_controls(void) {
     bind(&profile, NK_PSP_BTN_LEFT, NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_DPAD_LEFT, NK_BINDING_NONE, 0);
     bind(&profile, NK_PSP_BTN_RIGHT, NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_DPAD_RIGHT,
          NK_BINDING_HOST_AXIS_POS, NK_HOST_AXIS_LEFTX);
+    /* The keyboard column reads the profile's keys: the window's defaults here. */
+    key(&profile, NK_PSP_BTN_START, "return", NULL);
+    key(&profile, NK_PSP_BTN_SELECT, "lshift", "rshift");
+    key(&profile, NK_PSP_BTN_CROSS, "x", NULL);
+    key(&profile, NK_PSP_BTN_CIRCLE, "z", NULL);
+    key(&profile, NK_PSP_BTN_SQUARE, "a", NULL);
+    key(&profile, NK_PSP_BTN_TRIANGLE, "s", NULL);
+    key(&profile, NK_PSP_BTN_LTRIGGER, "q", NULL);
+    key(&profile, NK_PSP_BTN_RTRIGGER, "w", NULL);
+    key(&profile, NK_PSP_BTN_UP, "up", NULL);
+    key(&profile, NK_PSP_BTN_DOWN, "down", NULL);
+    key(&profile, NK_PSP_BTN_LEFT, "left", NULL);
+    key(&profile, NK_PSP_BTN_RIGHT, "right", NULL);
 
-    nk_overlay_describe_controls(&controls, &profile, NK_UI_PAD_LETTERS_A_SOUTH, keys,
-                                 sizeof(keys) / sizeof(keys[0]));
+    nk_overlay_describe_controls(&controls, &profile, NK_UI_PAD_LETTERS_A_SOUTH);
     CHECK(controls.count == 10u, "describe: one row per PSP control");
     CHECK(row_is(&controls, "D-pad", "Arrow keys", "D-pad / Left stick"),
           "describe: the four arrows are named once; a stick binding joins the D-pad");
@@ -453,23 +465,31 @@ static void test_describe_controls(void) {
     CHECK(row_is(&controls, "R", "W", ""), "describe: an unbound control is empty");
     CHECK(row_is(&controls, "Select", "Shift", "View"), "describe: Xbox-style back is View");
 
-    nk_overlay_describe_controls(&controls, &profile, NK_UI_PAD_SHAPES, keys,
-                                 sizeof(keys) / sizeof(keys[0]));
+    nk_overlay_describe_controls(&controls, &profile, NK_UI_PAD_SHAPES);
     CHECK(row_is(&controls, "Cross", "X", "Cross"), "describe: a PlayStation-style pad says Cross");
     CHECK(row_is(&controls, "L", "Q", "L1 / L2"), "describe: PlayStation shoulder and trigger");
-    nk_overlay_describe_controls(&controls, &profile, NK_UI_PAD_LETTERS_A_EAST, keys,
-                                 sizeof(keys) / sizeof(keys[0]));
+    nk_overlay_describe_controls(&controls, &profile, NK_UI_PAD_LETTERS_A_EAST);
     CHECK(row_is(&controls, "Cross", "X", "B"), "describe: a Switch-style pad's south is B");
-    nk_overlay_describe_controls(&controls, &profile, NK_UI_PAD_NEUTRAL, keys,
-                                 sizeof(keys) / sizeof(keys[0]));
+    nk_overlay_describe_controls(&controls, &profile, NK_UI_PAD_NEUTRAL);
     CHECK(row_is(&controls, "Circle", "Z", "East button"), "describe: an unknown pad names the position");
 
     bind(&profile, NK_PSP_BTN_CROSS, NK_BINDING_HOST_BUTTON, NK_HOST_BUTTON_EAST, NK_BINDING_NONE, 0);
-    nk_overlay_describe_controls(&controls, &profile, NK_UI_PAD_LETTERS_A_SOUTH, keys,
-                                 sizeof(keys) / sizeof(keys[0]));
+    nk_overlay_describe_controls(&controls, &profile, NK_UI_PAD_LETTERS_A_SOUTH);
     CHECK(row_is(&controls, "Cross", "X", "B"), "describe: a remapped button shows the new binding");
-    nk_overlay_describe_controls(&controls, NULL, NK_UI_PAD_LETTERS_A_SOUTH, NULL, 0u);
-    CHECK(row_is(&controls, "Cross", "", ""), "describe: no mapping leaves the row unbound");
+    key(&profile, NK_PSP_BTN_CROSS, "space", "x");
+    key(&profile, NK_PSP_BTN_RTRIGGER, "e", NULL);
+    nk_overlay_describe_controls(&controls, &profile, NK_UI_PAD_LETTERS_A_SOUTH);
+    CHECK(row_is(&controls, "Cross", "Space / X", "B"),
+          "describe: a remapped key shows the profile's keys, primary then secondary");
+    CHECK(row_is(&controls, "R", "E", ""), "describe: a newly bound key appears");
+    key(&profile, NK_PSP_BTN_DOWN, "s", NULL);
+    nk_overlay_describe_controls(&controls, &profile, NK_UI_PAD_LETTERS_A_SOUTH);
+    CHECK(row_is(&controls, "D-pad", "Up Arrow / Right Arrow / S / Left Arrow", "D-pad / Left stick"),
+          "describe: three arrows and another key are each named");
+    nk_overlay_describe_controls(&controls, NULL, NK_UI_PAD_LETTERS_A_SOUTH);
+    CHECK(row_is(&controls, "Cross", "X", ""),
+          "describe: no profile is the window's default keyboard and no pad binding");
+    CHECK(row_is(&controls, "Select", "Shift", ""), "describe: both shift keys read Shift");
 }
 
 static bool append_text(char *out, size_t cap, size_t *used, const char *text, size_t length) {

@@ -6,7 +6,7 @@ states which of them may cross the public-source boundary.
 
 | Surface | Public disposition | Provenance / boundary decision |
 | --- | --- | --- |
-| `assets/titles/hst-ucus98701.json` | Excluded | Title-specific identity, module addresses and private-route filesystem configuration. The public candidate retains only generic schema and synthetic title manifests. |
+| `assets/titles/hst-ucus98701.json` | Included (owner decision, 2026-10-27) | Title identity, module names and load addresses, profiles and runtime bindings, all as addresses, plus the standard `place_game_here/` input layout. No game bytes, disc image name, host path or route evidence. |
 | `assets/title_manifest.schema.json` | Included | Generic schema; it contains no title bytes, addresses, hashes, keys or route evidence. |
 | `assets/titles/synthetic.json`, `assets/titles/pspdev-phase5.json`, `assets/titles/synthetic-title2.json`, `assets/titles/display-smoke.json` | Included | Source-owned fixtures with synthetic addresses and build paths. They do not describe retail content. |
 | `nk.ps1`, `nk_manager.ps1` | Included as tooling | Canonical Windows orchestration with fail-closed, manifest-declared input validation. The retired HST-prefixed wrappers are not part of the public surface. |

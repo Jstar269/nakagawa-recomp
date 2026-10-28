@@ -26,7 +26,12 @@
 //   * the shared VASIN helper matches the real-PSP measured domain words,
 //     including signed invalid-NaN payloads just outside +/-1;
 //   * vscmp.s/vsge.s/vslt.s return the 45 words a PSP-3000 measured
-//     (PSP-VFPU-CMP-001), in the generated code and the interpreter alike;
+//     (PSP-VFPU-CMP-001), in the generated code and the interpreter alike, and
+//     vscmp at every width follows the PSP-HLE-ISSUES-001 cells (denormals
+//     flushed, NaNs ordered by bit pattern);
+//   * vrndi.s steps the random unit by the PSP-HLE-ISSUES-001 rule in the
+//     generated code and the interpreter alike, and the vrnd forms and prefixes
+//     without a recorded rule fail closed;
 //   * valid aligned quad round-trips still work.
 //
 // The final check count is printed by the executable. No game inputs or private
@@ -490,9 +495,7 @@ static int check_overlap_diff(void) {
             int32_t m = (int32_t)((i * 37 + c * 13) % 8192) - 4096;
             s0.v[i] = (float)m / 32.0f;
         }
-        s0.vfpuCtrl[0] = 0xe4u;
-        s0.vfpuCtrl[1] = 0xe4u;
-        s0.vfpuCtrl[2] = 0u;
+        sr_vfpu_thread_ctrl_init(&s0); /* identity prefixes, thread-entry RCX0-7 */
         s0.vfpuCtrl[3] = 0u;
 
         s1 = s0;
@@ -511,7 +514,7 @@ static int check_overlap_diff(void) {
                 break;
             }
         }
-        for (int i = 0; i < 4 && !case_bad; i++) {
+        for (int i = 0; i < 16 && !case_bad; i++) {
             if (s1.vfpuCtrl[i] != s2.vfpuCtrl[i]) {
                 fprintf(stderr,
                         "MISMATCH overlap diff case=%s op=0x%08x: vfpuCtrl[%d] codegen=0x%08x interp=0x%08x\n",
@@ -767,6 +770,10 @@ static int check_vfpu3_compare_forms(void) {
         {5u, 0x40400000u, 0x00000000u, 0x3f800000u, "vscmp.s 3 vs 0 writes 1.0"},
         {5u, 0x7fc00000u, 0x3fc00000u, 0x3f800000u, "vscmp.s NaN vs 1.5 writes 1.0 (PSP-VFPU-CMP-001)"},
         {5u, 0x3fc00000u, 0x7fc00000u, 0xbf800000u, "vscmp.s 1.5 vs NaN writes -1.0 (PSP-VFPU-CMP-001)"},
+        {5u, 0x00000001u, 0x00000000u, 0x00000000u,
+         "vscmp.s +denormal vs 0 writes 0.0 (denormal flushed, PSP-HLE-ISSUES-001)"},
+        {5u, 0x80000001u, 0x00000000u, 0x00000000u,
+         "vscmp.s -denormal vs 0 writes 0.0 (denormal flushed, PSP-HLE-ISSUES-001)"},
     };
     CpuState s;
     int bad = 0;
@@ -925,6 +932,93 @@ static int check_vfpu_compare_measured_words(void) {
                         "aot=0x%08x interp=0x%08x kind=%d\n",
                         op_case[op], pairs[p].name, pairs[p].a, pairs[p].b, want,
                         aot.vi[di[0]], interp.vi[di[0]], kind);
+            }
+        }
+    }
+    return bad;
+}
+
+static int check_vscmp_hle_issues_cells(void) {
+    /* PSP-HLE-ISSUES-001 (PSP-3000, 6.61, 2026-10-24, probe case hle-issues-batch, PR #1269;
+     * captured from da97b2c0 without a runner envelope, so not acceptance-eligible): the
+     * probe's own vscmp.s/.p/.t/.q C200, C000, C100 and vscmp.q C200, C000, C000 words over
+     * its six operand sets (fixtures/psp_oracle/probe_hle_issues.c). docs/HARDWARE_ORACLE.md
+     * states the result of all 30 cells, identical on both passes: per lane, -1, 0 or +1 in
+     * sign-magnitude integer order of the bit patterns, with denormals flushed to zero,
+     * +0 equal to -0 and NaNs above infinity by bit pattern, at every width, and VFPU_CC not
+     * written. The want[] words below are that rule applied to each lane; the same-register
+     * form compares every lane with itself and writes 0.0. Both execution lanes run each
+     * word: the AOT body tools/codegen.py emits (via the overlap-diff header) and the
+     * production interpreter. Lanes past the width and every other register keep their
+     * values. The denorm-finite set failed before the denormal flush: the host compare
+     * ordered 0x00000001 above 0 and 0x80000001 below it. */
+    static const struct {
+        const char *name;
+        uint32_t vs[4], vt[4], want[4];
+    } sets[] = {
+        {"qnan-inf", {0x7fc00000u, 0x7fc00000u, 0x7f800000u, 0xff800000u},
+         {0x7fc00000u, 0x7f800000u, 0x7fc00000u, 0x7fc00000u},
+         {0x00000000u, 0x3f800000u, 0xbf800000u, 0xbf800000u}},
+        {"nan-kinds", {0x7f800001u, 0xffc00000u, 0x7fffffffu, 0x7f800001u},
+         {0x3f800000u, 0xbf800000u, 0x7fffffffu, 0xff800001u},
+         {0x3f800000u, 0xbf800000u, 0x00000000u, 0x3f800000u}},
+        {"inf-inf", {0x7f800000u, 0xff800000u, 0x7f800000u, 0xff800000u},
+         {0x7f800000u, 0xff800000u, 0xff800000u, 0x7f800000u},
+         {0x00000000u, 0x00000000u, 0x3f800000u, 0xbf800000u}},
+        {"zero-nan", {0x00000000u, 0x80000000u, 0x3f800000u, 0xbf800000u},
+         {0x80000000u, 0x00000000u, 0x7fc00000u, 0xffc00000u},
+         {0x00000000u, 0x00000000u, 0xbf800000u, 0x3f800000u}},
+        {"denorm-finite", {0x00000001u, 0x80000001u, 0x40400000u, 0x40000000u},
+         {0x00000000u, 0x00000000u, 0x40000000u, 0x40400000u},
+         {0x00000000u, 0x00000000u, 0x3f800000u, 0xbf800000u}},
+        {"nan-mixed", {0x7f800001u, 0x3f800000u, 0x7fc00000u, 0xff800000u},
+         {0xff800001u, 0x7f800001u, 0xff800000u, 0x7fc00000u},
+         {0x3f800000u, 0xbf800000u, 0x3f800000u, 0xbf800000u}},
+    };
+    static const char *const forms[] = {
+        "vscmp-s-issues", "vscmp-p-issues", "vscmp-t-issues", "vscmp-q-issues",
+        "vscmp-q-same-issues",
+    };
+    int bad = 0;
+    for (size_t f = 0; f < sizeof(forms) / sizeof(forms[0]); f++) {
+        const int c = find_overlap_diff_case(forms[f]);
+        CHECK(c >= 0, "PSP-HLE-ISSUES-001 vscmp word is in the overlap-diff header");
+        if (c < 0) { bad = 1; continue; }
+        const uint32_t w = overlap_diff_cases[c].w;
+        const int n = vsize(w);
+        const int same = ((w >> 8) & 0x7fu) == ((w >> 16) & 0x7fu);
+        uint8_t si[4], ti[4], di[4];
+        vreg_idx((int)((w >> 8) & 0x7fu), n, si);
+        vreg_idx((int)((w >> 16) & 0x7fu), n, ti);
+        vreg_idx((int)(w & 0x7fu), n, di);
+        for (size_t p = 0; p < sizeof(sets) / sizeof(sets[0]); p++) {
+            CpuState before, aot, interp;
+            setup_identity_compute(&before);
+            for (int i = 0; i < 128; i++) before.vi[i] = 0x3f800000u | ((uint32_t)i << 16);
+            before.vfpuCtrl[3] = 0x5au; /* VFPU_CC preset: vscmp must leave it */
+            for (int l = 0; l < n; l++) {
+                before.vi[si[l]] = sets[p].vs[l];
+                if (!same) before.vi[ti[l]] = sets[p].vt[l];
+            }
+            aot = before;
+            interp = before;
+            overlap_diff_run_codegen(&aot, c);
+            const int kind = sr_vfpu_interp(&interp, w);
+            CpuState want = before;
+            for (int l = 0; l < n; l++) want.vi[di[l]] = same ? 0x00000000u : sets[p].want[l];
+            g_checks++;
+            if (kind != SR_VFPU_COMPUTE || memcmp(aot.vi, want.vi, sizeof(want.vi)) != 0 ||
+                memcmp(interp.vi, want.vi, sizeof(want.vi)) != 0 || aot.vfpuCtrl[3] != 0x5au ||
+                memcmp(aot.vfpuCtrl, interp.vfpuCtrl, sizeof(aot.vfpuCtrl)) != 0) {
+                g_failures++;
+                bad = 1;
+                for (int l = 0; l < n; l++) {
+                    fprintf(stderr,
+                            "FAIL: PSP-HLE-ISSUES-001 %s-%s lane %d a=0x%08x b=0x%08x "
+                            "psp=0x%08x aot=0x%08x interp=0x%08x kind=%d\n",
+                            forms[f], sets[p].name, l, before.vi[si[l]], before.vi[ti[l]],
+                            want.vi[di[l]], aot.vi[di[l]], interp.vi[di[l]], kind);
+                }
             }
         }
     }
@@ -1114,14 +1208,183 @@ static int check_vrexp2_measured_words(void) {
     return bad;
 }
 
+/* RCX0-7 image of a random-unit state as probe_hle_issues.c writes it: Ck split into
+ * the low halves of RCXk and RCX(k+4), carry nibble k in bits 16-19 of RCXk, 0x3f8 above. */
+static void vrndi_probe_image(uint32_t *rcx, const uint32_t c[4], uint32_t carry) {
+    for (unsigned k = 0; k < 8u; k++) {
+        const uint32_t half = (c[k & 3u] >> (k < 4u ? 0u : 16u)) & 0xffffu;
+        rcx[k] = 0x3f800000u | (((carry >> (4u * k)) & 0xfu) << 16) | half;
+    }
+}
+
+/* Run one vrndi.s word in the AOT lane (overlap-diff case c, skipped when c < 0) and the
+ * interpreter from `before`; both must end in `want`. */
+static int vrndi_lanes_match(int c, uint32_t w, int lane, const CpuState *before,
+                             const CpuState *want, const char *what) {
+    CpuState aot = *before, interp = *before;
+    const int kind = sr_vfpu_interp(&interp, w);
+    int ok = kind == SR_VFPU_COMPUTE && memcmp(interp.vi, want->vi, sizeof(want->vi)) == 0 &&
+             memcmp(interp.vfpuCtrl, want->vfpuCtrl, sizeof(want->vfpuCtrl)) == 0;
+    if (c >= 0) {
+        overlap_diff_run_codegen(&aot, c);
+        ok &= memcmp(aot.vi, want->vi, sizeof(want->vi)) == 0 &&
+              memcmp(aot.vfpuCtrl, want->vfpuCtrl, sizeof(want->vfpuCtrl)) == 0;
+    }
+    g_checks++;
+    if (!ok) {
+        g_failures++;
+        fprintf(stderr, "FAIL: vrndi.s 0x%08x %s kind=%d value aot=0x%08x interp=0x%08x "
+                "want=0x%08x; RCX0 aot=0x%08x interp=0x%08x want=0x%08x\n", w, what, kind,
+                aot.vi[lane], interp.vi[lane], want->vi[lane], aot.vfpuCtrl[8],
+                interp.vfpuCtrl[8], want->vfpuCtrl[8]);
+    }
+    return !ok;
+}
+
+static int check_vrndi_rule_cells(void) {
+    /* vrndi.s, issue #326. docs/HARDWARE_ORACLE.md (PSP-HLE-ISSUES-001, PSP-3000, 6.61,
+     * 2026-10-24, probe case hle-issues-batch, not acceptance-eligible) records the step
+     * rule that reproduces all 1792 rcar/rcbig rows: one vrndi.s S000 from RCX states the
+     * probe wrote (C0 0x2468ace0, C1 0x13579bdf, C2/C3/carry from its grids). The raw rows
+     * stay private, so these cells are that rule applied to twelve of the probe's own
+     * states (carry-out 0, 1 and 2; carries in all eight nibbles), computed outside the
+     * runtime: the drawn word and RCX0-7 after the step. Both lanes run each word -- the
+     * AOT body tools/codegen.py emits (via the overlap-diff header) and the production
+     * interpreter -- into S000 (the probe word) and S323. Only the destination lane and
+     * RCX0-7 change; VFPU_CC and the prefixes are left. Before the step was implemented,
+     * the AOT raised Unsupported and the interpreter answered SR_VFPU_OTHER. */
+    static const uint32_t c2s[8] = {0x00000000u, 0x00000001u, 0x7fffffffu, 0x80000000u,
+                                    0xfffffffeu, 0xffffffffu, 0x907f6e50u, 0x5a5a5a5au};
+    static const uint32_t c3s[8] = {0x00000000u, 0x00000001u, 0x7fffffffu, 0x80000000u,
+                                    0xc0000000u, 0xffffffffu, 0xc4d5e6d8u, 0x89abcdefu};
+    static const uint32_t carries[2][7] = {
+        {0x0u, 0x1u, 0x2u, 0x3u, 0xfu, 0x10u, 0xffffu},
+        {0x00010000u, 0x40000000u, 0x7fff0000u, 0x80000000u, 0x12345678u, 0xfffffffcu,
+         0xffffffffu},
+    };
+    static const struct {
+        const char *name;
+        unsigned i, j, k, big;
+        uint32_t value, after[8];
+    } cells[] = {
+        {"rcar-0-0-0", 0u, 0u, 0u, 0u, 0x0b27424au,
+         {0x3f80cf61u, 0x3f8072e9u, 0x3f800000u, 0x3f800000u, 0x3f802579u, 0x3f80e5adu,
+          0x3f800000u, 0x3f800000u}},
+        {"rcar-1-1-1", 1u, 1u, 1u, 0u, 0x0b27424eu,
+         {0x3f80cf61u, 0x3f8072e9u, 0x3f800001u, 0x3f800004u, 0x3f802579u, 0x3f80e5adu,
+          0x3f800000u, 0x3f800000u}},
+        {"rcar-2-3-6", 2u, 3u, 6u, 0u, 0x8b284248u,
+         {0x3f80cf61u, 0x3f8072e9u, 0x3f800000u, 0x3f80fffeu, 0x3f802579u, 0x3f80e5adu,
+          0x3f808000u, 0x3f808000u}},
+        {"rcar-5-5-6 (carry out 1)", 5u, 5u, 6u, 0u, 0x0b284246u,
+         {0x3f81cf61u, 0x3f8072e9u, 0x3f80ffffu, 0x3f80fffcu, 0x3f802579u, 0x3f80e5adu,
+          0x3f80ffffu, 0x3f800000u}},
+        {"rcar-3-4-4", 3u, 4u, 4u, 0u, 0x0b274259u,
+         {0x3f80cf61u, 0x3f8072e9u, 0x3f800000u, 0x3f80000fu, 0x3f802579u, 0x3f80e5adu,
+          0x3f80c000u, 0x3f800000u}},
+        {"rcar-6-7-5", 6u, 7u, 5u, 0u, 0xaefe4c88u,
+         {0x3f80cf61u, 0x3f8072e9u, 0x3f80cdefu, 0x3f800a3eu, 0x3f802579u, 0x3f80e5adu,
+          0x3f8089abu, 0x3f80a3d7u}},
+        {"rcbig-0-0-0", 0u, 0u, 0u, 1u, 0x0b28424au,
+         {0x3f80cf61u, 0x3f8072e9u, 0x3f800000u, 0x3f800000u, 0x3f802579u, 0x3f80e5adu,
+          0x3f800000u, 0x3f800001u}},
+        {"rcbig-5-5-6 (carry out 2)", 5u, 5u, 6u, 1u, 0x0b274246u,
+         {0x3f82cf61u, 0x3f8072e9u, 0x3f80ffffu, 0x3f80fffcu, 0x3f802579u, 0x3f80e5adu,
+          0x3f80ffffu, 0x3f80ffffu}},
+        {"rcbig-7-6-4", 7u, 6u, 4u, 1u, 0x0161c0ccu,
+         {0x3f80cf61u, 0x3f8072e9u, 0x3f80e6d8u, 0x3f807e82u, 0x3f802579u, 0x3f80e5adu,
+          0x3f80c4d5u, 0x3f80f63au}},
+        {"rcbig-4-2-5 (carry out 2)", 4u, 2u, 5u, 1u, 0x0b274242u,
+         {0x3f82cf61u, 0x3f8072e9u, 0x3f80ffffu, 0x3f80fff8u, 0x3f802579u, 0x3f80e5adu,
+          0x3f807fffu, 0x3f80ffffu}},
+        {"rcbig-3-3-3 (carry nibble 7)", 3u, 3u, 3u, 1u, 0x0b27424au,
+         {0x3f81cf61u, 0x3f8072e9u, 0x3f800000u, 0x3f800000u, 0x3f802579u, 0x3f80e5adu,
+          0x3f808000u, 0x3f800000u}},
+        {"rcbig-2-7-1", 2u, 7u, 1u, 1u, 0xde7ede27u,
+         {0x3f81cf61u, 0x3f8072e9u, 0x3f80cdefu, 0x3f809bddu, 0x3f802579u, 0x3f80e5adu,
+          0x3f8089abu, 0x3f80d357u}},
+    };
+    /* Six draws in a row from the measured thread-entry RCX (sr_vfpu_thread_ctrl_init),
+     * the same rule applied again to each state it leaves. */
+    static const uint32_t seq[6] = {0x00094e24u, 0x245a1029u, 0xecf210c2u,
+                                    0x91abc47bu, 0xcad33038u, 0x149d0e36u};
+    static const uint32_t seq_rcx[8] = {0x3f8094b3u, 0x3f807323u, 0x3f8002a4u, 0x3f800660u,
+                                        0x3f80e3ccu, 0x3f8030d0u, 0x3f800000u, 0x3f800000u};
+    static const char *const forms[] = {"vrndi-s-issues", "vrndi-s-s323"};
+    int bad = 0;
+    for (size_t f = 0; f < sizeof(forms) / sizeof(forms[0]); f++) {
+        const int c = find_overlap_diff_case(forms[f]);
+        CHECKB(bad, c >= 0, "vrndi.s word is in the overlap-diff header (AOT emits it)");
+        const uint32_t w = c >= 0 ? overlap_diff_cases[c].w : (f == 0 ? 0xd0210000u : 0xd021006eu);
+        uint8_t di[1];
+        vreg_idx((int)(w & 0x7fu), 1, di);
+        for (size_t p = 0; p < sizeof(cells) / sizeof(cells[0]); p++) {
+            CpuState before, want;
+            const uint32_t cs[4] = {0x2468ace0u, 0x13579bdfu, c2s[cells[p].i], c3s[cells[p].j]};
+            setup_identity_compute(&before);
+            for (int i = 0; i < 128; i++) before.vi[i] = 0x3f800000u | ((uint32_t)i << 16);
+            before.vfpuCtrl[3] = 0x5au; /* VFPU_CC preset: vrndi must leave it */
+            vrndi_probe_image(&before.vfpuCtrl[8], cs, carries[cells[p].big][cells[p].k]);
+            want = before;
+            want.vi[di[0]] = cells[p].value;
+            memcpy(&want.vfpuCtrl[8], cells[p].after, sizeof(cells[p].after));
+            bad |= vrndi_lanes_match(c, w, di[0], &before, &want, cells[p].name);
+        }
+        CpuState aot, interp;
+        setup_identity_compute(&interp);
+        sr_vfpu_thread_ctrl_init(&interp);
+        aot = interp;
+        int seq_ok = 1;
+        for (int d = 0; d < 6; d++) {
+            seq_ok &= sr_vfpu_interp(&interp, w) == SR_VFPU_COMPUTE && interp.vi[di[0]] == seq[d];
+            if (c >= 0) {
+                overlap_diff_run_codegen(&aot, c);
+                seq_ok &= aot.vi[di[0]] == seq[d];
+            }
+        }
+        seq_ok &= memcmp(&interp.vfpuCtrl[8], seq_rcx, sizeof(seq_rcx)) == 0;
+        if (c >= 0) seq_ok &= memcmp(&aot, &interp, sizeof(aot)) == 0;
+        CHECKB(bad, seq_ok, "six vrndi.s draws from the thread-entry RCX follow the rule in both lanes");
+    }
+    /* Outside the measured domain the interpreter refuses with no state change (the AOT
+     * body stops the run on the same prefix test; tools/test_codegen_vfpu_fallback.py
+     * executes that branch): a pending S, T or D prefix, the .p/.t/.q widths, and the
+     * forms with no recorded rule (vrnds.s, vrndf1.s, vrndf2.s). */
+    static const struct { uint32_t w, pfx[3]; } refused[] = {
+        {0xd0210000u, {0xf00e4u, 0xe4u, 0u}},    /* vrndi.s, S prefix pending */
+        {0xd0210000u, {0xe4u, 0x1bu, 0u}},       /* vrndi.s, T prefix pending */
+        {0xd0210000u, {0xe4u, 0xe4u, 0x100u}},   /* vrndi.s, D write mask on lane 0 */
+        {0xd0210000u, {0xe4u, 0xe4u, 0x1u}},     /* vrndi.s, D saturation [0, 1] */
+        {0xd0210080u, {0xe4u, 0xe4u, 0u}},       /* vrndi.p */
+        {0xd0218000u, {0xe4u, 0xe4u, 0u}},       /* vrndi.t */
+        {0xd0218080u, {0xe4u, 0xe4u, 0u}},       /* vrndi.q */
+        {0xd0200000u, {0xe4u, 0xe4u, 0u}},       /* vrnds.s */
+        {0xd0220000u, {0xe4u, 0xe4u, 0u}},       /* vrndf1.s */
+        {0xd0230000u, {0xe4u, 0xe4u, 0u}},       /* vrndf2.s */
+    };
+    for (size_t r = 0; r < sizeof(refused) / sizeof(refused[0]); r++) {
+        CpuState s;
+        setup_identity_compute(&s);
+        sr_vfpu_thread_ctrl_init(&s);
+        for (int i = 0; i < 3; i++) s.vfpuCtrl[i] = refused[r].pfx[i];
+        const CpuState before = s;
+        const int kind = sr_vfpu_interp(&s, refused[r].w);
+        CHECKB(bad, kind == SR_VFPU_OTHER && memcmp(&s, &before, sizeof(s)) == 0,
+               "unmeasured vrnd form or prefix fails closed with no state change");
+    }
+    return bad;
+}
+
 int main(void) {
     int bad = 0;
     bad |= check_psp_measured_vfpu9();
+    bad |= check_vrndi_rule_cells();
     bad |= check_cop2_control_transfers();
     bad |= check_quad_memops();
     bad |= check_vcrs_widths();
     bad |= check_vasin_measured_domain_words();
     bad |= check_vfpu_compare_measured_words();
+    bad |= check_vscmp_hle_issues_cells();
     bad |= check_vrexp2_measured_words();
     bad |= check_reserved_cmov_form();
     bad |= check_vfpu3_compare_forms();

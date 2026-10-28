@@ -85,10 +85,23 @@ def build_cases() -> tuple[list[tuple[int, str, int]], int, tuple[int, int]]:
     for sub, op in ((5, "vscmp"), (6, "vsge"), (7, "vslt")):
         cases.append((_bin_word(0x1B, sub, 1, 0x40, 0x00, 0x20), f"{op}-s-measured", 1))
 
+    # The PSP-HLE-ISSUES-001 probe words (fixtures/psp_oracle/probe_hle_issues.c, issue #326):
+    # vscmp.s/.p/.t/.q C200, C000, C100 and vscmp.q C200, C000, C000.
+    # check_vscmp_hle_issues_cells() finds them by name and runs the probe's operand sets.
+    for w, suffix, size in ((0x6E840008, "s", 1), (0x6E840088, "p", 2), (0x6E848008, "t", 3),
+                            (0x6E848088, "q", 4), (0x6E808088, "q-same", 4)):
+        cases.append((w, f"vscmp-{suffix}-issues", size))
+
     # The PSP-VFPU-TRANSCENDENTAL-001 probe word for vrexp2.s S002, S000 (optype 28).
     # check_vrexp2_measured_words() finds it by name and pins both lanes to the 63 words a
     # PSP-3000 returned.
     cases.append((_vv2_word(28, 1, 0x40, 0x00), "vrexp2-s-measured", 1))
+
+    # vrndi.s (issue #326): the PSP-HLE-ISSUES-001 probe word vrndi.s S000, and the same draw
+    # into S323 (vd=0x6E) so the destination decode is exercised off lane 0.
+    # check_vrndi_rule_cells() finds them by name and steps both lanes from the probe's states.
+    cases.append((0xD0210000, "vrndi-s-issues", 1))
+    cases.append((0xD021006E, "vrndi-s-s323", 1))
 
     # vmscl.t (op 0x3C sub 4 size 3): scalar inside destination matrix
     cases.append((_bin_word(0x3C, 4, 3, 0x20, 0x20, 0x00), "vmscl-t-scalar-in-dest", 2))

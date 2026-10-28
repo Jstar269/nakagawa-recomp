@@ -13,6 +13,7 @@ discovered function count and ``--funcs-per-chunk``/``--target-chunk-bytes``; it
 never a fixed per-title constant.
 """
 
+import bisect
 import struct
 import re
 import os
@@ -33,6 +34,7 @@ from analyze import (
 )
 from host_stubs import HST_SIMPLE_STUBS
 import compat_overrides
+import enhancement_package
 import entry_frame_balance
 from imports import ImportTableError, format_boundary
 
@@ -76,6 +78,66 @@ STALE_DETECT = False
 # The C half of the option (-DSR_NAN_TRAP) makes those checks live; without it
 # they expand to ((void)0) and neither half changes behaviour on its own.
 NAN_TRAP = False
+
+# Active AOT enhancement package sites (addr -> resolved site dict with its "rewrite").
+# Empty (the default) keeps authentic emission byte-identical.
+ENHANCEMENT_SITES: dict[int, dict] = {}
+ENHANCEMENT_PKG_META: dict | None = None
+# The sites whose rewrite has been emitted. A package is refused unless every
+# verified site is in it when the translation is written.
+ENHANCEMENT_APPLIED: set[int] = set()
+
+
+def _enhancement_rewrite(addr: int) -> dict | None:
+    """The planned rewrite for a verified main-executable site, or None.
+
+    Callers emit the rewrite they are given, so the site is recorded as applied.
+    """
+    if not ENHANCEMENT_SITES or ADDRESS_SPACE.runtime_module:
+        return None
+    site = ENHANCEMENT_SITES.get(addr)
+    if site is None:
+        return None
+    ENHANCEMENT_APPLIED.add(addr)
+    return site["rewrite"]
+
+
+def _scaled_store_line(rw: dict, stock_line: str) -> str:
+    """A swc1 site that stores its FPR scaled: the store reads a scaled copy, and the
+    register is never written, so an access fault that leaves the statement early
+    (--lle-cpu) cannot leave it scaled."""
+    r = rw["reg"]
+    stored = f"s->fi[{r}]"
+    stock = stock_line.strip()
+    if stock.count(stored) != 1:
+        raise ValueError(f"scale_f_store: expected one read of {stored} in {stock!r}")
+    return (f"{{ float _nk_f = s->f[{r}] * {rw['factor']!r}f; uint32_t _nk_bits; "
+            f"memcpy(&_nk_bits, &_nk_f, sizeof _nk_bits); "
+            f"{stock.replace(stored, '_nk_bits')} }}")
+
+
+def _enhanced_line(rw: dict, stock_line: str, word_line: str | None) -> str:
+    """Both forms of one rewritten site: the stock statement runs unless the
+    experimental toggle is on at run time (nk_enhancement_on())."""
+    kind = rw["kind"]
+    if kind == "word":
+        enh = word_line
+    elif kind == "gate":
+        enh = f"if (nk_enhancement_gate_30hz()) {{ {stock_line.strip()} }}"
+    elif kind == "scale_int_reg":
+        enh = f"{stock_line.strip()} s->r[{rw['reg']}] <<= 1;"
+    elif kind == "scale_f_reg":
+        enh = f"{stock_line.strip()} s->f[{rw['reg']}] *= {rw['factor']!r}f;"
+    elif kind == "scale_f_store":
+        enh = _scaled_store_line(rw, stock_line)
+    elif kind == "scale_f_addend":
+        r = rw["reg"]
+        enh = (f"{{ float _nk_keep = s->f[{r}]; s->f[{r}] *= {rw['factor']!r}f; "
+               f"{stock_line.strip()} s->f[{r}] = _nk_keep; }}")
+    else:
+        raise ValueError(f"unknown enhancement rewrite kind {kind!r}")
+    return (f"    if (nk_enhancement_on()) {{ {enh.strip()} }}\n"
+            f"    else {{ {stock_line.strip()} }}")
 
 
 class RelocatedWord(int):
@@ -450,6 +512,158 @@ def entry_symbol(addr, resume_owners=None):
     return f"r_{addr:08x}" if resume_owners and addr in resume_owners else f"f_{addr:08x}"
 
 
+# --symbol-map=PATH names the generated functions from a guest symbol table, the way
+# a decompilation's symbol file names a static recompilation's functions. The file
+# holds names and addresses only, one GNU ld symbol assignment per line, the form
+# splat's symbol_addrs.txt and matching decompilations use:
+#
+#     name = 0xADDR;  // type:func size:0xNN
+#
+# Blank lines and lines that start with # or // are comments, and any line may end
+# in one. A comment's type: attribute other than func drops the line (data labels);
+# size: gives the function's byte length, which lets crash reports name an address
+# inside it. Addresses are the generated f_<addr> addresses: the primary image and
+# fixed-base extra ELFs at their load addresses (runtime-placed modules keep their
+# m<n>_ names). Without the option nothing below runs and the output is unchanged.
+_SYMBOL_MAP_LINE = re.compile(
+    r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(0[xX][0-9A-Fa-f]+)\s*;\s*(?:(?://|#)(.*))?")
+_SYMBOL_MAP_ATTRIBUTE = re.compile(r"\b(type|size):(\S+)")
+# Every generated reference to a primary-image entry is one of these tokens
+# (entry_symbol); a longer word such as f_<addr>_real is generator-owned.
+_GENERATED_ENTRY_TOKEN = re.compile(r"\b[fr]_[0-9a-f]{8}\b")
+_GENERATOR_SUFFIXED_ENTRY = re.compile(r"\b[fr]_[0-9a-f]{8}_\w+")
+
+
+class SymbolMapError(ValueError):
+    pass
+
+
+def load_symbol_map(path):
+    """Read a guest symbol map into {address: (name, size)}; size 0 is unknown.
+
+    A malformed line, an address that does not fit 32 bits, or two different
+    names (or sizes) for one address is an error naming the file and line.
+    """
+    symbols = {}
+    with open(path, encoding="utf-8") as source:
+        for line_no, line in enumerate(source, 1):
+            text = line.strip()
+            if not text or text.startswith(("#", "//")):
+                continue
+            where = f"{path}:{line_no}"
+            match = _SYMBOL_MAP_LINE.fullmatch(text)
+            if match is None:
+                raise SymbolMapError(f"{where}: expected `name = 0xADDR;`, got {text!r}")
+            name, addr_text, comment = match.groups()
+            attributes = dict(_SYMBOL_MAP_ATTRIBUTE.findall(comment or ""))
+            if attributes.get("type", "func") != "func":
+                continue
+            addr = int(addr_text, 16)
+            if addr > 0xFFFFFFFF:
+                raise SymbolMapError(f"{where}: address {addr_text} does not fit 32 bits")
+            size = 0
+            if "size" in attributes:
+                try:
+                    size = int(attributes["size"], 0)
+                except ValueError:
+                    raise SymbolMapError(
+                        f"{where}: size {attributes['size']!r} is not a number") from None
+                if not 0 < size <= 0x100000000 - addr:
+                    raise SymbolMapError(
+                        f"{where}: size {attributes['size']} does not fit the address space")
+            previous = symbols.get(addr)
+            if previous is not None and previous != (name, size):
+                raise SymbolMapError(
+                    f"{where}: 0x{addr:08x} is already {previous[0]} "
+                    f"(size 0x{previous[1]:x}), not {name} (size 0x{size:x})")
+            symbols[addr] = (name, size)
+    return symbols
+
+
+def site_names_from_symbol_map(symbols):
+    """Turn a load_symbol_map result into {name: address} for enhancement-package sites.
+
+    A name the map gives to more than one address is left out, so a site that uses it
+    stays unresolved instead of silently taking one of them.
+    """
+    names = {}
+    ambiguous = set()
+    for addr, (name, _size) in symbols.items():
+        if name in names and names[name] != addr:
+            ambiguous.add(name)
+        names[name] = addr
+    for name in ambiguous:
+        del names[name]
+    return names
+
+
+_C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def import_stub_names(import_nids):
+    """--name-imports: {stub address: (name, 0)} for the stubs whose NID the corpus names.
+
+    The names come from tools/nid_corpus.json through gen_nidnames.nid_names, the
+    mapping src/rt/nid_names.h is generated from. A NID the corpus does not name, or
+    a name that is not a C identifier, leaves its stub as f_<address>.
+    """
+    import json
+    import gen_nidnames
+    corpus = json.loads(gen_nidnames.CORPUS.read_text(encoding="utf-8"))
+    names = gen_nidnames.nid_names(corpus)
+    return {addr: (names[nid], 0) for addr, nid in import_nids.items()
+            if nid in names and _C_IDENTIFIER.fullmatch(names[nid])}
+
+
+def symbol_map_renames(symbols, emitted, resume_owners):
+    """Generated-token renames for the entries a symbol map names.
+
+    A callable entry the map names becomes f_<addr>_<name>; the address stays
+    in the symbol, so two static functions that share a name stay distinct. A
+    resume body takes the name of the callable that owns it: r_<addr>_<owner>.
+    Any other entry inside a function whose size the map gives, past its start,
+    is named after it with an `in_`: f_<addr>_in_<name> (r_<addr>_in_<name> for
+    a resume body whose owner has no name).
+    """
+    sized = sorted((addr, size, name) for addr, (name, size) in symbols.items() if size)
+    starts = [addr for addr, _size, _name in sized]
+
+    def containing(addr):
+        i = bisect.bisect_right(starts, addr) - 1
+        if i >= 0 and addr - sized[i][0] < sized[i][1]:
+            return sized[i][2]
+        return None
+
+    renames = {}
+    for addr in sorted(set(emitted)):
+        if addr in resume_owners:
+            owner = symbols.get(resume_owners[addr])
+            if owner is not None:
+                renames[f"r_{addr:08x}"] = f"r_{addr:08x}_{owner[0]}"
+            elif (inside := containing(addr)) is not None:
+                renames[f"r_{addr:08x}"] = f"r_{addr:08x}_in_{inside}"
+        elif addr in symbols:
+            renames[f"f_{addr:08x}"] = f"f_{addr:08x}_{symbols[addr][0]}"
+        elif (inside := containing(addr)) is not None:
+            renames[f"f_{addr:08x}"] = f"f_{addr:08x}_in_{inside}"
+    return renames
+
+
+def symbol_map_collisions(renames, texts):
+    """Renamed symbols that a generator-owned word (f_<addr>_real) already spells."""
+    named = set(renames.values())
+    return sorted({word for text in texts
+                   for word in _GENERATOR_SUFFIXED_ENTRY.findall(text)} & named)
+
+
+def rename_generated_entries(text, renames):
+    """Apply symbol_map_renames to one generated file's text."""
+    if not renames:
+        return text
+    return _GENERATED_ENTRY_TOKEN.sub(
+        lambda match: renames.get(match.group(0), match.group(0)), text)
+
+
 def build_emitted_ownership_map(cfg_report, catalog, emitted):
     """Project the existing CFG onto codegen's entry catalog without steering it."""
     emitted_addresses = set(emitted)
@@ -517,10 +731,12 @@ def build_emitted_ownership_map(cfg_report, catalog, emitted):
     }
 
 
-def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=()):
+def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=(), renames=None,
+                       enhancement=False):
     """Write the shared generated declarations with the runtime ABI contract."""
     if resume_owners is None:
         resume_owners = {}
+    renames = renames or {}
     with open(path, "w", encoding="ascii", newline="\n") as f:
         f.write("#ifndef RECOMP_FUNCS_H\n#define RECOMP_FUNCS_H\n")
         f.write('#include "recomp.h"\n\n')
@@ -532,12 +748,20 @@ def write_funcs_header(path, emitted, resume_owners=None, runtime_modules=()):
         )
         f.write("#endif\n\n")
         for a in emitted:
-            f.write(f"void {entry_symbol(a, resume_owners)}(CpuState *s);\n")
+            symbol = entry_symbol(a, resume_owners)
+            f.write(f"void {renames.get(symbol, symbol)}(CpuState *s);\n")
         for module in runtime_modules:
             f.write(f"\n/* runtime-placed module {module.name} */\n")
             f.write(f"extern uint32_t {module.base_symbol};\n")
             for a, _nwords in module.functions:
                 f.write(f"void {module.prefix}_{a:08x}(CpuState *s);\n")
+        if enhancement:
+            # Enhancement-package builds only: rewritten sites run their stock form
+            # unless SR_EXPERIMENTAL_60HZ=1 opts in at launch, and gated sites run on
+            # even display vblanks (alternate updates of a once-per-vblank loop).
+            f.write("\nint nk_enhancement_on(void);\n")
+            f.write("static inline int nk_enhancement_gate_30hz(void) "
+                    "{ return (sr_display_vcount() & 1u) == 0u; }\n")
         f.write("#endif\n")
 
 
@@ -1156,8 +1380,26 @@ def _flit(v):
 # fail-closed interpreter fallback until semantic evidence is admitted.
 _VFPU4_NAMED_UNIMPLEMENTED = {
     (0x01, 0x00): "vrnds",
+    (0x01, 0x01): "vrndi",  # .p/.t/.q only: vrndi.s is _vrndi_single_stmt
     (0x01, 0x02): "vrndf1",
+    (0x01, 0x03): "vrndf2",
 }
+
+
+def _vrndi_single_stmt(addr, w):
+    """vrndi.s: one draw of the VFPU random unit (issue #326).
+
+    The step is sr_vfpu_rnd_step (src/rt/recomp.h), the rule a PSP-3000 measured for
+    vrndi.s under identity S/T/D prefixes (PSP-HLE-ISSUES-001). A pending prefix is
+    unmeasured, so it stops the run with no state change, as sr_vfpu_interp refuses it.
+    """
+    d0 = vreg_indices(w & 0x7F, 1)[0]
+    return ("{ if (s->vfpuCtrl[0]!=0xe4u || s->vfpuCtrl[1]!=0xe4u || s->vfpuCtrl[2]!=0u) { "
+            f"s->pc={G(addr)}; "
+            f"fprintf(stderr, \"VFPU_UNSUPPORTED: pc=0x{addr:08x} word=0x{w:08x} issue=326\\n\"); "
+            f"sr_unimplemented({G(addr)}, \"VFPU vrndi.s under a prefix is unmeasured; issue #326\"); "
+            "sr_end(s, 0u, 0); return; } "
+            f"s->vi[{d0}]=sr_vfpu_rnd_step(&s->vfpuCtrl[8]); }}")
 
 # VFPU9 forms whose semantics follow the 2026-10-24 PSP-3000 measurement (issue
 # #326) and live only in sr_vfpu_interp: op9 -> (name, vector sizes it accepts).
@@ -1201,6 +1443,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
     if op == 0x34:
         jump = (w >> 21) & 0x1F
         rt_selector = (w >> 16) & 0x1F
+        if (jump, rt_selector) == (0x01, 0x01) and vec_size(w) == 1:
+            return _vrndi_single_stmt(addr, w), None, 0
         public_name = _VFPU4_NAMED_UNIMPLEMENTED.get((jump, rt_selector))
         if public_name is not None:
             raise Unsupported(
@@ -1510,20 +1754,22 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             # are the VFPU4 vcmov (jump 0x15) handled above. The flagship's quaternion slerp uses
             # vsge to build its sign term (2 * (dot >= 0) - 1), and the wrong decode multiplied its
             # dot product by stale scratch lanes, which is the one-frame skinned-model corruption
-            # of issue #69. vsge and vslt treat a NaN operand as unordered and write 0.0; vscmp
-            # does not: a PSP-3000 orders a lane with a NaN by sign and magnitude of the raw
-            # words, so NaN vs 1.5 writes +1.0, 1.5 vs NaN writes -1.0 and -NaN vs 1.5 writes
-            # -1.0, quiet or signalling (PSP-VFPU-CMP-001, measured 2026-10-15; every other cell
-            # of that probe agrees with the plain float compares below). A pair of NaNs follows
-            # the same order and is UNMEASURED. src/rt/vfpu_interp.c (vscmp_lane) is the twin.
+            # of issue #69. vsge and vslt treat a NaN operand as unordered and write 0.0 (a
+            # denormal operand of theirs is UNMEASURED and keeps the host float compare). vscmp
+            # compares raw words: a PSP-3000 orders each lane by sign and magnitude of the bit
+            # patterns after flushing a denormal to a zero of its sign, so +0 equals -0, NaN vs
+            # 1.5 writes +1.0, 1.5 vs NaN writes -1.0, -NaN vs 1.5 writes -1.0, NaNs order
+            # above infinity and by payload, and 0x00000001 vs 0 writes 0.0, at every width
+            # (PSP-VFPU-CMP-001, measured 2026-10-15; PSP-HLE-ISSUES-001, captured 2026-10-24,
+            # not acceptance-eligible). src/rt/vfpu_interp.c (vscmp_lane) is the twin.
             name = {5: "vscmp.s", 6: "vsge.s", 7: "vslt.s"}[sub]
             mag_a = "(int64_t)(_ab&0x7fffffffu)"
             mag_b = "(int64_t)(_bb&0x7fffffffu)"
             expr = {5: ("{ uint32_t _ab,_bb; memcpy(&_ab,&_a[_i],4); memcpy(&_bb,&_b[_i],4); "
-                        "if((_ab&0x7fffffffu)>0x7f800000u||(_bb&0x7fffffffu)>0x7f800000u){ "
+                        "if((_ab&0x7f800000u)==0u) _ab&=0x80000000u; "
+                        "if((_bb&0x7f800000u)==0u) _bb&=0x80000000u; "
                         f"int64_t _ka=(_ab>>31)?-{mag_a}:{mag_a},_kb=(_bb>>31)?-{mag_b}:{mag_b}; "
-                        "_d[_i]=(_ka<_kb)?-1.0f:((_ka>_kb)?1.0f:0.0f); } "
-                        "else _d[_i]=(_a[_i]<_b[_i])?-1.0f:((_a[_i]>_b[_i])?1.0f:0.0f); }"),
+                        "_d[_i]=(_ka<_kb)?-1.0f:((_ka>_kb)?1.0f:0.0f); }"),
                     6: "_d[_i]=(_a[_i]>=_b[_i])?1.0f:0.0f;",
                     7: "_d[_i]=(_a[_i]<_b[_i])?1.0f:0.0f;"}[sub]
             body = (f"float _a[4],_b[4],_d[4]; sr_vread(_a,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
@@ -2054,7 +2300,7 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
             pc = next_pc
     return insns, labels, continuations
 
-def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
+def _plain_line(addr, w, trace_w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     try:
         eff, saddr, ssize = effect(addr, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
                                    delay_branch_pc=delay_branch_pc)
@@ -2067,8 +2313,21 @@ def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None)
         eff = _vfpu_interp_stmt(addr, w)
         saddr, ssize = None, 0
     if saddr is SELF_TRACED:
-        return f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff}"
-    return f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
+        return f"    sr_begin(s, {G(addr)}, 0x{trace_w:08x}u); {eff}"
+    return f"    sr_begin(s, {G(addr)}, 0x{trace_w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
+
+def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
+    line = _plain_line(addr, w, w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+                       delay_branch_pc=delay_branch_pc)
+    rw = _enhancement_rewrite(addr) if w is not None else None
+    if rw is None:
+        return line
+    word_line = None
+    if rw["kind"] == "word":
+        # The trace hook keeps the stock word: guest memory still holds it.
+        word_line = _plain_line(addr, rw["word"], w, hst_profile=hst_profile, lle_cpu=lle_cpu,
+                                delay_branch_pc=delay_branch_pc)
+    return _enhanced_line(rw, line, word_line)
 
 def _cop0_fields(w):
     """Split a COP0 word into (rs, rt, rd, sel)."""
@@ -2185,15 +2444,8 @@ _SV_SPECIAL = {0x0006e9bc, 0x0006ea1c, 0x00108630, 0x0010433c}
 #   "inject" : unconditionally inject `stmt` into the branch block.
 #   "probe"  : emit a one-shot fprintf probe at function entry (no semantic
 #              change; diagnostic only).
-_GUEST_PATCH_KEYS = {0x00010950, 0x00048320, 0x0004cdc8}
+_GUEST_PATCH_KEYS = {0x0004cdc8}
 GUEST_PATCHES = {
-    0x00010950: {"kind": "cond", "value": "0 /* bypass loop 0x10950 */",
-                 "stmt": " s->r[16] = s->r[3];",
-                 "why": "bypass spin loop at 0x10950 (worker frame init)",
-                 "issue": "#5.1"},
-    0x00048320: {"kind": "inject", "stmt": " _c = 1u;",
-                 "why": "force single-iteration pass at 0x48320",
-                 "issue": "#5.1"},
     0x0004cdc8: {"kind": "cond", "value": "1u",
                  "why": "route host0 asset reads through sceIoOpen so HLE can serve extracted XB files; the guest-only host filesystem is unavailable",
                  "issue": "P0 table root 0x0034a84c"},
@@ -2311,6 +2563,8 @@ def sv_plan(elf, insns, labels, hst_profile=False):
     if not (insns and SV_ENABLED):
         return {}
     if hst_profile and (insns & _SV_SPECIAL):
+        return {}
+    if ENHANCEMENT_SITES and (insns & set(ENHANCEMENT_SITES.keys())):
         return {}
     points, total = {}, 0
     regs: list[int | None] = [None] * 32
@@ -2694,19 +2948,28 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         if op == 3:  # jal
             ADDRESS_SPACE.check_jump(addr, w)
             target = jump_target(addr, w)
+            _jal_rw = _enhancement_rewrite(addr)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             if target in known or target in resume_owners:
-                out.append(
-                    f"    {emit_checked_body_call(ADDRESS_SPACE.symbol(target, resume_owners), addr)}"
-                )
+                _call_stmt = f"    {emit_checked_body_call(ADDRESS_SPACE.symbol(target, resume_owners), addr)}"
                 if lle_cpu:
-                    out.append(f"    {_flow_return(resumable)}")
+                    _call_stmt += f"\n    {_flow_return(resumable)}"
             else:
-                out.append(
+                _call_stmt = (
                     f"    dispatch_call(s, {G(target)}, "
                     f"{G((addr + 8) & 0xFFFFFFFF)});"
                 )
+            if _jal_rw is not None:
+                # gate_30hz on a call (the only rewrite a call site plans): the delay
+                # slot above always runs; the call is gated while the toggle is on.
+                out.append(
+                    f"    if (!nk_enhancement_on() || nk_enhancement_gate_30hz()) {{\n"
+                    f"{_call_stmt}\n"
+                    f"    }}"
+                )
+            else:
+                out.extend(_call_stmt.split("\n"))
             if addr in continuations:
                 out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
             elif addr in dup_slot_skips:
@@ -3156,7 +3419,7 @@ def main(argv):
             "usage: codegen.py <elf> <out.c> [--base=HEX] [--profile=NAME] "
             "[--funcs-per-chunk=N] [--target-chunk-bytes=N] [--extra-span=LO,HI] "
             "[--extra-elf=ELF@BASE]... [--cfg-report=out.json] [--cfg-gate] "
-            "[--stack-census]\n"
+            "[--stack-census] [--symbol-map=FILE] [--name-imports]\n"
             "       codegen.py --env-elf <out.c> [--base=HEX] [...]\n"
         )
         return 2
@@ -3187,11 +3450,28 @@ def main(argv):
     cfg_gate = False
     stack_census = False
     omit_aot = _OmitAot()
+    enhancement_pkg_path = None
     extra_elfs = []  # list of (elf_path, base_addr)
     cli_extra_specs = []  # raw "ELF@BASE" strings from --extra-elf=
+    symbol_map_path = None
+    name_imports = False
     for o in opts:
         if o.startswith("--base="):
             base = int(o.split("=", 1)[1], 16)
+        elif o.startswith("--enhancement-package="):
+            enhancement_pkg_path = o.split("=", 1)[1]
+            if not enhancement_pkg_path:
+                sys.stderr.write("--enhancement-package requires a path\n")
+                return 2
+        elif o == "--name-imports":
+            # Name each import stub after the function its NID imports (import_stub_names).
+            # Default (absent) leaves every stub f_<address>: the output is unchanged.
+            name_imports = True
+        elif o.startswith("--symbol-map="):
+            symbol_map_path = o.split("=", 1)[1]
+            if not symbol_map_path:
+                sys.stderr.write("--symbol-map requires a path\n")
+                return 2
         elif o.startswith("--extra-span="):
             extra_span_arg = o.split("=", 1)[1]
         elif o.startswith("--cfg-report="):
@@ -3266,6 +3546,15 @@ def main(argv):
         # The dynamic run is meaningful only after the static ownership floor
         # accepts the same image.
         cfg_gate = True
+
+    symbols = {}
+    if symbol_map_path is not None:
+        # Read before the analysis so a bad map fails in a second, not after it.
+        try:
+            symbols = load_symbol_map(symbol_map_path)
+        except (OSError, UnicodeDecodeError, SymbolMapError) as exc:
+            sys.stderr.write(f"codegen: symbol map: {exc}\n")
+            return 2
 
     try:
         extra_specs = build_profile.resolve_list(
@@ -3353,6 +3642,66 @@ def main(argv):
         addr: info.owner for addr, info in catalog.items() if info.resumable
     }
 
+    global ENHANCEMENT_SITES, ENHANCEMENT_PKG_META
+    ENHANCEMENT_SITES = {}
+    ENHANCEMENT_PKG_META = None
+    ENHANCEMENT_APPLIED.clear()
+    if enhancement_pkg_path is not None:
+        import hashlib
+        from pathlib import Path
+        try:
+            pkg_raw = enhancement_package.load_package(enhancement_pkg_path)
+            pkg_validated = enhancement_package.validate_package(pkg_raw)
+            elf_sha256 = hashlib.sha256(elf.data).hexdigest()
+            sym_map = enhancement_package.extract_elf_func_symbols(elf)
+            if symbol_map_path is not None:
+                # The guest symbol map names the package's sites too, in place of the
+                # <package>.symbols.json sidecar.
+                sym_map.update(site_names_from_symbol_map(symbols))
+            else:
+                pkg_p = Path(enhancement_pkg_path)
+                sidecar = pkg_p.with_suffix(".symbols.json")
+                if sidecar.is_file():
+                    sym_map.update(enhancement_package.load_symbol_map(sidecar))
+
+            def _read_words(vaddr: int, count: int):
+                out_w = []
+                for idx_w in range(count):
+                    val = read32(elf, vaddr + idx_w * 4)
+                    if val is None:
+                        return None
+                    out_w.append(val)
+                return out_w
+
+            ENHANCEMENT_SITES = enhancement_package.verify_and_resolve_sites(
+                pkg_validated,
+                executable_sha256=elf_sha256,
+                symbol_to_addr=sym_map,
+                read_words_fn=_read_words,
+                known_functions=sorted(known),
+            )
+            for site in ENHANCEMENT_SITES.values():
+                stock = site["stock_words"][0]
+                if is_control(stock) and not (
+                    (stock >> 26) == 3 and site["rewrite"]["kind"] == "gate"
+                ):
+                    raise enhancement_package.EnhancementPackageError(
+                        f"site {site['id']}: only a jal call site can be rewritten among "
+                        "control transfers (fail-closed refusal)"
+                    )
+            ENHANCEMENT_PKG_META = {
+                "id": pkg_validated["id"],
+                "version": pkg_validated["version"],
+                "epoch": enhancement_package.AOT_ENHANCEMENT_PACKAGE_EPOCH,
+                "digest": enhancement_package.compute_package_digest(pkg_validated),
+                "sites_count": len(ENHANCEMENT_SITES),
+            }
+        except enhancement_package.EnhancementPackageError as exc:
+            sys.stderr.write(
+                f"codegen: enhancement package refused (fail-closed): {exc}\n"
+            )
+            return 1
+
     impmap = {}
     if elf.reloc is not None or elf.sec(".rodata.sceModuleInfo") is not None:
         try:
@@ -3376,6 +3725,7 @@ def main(argv):
     stubbed = []
     func_texts = []
     stale_funcs = []  # TD-27: primary-image addresses with real translations
+    import_nids = {}  # import stub address -> NID, for --name-imports
 
     # Semantic name overrides for known HST functions. Single source of truth is
     # host_stubs.HST_SIMPLE_STUBS: addr -> (name, retflag). retflag=1 means the
@@ -3512,17 +3862,10 @@ def main(argv):
 }'''
             func_texts.append(text); emitted.append(a); continue
 
-        if hst_profile and a == 0x0001034c:
-            text = f"""void f_0001034c(CpuState *s) {{  /* custom stub: skip corrupted heap-statistics walk */
-    /* This routine only accumulates mallinfo-style counters. The guest free-list can be
-     * incomplete during bring-up; walking it must not block game initialization. */
-   {compat_fired_stmt("CODEGEN_CUSTOM_STUBS", a)}
-    s->r[2] = 0u;
-    s->pc = s->r[31];
-}}"""
-            func_texts.append(text); emitted.append(a); continue
-
-
+        # 0x0001034c (heap-statistics walk skip) and 0x001d9eb0 (title backdrop
+        # chooser postcondition) were retired under #363: the walk runs over the
+        # retail allocator's statically linked, untouched bins once the allocator is
+        # host-bridged, and the chooser never yields 0. Both now translate as written.
 
         if a in SIMPLE_STUBS:
             name, ret_val = SIMPLE_STUBS[a]
@@ -3552,39 +3895,6 @@ def main(argv):
         SR_YIELD(s, 0x000468c8u);
         f_000468c8_real(s);
         SR_TAIL_DRAIN(s);
-    }
-}"""
-            func_texts.append(text); emitted.append(a); continue
-
-        if hst_profile and a == 0x001d9eb0:
-            # This retail chooser supplies the NN in both menu/095_titleNN.xb and
-            # data/menu/title/title_cNN.gim.  Every shipped title archive is numbered
-            # from 01 upward; 00 does not exist.  Preserve the original selection
-            # routine, but recover from its impossible zero result.  Without this
-            # guard the failed c00 load leaves an unrelated text surface in the title
-            # background buffer.  Archived live traces selected c01/c02 normally, so
-            # this is intentionally a postcondition guard rather than a replacement
-            # chooser or a VFS alias that would conceal bad resource paths globally.
-            func_texts.append("\n".join(emit_function(
-                elf, a, ranges, known, resume_owners=resume_owners,
-                resumable=catalog[a].resumable, profile=profile,
-                dispatch_boundaries=dispatch_boundaries,
-                stack_census=stack_census)))
-            func_texts[-1] = func_texts[-1].replace(
-                "void f_001d9eb0(CpuState *s)", "void f_001d9eb0_real(CpuState *s)")
-            text = """void f_001d9eb0(CpuState *s) {  /* title backdrop selector postcondition */
-    f_001d9eb0_real(s);
-    SR_TAIL_DRAIN(s);
-    if (s->r[2] == 0u) {
-        static int warned = 0;
-        if (!warned) {
-            fprintf(stderr,
-                "TITLE_SELECT: retail chooser returned invalid id 0; using shipped backdrop 01\\n");
-            fflush(stderr);
-            warned = 1;
-        }
-       """ + compat_fired_stmt("CODEGEN_CUSTOM_STUBS", a) + """
-        s->r[2] = 1u;
     }
 }"""
             func_texts.append(text); emitted.append(a); continue
@@ -3632,12 +3942,14 @@ def main(argv):
             if lib_nid is not None:
                 lib, nid = lib_nid
                 text = import_stub_text(a, lib, nid)
+                import_nids[a] = nid
             else:
                 text = f"void f_{a:08x}(CpuState *s) {{  /* import stub without NID mapping */\n"
                 text += f"    sr_unimplemented(0x{a:08x}u, \"import stub without NID mapping\");\n}}"
             func_texts.append(text)
             emitted.append(a)
             continue
+        applied_before = set(ENHANCEMENT_APPLIED) if ENHANCEMENT_SITES else None
         try:
             func_texts.append("\n".join(emit_function(
                 elf, a, ranges, known, resume_owners=resume_owners,
@@ -3648,6 +3960,9 @@ def main(argv):
             if STALE_DETECT:
                 stale_funcs.append(a)
         except Unsupported as e:
+            if applied_before is not None:
+                # The stub replaces the body, so its rewrites were not emitted.
+                ENHANCEMENT_APPLIED.intersection_update(applied_before)
             reason = str(e).replace('"', "'")
             text = f"void {entry_symbol(a, resume_owners)}(CpuState *s) {{  /* untranslatable: {reason} */\n"
             text += "    (void)s;  /* a stub never reads the state; keeps -Werror builds clean */\n"
@@ -3726,6 +4041,7 @@ def main(argv):
                 if lib_nid is not None:
                     lib, nid = lib_nid
                     text = import_stub_text(a, lib, nid)
+                    import_nids[a] = nid
                 else:
                     text = f"void f_{a:08x}(CpuState *s) {{  /* import stub -> HLE boundary */\n"
                     text += f"    sr_hle_call(s, 0u);\n}}"
@@ -3802,6 +4118,65 @@ def main(argv):
     num_files = len(boundaries)
     base_name = os.path.splitext(out_c)[0]
 
+    if ENHANCEMENT_PKG_META is not None:
+        missing = sorted(
+            site["id"] for addr, site in ENHANCEMENT_SITES.items()
+            if addr not in ENHANCEMENT_APPLIED
+        )
+        if missing:
+            # A verified site that no emitted statement rewrites (an unreached address, a
+            # stubbed function, a fused fast path) would leave the epoch stamp claiming
+            # it: refuse before anything is written.
+            sys.stderr.write(
+                "codegen: enhancement package refused (fail-closed): "
+                f"{len(missing)} of {len(ENHANCEMENT_SITES)} sites were not emitted: "
+                + ", ".join(missing) + "\n"
+            )
+            return 1
+
+    # Names from --symbol-map and --name-imports are applied as each file is
+    # written, after the partition, so they change symbol spellings and nothing
+    # else. A map's name for an address wins over the stub's NID name.
+    renames = {}
+    symbol_table = []
+    if symbol_map_path is not None or name_imports:
+        names = import_stub_names(import_nids) if name_imports else {}
+        named_imports = sum(1 for a in names if a not in symbols)
+        names.update(symbols)
+        renames = symbol_map_renames(names, emitted, resume_owners)
+        collisions = symbol_map_collisions(renames, func_texts)
+        if collisions:
+            sys.stderr.write(
+                "codegen: symbol map: a name would spell a generator-owned symbol: "
+                + ", ".join(collisions) + "\n")
+            return 2
+        emitted_set = set(emitted)
+        emitted_sorted = sorted(emitted_set)
+
+        def holds_an_entry(a, size):
+            i = bisect.bisect_left(emitted_sorted, a)
+            return i < len(emitted_sorted) and emitted_sorted[i] - a < size
+
+        # The runtime names an address inside a function from this table, so a
+        # function whose own start is not an entry is in it when an entry is inside.
+        symbol_table = sorted(
+            (a, name, size) for a, (name, size) in names.items()
+            if a in emitted_set or (size and holds_an_entry(a, size)))
+        if symbol_map_path is not None:
+            renamed = [int(symbol[2:], 16) for symbol in renames]
+            named_resumes = sum(1 for a in renamed
+                                if a in resume_owners and resume_owners[a] in names)
+            inside = sum(1 for a in renamed if a not in names
+                         and not (a in resume_owners and resume_owners[a] in names))
+            sys.stderr.write(
+                f"symbol map: {sum(1 for a in symbols if a in emitted_set)} of {len(symbols)} "
+                f"function name(s) name an emitted entry; {named_resumes} resume bodies take "
+                f"their owner's name; {inside} entries inside a named function take its name\n")
+        if name_imports:
+            sys.stderr.write(
+                f"import names: {named_imports} of {len(import_nids)} import stubs named "
+                "from the NID corpus\n")
+
     # Write the codegen gap report
     with open(f"{base_name}_stubs.txt", "w", encoding="ascii", newline="\n") as f:
         for a, r in sorted(stubbed):
@@ -3814,7 +4189,8 @@ def main(argv):
 
     # Write the shared functions header
     funcs_h_path = f"{base_name}_funcs.h"
-    write_funcs_header(funcs_h_path, emitted, resume_owners, module_translations)
+    write_funcs_header(funcs_h_path, emitted, resume_owners, module_translations, renames,
+                       enhancement=ENHANCEMENT_PKG_META is not None)
 
     # The analyzer, not mapped-RAM reachability, owns executable-byte authority.
     # Preserve its exact end-exclusive ranges in generated registration. Exact
@@ -3839,6 +4215,24 @@ def main(argv):
         "#include <stdio.h>",
         ""
     ]
+    if ENHANCEMENT_PKG_META is not None:
+        main_out.append(
+            f"/* AOT Enhancement Epoch: {ENHANCEMENT_PKG_META['epoch']} "
+            f"id={ENHANCEMENT_PKG_META['id']} v={ENHANCEMENT_PKG_META['version']} "
+            f"sites={ENHANCEMENT_PKG_META['sites_count']} "
+            f"sha256={ENHANCEMENT_PKG_META['digest']} */"
+        )
+        main_out += [
+            "int nk_enhancement_on(void) {",
+            "    static int on = -1;",
+            "    if (on < 0) {",
+            '        const char *v = getenv("SR_EXPERIMENTAL_60HZ");',
+            "        on = (v && v[0] == '1' && v[1] == '\\0') ? 1 : 0;",
+            "    }",
+            "    return on;",
+            "}",
+            "",
+        ]
     census_entries = sorted({a for a in emitted if a not in resume_owners})
     if stack_census:
         census_values = census_entries or [0]
@@ -3854,7 +4248,18 @@ def main(argv):
         main_out.append("")
     for module in module_translations:
         main_out.extend(runtime_module_descriptor_lines(module))
+    if symbol_table:
+        main_out.append("")
+        main_out.append("/* Guest function names from --symbol-map and --name-imports: "
+                        "names and addresses only. */")
+        main_out.append("static const SrGuestSymbol sr_guest_symbol_table[] = {")
+        for a, name, size in symbol_table:
+            main_out.append(f'    {{0x{a:08x}u, 0x{size:08x}u, "{name}"}},')
+        main_out.append("};")
     main_out.append("\nvoid sr_register_all(void) {")
+    if symbol_table:
+        main_out.append(
+            f"    sr_guest_symbols_register(sr_guest_symbol_table, {len(symbol_table)}u);")
     if LLE_CPU:
         main_out.append("    sr_cpu_lle_set_enabled(1);")
     main_out.append("    sr_exec_span_reset();")
@@ -3906,25 +4311,26 @@ def main(argv):
     main_out.append('    fprintf(stderr, "sr_register_all: completed\\n");\n}')
 
     with open(out_c, "w", encoding="ascii", newline="\n") as f:
-        f.write("\n".join(main_out))
+        f.write(rename_generated_entries("\n".join(main_out), renames))
 
     for i, chunk in enumerate(boundaries):
+        parts = ["/* Generated by tools/codegen.py. Do not edit by hand. */\n",
+                 f'#include "{os.path.basename(base_name)}_funcs.h"\n#include <math.h>\n#include <string.h>\n#include <stdio.h>\n\n']
+        if SV_ENABLED:
+            parts.append(SR_SV_CHECK + "\n\n")
+        parts.append("\n\n".join(chunk) + "\n\n")
+        parts.append(f"void sr_register_chunk_{i}(void) {{\n")
+        for ft in chunk:
+            if isinstance(ft, ModuleText):
+                continue  # reached through its module descriptor, never at a fixed address
+            m = re.search(r'void ([fr])_([0-9a-fA-F]+)\(', ft)
+            if m:
+                prefix = m.group(1)
+                a_val = int(m.group(2), 16)
+                parts.append(f"    sr_register(0x{a_val:08x}u, {prefix}_{a_val:08x});\n")
+        parts.append("}\n")
         with open(f"{base_name}_{i}.c", "w", encoding="ascii", newline="\n") as f:
-            f.write("/* Generated by tools/codegen.py. Do not edit by hand. */\n")
-            f.write(f'#include "{os.path.basename(base_name)}_funcs.h"\n#include <math.h>\n#include <string.h>\n#include <stdio.h>\n\n')
-            if SV_ENABLED:
-                f.write(SR_SV_CHECK + "\n\n")
-            f.write("\n\n".join(chunk) + "\n\n")
-            f.write(f"void sr_register_chunk_{i}(void) {{\n")
-            for ft in chunk:
-                if isinstance(ft, ModuleText):
-                    continue  # reached through its module descriptor, never at a fixed address
-                m = re.search(r'void ([fr])_([0-9a-fA-F]+)\(', ft)
-                if m:
-                    prefix = m.group(1)
-                    a_val = int(m.group(2), 16)
-                    f.write(f"    sr_register(0x{a_val:08x}u, {prefix}_{a_val:08x});\n")
-            f.write("}\n")
+            f.write(rename_generated_entries("".join(parts), renames))
 
     write_shared_library_sources(os.path.dirname(base_name) or ".", module_translations)
 
@@ -3932,6 +4338,9 @@ def main(argv):
         cfg_report["emitted_ownership_map"] = build_emitted_ownership_map(
             cfg_report, catalog, primary_emitted,
         )
+        for row in cfg_report["emitted_ownership_map"]["regions"]:
+            if row["symbol"] is not None:
+                row["symbol"] = renames.get(row["symbol"], row["symbol"])
         with open(cfg_report_path, "w", encoding="ascii", newline="\n") as output:
             output.write(canonical_cfg_json(cfg_report))
 

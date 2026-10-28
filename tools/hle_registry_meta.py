@@ -142,6 +142,33 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured",
     },
+    # The sampling setters' accepted ranges and error codes follow PSPAutotests
+    # tests/ctrl/sampling and tests/ctrl/sampling2 (.expected files recorded on a PSP);
+    # the stored values do not yet drive sampling (#1390).
+    "h_CtrlSetSamplingMode": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix",
+            "PSPAutotests tests/ctrl/sampling (modes 2 and -1 refused with 0x80000107, mode kept)",
+        ],
+        "limitation": "validates and stores the mode, but digital mode does not yet centre the sampled analog axes (#1390); whether firmware truncates the argument to 8 bits before the range check is not measured",
+    },
+    "h_CtrlSetSamplingCycle": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix",
+            "PSPAutotests tests/ctrl/sampling2 (0 and 5555..20000 accepted, other cycles refused with 0x800001FE, cycle kept)",
+        ],
+        "limitation": "validates and stores the cycle, but samples are still latched once per VBLANK whatever the cycle (#1390)",
+    },
+    "h_CtrlGetSamplingCycle": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix",
+            "PSPAutotests tests/ctrl/sampling (power-on cycle 0, set/get round trip)",
+        ],
+        "limitation": "reports the cycle retained by sceCtrlSetSamplingCycle; PSPAutotests leaves the NULL out-pointer call out as crashing a PSP, so the ILLEGAL_ADDR refusal used here instead is the runtime's fail-closed choice, not a measured code",
+    },
     # Kernel alarms are guest-time timers whose handlers run in interrupt context from the
     # scheduler's interrupt-service step.  The only measured cells are the unknown-alarm-id
     # code and "a non-zero handler return reschedules"; the rest is project-defined.
@@ -405,16 +432,19 @@ HANDLER_METADATA = {
     # memmove-correct same-pointer and overlapping copies, and full-span copies
     # (the PSP-3000 size matrix copied fully valid spans completely through
     # 0x100000; there is no API-wide 0xC000 ceiling, see docs/ARCHITECTURE.md).
-    # The handlers remain partial because concurrent-DMA BUSY behavior and the
-    # precedence of validation for an invalid truncated tail are not established
-    # by the available evidence.
+    # The measured cross-thread contract is modelled too: a Try during another
+    # thread's pending transfer returns BUSY and a blocking call waits for it.
+    # The handlers remain partial because the transfer's guest-time duration is
+    # unmeasured (its window closes at a scheduling decision, not after a time)
+    # and the precedence of validation for an invalid truncated tail is not
+    # established by the available evidence.
     "h_DmacMemcpy": {
         "status": "partial",
-        "limitation": "concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)",
+        "limitation": "active-transfer guest-time duration unmeasured (ordering-only window) and invalid truncated-tail validation precedence unmodeled (#303, #341)",
     },
     "h_DmacTryMemcpy": {
         "status": "partial",
-        "limitation": "concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)",
+        "limitation": "active-transfer guest-time duration unmeasured (ordering-only window) and invalid truncated-tail validation precedence unmodeled (#303, #341)",
     },
     # This returns no error while the virtual ISO-backed UMD model reports its
     # disc present (activated 0x32 or deactivated 0x12). Other drive-error states
@@ -457,7 +487,7 @@ HANDLER_METADATA = {
     # command pairs remain visible per pair and are tracked under issue #341.
     "h_IoDevctl": {
         "status": "partial",
-        "limitation": "Memory Stick devctl callback events unmodeled (#341)",
+        "limitation": "Memory Stick insert/eject callbacks are notified once, with argument 1, when registered; no later insert or eject event exists, and the 32-entry bound, duplicate entries and 0x80010016 refusals follow PPSSPP's model, not a hardware measurement (#1378)",
     },
     "h_IoDopen": {
         "status": "partial",
@@ -471,8 +501,9 @@ HANDLER_METADATA = {
         "status": "partial",
         "evidence": [
             "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
+            "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
         ],
-        "limitation": "PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; large offsets, out-of-range clamping, invalid whence, raw devices and error precedence remain unmeasured (#341)",
+        "limitation": "PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; on a file, a destination before the start or past the end fails closed with IO_LSEEK_OUT_OF_RANGE (#1380); large offsets, invalid whence and error precedence remain unmeasured (#341). UMD block-device seeks follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (sector positions, SEEK_END at the last sector, 0x8001b003 for a negative or far-past-the-disc position); the refusal edge between the last sector and the captured far position is inferred",
     },
     "h_IoMkdir": {
         "status": "complete",
@@ -488,15 +519,16 @@ HANDLER_METADATA = {
             "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
         ],
-        "limitation": "measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; other flag combinations, general error precedence and raw UMD data operations remain unmeasured (#341)",
+        "limitation": "measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; an open without PSP_O_CREAT never creates a file, and PSP_O_CREAT|PSP_O_EXCL on an existing file fails closed with IO_OPEN_EXCL_EXISTING (#1380); other flag combinations and general error precedence remain unmeasured (#341). UMD block-device reads and seeks are covered under sceIoRead and sceIoLseek",
     },
     "h_IoRead": {
         "status": "partial",
         "evidence": [
             "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+            "src/rt/hle_thread_selftest.c:test_umd_block_device_sectors",
         ],
-        "limitation": "PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); short reads at end of file, zero-length reads, partial-read position advance, unreadable buffers, write-only descriptors, raw UMD data and standard-stream reads remain unmeasured (#341)",
+        "limitation": "PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); short reads at end of file, zero-length file reads, partial-read position advance, unreadable buffers, write-only descriptors and standard-stream reads remain unmeasured (#341). UMD block-device reads follow PSP-UMDRAW-001's captured but not acceptance-qualified cells (counts and results in 2048-byte sectors, the position advancing by the count, 0x80010016 for a zero count); a read crossing the last sector stays at the raw-device boundary, and the runtime refuses a destination outside guest memory where the console overran the buffer",
     },
     "h_IoRemove": {
         "status": "complete",
@@ -844,15 +876,25 @@ HANDLER_METADATA = {
     },
     "h_RtcGetCurrentClockLocal": {
         "status": "partial",
-        "limitation": "timezone/daylight comes from the fixed UTC constant until #77 adds the settable system profile, so LocalTime matches only a UTC-configured PSP (#77, #80, #341)",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
+            "src/rt/hle.c:psp_profile_local_offset_minutes",
+        ],
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the seed is the oracle console's measured setting, not a factory default, and the 60-minute daylight-saving shift is the setting's meaning, not measured (#1382, #341)",
     },
     "h_RtcConvertUtcToLocal": {
         "status": "partial",
-        "limitation": "runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
+        ],
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)",
     },
     "h_RtcConvertLocalToUtc": {
         "status": "partial",
-        "limitation": "runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_rtc_local_time_follows_the_system_profile",
+        ],
+        "limitation": "applies the time zone and daylight saving of the system profile, the registry keys sceUtilityGetSystemParamInt reports; the 60-minute daylight-saving shift is the setting's meaning, not measured, and the checked-overflow failure class is not autotest-verified (#1382, #341)",
     },
     "h_RtcGetTick": {
         "status": "complete",
@@ -997,6 +1039,14 @@ HANDLER_METADATA = {
         ],
         "limitation": "the cited cell measures a blocked waiter's WAIT_CANCEL outcome after event cancellation; it does not establish the cancel call's return, pattern assignment, waiter-count output, unknown-ID behavior, pointer errors, or multiple-waiter ordering",
     },
+    "h_CancelMsgPipe": {
+        "status": "partial",
+        "evidence": [
+            "PSPAutotests tests/threads/msgpipe (cancel case: waiters released with WAIT_CANCEL, counts and remaining timeout written)",
+            "src/rt/hle_thread_selftest.c:test_msgpipe_cancel_and_refer",
+        ],
+        "limitation": "releases every active send and receive waiter with WAIT_CANCEL, writes both waiter counts and each timed waiter's remaining timeout and empties the buffer; a waiter paused inside a callback, the unknown-UID code and error precedence are not hardware measured (#1381)",
+    },
     "h_CancelSema": {
         "status": "partial",
         "evidence": [
@@ -1010,7 +1060,7 @@ HANDLER_METADATA = {
         "evidence": [
             "docs/HARDWARE_ORACLE.md (PSP-B1-01: ClearEventFlag(mask) keeps only the bits in mask)",
         ],
-        "limitation": "the measured mask behavior matches the normal-object path; an unknown event-flag UID currently returns generic 0x80020000 instead of the measured unknown-event-flag code 0x8002019A, and error precedence is not covered",
+        "limitation": "the measured mask behavior matches the normal-object path; an unknown UID, or a UID of another kernel-object kind, returns the measured unknown-event-flag code 0x8002019A; error precedence is not covered",
     },
     "h_CreateFpl": {
         "status": "partial",
@@ -1179,6 +1229,15 @@ HANDLER_METADATA = {
         ],
         "limitation": "valid pool layout and the cited short/zero-size behavior are covered; tick fields, invalid pointers, unknown IDs beyond the after-delete refer, and error precedence are not established",
     },
+    "h_ReferMsgPipeStatus": {
+        "status": "partial",
+        "evidence": [
+            "public ABI (PSPSDK pspthreadman.h: SceKernelMppInfo, 56 bytes)",
+            "PSPAutotests tests/threads/msgpipe (refer counts beside the cancel and delete cases)",
+            "src/rt/hle_thread_selftest.c:test_msgpipe_cancel_and_refer",
+        ],
+        "limitation": "reports name, attr, buffer size, free size and the active send and receive waiter counts for a known pipe, honours a short or zero size word and checks the whole span before writing; the unknown-UID and NULL-pointer codes and error precedence are source-selftested, not hardware measured (#1381)",
+    },
     "h_ReferMutexStatus": {
         "status": "partial",
         "evidence": [
@@ -1252,7 +1311,7 @@ HANDLER_METADATA = {
             "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event signal/cancel before deadline and late dispatch)",
             "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: event flag poll/wait modes and outputs)",
         ],
-        "limitation": "the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown event-flag UID currently returns generic 0x80020000 instead of 0x8002019A, and other mode, pointer, and multi-waiter precedence is not established",
+        "limitation": "the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown UID, or a UID of another kernel-object kind, returns 0x8002019A; other mode, pointer, and multi-waiter precedence is not established",
     },
     "h_WaitSema": {
         "status": "partial",
@@ -1442,3 +1501,307 @@ KNOWN_NID_ISSUES = {
 # retired when the 603_605 SDK-version variant was rerouted to
 # h_SetCompiledSdkVersion under its canonical name (issue #71).
 WAIVERS = ()
+
+# Issue #341 acceptance: no handler the public profile-zero guest imports stays
+# silently `unreviewed`. These are the NIDs the guest built from
+# fixtures/profile_zero/main.c imports today that still route to a dedicated
+# `unreviewed` handler. The list only shrinks:
+#   - tools/hle_manifest.py rejects an entry whose NID is no longer registered,
+#     whose name disagrees with the registration, that does not name #341, or
+#     whose handler is no longer `unreviewed` (graduating a handler retires its
+#     entries in the same change);
+#   - `tools/hle_manifest.py --imports <guest> --check-profile-zero-imports`, run
+#     by the hosted profile_zero_fixture job on the digest-checked build, fails
+#     on an imported unreviewed NID that is missing here and on an entry the
+#     guest no longer imports.
+# Never add an entry to make that gate pass: review the handler instead.
+PROFILE_ZERO_ISSUE = "https://github.com/Jstar269/nakagawa-recomp/issues/341"
+PROFILE_ZERO_UNREVIEWED_IMPORTS = {
+    0x03444EB4: {"name": "sceGeListSync", "issue": PROFILE_ZERO_ISSUE},  # h_GeListSync
+    0x05572A5F: {"name": "sceKernelExitGame", "issue": PROFILE_ZERO_ISSUE},  # h_ExitGame
+    0x05DB22CE: {"name": "sceGeUnsetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeUnsetCallback
+    0x092968F4: {"name": "sceKernelCpuSuspendIntr", "issue": PROFILE_ZERO_ISSUE},  # h_CpuSuspendIntr
+    0x0E20F177: {"name": "sceDisplaySetMode", "issue": PROFILE_ZERO_ISSUE},  # h_DisplaySetMode
+    0x13F592BC: {"name": "sceAudioOutputPannedBlocking", "issue": PROFILE_ZERO_ISSUE},  # h_AudioOutputPannedBlocking
+    0x172D316E: {"name": "sceKernelStdin", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
+    0x1F803938: {"name": "sceCtrlReadBufferPositive", "issue": PROFILE_ZERO_ISSUE},  # h_CtrlReadBuffer
+    0x237DBD4F: {"name": "sceKernelAllocPartitionMemory", "issue": PROFILE_ZERO_ISSUE},  # h_AllocPartitionMemory
+    0x278C0DF5: {"name": "sceKernelWaitThreadEnd", "issue": PROFILE_ZERO_ISSUE},  # h_WaitThreadEnd
+    0x293B45B8: {"name": "sceKernelGetThreadId", "issue": PROFILE_ZERO_ISSUE},  # h_GetThreadIdSched
+    0x446D8DE6: {"name": "sceKernelCreateThread", "issue": PROFILE_ZERO_ISSUE},  # h_CreateThread
+    0x55C20A00: {"name": "sceKernelCreateEventFlag", "issue": PROFILE_ZERO_ISSUE},  # h_CreateEventFlag
+    0x5F10D406: {"name": "sceKernelCpuResumeIntr", "issue": PROFILE_ZERO_ISSUE},  # h_CpuResumeIntr
+    0x9D9A5BA1: {"name": "sceKernelGetBlockHeadAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GetBlockHeadAddr
+    0xA291F107: {"name": "sceKernelMaxFreeMemSize", "issue": PROFILE_ZERO_ISSUE},  # h_MaxFreeMemSize
+    0xA4FC06A4: {"name": "sceGeSetCallback", "issue": PROFILE_ZERO_ISSUE},  # h_GeSetCallback
+    0xA5DA2406: {"name": "sceUtilityGetSystemParamInt", "issue": PROFILE_ZERO_ISSUE},  # h_GetSystemParamInt
+    0xA6BAB2E9: {"name": "sceKernelStdout", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
+    0xACE946E8: {"name": "sceIoGetstat", "issue": PROFILE_ZERO_ISSUE},  # h_IoGetstat
+    0xB287BD61: {"name": "sceGeDrawSync", "issue": PROFILE_ZERO_ISSUE},  # h_GeDrawSync
+    0xB6D61D02: {"name": "sceKernelFreePartitionMemory", "issue": PROFILE_ZERO_ISSUE},  # h_FreePartitionMemory
+    0xBEA46419: {"name": "sceKernelLockLwMutex", "issue": PROFILE_ZERO_ISSUE},  # h_LockLwMutex
+    0xCEADEB47: {"name": "sceKernelDelayThread", "issue": PROFILE_ZERO_ISSUE},  # h_DelayThread
+    0xD675EBB8: {"name": "sceKernelSelfStopUnloadModule", "issue": PROFILE_ZERO_ISSUE},  # h_SelfStopUnloadModule
+    0xE0D68148: {"name": "sceGeListUpdateStallAddr", "issue": PROFILE_ZERO_ISSUE},  # h_GeListUpdateStallAddr
+    0xE3EB004C: {"name": "sceIoDread", "issue": PROFILE_ZERO_ISSUE},  # h_IoDread
+    0xEF9E4C70: {"name": "sceKernelDeleteEventFlag", "issue": PROFILE_ZERO_ISSUE},  # h_DeleteEventFlag
+    0xF0B7DA1C: {"name": "sceKernelDeleteMsgPipe", "issue": PROFILE_ZERO_ISSUE},  # h_DeleteMsgPipe
+    0xF475845D: {"name": "sceKernelStartThread", "issue": PROFILE_ZERO_ISSUE},  # h_StartThread
+    0xF78BA90A: {"name": "sceKernelStderr", "issue": PROFILE_ZERO_ISSUE},  # h_StdFd
+}
+
+# Runtime subsystem that owns each registration (issue #307). The split of
+# src/rt/hle.c into subsystem modules needs one obvious owner per registered
+# NID before any handler moves; this map states it. A subsystem is an
+# ownership grouping for the runtime source, never a support claim and not a
+# claim about which PSP library exports the NID.
+#
+# Resolution (tools/hle_manifest.py subsystem_for): strip the registered
+# name's leading underscores, then the LONGEST key below that prefixes it
+# decides, so `sceAudiocodec` beats `sceAudio` and `sceKernelPower` claims
+# the power NIDs before any kernel entry. The manifest fails closed: a
+# registration no key matches, a key no registration resolves through, and a
+# value outside SUBSYSTEMS are all errors. Keys are unique by construction;
+# tools/test_hle_manifest.py also rejects a key written twice, which a Python
+# dict literal would otherwise collapse silently to its last value.
+#
+# Kernel names lead with a verb (sceKernelCreateSema, sceKernelWaitSema), so
+# no short prefix separates threads from semaphores; those keys are the
+# verb-and-object stems, and each also covers its CB, Wide, Low and firmware
+# variants (sceKernelLockLwMutexCB, sceKernelTryLockLwMutex_600).
+SUBSYSTEMS = frozenset({
+    "audio",
+    "audio_codec",
+    "cache_dma",
+    "display",
+    "font",
+    "ge",
+    "input",
+    "io",
+    "kernel_interrupt",
+    "kernel_memory",
+    "kernel_module",
+    "kernel_sync",
+    "kernel_thread",
+    "kernel_time",
+    "kernel_utils",
+    "mpeg",
+    "network",
+    "npdrm",
+    "power",
+    "rtc",
+    "system",
+    "umd",
+    "utility",
+})
+
+SUBSYSTEM_BY_PREFIX = {
+    # --- audio output and the SAS mixer ---
+    "sceAudio": "audio",
+    "sceSas": "audio",
+    # --- compressed-audio decoders ---
+    "sceAtrac": "audio_codec",
+    "sceAudiocodec": "audio_codec",
+    "sceMp3": "audio_codec",
+    # --- CPU caches and DMA copies ---
+    "sceDmac": "cache_dma",
+    "sceKernelDcache": "cache_dma",
+    "sceKernelIcache": "cache_dma",
+    # --- display, graphics engine, input ---
+    "sceDisplay": "display",
+    "sceGe": "ge",
+    "sceCtrl": "input",
+    "sceHprm": "input",
+    # --- fonts ---
+    "sceFont": "font",
+    # --- file I/O ---
+    "sceIo": "io",
+    # --- video and stream demux ---
+    "sceMpeg": "mpeg",
+    "scePsmf": "mpeg",
+    # --- network (fail-closed stubs) ---
+    "sceHttp": "network",
+    "sceNet": "network",
+    "sceSsl": "network",
+    "sceWlan": "network",
+    # --- NP DRM keys ---
+    "sceNpDrm": "npdrm",
+    # --- power, UMD, clock ---
+    "sceKernelPower": "power",
+    "scePower": "power",
+    "sceUmd": "umd",
+    "sceRtc": "rtc",
+    # --- system registry and console identity ---
+    "sceOpenPSID": "system",
+    "sceReg": "system",
+    # --- utility dialogs and impose ---
+    "sceImpose": "utility",
+    "sceUtility": "utility",
+    # --- kernel: interrupts ---
+    "sceKernelCpuResumeIntr": "kernel_interrupt",
+    "sceKernelCpuSuspendIntr": "kernel_interrupt",
+    "sceKernelDisableSubIntr": "kernel_interrupt",
+    "sceKernelEnableSubIntr": "kernel_interrupt",
+    "sceKernelIsCpuIntrEnable": "kernel_interrupt",
+    "sceKernelIsCpuIntrSuspended": "kernel_interrupt",
+    "sceKernelRegisterSubIntrHandler": "kernel_interrupt",
+    "sceKernelReleaseSubIntrHandler": "kernel_interrupt",
+    # --- kernel: memory partitions, pools, TLS, SDK version ---
+    "sceKernelAllocMemoryBlock": "kernel_memory",
+    "sceKernelAllocPartitionMemory": "kernel_memory",
+    "sceKernelAllocateFpl": "kernel_memory",
+    "sceKernelAllocateVpl": "kernel_memory",
+    "sceKernelCreateFpl": "kernel_memory",
+    "sceKernelCreateTlspl": "kernel_memory",
+    "sceKernelCreateVpl": "kernel_memory",
+    "sceKernelDeleteFpl": "kernel_memory",
+    "sceKernelDeleteTlspl": "kernel_memory",
+    "sceKernelDeleteVpl": "kernel_memory",
+    "sceKernelDevkitVersion": "kernel_memory",
+    "sceKernelFreeFpl": "kernel_memory",
+    "sceKernelFreeMemoryBlock": "kernel_memory",
+    "sceKernelFreePartitionMemory": "kernel_memory",
+    "sceKernelFreeTlspl": "kernel_memory",
+    "sceKernelFreeVpl": "kernel_memory",
+    "sceKernelGetBlockHeadAddr": "kernel_memory",
+    "sceKernelGetMemoryBlockAddr": "kernel_memory",
+    "sceKernelGetTlsAddr": "kernel_memory",
+    "sceKernelMaxFreeMemSize": "kernel_memory",
+    "sceKernelReferFplStatus": "kernel_memory",
+    "sceKernelReferTlsplStatus": "kernel_memory",
+    "sceKernelReferVplStatus": "kernel_memory",
+    "sceKernelSetCompiledSdkVersion": "kernel_memory",
+    "sceKernelSetCompilerVersion": "kernel_memory",
+    "sceKernelTotalFreeMemSize": "kernel_memory",
+    "sceKernelTryAllocateFpl": "kernel_memory",
+    "sceKernelTryAllocateVpl": "kernel_memory",
+    "sceKernelVolatileMem": "kernel_memory",
+    # --- kernel: module loading and process exit ---
+    "sceKernelExitGame": "kernel_module",
+    "sceKernelGetModuleId": "kernel_module",
+    "sceKernelLoadExec": "kernel_module",
+    "sceKernelLoadModule": "kernel_module",
+    "sceKernelRegisterExitCallback": "kernel_module",
+    "sceKernelSelfStopUnloadModule": "kernel_module",
+    "sceKernelStartModule": "kernel_module",
+    "sceKernelStopModule": "kernel_module",
+    "sceKernelStopUnloadSelfModuleWithStatus": "kernel_module",
+    "sceKernelUnloadModule": "kernel_module",
+    # --- kernel: semaphores, event flags, mutexes, message boxes and pipes ---
+    "sceKernelCancelEventFlag": "kernel_sync",
+    "sceKernelCancelMsgPipe": "kernel_sync",
+    "sceKernelCancelMutex": "kernel_sync",
+    "sceKernelCancelReceiveMbx": "kernel_sync",
+    "sceKernelCancelSema": "kernel_sync",
+    "sceKernelClearEventFlag": "kernel_sync",
+    "sceKernelCreateEventFlag": "kernel_sync",
+    "sceKernelCreateLwMutex": "kernel_sync",
+    "sceKernelCreateMbx": "kernel_sync",
+    "sceKernelCreateMsgPipe": "kernel_sync",
+    "sceKernelCreateMutex": "kernel_sync",
+    "sceKernelCreateSema": "kernel_sync",
+    "sceKernelDeleteEventFlag": "kernel_sync",
+    "sceKernelDeleteLwMutex": "kernel_sync",
+    "sceKernelDeleteMbx": "kernel_sync",
+    "sceKernelDeleteMsgPipe": "kernel_sync",
+    "sceKernelDeleteMutex": "kernel_sync",
+    "sceKernelDeleteSema": "kernel_sync",
+    "sceKernelLockLwMutex": "kernel_sync",
+    "sceKernelLockMutex": "kernel_sync",
+    "sceKernelPollEventFlag": "kernel_sync",
+    "sceKernelPollMbx": "kernel_sync",
+    "sceKernelPollSema": "kernel_sync",
+    "sceKernelReceiveMbx": "kernel_sync",
+    "sceKernelReceiveMsgPipe": "kernel_sync",
+    "sceKernelReferEventFlagStatus": "kernel_sync",
+    "sceKernelReferLwMutexStatus": "kernel_sync",
+    "sceKernelReferMbxStatus": "kernel_sync",
+    "sceKernelReferMsgPipeStatus": "kernel_sync",
+    "sceKernelReferMutexStatus": "kernel_sync",
+    "sceKernelReferSemaStatus": "kernel_sync",
+    "sceKernelSendMbx": "kernel_sync",
+    "sceKernelSendMsgPipe": "kernel_sync",
+    "sceKernelSetEventFlag": "kernel_sync",
+    "sceKernelSignalSema": "kernel_sync",
+    "sceKernelTryLockLwMutex": "kernel_sync",
+    "sceKernelTryLockMutex": "kernel_sync",
+    "sceKernelTryReceiveMsgPipe": "kernel_sync",
+    "sceKernelTrySendMsgPipe": "kernel_sync",
+    "sceKernelUnlockLwMutex": "kernel_sync",
+    "sceKernelUnlockMutex": "kernel_sync",
+    "sceKernelWaitEventFlag": "kernel_sync",
+    "sceKernelWaitSema": "kernel_sync",
+    # --- kernel: threads, callbacks, delays, dispatch, profilers ---
+    "sceKernelCancelCallback": "kernel_thread",
+    "sceKernelCancelWakeupThread": "kernel_thread",
+    "sceKernelChangeCurrentThreadAttr": "kernel_thread",
+    "sceKernelChangeThreadPriority": "kernel_thread",
+    "sceKernelCheckCallback": "kernel_thread",
+    "sceKernelCreateCallback": "kernel_thread",
+    "sceKernelCreateNotifyCallback": "kernel_thread",
+    "sceKernelCreateThread": "kernel_thread",
+    "sceKernelDelaySysClockThread": "kernel_thread",
+    "sceKernelDelayThread": "kernel_thread",
+    "sceKernelDeleteCallback": "kernel_thread",
+    "sceKernelDeleteNotifyCallback": "kernel_thread",
+    "sceKernelDeleteThread": "kernel_thread",
+    "sceKernelExitDeleteThread": "kernel_thread",
+    "sceKernelExitThread": "kernel_thread",
+    "sceKernelGetCallbackCount": "kernel_thread",
+    "sceKernelGetThreadCurrentPriority": "kernel_thread",
+    "sceKernelGetThreadExitStatus": "kernel_thread",
+    "sceKernelGetThreadId": "kernel_thread",
+    "sceKernelGetThreadStackFreeSize": "kernel_thread",
+    "sceKernelGetThreadmanIdList": "kernel_thread",
+    "sceKernelNotifyCallback": "kernel_thread",
+    "sceKernelReferCallbackStatus": "kernel_thread",
+    "sceKernelReferGlobalProfiler": "kernel_thread",
+    "sceKernelReferSystemStatus": "kernel_thread",
+    "sceKernelReferThreadProfiler": "kernel_thread",
+    "sceKernelReferThreadRunStatus": "kernel_thread",
+    "sceKernelReferThreadStatus": "kernel_thread",
+    "sceKernelReleaseWaitThread": "kernel_thread",
+    "sceKernelResumeDispatchThread": "kernel_thread",
+    "sceKernelResumeThread": "kernel_thread",
+    "sceKernelRotateThreadReadyQueue": "kernel_thread",
+    "sceKernelSleepThread": "kernel_thread",
+    "sceKernelStartThread": "kernel_thread",
+    "sceKernelSuspendDispatchThread": "kernel_thread",
+    "sceKernelSuspendThread": "kernel_thread",
+    "sceKernelTerminateDeleteThread": "kernel_thread",
+    "sceKernelTerminateThread": "kernel_thread",
+    "sceKernelWaitThreadEnd": "kernel_thread",
+    "sceKernelWakeupThread": "kernel_thread",
+    # --- kernel: system time, alarms, virtual timers, libc clock ---
+    "sceKernelCancelAlarm": "kernel_time",
+    "sceKernelCancelVTimerHandler": "kernel_time",
+    "sceKernelCreateVTimer": "kernel_time",
+    "sceKernelDeleteVTimer": "kernel_time",
+    "sceKernelGetSystemTime": "kernel_time",
+    "sceKernelGetVTimerBase": "kernel_time",
+    "sceKernelGetVTimerTime": "kernel_time",
+    "sceKernelLibcClock": "kernel_time",
+    "sceKernelLibcGettimeofday": "kernel_time",
+    "sceKernelLibcTime": "kernel_time",
+    "sceKernelReferVTimerStatus": "kernel_time",
+    "sceKernelSetAlarm": "kernel_time",
+    "sceKernelSetVTimerHandler": "kernel_time",
+    "sceKernelSetVTimerTime": "kernel_time",
+    "sceKernelStartVTimer": "kernel_time",
+    "sceKernelStopVTimer": "kernel_time",
+    "sceKernelSysClock2USec": "kernel_time",
+    "sceKernelUSec2SysClock": "kernel_time",
+    # --- kernel: stdio, debug output, GPIO, libc memory/string helpers ---
+    "memset": "kernel_utils",
+    "newlibModuleStreamWrite": "kernel_utils",
+    "printf": "kernel_utils",
+    "sceKernelGetGPI": "kernel_utils",
+    "sceKernelMemcpy": "kernel_utils",
+    "sceKernelMemset": "kernel_utils",
+    "sceKernelPrintf": "kernel_utils",
+    "sceKernelSetGPO": "kernel_utils",
+    "sceKernelStderr": "kernel_utils",
+    "sceKernelStdin": "kernel_utils",
+    "sceKernelStdout": "kernel_utils",
+    "strlen": "kernel_utils",
+}

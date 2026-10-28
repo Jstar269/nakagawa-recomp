@@ -28,9 +28,12 @@ read anywhere.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
+import math
 import os
+import random
 import re
 import shutil
 import struct
@@ -611,6 +614,153 @@ class ExactArithmeticTests(unittest.TestCase):
     def test_float_coordinates_are_rejected_not_rounded(self) -> None:
         with self.assertRaises(TypeError):
             ttf2pgf._round26_6(2.5)
+
+
+def _rasterize_rational_reference(raster, embolden_x: int = 0, embolden_y: int = 0):
+    """The specification's 8x8 non-zero-winding rasterizer written with Fractions, as the
+    converter computed it before its crossings moved to integer arithmetic. The tests compare
+    the production rasterizer against this, bit for bit."""
+    width, height = raster.width, raster.height
+    if width <= 0 or height <= 0 or not raster.edges:
+        return 0, 0, ()
+    sub_pixel, supersample = ttf2pgf.SUB_PIXEL, ttf2pgf.SUPERSAMPLE
+    left26, top26 = raster.left * 64, raster.top * 64
+    sub_columns = width * supersample
+    sub_rows = []
+    for row in range(height):
+        for step in range(supersample):
+            y = top26 - (row * supersample + step) * sub_pixel - sub_pixel // 2
+            crossings = []
+            for x0, y0, x1, y1 in raster.edges:
+                if y0 == y1:
+                    continue
+                if y0 <= y < y1:
+                    direction = 1
+                elif y1 <= y < y0:
+                    direction = -1
+                else:
+                    continue
+                numer = x0 * (y1 - y0) + (y - y0) * (x1 - x0)
+                den = y1 - y0
+                if den < 0:
+                    numer, den = -numer, -den
+                crossings.append((Fraction(numer, den) - left26, direction))
+            crossings.sort(key=lambda entry: (entry[0], entry[1]))
+            bits = winding = 0
+            for index, (position, direction) in enumerate(crossings):
+                winding += direction
+                if winding == 0 or index + 1 >= len(crossings):
+                    continue
+                nxt = crossings[index + 1][0]
+                j_min = max((position - (sub_pixel // 2)) // sub_pixel + 1, 0)
+                j_max = min(-((sub_pixel // 2 - nxt) // sub_pixel) - 1, sub_columns - 1)
+                if j_max >= j_min:
+                    bits |= ((1 << (j_max - j_min + 1)) - 1) << j_min
+            sub_rows.append(bits)
+    if embolden_x:
+        mask = (1 << sub_columns) - 1
+        sub_rows = [functools_reduce_or(bits, embolden_x) & mask for bits in sub_rows]
+    if embolden_y:
+        sub_rows = [
+            functools.reduce(lambda acc, value: acc | value, sub_rows[index : index + embolden_y + 1], 0)
+            for index in range(len(sub_rows))
+        ]
+    counts = [0] * (width * height)
+    for index, bits in enumerate(sub_rows):
+        row = index // supersample
+        for column in range(width):
+            active = (bits >> (column * supersample)) & 0xFF
+            counts[row * width + column] += active.bit_count()
+    scale = supersample * supersample
+    return width, height, tuple((count * 15 + 32) // scale for count in counts)
+
+
+def functools_reduce_or(bits: int, shifts: int) -> int:
+    grown = bits
+    for shift in range(1, shifts + 1):
+        grown |= bits << shift
+    return grown
+
+
+class IntegerRasterEquivalenceTests(unittest.TestCase):
+    """The flattener, the 26.6 scaling and the crossing rasterizer run on integers for speed; each
+    must produce exactly what the specification's rational arithmetic produces."""
+
+    def test_scaled_flattening_matches_the_rational_flattener(self) -> None:
+        rng = random.Random(1296)
+        bits, half = ttf2pgf._SCALE_BITS, 1 << (ttf2pgf._SCALE_BITS - 1)
+        for _ in range(3000):
+            a, c, b = ((rng.randint(-40000, 40000), rng.randint(-40000, 40000)) for _ in range(3))
+            reference: list[tuple] = []
+            ttf2pgf._flatten_quad(a, c, b, 0, reference)
+            scaled: list[tuple] = []
+            ttf2pgf._flatten_quad_scaled(*((x << bits, y << bits) for x, y in (a, c, b)), 0, scaled)
+            self.assertEqual(
+                [((x + half) >> bits, (y + half) >> bits) for x, y in scaled],
+                [(ttf2pgf._round26_6(x), ttf2pgf._round26_6(y)) for x, y in reference],
+            )
+
+    def test_scaled_contour_expansion_keeps_implied_midpoints_exact(self) -> None:
+        rng = random.Random(363)
+        bits = ttf2pgf._SCALE_BITS
+        for _ in range(500):
+            points = [(rng.randint(-5000, 5000), rng.randint(-5000, 5000), rng.random() < 0.4)
+                      for _ in range(rng.randint(2, 9))]
+            reference = ttf2pgf._expand_contour(points)
+            scaled = ttf2pgf._expand_contour(
+                [(x << bits, y << bits, on) for x, y, on in points], ttf2pgf._scaled_midpoint
+            )
+            unscale = lambda point: (Fraction(point[0], 1 << bits), Fraction(point[1], 1 << bits))
+            self.assertEqual(
+                [(segment[0], *map(unscale, segment[1:])) for segment in scaled],
+                [(segment[0], *((Fraction(x), Fraction(y)) for x, y in segment[1:])) for segment in reference],
+            )
+
+    def test_integer_26_6_scaling_matches_the_rational_rule(self) -> None:
+        rng = random.Random(1309)
+        for _ in range(5000):
+            value, ppem, upem = rng.randint(-70000, 70000), rng.randint(1, 64), rng.randint(16, 16384)
+            self.assertEqual(
+                ttf2pgf._to26_6(value, ppem, upem),
+                math.floor(Fraction(value) * ppem * 64 / upem + Fraction(1, 2)),
+            )
+
+    def test_crossing_rasterizer_matches_the_rational_reference(self) -> None:
+        rng = random.Random(2026)
+        for case in range(400):
+            # Large outlines push edge denominators past 2**16 and take the Fraction sort.
+            span = 1 << (8 if case % 4 else 18)
+            edges = []
+            for _ in range(rng.randint(1, 6)):
+                points = [(rng.randint(-span, span), rng.randint(-span, span)) for _ in range(rng.randint(3, 6))]
+                edges.extend((x0, y0, x1, y1) for (x0, y0), (x1, y1) in zip(points, points[1:] + points[:1], strict=True))
+            xs = [x for edge in edges for x in (edge[0], edge[2])]
+            ys = [y for edge in edges for y in (edge[1], edge[3])]
+            raster = ttf2pgf._Raster(
+                edges=tuple(edges), left=min(xs) // 64, bottom=min(ys) // 64,
+                right=-((-max(xs)) // 64), top=-((-max(ys)) // 64),
+            )
+            if raster.width * raster.height > 4096:
+                continue
+            embolden = (case % 3, case % 2)
+            self.assertEqual(ttf2pgf._rasterize(raster, *embolden),
+                             _rasterize_rational_reference(raster, *embolden))
+
+    def test_latin_project_font_output_is_pinned(self) -> None:
+        # The digest the converter has produced for the Latin project font since #1309's build;
+        # the integer arithmetic must reproduce it byte for byte.
+        fixture = ROOT / "fixtures" / "fonts" / "mplus1p"
+        conversion = convert(
+            (fixture / "MPLUS1p-Regular.ttf").read_bytes(),
+            input_path="fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf",
+            output_path="nkltn.pgf",
+            pin=load_pin(fixture / "PIN.json", (fixture / "MPLUS1p-Regular.ttf").read_bytes()),
+            code_points=ttf2pgf.latin_1_text_code_points(),
+            ppem=13, embolden_x=6, embolden_y=4, embolden_advance=3,
+            font_name="Nakagawa Open Latin", font_type="Regular",
+        )
+        self.assertEqual(hashlib.sha256(conversion.image).hexdigest(),
+                         "e10068b52f117295792fe29698a97ab52faedaac1aabfee59a8cf498437b1d15")
 
 
 def _format4_subtable(segments: list[tuple[int, int, int]]) -> bytes:
@@ -1246,6 +1396,21 @@ class VendorFontNameScanTests(unittest.TestCase):
             offenders.extend(f"{entry}:{number}" for number in self._hit_lines(text))
         self.assertEqual(offenders, [], "tracked source names a vendor font; use a project-owned name")
 
+
+
+class IsolatedInterpreterTests(unittest.TestCase):
+    """The release bundles Python's embeddable distribution, whose ._pth file keeps the
+    script's folder off sys.path. `-I` gives a normal interpreter the same import path, so
+    BUILD PACKAGE's project-font step must still find its sibling pgf_writer module."""
+
+    def test_script_imports_its_sibling_module_without_the_script_folder_on_sys_path(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-I", str(TOOL), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("usage", result.stdout.lower())
 
 if __name__ == "__main__":
     unittest.main()

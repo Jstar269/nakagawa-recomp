@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "fp_convert.h"
 #ifdef __cplusplus
@@ -114,6 +115,39 @@ static inline void sr_vfpu_thread_ctrl_init(CpuState *s) {
     }
 }
 
+/* One step of the VFPU random unit, as one vrndi.s draw takes it (issue #326). The
+ * rule is the PSP-3000 measurement in docs/HARDWARE_ORACLE.md (PSP-HLE-ISSUES-001,
+ * 2026-10-24): state Ck = (RCX(k+4) & 0xffff) << 16 | (RCXk & 0xffff) for k = 0..3
+ * and a carry c whose nibble k sits in bits 16-19 of RCXk; then C0' = 69069 C0 + 1,
+ * C1' = xorshift32(C1; 13, 17, 5), C2' = C3, C3' = 2 C3 + C2 + c (mod 2^32),
+ * c' = ((C2 >> 2) + (C3 >> 3) + (c >> 2)) >> 30, and the drawn word is
+ * C0' + C1' + C3'. It reproduces all 1792 measured rows (the drawn word and RCX0-7
+ * after the step). The new state goes back in the same layout. Bits 20-31 are not part
+ * of the state and are left as found: the probe wrote 0x3f8 there in every cell; what
+ * the unit does with other upper bits (reachable only through mtvc) is unmeasured.
+ * The generated code and sr_vfpu_interp both call this. */
+static inline uint32_t sr_vfpu_rnd_step(uint32_t rcx[8]) {
+    uint32_t c[4], carry = 0u;
+    for (int k = 0; k < 4; k++)
+        c[k] = ((rcx[k + 4] & 0xffffu) << 16) | (rcx[k] & 0xffffu);
+    for (int k = 0; k < 8; k++)
+        carry |= ((rcx[k] >> 16) & 0xfu) << (4 * k);
+    uint32_t x = c[1];
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    /* Each addend is below 2^30, so the 32-bit sum cannot wrap. */
+    const uint32_t next_carry = ((c[2] >> 2) + (c[3] >> 3) + (carry >> 2)) >> 30;
+    const uint32_t n[4] = {69069u * c[0] + 1u, x, c[3], 2u * c[3] + c[2] + carry};
+    for (int k = 0; k < 4; k++) {
+        rcx[k] = (rcx[k] & 0xfff00000u) | (((next_carry >> (4 * k)) & 0xfu) << 16) |
+                 (n[k] & 0xffffu);
+        rcx[k + 4] = (rcx[k + 4] & 0xfff00000u) |
+                     (((next_carry >> (4 * (k + 4))) & 0xfu) << 16) | (n[k] >> 16);
+    }
+    return n[0] + n[1] + n[3];
+}
+
 /* LLE Phase 1 (PR 2): COP0/exception/eret helpers and flow metadata. Included
  * here so generated code and the interpreter share one declaration site. */
 #include "cpu_lle.h"
@@ -200,13 +234,17 @@ static inline int sr_guest_span_hits_swizzled_vram_mirror(uint32_t address,
     return 1;
 }
 
-static inline void sr_guest_span_report_vram_mirror_boundary(void) {
+/* `caller` names the function that asked for the refused span (the span
+ * predicates below pass their caller's __func__), so a log line identifies the
+ * bulk path that still forms one host pointer over a swizzled mirror. */
+static inline void sr_guest_span_report_vram_mirror_boundary(const char *caller) {
     static int reported;
     if (!reported) {
         reported = 1;
         fprintf(stderr,
                 "SEMANTIC_BOUNDARY: VRAM_MIRROR_BULK_UNSUPPORTED; bulk access through "
-                "a swizzled VRAM mirror is not supported yet.\n");
+                "a swizzled VRAM mirror is not supported yet (caller: %s).\n",
+                caller ? caller : "unknown");
     }
 }
 
@@ -251,33 +289,44 @@ static inline void sr_guest_vram_read_prepare_bytes(uint32_t addr, uint32_t widt
  * in range). readable/writable are identical today because the guest arena is one
  * uniformly read/write region; they are kept distinct so a call site states intent
  * and a future read-only region only changes one of them. */
-static inline int sr_guest_span_readable(uint32_t addr, uint32_t size) {
+static inline int sr_guest_span_readable_at(uint32_t addr, uint32_t size,
+                                            const char *caller) {
     if (size == 0u) return 1;
     if (!sr_inrange_n(addr, size)) return 0;
     if (sr_guest_span_hits_swizzled_vram_mirror(addr, size)) {
-        sr_guest_span_report_vram_mirror_boundary();
+        sr_guest_span_report_vram_mirror_boundary(caller);
         return 0;
     }
     return 1;
 }
-static inline int sr_guest_span_writable(uint32_t addr, uint32_t size) {
+static inline int sr_guest_span_writable_at(uint32_t addr, uint32_t size,
+                                            const char *caller) {
     if (size == 0u) return 1;
     if (!sr_inrange_n(addr, size)) return 0;
     if (sr_guest_span_hits_swizzled_vram_mirror(addr, size)) {
-        sr_guest_span_report_vram_mirror_boundary();
+        sr_guest_span_report_vram_mirror_boundary(caller);
         return 0;
     }
     return 1;
 }
 
 /* Bulk readers call this immediately before forming their host pointer. */
-static inline int sr_guest_span_readable_current(uint32_t addr, uint32_t size) {
-    if (!sr_guest_span_readable(addr, size)) return 0;
+static inline int sr_guest_span_readable_current_at(uint32_t addr, uint32_t size,
+                                                    const char *caller) {
+    if (!sr_guest_span_readable_at(addr, size, caller)) return 0;
     if (__builtin_expect(g_sr_vram_read_pending, 0) &&
         sr_vram_cpu_span_touches(addr, size))
         sr_ge_vram_read_prepare(sr_vram_cpu_address(addr), size);
     return 1;
 }
+
+/* Call sites keep the short names; the boundary report names the calling function. */
+#define sr_guest_span_readable(addr, size) \
+    sr_guest_span_readable_at((addr), (size), __func__)
+#define sr_guest_span_writable(addr, size) \
+    sr_guest_span_writable_at((addr), (size), __func__)
+#define sr_guest_span_readable_current(addr, size) \
+    sr_guest_span_readable_current_at((addr), (size), __func__)
 
 /* Return the largest prefix of [addr, addr + size) that remains inside the
  * flat guest arena.  This is intentionally a prefix calculation, not a
@@ -530,6 +579,149 @@ static inline void sr_guest_vram_write_commit_bytes(uint32_t addr, uint32_t widt
     }
 }
 
+/* --- Bulk guest copies through the swizzled VRAM mirrors (#1049) -------------
+ * sr_vram_cpu_address() applies the CPU-view transforms measured on a PSP-3000
+ * (docs/HARDWARE_ORACLE.md, PSP-VRAM-MIRROR-001). The 0x04200000 view XORs the
+ * offset with 0x2040 (bits 6 and 13), so each aligned 64-byte block stays
+ * contiguous in physical VRAM. The 0x04600000 view also rotates bits 5..9, so
+ * only each aligned 32-byte block does. The base and 0x04400000 views, RAM and
+ * the rest of the arena are linear. One host pointer therefore covers at most
+ * one such block of a swizzled view; sr_guest_host_run() returns how many
+ * leading bytes of a span one host pointer covers. The helpers below walk a
+ * span in those pieces with the per-piece VRAM read preparation and write
+ * prepare/commit of the scalar accessors, so a bulk CPU copy lands where the
+ * same copy made of scalar stores would. Each checks its whole span first and
+ * touches no guest byte when the span leaves the arena. */
+#define SR_VRAM_MIRROR_XOR_RUN    0x40u  /* 0x04200000 view: offset ^ 0x2040 */
+#define SR_VRAM_MIRROR_ROTATE_RUN 0x20u  /* 0x04600000 view: bits 5..9 rotated */
+
+static inline uint32_t sr_guest_host_run(uint32_t addr, uint32_t size) {
+    const uint32_t phys = (uint32_t)SR_PHYS(addr);
+    uint32_t run;
+    if (phys < 0x04200000u) {
+        run = 0x04200000u - phys;
+    } else if (phys < 0x04400000u) {
+        run = SR_VRAM_MIRROR_XOR_RUN - (phys & (SR_VRAM_MIRROR_XOR_RUN - 1u));
+    } else if (phys < 0x04600000u) {
+        run = 0x04600000u - phys;
+    } else if (phys < 0x04800000u) {
+        run = SR_VRAM_MIRROR_ROTATE_RUN - (phys & (SR_VRAM_MIRROR_ROTATE_RUN - 1u));
+    } else {
+        return size;
+    }
+    return run < size ? run : size;
+}
+
+/* Guest [src, src + size) to host memory. */
+static inline int sr_guest_copy_in(void *host, uint32_t src, uint32_t size) {
+    if (size == 0u) return 1;
+    if (!host || !sr_inrange_n(src, size)) return 0;
+    uint8_t *out = (uint8_t *)host;
+    while (size != 0u) {
+        const uint32_t run = sr_guest_host_run(src, size);
+        sr_guest_vram_read_prepare_bytes(src, run);
+        memcpy(out, SR_HOST(src), run);
+        out += run;
+        src += run;
+        size -= run;
+    }
+    return 1;
+}
+
+/* Host memory to guest [dst, dst + size). */
+static inline int sr_guest_copy_out(uint32_t dst, const void *host, uint32_t size) {
+    if (size == 0u) return 1;
+    if (!host || !sr_inrange_n(dst, size)) return 0;
+    const uint8_t *in = (const uint8_t *)host;
+    while (size != 0u) {
+        const uint32_t run = sr_guest_host_run(dst, size);
+        sr_guest_vram_write_prepare_bytes(dst, run);
+        memcpy(SR_HOST(dst), in, run);
+        sr_guest_vram_write_commit_bytes(dst, run);
+        in += run;
+        dst += run;
+        size -= run;
+    }
+    return 1;
+}
+
+/* Fill guest [dst, dst + size) with one byte value. */
+static inline int sr_guest_fill(uint32_t dst, uint8_t value, uint32_t size) {
+    if (size == 0u) return 1;
+    if (!sr_inrange_n(dst, size)) return 0;
+    while (size != 0u) {
+        const uint32_t run = sr_guest_host_run(dst, size);
+        sr_guest_vram_write_prepare_bytes(dst, run);
+        memset(SR_HOST(dst), value, run);
+        sr_guest_vram_write_commit_bytes(dst, run);
+        dst += run;
+        size -= run;
+    }
+    return 1;
+}
+
+/* Physical arena bytes a span can reach, as one conservative interval: its own
+ * linear range, widened to all of VRAM when any byte lies in the VRAM CPU
+ * window (every view there maps into the 2 MiB at SR_VRAM_CPU_BASE). */
+static inline void sr_guest_span_physical_hull(uint32_t addr, uint32_t size,
+                                               uint32_t *lo, uint32_t *hi) {
+    uint32_t first = (uint32_t)SR_PHYS(addr);
+    uint32_t last = first + (size - 1u);
+    if (sr_vram_cpu_span_touches(addr, size)) {
+        if (first > SR_VRAM_CPU_BASE) first = SR_VRAM_CPU_BASE;
+        if (last < SR_VRAM_CPU_BASE + 0x001FFFFFu) last = SR_VRAM_CPU_BASE + 0x001FFFFFu;
+    }
+    *lo = first;
+    *hi = last;
+}
+
+/* Guest-to-guest copy with memmove semantics: the result equals reading the
+ * whole source before writing any destination byte. Spans that avoid the
+ * swizzled views keep the single host memmove. A span through a swizzled view
+ * is copied piece by piece, each piece no longer than one host pointer covers
+ * on either side; when the two spans cannot share a physical byte the pieces
+ * are copied directly. Otherwise a swizzled view permutes bytes within VRAM,
+ * so the spans' physical bytes can overlap in any order, and the source is
+ * staged through host memory first. Returns 0, touching nothing, when a span
+ * leaves the arena or the staging buffer cannot be allocated. */
+static inline int sr_guest_memmove(uint32_t dst, uint32_t src, uint32_t size) {
+    if (size == 0u) return 1;
+    if (!sr_inrange_n(dst, size) || !sr_inrange_n(src, size)) return 0;
+    if (!sr_guest_span_hits_swizzled_vram_mirror(dst, size) &&
+        !sr_guest_span_hits_swizzled_vram_mirror(src, size)) {
+        if (__builtin_expect(g_sr_vram_read_pending, 0) &&
+            sr_vram_cpu_span_touches(src, size))
+            sr_ge_vram_read_prepare(sr_vram_cpu_address(src), size);
+        sr_guest_vram_write_prepare_bytes(dst, size);
+        memmove(SR_HOST(dst), SR_HOST(src), size);
+        sr_guest_vram_write_commit_bytes(dst, size);
+        return 1;
+    }
+    uint32_t src_lo, src_hi, dst_lo, dst_hi;
+    sr_guest_span_physical_hull(src, size, &src_lo, &src_hi);
+    sr_guest_span_physical_hull(dst, size, &dst_lo, &dst_hi);
+    if (src_hi < dst_lo || dst_hi < src_lo) {
+        while (size != 0u) {
+            uint32_t run = sr_guest_host_run(src, size);
+            run = sr_guest_host_run(dst, run);
+            sr_guest_vram_read_prepare_bytes(src, run);
+            sr_guest_vram_write_prepare_bytes(dst, run);
+            memcpy(SR_HOST(dst), SR_HOST(src), run);
+            sr_guest_vram_write_commit_bytes(dst, run);
+            src += run;
+            dst += run;
+            size -= run;
+        }
+        return 1;
+    }
+    uint8_t *staged = (uint8_t *)malloc(size);
+    if (!staged) return 0;
+    const int ok = sr_guest_copy_in(staged, src, size) &&
+                   sr_guest_copy_out(dst, staged, size);
+    free(staged);
+    return ok;
+}
+
 static inline uint8_t  sr_r8 (uint32_t a) {
     if (sr_inrange(a)) {
         uint8_t v;
@@ -636,24 +828,24 @@ static inline void sr_w32(uint32_t a, uint32_t v) { sr_w32_pc(a, v, 0); }
  * memmove/memset (#1170).  They keep the same VRAM coherence contract as the
  * MEM_* accessors and h_Memcpy/h_Memset: a renderer-owned source is read back
  * before the host pointer is formed, and the destination is prepared and
- * committed so GPU targets and cached textures observe the store. */
+ * committed so GPU targets and cached textures observe the store.  A span
+ * through a swizzled VRAM mirror is copied in measured-contiguous pieces
+ * (sr_guest_memmove/sr_guest_fill, #1049), as the translated body's scalar
+ * stores would land it. */
 static inline void sr_native_memmove(uint32_t dest, uint32_t src, uint32_t size, uint32_t pc) {
     if (size > 0u && size < 0x04000000u &&
-        sr_guest_span_writable(dest, size) && sr_guest_span_readable_current(src, size)) {
-        sr_guest_vram_write_prepare_bytes(dest, size);
+        sr_inrange_n(dest, size) && sr_inrange_n(src, size)) {
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dest, size, pc);
-        memmove(SR_HOST(dest), SR_HOST(src), size);
-        sr_guest_vram_write_commit_bytes(dest, size);
-    } else if (size) {
+        if (sr_guest_memmove(dest, src, size)) return;
+    }
+    if (size) {
         sr_oor(dest, 0u, 1); sr_oor(src, 0u, 0);
     }
 }
 static inline void sr_native_memset(uint32_t dest, uint8_t val, uint32_t size, uint32_t pc) {
-    if (size > 0u && size < 0x04000000u && sr_guest_span_writable(dest, size)) {
-        sr_guest_vram_write_prepare_bytes(dest, size);
+    if (size > 0u && size < 0x04000000u && sr_inrange_n(dest, size)) {
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dest, size, pc);
-        memset(SR_HOST(dest), val, size);
-        sr_guest_vram_write_commit_bytes(dest, size);
+        sr_guest_fill(dest, val, size);
     } else if (size) {
         sr_oor(dest, val, 1);
     }
@@ -673,6 +865,7 @@ void  sr_mem_init(void);
 void  sr_mem_reset(void);              /* LoadExec: zero guest RAM and retire executable spans */
 void  sr_load_segment(uint32_t vaddr, const void *data, uint32_t len);
 uint32_t sr_loaded_end(void);   /* highest guest address the loader wrote (module end incl. BSS) */
+uint32_t sr_loaded_base(void);  /* lowest guest address the loader wrote; UINT32_MAX when none */
 void  sr_loaded_end_set(uint32_t end); /* host loader seed for a new package program */
 
 /* Backing store for the game's newlib allocation API (see tools/codegen.py custom
@@ -854,6 +1047,46 @@ uint32_t sr_register_count(void);  /* number of sr_register() calls performed so
  * in src/rt/stale_code.h (SR_STALE_DETECT, checked at cache-invalidate time,
  * never on this path), so enabling detection cannot slow dispatch itself. */
 RecompFn sr_lookup(uint32_t addr);
+
+/* Guest function names from tools/codegen.py --symbol-map (names and addresses only). The
+ * generated sr_register_all() hands over one table sorted by address; size 0 means only the
+ * start address is named. A build without a map registers nothing, so every lookup is NULL
+ * and every report prints exactly what it printed before. */
+typedef struct SrGuestSymbol {
+    uint32_t addr;
+    uint32_t size;
+    const char *name;
+} SrGuestSymbol;
+void sr_guest_symbols_register(const SrGuestSymbol *table, uint32_t count);
+/* The registered symbol naming pc, or NULL. */
+const SrGuestSymbol *sr_guest_symbol_at(uint32_t pc);
+/* "name" or "name+0x<offset>" for pc in buf, or "" when no symbol names it. */
+const char *sr_guest_symbol_label(uint32_t pc, char *buf, size_t len);
+
+/* The entry of a sorted table whose start is pc, or whose nonzero size covers pc. */
+static inline const SrGuestSymbol *sr_guest_symbol_find(const SrGuestSymbol *table,
+                                                        uint32_t count, uint32_t pc) {
+    uint32_t lo = 0u, hi = count;  /* first entry whose start is above pc */
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        if (table[mid].addr <= pc) lo = mid + 1u;
+        else hi = mid;
+    }
+    if (lo == 0u) return NULL;
+    const SrGuestSymbol *sym = &table[lo - 1u];
+    return pc == sym->addr || pc - sym->addr < sym->size ? sym : NULL;
+}
+
+/* sr_guest_symbol_label's text for a symbol found for pc (NULL gives ""). */
+static inline const char *sr_guest_symbol_format(const SrGuestSymbol *sym, uint32_t pc,
+                                                 char *buf, size_t len) {
+    if (len == 0u) return "";
+    buf[0] = '\0';
+    if (!sym) return buf;
+    if (pc == sym->addr) snprintf(buf, len, "%s", sym->name);
+    else snprintf(buf, len, "%s+0x%" PRIx32, sym->name, pc - sym->addr);
+    return buf;
+}
 
 /* Codegen registers exact analyzer-owned, end-exclusive executable spans before
  * guest execution. Mapped RAM alone never grants interpreter fetch authority.
@@ -1163,6 +1396,12 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* Opt-in GE time model (ge.c, SR_GE_TIMING; issue #1296), in GE clocks (the bus clock),
+ * measured on a PSP-3000 with CASE=ge-timing: enable charging, the fixed cost of one list
+ * (enqueue to finish of an empty list), and the work the last ge_run_list call executed. */
+void     ge_timing_set_enabled(int on);
+double   ge_timing_list_clk(void);
+double   ge_timing_run_clk(void);
 /* SR_GE_TRANSITION_TRACE late-write check (issue #69): re-hash the vertex and index bytes of
  * every weighted draw recorded since the last check; a no-op unless the trace is armed. */
 void ge_transition_trace_check(const char *why, uint32_t vcount);
@@ -1267,6 +1506,7 @@ static inline bool sr_gui_request_launcher_foreground_once(
 }
 void     gui_init(const char *title);
 int      gui_on(void);
+int      gui_interactive(void);                  /* 1 when a person is at a real window: not offscreen, headless or acceptance */
 uint32_t gui_buttons(void);
 void     gui_consume_button_pulses(void);          /* after one PSP VBLANK sample */
 /* Gamepad buttons that went down since the last call, as PSP button bits: the on-screen
@@ -1329,6 +1569,12 @@ int          gui_pause_busy_reason(void);
 void         gui_pause_enter(void);
 SrPauseFrame gui_pause_frame(void);
 void         gui_pause_leave(void);
+/* A player quit request notifies the guest's registered exit callback (src/rt/hle.c, #1392).
+ * sr_exit_request_quit returns 1 while the guest has its bounded window to call
+ * sceKernelExitGame, 0 when the player should exit now; sr_exit_request_expired is 1 once that
+ * window has passed. */
+int      sr_exit_request_quit(void);
+int      sr_exit_request_expired(void);
 SrPauseVerdict sched_pause_request(SrPauseSource source);
 int      sched_pause_active(void);
 /* The source of the pause requested or open now (the presenter opens on the controller
@@ -1470,6 +1716,13 @@ int      sched_thread_set_gp(uint32_t uid, uint32_t gp);
 int      sched_module_range_busy(uint32_t start, uint32_t end, uint32_t ignored_uid);
 typedef void (*SrSchedThreadExitHook)(uint32_t uid);
 void     sched_set_thread_exit_hook(SrSchedThreadExitHook hook);
+/* Opt-in GE completion timing (hle.c, SR_GE_TIMING): the earliest guest-time deadline of a
+ * list the modelled GE is still drawing (SCHED_WAIT_FOREVER-style UINT64_MAX when none), and
+ * the interrupt-service step that completes every due list.  With no hooks registered --
+ * every build that does not link hle.c -- the scheduler behaves as before. */
+typedef uint64_t (*SrSchedGeNextDeadline)(void);
+typedef void (*SrSchedGeServiceDue)(void);
+void     sched_set_ge_timing_hooks(SrSchedGeNextDeadline next_deadline, SrSchedGeServiceDue service_due);
 int      sched_guest_thread_running(void);
 void     sched_request_guest_reset(void);
 void     sched_exit_current(int32_t status);        /* non-delete exit; normalize signed-negative status */
@@ -1504,6 +1757,12 @@ int      sched_take_wake_result(uint32_t *result_out); /* 1 + code when a wake r
 int      sched_count_waiters(uint32_t obj);         /* threads currently blocked on obj */
 int      sched_wake_one_object_waiter_with_result(uint32_t thread_uid, uint32_t result);
 int      sched_wake_one_object_waiter(uint32_t obj, uint32_t thread_uid); /* ready single thread blocked on obj */
+/* Device transfer window (#303): the current thread starts a transfer whose guest-time
+ * duration is unmeasured; the scheduler closes the window at the decision after one
+ * other thread was dispatched (at once when none is runnable) and wakes obj's waiters.
+ * begin returns 0 when a window is already open or no thread is current. */
+int      sched_transfer_begin(uint32_t obj);
+int      sched_transfer_pending(uint32_t obj, uint32_t *owner_uid); /* 1 while obj's window is open */
 /* Semantic wait lifetime, independent of SrCoro's executable stack. Only the
  * innermost block attaches to the TCB; callback-parked parents remain live.
  * Detach hooks are object policy and MUST NOT preempt during owner teardown. */
@@ -1638,7 +1897,31 @@ typedef struct SrThreadInfo {
     uint32_t releaseCount;
 } SrThreadInfo;
 int      sched_thread_info(uint32_t uid, SrThreadInfo *out);
+/* sceKernelGetThreadmanIdList list classes: the public PSPSDK SceKernelIdListType values
+ * (pspthreadman.h). Which other values a PSP accepts is UNMEASURED. */
+#define SR_TMID_THREAD                1
+#define SR_TMID_SEMAPHORE             2
+#define SR_TMID_EVENT_FLAG            3
+#define SR_TMID_MBOX                  4
+#define SR_TMID_VPL                   5
+#define SR_TMID_FPL                   6
+#define SR_TMID_MPIPE                 7
+#define SR_TMID_CALLBACK              8
+#define SR_TMID_THREAD_EVENT_HANDLER  9
+#define SR_TMID_ALARM                 10
+#define SR_TMID_VTIMER                11
+#define SR_TMID_SLEEP_THREAD          64
+#define SR_TMID_DELAY_THREAD          65
+#define SR_TMID_SUSPEND_THREAD        66
+#define SR_TMID_DORMANT_THREAD        67
+typedef void (*SrUidVisitor)(uint32_t uid, void *ctx);
+/* Calls visit(uid, ctx), in table order, for every live object of list class `tmid` that
+ * the scheduler owns: threads, the four thread-state lists and alarms. The state lists use
+ * the same status and wait type sceKernelReferThreadStatus reports. Returns 1 when `tmid` is
+ * one of those classes, 0 otherwise (nothing visited). */
+int      sched_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx);
 uint32_t sched_thread_exit_status(uint32_t uid);
+uint32_t sched_thread_stack_free_size(uint32_t uid);  /* sceKernelGetThreadStackFreeSize */
 void     sched_set_current_join_target(uint32_t uid);
 void     sched_clear_current_join_target(void);
 int      sched_take_current_join_result(uint32_t uid, uint32_t *result_out);

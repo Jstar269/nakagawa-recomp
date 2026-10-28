@@ -65,6 +65,10 @@ NK_UI_OVERLAY_C9C_SRCS := \
 
 NK_UI_OVERLAY_HOST_SRCS := src/rt/overlay/overlay_host.c
 
+# The controls page reads the input profile's keys and their names (#1159), so the
+# overlay's own tests link the input profile and what it needs; the runtime already does.
+NK_UI_OVERLAY_CORE_SRCS = src/core/nk_input_profile.c src/core/nk_json.c $(PLAYER_PLATFORM_SRC)
+
 NK_UI_NATIVE_CORE_SRCS := $(NK_UI_CORE_SRCS) $(NK_UI_EDGE_SRCS) $(NK_UI_BACKEND_SRCS)
 
 NK_UI_TEST_SRCS := \

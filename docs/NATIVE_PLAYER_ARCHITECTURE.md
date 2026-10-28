@@ -100,7 +100,7 @@ The owner decided on 2026-10-21 that the native player's UI is written in C on S
 Not done yet:
 
 - **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** `src/ui/` (nk_ui) wraps it with the theme, text, focus, input and SDL_Renderer layers.
-- **The nk_ui launcher is the default.** It draws the Library, Title detail, About, the setup wizard, package build progress, the build-tool download, the error card, the card a disc gets when it is added, Settings with its online, notices and removal pages, the controller settings screen with its calibration steps, and the developer log, with the design system in section 8. `--ui=legacy` (or `NK_UI=legacy`) keeps the existing renderer for one release; the player also falls back to it when the UI fonts cannot load.
+- **The nk_ui launcher is the default.** It draws the Library, Title detail, About, the setup wizard, package build progress, the build-tool download, the error card, the card a disc gets when it is added, Settings with its online, notices and removal pages, the controller settings screen with its calibration steps, and the developer log, with the design system in section 8. It is the only launcher: the shipped player has no switch to the old renderer, and when the launcher cannot start (its fonts missing from an incomplete ZIP extraction) the player says why in a message box, tells the user to extract the ZIP again, and exits with code 4. The old `ui_renderer.c` stays only for regression tests that still pin it (`--ui=legacy`, in the `NK_PLAYER_UI_REGRESSION_TEST` build).
 - The in-game overlay is built on nk_ui inside the runtime (`src/rt/overlay/`); settings, first run and error dialogs on nk_ui are targets, specified in section 8.
 
 ---
@@ -109,8 +109,8 @@ Not done yet:
 
 The diagram below is the target separation. The implemented public slice currently reaches
 title lookup, bounded ISO inspection and ISO/XB staging, library package build and
-validation, launch-session validation, and child-process lifecycle. Nakagawa does not
-decrypt games (built-in decryption was removed, #295); retail-disc hash
+validation, launch-session validation, and child-process lifecycle. The player decrypts
+a UMD disc's encrypted program files locally with built-in tables (#295); retail-disc hash
 validation and overlay parity remain unbuilt.
 
 ```text
@@ -153,8 +153,8 @@ capability layers rather than being reimplemented in the launcher.
 The flow below is the complete productization target, not a description of the current
 executable. Today the player opens a native SDL file picker, inspects a selected ISO, runs
 bounded ISO/XB staging for supported inputs, builds a runtime package from the library with
-live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). The player and CLI use decrypted
-files from your own copy and do not decrypt games ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); retail-disc hash validation
+live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). The player decrypts the encrypted
+executable and modules of a UMD disc image you own, locally, when it checks the disc ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); retail-disc hash validation
 and one-click play from an arbitrary ISO without the developer toolchain remain unbuilt
 ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
@@ -185,7 +185,7 @@ and one-click play from an arbitrary ISO without the developer toolchain remain 
      under those roots (for example `xbdata`) must be present, or the disc is
      refused with `[STAGE_DATA_FOLDER_MISSING]` before anything is promoted.
    - Native project-authored XB parsing validates FST spans, names, bounds, and nested LZS/Huffman payloads before writing members under the runtime-compatible `<archive>.xb.d/` directories.
-   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`. This staging step does not decrypt files, and neither does any other part of the player ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
+   - If present, named plain support PRXs that the user has already placed in a recognized local folder are copied into `EXTRACTED/decrypted/`. This staging step does not decrypt files; the disc check before it decrypts the encrypted `EBOOT.BIN` and modules that have no plain copy yet ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
    - Atomic directory promotion occurs only after the worker completes; failed/cancelled staging is discarded.
    - The promoted root is registered with a persistent asset census and becomes
      the launch session's preferred `SR_DATAROOT`/`SR_MEMSTICK` source.
@@ -257,12 +257,12 @@ The native player provides a dedicated Controller Settings screen (`VIEW_CONTROL
 - **Live Input Monitor**: A real-time visualizer panel displays active host button presses, numerical stick coordinates, and an interactive 2D deadzone box so users can immediately observe calibration effects.
 - **Safe Navigation & Defaults**: Keyboard Escape always backs out or cancels capture, preventing navigation lockouts. "RESET DEFAULTS" restores the baseline profile.
 - **Per-Title Mapping Choice**: the screen states which mapping it is editing, and a "USE GLOBAL MAPPING" / "USE THIS GAME MAPPING" control switches scope for the selected library disc ([#520](https://github.com/Jstar269/nakagawa-recomp/issues/520)). A disc's own mapping is seeded from the global one, so the first edit in that scope changes only what the user changed; choosing the global mapping again drops that disc's entry. The library card carries the same choice as a "MAPPING: GLOBAL" / "MAPPING: THIS GAME" button.
-- **Unified Atomic Persistence**: "SAVE PROFILE" atomically writes the whole profile document (the global mapping plus the per-disc entries, profile schema 2) via a temporary file and rename to `<config>/input_profile.json`, shared with the runtime. An interrupted write leaves the previous file intact, and an invalid entry is refused before anything is written.
+- **Unified Atomic Persistence**: "SAVE PROFILE" atomically writes the whole profile document (the global mapping plus the per-disc entries, profile schema 3) via a temporary file and rename to `<config>/input_profile.json`, shared with the runtime. An interrupted write leaves the previous file intact, and an invalid entry is refused before anything is written.
 - **Guided Stick & Trigger Calibration**: A multi-stage calibration wizard ("CALIBRATE STICK & TRIGGERS") guides the user through:
   1. *Resting state*: sampling resting analog stick and trigger axes for 1000 ms to establish neutral/center points.
   2. *Extremes state*: interactive live sampling where the user presses each trigger fully and rotates analog sticks in circles to capture maximum physical excursions.
   3. *Review & Accept*: visual summary of captured resting and extreme values with Accept or Cancel actions.
-  Values are stored in the unified `input_profile.json` (schema 2, schema 1 files still load) and applied during analog and trigger transform evaluations. Keyboard Escape or gamepad East button safely cancels at any point.
+  Values are stored in the unified `input_profile.json` (schema 3; schema 1 and 2 files still load) and applied during analog and trigger transform evaluations. Keyboard Escape or gamepad East button safely cancels at any point.
 - **In-game pause**: `Esc`, `F1` or the gamepad's `Guide` pauses a running game, and so does disconnecting its controller. The scheduler stops the guest ([issue #1171](https://github.com/Jstar269/nakagawa-recomp/issues/1171), the [Clocks section](ARCHITECTURE.md#clocks)); the window shows the last game frame under the scrim and holds all input, and a button held as the pause closes does not reach the game as a press. Focus loss and window minimization do not auto-pause in v0.0.1.
 - **Pause overlay** ([issue #1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159)): the runtime draws the pause menu (resume, settings, controls, quit to library) and the controller-disconnected dialog with nk_ui over the frozen frame (`src/rt/overlay/`, hosted by `src/rt/gui.c`). Game scaling and the performance HUD change for the rest of the run; the library's Settings keep what a game starts with. The controls page shows the mapping in force. Quitting is refused while the game is saving. The launcher passes the game's name, its disc ID and the player's folder (`SR_GAME_TITLE`, `SR_DISC_ID`, `SR_UI_ROOT`), where the runtime finds the UI fonts and SDL3_ttf; without them the pause shows the frozen frame alone.
 

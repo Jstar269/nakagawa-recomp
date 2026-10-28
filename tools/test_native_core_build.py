@@ -207,6 +207,18 @@ class StandaloneTestBinTargetTests(unittest.TestCase):
                 self.assertTrue(any("build/native-core/player/nk_font.o" in c for c in commands))
                 self.assertIn(binary, _link_outputs(commands))
 
+    def test_only_the_package_builder_test_shortens_the_python_probe_bound(self) -> None:
+        # The hung-wrapper case waits out the probe bound once per probe. The test
+        # binary sets a shorter bound; nothing else does, so the player keeps 10 s.
+        commands = _dry_run("package-builder-test-bin")
+        self.assertTrue(any("-DPYTHON_VERSION_PROBE_TIMEOUT_MS=3000" in c and "src/player/package_builder.c" in c
+                            for c in commands))
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertEqual(makefile.count("PYTHON_VERSION_PROBE_TIMEOUT_MS"), 1)
+        source = (ROOT / "src" / "player" / "package_builder.c").read_text(encoding="utf-8")
+        self.assertIn("#ifndef PYTHON_VERSION_PROBE_TIMEOUT_MS\n#define PYTHON_VERSION_PROBE_TIMEOUT_MS 10000\n#endif",
+                      source)
+
     def test_player_state_keeps_its_seam_variant(self) -> None:
         commands = _dry_run("player-state-test-bin")
         self.assertTrue(any("-DNK_TITLE_MANIFEST_TEST_SEAMS" in c and "src/core/nk_font.c" in c

@@ -21,7 +21,9 @@ enum {
                                          never jumps to another row, it just fails at the end */
     NK_UI_FOCUS_DEFAULT = 1u << 2,    /* preferred first focus when its scope activates
                                          with no remembered id */
-    NK_UI_FOCUS_OWNS_HORIZONTAL = 1u << 3 /* left and right change this control (a segmented
+    NK_UI_FOCUS_NO_DEFAULT = 1u << 3, /* never taken as a scope's first focus (a destructive
+                                         action): reached only by moving to it */
+    NK_UI_FOCUS_OWNS_HORIZONTAL = 1u << 4 /* left and right change this control (a segmented
                                              control, a slider): they never move focus off it */
 };
 

@@ -55,6 +55,14 @@ typedef struct {
     uint32_t tex_addr, tex_bufw, tex_fmt;   /* level-0 texture base / stride(texels) / PSM */
     uint32_t tex_wrap, tex_func, tex_env, tex_filter;
     int tex_w, tex_h;                        /* texture dimensions (from TEXSIZE log2) */
+    /* Mip levels 1-7 (index = level - 1), decoded like level 0's TEXADDR/TEXBUFWIDTH/TEXSIZE.
+     * Sizes stay log2 so a level never written reads as the 1x1 a zero TEXSIZE word gives. */
+    uint32_t tex_mip_addr[7], tex_mip_bufw[7];
+    uint8_t tex_mip_wlog2[7], tex_mip_hlog2[7];
+    uint32_t tex_max_level;                  /* TEXMODE bits 16-18: highest level sampled */
+    uint32_t tex_level_mode;                 /* TEXLEVEL bits 0-1: 0 auto, 1 constant, 2 slope */
+    float tex_lod_bias;                      /* TEXLEVEL bits 16-23: signed 4.4 level bias */
+    float tex_lod_slope;                     /* TEXLODSLOPE */
     uint32_t clut_addr, clut_fmt;            /* palette base and format word */
     /* Internal CLUT RAM, captured at GE_LOADCLUT like the hardware. Games reuse the staging
      * buffer right after LOADCLUT, so sampling the palette live from memory reads garbage. */
@@ -95,6 +103,16 @@ typedef struct {
      * which guest range is about to be read. */
     uint32_t xf_src, xf_srcw, xf_dst, xf_dstw, xf_spos, xf_dpos, xf_size;
 } GeState;
+
+/* Mip levels are sampled (#1373) when TEXFILTER's minification field names a mipmap filter
+ * (bit 2: GU_{NEAREST,LINEAR}_MIPMAP_{NEAREST,LINEAR}), TEXMODE's highest level is above 0
+ * and TEXLEVEL is in its automatic (0) or constant (1) mode. Slope mode (2) and the unused
+ * mode 3 stay on level 0: no public source gives their formula (unmeasured). The software
+ * sampler (ge.c tex_lod) and the Vulkan texture cache (gpu_sdl3vk/ge_gpu.c) share this one
+ * rule so the two GE paths turn mip levels on for the same states. */
+static inline int ge_tex_mip_active(const GeState *g) {
+    return (g->tex_filter & 4u) != 0u && g->tex_max_level > 0u && g->tex_level_mode <= 1u;
+}
 
 /* A rasterized vertex: screen position, reciprocal clip-w (for persp-correct interp), UV,
  * colour, and per-vertex fog factor (1 = no fog). In transform mode u/v are stored
@@ -283,12 +301,23 @@ void      ge_zbuf_invalidate_guest_span(uint32_t addr, uint32_t bytes);
 void      ge_zbuf_note_external_write(void);
 void      ge_zbuf_invalidate_guest_range(uint32_t addr);
 GeState  *ge_state_ptr(void);
+/* Changes whenever GE state may have changed (each list command, init, replay restore), so a
+ * consumer can keep values derived from GeState until it moves. */
+uint32_t  ge_state_serial(void);
+/* A write through ge_state_ptr() outside a list command does not move the serial by itself:
+ * the writer calls this before the next draw, or the consumers keep values derived from the
+ * old state (ge.c's lighting inputs, the Vulkan backend's per-draw state template). */
+void      ge_state_note_external_write(void);
 uint16_t *ge_zbuf_ptr(void);        /* 272*512 entries, row stride = ge_zbuf_stride() */
 uint32_t  ge_zbuf_stride(void);
 /* Decode the CURRENT texture (ge.tex_addr, tex_w x tex_h) to RGBA8 through the exact
  * sampler path the software rasterizer uses (swizzle + CLUT + format). out must hold
  * tex_w*tex_h words; layout is row-major, r|g<<8|b<<16|a<<24. */
 void      ge_decode_tex_rgba(uint32_t *out);
+/* Decode mip level `level` (1-7) of the CURRENT texture the same way: the level's own
+ * address, buffer width and size (tex_mip_*), with level 0's format, swizzle and CLUT.
+ * out must hold that level's (1 << tex_mip_wlog2) * (1 << tex_mip_hlog2) words. */
+void      ge_decode_tex_level_rgba(uint32_t level, uint32_t *out);
 void      ge_replay_restore(const GeState *state, const uint16_t *zbuf);
 void      ge_cpu_profile_reset(void);
 void      ge_cpu_profile_get(GeCpuProfileStats *out);

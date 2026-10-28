@@ -217,9 +217,6 @@ int  sdl3vk_set_present_scaling(int mode);
 /* The window's display scale (1.0 at 100 %) and its pixels per window coordinate, the unit
  * pointer events arrive in. Returns 0 before the window exists. */
 int  sdl3vk_window_scales(float *display_scale, float *pixels_per_point);
-/* The keyboard's mapping, one key per index from 0: its PSP button bits and the name the
- * controls page shows (the four arrow keys share one). Returns 0 past the last key. */
-int  sdl3vk_keyboard_key(int index, uint32_t *psp_bits, const char **label);
 /* The refresh period of the display the window is on, in ns; 0 when SDL does not know it. */
 uint64_t sdl3vk_display_period_ns(void);
 
@@ -232,6 +229,11 @@ void sdl3vk_map_gamepad(
     uint8_t *out_lx,
     uint8_t *out_ly
 );
+/* Host keyboard (#1299): PSP button bits for the held keys (`key_state` indexed by
+ * SDL_Scancode, `key_count` entries) and for one key-down event. A NULL profile means
+ * the default mapping. */
+uint32_t sdl3vk_map_keyboard(const NkInputProfile *profile, const bool *key_state, int key_count);
+uint32_t sdl3vk_map_key(const NkInputProfile *profile, int scancode);
 void sdl3vk_init_input_profile(void);
 void sdl3vk_reset_input_profile(void);
 const NkInputProfile *sdl3vk_get_input_profile(void);

@@ -61,6 +61,8 @@ void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void
 void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
 
 uint32_t g_sr_debug = 0;
+int g_prof_enabled;   /* SR_YIELD in the flight equivalence body */
+void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
 SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
 int g_sr_mem_watch_count = 0;
 int g_sr_heap_watch = 0;
@@ -300,6 +302,7 @@ static void reset_sched(void) {
     s_test_uid_next = 0x110u;
     g_test_body = NULL;
     sched_alarm_reset();
+    sched_transfer_reset();
     memset(&g_cpu_store, 0, sizeof(g_cpu_store));
     s_cpu = &g_cpu_store;
     s_pace_on = 0;   /* turbo: no host-clock sleeps if a vblank path ever fires */
@@ -823,6 +826,40 @@ static void test_blocked_excluded_until_wake(void) {
     expect(pick_next() == waiter, "sched_wake readies the blocked thread and it wins on priority");
 }
 
+/* #303 device transfer window: the owner, parked on the transfer object, stays
+ * parked through exactly one decision that hands the CPU to another thread and is
+ * released at the next one; with no other runnable thread it is released at once. */
+static void test_transfer_window_closes_after_one_other_dispatch(void) {
+    reset_sched();
+    int owner = mk(0x200, TH_RUNNING, 16);
+    int other = mk(0x201, TH_READY, 32);
+    s_cur = owner;
+    expect(sched_transfer_begin(0xD0Au), "the running thread opens a transfer window");
+    expect(!sched_transfer_begin(0xD0Bu), "only one transfer window is open at a time");
+    s_tcb[owner].state = TH_WAIT_OBJ;   /* as sched_block_on leaves the owner */
+    s_tcb[owner].wait_obj = 0xD0Au;
+    s_cur = -1;
+    uint32_t who = 0;
+    expect(pick_next() == other, "a weaker ready thread gets the CPU while the transfer is pending");
+    expect(sched_transfer_pending(0xD0Au, &who) && who == 0x200u,
+           "the window stays open through that dispatch and names its owner");
+    expect(s_tcb[owner].state == TH_WAIT_OBJ, "the owner stays blocked during that dispatch");
+    expect(pick_next() == owner, "the next decision closes the window; the woken owner wins on priority");
+    expect(!sched_transfer_pending(0xD0Au, NULL), "the closed window is no longer pending");
+
+    reset_sched();
+    int lone = mk(0x210, TH_RUNNING, 32);
+    int parked = mk(0x211, TH_WAIT_OBJ, 16);
+    s_tcb[parked].wait_obj = 0xABCu;
+    s_cur = lone;
+    expect(sched_transfer_begin(0xD0Au), "a lone thread opens a transfer window");
+    s_tcb[lone].state = TH_WAIT_OBJ;
+    s_tcb[lone].wait_obj = 0xD0Au;
+    s_cur = -1;
+    expect(pick_next() == lone, "with no other runnable thread the window closes at once");
+    expect(s_tcb[parked].state == TH_WAIT_OBJ, "closing wakes only the transfer object's waiters");
+}
+
 static void test_dormant_excluded(void) {
     reset_sched();
     int dead = mk(0x200, TH_DORMANT, 1);
@@ -1110,8 +1147,9 @@ static void test_title_config_configured_roles_act(void) {
         uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
         expect(worker != 0 && g_worker_uid == worker,
                "the configured worker entry claims the worker uid");
-        expect(sched_create_thread(cfg_worker_entry(), 36, 0x1000u) == worker,
-               "a repeat create at the configured worker entry reuses the worker thread");
+        uint32_t second = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+        expect(second != 0 && second != worker,
+               "a repeat create at the configured worker entry creates a second thread");
     }
     if (cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
         reset_sched();
@@ -1121,8 +1159,8 @@ static void test_title_config_configured_roles_act(void) {
         expect(launcher != 0 && g_launcher_uid == launcher,
                "the configured launcher entry claims the launcher uid");
         TCB *lt = tcb_by_uid(launcher);
-        expect(lt && lt->priority == 50,
-               "the configured launcher is demoted out of the worker's way");
+        expect(lt && lt->priority == 32,
+               "the configured launcher keeps the priority its creator passed (#363)");
     }
     if (!cfg_has(SR_TITLE_CFG_WORKER_ENTRY) && !cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
         /* Generic build: no address anywhere can claim a role. */
@@ -1140,6 +1178,40 @@ static void test_title_config_configured_roles_act(void) {
     }
 }
 
+/* #363: a launcher thread created at a higher priority than the worker it starts keeps
+ * that priority, and strict priority alone decides who runs. While the launcher is READY
+ * the lower-priority worker never runs; once the launcher blocks (a game's main thread
+ * sleeps in sceKernelSleepThread after starting its worker) the worker runs. The launcher
+ * is the configured entry when this build has one, so the creation path that used to
+ * demote it to 50 is the one under test; before the retirement the worker won while the
+ * launcher was still READY. */
+static void test_launcher_keeps_priority_and_worker_runs_after_it_blocks(void) {
+    reset_sched();
+    uint32_t root = sched_create_thread(0x00001000u, 32, 0x1000u);
+    expect(root != 0, "root create succeeds");
+    uint32_t launcher_entry = cfg_role_entry(SR_TITLE_CFG_LAUNCHER_ENTRY, 0x00007000u);
+    uint32_t launcher = sched_create_thread(launcher_entry, 32, 0x1000u);
+    uint32_t worker = sched_create_thread(0x00007100u, 38, 0x1000u);
+    expect(launcher != 0 && worker != 0, "launcher and worker creates succeed");
+    TCB *rt = tcb_by_uid(root);
+    TCB *lt = tcb_by_uid(launcher);
+    TCB *wt = tcb_by_uid(worker);
+    expect(rt && lt && wt, "all three threads exist");
+    if (!rt || !lt || !wt) return;
+    expect(lt->priority == 32 && wt->priority == 38,
+           "each thread keeps the priority its creator passed");
+    rt->state = TH_DORMANT;
+    lt->state = TH_READY;
+    wt->state = TH_READY;
+    for (int i = 0; i < 100; i++)
+        expect(pick_next() == index_of_uid(launcher),
+               "the READY higher-priority launcher always wins over its worker");
+    lt->state = TH_WAIT_OBJ;          /* an untimed sleep: only a wakeup releases it */
+    lt->wake = SCHED_WAIT_FOREVER;
+    expect(pick_next() == index_of_uid(worker),
+           "the worker runs once the launcher blocks");
+}
+
 /* Hits recorded so far for one census id in the fired-patch report, 0 when absent. */
 static unsigned long long compat_hits(const char *id) {
     char got[160];
@@ -1155,25 +1227,24 @@ static unsigned long long compat_hits(const char *id) {
 static void test_compat_fired_report_names_applied_patches(void) {
     char id[160];
     if (cfg_has(SR_TITLE_CFG_WORKER_ENTRY)) {
-        snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:worker thread reuse", (unsigned)cfg_worker_entry());
-        unsigned long long before = compat_hits(id);
+        /* The worker reuse hook is retired (#363): a repeat create at the worker entry
+         * records no firing any more. */
         reset_sched();
         expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");
-        uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
-        expect(compat_hits(id) == before, "the first worker create is not a reuse");
-        expect(sched_create_thread(cfg_worker_entry(), 36, 0x1000u) == worker &&
-               compat_hits(id) == before + 1u,
-               "a worker reuse appears in the fired-patch report under its census id");
+        (void)sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+        (void)sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+        snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:worker thread reuse", (unsigned)cfg_worker_entry());
+        expect(compat_hits(id) == 0u, "a repeat worker create records no reuse firing");
     }
     if (cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
+        /* The retired demotion (#363) must not come back under its old census id. */
         snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:launcher priority demotion",
                  (unsigned)cfg_launcher_entry());
-        unsigned long long before = compat_hits(id);
         reset_sched();
         expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");
         expect(sched_create_thread(cfg_launcher_entry(), 32, 0x1000u) != 0 &&
-               compat_hits(id) == before + 1u,
-               "a launcher demotion appears in the fired-patch report under its census id");
+               compat_hits(id) == 0u,
+               "a launcher create fires no priority-demotion patch");
     }
     if (!cfg_has(SR_TITLE_CFG_WORKER_ENTRY) && !cfg_has(SR_TITLE_CFG_LAUNCHER_ENTRY)) {
         for (size_t i = 0; i < sizeof(k_candidate_entries) / sizeof(k_candidate_entries[0]); i++) {
@@ -1204,6 +1275,28 @@ static void test_delivered_vblank_writes_no_guest_memory(void) {
         expect(MEM_R32(k_candidate_counters[i]) == 0u,
                "a candidate counter word is untouched by a delivered VBLANK");
     }
+}
+
+/* #363: a dormant worker stays dormant. The runtime used to restart a DORMANT thread
+ * holding the worker role on the next VBLANK, as a surrogate for a callback that re-arms
+ * the guest's frame loop; nothing on the PSP restarts an exited thread, so a delivered
+ * VBLANK must leave it DORMANT and record no firing. */
+static void test_dormant_worker_is_not_relaunched_at_vblank(void) {
+    if (!cfg_has(SR_TITLE_CFG_WORKER_ENTRY)) return;
+    char id[160];
+    snprintf(id, sizeof id, "SCHEDULER_HOOKS:0x%08x:worker relaunch trampoline",
+             (unsigned)cfg_worker_entry());
+    reset_sched();
+    expect(sched_create_thread(0x00001000u, 32, 0x1000u) != 0, "root create succeeds");
+    uint32_t worker = sched_create_thread(cfg_worker_entry(), 36, 0x1000u);
+    TCB *w = tcb_by_uid(worker);
+    expect(w != NULL && g_worker_uid == worker, "the configured worker entry claims the worker uid");
+    if (!w) return;
+    w->state = TH_DORMANT;
+    deliver_vblank();
+    deliver_vblank();
+    expect(w->state == TH_DORMANT, "a delivered VBLANK leaves a dormant worker dormant");
+    expect(compat_hits(id) == 0u, "a dormant worker at VBLANK records no relaunch firing");
 }
 
 /* ---- role-UID capture tests -------------------------------------------------------- */
@@ -1302,22 +1395,8 @@ static void test_historical_launcher_uid_is_ordinary_when_unconfigured(void) {
     expect(t != NULL, "the 0x111 thread exists");
     if (!t) return;
     uint32_t state_ptr = t->k0_init + 0x10u;
-    /* Launcher-only path: skipped guest-hash registration. An ordinary thread is
-     * registered, so its slot must be findable. */
-    SrTitleReentBindings reent_bindings;
-    if (sr_title_config_reent_bindings(&reent_bindings)) {
-        uint32_t bucket = uid % 32u;
-        uint32_t found = MEM_R32(reent_bindings.guest_thread_table_addr +
-                                 0x84u + bucket * 4u) == uid
-                             ? MEM_R32(reent_bindings.guest_thread_table_addr +
-                                       0x04u + bucket * 4u)
-                             : 0u;
-        expect(found == state_ptr,
-               "UID 0x111 is registered in the configured guest reent hash");
-    } else {
-        expect(MEM_R32(state_ptr + 0x37cu) == uid,
-               "unconfigured guest reent bindings leave the ordinary thread UID intact");
-    }
+    expect(MEM_R32(state_ptr + 0x37cu) == uid,
+           "an ordinary thread's reent carries its own UID");
     /* Launcher-only path: keeping an independently-initialized reent. An ordinary
      * thread inherits the master reent instead. */
     expect(MEM_R32(state_ptr) == 0xFEEDFACEu,
@@ -1338,8 +1417,7 @@ static void test_historical_worker_uid_is_ordinary_when_unconfigured(void) {
            "UID 0x114 is not the worker when no worker entry is configured");
     expect(g_worker_uid == SR_ROLE_UID_NONE,
            "the worker role stays uncaptured in a build with no worker binding");
-    /* Worker-only path: create-reuse. An ordinary thread at the same entry gets a
-     * second TCB. */
+    /* No entry reuses a thread: another create at the same entry gets a second TCB. */
     TCB *t = tcb_by_uid(uid);
     expect(t != NULL, "the 0x114 thread exists");
     if (!t) return;
@@ -1377,7 +1455,7 @@ static void test_configured_entry_captures_whatever_uid_it_gets(void) {
     TCB *lt = tcb_by_uid(launcher);
     expect(lt && g_master_reent == lt->k0_init + 0x10u,
            "only the captured launcher seeds the master reent");
-    expect(lt && lt->priority == 50, "only the captured launcher is demoted");
+    expect(lt && lt->priority == 32, "the captured launcher keeps its declared priority");
 }
 
 /* Regression E: root capture is first-created-thread, with no historical default to fall
@@ -2993,6 +3071,140 @@ static void test_liveness_bounded_long_run_starvation(void) {
     (void)low;
 }
 
+/* ---- flight recorder equivalence (#320, acceptance 5) --------------------------------
+ *
+ * Recording must not change what the guest sees. The same three-thread workload runs
+ * with the recorder disabled and then with every class enabled at the maximum limit;
+ * the scheduler pick order, the guest memory the threads write, each thread's final
+ * state and exit status, the restored callee-saved register and the scheduler counters
+ * must be identical, and the enabled run must have recorded the scheduling it observed
+ * (so the comparison is not of two unrecorded runs).
+ *
+ * MUTANT: make record_locked() force a slice expiry
+ *   (`atomic_store_explicit(&sr_timeslice, 0, memory_order_relaxed);`)
+ *   -- the wake each body records before its SR_YIELD then switches to the woken
+ *   thread early, and the pick order and guest log diverge. A host sleep or yield in the recorder is caught statically instead, by
+ *   tools/test_flight_diff.py (RecorderTimingTests). */
+enum {
+    FLIGHT_EQ_OBJ = 0x46000001u,
+    FLIGHT_EQ_LOG = 0x08800000u,   /* guest word 0: entry count; then one word per entry */
+    FLIGHT_EQ_THREADS = 3,
+    FLIGHT_EQ_MAX_PICKS = 32,
+    FLIGHT_EQ_LOG_WORDS = 1 + 2 * FLIGHT_EQ_THREADS,
+    FLIGHT_EQ_STATE_WORDS = FLIGHT_EQ_LOG_WORDS + 5 * FLIGHT_EQ_THREADS + 6
+};
+
+typedef struct {
+    uint32_t picks[FLIGHT_EQ_MAX_PICKS];
+    uint32_t pick_count;
+    uint32_t drained;              /* 1 when the run ended with nothing runnable */
+    uint32_t words[FLIGHT_EQ_STATE_WORDS];
+} FlightEqTrace;
+
+static void flight_eq_log(uint32_t word) {
+    uint32_t n = MEM_R32(FLIGHT_EQ_LOG);
+    MEM_W32(FLIGHT_EQ_LOG + 4u + 4u * n, word);
+    MEM_W32(FLIGHT_EQ_LOG, n + 1u);
+}
+
+/* Log entry, release the previous waiter (a recorded wake), take a yield point, block,
+ * then log the restored s0 and return. */
+static void flight_eq_body(CpuState *s) {
+    uint32_t uid = s_tcb[s_cur].uid;
+    flight_eq_log(uid);
+    s->r[16] = 0x5a5a0000u | uid;
+    sched_wake(FLIGHT_EQ_OBJ);
+    SR_YIELD(s, 0x09100000u);
+    sched_block_on(FLIGHT_EQ_OBJ);
+    flight_eq_log(s->r[16] ^ 0x80000000u);
+    s->r[2] = MEM_R32(FLIGHT_EQ_LOG);
+}
+
+static void flight_eq_run(FlightEqTrace *out) {
+    static const int priorities[FLIGHT_EQ_THREADS] = {30, 30, 20};
+    uint32_t uids[FLIGHT_EQ_THREADS];
+    int woken = 0;
+    memset(out, 0, sizeof(*out));
+    reset_sched();
+    g_test_body = flight_eq_body;
+    for (int i = 0; i < FLIGHT_EQ_THREADS; i++) {
+        uids[i] = sched_create_thread(0x09100000u + 0x10u * (uint32_t)i, priorities[i], 0x10000u);
+        sched_start_thread(uids[i], 0, 0);
+    }
+    while (out->pick_count < FLIGHT_EQ_MAX_PICKS) {
+        int next = pick_next();
+        if (next < 0) {
+            if (woken) {
+                out->drained = 1u;
+                break;
+            }
+            sched_wake(FLIGHT_EQ_OBJ);
+            woken = 1;
+            continue;
+        }
+        out->picks[out->pick_count++] = s_tcb[next].uid;
+        run_one_slice(next);
+    }
+    unsigned w = 0;
+    for (unsigned i = 0; i < FLIGHT_EQ_LOG_WORDS; i++)
+        out->words[w++] = MEM_R32(FLIGHT_EQ_LOG + 4u * i);
+    for (int i = 0; i < FLIGHT_EQ_THREADS; i++) {
+        TCB *t = tcb_by_uid(uids[i]);
+        out->words[w++] = uids[i];
+        out->words[w++] = t ? (uint32_t)t->state : 0xffffffffu;
+        out->words[w++] = t ? t->wait_obj : 0xffffffffu;
+        out->words[w++] = t ? (uint32_t)t->exit_status : 0xffffffffu;
+        out->words[w++] = t ? t->saved.r[16] : 0xffffffffu;
+    }
+    SrSchedLivenessSnapshot snap;
+    sched_liveness_snapshot(&snap);
+    out->words[w++] = (uint32_t)s_last_pick;
+    out->words[w++] = (uint32_t)s_tick;
+    out->words[w++] = (uint32_t)s_vtime_us;
+    out->words[w++] = (uint32_t)snap.picks;
+    out->words[w++] = (uint32_t)snap.wake_transitions;
+    out->words[w++] = (uint32_t)snap.waiters_readied;
+    for (int i = 0; i < FLIGHT_EQ_THREADS; i++) sched_terminate_thread(uids[i]);
+    g_test_body = NULL;
+}
+
+static void test_flight_recorder_does_not_perturb_scheduling(void) {
+    FlightEqTrace off, on;
+    SrFlightSnapshot snapshot;
+    SrFlightEvent event;
+
+    sr_flight_test_disable();
+    flight_eq_run(&off);
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.recorded == 0u, "flight equivalence: the disabled recorder records nothing");
+    expect(off.drained == 1u && off.pick_count == 6u,
+           "flight equivalence: the workload drains in six picks (three entries, three resumes)");
+    expect(off.picks[0] == off.picks[2] && off.words[0] == 6u,
+           "flight equivalence: the first peer's wake resumes the priority-20 thread next");
+
+    sr_flight_test_reset(SR_FLIGHT_CLASS_ALL, SR_FLIGHT_MAX_EVENTS);
+    flight_eq_run(&on);
+    sr_flight_snapshot(&snapshot);
+    unsigned picks = 0, blocks = 0, wakes = 0;
+    for (int i = 0; i < sr_flight_event_count(); i++) {
+        if (!sr_flight_event_at((uint32_t)i, &event) || event.event_class != SR_FLIGHT_CLASS_SCHED)
+            continue;
+        if (event.kind == SR_FLIGHT_KIND_SCHED_PICK && event.arg1 != 0u) picks++;
+        if (event.kind == SR_FLIGHT_KIND_SCHED_BLOCK) blocks++;
+        if (event.kind == SR_FLIGHT_KIND_SCHED_WAKE) wakes++;
+    }
+    sr_flight_test_disable();
+    expect(snapshot.dropped == 0u && picks == 6u && blocks == 3u && wakes == 3u,
+           "flight equivalence: the enabled recorder saw every pick, block and wake");
+
+    expect(on.drained == off.drained && on.pick_count == off.pick_count,
+           "flight equivalence: recording does not change how many picks the workload takes");
+    expect(memcmp(on.picks, off.picks, sizeof(off.picks)) == 0,
+           "flight equivalence: recording does not change the scheduler pick order");
+    expect(memcmp(on.words, off.words, sizeof(off.words)) == 0,
+           "flight equivalence: recording does not change guest memory, thread state or counters");
+}
+
 /* ---- main -------------------------------------------------------------------------- */
 
 /* ---- PSP display-wait semantics -----------------------------------------------------
@@ -3854,6 +4066,108 @@ static void test_alarm_is_a_wake_source_for_the_idle_scheduler(void) {
     expect(st.unwakeable, "with the alarm cancelled the same sleeper is a deadlock again");
 }
 
+/* Opt-in GE completion timing (hle.c, SR_GE_TIMING): the scheduler side is a registered
+ * deadline plus a service step.  These fakes stand in for hle.c's list table. */
+static uint64_t g_ge_fake_deadline = SCHED_WAIT_FOREVER;
+static unsigned g_ge_fake_calls;
+static int g_ge_fake_seen_cur;
+static unsigned g_ge_fake_seen_vblanks;
+static unsigned g_ge_fake_seen_alarms;
+static uint64_t g_ge_fake_seen_time;
+
+static uint64_t ge_fake_next_deadline(void) { return g_ge_fake_deadline; }
+static void ge_fake_service_due(void) {
+    g_ge_fake_calls++;
+    g_ge_fake_seen_cur = s_cur;
+    g_ge_fake_seen_vblanks = g_test_handler_calls;
+    g_ge_fake_seen_alarms = g_alarm_calls;
+    g_ge_fake_seen_time = s_vtime_us;
+    g_ge_fake_deadline = SCHED_WAIT_FOREVER;   /* the due list completed */
+}
+
+static void ge_timing_fixture(void) {
+    alarm_fixture();
+    g_ge_fake_deadline = SCHED_WAIT_FOREVER;
+    g_ge_fake_calls = 0;
+    g_ge_fake_seen_cur = 0;
+    g_ge_fake_seen_vblanks = 0;
+    g_ge_fake_seen_alarms = 0;
+    g_ge_fake_seen_time = 0;
+    sched_set_ge_timing_hooks(ge_fake_next_deadline, ge_fake_service_due);
+}
+
+/* MUTANT: drop scheduler_ge_due() from scheduler_service_pending -- the completion is never
+ *   delivered; service it ahead of the VBLANK batch or after alarms -- the ordering checks fail;
+ *   leave s_cur alone around the hook -- the interrupt-context check fails. */
+static void test_ge_timing_completion_is_an_interrupt_source(void) {
+    ge_timing_fixture();
+    int running = mk(0x260u, TH_RUNNING, 20);
+    s_cur = running;
+
+    g_ge_fake_deadline = 2500u;
+    s_vtime_us = 2499u;
+    scheduler_service_pending();
+    expect(g_ge_fake_calls == 0u, "GE timing: no completion before the modelled time");
+    s_vtime_us = 2500u;
+    scheduler_service_pending();
+    expect(g_ge_fake_calls == 1u && g_ge_fake_seen_time == 2500u,
+           "GE timing: the completion is delivered once the modelled time is reached");
+    expect(g_ge_fake_seen_cur == -1 && s_cur == running,
+           "GE timing: completion runs in interrupt context and the thread is current again");
+    scheduler_service_pending();
+    expect(g_ge_fake_calls == 1u, "GE timing: a delivered completion is not delivered again");
+
+    /* Under a CpuSuspendIntr window it waits for the resume, like an alarm. */
+    g_ge_fake_deadline = 3000u;
+    s_vtime_us = 4000u;
+    uint32_t token = sched_suspend_interrupts();
+    scheduler_service_pending();
+    expect(g_ge_fake_calls == 1u, "GE timing: no completion while interrupts are suspended");
+    expect(sched_ge_wake_deadline() == SCHED_WAIT_FOREVER,
+           "GE timing: an undeliverable completion is not an idle wake source");
+    sched_resume_interrupts(token);
+    expect(g_ge_fake_calls == 2u, "GE timing: the completion is delivered at the resume");
+
+    /* A VBLANK episode, a GE completion and an alarm all due: VBLANK, GE, then the alarm. */
+    ge_timing_fixture();
+    s_cur = mk(0x261u, TH_RUNNING, 20);
+    g_test_vblank_handler = 0x00001234u;
+    sched_alarm_set(10u, ALARM_HANDLER, 0x66u);
+    g_ge_fake_deadline = 10u;
+    s_vtime_us = 20u;
+    sched_raise_interrupt(SCHED_INTR_VBLANK);
+    scheduler_service_pending();
+    expect(g_test_handler_calls == 1u && g_ge_fake_calls == 1u && g_alarm_calls == 1u,
+           "GE timing: all three sources were delivered");
+    expect(g_ge_fake_seen_vblanks == 1u && g_ge_fake_seen_alarms == 0u,
+           "GE timing: the completion runs after the VBLANK episode and before the alarm");
+
+    sched_set_ge_timing_hooks(NULL, NULL);
+}
+
+/* MUTANT: drop the GE deadline from sched_classify_idle -- a thread delayed only by a
+ *   DrawSync whose list is drawing would rely on its own delay; a waiter released by the
+ *   finish callback alone is then reported as a deadlock. */
+static void test_ge_timing_completion_is_an_idle_wake_source(void) {
+    ge_timing_fixture();
+    g_ge_fake_deadline = 7000u;
+    SchedIdleState st = sched_classify_idle();
+    expect(st.soonest == SCHED_WAIT_FOREVER && st.unwakeable,
+           "GE timing: a drawing list with no waiting thread does not keep an idle run alive");
+
+    TCB *sleeper = &s_tcb[mk(0x262u, TH_WAIT_OBJ, 32)];
+    sleeper->wait_obj = 0x53000010u;
+    sleeper->wake = SCHED_WAIT_FOREVER;
+    st = sched_classify_idle();
+    expect(st.soonest == 7000u && !st.unwakeable,
+           "GE timing: a thread waiting on a finish callback sees the completion as its next wake");
+
+    sched_set_ge_timing_hooks(NULL, NULL);
+    st = sched_classify_idle();
+    expect(st.soonest == SCHED_WAIT_FOREVER && st.unwakeable,
+           "GE timing: with no hooks registered the scheduler is unchanged");
+}
+
 static void test_alarm_table_capacity_and_reset(void) {
     alarm_fixture();
     uint32_t uids[SCHED_ALARM_MAX];
@@ -4572,6 +4886,7 @@ int main(int argc, char **argv) {
     test_mixed_priorities();
     test_sleeping_excluded();
     test_blocked_excluded_until_wake();
+    test_transfer_window_closes_after_one_other_dispatch();
     test_dormant_excluded();
     test_current_becomes_nonrunnable();
     test_timed_wait_promotion();
@@ -4588,8 +4903,10 @@ int main(int argc, char **argv) {
     test_role_uid_capture();
     test_title_config_foreign_entries_are_inert();
     test_title_config_configured_roles_act();
+    test_launcher_keeps_priority_and_worker_runs_after_it_blocks();
     test_compat_fired_report_names_applied_patches();
     test_delivered_vblank_writes_no_guest_memory();
+    test_dormant_worker_is_not_relaunched_at_vblank();
     test_historical_launcher_uid_is_ordinary_when_unconfigured();
     test_historical_worker_uid_is_ordinary_when_unconfigured();
     test_configured_entry_captures_whatever_uid_it_gets();
@@ -4632,6 +4949,7 @@ int main(int argc, char **argv) {
     test_liveness_queue_full_and_empty_without_spin();
     test_liveness_sole_runnable_becomes_nonsole();
     test_liveness_bounded_long_run_starvation();
+    test_flight_recorder_does_not_perturb_scheduling();
 
     /* PSP display-wait semantics (hardware-pinned; see the block above these). */
     test_waitvblankstart_always_blocks();
@@ -4655,6 +4973,8 @@ int main(int argc, char **argv) {
     test_alarm_cancel_and_ordering();
     test_alarm_waits_for_enabled_interrupts_and_follows_vblank();
     test_alarm_is_a_wake_source_for_the_idle_scheduler();
+    test_ge_timing_completion_is_an_interrupt_source();
+    test_ge_timing_completion_is_an_idle_wake_source();
     test_alarm_table_capacity_and_reset();
 
     /* Player pause: each case maps to the mutation in the reviewed contract. */

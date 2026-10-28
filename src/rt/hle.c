@@ -258,6 +258,48 @@ static int hle_log_on(void) {
     return enabled;
 }
 
+/* The other diagnostic switches on the per-call path follow the same rule (#1296). An
+ * uncached getenv takes the C runtime's environment lock and compares the name against
+ * every variable, and sr_syscall() plus the CpuSuspendIntr/CpuResumeIntr pair a guest
+ * allocator brackets each allocation with read up to four of them per call. */
+static int hle_env_switch(int *cached, const char *name) {
+    if (*cached < 0) *cached = getenv(name) != NULL;
+    return *cached;
+}
+
+static int hle_nidlog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_NIDLOG");
+}
+
+static int hle_syslog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_SYSLOG");
+}
+
+/* Read on every controller sample and every presented frame. */
+static int hle_inlog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_INLOG");
+}
+
+static int hle_present_trace_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_PRESENT_TRACE");
+}
+
+static int hle_debug_thread_log_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_DEBUG_THREAD_LOG");
+}
+
+/* Thread sleep, wakeup and run-status calls and every UID allocation report under
+ * SR_WAKELOG; a guest can make those calls every frame. */
+static int hle_wakelog_on(void) {
+    static int enabled = -1;
+    return hle_env_switch(&enabled, "SR_WAKELOG");
+}
+
 /* Display-list tracing is extremely verbose (several writes per presented
  * frame).  Keep Standard mode quiet; Diagnostics enables SR_GEDUMP, and the
  * public SR_DEBUG GE bit (0x08) remains an equivalent opt-in. */
@@ -504,7 +546,7 @@ static uint32_t s_uid = 0x110;
 uint32_t sr_alloc_uid(void) {
     while (s_uid == 0u || s_uid == SR_ROLE_UID_NONE) s_uid++;
     uint32_t uid = s_uid++;
-    if (getenv("SR_WAKELOG")) fprintf(stderr, "ALLOC_UID: 0x%x\n", uid);
+    if (hle_wakelog_on()) fprintf(stderr, "ALLOC_UID: 0x%x\n", uid);
     return uid;
 }
 
@@ -1019,20 +1061,24 @@ uint32_t sr_hle_test_compiled_sdk_version(void) {
 
 /* sceUtilityGetSystemParamInt(id, int *out): write the system setting and return 0. A no-op that
  * leaves *out untouched makes the game read garbage for the language and load the wrong region
- * assets. IDs follow PSP_SYSTEMPARAM_ID_INT_*. LANGUAGE (1, English), BUTTON_PREFERENCE (1, cross
- * = enter), DATE_FORMAT (1), TIME_FORMAT (1) and DAYLIGHTSAVINGS (1) are the values of their
- * registry keys measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration: that console's
- * configured settings, not factory defaults (which are unmeasured). The ad-hoc channel, WLAN power
- * save and time zone values are unmeasured project defaults. The registry (sreg_systemparam_int)
- * is the source sceUtilityGetSystemParamInt reads; this table seeds it. */
+ * assets. IDs follow PSP_SYSTEMPARAM_ID_INT_*. This table seeds the virtual system registry
+ * (sreg_systemparam_int), the one retained system profile every guest-visible reader of these
+ * settings goes through: sceUtilityGetSystemParamInt, sceImpose, and the RTC local-time and
+ * gettimeofday paths (psp_profile_local_offset_minutes, #1382). This is the one place the seed
+ * values and their status are stated. Every value marked measured is the configured setting of the
+ * PSP-3000 6.6.1 oracle console, not a factory default (factory defaults are unmeasured):
+ * LANGUAGE, BUTTON_PREFERENCE, DATE_FORMAT, TIME_FORMAT and DAYLIGHTSAVINGS from the read-only
+ * registry enumeration of 2026-10-09, and ADHOC_CHANNEL, TIMEZONE and LOCK_PARENTAL_LEVEL through
+ * sceUtilityGetSystemParamInt on 2026-10-10 (hle-sysparam). WLAN_POWERSAVE is an unmeasured
+ * project default. */
 static uint32_t systemparam_int_value(uint32_t id) {
     switch (id) {
         case 2:  return 0;   /* ADHOC_CHANNEL: measured 0 (automatic) on the oracle, 2026-10-10 */
-        case 3:  return 0;   /* WLAN_POWERSAVE: off (unmeasured) */
+        case 3:  return 0;   /* WLAN_POWERSAVE: off (unmeasured project default) */
         case 4:  return 1;   /* DATE_FORMAT: measured */
         case 5:  return 1;   /* TIME_FORMAT: measured (1 = 12-hour in the PSPSDK enumeration) */
-        case 6:  return 0xfffffed4u; /* TIMEZONE offset in minutes: measured -300 on the oracle console */
-        case 7:  return 1;   /* DAYLIGHTSAVINGS: measured */
+        case 6:  return 0xfffffed4u; /* TIMEZONE minutes from UTC: measured -300 on the oracle, 2026-10-10 */
+        case 7:  return 1;   /* DAYLIGHTSAVINGS: measured 1 (PSPSDK SAVING) */
         case 8:  return 1;   /* LANGUAGE: measured (English) */
         case 9:  return 1;   /* BUTTON_PREFERENCE: measured */
         case 10: return 9;   /* LOCK_PARENTAL_LEVEL: measured 9 (off) on the oracle, 2026-10-10 */
@@ -2745,9 +2791,14 @@ static uint32_t h_ImposeGetLanguageMode(CpuState *s) {
  * IdleCancelThreshold) and PPSSPP Core/HLE/sceCtrl.cpp, where the sets update
  * the sampling state later reads observe. The power-on defaults are digital
  * mode (0), cycle 0, and disabled thresholds (-1/-1, matching the previous
- * fixed getter and its PPSSPP-default comment). Validation of out-of-range
- * modes/cycles is UNMEASURED here: requests are retained verbatim and
- * reported back, like the batch-2 power clocks. */
+ * fixed getter and its PPSSPP-default comment). The setters validate their
+ * argument (issue #1390): the accepted ranges and the two error codes are
+ * pinned by PSPAutotests tests/ctrl/sampling and tests/ctrl/sampling2 (.expected
+ * files recorded on a PSP), corroborated by PPSSPP Core/HLE/sceCtrl.cpp; there
+ * is no project oracle case for them yet. The stored mode and cycle do not yet
+ * change what is sampled or how often (also #1390). */
+#define SCE_CTRL_ERROR_INVALID_MODE 0x80000107u  /* SCE_KERNEL_ERROR_INVALID_MODE */
+#define SCE_CTRL_ERROR_INVALID_VALUE 0x800001feu /* SCE_KERNEL_ERROR_INVALID_VALUE */
 static uint32_t s_ctrl_sampling_mode = 0u;
 static uint32_t s_ctrl_sampling_cycle = 0u;
 static uint32_t s_ctrl_idle_reset = 0xFFFFFFFFu;
@@ -2799,14 +2850,24 @@ static uint32_t h_CtrlGetIdleCancelThreshold(CpuState *s) {
     if (A1) MEM_W32(A1, s_ctrl_idle_back);
     return 0;
 }
-/* sceCtrlSetSamplingMode(mode): store the mode, returning the previous one. */
+/* sceCtrlSetSamplingMode(mode): store the mode (0 digital, 1 analog), returning
+ * the previous one. Any other mode, 2 and -1 included, is refused with
+ * INVALID_MODE and leaves the stored mode unchanged (PSPAutotests ctrl/sampling).
+ * The whole register is range-checked; whether firmware first truncates the
+ * argument to 8 bits (uOFW src/kd/ctrl/ctrl.c reconstructs a u8 parameter) is
+ * UNMEASURED, so a value such as 0x101 is refused here. */
 static uint32_t h_CtrlSetSamplingMode(CpuState *s) {
+    if (A0 > 1u) return SCE_CTRL_ERROR_INVALID_MODE;
     uint32_t prev = s_ctrl_sampling_mode;
     s_ctrl_sampling_mode = A0;
     return prev;
 }
-/* sceCtrlSetSamplingCycle(cycle): store the cycle, returning the previous one. */
+/* sceCtrlSetSamplingCycle(cycle): store the cycle in microseconds, returning the
+ * previous one. 0 (sample on VBLANK) and 5555..20000 are accepted; 1..5554, values
+ * above 20000 and -1 are refused with INVALID_VALUE and leave the stored cycle
+ * unchanged (PSPAutotests ctrl/sampling and ctrl/sampling2). */
 static uint32_t h_CtrlSetSamplingCycle(CpuState *s) {
+    if ((A0 > 0u && A0 < 5555u) || A0 > 20000u) return SCE_CTRL_ERROR_INVALID_VALUE;
     uint32_t prev = s_ctrl_sampling_cycle;
     s_ctrl_sampling_cycle = A0;
     return prev;
@@ -2842,6 +2903,18 @@ static uint32_t h_CtrlGetSamplingMode(CpuState *s) {
     (void)s;
     if (!A0 || !sr_guest_span_writable(A0, 4u)) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
     MEM_W32(A0, s_ctrl_sampling_mode);
+    return 0;
+}
+/* sceCtrlGetSamplingCycle(int *pcycle): report the cycle retained by
+ * sceCtrlSetSamplingCycle (power-on default 0) and return 0, the round trip
+ * PSPAutotests ctrl/sampling records. The out-pointer is checked like the mode
+ * getter above. PSPAutotests leaves the NULL call out because it crashes the PSP,
+ * so there is no PSP return code to match: the ILLEGAL_ADDR refusal is this
+ * runtime's fail-closed choice, not a measured code. */
+static uint32_t h_CtrlGetSamplingCycle(CpuState *s) {
+    (void)s;
+    if (!A0 || !sr_guest_span_writable(A0, 4u)) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(A0, s_ctrl_sampling_cycle);
     return 0;
 }
 
@@ -4065,8 +4138,10 @@ static uint32_t h_DelaySysClockThreadCB(CpuState *s) {
     if (result != 0u) return result;
     return h_DelayThreadCBForUsec(usec);
 }
+/* sceKernelChangeThreadPriority(thid, priority).  Validation, the stored value and the
+ * scheduling boundary at the call (the PSPAutotests threads/threads/change.expected
+ * cells) are sched_set_priority's. */
 static uint32_t h_ChangeThreadPriority(CpuState *s) {
-    /* PSP-B3-01 (psp-hw-20260917): a dormant target answers DORMANT. */
     return sched_set_priority(A0, (int)A1);
 }
 
@@ -4145,15 +4220,12 @@ static uint32_t h_DeleteThread(CpuState *s) {
 static uint32_t h_GetThreadIdSched(CpuState *s) { (void)s; return sched_current_uid(); }
 static uint32_t h_GetThreadPriority(CpuState *s) { (void)s; return (uint32_t)sched_current_priority(); }
 static uint32_t h_GetThreadExitStatus(CpuState *s) { return sched_thread_exit_status(A0); }
+/* sceKernelGetThreadStackFreeSize(thid), thid 0 = the calling thread: the unused part of the
+ * selected thread's own stack, from the scheduler's stack range and creation fill
+ * (sched_thread_stack_free_size has the public evidence and the unmeasured cases). */
 static uint32_t h_GetThreadStackFreeSize(CpuState *s) {
-    /* Walk from SP upward until we hit the stack sentinel (0xDEADBEEF). */
-    uint32_t sp = s->r[29];
-    uint32_t free = 0;
-    for (uint32_t a = sp; a < sp + 65536; a += 4) {
-        if (MEM_R32(a) == 0xDEADBEEF) { free = a - sp; break; }
-    }
-    if (!free) free = 0x1000;
-    return free;
+    (void)s;
+    return sched_thread_stack_free_size(A0);
 }
 /* sceKernelSleepThread[CB] blocks only when no wakeup is banked; a pending wakeup is
  * consumed and the call returns without waiting. The context check therefore asks the
@@ -4163,7 +4235,7 @@ static uint32_t h_GetThreadStackFreeSize(CpuState *s) {
 static uint32_t h_SleepThread(CpuState *s) {
     (void)s;
     uint32_t uid = sched_current_uid();
-    if (getenv("SR_WAKELOG")) {
+    if (hle_wakelog_on()) {
         static int n=0;
         if (n++<8) fprintf(stderr, "SLEEP uid=0x%x\n", uid);
     }
@@ -4175,7 +4247,7 @@ static uint32_t h_SleepThread(CpuState *s) {
 static uint32_t h_SleepThreadCB(CpuState *s) {
     (void)s;
     uint32_t uid = sched_current_uid();
-    if (getenv("SR_WAKELOG")) {
+    if (hle_wakelog_on()) {
         static int n=0;
         if (n++<8) fprintf(stderr, "SLEEP_CB uid=0x%x\n", uid);
     }
@@ -4185,14 +4257,14 @@ static uint32_t h_SleepThreadCB(CpuState *s) {
     return 0;
 }
 static uint32_t h_WakeupThread(CpuState *s) {
-    if (getenv("SR_WAKELOG")) { static int n=0; if (n++<8) fprintf(stderr, "WAKEUP target=0x%x (from 0x%x)\n", A0, sched_current_uid()); }
+    if (hle_wakelog_on()) { static int n=0; if (n++<8) fprintf(stderr, "WAKEUP target=0x%x (from 0x%x)\n", A0, sched_current_uid()); }
     uint32_t result = sched_thread_wakeup(A0);
     if (result == 0) sched_preempt();
     return result;
 }
 static uint32_t h_CancelWakeupThread(CpuState *s) {
     int old = sched_thread_cancel_wakeup(A0);
-    if (getenv("SR_WAKELOG")) { static int n=0; if (n++<8) fprintf(stderr, "CANCEL_WAKE target=0x%x old=%d (from 0x%x)\n", A0, old, sched_current_uid()); }
+    if (hle_wakelog_on()) { static int n=0; if (n++<8) fprintf(stderr, "CANCEL_WAKE target=0x%x old=%d (from 0x%x)\n", A0, old, sched_current_uid()); }
     return old < 0 ? 0x800201a0u : (uint32_t)old;
 }
 static uint32_t h_WaitThreadEnd_impl(CpuState *s, int is_cb) {
@@ -4274,7 +4346,7 @@ static uint32_t h_ReferThreadRunStatus(CpuState *s) {
         MEM_W32(out + 0x20, rs.intrPreemptCount);
         MEM_W32(out + 0x24, rs.threadPreemptCount);
         MEM_W32(out + 0x28, rs.releaseCount);
-        if (getenv("SR_WAKELOG")) { static int n=0; if (n++<12) fprintf(stderr,
+        if (hle_wakelog_on()) { static int n=0; if (n++<12) fprintf(stderr,
             "REFER_RUN target=0x%x status=%u pri=%u waitType=%u waitId=0x%x wakeups=%u\n",
             A0, rs.status, rs.currentPriority, rs.waitType, rs.waitId, rs.wakeupCount); }
     }
@@ -4418,7 +4490,7 @@ static int real_module_start_enabled(void) {
  *   unset  - translated libfont module_start runs, so the guest owns its own
  *             readiness, and so does a guest-placed module's unless host HLE serves
  *             its exports; every other module keeps the host bypass in h_StartModule.
- *   "0"    - no module_start runs for any module; libfont reports a named refusal
+ *   "0"    - no module_start runs for any module; libfont stops the run by name
  *             instead of synthesizing guest readiness.
  * Any other value is refused rather than guessed, and the refusal is named once. */
 typedef enum {
@@ -4981,6 +5053,50 @@ static uint32_t guest_module_boundary(const char *boundary, const char *file, co
     return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
 }
 
+/* Libfont's readiness belongs to its own module_start (#299). When that cannot run -- the
+ * build did not translate it, its image was refused, it records no entry, or the operator's
+ * SR_REAL_MODULE_START=0 kill switch keeps module_start off -- the game waits for readiness
+ * nothing will ever set. The runtime never synthesizes it, so the run stops by name: one
+ * semantic-boundary line in SR_BOOT_EVENT_FILE (the shape the dispatcher and the
+ * unsupported-import stop write), which the player turns into its stopped-early card
+ * instead of a frozen game, then its own exit status. The selftest harness counts the stop
+ * and returns the named refusal, so a test can assert it. */
+#define HLE_LIBFONT_STARTUP_STOP_EXIT 11
+#define HLE_LIBFONT_STARTUP_BOUNDARY "libfont-startup-unavailable"
+#ifdef SR_HLE_THREAD_SELFTEST
+static uint32_t s_hle_libfont_startup_stops;
+uint32_t sr_hle_test_libfont_startup_stops(void) { return s_hle_libfont_startup_stops; }
+#endif
+static uint32_t hle_libfont_startup_stop(const char *reason) {
+    fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; translated guest libfont startup is not "
+                    "supported yet on this route; refusing to synthesize readiness, so the run "
+                    "stops at %s\n", reason, HLE_LIBFONT_STARTUP_BOUNDARY);
+    const char *path = getenv("SR_BOOT_EVENT_FILE");
+    if (path && path[0]) {
+        FILE *events = fopen(path, "ab");
+        if (events) {
+            fprintf(events,
+                    "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=%u\n",
+                    HLE_LIBFONT_STARTUP_BOUNDARY, 299u);
+            fclose(events);
+        }
+    }
+#ifdef SR_HLE_THREAD_SELFTEST
+    s_hle_libfont_startup_stops++;
+    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+#else
+    sr_hit_hle = 1;
+    if (sr_sched_on) {
+        sr_trace_close();
+        sr_compat_report();
+        sr_perf_shutdown();
+        fflush(stderr);
+        _Exit(HLE_LIBFONT_STARTUP_STOP_EXIT);
+    }
+    longjmp(g_hle_jmp, 1);
+#endif
+}
+
 static uint32_t read_guest_module_option(uint32_t option, GuestModuleLoadOption *out) {
     memset(out, 0, sizeof(*out));
     if (!option) return 0;
@@ -5247,6 +5363,10 @@ static uint32_t load_module_by_guest_path(const char *path, uint32_t option) {
         if (error) {
             retire_loaded_module(mod);
             fprintf(stderr, "sceKernelLoadModule(\"%s\") -> 0x%08x\n", path, error);
+            /* A named boundary refused libfont's translated image: its module_start can
+             * never run, so the run stops by name rather than leave the game waiting. */
+            if (error == HLE_KERNEL_ERROR_NOT_IMPLEMENTED && module_path_is(path, "libfont.prx"))
+                return hle_libfont_startup_stop("the translated libfont image was refused at load");
             return error;
         }
     } else if (declared && !populate_guest_module(file, base, required)) {
@@ -5662,15 +5782,18 @@ static SrPsmfPlayer s_psmf_players[4];
  * player path being involved in a no-new-frame stretch. File-local: no other translation
  * unit consumes them (the watchdog that prints them lives in this file). */
 static unsigned long s_psmf_calls = 0, s_psmf_getvideo = 0, s_psmf_getaudio = 0;
-static SrPsmfPlayer *psmf_find(uint32_t guest, int create) {
+static SrPsmfPlayer *psmf_slot(uint32_t guest, int create) {
     SrPsmfPlayer *freeSlot = NULL;
-    s_psmf_calls++;   /* every scePsmfPlayer handler resolves its control block here */
     for (size_t i = 0; i < sizeof(s_psmf_players) / sizeof(s_psmf_players[0]); i++) {
         if (s_psmf_players[i].used && s_psmf_players[i].guest == guest) return &s_psmf_players[i];
         if (!s_psmf_players[i].used && !freeSlot) freeSlot = &s_psmf_players[i];
     }
-    if (create && guest && freeSlot) { memset(freeSlot, 0, sizeof(*freeSlot)); freeSlot->used=1; freeSlot->guest=guest; return freeSlot; }
+    if (create && guest && freeSlot) { memset(freeSlot, 0, sizeof(*freeSlot)); freeSlot->used=1; freeSlot->guest=guest; freeSlot->h264=-1; return freeSlot; }
     return NULL;
+}
+static SrPsmfPlayer *psmf_find(uint32_t guest, int create) {
+    s_psmf_calls++;   /* every scePsmfPlayer handler resolves its control block here */
+    return psmf_slot(guest, create);
 }
 static void psmf_flush(SrPsmfPlayer *p) {
     if (!p) return;
@@ -5984,6 +6107,21 @@ static void psmf_media_reset(SrPsmfPlayer *p) {
     p->rejectNamed = 0;
 }
 
+/* Give back everything a player acquired -- queued access units, the producer, the H.264
+ * decoder instance and the audio decoder -- and free its slot.  Issue #279: Delete used to
+ * reset the decoder and then forget its id, so every movie kept one of a backend's few
+ * decoder instances (four for Media Foundation and FFmpeg) and the fifth movie of a session
+ * got none. */
+static void psmf_player_release(SrPsmfPlayer *p) {
+    if (!p) return;
+    psmf_flush(p);
+    if (p->producer) { sr_psmf_producer_close(p->producer); p->producer = NULL; }
+    if (p->h264 >= 0) { sr_h264_destroy(p->h264); p->h264 = -1; }
+    psmf_media_reset(p);
+    memset(p, 0, sizeof(*p));
+    p->h264 = -1;
+}
+
 /* Presentation time of one submitted picture.  A packet that carried a PTS sets the clock;
  * a packet that did not advances it by exactly one frame, and until the first PTS arrives the
  * picture's time stays unknown (-1) rather than invented. */
@@ -6268,11 +6406,15 @@ static int psmf_parse_header(SrPsmfPlayer *p, const uint8_t *h, uint32_t n) {
     return 1;
 }
 static uint32_t h_PsmfCreate(CpuState *s) {
-    SrPsmfPlayer *p=psmf_find(A0,1); if(!p||!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_PARAM; uint32_t b=MEM_R32(A1),sz=MEM_R32(A1+4),pri=MEM_R32(A1+8);
+    /* Parameters are checked before a slot is claimed, so a refused create keeps nothing;
+     * creating over a live control block gives the old player's decoder and producer back
+     * and starts a fresh player (issue #279). */
+    SrPsmfPlayer *p=psmf_find(A0,0); if(!A0||!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_PARAM; uint32_t b=MEM_R32(A1),sz=MEM_R32(A1+4),pri=MEM_R32(A1+8);
     if(!b||sz<0x00285800u){MEM_W32(A0,0);return PSMF_ERR_BUFSIZE;} if(pri<0x10u||pri>=0x6eu){MEM_W32(A0,0);return PSMF_ERR_PARAM;}
-    p->h264=-1;p->buffer=b;p->bufferSize=sz;p->priority=pri;p->status=PSMF_STATUS_INIT;p->pixelMode=3;p->loopStatus=1;p->videoCodec=0xe;p->audioCodec=0xf;MEM_W32(A0,A0);sched_delay_current(20000);return 0;
+    psmf_player_release(p); p=psmf_slot(A0,1); if(!p)return PSMF_ERR_PARAM;
+    p->buffer=b;p->bufferSize=sz;p->priority=pri;p->status=PSMF_STATUS_INIT;p->pixelMode=3;p->loopStatus=1;p->videoCodec=0xe;p->audioCodec=0xf;MEM_W32(A0,A0);sched_delay_current(20000);return 0;
 }
-static uint32_t h_PsmfDelete(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;psmf_flush(p);if(p->producer){sr_psmf_producer_close(p->producer);p->producer=NULL;}psmf_media_reset(p);memset(p,0,sizeof(*p));p->h264=-1;MEM_W32(A0,0);sched_delay_current(20000);return 0;}
+static uint32_t h_PsmfDelete(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;psmf_player_release(p);MEM_W32(A0,0);sched_delay_current(20000);return 0;}
 static uint32_t h_PsmfSetTempBuf(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||A2<0x10000u)return PSMF_ERR_PARAM;p->tempBuf=A1;p->tempSize=A2;return 0;}
 static uint32_t h_PsmfSetPsmfCB(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;char path[512];if(!guest_cstr(A1,path,sizeof(path)))return PSMF_ERR_PARAM;uint32_t lba=0,sz=0;uint8_t h[2048];if(iso_lookup(path,&lba,&sz)!=0||sz<sizeof(h)||iso_read(lba,0,h,sizeof(h))!=(int)sizeof(h)||!psmf_parse_header(p,h,sizeof(h)))return PSMF_ERR_PARAM;if(p->producer)sr_psmf_producer_close(p->producer);p->producer=NULL;p->source.lba=lba;p->source.size=sz;SrPsmfSource source={psmf_iso_read,p,sz};p->producer=sr_psmf_producer_open(&source,p->presentationBase);if(!p->producer)return PSMF_ERR_PARAM;strncpy(p->path,path,sizeof(p->path)-1);p->fileLba=lba;p->fileSize=sz;p->readOffset=p->streamOffset;p->status=PSMF_STATUS_STANDBY;psmf_flush(p);psmf_media_reset(p);sched_delay_current(3100);return 0;}
 static uint32_t h_PsmfConfig(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;if(A1==0){if(A2>1)return PSMF_ERR_PARAM;p->loopStatus=A2;return 0;}if(A1==1){if((int32_t)A2<-1||A2>3)return PSMF_ERR_PARAM;p->pixelMode=(A2==(uint32_t)-1)?3:A2;return 0;}return PSMF_ERR_CONFIG;}
@@ -6483,7 +6625,47 @@ extern uint32_t sr_callback_table_register(uint32_t name_addr, uint32_t entry,
                                            uint32_t arg, uint32_t *error_out);
 extern int sr_vblank_dispatch_registered(void);
 extern int sr_callback_find_in_table(uint32_t uid);
-static uint32_t h_GetModuleId(CpuState *s) { (void)s; return 0x112; }   /* main module's id (stable) */
+/* Module identity by address (#1385). A live module record owns its image
+ * [image_base, image_end); the program the host loader placed is the main module and
+ * owns [sr_loaded_base(), sr_loaded_end()). A program LoadExec booted is itself a module
+ * record. The main module's UID comes from the shared pool the first time a guest asks
+ * for it, so it never aliases another kernel object (it used to be the constant 0x112,
+ * the third UID the pool hands out, which a thread or semaphore also receives). */
+#define SCE_KERNEL_ERROR_UNKNOWN_MODULE 0x8002012eu
+static uint32_t s_main_module_uid;
+
+static uint32_t module_uid_at(uint32_t addr) {
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        const LoadedModule *mod = &s_loaded_modules[i];
+        if (!mod->in_use || mod->state == MODULE_STATE_UNUSED ||
+            mod->state == MODULE_STATE_UNLOADED)
+            continue;
+        if (mod->image_base < mod->image_end && addr >= mod->image_base &&
+            addr < mod->image_end)
+            return mod->uid;
+    }
+    uint32_t base = sr_loaded_base(), end = sr_loaded_end();
+    if (base < end && addr >= base && addr < end) {
+        if (!s_main_module_uid) s_main_module_uid = sr_alloc_uid();
+        return s_main_module_uid;
+    }
+    return 0u;
+}
+
+/* An address no live module owns -- unmapped, or the range of a module since unloaded --
+ * is refused. The PSP's error for it is unmeasured; this is the kernel's unknown-module
+ * error, assumed until a hardware capture pins it. */
+static uint32_t h_GetModuleIdByAddress(CpuState *s) {
+    uint32_t uid = module_uid_at(A0);
+    return uid ? uid : SCE_KERNEL_ERROR_UNKNOWN_MODULE;
+}
+
+/* The calling module: the one whose code issued the call, found by the return address
+ * the caller left in $ra. */
+static uint32_t h_GetModuleId(CpuState *s) {
+    uint32_t uid = module_uid_at(s->r[31]);
+    return uid ? uid : SCE_KERNEL_ERROR_UNKNOWN_MODULE;
+}
 
 static uint32_t h_StopModule_Trace(CpuState *s) {
     uint32_t modid = A0;
@@ -6888,6 +7070,40 @@ static uint32_t h_RegisterExitCallback(CpuState *s) {
         fprintf(stderr, "CBLOG: registered external-exit callback uid=0x%x\n", cb_uid);
     return 0;
 }
+
+/* Player quit request (#1392). PSPSDK documents the exit callback as the game's notice that
+ * the user asked to quit from the HOME menu: the callback does its cleanup and calls
+ * sceKernelExitGame itself. Measured under PSPLink, sceKernelExitGame does not run a
+ * registered exit callback, so this request is the only place the callback is notified and
+ * h_ExitGame stays terminal. The notification goes through sr_callback_notify, so the body
+ * runs on the thread that created the callback at its next callback-servicing wait.
+ *
+ * Unmeasured on the stock-firmware HOME-menu path: the notify argument (0 here) and how long
+ * the firmware waits. SR_EXIT_REQUEST_WINDOW_US is a host policy, not PSP timing: a guest
+ * that has not exited when that much guest time has passed is ended by the player. */
+#define SR_EXIT_REQUEST_WINDOW_US 5000000u
+static int s_exit_request_pending;
+static uint64_t s_exit_request_deadline_us;
+
+/* Returns 1 when the guest's exit callback was notified (now or by an earlier request) and
+ * its window is still open, so the player keeps running; 0 when the player exits now: no
+ * valid callback is registered, the notification failed, or the window has passed. */
+int sr_exit_request_quit(void) {
+    if (s_exit_request_pending) return !sr_exit_request_expired();
+    if (!s_exit_cb_uid || !sr_callback_is_valid(s_exit_cb_uid)) return 0;
+    if (sr_callback_notify(s_exit_cb_uid, 0u) != 0u) return 0;
+    s_exit_request_pending = 1;
+    s_exit_request_deadline_us = sched_vtime_us() + SR_EXIT_REQUEST_WINDOW_US;
+    fprintf(stderr, "GAMELOG: quit requested; notified exit callback uid=0x%x, waiting up to "
+                    "%u us of guest time for sceKernelExitGame\n",
+            s_exit_cb_uid, SR_EXIT_REQUEST_WINDOW_US);
+    return 1;
+}
+
+/* 1 once a notified quit request's guest-time window has passed without the guest exiting. */
+int sr_exit_request_expired(void) {
+    return s_exit_request_pending && sched_vtime_us() >= s_exit_request_deadline_us;
+}
 /* sceKernelStopUnloadSelfModuleWithStatus(status, ...): on hardware the kernel stops the
  * module's threads and reclaims its memory -- control NEVER returns to the caller. The
  * runtime loads exactly one game module and its threads are the only execution surface,
@@ -6922,10 +7138,10 @@ static uint32_t h_StopUnloadSelfModuleWithStatus(CpuState *s) {
  * on reaching zero, calls ResumeIntr. The spinlock at 0x10974 polls 0x30aa80 via bne. */
 static uint32_t h_CpuSuspendIntr(CpuState *s) {
     (void)s;
-    if (getenv("SR_SYSLOG")) {
+    if (hle_syslog_on()) {
         fprintf(stderr, "HLE: sceKernelCpuSuspendIntr called\n");
     }
-    if (getenv("SR_DEBUG_THREAD_LOG")) {
+    if (hle_debug_thread_log_on()) {
         /* Role-resolved rather than UID-literal (the historical literals drifted and
          * left these diagnostics permanently silent). A build with no worker/launcher
          * binding has no role to report, so both branches stay quiet. */
@@ -6947,10 +7163,10 @@ static uint32_t h_CpuSuspendIntr(CpuState *s) {
 }
 
 static uint32_t h_CpuResumeIntr(CpuState *s) {
-    if (getenv("SR_SYSLOG")) {
+    if (hle_syslog_on()) {
         fprintf(stderr, "HLE: sceKernelCpuResumeIntr called\n");
     }
-    if (getenv("SR_DEBUG_THREAD_LOG")) {
+    if (hle_debug_thread_log_on()) {
         /* Role-resolved (see h_CpuSuspendIntr). */
         if (sched_current_is_worker()) {
             fprintf(stderr, "DEBUG: CpuResumeIntr worker=0x%x: r2 (v0)=0x%x, r6 (a2)=0x%x, r16 (s0)=0x%x, r26 (k0)=0x%x, ra=0x%x, sp=0x%x\n  Stack:",
@@ -7013,24 +7229,37 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  *   - a one-byte tail past an allocator-proven valid prefix returns success
  *     after copying exactly that prefix, for both APIs and both directions;
  *   - same-pointer and forward/backward overlapping copies are memmove-correct;
- *   - concurrent Try calls report BUSY while another DMA is active and a
- *     concurrent blocking call waits for that operation.
+ *   - both APIs block their caller for the whole transfer; a Try made while
+ *     another thread's transfer is pending returns BUSY (0x80000021) and a
+ *     blocking call made then waits for it and returns 0 (PSP-3000 / 6.6.1,
+ *     64/64 for each of the three dma-concurrency combinations, #303).
  *
  * RUNTIME_IMPLEMENTED:
  *   - fully valid spans are copied at their requested size (there is no
  *     API-wide 0xC000 ceiling);
  *   - the measured one-byte arena-end tail is copied only through its valid
  *     prefix, while larger or ambiguous overruns remain fail-closed;
- *   - both registered NIDs share the measured single-caller copy path.
+ *   - both registered NIDs share one copy path;
+ *   - the active transfer: a guest thread that starts one stays blocked in
+ *     the call while the scheduler's transfer window is open; another
+ *     thread's Try returns BUSY without copying, and its blocking call waits
+ *     through the scheduler, then performs its own transfer and returns 0.
  *
- * RUNTIME_UNIMPLEMENTED:
- *   - the scheduler has no active-DMA operation state, so cross-thread BUSY and
- *     blocking semantics remain outside this synchronous helper.
+ * UNMEASURED (explicit runtime choices, not PSP facts):
+ *   - the transfer's guest-time duration: the probes recorded caller wall time
+ *     only (~376-382 us for an earlier large call, 4.43-4.55 ms for 1 MiB
+ *     VRAM-to-VRAM) and no rate law is inferred from either, so the window
+ *     carries no time; it closes at the scheduling decision after one other
+ *     thread has been dispatched, or at once when none is runnable
+ *     (sched_transfer_begin in sched.c);
+ *   - callers that cannot block (interrupt context, suspended interrupts or
+ *     dispatch, no guest thread) keep the synchronous copy and open no window;
+ *   - a BUSY Try copies nothing; more than two callers queue by priority;
+ *   - BUSY and the wait are decided after the size/NULL checks and before
+ *     span validation, which runs when the copy happens.
  *
  * The size-before-address ordering below is a runtime ordering; the combined
  * size-zero-plus-invalid-pointer case was not part of the probe.
- * The measured ~376–382 us observation for a large call is caller wall time;
- * no guest-time rate law is inferred from it.
  * Guest RAM/VRAM share the runtime's unified host allocation, and this target
  * does not currently translate guest self-modifying code or maintain a separate
  * instruction-cache/dispatch-table invalidation layer. DMA therefore exposes
@@ -7039,14 +7268,43 @@ static uint32_t h_UmdCheckMedium(CpuState *s) { (void)s; return 1; }      /* med
  */
 #define SCE_DMAC_ERROR_ILLEGAL_ADDR 0x80000103u
 #define SCE_DMAC_ERROR_ILLEGAL_SIZE 0x80000104u
+#define SCE_DMAC_ERROR_BUSY 0x80000021u
+/* The active transfer's owner and every blocking caller queued behind it park
+ * on this object until the scheduler closes the transfer window. */
+#define DMAC_TRANSFER_WAIT_OBJ 0x444d4143u /* "DMAC" */
+
+static uint32_t dmac_transfer(CpuState *s, int try_only);
 
 static uint32_t h_DmacMemcpy(CpuState *s) {
+    return dmac_transfer(s, 0);
+}
+
+static uint32_t h_DmacTryMemcpy(CpuState *s) {
+    return dmac_transfer(s, 1);
+}
+
+/* Only a guest thread on its own coroutine, with interrupts and dispatch
+ * enabled, can genuinely block; any other caller keeps the synchronous copy,
+ * so no caller that copies today starts waiting. */
+static int dmac_caller_can_wait(void) {
+    return sched_guest_thread_running() && sched_wait_permitted();
+}
+
+static uint32_t dmac_transfer(CpuState *s, int try_only) {
     /* a0=dst, a1=src, a2=size. A real DMA copy in guest memory. */
     uint32_t dst = A0, src = A1, n = A2;
 
     /* Validate size and null pointers before touching guest memory. */
     if (n == 0u) return SCE_DMAC_ERROR_ILLEGAL_SIZE;
     if (dst == 0u || src == 0u) return SCE_DMAC_ERROR_ILLEGAL_ADDR;
+
+    /* Another thread's transfer is pending: Try reports BUSY without copying,
+     * and the blocking form waits for it through the scheduler. */
+    if (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, NULL)) {
+        if (try_only) return SCE_DMAC_ERROR_BUSY;
+        while (dmac_caller_can_wait() && sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, NULL))
+            sched_block_on(DMAC_TRANSFER_WAIT_OBJ);
+    }
 
     /* The physical PSP completed the one-byte invalid-tail case through the
      * valid prefix.  Compute both prefixes with overflow-safe arena arithmetic
@@ -7076,22 +7334,23 @@ static uint32_t h_DmacMemcpy(CpuState *s) {
     memmove(SR_HOST(dst), SR_HOST(src), effective);
     sr_guest_vram_write_commit_bytes(dst, effective);
     if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, effective, 0u);
-    return 0;
-}
 
-/* sceDmacTryMemcpy shares the measured single-caller copy path.  Its
- * cross-thread BUSY behavior remains a separate scheduler/DMAC operation to
- * implement once the runtime has explicit active-transfer state. */
-static uint32_t h_DmacTryMemcpy(CpuState *s) {
-    return h_DmacMemcpy(s);
+    /* This call's own transfer: the caller stays blocked in the call until the
+     * scheduler closes its window. */
+    if (dmac_caller_can_wait() && sched_transfer_begin(DMAC_TRANSFER_WAIT_OBJ)) {
+        const uint32_t self = sched_current_uid();
+        uint32_t owner = 0u;
+        while (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, &owner) && owner == self)
+            sched_block_on(DMAC_TRANSFER_WAIT_OBJ);
+    }
+    return 0;
 }
 static uint32_t h_Memset(CpuState *s) {
     /* a0=dst, a1=byte_val, a2=size */
     uint32_t dst = A0, val = A1 & 0xff, n = A2;
-    if (n && sr_guest_span_writable(dst, n)) {
-        sr_guest_vram_write_prepare_bytes(dst, n);
-        memset(SR_HOST(dst), (int)val, n);
-        sr_guest_vram_write_commit_bytes(dst, n);
+    /* A CPU fill: a span through a swizzled VRAM mirror lands where the
+     * same scalar stores would (sr_guest_fill, #1049). */
+    if (n && sr_guest_fill(dst, (uint8_t)val, n)) {
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, n, 0u);
     } else if (n) {
         sr_oor(dst, val, 1);
@@ -7118,10 +7377,9 @@ static uint32_t h_Strlen(CpuState *s) {
 static uint32_t h_Memcpy(CpuState *s) {
     /* a0=dst, a1=src, a2=size */
     uint32_t dst = A0, src = A1, n = A2;
-    if (n && sr_guest_span_readable_current(src, n) && sr_guest_span_writable(dst, n)) {
-        sr_guest_vram_write_prepare_bytes(dst, n);
-        memmove(SR_HOST(dst), SR_HOST(src), n);
-        sr_guest_vram_write_commit_bytes(dst, n);
+    /* A CPU copy with memmove semantics; spans through a swizzled VRAM
+     * mirror are copied in measured-contiguous pieces (sr_guest_memmove, #1049). */
+    if (n && sr_guest_memmove(dst, src, n)) {
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, n, 0u);
     } else if (n) {
         sr_oor(dst, 0u, 1);
@@ -7129,6 +7387,16 @@ static uint32_t h_Memcpy(CpuState *s) {
     }
     return dst;
 }
+
+/* Whether a Memory Stick open may create its file. sceIoOpen takes this from PSP_O_CREAT
+ * (0x0200) and PSP_O_EXCL (0x0800) (#1380); the stdio mode then only says how the stream
+ * reads, writes, truncates and appends. MS0_OPEN_BY_MODE keeps the stdio meaning (r opens
+ * an existing file, w and a create one) for the runtime's own callers. */
+typedef enum {
+    MS0_OPEN_BY_MODE = 0,
+    MS0_OPEN_EXISTING,   /* never create: a missing file fails */
+    MS0_OPEN_NEW,        /* create a new file: an existing name fails */
+} Ms0OpenExistence;
 
 #ifdef _WIN32
 /* ---- checked UTF-8/UTF-16 host-path helpers (issue #223) --------------------------
@@ -7550,8 +7818,10 @@ static int sr_ensure_directory_utf8(const char *path) {
 
 /* Contained FILE* open under the unified Memory Stick root: OPEN -> HANDLE ->
  * FINAL PATH VERIFY, then hand the verified handle to the CRT. Maps the wide
- * fopen mode onto CreateFileW access/disposition (r/w/a/+ and binary). */
-static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
+ * fopen mode onto CreateFileW access/disposition (r/w/a/+ and binary); EXISTENCE
+ * overrides the creation disposition the mode implies. */
+static FILE *ms0_fopen_existence_utf8(const char *host_path, const wchar_t *mode,
+                                      Ms0OpenExistence existence) {
     if (!host_path || !mode || !mode[0]) return NULL;
     wchar_t canonical[MAX_PATH * 2];
     if (!sr_vfs_canonical_root(sr_ms0_root(), canonical,
@@ -7567,7 +7837,9 @@ static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
     DWORD access = GENERIC_READ;
     if (has_w || has_a || has_plus) access |= GENERIC_WRITE;
     DWORD disposition = OPEN_EXISTING;
-    if (has_w) disposition = CREATE_ALWAYS;
+    if (existence == MS0_OPEN_NEW) disposition = CREATE_NEW;
+    else if (existence == MS0_OPEN_EXISTING) disposition = has_w ? TRUNCATE_EXISTING : OPEN_EXISTING;
+    else if (has_w) disposition = CREATE_ALWAYS;
     else if (has_a) disposition = OPEN_ALWAYS;
     HANDLE h = INVALID_HANDLE_VALUE;
     if (!sr_vfs_open_contained_utf8(host_path, access, 0, disposition, canonical, &h))
@@ -7589,6 +7861,10 @@ static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
         return NULL;
     }
     return fp;
+}
+
+static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
+    return ms0_fopen_existence_utf8(host_path, mode, MS0_OPEN_BY_MODE);
 }
 
 #else /* !_WIN32: the same host-path layer expressed with POSIX primitives ----- */
@@ -8066,7 +8342,7 @@ static sr_cd_status ms0_posix_root_open(sr_cd_root *root) {
 }
 
 static FILE *ms0_fopen_rel_utf8(const char *rel, const wchar_t *mode,
-                                sr_cd_status *status_out) {
+                                Ms0OpenExistence existence, sr_cd_status *status_out) {
     if (status_out) *status_out = SR_CD_INVALID_PATH;
     if (!rel || !mode || !mode[0]) return NULL;
     char parent[SR_CD_REL_MAX], leaf[SR_CD_NAME_MAX];
@@ -8080,9 +8356,15 @@ static FILE *ms0_fopen_rel_utf8(const char *rel, const wchar_t *mode,
         else if (*p != L'r' && *p != L'b') return NULL;
     }
     if ((has_w && has_a) || ((has_w || has_a) && !has_plus)) return NULL;
+    if (existence == MS0_OPEN_NEW && !has_plus) return NULL;
     sr_cd_file_mode file_mode = has_w ? SR_CD_FILE_READ_WRITE_TRUNCATE :
                                 has_a ? SR_CD_FILE_READ_WRITE_APPEND :
                                 has_plus ? SR_CD_FILE_READ_WRITE : SR_CD_FILE_READ;
+    if (existence == MS0_OPEN_NEW)
+        file_mode = has_a ? SR_CD_FILE_READ_WRITE_NEW_APPEND : SR_CD_FILE_READ_WRITE_NEW;
+    else if (existence == MS0_OPEN_EXISTING && (has_w || has_a))
+        file_mode = has_w ? SR_CD_FILE_READ_WRITE_EXISTING_TRUNCATE :
+                            SR_CD_FILE_READ_WRITE_EXISTING_APPEND;
 
     sr_cd_root root;
     sr_cd_status st = ms0_posix_root_open(&root);
@@ -8098,14 +8380,14 @@ static FILE *ms0_fopen_rel_utf8(const char *rel, const wchar_t *mode,
 }
 
 static FILE *ms0_fopen_guest_utf8(const char *guest_path, const wchar_t *mode,
-                                  sr_cd_status *status_out) {
+                                  Ms0OpenExistence existence, sr_cd_status *status_out) {
     char rel[SR_CD_REL_MAX];
     sr_cd_status st = ms0_posix_guest_relpath(guest_path, rel, sizeof(rel));
     if (st != SR_CD_OK) {
         if (status_out) *status_out = st;
         return NULL;
     }
-    return ms0_fopen_rel_utf8(rel, mode, status_out);
+    return ms0_fopen_rel_utf8(rel, mode, existence, status_out);
 }
 
 /* Compatibility helper for the legacy-flat import, whose destination was
@@ -8114,7 +8396,7 @@ static FILE *ms0_fopen_guest_utf8(const char *guest_path, const wchar_t *mode,
 static FILE *ms0_fopen_utf8(const char *host_path, const wchar_t *mode) {
     char rel[SR_CD_REL_MAX];
     if (ms0_posix_host_relpath(host_path, rel, sizeof(rel)) != SR_CD_OK) return NULL;
-    return ms0_fopen_rel_utf8(rel, mode, NULL);
+    return ms0_fopen_rel_utf8(rel, mode, MS0_OPEN_BY_MODE, NULL);
 }
 #endif /* _WIN32 */
 
@@ -8525,7 +8807,7 @@ static int fontlib_snapshot(uint32_t handle, SrFontLib *out) {
     if (!handle) return 0;
     hle_lock();
     for (size_t i = 0; i < sizeof(s_fontlibs) / sizeof(s_fontlibs[0]); i++)
-        if (s_fontlibs[i].used && s_fontlibs[i].handle == handle) {
+        if (s_fontlibs[i].used == 1 && s_fontlibs[i].handle == handle) {
             if (out) *out = s_fontlibs[i];
             found = 1; break;
         }
@@ -8538,7 +8820,7 @@ static const PGF *font_acquire(uint32_t handle, SrFont **record) {
     if (!handle) return NULL;
     hle_lock();
     for (size_t i = 0; i < sizeof(s_fonts) / sizeof(s_fonts[0]); i++)
-        if (s_fonts[i].used && !s_fonts[i].closing && s_fonts[i].handle == handle) {
+        if (s_fonts[i].used == 1 && !s_fonts[i].closing && s_fonts[i].handle == handle) {
             s_fonts[i].refs++;
             pgf = s_fonts[i].pgf;
             if (record) *record = &s_fonts[i];
@@ -8574,6 +8856,26 @@ static const PGF *font_pgf_for(uint32_t handle, int cc, SrFont **record) {
 static uint32_t font_call_alloc(CpuState *s, uint32_t allocFn, uint32_t userData, uint32_t size) {
     if (allocFn) return ge_call_guest_rv(s, allocFn, userData, size, 0);
     return 0;
+}
+/* A guest allocator result is usable only when its whole span is guest-writable and it overlaps
+ * no live or reserved library or font object; a duplicate or overlapping return would alias one
+ * handle's state onto another's. Rejected blocks are not passed to freeFunc: an out-of-range
+ * block is not the guest's, and an overlapping one belongs to a live object. Host policy: what
+ * the PSP's libfont does with such a block is UNMEASURED, so this fails closed. Holds hle_lock. */
+static int font_alloc_span_free_locked(uint32_t addr, uint32_t size) {
+    if (!addr || !sr_guest_span_writable(addr, size)) return 0;
+    uint64_t lo = addr, hi = (uint64_t)addr + size;
+    for (size_t i = 0; i < sizeof(s_fontlibs) / sizeof(s_fontlibs[0]); i++) {
+        const SrFontLib *L = &s_fontlibs[i];
+        if (L->used && L->handle && lo < (uint64_t)L->handle + L->allocSize && L->handle < hi)
+            return 0;
+    }
+    for (size_t i = 0; i < sizeof(s_fonts) / sizeof(s_fonts[0]); i++) {
+        const SrFont *f = &s_fonts[i];
+        if (f->used && f->handle && lo < (uint64_t)f->handle + SR_FONT_SIZE && f->handle < hi)
+            return 0;
+    }
+    return 1;
 }
 static void font_zero(uint32_t addr, uint32_t size) {
     if (!addr) return;
@@ -8653,6 +8955,12 @@ static uint32_t h_FontNewLib(CpuState *s) {
     uint32_t params = A0, errPtr = A1;
     uint32_t userData = 0, allocFn = 0, freeFn = 0; int numFonts = 0;
     uint32_t paramsCopy[11] = {0};
+    if (params && !sr_guest_span_readable(params, (uint32_t)sizeof(paramsCopy))) {
+        /* The whole 0x2c-byte FontNewLibParams block is retained, so all of it must be guest
+         * memory before any word is read or the allocator is called. */
+        if (errPtr) MEM_W32(errPtr, SR_FONT_ERROR_INVALID_ARG);
+        return 0;
+    }
     if (params) {
         for (int i = 0; i < 11; i++) paramsCopy[i] = MEM_R32(params + (uint32_t)i * 4);
         userData = MEM_R32(params + 0x00);
@@ -8675,6 +8983,13 @@ static uint32_t h_FontNewLib(CpuState *s) {
     hle_unlock();
     if (slot < 0) { if (errPtr) MEM_W32(errPtr, SR_FONT_ERROR_TOO_MANY); return 0; }
     uint32_t lib = font_call_alloc(s, allocFn, userData, allocSize);
+    /* Validate the allocator's block and reserve its span before writing to it or publishing. */
+    hle_lock();
+    int lib_ok = font_alloc_span_free_locked(lib, allocSize);
+    if (lib_ok) { s_fontlibs[slot].handle = lib; s_fontlibs[slot].allocSize = allocSize; }
+    else memset(&s_fontlibs[slot], 0, sizeof(s_fontlibs[slot]));
+    hle_unlock();
+    if (!lib_ok) lib = 0;
     if (lib) {
         font_zero(lib, allocSize);
         MEM_W32(lib + 0x00, SR_FONTLIB_MAGIC);
@@ -8682,17 +8997,14 @@ static uint32_t h_FontNewLib(CpuState *s) {
         MEM_W32(lib + 0x08, userData);
         MEM_W32(lib + 0x0c, allocFn);
         MEM_W32(lib + 0x10, freeFn);
-    }
-    hle_lock();
-    if (lib) {
-        s_fontlibs[slot].used = 1; s_fontlibs[slot].handle = lib;
+        hle_lock();
+        s_fontlibs[slot].used = 1;
         s_fontlibs[slot].allocFn = allocFn; s_fontlibs[slot].freeFn = freeFn;
         s_fontlibs[slot].userData = userData; s_fontlibs[slot].numFonts = numFonts;
         s_fontlibs[slot].openCount = 0;
         memcpy(s_fontlibs[slot].params, paramsCopy, sizeof(paramsCopy));
-        s_fontlibs[slot].allocSize = allocSize;
-    } else memset(&s_fontlibs[slot], 0, sizeof(s_fontlibs[slot]));
-    hle_unlock();
+        hle_unlock();
+    }
     if (errPtr) MEM_W32(errPtr, lib ? 0 : SR_FONT_ERROR_OOM);
     if (getenv("SR_FONTLOG"))
         fprintf(stderr, "h_FontNewLib: params=0x%08x numFonts=%d alloc=0x%08x free=0x%08x -> lib=0x%08x\n",
@@ -8735,6 +9047,11 @@ static uint32_t font_open_common(CpuState *s, uint32_t lib, uint32_t index, uint
     }
     uint32_t allocFn = L.allocFn, userData = L.userData;
     uint32_t fh = font_call_alloc(s, allocFn, userData, SR_FONT_SIZE);
+    /* Validate the allocator's block and reserve its span before writing to it or publishing. */
+    hle_lock();
+    if (font_alloc_span_free_locked(fh, SR_FONT_SIZE)) s_fonts[slot].handle = fh;
+    else fh = 0;
+    hle_unlock();
     if (fh) {
         font_zero(fh, SR_FONT_SIZE);
         MEM_W32(fh + 0x00, SR_FONT_MAGIC);
@@ -8782,7 +9099,7 @@ static uint32_t h_FontOpenUserMemory(CpuState *s) {
     /* sceFontOpenUserMemory(a0=lib, a1=memAddr, a2=memLen, a3=u32* errorCode). */
     font_load();
     PGF *owned = NULL;
-    if (A1 && A2 >= 16 && A2 <= 16u * 1024u * 1024u) {
+    if (A1 && A2 >= 16 && A2 <= 16u * 1024u * 1024u && sr_guest_span_readable(A1, A2)) {
         uint8_t *copy = (uint8_t *)malloc(A2);
         if (copy) {
             for (uint32_t i = 0; i < A2; i++) copy[i] = MEM_R8(A1 + i);
@@ -8856,7 +9173,11 @@ static uint32_t h_FontDoneLib(CpuState *s) {
 static uint32_t h_FontGetFontInfo(CpuState *s) {
     font_load();
     SrFont *f = NULL; const PGF *p = font_acquire(A0, &f);
-    if (!p || !A1) { font_release(f); return SR_FONT_ERROR_INVALID_ARG; }
+    /* FontInfo is 0x108 bytes; the whole output span must be guest memory before any write. */
+    if (!p || !A1 || !sr_guest_span_writable(A1, 0x108u)) {
+        font_release(f);
+        return SR_FONT_ERROR_INVALID_ARG;
+    }
     font_write_info(A1, p, f && f->has_registry_info ? &f->registry_info : NULL,
                     f ? (f->ownedPgf != NULL) : 1);
     font_release(f);
@@ -8874,105 +9195,15 @@ uint32_t sr_font_test_info_for_index(uint32_t index, uint32_t info_addr) {
 }
 #endif
 uint32_t h_FontGetCharInfo(CpuState *s) {
-    uint32_t ci = A2; if (!ci) return SR_FONT_ERROR_INVALID_ARG;
+    /* CharInfo is 0x3c bytes; the whole output span must be guest memory before any write. */
+    uint32_t ci = A2; if (!ci || !sr_guest_span_writable(ci, 0x3cu)) return SR_FONT_ERROR_INVALID_ARG;
     uint32_t cc = A1 & 0xffff;
     SrFont *f = NULL; const PGF *p = font_pgf_for(A0, (int)cc, &f);
     if (p) { pgf_get_char_info(p, (int)cc, 0x5f, ci); font_release(f); return 0; }
     font_release(f);
     return SR_FONT_ERROR_INVALID_ARG;
-#if 0 /* Retired synthetic metrics fallback. */
-    for (int i = 0; i < 0x3c; i++) MEM_W8(ci + (uint32_t)i, 0);
-    int draw = (cc > 32);                      /* space and controls: empty */
-    MEM_W32(ci + 0, draw ? 8 : 0);             /* bitmapWidth */
-    MEM_W32(ci + 4, draw ? 11 : 0);            /* bitmapHeight */
-    MEM_W32(ci + 8, 0);                        /* bitmapLeft */
-    MEM_W32(ci + 12, 0);                       /* bitmapTop */
-    MEM_W32(ci + 16, 8 << 6);                  /* sfp26Width */
-    MEM_W32(ci + 20, 11 << 6);                 /* sfp26Height */
-    MEM_W32(ci + 24, 0);                       /* ascender */
-    MEM_W32(ci + 28, (uint32_t)(-(11 << 6)));  /* descender */
-    MEM_W32(ci + 32, 0);                       /* bearingHX */
-    MEM_W32(ci + 36, 0);                       /* bearingHY */
-    MEM_W32(ci + 48, 8 << 6);                  /* sfp26AdvanceH */
-    MEM_W32(ci + 52, 12 << 6);                 /* sfp26AdvanceV */
-    return 0;
-#endif
 }
 
-#if 0 /* Retired synthetic bitmap font. */
-static const uint8_t *font5x7(uint32_t cc) {
-    if (cc >= 'a' && cc <= 'z') cc -= 32;
-    switch (cc) {
-        case 'A': { static const uint8_t r[7] = {14,17,17,31,17,17,17}; return r; }
-        case 'B': { static const uint8_t r[7] = {30,17,17,30,17,17,30}; return r; }
-        case 'C': { static const uint8_t r[7] = {14,17,16,16,16,17,14}; return r; }
-        case 'D': { static const uint8_t r[7] = {30,17,17,17,17,17,30}; return r; }
-        case 'E': { static const uint8_t r[7] = {31,16,16,30,16,16,31}; return r; }
-        case 'F': { static const uint8_t r[7] = {31,16,16,30,16,16,16}; return r; }
-        case 'G': { static const uint8_t r[7] = {14,17,16,23,17,17,15}; return r; }
-        case 'H': { static const uint8_t r[7] = {17,17,17,31,17,17,17}; return r; }
-        case 'I': { static const uint8_t r[7] = {14,4,4,4,4,4,14}; return r; }
-        case 'J': { static const uint8_t r[7] = {7,2,2,2,18,18,12}; return r; }
-        case 'K': { static const uint8_t r[7] = {17,18,20,24,20,18,17}; return r; }
-        case 'L': { static const uint8_t r[7] = {16,16,16,16,16,16,31}; return r; }
-        case 'M': { static const uint8_t r[7] = {17,27,21,21,17,17,17}; return r; }
-        case 'N': { static const uint8_t r[7] = {17,25,21,19,17,17,17}; return r; }
-        case 'O': { static const uint8_t r[7] = {14,17,17,17,17,17,14}; return r; }
-        case 'P': { static const uint8_t r[7] = {30,17,17,30,16,16,16}; return r; }
-        case 'Q': { static const uint8_t r[7] = {14,17,17,17,21,18,13}; return r; }
-        case 'R': { static const uint8_t r[7] = {30,17,17,30,20,18,17}; return r; }
-        case 'S': { static const uint8_t r[7] = {15,16,16,14,1,1,30}; return r; }
-        case 'T': { static const uint8_t r[7] = {31,4,4,4,4,4,4}; return r; }
-        case 'U': { static const uint8_t r[7] = {17,17,17,17,17,17,14}; return r; }
-        case 'V': { static const uint8_t r[7] = {17,17,17,17,17,10,4}; return r; }
-        case 'W': { static const uint8_t r[7] = {17,17,17,21,21,21,10}; return r; }
-        case 'X': { static const uint8_t r[7] = {17,17,10,4,10,17,17}; return r; }
-        case 'Y': { static const uint8_t r[7] = {17,17,10,4,4,4,4}; return r; }
-        case 'Z': { static const uint8_t r[7] = {31,1,2,4,8,16,31}; return r; }
-        case '0': { static const uint8_t r[7] = {14,17,19,21,25,17,14}; return r; }
-        case '1': { static const uint8_t r[7] = {4,12,4,4,4,4,14}; return r; }
-        case '2': { static const uint8_t r[7] = {14,17,1,2,4,8,31}; return r; }
-        case '3': { static const uint8_t r[7] = {30,1,1,14,1,1,30}; return r; }
-        case '4': { static const uint8_t r[7] = {2,6,10,18,31,2,2}; return r; }
-        case '5': { static const uint8_t r[7] = {31,16,16,30,1,1,30}; return r; }
-        case '6': { static const uint8_t r[7] = {6,8,16,30,17,17,14}; return r; }
-        case '7': { static const uint8_t r[7] = {31,1,2,4,8,8,8}; return r; }
-        case '8': { static const uint8_t r[7] = {14,17,17,14,17,17,14}; return r; }
-        case '9': { static const uint8_t r[7] = {14,17,17,15,1,2,12}; return r; }
-        case '.': { static const uint8_t r[7] = {0,0,0,0,0,12,12}; return r; }
-        case ',': { static const uint8_t r[7] = {0,0,0,0,0,12,8}; return r; }
-        case ':': { static const uint8_t r[7] = {0,12,12,0,12,12,0}; return r; }
-        case '/': { static const uint8_t r[7] = {1,1,2,4,8,16,16}; return r; }
-        case '-': { static const uint8_t r[7] = {0,0,0,31,0,0,0}; return r; }
-        case '+': { static const uint8_t r[7] = {0,4,4,31,4,4,0}; return r; }
-        case '!': { static const uint8_t r[7] = {4,4,4,4,4,0,4}; return r; }
-        case '?': { static const uint8_t r[7] = {14,17,1,2,4,0,4}; return r; }
-        case '(' : { static const uint8_t r[7] = {2,4,8,8,8,4,2}; return r; }
-        case ')' : { static const uint8_t r[7] = {8,4,2,2,2,4,8}; return r; }
-        case '\'' : { static const uint8_t r[7] = {4,4,8,0,0,0,0}; return r; }
-        default: return NULL;
-    }
-}
-
-static void font_write_pixel(uint32_t base, uint32_t fmt, int bpl, int bufW, int bufH, int px, int py, uint8_t val) {
-    static const int pxBytes[5] = { 0, 0, 1, 3, 4 };
-    if (fmt > 4 || px < 0 || px >= bufW || py < 0 || py >= bufH) return;
-    int pb = pxBytes[fmt];
-    uint32_t a = base + (uint32_t)(py * bpl) + (uint32_t)(pb == 0 ? px / 2 : px * pb);
-    switch (fmt) {
-        case 0: case 1: {
-            uint8_t old = MEM_R8(a);
-            uint8_t pix = val >> 4;
-            if ((px & 1) != (int)fmt) MEM_W8(a, (uint8_t)((pix << 4) | (old & 0x0F)));
-            else MEM_W8(a, (uint8_t)((old & 0xF0) | pix));
-            break;
-        }
-        case 2: MEM_W8(a, val); break;
-        case 3: MEM_W8(a, val); MEM_W8(a + 1, val); MEM_W8(a + 2, val); break;
-        case 4: MEM_W32(a, (uint32_t)val | ((uint32_t)val << 8) | ((uint32_t)val << 16) | ((uint32_t)val << 24)); break;
-    }
-}
-#endif
 
 uint32_t h_FontGetCharGlyphImage(CpuState *s) {
     uint32_t cc = A1 & 0xffff, gi = A2;
@@ -8984,24 +9215,6 @@ uint32_t h_FontGetCharGlyphImage(CpuState *s) {
     }
     font_release(f);
     return SR_FONT_ERROR_INVALID_ARG;
-#if 0 /* Retired synthetic glyph fallback. */
-    uint32_t fmt = MEM_R32(gi + 0);
-    int x = (int)MEM_R32(gi + 4) >> 6, y = (int)MEM_R32(gi + 8) >> 6;
-    int bufW = (int)(MEM_R16(gi + 12)), bufH = (int)(MEM_R16(gi + 14));
-    int bpl = (int)(MEM_R16(gi + 16));
-    uint32_t base = MEM_R32(gi + 20);
-    if (getenv("SR_FONTLOG")) { static int n = 0; if (n++ < 12)
-        fprintf(stderr, "glyph cc=0x%04x fmt=%u xy=(%d,%d) buf=0x%08x %dx%d bpl=%d\n", cc, fmt, x, y, base, bufW, bufH, bpl); }
-    const uint8_t *rows = font5x7(cc);
-    if (!rows && getenv("SR_FONTLOG")) { static unsigned char seen[65536]; if (!seen[cc]) { seen[cc] = 1;
-        fprintf(stderr, "MISSING glyph cc=0x%04x '%c'\n", cc, (cc >= 32 && cc < 127) ? (char)cc : '?'); } }
-    for (int yy = 0; yy < 11; yy++) for (int xx = 0; xx < 8; xx++) {
-        int gx = xx - 1, gy = yy - 2;
-        int on = rows && gx >= 0 && gx < 5 && gy >= 0 && gy < 7 && (rows[gy] & (1u << (4 - gx)));
-        font_write_pixel(base, fmt, bpl, bufW, bufH, x + xx, y + yy, on ? 0xFF : 0x00);
-    }
-    return 0;
-#endif
 }
 
 /* Some libfont revisions expose an internal glyph-table-id entry point even though the public
@@ -9023,8 +9236,12 @@ static uint32_t h_FontFindOptimumFont(CpuState *s) {
  * These thin wrappers marshal MIPS args to the ported mpeg_* functions. The port implements the
  * real PSMF analysis, ring-buffer accounting, handle/context creation, stream registration, and
  * AU getters with timestamp progression + end-of-stream, so the movie playback loop runs and
- * completes exactly as on PPSSPP. The SDL3 build decodes AVC video through Windows Media
- * Foundation (h264_mf.c); ATRAC movie audio is still modelled as silence. */
+ * completes exactly as on PPSSPP. AVC video goes through the backend-neutral decoder seam
+ * (sr_h264.h): the project-authored PSMF producer forms the access units, and the registry in
+ * h264_null.c picks the build's decoder, Media Foundation (h264_mf.c) on Windows or the vendored
+ * FFmpeg H.264 subset (h264_ffmpeg.c, the H264_FFMPEG=1 default elsewhere). A build with
+ * neither fails closed. Nothing here depends on which backend decodes. sceMpegAtracDecode
+ * still decodes no audio samples; it only advances the audio clock. */
 uint32_t mpeg_init(void);
 uint32_t mpeg_finish(void);
 uint32_t mpeg_query_mem_size(uint32_t outAddr);
@@ -9215,6 +9432,9 @@ static uint32_t h_MpegAvcDecodeFlush(CpuState *s) {
 #define ATRAC3_SAMPLES_PER_FRAME 1024
 #define ATRAC_CODEC_AT3PLUS 0x1000u
 #define ATRAC_CODEC_AT3 0x1001u
+/* Measured on a PSP-3000 (#1096): the first sceAtracDecodeData of an AT3 stream
+ * whose fact delay is 500 returns this code with 0 samples. */
+#define ATRAC_ERROR_API_FAIL 0x80630002u
 #define ATRAC_ERROR_NO_ATRACID 0x80630003u
 #define ATRAC_ERROR_INVALID_CODECTYPE 0x80630004u
 #define ATRAC_ERROR_BAD_ATRACID 0x80630005u
@@ -9225,6 +9445,9 @@ static uint32_t h_MpegAvcDecodeFlush(CpuState *s) {
 #define ATRAC_ERROR_ADD_DATA_IS_TOO_BIG 0x80630018u
 #define ATRAC_ERROR_NO_LOOP_INFORMATION 0x80630021u
 #define ATRAC_ERROR_ALLDATA_DECODED 0x80630022u
+/* Measured on a PSP-3000 (#1096): sceAtracDecodeData of a streamed AT3 track
+ * after its last buffered frame, with file data still to stream. */
+#define ATRAC_ERROR_BUFFER_IS_EMPTY 0x80630023u
 #define ATRAC_ERROR_DECODE_DATA_AFTER_END 0x80630024u
 #define ATRAC_PSP_ALLDATA_IS_ON_MEMORY 0xFFFFFFFFu
 #define ATRAC_PSP_NONLOOP_STREAM_IS_ON_MEMORY 0xFFFFFFFEu
@@ -9250,8 +9473,9 @@ typedef struct {
     uint32_t avgBytesPerSec;      /* RIFF fmt nAvgBytesPerSec (bitrate source) */
     uint16_t formatTag;           /* RIFF fmt wFormatTag */
     uint8_t at3Extradata[14];     /* validated AT3 WAVEFORMATEX extension */
-    int at3FactDelayPresent;      /* RIFF fact delay exists; trim is NOT_MEASURED */
-    int at3FirstFrameDelayNotMeasured;
+    uint32_t at3FactSize;         /* RIFF fact chunk size (8 or 12) */
+    uint32_t at3FactDelay;        /* fact word after the sample count */
+    int at3FirstFramePending;     /* no frame decoded since SetData */
     int endSample, posSample, loopNum;
     int loopStartSample, loopEndSample;   /* 'smpl' loop points; -1 when absent */
     uint32_t bufferPos;           /* ring offset of the next frame to consume */
@@ -9388,7 +9612,7 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
     uint16_t formatTag = 0;
     uint8_t at3Extradata[14] = {0};
     int hasFmt = 0;
-    int at3FactDelayPresent = 0;
+    uint32_t at3FactSize = 0, at3FactDelay = 0;
     int endSample = 0;
     int loopStartSample = -1, loopEndSample = -1;
     for (uint32_t off = 12u; off <= scan_end - 8u;) {
@@ -9407,7 +9631,8 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
             if (sz < 4u || sz > avail) return 0;
             if (a->codecType == ATRAC_CODEC_AT3) {
                 if (sz != 8u && sz != 12u) return 0;
-                at3FactDelayPresent = 1;
+                at3FactSize = sz;
+                at3FactDelay = MEM_R32(p + 12u);
             }
             uint32_t samples = MEM_R32(p + 8u);
             if (samples == 0u || samples > 0x7fffffffu) return 0;
@@ -9474,7 +9699,8 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
     a->channels = channels;
     a->formatTag = formatTag;
     memcpy(a->at3Extradata, at3Extradata, sizeof(a->at3Extradata));
-    a->at3FactDelayPresent = at3FactDelayPresent;
+    a->at3FactSize = at3FactSize;
+    a->at3FactDelay = at3FactDelay;
     a->endSample = endSample;
     a->loopStartSample = loopStartSample;
     a->loopEndSample = loopEndSample;
@@ -9603,7 +9829,10 @@ static uint32_t atrac_remaining_frames(const Atrac *a) {
     if (remainingBytes < 0) remainingBytes = 0;
     return (uint32_t)remainingBytes / a->bytesPerFrame;
 }
-static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size) {
+/* Configure `a` from the first `size` bytes of a track held in a guest buffer
+ * of `bufSize` bytes (the ring or the whole-file buffer). sceAtracSetData passes
+ * size == bufSize; the halfway calls pass the filled prefix separately. */
+static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t bufSize) {
     /* Transactional: a rejected buffer leaves the previously configured
      * context untouched. */
     uint32_t oldBuf = a->buf;
@@ -9642,14 +9871,14 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size) {
     }
     (void)atrac_reset_decoder(a);
     a->decodeFailureReported = 0;
-    a->at3FirstFrameDelayNotMeasured = 0;
+    a->at3FirstFramePending = 1;
     if (oldStreamWindow) free(oldStreamWindow);
     a->streamWindow = NULL;
     a->streamWindowSize = 0;
     a->streamWindowRead = 0;
     a->streamWindowWrite = 0;
     a->streamWindowQueued = 0;
-    a->bufferMaxSize = size;
+    a->bufferMaxSize = bufSize;
     if (a->size > a->fileSize) a->size = a->fileSize;
     if (a->bytesPerFrame == 0u || a->dataByteOffset == 0u) {
         /* No frame-size/ring contract in the fed prefix (e.g. a fact-only
@@ -9805,45 +10034,139 @@ static uint32_t h_AtracGetAtracID(CpuState *s) {
     }
     return ATRAC_ERROR_NO_ATRACID;
 }
-static uint32_t h_AtracSetDataAndGetID(CpuState *s) {
+/* The sceAtracSet*Data and sceAtracSet*HalfwayBuffer family (PSPSDK
+ * pspatrac3.h). A data call hands over a buffer whose bufSize bytes all hold
+ * the track's start; a halfway call hands over a bufSize-byte buffer of which
+ * only the first readSize bytes are filled, and the guest adds the rest
+ * through sceAtracGetStreamDataInfo and sceAtracAddStreamData. The calls that
+ * take an ID configure that context; the *AndGetID calls allocate one for the
+ * codec the RIFF fmt chunk names. The MOut calls ask for mono output, which
+ * the HLE models for mono tracks only. The validation order and the two
+ * refusal codes below are upstream-derived and unmeasured: they follow the
+ * public PPSSPP reference (GPL-2.0-or-later, Core/HLE/sceAtrac.cpp), not a
+ * PSP measurement, and stay so labelled until a probe pins them (#1096). */
+#define ATRAC_ERROR_INCORRECT_READ_SIZE 0x80630013u
+#define ATRAC_ERROR_NOT_MONO 0x80630019u
+/* Codec named by the fmt chunk of the RIFF prefix: tag 0x0270 is ATRAC3 and
+ * WAVE_FORMAT_EXTENSIBLE (0xFFFE) is ATRAC3+. 0 for any other tag, or when the
+ * prefix has no fmt chunk. */
+static uint32_t atrac_riff_codec(uint32_t buf, uint32_t size) {
+    if (size < 44u || !sr_guest_span_readable(buf, size) ||
+        MEM_R32(buf) != 0x46464952u /* 'RIFF' */ ||
+        MEM_R32(buf + 8u) != 0x45564157u /* 'WAVE' */)
+        return 0u;
+    uint32_t end = size < ATRAC_RIFF_SCAN_MAX ? size : ATRAC_RIFF_SCAN_MAX;
+    for (uint32_t off = 12u; off <= end - 10u;) {
+        uint32_t sz = MEM_R32(buf + off + 4u);
+        if (MEM_R32(buf + off) == 0x20746d66u /* 'fmt ' */) {
+            uint32_t tag = MEM_R16(buf + off + 8u);
+            return tag == 0x0270u ? ATRAC_CODEC_AT3
+                 : tag == 0xFFFEu ? ATRAC_CODEC_AT3PLUS : 0u;
+        }
+        uint64_t next = (uint64_t)off + 8u + sz + (sz & 1u);
+        if (next > end) break;
+        off = (uint32_t)next;
+    }
+    return 0u;
+}
+/* Channel count of the RIFF prefix as the codec `codec` parses it, without
+ * touching any context; -1 when the prefix does not parse. */
+static int atrac_riff_channels(uint32_t codec, uint32_t buf, uint32_t size) {
+    Atrac probe;
+    memset(&probe, 0, sizeof(probe));
+    probe.codecType = codec;
+    return atrac_parse_track(&probe, buf, size) ? probe.channels : -1;
+}
+static void atrac_log_setdata(const Atrac *a, const char *call) {
+    if (!atrac_log_on()) return;
+    fprintf(stderr, "ATRAC_SETDATA: %s id=%d buf=0x%08x size=%u bufSize=%u fileSize=%u frame=%u dataOff=%u endSample=%d state=%d\n",
+            call, (int)(a - s_atrac), a->buf, a->size, a->bufferMaxSize, a->fileSize,
+            a->bytesPerFrame, a->dataByteOffset, a->endSample, a->bufferState);
+}
+/* Shared body of the *AndGetID calls. */
+static uint32_t atrac_set_new(uint32_t buf, uint32_t readSize, uint32_t bufSize,
+                              int mono, const char *call) {
+    if (readSize > bufSize) return ATRAC_ERROR_INCORRECT_READ_SIZE;
+    if (bufSize > readSize && !sr_guest_span_readable(buf, bufSize))
+        return ATRAC_ERROR_SIZE_TOO_SMALL;
+    uint32_t codec = atrac_riff_codec(buf, readSize);
+    int channels = codec ? atrac_riff_channels(codec, buf, readSize) : -1;
+    if (channels < 0) return ATRAC_ERROR_UNKNOWN_FORMAT;
+    if (mono && channels != 1) return ATRAC_ERROR_NOT_MONO;
     int id = -1; for (int i = 0; i < 8; i++) if (!s_atrac[i].used) { id = i; break; }
     if (id < 0) return ATRAC_ERROR_NO_ATRACID;
     Atrac *a = &s_atrac[id];
     memset(a, 0, sizeof(*a));
-    a->used = 1; a->codecType = ATRAC_CODEC_AT3PLUS;
-    if (!atrac_set_track(a, A0, A1)) {
+    a->used = 1; a->codecType = codec;
+    if (!atrac_set_track(a, buf, readSize, bufSize)) {
         /* The ID was never handed out: do not leave a half-configured slot
          * behind that later calls could mistake for a valid context. */
         a->used = 0;
         return ATRAC_ERROR_UNKNOWN_FORMAT;
     }
     atrac_ensure_decoder(a);
-    if (atrac_log_on()) {
-        fprintf(stderr, "ATRAC_SETDATA: id=%d buf=0x%08x size=%u fileSize=%u frame=%u dataOff=%u endSample=%d state=%d\n",
-                id, a->buf, a->size, a->fileSize, a->bytesPerFrame, a->dataByteOffset, a->endSample, a->bufferState);
-        fprintf(stderr, "ATRAC_SETDATA_BYTES: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                MEM_R8(a->buf+0), MEM_R8(a->buf+1), MEM_R8(a->buf+2), MEM_R8(a->buf+3),
-                MEM_R8(a->buf+4), MEM_R8(a->buf+5), MEM_R8(a->buf+6), MEM_R8(a->buf+7),
-                MEM_R8(a->buf+8), MEM_R8(a->buf+9), MEM_R8(a->buf+10), MEM_R8(a->buf+11),
-                MEM_R8(a->buf+12), MEM_R8(a->buf+13), MEM_R8(a->buf+14), MEM_R8(a->buf+15));
+    if (a->codecType == ATRAC_CODEC_AT3 && !a->dec_at3) {
+        atrac_release_decoder(a);
+        atrac_stream_window_free(a);
+        a->used = 0;
+        return ATRAC_ERROR_UNKNOWN_FORMAT;
     }
+    atrac_log_setdata(a, call);
     return (uint32_t)id;
 }
 static Atrac *atrac_of(uint32_t id) { return id < 8 && s_atrac[id].used ? &s_atrac[id] : 0; }
-static uint32_t h_AtracSetData(CpuState *s) {
-    Atrac *a = atrac_of(A0);
+/* Shared body of the calls that configure an existing ID. A MOut call on a
+ * track that is not mono returns NOT_MONO; the public reference keeps the
+ * data in that case, but its stereo-to-mono output is not modelled here, so
+ * the HLE refuses before touching the context. */
+static uint32_t atrac_set_existing(uint32_t id, uint32_t buf, uint32_t readSize,
+                                   uint32_t bufSize, int mono, const char *call) {
+    Atrac *a = atrac_of(id);
     if (!a) return ATRAC_ERROR_BAD_ATRACID;
-    if (!A1 || A2 < 44u || !sr_guest_span_readable(A1, A2))
+    if (readSize > bufSize) return ATRAC_ERROR_INCORRECT_READ_SIZE;
+    if (!buf || readSize < 44u || !sr_guest_span_readable(buf, bufSize))
         return ATRAC_ERROR_SIZE_TOO_SMALL;
-    if (!atrac_set_track(a, A1, A2))
+    if (mono && atrac_riff_channels(a->codecType, buf, readSize) != 1)
+        return ATRAC_ERROR_NOT_MONO;
+    if (!atrac_set_track(a, buf, readSize, bufSize))
         return ATRAC_ERROR_UNKNOWN_FORMAT;
     atrac_ensure_decoder(a);
     if (a->codecType == ATRAC_CODEC_AT3 && !a->dec_at3)
         return ATRAC_ERROR_UNKNOWN_FORMAT;
-    if (atrac_log_on())
-        fprintf(stderr, "ATRAC_SETDATA_EXISTING: id=%u buf=0x%08x size=%u fileSize=%u frame=%u dataOff=%u endSample=%d state=%d\n",
-                A0, a->buf, a->size, a->fileSize, a->bytesPerFrame, a->dataByteOffset, a->endSample, a->bufferState);
+    atrac_log_setdata(a, call);
     return 0;
+}
+/* sceAtracSetDataAndGetID(buf, bufSize) */
+static uint32_t h_AtracSetDataAndGetID(CpuState *s) {
+    return atrac_set_new(A0, A1, A1, 0, "SetDataAndGetID");
+}
+/* sceAtracSetHalfwayBufferAndGetID(buf, readSize, bufSize) */
+static uint32_t h_AtracSetHalfwayBufferAndGetID(CpuState *s) {
+    return atrac_set_new(A0, A1, A2, 0, "SetHalfwayBufferAndGetID");
+}
+/* sceAtracSetMOutDataAndGetID(buf, bufSize) */
+static uint32_t h_AtracSetMOutDataAndGetID(CpuState *s) {
+    return atrac_set_new(A0, A1, A1, 1, "SetMOutDataAndGetID");
+}
+/* sceAtracSetMOutHalfwayBufferAndGetID(buf, readSize, bufSize) */
+static uint32_t h_AtracSetMOutHalfwayBufferAndGetID(CpuState *s) {
+    return atrac_set_new(A0, A1, A2, 1, "SetMOutHalfwayBufferAndGetID");
+}
+/* sceAtracSetData(id, buf, bufSize) */
+static uint32_t h_AtracSetData(CpuState *s) {
+    return atrac_set_existing(A0, A1, A2, A2, 0, "SetData");
+}
+/* sceAtracSetHalfwayBuffer(id, buf, readSize, bufSize) */
+static uint32_t h_AtracSetHalfwayBuffer(CpuState *s) {
+    return atrac_set_existing(A0, A1, A2, A3, 0, "SetHalfwayBuffer");
+}
+/* sceAtracSetMOutData(id, buf, bufSize) */
+static uint32_t h_AtracSetMOutData(CpuState *s) {
+    return atrac_set_existing(A0, A1, A2, A2, 1, "SetMOutData");
+}
+/* sceAtracSetMOutHalfwayBuffer(id, buf, readSize, bufSize) */
+static uint32_t h_AtracSetMOutHalfwayBuffer(CpuState *s) {
+    return atrac_set_existing(A0, A1, A2, A3, 1, "SetMOutHalfwayBuffer");
 }
 static uint32_t h_AtracReleaseAtracID(CpuState *s) {
     Atrac *a = atrac_of(A0);
@@ -9880,16 +10203,19 @@ int sr_hle_test_atrac_second_buffer(uint32_t id, uint32_t *addr, uint32_t *size)
     return 1;
 }
 #endif
-/* Decode the next frame through its codec-specific bridge into guest `out`. Returns
- *   1  frame decoded and written (channels*samplesPerFrame interleaved s16),
+/* Decode the next frame through its codec-specific bridge into guest `out`,
+ * dropping its first `skip` samples. *samples_out is the decoder frame length;
+ * (frame - skip) samples are written. Returns
+ *   1  frame decoded and written (channels*(samplesPerFrame-skip) interleaved s16),
  *   0  no frame available right now (streamed ring empty or frame not yet fed),
  *  -1  permanent failure (no decoder, or the frame failed to decode).
  * A -1 is a visible gap: the caller returns an error code instead of
  * fabricating PCM (no fake audio). */
-static int atrac_decode_frame(Atrac *a, uint32_t out, int *samples_out) {
+static int atrac_decode_frame(Atrac *a, uint32_t out, int skip, int *samples_out) {
     uint32_t src;
     int streamed = atrac_streamed_state(a);
     if (samples_out) *samples_out = 0;
+    if (skip < 0 || skip >= atrac_samples_per_frame(a)) return -1;
     if (a->bytesPerFrame == 0u) return 0;   /* ring not sized yet (streaming refill) */
     if (streamed) {
         if (a->bufferValidBytes < a->bytesPerFrame) return 0;
@@ -9933,18 +10259,20 @@ static int atrac_decode_frame(Atrac *a, uint32_t out, int *samples_out) {
         return -1;
     }
     /* Whole-span preflight before the bulk guest write (AGENTS.md guest-memory
-     * hardening): the complete channels*n*2 writable span must be valid, and a
-     * rejected output address must not leave partial PCM behind. */
-    if (out && !sr_guest_span_writable(out, (uint32_t)n * (uint32_t)a->channels * 2u))
+     * hardening): the complete channels*kept*2 writable span must be valid, and
+     * a rejected output address must not leave partial PCM behind. */
+    int kept = n - skip;
+    const int16_t *pcm = a->host_pcm + skip * a->channels;
+    if (out && !sr_guest_span_writable(out, (uint32_t)kept * (uint32_t)a->channels * 2u))
         return -1;
     /* host_pcm is already interleaved channels*n s16 (PR-A contract). */
     if (out)
-        for (int i = 0; i < n * a->channels; i++)
-            MEM_W16(out + (uint32_t)i * 2u, (uint16_t)a->host_pcm[i]);
+        for (int i = 0; i < kept * a->channels; i++)
+            MEM_W16(out + (uint32_t)i * 2u, (uint16_t)pcm[i]);
     if (audio_stat_on()) {
         int pk = 0;
-        for (int i = 0; i < n * a->channels; i++) {
-            int v = a->host_pcm[i];
+        for (int i = 0; i < kept * a->channels; i++) {
+            int v = pcm[i];
             if (v < 0) v = -v;
             if (v > pk) pk = v;
         }
@@ -9957,18 +10285,52 @@ static int atrac_decode_frame(Atrac *a, uint32_t out, int *samples_out) {
     return 1;
 }
 
-/* NOT_MEASURED: the PSP's trimming of the first decoded frame using the RIFF
- * fact-chunk delay has not been measured. Keep the complete decoder frame and
- * report this boundary once; do not infer or apply a delay value. */
-static int atrac3_first_frame_delay_trim_samples(Atrac *a) {
+/* First sceAtracDecodeData of a plain AT3 track against the delay word of an
+ * 8-byte RIFF fact chunk. MEASURED on a PSP-3000 (firmware 6.61) on 2026-10-24
+ * with one 2-channel, 304-byte-block stream launched once per delay, only the
+ * delay word changed (#1096; fixtures/psp_oracle/README.md `at3-decode`):
+ *   delay 0 and 1024 -> 955 samples; delay 955 -> 1024 samples; later calls
+ *   1024 each; delay 500 -> the first decode returns 0x80630002, 0 samples.
+ * Only these delays are modelled. Any other delay, or a 12-byte fact chunk,
+ * keeps the complete decoder frame and reports ATRAC3_NOT_MEASURED once. The
+ * PSP's sceAtracSetData refusal of delay 2048 (0x80630008) is measured but not
+ * modelled here. The sample counts are measured; which samples of the frame
+ * the PSP drops is not public evidence, and the leading ones are dropped
+ * (assumed). */
+static const struct {
+    uint32_t delay;
+    int first_samples;     /* samples returned by the first call; 0 = refused */
+    uint32_t error;        /* first-call return when refused */
+} k_atrac3_first_frame_measured[] = {
+    { 0u, 955, 0u },
+    { 955u, 1024, 0u },
+    { 1024u, 955, 0u },
+    { 500u, 0, ATRAC_ERROR_API_FAIL },
+};
+/* Returns the first-call error for a refused delay (0 otherwise) and sets
+ * *skip to the leading samples the first frame drops. */
+static uint32_t atrac3_first_frame_rule(const Atrac *a, int *skip) {
     static int reported;
-    if (a->codecType != ATRAC_CODEC_AT3 || !a->at3FactDelayPresent ||
-        a->at3FirstFrameDelayNotMeasured)
+    *skip = 0;
+    if (a->codecType != ATRAC_CODEC_AT3 || !a->at3FirstFramePending)
         return 0;
-    a->at3FirstFrameDelayNotMeasured = 1;
+    if (a->at3FactSize == 8u) {
+        for (size_t i = 0; i < sizeof(k_atrac3_first_frame_measured) /
+                                   sizeof(k_atrac3_first_frame_measured[0]); i++) {
+            if (k_atrac3_first_frame_measured[i].delay != a->at3FactDelay)
+                continue;
+            if (k_atrac3_first_frame_measured[i].error)
+                return k_atrac3_first_frame_measured[i].error;
+            *skip = ATRAC3_SAMPLES_PER_FRAME -
+                    k_atrac3_first_frame_measured[i].first_samples;
+            return 0;
+        }
+    }
     if (!reported) {
         fprintf(stderr,
-                "ATRAC3_NOT_MEASURED: first-frame RIFF fact-delay trimming is not applied pending PSP measurement.\n");
+                "ATRAC3_NOT_MEASURED: first-frame length for fact size %u delay %u is not measured; "
+                "the complete decoder frame is kept (#1096).\n",
+                a->at3FactSize, a->at3FactDelay);
         reported = 1;
     }
     return 0;
@@ -9986,9 +10348,17 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
         if (remAddr) MEM_W32(remAddr, atrac_remaining_frames(a));
         return ATRAC_ERROR_DECODE_DATA_AFTER_END;
     }
-    (void)atrac3_first_frame_delay_trim_samples(a);
+    int skip = 0;
+    uint32_t first_err = atrac3_first_frame_rule(a, &skip);
+    if (first_err) {
+        /* Measured: 0 samples. The other outputs are not recorded, and a
+         * repeated call (which refuses again here, nothing being consumed)
+         * was not measured. */
+        if (decAddr) MEM_W32(decAddr, 0u);
+        return first_err;
+    }
     int decoded_samples = 0;
-    int st = atrac_decode_frame(a, out, &decoded_samples);
+    int st = atrac_decode_frame(a, out, skip, &decoded_samples);
     if (st < 0) {
         /* Honest gap: this track cannot produce PCM in this build (unsupported
          * codec, decoder allocation failure, or a frame that failed to decode).
@@ -9999,10 +10369,27 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
         atrac_report_decode_failure(a);
         return ATRAC_ERROR_UNKNOWN_FORMAT;
     }
+    if (st == 0 && a->codecType == ATRAC_CODEC_AT3 &&
+        atrac_streamed_state(a) && a->size < a->fileSize) {
+        /* MEASURED on a PSP-3000 (#1096; fixtures/psp_oracle/README.md
+         * `at3-decode`): once the buffered frames of a streamed AT3 track are
+         * used up and file data remains to be added, DecodeData returns
+         * 0x80630023 with 0 samples and end flag 0. Nothing is consumed, so
+         * sceAtracAddStreamData resumes decoding. */
+        if (decAddr) MEM_W32(decAddr, 0u);
+        if (finAddr) MEM_W32(finAddr, 0u);
+        if (remAddr) MEM_W32(remAddr, atrac_remaining_frames(a));
+        return ATRAC_ERROR_BUFFER_IS_EMPTY;
+    }
     if (st > 0) {
-        n = decoded_samples;
+        /* The guest receives the kept samples. The stream position still
+         * advances by the whole decoder frame, as before this trim existed:
+         * the PSP's position after a shortened first call is NOT_MEASURED
+         * (#1096), so the frame-offset bookkeeping is left unchanged. */
+        n = decoded_samples - skip;
+        a->at3FirstFramePending = 0;
         if (atrac_streamed_state(a)) atrac_consume_frame(a);
-        a->posSample += n;
+        a->posSample += decoded_samples;
         if (atrac_streamed_state(a) && a->loopEndSample > 0 && a->posSample > a->loopEndSample) {
             a->posSample = a->loopStartSample >= 0 ? a->loopStartSample : 0;
             if (a->loopNum > 0) a->loopNum--;
@@ -10211,11 +10598,109 @@ static uint32_t h_AtracGetLoopStatus(CpuState *s) {
     return 0;
 }
 static uint32_t h_AtracSetLoopNum(CpuState *s) { Atrac *a = atrac_of(A0); if (a) a->loopNum = (int)A1; return 0; }
+/* sceAtracGetBufferInfoForResetting and sceAtracResetPlayPosition share one
+ * description of the refill that a reset to `sample` needs: one span of the
+ * 32-byte PSPSDK pspatrac3.h PspBufferInfo (write address, bytes the guest
+ * may write, bytes it must write, file offset of the first byte). */
+typedef struct {
+    uint32_t writePos, writable, minWrite, filePos;
+} AtracResetSpan;
+/* Error codes of the reset pair. They follow the public PPSSPP reference
+ * (Core/HLE/ErrorCodes.h) and are not measured on a PSP here (#1096). */
+#define ATRAC_ERROR_SECOND_BUFFER_NEEDED 0x80630012u
+#define ATRAC_ERROR_BAD_SAMPLE 0x80630015u
+#define ATRAC_ERROR_BAD_FIRST_RESET_SIZE 0x80630016u
+#define ATRAC_ERROR_BAD_SECOND_RESET_SIZE 0x80630017u
+/* The refill for a reset to `sample`, or the error both reset calls return.
+ * A streamed track is refilled from the ring start with the frame before the
+ * one that holds the sample, so the refill begins with a state-loading frame;
+ * the guest may write the frame-aligned ring capacity (at most the rest of
+ * the file) and must write two frames. A halfway buffer continues after its
+ * fed prefix up to the sample's frame. The reset never needs the second
+ * buffer. */
+static uint32_t atrac_reset_buffer_info(const Atrac *a, uint32_t sample,
+                                        AtracResetSpan *first,
+                                        AtracResetSpan *second) {
+    if (a->bufferState != ATRAC_STATE_ALL_DATA_LOADED &&
+        a->bufferState != ATRAC_STATE_HALFWAY_BUFFER && !atrac_streamed_state(a))
+        return ATRAC_ERROR_NO_DATA;
+    if (a->bufferState == ATRAC_STATE_STREAMED_LOOP_TRAILER && !a->secondBuf)
+        return ATRAC_ERROR_SECOND_BUFFER_NEEDED;
+    if (sample > (uint32_t)a->endSample)
+        return ATRAC_ERROR_BAD_SAMPLE;
+    uint32_t spf = (uint32_t)atrac_samples_per_frame(a);
+    first->writePos = a->buf;
+    first->writable = 0u;
+    first->minWrite = 0u;
+    first->filePos = 0u;
+    if (a->bufferState == ATRAC_STATE_HALFWAY_BUFFER) {
+        uint64_t needed = (uint64_t)a->dataByteOffset +
+                          (uint64_t)(sample / spf) * a->bytesPerFrame;
+        uint64_t missing = needed > a->size ? needed - a->size : 0u;
+        first->writePos = a->buf + a->size;
+        first->writable = a->fileSize > a->size ? a->fileSize - a->size : 0u;
+        first->minWrite = missing > 0xffffffffu ? 0xffffffffu : (uint32_t)missing;
+        first->filePos = a->size;
+    } else if (atrac_streamed_state(a)) {
+        uint64_t off = a->dataByteOffset;
+        if (sample >= spf)
+            off += (uint64_t)((sample - spf) / spf) * a->bytesPerFrame;
+        uint32_t fileOff = off > 0xffffffffu ? 0xffffffffu : (uint32_t)off;
+        uint32_t ringBytes = a->bufferMaxSize / a->bytesPerFrame * a->bytesPerFrame;
+        uint32_t rest = a->fileSize > fileOff ? a->fileSize - fileOff : 0u;
+        first->writable = rest < ringBytes ? rest : ringBytes;
+        first->minWrite = a->bytesPerFrame * 2u;
+        first->filePos = fileOff;
+    }
+    second->writePos = a->secondBuf ? a->secondBuf : a->buf;
+    second->writable = 0u;
+    second->minWrite = 0u;
+    second->filePos = 0u;
+    return 0;
+}
+/* sceAtracResetPlayPosition(id, sample, writtenFirstBuf, writtenSecondBuf).
+ * PSPSDK pspatrac3.h contract: the guest first asks
+ * sceAtracGetBufferInfoForResetting where to write, writes the file bytes from
+ * the reported file position to the reported write position, and then passes
+ * the byte counts it wrote here. The library continues from that refill, so a
+ * streamed context drops its old ring contents: the refill sits at the start
+ * of the buffer (no RIFF prefix), the file read position continues after it,
+ * and the decode cursor skips the refill's state-loading first frame exactly
+ * as sceAtracSetData does for sample 0. Keeping the old ring (#1291) made the
+ * next frames mix the stale ring with the guest's refill, which the decoder
+ * rejects. A halfway buffer gains the bytes written after its fed prefix.
+ * Counts outside what sceAtracGetBufferInfoForResetting offered are refused
+ * and leave the context unchanged. Whether the PSP decodes the state-loading
+ * frame to prime the decoder is not measured; like sceAtracSetData, the HLE
+ * skips it. */
 static uint32_t h_AtracResetPlayPosition(CpuState *s) {
     Atrac *a = atrac_of(A0);
-    if (!a) return 0;
-    a->posSample = (int)A1;
+    if (!a) return ATRAC_ERROR_BAD_ATRACID;
+    uint32_t sample = A1, wroteFirst = A2, wroteSecond = A3;
+    AtracResetSpan first, second;
+    uint32_t err = atrac_reset_buffer_info(a, sample, &first, &second);
+    if (err) return err;
+    if (wroteFirst < first.minWrite || wroteFirst > first.writable)
+        return ATRAC_ERROR_BAD_FIRST_RESET_SIZE;
+    if (wroteSecond < second.minWrite || wroteSecond > second.writable)
+        return ATRAC_ERROR_BAD_SECOND_RESET_SIZE;
+    if (atrac_streamed_state(a)) {
+        /* first.writable bounds the refill by the ring and the file end. */
+        a->size = first.filePos + wroteFirst;
+        a->bufferHeaderSize = 0;
+        a->bufferPos = a->bytesPerFrame;
+        a->bufferValidBytes = wroteFirst - a->bytesPerFrame;
+        (void)atrac_stream_window_init(a);
+        atrac_update_buffer_state(a);
+    } else if (a->bufferState == ATRAC_STATE_HALFWAY_BUFFER) {
+        a->size += wroteFirst;   /* first.writable is the rest of the file */
+        atrac_update_buffer_state(a);
+    }
+    a->posSample = (int)sample;
     (void)atrac_reset_decoder(a);
+    if (atrac_log_on())
+        fprintf(stderr, "ATRAC_RESET: id=%u sample=%u wrote=%u size=%u pos=%u avail=%u state=%d\n",
+                A0, sample, wroteFirst, a->size, a->bufferPos, a->bufferValidBytes, a->bufferState);
     return 0;
 }
 
@@ -10248,60 +10733,21 @@ static uint32_t h_AtracGetSecondBufferInfo(CpuState *s) {
  * obtains the buffer information required to seek to a sample position before
  * sceAtracResetPlayPosition. Public behaviour reference: PSPSDK pspatrac3.h
  * (PspBufferInfo, 32 bytes) and PPSSPP Core/HLE/sceAtrac.cpp.
- * Fills the 8-word PspBufferInfo describing the first and second buffer spans. */
+ * Fills the 8-word PspBufferInfo describing the first and second buffer spans;
+ * h_AtracResetPlayPosition accepts exactly the refill reported here. */
 static uint32_t h_AtracGetBufferInfoForResetting(CpuState *s) {
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     if (!A2 || !sr_guest_span_writable(A2, 32u)) return 0x80000103u; /* ILLEGAL_ADDR */
-    if (a->bufferState == ATRAC_STATE_STREAMED_LOOP_TRAILER && !a->secondBuf)
-        return 0x80630012u; /* SECOND_BUFFER_NEEDED */
-    if (a->endSample >= 0 && (int)A1 > a->endSample)
-        return 0x80630015u; /* BAD_SAMPLE */
-
-    uint32_t writePos1 = a->buf;
-    uint32_t writable1 = 0u;
-    uint32_t minWrite1 = 0u;
-    uint32_t filePos1 = 0u;
-
-    if (a->bufferState == ATRAC_STATE_ALL_DATA_LOADED) {
-        writePos1 = a->buf;
-        writable1 = 0u;
-        minWrite1 = 0u;
-        filePos1 = 0u;
-    } else if (a->bufferState == ATRAC_STATE_HALFWAY_BUFFER) {
-        writePos1 = a->buf + a->size;
-        writable1 = (a->fileSize > a->size) ? (a->fileSize - a->size) : 0u;
-        uint32_t needed = a->dataByteOffset;
-        if (a->bytesPerFrame > 0)
-            needed += (A1 / (uint32_t)atrac_samples_per_frame(a)) * a->bytesPerFrame;
-        minWrite1 = (needed > a->size) ? (needed - a->size) : 0u;
-        filePos1 = a->size;
-    } else {
-        /* Streamed mode */
-        uint32_t sampleFileOffset = a->dataByteOffset;
-        uint32_t samplesPerFrame = (uint32_t)atrac_samples_per_frame(a);
-        if (a->bytesPerFrame > 0 && A1 >= samplesPerFrame) {
-            sampleFileOffset += ((A1 - samplesPerFrame) / samplesPerFrame) * a->bytesPerFrame;
-        }
-        uint32_t bSize = a->bytesPerFrame > 0 ? (a->bufferMaxSize / a->bytesPerFrame * a->bytesPerFrame) : a->bufferMaxSize;
-        writePos1 = a->buf;
-        writable1 = (a->fileSize > sampleFileOffset) ? (a->fileSize - sampleFileOffset) : 0u;
-        if (writable1 > bSize) writable1 = bSize;
-        minWrite1 = a->bytesPerFrame > 0 ? a->bytesPerFrame * 2u : 0u;
-        filePos1 = sampleFileOffset;
+    AtracResetSpan first, second;
+    uint32_t err = atrac_reset_buffer_info(a, A1, &first, &second);
+    if (err) return err;
+    const AtracResetSpan *spans[2] = { &first, &second };
+    for (uint32_t i = 0; i < 2u; i++) {
+        MEM_W32(A2 + i * 16u + 0u, spans[i]->writePos);
+        MEM_W32(A2 + i * 16u + 4u, spans[i]->writable);
+        MEM_W32(A2 + i * 16u + 8u, spans[i]->minWrite);
+        MEM_W32(A2 + i * 16u + 12u, spans[i]->filePos);
     }
-
-    /* First buffer info */
-    MEM_W32(A2 + 0u, writePos1);
-    MEM_W32(A2 + 4u, writable1);
-    MEM_W32(A2 + 8u, minWrite1);
-    MEM_W32(A2 + 12u, filePos1);
-
-    /* Second buffer info: reset never needs a second buffer write */
-    MEM_W32(A2 + 16u, a->secondBuf ? a->secondBuf : a->buf);
-    MEM_W32(A2 + 20u, 0u);
-    MEM_W32(A2 + 24u, 0u);
-    MEM_W32(A2 + 28u, 0u);
-
     return 0;
 }
 
@@ -10804,13 +11250,26 @@ void sr_hle_test_set_compiled_sdk_version(uint32_t version) {
 }
 #endif
 
-/* sceUtility dialogs (savedata/msg). The public contract is a poll-driven status machine:
+/* sceUtility dialogs (savedata/msg). The public contract is a status machine the game polls:
  * InitStart arms it, Update refreshes it, GetStatus reports where it is and ShutdownStart
- * removes it, and result is the common-header field at param+0x1c. A game that polls is
- * entitled to see every step on the way, so the status only ever advances one step per
- * GetStatus call: an earlier guess jumped straight to RUNNING and to NONE, skipping steps a
- * game that waits to observe them would hang on. The OSK is a separate utility with its own
- * state enum and is handled with the rest of it below. */
+ * removes it, and result is the common-header field at param+0x1c. Each transition belongs
+ * to the call or event that drives it on a PSP (#1386), from the PSPAutotests hardware
+ * captures (hrydgard/pspautotests e2d098fc, tests/utility/savedata/{initstatus,noupdate,
+ * shutdownstatus}.expected and tests/utility/dialog/{status,priority}.expected):
+ *  - INIT -> RUNNING is the dialog's own start-up. Every caller priority from 16 to 111 sees
+ *    INIT on the GetStatus right after InitStart, and RUNNING follows with no Update call.
+ *    Update does not move it: a message Update during INIT returns INVALID_STATUS, and
+ *    savedata's (unmeasured) fails closed the same way. How long INIT lasts is unmeasured, so
+ *    here start-up completes once a GetStatus has reported INIT.
+ *  - RUNNING -> FINISHED needs Update: a savedata dialog polled for two seconds without one
+ *    stays RUNNING. The first Update does the work; FINISHED comes after the work and two more
+ *    Updates, a count no capture measures.
+ *  - SHUTDOWN -> NONE is the shutdown's own completion. A message dialog shows SHUTDOWN to
+ *    every caller priority measured; a savedata shutdown ends at priority 0x20, so a caller
+ *    at 0x20 sees SHUTDOWN and a worse one sees NONE at once (h_DlgShutdown). When NONE
+ *    follows a reported SHUTDOWN is unmeasured: here on the next GetStatus.
+ * The OSK is a separate utility with its own state enum and is handled with the rest of it
+ * below. */
 static int guest_cstr(uint32_t addr, char *out, int max);
 
 /* sceUtilitySavedata: real persistence on a virtual memory stick (src/rt/savedata.c). */
@@ -10826,6 +11285,39 @@ static void dialog_unlock(void) {
     atomic_flag_clear_explicit(&s_dialog_lock, memory_order_release);
 }
 
+/* One utility dialog slot (#1386). Savedata, message, netconf, gamedata-install, game-sharing
+ * and the OSK share it: only one utility dialog runs at a time. InitStart takes the slot only
+ * while the dialog holding it is back at NONE, and the type that took it keeps it after it
+ * winds down, so that type's own GetStatus then reports NONE (0) rather than WRONG_TYPE: a
+ * game spinning "while (sceUtilityOskGetStatus() != 0)" after name entry would otherwise wait
+ * forever. A call for any other type returns WRONG_TYPE (0x80110005), the OSK's PSP-measured
+ * result with no keyboard (#363), which the #1386 contract applies to every dialog. An
+ * InitStart while the holder is still active returns INVALID_STATUS (0x80110001) and changes
+ * nothing: the code the #1386 contract names, and the OSK's measured code for a call in the
+ * wrong state. What a PSP returns for a second InitStart is unmeasured, so the slot fails
+ * closed rather than let a new dialog replace one that is still running. */
+#define SCE_ERROR_UTILITY_INVALID_STATUS 0x80110001u
+#define SCE_ERROR_UTILITY_WRONG_TYPE     0x80110005u
+enum {
+    UTILITY_SLOT_NONE = 0, UTILITY_SLOT_SAVEDATA, UTILITY_SLOT_MSG, UTILITY_SLOT_NETCONF,
+    UTILITY_SLOT_GAMEDATA, UTILITY_SLOT_GAMESHARING, UTILITY_SLOT_OSK
+};
+/* The type that last took the slot. Written under dialog_lock, and only by guest syscalls and
+ * the guest resets, so a handler on the guest thread may read it directly. */
+static int s_utility_slot = UTILITY_SLOT_NONE;
+static int utility_slot_active_locked(void);    /* fwd: asks the holder's own state machine */
+/* Take the slot for `type`, or refuse while its holder is active. Caller holds dialog_lock. */
+static uint32_t utility_slot_claim_locked(int type) {
+    if (utility_slot_active_locked()) {
+        if (getenv("SR_DLGLOG"))
+            fprintf(stderr, "utility InitStart (type %d) refused: type %d holds the active slot\n",
+                    type, s_utility_slot);
+        return SCE_ERROR_UTILITY_INVALID_STATUS;
+    }
+    s_utility_slot = type;
+    return 0;
+}
+
 static int s_dlg_status = 0, s_dlg_tick = 0;
 static uint32_t s_dlg_param = 0, s_dlg_result = 0, s_dlg_generation = 0;
 static unsigned s_dlg_work_started, s_dlg_work_done;
@@ -10835,14 +11327,17 @@ int sr_savedata_pause_busy(void) {
     dialog_unlock();
     return busy;
 }
-static int s_osk_current_clear(void);   /* fwd: savedata/msg dialogs take the slot from the OSK */
 static uint32_t h_SavedataInitStart(CpuState *s) {
     if (!A0 || !sr_guest_span_readable(A0, 0x600u) || !sr_guest_span_writable(A0, 0x600u)) return 0x80110004u;
     dialog_lock();
+    const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_SAVEDATA);
+    if (claim) {
+        dialog_unlock();
+        return claim;
+    }
     s_dlg_param = A0; s_dlg_status = 1; s_dlg_tick = 0;
     s_dlg_work_started = s_dlg_work_done = 0;
     s_dlg_generation++;
-    s_osk_current_clear();
     s_dlg_result = 0;
     MEM_W32(A0 + 0x1c, 0);
     dialog_unlock();
@@ -10859,10 +11354,14 @@ static uint32_t h_SavedataInitStart(CpuState *s) {
 static uint32_t h_DlgGetStatus(CpuState *s) {
     (void)s;
     dialog_lock();
+    if (s_utility_slot != UTILITY_SLOT_SAVEDATA) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
     int ret = s_dlg_status;
-    if (s_dlg_status == 1) {                              /* INITIALIZE -> RUNNING */
+    if (s_dlg_status == 1) {              /* INIT reported: start-up completes, RUNNING */
         s_dlg_status = 2; s_dlg_tick = 0;
-    } else if (s_dlg_status == 4) {                       /* SHUTDOWN -> NONE */
+    } else if (s_dlg_status == 4) {       /* SHUTDOWN reported: the shutdown completes, NONE */
         s_dlg_status = 0;
     }
     if (getenv("SR_DLGLOG")) {                            /* log transitions only (unbounded) */
@@ -10879,9 +11378,13 @@ static uint32_t h_SavedataUpdate(CpuState *s) {
     (void)s;
     uint32_t param = 0, generation = 0;
     dialog_lock();
-    if (s_dlg_status == 1) {
-        s_dlg_status = 2;
-        s_dlg_tick = 0;
+    if (s_utility_slot != UTILITY_SLOT_SAVEDATA) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
+    if (s_dlg_status == 1) {      /* still starting up: Update does not move INIT (#1386) */
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_INVALID_STATUS;
     }
     if (s_dlg_status == 2 && !s_dlg_work_started) {
         s_dlg_work_started = 1;
@@ -10905,18 +11408,39 @@ static uint32_t h_SavedataUpdate(CpuState *s) {
     }
     return 0;
 }
+/* A savedata shutdown ends on a priority-0x20 thread, whatever the dialog's own thread
+ * priorities (PSPAutotests tests/utility/savedata/shutdownstatus.expected, SIZES on a save
+ * that exists and on one that does not): a caller at 0x20 keeps the CPU, so its next GetStatus
+ * reports SHUTDOWN and a later one NONE, while a caller at 0x21-0x24 or 0x6F is preempted until
+ * the shutdown is over and sees only NONE. Such a caller can therefore start the next dialog
+ * straight after ShutdownStart. A caller better than 0x20 is unmeasured and sees SHUTDOWN, as
+ * one at 0x20 does. Only a shutdown from FINISHED is measured; ShutdownStart during INIT or
+ * RUNNING keeps the reported SHUTDOWN. */
+#define UTILITY_SAVEDATA_SHUTDOWN_PRIORITY 0x20
 static uint32_t h_DlgShutdown(CpuState *s) {
     (void)s;
+    const int caller_priority = sched_current_priority();
     dialog_lock();
-    s_dlg_status = 4;
+    if (s_utility_slot != UTILITY_SLOT_SAVEDATA) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
+    if (s_dlg_status == 3 && caller_priority > UTILITY_SAVEDATA_SHUTDOWN_PRIORITY)
+        s_dlg_status = 0;                /* the shutdown ran before the caller got the CPU back */
+    else if (s_dlg_status)
+        s_dlg_status = 4;                /* NONE stays NONE: a stray call cannot re-arm the slot */
     dialog_unlock();
     if (getenv("SR_DLGLOG")) fprintf(stderr, "DlgShutdownStart\n");
     return 0;
 }
 
-/* Lightweight utility services used during setup. Each service owns an independent state
- * machine so polling netconf cannot consume a message/gamedata transition. Init captures the
- * common parameter block and completes it successfully; Update advances RUNNING->FINISHED. */
+/* Lightweight utility services used during setup. Each service keeps its own state machine,
+ * and the one slot above decides which of them a call reaches, so polling netconf cannot
+ * consume a message/gamedata transition. Init captures the common parameter block and
+ * completes it successfully; Update advances RUNNING->FINISHED. Update during INIT returns
+ * INVALID_STATUS and changes nothing: measured for the message dialog (PSPAutotests
+ * tests/utility/dialog/status.expected) and the OSK (#363), unmeasured for netconf,
+ * gamedata-install and game-sharing, which fail closed the same way. */
 typedef struct UtilityDialog {
     uint32_t param;
     uint32_t result;
@@ -10927,22 +11451,52 @@ typedef struct UtilityDialog {
     unsigned work_started : 1;
     unsigned work_done : 1;
 } UtilityDialog;
-enum { UTILITY_MSG = 0, UTILITY_NETCONF, UTILITY_GAMEDATA, UTILITY_GAMESHARING };
+enum {  /* a dialog's kind is the slot type it claims */
+    UTILITY_MSG = UTILITY_SLOT_MSG, UTILITY_NETCONF = UTILITY_SLOT_NETCONF,
+    UTILITY_GAMEDATA = UTILITY_SLOT_GAMEDATA, UTILITY_GAMESHARING = UTILITY_SLOT_GAMESHARING
+};
 static UtilityDialog s_msg_dialog = {.kind = UTILITY_MSG};
 static UtilityDialog s_net_dialog = {.kind = UTILITY_NETCONF};
 static UtilityDialog s_gamedata_dialog = {.kind = UTILITY_GAMEDATA};
 static UtilityDialog s_sharing_dialog = {.kind = UTILITY_GAMESHARING};
 
+/* Forget every dialog and free the slot. A new generation drops a result whose work is still
+ * running outside the lock. Caller holds dialog_lock. */
+static void utility_dialogs_reset_locked(void) {
+    UtilityDialog *const dialogs[] = { &s_msg_dialog, &s_net_dialog, &s_gamedata_dialog,
+                                       &s_sharing_dialog };
+    s_dlg_status = 0;
+    s_dlg_tick = 0;
+    s_dlg_param = 0u;
+    s_dlg_result = 0u;
+    s_dlg_work_started = s_dlg_work_done = 0u;
+    s_dlg_generation++;
+    for (size_t i = 0; i < sizeof(dialogs) / sizeof(dialogs[0]); i++) {
+        UtilityDialog *d = dialogs[i];
+        d->param = 0u;
+        d->result = 0u;
+        d->generation++;
+        d->status = 0;
+        d->ticks = 0u;
+        d->work_started = d->work_done = 0u;
+    }
+    s_utility_slot = UTILITY_SLOT_NONE;
+}
+
 static uint32_t utility_dialog_init(UtilityDialog *d, uint32_t param) {
     if (!param) return 0x80110004u; /* SCE_ERROR_UTILITY_INVALID_PARAM */
     dialog_lock();
+    const uint32_t claim = utility_slot_claim_locked((int)d->kind);
+    if (claim) {
+        dialog_unlock();
+        return claim;
+    }
     d->param = param;
     d->result = 0;
     d->generation++;
     d->status = 1;
     d->ticks = 0;
     d->work_started = d->work_done = 0;
-    s_osk_current_clear();
     MEM_W32(param + 0x1c, 0);
     dialog_unlock();
     return 0;
@@ -10951,7 +11505,14 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
     uint32_t param = 0, generation = 0, result = 0;
     unsigned kind = 0;
     dialog_lock();
-    if (d->status == 1) { d->status = 2; d->ticks = 0; }
+    if (s_utility_slot != (int)d->kind) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
+    if (d->status == 1) {  /* still starting up: Update does not move INIT (#1386) */
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_INVALID_STATUS;
+    }
     if (d->status == 2 && !d->work_started) {
         d->work_started = 1;
         param = d->param;
@@ -10981,6 +11542,10 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
 }
 static uint32_t utility_dialog_status(UtilityDialog *d) {
     dialog_lock();
+    if (s_utility_slot != (int)d->kind) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
     uint32_t ret = (uint32_t)d->status;
     if (d->status == 1) {
         d->status = 2;
@@ -10996,6 +11561,10 @@ static uint32_t utility_dialog_status(UtilityDialog *d) {
 }
 static uint32_t utility_dialog_shutdown(UtilityDialog *d) {
     dialog_lock();
+    if (s_utility_slot != (int)d->kind) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_WRONG_TYPE;
+    }
     if (d->status) d->status = 4;
     dialog_unlock();
     return 0;
@@ -11045,23 +11614,26 @@ static int s_osk_status = OSK_NONE;
 static uint32_t s_osk_param = 0;
 static int s_osk_field = 0;           /* the next field to answer */
 static int s_osk_request_open = 0;    /* a person's answer to that field is pending */
-/* A keyboard keeps the dialog slot after it shuts down, so GetStatus reports NONE(0)
- * rather than SCE_ERROR_UTILITY_WRONG_TYPE (0x80110005) once one has run: a game spinning
- * "while (sceUtilityOskGetStatus() != 0)" after name entry waits on 0 forever otherwise. */
-static int s_osk_current = 0;
+/* The slot's holder is active from its InitStart until it is back at NONE: once its own
+ * GetStatus has reported the way back, or at once for a savedata ShutdownStart from a caller
+ * worse than 0x20 (h_DlgShutdown). Only then may another InitStart take the slot. Caller holds
+ * dialog_lock. */
+static int utility_slot_active_locked(void) {
+    switch (s_utility_slot) {
+    case UTILITY_SLOT_SAVEDATA:    return s_dlg_status != 0;
+    case UTILITY_SLOT_MSG:         return s_msg_dialog.status != 0;
+    case UTILITY_SLOT_NETCONF:     return s_net_dialog.status != 0;
+    case UTILITY_SLOT_GAMEDATA:    return s_gamedata_dialog.status != 0;
+    case UTILITY_SLOT_GAMESHARING: return s_sharing_dialog.status != 0;
+    case UTILITY_SLOT_OSK:         return s_osk_status != OSK_NONE;
+    default:                       return 0;
+    }
+}
 static int hle_loadexec_dialog_busy(void) {
     dialog_lock();
-    int busy = s_dlg_status != 0;
+    int busy = s_dlg_status != 0 || s_utility_slot == UTILITY_SLOT_OSK;
     dialog_unlock();
-    return busy || s_osk_status != OSK_NONE || s_osk_current != 0;
-}
-static void osk_abandon_request(void);  /* fwd: defined with the keyboard's field collection */
-/* Another utility dialog takes the slot: the keyboard is no longer polled, so a person's
- * pending answer is dropped and its box closed rather than left open with no poller. */
-static int s_osk_current_clear(void) {
-    osk_abandon_request();
-    s_osk_current = 0;
-    return 0;
+    return busy || s_osk_status != OSK_NONE;
 }
 
 /* ---- Scripted answers, for automation. SR_OSK_SCRIPT=<file> supplies one answer per
@@ -11216,21 +11788,26 @@ static int osk_collect(void) {
     return 1;
 }
 
+/* A keyboard, like every utility dialog, starts only while the slot's holder is at NONE: a
+ * running keyboard or dialog keeps the slot, its open request included (#1386). */
 static uint32_t h_OskInitStart(CpuState *s) {
     if (!A0 || !sr_guest_span_readable(A0, 0x40u)) return 0x80110004u;  /* SceUtilityOskParams */
-    osk_abandon_request();                                 /* a new keyboard replaces the old one */
-    s_osk_param = A0;
-    s_osk_status = OSK_INIT;
-    s_osk_field = 0;
-    s_osk_current = 1;                                     /* the OSK owns the dialog slot */
-    s_osk_script_read = 0;                                 /* a new keyboard re-reads its answers */
-    return 0;
+    dialog_lock();
+    const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_OSK);
+    if (!claim) {
+        s_osk_param = A0;
+        s_osk_status = OSK_INIT;
+        s_osk_field = 0;
+        s_osk_script_read = 0;                             /* a new keyboard re-reads its answers */
+    }
+    dialog_unlock();
+    return claim;
 }
 /* GetStatus with no OSK ever started (e.g. polled every boot frame while a savedata dialog
  * is up) is SCE_ERROR_UTILITY_WRONG_TYPE; once one has run NONE(0) is a real status. */
 static uint32_t h_OskGetStatus(CpuState *s) {
     (void)s;
-    if (!s_osk_current) return 0x80110005u;
+    if (s_utility_slot != UTILITY_SLOT_OSK) return SCE_ERROR_UTILITY_WRONG_TYPE;
     int ret = s_osk_status;
     if (s_osk_status == OSK_INIT) s_osk_status = OSK_VISIBLE;
     else if (s_osk_status == OSK_VISIBLE) { if (osk_collect()) s_osk_status = OSK_QUIT; }
@@ -11242,7 +11819,7 @@ static uint32_t h_OskGetStatus(CpuState *s) {
  * QUIT accepts shutdown; GetStatus keeps the existing wind-down to NONE. */
 static uint32_t h_OskShutdown(CpuState *s) {
     (void)s;
-    if (!s_osk_current) return 0x80110005u;
+    if (s_utility_slot != UTILITY_SLOT_OSK) return SCE_ERROR_UTILITY_WRONG_TYPE;
     if (s_osk_status == OSK_NONE || s_osk_status == OSK_INIT || s_osk_status == OSK_VISIBLE)
         return 0x80110001u;
     osk_abandon_request();
@@ -11253,18 +11830,21 @@ static uint32_t h_OskShutdown(CpuState *s) {
  * returns WRONG_TYPE before a keyboard starts, and INVALID_STATUS in INIT, QUIT and NONE after use. */
 static uint32_t h_OskUpdate(CpuState *s) {
     (void)s;
-    if (!s_osk_current) return 0x80110005u;
+    if (s_utility_slot != UTILITY_SLOT_OSK) return SCE_ERROR_UTILITY_WRONG_TYPE;
     if (s_osk_status == OSK_NONE || s_osk_status == OSK_INIT || s_osk_status == OSK_QUIT)
         return 0x80110001u;
     return 0;
 }
-/* Test-only: forget the keyboard slot, abandoning any answer still pending. */
+/* Test-only: free the utility dialog slot, forgetting the keyboard (abandoning any answer still
+ * pending) and every other dialog, so the next case starts with no dialog ever opened. */
 void sr_hle_test_osk_slot_reset(void) {
     osk_abandon_request();
-    s_osk_current = 0;
     s_osk_status = OSK_NONE;
     s_osk_param = 0;
     s_osk_field = 0;
+    dialog_lock();
+    utility_dialogs_reset_locked();
+    dialog_unlock();
 }
 
 /* Single definition, called by both registry branches, so the executable HLE harness
@@ -11276,6 +11856,31 @@ void hle_register_osk_handlers(void) {
     /* 0xf6269b82 is OskInitStart, NOT GetSystemParamString -- the old string handler wrote
      * A2 bytes through A1, both garbage for this signature. */
     sr_hle_register(0xf6269b82, "sceUtilityOskInitStart", h_OskInitStart);
+}
+
+/* The other utility dialogs share the OSK's slot (#1386); one definition for both registry
+ * branches, so the executable HLE harness dispatches the mapping the game build does.
+ * sceUtilitySavedataInitStart is registered with hle_register_partition_savedata_handlers(). */
+static void hle_register_utility_dialog_handlers(void) {
+    sr_hle_register(0x9790b33c, "sceUtilitySavedataShutdownStart", h_DlgShutdown);
+    sr_hle_register(0x8874dbe0, "sceUtilitySavedataGetStatus", h_DlgGetStatus);
+    sr_hle_register(0xd4b95ffb, "sceUtilitySavedataUpdate", h_SavedataUpdate);
+    sr_hle_register(0x2ad8e239, "sceUtilityMsgDialogInitStart", h_MsgDialogInit);
+    sr_hle_register(0x95fc253b, "sceUtilityMsgDialogUpdate", h_MsgDialogUpdate);
+    sr_hle_register(0x9a1c91d7, "sceUtilityMsgDialogGetStatus", h_MsgDialogStatus);
+    sr_hle_register(0x67af3428, "sceUtilityMsgDialogShutdownStart", h_MsgDialogShutdown);
+    sr_hle_register(0x4db1e739, "sceUtilityNetconfInitStart", h_NetDialogInit);
+    sr_hle_register(0x91e70e35, "sceUtilityNetconfUpdate", h_NetDialogUpdate);
+    sr_hle_register(0x6332aa39, "sceUtilityNetconfGetStatus", h_NetDialogStatus);
+    sr_hle_register(0xf88155f6, "sceUtilityNetconfShutdownStart", h_NetDialogShutdown);
+    sr_hle_register(0x24ac31eb, "sceUtilityGamedataInstallInitStart", h_GamedataDialogInit);
+    sr_hle_register(0x4aecd179, "sceUtilityGamedataInstallUpdate", h_GamedataDialogUpdate);
+    sr_hle_register(0xb57e95d9, "sceUtilityGamedataInstallGetStatus", h_GamedataDialogStatus);
+    sr_hle_register(0x32e32dcb, "sceUtilityGamedataInstallShutdownStart", h_GamedataDialogShutdown);
+    sr_hle_register(0xc492f751, "sceUtilityGameSharingInitStart", h_SharingDialogInit);
+    sr_hle_register(0x7853182d, "sceUtilityGameSharingUpdate", h_SharingDialogUpdate);
+    sr_hle_register(0x946963f3, "sceUtilityGameSharingGetStatus", h_SharingDialogStatus);
+    sr_hle_register(0xefc6f80f, "sceUtilityGameSharingShutdownStart", h_SharingDialogShutdown);
 }
 
 /* sceWlanGetEtherAddr: 6-byte MAC out through a0. Fixed value so save/profile stamps stay
@@ -11301,37 +11906,179 @@ static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
     return 0;
 }
 
-/* The lock sceKernelVolatileMemLock and TryLock take. See h_VolatileMemUnlock. */
+/* The lock sceKernelVolatileMemLock and TryLock take and sceKernelVolatileMemUnlock releases:
+ * one lock over the 4 MiB volatile region at 0x08400000 (#1383).
+ *
+ * Measured on PSP-3000 6.6.1: Lock on a free lock returns 0 and writes the address 0x08400000 and
+ * the size 4 MiB; Unlock with nothing locked returns 0x800201ae (the raw value; the PSPSDK names
+ * it SCE_KERNEL_ERROR_SEMA_OVF); Unlock while the lock is held returns 0 and releases it
+ * (2026-10-21, probe CASE=fake-success, #1135). While the lock is held, TryLock returns
+ * 0x802b0200 and writes neither output (2026-10-22, PR #1153, #1190).
+ *
+ * PSPAutotests tests/intr/waits.expected (hardware-generated; src/rt/intr_conformance.h cites each
+ * line): Lock returns CAN_NOT_WAIT with interrupts or dispatch disabled, whether the lock is free
+ * or held (L290-L293), and ILLEGAL_CONTEXT from an interrupt handler while it is free (L412), so
+ * both contexts are checked before the lock state.
+ *
+ * Contract (#1383): Lock while the lock is held blocks through the scheduler's wait-invocation
+ * substrate and waiters queue in FIFO order. Unlock hands the lock to the first queued waiter
+ * whose wait is still live, writes that waiter's address and size outputs and completes its wait
+ * with 0.
+ *
+ * Project choices, UNMEASURED on hardware:
+ *  - Lock and TryLock accept only type 0. The PSP result for another type is unmeasured, so it is
+ *    refused by name with NOT_IMPLEMENTED (0x80020002), before anything else, rather than
+ *    answered with a guessed code. Unlock's argument is not checked: Unlock keeps its measured
+ *    route.
+ *  - The lock has no owning thread: Unlock from any thread releases it, as the semaphore overflow
+ *    code above suggests (an inference). Terminating or deleting the thread that took the lock
+ *    therefore leaves it held. A waiting thread that is terminated, deleted or released by
+ *    sceKernelReleaseWaitThread leaves the queue through its wait invocation's detach hook and is
+ *    never handed the lock.
+ *  - Output spans are validated before anything is written or queued (ILLEGAL_ADDR for an
+ *    unwritable non-NULL span); NULL outputs are tolerated. CAN_NOT_WAIT and ILLEGAL_CONTEXT write
+ *    no output. A blocked Lock latches no ReferThreadStatus wait type.
+ *  - No guest-memory reservation is recorded for the region while the lock is held. */
+#define VOLATILE_MEM_BASE      0x08400000u
+#define VOLATILE_MEM_SIZE      0x00400000u
+#define VOLATILE_MEM_WAIT_OBJ  0x564d454du   /* "VMEM": the scheduler object a blocked Lock waits on */
+#define VOLATILE_MEM_HELD      0x802b0200u   /* TryLock while held (measured) */
+#define VOLATILE_MEM_NOT_HELD  0x800201aeu   /* Unlock with nothing held (measured) */
+
+typedef struct {
+    SrWaitHandle invocation;
+    uint32_t addr_out, size_out;
+} VolatileMemWaiter;
+
 static int s_volatile_locked = 0;
-static uint32_t h_VolatileMemLock(CpuState *s) {
-    /* Keep the established 4 MiB success route and NULL-output tolerance. Check
-     * both complete non-NULL output spans before writing either one. */
-    if ((A1 && !sr_guest_span_writable(A1, 4u)) ||
-        (A2 && !sr_guest_span_writable(A2, 4u)))
-        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (A1) MEM_W32(A1, 0x08400000u);
-    if (A2) MEM_W32(A2, 0x00400000u);
-    s_volatile_locked = 1;
+static VolatileMemWaiter *s_volatile_waiters;    /* FIFO: index 0 is the oldest waiter */
+static size_t s_volatile_wait_count, s_volatile_wait_cap;
+
+static int volatile_mem_type_ok(const char *api, uint32_t type) {
+    if (type == 0u) return 1;
+    fprintf(stderr, "SEMANTIC_BOUNDARY: VOLATILE_MEM_TYPE: %s type %u: the PSP result for a type "
+                    "other than 0 is unmeasured; refusing (0x80020002)\n", api, type);
     return 0;
 }
-/* Measured on PSP-3000 6.6.1 (2026-10-22, PR #1153): while the volatile-memory
- * lock is already held, TryLock returns 0x802b0200 and writes neither output. */
-static uint32_t h_VolatileMemTryLock(CpuState *s) {
-    if (s_volatile_locked) return 0x802b0200u;
-    return h_VolatileMemLock(s);
+
+/* Both complete non-NULL output spans are checked before either one is written. */
+static int volatile_mem_outputs_writable(uint32_t addr_out, uint32_t size_out) {
+    return (!addr_out || sr_guest_span_writable(addr_out, 4u)) &&
+           (!size_out || sr_guest_span_writable(size_out, 4u));
 }
-/* The lock sceKernelVolatileMemLock and TryLock take and sceKernelVolatileMemUnlock releases.
- * Measured on PSP-3000 6.6.1 (2026-10-21, probe CASE=fake-success): Unlock with nothing locked
- * returns 0x800201ae (the raw value; the PSPSDK names it SCE_KERNEL_ERROR_SEMA_OVF); Unlock while
- * the lock is held returns 0 and releases it. */
+
+static void volatile_mem_take(uint32_t addr_out, uint32_t size_out) {
+    s_volatile_locked = 1;
+    if (addr_out) MEM_W32(addr_out, VOLATILE_MEM_BASE);
+    if (size_out) MEM_W32(size_out, VOLATILE_MEM_SIZE);
+}
+
+static void volatile_mem_remove_waiter(size_t i) {
+    memmove(&s_volatile_waiters[i], &s_volatile_waiters[i + 1u],
+            (s_volatile_wait_count - i - 1u) * sizeof(*s_volatile_waiters));
+    s_volatile_wait_count--;
+}
+
+static int volatile_mem_enqueue(SrWaitHandle invocation, uint32_t addr_out, uint32_t size_out) {
+    if (s_volatile_wait_count == s_volatile_wait_cap) {
+        size_t next = s_volatile_wait_cap ? s_volatile_wait_cap * 2u : 4u;
+        if (next > SIZE_MAX / sizeof(*s_volatile_waiters)) return 0;
+        VolatileMemWaiter *grown =
+            (VolatileMemWaiter *)realloc(s_volatile_waiters, next * sizeof(*grown));
+        if (!grown) return 0;
+        s_volatile_waiters = grown;
+        s_volatile_wait_cap = next;
+    }
+    VolatileMemWaiter *w = &s_volatile_waiters[s_volatile_wait_count++];
+    w->invocation = invocation;
+    w->addr_out = addr_out;
+    w->size_out = size_out;
+    return 1;
+}
+
+/* Wait-invocation detach hook: a waiter that finished, or whose thread was terminated, deleted
+ * or released, leaves the queue. The lock state does not change, so nobody is notified. */
+static int volatile_mem_detach(SrWaitHandle invocation, uint32_t object) {
+    (void)object;
+    for (size_t i = 0; i < s_volatile_wait_count; i++) {
+        if (s_volatile_waiters[i].invocation == invocation) {
+            volatile_mem_remove_waiter(i);
+            break;
+        }
+    }
+    return 0;
+}
+
+/* Hand the free lock to the oldest waiter whose wait is still live. Its output spans are
+ * validated again before the grant; a waiter whose spans fail gets the ILLEGAL_ADDR Lock gives at
+ * entry and the next waiter is tried. Returns 1 when a waiter now holds the lock. */
+static int volatile_mem_grant_next(void) {
+    while (s_volatile_wait_count > 0u) {
+        VolatileMemWaiter w = s_volatile_waiters[0];
+        volatile_mem_remove_waiter(0);
+        if (!volatile_mem_outputs_writable(w.addr_out, w.size_out)) {
+            (void)sched_wait_complete(w.invocation, SCE_KERNEL_ERROR_ILLEGAL_ADDR);
+            continue;
+        }
+        if (!sched_wait_complete(w.invocation, 0u)) continue;  /* released, terminated, deleted */
+        volatile_mem_take(w.addr_out, w.size_out);
+        return 1;
+    }
+    return 0;
+}
+
+static uint32_t h_VolatileMemLock(CpuState *s) {
+    if (!volatile_mem_type_ok("sceKernelVolatileMemLock", A0))
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    if (sched_is_intr_context()) return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;   /* L412 */
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;      /* L290-L293 */
+    if (!volatile_mem_outputs_writable(A1, A2)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (!s_volatile_locked) {
+        volatile_mem_take(A1, A2);
+        return 0;
+    }
+
+    SrWaitHandle invocation = sched_wait_begin(VOLATILE_MEM_WAIT_OBJ, 0u, 0, volatile_mem_detach);
+    if (!invocation) return HLE_KERNEL_ERROR_NO_MEMORY;
+    if (!volatile_mem_enqueue(invocation, A1, A2)) {
+        (void)sched_wait_finish(invocation);
+        return HLE_KERNEL_ERROR_NO_MEMORY;
+    }
+    /* Only Unlock's grant (0), a span refusal or a release, termination or deletion completes
+     * this invocation; any other wake finds no result and waits again. */
+    uint32_t result;
+    while (!sched_wait_take_result(invocation, &result))
+        (void)sched_wait_block(invocation, 0u, 0);
+    if (sched_wait_finish(invocation)) sched_preempt();
+    return result;
+}
+
+static uint32_t h_VolatileMemTryLock(CpuState *s) {
+    if (!volatile_mem_type_ok("sceKernelVolatileMemTryLock", A0))
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    if (s_volatile_locked) return VOLATILE_MEM_HELD;
+    if (!volatile_mem_outputs_writable(A1, A2)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    volatile_mem_take(A1, A2);
+    return 0;
+}
+
 static uint32_t h_VolatileMemUnlock(CpuState *s) {
     (void)s;
-    if (!s_volatile_locked) return 0x800201aeu;
+    if (!s_volatile_locked) return VOLATILE_MEM_NOT_HELD;
     s_volatile_locked = 0;
+    if (volatile_mem_grant_next()) sched_preempt();   /* a stronger new holder runs now */
     return 0;
 }
-/* Test-only: forget the lock. */
-void sr_hle_test_volatile_mem_reset(void) { s_volatile_locked = 0; }
+
+/* Test-only: forget the lock and its queue. Waits still parked on it belong to fixture threads
+ * the caller is discarding. */
+void sr_hle_test_volatile_mem_reset(void) {
+    s_volatile_locked = 0;
+    free(s_volatile_waiters);
+    s_volatile_waiters = NULL;
+    s_volatile_wait_count = 0u;
+    s_volatile_wait_cap = 0u;
+}
 /* Registered entry for sceUmdRegisterUMDCallBack. When UMD becomes ready the kernel fires
  * this callback (a0=unknown, a1=drive_stat), which in this game calls sceKernelWakeupThread
  * on the launcher (0x111) to unstick it from sceKernelSleepThread. */
@@ -11502,6 +12249,9 @@ static void hle_register_umd_callback_handlers(void) {
 /* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
  * (it typically wakes the sleeping game thread). PSP_VBLANK_INT = 30. */
 static uint32_t g_vbl_handler = 0, g_vbl_arg = 0, g_vbl_no = 0; static int g_vbl_on = 0;
+/* The slot holds a Register that Release has not cleared; a handler word of 0 is still a
+ * registration. Only h_RegisterSubIntr's log-on-change test reads it (#1287). */
+static int g_vbl_registered = 0;
 
 /* Generic PSP callback objects are kernel objects, not a 16-entry subsystem
  * table. Hardware creates at least 1024 of them. Keep an append-only host array:
@@ -11563,17 +12313,46 @@ int sr_callback_is_valid(uint32_t uid) {
     return sr_callback_find_in_table(uid) >= 0;
 }
 
+/* Memory Stick insert/eject callback registrations made through sceIoDevctl
+ * 0x02415821 on ms0:/fatms0:. The 32-entry bound, duplicate registrations each
+ * taking an entry, unregister removing only the first match, and the 0x80010016
+ * refusals follow PPSSPP's sceIo.cpp fatms0: model, applied here to ms0: as well
+ * (PSP-IO-001, #311, has not measured them). Dropping a deleted callback's
+ * registrations is a project model: hardware behaviour for a deleted registered
+ * callback is unmeasured, and dropping it means it can never fire. */
+enum { MEMSTICK_CALLBACK_MAX = 32 };
+static uint32_t s_memstick_callbacks[MEMSTICK_CALLBACK_MAX];
+static uint32_t s_memstick_callback_count;
+
+static int memstick_callback_remove_first(uint32_t uid) {
+    for (uint32_t i = 0; i < s_memstick_callback_count; i++) {
+        if (s_memstick_callbacks[i] != uid) continue;
+        memmove(&s_memstick_callbacks[i], &s_memstick_callbacks[i + 1u],
+                (s_memstick_callback_count - i - 1u) * sizeof(s_memstick_callbacks[0]));
+        s_memstick_callbacks[--s_memstick_callback_count] = 0u;
+        return 1;
+    }
+    return 0;
+}
+
+static void memstick_callback_forget(uint32_t uid) {
+    while (memstick_callback_remove_first(uid)) { }
+}
+
 int sr_callback_table_unregister(uint32_t uid) {
     int idx = sr_callback_find_in_table(uid);
     if (idx < 0) return 0;
     memset(&s_callbacks[idx], 0, sizeof(s_callbacks[idx]));
+    memstick_callback_forget(uid);
     return 1;
 }
 
 void sr_callback_unregister_owner(uint32_t thread_uid) {
     for (size_t i = 0; i < s_callbacks_len; i++) {
-        if (s_callbacks[i].used && s_callbacks[i].owner_thread_uid == thread_uid)
+        if (s_callbacks[i].used && s_callbacks[i].owner_thread_uid == thread_uid) {
+            memstick_callback_forget(s_callbacks[i].uid);
             memset(&s_callbacks[i], 0, sizeof(s_callbacks[i]));
+        }
     }
     if (s_exit_cb_uid && !sr_callback_is_valid(s_exit_cb_uid))
         s_exit_cb_uid = 0;
@@ -11835,8 +12614,14 @@ static uint32_t h_RegisterSubIntr(CpuState *s) {
      * (PSPSDK pspintrman.h and its vsync sample: `void on_vblank(int sub, void *data)`), so
      * the sub-interrupt number is kept with the handler and its arg. */
     if (A0 == 30) {
-        fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
-        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3;
+        /* Titles re-register the same handler before almost every frame (#1287), so the line
+         * is written only when a registration changes the slot, or always under SR_HLELOG.
+         * The return code is unchanged: duplicate-register codes are UNMEASURED on the PSP. */
+        int changed = !g_vbl_registered || g_vbl_handler != A2 || g_vbl_no != A1 ||
+                      g_vbl_arg != A3;
+        if (changed || hle_log_on())
+            fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
+        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3; g_vbl_registered = 1;
     }
     return 0;
 }
@@ -11856,7 +12641,9 @@ static uint32_t h_DisableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 0; retu
  * Register. Non-VBLANK lines answer success without effect (UNMEASURED), as
  * with Enable/Disable. */
 static uint32_t h_ReleaseSubIntr(CpuState *s) {
-    if (A0 == 30) { g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; }
+    if (A0 == 30) {
+        g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; g_vbl_registered = 0;
+    }
     return 0;
 }
 uint32_t sr_vblank_handler(void) { return g_vbl_on ? g_vbl_handler : 0; }
@@ -12102,16 +12889,26 @@ enum {
     RTC_FILETIME_EPOCH_TICK = 50491123200000000ull,
 };
 
-/* The PSP timezone is a console setting, not the host process timezone.  The
- * current public configuration is UTC/standard time; keeping it explicit makes
- * every RTC/local and gettimeofday path deterministic and leaves the setting in
- * one place.  The retained, settable system-profile owner for timezone/daylight
- * is issue #77 and does not exist yet, so sceRtcGetCurrentClockLocalTime and
- * the UTC/local conversions run on this fixed UTC constant until #77 lands;
- * the explicit-offset sceRtcGetCurrentClock path is complete and independent.
- * #80's LocalTime criterion is therefore BLOCKED BY #77, not complete. */
-static const int32_t s_psp_timezone_minutes = 0;
-static const int32_t s_psp_daylight = 0;
+/* The console's time zone and daylight-saving setting (#1382). It is a console setting, never the
+ * host process timezone, and it lives in the one retained system profile: the virtual system
+ * registry keys /CONFIG/DATE/time_zone_offset and /CONFIG/DATE/summer_time, which
+ * sceUtilityGetSystemParamInt reports as TIMEZONE (6) and DAYLIGHTSAVINGS (7). The RTC local-time
+ * APIs and gettimeofday read them here on every call, so a value a game writes through sceReg, or
+ * the per-user overlay restores, reaches every API at once and the getter and the clocks cannot
+ * disagree. The seed values and their measured status are stated once, at systemparam_int_value.
+ * PSPSDK psputility_sysparam.h: TIMEZONE is the offset from UTC in minutes (EST = -300) and
+ * DAYLIGHTSAVINGS is 0 (STD) or 1 (SAVING). That SAVING moves local time 60 minutes ahead is the
+ * setting's meaning, not a measurement: the firmware's arithmetic is unmeasured, and so is its
+ * handling of other values, which count as SAVING here. The explicit-offset sceRtcGetCurrentClock
+ * path does not use the profile. Returns the local offset in minutes; zone_out and daylight_out,
+ * when not NULL, receive the two settings. */
+static int64_t psp_profile_local_offset_minutes(int32_t *zone_out, uint32_t *daylight_out) {
+    int32_t zone = (int32_t)sreg_systemparam_int(6u);   /* PSP_SYSTEMPARAM_ID_INT_TIMEZONE */
+    uint32_t daylight = sreg_systemparam_int(7u);       /* PSP_SYSTEMPARAM_ID_INT_DAYLIGHTSAVINGS */
+    if (zone_out) *zone_out = zone;
+    if (daylight_out) *daylight_out = daylight;
+    return (int64_t)zone + (daylight ? 60 : 0);
+}
 
 static uint64_t s_rtc_epoch_tick;
 static uint64_t s_rtc_last_tick;
@@ -12235,7 +13032,7 @@ static int rtc_tick_to_datetime(uint64_t tick, RtcDateTime *out) {
     return 0;
 }
 
-static int rtc_add_offset(uint64_t tick, int32_t minutes, uint64_t *out) {
+static int rtc_add_offset(uint64_t tick, int64_t minutes, uint64_t *out) {
     if (!out) return 0;
     int64_t delta = (int64_t)minutes * 60ll * 1000000ll;
     if (delta >= 0) {
@@ -12256,7 +13053,7 @@ static int rtc_add_offset(uint64_t tick, int32_t minutes, uint64_t *out) {
  * an offset that crosses year 1 wraps instead of failing.  ConvertUtcToLocal
  * keeps the checked rtc_add_offset above because its overflow contract is not
  * autotest-verified; only the current-clock path uses the wrap form. */
-static void rtc_add_offset_wrap(uint64_t tick, int32_t minutes, uint64_t *out) {
+static void rtc_add_offset_wrap(uint64_t tick, int64_t minutes, uint64_t *out) {
     int64_t delta = (int64_t)minutes * 60ll * 1000000ll;
     *out = tick + (uint64_t)delta;   /* defined modulo 2^64 for both signs */
 }
@@ -12482,7 +13279,10 @@ static uint32_t h_LibcTime(CpuState *s) {
  * sceKernelGetSystemTime; it is an elapsed guest CPU-time value, not Unix time. */
 static uint32_t h_LibcClock(CpuState *s) { (void)s; return (uint32_t)now_usec(); }
 /* Fill a struct timeval {sec, usec} and struct timezone {minuteswest,dsttime}.
- * Both spans are preflighted before any write. */
+ * Both spans are preflighted before any write. The timezone record carries the
+ * system profile's settings in the BSD shape (minutes west of UTC, standard
+ * offset only, and the daylight flag); what the PSP itself writes there is
+ * unmeasured. */
 static uint32_t h_LibcGettimeofday(CpuState *s) {
     (void)s;
     if (A0 && !sr_guest_span_writable(A0, 8u)) return RTC_ILLEGAL_ADDR;
@@ -12494,8 +13294,11 @@ static uint32_t h_LibcGettimeofday(CpuState *s) {
         MEM_W32(A0 + 4u, (uint32_t)(unix_usec % 1000000u));
     }
     if (A1) {
-        MEM_W32(A1, (uint32_t)(-s_psp_timezone_minutes));
-        MEM_W32(A1 + 4u, (uint32_t)s_psp_daylight);
+        int32_t zone;
+        uint32_t daylight;
+        (void)psp_profile_local_offset_minutes(&zone, &daylight);
+        MEM_W32(A1, 0u - (uint32_t)zone);
+        MEM_W32(A1 + 4u, daylight);
     }
     return 0;
 }
@@ -12514,7 +13317,7 @@ static uint32_t h_RtcGetCurrentClockLocal(CpuState *s) {
     (void)s;
     if (!sr_guest_span_writable(A0, 16u)) return RTC_ILLEGAL_ADDR;
     uint64_t local_tick;
-    rtc_add_offset_wrap(rtc_now_tick(), s_psp_timezone_minutes, &local_tick);
+    rtc_add_offset_wrap(rtc_now_tick(), psp_profile_local_offset_minutes(NULL, NULL), &local_tick);
     RtcDateTime value;
     rtc_tick_to_datetime(local_tick, &value);
     return rtc_write_datetime(A0, &value) ? 0u : RTC_ILLEGAL_ADDR;
@@ -12523,14 +13326,14 @@ static uint32_t h_RtcConvertUtcToLocal(CpuState *s) {
     (void)s;
     uint64_t in, out;
     if (!A0 || !A1 || !rtc_read_u64(A0, &in) || !sr_guest_span_writable(A1, 8u) ||
-        !rtc_add_offset(in, s_psp_timezone_minutes, &out)) return RTC_ILLEGAL_ADDR;
+        !rtc_add_offset(in, psp_profile_local_offset_minutes(NULL, NULL), &out)) return RTC_ILLEGAL_ADDR;
     return rtc_write_u64(A1, out) ? 0u : RTC_ILLEGAL_ADDR;
 }
 static uint32_t h_RtcConvertLocalToUtc(CpuState *s) {
     (void)s;
     uint64_t in, out;
     if (!A0 || !A1 || !rtc_read_u64(A0, &in) || !sr_guest_span_writable(A1, 8u) ||
-        !rtc_add_offset(in, -s_psp_timezone_minutes, &out)) return RTC_ILLEGAL_ADDR;
+        !rtc_add_offset(in, -psp_profile_local_offset_minutes(NULL, NULL), &out)) return RTC_ILLEGAL_ADDR;
     return rtc_write_u64(A1, out) ? 0u : RTC_ILLEGAL_ADDR;
 }
 /* PSP's three std-fd imports intentionally alias the stdout handle (1).  The
@@ -12699,7 +13502,9 @@ static uint32_t h_StartModule(CpuState *s) {
         snprintf(detail, sizeof(detail), "module_start 0x%08x has no translated body",
                  mod->module_start);
         mod->state = previous_state;
-        return guest_module_boundary("guest-module-start-untranslated", mod->code->name, detail);
+        uint32_t refused = guest_module_boundary("guest-module-start-untranslated",
+                                                 mod->code->name, detail);
+        return is_libfont ? hle_libfont_startup_stop("entry untranslated") : refused;
     }
 
     if (allow_entry && mod->module_start != 0 && sr_lookup(mod->module_start) != NULL) {
@@ -12717,24 +13522,15 @@ static uint32_t h_StartModule(CpuState *s) {
     }
 
     /* Guest startup is unavailable: the entry is not translated, the image recorded none,
-     * or the operator disabled module_start. Libfont readiness belongs to guest code; do
-     * not synthesize it when translated startup cannot run. */
+     * or the operator disabled module_start. Libfont readiness belongs to guest code and is
+     * never synthesized, so the run stops by name (hle_libfont_startup_stop); the module
+     * keeps its previous state for a harness that observes the refusal. */
     if (is_libfont) {
         const char *reason = !allow_entry ? "SR_REAL_MODULE_START=0 disabled guest startup"
                          : (mod->module_start == 0) ? "no module_start entry recorded"
                                                     : "entry untranslated";
-        unsigned reason_index = !allow_entry ? 0u : (mod->module_start == 0 ? 1u : 2u);
-        /* The diagnostic is latched per named boundary while a failed start remains
-         * retryable in its previous module state. */
-        static int s_logged_libfont_unavailable[3];
-        if (!s_logged_libfont_unavailable[reason_index]) {
-            s_logged_libfont_unavailable[reason_index] = 1;
-            fprintf(stderr, "LIBFONT_STARTUP_UNAVAILABLE: %s; translated guest libfont "
-                            "startup is not supported yet on this route; refusing to "
-                            "synthesize readiness\n", reason);
-        }
         mod->state = previous_state;
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        return hle_libfont_startup_stop(reason);
     }
 
     static int s_logged_untranslated = 0;
@@ -12816,6 +13612,7 @@ int sr_hle_test_set_module_image(uint32_t uid, uint32_t base, uint32_t end, uint
 }
 
 void sr_hle_test_module_reset(void) {
+    s_main_module_uid = 0u;
     s_deferred_self_stop_uid = 0u;
     s_deferred_self_stop_thread_uid = 0u;
     s_nloaded_modules = 0;
@@ -12930,6 +13727,7 @@ typedef struct {
     int used;
     FdKind kind;                 /* descriptor identity is independent of its number */
     uint8_t std_stream;          /* 0=stdin, 1=stdout, 2=stderr for FD_KIND_STD */
+    uint8_t raw_umd;             /* 1 = UMD block device: size and off count 2048-byte sectors */
     uint32_t lba, size, off;
     int64_t async_res;
     int writable;
@@ -12981,6 +13779,7 @@ typedef enum {
     IO_RAW_BOUNDARY_ASYNC_CALLBACK,
     IO_RAW_BOUNDARY_DREAD,
     IO_RAW_BOUNDARY_DCLOSE,
+    IO_RAW_BOUNDARY_READ_PAST_END,
 } IoRawDeviceBoundary;
 
 typedef struct {
@@ -13134,6 +13933,61 @@ static uint32_t hle_io_raw_fd_boundary(uint32_t fd, IoRawDeviceBoundary operatio
                                        const char *api) {
     if (!hle_fd_is_raw_device(fd)) return 0u;
     return hle_io_raw_device_boundary(operation, api, s_fds[fd].guest_path, fd);
+}
+
+/* The UMD block device. A read-only descriptor for "umd0:", "umd1:" or "umd:" addresses the
+ * disc image in 2048-byte sectors (PSP-UMDRAW-001 captured cells, docs/HARDWARE_ORACLE.md):
+ * sceIoLseek and sceIoLseek32 return the new position in sectors, SEEK_END is relative to the
+ * last sector, and sceIoRead takes and returns a count of sectors and advances the position by
+ * it. A position below zero or past the last sector is refused with 0x8001b003 and leaves the
+ * position where it was; a zero count is refused with 0x80010016. Two cases stay at a named
+ * boundary because no capture covers them: a read that would cross the last sector, and every
+ * data operation while no disc image is open. The console wrote a whole request even past the
+ * end of a smaller buffer; the runtime refuses a destination that is not writable guest memory. */
+#define IO_UMD_SECTOR_BYTES 2048u
+#define IO_UMD_POSITION_REFUSED 0x8001b003u
+
+static int hle_fd_is_raw_umd(uint32_t fd) {
+    return hle_fd_is_raw_device(fd) && s_fds[fd].raw_umd && s_fds[fd].size != 0u;
+}
+
+static uint32_t hle_io_raw_umd_seek(Fd *f, int64_t offset, uint32_t whence,
+                                    uint32_t *position) {
+    if (whence >= 3u) return SCE_ERROR_KERNEL_INVALID_ARGUMENT;
+    int64_t base = whence == 1u ? (int64_t)f->off :
+                   (whence == 2u ? (int64_t)f->size - 1 : 0);
+    if (offset > INT64_MAX - base) return IO_UMD_POSITION_REFUSED;
+    int64_t target = base + offset;
+    if (target < 0 || target >= (int64_t)f->size) return IO_UMD_POSITION_REFUSED;
+    f->off = (uint32_t)target;
+    *position = f->off;
+    return 0u;
+}
+
+static uint32_t hle_io_raw_umd_read(uint32_t fd, uint32_t dst, uint32_t sectors) {
+    Fd *f = &s_fds[fd];
+    if (sectors == 0u) return 0x80010016u;
+    if (sectors > UINT32_MAX / IO_UMD_SECTOR_BYTES ||
+        !sr_guest_span_writable(dst, sectors * IO_UMD_SECTOR_BYTES))
+        return 0x80010016u;
+    if (sectors > f->size - f->off)
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_READ_PAST_END,
+                                          "sceIoRead past the last disc sector",
+                                          f->guest_path, fd);
+    const uint32_t bytes = sectors * IO_UMD_SECTOR_BYTES;
+    uint8_t tmp[4096];
+    for (uint32_t done = 0; done < bytes;) {
+        uint32_t n = bytes - done;
+        if (n > sizeof(tmp)) n = (uint32_t)sizeof(tmp);
+        if (iso_read(f->off, done, tmp, n) != (int)n) return 0x80010005u;
+        for (uint32_t k = 0; k < n; k++) MEM_W8(dst + done + k, tmp[k]);
+        done += n;
+    }
+    if (getenv("SR_IOLOG"))
+        fprintf(stderr, "Read vbl=%u fd=%u sector=%u sectors=%u dst=0x%08x\n",
+                s_vcount_fwd, fd, f->off, sectors, dst);
+    f->off += sectors;
+    return sectors;
 }
 
 static int hle_fd_allocate(void) {
@@ -13748,6 +14602,11 @@ static int data_walk(const wchar_t *root, const char *mount,
     int ok = 1;
     while (ok && stack_count != 0u) {
         DataWalkDir current = stack[--stack_count];
+#ifdef SR_HLE_THREAD_SELFTEST
+        /* The Windows walk's test-only pacing hook and work counters, at the same points. */
+        if (s_data_test_pace_ms > 0) sr_host_sleep_ms(s_data_test_pace_ms);
+        s_data_test_walk_calls++;
+#endif
         char *host_utf8 = NULL;
         if (!sr_wide_to_utf8_alloc(current.host, &host_utf8)) {
             fprintf(stderr, "host_data: host-path conversion failed during enumeration\n");
@@ -13775,6 +14634,9 @@ static int data_walk(const wchar_t *root, const char *mount,
                 }
                 break;
             }
+#ifdef SR_HLE_THREAD_SELFTEST
+            s_data_test_scan_names++;
+#endif
             if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
             wchar_t *name = NULL;
             wchar_t *child_host = NULL;
@@ -13822,6 +14684,9 @@ static int data_walk(const wchar_t *root, const char *mount,
                                                     exclude_count)) {
                     /* An excluded file is not indexed or opened. */
                 } else {
+#ifdef SR_HLE_THREAD_SELFTEST
+                    s_data_test_scan_probes++;
+#endif
                     int probe_fd = openat(dirfd(dir), entry->d_name,
                                           O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
                     struct stat probe_st;
@@ -14094,6 +14959,10 @@ static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
     int found = 0;
     while (ok && stack_count != 0u) {
         DataWalkDir current = stack[--stack_count];
+#ifdef SR_HLE_THREAD_SELFTEST
+        if (s_data_test_pace_ms > 0) sr_host_sleep_ms(s_data_test_pace_ms);
+        s_data_test_walk_calls++;
+#endif
         char *host_utf8 = NULL;
         if (!sr_wide_to_utf8_alloc(current.host, &host_utf8)) {
             ok = 0;
@@ -14115,6 +14984,9 @@ static int archive_data_discover(const wchar_t *root, SrArchiveVfs *vfs,
                 if (errno != 0) ok = 0;
                 break;
             }
+#ifdef SR_HLE_THREAD_SELFTEST
+            s_data_test_scan_names++;
+#endif
             if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
             wchar_t *name = NULL;
             wchar_t *child = NULL;
@@ -14453,7 +15325,7 @@ static char *data_loose_path_alloc(const char *root_utf8, const char *key) {
     size_t capacity = root_len + key_len + 2u;
     char *path = (char *)malloc(capacity);
     if (!path) return NULL;
-    if (sr_vfs_host_dir_path(root_utf8, key, path, capacity, '\\') <= 0) {
+    if (sr_vfs_host_dir_path(root_utf8, key, path, capacity, SR_HOST_PATH_SEP) <= 0) {
         free(path);
         return NULL;
     }
@@ -15088,6 +15960,16 @@ static int data_archive_guest_path_allowed(const char *guest_path) {
             guest_path[4] >= '0' && guest_path[4] <= '9' && guest_path[5] == ':');
 }
 
+/* sceIoOpen with PSP_O_CREAT | PSP_O_EXCL found an existing file (#1380). The PSP-IO-001
+ * oracle group never opens with PSP_O_EXCL, so the console's result is unmeasured: the open
+ * is refused with the named not-supported code and the file is left untouched. */
+static uint32_t io_open_exclusive_existing_boundary(const char *path) {
+    fprintf(stderr,
+            "SEMANTIC_BOUNDARY: IO_OPEN_EXCL_EXISTING: sceIoOpen with PSP_O_CREAT|PSP_O_EXCL "
+            "names an existing file (%s); the PSP result is unmeasured (0x80010086)\n", path);
+    return 0x80010086u;
+}
+
 /* Host-serve a guest file from the extracted-XB data root (SR_DATAROOT).
  *
  * This is the long-term groundwork for the text-loader (.to) fix and any other
@@ -15129,6 +16011,13 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
     s_closed_async_state[slot] = IO_ASYNC_IDLE;
 
     if (raw_device != IO_RAW_DEVICE_NONE) {
+        /* The UMD block device sizes itself from the open disc image; with no image its data
+         * operations stay at the raw-device boundary. */
+        if (raw_device != IO_RAW_DEVICE_MSSTOR0P1) {
+            uint32_t sectors = 0;
+            s_fds[slot].raw_umd = 1;
+            if (iso_sector_count(&sectors) == 0) s_fds[slot].size = sectors;
+        }
         s_fds[slot].used = 1;
         return (uint32_t)slot;
     }
@@ -15153,6 +16042,7 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
 
     int writing = (flags & 0x0002) != 0;        /* WRONLY or RDWR */
     int creating = (flags & 0x0200) != 0;
+    int exclusive = creating && (flags & 0x0800) != 0;  /* CREAT | EXCL */
 #ifndef _WIN32
     sr_cd_status open_status = SR_CD_NOT_FOUND;
 #endif
@@ -15160,29 +16050,40 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
     int in_iso = (iso_lookup(path, &lba, &size) == 0);
 
     if (writing || creating || !in_iso) {
-        /* Host-backed file (writable storage). */
+        /* Host-backed file (writable storage). Without CREAT the file must already exist,
+         * and TRUNC or APPEND change it; with CREAT | EXCL only a new file opens (#1380). */
         char *hp = host_path_alloc(path);
         const wchar_t *mode;
         if (flags & 0x0400) mode = L"w+b";            /* TRUNC */
         else if (flags & 0x0100) mode = L"a+b";       /* APPEND */
-        else if (writing || creating) mode = L"r+b"; /* update; fall back to create below */
+        else if (writing || creating) mode = L"r+b"; /* update; CREAT falls back to create below */
         else mode = L"rb";                           /* read-only host file (e.g. a prior save) */
+        Ms0OpenExistence existence = exclusive ? MS0_OPEN_NEW :
+                                     creating ? MS0_OPEN_BY_MODE : MS0_OPEN_EXISTING;
+        int exclusive_found = 0;
 #ifdef _WIN32
-        FILE *fp = hp ? ms0_fopen_utf8(hp, mode) : NULL;
-        if (!fp && (writing || creating) && hp) fp = ms0_fopen_utf8(hp, L"w+b");
+        FILE *fp = hp ? ms0_fopen_existence_utf8(hp, mode, existence) : NULL;
+        if (!fp && creating && !exclusive && hp) fp = ms0_fopen_utf8(hp, L"w+b");
+        if (!fp && exclusive && hp) {
+            FILE *existing = ms0_fopen_utf8(hp, L"rb");
+            exclusive_found = existing != NULL;
+            if (existing) fclose(existing);
+        }
         if (!fp && !writing && !creating && hp && ms0_try_legacy_flat_import(path, hp))
-            fp = ms0_fopen_utf8(hp, mode);
+            fp = ms0_fopen_existence_utf8(hp, mode, existence);
 #else
         FILE *fp = sr_ms0_classify(path, NULL) == SR_MS0_OWNED ?
-                   ms0_fopen_guest_utf8(path, mode, &open_status) : NULL;
-        if (!fp && (writing || creating) && open_status == SR_CD_NOT_FOUND &&
+                   ms0_fopen_guest_utf8(path, mode, existence, &open_status) : NULL;
+        if (!fp && creating && !exclusive && open_status == SR_CD_NOT_FOUND &&
             sr_ms0_classify(path, NULL) == SR_MS0_OWNED)
-            fp = ms0_fopen_guest_utf8(path, L"w+b", &open_status);
+            fp = ms0_fopen_guest_utf8(path, L"w+b", MS0_OPEN_BY_MODE, &open_status);
+        exclusive_found = !fp && exclusive && open_status == SR_CD_ALREADY_EXISTS;
         if (!fp && !writing && !creating && open_status == SR_CD_NOT_FOUND && hp &&
             ms0_try_legacy_flat_import(path, hp))
-            fp = ms0_fopen_guest_utf8(path, mode, &open_status);
+            fp = ms0_fopen_guest_utf8(path, mode, existence, &open_status);
 #endif
         free(hp);
+        if (exclusive_found) return io_open_exclusive_existing_boundary(path);
         if (!fp) {
 #ifndef _WIN32
             if (sr_ms0_classify(path, NULL) == SR_MS0_OWNED &&
@@ -15348,6 +16249,7 @@ static uint32_t h_IoRead(CpuState *s) {
     uint32_t fd = A0, dst = A1, count = A2;
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    if (hle_fd_is_raw_umd(fd)) return hle_io_raw_umd_read(fd, dst, count);
     uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_READ, "sceIoRead");
     if (raw_error != 0u) return raw_error;
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
@@ -15429,11 +16331,38 @@ static uint32_t h_IoRead(CpuState *s) {
     }
     return done;
 }
+/* Destination of a seek on a file descriptor (#1380). PSP-IO-001 measured SEEK_SET 32,
+ * SEEK_CUR -16 and SEEK_END 0 inside a 64-byte host0 file. A destination before the start
+ * or past the end has no measured result, so it is refused with the named not-supported
+ * code and the position is left unchanged instead of being clamped and reported as success.
+ * WHENCE is already validated (< 3). */
+static uint32_t io_seek_destination(const Fd *f, int64_t offset, uint32_t whence,
+                                    const char *api, uint32_t *position) {
+    static atomic_uint reported;
+    int64_t base = whence == 1u ? (int64_t)f->off : whence == 2u ? (int64_t)f->size : 0;
+    unsigned side = offset < -base ? 1u :
+                    offset > (int64_t)f->size - base ? 2u : 0u;
+    if (side == 0u) {
+        *position = (uint32_t)(base + offset);
+        return 0u;
+    }
+    if (!(atomic_fetch_or_explicit(&reported, side, memory_order_acq_rel) & side))
+        fprintf(stderr,
+                "SEMANTIC_BOUNDARY: IO_LSEEK_OUT_OF_RANGE: %s to a destination %s the file "
+                "is unmeasured (0x80010086)\n",
+                api, side == 1u ? "before the start of" : "past the end of");
+    return 0x80010086u;
+}
 static uint32_t h_IoLseek32(CpuState *s) {
     /* a0=fd, a1=offset, a2=whence. Returns new position (32-bit). */
     uint32_t fd = A0; int32_t off = (int32_t)A1; uint32_t whence = A2;
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    if (hle_fd_is_raw_umd(fd)) {
+        uint32_t position = 0;
+        uint32_t rc = hle_io_raw_umd_seek(&s_fds[fd], off, whence, &position);
+        return rc != 0u ? rc : position;
+    }
     uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK32,
                                                "sceIoLseek32");
     if (raw_error != 0u) return raw_error;
@@ -15441,9 +16370,10 @@ static uint32_t h_IoLseek32(CpuState *s) {
     if (whence >= 3u) return SCE_ERROR_KERNEL_INVALID_ARGUMENT;
     Fd *f = &s_fds[fd];
     if (f->async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
-    int64_t base = whence == 1 ? f->off : (whence == 2 ? f->size : 0);
-    int64_t np = base + off; if (np < 0) np = 0; if (np > f->size) np = f->size;
-    f->off = (uint32_t)np;
+    uint32_t position = 0;
+    uint32_t refused = io_seek_destination(f, off, whence, "sceIoLseek32", &position);
+    if (refused != 0u) return refused;
+    f->off = position;
     return f->off;
 }
 static uint32_t h_IoLseek(CpuState *s) {
@@ -15453,6 +16383,13 @@ static uint32_t h_IoLseek(CpuState *s) {
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD) {
         s->r[3] = 0;
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    }
+    if (hle_fd_is_raw_umd(fd)) {
+        uint32_t position = 0;
+        uint32_t rc = hle_io_raw_umd_seek(&s_fds[fd], (int64_t)(((uint64_t)A3 << 32) | A2),
+                                          stack_arg(s, 0), &position);
+        s->r[3] = rc != 0u ? 0xffffffffu : 0u;
+        return rc != 0u ? rc : position;
     }
     uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK64,
                                                "sceIoLseek");
@@ -15466,11 +16403,12 @@ static uint32_t h_IoLseek(CpuState *s) {
     }
     if (whence >= 3u) { s->r[3] = 0xFFFFFFFF; return SCE_ERROR_KERNEL_INVALID_ARGUMENT; }
     Fd *f = &s_fds[fd];
-    int64_t base = whence == 1 ? f->off : (whence == 2 ? f->size : 0);
-    int64_t np = base + off; if (np < 0) np = 0; if (np > f->size) np = f->size;
-    f->off = (uint32_t)np;
-    s->r[3] = (uint32_t)((uint64_t)np >> 32);
-    return (uint32_t)np;
+    uint32_t position = 0;
+    uint32_t refused = io_seek_destination(f, off, whence, "sceIoLseek", &position);
+    if (refused != 0u) { s->r[3] = 0xFFFFFFFF; return refused; }
+    f->off = position;
+    s->r[3] = 0;
+    return position;
 }
 /* sceIoIoctl (NID 0x63632449): device control on an open fd. First hit live
  * 2026-07-18, right after the first real savegame started existing (boot now
@@ -15652,6 +16590,79 @@ static uint32_t vfs_overlay_initial_find_error(unsigned long error, int *found) 
     }
     return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
 }
+#else
+/* The POSIX overlay listing. The directory is reached through the contained seam's
+ * descriptor walk from the bound Memory Stick root, the walk every POSIX ms0: open
+ * already takes: each component is opened with O_NOFOLLOW, so a link on the way is
+ * refused where the Win32 arm refuses a directory resolving outside the root. The
+ * listing reads that same descriptor, so no path is resolved twice. */
+static uint32_t vfs_overlay_merge_dir_posix(const char *guest_path, SrVfsDirList *list,
+                                            int *found) {
+    char trimmed[SR_CD_REL_MAX + 16u], rel[SR_CD_REL_MAX];
+    const char *tail = NULL;
+    size_t n = strlen(guest_path);
+    if (n >= sizeof(trimmed)) return 0;
+    memcpy(trimmed, guest_path, n + 1u);
+    /* A trailing separator names the same directory, as the Win32 host path does. */
+    while (n > 0u && (trimmed[n - 1u] == '/' || trimmed[n - 1u] == '\\')) trimmed[--n] = '\0';
+    if (sr_ms0_classify(trimmed, &tail) != SR_MS0_OWNED || !tail) return 0;
+    while (*tail == '/' || *tail == '\\') tail++;
+    if (*tail == '\0') rel[0] = '\0'; /* the root itself */
+    else if (ms0_posix_guest_relpath(trimmed, rel, sizeof(rel)) != SR_CD_OK) return 0;
+    sr_cd_root root;
+    if (ms0_posix_root_open(&root) != SR_CD_OK) return 0;
+    int dir_fd = -1;
+    sr_cd_status st = sr_cd__at_walk(root.fd, rel, &dir_fd);
+    sr_cd_root_close(&root);
+    if (st == SR_CD_NOT_FOUND) return 0;
+    if (st != SR_CD_OK) {
+        fprintf(stderr, "sceIoDopen: refusing '%s': no directory reachable without a link "
+                        "inside the configured Memory Stick root (%s)\n",
+                guest_path, sr_cd_status_name(st));
+        fflush(stderr);
+        return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND, as on Win32 */
+    }
+    DIR *dir = fdopendir(dir_fd);
+    if (!dir) {
+        close(dir_fd);
+        return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
+    }
+    *found = 1;
+    uint32_t rc = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(dir);
+        if (!entry) {
+            if (errno != 0) {
+                fprintf(stderr, "sceIoDopen: host enumeration of '%s' ended early (errno=%d); "
+                                "refusing a short listing\n", guest_path, errno);
+                rc = 0x80010005u;
+            }
+            break;
+        }
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        struct stat child;
+        if (fstatat(dirfd(dir), entry->d_name, &child, AT_SYMLINK_NOFOLLOW) != 0) {
+            if (errno == ENOENT) continue; /* removed since readdir named it */
+            fprintf(stderr, "sceIoDopen: host child of '%s' cannot be classified (errno=%d); "
+                            "refusing a short listing\n", guest_path, errno);
+            rc = 0x80010005u;
+            break;
+        }
+        int is_dir = S_ISDIR(child.st_mode);
+        if (!is_dir && (uint64_t)child.st_size > UINT32_MAX) {
+            fprintf(stderr, "sceIoDopen: host file '%s' exceeds the guest size limit; "
+                            "skipping one entry\n", entry->d_name);
+            list->skipped++;
+        } else if (!sr_vfs_dirlist_merge(list, entry->d_name, is_dir,
+                                         is_dir ? 0u : (uint64_t)child.st_size)) {
+            rc = 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
+            break;
+        }
+    }
+    closedir(dir);
+    return rc;
+}
 #endif
 
 /* Merge the writable host overlay's children for `guest_path` into `list`.
@@ -15798,7 +16809,7 @@ static uint32_t vfs_overlay_merge_dir(const char *guest_path, SrVfsDirList *list
             }
         }
 #else
-        (void)list;
+        rc = vfs_overlay_merge_dir_posix(guest_path, list, found);
 #endif
     }
     free(pattern);
@@ -16084,13 +17095,12 @@ static int io_memstick_capacity(uint32_t info[5]) {
 }
 #endif /* _WIN32 */
 
-static atomic_uint s_memstick_insert_eject_callback_uid;
-
 static uint32_t h_IoDevctl(CpuState *s) {
     enum {
         IO_DEVCTL_GET_CAPACITY = 0x02425818u,
         IO_DEVCTL_CHECK_INSERTED = 0x02025806u,
         IO_DEVCTL_CHECK_READY = 0x02025801u,
+        IO_DEVCTL_CHECK_MEDIUM = 0x02425823u,
         IO_DEVCTL_REGISTER_CALLBACK = 0x02415821u,
         IO_DEVCTL_UNREGISTER_CALLBACK = 0x02415822u,
         IO_DEVCTL_ERROR_UNSUPPORTED = 0x80010086u,
@@ -16123,13 +17133,18 @@ static uint32_t h_IoDevctl(CpuState *s) {
             for (uint32_t i = 0; i < 5u; i++) MEM_W32(info_addr + i * 4u, info[i]);
             return 0;
         }
+        /* 0x02425823 is the fatms0: medium check games make before saving or
+         * loading ("is a Memory Stick inserted?"). PPSSPP's sceIo.cpp answers it
+         * with 1 while its Memory Stick is inserted, which this runtime's always
+         * is; refusing it told games there was no Memory Stick (#341). */
         case IO_DEVCTL_CHECK_INSERTED:
+        case IO_DEVCTL_CHECK_MEDIUM:
         case IO_DEVCTL_CHECK_READY: {
             if (outlen < 4u || outlen > INT32_MAX)
                 return IO_DEVCTL_ERROR_INVALID_ARGUMENT;
             if (!outdata || !sr_guest_span_writable(outdata, 4u))
                 return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-            MEM_W32(outdata, A1 == IO_DEVCTL_CHECK_INSERTED ? 1u : 4u);
+            MEM_W32(outdata, A1 == IO_DEVCTL_CHECK_READY ? 4u : 1u);
             return 0;
         }
         case IO_DEVCTL_REGISTER_CALLBACK:
@@ -16138,20 +17153,20 @@ static uint32_t h_IoDevctl(CpuState *s) {
             if (!A2 || !sr_guest_span_readable(A2, 4u))
                 return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
             uint32_t callback_uid = MEM_R32(A2);
-            if (A1 == IO_DEVCTL_REGISTER_CALLBACK) {
-                atomic_store_explicit(&s_memstick_insert_eject_callback_uid, callback_uid,
-                                      memory_order_release);
-            } else {
-                uint32_t registered = atomic_load_explicit(
-                    &s_memstick_insert_eject_callback_uid, memory_order_acquire);
-                while (registered == callback_uid &&
-                       !atomic_compare_exchange_weak_explicit(
-                           &s_memstick_insert_eject_callback_uid, &registered, 0u,
-                           memory_order_acq_rel, memory_order_acquire)) { }
-            }
-            /* Storage is recorded for lifecycle parity only; callbacks are never
-             * dispatched until the runtime can model insertion/ejection events. */
-            return 0;
+            if (A1 == IO_DEVCTL_UNREGISTER_CALLBACK)
+                return memstick_callback_remove_first(callback_uid)
+                           ? 0u : IO_DEVCTL_ERROR_INVALID_ARGUMENT;
+            if (sr_callback_find_in_table(callback_uid) < 0 ||
+                s_memstick_callback_count >= MEMSTICK_CALLBACK_MAX)
+                return IO_DEVCTL_ERROR_INVALID_ARGUMENT;
+            s_memstick_callbacks[s_memstick_callback_count++] = callback_uid;
+            /* The runtime's Memory Stick is always inserted and assigned (the
+             * inserted query above answers 1), so registering queues one
+             * notification with argument 1 (inserted). sr_callback_notify only
+             * marks it pending and wakes the owner; the body runs on the owning
+             * thread at its next callback point. No later insert or eject event
+             * exists in this runtime. */
+            return sr_callback_notify(callback_uid, 1u);
         }
         default:
             hle_note_devctl_refusal(device, A1, IO_DEVCTL_ERROR_UNSUPPORTED);
@@ -16334,13 +17349,15 @@ static uint32_t io_async_complete_fd(uint32_t fd) {
             else {
                 int64_t offset = (int64_t)(((uint64_t)request.a2 << 32) | request.a1);
                 Fd *file = &s_fds[fd];
-                int64_t base = request.stack0 == 1u ? file->off :
-                               request.stack0 == 2u ? file->size : 0;
-                int64_t position = base + offset;
-                if (position < 0) position = 0;
-                if (position > file->size) position = file->size;
-                file->off = (uint32_t)position;
-                result = position;
+                uint32_t position = 0;
+                uint32_t refused = io_seek_destination(file, offset, request.stack0,
+                                                       "sceIoLseekAsync", &position);
+                if (refused != 0u) {
+                    result = (int64_t)(int32_t)refused;
+                } else {
+                    file->off = position;
+                    result = position;
+                }
             }
         } else if (request.op == IO_ASYNC_IOCTL) {
             result = (int64_t)(int32_t)h_io_ioctl_args(fd, request.a1, request.a2,
@@ -16844,14 +17861,18 @@ uint32_t sr_hle_test_io_lseek32(CpuState *s) { return h_IoLseek32(s); }
 uint32_t sr_hle_test_io_dopen(CpuState *s) { return h_IoDopen(s); }
 uint32_t sr_hle_test_io_dread(CpuState *s) { return h_IoDread(s); }
 uint32_t sr_hle_test_io_dclose(CpuState *s) { return h_IoDclose(s); }
+#ifdef _WIN32 /* the classifier maps FindFirstFileW's error codes and exists on Win32 only */
 uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found) {
     return vfs_overlay_initial_find_error(error, found);
 }
+#endif
 uint32_t sr_hle_test_io_ioctl(CpuState *s) { return h_IoIoctl(s); }
 void sr_hle_test_register_iofilemgr(void) { hle_register_iofilemgr_handlers(); }
-uint32_t sr_hle_test_io_devctl_callback_uid(void) {
-    return atomic_load_explicit(&s_memstick_insert_eject_callback_uid,
-                                memory_order_acquire);
+uint32_t sr_hle_test_io_devctl_callback_count(void) {
+    return s_memstick_callback_count;
+}
+uint32_t sr_hle_test_io_devctl_callback_at(uint32_t index) {
+    return index < s_memstick_callback_count ? s_memstick_callbacks[index] : 0u;
 }
 uint32_t sr_hle_test_io_devctl_refusal_log_count(void) {
     return atomic_load_explicit(&s_hle_devctl_refusal_log_count,
@@ -18867,13 +19888,28 @@ int sr_route_test_sample(uint8_t *out);
  * function-static) so the selftest can reset and query it; production semantics are the
  * same either way. */
 static int s_live_input_seen = 0;
+/* The user asked for synthetic pad input by name: SR_PAD (the mask) or one of the pulse's
+ * cadence knobs. An empty value is not a request. */
+static int ctrl_pulse_requested(void) {
+    static const char *const knobs[] = { "SR_PAD", "SR_PADPERIOD", "SR_PADWIDTH", "SR_PADSTART" };
+    for (size_t i = 0; i < sizeof knobs / sizeof knobs[0]; i++) {
+        const char *v = getenv(knobs[i]);
+        if (v && v[0]) return 1;
+    }
+    return 0;
+}
 /* One-directional evidence gate: any nonzero live key mask proves a human is driving,
  * while a quiet frame proves nothing. Returns nonzero when the synthetic pulse must be
  * suppressed. Reads SR_NOINPUT and gui_pad_present() on every call so hotplug and
- * keyboard-first/gamepad-later sequences need no extra state. */
+ * keyboard-first/gamepad-later sequences need no extra state.
+ *
+ * A person at a real window (gui_interactive(): not the offscreen sink, a headless host or an
+ * acceptance launch) never gets a pulse they did not ask for, even before their first key:
+ * the pulse is fake input there, and a demo that quits on START closes on its first frame. */
 static int ctrl_pulse_suppressed(uint32_t keys) {
     if (keys) s_live_input_seen = 1;
     if (getenv("SR_NOINPUT") || gui_pad_present() || s_live_input_seen) return 1;
+    if (gui_interactive() && !ctrl_pulse_requested()) return 1;
     return 0;
 }
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -18942,6 +19978,14 @@ static uint32_t h_CtrlButtons(void) {
      * runs. When a real controller is connected the player drives input themselves, so suppress the
      * pulse (otherwise a phantom START every few seconds would keep opening the pause menu).
      *
+     * The same holds from the first vblank in a real window (gui_interactive()): the pulse
+     * starts at vblank 0 and fires for 4 vblanks every 240, so a player who has not yet touched a
+     * key would still be handed a phantom START -- the "Test this PC" demos quit on START and
+     * closed on their first frame (walkthrough B16, reproduced with a plain mouse click). There
+     * the pulse runs only when the user named it (SR_PAD, SR_PADPERIOD, SR_PADWIDTH or
+     * SR_PADSTART). Headless runs (the offscreen sink, a dummy video driver, an acceptance
+     * launch) and runs with an explicit SR_PAD or a route/pad script keep today's behaviour.
+     *
      * A connected pad is not the only way a human drives this runtime: the keyboard path is
      * equally live, and gui_pad_present() is false for it (it reports gamepad presence only;
      * the GDI fallback sets it to 0 unconditionally while read_keys() still delivers live
@@ -19008,7 +20052,7 @@ void sr_ctrl_sample(void) {
      * project choice, not yet measured on hardware. */
     keyboard_took_sample = keyboard_took_sample || sr_osk_overlay_active();
     if (keyboard_took_sample) buttons = 0u;
-    if (getenv("SR_INLOG")) {
+    if (hle_inlog_on()) {
         static uint32_t previous;
         if (buttons != previous) {
             fprintf(stderr, "ctrl_latch: vcount=%u buttons 0x%04x -> 0x%04x lx=%u ly=%u\n",
@@ -19042,7 +20086,11 @@ static uint32_t ctrl_fill_n(uint32_t buf, uint32_t nbufs, int negate, int peek) 
      * Clamping an oversized request the way this used to is a fabricated success:
      * the guest asked for something the API cannot do and was told it worked. */
     if (nbufs > CTRL_RING) return SCE_CTRL_ERROR_INVALID_SIZE;
-    if (nbufs == 0) return 0;                      /* zero requested, zero written */
+    /* A zero count is refused with the same code (issue #1390 acceptance, from the
+     * project's PSP-3000 measurement cited there; not yet a public oracle cell,
+     * which #311 tracks for PSP-SYSTEM-001). PPSSPP and the uOFW reconstruction
+     * return 0 here instead. Refusing writes nothing and consumes nothing. */
+    if (nbufs == 0) return SCE_CTRL_ERROR_INVALID_SIZE;
     int avail = (s_ctrl_w - s_ctrl_r + CTRL_RING) % CTRL_RING;
     /* Blocking ReadBuffer waits for at least one fresh sample (delivered each VBLANK). */
     if (!peek) {
@@ -19087,11 +20135,11 @@ static uint32_t ctrl_fill_n(uint32_t buf, uint32_t nbufs, int negate, int peek) 
     if (!peek) s_ctrl_r = s_ctrl_w;                /* consume */
     /* Scripted input advances in guest time: this read is what tells the script the guest
      * has seen the state it is holding (scripted_input.h). */
-    if (sr_input_read(&s_input, newest_input) && getenv("SR_INLOG"))
+    if (sr_input_read(&s_input, newest_input) && hle_inlog_on())
         fprintf(stderr, "ctrl_read: vcount=%u guest read scripted 0x%04x (latched %u samples "
                         "since vblank %u)\n",
                 s_vcount_fwd, s_input.seg.mask, s_input.latched, s_input.since);
-    if (getenv("SR_INLOG")) {
+    if (hle_inlog_on()) {
         static unsigned long calls = 0;
         CtrlSample latest = s_ctrl_ring[(s_ctrl_w - 1 + CTRL_RING) % CTRL_RING];
         if ((++calls % 200) == 0 || (latest.btn & 0x8))
@@ -19106,6 +20154,12 @@ static uint32_t ctrl_fill(uint32_t buf, uint32_t count, int negate) {
 static uint32_t h_CtrlReadBuffer(CpuState *s) { return ctrl_fill(A0, A1, 0); }
 static uint32_t h_CtrlPeekBufferPositive(CpuState *s) {
     return ctrl_fill_n(A0, A1, 0, 1);
+}
+/* sceCtrlReadBufferNegative / sceCtrlPeekBufferNegative: the positive contract with
+ * the button field inverted (PSPSDK pspctrl.h); the read consumes and the peek does not. */
+static uint32_t h_CtrlReadBufferNegative(CpuState *s) { return ctrl_fill(A0, A1, 1); }
+static uint32_t h_CtrlPeekBufferNegative(CpuState *s) {
+    return ctrl_fill_n(A0, A1, 1, 1);
 }
 
 /* sceCtrlReadLatch(SceCtrlLatch *latch) (PSPSDK pspctrl.h, 16 bytes: uiMake, uiBreak, uiPress,
@@ -19235,6 +20289,21 @@ static unsigned long s_watchdog_fires = 0;
  * detects the crossing; an exact-modulus test cannot.  Reset wherever
  * s_last_flip_vcount is reset so a fresh stretch starts at bucket 0. */
 static uint32_t s_watchdog_bucket = 0;
+
+/* A resumed frame closes one observed no-frame stretch. stderr is redirected
+ * to the per-run boot-event log by the native launcher, so the parent player
+ * can consume this event while the game is still running. */
+static void hle_watchdog_note_present(void) {
+    if (s_watchdog_bucket > 0u) {
+        uint32_t diff = s_vcount - s_last_flip_vcount;
+        fprintf(stderr,
+                "BOOT_EVENT phase=resumed observation=frame_present "
+                "no_frame_vblanks=%u\n", diff);
+        fflush(stderr);
+    }
+    s_last_flip_vcount = s_vcount;
+    s_watchdog_bucket = 0;
+}
 
 #ifdef SR_HLE_THREAD_SELFTEST
 /* White-box view of the flip accounting for the conformance harness. The counters are
@@ -19514,10 +20583,11 @@ static void display_present_frame(void) {
     int presented = gui_present(s_display_active.addr, s_display_active.fmt,
                                 (uint32_t)s_display_active.stride);
     if (presented) {
+        if (sr_perf_enabled) sr_perf_present_frame(s_display_active.addr, s_vcount);
         SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_PRESENT, SR_FLIGHT_KIND_PRESENT_FRAME,
                                s_display_active.addr, (uint32_t)s_display_active.fmt,
                                (uint32_t)s_display_active.stride, s_vcount);
-        if (getenv("SR_PRESENT_TRACE"))
+        if (hle_present_trace_on())
             fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
                     s_vcount, s_display_active.addr, s_display_active.fmt,
                     s_display_active.stride);
@@ -19978,8 +21048,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
         s_display_latched_pending = 0;
         s_display_configured = 1;
         s_framebuf = addr;
-        s_last_flip_vcount = s_vcount;
-        s_watchdog_bucket = 0;
+        hle_watchdog_note_present();
         /* Issue #57: arm any due present capture BEFORE the present so the recorded
          * frame is exactly the one being presented. */
         fbcap_arm_for_present(s_vcount, &s_display_active, 0u, s_framebuf != 0);
@@ -20298,8 +21367,7 @@ void sr_vblank_tick(void) {
         s_display_latched_pending = 0;
         s_display_configured = 1;
         s_framebuf = s_display_active.addr;
-        s_last_flip_vcount = s_vcount;
-        s_watchdog_bucket = 0;
+        hle_watchdog_note_present();
         /* Same arm as the sync=0 immediate flip: a NEXTFRAME (sync=1) flip is presented
          * here, so the capture must be armed before this present or the recorded frame
          * is not the presented one. Arming only in the sync=0 branch left every
@@ -20383,9 +21451,15 @@ void sr_vblank_tick(void) {
                 "WATCHDOG: no new frame presented for %u vblanks (~%us) - neutral "
                 "NO-NEW-FLIP observation, not by itself a hang/stall verdict\n",
                 diff, diff / 60);
+        uint32_t ready = 0u, delay = 0u, wait = 0u, spin = 0u;
+        extern void sched_watchdog_summary(uint32_t *, uint32_t *,
+                                           uint32_t *, uint32_t *);
+        sched_watchdog_summary(&ready, &delay, &wait, &spin);
         fprintf(stderr,
-                "BOOT_EVENT phase=stalled observation=no_new_flip no_frame_vblanks=%u seconds=%u\n",
-                diff, diff / 60);
+                "BOOT_EVENT phase=stalled observation=no_new_flip "
+                "no_frame_vblanks=%u seconds=%u ready=%u delay=%u wait=%u spin=%u\n",
+                diff, diff / 60u, ready, delay, wait, spin);
+        fflush(stderr);
         /* Which side of the display handoff stopped presenting: did the guest stop
          * asking for flips, or are its requests being refused? last_vcount vs
          * s_last_flip_vcount separates "no call since the last flip" from "calls
@@ -20816,6 +21890,7 @@ void ge_finish_latch_assist(void) {
 #define GE_LIST_SYNC_STALLED 3u     /* sceGeListSync(qid, 1) on a list stalled at its start address, read after a BUSY dequeue; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list stalled partway through is UNMEASURED and reads the same value */
 #define GE_LIST_SYNC_PAUSED 4u      /* sceGeListSync(qid, 1) on a list sceGeBreak(0) paused mid-draw; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list paused out of a stall, the only pause the runtime produces, is UNMEASURED and reads the same value */
 #define GE_DRAW_SYNC_STALLED 3u     /* sceGeDrawSync(1) with one list stalled at its start address, read after a BUSY dequeue; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list stalled partway through is UNMEASURED */
+#define GE_SYNC_DRAWING 2u          /* sceGeDrawSync(1) and sceGeListSync(qid, 1) on a list the GE is drawing, until its finish interrupt has been handled, then 0; PSP-3000 CASE=ge-timing C3, measured 2026-10-25 (issue #1296). Used by the opt-in SR_GE_TIMING model */
 #define GE_DRAW_SYNC_PAUSED 2u      /* sceGeDrawSync(1) with a list sceGeBreak(0) paused mid-draw; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list paused out of a stall is UNMEASURED */
 #define GE_ERROR_NO_ACTIVE_LIST 0x80000020u /* sceGeBreak(0) with no active list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
 #define GE_ERROR_INVALID_BREAK_MODE 0x80000107u /* sceGeBreak(-1), parameter untouched; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
@@ -20828,7 +21903,39 @@ enum {
     GE_LIST_COMPLETED = 2,
     GE_LIST_PAUSED = 3,
     GE_LIST_CANCELLED = 4,
+    GE_LIST_DRAWING = 5, /* reached its END; the opt-in timing model has not completed it yet */
 };
+
+/* Blocking sceGeListSync/sceGeDrawSync park the caller on this object and
+ * re-read the list table each time it is woken (#1374). Every transition that can
+ * end such a wait wakes it: a list reaching its END, a sceGeBreak(1) reset, and an
+ * enqueue that reuses a slot. */
+#define GE_SYNC_WAIT_OBJ 0x47455359u /* "GESY" */
+
+static void ge_sync_wake(void) { sched_wake(GE_SYNC_WAIT_OBJ); }
+
+/* Park the calling thread until the next GE list transition. Returns 1 to re-read the
+ * list table; 0 with *result set when the wait ended without one (a released or
+ * deleted wait) or cannot happen. A blocking sync that has no waitable guest thread,
+ * or runs with interrupts or dispatch disabled, can never be completed by a producer
+ * thread; the PSP result there is UNMEASURED, so it is refused visibly rather than
+ * reported as complete. */
+static int ge_sync_block(const char *api, uint32_t *result) {
+    if (!sched_guest_thread_running() || !sched_wait_permitted()) {
+        fprintf(stderr,
+                "UNSUPPORTED_IMPORT: %s blocking wait outside a waitable guest thread has no measured result; refused.\n",
+                api);
+        *result = HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        return 0;
+    }
+    sched_block_on(GE_SYNC_WAIT_OBJ);
+    uint32_t woken = 0;
+    if (sched_take_wake_result(&woken)) {
+        *result = woken;
+        return 0;
+    }
+    return 1;
+}
 
 typedef struct {
     uint32_t uid;
@@ -20839,9 +21946,165 @@ typedef struct {
     uint32_t cbarg;
     int status; // GE_LIST_*
     int executed; // the GE ran this list to its END; a later stall address must not re-run it
+    uint64_t done_us; // GE_LIST_DRAWING: modelled completion time (guest us)
+    uint64_t finish_seq; // GE_LIST_DRAWING: completion order between equal times
 } GeListInfo;
 
 static GeListInfo s_ge_lists[GE_LIST_MAX];
+
+/* ---- opt-in GE completion timing (SR_GE_TIMING=1, issue #1296) ----------------------------
+ *
+ * By default the runtime executes a display list synchronously inside the call that hands it
+ * to the GE (sceGeListEnQueue, sceGeListUpdateStallAddr, sceGeContinue) and completes it
+ * there: the finish callback runs and every later sync reads "done" with no guest time spent.
+ * On a PSP the GE draws while the CPU runs on, and sceGeDrawSync / sceGeListSync wait for it.
+ *
+ * With SR_GE_TIMING=1 a list that reached its END is GE_LIST_DRAWING until its completion
+ * interrupt has been handled:
+ *   - The GE is one serial timeline (s_ge_busy_until_ns).  Each list's fixed cost and each
+ *     executed chunk are charged from max(now, busy-until), so a list queued behind a busy GE
+ *     finishes after it.  Measured (CASE=ge-timing, C5/T15): a list enqueued while the GE is
+ *     busy finishes after the running one, and back-to-back lists show no measurable gap.
+ *   - The cost of each chunk is ge.c's GE time model, in GE clocks, measured on a PSP-3000
+ *     (CASE=ge-timing, PSP-GE-TIMING-001, PR #1321; issue #1296's third comment).  The GE clock
+ *     is the bus clock, so clocks become guest time at the emulated bus clock
+ *     (sr_power_bus_clock_mhz) at the moment the work is charged.
+ *   - Completion is an interrupt source the scheduler delivers (sched_set_ge_timing_hooks):
+ *     the finish callback runs from scheduler_service_pending(), in interrupt context,
+ *     never before the modelled time, due lists in completion order.  Measured (C1): the
+ *     finish callback runs at the end of the list.
+ *   - The peeks sceGeDrawSync(1) and sceGeListSync(qid, 1) read 2 until that interrupt has
+ *     been handled, then 0 (measured, C3).  sceGeDrawSync(0) and sceGeListSync(qid, 0) delay
+ *     the calling thread until the modelled time; the scheduler delivers the due completion
+ *     before the thread runs again, so they return after the callback (measured, C2/C6).
+ *     With CPU interrupts suspended the completion cannot be delivered and a blocking sync
+ *     returns once the time has passed: UNMEASURED.
+ * Known divergences: a SIGNAL with behaviour CONTINUE calls the signal callback mid-list on a
+ * PSP (measured, C4) but signal callbacks are not dispatched here; sceGeBreak(0) does not pause
+ * a drawing list (UNMEASURED); sceGeListEnQueueHead appends to the timeline instead of jumping
+ * the queue (UNMEASURED). */
+static int s_ge_timing = -1;              /* -1 until SR_GE_TIMING is read */
+static uint64_t s_ge_busy_until_ns;       /* the modelled GE is busy until this guest time */
+static unsigned s_ge_timing_drawing;      /* lists in GE_LIST_DRAWING */
+static uint64_t s_ge_timing_seq;          /* completion order between equal times */
+
+static int ge_timing_on(void) {
+    if (s_ge_timing < 0) {
+        const char *on = getenv("SR_GE_TIMING");
+        s_ge_timing = on && strcmp(on, "1") == 0;
+        ge_timing_set_enabled(s_ge_timing);
+        if (s_ge_timing)
+            fprintf(stderr, "GE_TIMING: on, GE time model measured on PSP-3000 (CASE=ge-timing, "
+                            "issue #1296), bus clock %u MHz\n", (unsigned)sr_power_bus_clock_mhz());
+    }
+    return s_ge_timing;
+}
+
+static uint64_t ge_timing_now_ns(void) {
+    sched_vtime_refresh();
+    return sched_vtime_us() * 1000u;
+}
+
+/* Put `clk` GE clocks of work on the timeline, at the current bus clock. */
+static void ge_timing_add_clk(double clk) {
+    uint32_t mhz = sr_power_bus_clock_mhz();
+    /* scePowerSetClockFrequency retains its request verbatim; a zero bus clock, which no PSP
+     * runs at, keeps the boot clock rather than dividing by zero. */
+    if (mhz == 0u) mhz = SR_POWER_BOOT_BUS_MHZ;
+    uint64_t now = ge_timing_now_ns();
+    if (s_ge_busy_until_ns < now) s_ge_busy_until_ns = now;
+    if (clk > 0.0) s_ge_busy_until_ns += (uint64_t)(clk * 1000.0 / (double)mhz + 0.5);  /* nearest ns */
+}
+
+/* Charge the chunk the last ge_run_list call executed. */
+static void ge_timing_charge_run(void) {
+    ge_timing_add_clk(ge_timing_run_clk());
+}
+
+/* The GE ran the list in `slot` to its END.  By default it completes now and its finish
+ * callback runs in this call, as it always has; with the model on it draws until the GE
+ * timeline reaches the end of its work. */
+static void ge_list_reached_end(CpuState *s, int slot) {
+    GeListInfo *l = &s_ge_lists[slot];
+    l->executed = 1;
+    if (ge_timing_on()) {
+        l->status = GE_LIST_DRAWING;
+        l->done_us = (s_ge_busy_until_ns + 999u) / 1000u;
+        l->finish_seq = ++s_ge_timing_seq;
+        s_ge_timing_drawing++;
+        if (ge_log_on())
+            fprintf(stderr, "GE_TIMING: list_id=0x%08x drawing until %llu us\n",
+                    l->uid, (unsigned long long)l->done_us);
+        return;
+    }
+    l->status = GE_LIST_COMPLETED;
+    ge_finish_callback(s, l->cbid, l->uid, l->cbarg);
+}
+
+/* Scheduler hook: the earliest completion time of a drawing list, else UINT64_MAX. */
+static uint64_t ge_timing_next_deadline_us(void) {
+    uint64_t next = UINT64_MAX;
+    if (!s_ge_timing_drawing) return next;
+    for (int i = 0; i < GE_LIST_MAX; i++)
+        if (s_ge_lists[i].status == GE_LIST_DRAWING && s_ge_lists[i].done_us < next)
+            next = s_ge_lists[i].done_us;
+    return next;
+}
+
+/* Scheduler hook, run as an interrupt episode: complete every list whose time has passed,
+ * in completion order, and run its finish callback. */
+static void ge_timing_service_due(void) {
+    while (s_ge_timing_drawing) {
+        uint64_t now = sched_vtime_us();
+        int best = -1;
+        for (int i = 0; i < GE_LIST_MAX; i++) {
+            const GeListInfo *l = &s_ge_lists[i];
+            if (l->status != GE_LIST_DRAWING || l->done_us > now) continue;
+            if (best < 0 || l->done_us < s_ge_lists[best].done_us ||
+                (l->done_us == s_ge_lists[best].done_us && l->finish_seq < s_ge_lists[best].finish_seq))
+                best = i;
+        }
+        if (best < 0) return;
+        GeListInfo *l = &s_ge_lists[best];
+        l->status = GE_LIST_COMPLETED;
+        s_ge_timing_drawing--;
+        if (ge_log_on())
+            fprintf(stderr, "GE_TIMING: list_id=0x%08x completed at %llu us (modelled %llu us)\n",
+                    l->uid, (unsigned long long)now, (unsigned long long)l->done_us);
+        ge_finish_callback(s_cpu, l->cbid, l->uid, l->cbarg);
+    }
+}
+
+/* The latest completion time still ahead of the guest clock among drawing lists (`slot` < 0:
+ * every list), else 0. */
+static uint64_t ge_timing_drawing_until(int slot) {
+    uint64_t now = ge_timing_now_ns() / 1000u;
+    uint64_t until = 0;
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        if (slot >= 0 && i != slot) continue;
+        if (s_ge_lists[i].status == GE_LIST_DRAWING && s_ge_lists[i].done_us > now &&
+            s_ge_lists[i].done_us > until)
+            until = s_ge_lists[i].done_us;
+    }
+    return until;
+}
+
+/* Delay the calling thread until no list (`slot` < 0) or the list in `slot` is still drawing.
+ * A caller with no thread (interrupt context) cannot be delayed and returns at once. */
+static void ge_timing_wait(int slot) {
+    uint64_t until;
+    while (sched_current_uid() != 0u && (until = ge_timing_drawing_until(slot)) != 0u)
+        sched_delay_current(until - sched_vtime_us());
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only switch for the model; resets the GE timeline. */
+void sr_hle_test_ge_timing(int on) {
+    s_ge_timing = on ? 1 : 0;
+    ge_timing_set_enabled(s_ge_timing);
+    s_ge_busy_until_ns = 0;
+}
+#endif
 
 static uint32_t h_GeGetCmd(CpuState *s) {
     (void)s;
@@ -20872,9 +22135,21 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
             break;
         }
     }
+    if (slot == -1 && ge_timing_on()) {
+        /* With lists left drawing, reuse a finished slot first so no completion is lost. */
+        for (int i = 0; i < GE_LIST_MAX; i++) {
+            if (s_ge_lists[i].status == GE_LIST_COMPLETED || s_ge_lists[i].status == GE_LIST_CANCELLED) {
+                slot = i;
+                break;
+            }
+        }
+    }
     if (slot == -1) {
         slot = 0;
+        /* The reused slot drops a list a blocking sync may be waiting on. */
+        ge_sync_wake();
     }
+    if (s_ge_lists[slot].status == GE_LIST_DRAWING) s_ge_timing_drawing--;
 
     s_ge_lists[slot].uid = list_id;
     s_ge_lists[slot].start_pc = list;
@@ -20884,6 +22159,7 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     s_ge_lists[slot].cbarg = cbarg;
     s_ge_lists[slot].executed = 0;
     s_ge_lists[slot].status = 1;
+    if (ge_timing_on()) ge_timing_add_clk(ge_timing_list_clk());
 
     /* stall == list means the ring buffer is empty — the game will fill it and advance the
      * stall via sceGeListUpdateStallAddr. Running it now would read uninitialized eDRAM;
@@ -20900,6 +22176,7 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
     g_ge_stall_addr = stall;
     uint32_t next_pc = ge_run_list(list, 0);
     g_ge_stall_addr = 0;
+    if (ge_timing_on()) ge_timing_charge_run();
 
     ge_enqueue_trace_result(s, "enqueue", list_id,
                             next_pc == 0 ? "done" : "stalled",
@@ -20910,11 +22187,9 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
                 list_id, list, stall, cbid, next_pc, next_pc == 0 ? "(DONE)" : "(stalled)");
 
     if (next_pc == 0) {
-        s_ge_lists[slot].executed = 1;
-        s_ge_lists[slot].status = 2; // completed
         SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
                                list_id, list, stall, next_pc);
-        ge_finish_callback(s, cbid, list_id, cbarg);
+        ge_list_reached_end(s, slot);
     } else {
         /* List stalled at a non-start stall — game will advance via UpdateStallAddr.
          * Do NOT drain here: that runs past the game's write head into uninitialized eDRAM. */
@@ -21003,6 +22278,7 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
 
     uint32_t next_pc = ge_run_list(s_ge_lists[slot].current_pc, 1); // 1 = resume
     g_ge_stall_addr = 0;
+    if (ge_timing_on()) ge_timing_charge_run();
 
     ge_enqueue_trace_result(s, "update_stall", list_id,
                             next_pc == 0 ? "done" : "stalled",
@@ -21013,14 +22289,13 @@ static uint32_t h_GeListUpdateStallAddr(CpuState *s) {
                 next_pc, next_pc == 0 ? "(COMPLETED)" : "(stalled)");
 
     if (next_pc == 0) {
-        s_ge_lists[slot].executed = 1;
-        s_ge_lists[slot].status = 2; // completed
         SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
                                list_id, s_ge_lists[slot].start_pc,
                                s_ge_lists[slot].stall_addr, next_pc);
         if (ge_log_on())
             fprintf(stderr, "GE_UPDATE_STALL: list DONE, firing finish callback cbid=%u\n", s_ge_lists[slot].cbid);
-        ge_finish_callback(s, s_ge_lists[slot].cbid, list_id, s_ge_lists[slot].cbarg);
+        ge_sync_wake();
+        ge_list_reached_end(s, slot);
     } else {
         s_ge_lists[slot].current_pc = next_pc;
     }
@@ -21035,30 +22310,42 @@ unsigned sr_hle_test_ge_late_stall_ignored(void) { return s_ge_late_stall_ignore
 static uint32_t h_GeListSync(CpuState *s) {
     uint32_t qid = A0;
     uint32_t syncType = A1;
+    int recorded = 0;
+rescan:
     for (int i = 0; i < GE_LIST_MAX; i++) {
         if (s_ge_lists[i].uid == qid) {
-            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
-                                   qid, s_ge_lists[i].start_pc,
-                                   s_ge_lists[i].stall_addr, syncType);
+            if (!recorded) {
+                SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
+                                       qid, s_ge_lists[i].start_pc,
+                                       s_ge_lists[i].stall_addr, syncType);
+                recorded = 1;
+            }
             if (ge_log_on())
                 fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
                         qid, syncType, s_ge_lists[i].status, s_ge_lists[i].current_pc);
+            if (s_ge_lists[i].status == GE_LIST_DRAWING) {
+                /* Opt-in timing model.  The peek reads 2 until the completion interrupt has
+                 * been handled (PSP-3000, CASE=ge-timing C3). */
+                if (syncType == 1) return GE_SYNC_DRAWING;
+                ge_timing_wait(i);
+                ge_transition_trace_check("listsync", s_vcount);
+                return 0;
+            }
             if (s_ge_lists[i].status == GE_LIST_COMPLETED) {
                 ge_transition_trace_check("listsync", s_vcount);
                 return 0;
             }
-            if (s_ge_lists[i].status == GE_LIST_STALLED) {
-                if (syncType == 1) return GE_LIST_SYNC_STALLED;
-                sched_delay_current(1000);
-                return 0;
-            }
-            if (s_ge_lists[i].status == GE_LIST_PAUSED) {
-                /* The blocking form (syncType 0) has no measured return value: probe.c
-                 * records that a blocking sync on a paused list did not return on
-                 * PSP-3000, so its value is left as it was. */
-                if (syncType == 1) return GE_LIST_SYNC_PAUSED;
-                sched_delay_current(1000);
-                return 2;
+            if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
+                if (syncType == 1)
+                    return s_ge_lists[i].status == GE_LIST_STALLED ? GE_LIST_SYNC_STALLED
+                                                                   : GE_LIST_SYNC_PAUSED;
+                /* The blocking form (PSPSDK pspge.h) returns once the list completes, so
+                 * the caller waits until a producer thread advances the stall address or
+                 * resumes the pause, or a reset removes the list. probe.c records that a
+                 * blocking sync on a paused list did not return on PSP-3000. */
+                uint32_t result = 0;
+                if (!ge_sync_block("sceGeListSync", &result)) return result;
+                goto rescan;
             }
             if (s_ge_lists[i].status == GE_LIST_CANCELLED) {
                 /* A sceGeBreak(1) reset removes the list, so its id is no longer valid:
@@ -21116,6 +22403,9 @@ static uint32_t h_GeEdramSetAddrTranslation(CpuState *s) {
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test-build-only reset to the measured boot width. */
 void sr_hle_test_ge_edram_reset(void) { s_ge_edram_width = GE_EDRAM_WIDTH_BOOT; }
+/* Test-build-only: empty the GE list table, so a blocking-sync test does not wait
+ * on a list an earlier test left stalled. */
+void sr_hle_test_ge_lists_reset(void) { memset(s_ge_lists, 0, sizeof(s_ge_lists)); }
 #endif
 static uint32_t h_GeDrawSync(CpuState *s) {
     /* sceGeDrawSync(mode): wait for (mode 0) or peek at (mode 1) the
@@ -21126,26 +22416,41 @@ static uint32_t h_GeDrawSync(CpuState *s) {
      * completed, status 3 is paused. Peek reports the measured sync status
      * (2 while any list is paused, 3 while any list is stalled, else 0;
      * PSP-GE-CONTROL-001, measured in the eligible 2026-10-15 re-run);
-     * wait yields once through the scheduler -- the same pacing h_GeListSync's
-     * mode-0 path uses -- and reports completion, because a stalled list advances
-     * only on the game's UpdateStallAddr, never on time, so blocking here could
-     * never complete it. Which non-{0,1} modes firmware accepts is UNMEASURED:
-     * anything but the documented peek takes the wait path. */
+     * wait parks the caller until no list is stalled or paused (#1374): a stalled
+     * list advances only when a guest thread calls sceGeListUpdateStallAddr, so the
+     * waiter blocks through the scheduler and lets that producer run. Which
+     * non-{0,1} modes firmware accepts is UNMEASURED: anything but the documented
+     * peek takes the wait path. */
     uint32_t mode = A0;
-    int busy = 0;
-    int paused = 0;
-    for (int i = 0; i < GE_LIST_MAX; i++) {
-        if (s_ge_lists[i].status == GE_LIST_STALLED) busy = 1;
-        if (s_ge_lists[i].status == GE_LIST_PAUSED) paused = 1;
-    }
-    SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW_SYNC,
-                           mode, (uint32_t)(busy || paused), 0u, 0u);
-    if (mode == 1u) {
-        if (paused) return GE_DRAW_SYNC_PAUSED;
-        return busy ? GE_DRAW_SYNC_STALLED : 0u;
+    int recorded = 0;
+    for (;;) {
+        /* Opt-in timing model: wait for every drawing list first.  The peek reads 2 until the
+         * completion interrupt has been handled (PSP-3000, CASE=ge-timing C3). A list a
+         * producer released while this call waited can be drawing on the next pass. */
+        if (s_ge_timing_drawing) {
+            if (mode == 1u) return GE_SYNC_DRAWING;
+            ge_timing_wait(-1);
+        }
+        int busy = 0;
+        int paused = 0;
+        for (int i = 0; i < GE_LIST_MAX; i++) {
+            if (s_ge_lists[i].status == GE_LIST_STALLED) busy = 1;
+            if (s_ge_lists[i].status == GE_LIST_PAUSED) paused = 1;
+        }
+        if (!recorded) {
+            SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW_SYNC,
+                                   mode, (uint32_t)(busy || paused), 0u, 0u);
+            recorded = 1;
+        }
+        if (mode == 1u) {
+            if (paused) return GE_DRAW_SYNC_PAUSED;
+            return busy ? GE_DRAW_SYNC_STALLED : 0u;
+        }
+        if (!busy && !paused) break;
+        uint32_t result = 0;
+        if (!ge_sync_block("sceGeDrawSync", &result)) return result;
     }
     ge_transition_trace_check("drawsync", s_vcount);
-    if (busy || paused) sched_delay_current(1000);
     return 0;
 }
 
@@ -21196,12 +22501,15 @@ static uint32_t h_GeBreak(CpuState *s) {
          * not that list's queue id. A reset with a paused list is UNMEASURED and returns 0 by
          * the same rule. */
         for (int i = 0; i < GE_LIST_MAX; i++) {
-            if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
+            if (s_ge_lists[i].status == GE_LIST_DRAWING) s_ge_timing_drawing--;
+            if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED ||
+                s_ge_lists[i].status == GE_LIST_DRAWING) {
                 s_ge_lists[i].status = GE_LIST_CANCELLED;
                 if (ge_log_on())
                     fprintf(stderr, "GE_BREAK: cancelled queue list_id=0x%08x\n", s_ge_lists[i].uid);
             }
         }
+        ge_sync_wake();
         return 0u;
     }
 }
@@ -21230,15 +22538,14 @@ static uint32_t h_GeContinue(CpuState *s) {
         g_ge_stall_addr = s_ge_lists[paused_slot].stall_addr;
         uint32_t next_pc = ge_run_list(s_ge_lists[paused_slot].current_pc, 1); /* 1 = resume */
         g_ge_stall_addr = 0;
+        if (ge_timing_on()) ge_timing_charge_run();
 
         if (next_pc == 0) {
-            s_ge_lists[paused_slot].executed = 1;
-            s_ge_lists[paused_slot].status = GE_LIST_COMPLETED;
             SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_FINISH,
                                    s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].start_pc,
                                    s_ge_lists[paused_slot].stall_addr, next_pc);
-            ge_finish_callback(s, s_ge_lists[paused_slot].cbid,
-                               s_ge_lists[paused_slot].uid, s_ge_lists[paused_slot].cbarg);
+            ge_sync_wake();
+            ge_list_reached_end(s, paused_slot);
         } else {
             s_ge_lists[paused_slot].current_pc = next_pc;
             s_ge_lists[paused_slot].status = GE_LIST_STALLED;
@@ -22469,6 +23776,15 @@ static uint32_t msg_pipe_blocking_common(CpuState *s, int is_send, int is_cb) {
             break;
         }
     }
+    /* A cancelled or deleted timed wait reports its remaining timeout, as the
+     * public PSPAutotests threads/msgpipe cancel and delete cases show
+     * (reference output, not measured here). */
+    if (has_timeout && (result == SCE_KERNEL_ERROR_WAIT_CANCEL ||
+                        result == SCE_KERNEL_ERROR_WAIT_DELETE)) {
+        sched_vtime_refresh();
+        uint64_t now = sched_vtime_us();
+        MEM_W32(toptr, now < end_time ? (uint32_t)(end_time - now) : 0u);
+    }
     /* All departures detach/reconsider through the same object hook. Only the
      * normal syscall boundary may preempt; owner abandonment never does here. */
     if (sched_wait_finish(waiter_scope)) sched_preempt();
@@ -22491,6 +23807,120 @@ static uint32_t h_ReceiveMsgPipeCB(CpuState *s) {
     return msg_pipe_blocking_common(s, 0, 1);
 }
 
+/* A waiter counts for Cancel and Refer only while it is its owner's active
+ * wait (blocked, or readied to retry and not yet run), so a thread counts at
+ * most once. An entry stays in p->waiters until its owner finishes, so one
+ * already released with a result (TERMINAL) is no longer a waiter. A
+ * callback-aware wait whose owner is running callbacks is paused, not
+ * waiting: it neither counts nor is cancelled, and resumes waiting when the
+ * callbacks return (the PPSSPP pause model; not measured here). A readied
+ * waiter has not transferred yet, whereas the PSP serves a waiter directly
+ * (docs/HARDWARE_ORACLE.md, PSP-B3-01), so a Cancel or Delete between the
+ * wake and the retry still releases it without its bytes. */
+static int msg_pipe_waiter_waiting(const MsgPipeWaiter *waiter) {
+    SrWaitState state;
+    uint32_t owner;
+    return sched_wait_state(waiter->invocation, &state, &owner) &&
+           (state == SR_WAIT_BLOCKED || state == SR_WAIT_NOTIFIED);
+}
+
+static void msg_pipe_count_waiters(const MsgPipe *p, uint32_t *send_out,
+                                   uint32_t *receive_out) {
+    uint32_t send = 0u, receive = 0u;
+    for (int i = 0; i < p->nwaiters; i++) {
+        if (!msg_pipe_waiter_waiting(&p->waiters[i])) continue;
+        if (p->waiters[i].is_send) send++;
+        else receive++;
+    }
+    *send_out = send;
+    *receive_out = receive;
+}
+
+static uint32_t h_CancelMsgPipe(CpuState *s) {
+    /* a0=uid, a1=numSendWaitThreads out, a2=numReceiveWaitThreads out (issue #1381).
+     * Both output pointers may be NULL; a non-NULL one that is not writable
+     * fails closed with ILLEGAL_ADDR before any waiter or buffer changes
+     * (project choice, as in h_CancelReceiveMbx). Every counted sender and
+     * receiver waiter is released with WAIT_CANCEL. The counts, the emptied
+     * buffer and the remaining timeout a cancelled timed waiter reports follow
+     * the public PSPAutotests threads/msgpipe cancel case and PPSSPP
+     * (reference output and emulator consensus, not measured here). */
+    MsgPipe *p = msg_pipe_find(A0);
+    if (!p) return SCE_KERNEL_ERROR_UNKNOWN_MPPID;
+    uint32_t sendp = A1;
+    uint32_t receivep = A2;
+    if ((sendp && !sr_guest_span_writable(sendp, 4u)) ||
+        (receivep && !sr_guest_span_writable(receivep, 4u)))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t senders, receivers;
+    msg_pipe_count_waiters(p, &senders, &receivers);
+    if (sendp) MEM_W32(sendp, senders);
+    if (receivep) MEM_W32(receivep, receivers);
+    p->read_pos = 0u;
+    p->write_pos = 0u;
+    p->count = 0u;
+    if (getenv("SR_MSGLOG"))
+        fprintf(stderr, "HLE: CancelMsgPipe uid=0x%x name='%s' send=%u receive=%u\n",
+                p->uid, p->name, senders, receivers);
+    /* No waiter: no wake result to latch. Completing an invocation records its
+     * result without detaching it, so p->waiters is stable during the walk. */
+    if (senders || receivers) {
+        for (int i = 0; i < p->nwaiters; i++)
+            if (msg_pipe_waiter_waiting(&p->waiters[i]))
+                (void)sched_wait_complete(p->waiters[i].invocation,
+                                          SCE_KERNEL_ERROR_WAIT_CANCEL);
+        sched_preempt();
+    }
+    return 0;
+}
+
+/* SceKernelMppInfo (PSPSDK pspthreadman.h) is 56 bytes: size(0), name[32](4),
+ * attr(36), bufSize(40), freeSize(44), numSendWaitThreads(48),
+ * numReceiveWaitThreads(52). */
+typedef struct {
+    uint32_t size;
+    char     name[32];
+    uint32_t attr;
+    int32_t  bufSize;
+    int32_t  freeSize;
+    int32_t  numSendWaitThreads;
+    int32_t  numReceiveWaitThreads;
+} SceKernelMppInfo;
+
+static uint32_t h_ReferMsgPipeStatus(CpuState *s) {
+    /* a0=uid, a1=info (issue #1381). Same size-field contract as
+     * h_ReferSemaStatus: a zero size writes nothing, otherwise
+     * min(size, sizeof) bytes are written after the whole span is checked. */
+    uint32_t info_addr = A1;
+    if (!info_addr || !sr_guest_span_readable(info_addr, 4u))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MsgPipe *p = msg_pipe_find(A0);
+    if (!p) return SCE_KERNEL_ERROR_UNKNOWN_MPPID;
+    uint32_t input_size = MEM_R32(info_addr);
+    if (input_size == 0u) return 0;
+    uint32_t write_len = input_size < (uint32_t)sizeof(SceKernelMppInfo)
+                         ? input_size : (uint32_t)sizeof(SceKernelMppInfo);
+    if (!sr_guest_span_writable(info_addr, write_len))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t senders, receivers;
+    msg_pipe_count_waiters(p, &senders, &receivers);
+    SceKernelMppInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = (uint32_t)sizeof(SceKernelMppInfo);
+    /* Copy only up to the terminator: create keeps the bytes after it as they
+     * were on the host stack, and they must not reach the guest. */
+    for (size_t i = 0; i + 1u < sizeof(info.name) && p->name[i]; i++)
+        info.name[i] = p->name[i];
+    info.attr = p->attr;
+    info.bufSize = (int32_t)p->capacity;
+    info.freeSize = (int32_t)(p->capacity - p->count);
+    info.numSendWaitThreads = (int32_t)senders;
+    info.numReceiveWaitThreads = (int32_t)receivers;
+    for (uint32_t i = 0; i < write_len; i++)
+        MEM_W8(info_addr + i, ((const uint8_t *)&info)[i]);
+    return 0;
+}
+
 /* Message-pipe NID registrations.  Shared by the production registry and the
  * executable HLE selftest so the test exercises the exact production mapping
  * rather than a duplicate registration list. */
@@ -22503,6 +23933,8 @@ static void hle_register_msgpipe_handlers(void) {
     sr_hle_register(0x7c41f2c2, "sceKernelSendMsgPipeCB", h_SendMsgPipeCB);
     sr_hle_register(0x74829b76, "sceKernelReceiveMsgPipe", h_ReceiveMsgPipe);
     sr_hle_register(0xfbfa697d, "sceKernelReceiveMsgPipeCB", h_ReceiveMsgPipeCB);
+    sr_hle_register(0x349b864d, "sceKernelCancelMsgPipe", h_CancelMsgPipe);
+    sr_hle_register(0x33be4024, "sceKernelReferMsgPipeStatus", h_ReferMsgPipeStatus);
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -22846,20 +24278,39 @@ static void hle_register_mbx_handlers(void) {
 
 /* ---- semaphores and event flags, backed by the scheduler's block/wake-on-object ---- */
 
+/* Semaphores, event flags and LwMutexes share this table, so every slot carries
+ * the kind of object it holds and every lookup names the kind it accepts
+ * (issue #1389). A UID of another kind is the calling API's own unknown-ID
+ * error, as for an unknown or deleted UID: UNKNOWN_SEMID, UNKNOWN_EVFID or
+ * LWMUTEX_NOT_FOUND. Before this, SetEventFlag on a semaphore UID ORed bits
+ * into the semaphore's slot and DeleteEventFlag freed the semaphore. The kind also
+ * lets sceKernelGetThreadmanIdList list one class at a time. */
 typedef struct {
     int used; uint32_t uid; int count, maxc; uint32_t pattern;
     uint32_t attr, init_pattern;   /* event flags: create-time values for Refer */
     int initc;                     /* semaphores: create-time count for CancelSema(-1); LwMutex initialCount */
     uint32_t workarea;             /* LwMutex workarea address */
     char name[32];                 /* LwMutex name */
+    int kind;                      /* SYNC_KIND_*: the object class sharing this table */
 } Sync;
+enum { SYNC_KIND_SEMA = 1, SYNC_KIND_EVENT_FLAG, SYNC_KIND_LWMUTEX };
 static Sync s_sync[128];
-static Sync *sync_find(uint32_t uid) {
-    for (int i = 0; i < 128; i++) if (s_sync[i].used && s_sync[i].uid == uid) return &s_sync[i];
+static Sync *sync_find(uint32_t uid, int kind) {
+    for (int i = 0; i < 128; i++)
+        if (s_sync[i].used && s_sync[i].uid == uid && s_sync[i].kind == kind) return &s_sync[i];
     return NULL;
 }
-static Sync *sync_new(void) {
-    for (int i = 0; i < 128; i++) if (!s_sync[i].used) { s_sync[i].used = 1; s_sync[i].uid = sr_alloc_uid(); return &s_sync[i]; }
+/* The slot is cleared, so no field of a previous object (of any kind) survives
+ * into the new one. */
+static Sync *sync_new(int kind) {
+    for (int i = 0; i < 128; i++)
+        if (!s_sync[i].used) {
+            memset(&s_sync[i], 0, sizeof(s_sync[i]));
+            s_sync[i].used = 1;
+            s_sync[i].kind = kind;
+            s_sync[i].uid = sr_alloc_uid();
+            return &s_sync[i];
+        }
     return NULL;
 }
 
@@ -22870,13 +24321,12 @@ static uint32_t h_CreateSema(CpuState *s) {
      * maxCount == 0 are accepted on hardware, so no validation is added for
      * either. */
     if (A1 & ~0x3ffu) return 0x80020191u;
-    Sync *m = sync_new(); if (!m) return 0x80020000;
+    Sync *m = sync_new(SYNC_KIND_SEMA); if (!m) return 0x80020000;
     m->count = (int)A2; m->maxc = (int)A3;
     /* PSP-B2-01 (psp-hw-20260917): CancelSema(-1) resets the count to the
      * create-time initial count, not to zero. */
     m->initc = (int)A2;
-    /* Create-time name and attr for ReferSemaStatus. sync_new does not clear
-     * these fields, so both are written on every create (an unreadable name
+    /* Create-time name and attr for ReferSemaStatus (an unreadable name
      * pointer yields an empty name, never a failed create). */
     m->attr = A1;
     guest_cstr(A0, m->name, sizeof(m->name));
@@ -22954,7 +24404,7 @@ static void ensure_runtime_sync_callbacks(CpuState *s) {
 
     if (mode == 1) {
         uint32_t sema = MEM_R32(config_base + 0x0cu);
-        if (!sync_find(sema)) {
+        if (!sync_find(sema, SYNC_KIND_SEMA)) {
             CpuState call = *s;
             call.r[4] = sema_name_ptr;
             call.r[5] = 0;
@@ -22987,7 +24437,7 @@ static void ensure_runtime_sync_callbacks(CpuState *s) {
 static uint32_t h_DeleteSema(CpuState *s) {
     /* PSP-B1-01 (psp-hw-20260917): unknown or deleted semaphore id is
      * UNKNOWN_SEMID. */
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    Sync *m = sync_find(A0, SYNC_KIND_SEMA); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     /* PSP-B2-01 (psp-hw-20260917): deleting a semaphore with a waiter succeeds
      * and the waiter leaves with WAIT_DELETE (0x800201B5). With no waiter there
      * is nothing to wake and no wake result to latch (a stale result would be
@@ -23051,7 +24501,7 @@ static uint32_t sema_wait_entry(const char *who, uint32_t uid, int need, Sync **
     Sync *m = NULL;
     if (!sched_wait_permitted()) {
         err = SCE_KERNEL_ERROR_CAN_NOT_WAIT;
-    } else if ((m = sync_find(uid)) == NULL) {
+    } else if ((m = sync_find(uid, SYNC_KIND_SEMA)) == NULL) {
         err = SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     } else if (need <= 0 || need > m->maxc) {
         err = SCE_KERNEL_ERROR_ILLEGAL_COUNT;
@@ -23114,7 +24564,7 @@ static uint32_t h_WaitSema(CpuState *s) {
             uint32_t woken = 0;
             if (sched_take_wake_result(&woken)) return woken;
         }
-        m = sync_find(uid); if (!m) return 0x80020000;
+        m = sync_find(uid, SYNC_KIND_SEMA); if (!m) return 0x80020000;
     }
     m->count -= need;
     return 0;
@@ -23136,7 +24586,7 @@ static uint32_t h_WaitSemaCB(CpuState *s) {
     while (m->count < need) {
         if (sr_thread_has_pending_callbacks(sched_current_uid())) {
             sr_thread_dispatch_callbacks();
-            m = sync_find(uid); if (!m) return 0x80020000;
+            m = sync_find(uid, SYNC_KIND_SEMA); if (!m) return 0x80020000;
             sched_vtime_refresh();
             continue;
         }
@@ -23173,7 +24623,7 @@ static uint32_t h_WaitSemaCB(CpuState *s) {
             uint32_t woken = 0;
             if (sched_take_wake_result(&woken)) return woken;
         }
-        m = sync_find(uid); if (!m) return 0x80020000;
+        m = sync_find(uid, SYNC_KIND_SEMA); if (!m) return 0x80020000;
         sched_vtime_refresh();
     }
     m->count -= need;
@@ -23182,7 +24632,7 @@ static uint32_t h_WaitSemaCB(CpuState *s) {
 static uint32_t h_SignalSema(CpuState *s) {
     /* PSP-B1-01 (psp-hw-20260917): unknown or deleted semaphore id is
      * UNKNOWN_SEMID, replacing the generic 0x80020000 seam. */
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    Sync *m = sync_find(A0, SYNC_KIND_SEMA); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     int signals = (int)A1;
     int64_t new_count = (int64_t)m->count + signals;
     /* PSP-B1-01 (psp-hw-20260917): an overflow past maxCount rejects with
@@ -23197,7 +24647,7 @@ static uint32_t h_SignalSema(CpuState *s) {
  * blocking forms use, so the family cannot drift to two different spellings of
  * one error. sceKernelPollSema has no context gate because it never blocks. */
 static uint32_t h_PollSema(CpuState *s) {
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    Sync *m = sync_find(A0, SYNC_KIND_SEMA); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     int need = (int)A1;
     /* PSP-B1-01 (psp-hw-20260917): count validation answers ILLEGAL_COUNT even
      * on an empty semaphore; SEMA_ZERO is only for a valid count it cannot
@@ -23227,7 +24677,7 @@ static uint32_t h_ReferSemaStatus(CpuState *s) {
     uint32_t info_addr = A1;
     if (!info_addr || !sr_guest_span_readable(info_addr, 4))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    Sync *m = sync_find(uid);
+    Sync *m = sync_find(uid, SYNC_KIND_SEMA);
     if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     uint32_t input_size = MEM_R32(info_addr);
     if (input_size == 0) return 0;
@@ -23258,7 +24708,7 @@ static uint32_t h_ReferSemaStatus(CpuState *s) {
  * registered. This reads the real production Sync entry and is compiled only
  * into the test executable. It adds no field and changes no layout. */
 int sr_hle_test_sema_state(uint32_t uid, int *count_out, int *max_out) {
-    Sync *m = sync_find(uid);
+    Sync *m = sync_find(uid, SYNC_KIND_SEMA);
     if (!m) return 0;
     if (count_out) *count_out = m->count;
     if (max_out)   *max_out   = m->maxc;
@@ -23368,7 +24818,7 @@ static uint32_t h_CreateLwMutex(CpuState *s) {
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;   /* ILLEGAL_ADDR */
     /* PSP-B1-01: a non-recursive mutex cannot start with more than one lock. */
     if (!(attr & LWMUTEX_ATTR_RECURSIVE) && initial > 1) return 0x800201bdu;
-    Sync *m = sync_new(); if (!m) return 0x80020000;
+    Sync *m = sync_new(SYNC_KIND_LWMUTEX); if (!m) return 0x80020000;
     m->workarea = wa;
     m->attr = attr;
     m->initc = initial;
@@ -23389,7 +24839,7 @@ static uint32_t h_DeleteLwMutex(CpuState *s) {
     uint32_t wa = A0;
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;
     uint32_t uid = MEM_R32(wa + LWMUTEX_UID);
-    Sync *m = sync_find(uid);
+    Sync *m = sync_find(uid, SYNC_KIND_LWMUTEX);
     /* PSP-B1-01: deleting an already-deleted workarea is NOT_FOUND. */
     if (!m) return SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND;
     m->used = 0;
@@ -23457,7 +24907,7 @@ static uint32_t h_ReferLwMutexStatus(CpuState *s) {
     uint32_t info_addr = A1;
     if (!lwmutex_workarea_ok(wa)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     uint32_t uid = MEM_R32(wa + LWMUTEX_UID);
-    Sync *m = sync_find(uid);
+    Sync *m = sync_find(uid, SYNC_KIND_LWMUTEX);
     if (!m) return SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND;
     return lwmutex_refer_status(m, info_addr);
 }
@@ -23466,7 +24916,7 @@ static uint32_t h_ReferLwMutexStatus(CpuState *s) {
 static uint32_t h_ReferLwMutexStatusByID(CpuState *s) {
     uint32_t uid = A0;
     uint32_t info_addr = A1;
-    Sync *m = sync_find(uid);
+    Sync *m = sync_find(uid, SYNC_KIND_LWMUTEX);
     if (!m) return SCE_KERNEL_ERROR_LWMUTEX_NOT_FOUND;
     return lwmutex_refer_status(m, info_addr);
 }
@@ -23496,7 +24946,7 @@ static int lwmutex_acquire_timeout(uint32_t wa, int count, int blocking, uint32_
         has_timeout = 1;
     }
     for (;;) {
-        if (!sync_find(MEM_R32(wa + LWMUTEX_UID))) return LWMUTEX_GONE;
+        if (!sync_find(MEM_R32(wa + LWMUTEX_UID), SYNC_KIND_LWMUTEX)) return LWMUTEX_GONE;
         int level = (int)MEM_R32(wa + LWMUTEX_LOCK_LEVEL);
         uint32_t owner = MEM_R32(wa + LWMUTEX_LOCK_THREAD);
         if (level == 0) {
@@ -23546,7 +24996,7 @@ static int lwmutex_acquire_timeout(uint32_t wa, int count, int blocking, uint32_
         }
         uint32_t waiters = MEM_R32(wa + LWMUTEX_NUM_WAIT);
         if (waiters) MEM_W32(wa + LWMUTEX_NUM_WAIT, waiters - 1u);
-        if (!sync_find(uid)) { lww_remove_thread(cur); return LWMUTEX_GONE; }
+        if (!sync_find(uid, SYNC_KIND_LWMUTEX)) { lww_remove_thread(cur); return LWMUTEX_GONE; }
         /* PSP-B2-01 (psp-hw-20260917): the unlocker hands ownership directly to
          * the waiter, so a woken waiter that now owns the mutex takes it. */
         if (MEM_R32(wa + LWMUTEX_LOCK_THREAD) == cur) {
@@ -23671,7 +25121,7 @@ static uint32_t h_CancelSema(CpuState *s) {
      * count, n <= max sets it, n > max rejects with ILLEGAL_COUNT (and numWait
      * stays untouched). Wake waiters with WAIT_CANCEL and report their number;
      * a NULL numWait is allowed. */
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
+    Sync *m = sync_find(A0, SYNC_KIND_SEMA); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_SEMID;
     int new_count = (int32_t)A1;
     if (new_count > m->maxc) return SCE_KERNEL_ERROR_ILLEGAL_COUNT;
     if (hle_log_on())
@@ -23694,7 +25144,7 @@ static uint32_t h_CancelEventFlag(CpuState *s) {
     /* a0=evid, a1=newPattern, a2=numWaitThreads out (stack_arg 0).
      * PSP-B2-01 (psp-hw-20260917): Cancel sets the pattern, reports the waiter
      * count and wakes every waiter with WAIT_CANCEL. */
-    Sync *m = sync_find(A0); if (!m) return 0x8002019au;   /* UNKNOWN_EVFID */
+    Sync *m = sync_find(A0, SYNC_KIND_EVENT_FLAG); if (!m) return 0x8002019au;   /* UNKNOWN_EVFID */
     int waiters = sched_count_waiters(A0);
     m->pattern = A1;
     uint32_t nump = stack_arg(s, 0);
@@ -24253,27 +25703,91 @@ static uint32_t h_ReferMutexStatus(CpuState *s) {
 
 static uint32_t h_CreateEventFlag(CpuState *s) {
     /* a0=name, a1=attr, a2=initPattern, a3=opt. */
-    Sync *m = sync_new(); if (!m) return 0x80020000;
+    Sync *m = sync_new(SYNC_KIND_EVENT_FLAG); if (!m) return 0x80020000;
     m->pattern = A2;
     m->attr = A1;
     m->init_pattern = A2;
     return m->uid;
 }
-/* PSP-B1-01: unknown or deleted event-flag ids are UNKNOWN_EVFID. */
+/* PSP-B1-01: unknown or deleted event-flag ids are UNKNOWN_EVFID. PSPAutotests
+ * tests/threads/events gives Clear (clear.expected L15-L19), Wait
+ * (wait.expected L35) and Refer (refer.expected L23-L25) the same code, and a
+ * UID of another kind in the shared table answers it too (see sync_find). */
 #define SCE_KERNEL_ERROR_UNKNOWN_EVFID 0x8002019au
+static Sync *evf_find(uint32_t uid) { return sync_find(uid, SYNC_KIND_EVENT_FLAG); }
+
+/* Event-flag waiter records (issue #1389). A thread blocked in
+ * sceKernelWaitEventFlag[CB] holds one record naming the flag and its outBits
+ * address, so DeleteEventFlag can write each waiter's outBits when it ends the
+ * wait. A record is used only while its thread is still blocked on that flag
+ * (evf_waiter_live): a thread terminated in the wait leaves a dead record that
+ * is never written through and is reclaimed. A thread blocks on one object at a
+ * time, so live records never outnumber the scheduler's 128 threads. */
+#define EVF_WAITER_MAX 128
+typedef struct { uint32_t evf, thread, outp; int active; } EvfWaiter;
+static EvfWaiter s_evf_waiters[EVF_WAITER_MAX];
+
+static int evf_waiter_live(const EvfWaiter *w) {
+    SrThreadRunStatus rs;
+    /* PSP-B3-01 (psp-hw-20260917): an event-flag wait is waitType 4. */
+    return w->active && sched_thread_run_status(w->thread, &rs) == 0 &&
+           rs.waitType == 4u && rs.waitId == w->evf;
+}
+static void evf_waiter_end(void) {
+    uint32_t self = sched_current_uid();
+    for (int i = 0; i < EVF_WAITER_MAX; i++)
+        if (s_evf_waiters[i].active && s_evf_waiters[i].thread == self) s_evf_waiters[i].active = 0;
+}
+static void evf_waiter_begin(uint32_t evf, uint32_t outp) {
+    evf_waiter_end();
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < EVF_WAITER_MAX; i++)
+            if (!s_evf_waiters[i].active) {
+                s_evf_waiters[i] = (EvfWaiter){evf, sched_current_uid(), outp, 1};
+                return;
+            }
+        for (int i = 0; i < EVF_WAITER_MAX; i++)
+            if (!evf_waiter_live(&s_evf_waiters[i])) s_evf_waiters[i].active = 0;
+    }
+    fprintf(stderr, "HLE: event-flag waiter table full; uid=0x%x outBits=0x%08x not recorded\n",
+            evf, outp);
+}
+
 static uint32_t h_DeleteEventFlag(CpuState *s) {
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
-    m->used = 0; return 0;
+    uint32_t uid = A0;
+    Sync *m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
+    uint32_t pattern = m->pattern;
+    m->used = 0;
+    /* PSPAutotests tests/threads/events: the delete returns 0 and a thread
+     * blocked on the flag leaves its wait with WAIT_DELETE (0x800201B5), the
+     * plain form (wait.expected L31) and the CB form (delete.expected L5-L7)
+     * alike. wait.expected L31 also shows outBits written: 00000000, over
+     * 0xDEADBEEF, from a flag whose pattern is 0. Writing the pattern at
+     * deletion follows the measured Cancel rule (PSP-B2-01: the canceller's
+     * pattern) and PPSSPP; a nonzero pattern at deletion is unmeasured. */
+    for (int i = 0; i < EVF_WAITER_MAX; i++) {
+        EvfWaiter *w = &s_evf_waiters[i];
+        if (!w->active || w->evf != uid) continue;
+        if (evf_waiter_live(w) && w->outp && sr_guest_span_writable(w->outp, 4u))
+            MEM_W32(w->outp, pattern);
+        w->active = 0;
+    }
+    /* No waiter: no wake result to latch (see h_DeleteSema). */
+    if (sched_count_waiters(uid)) {
+        sched_wake_with_result(uid, SCE_KERNEL_ERROR_WAIT_DELETE);
+        sched_preempt();   /* delete.expected L6: a stronger waiter runs at once */
+    }
+    return 0;
 }
 static uint32_t h_SetEventFlag(CpuState *s) {
-    Sync *m = sync_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
+    Sync *m = evf_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     m->pattern |= A1; sched_wake(A0); sched_preempt(); return 0;
 }
 static uint32_t h_ClearEventFlag(CpuState *s) {
     /* sceKernelClearEventFlag(evfid, bits): A1 is the mask of bits to KEEP
      * (currentPattern &= bits), matching PSP/PPSSPP. It is NOT a mask of bits
      * to remove — inverting A1 here inverts the contract. */
-    Sync *m = sync_find(A0); if (!m) return 0x80020000;
+    Sync *m = evf_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     m->pattern = sr_evf_clear_pattern(m->pattern, A1); return 0;
 }
 static uint32_t h_WaitEventFlag(CpuState *s) {
@@ -24281,7 +25795,7 @@ static uint32_t h_WaitEventFlag(CpuState *s) {
     uint32_t uid = A0, bits = A1, mode = A2, outp = A3, toptr = stack_arg(s, 0);
     uint32_t rc = sr_evf_check_wait_args(bits, mode);
     if (rc) return rc;
-    Sync *m = sync_find(uid); if (!m) return 0x80020000;
+    Sync *m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     if (hle_log_on())
         fprintf(stderr, "HLE: WaitEventFlag uid=0x%x bits=0x%x pattern=0x%x (from 0x%x)\n", uid, bits, m->pattern, sched_current_uid());
     /* Third in line, and the ordering is the whole point. sr_evf_check_wait_args()
@@ -24319,27 +25833,36 @@ static uint32_t h_WaitEventFlag(CpuState *s) {
                     return 0x800201A8;
                 }
             }
-            if (sched_block_on_timeout(uid, usec)) {
+            evf_waiter_begin(uid, outp);
+            int timed_out = sched_block_on_timeout(uid, usec);
+            evf_waiter_end();
+            if (timed_out) {
                 /* PSP-B2-01 (psp-hw-20260917): an expired wait writes the
                  * remaining timeout (0) and reports the current pattern. */
                 MEM_W32(toptr, 0u);
-                if (outp) MEM_W32(outp, m->pattern);
+                m = evf_find(uid);
+                if (outp && m) MEM_W32(outp, m->pattern);
                 return 0x800201A8;
             }
         } else {
+            evf_waiter_begin(uid, outp);
             sched_block_on(uid);
+            evf_waiter_end();
         }
         /* PSP-B2-01 (psp-hw-20260917): a cancelled wait answers WAIT_CANCEL
          * (0x800201A9) with outBits = the canceller's new pattern. */
         {
             uint32_t woken = 0;
             if (sched_take_wake_result(&woken)) {
-                m = sync_find(uid);
+                m = evf_find(uid);
                 if (woken == 0x800201a9u && outp && m) MEM_W32(outp, m->pattern);
                 return woken;
             }
         }
-        m = sync_find(uid); if (!m) return 0x80020000;
+        /* Gone without a wake result: deleted while this thread sat READY after
+         * another wake. The flag existed when the wait began, so the wait ends
+         * as a deleted one (WAIT_DELETE above), not with the generic seam. */
+        m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
     }
     if (outp) MEM_W32(outp, m->pattern);         /* outBits = pre-consume pattern */
     m->pattern = sr_evf_consume(m->pattern, bits, mode);
@@ -24350,7 +25873,7 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
     uint32_t uid = A0, bits = A1, mode = A2, outp = A3, toptr = stack_arg(s, 0);
     uint32_t rc = sr_evf_check_wait_args(bits, mode);
     if (rc) return rc;
-    Sync *m = sync_find(uid); if (!m) return 0x80020000;
+    Sync *m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     if (hle_log_on())
         fprintf(stderr, "HLE: WaitEventFlagCB uid=0x%x bits=0x%x pattern=0x%x (from 0x%x)\n", uid, bits, m->pattern, sched_current_uid());
     /* Same ordering as the non-CB form, and ahead of the clock sample and callback
@@ -24371,7 +25894,9 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
     while (!sr_evf_matches(m->pattern, bits, mode)) {
         if (sr_thread_has_pending_callbacks(sched_current_uid())) {
             sr_thread_dispatch_callbacks();
-            m = sync_find(uid); if (!m) return 0x80020000;
+            /* Deleted while this waiter ran its callbacks: the wait ends as a
+             * deleted one, as PPSSPP ends it (unmeasured on hardware). */
+            m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
             sched_vtime_refresh();
             continue;
         }
@@ -24389,19 +25914,24 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
             sched_set_current_cb_wait(1);
             /* PSP-B3-01 (psp-hw-20260917): evf CB waits report waitType 4. */
             sched_set_current_wait_kind(4);
+            evf_waiter_begin(uid, outp);
             int timed_out = sched_block_on_timeout(uid, remaining);
+            evf_waiter_end();
             sched_set_current_cb_wait(0);
             if (timed_out) {
                 /* PSP-B2-01 (psp-hw-20260917): same remaining-0 contract after
                  * a real timed block. */
                 MEM_W32(toptr, 0u);
-                if (outp) MEM_W32(outp, m->pattern);
+                m = evf_find(uid);
+                if (outp && m) MEM_W32(outp, m->pattern);
                 return SCE_KERNEL_ERROR_WAIT_TIMEOUT;
             }
         } else {
             sched_set_current_cb_wait(1);
             sched_set_current_wait_kind(4);
+            evf_waiter_begin(uid, outp);
             sched_block_on(uid);
+            evf_waiter_end();
             sched_set_current_cb_wait(0);
         }
         /* PSP-B2-01 (psp-hw-20260917): a cancelled wait answers WAIT_CANCEL
@@ -24409,12 +25939,12 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
         {
             uint32_t woken = 0;
             if (sched_take_wake_result(&woken)) {
-                m = sync_find(uid);
+                m = evf_find(uid);
                 if (woken == 0x800201a9u && outp && m) MEM_W32(outp, m->pattern);
                 return woken;
             }
         }
-        m = sync_find(uid); if (!m) return 0x80020000;
+        m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;   /* as in h_WaitEventFlag */
         sched_vtime_refresh();
     }
     if (outp) MEM_W32(outp, m->pattern);
@@ -24425,7 +25955,7 @@ static uint32_t h_PollEventFlag(CpuState *s) {
     uint32_t uid = A0, bits = A1, mode = A2, outp = A3;
     uint32_t rc = sr_evf_check_poll_args(bits, mode);
     if (rc) return rc;
-    Sync *m = sync_find(uid); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
+    Sync *m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     if (!sr_evf_matches(m->pattern, bits, mode)) {
         if (outp) MEM_W32(outp, m->pattern);
         return SR_EVF_ERR_COND;
@@ -24439,7 +25969,7 @@ static uint32_t h_PollEventFlag(CpuState *s) {
  * wrote it. PSP-B1-01: attr and initPattern are the create-time values; waiters are not
  * tracked here. */
 static uint32_t h_ReferEventFlagStatus(CpuState *s) {
-    Sync *m = sync_find(A0); if (!m) return 0x80020000;
+    Sync *m = evf_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
     uint32_t info = A1; if (!info) return 0x80020000;
     for (int i = 0; i < 32; i++) MEM_W8(info + 4 + (uint32_t)i, 0);
     MEM_W32(info + 36, m->attr);
@@ -24447,6 +25977,110 @@ static uint32_t h_ReferEventFlagStatus(CpuState *s) {
     MEM_W32(info + 44, m->pattern);
     MEM_W32(info + 48, 0);
     return 0;
+}
+
+/* ---- sceKernelGetThreadmanIdList(type, readbuf, readbufsize, idcount) ----
+ *
+ * Signature and list classes: the public PSPSDK (pspthreadman.h, SceKernelIdListType);
+ * readbufsize counts SceUIDs. The call writes min(readbufsize, total) uids of the class to
+ * readbuf, stores the total in *idcount when idcount is not NULL, and returns the number
+ * written (issue #1288). Every argument check runs before any guest write.
+ *
+ * UNMEASURED on a PSP: the list order (table order here), whether the return of a short
+ * buffer is the number written or the total (the PSPSDK leaves it open), and the error
+ * codes, which are the PSPSDK pspkerror.h names for each case: ILLEGAL_TYPE for a type
+ * outside SceKernelIdListType, ILLEGAL_SIZE for a negative readbufsize, ILLEGAL_ADDR for
+ * an unwritable readbuf span or idcount. Thread event handlers are a PSPSDK class this
+ * runtime does not track (their registration is not implemented), so that type is a named
+ * refusal, never an empty list. */
+#define THREADMAN_ERROR_ILLEGAL_TYPE 0x800201bbu   /* SCE_KERNEL_ERROR_ILLEGAL_TYPE */
+
+typedef struct {
+    uint32_t readbuf;
+    uint32_t cap;      /* uids readbuf holds */
+    uint32_t total;    /* uids of the class */
+} ThreadmanIdSink;
+
+static void threadman_id_sink(uint32_t uid, void *ctx) {
+    ThreadmanIdSink *sink = (ThreadmanIdSink *)ctx;
+    if (sink->total < sink->cap) MEM_W32(sink->readbuf + 4u * sink->total, uid);
+    sink->total++;
+}
+
+/* The classes the HLE object tables own. Returns 1 when `tmid` is one of them. */
+static int hle_visit_threadman_ids(int tmid, SrUidVisitor visit, void *ctx) {
+    switch (tmid) {
+        case SR_TMID_SEMAPHORE:
+        case SR_TMID_EVENT_FLAG: {
+            const int kind = tmid == SR_TMID_SEMAPHORE ? SYNC_KIND_SEMA : SYNC_KIND_EVENT_FLAG;
+            for (int i = 0; i < 128; i++)
+                if (s_sync[i].used && s_sync[i].kind == kind) visit(s_sync[i].uid, ctx);
+            return 1;
+        }
+        case SR_TMID_MBOX:
+            for (int i = 0; i < MBX_MAX; i++)
+                if (s_mbx[i].used) visit(s_mbx[i].uid, ctx);
+            return 1;
+        case SR_TMID_VPL:   /* vpl_lookup: uid = 0x600 + slot */
+            for (uint32_t i = 0; i < VPL_MAX; i++)
+                if (s_vpls[i].used) visit(0x600u + i, ctx);
+            return 1;
+        case SR_TMID_FPL:   /* fpl_lookup: uid = 0x500 + slot */
+            for (uint32_t i = 0; i < FPL_MAX; i++)
+                if (s_fpls[i].used) visit(0x500u + i, ctx);
+            return 1;
+        case SR_TMID_MPIPE:
+            for (int i = 0; i < MSG_PIPE_MAX; i++)
+                if (s_msg_pipes[i].used) visit(s_msg_pipes[i].uid, ctx);
+            return 1;
+        case SR_TMID_CALLBACK:
+            for (size_t i = 0; i < s_callbacks_len; i++)
+                if (s_callbacks[i].used) visit(s_callbacks[i].uid, ctx);
+            return 1;
+        case SR_TMID_VTIMER:
+            for (int i = 0; i < VTIMER_MAX; i++)
+                if (s_vtimers[i].used) visit(s_vtimers[i].uid, ctx);
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int threadman_id_type_listed(int tmid) {
+    return (tmid >= SR_TMID_THREAD && tmid <= SR_TMID_VTIMER) ||
+           (tmid >= SR_TMID_SLEEP_THREAD && tmid <= SR_TMID_DORMANT_THREAD);
+}
+
+static uint32_t h_GetThreadmanIdList(CpuState *s) {
+    const int tmid = (int)(int32_t)A0;
+    const uint32_t readbuf = A1;
+    const int32_t readbufsize = (int32_t)A2;
+    const uint32_t idcount = A3;
+    if (!threadman_id_type_listed(tmid)) return THREADMAN_ERROR_ILLEGAL_TYPE;
+    if (tmid == SR_TMID_THREAD_EVENT_HANDLER) {
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelGetThreadmanIdList type %d "
+                        "(ThreadEventHandler): thread event handlers are not modelled, so "
+                        "no list is given\n", tmid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (readbufsize < 0) return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
+    if (readbufsize > 0) {
+        const uint64_t bytes = (uint64_t)(uint32_t)readbufsize * 4u;
+        if (!readbuf || bytes > UINT32_MAX || !sr_guest_span_writable(readbuf, (uint32_t)bytes))
+            return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    }
+    if (idcount && !sr_guest_span_writable(idcount, 4u)) return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+
+    ThreadmanIdSink sink = { readbuf, (uint32_t)readbufsize, 0u };
+    if (!sched_visit_threadman_ids(tmid, threadman_id_sink, &sink) &&
+        !hle_visit_threadman_ids(tmid, threadman_id_sink, &sink)) {
+        /* A listed PSPSDK class with no owner here: fail closed by name. */
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelGetThreadmanIdList type %d has no "
+                        "object table in this runtime\n", tmid);
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    if (idcount) MEM_W32(idcount, sink.total);
+    return sink.total < sink.cap ? sink.total : sink.cap;
 }
 
 static void hle_register_thread_exit_handlers(void) {
@@ -24475,6 +26109,8 @@ static void hle_register_selftest_oracle_handlers(void) {
     sr_hle_register(0x349d6d6c, "sceKernelCheckCallback", h_CheckCallback);
     sr_hle_register(0xba4051d6, "sceKernelCancelCallback", h_CancelCallback);
     sr_hle_register(0x2a3d44ff, "sceKernelGetCallbackCount", h_GetCallbackCount);
+    /* The quit-request selftest (#1392) registers its exit callback through this NID. */
+    sr_hle_register(0x4ac57943, "sceKernelRegisterExitCallback", h_RegisterExitCallback);
     sr_hle_register(0xd6da4ba1, "sceKernelCreateSema", h_CreateSema);
     sr_hle_register(0x28b6489c, "sceKernelDeleteSema", h_DeleteSema);
     sr_hle_register(0x3f53e640, "sceKernelSignalSema", h_SignalSema);
@@ -24580,6 +26216,8 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x4a9e5e29, "sceUmdWaitDriveStatCB", h_UmdWaitDriveStatCB);
     sr_hle_register(0x1f803938, "sceCtrlReadBufferPositive", h_CtrlReadBuffer);
     sr_hle_register(0x3a622550, "sceCtrlPeekBufferPositive", h_CtrlPeekBufferPositive);
+    sr_hle_register(0x60b81f86, "sceCtrlReadBufferNegative", h_CtrlReadBufferNegative);
+    sr_hle_register(0xc152080a, "sceCtrlPeekBufferNegative", h_CtrlPeekBufferNegative);
     sr_hle_register(0x0b588501, "sceCtrlReadLatch", h_CtrlReadLatch);
     sr_hle_register(0xb1d0e5cd, "sceCtrlPeekLatch", h_CtrlPeekLatch);
     sr_hle_register(0x6a638d83, "sceIoRead", h_IoRead);
@@ -24740,8 +26378,8 @@ static void hle_register_atrac_handlers(void) {
     sr_hle_register(0x644e5607, "sceAtracResetPlayPosition", h_AtracResetPlayPosition);
     /* Additional sceAtrac handlers (TD-24 batch 4) */
     sr_hle_register(0x132f1eca, "sceAtracReinit", h_AtracReinit);
-    sr_hle_register(0x0fae370e, "sceAtracSetHalfwayBufferAndGetID", h_AtracSetDataAndGetID);
-    sr_hle_register(0x3f6e26b5, "sceAtracSetHalfwayBuffer", h_AtracSetDataAndGetID);
+    sr_hle_register(0x0fae370e, "sceAtracSetHalfwayBufferAndGetID", h_AtracSetHalfwayBufferAndGetID);
+    sr_hle_register(0x3f6e26b5, "sceAtracSetHalfwayBuffer", h_AtracSetHalfwayBuffer);
     sr_hle_register(0x0e2a73ab, "sceAtracSetData", h_AtracSetData);
     sr_hle_register(0x780f88d1, "sceAtracGetAtracID", h_AtracGetAtracID);
     sr_hle_register(0x2dd3e298, "sceAtracGetBufferInfoForResetting", h_AtracGetBufferInfoForResetting);
@@ -24760,10 +26398,10 @@ static void hle_register_atrac_handlers(void) {
     sr_hle_register(0xd6a5f2f7, "sceAtracGetMaxSample", h_AtracGetMaxSample);
     sr_hle_register(0x5622b7c1, "sceAtracSetAA3DataAndGetID", h_AtracSetDataAndGetID);
     sr_hle_register(0x5dd66588, "sceAtracSetAA3HalfwayBufferAndGetID", h_AtracSetDataAndGetID);
-    sr_hle_register(0x472e3825, "sceAtracSetMOutDataAndGetID", h_AtracSetDataAndGetID);
-    sr_hle_register(0x5cf9d852, "sceAtracSetMOutHalfwayBuffer", h_AtracSetDataAndGetID);
-    sr_hle_register(0x9cd7de03, "sceAtracSetMOutHalfwayBufferAndGetID", h_AtracSetDataAndGetID);
-    sr_hle_register(0xf6837a1a, "sceAtracSetMOutData", h_AtracSetDataAndGetID);
+    sr_hle_register(0x472e3825, "sceAtracSetMOutDataAndGetID", h_AtracSetMOutDataAndGetID);
+    sr_hle_register(0x5cf9d852, "sceAtracSetMOutHalfwayBuffer", h_AtracSetMOutHalfwayBuffer);
+    sr_hle_register(0x9cd7de03, "sceAtracSetMOutHalfwayBufferAndGetID", h_AtracSetMOutHalfwayBufferAndGetID);
+    sr_hle_register(0xf6837a1a, "sceAtracSetMOutData", h_AtracSetMOutData);
     sr_hle_register(0x83bf7afd, "sceAtracSetSecondBuffer", h_AtracSetSecondBuffer);
     sr_hle_register(0x83e85ea0, "sceAtracGetSecondBufferInfo", h_AtracGetSecondBufferInfo);
     sr_hle_register(0xd5c28cc0, "sceAtracReleaseResources", h_AtracReleaseResources);
@@ -24816,9 +26454,7 @@ static void hle_register_sas_handlers(void) {
 static void hle_register_utility_module_handlers(void) {
     sr_hle_register(0xc629af26, "sceUtilityLoadAvModule", h_UtilityLoadAvModule);
     sr_hle_register(0xf7d8d092, "sceUtilityUnloadAvModule", h_UtilityUnloadAvModule);
-    sr_hle_register(0x2a6117a5, "sceUtilityLoadModule", h_UtilityLoadModule);
     sr_hle_register(0x2a2b3de0, "sceUtilityLoadModule", h_UtilityLoadModule);
-    sr_hle_register(0x1579a30a, "sceUtilityUnloadModule", h_UtilityUnloadModule);
     sr_hle_register(0xe49bfe92, "sceUtilityUnloadModule", h_UtilityUnloadModule);
     sr_hle_register_unsupported(0x1579a159, "sceUtilityLoadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
     sr_hle_register_unsupported(0x64d50c56, "sceUtilityUnloadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
@@ -24864,6 +26500,7 @@ static void hle_register_kernel_module_handlers(void) {
     sr_hle_register(0xb7f46618, "sceKernelLoadModuleByID", h_LoadModuleByID);
     sr_hle_register(0x50f0c1ec, "sceKernelStartModule", h_StartModule);
     sr_hle_register(0xf0a26395, "sceKernelGetModuleId", h_GetModuleId);
+    sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleIdByAddress);
     sr_hle_register(0xd1ff982a, "sceKernelStopModule", h_StopModule_Trace);
     sr_hle_register(0x2e0911aa, "sceKernelUnloadModule", h_UnloadModule_Trace);
     sr_hle_register(0x8f2df740, "sceKernelStopUnloadSelfModuleWithStatus", h_StopUnloadSelfModuleWithStatus);
@@ -24917,6 +26554,7 @@ static void hle_register_ctrl_sampling_handlers(void) {
     sr_hle_register(0x6a2774f3, "sceCtrlSetSamplingCycle", h_CtrlSetSamplingCycle);
     sr_hle_register(0xa7144800, "sceCtrlSetIdleCancelThreshold", h_CtrlSetIdleCancelThreshold);
     sr_hle_register(0xda6b76a1, "sceCtrlGetSamplingMode", h_CtrlGetSamplingMode);
+    sr_hle_register(0x02baad91, "sceCtrlGetSamplingCycle", h_CtrlGetSamplingCycle);
     /* 0x687660fa is GetIdleCancelThreshold(int*,int*), NOT ReadBufferNegative -- the pad
      * handler used pointer a1 as a buffer count and wrote up to a ring of SceCtrlData
      * through a1's 4-byte int (and could block the caller on the input ring). */
@@ -24957,6 +26595,20 @@ static void hle_register_impose_handlers(void) {
  * implemented here; decoder output remains a separate fail-closed stage.  One definition,
  * called by both registry branches, so the executable harness dispatches the production
  * mapping and the named media boundaries are reachable from a production-path test. */
+/* sceLibFont: one mapping for the production registry and the executable harness, so the
+ * harness dispatches the production handlers (issue #1384). */
+static void hle_register_font_handlers(void) {
+    sr_hle_register(0x67f17ed7, "sceFontNewLib", h_FontNewLib);
+    sr_hle_register(0xa834319d, "sceFontOpen", h_FontOpen);
+    sr_hle_register(0x574b6fbc, "sceFontDoneLib", h_FontDoneLib);
+    sr_hle_register(0x0da7535e, "sceFontGetFontInfo", h_FontGetFontInfo);
+    sr_hle_register(0xdcc80c2f, "sceFontGetCharInfo", h_FontGetCharInfo);
+    sr_hle_register(0x980f4895, "sceFontGetCharGlyphImage", h_FontGetCharGlyphImage);
+    sr_hle_register(0x099ef33c, "sceFontFindOptimumFont", h_FontFindOptimumFont);
+    sr_hle_register(0x3aea8cb6, "sceFontClose", h_FontClose);
+    sr_hle_register(0xbb8e7fe6, "sceFontOpenUserMemory", h_FontOpenUserMemory);
+}
+
 static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0x1078c008, "scePsmfPlayerStop", h_PsmfStop);
     sr_hle_register(0x1e57a8e7, "scePsmfPlayerConfigPlayer", h_PsmfConfig);
@@ -25007,10 +26659,13 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x912354a7, "sceKernelRotateThreadReadyQueue", h_RotateThreadReadyQueue);
     sr_hle_register(0x75156e8f, "sceKernelResumeThread", h_ResumeThread);
     sr_hle_register(0x9944f31f, "sceKernelSuspendThread", h_SuspendThread);
+    sr_hle_register(0x71bc9871, "sceKernelChangeThreadPriority", h_ChangeThreadPriority);
     sr_hle_register(0x6652b8ca, "sceKernelSetAlarm", h_SetAlarm);
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
     sr_hle_register(0x110dec9au, "sceKernelUSec2SysClock", h_USec2SysClock);
     sr_hle_register(0x7e65b999, "sceKernelCancelAlarm", h_CancelAlarm);
+    sr_hle_register(0x94416130u, "sceKernelGetThreadmanIdList", h_GetThreadmanIdList);
+    sr_hle_register(0x52089ca1, "sceKernelGetThreadStackFreeSize", h_GetThreadStackFreeSize);
     sr_hle_register(0x034a921fu, "sceKernelGetVTimerTime", h_GetVTimerTime);
     sr_hle_register(0x50f61d8a, "sceKernelFreeMemoryBlock", h_FreeMemoryBlock);
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
@@ -25022,7 +26677,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xb448ec0d, "sceGeBreak", h_GeBreak);
     sr_hle_register(0x5fb86ab0, "sceGeListDeQueue", h_GeListDeQueue);
     /* sceGeSaveContext / sceGeRestoreContext are refused, not faked. The modeled GE state
-     * (GeState in ge_shared.h, 3364 bytes) carries 2048 bytes of CLUT RAM plus matrix banks
+     * (GeState in ge_shared.h, 3452 bytes) carries 2048 bytes of CLUT RAM plus matrix banks
      * and derived fields, so it cannot fit a 2048-byte PspGeContext, and the 256-entry
      * command register file alone does not capture matrices or CLUT contents. A restore
      * therefore cannot reinstate what a save would need, so both refuse with the GE
@@ -25114,6 +26769,71 @@ static void hle_register_unregistered_import_batch(void) {
     /* sceNetApctl is the access-point control library; with no network stack the runtime refuses its
      * handler calls under the offline network policy (0x80010086). */
     sr_hle_register_unsupported(0x5963991bu, "sceNetApctlDelHandler", 0x80010086u);
+    /* The public ad hoc libraries (#1139 phase 0) sit above sceNet: the PSPSDK prototypes in
+     * pspnet_adhoc.h (22), pspnet_adhocctl.h (21) and pspnet_adhocmatching.h (16), each NID
+     * sha1(name) as tools/nid_corpus.json records for its pspsdk-sourced names. With no network
+     * stack they refuse under the offline network policy, with the runtime's documented
+     * SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED that sceNetInit returns. The code is not a
+     * measured ad hoc result; PSP-visible ad hoc state and errors are unmeasured. */
+    sr_hle_register_unsupported(0x7f75c338u, "sceNetAdhocGameModeCreateMaster", 0x80010086u);
+    sr_hle_register_unsupported(0x3278ab0cu, "sceNetAdhocGameModeCreateReplica", 0x80010086u);
+    sr_hle_register_unsupported(0xa0229362u, "sceNetAdhocGameModeDeleteMaster", 0x80010086u);
+    sr_hle_register_unsupported(0x0b2228e9u, "sceNetAdhocGameModeDeleteReplica", 0x80010086u);
+    sr_hle_register_unsupported(0x98c204c8u, "sceNetAdhocGameModeUpdateMaster", 0x80010086u);
+    sr_hle_register_unsupported(0xfa324b4eu, "sceNetAdhocGameModeUpdateReplica", 0x80010086u);
+    sr_hle_register_unsupported(0xc7c1fc57u, "sceNetAdhocGetPdpStat", 0x80010086u);
+    sr_hle_register_unsupported(0xb9685118u, "sceNetAdhocGetPtpStat", 0x80010086u);
+    sr_hle_register_unsupported(0xe1d621d7u, "sceNetAdhocInit", 0x80010086u);
+    sr_hle_register_unsupported(0x6f92741bu, "sceNetAdhocPdpCreate", 0x80010086u);
+    sr_hle_register_unsupported(0x7f27bb5eu, "sceNetAdhocPdpDelete", 0x80010086u);
+    sr_hle_register_unsupported(0xdfe53e03u, "sceNetAdhocPdpRecv", 0x80010086u);
+    sr_hle_register_unsupported(0xabed3790u, "sceNetAdhocPdpSend", 0x80010086u);
+    sr_hle_register_unsupported(0x9df81198u, "sceNetAdhocPtpAccept", 0x80010086u);
+    sr_hle_register_unsupported(0x157e6225u, "sceNetAdhocPtpClose", 0x80010086u);
+    sr_hle_register_unsupported(0xfc6fc07bu, "sceNetAdhocPtpConnect", 0x80010086u);
+    sr_hle_register_unsupported(0x9ac2eeacu, "sceNetAdhocPtpFlush", 0x80010086u);
+    sr_hle_register_unsupported(0xe08bdac1u, "sceNetAdhocPtpListen", 0x80010086u);
+    sr_hle_register_unsupported(0x877f6d66u, "sceNetAdhocPtpOpen", 0x80010086u);
+    sr_hle_register_unsupported(0x8bea2b3eu, "sceNetAdhocPtpRecv", 0x80010086u);
+    sr_hle_register_unsupported(0x4da4c788u, "sceNetAdhocPtpSend", 0x80010086u);
+    sr_hle_register_unsupported(0xa62c6f57u, "sceNetAdhocTerm", 0x80010086u);
+    sr_hle_register_unsupported(0x20b317a0u, "sceNetAdhocctlAddHandler", 0x80010086u);
+    sr_hle_register_unsupported(0x0ad043edu, "sceNetAdhocctlConnect", 0x80010086u);
+    sr_hle_register_unsupported(0xec0635c1u, "sceNetAdhocctlCreate", 0x80010086u);
+    sr_hle_register_unsupported(0xa5c055ceu, "sceNetAdhocctlCreateEnterGameMode", 0x80010086u);
+    sr_hle_register_unsupported(0x6402490bu, "sceNetAdhocctlDelHandler", 0x80010086u);
+    sr_hle_register_unsupported(0x34401d65u, "sceNetAdhocctlDisconnect", 0x80010086u);
+    sr_hle_register_unsupported(0xcf8e084du, "sceNetAdhocctlExitGameMode", 0x80010086u);
+    sr_hle_register_unsupported(0x99560abeu, "sceNetAdhocctlGetAddrByName", 0x80010086u);
+    sr_hle_register_unsupported(0x362cbe8fu, "sceNetAdhocctlGetAdhocId", 0x80010086u);
+    sr_hle_register_unsupported(0x5a014ce0u, "sceNetAdhocctlGetGameModeInfo", 0x80010086u);
+    sr_hle_register_unsupported(0x8916c003u, "sceNetAdhocctlGetNameByAddr", 0x80010086u);
+    sr_hle_register_unsupported(0xded9d28eu, "sceNetAdhocctlGetParameter", 0x80010086u);
+    sr_hle_register_unsupported(0x8db83fdcu, "sceNetAdhocctlGetPeerInfo", 0x80010086u);
+    sr_hle_register_unsupported(0xe162cb14u, "sceNetAdhocctlGetPeerList", 0x80010086u);
+    sr_hle_register_unsupported(0x81aee1beu, "sceNetAdhocctlGetScanInfo", 0x80010086u);
+    sr_hle_register_unsupported(0x75ecd386u, "sceNetAdhocctlGetState", 0x80010086u);
+    sr_hle_register_unsupported(0xe26f226eu, "sceNetAdhocctlInit", 0x80010086u);
+    sr_hle_register_unsupported(0x5e7f79c9u, "sceNetAdhocctlJoin", 0x80010086u);
+    sr_hle_register_unsupported(0x1ff89745u, "sceNetAdhocctlJoinEnterGameMode", 0x80010086u);
+    sr_hle_register_unsupported(0x08fff7a0u, "sceNetAdhocctlScan", 0x80010086u);
+    sr_hle_register_unsupported(0x9d689e13u, "sceNetAdhocctlTerm", 0x80010086u);
+    sr_hle_register_unsupported(0xec19337du, "sceNetAdhocMatchingAbortSendData", 0x80010086u);
+    sr_hle_register_unsupported(0xea3c6108u, "sceNetAdhocMatchingCancelTarget", 0x80010086u);
+    sr_hle_register_unsupported(0x8f58bedfu, "sceNetAdhocMatchingCancelTargetWithOpt", 0x80010086u);
+    sr_hle_register_unsupported(0xca5eda6fu, "sceNetAdhocMatchingCreate", 0x80010086u);
+    sr_hle_register_unsupported(0xf16eaf4fu, "sceNetAdhocMatchingDelete", 0x80010086u);
+    sr_hle_register_unsupported(0xb5d96c2au, "sceNetAdhocMatchingGetHelloOpt", 0x80010086u);
+    sr_hle_register_unsupported(0xc58bcd9eu, "sceNetAdhocMatchingGetMembers", 0x80010086u);
+    sr_hle_register_unsupported(0x40f8f435u, "sceNetAdhocMatchingGetPoolMaxAlloc", 0x80010086u);
+    sr_hle_register_unsupported(0x9c5cfb7du, "sceNetAdhocMatchingGetPoolStat", 0x80010086u);
+    sr_hle_register_unsupported(0x2a2a1e07u, "sceNetAdhocMatchingInit", 0x80010086u);
+    sr_hle_register_unsupported(0x5e3d4b79u, "sceNetAdhocMatchingSelectTarget", 0x80010086u);
+    sr_hle_register_unsupported(0xf79472d7u, "sceNetAdhocMatchingSendData", 0x80010086u);
+    sr_hle_register_unsupported(0xb58e61b7u, "sceNetAdhocMatchingSetHelloOpt", 0x80010086u);
+    sr_hle_register_unsupported(0x93ef3843u, "sceNetAdhocMatchingStart", 0x80010086u);
+    sr_hle_register_unsupported(0x32b156b3u, "sceNetAdhocMatchingStop", 0x80010086u);
+    sr_hle_register_unsupported(0x7945ecdau, "sceNetAdhocMatchingTerm", 0x80010086u);
     /* sceRtcGetAccumulativeTime (0x011f03c1) is not declared in the PSPSDK RTC header, so its contract
      * is not established here and it is refused under its name rather than guessed. */
     sr_hle_register_unsupported(0x011f03c1u, "sceRtcGetAccumulativeTime", 0x80020002u);
@@ -25192,6 +26912,7 @@ void sr_hle_init(void) {
      * test mapping from becoming a duplicate implementation. */
     hle_register_utility_module_handlers();
     hle_register_kernel_module_handlers();
+    hle_register_font_handlers();
     hle_register_msgpipe_handlers();
     hle_register_mbx_handlers();
     /* PSP-B2-01 / PSP-B3-01 cancel/release family: one definition for both
@@ -25222,6 +26943,7 @@ void sr_hle_init(void) {
     hle_register_partition_savedata_handlers();
     hle_register_impose_handlers();
     hle_register_osk_handlers();
+    hle_register_utility_dialog_handlers();
     hle_register_dcache_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
@@ -25255,35 +26977,12 @@ void sr_hle_init(void) {
     sr_hle_register(0x0ed48fe2, "sceKernelDeleteNotifyCallback", h_DeleteNotifyCallback);
     sr_hle_register(0x94aa61ee, "sceKernelGetThreadCurrentPriority", h_GetThreadPriority);
     sr_hle_register(0xfccfad26, "sceKernelCancelWakeupThread", h_CancelWakeupThread);
-    sr_hle_register(0x71bc9871, "sceKernelChangeThreadPriority", h_ChangeThreadPriority);
     sr_hle_register(0xffc36a14, "sceKernelReferThreadRunStatus", h_ReferThreadRunStatus);
-    sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleId);
-    /* Boot setup batch (return success / reference value). */
-    sr_hle_register(0x4ac57943, "sceKernelRegisterExitCallback", h_RegisterExitCallback);
     /* sceImpose language/confirm-button mode: retained state shared with the system-param table
      * above (the getter had no registration at all before this). */
     hle_register_impose_handlers();
     hle_register_osk_handlers();
-    /* sceUtilitySavedataInitStart registered via hle_register_partition_savedata_handlers() */
-    sr_hle_register(0x9790b33c, "sceUtilitySavedataShutdownStart", h_DlgShutdown);
-    sr_hle_register(0x8874dbe0, "sceUtilitySavedataGetStatus", h_DlgGetStatus);
-    sr_hle_register(0xd4b95ffb, "sceUtilitySavedataUpdate", h_SavedataUpdate);
-    sr_hle_register(0x2ad8e239, "sceUtilityMsgDialogInitStart", h_MsgDialogInit);
-    sr_hle_register(0x95fc253b, "sceUtilityMsgDialogUpdate", h_MsgDialogUpdate);
-    sr_hle_register(0x9a1c91d7, "sceUtilityMsgDialogGetStatus", h_MsgDialogStatus);
-    sr_hle_register(0x67af3428, "sceUtilityMsgDialogShutdownStart", h_MsgDialogShutdown);
-    sr_hle_register(0x4db1e739, "sceUtilityNetconfInitStart", h_NetDialogInit);
-    sr_hle_register(0x91e70e35, "sceUtilityNetconfUpdate", h_NetDialogUpdate);
-    sr_hle_register(0x6332aa39, "sceUtilityNetconfGetStatus", h_NetDialogStatus);
-    sr_hle_register(0xf88155f6, "sceUtilityNetconfShutdownStart", h_NetDialogShutdown);
-    sr_hle_register(0x24ac31eb, "sceUtilityGamedataInstallInitStart", h_GamedataDialogInit);
-    sr_hle_register(0x4aecd179, "sceUtilityGamedataInstallUpdate", h_GamedataDialogUpdate);
-    sr_hle_register(0xb57e95d9, "sceUtilityGamedataInstallGetStatus", h_GamedataDialogStatus);
-    sr_hle_register(0x32e32dcb, "sceUtilityGamedataInstallShutdownStart", h_GamedataDialogShutdown);
-    sr_hle_register(0xc492f751, "sceUtilityGameSharingInitStart", h_SharingDialogInit);
-    sr_hle_register(0x7853182d, "sceUtilityGameSharingUpdate", h_SharingDialogUpdate);
-    sr_hle_register(0x946963f3, "sceUtilityGameSharingGetStatus", h_SharingDialogStatus);
-    sr_hle_register(0xefc6f80f, "sceUtilityGameSharingShutdownStart", h_SharingDialogShutdown);
+    hle_register_utility_dialog_handlers();
     /* sceWlan: the game stamps saves/profiles with the console's MAC. A stable fake works
      * (PPSSPP behaviour); low 2 bits of byte 0 must be clear (locally-administered/multicast
      * OUI bits confuse some games -- PPSSPP masks them too). */
@@ -25292,7 +26991,6 @@ void sr_hle_init(void) {
     sr_hle_register(0xd7763699, "sceWlanGetSwitchState", h_WlanOn);
     sr_hle_power_register_callback();
     sr_hle_register(0x46ebb729, "sceUmdCheckMedium", h_UmdCheckMedium);
-    sr_hle_register(0x52089ca1, "sceKernelGetThreadStackFreeSize", h_GetThreadStackFreeSize);
     /* sceMpeg: faithful port (src/rt/mpeg.c). Drives the PSMF intro to completion. */
     sr_hle_register(0x682a619b, "sceMpegInit", h_MpegInit);
     sr_hle_register(0x874624d6, "sceMpegFinish", h_MpegFinish);
@@ -25328,15 +27026,7 @@ void sr_hle_init(void) {
      * implemented here; decoder output remains a separate fail-closed stage. */
     hle_register_psmf_player_handlers();
     /* sceLibFont: synchronized handles backed by parsed firmware/user PGFs. */
-    sr_hle_register(0x67f17ed7, "sceFontNewLib", h_FontNewLib);
-    sr_hle_register(0xa834319d, "sceFontOpen", h_FontOpen);
-    sr_hle_register(0x574b6fbc, "sceFontDoneLib", h_FontDoneLib);
-    sr_hle_register(0x0da7535e, "sceFontGetFontInfo", h_FontGetFontInfo);
-    sr_hle_register(0xdcc80c2f, "sceFontGetCharInfo", h_FontGetCharInfo);
-    sr_hle_register(0x980f4895, "sceFontGetCharGlyphImage", h_FontGetCharGlyphImage);
-    sr_hle_register(0x099ef33c, "sceFontFindOptimumFont", h_FontFindOptimumFont);
-    sr_hle_register(0x3aea8cb6, "sceFontClose", h_FontClose);
-    sr_hle_register(0xbb8e7fe6, "sceFontOpenUserMemory", h_FontOpenUserMemory);
+    hle_register_font_handlers();
     sr_hle_register_unsupported(0x6af9b50a, "sceUmdCancelWaitDriveStat", 0x80010086u); /* SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED */
     sr_hle_register(0x20628e6f, "sceUmdGetErrorStat", h_UmdGetErrorStat);
     /* Callback-aware UMD wait consumes callbacks while preserving the drive wait. */
@@ -25412,6 +27102,11 @@ void sr_hle_init(void) {
     hle_register_atrac_handlers();
     hle_register_mp3_handlers();
     hle_register_sas_handlers();
+#endif
+#ifndef SR_MPEG_MEDIA_SELFTEST
+    /* Opt-in GE completion timing: the hooks report nothing unless SR_GE_TIMING=1. */
+    sched_set_ge_timing_hooks(ge_timing_next_deadline_us, ge_timing_service_due);
+    (void)ge_timing_on();
 #endif
     atomic_store_explicit(&s_hle_init_state, 2, memory_order_release);
 }
@@ -25498,7 +27193,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         sr_flight_hle_arguments(flight_sequence, s->r[4], s->r[5], s->r[6], s->r[7]);
     }
     sr_last_nid = nid;
-    if (getenv("SR_NIDLOG")) {
+    if (hle_nidlog_on()) {
         static FILE *nf = NULL; static unsigned long nc = 0;
         if (!nf) nf = fopen("nidseq_mine.txt", "w");
         if (nf) { fprintf(nf, "0x%08x 0x%x %u\n", nid, sched_current_uid(), s_vcount);
@@ -25538,7 +27233,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         if (sr_sched_on) { sr_trace_close(); sr_compat_report(); sr_perf_shutdown(); fflush(stderr); _Exit(7); }
         longjmp(g_hle_jmp, 1);
     }
-    if (getenv("SR_SYSLOG")) {
+    if (hle_syslog_on()) {
         /* Log the first time each (thread, nid) pair occurs, to see what each thread does. */
         static struct { uint32_t uid, nid; } seen[4096]; static int nseen = 0;
         uint32_t cur = sched_current_uid(); int known = 0;
@@ -25636,11 +27331,16 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_callbacks = NULL;
     s_callbacks_len = 0u;
     s_callbacks_cap = 0u;
+    memset(s_memstick_callbacks, 0, sizeof(s_memstick_callbacks));
+    s_memstick_callback_count = 0u;
     s_exit_cb_uid = 0u;
+    s_exit_request_pending = 0;
+    s_exit_request_deadline_us = 0u;
     s_utility_av_loaded = 0u;
     s_volatile_locked = 0;
     g_sdk_version = 0u;
     s_loadexec_boot_uid = 0u;
+    s_main_module_uid = 0u;
     sr_hle_power_loadexec_reset();
 
     hle_fd_init();
@@ -25649,15 +27349,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
     /* Media-player state owns host decoder/producer objects as well as guest
      * pointers. Close those objects before the next program reuses guest RAM. */
     for (size_t i = 0; i < sizeof(s_psmf_players) / sizeof(s_psmf_players[0]); i++) {
-        SrPsmfPlayer *p = &s_psmf_players[i];
-        psmf_flush(p);
-        if (p->producer) {
-            sr_psmf_producer_close(p->producer);
-            p->producer = NULL;
-        }
-        psmf_media_reset(p);
-        memset(p, 0, sizeof(*p));
-        p->h264 = -1;
+        psmf_player_release(&s_psmf_players[i]);
     }
     for (unsigned i = 0; i < sizeof(s_atrac) / sizeof(s_atrac[0]); i++) {
         atrac_release_decoder(&s_atrac[i]);
@@ -25667,23 +27359,17 @@ void sr_hle_loadexec_reset_guest_state(void) {
     hle_audio_guest_reset();
     hle_sas_guest_reset();
 
-    if (s_osk_current) (void)s_osk_current_clear();
+    osk_abandon_request();
     s_osk_status = OSK_NONE;
     s_osk_param = 0u;
     s_osk_field = 0;
     s_osk_request_open = 0;
-    s_osk_current = 0;
     s_osk_answer_count = 0;
     s_osk_repeat = NULL;
     s_osk_script_read = 0;
     memset(s_osk_answers, 0, sizeof(s_osk_answers));
     dialog_lock();
-    s_dlg_status = 0;
-    s_dlg_tick = 0;
-    s_dlg_param = 0u;
-    s_dlg_result = 0u;
-    s_dlg_work_started = s_dlg_work_done = 0u;
-    s_dlg_generation++;
+    utility_dialogs_reset_locked();
     dialog_unlock();
 
     s_uid = 0x110u;

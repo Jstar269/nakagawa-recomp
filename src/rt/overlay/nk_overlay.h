@@ -69,14 +69,6 @@ typedef struct {
 
 #define NK_OVERLAY_MAX_CONTROL_ROWS 16u
 
-/* One keyboard key the window maps to PSP buttons, as the window's key table has
-   it (sdl3vk_keyboard_key). Keys that share a label (the four arrow keys) are
-   named once on a row. */
-typedef struct {
-    uint32_t psp_bits;
-    const char *label;
-} NkOverlayKey;
-
 /* The controls page's rows with the text they point into. */
 typedef struct {
     NkOverlayControlRow rows[NK_OVERLAY_MAX_CONTROL_ROWS];
@@ -85,14 +77,14 @@ typedef struct {
     size_t used;
 } NkOverlayControls;
 
-/* Describes the PSP controls from the mapping in force: the window's key table
-   for the keyboard column and the input profile for the controller column, with
-   the controller's buttons named for `family` (an Xbox-style pad says A, a
-   PlayStation-style one Cross, an unknown one South button). A NULL profile
-   leaves the controller column unbound. */
+/* Describes the PSP controls from the input profile the window maps through: its
+   keyboard keys (psp_keys) for the keyboard column and its pad bindings for the
+   controller column, with the controller's buttons named for `family` (an
+   Xbox-style pad says A, a PlayStation-style one Cross, an unknown one South
+   button). A NULL profile is the window's default keyboard and leaves the
+   controller column unbound. */
 void nk_overlay_describe_controls(NkOverlayControls *out, const NkInputProfile *profile,
-                                  NkUiPadFamily family, const NkOverlayKey *keys,
-                                  size_t key_count);
+                                  NkUiPadFamily family);
 
 /* What the screens show. The host fills it before every frame; the strings must
    outlive the frame. */

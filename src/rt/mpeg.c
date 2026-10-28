@@ -9,11 +9,14 @@
 /* *
  * This is a faithful port of PPSSPP's sceMpeg control flow: PSMF header analysis, ring-buffer
  * packet accounting, MPEG handle/context creation, stream registration, and the access-unit
- * getters with timestamp progression and end-of-stream detection. The one part that cannot be
- * ported without ffmpeg is the actual AVC/ATRAC sample decode (the PPSSPP MediaEngine); here the
- * media-engine timestamp is modelled directly (video advances by videoTimestampStep per decoded
- * frame and ends at the stream's last timestamp), so a game's movie-playback loop runs and
- * *completes* identically — the decoded video frame is left blank.
+ * getters with timestamp progression and end-of-stream detection. PPSSPP's MediaEngine is not
+ * ported: the media-engine timestamp is modelled directly (video advances by videoTimestampStep
+ * per decoded frame and ends at the stream's last timestamp), so a game's movie-playback loop
+ * runs and *completes* identically. AVC pictures are decoded through the backend-neutral
+ * sr_h264.h seam by whichever decoder the build selected; sceMpegAvcDecode clears the
+ * destination until the first picture arrives, and without a usable decoder it fails closed
+ * with the backend-unavailable error. ATRAC audio is not decoded here: sceMpegAtracDecode only
+ * advances the audio clock.
  *
  * This file is GPL-2.0-or-later because it is derived from PPSSPP; that licence covers this
  * runtime source only and says nothing about the user's game.
@@ -947,6 +950,7 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
         target.kind = SR_H264_TARGET_HOST;
         target.host_buffer = b->rgba;
         target.host_width = (int)b->width;
+        target.host_height = (int)b->height;   /* b->rgba holds width * height pixels */
         target.host_stride = (int)b->width * 4;
         int r = sr_h264_frame_ex(ctx->h264, eos, &target, &info);
         if (r > 0) {

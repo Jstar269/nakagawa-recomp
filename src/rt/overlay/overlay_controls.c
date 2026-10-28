@@ -2,8 +2,8 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 /* The controls page's rows, described from the mapping in force rather than from a
-   copy of it: the window's own key table and the input profile the window maps the
-   pad through (#357, #520). Controller buttons are named the way the pad's own
+   copy of it: the input profile the window maps the keyboard and the pad through
+   (#357, #520). Controller buttons are named the way the pad's own
    family names them, the rule the prompt bar follows (docs/PLAYER_UI_DESIGN.md,
    prompt glyphs): an Xbox-style pad says A, a Switch-style one B for the same south
    button, a PlayStation-style one Cross, and an unknown pad its position. */
@@ -140,6 +140,77 @@ static void name_add(NameList *list, const char *name) {
     }
 }
 
+/* Words for one row's keys, from the profile's key codes. Both keys of a pair
+   (Left and Right Shift) read as one word, and the four arrow keys as "Arrow
+   keys", so a row stays short enough for the page. */
+typedef struct {
+    char words[2 * NK_PSP_BTN_COUNT][24];
+    size_t count;
+} KeyWords;
+
+static bool key_listed(const int *keys, size_t count, int key) {
+    size_t i;
+    for (i = 0; i < count; ++i) {
+        if (keys[i] == key) return true;
+    }
+    return false;
+}
+
+static void key_words_add(KeyWords *words, NameList *list, const char *text) {
+    if (words->count >= sizeof(words->words) / sizeof(words->words[0])) return;
+    snprintf(words->words[words->count], sizeof(words->words[0]), "%s", text);
+    name_add(list, words->words[words->count++]);
+}
+
+/* Marks the listed keys in `group` as taken and adds `word` when all of them are listed. */
+static void key_group(const int *keys, bool *taken, size_t count, const char *const *group,
+                      size_t group_count, const char *word, KeyWords *words, NameList *list) {
+    size_t g;
+    size_t k;
+    for (g = 0; g < group_count; ++g) {
+        if (!key_listed(keys, count, nk_host_key_from_name(group[g]))) return;
+    }
+    for (k = 0; k < count; ++k) {
+        for (g = 0; g < group_count; ++g) {
+            if (keys[k] == nk_host_key_from_name(group[g])) taken[k] = true;
+        }
+    }
+    key_words_add(words, list, word);
+}
+
+static void describe_keys(NameList *list, KeyWords *words, const NkInputProfile *profile,
+                          uint32_t bits) {
+    static const char *const k_arrows[] = {"up", "down", "left", "right"};
+    static const char *const k_shift[] = {"lshift", "rshift"};
+    static const char *const k_ctrl[] = {"lctrl", "rctrl"};
+    static const char *const k_alt[] = {"lalt", "ralt"};
+    int keys[2 * NK_PSP_BTN_COUNT];
+    bool taken[2 * NK_PSP_BTN_COUNT];
+    size_t count = 0u;
+    size_t i;
+    int b;
+    for (b = 0; b < NK_PSP_BTN_COUNT; ++b) {
+        const int slots[2] = {profile->psp_keys[b].primary, profile->psp_keys[b].secondary};
+        if ((k_psp_bits[b] & bits) == 0u) continue;
+        for (i = 0; i < 2u; ++i) {
+            if (nk_host_key_name(slots[i]) != NULL && !key_listed(keys, count, slots[i])) {
+                keys[count++] = slots[i];
+            }
+        }
+    }
+    memset(taken, 0, sizeof(taken));
+    key_group(keys, taken, count, k_arrows, 4u, "Arrow keys", words, list);
+    key_group(keys, taken, count, k_shift, 2u, "Shift", words, list);
+    key_group(keys, taken, count, k_ctrl, 2u, "Ctrl", words, list);
+    key_group(keys, taken, count, k_alt, 2u, "Alt", words, list);
+    for (i = 0; i < count; ++i) {
+        char text[24];
+        if (taken[i]) continue;
+        nk_host_key_words(keys[i], text, sizeof(text));
+        key_words_add(words, list, text);
+    }
+}
+
 static const char *names_store(NkOverlayControls *out, const NameList *list) {
     char *start = out->text + out->used;
     size_t room = sizeof(out->text) - out->used;
@@ -161,22 +232,27 @@ static const char *names_store(NkOverlayControls *out, const NameList *list) {
 }
 
 void nk_overlay_describe_controls(NkOverlayControls *out, const NkInputProfile *profile,
-                                  NkUiPadFamily family, const NkOverlayKey *keys,
-                                  size_t key_count) {
+                                  NkUiPadFamily family) {
     const int set = family_set(family);
+    NkInputProfile window_default;
+    const NkInputProfile *keymap = profile;
     size_t r;
     if (out == NULL) return;
+    if (keymap == NULL) {
+        /* No profile: the window maps the keyboard through its defaults. */
+        nk_input_profile_init_default(&window_default);
+        keymap = &window_default;
+    }
     memset(out, 0, sizeof(*out));
     for (r = 0; r < sizeof(k_rows) / sizeof(k_rows[0]) && r < NK_OVERLAY_MAX_CONTROL_ROWS; ++r) {
         const ControlsRowSpec *spec = &k_rows[r];
         NameList keyboard;
         NameList controller;
-        size_t i;
+        KeyWords words;
         memset(&keyboard, 0, sizeof(keyboard));
         memset(&controller, 0, sizeof(controller));
-        for (i = 0; keys != NULL && i < key_count; ++i) {
-            if ((keys[i].psp_bits & spec->bits) != 0u) name_add(&keyboard, keys[i].label);
-        }
+        memset(&words, 0, sizeof(words));
+        if (!spec->stick) describe_keys(&keyboard, &words, keymap, spec->bits);
         if (profile != NULL && spec->stick) {
             name_add(&controller, axis_stick_name(profile->axes[NK_PSP_AXIS_ANALOG_X].host_axis));
             name_add(&controller, axis_stick_name(profile->axes[NK_PSP_AXIS_ANALOG_Y].host_axis));

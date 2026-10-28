@@ -158,7 +158,16 @@ typedef struct {
     int ui_scale_pct;   /* 0 = automatic (follow display_scale); explicit values: 100, 125, 150, 200.
                            100 forces 1x on a high-DPI display. Anything else is treated as 100. */
     int text_size_pct;  /* 90, 100, 125 or 150. Anything else is treated as 100. */
+    /* The smallest layout the host's screens are designed for, in layout units
+       (0 = none). A window smaller than this at the chosen density lowers the
+       density, down to NK_UI_MIN_FIT_DENSITY, so the layout keeps this size and
+       the whole UI is drawn smaller instead of running off the window. */
+    float min_logical_w;
+    float min_logical_h;
 } NkUiViewport;
+
+/* The lowest density a minimum layout size may lower the UI to. */
+#define NK_UI_MIN_FIT_DENSITY 0.25f
 
 typedef struct {
     float density;

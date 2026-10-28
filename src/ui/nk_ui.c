@@ -207,6 +207,20 @@ NkUiScale nk_ui_scale_for_viewport(const NkUiViewport *viewport) {
         text_scale = (float)viewport->text_size_pct / 100.0f;
     }
     result.density = nk_ui_clamp_density(ui_scale * text_scale);
+    if (viewport->pixel_w > 0 && viewport->pixel_h > 0) {
+        float fit = result.density;
+        if (isfinite(viewport->min_logical_w) && viewport->min_logical_w > 0.0f) {
+            float fit_w = (float)viewport->pixel_w / viewport->min_logical_w;
+            if (fit_w < fit) fit = fit_w;
+        }
+        if (isfinite(viewport->min_logical_h) && viewport->min_logical_h > 0.0f) {
+            float fit_h = (float)viewport->pixel_h / viewport->min_logical_h;
+            if (fit_h < fit) fit = fit_h;
+        }
+        if (fit < result.density) {
+            result.density = fit > NK_UI_MIN_FIT_DENSITY ? fit : NK_UI_MIN_FIT_DENSITY;
+        }
+    }
     if (viewport->pixel_w > 0) {
         result.logical_w = (float)viewport->pixel_w / result.density;
     }
@@ -1058,15 +1072,24 @@ void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
     if ((flags & NK_UI_BUTTON_OWNS_HORIZONTAL) != 0u) {
         entry.flags |= NK_UI_FOCUS_OWNS_HORIZONTAL;
     }
+    /* A destructive action is never the default focus (PLAYER_UI_DESIGN.md). */
+    if ((flags & NK_UI_BUTTON_DANGER) != 0u) {
+        entry.flags |= NK_UI_FOCUS_NO_DEFAULT;
+    }
+    /* The page's first enabled control that may take the default is its
+       default, whatever was focused before: when the screen changes and the
+       old focus is gone, focus lands here (the title page's PLAY or BUILD
+       PACKAGE), not on the first control drawn (a top-bar tab). */
     if ((entry.flags & NK_UI_FOCUS_DISABLED) == 0u && ui->focus_entry_count == 0u &&
-        ui->focused == 0u && (flags & NK_UI_BUTTON_NOT_DEFAULT) == 0u) {
+        (flags & (NK_UI_BUTTON_NOT_DEFAULT | NK_UI_BUTTON_DANGER)) == 0u) {
         entry.flags |= NK_UI_FOCUS_DEFAULT;
     }
     entry.scope = NK_UI_SCOPE_ROOT;
     entry.scroller = 0u;
     (void)nk_ui_focus_register(ui->focus_graph, &entry);
-    /* Controls that may not take default focus do not use up the default. */
-    if ((flags & NK_UI_BUTTON_NOT_DEFAULT) == 0u) {
+    /* Controls that may not take default focus, disabled ones included, do
+       not use up the default. */
+    if ((entry.flags & NK_UI_FOCUS_DEFAULT) != 0u) {
         ++ui->focus_entry_count;
     }
 }
