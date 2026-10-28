@@ -157,7 +157,7 @@ _FIXED_CAMPAIGN_CASES = {
     ),
     "thread-k0-block": _fixed_campaign_rows(
         "PSP-THREAD-K0-001",
-        [("K0-MAIN", 6, _PASS), ("K0-FRESH", 9, _PASS)]
+        [("K0-MAIN", 6, _PASS), ("K0-FRESH", 11, _PASS)]
         + [(f"K0-FRESH-W{row}0", 16, _PASS) for row in range(4)]
         + [(f"K0-REUSE-{attr}", 9, _PASS) for attr in ("DEF", "NOFILL", "CLEAR")],
     ),

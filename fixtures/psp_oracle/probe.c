@@ -3419,8 +3419,8 @@ static void run_thread_exit_delete(int emulated) {
 
    K0-MAIN       the probe's own thread.
    K0-FRESH      a new thread: k0, its stack span, sp at entry, k0+4, nonzero
-                 words in the block, and 0xffffffff words below sp (the
-                 default stack fill).
+                 words in the block, 0xffffffff words below sp (the default
+                 stack fill) and the two lowest stack words.
    K0-FRESH-Wnn  the 64 words from k0, in four rows of 16.
    K0-REUSE-*    thread D fills its stack below sp with 0xa5a5a5a5 and stores
                  0xa5a5a5a5 at k0+4 (what the title's launcher does with a
@@ -3428,17 +3428,21 @@ static void run_thread_exit_delete(int emulated) {
                  size and attribute (0, NO_FILLSTACK 0x00100000, CLEAR_STACK
                  0x00200000) is then created and reports its stack base, k0,
                  k0+4 and how many 0xa5a5a5a5 words survived.
+   The lowest K0_GUARD_WORDS stack words are never written or counted: on a
+   PSP-3000 (6.61) the first launch hung after thread D overwrote them, so
+   the kernel keeps state there (K0-FRESH reports the two lowest words).
    Reads stay inside each thread's own stack span and k0 block; the only
-   writes are D's own stack below sp and its k0+4. PASS = every create,
-   start and wait succeeded; the values are data. */
+   writes are D's own stack between the guard words and sp, and its k0+4.
+   PASS = every create, start and wait succeeded; the values are data. */
 #define K0_WORDS 64u
 #define K0_STACK 0x4000u
 #define K0_ATTR_NOFILL 0x00100000u
 #define K0_ATTR_CLEAR 0x00200000u
 #define K0_FILL 0xa5a5a5a5u
 #define K0_SP_GAP 256u
+#define K0_GUARD_WORDS 16u
 typedef struct {
-    uint32_t k0, base, size, sp, w1, nonzero, ff_words, fill_words, scanned;
+    uint32_t k0, base, size, sp, w1, nonzero, ff_words, fill_words, scanned, low0, low1;
     uint32_t words[K0_WORDS];
 } K0Report;
 static K0Report g_k0_report;
@@ -3473,9 +3477,13 @@ static void k0_capture(K0Report *r) {
         }
         r->w1 = r->words[1];
     }
-    if (r->base && r->sp > r->base + K0_SP_GAP && r->sp <= r->base + r->size) {
+    if (r->base && r->sp > r->base + K0_SP_GAP + K0_GUARD_WORDS * 4u &&
+        r->sp <= r->base + r->size) {
         const volatile uint32_t *w = (const volatile uint32_t *)(uintptr_t)r->base;
-        r->scanned = (r->sp - K0_SP_GAP - r->base) / 4u;
+        r->low0 = w[0];
+        r->low1 = w[1];
+        w += K0_GUARD_WORDS;
+        r->scanned = (r->sp - K0_SP_GAP - r->base) / 4u - K0_GUARD_WORDS;
         for (uint32_t i = 0; i < r->scanned; i++) {
             if (w[i] == 0xffffffffu) r->ff_words++;
             if (w[i] == K0_FILL) r->fill_words++;
@@ -3487,7 +3495,7 @@ static int k0_entry(SceSize args, void *argp) {
     (void)argp;
     k0_capture(&g_k0_report);
     if (g_k0_dirty && g_k0_report.scanned) {
-        volatile uint32_t *w = (volatile uint32_t *)(uintptr_t)g_k0_report.base;
+        volatile uint32_t *w = (volatile uint32_t *)(uintptr_t)g_k0_report.base + K0_GUARD_WORDS;
         for (uint32_t i = 0; i < g_k0_report.scanned; i++) w[i] = K0_FILL;
         const K0Report *r = &g_k0_report;
         if (r->k0 >= r->base && r->k0 + K0_WORDS * 4u <= r->base + r->size)
@@ -3527,10 +3535,10 @@ static void run_thread_k0_block(int emulated) {
 
     const int rc = k0_run(emulated, "fresh", 0u, 0);
     r = g_k0_report;
-    const uint32_t fo[9] = {r.k0, r.base, r.size, r.sp, r.base + r.size - r.k0, r.w1,
-                            r.nonzero, r.ff_words, r.scanned};
+    const uint32_t fo[11] = {r.k0, r.base, r.size, r.sp, r.base + r.size - r.k0, r.w1,
+                             r.nonzero, r.ff_words, r.scanned, r.low0, r.low1};
     emit_record_extended(emulated, "PSP-THREAD-K0-001", "K0-FRESH", rc == 0 ? "PASS" : "FAIL",
-                         (uint32_t)rc, fo, 9);
+                         (uint32_t)rc, fo, 11);
     for (uint32_t row = 0; row < 4; row++) {
         emit_record_extended(emulated, "PSP-THREAD-K0-001", word_rows[row],
                              rc == 0 ? "PASS" : "FAIL", (uint32_t)rc, r.words + row * 16u, 16);
