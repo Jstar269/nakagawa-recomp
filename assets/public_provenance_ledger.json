@@ -1711,7 +1711,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bf38c1da718055be97d262724db4099ce4bdd734508fb008521225bd323814fa"
+      "sha256": "fac3449d902a047bfd367930ca7b3c51964b0d24f4cc5b32fda0e55733e3d5ce"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -11626,7 +11626,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "251fa48b7bea129a425b74eca772825c4d146f162e5e3e7f21451680fcb53cee"
+      "sha256": "1d07bc5bc47f9f1a412dd62c8db10a679d25ec23e6fbaa7f94c6bcc5fd9151f8"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -11651,7 +11651,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "55387e36a6e5a887d16885159421b111e742d010b8dc12d20a4f883f55895684"
+      "sha256": "af89c8620ac4f22845901b64e56eebb998d4dae1cad01e68a79e7acc3f9935bc"
     },
     {
       "path": "tools/compiler_compare.py",
@@ -12073,7 +12073,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "01eeee79206b39318816aa49c49d441ffd242156a20d3d66510efe302c4e0a25"
+      "sha256": "dcb096b002d7af80e383ba8bbe92c7fbec59e94641d11e87d08757b8da0345a4"
     },
     {
       "path": "tools/hst_test_fixtures.py",
@@ -13448,7 +13448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9d76ea0ea2eebc0476e025741aeac7ee20736475213e7a128858c346a8b31173"
+      "sha256": "f5cd497d097ce0060d0908558cdc4d486403fec6d70de99595f6307a8e5ac4b0"
     },
     {
       "path": "tools/test_codegen_retail_allocator.py",
@@ -13520,7 +13520,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7ba5a143e4acc3e98bb8dc91cd9076df4f92b31ace4c79b79b56a17a6915bdb9"
+      "sha256": "8a9ce11c26c1702aaff72a7eb1a9254c785915850689d06833547d6bf1ff7abe"
     },
     {
       "path": "tools/test_compiler_compare.py",
