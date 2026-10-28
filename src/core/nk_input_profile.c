@@ -307,6 +307,49 @@ const char *nk_host_key_name(int key) {
     return NULL;
 }
 
+/* Key names in plain words where the profile's own name is not one already. */
+static const struct {
+    const char *name;
+    const char *words;
+} kKeyWords[] = {
+    { "return", "Enter" },          { "backspace", "Backspace" },   { "tab", "Tab" },
+    { "space", "Space" },           { "minus", "-" },               { "equals", "=" },
+    { "leftbracket", "[" },         { "rightbracket", "]" },        { "backslash", "\\" },
+    { "semicolon", ";" },           { "apostrophe", "'" },          { "grave", "`" },
+    { "comma", "," },               { "period", "." },              { "slash", "/" },
+    { "insert", "Insert" },         { "home", "Home" },             { "pageup", "Page Up" },
+    { "delete", "Delete" },         { "end", "End" },               { "pagedown", "Page Down" },
+    { "right", "Right Arrow" },     { "left", "Left Arrow" },       { "down", "Down Arrow" },
+    { "up", "Up Arrow" },           { "kp_divide", "Keypad /" },    { "kp_multiply", "Keypad *" },
+    { "kp_minus", "Keypad -" },     { "kp_plus", "Keypad +" },      { "kp_enter", "Keypad Enter" },
+    { "kp_period", "Keypad ." },    { "lctrl", "Left Ctrl" },       { "lshift", "Left Shift" },
+    { "lalt", "Left Alt" },         { "rctrl", "Right Ctrl" },      { "rshift", "Right Shift" },
+    { "ralt", "Right Alt" }
+};
+
+void nk_host_key_words(int key, char *buf, size_t buf_sz) {
+    const char *name = nk_host_key_name(key);
+    if (!buf || buf_sz == 0) return;
+    if (!name) {
+        snprintf(buf, buf_sz, "None");
+        return;
+    }
+    for (size_t i = 0; i < sizeof(kKeyWords) / sizeof(kKeyWords[0]); i++) {
+        if (strcmp(name, kKeyWords[i].name) == 0) {
+            snprintf(buf, buf_sz, "%s", kKeyWords[i].words);
+            return;
+        }
+    }
+    /* What is left is a letter or digit, on the main keys or the keypad. */
+    if (strncmp(name, "kp_", 3) == 0) {
+        snprintf(buf, buf_sz, "Keypad %s", name + 3);
+    } else if (name[0] >= 'a' && name[0] <= 'z' && name[1] == '\0') {
+        snprintf(buf, buf_sz, "%c", name[0] - 'a' + 'A');
+    } else {
+        snprintf(buf, buf_sz, "%s", name);
+    }
+}
+
 int nk_host_key_from_name(const char *name) {
     if (!name) return NK_HOST_KEY_NONE;
     for (size_t i = 0; i < sizeof(kHostKeys) / sizeof(kHostKeys[0]); i++) {

@@ -211,6 +211,12 @@ int  sdl3vk_window_minimized(void);
 void sdl3vk_wait_events(uint32_t timeout_ms);
 /* The SR_PRESENT_SCALING mode in use (SDL3VK_SCALING_*). */
 int  sdl3vk_present_scaling(void);
+/* Changes it for the rest of the run (the pause overlay's settings page); the next present
+ * uses it. Returns 0, changing nothing, for a value that is not an SDL3VK_SCALING_* mode. */
+int  sdl3vk_set_present_scaling(int mode);
+/* The window's display scale (1.0 at 100 %) and its pixels per window coordinate, the unit
+ * pointer events arrive in. Returns 0 before the window exists. */
+int  sdl3vk_window_scales(float *display_scale, float *pixels_per_point);
 /* The refresh period of the display the window is on, in ns; 0 when SDL does not know it. */
 uint64_t sdl3vk_display_period_ns(void);
 
