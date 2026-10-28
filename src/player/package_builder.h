@@ -327,7 +327,7 @@ void package_builder_bootstrap_python_cancel(PackageBootstrapSession *session);
 void package_builder_bootstrap_python_close(PackageBootstrapSession *session);
 
 /* Resets the session and starts the verified Python prerequisite fetcher from
- * python_path, writing its log, progress and cancel files for this session. On failure
+ * python_path, writing its log, progress and cancel files for this session. On failure,
  * failure_code and failure_boundary say why. `bootstrapped_python` is not used. */
 NkResult package_builder_start_prerequisite_fetch(
     PackageBuildSession *session, const char *python_path, const char *cli_path,
