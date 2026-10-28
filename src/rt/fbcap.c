@@ -48,6 +48,9 @@ static int s_result;                 /* 1 published, 0 nothing attempted, -1 fai
 static char s_path[1024];
 static sr_cap_source s_src = SR_CAP_SRC_NONE;
 static uint32_t s_w, s_h;
+static int s_probe;                  /* the pending request is a probe: no file */
+static int s_probe_ready;            /* a probe result is waiting to be taken */
+static uint32_t s_probe_brightest;
 
 static int cap_is_sep(char c) { return c == '/' || c == '\\'; }
 
@@ -165,6 +168,24 @@ static int cap_publish(const void *px, uint32_t row_bytes, sr_cap_order order) {
         cap_finish(0, "invalid pixel description");
         return -1;
     }
+    if (s_probe) {
+        /* The brightest of the three colour bytes; the ignored byte sits at offset 3 in
+         * both orders. */
+        uint32_t brightest = 0;
+        for (uint32_t y = 0; y < s_h && brightest < 255u; y++) {
+            const uint8_t *row = (const uint8_t *)px + (size_t)y * row_bytes;
+            for (uint32_t x = 0; x < s_w; x++) {
+                const uint8_t *p = row + (size_t)x * 4u;
+                uint8_t m = p[0] > p[1] ? p[0] : p[1];
+                if (p[2] > m) m = p[2];
+                if (m > brightest) brightest = m;
+            }
+        }
+        s_probe_brightest = brightest;
+        s_probe_ready = 1;
+        cap_finish(1, NULL);
+        return 1;
+    }
     if (!cap_write_file((const uint8_t *)px, row_bytes, order)) {
         cap_finish(0, "write or publish failed");
         return -1;
@@ -180,10 +201,58 @@ int sr_capture_arm(const char *path) {
     if (s_state == CAP_ARMED || s_state == CAP_RECORDED) return 0;
     if (!path || !path[0] || strlen(path) >= sizeof s_path) return 0;
     snprintf(s_path, sizeof s_path, "%s", path);
+    s_probe = 0;
     s_src = SR_CAP_SRC_NONE;
     s_w = s_h = 0;
     s_state = CAP_ARMED;
     return 1;
+}
+
+int sr_capture_arm_probe(void) {
+    s_result = 0;
+    if (s_state == CAP_ARMED || s_state == CAP_RECORDED) return 0;
+    s_path[0] = '\0';
+    s_probe = 1;
+    s_src = SR_CAP_SRC_NONE;
+    s_w = s_h = 0;
+    s_state = CAP_ARMED;
+    return 1;
+}
+
+int sr_capture_probe_take(uint32_t *brightest) {
+    if (!s_probe_ready) return 0;
+    s_probe_ready = 0;
+    if (brightest) *brightest = s_probe_brightest;
+    return 1;
+}
+
+int sr_picture_watch_probe(SrPictureWatch *w, uint32_t vcount, uint32_t brightest) {
+    if (!w) return SR_PICTURE_WATCH_NONE;
+    w->last_vcount = vcount;
+    if (brightest <= SR_PICTURE_DARK_MAX) {
+        if (!w->dark) {
+            w->dark = 1;
+            w->first_vcount = vcount;
+            w->reported = 0;
+        }
+        return SR_PICTURE_WATCH_NONE;
+    }
+    int resumed = w->dark && w->reported > 0u;
+    w->dark = 0;
+    w->reported = 0;
+    return resumed ? SR_PICTURE_WATCH_RESUMED : SR_PICTURE_WATCH_NONE;
+}
+
+int sr_picture_watch_tick(SrPictureWatch *w, uint32_t vcount, uint32_t *dark_vblanks) {
+    if (!w || !w->dark) return SR_PICTURE_WATCH_NONE;
+    /* VCOUNT is monotonic for the process, so both differences are true elapsed counts. */
+    if (vcount - w->last_vcount > 2u * SR_PICTURE_PROBE_EVERY) return SR_PICTURE_WATCH_NONE;
+    uint32_t elapsed = vcount - w->first_vcount;
+    uint32_t bucket = elapsed / SR_PICTURE_REPORT_EVERY;
+    if (bucket <= w->reported) return SR_PICTURE_WATCH_NONE;
+    w->reported = bucket;
+    if (dark_vblanks) *dark_vblanks = elapsed;
+    return SR_PICTURE_WATCH_REPORT;
 }
 
 int sr_capture_result(void) { return s_result; }
