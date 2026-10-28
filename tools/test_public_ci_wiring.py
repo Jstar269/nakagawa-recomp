@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -152,6 +153,34 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("$(RT_GE_O): src/rt/ge.c", makefile)
         self.assertIn("$(CC) $(GE_CFLAGS)", makefile)
 
+    def test_gpu_coherence_selftest_runs_on_lavapipe_in_linux_ci(self) -> None:
+        """ge_gpu.c's coherence selftest ran on no hosted job, so a #1481 regression went unseen.
+
+        It needs a Vulkan device and a window: the step selects lavapipe and runs under Xvfb as
+        the capture selftest does, and a Make failure (an exit 77 skip included) fails it.
+        """
+        native_tools = _ci_job_blocks()["native_tools"]
+        step_name = "Run GPU coherence selftest on lavapipe"
+        step = _ci_step(native_tools, step_name)
+        self.assertIsNotNone(step, "native_tools must run gpu-coherence-selftest")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertIn("set -euo pipefail", text)
+        self.assertIn("-name 'lvp_icd*.json'", text)
+        self.assertIn('export VK_ICD_FILENAMES="$lvp_icd"', text)
+        self.assertIn('xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11', text)
+        self.assertRegex(text, r"(?m)^\s+make CC=gcc gpu-coherence-selftest$")
+        self.assertNotIn("continue-on-error", text)
+        self.assertNotIn("if:", text)
+        self.assertLess(
+            _ci_step_index(native_tools, "Verify lavapipe and run GPU capture selftest"),
+            _ci_step_index(native_tools, step_name),
+        )
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("gpu-coherence-selftest: $(GPU_COHERENCE_BIN)\n\t$(GPU_COHERENCE_BIN)\n", makefile)
+        docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
+        self.assertIn("`gpu-coherence-selftest`", docs)
+
     def test_ffmpeg_h264_media_selftest_is_wired_in_linux_ci(self) -> None:
         """The vendored H.264 subset must build and execute its real media fixture in CI.
 
@@ -176,6 +205,37 @@ class PublicCiWiringTests(unittest.TestCase):
             _ci_step_index(native_tools, "Install the pinned SDL3 into the Linux prefix"),
             _ci_step_index(native_tools, step_name),
         )
+
+    def test_hle_thread_selftest_runs_on_linux_and_windows(self) -> None:
+        """The production-HLE suite links src/rt/hle.c, so it is hle.c's behavioural gate.
+
+        Linux runs the POSIX arms of hle.c's host seams and Windows the Win32 arms; built on
+        Windows alone, the Linux arms had no behavioural coverage beyond compiling (#306).
+        """
+        jobs = _ci_job_blocks()
+        native_tools = jobs["native_tools"]
+        step_name = "Build and run HLE thread selftest (links SDL3)"
+        step = _ci_step(native_tools, step_name)
+        self.assertIsNotNone(step, "native_tools must build and run hle-thread-selftest")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertRegex(text, r"(?m)^\s+run: make CC=gcc -j\d+ hle-thread-selftest$")
+        self.assertNotIn("continue-on-error", text)
+        self.assertNotIn("if:", text)
+        self.assertLess(
+            _ci_step_index(native_tools, "Install the pinned SDL3 into the Linux prefix"),
+            _ci_step_index(native_tools, step_name),
+        )
+        windows = _ci_step(jobs["windows_runtime"], "Build and run HLE thread selftest")
+        self.assertIsNotNone(windows, "the Windows selftests part must keep hle-thread-selftest")
+        assert windows is not None
+        self.assertIn("hle-thread-selftest", "\n".join(windows))
+        # GNU ld has no --no-insert-timestamp: the link names the per-host reproducible flag.
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        start = makefile.index("\nhle-thread-selftest-build:")
+        recipe = makefile[start:makefile.index("\nhle-thread-selftest:", start)]
+        self.assertIn("$(REPRODUCIBLE_LINK_FLAG)", recipe)
+        self.assertNotIn("--no-insert-timestamp", recipe)
 
     def test_failed_linux_showcase_smoke_uploads_its_runtime_log(self) -> None:
         """A failed smoke names runtime.log; the run must keep it to diagnose a flake."""
@@ -456,18 +516,22 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run strbuf checked-append formatting selftest": "CC=gcc VULKAN_SDK=/ucrt64 strbuf-selftest",
     "Build and run HLE thread selftest": "CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest",
     "Build and run flash0 font device selftest": 'PYTHONPATH=tools "$py" -m unittest -v test_flash0_font',
+    "Build and run the Media Foundation H.264 media selftest": "CC=gcc VULKAN_SDK=/ucrt64 psmf-media-selftest",
     "Build and run synthetic VFPU fuzzer (shard 0 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Build and run synthetic VFPU fuzzer (shard 1 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
     "Prove the fuzz shards cover every case exactly once": 'NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe "$py" -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests',
 }
-# Steps every part repeats: the toolchain setup and the runtime-object compile gate.
+# Steps every part repeats: the toolchain setup, the job-local compiler cache and the
+# runtime-object compile gate.
 _WINDOWS_EVERY_PART = (
     "Check out repository",
     "Set up Windows CPython 3.15.1",
     "Set up MSYS2 UCRT64",
     "Pin the Windows Python toolchain (CPython 3.15.1)",
     "Verify default and override compiler resolution",
+    "Route this job's compiles through a job-local compiler cache",
     "Compile Windows runtime objects through the default compiler path",
+    "Report the job-local compiler cache statistics",
 )
 
 
@@ -517,6 +581,35 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
             step,
         )
 
+    def test_media_foundation_media_selftest_decodes_or_fails(self) -> None:
+        """#283: the source-authored H.264 fixture runs on the Windows backend, Media Foundation.
+
+        The selftest exits 0 with SKIP lines when no decoder instance can be created, so the
+        step must fail on any SKIP line rather than pass without a decode.
+        """
+        name = "Build and run the Media Foundation H.264 media selftest"
+        if name not in self.steps:
+            self.fail(f"windows_runtime has no {name!r} step")
+        self.assertEqual(self.part_of(name), "selftests")
+        step = "\n".join(self.steps[name])
+        self.assertIn("shell: msys2 {0}", step)
+        self.assertIn("set -euo pipefail", step)
+        self.assertNotIn("continue-on-error", step)
+        self.assertNotIn("H264_FFMPEG", step)
+        self.assertIn(
+            "mingw32-make --no-print-directory GAME_NAME=ci BUILD_DIR=build/windows-runtime \\\n"
+            '            CC=gcc VULKAN_SDK=/ucrt64 psmf-media-selftest 2>&1 | tee "$log"\n'
+            "          if grep -F 'SKIP:' \"$log\"; then\n",
+            step,
+        )
+        self.assertRegex(step, r"(?m)^\s+exit 1$")
+        self.assertIn("CC=gcc VULKAN_SDK=/ucrt64 psmf-media-selftest-csc-mutant", step)
+        # The Windows build keeps Media Foundation as its decoder: the FFmpeg subset is off
+        # there by default and the media selftest links the Media Foundation libraries.
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("ifeq ($(OS),Windows_NT)\nH264_FFMPEG ?= 0\nelse\nH264_FFMPEG ?= 1\nendif", makefile)
+        self.assertIn("ifeq ($(OS),Windows_NT)\nPSMF_MEDIA_LIBS := -lmfplat -lole32", makefile)
+
     def test_every_serial_gate_runs_in_exactly_one_declared_part_with_its_command(self) -> None:
         self.assertEqual(len(self.parts), len(set(self.parts)))
         for name, command in _WINDOWS_SERIAL_GATES.items():
@@ -547,6 +640,75 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
             _ci_step_index(self.block, "Build and run full production pipeline smoke"),
             _ci_step_index(self.block, "Stage and run production smoke outside its build directory"),
         )
+
+
+class WindowsCompilerCacheTests(unittest.TestCase):
+    """#735 item 2: repeated Windows compiles are served only by a job-local cache.
+
+    ccache keys an entry on the compiler, the command line and the contents of every
+    header, so a hit is an identical compile. The cache must start empty in each job
+    and never cross a job or a run (#373), CC must stay `gcc`, and the masquerading
+    `gcc` must resolve into the UCRT64 toolchain, whose location the build's SDL3
+    toolchain check reads.
+    """
+
+    SETUP = "Route this job's compiles through a job-local compiler cache"
+    REPORT = "Report the job-local compiler cache statistics"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.block = _ci_job_blocks()["windows_runtime"]
+        cls.setup = "\n".join(_ci_step(cls.block, cls.SETUP) or [])
+        cls.report = "\n".join(_ci_step(cls.block, cls.REPORT) or [])
+
+    def test_cache_comes_from_the_toolchain_and_wraps_every_compile_after_the_resolution_check(self) -> None:
+        install = "\n".join(_ci_step(self.block, "Set up MSYS2 UCRT64") or [])
+        self.assertIn("mingw-w64-ucrt-x86_64-ccache", install)
+        self.assertLess(_ci_step_index(self.block, "Verify default and override compiler resolution"),
+                        _ci_step_index(self.block, self.SETUP))
+        self.assertLess(_ci_step_index(self.block, self.SETUP),
+                        _ci_step_index(self.block, "Compile Windows runtime objects through the default compiler path"))
+
+    def test_gcc_is_a_native_symlink_to_the_toolchain_ccache(self) -> None:
+        # A copy elsewhere would leave `gcc` outside /ucrt64/bin and fail the SDL3
+        # toolchain check; nativestrict refuses to fall back to copying.
+        self.assertIn('MSYS=winsymlinks:nativestrict ln -s /ucrt64/bin/ccache.exe "$cache/bin/gcc.exe"', self.setup)
+        self.assertIn('test "$(readlink -f "$cache/bin/gcc.exe")" = /ucrt64/bin/ccache.exe', self.setup)
+        self.assertIn('test "$(command -v gcc)" = "$cache/bin/gcc"', self.setup)
+        self.assertIn("> /etc/profile.d/zz-job-compiler-cache.sh", self.setup)
+        self.assertNotRegex(self.setup, r"(?m)^\s*cp\s")
+
+    def test_cache_lives_in_this_job_and_is_never_restored_or_shared(self) -> None:
+        self.assertIn('cache="$(cygpath -u "$RUNNER_TEMP")/ccache"', self.setup)
+        self.assertIn("export CCACHE_DIR='%s'", self.setup)
+        self.assertIn('"$(cygpath -m "$cache/objects")"', self.setup)
+        # The cache is named in no other step, so no cache, artifact or other job's
+        # step can restore, upload or reuse it.
+        allowed = {"Set up MSYS2 UCRT64", self.SETUP, self.REPORT}
+        for job, lines in _ci_job_blocks().items():
+            step = None
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("- name: "):
+                    step = stripped[len("- name: "):]
+                if "ccache" not in stripped.lower() or stripped.startswith("#"):
+                    continue
+                with self.subTest(job=job, line=stripped):
+                    self.assertEqual(job, "windows_runtime", "the compiler cache must not leave its job")
+                    self.assertIn(step, allowed, "the compiler cache is used only by its own steps")
+
+    def test_cc_stays_gcc_in_every_windows_step(self) -> None:
+        for line in self.block:
+            with self.subTest(line=line.strip()):
+                self.assertNotRegex(line, r"\bCC=\S*ccache", "the cache masquerades as gcc; CC is not changed")
+
+    def test_report_runs_last_and_fails_when_the_cache_was_bypassed(self) -> None:
+        names = [line.strip()[len("- name: "):] for line in self.block if line.strip().startswith("- name: ")]
+        self.assertEqual(names[-1], self.REPORT)
+        self.assertIn("ccache --print-stats", self.report)
+        for counter in ("direct_cache_hit", "preprocessed_cache_hit", "cache_miss"):
+            self.assertIn(f'"{counter}"', self.report)
+        self.assertIn('test "$compiles" -gt 0', self.report)
 
 
 class WindowsPlayerStageSmokeTests(unittest.TestCase):
@@ -601,9 +763,85 @@ class WindowsPlayerStageSmokeTests(unittest.TestCase):
 
     def test_disc_writer_action_is_the_one_the_step_calls(self) -> None:
         showcase = (ROOT / "fixtures" / "showcase" / "showcase.py").read_text(encoding="utf-8")
-        self.assertIn('choices=("build", "smoke", "stage-iso", "loadexec-smoke")', showcase)
+        self.assertIn('choices=("build", "build-prx", "smoke", "stage-iso", "loadexec-smoke")',
+                      showcase)
         self.assertIn("def stage_iso(out_dir: Path) -> Path:", showcase)
         self.assertIn("def loadexec_smoke() -> None:", showcase)
+
+
+class PlayerUiShardTests(unittest.TestCase):
+    """The player UI regressions run as parallel shards that together run each test once.
+
+    `make player-ui-regressions` starts one unittest process per entry of
+    PLAYER_UI_SHARDS, and tests/native/test_player_ui.py keeps the tests of its shard.
+    These checks load the real module's tests, so a test added to it is covered too.
+    """
+
+    MODULE = ROOT / "tests" / "native" / "test_player_ui.py"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        sys.path.insert(0, str(cls.MODULE.parent))
+        try:
+            spec = importlib.util.spec_from_file_location("test_player_ui_shards", cls.MODULE)
+            assert spec is not None and spec.loader is not None
+            cls.module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cls.module)
+        finally:
+            sys.path.remove(str(cls.MODULE.parent))
+        with mock.patch.dict(os.environ, {cls.module.PLAYER_UI_SHARD_ENV: ""}):
+            cls.suite = unittest.TestLoader().loadTestsFromModule(cls.module)
+        cls.ids = sorted(test.id() for test in cls.module._flatten(cls.suite))
+
+    def shard_ids(self, spec: str) -> list[str]:
+        return [test.id() for test in self.module._flatten(self.module.select_shard(self.suite, spec))]
+
+    def test_the_unsharded_suite_is_the_whole_module(self) -> None:
+        self.assertGreater(len(self.ids), 100)
+        self.assertEqual(len(self.ids), len(set(self.ids)))
+
+    def test_every_shard_count_runs_each_test_exactly_once(self) -> None:
+        for count in (1, 2, 3, 4, 7):
+            with self.subTest(count=count):
+                shards = [self.shard_ids(f"{index}/{count}") for index in range(count)]
+                self.assertTrue(all(shards), "every shard runs at least one test")
+                joined = [test for shard in shards for test in shard]
+                self.assertEqual(sorted(joined), self.ids, "the shards must partition the suite")
+
+    def test_malformed_and_empty_shards_are_refused(self) -> None:
+        for spec in ("1", "4/4", "-1/4", "0/0", "a/2", "0/2/3", " 0/2", "01/4", "0/05"):
+            with self.subTest(spec=spec), self.assertRaises(ValueError):
+                self.module.parse_shard(spec)
+        beyond = len(self.ids) + 1
+        with self.assertRaises(ValueError):
+            self.module.select_shard(self.suite, f"{beyond - 1}/{beyond}")
+
+    def test_the_environment_selects_the_shard_the_loader_returns(self) -> None:
+        with mock.patch.dict(os.environ, {self.module.PLAYER_UI_SHARD_ENV: "1/4"}):
+            loaded = unittest.TestLoader().loadTestsFromModule(self.module)
+        self.assertEqual([test.id() for test in self.module._flatten(loaded)], self.shard_ids("1/4"))
+
+    def test_the_makefile_runs_every_shard_of_one_count_side_by_side(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        listed = re.search(r"(?m)^PLAYER_UI_SHARDS := (.+)$", makefile)
+        self.assertIsNotNone(listed)
+        assert listed is not None
+        shards = listed.group(1).split()
+        self.assertEqual(shards, [str(index) for index in range(len(shards))],
+                         "the shard list must be 0..n-1 so every residue runs")
+        self.assertGreater(len(shards), 1)
+        targets = " ".join(f"player-ui-regressions-shard-{shard}" for shard in shards)
+        # The shard rule names exactly those targets, literally and as .PHONY.
+        self.assertIn(f"\n{targets}:\n", makefile)
+        self.assertIn(f".PHONY: player-ui-regressions {targets}\n", makefile)
+        self.assertIn("-j$(words $(PLAYER_UI_SHARDS)) --output-sync=target", makefile)
+        self.assertIn("$(addprefix player-ui-regressions-shard-,$(PLAYER_UI_SHARDS))", makefile)
+        self.assertIn(
+            f"{targets}: export NAKAGAWA_PLAYER_UI_SHARD = "
+            "$(patsubst player-ui-regressions-shard-%,%,$@)/$(words $(PLAYER_UI_SHARDS))",
+            makefile,
+        )
+        self.assertEqual(self.module.PLAYER_UI_SHARD_ENV, "NAKAGAWA_PLAYER_UI_SHARD")
 
 
 class VfpuFuzzShardTests(unittest.TestCase):
@@ -882,6 +1120,11 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertIn("sha256sum --check --strict SHA256SUMS", fixture)
         self.assertIn("name: profile-zero-fixture", fixture)
         self.assertIn("if-no-files-found: error", fixture)
+        # #341: the verified guest's imports are gated on HLE review status.
+        gate = "\n".join(_ci_step(self.blocks["profile_zero_fixture"],
+                                  "Gate profile-zero imports on HLE review status") or [])
+        self.assertIn("--imports fixtures/profile_zero/prebuilt/profile_zero_guest.prx", gate)
+        self.assertIn("--check-profile-zero-imports", gate)
         for job in ("python_tools", "windows_runtime"):
             with self.subTest(job=job):
                 block = "\n".join(self.blocks[job])

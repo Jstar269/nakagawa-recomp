@@ -31,6 +31,7 @@
 *.jpg             binary
 *.jpeg            binary
 *.webp            binary
+*.mp4             binary
 *.ogg             binary
 *.dat             binary
 *.pgm             binary

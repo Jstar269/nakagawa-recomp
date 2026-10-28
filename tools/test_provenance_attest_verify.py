@@ -2223,6 +2223,17 @@ class LiveRepositoryTests(unittest.TestCase):
         self.assertIn("$env:CANDIDATE_SHA -ne $env:GITHUB_SHA", raw)
         self.assertIn("$checkedOutSha -ne $env:GITHUB_SHA", raw)
         self.assertNotIn("ref: ${{ github.sha }}", raw)
+        # The showcase PRX job the candidate job needs is held to the same limits.
+        prx_job = raw[raw.index("  showcase_prx:"):raw.index("  candidate_binary_l2:")]
+        self.assertIn(
+            "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'",
+            prx_job,
+        )
+        self.assertIn('"$CANDIDATE_SHA" != "$GITHUB_SHA"', prx_job)
+        self.assertIn('"$checked_out" != "$GITHUB_SHA"', prx_job)
+        self.assertNotIn("id-token", prx_job)
+        self.assertNotIn("attestations:", prx_job)
+        self.assertIn("needs: [showcase_prx]", raw[raw.index("  candidate_binary_l2:"):])
 
     def test_the_trusted_workflow_never_interpolates_untrusted_event_text(self) -> None:
         """Titles, bodies and branch names must not reach the job at all."""

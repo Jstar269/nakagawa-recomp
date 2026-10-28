@@ -816,7 +816,7 @@ static void flight_exit(void) {
     if (write_bundle((int)s_flight_terminal_reason)) s_flight_dumped = 1;
 }
 
-#if defined(SR_HLE_THREAD_SELFTEST)
+#if defined(SR_HLE_THREAD_SELFTEST) || defined(SR_SCHED_LIVENESS_TEST)
 void sr_flight_test_reset(uint32_t enabled_classes, uint32_t limit) {
     s_flight_classes = enabled_classes & SR_FLIGHT_CLASS_ALL;
     s_flight_limit = limit == 0u ? 1u : (limit > SR_FLIGHT_MAX_EVENTS ? SR_FLIGHT_MAX_EVENTS : limit);

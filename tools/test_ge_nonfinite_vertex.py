@@ -211,6 +211,61 @@ static void emit_list(uint32_t list, const float *bone, int nrm_nan) {
     emit_vtx(VERTS + 2u * 40u, 1.0f, 0, 1, 0xFFFFFFFFu, 0, 0, 1, 0.0f, 0.5f, 0);
 }
 
+/* Two lit triangles in one list with light 0's colour changed between them (lightswap):
+ * register-derived lighting values the GE keeps between commands must follow the command,
+ * so the second triangle is lit with the new colour. Directional light along +z, normals
+ * +z (n.l = 1), diffuse material white, no ambient or emissive: each pixel's red channel is
+ * the light's diffuse red. The light's ambient colour, then its type, change too. */
+static void emit_lightswap_list(uint32_t list) {
+    s_pc = list;
+    W(0x14, 0);                       /* ORIGIN */
+    W(0x10, 0);                       /* BASE */
+    W(0x9C, 0x044000);                /* FRAMEBUFPTR -> 0x04044000 */
+    W(0x9D, FBW);
+    W(0xD2, 3);                       /* PIXFORMAT 8888 */
+    W(0xD4, 0);
+    W(0xD5, (271u << 10) | 479u);
+    W(0x17, 1);                       /* LIGHTINGENABLE */
+    W(0x18, 1);                       /* LIGHTENABLE0 */
+    W(0x5F, 0);                       /* LIGHTTYPE0: directional, diffuse only */
+    W(0x63, f24(0.0f)); W(0x64, f24(0.0f)); W(0x65, f24(2.0f));   /* light 0 direction */
+    W(0x53, 0);                       /* MATERIALUPDATE: colours from the registers */
+    W(0x54, 0);                       /* MATERIALEMISSIVE */
+    W(0x55, 0xFFFFFF);                /* MATERIALAMBIENT */
+    W(0x56, 0xFFFFFF);                /* MATERIALDIFFUSE */
+    W(0x5C, 0);                       /* AMBIENTCOLOR */
+    W(0x8F, 0); W(0x90, 0x404040); W(0x91, 0);   /* light 0 ambient / diffuse / specular */
+    W(0x1E, 0);
+    W(0xA0, 0x030000);
+    W(0xA8, (0x08u << 16) | 64u);
+    W(0xB8, (6u << 8) | 6u);
+    W(0xC3, 3);
+    W(0x42, f24(240.0f)); W(0x43, f24(136.0f)); W(0x44, f24(1000.0f));
+    W(0x45, f24(240.0f)); W(0x46, f24(136.0f)); W(0x47, f24(30000.0f));
+    W(0x4C, 0); W(0x4D, 0);
+    mat_upload(0x3A, 0x3B, kIdent43, 12);
+    mat_upload(0x3C, 0x3D, kIdent43, 12);
+    mat_upload(0x3E, 0x3F, kIdent44, 16);
+    mat_upload(0x2A, 0x2B, kIdent43, 12);
+    W(0x12, VT);
+    W(0x01, VERTS - list);
+    W(0x04, (3u << 16) | 3u);         /* triangle 1: light 0 diffuse 0x40 */
+    W(0x90, 0xC0C0C0);                /* light 0 diffuse -> 0xC0 */
+    W(0x04, (3u << 16) | 3u);         /* triangle 2 */
+    W(0x8F, 0x202020);                /* light 0 ambient -> 0x20 (material ambient white) */
+    W(0x04, (3u << 16) | 3u);         /* triangle 3: 0xC0 + 0x20 */
+    W(0x5F, (2u << 8));               /* LIGHTTYPE0 -> point light at (0, 0, 2): n.l = 1 */
+    W(0x04, (3u << 16) | 3u);         /* triangle 4: point light, attenuation 1 */
+    W(0x0C, 0);                       /* END */
+    static const float xs[4] = { -0.9f, -0.4f, 0.1f, 0.6f };
+    for (uint32_t t = 0; t < 4; t++) {
+        float x0 = xs[t];
+        emit_vtx(VERTS + (t * 3u + 0u) * 40u, 1.0f, 0, 0, 0xFFFFFFFFu, 0, 0, 1, x0, -0.5f, 0);
+        emit_vtx(VERTS + (t * 3u + 1u) * 40u, 1.0f, 1, 0, 0xFFFFFFFFu, 0, 0, 1, x0 + 0.3f, -0.5f, 0);
+        emit_vtx(VERTS + (t * 3u + 2u) * 40u, 1.0f, 0, 1, 0xFFFFFFFFu, 0, 0, 1, x0 + 0.15f, 0.5f, 0);
+    }
+}
+
 /* tc=float col=8888 pos=float through=1 idx=none. pos_fmt=3 makes a through vertex carry
  * raw float screen coordinates, so a NaN word written by the guest lands in the vertex
  * exactly as a NaN float would (STRIDE 24: u, v, rgba8888, x, y, z). */
@@ -339,6 +394,16 @@ static void print_predicates(void) {
     }
 }
 
+/* Red channel at the centroid of lightswap triangle t (screen x = 240 + 240 * model x). */
+static unsigned lightswap_red(uint32_t t) {
+    static const float xs[4] = { -0.9f, -0.4f, 0.1f, 0.6f };
+    uint32_t x = (uint32_t)(240.0f + 240.0f * (xs[t] + 0.15f));
+    uint32_t y = 136u;
+    uint32_t w;
+    memcpy(&w, SR_HOST(FB + (y * FBW + x) * 4u), 4);
+    return w == SENTINEL ? 0x100u : (w & 0xFFu);
+}
+
 int main(int argc, char **argv) {
     const char *mode = (argc > 1) ? argv[1] : "finite";
     int with_gpu = (argc > 2) && strcmp(argv[2], "hook") == 0;
@@ -353,7 +418,9 @@ int main(int argc, char **argv) {
     if (!arena) return 2;
     g_mem = arena + 0x08000000u;
 
-    if (strcmp(mode, "throughtri") == 0 || strcmp(mode, "throughok") == 0)
+    if (strcmp(mode, "lightswap") == 0)
+        emit_lightswap_list(LIST1);
+    else if (strcmp(mode, "throughtri") == 0 || strcmp(mode, "throughok") == 0)
         emit_through_list(LIST1, 3, 3, strcmp(mode, "throughtri") == 0);
     else if (strcmp(mode, "throughspr") == 0)
         emit_through_list(LIST1, 6, 2, 1);
@@ -366,6 +433,8 @@ int main(int argc, char **argv) {
     ge_set_frame(60);
     if (ge_run_list(LIST1, 0) != 0) { printf("FAIL: list did not END\n"); return 1; }
     printf("LIT=%u\nHOOK=%u\n", lit_pixels(), s_hook_calls);
+    if (strcmp(mode, "lightswap") == 0)
+        for (uint32_t t = 0; t < 4; t++) printf("RED%u=%u\n", t, lightswap_red(t));
     /* GESTAT prints on the frame boundary, so step to the next multiple of 60 to flush
      * the counters this list accumulated. */
     ge_set_frame(120);
@@ -510,6 +579,20 @@ class TestNonFiniteVertex(unittest.TestCase):
         self.assertEqual(gpu.returncode, 0, gpu.stdout + gpu.stderr)
         self.assertEqual(_out(gpu, "HOOK"), 0,
                          "the Vulkan capture seam was handed a non-finite patch triangle")
+
+    def test_lighting_follows_light_changes_between_draws(self):
+        # The GE keeps register-derived lighting values (colours, a directional light's
+        # normalized direction) between commands; a light command between two draws of one
+        # list must reach the next draw's colour, and a light-type change its direction rule.
+        result = _run(self.exe, "lightswap")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(_out(result, "OOR"), 0)
+        red = [_out(result, f"RED{t}") for t in range(4)]
+        self.assertEqual(red[:3], [0x40, 0xC0, 0xE0])
+        # A point light at (0, 0, 2) is off-axis for every vertex of triangle 4, so n.l < 1:
+        # still lit by the ambient term, but darker than the directional light's 0xE0.
+        self.assertGreater(red[3], 0x20)
+        self.assertLess(red[3], 0xE0)
 
     def test_both_ge_paths_agree_on_the_finite_control(self):
         # The control must still be submitted to the GPU seam AND rasterize in software:

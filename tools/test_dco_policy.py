@@ -377,15 +377,20 @@ class TestGovernanceSurfaces(RuleStatementAssertions):
         self.assertEqual(list(template_dir.glob("*.md")), [])
 
     def test_tracked_claude_guidance_is_public_and_small(self):
-        content = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-        self.assertLessEqual(len(content.splitlines()), 50)
+        # Every tool-specific router only points at AGENTS.md's quick start: it
+        # stays small, public, and free of tracker numbers that go stale.
         windows_path = r"[A-Z]" + re.escape(":") + r"[\\/]"
         unix_user_path = "/" + "Users" + "/"
-        self.assertNotRegex(
-            content,
-            rf"(?i)(place_game_here|game\.iso|EBOOT|SaveBase|memstick/|{unix_user_path}|{windows_path}|session[-_ ]?[0-9a-f]{{8,}})",
-        )
-        self.assertNotRegex(content, r"(?i)\b(?:issue|pr)\s*#\d+")
+        for rel in ("CLAUDE.md", ".github/copilot-instructions.md"):
+            with self.subTest(router=rel):
+                content = (ROOT / rel).read_text(encoding="utf-8")
+                self.assertLessEqual(len(content.splitlines()), 50)
+                self.assertIn("AGENTS.md#where-to-start", content)
+                self.assertNotRegex(
+                    content,
+                    rf"(?i)(place_game_here|game\.iso|EBOOT|SaveBase|memstick/|{unix_user_path}|{windows_path}|session[-_ ]?[0-9a-f]{{8,}})",
+                )
+                self.assertNotRegex(content, r"(?i)\b(?:issue|pr)\s*#\d+")
 
     def test_claude_is_no_longer_ignored(self):
         ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")

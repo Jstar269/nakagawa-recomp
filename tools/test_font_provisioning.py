@@ -172,7 +172,7 @@ class FontProvisioningTests(unittest.TestCase):
         self.assertEqual({slot: states[slot]["source"] for slot in states}, {
             "japanese": "user", "latin": "user", "korean": "user",
         })
-        self.assertIn("imported from your PSP", states["japanese"]["detail"])
+        self.assertIn("your imported font", states["japanese"]["detail"])
 
         # The originals are untouched by the import.
         self.assertEqual((source / "whatever_name.pgf").read_bytes(), japanese_pgf())
