@@ -24812,16 +24812,19 @@ static uint32_t h_CancelSema(CpuState *s) {
     return 0;
 }
 
+static void evf_cancel_outputs(uint32_t uid, uint32_t pattern);
+
 static uint32_t h_CancelEventFlag(CpuState *s) {
-    /* a0=evid, a1=newPattern, a2=numWaitThreads out (stack_arg 0).
+    /* a0=evid, a1=newPattern, a2=numWaitThreads out.
      * PSP-B2-01 (psp-hw-20260917): Cancel sets the pattern, reports the waiter
      * count and wakes every waiter with WAIT_CANCEL. */
     Sync *m = sync_find(A0, SYNC_KIND_EVENT_FLAG); if (!m) return 0x8002019au;   /* UNKNOWN_EVFID */
     int waiters = sched_count_waiters(A0);
     m->pattern = A1;
-    uint32_t nump = stack_arg(s, 0);
-    if (nump) MEM_W32(nump, (uint32_t)waiters);
+    uint32_t nump = A2;
+    if (nump && sr_guest_span_writable(nump, 4u)) MEM_W32(nump, (uint32_t)waiters);
     if (waiters) {
+        evf_cancel_outputs(A0, m->pattern);
         sched_wake_with_result(A0, SCE_KERNEL_ERROR_WAIT_CANCEL);
         sched_preempt();
     }
@@ -25379,8 +25382,18 @@ static uint32_t h_CreateEventFlag(CpuState *s) {
      * attribute cases. The option is ignored, as in the recorded cases. */
     if (!A0) return 0x80020001u;
     if ((A1 & 0x100u) || A1 >= 0x300u) return 0x80020191u;
+    /* Unreadable guest names fail closed; the PSP result for that case is
+     * unmeasured. Long valid names are truncated to 31 bytes. */
+    char name[32] = {0};
+    for (uint32_t i = 0; i < 31u; i++) {
+        uint32_t addr;
+        if (!sr_size_add_ok(A0, i, &addr) || !sr_guest_span_readable(addr, 1u))
+            return 0x80020001u;
+        name[i] = (char)MEM_R8(addr);
+        if (!name[i]) break;
+    }
     Sync *m = sync_new(SYNC_KIND_EVENT_FLAG); if (!m) return 0x80020000;
-    guest_cstr(A0, m->name, sizeof(m->name));
+    memcpy(m->name, name, sizeof(name));
     m->pattern = A2;
     m->attr = A1;
     m->init_pattern = A2;
@@ -25401,8 +25414,9 @@ static Sync *evf_find(uint32_t uid) { return sync_find(uid, SYNC_KIND_EVENT_FLAG
  * is never written through and is reclaimed. A thread blocks on one object at a
  * time, so live records never outnumber the scheduler's 128 threads. */
 #define EVF_WAITER_MAX 128
-typedef struct { uint32_t evf, thread, outp; int active; } EvfWaiter;
+typedef struct { uint32_t evf, thread, outp, bits, mode, toptr; uint64_t order, deadline; int active; } EvfWaiter;
 static EvfWaiter s_evf_waiters[EVF_WAITER_MAX];
+static uint64_t s_evf_wait_order;
 
 static int evf_waiter_live(const EvfWaiter *w) {
     SrThreadRunStatus rs;
@@ -25415,12 +25429,12 @@ static void evf_waiter_end(void) {
     for (int i = 0; i < EVF_WAITER_MAX; i++)
         if (s_evf_waiters[i].active && s_evf_waiters[i].thread == self) s_evf_waiters[i].active = 0;
 }
-static void evf_waiter_begin(uint32_t evf, uint32_t outp) {
+static void evf_waiter_begin(uint32_t evf, uint32_t outp, uint32_t bits, uint32_t mode, uint32_t toptr, uint64_t deadline) {
     evf_waiter_end();
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < EVF_WAITER_MAX; i++)
             if (!s_evf_waiters[i].active) {
-                s_evf_waiters[i] = (EvfWaiter){evf, sched_current_uid(), outp, 1};
+                s_evf_waiters[i] = (EvfWaiter){evf, sched_current_uid(), outp, bits, mode, toptr, ++s_evf_wait_order, deadline, 1};
                 return;
             }
         for (int i = 0; i < EVF_WAITER_MAX; i++)
@@ -25428,6 +25442,24 @@ static void evf_waiter_begin(uint32_t evf, uint32_t outp) {
     }
     fprintf(stderr, "HLE: event-flag waiter table full; uid=0x%x outBits=0x%08x not recorded\n",
             evf, outp);
+}
+
+/* Snapshot outputs at wake, before another thread can alter the flag or the
+ * released waiter can be delayed by scheduling. */
+static void evf_waiter_outputs(const EvfWaiter *w, uint32_t pattern) {
+    if (w->outp && sr_guest_span_writable(w->outp, 4u)) MEM_W32(w->outp, pattern);
+    if (w->toptr && sr_guest_span_writable(w->toptr, 4u)) {
+        sched_vtime_refresh();
+        uint64_t now = sched_vtime_us();
+        uint64_t remaining = now < w->deadline ? w->deadline - now : 0u;
+        MEM_W32(w->toptr, (uint32_t)remaining);
+    }
+}
+static void evf_cancel_outputs(uint32_t uid, uint32_t pattern) {
+    for (int i = 0; i < EVF_WAITER_MAX; i++) {
+        EvfWaiter *w = &s_evf_waiters[i];
+        if (w->evf == uid && evf_waiter_live(w)) evf_waiter_outputs(w, pattern);
+    }
 }
 
 static uint32_t h_DeleteEventFlag(CpuState *s) {
@@ -25445,8 +25477,7 @@ static uint32_t h_DeleteEventFlag(CpuState *s) {
     for (int i = 0; i < EVF_WAITER_MAX; i++) {
         EvfWaiter *w = &s_evf_waiters[i];
         if (!w->active || w->evf != uid) continue;
-        if (evf_waiter_live(w) && w->outp && sr_guest_span_writable(w->outp, 4u))
-            MEM_W32(w->outp, pattern);
+        if (evf_waiter_live(w)) evf_waiter_outputs(w, pattern);
         w->active = 0;
     }
     /* No waiter: no wake result to latch (see h_DeleteSema). */
@@ -25458,7 +25489,27 @@ static uint32_t h_DeleteEventFlag(CpuState *s) {
 }
 static uint32_t h_SetEventFlag(CpuState *s) {
     Sync *m = evf_find(A0); if (!m) return SCE_KERNEL_ERROR_UNKNOWN_EVFID;
-    m->pattern |= A1; sched_wake(A0); sched_preempt(); return 0;
+    m->pattern |= A1;
+    /* PSPAutotests set.expected: each waiter observes the pattern left by
+     * preceding waiters, not a pattern rechecked later in scheduler order. */
+    uint64_t after = 0;
+    int woke = 0;
+    for (;;) {
+        EvfWaiter *next = NULL;
+        for (int i = 0; i < EVF_WAITER_MAX; i++) {
+            EvfWaiter *w = &s_evf_waiters[i];
+            if (w->evf == A0 && evf_waiter_live(w) && w->order > after &&
+                (!next || w->order < next->order)) next = w;
+        }
+        if (!next) break;
+        after = next->order;
+        if (!sr_evf_matches(m->pattern, next->bits, next->mode)) continue;
+        evf_waiter_outputs(next, m->pattern);
+        m->pattern = sr_evf_consume(m->pattern, next->bits, next->mode);
+        woke |= sched_wake_one_object_waiter_with_result(next->thread, 0u);
+    }
+    if (woke) sched_preempt();
+    return 0;
 }
 static uint32_t h_ClearEventFlag(CpuState *s) {
     /* sceKernelClearEventFlag(evfid, bits): A1 is the mask of bits to KEEP
@@ -25510,7 +25561,7 @@ static uint32_t h_WaitEventFlag(CpuState *s) {
                     return 0x800201A8;
                 }
             }
-            evf_waiter_begin(uid, outp);
+            evf_waiter_begin(uid, outp, bits, mode, toptr, wait_end);
             int timed_out = sched_block_on_timeout(uid, usec);
             evf_waiter_end();
             if (timed_out) {
@@ -25522,7 +25573,7 @@ static uint32_t h_WaitEventFlag(CpuState *s) {
                 return 0x800201A8;
             }
         } else {
-            evf_waiter_begin(uid, outp);
+            evf_waiter_begin(uid, outp, bits, mode, toptr, wait_end);
             sched_block_on(uid);
             evf_waiter_end();
         }
@@ -25531,8 +25582,6 @@ static uint32_t h_WaitEventFlag(CpuState *s) {
         {
             uint32_t woken = 0;
             if (sched_take_wake_result(&woken)) {
-                m = evf_find(uid);
-                if (woken == 0x800201a9u && outp && m) MEM_W32(outp, m->pattern);
                 return woken;
             }
         }
@@ -25564,6 +25613,17 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
         sched_count_waiters(uid) > 0)
         return 0x800201b0u;
 
+    /* A CB wait services pending callbacks even when it initially matches.
+     * A callback may change or delete the flag, so recheck before waiting. */
+    if (sr_thread_has_pending_callbacks(sched_current_uid())) {
+        sr_thread_dispatch_callbacks();
+        m = evf_find(uid); if (!m) return SCE_KERNEL_ERROR_WAIT_DELETE;
+        if (!sr_evf_matches(m->pattern, bits, mode) && !sched_wait_permitted())
+            return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
+        if (!sr_evf_matches(m->pattern, bits, mode) && !(m->attr & 0x200u) &&
+            sched_count_waiters(uid) > 0)
+            return 0x800201b0u;
+    }
     sched_vtime_refresh();
     uint64_t start = sched_vtime_us();
     uint64_t end = start + (toptr ? MEM_R32(toptr) : 0);
@@ -25591,7 +25651,7 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
             sched_set_current_cb_wait(1);
             /* PSP-B3-01 (psp-hw-20260917): evf CB waits report waitType 4. */
             sched_set_current_wait_kind(4);
-            evf_waiter_begin(uid, outp);
+            evf_waiter_begin(uid, outp, bits, mode, toptr, end);
             int timed_out = sched_block_on_timeout(uid, remaining);
             evf_waiter_end();
             sched_set_current_cb_wait(0);
@@ -25606,7 +25666,7 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
         } else {
             sched_set_current_cb_wait(1);
             sched_set_current_wait_kind(4);
-            evf_waiter_begin(uid, outp);
+            evf_waiter_begin(uid, outp, bits, mode, toptr, end);
             sched_block_on(uid);
             evf_waiter_end();
             sched_set_current_cb_wait(0);
@@ -25616,8 +25676,6 @@ static uint32_t h_WaitEventFlagCB(CpuState *s) {
         {
             uint32_t woken = 0;
             if (sched_take_wake_result(&woken)) {
-                m = evf_find(uid);
-                if (woken == 0x800201a9u && outp && m) MEM_W32(outp, m->pattern);
                 return woken;
             }
         }

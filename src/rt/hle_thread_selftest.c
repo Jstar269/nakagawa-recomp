@@ -12802,6 +12802,7 @@ static void test_expired_timed_object_waits_enter_strict_priority(void) {
  * ------------------------------------------------------------------------- */
 #define WCR_NAMEBUF     0x00250500u
 #define WCR_NUMWAIT     0x00250540u
+#define WCR_EVF_OUT     0x00250544u
 #define WCR_WAIT_CANCEL 0x800201a9u
 #define WCR_WAIT_RELEASE 0x800201aau
 #define NID_WCR_CANCEL_SEMA     0x8ffdf9a2u
@@ -12828,7 +12829,7 @@ static void wcr_waiter_body_evf(void *arg) {
     (void)arg;
     CpuState cpu;
     memset(&cpu, 0, sizeof cpu);
-    cpu.r[4] = s_wcr_obj; cpu.r[5] = 1u; cpu.r[6] = 0u; cpu.r[7] = WCR_NUMWAIT; cpu.r[8] = 0u;
+    cpu.r[4] = s_wcr_obj; cpu.r[5] = 1u; cpu.r[6] = 0u; cpu.r[7] = WCR_EVF_OUT; cpu.r[8] = 0u;
     s_wcr_ret = sr_syscall(&cpu, NID_CNW_WAIT_EVF);
     s_wcr_returned = 1;
     selftest_park_on_scheduler();
@@ -12960,7 +12961,7 @@ static void test_cancel_release_wake_results(void) {
         s_cur = (int)(waiter - s_tcb) - 1;
         MEM_W32(WCR_NUMWAIT, 0xFFFFFFFFu);
         memset(&cpu, 0, sizeof cpu);
-        cpu.r[4] = s_wcr_obj; cpu.r[5] = 0x10u; cpu.r[6] = WCR_NUMWAIT; cpu.r[8] = WCR_NUMWAIT;
+        cpu.r[4] = s_wcr_obj; cpu.r[5] = 0x10u; cpu.r[6] = WCR_NUMWAIT; cpu.r[8] = 0u;
         uint32_t rc = sr_syscall(&cpu, NID_WCR_CANCEL_EVF);
         expect(rc == 0u, "PSP-B2-01: CancelEventFlag succeeds");
         expect(MEM_R32(WCR_NUMWAIT) == 1u,
@@ -12971,7 +12972,7 @@ static void test_cancel_release_wake_results(void) {
         expect(s_wcr_returned == 1, "CancelEventFlag: the cancelled waiter resumed");
         expect(s_wcr_ret == WCR_WAIT_CANCEL,
                "PSP-B2-01: the cancelled event-flag waiter receives 0x800201A9");
-        expect(MEM_R32(WCR_NUMWAIT) == 0x10u,
+        expect(MEM_R32(WCR_EVF_OUT) == 0x10u,
                "PSP-B2-01: the cancelled waiter observes outBits = the new pattern");
         wcr_finish(waiter, s_wcr_obj);
     }
@@ -13088,11 +13089,15 @@ static void evt_expect_now(int self_idx, uint32_t thread_uid, uint32_t nid, uint
     s_cur = self_idx;
 }
 
+static void test_evf_cb_immediate(void);
+
 static void test_evf_create_and_refer(void) {
     (void)wsv_begin();
     title_hle_write_cstr(EVT_NAME, "12345678901234567890123456789012345");
     b1_expect(b1_call(NID_B1_CREATE_EVF, 0u, 0u, 0u, 0u), 0x80020001u,
               "event flag create rejects a null name");
+    b1_expect(b1_call(NID_B1_CREATE_EVF, 0x10000000u, 0u, 0u, 0u), 0x80020001u,
+              "event flag create rejects an unreadable name");
     b1_expect(b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0x100u, 0u, 0u), 0x80020191u,
               "event flag create rejects attribute 0x100");
     b1_expect(b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0x300u, 0u, 0u), 0x80020191u,
@@ -13112,6 +13117,80 @@ static void test_evf_create_and_refer(void) {
     expect(MEM_R32(EVT_INFO + 36u) == 0xdeadbeefu, "event flag refer size zero writes nothing");
     (void)b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u);
     s_cur = -1;
+}
+
+typedef struct {
+    TCB *tcb;
+    uint32_t evf, mode, out, timeout, result;
+    int returned;
+} EvtOrderedWait;
+
+static void evt_ordered_wait_body(void *arg) {
+    EvtOrderedWait *w = (EvtOrderedWait *)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = w->evf; cpu.r[5] = 1u; cpu.r[6] = w->mode; cpu.r[7] = w->out; cpu.r[8] = w->timeout;
+    w->result = sr_syscall(&cpu, NID_CNW_WAIT_EVF);
+    w->returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static void test_evf_ordered_set(void) {
+    for (int clearall = 0; clearall < 2; clearall++) {
+        TCB *main_t = wsv_begin();
+        int main_idx = (int)(main_t - s_tcb);
+        uint32_t evf = b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0x200u, 0u, 0u);
+        EvtOrderedWait a = {0}, b = {0};
+        a.evf = b.evf = evf; a.mode = clearall ? 0x10u : 0x20u; b.mode = 0u;
+        a.out = EVT_OUT; b.out = EVT_OUT + 8u;
+        MEM_W32(a.out, 0xdeadbeefu); MEM_W32(b.out, 0xdeadbeefu);
+        a.tcb = fixture_thread(0x1e8u, TH_READY, 60); a.tcb->started = 1;
+        b.tcb = fixture_thread(0x1e9u, TH_READY, 40); b.tcb->started = 1;
+        a.tcb->coro = sr_coro_create(evt_ordered_wait_body, &a, (size_t)4 << 20);
+        b.tcb->coro = sr_coro_create(evt_ordered_wait_body, &b, (size_t)4 << 20);
+        s_cur = (int)(a.tcb - s_tcb); sr_coro_switch(a.tcb->coro);
+        s_cur = (int)(b.tcb - s_tcb); sr_coro_switch(b.tcb->coro);
+        expect(a.tcb->state == TH_WAIT_OBJ && b.tcb->state == TH_WAIT_OBJ, "event set: both waiters parked");
+        s_cur = main_idx;
+        b1_expect(b1_call(NID_B1_SET_EVF, evf, 3u, 0u, 0u), 0u, "event set succeeds");
+        expect(a.tcb->state == TH_READY && b.tcb->state == TH_WAIT_OBJ,
+               "event set: older clearing waiter consumes before later waiter");
+        expect(MEM_R32(a.out) == 3u && MEM_R32(b.out) == 0xdeadbeefu,
+               "event set: only satisfied waiter receives pre-clear bits");
+        MEM_W32(EVT_INFO, 52u); (void)b1_call(NID_B1_REFER_EVF, evf, EVT_INFO, 0u, 0u);
+        expect(MEM_R32(EVT_INFO + 44u) == (clearall ? 0u : 2u), "event set: clear mode updates pattern before wake");
+        if (a.tcb->state == TH_READY) { s_cur = (int)(a.tcb - s_tcb); sr_coro_switch(a.tcb->coro); }
+        expect(a.returned && a.result == 0u, "event set: selected waiter returns success");
+        s_cur = main_idx; (void)b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u);
+        sr_coro_destroy(a.tcb->coro); sr_coro_destroy(b.tcb->coro);
+        s_cur = -1;
+    }
+}
+
+static void test_evf_cancel_outputs(void) {
+    TCB *main_t = wsv_begin();
+    int main_idx = (int)(main_t - s_tcb);
+    uint32_t evf = b1_call(NID_B1_CREATE_EVF, EVT_NAME, 0x200u, 0u, 0u);
+    EvtOrderedWait w = {0};
+    w.evf = evf; w.out = EVT_OUT; w.timeout = EVT_TMO;
+    MEM_W32(EVT_OUT, 0xdeadbeefu); MEM_W32(EVT_TMO, 1000000u); MEM_W32(EVT_INFO, 0xdeadbeefu);
+    w.tcb = fixture_thread(0x1eau, TH_READY, 60); w.tcb->started = 1;
+    w.tcb->coro = sr_coro_create(evt_ordered_wait_body, &w, (size_t)4 << 20);
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.tcb->state == TH_WAIT_OBJ, "event cancel: timed waiter parked");
+    s_cur = main_idx;
+    s_vtime_us += 1000u;
+    b1_expect(b1_call(NID_WCR_CANCEL_EVF, evf, 2u, EVT_INFO, 0u), 0u, "event cancel succeeds");
+    expect(MEM_R32(EVT_INFO) == 1u, "event cancel: count uses the third argument");
+    expect(MEM_R32(EVT_OUT) == 2u, "event cancel: writes pattern before waiter runs");
+    expect(MEM_R32(EVT_TMO) < 1000000u && MEM_R32(EVT_TMO) > 0u,
+           "event cancel: writes remaining timeout at wake");
+    (void)b1_call(NID_B1_SET_EVF, evf, 4u, 0u, 0u);
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned && w.result == 0x800201a9u && MEM_R32(EVT_OUT) == 2u,
+           "event cancel: resumed waiter retains cancellation pattern");
+    s_cur = main_idx; (void)b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u);
+    sr_coro_destroy(w.tcb->coro); s_cur = -1;
 }
 
 static void test_evf_typed_uids_and_delete(void) {
@@ -16282,6 +16361,51 @@ static void wakeup_delete_callback(uint32_t uid) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = uid;
     (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK);
+}
+
+static uint32_t s_evf_cb_target;
+static void evf_clear_guest_fn(CpuState *cpu) {
+    CpuState call;
+    memset(&call, 0, sizeof call);
+    call.r[4] = s_evf_cb_target; call.r[5] = 0u;
+    (void)sr_syscall(&call, NID_EVT_CLEAR_EVF);
+    cpu->r[2] = 0u;
+}
+
+/* A callback-aware event wait must dispatch pending callbacks even when its
+ * requested bit was already set at entry (issue #1389). */
+static void test_evf_cb_immediate(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    s_wakeup_log_len = 0u;
+    TCB *owner = fixture_thread(0x3411u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    uint32_t cb = wakeup_create_callback(WAKEUP_FIRST_NAME, "event-cb", WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    uint32_t evf = b1_call(NID_B1_CREATE_EVF, WAKEUP_FIRST_NAME, 0u, 1u, 0u);
+    expect(wakeup_notify(cb, WAKEUP_FIRST_NOTIFY) == 0u, "event CB: callback notified");
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = evf; cpu.r[5] = 1u; cpu.r[6] = 0u;
+    expect(sr_syscall(&cpu, NID_CNW_WAIT_EVF_CB) == 0u, "event CB: immediately matching wait succeeds");
+    expect(s_wakeup_log_len == 1u && !sr_thread_has_pending_callbacks(owner->uid),
+           "event CB: immediate match dispatches the pending callback");
+    wakeup_delete_callback(cb);
+    sr_test_register_guest_fn(WAKEUP_SECOND_ENTRY, evf_clear_guest_fn);
+    s_evf_cb_target = evf;
+    cb = wakeup_create_callback(WAKEUP_SECOND_NAME, "event-clear", WAKEUP_SECOND_ENTRY, 0u);
+    expect(wakeup_notify(cb, 0u) == 0u, "event CB: clearing callback notified");
+    MEM_W32(EVT_TMO, 0u); MEM_W32(EVT_OUT, 0xdeadbeefu);
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = evf; cpu.r[5] = 1u; cpu.r[6] = 0u; cpu.r[7] = EVT_OUT; cpu.r[8] = EVT_TMO;
+    expect(sr_syscall(&cpu, NID_CNW_WAIT_EVF_CB) == 0x800201a8u && MEM_R32(EVT_OUT) == 0u,
+           "event CB: callback clears the match, so the zero-timeout wait times out");
+    (void)b1_call(NID_B1_DELETE_EVF, evf, 0u, 0u, 0u);
+    wakeup_delete_callback(cb);
+    sr_test_guest_fn_reset();
+    s_cur = -1;
 }
 
 /* sceKernelCheckCallback at a safe point: both callbacks were notified in reverse slot
@@ -27248,7 +27372,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + 3 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
         char msg[768];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -27261,6 +27385,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 3 rotate peers + 2 suspended-waiter bodies + 5 released-wait bodies "
                  "+ 1 callback-wakeup delay body "
                  "+ 6 issue #1389 call bodies (4 cross-kind waits + 2 deleted waiters) "
+                 "+ 3 event-flag set/cancel waiters "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
@@ -34634,6 +34759,9 @@ static int hle_selftest_main(int argc, char **argv) {
         test_sema_hardware_codes();
         test_lwmutex_hardware_codes();
         test_evf_hardware_codes();
+        test_evf_cb_immediate();
+        test_evf_cancel_outputs();
+        test_evf_ordered_set();
         test_evf_create_and_refer();
         test_evf_typed_uids_and_delete();
         fprintf(stderr, "b1-kobj: %d checks, %d failures\n", s_checks, s_failures);
@@ -34827,6 +34955,9 @@ static int hle_selftest_main(int argc, char **argv) {
     test_hle_liveness_timeout_cancel_delete();
     test_hle_liveness_queue_full_empty();
     test_cancel_release_wake_results();
+    test_evf_cb_immediate();
+    test_evf_cancel_outputs();
+    test_evf_ordered_set();
     test_evf_create_and_refer();
     test_evf_typed_uids_and_delete();
     test_wake_result_is_per_thread();
