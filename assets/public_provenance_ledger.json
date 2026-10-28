@@ -12907,7 +12907,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3b29968adf5c9ac9df774c19e5ca91e9d45a6e0e9b3cefe00d091198644406fd"
+      "sha256": "3c17216fd418271303e80718f8045c3da1e63d065fd3fd88db87c957473bd213"
     },
     {
       "path": "tools/psp_threading_oracle/parser.py",
@@ -14937,7 +14937,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1141e6afa90e23611acbcb170f5c651bd0e8f045856b9a6b01ccd0d85c0a33f1"
+      "sha256": "e7baf28f11b25edc84a4580ad029fc482b717d2a3b3a80fffbab58f5d30ad4ac"
     },
     {
       "path": "tools/test_pspdev_lock.py",

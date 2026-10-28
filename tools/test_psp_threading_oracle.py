@@ -28,6 +28,7 @@ from psp_threading_oracle.parser import (
     SYNTHETIC_TEST_ONLY,
     HARDWARE_MEASURED,
 )
+from psp_threading_oracle.analyzer import main as analyzer_main
 from psp_oracle.protocol import ProtocolError
 
 MATRIX = load_matrix()
@@ -800,6 +801,56 @@ class MutantTests(unittest.TestCase):
         # If mutant altered, out4 would be 0xdddddddd (xor), not raw
         self.assertEqual(vals["out4"], "0x22222222")
         self.assertNotEqual(vals["out4"], "0xdddddddd")
+
+
+
+class AnalyzerMainTests(unittest.TestCase):
+    def test_analyzer_main_stdout(self) -> None:
+        import io
+        import tempfile
+        import unittest.mock
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = pathlib.Path(tmpdir)
+            f1 = tmp / "run1.txt"
+            f2 = tmp / "run2.txt"
+            f1.write_text(valid_campaign_text(0x11111111), encoding="utf-8")
+            f2.write_text(valid_campaign_text(0x22222222), encoding="utf-8")
+
+            buf = io.StringIO()
+            with unittest.mock.patch("sys.stdout", buf):
+                ret = analyzer_main([str(f1), str(f2)])
+            self.assertEqual(ret, 0)
+            out = buf.getvalue()
+            self.assertIn("CT-A01", out)
+            self.assertIn(f"# Input 0: SYNTHETIC_TEST_ONLY ({f1})", out)
+            self.assertIn(f"# Input 1: SYNTHETIC_TEST_ONLY ({f2})", out)
+
+    def test_analyzer_main_out_file(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = pathlib.Path(tmpdir)
+            f1 = tmp / "run1.txt"
+            out_file = tmp / "summary.txt"
+            f1.write_text(valid_campaign_text(0x11111111), encoding="utf-8")
+
+            ret = analyzer_main([str(f1), "--out", str(out_file)])
+            self.assertEqual(ret, 0)
+            out = out_file.read_text(encoding="utf-8")
+            self.assertIn("CT-A01", out)
+            self.assertIn(f"# Input 0: SYNTHETIC_TEST_ONLY ({f1})", out)
+
+    def test_analyzer_main_malformed_input(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = pathlib.Path(tmpdir)
+            f1 = tmp / "bad.txt"
+            f1.write_text("INVALID HARNESS DATA\n", encoding="utf-8")
+
+            with self.assertRaises(ProtocolError):
+                analyzer_main([str(f1)])
 
 if __name__ == "__main__":
     unittest.main()

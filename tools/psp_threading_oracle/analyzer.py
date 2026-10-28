@@ -34,14 +34,16 @@ def main(argv: list[str] | None = None) -> int:
         from .parser import evidence_label, parse_threading_output
     except ImportError:
         from psp_threading_oracle.parser import evidence_label, parse_threading_output  # type: ignore
+    table_lines: list[str] = [table]
     for idx, text in enumerate(texts):
         try:
             parsed = parse_threading_output(text)
             # No out-of-band context supplied via CLI -> remains UNVERIFIED or SYNTHETIC
             label = evidence_label(parsed, evidence_context=None, raw_text=text)
-            table += f"\n# Input {idx}: {label} ({args.inputs[idx]})"
+            table_lines.append(f"# Input {idx}: {label} ({args.inputs[idx]})")
         except Exception as exc:  # noqa: BLE001
-            table += f"\n# Input {idx}: MALFORMED ({exc})"
+            table_lines.append(f"# Input {idx}: MALFORMED ({exc})")
+    table = "\n".join(table_lines)
     if args.out:
         args.out.write_text(table, encoding="utf-8")
     else:
