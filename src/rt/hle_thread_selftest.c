@@ -22755,9 +22755,14 @@ static void test_msgpipe_safety(void) {
     /* --- CreateMsgPipe: resource-model validation before any allocation --- */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = GUEST_NAME;
-    cpu.r[7] = 0u; /* bufferSize 0 -> illegal */
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_SIZE,
-           "CreateMsgPipe rejects bufferSize 0");
+    cpu.r[7] = 0u;
+    uint32_t zero_uid = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
+    expect(zero_uid != 0u && zero_uid < 0x80000000u,
+           "CreateMsgPipe accepts bufferSize 0");
+    cpu.r[4] = zero_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+           "zero-buffer pipe deletes cleanly");
+    cpu.r[4] = GUEST_NAME;
 
     cpu.r[7] = max_cap + 1u; /* first size above the model ceiling */
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_SIZE,
@@ -23275,6 +23280,100 @@ static void selftest_msgpipe_waiter_finish(SelftestMsgPipeWaiterCtx *waiter,
     if (!waiter->returned) selftest_msgpipe_waiter_resume(waiter);
     if (!waiter->returned && sched_count_waiters(pipe_uid) == 0)
         selftest_msgpipe_waiter_resume(waiter);
+}
+
+/* Issue #1381: production-dispatch rendezvous, in both arrival orders, and
+ * direct delivery to a receiver even when the pipe has a buffer. */
+static void test_msgpipe_rendezvous(void) {
+    const uint32_t name = 0x08030000u, src = 0x08010000u, dst = 0x08020000u;
+    const uint32_t send_result = 0x08040000u, receive_result = 0x08040004u;
+    for (int buffered = 0; buffered < 2; buffered++) {
+        reset_fixture(); sr_hle_init();
+        title_hle_write_cstr(name, "rendezvous");
+        MEM_W8(src, 0xa1u); MEM_W8(src + 1u, 0xb2u);
+        TCB *main_t = fixture_thread(0x201u, TH_RUNNING, 32);
+        main_t->started = 1; int main_idx = (int)(main_t - s_tcb); s_cur = main_idx;
+        CpuState cpu = {0}; cpu.r[4] = name; cpu.r[7] = buffered ? 4u : 0u;
+        uint32_t pipe = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
+        expect((int32_t)pipe > 0, buffered ? "buffered rendezvous pipe created" : "zero-buffer pipe created");
+        if ((int32_t)pipe <= 0) { s_cur = -1; continue; }
+        SelftestMsgPipeWaiterCtx receiver = {0};
+        selftest_msgpipe_waiter_start_sized(&receiver, 0x202u, 48, pipe, dst, 2u, receive_result, 0, 0);
+        expect(receiver.tcb->state == TH_WAIT_OBJ, "rendezvous receiver waits before sender");
+        s_cur = main_idx; MEM_W32(send_result, 0u);
+        msgpipe_setup(&cpu, pipe, src, 2u, 0u, send_result);
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u && MEM_R32(send_result) == 2u,
+               "try send hands bytes directly to waiting receiver");
+        SrMsgPipeState st;
+        expect(sr_hle_test_msgpipe_state(pipe, &st) && st.count == 0u &&
+               MEM_R8(dst) == 0xa1u && MEM_R8(dst + 1u) == 0xb2u && receiver.tcb->state == TH_READY,
+               "direct send writes the receiver and leaves no buffered bytes");
+        if (buffered) {
+            msgpipe_setup(&cpu, pipe, src, 3u, 0u, send_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0x800201b3u,
+                   "pending direct receiver reserves pipe capacity");
+        }
+        if (receiver.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&receiver);
+        expect(receiver.returned && receiver.ret == 0u && MEM_R32(receive_result) == 2u,
+               "direct receiver completes with byte count");
+        s_cur = main_idx;
+        if (!buffered) {
+            MEM_W32(send_result, 0x539u);
+            msgpipe_setup(&cpu, pipe, src, 2u, 0u, send_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0x800201b3u &&
+                   MEM_R32(send_result) == 0x539u,
+                   "zero-buffer FULL poll preserves result when no receiver waits");
+            SelftestMsgPipeWaiterCtx sender = {0};
+            selftest_msgpipe_waiter_start_sized(&sender, 0x203u, 48, pipe, src, 2u, send_result, 1, 0);
+            expect(sender.tcb->state == TH_WAIT_OBJ, "zero-buffer sender waits before receiver");
+            s_cur = main_idx; MEM_W8(dst, 0u); MEM_W8(dst + 1u, 0u);
+            msgpipe_setup(&cpu, pipe, dst, 2u, 0u, receive_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0u &&
+                   MEM_R32(receive_result) == 2u && MEM_R8(dst) == 0xa1u && MEM_R8(dst + 1u) == 0xb2u,
+                   "try receive takes bytes directly from waiting sender");
+            if (sender.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&sender);
+            expect(sender.returned && sender.ret == 0u && MEM_R32(send_result) == 2u,
+                   "direct sender completes with byte count");
+            s_cur = main_idx; sr_coro_destroy(sender.tcb->coro);
+            SelftestMsgPipeWaiterCtx partial = {0};
+            selftest_msgpipe_waiter_start_sized(&partial, 0x204u, 48, pipe, dst, 2u, receive_result, 0, 0);
+            s_cur = main_idx;
+            msgpipe_setup(&cpu, pipe, src, 1u, 0u, send_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u &&
+                   MEM_R32(receive_result) == 1u && partial.tcb->state == TH_WAIT_OBJ,
+                   "partial direct send retains a FULL receiver");
+            msgpipe_setup(&cpu, pipe, src + 1u, 1u, 0u, send_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u &&
+                   partial.tcb->state == TH_READY && MEM_R8(dst + 1u) == 0xb2u,
+                   "second direct send completes the receiver");
+            if (partial.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&partial);
+            expect(partial.returned && partial.ret == 0u && MEM_R32(receive_result) == 2u,
+                   "partial receiver returns its complete count");
+            s_cur = main_idx; sr_coro_destroy(partial.tcb->coro);
+        }
+        if (buffered) {
+            SelftestMsgPipeWaiterCtx cancelled = {0};
+            selftest_msgpipe_waiter_start_sized(&cancelled, 0x205u, 48, pipe, dst, 2u, receive_result, 0, 0);
+            s_cur = main_idx;
+            msgpipe_setup(&cpu, pipe, src, 2u, 0u, send_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_SEND_MSG_PIPE) == 0u &&
+                   cancelled.tcb->state == TH_READY && MEM_R8(dst) == 0xa1u,
+                   "blocking send reserves the direct receiver before cancellation");
+            memset(&cpu, 0, sizeof cpu); cpu.r[4] = pipe;
+            expect(sr_syscall(&cpu, 0x349b864du) == 0u, "cancel clears a pending direct reservation");
+            if (cancelled.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&cancelled);
+            expect(cancelled.returned && cancelled.ret == 0x800201a9u,
+                   "cancelled reserved receiver reports WAIT_CANCEL");
+            s_cur = main_idx;
+            msgpipe_setup(&cpu, pipe, dst, 2u, 0u, receive_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0x800201b4u,
+                   "cancel discards reserved pipe bytes");
+            sr_coro_destroy(cancelled.tcb->coro);
+        }
+        memset(&cpu, 0, sizeof cpu); cpu.r[4] = pipe;
+        (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+        sr_coro_destroy(receiver.tcb->coro); s_cur = -1;
+    }
 }
 
 #define NID_SCE_KERNEL_CANCEL_MSG_PIPE 0x349b864du
@@ -23955,7 +24054,7 @@ static void test_msgpipe_waiter_order(void) {
     }
 }
 
-static void test_msgpipe_repeated_transfer_skips_readied_waiter(void) {
+static void test_msgpipe_repeated_transfer_skips_readied_waiter(int reverse_resume) {
     const uint32_t GUEST_BUF = 0x08010000u;
     const uint32_t GUEST_OUT = 0x08020000u;
     const uint32_t GUEST_NAME = 0x08030000u;
@@ -24000,6 +24099,11 @@ static void test_msgpipe_repeated_transfer_skips_readied_waiter(void) {
            first.tcb->state == TH_READY && second.tcb->state == TH_READY,
            "second transfer skips the ready queue entry and readies the next receiver");
 
+    if (reverse_resume && second.tcb->state == TH_READY) {
+        selftest_msgpipe_waiter_resume(&second);
+        expect(!second.returned && second.tcb->state == TH_WAIT_OBJ,
+               "later receiver cannot consume bytes ahead of a pending reservation");
+    }
     if (first.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&first);
     if (second.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&second);
     int fifo_bytes_match = first.returned && second.returned &&
@@ -35554,6 +35658,13 @@ static int hle_selftest_main(int argc, char **argv) {
     expect(sr_coro_current() == s_sched_coro,
            "the adopted scheduler coroutine is the one currently running");
 
+    if (argc > 1 && strcmp(argv[1], "--msgpipe-rendezvous") == 0) {
+        test_msgpipe_rendezvous();
+        fprintf(stderr, "msgpipe-rendezvous: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     if (argc > 1 && strcmp(argv[1], "--title-config") == 0) {
         test_title_config_hle_bindings();
         fprintf(stderr, "hle_title_production_selftest: %d checks, %d failures\n",
@@ -35824,6 +35935,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_mix_saturates_without_wrapping();
     test_sas_state_contracts();
     test_sas_end_flags_refresh_per_cycle();
+    test_msgpipe_rendezvous();
     test_msgpipe_safety();
     test_msgpipe_blocking();
     test_msgpipe_cancel_and_refer();
@@ -35831,7 +35943,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_msgpipe_invocation_lifetime();
     test_msgpipe_waiter_order();
     test_msgpipe_priority_wake_skips_ineligible_waiter();
-    test_msgpipe_repeated_transfer_skips_readied_waiter();
+    test_msgpipe_repeated_transfer_skips_readied_waiter(0);
+    test_msgpipe_repeated_transfer_skips_readied_waiter(1);
     test_msgpipe_callback_wakeup_skips_stale_head_waiter();
     test_msgpipe_callback_wakeup_skips_stale_send_priority_waiter();
     test_msgpipe_termination_requeues_readied_waiters();
