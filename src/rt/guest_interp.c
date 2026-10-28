@@ -427,7 +427,7 @@ uint32_t sr_module_code_sync_overlays(uint32_t lo, uint32_t hi) {
         if (!code->overlay_check_len || code->link_high <= lo || code->link_low >= hi) continue;
         if (module_binding_slot(code) >= 0 && !overlay_resident(code)) {
             sr_module_code_unbind(code);
-            fprintf(stderr, "CODE_OVERLAY_UNBOUND: %s [0x%08x,0x%08x)\n",
+            fprintf(stderr, "CODE_OVERLAY_UNBOUND: %s [0x%08" PRIx32 ",0x%08" PRIx32 ")\n",
                     code->name, code->link_low, code->link_high);
             changed++;
         }
@@ -439,12 +439,12 @@ uint32_t sr_module_code_sync_overlays(uint32_t lo, uint32_t hi) {
         SrModuleBindDetail detail;
         SrModuleBindResult result = sr_module_code_bind(code, 0u, &detail);
         if (result == SR_MODULE_BIND_OK) {
-            fprintf(stderr, "CODE_OVERLAY_BOUND: %s [0x%08x,0x%08x)\n",
+            fprintf(stderr, "CODE_OVERLAY_BOUND: %s [0x%08" PRIx32 ",0x%08" PRIx32 ")\n",
                     code->name, code->link_low, code->link_high);
             changed++;
         } else {
             /* Left unbound: a call into its range misses and stops by name. */
-            fprintf(stderr, "CODE_OVERLAY_BIND_FAILED: %s: %s at 0x%08x\n", code->name,
+            fprintf(stderr, "CODE_OVERLAY_BIND_FAILED: %s: %s at 0x%08" PRIx32 "\n", code->name,
                     sr_module_bind_result_name(result), detail.address);
         }
     }
