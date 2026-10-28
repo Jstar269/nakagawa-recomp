@@ -33,12 +33,12 @@ CONFIG = ROOT / ".betterleaks.toml"
 
 
 def _material(seed: str, length: int) -> str:
-    value = ""
-    counter = 0
-    while len(value) < length:
-        value += hashlib.sha256(f"{seed}-{counter}".encode("utf-8")).hexdigest()
-        counter += 1
-    return value[:length]
+    num_chunks = (length + 63) // 64
+    chunks = [
+        hashlib.sha256(f"{seed}-{counter}".encode("utf-8")).hexdigest()
+        for counter in range(num_chunks)
+    ]
+    return "".join(chunks)[:length]
 
 
 def _scan(
