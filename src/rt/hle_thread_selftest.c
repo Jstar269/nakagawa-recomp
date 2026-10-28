@@ -1289,6 +1289,7 @@ static size_t hle_data_stderr_capture_end(FILE *capture, int saved_fd,
                                           char *output, size_t output_size);
 static int count_occurrences(const char *haystack, const char *needle);
 uint32_t sr_hle_test_libfont_startup_stops(void);
+uint32_t sr_hle_test_unmodelled_stops(void);
 
 /* sceKernelStartModule for the synthetic libfont handle, with the argument and status
  * pointers the production ABI documents. */
@@ -19457,8 +19458,10 @@ static void test_kernel_import_sweep_ge_head(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = second_list;
     cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE_HEAD) == 0x80020002u,
-           "sceGeListEnQueueHead refuses when head ordering would affect a stalled queue");
+    uint32_t head_stops = sr_hle_test_unmodelled_stops();
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE_HEAD) == 0x80020002u &&
+               sr_hle_test_unmodelled_stops() == head_stops + 1u,
+           "sceGeListEnQueueHead stops the run by name when head ordering would affect a stalled queue");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = stalled_id;
@@ -19614,16 +19617,19 @@ static void test_ge_break_continue(void) {
            "DrawSync reports idle (0) after continue");
 
     /* No measured dequeue result exists for a completed list or an unknown id:
-     * both fail closed as NOT_IMPLEMENTED rather than reporting success. */
+     * both stop the run by name rather than hand the game an invented result. */
+    uint32_t dequeue_stops = sr_hle_test_unmodelled_stops();
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u,
-           "sceGeListDeQueue on a completed list fails closed (NOT_IMPLEMENTED)");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u &&
+               sr_hle_test_unmodelled_stops() == dequeue_stops + 1u,
+           "sceGeListDeQueue on a completed list stops the run by name");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0x7fffffffu;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u,
-           "sceGeListDeQueue on an unknown id fails closed (NOT_IMPLEMENTED)");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u &&
+               sr_hle_test_unmodelled_stops() == dequeue_stops + 2u,
+           "sceGeListDeQueue on an unknown id stops the run by name");
 
     /* Mode 1 cancellation */
     memset(&cpu, 0, sizeof(cpu));
@@ -25557,8 +25563,10 @@ static void test_kernel_import_sweep_memory_blocks_and_sdk_alias(void) {
     cpu.r[5] = 0u;
     cpu.r[6] = 0x100u;
     cpu.r[7] = options;
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u,
-           "sceKernelAllocMemoryBlock refuses unmodeled options extensions");
+    uint32_t alloc_stops = sr_hle_test_unmodelled_stops();
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK) == 0x80020002u &&
+               sr_hle_test_unmodelled_stops() == alloc_stops + 1u,
+           "sceKernelAllocMemoryBlock stops the run by name on unmodeled options extensions");
 
     MEM_W32(0x0bfffffcu, 8u); /* header fits, declared extension crosses guest RAM */
     memset(&cpu, 0, sizeof(cpu));
@@ -29712,6 +29720,24 @@ static void test_route_legacy_pad_script_is_unchanged(void) {
            "a bare pad script keeps its original absolute-frame behaviour");
     expect(sr_route_step(8600, NULL) == 0u,
            "the program stepper stays inert for a legacy pad script");
+
+    /* A long timed script loads whole, and one past the table is refused by name instead
+     * of being cut short: the v0.0.1 sweep's 453-line script used to lose every press after
+     * its 256th line, so the game it drove waited at a screen with no input arriving. */
+    static char long_script[4097u * 24u];
+    size_t used = 0u;
+    for (unsigned line = 0; line < 4096u; line++)
+        used += (size_t)snprintf(long_script + used, sizeof long_script - used,
+                                 "%u 0x4000 4\n", 10u + line * 10u);
+    sr_route_reset();
+    rt_write(long_script);
+    expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_LEGACY,
+           "a 4096-line pad script loads whole");
+    (void)snprintf(long_script + used, sizeof long_script - used, "99999 0x4000 4\n");
+    sr_route_reset();
+    rt_write(long_script);
+    expect(sr_route_load(RT_PATH) == 0 && sr_route_status() == RT_FAILED,
+           "a pad script past the table fails the run instead of being cut short");
 
     sr_route_reset();
     rt_write("# comment only\n\n");
@@ -34695,8 +34721,22 @@ static void test_vtimer_lifecycle(void) {
            "the stale UID stays unknown while a new timer exists");
     expect(vt_call(NID_VT_DELETE, vt2, 0u) == 0u, "the new timer deletes cleanly");
 
-    expect(vt_call(NID_VT_CREATE, VT_NAME, VT_OPTION) == VT_REFUSED_ERR,
-           "CreateVTimer with a non-NULL option struct is refused by name");
+    /* The kernel ignores the option struct (pspautotests vtimers/create.expected, recorded
+     * on a PSP): every declared size creates the same timer. */
+    static const uint32_t option_sizes[] = { 0xffffffffu, 0u, 1u, 4u, 8u, 4096u, 0x7fffffffu };
+    for (size_t i = 0; i < sizeof(option_sizes) / sizeof(option_sizes[0]); i++) {
+        MEM_W32(VT_OPTION, option_sizes[i]);
+        uint32_t vt_opt = vt_call(NID_VT_CREATE, VT_NAME, VT_OPTION);
+        expect((int32_t)vt_opt > 0, "CreateVTimer with an option struct of any size returns a UID");
+        expect(vt_refer(vt_opt, VT_INFO_SIZE) == 0u,
+               "a timer created with an option struct refers like a NULL-option timer");
+        expect(vt_call(NID_VT_DELETE, vt_opt, 0u) == 0u,
+               "a timer created with an option struct deletes cleanly");
+    }
+    uint32_t vt_stops = sr_hle_test_unmodelled_stops();
+    expect(vt_call(NID_VT_CREATE, VT_NAME, 0xfffffff0u) == VT_REFUSED_ERR &&
+               sr_hle_test_unmodelled_stops() == vt_stops + 1u,
+           "CreateVTimer with an unreadable option struct stops the run by name");
 
     s_pace_on = saved_pace;
     s_vtime_us = saved_vtime;
@@ -34787,20 +34827,163 @@ static void test_vtimer_refusals_are_named(void) {
     sr_hle_init();
     expect(sr_hle_test_is_registered(NID_SCE_KERNEL_SET_VTIMER_TIME),
            "SetVTimerTime has a named refusal registration");
-    expect(sr_hle_test_is_registered(NID_VT_SET_HANDLER),
-           "SetVTimerHandler has a named refusal registration");
-    expect(sr_hle_test_is_registered(NID_VT_SET_HANDLER_WIDE),
-           "SetVTimerHandlerWide has a named refusal registration");
-    expect(sr_hle_test_is_registered(NID_VT_CANCEL_HANDLER),
-           "CancelVTimerHandler has a named refusal registration");
     expect(vt_call(NID_SCE_KERNEL_SET_VTIMER_TIME, 0u, 0u) == VT_REFUSED_ERR,
            "SetVTimerTime returns the named refusal");
-    expect(vt_call(NID_VT_SET_HANDLER, 0u, 0u) == VT_REFUSED_ERR,
-           "SetVTimerHandler returns the named refusal");
-    expect(vt_call(NID_VT_SET_HANDLER_WIDE, 0u, 0u) == VT_REFUSED_ERR,
-           "SetVTimerHandlerWide returns the named refusal");
-    expect(vt_call(NID_VT_CANCEL_HANDLER, 0u, 0u) == VT_REFUSED_ERR,
-           "CancelVTimerHandler returns the named refusal");
+}
+
+/* VTimer handlers, against pspautotests tests/threads/vtimers/{sethandler,cancelhandler}
+ * .expected (2ed7c9c5, recorded on a PSP). */
+#define VTH_ENTRY      0x08a20000u
+#define VTH_ZERO_ID    0x800201bfu
+static unsigned s_vth_calls;
+static uint32_t s_vth_uid[8], s_vth_common[8], s_vth_returns[8];
+static uint64_t s_vth_sched[8], s_vth_actual[8];
+static int s_vth_intr[8];
+static int s_vth_cancel_inside;
+static uint32_t s_vth_cancel_self_rc, s_vth_cancel_zero_rc;
+
+static uint32_t vth_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3,
+                         uint32_t t0, uint32_t t1) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2; cpu.r[7] = a3;
+    cpu.r[8] = t0; cpu.r[9] = t1;
+    return sr_syscall(&cpu, nid);
+}
+
+static uint32_t vth_set(uint32_t uid, uint64_t time, uint32_t handler, uint32_t common) {
+    MEM_W32(VT_CLOCK, (uint32_t)time);
+    MEM_W32(VT_CLOCK + 4u, (uint32_t)(time >> 32));
+    return vth_call(NID_VT_SET_HANDLER, uid, VT_CLOCK, handler, common, 0u, 0u);
+}
+
+static uint32_t vth_set_wide(uint32_t uid, uint64_t time, uint32_t handler, uint32_t common) {
+    return vth_call(NID_VT_SET_HANDLER_WIDE, uid, 0u, (uint32_t)time, (uint32_t)(time >> 32),
+                    handler, common);
+}
+
+static void vth_handler_fn(CpuState *cpu) {
+    unsigned n = s_vth_calls++;
+    if (n < 8u) {
+        s_vth_uid[n] = cpu->r[4];
+        s_vth_sched[n] = (uint64_t)MEM_R32(cpu->r[5]) | ((uint64_t)MEM_R32(cpu->r[5] + 4u) << 32);
+        s_vth_actual[n] = (uint64_t)MEM_R32(cpu->r[6]) | ((uint64_t)MEM_R32(cpu->r[6] + 4u) << 32);
+        s_vth_common[n] = cpu->r[7];
+        s_vth_intr[n] = sched_is_intr_context();
+    }
+    if (s_vth_cancel_inside) {
+        s_vth_cancel_self_rc = vt_call(NID_VT_CANCEL_HANDLER, cpu->r[4], 0u);
+        s_vth_cancel_zero_rc = vt_call(NID_VT_CANCEL_HANDLER, 0u, 0u);
+    }
+    cpu->r[2] = n < 8u ? s_vth_returns[n] : 0u;
+}
+
+static TCB *vth_fixture(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(VTH_ENTRY, vth_handler_fn);
+    s_pace_on = 0;
+    s_vbl_next_us = UINT64_MAX;       /* isolate the timer source from the display source */
+    s_vblank_q_us = 0x7fffffff;
+    s_vth_calls = 0;
+    memset(s_vth_returns, 0, sizeof s_vth_returns);
+    s_vth_cancel_inside = 0;
+    s_vth_cancel_self_rc = s_vth_cancel_zero_rc = 0xffffffffu;
+    s_vtime_us = 2000000u;
+    TCB *main_t = fixture_thread(0x5f1u, TH_RUNNING, 32);
+    main_t->started = 1;
+    s_cur = (int)(main_t - s_tcb);
+    return main_t;
+}
+
+static void vth_run_until(uint64_t t) {
+    s_vtime_us = t;
+    scheduler_service_pending();
+}
+
+static void test_vtimer_handler_registration_and_errors(void) {
+    int saved_pace = s_pace_on;
+    vth_fixture();
+    uint32_t vt = vt_create_named("vth");
+    uint32_t gone = vt_create_named("vth-gone");
+    expect(vt_call(NID_VT_DELETE, gone, 0u) == 0u, "a timer to delete deletes");
+    expect(vth_set(0u, 0u, VTH_ENTRY, 0u) == VTH_ZERO_ID &&
+               vth_set_wide(0u, 0u, VTH_ENTRY, 0u) == VTH_ZERO_ID &&
+               vt_call(NID_VT_CANCEL_HANDLER, 0u, 0u) == VTH_ZERO_ID,
+           "uid 0 returns 0x800201BF to Set, SetWide and Cancel");
+    expect(vth_set(0x7fffffffu, 0u, VTH_ENTRY, 0u) == VT_BAD_ID_ERR &&
+               vth_set(gone, 0u, VTH_ENTRY, 0u) == VT_BAD_ID_ERR &&
+               vt_call(NID_VT_CANCEL_HANDLER, gone, 0u) == VT_BAD_ID_ERR,
+           "an unknown or deleted uid returns 0x800201BE");
+
+    expect(vth_set(vt, 0x1234u, VTH_ENTRY, 0xdeadbeefu) == 0u, "SetVTimerHandler returns 0");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && vt_info_u64(56u) == 0x1234u &&
+               MEM_R32(VT_INFO + 64u) == VTH_ENTRY && MEM_R32(VT_INFO + 68u) == 0xdeadbeefu,
+           "ReferVTimerStatus reports the schedule, handler and common that were set");
+    expect(vth_set(vt, 0u, 0u, 0x12345678u) == 0u && vt_refer(vt, VT_INFO_SIZE) == 0u &&
+               MEM_R32(VT_INFO + 64u) == 0u && MEM_R32(VT_INFO + 68u) == 0xdeadbeefu &&
+               vt_info_u64(56u) == 0x1234u,
+           "a NULL handler clears the handler and keeps the schedule and common");
+    expect(vth_set(vt, 0x40u, VTH_ENTRY, 0xabcd1337u) == 0u &&
+               vt_call(NID_VT_CANCEL_HANDLER, vt, 0u) == 0u &&
+               vt_call(NID_VT_CANCEL_HANDLER, vt, 0u) == 0u &&
+               vt_refer(vt, VT_INFO_SIZE) == 0u && MEM_R32(VT_INFO + 64u) == 0u &&
+               MEM_R32(VT_INFO + 68u) == 0xabcd1337u && vt_info_u64(56u) == 0x40u,
+           "CancelVTimerHandler clears the handler, twice too, and keeps schedule and common");
+    expect(vth_set(vt, 0u, VTH_ENTRY, 0u) == 0u, "a handler is set on a stopped timer");
+    vth_run_until(9000000u);
+    expect(s_vth_calls == 0u, "a stopped timer's handler never runs");
+    s_cur = -1;
+    s_pace_on = saved_pace;
+}
+
+static void test_vtimer_handler_runs_at_its_schedule_and_reschedules(void) {
+    int saved_pace = s_pace_on;
+    vth_fixture();
+    uint32_t vt = vt_create_named("vth-run");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "the timer starts");
+    s_vth_returns[0] = 1000u;
+    s_vth_returns[1] = 0u;
+    expect(vth_set_wide(vt, 400u, VTH_ENTRY, 0xdeadc0deu) == 0u, "SetVTimerHandlerWide returns 0");
+    vth_run_until(2000399u);
+    expect(s_vth_calls == 0u, "the handler has not run 1 us before its schedule");
+    vth_run_until(2000400u);
+    expect(s_vth_calls == 1u && s_vth_uid[0] == vt && s_vth_sched[0] == 400u &&
+               s_vth_actual[0] == 400u && s_vth_common[0] == 0xdeadc0deu && s_vth_intr[0],
+           "the handler runs in interrupt context with (uid, &scheduled, &actual, common)");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && vt_info_u64(56u) == 1400u,
+           "a non-zero return is the delay to the next call, from the scheduled time");
+    vth_run_until(2001400u);
+    expect(s_vth_calls == 2u && s_vth_sched[1] == 1400u, "the handler runs again at its new schedule");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && MEM_R32(VT_INFO + 64u) == 0u &&
+               vt_info_u64(56u) == 1400u,
+           "a zero return clears the handler and keeps the schedule");
+    vth_run_until(2100000u);
+    expect(s_vth_calls == 2u, "a cleared handler never runs again");
+    expect(s_cur >= 0 && !sched_is_intr_context(), "normal context is restored after the handler");
+    s_cur = -1;
+    s_pace_on = saved_pace;
+}
+
+static void test_vtimer_handler_catches_up_and_refuses_cancel_inside(void) {
+    int saved_pace = s_pace_on;
+    vth_fixture();
+    uint32_t vt = vt_create_named("vth-late");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "the timer starts");
+    vth_run_until(2010000u);
+    for (unsigned i = 0; i < 8u; i++) s_vth_returns[i] = 1000u;
+    s_vth_cancel_inside = 1;
+    expect(vth_set(vt, 9000u, VTH_ENTRY, 0u) == 0u, "a schedule already behind is accepted");
+    vth_run_until(2010000u);
+    expect(s_vth_calls == 2u && s_vth_sched[0] == 9000u && s_vth_sched[1] == 10000u,
+           "a schedule behind the timer runs at once, and again while the next one is behind");
+    expect(s_vth_cancel_self_rc == VTH_ZERO_ID && s_vth_cancel_zero_rc == VT_BAD_ID_ERR,
+           "inside its handler, cancelling the timer returns 0x800201BF and uid 0 0x800201BE");
+    vth_run_until(2011000u);
+    expect(s_vth_calls == 3u, "the refused cancel left the handler in place");
+    s_cur = -1;
+    s_pace_on = saved_pace;
 }
 
 #ifdef SR_HLE_AOT_BOUNDARY_TEST
@@ -35631,10 +35814,12 @@ static void test_threadman_id_list(void) {
     /* Thread event handlers are a PSPSDK class this runtime does not track: a named
      * refusal, never an empty success. */
     tmid_fill();
+    uint32_t tmid_stops = sr_hle_test_unmodelled_stops();
     rc = tmid_list(9u, TMID_BUF, 4u, TMID_COUNT);
     expect(rc == TMID_NOT_MODELLED_ERR && MEM_R32(TMID_COUNT) == TMID_SENTINEL &&
-               MEM_R32(TMID_BUF) == TMID_SENTINEL,
-           "ThreadmanIdList ThreadEventHandler: refused by name, nothing written");
+               MEM_R32(TMID_BUF) == TMID_SENTINEL &&
+               sr_hle_test_unmodelled_stops() == tmid_stops + 1u,
+           "ThreadmanIdList ThreadEventHandler: the run stops by name, nothing written");
 
     /* Bad guest pointers and sizes are refused before any write. */
     tmid_fill();
@@ -35822,6 +36007,9 @@ static int hle_selftest_main(int argc, char **argv) {
         test_vtimer_lifecycle();
         test_vtimer_measured_limits_and_base();
         test_vtimer_refusals_are_named();
+        test_vtimer_handler_registration_and_errors();
+        test_vtimer_handler_runs_at_its_schedule_and_reschedules();
+        test_vtimer_handler_catches_up_and_refuses_cancel_inside();
         fprintf(stderr, "vtimer: %d checks, %d failures\n", s_checks, s_failures);
         free(g_mem_base);
         return s_failures ? 1 : 0;
@@ -35989,6 +36177,9 @@ static int hle_selftest_main(int argc, char **argv) {
     test_vtimer_lifecycle();
     test_vtimer_measured_limits_and_base();
     test_vtimer_refusals_are_named();
+    test_vtimer_handler_registration_and_errors();
+    test_vtimer_handler_runs_at_its_schedule_and_reschedules();
+    test_vtimer_handler_catches_up_and_refuses_cancel_inside();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
     test_threadman_id_list();

@@ -46,8 +46,8 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **637** (dedicated **527**, fake_success **4**, controlled_unsupported **106**).
-Semantic handler census: **504** handlers across **25** API families, covering **533** handler-associated NID registrations.
+Registered NIDs: **637** (dedicated **530**, fake_success **4**, controlled_unsupported **103**).
+Semantic handler census: **507** handlers across **25** API families, covering **536** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -55,7 +55,7 @@ Semantic handler census: **504** handlers across **25** API families, covering *
 | `partial` | 171 | 173 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 317 | 331 |
+| `unreviewed` | 320 | 334 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -71,7 +71,7 @@ Semantic handler census: **504** handlers across **25** API families, covering *
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
-| `sceKernel` | 3 | 79 | 0 | 0 | 99 | 181 | 199 |
+| `sceKernel` | 3 | 79 | 0 | 0 | 102 | 184 | 202 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
@@ -84,7 +84,7 @@ Semantic handler census: **504** handlers across **25** API families, covering *
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **171** | **1** | **2** | **317** | **504** | **533** |
+| **Total** | **13** | **171** | **1** | **2** | **320** | **507** | **536** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -380,7 +380,7 @@ Semantic handler census: **504** handlers across **25** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: CreateSema accepts init greater than max and max zero, and rejects invalid attributes)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema restores the create-time initial count)
 - **`h_CreateVTimer`** (`sceKernel`): `sceKernelCreateVTimer` (0x20fff560)
-  - Limitation: NULL option struct only (a non-NULL option is refused, layout unmeasured); 64 creates in a row are measured (PSP-HLE-VTIMER-003), so the table holds 64; the limit above 64 and the no-slot code 0x80020190 are unmeasured; the microsecond unit is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)
+  - Limitation: the option struct is ignored, as on a PSP (pspautotests vtimers/create.expected at 2ed7c9c5, recorded on a PSP: every declared size creates the same timer), and an unreadable one stops the run by name; 64 creates in a row are measured (PSP-HLE-VTIMER-003), so the table holds 64, while the same PSP-recorded output shows 1024 creates succeed; a NULL name is accepted here, where that output shows 0x80020001; the no-slot code 0x80020190 is unmeasured; the microsecond unit is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)
 - **`h_CreateVpl`** (`sceKernel`): `sceKernelCreateVpl` (0x56c039b5)
   - Limitation: valid pool creation and measured accounting are covered; the handler maps size zero to VPL_EXHAUSTED and ignores the partition argument, but the cited valid-pool cells do not establish those edge results, allocation exhaustion, or option behavior
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: valid VPL creation, accounting, allocation, and deletion)

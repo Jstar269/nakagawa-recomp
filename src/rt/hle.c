@@ -69,6 +69,7 @@
 #include "flash0_font.h"    /* read-only flash0: font device (FONT_PLAN section 5) */
 #include "../core/nk_font.h" /* shared Latin index filenames and cache validation */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2893,6 +2894,44 @@ static uint32_t h_CtrlSetIdleCancelThreshold(CpuState *s) {
 #define HLE_KERNEL_ERROR_UNKNOWN_UID 0x800200cbu    /* SCE_KERNEL_ERROR_UNKNOWN_UID */
 #define HLE_KERNEL_ERROR_NO_MEMORY 0x80020190u      /* SCE_KERNEL_ERROR_NO_MEMORY */
 
+static void hle_record_unsupported_import_stop(uint32_t, const char *);
+
+/* A handler that meets an argument shape this runtime does not model stops the run by name,
+ * exactly as an import with no handler does: one UNSUPPORTED_IMPORT line, the player's
+ * "unsupported-import-<name>" stop card, and exit 7. Returning an invented error code would
+ * hand the game a result no PSP gives, and the game would carry on from it (#308). The
+ * selftest harness counts the stop and returns SCE_KERNEL_ERROR_NOTIMP, so a test can
+ * assert it. */
+#ifdef SR_HLE_THREAD_SELFTEST
+static uint32_t s_hle_unmodelled_stops;
+uint32_t sr_hle_test_unmodelled_stops(void) { return s_hle_unmodelled_stops; }
+#endif
+__attribute__((format(printf, 2, 3)))
+static uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...) {
+    char detail[192];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(detail, sizeof(detail), fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "UNSUPPORTED_IMPORT: %s %s; the run stops here (#308)\n", import_name, detail);
+#ifdef SR_HLE_THREAD_SELFTEST
+    s_hle_unmodelled_stops++;
+    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+#else
+    hle_record_unsupported_import_stop(sr_last_nid, import_name);
+    sr_flight_unsupported_fatal(sr_last_nid, sched_current_uid(), 0u);
+    sr_hit_hle = 1;
+    if (sr_sched_on) {
+        sr_trace_close();
+        sr_compat_report();
+        sr_perf_shutdown();
+        fflush(stderr);
+        _Exit(7);
+    }
+    longjmp(g_hle_jmp, 1);
+#endif
+}
+
 /* sceCtrlGetSamplingMode(int *pmode): report the mode retained by
  * sceCtrlSetSamplingMode (power-on default digital, 0) through the required
  * out-pointer, and return 0 as the PSPSDK pspctrl.h contract documents. The span
@@ -3013,17 +3052,17 @@ static uint32_t h_AllocMemoryBlock(CpuState *s) {
         if (options_size > 4u) {
             if (!sr_guest_span_readable(A3, options_size))
                 return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
-            fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelAllocMemoryBlock option extensions are not supported yet.\n");
-            return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+            return hle_unmodelled_stop("sceKernelAllocMemoryBlock",
+                                       "option extensions (%u bytes) are not supported yet",
+                                       options_size);
         }
     }
     if (kind > 4u) return HLE_KERNEL_ERROR_ILLEGAL_MEMBLOCKTYPE;
     if (size == 0u || size > UINT32_MAX - 0xffu)
         return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
     if (kind != 0u) {
-        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelAllocMemoryBlock placement kind %u is not supported yet.\n",
-                kind);
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        return hle_unmodelled_stop("sceKernelAllocMemoryBlock",
+                                   "placement kind %u is not supported yet", kind);
     }
 
     int slot = -1;
@@ -12711,9 +12750,7 @@ static uint32_t h_GetSystemTimeWide(CpuState *s) {
  *   - A size word of 0 writes nothing. That is the status-write rule the sema, event-flag and
  *     mailbox calls share, not a VTimer-specific citation.
  *
- * Refused by name, out of scope: SetVTimerTime, and the handler family (SetVTimerHandler,
- * SetVTimerHandlerWide, CancelVTimerHandler), which needs the timer interrupt model (issue #325).
- * A non-NULL CreateVTimer option struct is refused too, because its layout is unmeasured. */
+ * Refused by name, out of scope: SetVTimerTime. The handler family is below its own header. */
 /* The PSP-3000 accepted 64 creates in a row without a refusal (PSP-HLE-VTIMER-003), so the table
  * holds 64 timers. What the console does past 64 is unmeasured. */
 #define VTIMER_MAX 64
@@ -12728,6 +12765,9 @@ typedef struct {
     int running;
     uint64_t accum_us;     /* elapsed guest time over the finished running intervals */
     uint64_t started_us;   /* guest time at the start of the open interval, when running */
+    uint32_t handler;      /* guest handler, 0 when none */
+    uint32_t common;       /* the handler's fourth argument */
+    uint64_t schedule;     /* timer time of the next handler call */
 } VTimer;
 
 static VTimer s_vtimers[VTIMER_MAX];
@@ -12759,11 +12799,13 @@ static uint64_t vtimer_base_us(const VTimer *t) {
 }
 
 static uint32_t h_CreateVTimer(CpuState *s) {
-    /* a0=name, a1=option struct (only NULL is measured). */
-    if (A1) {
-        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelCreateVTimer option struct is not supported yet.\n");
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
-    }
+    /* a0=name, a1=SceKernelVTimerOptParam * or NULL. The kernel ignores the option struct: a
+     * PSP creates the same timer for a NULL struct and for declared sizes -1, 0, 1, 4, 7, 8, 12,
+     * 4096 and 0x7FFFFFFF (pspautotests tests/threads/vtimers/create.expected, recorded on a
+     * PSP, at 2ed7c9c5). Only a readable struct is measured, so an unreadable one stops. */
+    if (A1 && !sr_guest_span_readable(A1, 4u))
+        return hle_unmodelled_stop("sceKernelCreateVTimer",
+                                   "option struct at 0x%08x is unreadable, which is not measured", A1);
     VTimer *t = NULL;
     for (int i = 0; i < VTIMER_MAX; i++) {
         if (!s_vtimers[i].used) { t = &s_vtimers[i]; break; }
@@ -12802,6 +12844,158 @@ static uint32_t h_DeleteVTimer(CpuState *s) {
     if (!t) return VTIMER_BAD_ID;
     memset(t, 0, sizeof *t);
     return 0;
+}
+
+/* ---- VTimer handlers --------------------------------------------------------------------
+ *
+ * Measured on a PSP by pspautotests tests/threads/vtimers/{sethandler,cancelhandler}.expected
+ * (2ed7c9c5, recorded on a PSP):
+ *   - SetVTimerHandler(uid, SceKernelSysClock *time, handler, common) and the Wide form (the
+ *     time as a 64-bit value) store the schedule, the handler and common, and return 0. A NULL
+ *     handler clears the handler and leaves the schedule and common as they were.
+ *   - uid 0 returns 0x800201BF, an unknown or deleted uid 0x800201BE.
+ *   - The handler runs once the timer's own time reaches the schedule, also when the schedule
+ *     is already past at Set (it then runs at once, and again for each return still behind).
+ *     It gets (uid, SceKernelSysClock *scheduled, SceKernelSysClock *actual, common); the Wide
+ *     form's handler gets the same pointers. A non-zero return is the delay to the next call,
+ *     counted from the scheduled time; zero clears the handler and keeps the schedule.
+ *   - CancelVTimerHandler clears the handler and keeps the schedule and common. From inside the
+ *     timer's own handler it returns 0x800201BF for that timer and 0x800201BE for uid 0.
+ * The handler runs as a timer interrupt (sched_set_vtimer_hooks), on a nested guest frame like
+ * the GE callbacks. Not measured, so the run stops by name: a NULL time pointer (the test
+ * notes it crashes) and a SetVTimerHandler from inside the timer's own handler. */
+#define VTIMER_ZERO_ID 0x800201bfu
+
+static uint32_t s_vtimer_in_handler;   /* uid whose handler is running, else 0 */
+
+static uint32_t vtimer_set_handler(uint32_t uid, uint64_t time, uint32_t handler, uint32_t common,
+                                   const char *api) {
+    if (uid == 0u) return VTIMER_ZERO_ID;
+    VTimer *t = vtimer_lookup(uid);
+    if (!t) return VTIMER_BAD_ID;
+    if (s_vtimer_in_handler == uid)
+        return hle_unmodelled_stop(api, "from the timer's own handler is not measured");
+    t->handler = handler;
+    if (handler) {
+        t->schedule = time;
+        t->common = common;
+    }
+    return 0;
+}
+
+static uint32_t h_SetVTimerHandler(CpuState *s) {
+    /* a0=uid, a1=SceKernelSysClock *time, a2=handler, a3=common. */
+    if (!sr_guest_span_readable(A1, 8u))
+        return hle_unmodelled_stop("sceKernelSetVTimerHandler",
+                                   "with an unreadable time pointer 0x%08x is not measured", A1);
+    uint64_t time = (uint64_t)MEM_R32(A1) | ((uint64_t)MEM_R32(A1 + 4u) << 32);
+    return vtimer_set_handler(A0, time, A2, A3, "sceKernelSetVTimerHandler");
+}
+
+static uint32_t h_SetVTimerHandlerWide(CpuState *s) {
+    /* a0=uid, a2/a3=aligned 64-bit time (a1 is skipped), t0=handler, t1=common. */
+    return vtimer_set_handler(A0, ((uint64_t)A3 << 32) | A2, stack_arg(s, 0), stack_arg(s, 1),
+                              "sceKernelSetVTimerHandlerWide");
+}
+
+static uint32_t h_CancelVTimerHandler(CpuState *s) {
+    /* a0=uid. */
+    if (s_vtimer_in_handler) {
+        if (A0 == 0u) return VTIMER_BAD_ID;
+        if (A0 == s_vtimer_in_handler) return VTIMER_ZERO_ID;
+    }
+    if (A0 == 0u) return VTIMER_ZERO_ID;
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    t->handler = 0u;
+    return 0;
+}
+
+/* Guest time at which a running timer with a handler reaches its schedule, else UINT64_MAX. */
+static uint64_t vtimer_handler_deadline(const VTimer *t) {
+    if (!t->used || !t->running || !t->handler || s_vtimer_in_handler == t->uid) return UINT64_MAX;
+    if (t->schedule <= t->accum_us) return t->started_us;
+    uint64_t left = t->schedule - t->accum_us;
+    return left > UINT64_MAX - t->started_us ? UINT64_MAX : t->started_us + left;
+}
+
+static uint64_t vtimer_next_deadline_us(void) {
+    uint64_t next = UINT64_MAX;
+    for (int i = 0; i < VTIMER_MAX; i++) {
+        uint64_t d = vtimer_handler_deadline(&s_vtimers[i]);
+        if (d < next) next = d;
+    }
+    return next;
+}
+
+/* Run one handler as a timer interrupt on a nested guest frame, with the two clocks it is
+ * handed just above that frame. Returns its $v0. */
+static uint32_t vtimer_call_handler(CpuState *s, const VTimer *t, uint64_t scheduled,
+                                    uint64_t actual) {
+    uint32_t frame_sp = 0;
+    int frame = -1;
+    if (!sr_nested_frame_acquire(sched_current_uid(), &frame_sp, &frame) || frame_sp < 0x40u ||
+        !sr_guest_span_writable((frame_sp - 16u) & ~7u, 16u)) {
+        fprintf(stderr, "VTIMER_HANDLER: fn=0x%08x uid=0x%x has no nested guest-call frame; "
+                        "the run stops here (#308)\n", t->handler, t->uid);
+        if (frame >= 0) (void)sr_nested_frame_release(frame);
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = t->handler;
+        return 0u;
+    }
+    const uint32_t clocks = (frame_sp - 16u) & ~7u;
+    MEM_W32(clocks, (uint32_t)scheduled);
+    MEM_W32(clocks + 4u, (uint32_t)(scheduled >> 32));
+    MEM_W32(clocks + 8u, (uint32_t)actual);
+    MEM_W32(clocks + 12u, (uint32_t)(actual >> 32));
+    CpuState save;
+    memcpy(&save, s, sizeof(CpuState));
+    int32_t save_slice = atomic_load_explicit(&sr_timeslice, memory_order_relaxed);
+    memset(s, 0, sizeof(CpuState));
+    s->r[4] = t->uid;
+    s->r[5] = clocks;
+    s->r[6] = clocks + 8u;
+    s->r[7] = t->common;
+    s->r[28] = save.r[28];
+    s->r[29] = clocks - 16u;
+    s->r[31] = 0;
+    s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
+    s->pc = t->handler;
+    atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);
+    uint32_t fatal_target = 0u;
+    int fatal = hle_dispatch_guest_scoped(s, t->handler, "VTimer handler", &fatal_target);
+    uint32_t ret = s->r[2];
+    memcpy(s, &save, sizeof(CpuState));
+    if (fatal) {
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = fatal_target;
+    }
+    sr_cpu_link_clear(s);
+    atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
+    (void)sr_nested_frame_release(frame);
+    return ret;
+}
+
+/* The scheduler's VTimer interrupt step: run the most overdue handler once. */
+static void vtimer_service_one(void) {
+    uint64_t now = sched_vtime_us();
+    int best = -1;
+    uint64_t best_deadline = UINT64_MAX;
+    for (int i = 0; i < VTIMER_MAX; i++) {
+        uint64_t d = vtimer_handler_deadline(&s_vtimers[i]);
+        if (d <= now && d < best_deadline) { best = i; best_deadline = d; }
+    }
+    if (best < 0) return;
+    VTimer *t = &s_vtimers[best];
+    const uint32_t uid = t->uid, handler = t->handler;
+    const uint64_t scheduled = t->schedule;
+    s_vtimer_in_handler = uid;
+    uint32_t delay = vtimer_call_handler(s_cpu, t, scheduled, vtimer_elapsed_at(t, now));
+    s_vtimer_in_handler = 0u;
+    t = vtimer_lookup(uid);
+    if (!t || t->handler != handler || t->schedule != scheduled) return;
+    if (delay == 0u) t->handler = 0u;
+    else t->schedule = scheduled + delay;
 }
 
 static uint32_t h_GetVTimerTime(CpuState *s) {
@@ -12844,9 +13038,9 @@ typedef struct {
     uint32_t active;        /* 0x24: 1 while running, 0 when created or stopped (measured) */
     uint32_t base[2];       /* 0x28: guest time at the last Start while running, else 0 */
     uint32_t current[2];    /* 0x30: elapsed guest time, low/high (measured shape) */
-    uint32_t schedule[2];   /* 0x38: 0 (measured) */
-    uint32_t handler;       /* 0x40: 0 (measured) */
-    uint32_t common;        /* 0x44: 0 (measured) */
+    uint32_t schedule[2];   /* 0x38: timer time of the next handler call (0 until one is set) */
+    uint32_t handler;       /* 0x40: the handler, 0 when none */
+    uint32_t common;        /* 0x44: the handler's common argument */
 } SceKernelVTimerInfo;
 typedef char vtimer_info_is_72_bytes[(sizeof(SceKernelVTimerInfo) == VTIMER_INFO_SIZE) ? 1 : -1];
 
@@ -12873,6 +13067,10 @@ static uint32_t h_ReferVTimerStatus(CpuState *s) {
     info.base[1] = (uint32_t)(base >> 32);
     info.current[0] = (uint32_t)current;
     info.current[1] = (uint32_t)(current >> 32);
+    info.schedule[0] = (uint32_t)t->schedule;
+    info.schedule[1] = (uint32_t)(t->schedule >> 32);
+    info.handler = t->handler;
+    info.common = t->common;
     for (uint32_t i = 0; i < write_len; i++)
         MEM_W8(A1 + i, ((const uint8_t *)&info)[i]);
     return 0;
@@ -18679,7 +18877,9 @@ static uint32_t s_latch_seen_count = 0u;
 #define ROUTE_MAX_ALT    4
 #define ROUTE_MIN_ACTIVE_BYTES 12
 #define ROUTE_MAX_STEPS  256
-#define ROUTE_MAX_LEGACY 256
+/* A bare pad script is one line per press, so a timed sweep script runs to hundreds of lines
+ * (the v0.0.1 sweep's has 453); past this many the file is refused, never cut short. */
+#define ROUTE_MAX_LEGACY 4096
 #define ROUTE_NAME_MAX   32
 #define ROUTE_FAIL_EXIT  86
 
@@ -19162,7 +19362,11 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             fprintf(stderr, "ROUTE_PARSE: %s:%d: bare frame line inside a route program\n", path, lineno);
             return -1;
         }
-        if (s_route_nlegacy >= ROUTE_MAX_LEGACY) return 0;
+        if (s_route_nlegacy >= ROUTE_MAX_LEGACY) {
+            fprintf(stderr, "ROUTE_PARSE: %s:%d: more than %d pad-script lines\n",
+                    path, lineno, ROUTE_MAX_LEGACY);
+            return -1;
+        }
         char *m = strtok(NULL, " \t\r\n");
         char *w = strtok(NULL, " \t\r\n");
         if (!m || !w) {
@@ -21950,14 +22154,12 @@ static void ge_sync_wake(void) { sched_wake(GE_SYNC_WAIT_OBJ); }
  * list table; 0 with *result set when the wait ended without one (a released or
  * deleted wait) or cannot happen. A blocking sync that has no waitable guest thread,
  * or runs with interrupts or dispatch disabled, can never be completed by a producer
- * thread; the PSP result there is UNMEASURED, so it is refused visibly rather than
- * reported as complete. */
+ * thread; the PSP result there is UNMEASURED, so the run stops by name rather than
+ * report it complete. */
 static int ge_sync_block(const char *api, uint32_t *result) {
     if (!sched_guest_thread_running() || !sched_wait_permitted()) {
-        fprintf(stderr,
-                "UNSUPPORTED_IMPORT: %s blocking wait outside a waitable guest thread has no measured result; refused.\n",
-                api);
-        *result = HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        *result = hle_unmodelled_stop(
+            api, "blocking wait outside a waitable guest thread has no measured result");
         return 0;
     }
     sched_block_on(GE_SYNC_WAIT_OBJ);
@@ -22239,8 +22441,8 @@ static uint32_t h_GeListEnQueue(CpuState *s) {
 static uint32_t h_GeListEnQueueHead(CpuState *s) {
     for (int i = 0; i < GE_LIST_MAX; i++) {
         if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
-            fprintf(stderr, "UNSUPPORTED_IMPORT: sceGeListEnQueueHead queue ordering is not supported yet.\n");
-            return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+            return hle_unmodelled_stop("sceGeListEnQueueHead",
+                                       "queue ordering is not supported yet");
         }
     }
     return h_GeListEnQueue(s);
@@ -22600,10 +22802,8 @@ static uint32_t h_GeListDeQueue(CpuState *s) {
             return GE_ERROR_LIST_BUSY;
         }
     }
-    fprintf(stderr,
-            "UNSUPPORTED_IMPORT: sceGeListDeQueue(0x%08x) has no measured result for this list state; refused.\n",
-            qid);
-    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    return hle_unmodelled_stop("sceGeListDeQueue",
+                               "(0x%08x) has no measured result for this list state", qid);
 }
 
 static uint32_t h_GeEdramGetAddr(CpuState *s) { (void)s; return 0x04000000; }
@@ -26155,10 +26355,9 @@ static uint32_t h_GetThreadmanIdList(CpuState *s) {
     const uint32_t idcount = A3;
     if (!threadman_id_type_listed(tmid)) return THREADMAN_ERROR_ILLEGAL_TYPE;
     if (tmid == SR_TMID_THREAD_EVENT_HANDLER) {
-        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelGetThreadmanIdList type %d "
-                        "(ThreadEventHandler): thread event handlers are not modelled, so "
-                        "no list is given\n", tmid);
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        return hle_unmodelled_stop("sceKernelGetThreadmanIdList",
+                                   "type %d (ThreadEventHandler): thread event handlers are "
+                                   "not modelled", tmid);
     }
     if (readbufsize < 0) return HLE_KERNEL_ERROR_ILLEGAL_SIZE;
     if (readbufsize > 0) {
@@ -26172,9 +26371,8 @@ static uint32_t h_GetThreadmanIdList(CpuState *s) {
     if (!sched_visit_threadman_ids(tmid, threadman_id_sink, &sink) &&
         !hle_visit_threadman_ids(tmid, threadman_id_sink, &sink)) {
         /* A listed PSPSDK class with no owner here: fail closed by name. */
-        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelGetThreadmanIdList type %d has no "
-                        "object table in this runtime\n", tmid);
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        return hle_unmodelled_stop("sceKernelGetThreadmanIdList",
+                                   "type %d has no object table in this runtime", tmid);
     }
     if (idcount) MEM_W32(idcount, sink.total);
     return sink.total < sink.cap ? sink.total : sink.cap;
@@ -26847,9 +27045,9 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register(0x5f32beaau, "sceKernelReferVTimerStatus", h_ReferVTimerStatus);
     /* VTimer handler family and time setter: refused by name (issue #325 for the handlers). */
     sr_hle_register_unsupported(0x542ad630u, "sceKernelSetVTimerTime", 0x80020002u);
-    sr_hle_register_unsupported(0xd8b299aeu, "sceKernelSetVTimerHandler", 0x80020002u);
-    sr_hle_register_unsupported(0x53b00e9au, "sceKernelSetVTimerHandlerWide", 0x80020002u);
-    sr_hle_register_unsupported(0xd2d615efu, "sceKernelCancelVTimerHandler", 0x80020002u);
+    sr_hle_register(0xd8b299aeu, "sceKernelSetVTimerHandler", h_SetVTimerHandler);
+    sr_hle_register(0x53b00e9au, "sceKernelSetVTimerHandlerWide", h_SetVTimerHandlerWide);
+    sr_hle_register(0xd2d615efu, "sceKernelCancelVTimerHandler", h_CancelVTimerHandler);
     sr_hle_register_unsupported(0x7ed59bc4u, "sceDisplaySetHoldMode", 0x80020002u);
     sr_hle_register_unsupported(0x77ed8b3au, "sceDisplayWaitVblankStartMultiCB", 0x80020002u);
     sr_hle_register_unsupported(0x72189c48u, "sceImposeSetUMDPopup", 0x80010086u);
@@ -27204,6 +27402,7 @@ void sr_hle_init(void) {
     /* Opt-in GE completion timing: the hooks report nothing unless SR_GE_TIMING=1. */
     sched_set_ge_timing_hooks(ge_timing_next_deadline_us, ge_timing_service_due);
     (void)ge_timing_on();
+    sched_set_vtimer_hooks(vtimer_next_deadline_us, vtimer_service_one);
 #endif
     atomic_store_explicit(&s_hle_init_state, 2, memory_order_release);
 }

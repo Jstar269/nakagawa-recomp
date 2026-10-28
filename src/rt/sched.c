@@ -2009,6 +2009,42 @@ static void scheduler_ge_service(void) {
     sr_cpu_link_clear(s_cpu);
 }
 
+/* ---- VTimer handlers (hle.c, sceKernelSetVTimerHandler) ---------------------------------
+ *
+ * A VTimer handler is a timer interrupt like an alarm: hle.c owns the timers and reports the
+ * earliest guest-time deadline of a running timer with a handler; the scheduler delivers it
+ * from scheduler_service_pending(), in interrupt context, at the alarms' priority, and while
+ * somebody waits its deadline is an idle wake source. */
+static SrSchedVtimerNextDeadline s_vtimer_next;
+static SrSchedVtimerServiceOne s_vtimer_service;
+
+void sched_set_vtimer_hooks(SrSchedVtimerNextDeadline next_deadline,
+                            SrSchedVtimerServiceOne service_one) {
+    s_vtimer_next = next_deadline;
+    s_vtimer_service = service_one;
+}
+
+static uint64_t sched_vtimer_next_deadline(void) {
+    return s_vtimer_next ? s_vtimer_next() : SCHED_WAIT_FOREVER;
+}
+
+static uint64_t sched_vtimer_wake_deadline(void) {
+    return s_interrupts_enabled ? sched_vtimer_next_deadline() : SCHED_WAIT_FOREVER;
+}
+
+static int scheduler_vtimer_due(void) {
+    return s_vtimer_service && sched_vtimer_next_deadline() <= s_vtime_us;
+}
+
+/* One interrupt episode: the most overdue VTimer handler.  hle.c saves and restores the
+ * interrupted register file around the guest handler itself. */
+static void scheduler_vtimer_service(void) {
+    int save_cur = s_cur; s_cur = -1;     /* interrupt context: SR_YIELD must not switch */
+    s_vtimer_service();
+    s_cur = save_cur;
+    sr_cpu_link_clear(s_cpu);
+}
+
 /* The scheduler's idle classification, as a pure read of scheduler state.
  *
  * Factored out of sched_run so the policy is directly testable: the loop it used
@@ -2042,6 +2078,8 @@ static SchedIdleState sched_classify_idle(void) {
         if (alarm < st.soonest) st.soonest = alarm;
         uint64_t ge = sched_ge_wake_deadline();
         if (ge < st.soonest) st.soonest = ge;
+        uint64_t vtimer = sched_vtimer_wake_deadline();
+        if (vtimer < st.soonest) st.soonest = vtimer;
     }
     /* Object identity alone is not a licence to keep spinning: the source has to
      * still be able to fire and to be serviced. */
@@ -2069,11 +2107,16 @@ static void scheduler_service_pending(void) {
     s_servicing_interrupts = 1;
     while (s_interrupts_enabled &&
            ((s_pending_interrupts & SCHED_INTR_VBLANK) || s_pending_vblanks ||
-            scheduler_ge_due() || scheduler_alarm_due_slot() >= 0)) {
-        /* Alarms are the lowest-priority source here: only once no VBLANK episode is owed.
-         * A due GE completion (opt-in model) sits between the two. */
+            scheduler_ge_due() || scheduler_alarm_due_slot() >= 0 || scheduler_vtimer_due())) {
+        /* Timers are the lowest-priority source here: only once no VBLANK episode is owed.
+         * A due GE completion (opt-in model) sits between the two. Between a due alarm and
+         * a due VTimer handler the earlier deadline runs first (an unmeasured order). */
         if (!(s_pending_interrupts & SCHED_INTR_VBLANK) && !s_pending_vblanks) {
+            int alarm = scheduler_alarm_due_slot();
             if (scheduler_ge_due()) scheduler_ge_service();
+            else if (scheduler_vtimer_due() &&
+                     (alarm < 0 || sched_vtimer_next_deadline() < s_alarms[alarm].deadline))
+                scheduler_vtimer_service();
             else scheduler_alarm_service_one();
             continue;
         }
@@ -2811,6 +2854,8 @@ static void sched_idle_wait(void) {
         soonest = sched_alarm_wake_deadline();
     if (any_waiting && sched_ge_wake_deadline() < soonest)
         soonest = sched_ge_wake_deadline();
+    if (any_waiting && sched_vtimer_wake_deadline() < soonest)
+        soonest = sched_vtimer_wake_deadline();
     scheduler_progress_time();
     if (s_pace_on && soonest_runnable != SCHED_WAIT_FOREVER && soonest_runnable <= s_vtime_us)
         return;
@@ -3156,6 +3201,11 @@ void sr_yield(CpuState *s) {
             uint64_t alarm_at = sched_alarm_wake_deadline();
             if (alarm_at != SCHED_WAIT_FOREVER && alarm_at > s_vtime_us) {
                 uint64_t delta = alarm_at - s_vtime_us;
+                if (adv == 0 || delta < adv) adv = delta;
+            }
+            uint64_t vtimer_at = sched_vtimer_wake_deadline();
+            if (vtimer_at != SCHED_WAIT_FOREVER && vtimer_at > s_vtime_us) {
+                uint64_t delta = vtimer_at - s_vtime_us;
                 if (adv == 0 || delta < adv) adv = delta;
             }
             scheduler_add_time(adv);
