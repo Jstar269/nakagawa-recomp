@@ -120,7 +120,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ad0db549576ce08c7633b49885d03c3e597d4d98faa669156ce728450149360f"
+      "sha256": "5f7ea2cef1b2847212c9f07fb6d5e8b6edd494db682112b17a889e1e3cff9a85"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/config.yml",
@@ -465,7 +465,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "828ac4a5740e79035e7e3c56517003e5da6bcdf59a81eba3a3a8d1ba1476e1c9"
+      "sha256": "d450a9e683d1298887dec4ac73178cf99fd5fedd3a82ffdbbb7a8f6f8dbef55c"
     },
     {
       "path": "REVIEW.md",
@@ -1699,7 +1699,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7a9072b9f5f6997d2cf6088756dca7bae5e8529af085fc24e21c732a542771fb"
+      "sha256": "91915f00dff5525892ba0d1d092996290b46cdb062d77b84eb6bbc2511db51e5"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",

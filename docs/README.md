@@ -10,14 +10,15 @@ as a record.
 
 Start here if you want to play or try the project rather than change it:
 
-- [`../README.md`](../README.md) — what the project is, and the quick start.
-- [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) — playing a game you own.
-- [`../ACCESSIBILITY.md`](../ACCESSIBILITY.md) — what the player does and does not support for accessibility, and how to report a barrier.
-- [`../SUPPORT.md`](../SUPPORT.md) — where to take a question, including
+- [`../README.md`](../README.md): what the project is, the download and the quick start.
+- [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md): playing a game you own.
+- [`COMPATIBILITY.md`](COMPATIBILITY.md): which games work.
+- [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md): what the current release does, and how to check the download.
+- [`SETUP.md`](SETUP.md#windows-host-pitfalls): troubleshooting on Windows.
+- [`SHOWCASE.md`](SHOWCASE.md): the two demo programs.
+- [`../ACCESSIBILITY.md`](../ACCESSIBILITY.md): what the player supports for accessibility, and how to report a barrier.
+- [`../SUPPORT.md`](../SUPPORT.md): where to take a question, including
   [GitHub Discussions](https://github.com/Jstar269/nakagawa-recomp/discussions).
-- [`SHOWCASE.md`](SHOWCASE.md) — the two demo programs.
-- [`COMPATIBILITY.md`](COMPATIBILITY.md) — which games work.
-- [`SETUP.md`](SETUP.md#windows-host-pitfalls) — troubleshooting: Windows host pitfalls.
 
 ## Start here
 
@@ -57,19 +58,10 @@ Each row is something you are about to do. Find yours and read what it points to
   player discovery, and their profile-zero acceptance status (#309).
 - [`CI.md`](CI.md) — path-gated hosted checks and their evidence limits.
 - [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — machine-readable
-  runtime and supported tooling parser boundaries, including every native and Python
-  JSON consumer (title manifest, runtime package, library, cache/identity, font cache,
-  input profile, player settings and package-builder documents) plus performance
-  summaries, frame-dump and other tooling readers; each row carries resource limits, deterministic
-  regression/mutation status, sanitizer availability, and unresolved gaps (#319).
-  Every source anchor is a stable `path:symbol` reference checked against current
-  definitions by `tools/test_parse_fuzz.py`; line-number anchors are rejected.
-  Python methods use `Class.method` where needed, and anchors must resolve to one
-  definition (including supported constants). The checker rejects a `never reaches`
-  claim when a listed Python test has a syntactic call path to that reader, and a
-  row may only call a route untested when it names the kind of test that is missing.
-  The document is `schema_version` 4: `arithmetic.safe` remains a string status
-  rather than a boolean, and `schema_notes` records both changes.
+  inventory of the runtime's and supported tools' parser boundaries, each with its resource limits,
+  regression and mutation status, sanitizer availability and open gaps (#319).
+  `tools/test_parse_fuzz.py` checks its source anchors and claims; `schema_notes`
+  records the schema history.
 - [`DEBUGGING.md`](DEBUGGING.md) — diagnostics and safe local troubleshooting.
 - [`PORTING.md`](PORTING.md) — generic title-manifest/code-generation boundaries.
 - [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) — portability plan.
@@ -120,9 +112,8 @@ a target and what isn't built yet.
 - [`PREVIEW_RELEASE.md`](PREVIEW_RELEASE.md) — scope, packaging and qualification
   guide for the v0.0.1 release candidate. Creating a tag or release is a
   maintainer-only action (`AGENTS.md` section 3), and no agent may perform it.
-- [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md) — draft release notes
-  for the v0.0.1 public build.
-  Status: DRAFT; releases are maintainer-published.
+- [`RELEASE_NOTES_v0.0.1.md`](RELEASE_NOTES_v0.0.1.md) — the notes of the
+  v0.0.1 release, kept as released.
 
 ## Archive
 
@@ -229,7 +220,7 @@ Every substantial document carries one status.
 | `NATIVE_UI_REGRESSION_MATRIX.md` | CURRENT | Authoritative capability disposition table plus the native slice functional checklist |
 | `NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md` | CURRENT | Native player implementation narrative and launch-path evidence; per-capability status is maintained in `NATIVE_UI_REGRESSION_MATRIX.md` |
 | `PREVIEW_RELEASE.md` | CURRENT | v0.0.1 release candidate scope and qualification guide; tags and releases are maintainer-only |
-| `RELEASE_NOTES_v0.0.1.md` | DRAFT | Draft release notes for the v0.0.1 public build |
+| `RELEASE_NOTES_v0.0.1.md` | CURRENT | Notes of the v0.0.1 release, kept as released |
 | `NATIVE_PLAYER_ARCHITECTURE.md` | CURRENT | Maintained native-shell architecture; the wizard's bounded ISO/XB staging exists and the player decrypts the user's own disc locally, while retail-disc hash validation and one-click play without the developer toolchain remain unbuilt and are marked inline |
 | `PLAYER_UI_DESIGN.md` | CURRENT | Player UI design system for the default launcher: tokens, components, and the screen specs C6-C8 build against |
 | `ONLINE_FEATURES.md` | DRAFT | Design for the launcher's opt-in online mode (update check, news, user-sent reports) and developer mode, asked in the setup wizard; the switches, the wizard step and the developer log panel are built, no online feature is yet |
