@@ -1495,7 +1495,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "98c205715e58241dd85dfc60a7a285a8fb6311fa76a87b55c7b000099195d5e9"
+      "sha256": "4cf0e1d28d54466c60bf90dc066a9d8da805c16e4fe4f1ecf2e31a2c1d9097a6"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1702,7 +1702,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "959631a85d087c864d70d9cff097eaa566f13cbc307fed4357b949e780e59a02"
+      "sha256": "0d8b6d9313274587903518f0c07f521ef1494ce4d980712733ddfaa8201b08df"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -8891,7 +8891,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "4c4dc2d6bc7728041906824a69b165ec52aa7b8873d76e1ad363997632ff05c9"
+      "sha256": "21db2f2bddc606c15afc1337fb6005011959bdae96df89425995828f7ab64b3b"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8929,7 +8929,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "23ef1b546d1afe8eea79dcbbff26d65d190921d00abd6a4f6da24406405e5ff1"
+      "sha256": "b751ecfeb3b64237a10a93c08614ac1763f7623ec605ffbaf8cec3fb9d8acbaa"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -8941,7 +8941,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dcf84796892786137565fb80a93d9fb4d0d6ab2eb7444d4dedaa06422e42f06a"
+      "sha256": "556a9bb519274e9113b5c8dc6cb3d75cd0edd566ebf95eeef989da63a96a086d"
     },
     {
       "path": "src/rt/iso.h",
@@ -9379,7 +9379,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "899a534269614687a9ff1e86b4f6c4a4f249cb82d7de2e2007446b0aff31c54e"
+      "sha256": "9259edfb22dbc17b2b37adfcc94c4d1bc0e62446ed7e01f1cbbb64ea21f9afe8"
     },
     {
       "path": "src/rt/recomp.h",
@@ -9392,7 +9392,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b212b0598ddd77e37077706eff1eb79a5dd11a98bddd9247b73994b8b64754a4"
+      "sha256": "1a3fb42a004c611977bc824c410586edf58fb42ebf3e83d6ff1c10cd177d7c58"
     },
     {
       "path": "src/rt/savedata.c",
@@ -12109,7 +12109,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d8b6ff7cd0c2438d552676d43ad1eb8be01a9d6e485305277cd83a51152d7266"
+      "sha256": "6c6e0355ae1d0518d1d75b1ca9184b2e348a97cc2f896c6b6d66c34b6a16be5b"
     },
     {
       "path": "tools/import_audit_gate.py",
