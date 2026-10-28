@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-10.
 // See NOTICE.md for upstream lineage and modification provenance.
@@ -760,6 +761,7 @@ static uint32_t s_zbuf_guest_base;
 static uint32_t s_zbuf_guest_stride;
 static int s_zbuf_guest_valid;
 static int s_zbuf_guest_dirty;
+static int s_zbuf_layout_accepted;   /* ge_zbuf_layout_valid() passed for the cached pair */
 static int s_zbuf_boundary_reported;
 
 static uint32_t zbuf_stride(void) { return ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512); }
@@ -905,6 +907,11 @@ int ge_zbuf_prepare_current(void) {
     uint32_t base = ge.zbp ? SR_PHYS(ge.zbp) : SR_VRAM_CPU_BASE;
     if (base < 0x00200000u) base += SR_VRAM_CPU_BASE;
     uint32_t stride = zbuf_stride();
+    /* Every depth-tested pixel asks; validity depends only on (base, stride), and a cached
+     * surface was accepted for exactly this pair when it was loaded. */
+    if (s_zbuf_layout_accepted && s_zbuf_guest_valid && s_zbuf_guest_base == base &&
+        s_zbuf_guest_stride == stride)
+        return 1;
     if (!ge_zbuf_layout_valid(base, stride)) return 0;
 
     if (!s_zbuf_guest_valid || s_zbuf_guest_base != base ||
@@ -930,6 +937,7 @@ int ge_zbuf_prepare_current(void) {
         s_zbuf_guest_valid = 1;
         s_zbuf_guest_dirty = 0;
     }
+    s_zbuf_layout_accepted = 1;
     return 1;
 }
 
@@ -947,6 +955,7 @@ void ge_zbuf_note_external_write(void) {
     s_zbuf_guest_base = base;
     s_zbuf_guest_stride = stride;
     s_zbuf_guest_valid = 1;
+    s_zbuf_layout_accepted = 1;
     ge_zbuf_note_write();
 }
 
@@ -1019,6 +1028,7 @@ void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
     if (s_zbuf_guest_base < 0x00200000u) s_zbuf_guest_base += SR_VRAM_CPU_BASE;
     s_zbuf_guest_stride = state->zbw ? state->zbw : (state->fbw ? state->fbw : 512u);
     s_zbuf_guest_valid = s_zbuf_guest_stride <= 512u;
+    s_zbuf_layout_accepted = 0;           /* restored without the layout check */
     s_zbuf_guest_dirty = s_zbuf_guest_valid;
     if (s_zbuf_guest_dirty) g_sr_vram_read_pending = 1;
     if (s_tr_enabled > 0) ge_transition_trace_sync_written();
@@ -2239,11 +2249,67 @@ unsigned long g_ge_pixels = 0;
 static int clamp8(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 static float clampf01(float v) { return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v; }
 
+/* The colour target's own pixel loads and stores. The guest-memory accessors run the CPU
+ * view's work on every VRAM access: per-byte mirror translation, the store watches and the
+ * depth/renderer coherence hooks. For a depth-tested, blended pixel that was about 3000
+ * host cycles, enough that a full-screen sprite each frame left a low-priority loading
+ * thread almost no time. A pixel in the linear VRAM view (0x040xxxxx, which maps one to
+ * one) is read and written in place when that does exactly what the accessors would: no
+ * renderer hooks or GE capture, no store watch armed, and not overlapping the live depth
+ * surface (those accessors would write the software depth back first, or drop it). Every
+ * other access keeps the accessor path. The in place path also reads the word at
+ * 0x04084000 from VRAM: sr_r32 answers a CPU load there with a GE status value, which is
+ * a CPU-side shim and was never meant to replace a pixel of a colour target at 0x04000000. */
+static unsigned long long s_fb_direct_accesses, s_fb_accessor_accesses;
+
+static uint8_t *ge_fb_host(uint32_t addr, uint32_t width) {
+#ifdef SR_GE_VRAM_DECODER_CLI
+    (void)addr; (void)width;
+    return NULL;
+#else
+    uint32_t phys = SR_PHYS(addr);
+    if (s_gpu || g_ge_capture_active || g_sr_mem_watch_count || g_sr_store_context_pc ||
+        g_sr_last_writer_enabled || g_sr_heap_watch || SR_WATCH_ACTIVE() ||
+        phys < SR_VRAM_CPU_BASE || phys > 0x04200000u - width ||
+        ge_zbuf_range_overlaps(phys, width)) {
+        s_fb_accessor_accesses++;
+        return NULL;
+    }
+    s_fb_direct_accesses++;
+    return SR_HOST_LINEAR(phys);
+#endif
+}
+
+void ge_fb_access_counts(unsigned long long *direct, unsigned long long *accessor) {
+    if (direct) *direct = s_fb_direct_accesses;
+    if (accessor) *accessor = s_fb_accessor_accesses;
+}
+
+static uint32_t ge_fb_load(uint32_t addr, int is32) {
+    uint8_t *host = ge_fb_host(addr, is32 ? 4u : 2u);
+    if (host) {
+        if (is32) { uint32_t v; memcpy(&v, host, 4); return v; }
+        uint16_t v; memcpy(&v, host, 2); return v;
+    }
+    return is32 ? MEM_R32(addr) : MEM_R16(addr);
+}
+
+static void ge_fb_store(uint32_t addr, int is32, uint32_t value) {
+    uint8_t *host = ge_fb_host(addr, is32 ? 4u : 2u);
+    if (host) {
+        if (is32) memcpy(host, &value, 4);
+        else { uint16_t v = (uint16_t)value; memcpy(host, &v, 2); }
+        return;
+    }
+    if (is32) MEM_W32(addr, value);
+    else      MEM_W16(addr, (uint16_t)value);
+}
+
 static void read_fb_px(int x, int y, int *r, int *g, int *b, int *a) {
     uint32_t stride = ge.fbw ? ge.fbw : 512;
     uint32_t off = (uint32_t)(y*(int)stride + x);
-    if ((ge.fbfmt & 3) == 3) unpack_color(MEM_R32(ge_fb_addr() + off*4), 3, r,g,b,a);
-    else                     unpack_color(MEM_R16(ge_fb_addr() + off*2), ge.fbfmt&3, r,g,b,a);
+    if ((ge.fbfmt & 3) == 3) unpack_color(ge_fb_load(ge_fb_addr() + off*4, 1), 3, r,g,b,a);
+    else                     unpack_color(ge_fb_load(ge_fb_addr() + off*2, 0), ge.fbfmt&3, r,g,b,a);
 }
 
 static int factor_component(int f, int chan, int sr, int sg, int sb, int sa, int dr, int dg, int db, int da, int srcSide) {
@@ -2280,15 +2346,15 @@ static int pixel_in_bounds(int x, int y) {
 static uint32_t read_fb_raw(int x, int y) {
     uint32_t stride = ge.fbw ? ge.fbw : 512;
     uint32_t off = (uint32_t)(y * (int)stride + x);
-    return (ge.fbfmt & 3) == 3 ? MEM_R32(ge_fb_addr() + off * 4)
-                               : MEM_R16(ge_fb_addr() + off * 2);
+    return (ge.fbfmt & 3) == 3 ? ge_fb_load(ge_fb_addr() + off * 4, 1)
+                               : ge_fb_load(ge_fb_addr() + off * 2, 0);
 }
 
 static void write_fb_raw(int x, int y, uint32_t value) {
     uint32_t stride = ge.fbw ? ge.fbw : 512;
     uint32_t off = (uint32_t)(y * (int)stride + x);
-    if ((ge.fbfmt & 3) == 3) MEM_W32(ge_fb_addr() + off * 4, value);
-    else                     MEM_W16(ge_fb_addr() + off * 2, (uint16_t)value);
+    if ((ge.fbfmt & 3) == 3) ge_fb_store(ge_fb_addr() + off * 4, 1, value);
+    else                     ge_fb_store(ge_fb_addr() + off * 2, 0, value);
 }
 
 /* PMSKC/PMSKA are RGBA8 masks but disable writes to native framebuffer bits. */
