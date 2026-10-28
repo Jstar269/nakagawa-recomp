@@ -159,7 +159,8 @@ static void player_take_picked_disc(PlayerApp *app, const char *selected_path) {
             snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
                      "%s", k_invalid_disc_message);
         } else if (named_boundary) {
-            player_show_picked_refusal(app, res.boundary_code, "Not a Disc Image", message);
+            player_show_picked_refusal(app, res.boundary_code,
+                                       player_disc_refusal_title(res.boundary_code), message);
         } else {
             player_app_set_error(app, "ISO_CORRUPT", "Not a PSP Disc Image",
                                  k_invalid_disc_message, "Try Another File", VIEW_LIBRARY);
@@ -1261,7 +1262,9 @@ static void player_ui_nk_apply_action(PlayerApp *app,
             player_app_set_view(app, app->last_error.return_view);
             if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
                 strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0 ||
-                strncmp(app->last_error.error_code, "PBP_", 4) == 0) {
+                strncmp(app->last_error.error_code, "PBP_", 4) == 0 ||
+                strcmp(app->last_error.error_code, "DISC_IMAGE_COMPRESSED") == 0 ||
+                strcmp(app->last_error.error_code, "DISC_NOT_PSP") == 0) {
                 app->request_file_picker = true;
             }
         }
@@ -3607,12 +3610,26 @@ static void player_setup_standard_streams(void) {
                  nk_platform_path_separator()) >= (int)sizeof(path)) {
         return;
     }
-    FILE *log = nk_fopen_utf8(path, "wb");
-    if (!log) return;
-    /* _dup2 gives fds 1 and 2 their own copies of the log handle, so closing `log` is safe. */
-    _dup2(_fileno(log), 1);
-    _dup2(1, 2);
-    fclose(log);
+    /* The streams themselves are reopened on the file. A GUI process started
+       without standard handles has stdout and stderr bound to no descriptor
+       (_fileno returns -2), so pointing descriptors 1 and 2 at the file with
+       _dup2 left both streams writing nowhere and the file empty. Each run
+       starts the file afresh; both streams then append, so their lines
+       interleave in order instead of overwriting each other. */
+    WCHAR wpath[NK_MAX_PATH];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath,
+                            (int)(sizeof(wpath) / sizeof(wpath[0]))) <= 0) {
+        return;
+    }
+    FILE *fresh = _wfopen(wpath, L"wb");
+    if (!fresh) return;
+    fclose(fresh);
+    if (!_wfreopen(wpath, L"ab", stdout)) return;
+    if (!_wfreopen(wpath, L"ab", stderr)) return;
+    /* Code that writes to the process's standard handles rather than the CRT
+       streams reaches the same file. */
+    SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(_fileno(stdout)));
+    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(_fileno(stderr)));
 }
 #endif
 
@@ -4102,7 +4119,8 @@ int main(int argc, char *argv[]) {
             player_app_set_error(
                 &app,
                 named_boundary ? res.boundary_code : "ISO_CORRUPT",
-                named_boundary ? "Not a Disc Image" : "Not a PSP Disc Image",
+                named_boundary ? player_disc_refusal_title(res.boundary_code)
+                               : "Not a PSP Disc Image",
                 named_boundary ? message : k_invalid_disc_message,
                 "Try Another File", VIEW_LIBRARY);
         }

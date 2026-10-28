@@ -1565,7 +1565,10 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     );
 
     if (!ok) {
-        snprintf(session->last_error, sizeof(session->last_error), "Failed to spawn runtime process: %.*s", (int)(sizeof(session->last_error) - 40), session->executable_path);
+        snprintf(session->last_error, sizeof(session->last_error),
+                 "Failed to spawn runtime process (OS error %d): %.*s",
+                 session->process.spawn_error, (int)(sizeof(session->last_error) - 60),
+                 session->executable_path);
         session->is_running = false;
         return NK_ERROR_PROCESS_SPAWN;
     }
@@ -1725,4 +1728,57 @@ bool nk_launch_keep_run_log(const char *events_path, const char *disc_id,
     if (!nk_platform_get_path(NK_PATH_LOGS, log_dir, sizeof(log_dir))) return false;
     return nk_launch_keep_run_log_in(events_path, log_dir, disc_id,
                                      NK_LAUNCH_RUN_LOG_MAX_BYTES, out_path, out_size);
+}
+
+bool nk_launch_describe_spawn_block(int os_error, const char *program,
+                                    const char *program_title,
+                                    const char *program_path,
+                                    NkSpawnBlockReport *out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    NkSpawnBlock block = nk_platform_spawn_block(os_error);
+    if (block == NK_SPAWN_BLOCK_NONE) return false;
+    if (!program || !program[0]) program = "the program";
+    if (!program_title || !program_title[0]) program_title = "Program";
+    out->block = block;
+    switch (block) {
+        case NK_SPAWN_BLOCK_ACCESS_DENIED:
+            snprintf(out->code, sizeof(out->code), "WINDOWS_BLOCKED_START");
+            snprintf(out->title, sizeof(out->title), "Windows Blocked the %s", program_title);
+            snprintf(out->message, sizeof(out->message),
+                     "Windows refused to start %s (access denied). This is often a Microsoft "
+                     "Defender attack surface reduction rule. Those rules block programs that are "
+                     "new to Windows, and every game Nakagawa builds on this PC is new. Protection "
+                     "history in Windows Security names the rule. Whoever manages it can exclude "
+                     "Nakagawa's folders. Please don't turn Windows Security off.",
+                     program);
+            break;
+        case NK_SPAWN_BLOCK_THREAT:
+            snprintf(out->code, sizeof(out->code), "WINDOWS_DEFENDER_THREAT");
+            snprintf(out->title, sizeof(out->title), "Windows Security Blocked the %s",
+                     program_title);
+            snprintf(out->message, sizeof(out->message),
+                     "Windows Security says %s contains a threat, so Windows would not start it. "
+                     "Protection history in Windows Security names the detection. If you checked "
+                     "your download, you can allow it there and try again. Please don't turn "
+                     "Windows Security off.",
+                     program);
+            break;
+        case NK_SPAWN_BLOCK_POLICY:
+        default:
+            snprintf(out->code, sizeof(out->code), "WINDOWS_POLICY_BLOCKED");
+            snprintf(out->title, sizeof(out->title), "Windows Blocked the %s", program_title);
+            snprintf(out->message, sizeof(out->message),
+                     "A Windows policy on this PC does not allow %s to start. Whoever manages "
+                     "this PC sets that policy (AppLocker, App Control or a software restriction "
+                     "policy). Ask them to allow Nakagawa's folders.",
+                     program);
+            break;
+    }
+    char os_text[256];
+    if (!nk_platform_describe_os_error(os_error, os_text, sizeof(os_text))) os_text[0] = '\0';
+    snprintf(out->details, sizeof(out->details), "Windows error %d%s%.200s\nProgram: %.240s",
+             os_error, os_text[0] ? ": " : "", os_text,
+             program_path && program_path[0] ? program_path : "(unknown)");
+    return true;
 }
