@@ -890,7 +890,7 @@ class GateInventoryTests(unittest.TestCase):
 
 #: Independent inventory of retired HST override addresses that must NEVER be
 #: reintroduced as custom stubs, manual callables, resume points, or gated emitters.
-RETIRED_HST_ADDRESSES: frozenset[int] = frozenset({0x00010950, 0x00046D14, 0x00048320})
+RETIRED_HST_ADDRESSES: frozenset[int] = frozenset({0x00010950, 0x00046D14, 0x00048320, 0x0004CDC8})
 
 
 def scan_ast_literals_for_addrs(tree: ast.AST, forbidden_addrs: frozenset[int]) -> list[str]:
