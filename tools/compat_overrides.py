@@ -412,8 +412,11 @@ SCHEDULER_HOOKS = [
                  "binding once the guest's reent bring-up needs no host participation.",
          test="make sched-selftest (generic build allocates UID 0x111 and asserts it is ordinary)",
          owner_issue="#363",
-         retirement="retire together with the launcher binding once the guest's reent bring-up "
-                    "needs no host participation"),
+         retirement="retired (2026-10-28): a PSP-3000 measurement (docs/HARDWARE_ORACLE.md "
+                    "PSP-THREAD-K0-001) shows the kernel hands every new thread a k0 block with "
+                    "k0+4 == 0, also over a dirtied stack. sched.c now builds that block and no "
+                    "longer copies a launcher reent into any thread; the title's own libc keeps "
+                    "its per-thread state."),
 ]
 
 # HST-only guest Newlib reent bindings. The two entries (0x002cf338 master reent fallback

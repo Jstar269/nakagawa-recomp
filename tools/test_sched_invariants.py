@@ -233,31 +233,21 @@ class ThreadLifecycleTests(unittest.TestCase):
                 f"{name} must not compare thread UIDs against historical literals",
             )
 
-    def test_register_libc_thread_uses_role_validity_not_uid_numbers(self):
-        """Role treatment must follow a captured role, never a UID's numeric value.
+    def test_new_thread_gets_the_measured_k0_block_and_no_host_reent(self):
+        """Thread creation builds the k0 block a PSP-3000 hands a new thread (PSP-THREAD-K0-001).
 
-        UIDs are allocated from 0x110 upward, so any role UID is also an ordinary UID.
-        A bare ``uid == g_launcher_uid`` therefore grants launcher-only treatment --
-        master-reent seeding and a skipped guest reent registration -- to whichever
-        thread happens to be allocated that number in a build with no launcher binding.
+        k0 is the top 0x100 bytes of the thread's own stack: zero except the UID (+0xc0), the
+        stack base (+0xc8) and two all-ones words (+0xf8, +0xfc). k0+4 starts at 0, so the
+        scheduler must not pre-seed it or copy any libc reent into the thread.
         """
-        body = strip_comments(function_body(SCHED, "register_libc_thread"))
-        self.assertIn("sched_uid_is_launcher(uid)", body)
-        self.assertIn("init_guest_reent", body)
-        self.assertNotRegex(
-            body,
-            r"uid\s*[!=]=\s*g_(launcher|worker|root)_uid",
-            "register_libc_thread must ask sched_uid_is_*(), not compare UID numbers",
-        )
-
-        reent_body = strip_comments(function_body(SCHED, "init_guest_reent"))
-        self.assertIn("sched_uid_is_root(uid)", reent_body)
-        self.assertIn("sched_uid_is_launcher(uid)", reent_body)
-        self.assertNotRegex(
-            reent_body,
-            r"uid\s*[!=]=\s*g_(launcher|worker|root)_uid",
-            "init_guest_reent must ask sched_uid_is_*(), not compare UID numbers",
-        )
+        body = strip_comments(function_body(SCHED, "sched_create_thread_finish"))
+        self.assertIn("user_base + user_sz - SCHED_K0_BLOCK_SIZE", body)
+        for field in ("SCHED_K0_UID", "SCHED_K0_STACK_BASE", "SCHED_K0_ONES_0", "SCHED_K0_ONES_1"):
+            self.assertIn(field, body)
+        self.assertNotRegex(body, r"k0\s*\+\s*4\b", "k0+4 belongs to the title's libc")
+        code = strip_comments(SCHED)
+        for removed in ("register_libc_thread", "init_guest_reent", "g_master_reent", "s_libc_threads"):
+            self.assertNotIn(removed, code)
 
     def test_role_uids_start_uncaptured(self):
         """No role global may be seeded with a value the UID allocator can hand out."""

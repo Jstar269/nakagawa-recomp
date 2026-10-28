@@ -6968,7 +6968,6 @@ static void reset_fixture(void) {
     memset(g_mem_base, 0, 0x0c000000u);
     sr_display_test_reset();
     memset(s_tcb, 0, sizeof(s_tcb));
-    memset(s_libc_threads, 0, sizeof(s_libc_threads));
     memset(&s_cpu_store, 0, sizeof(s_cpu_store));
     s_ntcb = 0;
     s_cur = -1;
@@ -6985,7 +6984,6 @@ static void reset_fixture(void) {
     g_root_uid = 0x110u;
     g_launcher_uid = 0x111u;
     g_worker_uid = 0x114u; /* primary render worker, not the resource worker below */
-    g_master_reent = 0x00300000u;
     s_stack_top = SR_STACK_ARENA_CEIL;
     stack_ranges_reset();
     s_vtime_us = 0;
@@ -14659,12 +14657,6 @@ static void test_explicit_exit_status_exact(int32_t supplied, uint32_t expected)
 #define NID_SCE_KERNEL_CREATE_CALLBACK   0xe81caf8fu
 #define NID_SCE_KERNEL_DELETE_CALLBACK   0xedba5844u
 
-static int host_libc_contains_uid(uint32_t uid) {
-    for (int i = 0; i < MAXTHREADS; i++)
-        if (s_libc_threads[i].in_use && s_libc_threads[i].uid == uid) return 1;
-    return 0;
-}
-
 static void test_thread_delete_lifecycle_and_cleanup(void) {
     reset_fixture();
     sr_hle_init();
@@ -14713,8 +14705,6 @@ static void test_thread_delete_lifecycle_and_cleanup(void) {
     expect(terminate_delete == 0, "TerminateDeleteThread terminates and removes a target");
     expect(target && target->deleted && target->stack_released && target->resources_released,
            "TerminateDeleteThread marks the object deleted and releases resources once");
-    expect(!host_libc_contains_uid(target_uid),
-           "TerminateDeleteThread removes host libc ownership");
     expect(!sr_callback_is_valid(callback_uid),
            "TerminateDeleteThread removes callbacks owned by the target");
     expect(joiner->state == TH_READY && joiner->join_result_valid &&
@@ -15157,8 +15147,8 @@ static void sfs_main_fn(CpuState *cpu) {
 
     /* The caller, by UID 0 and by its own UID ("Current thread" and "Current"). */
     const uint32_t untouched = sfs_free(cpu, 0u);
-    expect(untouched == self->stack_base + self->stack_size - self_first,
-           "stack free: UID 0 counts the caller's untouched stack above its low 0x10 bytes");
+    expect(untouched == self->k0_init - self_first,
+           "stack free: UID 0 counts the caller's untouched stack from its low 0x10 bytes up to k0");
     expect(sfs_free(cpu, self_uid) == untouched,
            "stack free: the caller's own UID answers what UID 0 answers");
     sfs_fill(sp - 0x400u, sp, 0xffu);
@@ -15175,21 +15165,23 @@ static void sfs_main_fn(CpuState *cpu) {
     const uint32_t created = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
                                       0x30u, 0u);
     TCB *ct = tcb_by_uid(created);
-    expect(ct && ct->stack_size == 0x1000u && MEM_R8(ct->stack_base) == 0xffu &&
-           MEM_R8(ct->stack_base + ct->stack_size - 1u) == 0xffu,
-           "stack free: CreateThread fills the whole requested stack with 0xFF");
-    expect(ct && MEM_R32(ct->k0_init + 4u) == ct->k0_init + 0x10u,
-           "stack free: the fill leaves the runtime's k0/TLS block above the stack seeded");
-    expect(ct && sfs_free(cpu, created) == ct->stack_size - SFS_SKIP,
+    expect(ct && ct->stack_size == 0x1000u && MEM_R32(ct->stack_base) == created &&
+           MEM_R32(ct->stack_base + 4u) == 0xffffffffu && MEM_R8(ct->k0_init - 1u) == 0xffu,
+           "stack free: CreateThread fills the stack below k0 with 0xFF over a UID guard word");
+    expect(ct && ct->k0_init == ct->stack_base + ct->stack_size - 0x100u &&
+           MEM_R32(ct->k0_init + 4u) == 0u && MEM_R32(ct->k0_init + 0xc0u) == created &&
+           MEM_R32(ct->k0_init + 0xc8u) == ct->stack_base,
+           "stack free: the k0 block is the top 0x100 bytes of the stack, with k0+4 == 0");
+    expect(ct && sfs_free(cpu, created) == ct->k0_init - (ct->stack_base + SFS_SKIP),
            "stack free: a created thread answers its own untouched stack, not the caller's");
 
     /* NO_FILLSTACK: nothing is filled and the free size is 0. */
     const uint32_t nofill = sfs_call(cpu, NID_SCE_KERNEL_CREATE_THREAD, 0u, SFS_IDLE_ENTRY,
                                      0x30u, SFS_ATTR_NO_FILLSTACK);
     TCB *nt = tcb_by_uid(nofill);
-    expect(nt && MEM_R8(nt->stack_base + SFS_SKIP) == 0u &&
-           MEM_R8(nt->stack_base + nt->stack_size - 1u) == 0u,
-           "stack free: NO_FILLSTACK leaves the new stack as it was");
+    expect(nt && MEM_R8(nt->stack_base + SFS_SKIP) == 0u && MEM_R8(nt->k0_init - 1u) == 0u &&
+           MEM_R32(nt->k0_init + 0xc0u) == nofill,
+           "stack free: NO_FILLSTACK leaves the new stack as it was below its k0 block");
     expect(nt && sfs_free(cpu, nofill) == 0u,
            "stack free: a NO_FILLSTACK thread answers 0");
 
@@ -15218,7 +15210,7 @@ static void sfs_main_fn(CpuState *cpu) {
            "stack free: the stronger thread ran to its end at StartThread");
     if (wt) {
         const uint32_t worker_first = wt->stack_base + SFS_SKIP;
-        expect(s_sfs.worker_free_untouched == wt->stack_base + wt->stack_size - worker_first &&
+        expect(s_sfs.worker_free_untouched == wt->k0_init - worker_first &&
                s_sfs.worker_free_used == (s_sfs.worker_sp - 0x100u) - worker_first,
                "stack free: UID 0 measures the calling worker's own stack");
     }
@@ -25671,7 +25663,7 @@ static void test_partition_spans_the_whole_user_partition(void) {
     uint32_t main_thread = sched_create_thread(0x2004u, 32, 0x20000u);
     expect(root != 0u && main_thread != 0u, "a module_start and a main thread are created");
     uint32_t floor = sched_guest_stack_floor();
-    expect(floor == 0x0a000000u - (0x40000u + 0x800u) - (0x20000u + 0x800u),
+    expect(floor == 0x0a000000u - 0x40000u - 0x20000u,
            "thread stacks are carved from the top of the user partition, 0x0a000000");
     expect(sr_hle_test_partition_bump_top() == floor,
            "the free span runs from the image to the lowest live stack");
