@@ -465,7 +465,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "885c9ec9a3e97a6630d7381c2bbf827918952a6c3a06f13742afca68ab3cee38"
+      "sha256": "828ac4a5740e79035e7e3c56517003e5da6bcdf59a81eba3a3a8d1ba1476e1c9"
     },
     {
       "path": "REVIEW.md",

@@ -107,19 +107,6 @@ Nakagawa's Hot Shots Tennis workarounds with general fixes
 ([#363](https://github.com/Jstar269/nakagawa-recomp/issues/363)). No decomp source is copied into Nakagawa,
 which is meant for any PSP game, not just this one.
 
-## How is it made?
-
-Nakagawa Recomp is developed with AI coding agents, mainly Claude Code and Codex, directed by the maintainer. AI
-output is treated like any other untrusted contribution: a person must understand and verify it, and it lands only
-after passing the same checks as everything else.
-
-- **Strict automatic tests** run on every pull request, chosen by what it changes, and must pass before it merges
-  ([`docs/CI.md`](docs/CI.md)).
-- **Publication checks** keep game data, keys and private files out of the repository.
-- **Every commit made with AI help says so**, in an `Assisted-by:` line naming the tool.
-
-The full rules, including what may never be sent to an AI service, are in [`docs/AI_USAGE.md`](docs/AI_USAGE.md).
-
 ## Build it yourself
 
 This is the developer route; the [release ZIP](#can-i-play-it) is the easier one. New to this? The
@@ -144,7 +131,7 @@ No game at hand? `mingw32-make player showcase` (on Windows it needs WSL 2 and P
 
 [Project website](https://jstar269.github.io/nakagawa-recomp/) · [How it works](docs/ARCHITECTURE.md#pipeline) · [All documentation](docs/README.md) · [Open issues](https://github.com/Jstar269/nakagawa-recomp/issues) ·
 [Contributing](CONTRIBUTING.md) · [Accessibility](ACCESSIBILITY.md) · [Getting help](SUPPORT.md) · [Security](SECURITY.md) ·
-[Code of conduct](CODE_OF_CONDUCT.md) ·
+[Code of conduct](CODE_OF_CONDUCT.md) · [AI use](docs/AI_USAGE.md) ·
 [hst-decomp](https://github.com/Jstar269/hst-decomp)
 
 ## Project health
