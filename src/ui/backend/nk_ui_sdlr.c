@@ -522,7 +522,7 @@ static bool nk_ui_sdlr_draw_text(NkUiSdlr *r, const NkUiDrawCmd *cmd) {
         const NkUiGlyph *glyph = &r->glyphs[i];
         NkUiSdlrEntry *entry = nk_ui_sdlr_glyph(r, run->font, run->size_px, glyph->glyph,
                                                 &pending_page, &pending_quads);
-        NkUiSdlrQuadVertex *q;
+        NkUiSdlrQuadVertex *quad;
         float x0;
         float y0;
         float x1;
@@ -555,13 +555,13 @@ static bool nk_ui_sdlr_draw_text(NkUiSdlr *r, const NkUiDrawCmd *cmd) {
         v0 = (float)entry->y * inverse;
         u1 = (float)(entry->x + entry->w) * inverse;
         v1 = (float)(entry->y + entry->h) * inverse;
-        q = r->quad_vertices + (size_t)pending_quads * 4u;
-        q[0].x = x0; q[0].y = y0; q[0].u = u0; q[0].v = v0;
-        q[1].x = x1; q[1].y = y0; q[1].u = u1; q[1].v = v0;
-        q[2].x = x1; q[2].y = y1; q[2].u = u1; q[2].v = v1;
-        q[3].x = x0; q[3].y = y1; q[3].u = u0; q[3].v = v1;
+        quad = r->quad_vertices + (size_t)pending_quads * 4u;
+        quad[0].x = x0; quad[0].y = y0; quad[0].u = u0; quad[0].v = v0;
+        quad[1].x = x1; quad[1].y = y0; quad[1].u = u1; quad[1].v = v0;
+        quad[2].x = x1; quad[2].y = y1; quad[2].u = u1; quad[2].v = v1;
+        quad[3].x = x0; quad[3].y = y1; quad[3].u = u0; quad[3].v = v1;
         for (k = 0; k < 4; ++k) {
-            q[k].color = color;
+            quad[k].color = color;
         }
         ++pending_quads;
         ++r->stats.glyphs_drawn;

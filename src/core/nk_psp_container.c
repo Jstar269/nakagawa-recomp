@@ -94,6 +94,9 @@ static int refuse_firmware_form(NkPspCtx *ctx, const uint8_t *d, size_t size)
 
 /* ------------------------- validation -------------------------------- */
 
+/* ~PSP header fields read in this file: 0x06 compression attribute
+ * (bit 0 = compressed), 0x27 segment count, 0x28 decompressed ELF size, 0x2C total
+ * container size, 0x54 up to four segment sizes, 0xD0 tag. */
 static int validate_psp(NkPspCtx *ctx, const uint8_t *d, size_t size)
 {
     uint32_t psp_size;
@@ -124,21 +127,21 @@ static int validate_psp(NkPspCtx *ctx, const uint8_t *d, size_t size)
                            (unsigned)d[0x27]);
     }
     {
-        uint32_t total_seg = 0;
-        uint8_t nseg = d[0x27];
-        for (uint8_t i = 0; i < nseg; i++) {
-            uint32_t seg_sz = rd32(d + 0x54 + i * 4u);
-            if (seg_sz > (256u * 1024u * 1024u)) {
+        uint32_t total_segment_bytes = 0;
+        uint8_t segment_count = d[0x27];
+        for (uint8_t i = 0; i < segment_count; i++) {
+            uint32_t segment_size = rd32(d + 0x54 + i * 4u);
+            if (segment_size > (256u * 1024u * 1024u)) {
                 return nk_psp_fail(ctx, NK_PSP_ERR_FORMAT, NULL,
                                    "container segment %u declares an impossible size "
                                    "0x%08X",
-                                   (unsigned)i, (unsigned)seg_sz);
+                                   (unsigned)i, (unsigned)segment_size);
             }
-            if (total_seg > (256u * 1024u * 1024u) - seg_sz) {
+            if (total_segment_bytes > (256u * 1024u * 1024u) - segment_size) {
                 return nk_psp_fail(ctx, NK_PSP_ERR_FORMAT, NULL,
                                    "container segment sizes overflow aggregate extent");
             }
-            total_seg += seg_sz;
+            total_segment_bytes += segment_size;
         }
     }
     return NK_PSP_OK;
@@ -276,26 +279,26 @@ int nk_container_key_entries(const NkContainerInfo *info,
                              const NkKeystore *ks,
                              char entries[][80], int max_entries)
 {
-    int n = 0;
+    int count = 0;
     if (info == NULL || entries == NULL || max_entries <= 0) return 0;
     if (info->kind != NK_CTR_PSP) return 0;
 
-    snprintf(entries[n], (size_t)80, "prx.tag.0x%08X", info->tag);
-    n++;
-    if (n >= max_entries) return n;
-    snprintf(entries[n], (size_t)80, "kirk.cmd1.key");
-    n++;
-    if (n >= max_entries) return n;
+    snprintf(entries[count], (size_t)80, "prx.tag.0x%08X", info->tag);
+    count++;
+    if (count >= max_entries) return count;
+    snprintf(entries[count], (size_t)80, "kirk.cmd1.key");
+    count++;
+    if (count >= max_entries) return count;
     if (ks != NULL) {
         NkPrxTagEntry recipe;
         if (nk_keystore_get_prx_tag(ks, info->tag, &recipe) == 0 &&
             recipe.have_code && recipe.code >= 0 && recipe.code <= 127) {
-            snprintf(entries[n], (size_t)80, "kirk.keyvault.%d",
+            snprintf(entries[count], (size_t)80, "kirk.keyvault.%d",
                      recipe.code);
-            n++;
+            count++;
         }
     }
-    return n;
+    return count;
 }
 
 /* --------------------------- decrypt ---------------------------------- */
@@ -437,7 +440,7 @@ int nk_container_decrypt(NkPspCtx *ctx, const uint8_t *data, size_t size,
         uint32_t elf_size = rd32(v.data + 0x28);
         int compressed = info.compressed;
         uint8_t *work;
-        int n;
+        int decrypted_len;
         uint8_t *result = NULL;
         size_t result_size = 0;
 
@@ -446,13 +449,13 @@ int nk_container_decrypt(NkPspCtx *ctx, const uint8_t *data, size_t size,
             return nk_psp_fail(ctx, NK_PSP_ERR_INTERNAL, NULL,
                                "out of memory decrypting container");
         }
-        n = pspDecryptPRX(ctx, v.data, work, psp_size, NULL);
-        if (n < 0) {
+        decrypted_len = pspDecryptPRX(ctx, v.data, work, psp_size, NULL);
+        if (decrypted_len < 0) {
             free(work);
-            return n;
+            return decrypted_len;
         }
-        rc = decompress_payload(ctx, work, (size_t)n, compressed, elf_size,
-                                &result, &result_size);
+        rc = decompress_payload(ctx, work, (size_t)decrypted_len, compressed,
+                                elf_size, &result, &result_size);
         free(work);
         if (rc != NK_PSP_OK) return rc;
 

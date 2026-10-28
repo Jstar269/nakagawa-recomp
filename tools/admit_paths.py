@@ -17,6 +17,13 @@ or misordered step failed with its own code (``CANDIDATE_TREE_STALE``,
 
     python tools/admit_paths.py --merge-profile <worktree>
 
+    python tools/admit_paths.py --policy-delta <pr-worktree> \\
+        --approval-basis "Owner decision of <date>: ..." --private-repo <authority checkout>
+
+``--policy-delta`` issues only the policy delta for a profile change that adds
+no path: removed paths, exclude-list changes, and rule changes (a V2 authority
+binds each changed field's exact before and after values).
+
 The command does the mechanical parts and nothing else:
 
 1. reads each path's exact committed bytes from the pull request's ``HEAD``;
@@ -142,26 +149,48 @@ def _candidate_policy(base_policy: bytes, added_paths: set[str]) -> tuple[bytes,
     return raw, candidate
 
 
-def _policy_delta_records(baseline_policy: bytes, candidate_policy: bytes, added_paths: list[str]) -> tuple[str, bytes]:
-    """Return the candidate digest and exact authority for one nested policy delta."""
+def policy_delta_authority(baseline_policy: bytes, candidate_policy: bytes) -> tuple[str, bytes, dict]:
+    """Return ``(candidate sha256, authority bytes, derived delta)`` for the exact delta between two profiles.
+
+    A path-only delta is a V1 authority. A delta that also changes another profile field is V2: each
+    rule change names its field and the digests of its exact baseline and candidate values.
+    """
     try:
         baseline_document = json.loads(baseline_policy.decode("utf-8"))
         candidate_document = json.loads(candidate_policy.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise AdmitError("POLICY_PROFILE_INVALID", f"cannot read policy JSON: {error}") from error
     delta = provenance_ledger._classify_policy_delta(baseline_document, candidate_document)
+    allowed: dict = dict(delta)
+    schema_version = provenance_ledger.POLICY_DELTA_SCHEMA_VERSION
+    if delta["rule_changes"]:
+        schema_version = provenance_ledger.POLICY_DELTA_RULE_SCHEMA_VERSION
+        allowed["rule_changes"] = [
+            {
+                "key": key,
+                "baseline_sha256": provenance_ledger.policy_rule_value_sha256(baseline_document, key),
+                "candidate_sha256": provenance_ledger.policy_rule_value_sha256(candidate_document, key),
+            }
+            for key in delta["rule_changes"]
+        ]
+    candidate_sha = hashlib.sha256(candidate_policy).hexdigest()
+    authority = _canonical({
+        "allowed_delta": allowed,
+        "baseline_policy_sha256": hashlib.sha256(baseline_policy).hexdigest(),
+        "candidate_policy_sha256": candidate_sha,
+        "kind": provenance_ledger.POLICY_DELTA_KIND,
+        "schema_version": schema_version,
+    })
+    return candidate_sha, authority, delta
+
+
+def _policy_delta_records(baseline_policy: bytes, candidate_policy: bytes, added_paths: list[str]) -> tuple[str, bytes]:
+    """Return the candidate digest and exact authority for one nested policy delta."""
+    candidate_sha, authority, delta = policy_delta_authority(baseline_policy, candidate_policy)
     if delta["include_added"] != sorted(added_paths) or any(
         delta[key] for key in ("include_removed", "exclude_added", "exclude_removed", "rule_changes")
     ):
         raise AdmitError("POLICY_DELTA_UNEXPECTED", f"the derived policy delta is not exactly the new paths: {delta}")
-    candidate_sha = hashlib.sha256(candidate_policy).hexdigest()
-    authority = _canonical({
-        "allowed_delta": delta,
-        "baseline_policy_sha256": hashlib.sha256(baseline_policy).hexdigest(),
-        "candidate_policy_sha256": candidate_sha,
-        "kind": provenance_ledger.POLICY_DELTA_KIND,
-        "schema_version": provenance_ledger.POLICY_DELTA_SCHEMA_VERSION,
-    })
     return candidate_sha, authority
 
 
@@ -773,6 +802,76 @@ def admit_batch(
     }
 
 
+def issue_policy_delta(
+    *,
+    pr_worktree: Path,
+    private_repo: Path,
+    approval_basis: str | None,
+    base: str | None = None,
+    assisted_by: str | None = None,
+    push: bool = False,
+) -> dict:
+    """Write the policy delta for a pull request whose profile change adds no path.
+
+    This covers removed paths, exclude-list changes and rule changes (V2). The
+    baseline is the profile at ``base`` (default: the merge-base of HEAD and
+    origin/main) and the candidate is the committed profile at HEAD, so the
+    records match what hosted attestation reads. A delta that adds a path needs
+    an admission with trusted records instead, so it is refused here.
+    """
+    if not approval_basis or not approval_basis.strip():
+        raise AdmitError("APPROVAL_BASIS_REQUIRED", "--policy-delta records the human decision; pass --approval-basis")
+    authority_root, _ledger, _records = _authority_inputs(private_repo)
+    repo = Path(_text(pr_worktree, "rev-parse", "--show-toplevel"))
+    head = _text(repo, "rev-parse", "--verify", "HEAD")
+    resolved_base = _text(repo, "rev-parse", "--verify", f"{base}^{{commit}}") if base else \
+        _text(repo, "merge-base", "HEAD", "origin/main")
+    baseline_policy = _git(repo, "cat-file", "blob", f"{resolved_base}:{POLICY}")
+    candidate_policy = _git(repo, "cat-file", "blob", f"{head}:{POLICY}")
+    try:
+        canonical = _canonical_profile_bytes(json.loads(candidate_policy.decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AdmitError("POLICY_PROFILE_INVALID", f"cannot read the HEAD profile: {error}") from error
+    if canonical != candidate_policy:
+        raise AdmitError("POLICY_PROFILE_NOT_CANONICAL",
+                         f"{POLICY} at HEAD is not in canonical form; rewrite it with sorted path lists first")
+    candidate_sha, authority, delta = policy_delta_authority(baseline_policy, candidate_policy)
+    if not any(delta.values()):
+        raise AdmitError("POLICY_DELTA_EMPTY", f"{POLICY} at HEAD equals the base profile; no delta is needed")
+    if delta["include_added"]:
+        raise AdmitError("POLICY_DELTA_ADDS_PATHS",
+                         "the delta adds public paths; admit them (with their trusted records) instead: "
+                         + ", ".join(delta["include_added"]))
+    baseline_sha = hashlib.sha256(baseline_policy).hexdigest()
+    delta_dir = f"{POLICY_DELTAS}/{candidate_sha}/{baseline_sha}"
+    summary = "; ".join(
+        f"{key} {', '.join(values)}" for key, values in delta.items() if values)
+    record_paths, private_commit, pushed = _write_authority_commit(
+        authority_root=authority_root,
+        records={
+            f"{delta_dir}/candidate-policy.json": candidate_policy,
+            f"{delta_dir}/policy-delta-authority.json": authority,
+        },
+        message=(
+            f"provenance: policy delta for candidate profile {candidate_sha[:8]} (baseline {baseline_sha[:8]})\n\n"
+            f"{summary}.\n\nApproval basis: {approval_basis.strip()}"
+        ),
+        assisted_by=assisted_by, push=push,
+    )
+    return {
+        "base": resolved_base,
+        "head": head,
+        "delta": delta,
+        "schema_version": json.loads(authority)["schema_version"],
+        "baseline_policy_sha256": baseline_sha,
+        "candidate_policy_sha256": candidate_sha,
+        "records": record_paths,
+        "private_commit": private_commit,
+        "pushed": pushed,
+        "authority_root": authority_root,
+    }
+
+
 def merge_profile(worktree: Path) -> dict:
     """Write the three-way merge of both sides' include and exclude path lists.
 
@@ -887,6 +986,9 @@ def main(argv: list[str] | None = None) -> int:
                        help="JSON list of remaining entries; re-issue their chain from recorded admissions")
     modes.add_argument("--merge-profile", type=Path, metavar="WORKTREE",
                        help="write the three-way merge of the profile paths during an active merge")
+    modes.add_argument("--policy-delta", type=Path, metavar="WORKTREE",
+                       help="issue the policy delta for a profile change that adds no path "
+                            "(removed paths, exclude changes, rule changes)")
     parser.add_argument("--any-order-limit", type=int, default=6,
                         help="pre-issue every landing order up to this batch size (default: 6)")
     parser.add_argument("--approval-basis", help="the human decision, recorded verbatim (not with --rekey)")
@@ -917,6 +1019,29 @@ def main(argv: list[str] | None = None) -> int:
             print(f"admit paths: wrote canonical merge profile {result['profile']}")
             print(f"  profile sha256 {result['profile_sha256']}")
             print("  git add assets/public_source_profile.json")
+            return 0
+
+        if args.policy_delta is not None:
+            if args.pr_worktree is not None or args.paths or args.rekey or args.slug or args.origin_kind \
+                    or args.origin or args.license or args.origin_json is not None:
+                raise AdmitError("ADMIT_ARGUMENT_INVALID", "--policy-delta cannot be combined with admission arguments")
+            if args.private_repo is None:
+                raise AdmitError("AUTHORITY_REQUIRED", "pass --private-repo or set NK_PRIVATE_AUTHORITY")
+            result = issue_policy_delta(
+                pr_worktree=args.policy_delta, private_repo=args.private_repo,
+                approval_basis=args.approval_basis, base=args.base, assisted_by=args.assisted_by, push=args.push,
+            )
+            print(f"admit paths: issued a V{result['schema_version']} policy delta on base {result['base']}")
+            for key, values in result["delta"].items():
+                if values:
+                    print(f"  {key}: {', '.join(values)}")
+            print(f"  private records ({'pushed' if result['pushed'] else 'committed locally'} at "
+                  f"{result['private_commit'][:12]}):")
+            for record in result["records"]:
+                print(f"    {record}")
+            if not result["pushed"]:
+                print(f'\nLeft to do: git -C "{result["authority_root"]}" push origin main')
+            print("After another profile change lands on main, merge it and issue the delta again for the new base.")
             return 0
 
         if args.batch is not None or args.batch_resume is not None:

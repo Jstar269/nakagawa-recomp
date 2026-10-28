@@ -47,8 +47,8 @@ class ProgressEvent:
     def percentage(self) -> Optional[float]:
         if self.total <= 0:
             return None
-        pct = (self.completed / self.total) * 100.0
-        return min(100.0, max(0.0, pct))
+        percent = (self.completed / self.total) * 100.0
+        return min(100.0, max(0.0, percent))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -83,6 +83,11 @@ class CancellationToken:
             raise InterruptedError("Operation cancelled by user")
 
 
+def _comparable_disc_id(disc_id: str) -> str:
+    """A disc id with case, edge whitespace and the - and _ separators removed."""
+    return disc_id.strip().upper().replace("-", "").replace("_", "")
+
+
 @dataclass(frozen=True)
 class TitleProfile:
     """Data-driven title profile describing a supported PSP game."""
@@ -92,7 +97,7 @@ class TitleProfile:
     regions: Sequence[str]
     executable_base: int = 0
     executable_entry: int = 0
-    fallback_entry: Optional[str] = None
+    fallback_entry: Optional[str] = None  # run entry address as a "0x%08x" string
     required_modules: Sequence[str] = field(default_factory=list)
     archive_format: str = "raw"  # "raw", "claphanz_xb", etc.
     archive_relpath: str = ""
@@ -105,11 +110,8 @@ class TitleProfile:
     loose_content_roots: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
 
     def matches_disc_id(self, disc_id: str) -> bool:
-        norm = disc_id.strip().upper().replace("-", "").replace("_", "")
-        for candidate in self.disc_ids:
-            if candidate.strip().upper().replace("-", "").replace("_", "") == norm:
-                return True
-        return False
+        wanted = _comparable_disc_id(disc_id)
+        return any(_comparable_disc_id(candidate) == wanted for candidate in self.disc_ids)
 
 
 @dataclass(frozen=True)
