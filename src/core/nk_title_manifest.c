@@ -1325,10 +1325,23 @@ static bool nk_manifest_parse_locked(
             json_free(root);
             return false;
         }
+        static const char * const retired_assist_keys[] = {
+            "frame_ready_latch_addr", "display_bringup", "runtime_sync", NULL
+        };
+        for (int r = 0; retired_assist_keys[r]; r++) {
+            if (obj_get(rb_node, retired_assist_keys[r])) {
+                if (error_buf) snprintf(error_buf, error_buf_len,
+                    "$.runtime_bindings.%s: HLE_TITLE_ASSIST_RETIRED: the runtime no longer "
+                    "replays title display bring-up, seeds runtime sync state or advances a "
+                    "frame latch; remove this field and let the title's own code initialize "
+                    "that state", retired_assist_keys[r]);
+                json_free(root);
+                return false;
+            }
+        }
         static const char * const allowed_rb_keys[] = {
             "schema_version", "fallback_entry", "worker_thread_entry", "launcher_thread_entry",
-            "frame_ready_latch_addr", "expected_data_file_count", "dispatch_aliases",
-            "callback_terminators", "display_bringup", "runtime_sync", NULL
+            "expected_data_file_count", "dispatch_aliases", "callback_terminators", NULL
         };
         static const char * const required_rb_keys[] = {"schema_version", NULL};
         if (!check_object_keys(rb_node, "$.runtime_bindings", allowed_rb_keys, required_rb_keys, error_buf, error_buf_len)) {
@@ -1349,8 +1362,7 @@ static bool nk_manifest_parse_locked(
 
         /* Validate scalar addresses in runtime_bindings */
         static const char * const scalar_binding_fields[] = {
-            "fallback_entry", "worker_thread_entry", "launcher_thread_entry",
-            "frame_ready_latch_addr", NULL
+            "fallback_entry", "worker_thread_entry", "launcher_thread_entry", NULL
         };
         for (int s = 0; scalar_binding_fields[s]; s++) {
             JsonNode *s_node = obj_get(rb_node, scalar_binding_fields[s]);
