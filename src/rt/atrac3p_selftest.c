@@ -189,6 +189,17 @@ static void test_imdct_path_decode(void)
     atrac3p_destroy(h2);
 }
 
+/* Plain AT3 output polarity: the PSP decoder's sign (#1096), with the same scale and
+ * saturation as ATRAC3+. MUTANT: the unnegated conversion fails all three sign checks. */
+static void test_at3_pcm_polarity(void)
+{
+    CHECK(atrac3_pcm_sample(0.5f) == -16384, "AT3 sample +0.5 is -16384 (PSP polarity)");
+    CHECK(atrac3_pcm_sample(-0.25f) == 8192, "AT3 sample -0.25 is +8192 (PSP polarity)");
+    CHECK(atrac3_pcm_sample(-1.0f) == 32767, "AT3 sample -1.0 saturates to +32767");
+    CHECK(atrac3_pcm_sample(2.0f) == -32768, "AT3 sample +2.0 saturates to -32768");
+    CHECK(atrac3_pcm_sample(0.0f) == 0, "AT3 silence stays 0");
+}
+
 static void test_create_validation(void)
 {
     Atrac3pHandle *h = NULL;
@@ -353,6 +364,7 @@ int main(int argc, char **argv)
     (void)argc;
     (void)argv;
 
+    test_at3_pcm_polarity();
     test_create_validation();
     test_decode_rejection();
     test_terminator_decode();
