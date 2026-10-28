@@ -316,9 +316,16 @@ static const IcProbe kIcMatrix[] = {
 /* ---- group C: event flag ------------------------------------------------ */
 /* "Invalid mode" is the load-bearing row: ILLEGAL_MODE wins over the context
  * restriction with interrupts disabled (L72) but LOSES to it inside an interrupt
- * (L338). This single pair is why a universal pre-handler gate is wrong. */
+ * (L338). This single pair is why a universal pre-handler gate is wrong.
+ *
+ * Issue #1389 moved the "Bad flag" base[] cells from the 0x80020000 seam to
+ * UNKNOWN_EVFID (0x8002019A), the code PSP-B1-01 measures for an unknown or
+ * deleted flag and PSPAutotests tests/threads/events/wait.expected L35 shows in
+ * normal context. Normal stays a CONTROL here (waits.expected has no normal
+ * column); the other three stay known deviations, because L70/L71 and L80/L81
+ * put CAN_NOT_WAIT ahead of the lookup and L337/L340 ILLEGAL_CONTEXT. */
 { "sceKernelWaitEventFlag", 0x402fcf22u, "Bad flag", ICG_EVF, 0,
-  {0, 70, 337, 71}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x80020000u), IC_RET(0x80020000u), IC_RET(0x80020000u), IC_RET(0x80020000u)},
+  {0, 70, 337, 71}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x8002019au), IC_RET(0x8002019au), IC_RET(0x8002019au), IC_RET(0x8002019au)},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelWaitEventFlag", 0x402fcf22u, "Invalid mode", ICG_EVF, 1,
   {0, 72, 338, 73}, {ICU, IC_RET(0x80020195u), ILCTX, IC_RET(0x80020195u)}, {IC_RET(0x80020195u), IC_RET(0x80020195u), IC_RET(0x80020195u), IC_RET(0x80020195u)},
@@ -330,7 +337,7 @@ static const IcProbe kIcMatrix[] = {
   {0, 76, 0, 77}, {ICU, CNW, ICU, CNW}, {IC_RET(0), IC_RET(0), IC_RET(0), IC_RET(0)},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_UNKNOWN, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelWaitEventFlagCB", 0x328c546au, "Bad flag", ICG_EVF, 0,
-  {0, 80, 340, 81}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x80020000u), IC_RET(0x80020000u), IC_RET(0x80020000u), IC_RET(0x80020000u)},
+  {0, 80, 340, 81}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x8002019au), IC_RET(0x8002019au), IC_RET(0x8002019au), IC_RET(0x8002019au)},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelWaitEventFlagCB", 0x328c546au, "Invalid mode", ICG_EVF, 1,
   {0, 82, 341, 83}, {ICU, IC_RET(0x80020195u), ILCTX, IC_RET(0x80020195u)}, {IC_RET(0x80020195u), IC_RET(0x80020195u), IC_RET(0x80020195u), IC_RET(0x80020195u)},

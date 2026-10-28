@@ -337,8 +337,8 @@ static int convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
  * later (the sceMpegAvc*YCbCr path).  Returns 1 when the picture was written, 0 when the
  * destination or the decoded extent made the conversion impossible. */
 static int convert_frame_host(Dec *d, const uint8_t *src, uint32_t srcLen, uint8_t *dst,
-                              int maxW, int strideBytes) {
-    if (!dst || !src || maxW <= 0 || strideBytes < maxW * 4) return 0;
+                              int maxW, int maxH, int strideBytes) {
+    if (!dst || !src || maxW <= 0 || maxH <= 0 || strideBytes < maxW * 4) return 0;
     int stride = d->outStride > 0 ? d->outStride : d->outW;
     int w = d->outW, h = d->outH;
     if (stride <= 0 || w <= 0 || h <= 0 || w > stride) return 0;
@@ -347,6 +347,7 @@ static int convert_frame_host(Dec *d, const uint8_t *src, uint32_t srcLen, uint8
     if (srcNeed > srcLen) return 0;
     if (w > maxW) w = maxW;
     if (h > 272) h = 272;
+    if (h > maxH) h = maxH;   /* never past the rows the destination holds */
     const uint8_t *uvp = src + (size_t)yBytes;
     for (int y = 0; y < h; y++) {
         const uint8_t *yr = src + (size_t)y * (size_t)stride;
@@ -374,7 +375,7 @@ static SrH264PixelFormat guest_pixel_format(int pixelMode) {
 }
 
 static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
-                     uint8_t *host, int hostW, int hostStride,
+                     uint8_t *host, int hostW, int hostH, int hostStride,
                      SrH264FrameInfo *info) {
     /* 1 = a picture was produced AND delivered, 2 = produced but there was nowhere to write
      * it (the caller asked for a frame it cannot receive), 0 = need more input, -1 = decoder
@@ -419,7 +420,7 @@ static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
             if (SUCCEEDED(IMFSample_ConvertToContiguousBuffer(smp, &cbuf)) && cbuf) {
                 BYTE *base = NULL; DWORD cur = 0;
                 if (SUCCEEDED(IMFMediaBuffer_Lock(cbuf, &base, NULL, &cur))) {
-                    delivered = host ? convert_frame_host(d, base, cur, host, hostW, hostStride)
+                    delivered = host ? convert_frame_host(d, base, cur, host, hostW, hostH, hostStride)
                                      : convert_frame(d, base, cur, buffer, frameWidth, pixelMode);
                     IMFMediaBuffer_Unlock(cbuf);
                 }
@@ -431,6 +432,7 @@ static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
             info->width = host ? (d->outW < hostW ? d->outW : hostW) :
                                (d->outW < frameWidth ? d->outW : frameWidth);
             info->height = d->outH < 272 ? d->outH : 272;
+            if (host && info->height > hostH) info->height = hostH;
             info->stride = host ? hostStride : frameWidth * (pixelMode == 3 ? 4 : 2);
             info->native_format = SR_H264_PIXEL_NATIVE_NV12;
             info->delivered_format = host ? SR_H264_PIXEL_RGBA8888 :
@@ -514,13 +516,13 @@ int sr_h264_mf_submit_au(int id, const SrH264AccessUnit *au) {
  * game has fed the whole movie, so the MFT gets drained for the last buffered frames.
  * Returns 1 if a frame was written, 0 if none is available yet, -1 if decoding failed. */
 static int pull_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode,
-                       uint8_t *host, int hostW, int hostStride,
+                       uint8_t *host, int hostW, int hostH, int hostStride,
                        SrH264FrameInfo *info) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
     Dec *d = &s_dec[id];
     if (d->failed || !d->xf) return -1;
     for (int guard = 0; guard < 4096; guard++) {
-        int r = pump_out(d, buffer, frameWidth, pixelMode, host, hostW, hostStride, info);
+        int r = pump_out(d, buffer, frameWidth, pixelMode, host, hostW, hostH, hostStride, info);
         /* A refused destination (r == 2) is reported as "no frame written" but does NOT poison
          * the decoder: the picture was already consumed from the MFT, the stream is still
          * valid, and a later call with a usable buffer must keep working.  Only decoder-level
@@ -554,14 +556,15 @@ int sr_h264_mf_frame_ex(int id, int eos, const SrH264FrameTarget *target,
         if (!target->guest_buffer || target->frame_width <= 0 ||
             target->pixel_mode < 0 || target->pixel_mode > 3) return -1;
         return pull_frame(id, eos, target->guest_buffer, target->frame_width,
-                          target->pixel_mode, NULL, 0, 0, info);
+                          target->pixel_mode, NULL, 0, 0, 0, info);
     }
     if (target->kind == SR_H264_TARGET_HOST) {
         if (!target->host_buffer || target->host_width <= 0 ||
-            target->host_width > INT_MAX / 4 ||
+            target->host_width > INT_MAX / 4 || target->host_height <= 0 ||
             target->host_stride < target->host_width * 4) return -1;
         return pull_frame(id, eos, 0, 0, 0, target->host_buffer,
-                          target->host_width, target->host_stride, info);
+                          target->host_width, target->host_height,
+                          target->host_stride, info);
     }
     return -1;
 }

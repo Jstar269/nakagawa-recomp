@@ -55,9 +55,11 @@ PBP_BOUNDARY_CODES: tuple[str, ...] = (
     PBP_OFFSETS_INVALID,
     PBP_SFO_INVALID,
 )
+# The command line keeps refusing packages; the player converts a PSN release
+# of a UMD game into its disc image (#295 phase 2) and imports that instead.
 PBP_UNSUPPORTED_SENTENCE = (
     "This is a PlayStation Store package (PBP), not a disc image. "
-    "Nakagawa Recomp can't use these yet."
+    "The player converts PSN UMD games."
 )
 PBP_HEADER_TRUNCATED_SENTENCE = (
     "This file starts like a PlayStation Store package (PBP) but ends "
@@ -1317,7 +1319,8 @@ def _elf32_mips_usable(stream, file_size: int, lba: int, size: int, module: bool
 # ---------------------------------------------------------------------------
 # Guest-module boundary (issue #308).  The disc's own PRX/ELF modules are
 # resolved through the same per-title folder as the executable, one module at
-# a time and fail closed per module.  Nakagawa does not decrypt games.
+# a time and fail closed per module.  This check decrypts nothing; the player's
+# disc check does (#295).
 # ---------------------------------------------------------------------------
 
 MODULE_ROOTS = (
@@ -1516,7 +1519,7 @@ def check_needed_modules(
       and is never overwritten (skipped / user-supplied);
     * an already plain disc copy is used as it is (skipped / plain);
     * an encrypted ``~PSP``/``~SCE`` container with no valid user copy fails
-      closed as ENCRYPTED_MODULE (failed / encrypted): Nakagawa does not decrypt
+      closed as ENCRYPTED_MODULE (failed / encrypted): this check does not decrypt
       games and reads no key file;
     * anything else fails closed for that module alone (failed).
 
@@ -1609,7 +1612,7 @@ def check_needed_modules(
                 continue
 
             # 3. An encrypted container with no plain user copy fails closed.
-            #    Nakagawa does not decrypt games.
+            #    The player's disc check decrypts it (#295); this one does not.
             if module_dir is None:
                 results.append(_module_failure(
                     result, "folder-unavailable",
@@ -1628,20 +1631,25 @@ def check_needed_modules(
 
 
 def encrypted_executable_message(folder: Path | str) -> str:
-    """The fail-closed text for an encrypted EBOOT.BIN without a user EBOOT.elf."""
+    """The fail-closed text for an encrypted EBOOT.BIN with no EBOOT.elf in its folder.
+
+    The command-line check decrypts nothing; the player's disc check does (#295).
+    """
     return (
-        "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt "
-        f"games. Place a decrypted EBOOT.elf from your own copy in {folder}."
+        f"ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and no decrypted EBOOT.elf is in "
+        f"{folder}. The player decrypts it from your own disc when it checks the disc; "
+        "you can also place a decrypted EBOOT.elf from your own copy there."
     )
 
 
 def encrypted_module_message(name: str, folder: Path | str, *, label: str | None = None,
                              alternative: str | None = None) -> str:
-    """The fail-closed text for an encrypted guest module without a plain copy."""
+    """The fail-closed text for an encrypted guest module with no plain copy in its folder."""
     spelling = f"{name} (or {alternative})" if alternative else name
     return (
-        f"ENCRYPTED_MODULE: {label or name} is encrypted. Nakagawa does not decrypt "
-        f"games. Place a decrypted {spelling} from your own copy in {folder}."
+        f"ENCRYPTED_MODULE: {label or name} is encrypted and no decrypted copy is in "
+        f"{folder}. The player decrypts it from your own disc when it checks the disc; "
+        f"you can also place a decrypted {spelling} from your own copy there."
     )
 
 
@@ -1672,8 +1680,9 @@ def _guest_modules_check(report: dict) -> dict:
             "code": "GUEST_MODULES", "status": "MISSING",
             "message": (
                 f"Guest modules: {ready} of {total} ready; ENCRYPTED_MODULE: {label} "
-                f"is encrypted{more}. Nakagawa does not decrypt games. Place a "
-                f"decrypted {label} from your own copy in {module_dir}."
+                f"is encrypted{more}. The player decrypts it from your own disc when it "
+                f"checks the disc; you can also place a decrypted {label} from your own "
+                f"copy in {module_dir}."
             ),
             "issues": [308],
         }
@@ -1897,7 +1906,8 @@ def inspect_compatibility_preflight(
     user_decryptable_kinds = {
         "PSP_ENCRYPTED_CONTAINER", "SCE_WRAPPER", "PBP",
     }
-    # Nakagawa does not decrypt games and reads no key file: an encrypted
+    # This check decrypts nothing and reads no key file (the player's disc check
+    # decrypts, #295): an encrypted
     # executable is analyzed only through a user-supplied EBOOT.elf.
     if (
         not cfw_loader_detected

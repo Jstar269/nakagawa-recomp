@@ -5,8 +5,8 @@
 > cryptography, middleware, and firmware work is not implemented merely because
 > it appears in a resolution column. The current player performs bounded ISO/PARAM.SFO
 > inspection, staged XB extraction, and package build/launch for supported inputs. It
-> accepts user-supplied decrypted executables and modules; it does not decrypt games
-> (built-in decryption was removed, #295).
+> decrypts a UMD disc image's encrypted executable and modules locally with built-in
+> tables (#295), and still accepts a decrypted copy the user supplies.
 > The runtime now also serves guest reads from the
 > read-only archive-backed VFS (#298) when `SR_DATAROOT` holds `.xb` archives.
 
@@ -28,17 +28,17 @@
 
 The matrix is a decision and gap record. In the current public source, ISO/PARAM.SFO
 inspection, bounded file extraction, and the read-only archive-backed VFS exist.
-Nakagawa does not decrypt games; it uses decrypted files from your own copy.
+The player decrypts the user's own disc locally (#295).
 Guest middleware and title acceptance remain partial or open.
 
 | Preparation Surface | Current Manual Requirement | Technical Root Cause | True Low-Level (LLE) Resolution Path | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Main Executable** | A user-supplied decrypted MIPS ELF (`EBOOT.elf`) or the automatically selected plain `BOOT.BIN` fallback | The analyzer consumes MIPS ELF32 only; an encrypted executable without a decrypted copy fails closed as `ENCRYPTED_EXECUTABLE` | Built-in decryption was removed ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); plain and user-decrypted inputs are accepted | **USER-SUPPLIED DECRYPTED INPUT; TITLE EXECUTION AND ACCEPTANCE REMAIN TITLE-SPECIFIC** |
-| **Encrypted PRXs** | User-decrypted copies of the modules selected by the player or required by the title manifest | An encrypted module without a plain copy fails closed as `ENCRYPTED_MODULE`; guest translation/startup and middleware support remain separate boundaries | Built-in decryption was removed ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); genuine guest middleware execution remains incomplete | **USER-SUPPLIED DECRYPTED INPUT; GUEST MIDDLEWARE EXECUTION PARTIAL** |
+| **Main Executable** | A user-supplied decrypted MIPS ELF (`EBOOT.elf`) or the automatically selected plain `BOOT.BIN` fallback | The analyzer consumes MIPS ELF32 only; an encrypted executable without a decrypted copy fails closed as `ENCRYPTED_EXECUTABLE` | The player decrypts it from the user's disc with built-in tables ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); plain and user-decrypted inputs are accepted | **USER-SUPPLIED DECRYPTED INPUT; TITLE EXECUTION AND ACCEPTANCE REMAIN TITLE-SPECIFIC** |
+| **Encrypted PRXs** | User-decrypted copies of the modules selected by the player or required by the title manifest | An encrypted module without a plain copy fails closed as `ENCRYPTED_MODULE`; guest translation/startup and middleware support remain separate boundaries | The player decrypts them from the user's disc with built-in tables ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); genuine guest middleware execution remains incomplete | **USER-SUPPLIED DECRYPTED INPUT; GUEST MIDDLEWARE EXECUTION PARTIAL** |
 | **PSP System Fonts** | Dumped firmware PGFs (`jpn0.pgf`, `ltn0.pgf`) from `flash0:/font/` | Sony PGF format has proprietary metrics; fonts reside in firmware, not on UMD | Honest prerequisite: require user firmware dump for authentic rendering; optional synthetic font provider for developer convenience | **HONEST_PREREQUISITE_REQUIRED** |
 | **Video Middleware** | Host-HLE `scePsmfPlayer*` driving it over a bounded PSMF producer (see `docs/LLE_FIDELITY_ARCHITECTURE.md` §3.4) | The host-HLE player works, but the genuine `psmf.prx` / `libpsmfplayer.prx` middleware is not executing yet | Execute original guest `psmf.prx` & `libpsmfplayer.prx`; bridge only the lowest hardware codec boundary (`sceMpeg`) to host decoders | **PARTIAL — CODEC BRIDGE AND PRODUCER LANDED; GUEST MIDDLEWARE EXECUTION OPEN** |
 | **Game Assets** | Loose `xbdata_extracted/` (~56k files) or the `.xb` archives | Host filesystem previously expected flat directories | Transparent in-engine block VFS reading `.xb` archive sectors directly, preserving all PSP I/O semantics | **LANDED — READ-ONLY ARCHIVE-BACKED VFS (#298); LOOSE LAYOUT STILL ACCEPTED** |
-| **Title Manifest** | Private title-specific manifest | Excluded from public tree due to guest addresses | Generic title-catalog parameterization without hardcoded patches | **GENERIC SUPPORT EXISTS; TITLE ACCEPTANCE NOT RUN** |
+| **Title Manifest** | The title-specific manifest; HST's ships in `assets/titles/` | Other titles have none yet | Generic title-catalog parameterization without hardcoded patches | **GENERIC SUPPORT EXISTS; HST MANIFEST PUBLIC; OTHER TITLES NOT RUN** |
 
 ---
 
@@ -49,8 +49,8 @@ are not evidence that the paths have landed in the current player.
 
 ### 3.1 Retail EBOOT and PRX Cryptography
 
-* **Input boundary:** `tools/codegen.py` consumes supported MIPS ELF inputs and fails closed on encrypted headers. The player and CLI refuse an encrypted executable or module by name and accept decrypted files from your own copy ([`docs/SETUP.md`](SETUP.md#encrypted-executables)).
-* **Status:** Nakagawa does not decrypt games; built-in decryption was removed ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). PGD-protected game data, guest middleware startup, and any specific title's compatibility remain separate boundaries.
+* **Input boundary:** `tools/codegen.py` consumes supported MIPS ELF inputs and fails closed on encrypted headers. The player decrypts an encrypted executable or module from the user's disc, refuses one it can't decrypt by name, and accepts decrypted files from the user's own copy ([`docs/SETUP.md`](SETUP.md#encrypted-executables)).
+* **Status:** UMD disc images, and PSN releases of UMD games (an `EBOOT.PBP` holding an NPUMDIMG disc image, converted once into its ISO), are decrypted locally with built-in tables; other PSN (NPDRM) packages are not yet ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). PGD-protected game data, guest middleware startup, and any specific title's compatibility remain separate boundaries.
 
 ---
 
@@ -60,7 +60,7 @@ are not evidence that the paths have landed in the current player.
   * In `af5c4f4`, `src/rt/hle.c` intercepted `libfont.prx` and `psmf.prx`, skipped their `module_start` entry points, and wrote `1u` into a title-configured guest word through `sr_title_config_libfont_ready_flag_addr`.
   * This was done because executing `module_start` hung on an unconditional `WaitSema`.
   * Replacing the modules with host HLE bypassed genuine guest state machines, introduced timing discrepancies, and required ongoing title-specific maintenance.
-* **Current boundary:** The `libfont.prx` skip is removed for translated entries: `sceKernelStartModule` runs guest startup and its exports become available after startup. When startup is unavailable (an untranslated entry, no recorded entry, or the `SR_REAL_MODULE_START=0` kill switch), the runtime reports `LIBFONT_STARTUP_UNAVAILABLE`, returns `SCE_KERNEL_ERROR_NOTIMP`, and leaves guest readiness unchanged. Legacy manifests using the retired ready-word field fail with `LIBFONT_READY_FLAG_RETIRED`. Real-title startup dependencies still need private-route validation under [#299](https://github.com/Jstar269/nakagawa-recomp/issues/299). PSMF startup remains a separate bypass.
+* **Current boundary:** The `libfont.prx` skip is removed for translated entries: `sceKernelStartModule` runs guest startup and its exports become available after startup. An experimental build translates the disc's own `libfont.prx` as a runtime-placed module. When startup is unavailable (an untranslated or refused image, no recorded entry, or the `SR_REAL_MODULE_START=0` kill switch), the runtime reports `LIBFONT_STARTUP_UNAVAILABLE`, leaves guest readiness unchanged and stops the run at the named boundary `libfont-startup-unavailable`. Legacy manifests using the retired ready-word field fail with `LIBFONT_READY_FLAG_RETIRED`. Real-title startup dependencies still need private-route validation under [#299](https://github.com/Jstar269/nakagawa-recomp/issues/299). PSMF startup remains a separate bypass.
 
 ---
 

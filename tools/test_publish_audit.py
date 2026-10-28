@@ -352,6 +352,19 @@ class TestPublishAudit(unittest.TestCase):
         c_macro_neg = '#define TABLE_DIGEST "0123456789abcdef0123456789abcdef"\n'
         self.assertEqual(publish_audit.private_key_assignment_lines(c_macro_neg, "src/pgd.h"), [])
 
+    def test_only_the_reviewed_game_key_table_may_hold_key_literals(self):
+        # Owner decision 2026-10-27: one exact path carries the public game
+        # tables; the same bytes anywhere else still fail.
+        c_key = "static const u8 key_D91613F0[] = {%s};" % ", ".join(
+            "0x%02X" % i for i in range(16))
+        self.assertEqual(publish_audit.PUBLIC_GAME_KEY_TABLE_PATHS,
+                         frozenset({"src/core/nk_psp_builtin_keys.c"}))
+        self.assertEqual(publish_audit.private_key_literal_lines(
+            "src/core/nk_psp_builtin_keys.c", c_key), [])
+        for other in ("src/core/nk_psp_builtin_keys.h", "src/core/nk_psp_prx.c",
+                      "src/core/copy/nk_psp_builtin_keys.c", "nk_psp_builtin_keys.c"):
+            self.assertEqual(publish_audit.private_key_literal_lines(other, c_key), [1], other)
+
     def test_json_key_material_detection(self):
         # Positive JSON 32-hex string
         json_pos_hex = '{\n  "kirk_key": "0123456789abcdef0123456789abcdef"\n}\n'
@@ -1925,6 +1938,13 @@ class TextHygieneTests(unittest.TestCase):
 
     def test_exempt_binary_suffix_is_skipped(self):
         self.assertEqual(self._codes(b"a" + CRLF + b"b", path="assets/x.dat"), [])
+
+    def test_presentation_clip_is_binary_but_its_text_neighbours_are_not(self):
+        # Bytes that are neither UTF-8 nor NUL-bearing: governed text would report them, an .mp4 clip does not.
+        clip = b"ftypisom" + bytes(range(0x80, 0x100))
+        self.assertEqual(self._codes(clip, path="docs/media/clip.mp4"), [])
+        self.assertEqual(self._codes(clip, path="docs/media/clip.mp4.txt"), ["TEXT_ENCODING_UNDECODABLE"])
+        self.assertEqual(self._codes(b"a" + CRLF + b"b" + CRLF, path="docs/media/clip.md"), ["TEXT_LINE_ENDING_CRLF"])
 
     def test_empty_file_is_silent(self):
         self.assertEqual(self._codes(b""), [])

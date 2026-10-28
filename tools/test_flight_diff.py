@@ -1014,5 +1014,77 @@ class NanOriginFlightTests(unittest.TestCase):
             )
 
 
+# Host primitives that sleep, yield the host thread or wait, and the guest scheduler's own
+# entry points. The recorder runs inside guest scheduling decisions, so calling any of them
+# would let logging change guest-visible timing (#320 acceptance 5).
+_RECORDER_FORBIDDEN_CALL = re.compile(
+    r"\b(?:Sleep|SleepEx|sleep|usleep|nanosleep|clock_nanosleep|sched_yield|pthread_yield"
+    r"|thrd_sleep|thrd_yield|SwitchToThread|WaitFor\w+|SDL_\w+|sr_yield|SR_YIELD"
+    r"|sr_coro_\w+|sched_\w+|switch_to_scheduler)\s*\(")
+_RECORDER_INCLUDES = {"flight_recorder.h", "recomp.h", "errno.h", "stdio.h", "stdlib.h",
+                      "string.h"}
+_C_COMMENT_OR_LITERAL = re.compile(
+    r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.DOTALL)
+
+
+def _strip_c_comments_and_strings(source: str) -> str:
+    """Drop comments and string/char literals so prose and messages are not code."""
+    return _C_COMMENT_OR_LITERAL.sub(" ", source)
+
+
+def recorder_timing_findings(source: str) -> list[str]:
+    """Calls and includes in flight_recorder.c that could sleep, yield or reschedule."""
+    findings = []
+    for include in re.findall(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', source, re.MULTILINE):
+        if include not in _RECORDER_INCLUDES:
+            findings.append(f"include {include}")
+    code = _strip_c_comments_and_strings(source)
+    findings.extend(f"call {match.group(0).rstrip('( ')}"
+                    for match in _RECORDER_FORBIDDEN_CALL.finditer(code))
+    return findings
+
+
+class RecorderTimingTests(unittest.TestCase):
+    """Issue #320 acceptance 5: capturing events adds no host sleeps or scheduling yields.
+
+    The behavioural half is the sched selftest's flight equivalence workload (identical
+    pick order and guest state with the recorder off and fully on); this is the static half.
+    """
+
+    RECORDER = ROOT / "src" / "rt" / "flight_recorder.c"
+
+    def test_recorder_calls_no_sleep_yield_or_scheduler_entry(self):
+        source = self.RECORDER.read_text(encoding="utf-8")
+        self.assertEqual(recorder_timing_findings(source), [])
+
+    def test_injected_yields_and_sleeps_are_caught(self):
+        source = self.RECORDER.read_text(encoding="utf-8")
+        anchor = "    s_flight_last_kind = kind;\n"
+        self.assertEqual(source.count(anchor), 1, "record_locked() anchor moved")
+        mutants = {
+            "SDL_Delay(1u);": "call SDL_Delay",
+            "SDL_DelayPrecise(1000u);": "call SDL_DelayPrecise",
+            "Sleep(0);": "call Sleep",
+            "sched_yield();": "call sched_yield",
+            "SwitchToThread();": "call SwitchToThread",
+            "sr_yield(NULL);": "call sr_yield",
+            "sched_preempt();": "call sched_preempt",
+        }
+        for statement, finding in mutants.items():
+            with self.subTest(statement=statement):
+                mutant = source.replace(anchor, anchor + "    " + statement + "\n")
+                self.assertIn(finding, recorder_timing_findings(mutant))
+        include = "#include <string.h>\n"
+        self.assertEqual(source.count(include), 1, "include anchor moved")
+        mutant = source.replace(include, include + "#include <unistd.h>\n")
+        self.assertIn("include unistd.h", recorder_timing_findings(mutant))
+
+    def test_comments_and_messages_are_not_calls(self):
+        clean = ('#include "flight_recorder.h"\n'
+                 "/* never sleep() or sched_yield() here */\n"
+                 'static void f(void) { fprintf(stderr, "SDL_Delay(1)\\n"); } // Sleep(0)\n')
+        self.assertEqual(recorder_timing_findings(clean), [])
+
+
 if __name__ == "__main__":
     unittest.main()

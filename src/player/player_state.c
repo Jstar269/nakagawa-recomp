@@ -10,6 +10,9 @@
 #include "nk_font.h"
 #include "nk_json.h"
 #include "nk_platform.h"
+#include "nk_psp_container.h"
+#include "nk_psp_keystore.h"
+#include "nk_psp_npumdimg.h"
 #include "iso_reader.h"
 #include "nk_title_manifest.h"
 #include <errno.h>
@@ -964,6 +967,8 @@ int player_app_focus_count(const PlayerApp *app) {
                    (app->settings.developer_mode ? 1 : 0) + 1;
         case VIEW_DEVELOPER_LOG:
             return 3; /* copy, save, close */
+        case VIEW_PSP_FONTS:
+            return 3; /* import, remove, back */
         case VIEW_CONTROLLER_SETTINGS:
             if (input_settings_is_calibrating(&app->input_settings)) {
                 switch (input_settings_get_calibration_stage(&app->input_settings)) {
@@ -1518,6 +1523,36 @@ void player_app_note_close_confirmation_failure(PlayerApp *app) {
 bool player_app_take_close_confirmation_fallback(PlayerApp *app) {
     if (!app || !app->close_confirmation_pending) return false;
     app->close_confirmation_pending = false;
+    return true;
+}
+
+bool player_app_quit_confirmation_message(const PlayerApp *app, char *out,
+                                          size_t out_size) {
+    if (!out || out_size == 0) return false;
+    /* A disc title may carry line breaks or tabs; the box shows the name on
+       one line, with each run of them folded to a single space. */
+    char name[NK_MAX_TITLE_LEN];
+    size_t length = 0;
+    if (app) {
+        const char *title = app->launch_session.game_title;
+        bool pending_space = false;
+        for (size_t i = 0; i < sizeof(app->launch_session.game_title) && title[i]; ++i) {
+            unsigned char ch = (unsigned char)title[i];
+            if (ch <= 0x20 || ch == 0x7F) {
+                pending_space = length > 0;
+                continue;
+            }
+            if (pending_space && length + 1 < sizeof(name)) name[length++] = ' ';
+            pending_space = false;
+            if (length + 1 < sizeof(name)) name[length++] = (char)ch;
+        }
+    }
+    name[length] = '\0';
+    /* Two lines: on one, the box grows as wide as the sentence. */
+    snprintf(out, out_size,
+             "%s is still running.\nQuitting closes it, and anything since the "
+             "game's last save is lost.",
+             length > 0 ? name : "A game");
     return true;
 }
 
@@ -2483,7 +2518,7 @@ void player_app_populate_sample_games(PlayerApp *app) {
     memset(&p5, 0, sizeof(p5));
     p5.is_sample = true;
     snprintf(p5.disc_id, sizeof(p5.disc_id), "TEST00005");
-    snprintf(p5.title_name, sizeof(p5.title_name), "PSPDEV Phase 5 Source-Owned Fixture");
+    snprintf(p5.title_name, sizeof(p5.title_name), "Nakagawa Test Program");
     snprintf(p5.disc_version, sizeof(p5.disc_version), "1.00");
     snprintf(p5.iso_path, sizeof(p5.iso_path), "fixtures/pspdev_phase5/disc/game.iso");
     snprintf(p5.prepared_root, sizeof(p5.prepared_root), "fixtures/pspdev_phase5");
@@ -3390,12 +3425,36 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
     char gcc_path[NK_MAX_PATH];
     char make_path[NK_MAX_PATH];
     char python_path[NK_MAX_PATH];
-    bool have_python = package_builder_find_python_in_root(user_data_root,
-                                                            python_path, sizeof(python_path));
-    bool have_gcc = package_builder_find_tool_in_root("gcc", user_data_root,
-                                                       gcc_path, sizeof(gcc_path));
-    bool have_make = package_builder_find_tool_in_root("mingw32-make", user_data_root,
-                                                        make_path, sizeof(make_path));
+    /* A release zip's verified prereqs/ tree (#1285) is the pinned toolchain:
+       it outranks PATH and the per-user download, needs no consent card and
+       no network, and a damaged one is refused by name rather than replaced. */
+    PackageBundledTools bundled;
+    PackageBundleStatus bundle_status =
+        package_builder_resolve_bundled_tools(app->install_root, cli_path, &bundled);
+    if (bundle_status == PACKAGE_BUNDLE_INVALID) {
+        player_app_set_error(app, "PREREQUISITE_BUNDLE_INVALID",
+                             "Bundled Build Tools Are Damaged", bundled.error,
+                             "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+    bool have_python;
+    bool have_gcc;
+    bool have_make;
+    if (bundle_status == PACKAGE_BUNDLE_VALID) {
+        snprintf(python_path, sizeof(python_path), "%s", bundled.python_path);
+        snprintf(gcc_path, sizeof(gcc_path), "%s", bundled.gcc_path);
+        snprintf(make_path, sizeof(make_path), "%s", bundled.make_path);
+        snprintf(app->build_session.prerequisites_root,
+                 sizeof(app->build_session.prerequisites_root), "%s", bundled.root);
+        have_python = have_gcc = have_make = true;
+    } else {
+        have_python = package_builder_find_python_in_root(user_data_root,
+                                                          python_path, sizeof(python_path));
+        have_gcc = package_builder_find_tool_in_root("gcc", user_data_root,
+                                                     gcc_path, sizeof(gcc_path));
+        have_make = package_builder_find_tool_in_root("mingw32-make", user_data_root,
+                                                      make_path, sizeof(make_path));
+    }
     bool missing_toolchain = !have_gcc || !have_make;
     if (!have_python || missing_toolchain) {
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -3623,8 +3682,21 @@ bool player_app_open_prerequisite_about(PlayerApp *app) {
                              "Return to Settings", VIEW_SETTINGS);
         return false;
     }
-    package_builder_mark_prerequisites_installed(&list, data_root);
+    /* A verified release bundle (#1285) is what BUILD PACKAGE uses, so list it
+       and its notices; otherwise list the per-user download. */
+    char bundle_root[NK_MAX_PATH];
+    if (package_builder_bundled_prerequisites_root(app->install_root, bundle_root,
+                                                   sizeof(bundle_root)) &&
+        package_builder_check_bundled_prerequisites(bundle_root, &list, error, sizeof(error)) ==
+            PACKAGE_BUNDLE_VALID) {
+        package_builder_mark_prerequisites_installed_at(&list, bundle_root);
+    } else {
+        bundle_root[0] = '\0';
+        package_builder_mark_prerequisites_installed(&list, data_root);
+    }
     app->prerequisites.items = list;
+    snprintf(app->prerequisites.bundle_root, sizeof(app->prerequisites.bundle_root), "%s",
+             bundle_root);
     app->prerequisites.item_count = 0;
     for (size_t i = 0; i < list.count; i++) {
         if (list.items[i].installed) app->prerequisites.item_count++;
@@ -3651,6 +3723,12 @@ bool player_app_request_license_folder(PlayerApp *app) {
     int n;
     if (!app) return false;
     app->request_open_folder = false;
+    if (app->prerequisites.bundle_root[0]) {
+        n = snprintf(path, sizeof(path), "%s%cnotices", app->prerequisites.bundle_root,
+                     nk_platform_path_separator());
+        if (n < 0 || (size_t)n >= sizeof(path)) return false;
+        return player_app_request_open_folder(app, path);
+    }
     if (!player_app_data_root(app, data_root, sizeof(data_root)) || !data_root[0]) return false;
     n = snprintf(path, sizeof(path),
                  "%s%cprerequisites%cnotices", data_root,
@@ -3969,7 +4047,9 @@ void player_app_wizard_back(PlayerApp *app) {
             if (app->wizard.is_extracting) {
                 app->wizard.extraction_cancel_requested = true;
                 snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                         "Cancelling asset extraction...");
+                         "%s", app->psn_conversion_active
+                                   ? "Cancelling the conversion..."
+                                   : "Cancelling asset extraction...");
                 break;
             }
             app->wizard.step = WIZARD_STEP_SELECT_GAME;
@@ -4002,7 +4082,8 @@ void player_app_wizard_cancel(PlayerApp *app) {
     if (app->wizard.is_extracting) {
         app->wizard.extraction_cancel_requested = true;
         snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                 "Cancelling asset extraction...");
+                 "%s", app->psn_conversion_active ? "Cancelling the conversion..."
+                                                  : "Cancelling asset extraction...");
         return;
     }
     app->active_view = VIEW_LIBRARY;
@@ -4194,7 +4275,7 @@ const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
                    "setup wizard.";
         }
         return "Some PSP system fonts were not found, so some text may look different. "
-               "You can import your own fonts in the setup wizard.";
+               "You can import your PSP's own fonts in Settings, PSP fonts.";
     } else if (strcmp(check->code, "AUDIO_OUTPUT") == 0) {
         return "Sound plays through your default audio device. With no device, the game "
                "runs silently.";
@@ -4385,6 +4466,421 @@ static bool player_is_usable_mips_elf32(const char *path, bool module) {
     return usable;
 }
 
+/* Built-in game decryption (owner decision 2026-10-27, #295). The largest
+   program file the boundary takes from a disc, as in the module scan. */
+#define PLAYER_DECRYPT_MAX_INPUT (64u * 1024u * 1024u)
+
+/* One encrypted program file from the user's own disc, decrypted with the
+   built-in game tables into the title's private folder. A file already at the
+   destination is the user's and is never replaced. The result is written
+   beside it, checked against the shared PSP ELF32/MIPS layout rule, and only
+   then renamed into place, so a failed or interrupted run leaves nothing.
+   Firmware is refused by the boundary before any key is read. Returns the
+   named result (nk_psp_status_name, or VALIDATION_FAILURE, OUTPUT_EXISTS,
+   RESOURCE_LIMIT); "VALIDATED_DECRYPTED" means the file is in place. */
+static const char *player_decrypt_disc_file(const char *iso_path, uint32_t lba,
+                                            uint32_t size, const char *directory,
+                                            const char *destination, bool module,
+                                            char *detail, size_t detail_size) {
+    char staged[NK_MAX_PATH * 2 + 340];
+    char key_error[160];
+    unsigned char *input;
+    uint8_t *plain = NULL;
+    size_t plain_size = 0;
+    NkIsoReader *reader;
+    NkKeystore *keys;
+    NkPspCtx ctx;
+    FILE *out;
+    int rc;
+    if (detail && detail_size) detail[0] = '\0';
+    if (size == 0 || size > PLAYER_DECRYPT_MAX_INPUT) {
+        if (detail && detail_size) {
+            snprintf(detail, detail_size, "the file on the disc is %u bytes", (unsigned)size);
+        }
+        return "RESOURCE_LIMIT";
+    }
+    int written = snprintf(staged, sizeof(staged), "%s.decrypting", destination);
+    if (written < 0 || (size_t)written >= sizeof(staged)) return "IO_FAILURE";
+    input = (unsigned char *)malloc(size);
+    if (input == NULL) return "RESOURCE_LIMIT";
+    reader = nk_iso_reader_open(iso_path);
+    if (reader == NULL || nk_iso_reader_read(reader, lba, 0, input, size) != (int)size) {
+        if (reader) nk_iso_reader_close(reader);
+        free(input);
+        if (detail && detail_size) snprintf(detail, detail_size, "the disc image could not be read");
+        return "IO_FAILURE";
+    }
+    nk_iso_reader_close(reader);
+    keys = nk_keystore_create();
+    if (keys == NULL ||
+        nk_keystore_load_builtin(keys, key_error, sizeof(key_error)) != NK_PSP_OK) {
+        nk_keystore_free(keys);
+        free(input);
+        if (detail && detail_size) snprintf(detail, detail_size, "%s", keys ? key_error : "out of memory");
+        return "INTERNAL_ERROR";
+    }
+    nk_psp_ctx_init(&ctx, keys);
+    rc = nk_container_decrypt(&ctx, input, size, &plain, &plain_size);
+    nk_keystore_free(keys);
+    free(input);
+    if (rc != NK_PSP_OK) {
+        if (detail && detail_size) snprintf(detail, detail_size, "%.300s", ctx.message);
+        return nk_psp_status_name(rc);
+    }
+    if (!nk_platform_mkdir_p_private(directory)) {
+        free(plain);
+        if (detail && detail_size) snprintf(detail, detail_size, "the title's folder could not be made");
+        return "IO_FAILURE";
+    }
+    (void)nk_remove_utf8(staged);
+    out = nk_fopen_utf8(staged, "wb");
+    if (out == NULL || fwrite(plain, 1, plain_size, out) != plain_size) {
+        if (out) fclose(out);
+        free(plain);
+        (void)nk_remove_utf8(staged);
+        if (detail && detail_size) snprintf(detail, detail_size, "the decrypted file could not be written");
+        return "IO_FAILURE";
+    }
+    free(plain);
+    if (fclose(out) != 0) {
+        (void)nk_remove_utf8(staged);
+        if (detail && detail_size) snprintf(detail, detail_size, "the decrypted file could not be written");
+        return "IO_FAILURE";
+    }
+    if (!player_is_usable_mips_elf32(staged, module)) {
+        (void)nk_remove_utf8(staged);
+        if (detail && detail_size) {
+            snprintf(detail, detail_size, "the decrypted file is not a usable MIPS ELF32 %s",
+                     module ? "module" : "program");
+        }
+        return "VALIDATION_FAILURE";
+    }
+    if (!nk_platform_path_missing(destination)) {
+        (void)nk_remove_utf8(staged);
+        return "OUTPUT_EXISTS";
+    }
+    if (nk_rename_utf8(staged, destination) != 0) {
+        (void)nk_remove_utf8(staged);
+        if (detail && detail_size) snprintf(detail, detail_size, "the decrypted file could not be moved into place");
+        return "IO_FAILURE";
+    }
+    return "VALIDATED_DECRYPTED";
+}
+
+/* What a decryption result means, in the cards' plain words. */
+static const char *player_decrypt_plain_reason(const char *status) {
+    if (strcmp(status, "KEY_REQUIRED") == 0 || strcmp(status, "UNSUPPORTED_SCHEME") == 0) {
+        return "it uses an encryption Nakagawa doesn't cover yet";
+    }
+    if (strcmp(status, "FIRMWARE_OUT_OF_SCOPE") == 0) {
+        return "it is PSP system software, which Nakagawa never decrypts";
+    }
+    if (strcmp(status, "MALFORMED_INPUT") == 0 || strcmp(status, "INTEGRITY_FAILURE") == 0 ||
+        strcmp(status, "DECOMPRESS_FAILURE") == 0) {
+        return "the file on the disc looks damaged or changed";
+    }
+    if (strcmp(status, "VALIDATION_FAILURE") == 0) {
+        return "the result didn't check out, so nothing was kept";
+    }
+    if (strcmp(status, "IO_FAILURE") == 0 || strcmp(status, "RESOURCE_LIMIT") == 0) {
+        return "a file couldn't be read or written";
+    }
+    return "something went wrong inside Nakagawa";
+}
+
+/* The disc's EBOOT.BIN, decrypted into the title's folder as EBOOT.elf. */
+static const char *player_decrypt_disc_eboot(const char *iso_path, const char *directory,
+                                             const char *elf_path,
+                                             char *detail, size_t detail_size) {
+    uint32_t lba = 0, size = 0;
+    bool is_dir = false;
+    NkIsoReader *reader = nk_iso_reader_open(iso_path);
+    int found = reader ? nk_iso_reader_lookup(reader, "PSP_GAME/SYSDIR/EBOOT.BIN",
+                                              &lba, &size, &is_dir) : -1;
+    if (reader) nk_iso_reader_close(reader);
+    if (found != 0 || is_dir) {
+        if (detail && detail_size) snprintf(detail, detail_size, "EBOOT.BIN could not be found on the disc");
+        return "IO_FAILURE";
+    }
+    return player_decrypt_disc_file(iso_path, lba, size, directory, elf_path, false,
+                                    detail, detail_size);
+}
+
+/* ---- PSN releases of UMD games (#295 phase 2) ------------------------------
+ * A PSN EBOOT.PBP whose DATA.PSAR is an NPUMDIMG image holds the game's disc
+ * image. It is converted once into a private ISO under the per-user data root
+ * (<data>/discs/<DISC_ID>/<DISC_ID>.iso) and that ISO is then imported exactly
+ * as a picked disc, so the disc route above runs unchanged. PSOne Classics,
+ * updaters and other packages keep a named refusal. */
+
+bool player_path_is_pbp_package(const char *path) {
+    unsigned char magic[4];
+    FILE *file;
+    bool pbp;
+    if (path == NULL || path[0] == '\0') return false;
+    file = nk_fopen_utf8(path, "rb");
+    if (file == NULL) return false;
+    pbp = fread(magic, 1, sizeof(magic), file) == sizeof(magic) &&
+          memcmp(magic, "\0PBP", 4) == 0;
+    fclose(file);
+    return pbp;
+}
+
+/* Four letters and five digits: the form a disc ID takes, and the only one
+   used as a folder name under the data root. */
+static bool player_psn_disc_id_valid(const char *disc_id) {
+    if (disc_id == NULL || strlen(disc_id) != 9) return false;
+    for (size_t i = 0; i < 9; i++) {
+        unsigned char ch = (unsigned char)disc_id[i];
+        if (i < 4 ? !(ch >= 'A' && ch <= 'Z') : !(ch >= '0' && ch <= '9')) return false;
+    }
+    return true;
+}
+
+static void player_psn_label(const NkPbpInfo *info, char *out, size_t out_size) {
+    if (info->title[0] != '\0' && info->disc_id[0] != '\0') {
+        snprintf(out, out_size, "%.120s (%.15s)", info->title, info->disc_id);
+    } else if (info->disc_id[0] != '\0') {
+        snprintf(out, out_size, "The package %.15s", info->disc_id);
+    } else {
+        snprintf(out, out_size, "This package");
+    }
+}
+
+static void player_psn_result(char *code, size_t code_size, const char *name,
+                              char *message, size_t message_size,
+                              const char *fmt, ...) {
+    va_list args;
+    if (code != NULL && code_size > 0) snprintf(code, code_size, "%s", name);
+    if (message != NULL && message_size > 0) {
+        va_start(args, fmt);
+        vsnprintf(message, message_size, fmt, args);
+        va_end(args);
+    }
+}
+
+bool player_psn_package_inspect(const char *pbp_path, PlayerPsnPackage *package,
+                                char *code, size_t code_size,
+                                char *message, size_t message_size) {
+    NkPspCtx ctx;
+    NkPbpInfo info;
+    char label[160];
+    char data_root[NK_MAX_PATH];
+    char sep = nk_platform_path_separator();
+    int rc;
+    int written;
+    if (code != NULL && code_size > 0) code[0] = '\0';
+    if (message != NULL && message_size > 0) message[0] = '\0';
+    if (package == NULL || pbp_path == NULL) return false;
+    memset(package, 0, sizeof(*package));
+    nk_psp_ctx_init(&ctx, NULL);
+    rc = nk_pbp_identify_file(&ctx, pbp_path, &info);
+    player_psn_label(&info, label, sizeof(label));
+    switch (rc) {
+    case NK_PSP_OK:
+        break;
+    case NK_PSP_ERR_PSONE:
+        player_psn_result(code, code_size, "PSONE_CLASSIC_UNSUPPORTED", message, message_size,
+                          "%s is a PSOne Classic: a PlayStation game for the PSP's PS1 "
+                          "emulator. Nakagawa recompiles PSP games only, so it can't add "
+                          "this package.", label);
+        return false;
+    case NK_PSP_ERR_FIRMWARE:
+        player_psn_result(code, code_size, "FIRMWARE_OUT_OF_SCOPE", message, message_size,
+                          "This package is PSP system software (a firmware update). "
+                          "Nakagawa never decrypts firmware.");
+        return false;
+    case NK_PSP_ERR_UNSUPPORTED:
+        player_psn_result(code, code_size, "PBP_PACKAGE_UNSUPPORTED", message, message_size,
+                          "%s is a PSP package Nakagawa can't open yet. Only PSN releases "
+                          "of UMD games are converted; add a disc image (.iso) of the game "
+                          "instead.", label);
+        return false;
+    case NK_PSP_ERR_INPUT:
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "The package could not be read. Check that the file is complete "
+                          "and try again.");
+        return false;
+    default:
+        player_psn_result(code, code_size, "PBP_PACKAGE_UNSUPPORTED", message, message_size,
+                          "The file is not a PSP package Nakagawa can read: %.200s",
+                          ctx.message);
+        return false;
+    }
+    if (!player_psn_disc_id_valid(info.disc_id)) {
+        player_psn_result(code, code_size, "PBP_PACKAGE_UNSUPPORTED", message, message_size,
+                          "%s does not name a valid disc ID, so Nakagawa can't keep its "
+                          "disc image apart from other games.", label);
+        return false;
+    }
+    if (!nk_platform_get_app_data_dir(data_root, sizeof(data_root))) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "Nakagawa's data folder could not be found.");
+        return false;
+    }
+    written = snprintf(package->iso_path, sizeof(package->iso_path), "%s%cdiscs%c%s%c%s.iso",
+                       data_root, sep, sep, info.disc_id, sep, info.disc_id);
+    if (written < 0 || (size_t)written >= sizeof(package->iso_path) ||
+        strlen(pbp_path) >= sizeof(package->pbp_path)) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "The path to Nakagawa's data folder is too long.");
+        return false;
+    }
+    snprintf(package->pbp_path, sizeof(package->pbp_path), "%s", pbp_path);
+    snprintf(package->disc_id, sizeof(package->disc_id), "%s", info.disc_id);
+    snprintf(package->title, sizeof(package->title), "%s", info.title);
+    if (!nk_platform_path_missing(package->iso_path)) {
+        nk_psp_ctx_init(&ctx, NULL);
+        package->iso_ready =
+            nk_npumdimg_check_iso_file(&ctx, package->iso_path, package->disc_id) == NK_PSP_OK;
+    }
+    return true;
+}
+
+typedef struct {
+    const PlayerPsnConvertCallbacks *callbacks;
+} PlayerPsnBridge;
+
+static void player_psn_bridge_progress(void *user, uint64_t done, uint64_t total) {
+    const PlayerPsnBridge *bridge = (const PlayerPsnBridge *)user;
+    if (bridge->callbacks != NULL && bridge->callbacks->on_progress != NULL) {
+        bridge->callbacks->on_progress(done, total, bridge->callbacks->userdata);
+    }
+}
+
+static int player_psn_bridge_cancelled(void *user) {
+    const PlayerPsnBridge *bridge = (const PlayerPsnBridge *)user;
+    return bridge->callbacks != NULL && bridge->callbacks->is_cancelled != NULL &&
+           bridge->callbacks->is_cancelled(bridge->callbacks->userdata);
+}
+
+bool player_psn_package_convert(const PlayerPsnPackage *package,
+                                const PlayerPsnConvertCallbacks *callbacks,
+                                char *code, size_t code_size,
+                                char *message, size_t message_size) {
+    char directory[NK_MAX_PATH];
+    char key_error[160];
+    char label[160];
+    const char *status;
+    const char *slash;
+    NkKeystore *keys;
+    NkPspCtx ctx;
+    NkPbpInfo info;
+    PlayerPsnBridge bridge;
+    NkNpumdimgCallbacks hooks;
+    size_t length;
+    int rc;
+    if (code != NULL && code_size > 0) code[0] = '\0';
+    if (message != NULL && message_size > 0) message[0] = '\0';
+    if (package == NULL || package->iso_path[0] == '\0' || package->pbp_path[0] == '\0') {
+        player_psn_result(code, code_size, "INTERNAL_ERROR", message, message_size,
+                          "The package was not inspected first.");
+        return false;
+    }
+    slash = strrchr(package->iso_path, nk_platform_path_separator());
+    length = slash != NULL ? (size_t)(slash - package->iso_path) : 0u;
+    if (length == 0u || length >= sizeof(directory)) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "The disc image's folder could not be named.");
+        return false;
+    }
+    memcpy(directory, package->iso_path, length);
+    directory[length] = '\0';
+    if (!nk_platform_mkdir_p_private(directory)) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "The disc image's folder could not be made in Nakagawa's data "
+                          "folder.");
+        return false;
+    }
+    keys = nk_keystore_create();
+    if (keys == NULL ||
+        nk_keystore_load_builtin(keys, key_error, sizeof(key_error)) != NK_PSP_OK) {
+        nk_keystore_free(keys);
+        player_psn_result(code, code_size, "INTERNAL_ERROR", message, message_size,
+                          "%s", keys ? key_error : "Out of memory.");
+        return false;
+    }
+    bridge.callbacks = callbacks;
+    hooks.on_progress = player_psn_bridge_progress;
+    hooks.is_cancelled = player_psn_bridge_cancelled;
+    hooks.user = &bridge;
+    nk_psp_ctx_init(&ctx, keys);
+    rc = nk_npumdimg_convert_file(&ctx, package->pbp_path, package->iso_path, &hooks, &info);
+    nk_keystore_free(keys);
+    if (rc == NK_PSP_OK) return true;
+    status = nk_psp_status_name(rc);
+    if (rc == NK_PSP_ERR_CANCELLED) {
+        player_psn_result(code, code_size, status, message, message_size,
+                          "The conversion was cancelled, and the partial disc image was "
+                          "removed.");
+        return false;
+    }
+    fprintf(stderr, "[PLAYER] PSN package conversion stopped: %s: %s\n", status, ctx.message);
+    player_psn_label(&info, label, sizeof(label));
+    player_psn_result(code, code_size, status, message, message_size,
+                      "%s could not be turned into a disc image: %s. Nothing was kept.",
+                      label, rc == NK_PSP_ERR_CONTEXT
+                          ? "it is tied to the PSP that downloaded it"
+                          : player_decrypt_plain_reason(status));
+    return false;
+}
+
+void player_app_psn_conversion_begin(PlayerApp *app, const PlayerPsnPackage *package) {
+    if (app == NULL || package == NULL) return;
+    app->psn_package = *package;
+    app->psn_conversion_return_view = app->active_view;
+    app->psn_conversion_active = true;
+    app->psn_conversion_requested = true;
+    player_app_wizard_reset_extraction(app);
+    memset(&app->inspecting_game, 0, sizeof(app->inspecting_game));
+    snprintf(app->inspecting_game.disc_id, sizeof(app->inspecting_game.disc_id), "%s",
+             package->disc_id);
+    snprintf(app->inspecting_game.title_name, sizeof(app->inspecting_game.title_name), "%s",
+             package->title);
+    snprintf(app->inspecting_game.iso_path, sizeof(app->inspecting_game.iso_path), "%s",
+             package->pbp_path);
+    app->active_view = VIEW_SETUP_WIZARD;
+    app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+    app->wizard.iso_selected = false;
+    app->wizard.is_extracting = true;
+    app->wizard.total_files = 1;
+    snprintf(app->wizard.extraction_current_file, sizeof(app->wizard.extraction_current_file),
+             "%s.iso", package->disc_id);
+    snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+             "Converting %.120s (%s) from its PSN package into a disc image on this PC...",
+             package->title[0] ? package->title : "the game", package->disc_id);
+    app->focus_index = 0;
+}
+
+bool player_app_psn_conversion_take_request(PlayerApp *app) {
+    if (app == NULL || !app->psn_conversion_requested) return false;
+    app->psn_conversion_requested = false;
+    return true;
+}
+
+void player_app_psn_conversion_progress(PlayerApp *app, uint64_t done_bytes,
+                                        uint64_t total_bytes) {
+    int percent;
+    if (app == NULL || !app->psn_conversion_active) return;
+    percent = total_bytes > 0u ? (int)((done_bytes * 100u) / total_bytes) : 0;
+    player_app_wizard_set_extraction_progress(app, percent,
+                                              done_bytes >= total_bytes ? 1 : 0, 1, NULL);
+}
+
+void player_app_psn_conversion_finish(PlayerApp *app) {
+    if (app == NULL) return;
+    app->psn_conversion_active = false;
+    app->psn_conversion_requested = false;
+    player_app_wizard_reset_extraction(app);
+    app->wizard.status_message[0] = '\0';
+    app->active_view = app->psn_conversion_return_view;
+    if (app->active_view == VIEW_SETUP_WIZARD) {
+        app->wizard.step = WIZARD_STEP_SELECT_GAME;
+        app->wizard.iso_selected = false;
+    }
+    app->focus_index = 0;
+}
+
 static PlayerDecryptedEbootState player_find_decrypted_eboot(
     const char *runtime_root, const char *disc_id, char *directory,
     size_t directory_size, char *elf_path, size_t elf_path_size) {
@@ -4401,9 +4897,10 @@ static PlayerDecryptedEbootState player_find_decrypted_eboot(
 
 /* Issue #308 guest-module readiness: the disc's own PRX modules are resolved
    through the same per-title folder as the executable, one module at a time
-   and fail closed per module.  Nakagawa does not decrypt games: an encrypted
-   module is ready only when the user supplies a plain copy in that folder.
-   CFW patch-module exclusion stays the intake route's named job. */
+   and fail closed per module.  An encrypted module with no copy there is
+   decrypted from the disc with the built-in game tables (#295); a plain copy
+   the user put there always wins.  CFW patch-module exclusion stays the
+   intake route's named job. */
 /* Disc surveys found 35+ PRXs in one folder; 256 covers that count with a
    fixed upper bound for malformed images. */
 #define PLAYER_MAX_GUEST_MODULES 256
@@ -4667,8 +5164,9 @@ static void player_check_guest_modules(const GameRecord *game,
     char message[2048];
     char discovery_message[2048];
     char more[40];
-    size_t total = 0, ready = 0, not_ready = 0;
+    size_t total = 0, ready = 0, not_ready = 0, decrypted = 0;
     bool first_encrypted = false;
+    const char *first_status = "";
     PlayerModuleScanStatus scan_status;
     if (!game || !game->iso_path[0] || !game->disc_id[0]) {
         return;
@@ -4744,18 +5242,38 @@ static void player_check_guest_modules(const GameRecord *game,
             ready++;
             continue;
         }
-        /* Encrypted on the disc and no plain copy supplied: Nakagawa does not
-         * decrypt games, so this module stays not ready. */
-        not_ready++;
-        if (first_name[0] == '\0') {
-            snprintf(first_name, sizeof(first_name), "%.200s", module->name);
-            first_encrypted = true;
+        /* Encrypted on the disc and no plain copy supplied: decrypt it with
+         * the built-in tables. It stays not ready only when that stops. */
+        {
+            char decrypt_detail[320];
+            const char *status = player_decrypt_disc_file(
+                game->iso_path, module->lba, module->size, decrypted_dir,
+                module_path, true, decrypt_detail, sizeof(decrypt_detail));
+            if (strcmp(status, "VALIDATED_DECRYPTED") == 0) {
+                ready++;
+                decrypted++;
+                continue;
+            }
+            not_ready++;
+            if (first_name[0] == '\0') {
+                snprintf(first_name, sizeof(first_name), "%.200s", module->name);
+                snprintf(first_detail, sizeof(first_detail), "%.300s", decrypt_detail);
+                first_status = status;
+                first_encrypted = true;
+            }
         }
     }
     if (not_ready == 0) {
-        snprintf(message, sizeof(message),
-                 "Guest modules: %u of %u ready.",
-                 (unsigned)ready, (unsigned)total);
+        if (decrypted > 0) {
+            snprintf(message, sizeof(message),
+                     "Guest modules: %u of %u ready; %u decrypted from the disc with "
+                     "the built-in tables.",
+                     (unsigned)ready, (unsigned)total, (unsigned)decrypted);
+        } else {
+            snprintf(message, sizeof(message),
+                     "Guest modules: %u of %u ready.",
+                     (unsigned)ready, (unsigned)total);
+        }
         player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_OK, message,
                              NULL, 0);
         free(modules);
@@ -4771,16 +5289,16 @@ static void player_check_guest_modules(const GameRecord *game,
         if (first_encrypted) {
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; ENCRYPTED_MODULE: %.200s "
-                     "is encrypted%s. Nakagawa does not decrypt games. Place a "
-                     "decrypted %.200s from your own copy in %.900s.",
-                     (unsigned)ready, (unsigned)total, first_name, more,
-                     first_name, decrypted_dir);
+                     "is encrypted and built-in decryption stopped: %s (%.300s)%s. "
+                     "Place a decrypted %.200s from your own copy in %.900s.",
+                     (unsigned)ready, (unsigned)total, first_name, first_status,
+                     first_detail, more, first_name, decrypted_dir);
             player_preflight_add(preflight, "GUEST_MODULES", PREFLIGHT_MISSING,
                                  message, issues, 1);
             player_preflight_set_plain(preflight,
-                "Some of the game's program files are encrypted, and Nakagawa doesn't "
-                "decrypt games. Put a decrypted %.120s from your own copy in %.300s.",
-                first_name, decrypted_dir);
+                "Nakagawa couldn't decrypt one of the game's program files (%.120s): %s. "
+                "You can put a decrypted copy from your own disc in %.300s.",
+                first_name, player_decrypt_plain_reason(first_status), decrypted_dir);
         } else {
             snprintf(message, sizeof(message),
                      "Guest modules: %u of %u ready; %.200s is not ready "
@@ -4808,6 +5326,89 @@ static void player_font_append(char *out, size_t out_len, const char *text) {
     room = out_len - 1u - used;
     strncpy(out + used, text, room);
     out[used + room] = '\0';
+}
+
+/* The PSP system fonts in registry order: Japanese, the 16 Latin indices, Korean. */
+#define PLAYER_PSP_FONT_COUNT (NK_FONT_LATIN_INDEX_COUNT + 2)
+
+/* The fonts flagged in `wanted`, in plain words: "the Japanese font, 10 of the 16 Latin fonts and
+   the Korean font". The player's rows never show file names (#1302); the check's developer
+   message keeps the exact file and fallback for every font. */
+static void player_font_append_names(char *out, size_t out_len,
+                                     const bool wanted[PLAYER_PSP_FONT_COUNT]) {
+    char items[3][48];
+    size_t count = 0;
+    int latin = 0;
+    for (int font = 1; font <= NK_FONT_LATIN_INDEX_COUNT; font++) {
+        if (wanted[font]) latin++;
+    }
+    if (wanted[0]) snprintf(items[count++], sizeof(items[0]), "the Japanese font");
+    if (latin == NK_FONT_LATIN_INDEX_COUNT) {
+        snprintf(items[count++], sizeof(items[0]), "all %d Latin fonts", NK_FONT_LATIN_INDEX_COUNT);
+    } else if (latin == 1) {
+        snprintf(items[count++], sizeof(items[0]), "one of the %d Latin fonts",
+                 NK_FONT_LATIN_INDEX_COUNT);
+    } else if (latin > 1) {
+        snprintf(items[count++], sizeof(items[0]), "%d of the %d Latin fonts", latin,
+                 NK_FONT_LATIN_INDEX_COUNT);
+    }
+    if (wanted[PLAYER_PSP_FONT_COUNT - 1]) snprintf(items[count++], sizeof(items[0]), "the Korean font");
+    for (size_t i = 0; i < count; i++) {
+        if (i > 0) player_font_append(out, out_len, i + 1 == count ? " and " : ", ");
+        player_font_append(out, out_len, items[i]);
+    }
+}
+
+/* The Fonts check's player sentence when a PSP system font is not imported (#1300). A game that
+   asks for one gets a stand-in from another file (a nearby imported size, the older single Latin
+   import, or the project's font), whose face differs from the PSP's, or no font when nothing
+   stands in. Empty when every font is the user's own import. */
+static void player_font_missing_sentence(char *out, size_t out_len,
+                                         const NkFontSlotState states[NK_FONT_SLOT_COUNT],
+                                         const NkFontLatinIndexState latin[NK_FONT_LATIN_INDEX_COUNT]) {
+    bool missing[PLAYER_PSP_FONT_COUNT] = { false };
+    bool unserved[PLAYER_PSP_FONT_COUNT] = { false };
+    size_t missing_count = 0;
+    size_t unserved_count = 0;
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    for (int font = 0; font < PLAYER_PSP_FONT_COUNT; font++) {
+        NkFontSource source;
+        bool exact;
+        if (font == 0 || font == PLAYER_PSP_FONT_COUNT - 1) {
+            source = states[font == 0 ? NK_FONT_SLOT_JAPANESE : NK_FONT_SLOT_KOREAN].source;
+            exact = source == NK_FONT_SOURCE_USER;
+        } else {
+            source = latin[font - 1].source;
+            exact = source == NK_FONT_SOURCE_USER && latin[font - 1].served_index == font - 1;
+        }
+        if (exact) continue;
+        missing[font] = true;
+        missing_count++;
+        if (source == NK_FONT_SOURCE_NONE) {
+            unserved[font] = true;
+            unserved_count++;
+        }
+    }
+    if (missing_count == 0) return;
+    bool one = missing_count == 1;
+    player_font_append(out, out_len, one ? "This PSP system font was not found: "
+                                         : "These PSP system fonts were not found: ");
+    player_font_append_names(out, out_len, missing);
+    player_font_append(out, out_len, one ? ". Games that ask for it get " : ". Games that ask for them get ");
+    if (unserved_count == missing_count) {
+        player_font_append(out, out_len, "no font at all. ");
+    } else {
+        player_font_append(out, out_len, "a stand-in font that looks different");
+        if (unserved_count > 0) {
+            player_font_append(out, out_len, "; for ");
+            player_font_append_names(out, out_len, unserved);
+            player_font_append(out, out_len, " they get no font at all");
+        }
+        player_font_append(out, out_len, ". ");
+    }
+    player_font_append(out, out_len, one ? "Import it" : "Import them");
+    player_font_append(out, out_len, " from your own PSP in the setup wizard.");
 }
 
 void player_app_refresh_font_status(PlayerApp *app) {
@@ -4953,9 +5554,34 @@ static void player_build_compatibility_preflight_for_game(
         PlayerDecryptedEbootState decrypted_state = player_find_decrypted_eboot(
             runtime_root, game->disc_id, decrypted_dir,
             sizeof(decrypted_dir), decrypted_elf, sizeof(decrypted_elf));
-        if (decrypted_state == PLAYER_DECRYPTED_EBOOT_VALID) {
+        const char *decrypt_status = "";
+        char decrypt_detail[320] = "";
+        if (decrypted_state == PLAYER_DECRYPTED_EBOOT_MISSING && disc_readable &&
+            game->iso_path[0]) {
+            /* No EBOOT.elf yet: decrypt the disc's own with the built-in
+             * tables (#295). A copy the user put there is never replaced. */
+            decrypt_status = player_decrypt_disc_eboot(game->iso_path, decrypted_dir,
+                                                       decrypted_elf, decrypt_detail,
+                                                       sizeof(decrypt_detail));
+            if (strcmp(decrypt_status, "VALIDATED_DECRYPTED") == 0) {
+                decrypted_state = PLAYER_DECRYPTED_EBOOT_VALID;
+                player_dev_log_add(app, "disc", "%.16s EBOOT.BIN decrypted with the built-in tables",
+                                   game->disc_id);
+            } else {
+                player_dev_log_add(app, "disc", "%.16s EBOOT.BIN not decrypted: %s",
+                                   game->disc_id, decrypt_status);
+            }
+        }
+        if (decrypted_state == PLAYER_DECRYPTED_EBOOT_VALID &&
+            strcmp(decrypt_status, "VALIDATED_DECRYPTED") == 0) {
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
-                "User-supplied decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
+                "EBOOT.BIN was decrypted from the disc with the built-in tables; the "
+                "decrypted EBOOT.elf is a valid MIPS ELF32 and selected for analysis.",
+                NULL, 0);
+        } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_VALID) {
+            player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_OK,
+                "The decrypted EBOOT.elf in the title's folder is a valid MIPS ELF32 and "
+                "selected for analysis.",
                 NULL, 0);
         } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_INVALID) {
             char message[512];
@@ -4969,19 +5595,21 @@ static void player_build_compatibility_preflight_for_game(
                 "The EBOOT.elf you added isn't a working game program. Replace it with a "
                 "decrypted EBOOT.elf from your own copy in %.300s.", decrypted_dir);
         } else if (decrypted_state == PLAYER_DECRYPTED_EBOOT_MISSING) {
-            /* Nakagawa does not decrypt games and reads no key file: an
-             * encrypted EBOOT.BIN needs a user-supplied decrypted EBOOT.elf. */
-            char message[512];
+            /* Built-in decryption stopped with a named result: the user may
+             * still put a decrypted EBOOT.elf from their own copy there. */
+            char message[1024];
+            if (!decrypt_status[0]) decrypt_status = "IO_FAILURE";
             snprintf(message, sizeof(message),
-                "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not "
-                "decrypt games. Place a decrypted EBOOT.elf from your own copy in "
+                "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and built-in decryption "
+                "stopped: %s (%.300s). Place a decrypted EBOOT.elf from your own copy in "
                 "%.300s.",
-                decrypted_dir);
+                decrypt_status, decrypt_detail, decrypted_dir);
             player_preflight_add(preflight, "EXECUTABLE", PREFLIGHT_UNSUPPORTED,
                                  message, issues, 1);
             player_preflight_set_plain(preflight,
-                "The game's program is encrypted, and Nakagawa doesn't decrypt games. Put a "
-                "decrypted EBOOT.elf from your own copy in %.300s.", decrypted_dir);
+                "Nakagawa couldn't decrypt the game's program: %s. You can put a "
+                "decrypted EBOOT.elf from your own copy in %.300s.",
+                player_decrypt_plain_reason(decrypt_status), decrypted_dir);
         } else {
             static const unsigned int path_issues[] = { 308 };
             char message[512];
@@ -5113,6 +5741,11 @@ static void player_build_compatibility_preflight_for_game(
         player_preflight_add(preflight, "SYSTEM_FONTS",
                              every_slot ? PREFLIGHT_OK : PREFLIGHT_MISSING,
                              summary, font_issues, every_slot ? 0 : 1);
+        {
+            char missing[sizeof(preflight->checks[0].plain)];
+            player_font_missing_sentence(missing, sizeof(missing), states, latin_states);
+            if (missing[0]) player_preflight_set_plain(preflight, "%s", missing);
+        }
     }
 
     /* The public runtime drives the default device through SDL3 (#301). Whether a
