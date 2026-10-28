@@ -482,12 +482,19 @@ int main(void) {
     assert(strcmp(normalized.entry.id, t_p5.entry.id) == 0);
     nk_title_catalog_snapshot_release(&normalized);
 
-    printf("[NATIVE_TEST] Verifying retail IDs are NOT present in public catalog...\n");
+    printf("[NATIVE_TEST] Verifying the public HST manifest is the one catalogued retail title...\n");
+    NkTitleEntrySnapshot t_hst = {0};
+    assert(nk_title_catalog_find_by_disc_id("UCUS98701", &t_hst));
+    assert(strcmp(t_hst.entry.id, "hst-ucus98701-v1") == 0);
+    assert(t_hst.entry.kind == NK_TITLE_KIND_RETAIL);
+    assert(strcmp(t_hst.entry.codegen_profile, "hst") == 0);
+    assert(strcmp(t_hst.entry.hle_profile, "hst-current") == 0);
+    nk_title_catalog_snapshot_release(&t_hst);
+
+    printf("[NATIVE_TEST] Verifying other retail IDs are NOT present in public catalog...\n");
     NkTitleEntrySnapshot missing = {0};
-    assert(!nk_title_catalog_find_by_disc_id("UCUS98701", &missing));
     assert(!nk_title_catalog_find_by_disc_id("UCES01402", &missing));
     assert(!nk_title_catalog_find_by_disc_id("ULUS99999", &missing));
-    assert(!nk_title_catalog_find_by_id("hst-ucus98701-v1", &missing));
 
     printf("[NATIVE_TEST] Verifying in-memory private overlay registration...\n");
     NkTitleEntry private_overlay;
@@ -495,16 +502,16 @@ int main(void) {
     private_overlay.id = "private-local-test-v1";
     private_overlay.display_name = "Local Acceptance Private Title";
     private_overlay.kind = NK_TITLE_KIND_RETAIL;
-    private_overlay.primary_disc_id = "UCUS98701";
+    private_overlay.primary_disc_id = "UCES01402";
 
     /* Before registration: NULL */
-    assert(!nk_title_catalog_find_by_disc_id("UCUS98701", &missing));
+    assert(!nk_title_catalog_find_by_disc_id("UCES01402", &missing));
 
     /* Register overlay */
     nk_title_catalog_register_overlay(&private_overlay);
     NkTitleEntrySnapshot found_ov = {0};
     NkTitleEntrySnapshot found_ov_by_id = {0};
-    assert(nk_title_catalog_find_by_disc_id("UCUS-98701", &found_ov));
+    assert(nk_title_catalog_find_by_disc_id("UCES-01402", &found_ov));
     assert(strcmp(found_ov.entry.id, "private-local-test-v1") == 0);
     assert(nk_title_catalog_find_by_id("private-local-test-v1",
                                        &found_ov_by_id));
@@ -514,7 +521,7 @@ int main(void) {
     nk_title_catalog_clear_overlay();
     assert(strcmp(found_ov.entry.display_name,
                   "Local Acceptance Private Title") == 0);
-    assert(!nk_title_catalog_find_by_disc_id("UCUS98701", &missing));
+    assert(!nk_title_catalog_find_by_disc_id("UCES01402", &missing));
     assert(!nk_title_catalog_find_by_id("private-local-test-v1", &missing));
 
     printf("[NATIVE_TEST] Verifying library in-memory operations...\n");

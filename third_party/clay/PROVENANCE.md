@@ -21,7 +21,7 @@ is the only project build target that compiles the header.
 
 | File | Kind | Upstream v0.14 blob SHA | SHA-256 |
 | --- | --- | --- | --- |
-| `clay.h` | imported + LOCAL DELTA | `8ee7f5044d73ce8b7444fa4a7a6355730511dd7f` | `3e6a361313e3263203dd6417751b8e90abfd3a2aa09fa9a187e71457b867f56f` |
+| `clay.h` | imported + LOCAL DELTA | `8ee7f5044d73ce8b7444fa4a7a6355730511dd7f` | `79a845daa7af6eaa337ac3c9188d815faa0e59b551b2369e2f63cfb6c2f04a16` |
 | `LICENSE.md` | imported byte-identical | `2968c61bcdc6ecbef470e02edd45b47aba1d8c44` | `5dd30f9f52093076b7574458f5efb8242fe6cbbd4669d4a2914e7616810d0df8` |
 | `PROVENANCE.md` | project-authored manifest | n/a | n/a |
 
@@ -35,5 +35,15 @@ or generated Clay file is included.
   32 bits before the arena bounds check (CodeQL "multiplication result
   converted to larger type"). Every in-range result is unchanged. The change is
   marked `LOCAL DELTA` in the file. The upstream bytes have SHA-256
-  `c97241cc423af3fa11267978adce9cbb46274a2ad0709a5d4b2b1092dc27599d`; re-applying
-  this one change to the upstream file gives the SHA-256 in the table above.
+  `c97241cc423af3fa11267978adce9cbb46274a2ad0709a5d4b2b1092dc27599d`.
+- `clay.h`, `Clay__CalculateFinalLayout`: a wrapped text element's minimum height
+  is raised to its wrapped height, and the pass that carries wrapped heights up
+  the tree also carries the minimum heights, with the rule an element's close
+  uses (a sum along a column, the tallest child across a row, nothing for a
+  vertical clip container). Upstream takes the minimum before wrapping, as one
+  line, so compressing an overfull parent squeezed wrapped text back toward one
+  line and the next element painted over its later lines. Upstream `main` at
+  `e6cc36941ab2af5d81107617039d6f527a1c660b` behaves the same. Both changes are
+  marked `LOCAL DELTA` in the file; `tests/native/test_clay_layout.c` checks the
+  overfull case. Re-applying both changes to the upstream file gives the SHA-256
+  in the table above.

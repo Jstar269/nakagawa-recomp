@@ -720,6 +720,33 @@ def cache_root(user_data_root: Path | str, disc_id: str) -> Path:
     return root.joinpath(*CACHE_ROOT_PARTS, normalized)
 
 
+# One short key level under entries/: a default Windows install has no long
+# paths, and <user data>/cache/packages/<DISC>/entries/<64 hex>/<64 hex>/...
+# reached about 290 characters under a long user profile's local app data. The full
+# AOT and native digests stay in the entry's own cache metadata, which
+# validate_package_cache checks, so a shortened key that collides is rebuilt,
+# never reused.
+CACHE_ENTRY_KEY_CHARS = 16
+
+
+def cache_entry_key(cache_key: Mapping[str, Any]) -> str:
+    """The entry directory name for a cache key: 16 hex characters."""
+    aot = cache_key["aot"]["digest"]
+    native = cache_key["native"]["digest"]
+    if not (_is_cache_digest(aot) and _is_cache_digest(native)):
+        raise PackageCacheError("cache key digests are not SHA-256 hex")
+    return sha256_bytes(f"{aot}:{native}".encode("ascii"))[:CACHE_ENTRY_KEY_CHARS]
+
+
+def cache_entry_root(cache_root_path: Path | str, cache_key: Mapping[str, Any]) -> Path:
+    return Path(cache_root_path) / "entries" / cache_entry_key(cache_key)
+
+
+def _is_cache_entry_key(value: str) -> bool:
+    return (len(value) == CACHE_ENTRY_KEY_CHARS and
+            all(char in "0123456789abcdef" for char in value))
+
+
 def cache_root_is_private(user_data_root: Path | str, repository_root: Path | str) -> bool:
     root = Path(user_data_root).expanduser().resolve(strict=False)
     repository = Path(repository_root).expanduser().resolve(strict=False)
@@ -768,18 +795,25 @@ def prune_cache(
         return 0, 0
     candidates: list[tuple[int, Path]] = []
     try:
-        aot_entries = list(entries_root.iterdir())
-        for aot_entry in aot_entries:
-            if not aot_entry.is_dir() or aot_entry.is_symlink() or not _is_cache_digest(aot_entry.name):
+        for entry in list(entries_root.iterdir()):
+            if not entry.is_dir() or entry.is_symlink():
                 continue
-            for native_entry in aot_entry.iterdir():
-                if not native_entry.is_dir() or native_entry.is_symlink() or not _is_cache_digest(native_entry.name):
-                    continue
+            if _is_cache_digest(entry.name):
+                # The old two-level layout (entries/<aot>/<native>): its paths
+                # are too long for a default Windows install. Drop it; the next
+                # build fills the short layout.
                 try:
-                    modified = native_entry.stat().st_mtime_ns
+                    shutil.rmtree(entry)
                 except OSError:
-                    continue
-                candidates.append((modified, native_entry))
+                    pass
+                continue
+            if not _is_cache_entry_key(entry.name):
+                continue
+            try:
+                modified = entry.stat().st_mtime_ns
+            except OSError:
+                continue
+            candidates.append((modified, entry))
     except OSError:
         return 0, 0
     protected = (
@@ -929,6 +963,29 @@ def package_optimization(
         "RUNTIME_OPT": env.get("RUNTIME_OPT") or PACKAGE_RUNTIME_OPT,
         "RECOMP_OPT": env.get("RECOMP_OPT")
         or PACKAGE_RECOMP_OPT_BY_PROFILE.get(codegen_profile, "-O0"),
+    }
+
+
+# A package build splits generated C into chunks of about this many bytes (#1296). The
+# function count alone made Hot Shots Tennis chunks of 0.8 to 52 MB of C; one cc1 compiling
+# the 52 MB chunk at -O1 peaked at 2.7 GB, so a host with little free memory compiled one
+# chunk at a time. The same functions in chunks of at most 4 MB peaked at 440 MB each, for
+# the same total compile time. Chunking keeps every function's C text, its order and the
+# compile flags, and only moves the boundaries between translation units; gcc's inlining of
+# the runtime header's static inline helpers does depend on the unit's size, so smaller
+# units inline them into more functions (about a fifth of Hot Shots Tennis's functions).
+PACKAGE_CHUNK_TARGET_BYTES = 4_000_000
+
+
+def package_chunking(environment: Mapping[str, str] | None = None) -> dict[str, str]:
+    """``CHUNK_TARGET_BYTES`` for a package build; a value the caller set wins.
+
+    Both package routes' codegen-option builders apply it, so the cache key names
+    the chunking codegen really used whoever derives the options.
+    """
+    env = os.environ if environment is None else environment
+    return {
+        "CHUNK_TARGET_BYTES": env.get("CHUNK_TARGET_BYTES") or str(PACKAGE_CHUNK_TARGET_BYTES),
     }
 
 

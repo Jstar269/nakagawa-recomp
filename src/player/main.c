@@ -7,6 +7,7 @@
 #include "ui_renderer.h"
 #include "ui/player_ui_nk.h"
 #include "nk_title_manifest.h"
+#include "nk_ui_widgets.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
@@ -86,20 +87,23 @@ static bool player_populate_inspected_game(PlayerApp *app, const char *iso_path,
     return true;
 }
 
-static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *filelist, int filter) {
-    (void)filter;
-    PlayerApp *app = (PlayerApp *)userdata;
-    if (!app || !filelist || !filelist[0]) {
-        return;
+/* A picked file the player refuses by name: the wizard's status line, or the
+   error card everywhere else. */
+static void player_show_picked_refusal(PlayerApp *app, const char *code, const char *title,
+                                       const char *message) {
+    if (app->active_view == VIEW_SETUP_WIZARD) {
+        player_app_wizard_reset_extraction(app);
+        app->wizard.iso_selected = false;
+        snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                 "%.48s: %.200s", code, message);
+    } else {
+        player_app_set_error(app, code, title, message, "Try Another File", VIEW_LIBRARY);
     }
-    if (app->wizard.is_extracting) {
-        /* A second ISO cannot replace the source while the worker owns the
-           current staging transaction. */
-        return;
-    }
-    const char *selected_path = filelist[0];
-    printf("[PLAYER] ISO Selected: %s\n", selected_path);
+}
 
+/* A picked (or converted) disc image: inspect it and continue in the view it
+   was picked from. */
+static void player_take_picked_disc(PlayerApp *app, const char *selected_path) {
     IsoInspectResult res;
     if (iso_inspect_file(selected_path, &res)) {
         char profile_error[256] = "";
@@ -149,30 +153,65 @@ static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *
         const char *message = res.error_message[0]
             ? res.error_message
             : "The selected file is not a valid ISO9660 disc image.";
-        if (app->active_view == VIEW_SETUP_WIZARD) {
+        if (app->active_view == VIEW_SETUP_WIZARD && !named_boundary) {
             player_app_wizard_reset_extraction(app);
             app->wizard.iso_selected = false;
-            if (named_boundary) {
-                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                         "%.48s: %.200s", res.boundary_code, message);
-            } else {
-                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                         "%s", k_invalid_disc_message);
-            }
+            snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                     "%s", k_invalid_disc_message);
+        } else if (named_boundary) {
+            player_show_picked_refusal(app, res.boundary_code, "Not a Disc Image", message);
         } else {
-            player_app_set_error(
-                app,
-                named_boundary ? res.boundary_code : "ISO_CORRUPT",
-                named_boundary ? "Not a Disc Image" : "Not a PSP Disc Image",
-                named_boundary ? message : k_invalid_disc_message,
-                "Try Another File", VIEW_LIBRARY);
+            player_app_set_error(app, "ISO_CORRUPT", "Not a PSP Disc Image",
+                                 k_invalid_disc_message, "Try Another File", VIEW_LIBRARY);
         }
     }
 }
 
+/* A PSN release of a UMD game (#295 phase 2): converted once into a private
+   ISO on the conversion worker, then imported exactly as a picked disc. A
+   conversion already in place is used as it is; other packages are refused by
+   name. */
+static void player_take_picked_package(PlayerApp *app, const char *path) {
+    PlayerPsnPackage package;
+    char code[48];
+    char message[512];
+    if (!player_psn_package_inspect(path, &package, code, sizeof(code), message,
+                                    sizeof(message))) {
+        player_show_picked_refusal(app, code, "Package Not Supported", message);
+        return;
+    }
+    if (package.iso_ready) {
+        printf("[PLAYER] PSN package %s: using its converted disc image\n", package.disc_id);
+        player_take_picked_disc(app, package.iso_path);
+        return;
+    }
+    printf("[PLAYER] PSN package %s: converting it into a disc image\n", package.disc_id);
+    player_app_psn_conversion_begin(app, &package);
+}
+
+static void SDLCALL on_file_dialog_callback(void *userdata, const char * const *filelist, int filter) {
+    (void)filter;
+    PlayerApp *app = (PlayerApp *)userdata;
+    if (!app || !filelist || !filelist[0]) {
+        return;
+    }
+    if (app->wizard.is_extracting || app->psn_conversion_active) {
+        /* A second file cannot replace the source while a worker owns the
+           current staging transaction or conversion. */
+        return;
+    }
+    const char *selected_path = filelist[0];
+    printf("[PLAYER] ISO Selected: %s\n", selected_path);
+    if (player_path_is_pbp_package(selected_path)) {
+        player_take_picked_package(app, selected_path);
+        return;
+    }
+    player_take_picked_disc(app, selected_path);
+}
+
 static void trigger_file_picker(SDL_Window *window, PlayerApp *app) {
     SDL_DialogFileFilter filters[] = {
-        { "PSP Disc Images (*.iso)", "iso" },
+        { "PSP Disc Images and PSN Packages (*.iso, EBOOT.PBP)", "iso;pbp" },
         { "All Files (*.*)", "*" }
     };
     SDL_ShowOpenFileDialog(on_file_dialog_callback, app, window, filters, 2, NULL, false);
@@ -281,6 +320,35 @@ static bool player_refit_to_actual_frame(SDL_Window *window,
                                         position_valid, fitted);
 }
 
+#if !defined(_WIN32) && !defined(_WIN64)
+/* The app icon (the N1 mark on its ink tile) as the window icon: 32 px, with
+   larger copies SDL picks for high-density displays. Windows needs no call: the
+   executable carries the icon (assets/brand/nakagawa.rc) and SDL gives every
+   window its sizes, where SDL_SetWindowIcon would stretch one bitmap to all. */
+static void player_set_window_icon(SDL_Window *window) {
+    static const int sizes[] = { 32, 48, 64, 128, 256 };
+    SDL_Surface *icon = NULL;
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+        SDL_Surface *image = SDL_CreateSurface(sizes[i], sizes[i], SDL_PIXELFORMAT_RGBA32);
+        if (!image || !nk_ui_app_icon_rgba(sizes[i], (unsigned char *)image->pixels,
+                                           (size_t)image->pitch)) {
+            SDL_DestroySurface(image);
+            break;
+        }
+        if (!icon) {
+            icon = image;
+        } else {
+            SDL_AddSurfaceAlternateImage(icon, image);
+            SDL_DestroySurface(image);
+        }
+    }
+    if (!icon || !SDL_SetWindowIcon(window, icon)) {
+        fprintf(stderr, "The window icon was not set: %s\n", SDL_GetError());
+    }
+    SDL_DestroySurface(icon);
+}
+#endif
+
 static void player_capture_window_settings(PlayerApp *app, SDL_Window *window) {
     if (!app || !window) return;
     Uint32 flags = SDL_GetWindowFlags(window);
@@ -334,28 +402,59 @@ static bool player_confirm_quit(SDL_Window *window, PlayerApp *app) {
         return true;
     }
 
+    /* Short labels: SDL3's Windows box does not widen a button for a long one
+       (PLAYER_DIALOG_BUTTON_LABEL_MAX). Cancel stays the Return and Escape
+       default. */
     const SDL_MessageBoxButtonData buttons[] = {
         { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT |
               SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT,
-          0, "Cancel" },
-        { 0, 1, "Close game and quit" }
+          0, PLAYER_QUIT_DIALOG_CANCEL_LABEL },
+        { 0, 1, PLAYER_QUIT_DIALOG_QUIT_LABEL }
     };
+    char message[NK_MAX_TITLE_LEN + 128];
+    player_app_quit_confirmation_message(app, message, sizeof(message));
     const SDL_MessageBoxData dialog = {
         SDL_MESSAGEBOX_WARNING,
         window,
-        "Game still running",
-        "A game is running. Close it and quit?",
-        2,
+        PLAYER_QUIT_DIALOG_TITLE,
+        message,
+        (int)(sizeof(buttons) / sizeof(buttons[0])),
         buttons,
         NULL
     };
     int button_id = 0;
     bool dialog_shown = false;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* The headless regression cannot open a modal box, so it reads the dialog
+       the host would show from these lines; the message's line break is
+       written as \n to keep it on one. */
+    printf("[PLAYER_UI_TEST] QUIT_DIALOG title=%s\n", dialog.title);
+    printf("[PLAYER_UI_TEST] QUIT_DIALOG message=");
+    for (const char *ch = dialog.message; *ch; ++ch) {
+        if (*ch == '\n') fputs("\\n", stdout);
+        else putchar(*ch);
+    }
+    putchar('\n');
+    for (int i = 0; i < dialog.numbuttons; ++i) {
+        const SDL_MessageBoxButtonData *button = &dialog.buttons[i];
+        printf("[PLAYER_UI_TEST] QUIT_DIALOG button id=%d return_default=%d "
+               "escape_default=%d label=%s\n",
+               button->buttonID,
+               (button->flags & SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT) != 0,
+               (button->flags & SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT) != 0,
+               button->text);
+    }
+    fflush(stdout);
     if (!getenv("NK_UI_TEST_MESSAGEBOX_FAIL")) {
         dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
     }
 #else
+    /* The box is owned by the launcher window: bring that to the front first,
+       or the box opens behind the running game's window. */
+    if (window != NULL) {
+        (void)SDL_RestoreWindow(window);
+        (void)SDL_RaiseWindow(window);
+    }
     dialog_shown = SDL_ShowMessageBox(&dialog, &button_id);
 #endif
     if (!dialog_shown) {
@@ -436,6 +535,18 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         if (event->button.button == SDL_BUTTON_LEFT) input->mouse_down = false;
         return true;
     case SDL_EVENT_KEY_DOWN:
+        if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
+            app->input_settings.device == INPUT_DEVICE_KEYBOARD &&
+            input_settings_is_capturing(&app->input_settings) &&
+            event->key.key != SDLK_ESCAPE) {
+            /* While a PSP button waits for a key, the next key pressed is its
+               key, by position (the scancode). Esc still stops the wait below. */
+            if (!event->key.repeat) {
+                (void)input_settings_feed_capture_key(&app->input_settings,
+                                                      (int)event->key.scancode);
+            }
+            return true;
+        }
         if (!event->key.repeat && event->key.key == SDLK_F12 &&
             app->settings.developer_mode) {
             /* The developer log panel, from any launcher view. */
@@ -484,6 +595,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                 player_app_set_view(app, VIEW_BUILD_CACHE);
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
                        app->active_view == VIEW_BUILD_CACHE ||
+                       app->active_view == VIEW_PSP_FONTS ||
                        app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -586,6 +698,11 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
         if (app->active_view == VIEW_CONTROLLER_SETTINGS &&
             input_settings_is_capturing(&app->input_settings)) {
             NkBindingSource src;
+            if (app->input_settings.device == INPUT_DEVICE_KEYBOARD) {
+                /* A controller has no keys: its press stops the wait for one. */
+                input_settings_cancel_capture(&app->input_settings);
+                return true;
+            }
             src.type = NK_BINDING_HOST_BUTTON;
             src.index = event->gbutton.button;
             input_settings_feed_capture_source(&app->input_settings, src);
@@ -640,6 +757,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
                 player_app_set_view(app, VIEW_BUILD_CACHE);
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
                        app->active_view == VIEW_BUILD_CACHE ||
+                       app->active_view == VIEW_PSP_FONTS ||
                        app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -950,6 +1068,12 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
             player_app_clear_shared_library_cache(app);
             break;
         case PLAYER_UI_SETTINGS_KEEP_TOOLS: player_app_set_view(app, VIEW_BUILD_CACHE); break;
+        case PLAYER_UI_SETTINGS_OPEN_FONTS:
+            player_app_refresh_font_status(app);
+            player_app_set_view(app, VIEW_PSP_FONTS);
+            break;
+        case PLAYER_UI_SETTINGS_IMPORT_FONTS: app->request_font_folder_picker = true; break;
+        case PLAYER_UI_SETTINGS_REMOVE_FONTS: player_app_fonts_remove_imports(app); break;
         case PLAYER_UI_SETTINGS_NONE:
         default:
             break;
@@ -991,7 +1115,16 @@ static void player_ui_controller_apply(PlayerApp *app, PlayerUiControllerOp op,
                 input->has_save_diagnostic = true;
             }
             break;
-        case PLAYER_UI_CONTROLLER_RESET: input_settings_reset_to_defaults(input); break;
+        case PLAYER_UI_CONTROLLER_RESET:
+            /* The defaults of the device shown: the other device keeps its own. */
+            input_settings_reset_device_to_defaults(input);
+            break;
+        case PLAYER_UI_CONTROLLER_SHOW_CONTROLLER:
+            input_settings_set_device(input, INPUT_DEVICE_CONTROLLER);
+            break;
+        case PLAYER_UI_CONTROLLER_SHOW_KEYBOARD:
+            input_settings_set_device(input, INPUT_DEVICE_KEYBOARD);
+            break;
         case PLAYER_UI_CONTROLLER_BACK:
         case PLAYER_UI_CONTROLLER_CLOSE:
             if (input_settings_is_capturing(input)) input_settings_cancel_capture(input);
@@ -1113,6 +1246,11 @@ static void player_ui_nk_apply_action(PlayerApp *app,
     }
     if (action->kind == PLAYER_UI_ACTION_PREREQ_CANCEL) {
         player_app_prereq_cancel(app);
+        return;
+    }
+    if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER &&
+        app->active_view == VIEW_PREPARING) {
+        player_app_set_view(app, VIEW_LIBRARY);
         return;
     }
     if (action->kind == PLAYER_UI_ACTION_ERROR_RECOVER) {
@@ -1248,10 +1386,19 @@ static void player_render_active_ui(PlayerUiNk *next_ui, PlayerApp *app,
     if (next) (void)SDL_SetRenderScale(renderer, 1.0f, 1.0f);
     if (next && player_ui_nk_render(next_ui, app, renderer, window, &action)) {
         player_ui_nk_apply_action(app, &action);
-    } else {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    } else if (next_ui == NULL) {
+        /* --ui=legacy, the regression build only. */
         player_use_presentation(app, window, false);
         player_fit_ui_canvas(app, renderer);
         ui_render_frame(renderer, app, input);
+#endif
+    } else {
+        /* The launcher draws every view (player_ui_nk_draws_view); a frame it
+           could not draw is cleared, never handed to another renderer. */
+        (void)input;
+        (void)SDL_SetRenderDrawColor(renderer, 11u, 15u, 20u, 255u);
+        (void)SDL_RenderClear(renderer);
     }
 }
 
@@ -1300,7 +1447,8 @@ static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
         { "prereq_progress", VIEW_PREREQ_PROGRESS },
         { "prereq_about", VIEW_PREREQ_ABOUT },
         { "confirm_remove_tools", VIEW_CONFIRM_REMOVE_TOOLS },
-        { "build_cache", VIEW_BUILD_CACHE }
+        { "build_cache", VIEW_BUILD_CACHE },
+        { "psp_fonts", VIEW_PSP_FONTS }
     };
     if (!names || !names[0] || !mask) return false;
     uint32_t parsed_mask = 0;
@@ -1614,18 +1762,24 @@ static int player_ui_test_next_event(const char *script, size_t *cursor,
         return 1;
     }
     if (strncmp(token, "KEY_", 4) == 0) {
-        static const struct { const char *name; SDL_Keycode key; } keys[] = {
-            { "ESCAPE", SDLK_ESCAPE }, { "RETURN", SDLK_RETURN },
-            { "TAB", SDLK_TAB }, { "SPACE", SDLK_SPACE }, { "LEFT", SDLK_LEFT },
-            { "RIGHT", SDLK_RIGHT }, { "UP", SDLK_UP }, { "DOWN", SDLK_DOWN },
-            { "HOME", SDLK_HOME }, { "END", SDLK_END },
-            { "PAGEUP", SDLK_PAGEUP }, { "PAGEDOWN", SDLK_PAGEDOWN },
-            { "S", SDLK_S }, { "O", SDLK_O }, { "F1", SDLK_F1 }, { "F12", SDLK_F12 }
+        /* As SDL reports a key: its key code and, on a US layout, its position. */
+        static const struct { const char *name; SDL_Keycode key; SDL_Scancode scancode; } keys[] = {
+            { "ESCAPE", SDLK_ESCAPE, SDL_SCANCODE_ESCAPE },
+            { "RETURN", SDLK_RETURN, SDL_SCANCODE_RETURN }, { "TAB", SDLK_TAB, SDL_SCANCODE_TAB },
+            { "SPACE", SDLK_SPACE, SDL_SCANCODE_SPACE }, { "LEFT", SDLK_LEFT, SDL_SCANCODE_LEFT },
+            { "RIGHT", SDLK_RIGHT, SDL_SCANCODE_RIGHT }, { "UP", SDLK_UP, SDL_SCANCODE_UP },
+            { "DOWN", SDLK_DOWN, SDL_SCANCODE_DOWN }, { "HOME", SDLK_HOME, SDL_SCANCODE_HOME },
+            { "END", SDLK_END, SDL_SCANCODE_END }, { "PAGEUP", SDLK_PAGEUP, SDL_SCANCODE_PAGEUP },
+            { "PAGEDOWN", SDLK_PAGEDOWN, SDL_SCANCODE_PAGEDOWN }, { "C", SDLK_C, SDL_SCANCODE_C },
+            { "S", SDLK_S, SDL_SCANCODE_S }, { "O", SDLK_O, SDL_SCANCODE_O },
+            { "X", SDLK_X, SDL_SCANCODE_X }, { "F1", SDLK_F1, SDL_SCANCODE_F1 },
+            { "F12", SDLK_F12, SDL_SCANCODE_F12 }
         };
         for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             if (strcmp(token + 4, keys[i].name) == 0) {
                 event->type = SDL_EVENT_KEY_DOWN;
                 event->key.key = keys[i].key;
+                event->key.scancode = keys[i].scancode;
                 event->key.down = true;
                 return 1;
             }
@@ -1712,6 +1866,7 @@ static const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_PREREQ_ABOUT: return "prereq_about";
     case VIEW_CONFIRM_REMOVE_TOOLS: return "confirm_remove_tools";
     case VIEW_BUILD_CACHE: return "build_cache";
+    case VIEW_PSP_FONTS: return "psp_fonts";
     case VIEW_ONLINE_SETTINGS: return "online_settings";
     case VIEW_DEVELOPER_LOG: return "developer_log";
     default: return "unknown";
@@ -1892,6 +2047,7 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
            "error_details_complete=%d error_details_lines=%d error_details_available=%d "
            "select_binding=%d start_binding=%d circle_binding=%d profile_save_notice=%d "
            "input_scope=%s input_titles=%d input_notice=%d "
+           "input_device=%s start_key=%d key_note=%d "
            "selected_experimental=%d selected_prepared=%d selected_staged=%d "
            "selected_runtime=%d selected_package_status=%d "
            "selected_package_check_failed=%d package_check_failed_badge=%d games=%d "
@@ -1940,6 +2096,9 @@ static void player_ui_test_report_frame(int frame_number, const PlayerApp *app,
                ? input_settings_scope_label(&app->input_settings) : "global",
            app->input_settings.file.title_count,
            app->input_profile_notice[0] ? 1 : 0,
+           app->input_settings.device == INPUT_DEVICE_KEYBOARD ? "keyboard" : "controller",
+           app->input_settings.profile.psp_keys[INPUT_CONTROL_BTN_START].primary,
+           app->input_settings.key_note[0] ? 1 : 0,
            selected && selected->is_experimental ? 1 : 0,
            selected && selected->is_prepared ? 1 : 0,
            selected && selected->assets_staged ? 1 : 0,
@@ -2054,6 +2213,16 @@ static bool player_package_status_push_completion(SDL_Event *event) {
     return SDL_PushEvent(event) != 0;
 }
 
+/* Set once the launcher is closing. Package validation polls it while it
+   hashes, so closing the window during the startup package check does not
+   wait for every check to finish (launcher review B5). */
+static SDL_AtomicInt s_player_closing;
+
+static bool player_closing(void *user) {
+    (void)user;
+    return SDL_GetAtomicInt(&s_player_closing) != 0;
+}
+
 static int SDLCALL player_package_status_thread_main(void *userdata) {
     PlayerPackageStatusJob *job = (PlayerPackageStatusJob *)userdata;
     if (!job) return 1;
@@ -2062,7 +2231,14 @@ static int SDLCALL player_package_status_thread_main(void *userdata) {
     if (delay_text && delay_text[0]) {
         char *end = NULL;
         unsigned long delay = strtoul(delay_text, &end, 10);
-        if (end && *end == '\0' && delay <= 5000) SDL_Delay((Uint32)delay);
+        /* A slow check, standing in for hashing a large package: it stops
+           when the launcher closes, as the hashing does. */
+        if (end && *end == '\0' && delay <= 5000) {
+            for (unsigned long waited = 0; waited < delay && !player_closing(NULL);
+                 waited += 10u) {
+                SDL_Delay(10);
+            }
+        }
     }
 #endif
     char default_root[NK_MAX_PATH];
@@ -2712,6 +2888,160 @@ static void finish_staging_job(PlayerApp *app, PlayerStagingJob *job) {
     job->completion_handled = true;
 }
 
+/* A PSN package's conversion into its disc image (#295 phase 2), on a worker
+   like ADD TO LIBRARY staging: progress and completion come back as SDL user
+   events (data1 is the job), and the wizard's cancel stops it. A cancel or a
+   failure removes the partial file. */
+typedef struct {
+    SDL_Thread *thread;
+    SDL_Mutex *mutex;
+    PlayerPsnPackage package;
+    bool cancel_requested;
+    bool finished;
+    bool completion_handled;
+    bool ok;
+    int percent;
+    uint64_t done_bytes;
+    uint64_t total_bytes;
+    char code[48];
+    char message[512];
+} PlayerPsnJob;
+
+static void psn_job_push_event(PlayerPsnJob *job, int code) {
+    SDL_Event event;
+    memset(&event, 0, sizeof(event));
+    event.type = SDL_EVENT_USER;
+    event.user.code = code;
+    event.user.data1 = job;
+    SDL_PushEvent(&event);
+}
+
+static bool psn_job_cancelled(void *userdata) {
+    PlayerPsnJob *job = (PlayerPsnJob *)userdata;
+    if (!job || !job->mutex) return true;
+    SDL_LockMutex(job->mutex);
+    bool cancelled = job->cancel_requested;
+    SDL_UnlockMutex(job->mutex);
+    return cancelled;
+}
+
+static void psn_job_progress(uint64_t done_bytes, uint64_t total_bytes, void *userdata) {
+    PlayerPsnJob *job = (PlayerPsnJob *)userdata;
+    int percent = total_bytes ? (int)((done_bytes * 100u) / total_bytes) : 0;
+    bool changed;
+    if (!job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    changed = job->percent != percent;
+    job->percent = percent;
+    job->done_bytes = done_bytes;
+    job->total_bytes = total_bytes;
+    SDL_UnlockMutex(job->mutex);
+    if (changed) psn_job_push_event(job, PLAYER_STAGING_EVENT_PROGRESS);
+}
+
+static int SDLCALL psn_job_thread_main(void *userdata) {
+    PlayerPsnJob *job = (PlayerPsnJob *)userdata;
+    if (!job) return -1;
+    PlayerPsnConvertCallbacks callbacks = { psn_job_progress, psn_job_cancelled, job };
+    char code[sizeof(job->code)];
+    char message[sizeof(job->message)];
+    bool ok = player_psn_package_convert(&job->package, &callbacks, code, sizeof(code),
+                                         message, sizeof(message));
+    SDL_LockMutex(job->mutex);
+    job->ok = ok;
+    snprintf(job->code, sizeof(job->code), "%s", code);
+    snprintf(job->message, sizeof(job->message), "%s", message);
+    job->finished = true;
+    SDL_UnlockMutex(job->mutex);
+    psn_job_push_event(job, PLAYER_STAGING_EVENT_COMPLETE);
+    return ok ? 0 : 1;
+}
+
+static void request_psn_cancel(PlayerPsnJob *job) {
+    if (!job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    job->cancel_requested = true;
+    SDL_UnlockMutex(job->mutex);
+}
+
+static bool psn_job_finished(PlayerPsnJob *job) {
+    if (!job || !job->mutex || job->completion_handled) return false;
+    SDL_LockMutex(job->mutex);
+    bool finished = job->finished;
+    SDL_UnlockMutex(job->mutex);
+    return finished;
+}
+
+static void start_psn_job(PlayerApp *app, PlayerPsnJob **job_slot) {
+    if (!app || !job_slot) return;
+    if (*job_slot) {
+        if (!(*job_slot)->completion_handled) return;
+        SDL_DestroyMutex((*job_slot)->mutex);
+        free(*job_slot);
+        *job_slot = NULL;
+    }
+    PlayerPsnJob *job = (PlayerPsnJob *)calloc(1, sizeof(*job));
+    if (job) {
+        job->package = app->psn_package;
+        job->mutex = SDL_CreateMutex();
+    }
+    if (job && job->mutex) {
+        job->thread = SDL_CreateThread(psn_job_thread_main, "nakagawa-psn-convert", job);
+    }
+    if (!job || !job->mutex || !job->thread) {
+        if (job && job->mutex) SDL_DestroyMutex(job->mutex);
+        free(job);
+        player_app_psn_conversion_finish(app);
+        player_show_picked_refusal(app, "INTERNAL_ERROR", "Package Not Converted",
+                                   "Nakagawa could not start converting the package. Try again.");
+        return;
+    }
+    *job_slot = job;
+}
+
+static void sync_psn_progress(PlayerApp *app, PlayerPsnJob *job) {
+    if (!app || !job || !job->mutex) return;
+    SDL_LockMutex(job->mutex);
+    uint64_t done = job->done_bytes;
+    uint64_t total = job->total_bytes;
+    SDL_UnlockMutex(job->mutex);
+    player_app_psn_conversion_progress(app, done, total);
+}
+
+static void finish_psn_job(PlayerApp *app, PlayerPsnJob *job) {
+    if (!psn_job_finished(job)) return;
+    if (job->thread) {
+        SDL_WaitThread(job->thread, NULL);
+        job->thread = NULL;
+    }
+    job->completion_handled = true;
+    player_app_psn_conversion_finish(app);
+    if (job->ok) {
+        printf("[PLAYER] PSN package %s converted into its disc image\n", job->package.disc_id);
+        player_take_picked_disc(app, job->package.iso_path);
+    } else if (strcmp(job->code, "CANCELLED") == 0) {
+        if (app->active_view == VIEW_SETUP_WIZARD) {
+            snprintf(app->wizard.status_message, sizeof(app->wizard.status_message), "%.200s",
+                     job->message);
+        }
+    } else {
+        player_show_picked_refusal(app, job->code, "Package Not Converted", job->message);
+    }
+}
+
+static void destroy_psn_job(PlayerPsnJob **job_slot) {
+    if (!job_slot || !*job_slot) return;
+    PlayerPsnJob *job = *job_slot;
+    request_psn_cancel(job);
+    if (job->thread) {
+        SDL_WaitThread(job->thread, NULL);
+        job->thread = NULL;
+    }
+    if (job->mutex) SDL_DestroyMutex(job->mutex);
+    free(job);
+    *job_slot = NULL;
+}
+
 static void destroy_staging_job(PlayerStagingJob **job_slot) {
     if (!job_slot || !*job_slot) return;
     PlayerStagingJob *job = *job_slot;
@@ -2736,6 +3066,16 @@ static void staging_console_progress(const char *current_path, int percent,
     *last_percent = percent;
     printf("[PLAYER] STAGING_PROGRESS percent=%d files=%zu/%zu\n", percent,
            files_extracted, total_files);
+    fflush(stdout);
+}
+
+/* Console progress for a PSN package given as --iso: one line per ten percent. */
+static void psn_console_progress(uint64_t done_bytes, uint64_t total_bytes, void *userdata) {
+    int *last_percent = (int *)userdata;
+    int percent = total_bytes ? (int)((done_bytes * 100u) / total_bytes) : 0;
+    if (!last_percent || percent / 10 <= *last_percent / 10) return;
+    *last_percent = percent;
+    printf("[PLAYER] PSN_CONVERT_PROGRESS percent=%d\n", percent);
     fflush(stdout);
 }
 
@@ -3369,19 +3709,14 @@ int main(int argc, char *argv[]) {
        file, instead of the documented empty-library prompt. */
     bool populate_sample = false;
     bool force_empty = false;
-    /* The next UI is the default. --ui=legacy (or NK_UI=legacy) keeps the
-       existing renderer for one release as the documented fallback; the
-       command line wins over the environment. */
+    /* The nk_ui launcher is the only launcher. The regression-test build keeps
+       the old renderer behind --ui=legacy for the tests that still pin it;
+       the shipped player has no way to reach it. */
     bool ui_next_requested = true;
-    const char *ui_environment = getenv("NK_UI");
-    if (ui_environment != NULL && strcmp(ui_environment, "legacy") == 0) {
-        ui_next_requested = false;
-    }
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nakagawa_player [--user-data-root=<folder>] "
-                   "[--ui=next|--ui=legacy] "
                    "[--iso=<path> [--stage|--stage-only|--launch-now]] "
                    "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>] "
                    "[--width=W --height=H [--render-scale=S]] "
@@ -3392,13 +3727,12 @@ int main(int argc, char *argv[]) {
             return 0;
         } else if (strcmp(argv[i], "--experimental-60hz") == 0) {
             player_app_set_experimental_60hz_session(&app, true);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
         } else if (strcmp(argv[i], "--ui=next") == 0) {
             ui_next_requested = true;
         } else if (strcmp(argv[i], "--ui=legacy") == 0) {
             ui_next_requested = false;
-        } else if (strncmp(argv[i], "--ui=", 5u) == 0) {
-            fprintf(stderr, "[PLAYER] Unknown UI mode. Use --ui=next or --ui=legacy.\n");
-            return 2;
+#endif
         } else if (strncmp(argv[i], "--screenshot=", 13) == 0) {
             screenshot_path = argv[i] + 13;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -3602,6 +3936,36 @@ int main(int argc, char *argv[]) {
         } else {
             fprintf(stderr, "[PLAYER] Failed to load external manifest overlay: %s\n", err_msg);
             return 1;
+        }
+    }
+
+    /* A PSN package given as --iso converts once, here, and its disc image is
+       then inspected like any --iso (#295 phase 2). */
+    char converted_iso_path[NK_MAX_PATH];
+    if (initial_iso_path && player_path_is_pbp_package(initial_iso_path)) {
+        PlayerPsnPackage package;
+        char code[48];
+        char message[512];
+        bool ok = player_psn_package_inspect(initial_iso_path, &package, code, sizeof(code),
+                                             message, sizeof(message));
+        if (ok && !package.iso_ready) {
+            int last_percent = -1;
+            PlayerPsnConvertCallbacks hooks = { psn_console_progress, NULL, &last_percent };
+            printf("[PLAYER] Converting PSN package %s into its disc image...\n",
+                   package.disc_id);
+            ok = player_psn_package_convert(&package, &hooks, code, sizeof(code), message,
+                                            sizeof(message));
+        }
+        if (!ok) {
+            fprintf(stderr, "[PLAYER] %s: %s\n", code, message);
+            if (stage_only || app.launch_headless) return 1;
+            populate_sample = false;
+            player_app_set_error(&app, code, "Package Not Supported", message,
+                                 "Try Another File", VIEW_LIBRARY);
+            initial_iso_path = NULL;
+        } else {
+            snprintf(converted_iso_path, sizeof(converted_iso_path), "%s", package.iso_path);
+            initial_iso_path = converted_iso_path;
         }
     }
 
@@ -3970,6 +4334,9 @@ int main(int argc, char *argv[]) {
             player_app_set_view(&app, VIEW_ONLINE_SETTINGS);
         } else if (strcmp(test_view, "build-cache") == 0) {
             player_app_set_view(&app, VIEW_BUILD_CACHE);
+        } else if (strcmp(test_view, "psp-fonts") == 0) {
+            player_app_refresh_font_status(&app);
+            player_app_set_view(&app, VIEW_PSP_FONTS);
         } else if (strcmp(test_view, "developer-log") == 0) {
             app.settings.developer_mode = true;
             player_dev_log_add(&app, "test", "synthetic developer log line");
@@ -4060,6 +4427,14 @@ int main(int argc, char *argv[]) {
         if (strcmp(disc, "1") != 0) {
             snprintf(app.launch_session.disc_id, sizeof(app.launch_session.disc_id),
                      "%s", disc);
+            /* A launch carries the disc's title, as nk_launch_prepare_session
+               copies it from the library record. */
+            int running_index = player_app_find_game_by_disc_id(&app, disc);
+            if (running_index >= 0) {
+                snprintf(app.launch_session.game_title,
+                         sizeof(app.launch_session.game_title), "%s",
+                         app.games[running_index].title_name);
+            }
             app.child_window_ready = !starting;
         }
     }
@@ -4100,8 +4475,8 @@ int main(int argc, char *argv[]) {
             const char *disc = app.game_count > 0 ? app.games[0].disc_id : "TEST80001";
             package_builder_init_session(&app.build_session, disc, "Synthetic Package Fixture");
             player_app_set_build_error(&app, "preflight",
-                                       "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa "
-                                       "does not decrypt games.",
+                                       "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted and "
+                                       "built-in decryption stopped: KEY_REQUIRED.",
                                        NULL);
         } else {
             player_app_set_error(&app, ui_test_error_code, ui_test_error_code,
@@ -4170,6 +4545,8 @@ int main(int argc, char *argv[]) {
         }
         return player_run_command_line_launch(&app, launch_index, "--launch-index");
     }
+
+    nk_title_manifest_set_cancel_check(player_closing, NULL);
 
     /* Initialize SDL3 */
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -4255,6 +4632,9 @@ int main(int argc, char *argv[]) {
         SDL_Quit();
         return 1;
     }
+#if !defined(_WIN32) && !defined(_WIN64)
+    player_set_window_icon(window);
+#endif
     if (interactive_window && have_usable_bounds) {
         SDL_Rect usable = usable_bounds;
         player_apply_window_geometry(
@@ -4310,10 +4690,25 @@ int main(int argc, char *argv[]) {
         s_ui_test_next_ui = next_ui;
 #endif
         if (next_ui == NULL) {
-            fprintf(stderr,
-                    "[PLAYER] The next UI could not start: %s. Using the existing player UI.\n",
-                    ui_error[0] != '\0' ? ui_error : "initialization failed");
-            ui_next_requested = false;
+            /* There is no other launcher to fall back to: say why, once, and
+               stop. A missing file means the ZIP was extracted incompletely. */
+            const char *reason = ui_error[0] != '\0' ? ui_error : "it could not initialize";
+            char message[768];
+            (void)snprintf(message, sizeof(message),
+                           "Nakagawa Recomp can't open its launcher: %s.\n\n"
+                           "Some of its files are missing. Extract the ZIP again, keeping "
+                           "every folder, and start nakagawa_player.exe from the extracted "
+                           "folder.", reason);
+            fprintf(stderr, "[PLAYER] LAUNCHER_UNAVAILABLE: %s\n", message);
+            if (interactive_window) {
+                SDL_HideWindow(window);
+                (void)SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+                                               "Nakagawa Recomp can't start", message, NULL);
+            }
+            SDL_DestroyRenderer(renderer);
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+            return 4;
         }
     }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
@@ -4322,6 +4717,14 @@ int main(int argc, char *argv[]) {
     }
     if (ui_test_mode && getenv("NK_UI_TEST_REPORT_COMPATIBILITY") != NULL) {
         player_ui_nk_test_report_compatibility();
+    }
+    if (ui_test_mode && getenv("NK_UI_TEST_REPORT_VIEWS") != NULL) {
+        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_PSP_FONTS. */
+        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_PSP_FONTS; ++view) {
+            printf("[PLAYER_UI_TEST] view_coverage value=%d name=%s nk=%d\n", view,
+                   player_ui_test_view_name((PlayerView)view),
+                   player_ui_nk_draws_view(view) ? 1 : 0);
+        }
     }
 #endif
     s_switch_presentation = interactive_window && next_ui != NULL;
@@ -4439,6 +4842,7 @@ int main(int argc, char *argv[]) {
         SDL_free(ids);
     }
     PlayerStagingJob *staging_job = NULL;
+    PlayerPsnJob *psn_job = NULL;
     PlayerPackageStatusJob *package_status_job = NULL;
     bool package_status_requested[MAX_LIBRARY_GAMES] = { false };
     bool package_status_force_requested[MAX_LIBRARY_GAMES] = { false };
@@ -4807,35 +5211,38 @@ int main(int argc, char *argv[]) {
                      event.type == SDL_EVENT_PEN_UP)) {
                     SDL_ConvertEventToRenderCoordinates(renderer, &event);
                 }
+                /* A pad arriving or leaving updates the player's state first: the
+                   launcher also takes these events for its prompts, and a consumed
+                   event left Settings and the wizard saying "keyboard and mouse"
+                   with a controller attached. */
+                if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
+                    if (!gamepad) {
+                        gamepad = SDL_OpenGamepad(event.gdevice.which);
+                        if (gamepad) {
+                            const char *pad_name = SDL_GetGamepadName(gamepad);
+                            snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
+                                     "%s", pad_name ? pad_name : "Controller");
+                            app.settings.controller_connected = true;
+                            printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
+                        }
+                    }
+                    if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                        player_ui_nk_note_gamepad(next_ui, event.gdevice.which, true);
+                    }
+                } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
+                    player_ui_nk_note_gamepad(next_ui, event.gdevice.which, false);
+                    if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                        SDL_CloseGamepad(gamepad);
+                        gamepad = NULL;
+                        app.settings.controller_name[0] = '\0';
+                        app.settings.controller_connected = false;
+                        printf("[PLAYER] Gamepad disconnected\n");
+                    }
+                }
                 if (!player_dispatch_ui_event(&app, &input, next_ui, window, &running,
                                               &close_request_handled_in_batch,
                                               &event)) {
                     switch (event.type) {
-                    case SDL_EVENT_GAMEPAD_ADDED:
-                        if (!gamepad) {
-                            gamepad = SDL_OpenGamepad(event.gdevice.which);
-                            if (gamepad) {
-                                const char *pad_name = SDL_GetGamepadName(gamepad);
-                                snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
-                                         "%s", pad_name ? pad_name : "Controller");
-                                app.settings.controller_connected = true;
-                                printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
-                            }
-                        }
-                        if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
-                            player_ui_nk_note_gamepad(next_ui, event.gdevice.which, true);
-                        }
-                        break;
-                    case SDL_EVENT_GAMEPAD_REMOVED:
-                        player_ui_nk_note_gamepad(next_ui, event.gdevice.which, false);
-                        if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
-                            SDL_CloseGamepad(gamepad);
-                            gamepad = NULL;
-                            app.settings.controller_name[0] = '\0';
-                            app.settings.controller_connected = false;
-                            printf("[PLAYER] Gamepad disconnected\n");
-                        }
-                        break;
                     case SDL_EVENT_USER:
                         if (ui_renderer_handle_async_event(renderer, &event)) {
                             break;
@@ -4851,6 +5258,12 @@ int main(int argc, char *argv[]) {
                                 &build_check_session_generation,
                                 &build_check_cache_generation,
                                 &build_check_pending);
+                        } else if (psn_job && event.user.data1 == psn_job) {
+                            if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
+                                sync_psn_progress(&app, psn_job);
+                            } else if (event.user.code == PLAYER_STAGING_EVENT_COMPLETE) {
+                                finish_psn_job(&app, psn_job);
+                            }
                         } else if (event.user.data1 == staging_job) {
                             if (event.user.code == PLAYER_STAGING_EVENT_PROGRESS) {
                                 sync_staging_progress(&app, staging_job);
@@ -4935,6 +5348,19 @@ int main(int argc, char *argv[]) {
         if (staging_job && app.wizard.is_extracting &&
             player_app_wizard_cancel_requested(&app)) {
             request_staging_cancel(staging_job);
+        }
+        /* A picked PSN package converts on its own worker; the wizard's cancel
+           reaches it the same way. A completion whose event was lost is
+           finished here. */
+        if (player_app_psn_conversion_take_request(&app)) {
+            start_psn_job(&app, &psn_job);
+        }
+        if (psn_job && app.psn_conversion_active &&
+            player_app_wizard_cancel_requested(&app)) {
+            request_psn_cancel(psn_job);
+        }
+        if (psn_job_finished(psn_job)) {
+            finish_psn_job(&app, psn_job);
         }
 
         if (app.selected_game_index != last_package_selection) {
@@ -5207,6 +5633,10 @@ int main(int argc, char *argv[]) {
 #endif
     }
 
+    /* Closing: a package check still hashing stops at its next read, so the
+       window does not hang until every startup check is done. */
+    SDL_SetAtomicInt(&s_player_closing, 1);
+
     /* A launch still on its worker finishes first, so its game is stopped. */
     launch_job = player_launch_job_poll(&app, launch_job, true);
     if (app.is_game_running) {
@@ -5235,6 +5665,7 @@ int main(int argc, char *argv[]) {
     }
 
     destroy_staging_job(&staging_job);
+    destroy_psn_job(&psn_job);
     if (package_status_job) {
         if (package_status_job->thread) {
             SDL_WaitThread(package_status_job->thread, NULL);

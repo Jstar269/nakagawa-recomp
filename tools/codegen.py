@@ -13,6 +13,7 @@ discovered function count and ``--funcs-per-chunk``/``--target-chunk-bytes``; it
 never a fixed per-title constant.
 """
 
+import bisect
 import struct
 import re
 import os
@@ -603,15 +604,31 @@ def symbol_map_renames(symbols, emitted, resume_owners):
     A callable entry the map names becomes f_<addr>_<name>; the address stays
     in the symbol, so two static functions that share a name stay distinct. A
     resume body takes the name of the callable that owns it: r_<addr>_<owner>.
+    Any other entry inside a function whose size the map gives, past its start,
+    is named after it with an `in_`: f_<addr>_in_<name> (r_<addr>_in_<name> for
+    a resume body whose owner has no name).
     """
+    sized = sorted((addr, size, name) for addr, (name, size) in symbols.items() if size)
+    starts = [addr for addr, _size, _name in sized]
+
+    def containing(addr):
+        i = bisect.bisect_right(starts, addr) - 1
+        if i >= 0 and addr - sized[i][0] < sized[i][1]:
+            return sized[i][2]
+        return None
+
     renames = {}
     for addr in sorted(set(emitted)):
         if addr in resume_owners:
             owner = symbols.get(resume_owners[addr])
             if owner is not None:
                 renames[f"r_{addr:08x}"] = f"r_{addr:08x}_{owner[0]}"
+            elif (inside := containing(addr)) is not None:
+                renames[f"r_{addr:08x}"] = f"r_{addr:08x}_in_{inside}"
         elif addr in symbols:
             renames[f"f_{addr:08x}"] = f"f_{addr:08x}_{symbols[addr][0]}"
+        elif (inside := containing(addr)) is not None:
+            renames[f"f_{addr:08x}"] = f"f_{addr:08x}_in_{inside}"
     return renames
 
 
@@ -1346,8 +1363,26 @@ def _flit(v):
 # fail-closed interpreter fallback until semantic evidence is admitted.
 _VFPU4_NAMED_UNIMPLEMENTED = {
     (0x01, 0x00): "vrnds",
+    (0x01, 0x01): "vrndi",  # .p/.t/.q only: vrndi.s is _vrndi_single_stmt
     (0x01, 0x02): "vrndf1",
+    (0x01, 0x03): "vrndf2",
 }
+
+
+def _vrndi_single_stmt(addr, w):
+    """vrndi.s: one draw of the VFPU random unit (issue #326).
+
+    The step is sr_vfpu_rnd_step (src/rt/recomp.h), the rule a PSP-3000 measured for
+    vrndi.s under identity S/T/D prefixes (PSP-HLE-ISSUES-001). A pending prefix is
+    unmeasured, so it stops the run with no state change, as sr_vfpu_interp refuses it.
+    """
+    d0 = vreg_indices(w & 0x7F, 1)[0]
+    return ("{ if (s->vfpuCtrl[0]!=0xe4u || s->vfpuCtrl[1]!=0xe4u || s->vfpuCtrl[2]!=0u) { "
+            f"s->pc={G(addr)}; "
+            f"fprintf(stderr, \"VFPU_UNSUPPORTED: pc=0x{addr:08x} word=0x{w:08x} issue=326\\n\"); "
+            f"sr_unimplemented({G(addr)}, \"VFPU vrndi.s under a prefix is unmeasured; issue #326\"); "
+            "sr_end(s, 0u, 0); return; } "
+            f"s->vi[{d0}]=sr_vfpu_rnd_step(&s->vfpuCtrl[8]); }}")
 
 # VFPU9 forms whose semantics follow the 2026-10-24 PSP-3000 measurement (issue
 # #326) and live only in sr_vfpu_interp: op9 -> (name, vector sizes it accepts).
@@ -1391,6 +1426,8 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
     if op == 0x34:
         jump = (w >> 21) & 0x1F
         rt_selector = (w >> 16) & 0x1F
+        if (jump, rt_selector) == (0x01, 0x01) and vec_size(w) == 1:
+            return _vrndi_single_stmt(addr, w), None, 0
         public_name = _VFPU4_NAMED_UNIMPLEMENTED.get((jump, rt_selector))
         if public_name is not None:
             raise Unsupported(
@@ -2390,12 +2427,8 @@ _SV_SPECIAL = {0x0006e9bc, 0x0006ea1c, 0x00108630, 0x0010433c}
 #   "inject" : unconditionally inject `stmt` into the branch block.
 #   "probe"  : emit a one-shot fprintf probe at function entry (no semantic
 #              change; diagnostic only).
-_GUEST_PATCH_KEYS = {0x00010950, 0x0004cdc8}
+_GUEST_PATCH_KEYS = {0x0004cdc8}
 GUEST_PATCHES = {
-    0x00010950: {"kind": "cond", "value": "0 /* bypass loop 0x10950 */",
-                 "stmt": " s->r[16] = s->r[3];",
-                 "why": "bypass spin loop at 0x10950 (worker frame init)",
-                 "issue": "#5.1"},
     0x0004cdc8: {"kind": "cond", "value": "1u",
                  "why": "route host0 asset reads through sceIoOpen so HLE can serve extracted XB files; the guest-only host filesystem is unavailable",
                  "issue": "P0 table root 0x0034a84c"},
@@ -4108,14 +4141,27 @@ def main(argv):
                 + ", ".join(collisions) + "\n")
             return 2
         emitted_set = set(emitted)
+        emitted_sorted = sorted(emitted_set)
+
+        def holds_an_entry(a, size):
+            i = bisect.bisect_left(emitted_sorted, a)
+            return i < len(emitted_sorted) and emitted_sorted[i] - a < size
+
+        # The runtime names an address inside a function from this table, so a
+        # function whose own start is not an entry is in it when an entry is inside.
         symbol_table = sorted(
-            (a, name, size) for a, (name, size) in names.items() if a in emitted_set)
+            (a, name, size) for a, (name, size) in names.items()
+            if a in emitted_set or (size and holds_an_entry(a, size)))
         if symbol_map_path is not None:
-            named_resumes = sum(1 for symbol in renames if symbol.startswith("r_"))
+            renamed = [int(symbol[2:], 16) for symbol in renames]
+            named_resumes = sum(1 for a in renamed
+                                if a in resume_owners and resume_owners[a] in names)
+            inside = sum(1 for a in renamed if a not in names
+                         and not (a in resume_owners and resume_owners[a] in names))
             sys.stderr.write(
                 f"symbol map: {sum(1 for a in symbols if a in emitted_set)} of {len(symbols)} "
                 f"function name(s) name an emitted entry; {named_resumes} resume bodies take "
-                "their owner's name\n")
+                f"their owner's name; {inside} entries inside a named function take its name\n")
         if name_imports:
             sys.stderr.write(
                 f"import names: {named_imports} of {len(import_nids)} import stubs named "

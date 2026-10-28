@@ -16,7 +16,7 @@ anything it can't handle stops the run with a named message instead of guessing.
 ```mermaid
 flowchart LR
     INTAKE["ISO and EBOOT intake<br/>tools/nk_cli.py<br/>tools/nk_core/iso_inspect.py"]
-    REFUSE["Encrypted input refused by name<br/>ENCRYPTED_EXECUTABLE / ENCRYPTED_MODULE<br/>Nakagawa does not decrypt games"]
+    REFUSE["Encrypted input the player could not decrypt<br/>refused by name: ENCRYPTED_EXECUTABLE / ENCRYPTED_MODULE<br/>(the player decrypts the user's disc, src/core/nk_psp_*)"]
     LOAD["ISO / PRX loading and import mapping<br/>src/core/nk_iso.c<br/>src/player/iso_reader.c<br/>tools/prxload.py<br/>tools/imports.py"]
     ANALYZE["Function-boundary analysis<br/>tools/analyze.py"]
     CODEGEN["AOT code generation to C<br/>tools/codegen.py"]
@@ -489,7 +489,7 @@ profile dump; a nonzero value means the hotspot ranking is incomplete and must n
 authoritative. `make profiler-selftest` covers the zero-PC and saturated-probe cases without game
 inputs.
 
-The private HST manifest adapter requests `RUNTIME_OPT=-O2` and `RECOMP_OPT=-O1`; direct Make
+The HST manifest adapter requests `RUNTIME_OPT=-O2` and `RECOMP_OPT=-O1`; direct Make
 and generic manifests remain conservative `-O0/-O0`. Explicit overrides remain fully supported.
 Generated `-O2` is not being adopted; `-O1`'s
 measured build cost is higher but acceptable for HST.

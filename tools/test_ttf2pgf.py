@@ -1397,5 +1397,20 @@ class VendorFontNameScanTests(unittest.TestCase):
         self.assertEqual(offenders, [], "tracked source names a vendor font; use a project-owned name")
 
 
+
+class IsolatedInterpreterTests(unittest.TestCase):
+    """The release bundles Python's embeddable distribution, whose ._pth file keeps the
+    script's folder off sys.path. `-I` gives a normal interpreter the same import path, so
+    BUILD PACKAGE's project-font step must still find its sibling pgf_writer module."""
+
+    def test_script_imports_its_sibling_module_without_the_script_folder_on_sys_path(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-I", str(TOOL), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("usage", result.stdout.lower())
+
 if __name__ == "__main__":
     unittest.main()
