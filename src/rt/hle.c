@@ -11414,7 +11414,9 @@ int sr_savedata_pause_busy(void) {
     return busy;
 }
 static uint32_t h_SavedataInitStart(CpuState *s) {
-    if (!A0 || !sr_guest_span_readable(A0, 0x600u) || !sr_guest_span_writable(A0, 0x600u)) return 0x80110004u;
+    if (!A0 || !sr_guest_span_readable(A0, 4u) || MEM_R32(A0) != 0x600u ||
+        !sr_guest_span_readable(A0, 0x600u) || !sr_guest_span_writable(A0, 0x600u))
+        return 0x80110004u;
     dialog_lock();
     const uint32_t claim = utility_slot_claim_locked(UTILITY_SLOT_SAVEDATA);
     if (claim) {
