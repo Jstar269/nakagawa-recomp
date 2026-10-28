@@ -2,7 +2,7 @@
 
 > **Status: CURRENT — maintained architectural contract.** Issue reference: #327. Build cache coordination coordinates with #316, and high-refresh presentation coordinates with #328.
 
-**In the works:** no enhancement package can be loaded yet. The runtime and player have no enhancement loader; today this contract, the declaration schema and the package validator exist. Sections 3, 4 and 6 state requirements the loader must meet when it lands.
+Sections 1–7 define the authentic baseline, category boundaries, fail-closed package validation (`tools/enhancement_package.py`), and AOT cache epoch separation (`tools/nk_core/package_cache.py`, `tools/codegen.py`). Declarative frame-rate rescale packages (60 Hz logic rescaling for 30 Hz titles) are implemented on the AOT codegen and package-builder path; host runtime asset replacement and overlay loaders remain in the works.
 
 ## 1. Core Principle: Authentic Mode is the Untouched Baseline
 
@@ -67,10 +67,11 @@ Camera overrides operate at the 3D projection interface, transforming guest came
 
 ### 2.6. Timing and Frame Presentation (`timing_frame_presentation`)
 
-PSP titles commonly lock physics and animation loops to 30 Hz or 60 Hz VBLANK ticks. Enhancing presentation to high-refresh rates (120 Hz, 144 Hz, 240 Hz) requires careful decoupling (see #328).
+PSP titles commonly lock physics and animation loops to 30 Hz or 60 Hz VBLANK ticks. Enhancing presentation or rescaling frame-counted game logic to run at a true 60 Hz requires strict separation from real-time clocks (see #328):
 
-- **Allowed:** Interpolating host rendering between consecutive guest frames; adjusting presentation swap intervals; multiplying display updates while keeping guest timer tick counts authentic.
-- **Forbidden:** Speeding up the guest real-time clock to force higher frame rates, which breaks animation speed, physics, and audio synchronization.
+- **Allowed:** Interpolating host rendering between consecutive guest frames; adjusting presentation swap intervals; multiplying display updates while keeping guest timer tick counts authentic; applying declarative frame-rate rescale transforms (`count_x2`, `step_x0.5`, `decay_k_to_1-sqrt(1-k)`, `probability_per_update_x0.5`, `gate_30hz`, `vblank_wait_2_to_1`, `retention_m_to_sqrt(m)`) to verified symbolic sites during an explicit AOT enhancement epoch.
+- **Forbidden:** Speeding up the guest real-time clock (`sceKernelGetSystemTime*`, `sceRtc*`, audio hardware sample clocks) to force higher frame rates, which breaks real-time clocks, physics, and audio synchronization. Only frame-counted logic is rescaled; the game's real-time clock stays 100% authentic.
+- **RNG Policy for 60 Hz Rescaling:** Frame-rate rescale packages must declare an explicit `rng_policy` (`rescale_probability` or `subtick_30hz`) with its rationale. Under `rescale_probability`, stateless per-update probability thresholds use `probability_per_update_x0.5` ($p_{60} = 0.5\,p_{30}$) so expected events per second remain invariant at 60 Hz, while stateful multi-roll PRNG sequences or coupled physics/particle steps use `gate_30hz` to step on alternate 60 Hz ticks (30 Hz cadence) without altering PRNG state evolution.
 
 ---
 
@@ -118,16 +119,18 @@ Enhancement packages are declared as versioned JSON manifests adhering to `asset
 The declaration schema is kept lean and focused on core metadata and capability requests:
 
 - **Required root properties:** `schema_version` (must be 1), `id` (package identifier), `display_name`, `version` (semver), `category` (one of the 6 recognized categories), `target_title_id` (title ID or `*`), and `capabilities` (non-empty array of symbolic capability names).
-- **Optional root properties:** `min_runtime_version` (semver) and `hooks` (array of hook objects with `symbol` and `type` only).
-- **No speculative payloads:** Payload objects for specific categories are defined when those capabilities land in the runtime, not speculatively in the base schema.
+- **Optional root properties:** `min_runtime_version` (semver), `hooks` (array of hook objects with `symbol` and `type` only), and—for declarative frame-rate rescale packages (category `timing_frame_presentation` only)—`game_version` (exact title version string), `executable_sha256` (64-char lowercase hex SHA-256 of the stock guest ELF), `rng_policy` (`mode` and `reason`), and `sites` (non-empty array of symbolic instruction-site transform descriptors).
+- **Symbolic site descriptors (`sites`):** Each site entry declares `id` (site identifier), `function` (symbolic function name, never a raw hex address or `FUN_`/`sub_`/`loc_`/`func_` stem), `insn_offset` (non-negative 4-byte-aligned byte offset inside the function), `stock_digest` (64-char lowercase hex SHA-256 of the expected little-endian stock MIPS instruction word or words), optional `word_count` (an integer from 1 to 16, default `1`, the number of words `stock_digest` covers; only `1` has a defined rewrite, so a larger value refuses the package), and `transform` (one of `count_x2`, `step_x0.5`, `decay_k_to_1-sqrt(1-k)`, `retention_m_to_sqrt(m)`, `probability_per_update_x0.5`, `gate_30hz`, `vblank_wait_2_to_1`).
+- **No speculative payloads:** Unimplemented category payloads (`assets`, `presentation`, `timing`, `camera`, `save_data`) remain forbidden in the schema until their respective runtime loaders land.
 
-The package loader strictly adheres to fail-closed principles:
+The package loader and AOT codegen hook (`tools/enhancement_package.py` and `tools/codegen.py`) strictly adhere to fail-closed principles:
 
-1. **Unknown Category:** Any package specifying an unrecognized category string is immediately rejected.
+1. **Unknown Category or Transform:** Any package specifying an unrecognized category string or site transform is immediately rejected.
 2. **Incompatible Schema Version:** Packages with `schema_version != 1` are rejected with an explicit version error.
-3. **Address Literals:** Any hook symbol or capability name containing address literal patterns fails validation.
-4. **Undeclared Properties:** Extra, unknown, or malformed JSON properties cause validation failure (`additionalProperties: false`).
-5. **Fallback to Authentic Baseline:** When an enhancement package fails to load or validate, the runtime does not crash or attempt a "best guess" execution. It reports a clear, human-readable error to the user and continues execution in 100% authentic mode.
+3. **Address Literals:** Any hook symbol, capability name, or site `function` containing address literal patterns (`0x...`, `FUN_...`, `sub_...`, `loc_...`, `func_...`, bare 6–8 digit hex strings, or integer addresses) fails validation.
+4. **Stock Instruction Digest Verification:** Before any AOT transform is emitted, `verify_and_resolve_sites()` checks `executable_sha256` against the guest ELF and verifies that the stock instruction word(s) at `function + insn_offset` match `stock_digest`. If any site's stock word differs, or if a symbolic function cannot be resolved, the entire package is refused and the build stays authentic. Codegen also refuses the package, before it writes any output, when a verified site is not emitted with its rewrite (for example, its function became an untranslatable stub).
+5. **Undeclared Properties:** Extra, unknown, or malformed JSON properties cause validation failure (`additionalProperties: false`).
+6. **Fallback to Authentic Baseline:** When an enhancement package fails to load or validate, the runtime and package builder do not crash or attempt a "best guess" partial patch. They refuse the package with a clear diagnostic and preserve 100% authentic execution.
 
 ---
 
@@ -158,7 +161,53 @@ Implementation of the enhancement subsystem is phased to maintain fidelity at ev
 3. **Phase 3: Asset Replacement Engine:**
    - Texture dumping and replacement interface at the host GPU backend.
    - Streaming replacement audio handler.
-4. **Phase 4: High-Refresh Frame Pacing (#328):**
+4. **Phase 4: High-Refresh Frame Pacing and Declarative 60 Hz Logic Rescaling (#328):**
+   - Declarative frame-rate rescale package format (`game_version`, `executable_sha256`, `rng_policy`, symbolic `sites` with `stock_digest` and the section 9.2 transforms).
+   - Fail-closed loader and stock-word digest verifier in `tools/enhancement_package.py` and `tools/codegen.py`.
+   - Separate AOT instrumentation epoch (`aot-enhancement-package-v1`) in `tools/nk_core/package_cache.py`, `tools/title_codegen_plan.py`, and `tools/nk_cli.py`, plus the run-time opt-in (`SR_EXPERIMENTAL_60HZ`, the player's `experimental_60hz` setting).
    - VBLANK multiplier and display list presentation decoupling.
 5. **Phase 5: Symbolic Guest Hook Dispatch and Cache Epochs (#316):**
    - Symbolic hook resolution via private title profiles and instrumented AOT cache keys.
+
+---
+
+## 9. Declarative Frame-Rate Rescale Packages (60 Hz Logic)
+
+### 9.1. Purpose and Invariants
+
+Many PSP titles run a 30 Hz game-logic loop by waiting two VBLANK intervals per update and tune frame-counted durations, steps, decays and per-update probabilities for $\Delta t = 1/30\text{ s}$. A frame-rate rescale package lists the instruction sites that make the loop wait two VBLANKs and the sites whose constants assume $1/30\text{ s}$, so the same logic can run once per VBLANK.
+
+1. **Authentic mode is untouched.** Without `--enhancement-package` (the default), `tools/codegen.py` output and the codegen options in the AOT cache key are byte-identical to a build without this feature. A package build records `enhancement_package_epoch` (`aot-enhancement-package-v1`), the package id and digest in its codegen options, and `nk_cli.py build-package` writes it to its own directory (`packages/<disc_id>-enhanced-<pkg_id>`), never over the authentic package. `build-package` applies a package only when its command names one; it refuses to build while the environment names one on its own (`ENHANCEMENT_PACKAGE`, also through `MAKEFLAGS`, or `--enhancement-package` in `CODEGEN_USER_ARGS`), because the Makefile would apply it.
+2. **Off at run time unless opted in.** Every rewritten site is emitted twice: the stock statement and its rewrite. The rewrite runs only when the process starts with `SR_EXPERIMENTAL_60HZ=1`; any other value runs the stock statements, so a package build with the toggle off executes the authentic instruction stream. The player exports that variable at launch when its saved `experimental_60hz` setting is on (off by default) or when it was started with `--experimental-60hz`. The flag applies to that session only and is never written to the settings file.
+3. **No faster guest clock.** System time, RTC and audio sample clocks are untouched. Only the sites the package lists change.
+
+### 9.2. Site Transforms
+
+Each `sites` entry names a symbolic `function`, a 4-byte-aligned `insn_offset`, the SHA-256 `stock_digest` of the stock little-endian instruction word, and a `transform`. `plan_site_rewrite()` in `tools/enhancement_package.py` gives each (transform, instruction) pair exactly one rewrite, chosen from the transform and the instruction encoding alone; a pair without one refuses the whole package. Only one-word sites have a defined rewrite.
+
+| Transform | Instructions with a defined rewrite | Rewrite |
+| --- | --- | --- |
+| `vblank_wait_2_to_1` | `addi`/`addiu`/`slti`/`sltiu`/`ori` with immediate 2 | immediate 2 becomes 1 |
+| `gate_30hz` | `jal`; accumulating `addiu rt, rt, imm`, `addu`/`subu`/`add`/`sub` with the destination as a source, `add.s`/`sub.s` likewise | the statement runs only on even display VBLANKs (`sr_display_vcount()`), so every instance runs on the same alternate updates |
+| `count_x2` | positive `addi`/`addiu`/`slti`/`sltiu` immediate; `andi` mask $2^n-1$; `lui` of a normal float; `sll`; integer loads; `lwc1`/`swc1`; single-precision arithmetic and `cvt.s.w`; a unit countdown `addiu rt, rt, -1` | the produced value is doubled (a countdown is gated) |
+| `step_x0.5`, `probability_per_update_x0.5` | as `count_x2` except integer loads, plus accumulating `+1`/`-1`/`addu`/`subu` updates | the produced value is halved (exactly, or by gating a unit or register step); `add.s fd, fd, ft` halves the addend `ft` |
+| `decay_k_to_1-sqrt(1-k)` | `lui` of a float $k \in (0, 1)$ | $k \to 1 - \sqrt{1-k}$, rounded to the upper half |
+| `retention_m_to_sqrt(m)` | `lui` of a float $m \in (0, 1)$ | $m \to \sqrt{m}$, rounded to the upper half |
+
+The transforms scale the operand the site produces; they do not guess its role. A constant that multiplies or bounds a random roll (`rand() % 100`, `rand * 100.0f < p`) halves the per-update probability when it is doubled, so its site declares `count_x2`, not `probability_per_update_x0.5`. A `swc1` site stores a scaled copy of its register and never writes the register, so a store that faults under `--lle-cpu` leaves it unchanged.
+
+### 9.3. Random-Number Generator (RNG) Policy
+
+Every frame-rate rescale package declares `rng_policy`. Under `rescale_probability`, single-roll per-update checks keep running every update with their probability halved; stateful multi-roll consumers are gated with `gate_30hz` so they keep their 30 Hz roll order. Under `subtick_30hz`, every roll site is gated.
+
+### 9.4. Building and Running
+
+1. Validate a package: `python tools/enhancement_package.py path/to/pkg-60hz.json`.
+2. Build a package build: `python tools/nk_cli.py build-package <DISC_ID> --enhancement-package path/to/pkg-60hz.json` (or `--experimental-60hz` with the package at `<user data>/enhancements/<disc_id>-60hz.json`, the disc ID in lowercase, for example `ulus12345-60hz.json`), or pass `ENHANCEMENT_PACKAGE=path/to/pkg-60hz.json` to `make`. Codegen resolves function names from the ELF symbol table or a `<package>.symbols.json` sidecar.
+3. Run the built executable with `SR_EXPERIMENTAL_60HZ=1` for 60 Hz logic, or without it for the authentic 30 Hz game. The player does not yet select `packages/<disc_id>-enhanced-<pkg_id>` when launching a library entry.
+
+### 9.5. Known Limitation: Gating Follows Display VBLANK Parity
+
+`gate_30hz` sites (and the unit steps and countdowns that plan a `gate` rewrite) run when `sr_display_vcount()` is even. That keeps every instance of a gated site on the same updates only while each logic update takes exactly one VBLANK. When an update takes two VBLANKs (a frame drop under load, or the toggle on while a stock two-VBLANK wait still runs), every update sees the same parity, so the gated statements run on every update or on none: the gated logic then runs at twice its intended rate or stops. Treat a package build with frame drops as unreliable.
+
+A counter that advances once per logic update would remove this, but where an update begins is title-specific (a package's `vblank_wait_2_to_1` site is the natural place, and a package need not declare one), so it is not implemented. This package format is experimental and opt-in for that reason.

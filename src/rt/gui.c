@@ -586,7 +586,9 @@ void gui_pump(void) {
     if (s_offscreen) return;
 #ifdef SR_SDL3VK
     if (s_sdl3) {
-        int alive = sdl3vk_poll();
+        /* A window close first notifies the guest's exit callback; the run goes on while the
+         * guest has its bounded window to call sceKernelExitGame (hle.c, #1392). */
+        int alive = sdl3vk_poll() ? !sr_exit_request_expired() : sr_exit_request_quit();
         sync_sdl_input();
         if (!alive) { gui_window_closed_exit(); }
         return;

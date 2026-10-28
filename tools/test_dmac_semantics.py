@@ -13,8 +13,10 @@ These assertions guard the two properties a behavioral test cannot express:
 * the measured one-byte invalid-tail prefix is the only partial shape admitted
   before a larger overrun is measured.
 
-The concurrent BUSY result remains hardware-measured but runtime-unimplemented;
-this module must not turn it into an invented synchronous state machine.
+The cross-thread BUSY result is modelled from the PSP-3000 measurement (#303):
+BUSY is returned only by a Try made while another thread's transfer is pending,
+and the blocking form waits through a scheduler block, never a sleep or a spin.
+The executable proof is ``test_dmac_active_transfer_across_threads``.
 """
 
 from pathlib import Path
@@ -106,12 +108,29 @@ class TestDmacMeasuredBoundary(unittest.TestCase):
         self.assertIn("sr_guest_vram_write_commit_bytes(dst, effective)", region)
         self.assertIn("sr_heap_note_bulk_write(dst, effective, 0u)", region)
 
-    def test_no_fabricated_busy_result(self) -> None:
-        """No concurrent probe established a BUSY return code."""
-        code = re.sub(r"/\*.*?\*/", "", _dmac_region(), flags=re.S)
+    def test_busy_only_for_a_try_during_a_pending_transfer(self) -> None:
+        """BUSY is the measured cross-thread Try result and nothing else."""
+        region = _dmac_region()
+        code = re.sub(r"/\*.*?\*/", "", region, flags=re.S)
         code = re.sub(r"//[^\n]*", "", code)
-        self.assertNotIn("0x80000021", code)
-        self.assertNotIn("SCE_DMAC_BUSY", code)
+        self.assertIn("#define SCE_DMAC_ERROR_BUSY 0x80000021u", code)
+        self.assertEqual(code.count("0x80000021"), 1)
+        self.assertEqual(code.count("return SCE_DMAC_ERROR_BUSY;"), 1)
+        pending = code.index("if (sched_transfer_pending(DMAC_TRANSFER_WAIT_OBJ, NULL)) {")
+        busy = code.index("if (try_only) return SCE_DMAC_ERROR_BUSY;")
+        self.assertLess(code.index("if (dst == 0u || src == 0u)"), pending)
+        self.assertLess(pending, busy)
+        self.assertLess(busy, code.index("memmove(SR_HOST(dst), SR_HOST(src), effective)"),
+                        "a BUSY Try returns before any byte is copied")
+
+    def test_waits_are_scheduler_blocks(self) -> None:
+        """The blocking form waits through the scheduler, never a sleep or a spin."""
+        code = re.sub(r"/\*.*?\*/", "", _dmac_region(), flags=re.S)
+        self.assertEqual(code.count("sched_block_on(DMAC_TRANSFER_WAIT_OBJ);"), 2)
+        self.assertIn("sched_transfer_begin(DMAC_TRANSFER_WAIT_OBJ)", code)
+        self.assertIn("sched_guest_thread_running() && sched_wait_permitted()", code)
+        for forbidden in ("sched_delay_current", "sched_preempt", "Sleep(", "usleep", "sr_yield"):
+            self.assertNotIn(forbidden, code)
 
     def test_measured_invalid_tail_policy_is_explicit(self) -> None:
         region = _dmac_region()
@@ -126,6 +145,7 @@ class TestDmacExecutableCoverage(unittest.TestCase):
         self.assertIn("test_dmac_semantics();", text)
         self.assertIn("test_dmac_hardware_semantics(NID_SCE_DMAC_MEMCPY", text)
         self.assertIn("test_dmac_hardware_semantics(NID_SCE_DMAC_TRY_MEMCPY", text)
+        self.assertIn("test_dmac_active_transfer_across_threads();", text)
 
     def test_regression_asserts_measured_and_policy_cases(self) -> None:
         text = (ROOT / "src" / "rt" / "hle_thread_selftest.c").read_text(encoding="utf-8")
@@ -144,6 +164,9 @@ class TestDmacExecutableCoverage(unittest.TestCase):
             "aliased VRAM destination",
             "PSP: a hardware-verified transfer size copies every byte",
             "unmeasured multi-byte invalid tail remains fail-closed",
+            "a Try made while another thread's transfer is pending returns BUSY",
+            "a blocking call made while another thread's transfer is pending returns 0",
+            "the blocking call waits and returns only after the first transfer",
         ):
             self.assertIn(needle, text)
 

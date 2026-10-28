@@ -432,16 +432,19 @@ HANDLER_METADATA = {
     # memmove-correct same-pointer and overlapping copies, and full-span copies
     # (the PSP-3000 size matrix copied fully valid spans completely through
     # 0x100000; there is no API-wide 0xC000 ceiling, see docs/ARCHITECTURE.md).
-    # The handlers remain partial because concurrent-DMA BUSY behavior and the
-    # precedence of validation for an invalid truncated tail are not established
-    # by the available evidence.
+    # The measured cross-thread contract is modelled too: a Try during another
+    # thread's pending transfer returns BUSY and a blocking call waits for it.
+    # The handlers remain partial because the transfer's guest-time duration is
+    # unmeasured (its window closes at a scheduling decision, not after a time)
+    # and the precedence of validation for an invalid truncated tail is not
+    # established by the available evidence.
     "h_DmacMemcpy": {
         "status": "partial",
-        "limitation": "concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)",
+        "limitation": "active-transfer guest-time duration unmeasured (ordering-only window) and invalid truncated-tail validation precedence unmodeled (#303, #341)",
     },
     "h_DmacTryMemcpy": {
         "status": "partial",
-        "limitation": "concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)",
+        "limitation": "active-transfer guest-time duration unmeasured (ordering-only window) and invalid truncated-tail validation precedence unmodeled (#303, #341)",
     },
     # This returns no error while the virtual ISO-backed UMD model reports its
     # disc present (activated 0x32 or deactivated 0x12). Other drive-error states
@@ -1057,7 +1060,7 @@ HANDLER_METADATA = {
         "evidence": [
             "docs/HARDWARE_ORACLE.md (PSP-B1-01: ClearEventFlag(mask) keeps only the bits in mask)",
         ],
-        "limitation": "the measured mask behavior matches the normal-object path; an unknown event-flag UID currently returns generic 0x80020000 instead of the measured unknown-event-flag code 0x8002019A, and error precedence is not covered",
+        "limitation": "the measured mask behavior matches the normal-object path; an unknown UID, or a UID of another kernel-object kind, returns the measured unknown-event-flag code 0x8002019A; error precedence is not covered",
     },
     "h_CreateFpl": {
         "status": "partial",
@@ -1308,7 +1311,7 @@ HANDLER_METADATA = {
             "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event signal/cancel before deadline and late dispatch)",
             "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: event flag poll/wait modes and outputs)",
         ],
-        "limitation": "the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown event-flag UID currently returns generic 0x80020000 instead of 0x8002019A, and other mode, pointer, and multi-waiter precedence is not established",
+        "limitation": "the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown UID, or a UID of another kernel-object kind, returns 0x8002019A; other mode, pointer, and multi-waiter precedence is not established",
     },
     "h_WaitSema": {
         "status": "partial",
