@@ -1584,7 +1584,8 @@ int main(int argc, char **argv) {{
                         json.loads(ready.stdout)["compatibility_preflight"]["checks"]}
         self.assertEqual(ready_checks["DATA_ROOT"]["status"], "OK")
         self.assertEqual(ready_checks["RUNTIME_PACKAGE"]["status"], "OK")
-        self.assertEqual(ready_checks["SYSTEM_FONTS"]["status"], "OK")
+        # Project fonts only: every font is a stand-in, not the user's own (#1300).
+        self.assertEqual(ready_checks["SYSTEM_FONTS"]["status"], "SYNTHETIC")
 
         data_root.rmdir()
         extracted_data_root = (

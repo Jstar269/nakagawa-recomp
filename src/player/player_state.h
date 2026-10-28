@@ -271,7 +271,10 @@ typedef enum {
     PREFLIGHT_STALE,
     PREFLIGHT_UNSUPPORTED,
     PREFLIGHT_IN_PROGRESS,
-    PREFLIGHT_INVALID
+    PREFLIGHT_INVALID,
+    /* Usable, but not the real thing: every PSP font is served, and at least one by a
+       stand-in (a project font or another imported size), not the user's own (#1300). */
+    PREFLIGHT_SYNTHETIC
 } PlayerPreflightStatus;
 
 typedef struct {

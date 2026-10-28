@@ -4351,7 +4351,8 @@ const char *player_preflight_status_word(const PlayerPreflightCheck *check) {
     }
     if (strcmp(check->code, "DATA_ROOT") == 0) return "Checked later";
     if (strcmp(check->code, "SYSTEM_FONTS") == 0) {
-        return check->status == PREFLIGHT_INVALID ? "Can't read" : "Some missing";
+        if (check->status == PREFLIGHT_INVALID) return "Can't read";
+        return check->status == PREFLIGHT_SYNTHETIC ? "Synthetic" : "Some missing";
     }
     switch (check->status) {
         case PREFLIGHT_MISSING: return "Needed";
@@ -4409,6 +4410,11 @@ const char *player_preflight_plain_message(const PlayerPreflightCheck *check) {
         if (check->status == PREFLIGHT_INVALID) {
             return "Your imported PSP fonts can't be read. You can import them again in the "
                    "setup wizard.";
+        }
+        if (check->status == PREFLIGHT_SYNTHETIC) {
+            return "Every PSP system font has a stand-in, but some are not your PSP's own, so "
+                   "some text may look different. You can import your PSP's own fonts in "
+                   "Settings, PSP fonts.";
         }
         return "Some PSP system fonts were not found, so some text may look different. "
                "You can import your PSP's own fonts in Settings, PSP fonts.";
@@ -5874,12 +5880,16 @@ static void player_build_compatibility_preflight_for_game(
             player_font_append(summary, sizeof(summary), " ");
         }
         player_font_append(summary, sizeof(summary), states[NK_FONT_SLOT_KOREAN].detail);
-        player_preflight_add(preflight, "SYSTEM_FONTS",
-                             every_slot ? PREFLIGHT_OK : PREFLIGHT_MISSING,
-                             summary, font_issues, every_slot ? 0 : 1);
         {
+            /* Every font served but one not the user's own is Synthetic, not OK (#1300):
+               the sentence names the fonts that are stand-ins. */
             char missing[sizeof(preflight->checks[0].plain)];
+            PlayerPreflightStatus font_preflight;
             player_font_missing_sentence(missing, sizeof(missing), states, latin_states);
+            font_preflight = !every_slot ? PREFLIGHT_MISSING
+                : missing[0] ? PREFLIGHT_SYNTHETIC : PREFLIGHT_OK;
+            player_preflight_add(preflight, "SYSTEM_FONTS", font_preflight, summary, font_issues,
+                                 font_preflight == PREFLIGHT_OK ? 0 : 1);
             if (missing[0]) player_preflight_set_plain(preflight, "%s", missing);
         }
     }
