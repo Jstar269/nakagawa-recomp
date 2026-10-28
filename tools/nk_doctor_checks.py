@@ -915,8 +915,12 @@ def discover_sdl3_provider(
             resolved_msys = Path(msys_path).resolve()
         else:
             gcc_path = shutil.which("gcc")
-            if gcc_path and "ucrt64" in str(gcc_path).lower():
-                resolved_msys = Path(gcc_path).resolve().parent
+            # Judge the toolchain by the file gcc resolves to, as the prefix below and
+            # _compiler_toolchain_mismatch do: a gcc on PATH may be a symlink into it,
+            # such as ccache's masquerade link to the toolchain's own ccache.exe.
+            resolved_gcc = Path(gcc_path).resolve() if gcc_path else None
+            if resolved_gcc and "ucrt64" in str(resolved_gcc).lower():
+                resolved_msys = resolved_gcc.parent
             elif os.environ.get("MSYS_PATH"):
                 resolved_msys = Path(os.environ["MSYS_PATH"]).resolve()
             else:

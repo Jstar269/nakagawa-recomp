@@ -10,8 +10,9 @@ Detects deterministic classes of staleness that should not require network acces
 - obsolete private/public repository-topology statements;
 - known retired public URLs outside explicitly historical evidence records;
 - repository-relative Markdown links whose targets are absent or escape the tree;
-- false "checked-in"/"Git-ignored" claims about the publication-excluded retail
-  title manifest while it is untracked;
+- stale "not checked in"/"publication-excluded"/"Git-ignored"/"private" claims
+  about the HST title manifest while it is tracked and public (and false
+  "checked-in" claims if it is ever untracked again);
 - links to repository commits unavailable in public history;
 - frozen hand-written HLE census numbers that must come from the generator;
 - a hand-written HLE registration / NID / fake-success count presented as live
@@ -130,11 +131,22 @@ HISTORICAL_EVIDENCE_DOCS = {
 # rather than editing these files.
 PROJECT_TRUTH_SNAPSHOT_PREFIX = "docs/research/project-truth/"
 
-# The retail HST manifest is publication-excluded and never checked in (with a
-# .gitignore accident guard). While it is untracked, no maintained document may
-# describe it as checked in or conflate publication exclusion with ignoring.
-# Negated forms ("intentionally not checked in", "never checked in") are the
-# correct wording and must not match.
+# The HST title manifest is tracked and public (owner decision, 2026-10-27).
+# While it is tracked, no maintained document may still call it untracked, not
+# checked in, publication-excluded, Git-ignored, private or local: a line that
+# names the manifest and makes one of those claims is stale.
+HST_MANIFEST_MENTION_PAT = re.compile(
+    r"hst-ucus98701\.json|HST(?: retail| title)? manifest", re.IGNORECASE
+)
+HST_PRIVATE_MANIFEST_CLAIM_PAT = re.compile(
+    r"(?:not|never) checked in|publication-excluded|Git-ignored|gitignored|\buntracked\b"
+    r"|\b(?:private|local),? (?:HST|retail)",
+    re.IGNORECASE,
+)
+# Should the manifest ever be untracked again, the older invariant applies: no
+# document may describe it as checked in or conflate publication exclusion
+# with ignoring. Negated forms ("never checked in") are the correct wording
+# for that state and must not match.
 HST_CHECKED_IN_MANIFEST_PAT = re.compile(
     r"(?<!not )(?<!never )checked-in HST(?: retail)? manifest", re.IGNORECASE
 )
@@ -466,8 +478,11 @@ def lint_hle_census_counts(
     return errors
 
 
-def _is_hst_manifest_tracked(repo_root: pathlib.Path = ROOT) -> bool:
-    """Return whether the retail HST manifest is tracked (it must not be)."""
+def _is_hst_manifest_tracked(repo_root: pathlib.Path = ROOT) -> bool | None:
+    """Return whether the HST title manifest is tracked (it is: it is public).
+
+    ``None`` means Git could not answer, and the manifest wording checks skip.
+    """
     try:
         res = subprocess.run(
             ["git", "ls-files", f"{TITLES_DIR}/hst-ucus98701.json"],
@@ -480,7 +495,7 @@ def _is_hst_manifest_tracked(repo_root: pathlib.Path = ROOT) -> bool:
         return bool(res.stdout.strip())
     except (OSError, subprocess.SubprocessError):
         # Without Git there is no tracked-ness evidence; skip rather than guess.
-        return True
+        return None
 
 
 def _commit_exists_in_history(sha: str, repo_root: pathlib.Path = ROOT) -> bool:
@@ -507,7 +522,7 @@ def _commit_exists_in_history(sha: str, repo_root: pathlib.Path = ROOT) -> bool:
 def lint_doc_truth(
     doc_path: pathlib.Path,
     repo_root: pathlib.Path = ROOT,
-    hst_manifest_tracked: bool = True,
+    hst_manifest_tracked: bool | None = None,
 ) -> list[str]:
     """Enforce high-value document-truth invariants (all offline)."""
     errors: list[str] = []
@@ -524,7 +539,13 @@ def lint_doc_truth(
 
     text = doc_path.read_text(encoding="utf-8")
     for idx, line in enumerate(text.splitlines(), 1):
-        if not hst_manifest_tracked:
+        if hst_manifest_tracked is True:
+            if HST_MANIFEST_MENTION_PAT.search(line) and HST_PRIVATE_MANIFEST_CLAIM_PAT.search(line):
+                errors.append(
+                    f"{rel_path}:{idx}: calls the HST title manifest private, local, untracked "
+                    "or excluded, but assets/titles/hst-ucus98701.json is tracked and public"
+                )
+        elif hst_manifest_tracked is False:
             if HST_CHECKED_IN_MANIFEST_PAT.search(line):
                 errors.append(
                     f"{rel_path}:{idx}: calls the retail HST manifest 'checked-in' "

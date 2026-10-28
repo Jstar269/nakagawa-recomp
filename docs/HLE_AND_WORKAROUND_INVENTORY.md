@@ -46,24 +46,24 @@ names #341 on every entry and only shrinks: reviewing a handler retires its entr
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **634** (dedicated **524**, fake_success **4**, controlled_unsupported **106**).
-Semantic handler census: **492** handlers across **25** API families, covering **530** handler-associated NID registrations.
+Registered NIDs: **637** (dedicated **527**, fake_success **4**, controlled_unsupported **106**).
+Semantic handler census: **504** handlers across **25** API families, covering **533** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 13 | 22 |
-| `partial` | 166 | 168 |
+| `partial` | 171 | 173 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 310 | 333 |
+| `unreviewed` | 317 | 331 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | `newlib` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
-| `sceAtrac` | 0 | 0 | 0 | 0 | 24 | 24 | 33 |
+| `sceAtrac` | 0 | 0 | 0 | 0 | 30 | 30 | 33 |
 | `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
-| `sceCtrl` | 0 | 2 | 0 | 0 | 7 | 9 | 9 |
+| `sceCtrl` | 0 | 5 | 0 | 0 | 7 | 12 | 12 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
@@ -71,7 +71,7 @@ Semantic handler census: **492** handlers across **25** API families, covering *
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
-| `sceKernel` | 3 | 77 | 0 | 0 | 98 | 178 | 197 |
+| `sceKernel` | 3 | 79 | 0 | 0 | 99 | 181 | 199 |
 | `sceMp3` | 0 | 0 | 0 | 0 | 20 | 20 | 20 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceNp` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
@@ -82,9 +82,9 @@ Semantic handler census: **492** handlers across **25** API families, covering *
 | `sceRtc` | 4 | 5 | 0 | 0 | 0 | 9 | 9 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
 | `sceUmd` | 0 | 2 | 1 | 0 | 10 | 13 | 13 |
-| `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
+| `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 29 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **13** | **166** | **1** | **2** | **310** | **492** | **530** |
+| **Total** | **13** | **171** | **1** | **2** | **317** | **504** | **533** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -196,12 +196,24 @@ Semantic handler census: **492** handlers across **25** API families, covering *
   - Limitation: the returns for an unreserved slot, a held slot (0x80268002, including Output2 holding it), sample counts 0 (0x80000104), 65 and 4096 (accepted), 48000 Hz (accepted) and channel counts 1 (0x80000104) and 4 (0x80000003) are measured (PSP-HLE-AUDIO-SRC-001); the upper sample-count bound reuses the Output2 range 17..4111, channel counts other than 1, 2 and 4 take the code measured for 4, and rates other than 44100 and 48000 are refused with that same code and a message, all unmeasured (#339)
 - **`h_AudioSRCOutputBlocking`** (`sceAudio`): `sceAudioSRCOutputBlocking` (0xe0727056)
   - Limitation: returns 0x80260008 with nothing reserved and the reserved sample count after a reserve (0x400), both measured (PSP-HLE-AUDIO-SRC-001); the volume bound reuses the Output2 bound and the NULL or unreadable buffer result follows the regular output, both unmeasured; the host mixer runs at 44100 Hz, so a 48000 Hz block passes through a band-limited converter and keeps its source-rate pacing (#339)
+- **`h_CtrlGetSamplingCycle`** (`sceCtrl`): `sceCtrlGetSamplingCycle` (0x02baad91)
+  - Limitation: reports the cycle retained by sceCtrlSetSamplingCycle; PSPAutotests leaves the NULL out-pointer call out as crashing a PSP, so the ILLEGAL_ADDR refusal used here instead is the runtime's fail-closed choice, not a measured code
+  - Evidence: src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix
+  - Evidence: PSPAutotests tests/ctrl/sampling (power-on cycle 0, set/get round trip)
 - **`h_CtrlGetSamplingMode`** (`sceCtrl`): `sceCtrlGetSamplingMode` (0xda6b76a1)
   - Limitation: reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured
 - **`h_CtrlPeekLatch`** (`sceCtrl`): `sceCtrlPeekLatch` (0xb1d0e5cd)
   - Limitation: the transition and return words are the sceCtrlReadLatch model, source-tested; the non-clearing peek is the project's model and is not hardware measured, because PSP-HLE-CTRL-LATCH-001 cannot tell clearing from keeping (its release field stays saturated with no input)
   - Evidence: src/rt/hle_thread_selftest.c:test_ctrl_peek_latch_keeps_the_latch
   - Evidence: hardware oracle 2026-10-15 PSP-HLE-CTRL-LATCH-001 cases latch-peek-initial and latch-peek-after-poll (no input gives make break press 0 and release 0xFFFFFFFF)
+- **`h_CtrlSetSamplingCycle`** (`sceCtrl`): `sceCtrlSetSamplingCycle` (0x6a2774f3)
+  - Limitation: validates and stores the cycle, but samples are still latched once per VBLANK whatever the cycle (#1390)
+  - Evidence: src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix
+  - Evidence: PSPAutotests tests/ctrl/sampling2 (0 and 5555..20000 accepted, other cycles refused with 0x800001FE, cycle kept)
+- **`h_CtrlSetSamplingMode`** (`sceCtrl`): `sceCtrlSetSamplingMode` (0x1f4011e6)
+  - Limitation: validates and stores the mode, but digital mode does not yet centre the sampled analog axes (#1390); whether firmware truncates the argument to 8 bits before the range check is not measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_ctrl_sampling_mode_cycle_matrix
+  - Evidence: PSPAutotests tests/ctrl/sampling (modes 2 and -1 refused with 0x80000107, mode kept)
 - **`h_DisplaySetFrameBuf`** (`sceDisplay`): `sceDisplaySetFrameBuf` (0x289d82fe)
   - Limitation: display-smoke covers only a sync=1 8888 flip with stride 512; other format, address, stride, and error-precedence cases remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
@@ -215,9 +227,9 @@ Semantic handler census: **492** handlers across **25** API families, covering *
 - **`h_DisplayWaitVblankStartMulti`** (`sceDisplay`): `sceDisplayWaitVblankStartMulti` (0x40f1469c)
   - Limitation: waits the requested positive count of scheduler VBLANK periods; zero count returns SCE_KERNEL_ERROR_INVALID_VALUE (0x800001fe) before the wait-context check, following the historical waits-matrix transcription; callback behavior and hardware timing are not measured
 - **`h_DmacMemcpy`** (`sceDmac`): `sceDmacMemcpy` (0x617f3fe6)
-  - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
+  - Limitation: active-transfer guest-time duration unmeasured (ordering-only window) and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
-  - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
+  - Limitation: active-transfer guest-time duration unmeasured (ordering-only window) and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_GeBreak`** (`sceGe`): `sceGeBreak` (0xb448ec0d)
   - Limitation: models synchronous display list pause (mode 0) and queue reset (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); PSP-measured in the eligible PSP-GE-CONTROL-001 2026-10-15 re-run: the 0x80000020 no-active-list result, the invalid-mode result 0x80000107 (mode -1 only), the mode 0 queue id and the paused sync statuses (4, 2) for a list broken mid-draw, the mode 1 result 0 with one list stalled at its start, and the 0x80000100 sync result for a list the reset removed; a list enqueued with no stall address completes inside sceGeListEnQueue, so the runtime cannot reproduce the mid-draw break and returns 0x80000020 with sync peeks of 0 on that sequence; breaking a stalled list, a mode 1 reset of a paused list and modes above 1 are unmeasured and follow the same codes
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
@@ -260,7 +272,7 @@ Semantic handler census: **492** handlers across **25** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0004 and io-dopen-0005 close results)
   - Evidence: src/rt/hle_thread_selftest.c:test_umd_io_console_model
 - **`h_IoDevctl`** (`sceIo`): `sceIoDevctl` (0x54f5fb11)
-  - Limitation: Memory Stick devctl callback events unmodeled (#341)
+  - Limitation: Memory Stick insert/eject callbacks are notified once, with argument 1, when registered; no later insert or eject event exists, and the 32-entry bound, duplicate entries and 0x80010016 refusals follow PPSSPP's model, not a hardware measurement (#1378)
 - **`h_IoDopen`** (`sceIo`): `sceIoDopen` (0xb29ddf9c)
   - Limitation: the measured cells establish results and close outcomes for six fixed UMD/disc path calls only; directory contents/order, MS0 paths and general error precedence remain unmeasured (#341)
   - Evidence: src/rt/hle_thread_selftest.c:test_umd_io_console_model
@@ -338,6 +350,10 @@ Semantic handler census: **492** handlers across **25** API families, covering *
 - **`h_CancelEventFlag`** (`sceKernel`): `sceKernelCancelEventFlag` (0xcd203292)
   - Limitation: the cited cell measures a blocked waiter's WAIT_CANCEL outcome after event cancellation; it does not establish the cancel call's return, pattern assignment, waiter-count output, unknown-ID behavior, pointer errors, or multiple-waiter ordering
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)
+- **`h_CancelMsgPipe`** (`sceKernel`): `sceKernelCancelMsgPipe` (0x349b864d)
+  - Limitation: releases every active send and receive waiter with WAIT_CANCEL, writes both waiter counts and each timed waiter's remaining timeout and empties the buffer; a waiter paused inside a callback, the unknown-UID code and error precedence are not hardware measured (#1381)
+  - Evidence: PSPAutotests tests/threads/msgpipe (cancel case: waiters released with WAIT_CANCEL, counts and remaining timeout written)
+  - Evidence: src/rt/hle_thread_selftest.c:test_msgpipe_cancel_and_refer
 - **`h_CancelReceiveMbx`** (`sceKernel`): `sceKernelCancelReceiveMbx` (0x87d4dd36)
   - Limitation: cancel with zero waiters and invalid numWait-thread pointer error class unmeasured (#339, #341)
 - **`h_CancelSema`** (`sceKernel`): `sceKernelCancelSema` (0x8ffdf9a2)
@@ -345,7 +361,7 @@ Semantic handler census: **492** handlers across **25** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema(-1) restores the create-time initial count)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)
 - **`h_ClearEventFlag`** (`sceKernel`): `sceKernelClearEventFlag` (0x812346e4)
-  - Limitation: the measured mask behavior matches the normal-object path; an unknown event-flag UID currently returns generic 0x80020000 instead of the measured unknown-event-flag code 0x8002019A, and error precedence is not covered
+  - Limitation: the measured mask behavior matches the normal-object path; an unknown UID, or a UID of another kernel-object kind, returns the measured unknown-event-flag code 0x8002019A; error precedence is not covered
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: ClearEventFlag(mask) keeps only the bits in mask)
 - **`h_CreateFpl`** (`sceKernel`): `sceKernelCreateFpl` (0xc07bb470)
   - Limitation: the cited cells cover valid pool creation and block/status behavior; the handler converts zero block size/count to 16/1, a branch not established by those cited valid-pool cells, and allocation exhaustion plus partition, attribute, and option error precedence need separate evidence
@@ -448,6 +464,11 @@ Semantic handler census: **492** handlers across **25** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: valid FPL layout, short/zero-size writes, free counts, and refer-after-delete)
 - **`h_ReferMbxStatus`** (`sceKernel`): `sceKernelReferMbxStatus` (0xa8e8c846)
   - Limitation: size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)
+- **`h_ReferMsgPipeStatus`** (`sceKernel`): `sceKernelReferMsgPipeStatus` (0x33be4024)
+  - Limitation: reports name, attr, buffer size, free size and the active send and receive waiter counts for a known pipe, honours a short or zero size word and checks the whole span before writing; the unknown-UID and NULL-pointer codes and error precedence are source-selftested, not hardware measured (#1381)
+  - Evidence: public ABI (PSPSDK pspthreadman.h: SceKernelMppInfo, 56 bytes)
+  - Evidence: PSPAutotests tests/threads/msgpipe (refer counts beside the cancel and delete cases)
+  - Evidence: src/rt/hle_thread_selftest.c:test_msgpipe_cancel_and_refer
 - **`h_ReferMutexStatus`** (`sceKernel`): `sceKernelReferMutexStatus` (0xa9c2cb9a)
   - Limitation: the cited cell covers an unlocked mutex and its measured status words; size variants, recursive ownership, invalid pointers, and unknown-UID fields are not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-refer-unlocked status fields)
@@ -537,7 +558,7 @@ Semantic handler census: **492** handlers across **25** API families, covering *
   - Limitation: the cited cases cover owner release in the priority-inheritance control and interrupt-context refusal; invalid UIDs, bad counts, and multi-waiter priority ordering are not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-priority-inheritance owner release and accepted interrupt-context cell)
 - **`h_WaitEventFlag`** (`sceKernel`): `sceKernelWaitEventFlag` (0x402fcf22)
-  - Limitation: the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown event-flag UID currently returns generic 0x80020000 instead of 0x8002019A, and other mode, pointer, and multi-waiter precedence is not established
+  - Limitation: the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown UID, or a UID of another kernel-object kind, returns 0x8002019A; other mode, pointer, and multi-waiter precedence is not established
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event signal/cancel before deadline and late dispatch)
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: event flag poll/wait modes and outputs)
 - **`h_WaitSema`** (`sceKernel`): `sceKernelWaitSema` (0x4e3a1105)
@@ -695,7 +716,7 @@ Title Configuration Overrides (src/rt/title_config.c):
 #### 1. `libfont.prx` Startup Refusal Boundary
 
 - **Location:** `src/rt/hle.c` (`h_LoadModule`, `h_StartModule`) and the runtime-binding validators.
-- **Mechanism:** `sceKernelLoadModule` leaves readiness untouched. `sceKernelStartModule` runs a translated guest `libfont.prx` entry when the `SR_REAL_MODULE_START` gate allows it (`1` for any module, unset for `libfont` and for guest-placed modules whose exports host HLE does not serve, `0` never). If startup is unavailable (untranslated entry, no recorded entry, or the kill switch), it reports `LIBFONT_STARTUP_UNAVAILABLE`, leaves guest memory unchanged and returns `SCE_KERNEL_ERROR_NOTIMP`. A repeated successful start still refuses re-entry. Legacy manifests that set `libfont_ready_flag_addr` fail validation with `LIBFONT_READY_FLAG_RETIRED` and a migration sentence.
+- **Mechanism:** `sceKernelLoadModule` leaves readiness untouched. `sceKernelStartModule` runs a translated guest `libfont.prx` entry when the `SR_REAL_MODULE_START` gate allows it (`1` for any module, unset for `libfont` and for guest-placed modules whose exports host HLE does not serve, `0` never). If startup is unavailable (untranslated or refused image, no recorded entry, or the kill switch), it reports `LIBFONT_STARTUP_UNAVAILABLE`, leaves guest memory unchanged and stops the run at the named semantic boundary `libfont-startup-unavailable`, which the player shows as a stopped-early card. A repeated successful start still refuses re-entry. Legacy manifests that set `libfont_ready_flag_addr` fail validation with `LIBFONT_READY_FLAG_RETIRED` and a migration sentence.
 - **Root Cause:** An earlier compatibility bypass skipped `module_start` and wrote readiness during load. Translated startup and export routing now have a source-owned production-path fixture. Real-title startup readiness remains unverified when no locally supplied decrypted executable and PRXs are available.
 - **Lower-Level Solution:** Provide translated guest startup and its kernel, thread, callback, heap and file dependencies; remove the retired field from existing manifests.
 
@@ -807,9 +828,9 @@ The current registration classes and semantic statuses are in the generated cens
 | `sceUtility` | `sceUtilityLoadNetModule` (`0x1579a159`) and `sceUtilityUnloadNetModule` (`0x64d50c56`) | Controlled refusal: `0x80110001` (`SCE_ERROR_UTILITY_INVALID_STATUS`). |
 | `sceUmdUser` | `sceUmdCancelWaitDriveStat` (`0x6af9b50a`) | Controlled refusal: `0x80010086` (function not supported). Drive-wait cancellation is not modeled. |
 | `sceUmdUser` | `sceUmdGetErrorStat` (`0x20628e6f`) | Compatibility implementation: returns no error while the virtual ISO drive reports its modeled PRESENT/READY/READABLE state; other drive-error states are not modeled (#281). |
-| `IoFileMgrForUser` | `sceIoDevctl` (`0x54f5fb11`) | Partial Memory Stick support for `ms0:` and `fatms0:`: capacity/free-cluster geometry comes from the unified Memory Stick root shared with ordinary `sceIo*` and savedata (`SR_MEMSTICK`, default `memstick/`); inserted and ready queries write 1 and 4; insert/eject callback commands store or clear a UID but never dispatch callbacks. Other device/command pairs return `0x80010086`, log once per pair, and appear in the #281 exit summary. The callback event model is in the works (#281). |
+| `IoFileMgrForUser` | `sceIoDevctl` (`0x54f5fb11`) | Partial Memory Stick support for `ms0:` and `fatms0:`: capacity/free-cluster geometry comes from the unified Memory Stick root shared with ordinary `sceIo*` and savedata (`SR_MEMSTICK`, default `memstick/`); inserted and ready queries write 1 and 4; registering a live callback for insert/eject events adds it to a 32-entry list and queues one notification with argument 1 (inserted), delivered on the owning thread at its next callback point; unregister removes one matching entry, an unknown UID returns `0x80010016`, and deleting a callback drops its registrations. No later insert or eject event exists ([#1378](https://github.com/Jstar269/nakagawa-recomp/issues/1378)). Other device/command pairs return `0x80010086`, log once per pair, and appear in the #281 exit summary. |
 | `sceAtrac3plus` | `sceAtracGetOutputChannel` (`0xb3b5d042`) | Compatibility exception: existing acceptance is retained while output-channel mapping is tracked by #286. |
-| `sceKernelVolatileMemUnlock` | `sceKernelVolatileMemUnlock` (`0xa569e425`) | Compatibility exception: the documented asset-loading route uses this call around the shared volatile-memory scratch buffer; its lock ownership semantics remain unmodeled (#281). |
+| `sceKernelVolatileMemUnlock` | `sceKernelVolatileMemUnlock` (`0xa569e425`) | Compatibility exception at the migration: the documented asset-loading route uses this call around the shared volatile-memory scratch buffer (#281). It now returns the PSP-measured states (#1135) and hands the lock to the oldest `sceKernelVolatileMemLock` caller blocked on it (#1383). |
 | `sceUtility` | `sceUtilityOskUpdate` (`0x4b85c861`) | Compatibility exception: the current route collects text and advances the OSK state from `sceUtilityOskGetStatus`; update keeps its no-op success while that dialog contract is unfinished (#281). |
 
 ---

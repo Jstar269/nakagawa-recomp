@@ -21,6 +21,8 @@
 #include "nk_psp_keystore.h"
 #include "nk_psp_kirk.h"
 #include "nk_psp_kle.h"
+#include "nk_psp_lzrc.h"
+#include "nk_psp_npumdimg.h"
 #include "nk_psp_sha1.h"
 #include "psp_seal_fixture.h"
 
@@ -2839,6 +2841,166 @@ static void test_ec_verify(void) {
 }
 
 
+/* ---------------------------------------------------------------------------
+ * 8. PSN UMD images (NPUMDIMG) and the LZRC decoder (issue #295, phase 2)
+ *
+ * A synthetic PBP whose DATA.PSAR is an NPUMDIMG image, sealed with constant
+ * fake keys through the production DRM BB calls (tests/native/
+ * psp_seal_fixture.h), is mutated and run through the PBP identification, the
+ * header/table parse and every block read. LZRC gets random streams into a
+ * guarded buffer. Ceilings: block size 1..4096 sectors, image <= 4 GiB, the
+ * whole table and every block inside the file, LZRC output <= the caller's
+ * length.
+ * -------------------------------------------------------------------------- */
+
+typedef struct {
+    const uint8_t *data;
+    size_t size;
+} FuzzMemSource;
+
+static int fuzz_mem_read_at(void *user, uint64_t offset, void *buf, size_t len) {
+    const FuzzMemSource *mem = (const FuzzMemSource *)user;
+    if (offset > mem->size || (uint64_t)len > mem->size - offset) return -1;
+    memcpy(buf, mem->data + offset, len);
+    return 0;
+}
+
+static int fuzz_npumdimg_known(int rc) {
+    return rc == NK_PSP_OK || rc == NK_PSP_ERR_INPUT || rc == NK_PSP_ERR_FORMAT ||
+           rc == NK_PSP_ERR_INTEGRITY || rc == NK_PSP_ERR_UNSUPPORTED ||
+           rc == NK_PSP_ERR_DECOMPRESS || rc == NK_PSP_ERR_FIRMWARE ||
+           rc == NK_PSP_ERR_PSONE;
+}
+
+/* Identify, open and read every block; returns the first failure or OK. */
+static int fuzz_npumdimg_walk(NkKeystore *ks, const uint8_t *pbp, size_t size,
+                              uint8_t *image, size_t image_cap) {
+    FuzzMemSource mem = { pbp, size };
+    NkPsarSource src = { fuzz_mem_read_at, &mem, size };
+    NkPbpInfo info;
+    NkNpumdimg *img = NULL;
+    NkPspCtx ctx;
+    int rc;
+    nk_psp_ctx_init(&ctx, ks);
+    rc = nk_pbp_identify(&ctx, &src, &info);
+    if (rc != NK_PSP_OK) return rc;
+    rc = nk_npumdimg_open(&ctx, &src, &info, &img);
+    if (rc != NK_PSP_OK) return rc;
+    assert(nk_npumdimg_block_lbas(img) >= 1u &&
+           nk_npumdimg_block_lbas(img) <= NK_NPUMDIMG_MAX_BLOCK_LBAS);
+    assert(nk_npumdimg_lba_count(img) <= NK_NPUMDIMG_MAX_LBAS);
+    for (uint32_t b = 0; b < nk_npumdimg_block_count(img); b++) {
+        const uint8_t *data = NULL;
+        size_t block_bytes = (size_t)nk_npumdimg_block_lbas(img) * NK_NPUMDIMG_SECTOR;
+        rc = nk_npumdimg_read_block(&ctx, img, b, &data);
+        if (rc != NK_PSP_OK) break;
+        assert(data != NULL);
+        if (image != NULL && (size_t)(b + 1u) * block_bytes <= image_cap) {
+            memcpy(image + (size_t)b * block_bytes, data, block_bytes);
+        }
+    }
+    nk_npumdimg_close(img);
+    return rc;
+}
+
+static void test_fuzz_npumdimg(unsigned iters) {
+    enum { SECTORS = 24, GUARD = 64, LZ_CAP = 4096 };
+    static const int rows[3] = { 0x38, 0x39, 0x63 };
+    static const char *const values[3] = { "amctrl.loc_1CD4", "amctrl.loc_1CE4",
+                                            "amctrl.loc_1CF4" };
+    printf("[FUZZ] Testing PBP identify, NPUMDIMG image and LZRC decoder "
+           "(%u iterations)...\n", iters);
+    fflush(stdout);
+
+    char json[2048];
+    size_t at = 0;
+    at += (size_t)snprintf(json + at, sizeof(json) - at,
+                           "{\"format\":\"" FUZZ_KEYSTORE_FORMAT "\",\"entries\":{");
+    for (unsigned i = 0; i < 6u; i++) {
+        uint8_t fake[16];
+        char hex[33];
+        fuzz_fake_key(fake, 40u + i);
+        fuzz_hex_encode(fake, sizeof(fake), hex);
+        if (i < 3u) {
+            at += (size_t)snprintf(json + at, sizeof(json) - at, "%s\"kirk.keyvault.%d\":\"%s\"",
+                                   i ? "," : "", rows[i], hex);
+        } else {
+            at += (size_t)snprintf(json + at, sizeof(json) - at, ",\"%s\":\"%s\"",
+                                   values[i - 3u], hex);
+        }
+        assert(at < sizeof(json));
+    }
+    at += (size_t)snprintf(json + at, sizeof(json) - at, "}}");
+    assert(at < sizeof(json));
+    NkKeystore *ks = nk_keystore_create();
+    char kerr[256];
+    assert(ks != NULL);
+    assert(nk_keystore_load_json(ks, json, at, kerr, sizeof(kerr)) == NK_PSP_OK);
+
+    /* A patterned "disc image": the reader checks layout, not content. */
+    static uint8_t iso[SECTORS * 2048];
+    for (size_t i = 0; i < sizeof(iso); i++) iso[i] = (uint8_t)(i * 7u + (i >> 11));
+    NkPspCtx seal;
+    nk_psp_ctx_init(&seal, ks);
+    size_t seed_len = 0;
+    uint8_t *seed = psp_seal_npumdimg_pbp(&seal, "TEST80901", iso, sizeof(iso), 4u, &seed_len);
+    static uint8_t image[SECTORS * 2048];
+    memset(image, 0, sizeof(image));
+    assert(fuzz_npumdimg_walk(ks, seed, seed_len, image, sizeof(image)) == NK_PSP_OK);
+    assert(memcmp(image, iso, sizeof(iso)) == 0);
+
+    uint8_t *work = (uint8_t *)malloc(seed_len);
+    assert(work != NULL);
+    size_t psar_at = (size_t)seed[0x24] | ((size_t)seed[0x25] << 8) |
+                     ((size_t)seed[0x26] << 16) | ((size_t)seed[0x27] << 24);
+    unsigned opened = 0;
+    for (unsigned i = 0; i < iters; i++) {
+        memcpy(work, seed, seed_len);
+        unsigned flips = 1u + fuzz_rand32() % 6u;
+        for (unsigned f = 0; f < flips; f++) {
+            size_t pos;
+            switch (fuzz_rand32() % 4u) {
+            case 0: pos = fuzz_rand32() % 0x28u; break;                  /* PBP header */
+            case 1: pos = psar_at + fuzz_rand32() % 0x100u; break;       /* image header */
+            case 2: pos = psar_at + 0x100u + fuzz_rand32() % 0xC0u; break; /* block table */
+            default: pos = fuzz_rand32() % seed_len; break;
+            }
+            if (pos < seed_len) work[pos] ^= (uint8_t)(1u + fuzz_rand32() % 255u);
+        }
+        size_t size = (fuzz_rand32() % 8u == 0u) ? fuzz_rand32() % seed_len : seed_len;
+        int rc = fuzz_npumdimg_walk(ks, work, size, NULL, 0);
+        assert(fuzz_npumdimg_known(rc));
+        if (rc == NK_PSP_OK) opened++;
+    }
+    free(work);
+    free(seed);
+    nk_keystore_free(ks);
+
+    /* LZRC: random streams never write outside the caller's length. */
+    uint8_t *out = (uint8_t *)malloc(LZ_CAP + 2u * GUARD);
+    uint8_t in[512];
+    unsigned decoded = 0;
+    assert(out != NULL);
+    for (unsigned i = 0; i < iters; i++) {
+        size_t in_len = fuzz_rand32() % sizeof(in);
+        size_t out_len = fuzz_rand32() % LZ_CAP;
+        for (size_t k = 0; k < in_len; k++) in[k] = (uint8_t)fuzz_rand32();
+        if (in_len > 0u && (i & 1u)) in[0] &= 0x7Fu; /* mostly coded streams */
+        memset(out, FUZZ_CANARY, LZ_CAP + 2u * GUARD);
+        int got = nk_psp_lzrc_decompress(out + GUARD, out_len, in, in_len);
+        assert(got <= (int)out_len);
+        for (size_t k = 0; k < GUARD; k++) {
+            assert(out[k] == FUZZ_CANARY);
+            assert(out[GUARD + out_len + k] == FUZZ_CANARY);
+        }
+        if (got >= 0) decoded++;
+    }
+    free(out);
+    printf("[FUZZ] NPUMDIMG completed: %u/%u mutated packages opened, %u/%u LZRC "
+           "streams decoded, 0 crashes\n", opened, iters, decoded, iters);
+    fflush(stdout);
+}
+
 int main(int argc, char **argv) {
     unsigned iters = 100;
 
@@ -2872,6 +3034,7 @@ int main(int argc, char **argv) {
     test_fuzz_inflate(iters > 2000 ? 2000 : iters);
     test_fuzz_kirk(iters > 2000 ? 2000 : iters);
     test_fuzz_kle(iters > 2000 ? 2000 : iters);
+    test_fuzz_npumdimg(iters > 2000 ? 2000 : iters);
     test_kirk_ecdsa_curve_names();
     test_ec_mod_n_is_bounded(iters > 2000 ? 2000 : iters);
     test_ec_verify();

@@ -56,8 +56,9 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
      "Draws the project's moving test pattern. There is nothing to play.", ""},
     {"synthetic-allegrex-v1", "Works", PLAYER_UI_TIER_NONE,
      "Runs the project's test program, then closes.", ""},
-    {"pspdev-phase5-v1", "Boots to a named boundary", PLAYER_UI_TIER_WONT_BOOT,
-     "A project test module. It does not start from the player yet.", ""},
+    {"pspdev-phase5-v1", "Partially works", PLAYER_UI_TIER_WONT_BOOT,
+     "A small test program from the Nakagawa project. It doesn't start from the player yet.",
+     ""},
     {"synthetic-title2-v1", "Works", PLAYER_UI_TIER_NONE,
      "Runs the project's test program, then closes.", ""},
     {"showcase-scene-v1", "Partially works", PLAYER_UI_TIER_PLAYABLE,
@@ -68,10 +69,10 @@ static const PlayerUiCompatibilityRecord s_compatibility_records[] = {
        (#1297). */
     {"UCUS98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
      "Plays full matches and Story Mode.",
-     "Known issues: low frame rate, sound drops out, and movies show black."},
+     "Known issues: a few late sound wakes while loading, and some movies show black."},
     {"UCUS-98701", "Boots to a named boundary", PLAYER_UI_TIER_PLAYABLE,
      "Plays full matches and Story Mode.",
-     "Known issues: low frame rate, sound drops out, and movies show black."},
+     "Known issues: a few late sound wakes while loading, and some movies show black."},
     {"PAC-MAN Championship Edition", "Partially works", PLAYER_UI_TIER_NONE,
      "Reaches the title screen and plays a stage. The rest of the game has not been tried yet.",
      ""}
@@ -111,6 +112,13 @@ struct PlayerUiNk {
     PlayerView last_view;   /* the view drawn last, for the focus a Settings page returns to */
     unsigned flow_screen;   /* which flow screen drew last; 0 outside them */
     NkUiId pre_flow_focus;  /* the library focus to give back on leaving */
+    int pre_flow_game_count; /* titles in the library when the flow opened */
+    /* The title page's PLAY or BUILD PACKAGE went off while it had focus
+       (STARTING..., a running game): focus returns to it when it comes back
+       on, unless the user has moved since. title_primary_fallback is where
+       focus went meanwhile. */
+    bool title_primary_refocus;
+    NkUiId title_primary_fallback;
     NkUiPromptImages prompt_images;  /* Kenney glyphs; empty ones keep the geometry */
     PlayerUiArt *art;                /* disc ICON0 / PIC1, decoded at run time */
     PlayerUiSounds *sounds;          /* optional launcher sounds (ui_sounds) */
@@ -130,6 +138,7 @@ struct PlayerUiNk {
     size_t library_focus_index;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
     bool icon_reported[PLAYER_UI_TITLE_CAP];
+    char status_reported[PLAYER_UI_TITLE_CAP][32]; /* the status word last printed */
     int disc_reported_view;  /* the game-found card whose rows were printed, or -1 */
 #endif
     bool ready;
@@ -204,10 +213,18 @@ static bool player_ui_add_font(NkUiTtf *ttf, int font, const char *base_path,
    to Geist for Latin it lacks and to Noto Sans JP for Japanese titles. */
 static bool player_ui_register_fonts(NkUiTtf *ttf, const char *base_path,
                                      char *error, size_t error_size) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    /* Stands in for a ZIP extracted without its fonts folder. */
+    if (getenv("NK_UI_TEST_HIDE_UI_FONTS") != NULL) {
+        player_ui_set_error(error, error_size,
+                            "its fonts (assets\\fonts\\ui) are missing or damaged");
+        return false;
+    }
+#endif
     for (int font = 0; font < NK_UI_FONT_COUNT; ++font) {
         if (!player_ui_add_font(ttf, font, base_path, nk_ui_font_path(font))) {
             player_ui_set_error(error, error_size,
-                                "The next UI could not load the bundled UI fonts.");
+                                "its fonts (assets\\fonts\\ui) are missing or damaged");
             return false;
         }
     }
@@ -321,7 +338,7 @@ static bool player_ui_disc_view(PlayerView view) {
 static bool player_ui_settings_view(PlayerView view) {
     return view == VIEW_SETTINGS || view == VIEW_ONLINE_SETTINGS ||
            view == VIEW_PREREQ_ABOUT || view == VIEW_CONFIRM_REMOVE_TOOLS ||
-           view == VIEW_BUILD_CACHE;
+           view == VIEW_BUILD_CACHE || view == VIEW_PSP_FONTS;
 }
 
 /* The views the next UI draws: the library (router screens), the setup wizard,
@@ -330,17 +347,22 @@ static bool player_ui_settings_view(PlayerView view) {
    the developer log. */
 static bool player_ui_nk_flow_view(PlayerView view) {
     return view == VIEW_SETUP_WIZARD || view == VIEW_BUILDING_PACKAGE ||
+           view == VIEW_PREPARING ||
            view == VIEW_PREREQ_CONSENT ||
            view == VIEW_PREREQ_PROGRESS || view == VIEW_ERROR ||
            player_ui_disc_view(view) || player_ui_settings_view(view) ||
            view == VIEW_CONTROLLER_SETTINGS || view == VIEW_DEVELOPER_LOG;
 }
 
+bool player_ui_nk_draws_view(int view_value) {
+    PlayerView view = (PlayerView)view_value;
+    return view == VIEW_LIBRARY || view == PLAYER_VIEW_READY_LIBRARY ||
+           player_ui_nk_flow_view(view);
+}
+
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app) {
     return player != NULL && player->ready && app != NULL &&
-           (app->active_view == VIEW_LIBRARY ||
-            app->active_view == PLAYER_VIEW_READY_LIBRARY ||
-            player_ui_nk_flow_view(app->active_view));
+           player_ui_nk_draws_view(app->active_view);
 }
 
 static void player_ui_format_size(char *out, size_t out_size, uint64_t bytes) {
@@ -381,6 +403,8 @@ static void player_ui_check_row(PlayerUiCheckRow *row, const NkUiTheme *theme,
 
 /* The setup wizard's model, from the same wizard state the existing renderer
    reads. */
+static bool player_ui_unrecorded_experimental(const GameRecord *game);
+
 static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app,
                                               NkUiScale scale) {
     const NkUiTheme *theme = nk_ui_theme(player->ui);
@@ -409,9 +433,11 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
             break;
         case WIZARD_STEP_INSPECT_VERIFY:
             model.extracting = app->wizard.is_extracting;
+            model.converting_package = app->psn_conversion_active;
             model.extraction_complete = app->wizard.extraction_complete;
             model.extraction_failed = app->wizard.extraction_failed;
             model.experimental = game->is_experimental;
+            model.recorded = game->is_experimental && !player_ui_unrecorded_experimental(game);
             model.supported = !game->is_experimental &&
                               (app->wizard.extraction_complete ||
                                game->status == NK_STATUS_VERIFIED);
@@ -491,7 +517,11 @@ static PlayerUiAction player_ui_render_disc(PlayerUiNk *player, PlayerApp *app,
         case VIEW_INSPECTING: model.kind = PLAYER_UI_DISC_CHECKING; break;
         case VIEW_SUPPORTED_TITLE: model.kind = PLAYER_UI_DISC_SUPPORTED; break;
         case VIEW_EXPERIMENTAL_TITLE:
-            model.kind = blocking != NULL ? PLAYER_UI_DISC_BLOCKED : PLAYER_UI_DISC_UNTESTED;
+            /* A disc on the compatibility list is found, not untested, as its
+               title page's PLAYABLE says. */
+            model.kind = blocking != NULL ? PLAYER_UI_DISC_BLOCKED
+                : player_ui_unrecorded_experimental(game) ? PLAYER_UI_DISC_UNTESTED
+                : PLAYER_UI_DISC_SUPPORTED;
             break;
         case VIEW_UNSUPPORTED_TITLE:
         default: model.kind = PLAYER_UI_DISC_UNSUPPORTED; break;
@@ -558,6 +588,18 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
         case VIEW_PREREQ_ABOUT: model.page = PLAYER_UI_SETTINGS_PAGE_NOTICES; break;
         case VIEW_CONFIRM_REMOVE_TOOLS: model.page = PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS; break;
         case VIEW_BUILD_CACHE: model.page = PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE; break;
+        case VIEW_PSP_FONTS:
+            model.page = PLAYER_UI_SETTINGS_PAGE_FONTS;
+            if (app->wizard.font_slot_detail[0][0] == '\0') player_app_refresh_font_status(app);
+            for (int item = 0; item < NK_FONT_LATIN_INDEX_COUNT + 2 && item < 18; ++item) {
+                model.font_lines[model.font_line_count++] = item == 0
+                    ? app->wizard.font_slot_detail[NK_FONT_SLOT_JAPANESE]
+                    : item == NK_FONT_LATIN_INDEX_COUNT + 1
+                        ? app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN]
+                        : app->wizard.font_latin_index_detail[item - 1];
+            }
+            model.font_message = app->wizard.font_message;
+            break;
         case VIEW_SETTINGS:
         default: model.page = PLAYER_UI_SETTINGS_PAGE_MAIN; break;
     }
@@ -863,6 +905,20 @@ static PlayerUiAction player_ui_render_flow(PlayerUiNk *player, PlayerApp *app,
         model.logical_height = scale.logical_h;
         return player_ui_screen_prereq(player->ui, &model);
     }
+    if (app->active_view == VIEW_PREPARING) {
+        /* No preparation pipeline is connected in this build: the card says
+           so plainly, with the way back, and shows no fake progress. */
+        PlayerUiErrorModel model;
+        memset(&model, 0, sizeof(model));
+        model.badge = "Not available";
+        model.title = "Preparation Unavailable";
+        model.message = "No preparation pipeline is connected in this build, so no "
+                        "preparation work is running.";
+        model.recovery_label = "Return to Library";
+        model.logical_width = scale.logical_w;
+        model.logical_height = scale.logical_h;
+        return player_ui_screen_error(player->ui, &model);
+    }
     if (app->active_view == VIEW_ERROR) {
         const ErrorState *error = &app->last_error;
         bool launch_readiness = player_error_leads_with_message(error);
@@ -906,10 +962,19 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                         app->wizard.is_extracting
                     ? PLAYER_UI_ID_WIZARD_CANCEL : PLAYER_UI_ID_WIZARD_PRIMARY;
                 break;
-            case VIEW_BUILDING_PACKAGE: focus = PLAYER_UI_ID_BUILD_ACTION; break;
+            case VIEW_BUILDING_PACKAGE:
+                /* CANCEL BUILD is never the default focus, so a stray Enter or
+                   South cannot stop a build; a move reaches it. A finished
+                   build focuses BACK TO LIBRARY. */
+                if (app->build_session.is_complete && !app->build_session.is_failed) {
+                    screen += 1u;
+                    focus = PLAYER_UI_ID_BUILD_ACTION;
+                }
+                break;
             case VIEW_PREREQ_CONSENT: focus = PLAYER_UI_ID_PREREQ_ACCEPT; break;
             case VIEW_PREREQ_PROGRESS: focus = PLAYER_UI_ID_PREREQ_CANCEL; break;
-            case VIEW_ERROR: focus = PLAYER_UI_ID_ERROR_RECOVER; break;
+            case VIEW_ERROR:
+            case VIEW_PREPARING: focus = PLAYER_UI_ID_ERROR_RECOVER; break;
             case VIEW_INSPECTING:
             case VIEW_SUPPORTED_TITLE:
             case VIEW_EXPERIMENTAL_TITLE:
@@ -921,6 +986,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                     : player->last_view == VIEW_BUILD_CACHE ||
                             player->last_view == VIEW_CONFIRM_REMOVE_TOOLS
                         ? PLAYER_UI_ID_SETTINGS_BUILD_CACHE
+                    : player->last_view == VIEW_PSP_FONTS ? PLAYER_UI_ID_SETTINGS_FONTS
                     : player->last_view == VIEW_CONTROLLER_SETTINGS
                         ? PLAYER_UI_ID_SETTINGS_CONTROLLER
                         : PLAYER_UI_ID_SETTINGS_RESOLUTION;
@@ -942,6 +1008,7 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
                 break;
             }
             case VIEW_DEVELOPER_LOG: focus = PLAYER_UI_ID_DEVELOPER_LOG_CLOSE; break;
+            case VIEW_PSP_FONTS: focus = PLAYER_UI_ID_SETTINGS_IMPORT_FONTS; break;
             case VIEW_ONLINE_SETTINGS: focus = PLAYER_UI_ID_SETTINGS_ONLINE_MODE; break;
             case VIEW_PREREQ_ABOUT:
             case VIEW_CONFIRM_REMOVE_TOOLS: focus = PLAYER_UI_ID_SETTINGS_BACK; break;
@@ -957,9 +1024,16 @@ static void player_ui_flow_focus(PlayerUiNk *player, const PlayerApp *app) {
     if (screen == player->flow_screen) return;
     if (player->flow_screen == 0u) {
         player->pre_flow_focus = nk_ui_focused(player->ui);
+        player->pre_flow_game_count = app->game_count;
     }
     if (screen != 0u) {
         nk_ui_focus(player->ui, focus);
+    } else if (app->game_count > player->pre_flow_game_count &&
+               app->selected_game_index >= 0 &&
+               app->selected_game_index < app->game_count) {
+        /* A flow that added a game (ADD TO LIBRARY) ends on its card. */
+        player->library_focus_pending = true;
+        player->library_focus_index = (size_t)app->selected_game_index;
     } else if (player->pre_flow_focus != 0u) {
         nk_ui_focus(player->ui, player->pre_flow_focus);
     }
@@ -1138,10 +1212,22 @@ static bool player_ui_has_seen_boot(const GameRecord *game) {
                             game->status == NK_STATUS_PLAYABLE);
 }
 
+/* An experimental entry nobody has recorded a result for. A disc with a
+   compatibility record (a catalogued game whose title settings are local,
+   such as Hot Shots Tennis) is not called Untested beside its PLAYABLE. */
+static bool player_ui_unrecorded_experimental(const GameRecord *game) {
+    const char *expect;
+    const char *known_issues;
+    PlayerUiTier record_tier;
+    if (game == NULL || !game->is_experimental) return false;
+    (void)player_ui_compatibility_words(game, &expect, &known_issues, &record_tier);
+    return record_tier == PLAYER_UI_TIER_NONE;
+}
+
 static const char *player_ui_library_status_word(const GameRecord *game,
                                                  bool package_ready) {
     if (package_ready) return "Ready";
-    if (game != NULL && game->is_experimental) {
+    if (player_ui_unrecorded_experimental(game)) {
         return player_ui_has_seen_boot(game) ? "Experimental" : "Untested";
     }
     return "Needs setup";
@@ -1152,7 +1238,7 @@ static const char *player_ui_library_status_word(const GameRecord *game,
 static uint32_t player_ui_library_status_color(const GameRecord *game,
                                               bool package_ready) {
     if (package_ready) return PLAYER_UI_READY;
-    if (game != NULL && game->is_experimental) return PLAYER_UI_INFO;
+    if (player_ui_unrecorded_experimental(game)) return PLAYER_UI_INFO;
     return PLAYER_UI_WARNING;
 }
 
@@ -1167,7 +1253,7 @@ static unsigned player_ui_art_kind(const GameRecord *game) {
 static const char *player_ui_library_status_marker(const GameRecord *game,
                                                    bool package_ready) {
     if (package_ready) return "●";
-    if (game != NULL && game->is_experimental) {
+    if (player_ui_unrecorded_experimental(game)) {
         return player_ui_has_seen_boot(game) ? "◆" : "?";
     }
     return "▲";
@@ -1258,19 +1344,37 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->library_status = "Starting";
         out->status_rgba = PLAYER_UI_INFO;
         out->status_marker = "◆";
+    } else if (out->package_state == PLAYER_UI_PACKAGE_CHECKING &&
+               !player_ui_unrecorded_experimental(game)) {
+        /* Launcher review B4: until the background check has looked at the
+           package, the card does not know it needs setup. */
+        out->library_status = "Checking";
+        out->status_rgba = PLAYER_UI_INFO;
+        out->status_marker = "◆";
     } else if (running) {
         out->library_status = "Running";
         out->status_rgba = PLAYER_UI_READY;
         out->status_marker = "●";
     }
     out->art_kind = player_ui_art_kind(game);
-    out->badge = out->art_kind != NK_UI_ART_NONE ? "Showcase demo" : "Your disc";
+    /* The showcase packages beside the player are the demos under TEST THIS
+       PC. The --demo fixtures are the project's test programs, not a disc the
+       user added. */
+    out->is_demo = game->is_showcase_package;
+    out->badge = out->is_demo || out->art_kind != NK_UI_ART_NONE ? "Showcase demo"
+               : game->is_sample ? "Test program" : "Your disc";
     out->icon = NULL;
     out->picture = NULL;
     if (out->art_kind == NK_UI_ART_NONE) {
         player_ui_art_get(player->art, game->iso_path, false, &out->icon, NULL);
     }
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (strcmp(player->status_reported[index], out->library_status) != 0) {
+        snprintf(player->status_reported[index], sizeof(player->status_reported[index]), "%s",
+                 out->library_status);
+        printf("[PLAYER_UI_TEST] next_ui_library_status index=%d status=%s\n", index,
+               out->library_status);
+    }
     if (out->icon != NULL && !player->icon_reported[index]) {
         player->icon_reported[index] = true;
         printf("[PLAYER_UI_TEST] next_ui_disc_icon index=%d width=%u height=%u\n", index,
@@ -1377,6 +1481,11 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     player->viewport.display_scale = display_scale;
     player->viewport.ui_scale_pct = 0;
     player->viewport.text_size_pct = 100;
+    /* The launcher's screens are laid out for at least its design size
+       (1280 x 720); a smaller window, down to the 960 x 540 minimum, draws the
+       same layout smaller instead of pushing buttons off the window. */
+    player->viewport.min_logical_w = (float)PLAYER_UI_DESIGN_WIDTH;
+    player->viewport.min_logical_h = (float)PLAYER_UI_DESIGN_HEIGHT;
     scale = nk_ui_scale_for_viewport(&player->viewport);
     {
         /* Prompts follow the last input device ("Match input"). */
@@ -1442,31 +1551,41 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
     } else if (route == PLAYER_UI_ROUTE_LIBRARY) {
         size_t count = app->game_count > 0 ? (size_t)app->game_count : 0u;
         size_t columns = 1u;
-        size_t page_size = player_ui_library_page_size(scale.logical_w,
-                                                       scale.logical_h, &columns);
+        size_t page_size;
+        size_t demo_count;
+        size_t games;
         size_t slots;
         if (count > PLAYER_UI_TITLE_CAP) count = PLAYER_UI_TITLE_CAP;
-        /* The grid ends with the add card, so it has one slot more than titles. */
-        slots = count > 0u ? count + 1u : 0u;
         player_ui_fill_titles(player, app, count);
+        /* The grid holds the user's games and ends with the add card, so it has
+           one slot more than games; the demos sit under it, under TEST THIS PC. */
+        demo_count = player_ui_library_demo_count(player->titles, count);
+        games = count - demo_count;
+        page_size = player_ui_library_page_size_with_demos(scale.logical_w, scale.logical_h,
+                                                           demo_count, &columns);
+        slots = games > 0u ? games + 1u : 0u;
         {
             size_t focused_index = player_ui_focused_title_index(
                 nk_ui_focused(player->ui), count);
             if (focused_index < count) {
+                size_t position = player_ui_library_grid_position(player->titles, count,
+                                                                  focused_index);
                 app->selected_game_index = (int)focused_index;
-                player->library_page = focused_index / page_size;
+                if (position < count) player->library_page = position / page_size;
             }
         }
         if (nk_ui_focused(player->ui) == PLAYER_UI_ID_LIBRARY_ADD && slots > 0u) {
             player->library_page = (slots - 1u) / page_size;
         }
         if (player->library_focus_pending) {
+            size_t position = player_ui_library_grid_position(
+                player->titles, count, player->library_focus_index);
             player->library_focus_pending = false;
-            if (player->library_focus_index < count) {
+            if (position < count) {
                 nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ITEM(player->library_focus_index));
                 app->selected_game_index = (int)player->library_focus_index;
-                player->library_page = player->library_focus_index / page_size;
-            } else if (count > 0u) {
+                player->library_page = position / page_size;
+            } else if (games > 0u) {
                 nk_ui_focus(player->ui, PLAYER_UI_ID_LIBRARY_ADD);
                 player->library_page = (slots - 1u) / page_size;
             } else {
@@ -1503,6 +1622,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
             app->selected_game_index = (int)action.title_index;
             nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
             (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_TITLE);
+            player->title_primary_refocus = false;
             action.kind = PLAYER_UI_ACTION_NONE;
         } else if (action.kind == PLAYER_UI_ACTION_PAGE_PREVIOUS) {
             if (player->library_page > 0u) --player->library_page;
@@ -1543,6 +1663,38 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 app->stalled_game_notice_visible;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
+            {
+                /* Keep PLAY or BUILD PACKAGE focused across a game's start
+                   and exit: while it is off (STARTING..., STOP GAME is not
+                   offered as a default) focus waits on the fallback, and
+                   comes back when it is on again unless the user moved. */
+                const PlayerUiTitle *shown = &player->titles[index];
+                bool primary_default = shown->primary_action_enabled &&
+                    (shown->primary_action == PLAYER_UI_PRIMARY_PLAY ||
+                     shown->primary_action == PLAYER_UI_PRIMARY_BUILD);
+                NkUiId focused = nk_ui_focused(player->ui);
+                if (!primary_default) {
+                    if (focused == PLAYER_UI_ID_TITLE_PRIMARY) {
+                        player->title_primary_refocus = true;
+                        player->title_primary_fallback = 0u;
+                    } else if (player->title_primary_refocus &&
+                               player->title_primary_fallback == 0u) {
+                        player->title_primary_fallback = focused;
+                    } else if (player->title_primary_refocus &&
+                               focused != player->title_primary_fallback) {
+                        player->title_primary_refocus = false;
+                    }
+                } else if (player->title_primary_refocus) {
+                    /* No fallback recorded yet means the action was off for a
+                       single frame: focus is where the fallback put it. */
+                    if (player->title_primary_fallback == 0u ||
+                        focused == player->title_primary_fallback ||
+                        focused == PLAYER_UI_ID_TITLE_PRIMARY) {
+                        nk_ui_focus(player->ui, PLAYER_UI_ID_TITLE_PRIMARY);
+                    }
+                    player->title_primary_refocus = false;
+                }
+            }
             action = player_ui_screen_title(player->ui, &model);
             if (action.kind == PLAYER_UI_ACTION_BACK) {
                 nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));

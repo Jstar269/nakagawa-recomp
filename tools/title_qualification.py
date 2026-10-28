@@ -27,6 +27,7 @@ schema-valid report naming the failed stage, and exits 1.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -56,7 +57,9 @@ REPORT_NAME = "bringup-report.json"
 OUTPUT_LOG_NAME = "player-output.log"
 SMOKE_TIMEOUT_SECONDS = 150
 MAX_PUBLIC_JSON_BYTES = 256 * 1024
-# Public titles only. Retail manifests are local-only and never checked in.
+# The public route qualifies synthetic and homebrew titles only. A retail title's
+# acceptance needs the user's own game, so it is the private route's job, even for
+# the one retail manifest the repository carries (HST, public since 2026-10-27).
 PUBLIC_KINDS = frozenset({"synthetic", "homebrew"})
 # Bring-up issue numbers that the bring-up route attaches to a launch failure.
 # Maintenance: edit by hand; each number must be in the bring-up schema's issue_numbers enum (tested).
@@ -620,6 +623,15 @@ def _default_manifests() -> list[Path]:
     return sorted(TITLE_DIR.glob("*.json"))
 
 
+def _is_checked_in_retail(path: Path) -> bool:
+    """Whether ``path`` is a manifest of kind ``retail`` (read without validating it)."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(document, dict) and document.get("kind") == "retail"
+
+
 def _default_profiles() -> list[Path]:
     return sorted(INPUT_PROFILE_DIR.glob("*.json")) if INPUT_PROFILE_DIR.is_dir() else []
 
@@ -627,7 +639,18 @@ def _default_profiles() -> list[Path]:
 def cmd_validate(args: argparse.Namespace) -> int:
     build_root = args.build_root
     results: list[tuple[str, list[str]]] = [("manifest schema contract", manifest_schema_problems())]
+    skipped: list[str] = []
     for path in args.manifest or _default_manifests():
+        if not args.manifest and _is_checked_in_retail(path):
+            # Named, never silent: a checked-in retail manifest still has to pass the
+            # normative validator, and is then reported as not qualified here.
+            try:
+                title_manifest.validate_manifest(title_manifest.load_manifest(path))
+            except (title_manifest.TitleManifestError, OSError, ValueError) as exc:
+                results.append((f"manifest {path.name}", [f"{path}: {exc}"]))
+                continue
+            skipped.append(path.name)
+            continue
         try:
             manifest = load_public_manifest(path)
             problems = staging_problems(
@@ -651,6 +674,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
             problems = [str(exc)]
         results.append((f"report {path.name}", problems))
     failed = 0
+    for name in skipped:
+        print(f"SKIP manifest {name}: a retail title is qualified on the private route, "
+              "not the public one")
     for label, problems in results:
         if problems:
             failed += 1
@@ -659,7 +685,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 print(f"     {problem}")
         else:
             print(f"OK   {label}")
-    print(f"TITLE_QUALIFICATION_VALIDATE checked={len(results)} failed={failed}")
+    print(f"TITLE_QUALIFICATION_VALIDATE checked={len(results)} failed={failed} skipped={len(skipped)}")
     return 0 if failed == 0 else 2
 
 

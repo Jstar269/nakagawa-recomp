@@ -46,8 +46,14 @@ We aim to respond promptly and will remove material where appropriate.
   `b4386554795949491a26e51b7d74082bb9b2470f` (GPL-2.0-or-later) and its bundled
   KIRK-ENGINE (GPL-3.0-or-later), with every firmware entry left out; Nakagawa
   decrypts a game the user owns, locally, and never decrypts firmware. The
-  keystore, inflate, elliptic-curve and container-framing files are
-  project-authored. Per-file lineage: [`src/core/PROVENANCE.md`](src/core/PROVENANCE.md).
+  PSN UMD image reader is adapted from the same PPSSPP revision:
+  `nk_psp_amctrl.*` from `ext/libkirk/amctrl.c` (written by tpu, shipped with
+  no notice of its own; conveyed as GPL-3.0-or-later), `nk_psp_lzrc.*` from
+  `Core/FileSystems/tlzrc.cpp` (Copyright (c) 2012- PPSSPP Project,
+  GPL-2.0-or-later, kept GPL-2.0-or-later) and `nk_psp_npumdimg.*` from
+  `Core/FileSystems/BlockDevices.cpp` (GPL-2.0-or-later, conveyed as
+  GPL-3.0-or-later). The keystore, inflate, elliptic-curve and
+  container-framing files are project-authored. Per-file lineage: [`src/core/PROVENANCE.md`](src/core/PROVENANCE.md).
 - **PSPSDK / PSPDEV** — permissive per-component declarations and BSD-family
   notices for public ABI definitions and source-owned fixtures. The applicable
   notices are in `THIRD_PARTY_LICENSES/PSPSDK.txt` and `assets/upstream/`.
@@ -202,9 +208,9 @@ is complete. These exclusions are enforced by
 reject the capability and do not fabricate fonts, disc reads, playback, keys, or
 success.
 
-The HST-specific title manifest and private engineering/review documents are also
-outside the active public source tree. Synthetic title manifests and generic schemas are
-retained; no game executable, extracted asset, save, key, capture, oracle trace,
+Private engineering/review documents are also outside the active public source tree. The
+HST title manifest (addresses only, no game data), synthetic title manifests and generic
+schemas are retained; no game executable, extracted asset, save, key, capture, oracle trace,
 or generated retail translation unit is part of the public source boundary.
 
 ## Attribution contract
@@ -230,21 +236,49 @@ Users must supply any external inputs locally. Private inputs, keys, saves,
 captures, extracted assets and generated output must not be committed, attached
 to issues, or included in a release.
 
+## Presentation clip of Hot Shots Tennis
+
+The MP4 file docs/media/hst-rally.mp4 is a 28.5-second presentation clip of Hot Shots Tennis: Get a Grip running in
+Nakagawa Recomp on Windows (a build of main e3a407da, recorded 2026-10-27), with the game's own sound, and
+docs/media/hst-rally-poster.png is one of its frames. The game, its logo, artwork, music, sound and on-screen text belong to
+their owners and are not licensed under this repository's GPL-3.0-or-later declaration; the clip is shown
+only to identify the game. The repository contains no game data files, and users need their own copy of the
+game. Both files are listed with the SHA-256 of their exact bytes in assets/release_manifest.json.
+
+## Launcher screenshots
+
+The PNG files docs/media/launcher-library.png and docs/media/launcher-building.png are presentation
+screenshots of the Nakagawa player from the v0.0.1 release build. The library shows the disc art of Hot Shots
+Tennis: Get a Grip and LocoRoco, and the build screen names Hot Shots Tennis; those games, their art and
+names belong to their publishers and are shown only to identify them. The repository contains no game data
+files, and users need their own copy of a game. Both files are listed with the SHA-256 of their exact bytes in
+assets/release_manifest.json.
+
 ## Presentation screenshots of Hot Shots Tennis
 
 The PNG file docs/media/hst-title-screen.png is a presentation capture of Hot Shots Tennis: Get a Grip
 running in Nakagawa Recomp on Windows. The game, its logo, artwork and on-screen text belong to their
 owners and are not licensed under this repository's GPL-3.0-or-later declaration; the image is shown
-only to identify the game. The repository contains no game data files, and users need their own copy of
-the game. The file is listed with the SHA-256 of its exact bytes in assets/release_manifest.json.
+only to identify the game. docs/media/hst-title-screen-960.png is the same capture reduced to 960 by 540
+pixels for the project website, under the same terms. The repository contains no game data files, and
+users need their own copy of the game. Both files are listed with the SHA-256 of their exact bytes in
+assets/release_manifest.json.
+
+## Project website share card
+
+The PNG file docs/images/brand/og-card.png is the project-authored link-preview image of the project website:
+the N1 mark, the tennis court drawn for the site, and text set in Geist (SIL Open Font License 1.1,
+assets/fonts/ui/geist/OFL.txt). It shows no game imagery. It is distributed under GPL-3.0-or-later and
+listed with the SHA-256 of its exact bytes in assets/release_manifest.json.
 
 ## Project-authored Nakagawa brand artwork
 
 The files docs/images/brand/nakagawa-mark-light.svg and
 docs/images/brand/nakagawa-mark-dark.svg are the project-authored N1 Block & Branch
 mark, rendered in dark ink for light page themes and light ink for dark page themes.
-The artwork is distributed under GPL-3.0-or-later and listed with the SHA-256 of
-each file's exact bytes in assets/release_manifest.json.
+The file assets/brand/nakagawa.ico is the app icon drawn from that mark by
+tools/make_app_icon.py. The artwork is distributed under GPL-3.0-or-later and listed
+with the SHA-256 of each file's exact bytes in assets/release_manifest.json.
 
 ## Project UI fonts
 

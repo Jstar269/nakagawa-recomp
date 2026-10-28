@@ -15,14 +15,17 @@ static void record_clay_error(Clay_ErrorData error)
     fprintf(stderr, "Clay error %d\n", (int)error.errorType);
 }
 
+/* Every character is 10 x 10, so a word's width is ten times its length. */
 static Clay_Dimensions measure_text(Clay_StringSlice text,
                                     Clay_TextElementConfig *config,
                                     void *user_data)
 {
-    (void)text;
     (void)config;
     (void)user_data;
-    return (Clay_Dimensions){ 0.0f, 0.0f };
+    if (text.length <= 0) {
+        return (Clay_Dimensions){ 0.0f, 0.0f };
+    }
+    return (Clay_Dimensions){ 10.0f * (float)text.length, 10.0f };
 }
 
 static int expect_rectangle(const char *name, Clay_ElementId id,
@@ -123,7 +126,56 @@ int main(void)
         return EXIT_FAILURE;
     }
 
+    /* An overfull column keeps a wrapped paragraph at its wrapped height. The
+       four words wrap to four 10 px lines in the 50 px column; with the fixed
+       box under them the content is 120 px in a 100 px column. Compressing the
+       column must not squeeze the paragraph back toward one line, or the box
+       paints over its later lines. */
+    Clay_BeginLayout();
+    CLAY({
+        .id = CLAY_ID("column"),
+        .layout = {
+            .sizing = {
+                .width = CLAY_SIZING_FIXED(50.0f),
+                .height = CLAY_SIZING_FIXED(100.0f),
+            },
+            .layoutDirection = CLAY_TOP_TO_BOTTOM,
+        },
+    }) {
+        CLAY({
+            .id = CLAY_ID("paragraph"),
+            .layout = {
+                .sizing = {
+                    .width = CLAY_SIZING_GROW(0),
+                    .height = CLAY_SIZING_FIT(0),
+                },
+            },
+        }) {
+            CLAY_TEXT(CLAY_STRING("aaaa bbbb cccc dddd"),
+                      CLAY_TEXT_CONFIG({ .fontSize = 10, .lineHeight = 10,
+                                         .wrapMode = CLAY_TEXT_WRAP_WORDS }));
+        }
+        CLAY({
+            .id = CLAY_ID("after"),
+            .layout = {
+                .sizing = {
+                    .width = CLAY_SIZING_FIXED(50.0f),
+                    .height = CLAY_SIZING_FIXED(80.0f),
+                },
+            },
+        }) {}
+    }
+    (void)Clay_EndLayout();
+
+    if (clay_error_count != 0 ||
+        !expect_rectangle("paragraph", CLAY_ID("paragraph"), 0.0f, 0.0f, 50.0f, 40.0f) ||
+        !expect_rectangle("after", CLAY_ID("after"), 0.0f, 40.0f, 50.0f, 80.0f)) {
+        free(memory);
+        return EXIT_FAILURE;
+    }
+
     free(memory);
-    puts("Clay layout selftest passed: root, padding, child gap, fixed children, and grow child");
+    puts("Clay layout selftest passed: root, padding, child gap, fixed children, grow child, "
+         "and wrapped text kept whole in an overfull column");
     return EXIT_SUCCESS;
 }

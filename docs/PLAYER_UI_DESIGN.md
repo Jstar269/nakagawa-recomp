@@ -1,6 +1,6 @@
 # Player UI design system
 
-The visual spec for the native player's launcher UI (the default since C10; `--ui=legacy` keeps the old one for
+The visual spec for the native player's launcher UI (the only launcher since v0.0.1; the old renderer survives only in the regression-test build for
 one release). It is the reference every
 screen lane builds against: Library and Title detail (C5, built), Settings (C6), first run (C7) and error dialogs
 (C8). The tokens and components it names live in code:
@@ -113,6 +113,11 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
   secondary button also fills with `surface_high`; a focused card's edge becomes `line_strong`.
 - Arrow keys move to the nearest control in that direction. A button with `NK_UI_BUTTON_ROW` keeps Left and Right in
   its row, so a row of actions under cards of different heights is walked end to end.
+- When the screen changes and the old focus is gone, focus lands on the page's first enabled control that may be the
+  default: the title page's PLAY or BUILD PACKAGE, the new card after ADD TO LIBRARY. Top-bar tabs
+  (`NK_UI_BUTTON_NOT_DEFAULT`) and danger buttons never are; a screen whose only control is a danger button (CANCEL
+  BUILD while a build runs) starts with nothing focused, and a move reaches it. PLAY or BUILD PACKAGE gets focus back
+  when it comes back on after STARTING... or a package check, unless the user moved meanwhile.
 
 ### Layout grid
 
@@ -128,8 +133,18 @@ Labels, chips and eyebrows are drawn in caps (`nk_ui_caps`); the words stay sent
 | Safe area | nothing closer than 16 px to a window edge |
 
 Layout is logical px; the UI scale (Auto follows the display, or 100/125/150/200%) times the text size gives the
-device density, and the logical width decides the columns. Clay clips at most ten containers per layout: shorten
+device density, and the logical width decides the columns. The launcher's screens are laid out on at least its
+1280 x 720 design size (`NkUiViewport.min_logical_w` / `min_logical_h`): a smaller window, down to the 960 x 540
+minimum, lowers the density so the same layout is drawn smaller, instead of pushing buttons and the prompt bar off
+the window. A larger window keeps its density and gains room. Clay clips at most ten containers per layout: shorten
 long text with `nk_ui_text_clamp` instead of clipping it.
+
+Wrapped text keeps its wrapped height when its page is overfull. Clay took a paragraph's minimum height before
+wrapping, as one line, so compressing an overfull column squeezed the paragraph back and the next block painted over
+its later lines; the vendored `clay.h` carries the wrapped height into the minimum (`third_party/clay/PROVENANCE.md`).
+`test_every_screen_fits_the_window` in `tests/native/test_player_screens.c` lays every screen out in launcher windows
+of 1280 x 720, 960 x 540, 1366 x 705 and 853 x 480 pixels and fails when a box or text run leaves the window or text
+is painted over.
 
 ### Motion
 
@@ -193,12 +208,21 @@ Only actions the screen handles appear in its prompt bar.
 ### Library (C5, built)
 
 Top bar with LIBRARY, ABOUT and SETTINGS tabs (SETTINGS opens the Settings view, whose page shows that tab active;
-Start or F1, the menu prompt, opens it too); `LIBRARY` in `DISPLAY` with the count in `CAPTION` beside it ("7 titles · 2 showcase demos"); a pager
+Start or F1, the menu prompt, opens it too); `LIBRARY` in `DISPLAY` with the count of the user's games in `CAPTION` beside it ("7 titles"); a pager
 (small PREVIOUS and NEXT buttons around "PAGE 1 OF 2") on the right of that row when the grid spans pages; the card
-grid, ending with the add card ("Add a disc image you own", "Choose an .iso file"); prompt bar with MOVE, OPEN and
+grid of the user's games, ending with the add card ("Add a disc image you own", "Choose an .iso file"); prompt bar with MOVE, OPEN and
 SETTINGS and no corner text. Empty library: one centred 640 px card with a disc icon, `TITLE` "Add your first game", a `BODY`
 line, the primary START SETUP WIZARD button (the default focus), CHOOSE A DISC IMAGE, and a caption about dropping an
 .iso onto the window.
+
+TEST THIS PC: the demos that come with Nakagawa (the showcase packages beside the player) never join the grid. They
+sit in their own row under it, or under the empty-library card while the user has no games, so the setup wizard is
+offered on a first start even when the demos are there. The row's first grid column holds the `EYEBROW` "TEST THIS
+PC" and one `CAPTION` line ("Play a demo that comes with Nakagawa to check graphics, sound and controls."); each
+demo is a compact 72 px card one grid column wide (its project picture on the left, the name in `TILE_TITLE` over
+two lines at most, and the status in `LABEL_S`). The cards are focusable, never the default focus, and open the
+demo's title page like a game card. The grid gives up rows to fit the row; where the empty-library card and the row
+do not both fit (the 960 x 540 minimum), the card leaves out its icon.
 
 ### Title detail (C5, built)
 

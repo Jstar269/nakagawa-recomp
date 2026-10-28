@@ -27,7 +27,7 @@ after an import, and checks that the project source does not serve the cache's f
 is named on stderr once per slot and reason, however many opens resolve the slot. The selftest also
 checks that ``SR_USER_DATA_ROOT`` names the user source (its per-user directory is an empty decoy
 there), and that a relative value is named once and skips that source instead of falling back. The native part
-needs mingw32-make. The contract tests need no compiler: they check the fixture, the Python
+needs make (mingw32-make on Windows) and, off Windows, the SDL3 headers. The contract tests need no compiler: they check the fixture, the Python
 checker's verdict for each case, and that every link that compiles the device also supplies
 src/core/nk_font.c.
 """
@@ -117,10 +117,29 @@ BUILD_DIR = "build/mygame"
 
 # hle-thread-selftest-build writes hle_thread_selftest.exe on every host: the output name is
 # spelled in the recipe, not taken from EXE_EXT. Only the make program varies by platform.
-# The harness includes <windows.h> without a _WIN32 guard and calls Win32 file APIs, so it does
-# not build off Windows. Until it is ported, that is a named SKIP there, decided from the source
-# before any build (docs/LINUX_DEVELOPMENT.md lists the gap). The check retires itself: once the
-# include is guarded, the same test builds the selftest with make.
+# The harness once included <windows.h> without a _WIN32 guard, which was a named SKIP off
+# Windows decided from the source; since #306 it is guarded and the selftest builds on Linux.
+# Off Windows it needs the SDL3 headers (sched.c's host clock), which a host without SDL3,
+# such as the hosted python_tools job, reports as a SKIP; native_tools runs the selftest itself.
+
+
+def sdl3_headers_missing() -> bool:
+    """True off Windows when the C compiler cannot include SDL3, which the selftest links.
+
+    MSYS2's UCRT64 toolchain carries SDL3, so a Windows host never skips here."""
+    if sys.platform == "win32":
+        return False
+    compiler = shutil.which("gcc") or shutil.which("cc")
+    if not compiler:
+        return True
+    probe = subprocess.run(
+        [compiler, "-E", "-x", "c", "-", "-o", os.devnull],
+        input="#include <SDL3/SDL_timer.h>\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return probe.returncode != 0
 
 
 def unguarded_windows_include(source: str) -> bool:
@@ -314,6 +333,37 @@ def assert_refusals_named(test: unittest.TestCase, stderr: str, case: str) -> No
         len(project), 0 if case == "valid" else 1,
         "the SR_FONTDIR-at-cache refusal for " + case + " is expected once: " + repr(project),
     )
+
+
+def request_lines(stderr: str) -> list[str]:
+    """The lines the device logs for registry requests: one per request, the first time it resolves."""
+    return [line for line in stderr.splitlines() if re.match(r"flash0: \w+ registry index=", line)]
+
+
+def latin_request_line(index: int, backing: str, source: str, fallback: str | None = None) -> str:
+    """The line for Latin file ordinal ``index``. A request served by another file than its own
+    import is a substitute and names its fallback rule (#1300)."""
+    selection = "selection=exact" if fallback is None else f"selection=substitute fallback={fallback}"
+    return (f"flash0: Latin registry index={index + 1} requested=ltn{index}.pgf backing={backing} "
+            f"source={source} {selection}")
+
+
+def assert_requests_logged(test: unittest.TestCase, stderr: str, case: str) -> None:
+    """Every request is logged once. The Japanese project font and, when the cache is refused, the
+    project Latin font are stand-ins, so their lines say substitute; Korean has no source."""
+    project_latin = header_string("NK_FONT_SLOT_LATIN_FILE")
+    if case in ("valid", "tampered"):  # the tampered file is the legacy alias, not an indexed one
+        latin = [latin_request_line(index, f"ltn{index}.pgf", "user-imported") for index in range(16)]
+    else:
+        latin = [latin_request_line(index, project_latin, "project", "project") for index in range(16)]
+    expected = [
+        "flash0: Japanese registry index=0 requested=jpn0.pgf "
+        f"backing={header_string('NK_FONT_SLOT_JAPANESE_FILE')} source=project "
+        "selection=substitute fallback=project",
+        "flash0: Korean registry index=17 requested=kr0.pgf backing=none source=none fallback=missing",
+        *latin,
+    ]
+    test.assertCountEqual(request_lines(stderr), expected)
 
 
 class Flash0FontFixtureContractTests(unittest.TestCase):
@@ -552,6 +602,10 @@ const char *nk_font_latin_index_filename(int index) {
     return (unsigned)index < NK_FONT_LATIN_INDEX_COUNT ? names[index] : NULL;
 }
 
+const char *nk_font_slot_psp_filename(NkFontSlot slot) {
+    return slot == NK_FONT_SLOT_JAPANESE ? "jpn0.pgf" : slot == NK_FONT_SLOT_KOREAN ? "kr0.pgf" : NULL;
+}
+
 int nk_font_latin_index_from_filename(const char *name) {
     (void)name;
     return -1;
@@ -779,6 +833,10 @@ class Flash0FontDeviceTests(unittest.TestCase):
                 f"selftest does not build on {sys.platform} yet "
                 "(docs/LINUX_DEVELOPMENT.md, 'What doesn't yet')"
             )
+        if sdl3_headers_missing():
+            raise unittest.SkipTest(
+                "SDL3 headers are not installed: hle-thread-selftest links SDL3 (sched.c's host clock)"
+            )
         make_tool = "mingw32-make" if sys.platform == "win32" else "make"
         make = shutil.which(make_tool)
         if not make:
@@ -822,6 +880,7 @@ class Flash0FontDeviceTests(unittest.TestCase):
                     self.assertIn("flash0-font:", run.stderr)
                     self.assertEqual(run.returncode, 0, run.stderr[-6000:])
                     assert_refusals_named(self, run.stderr, case)
+                    assert_requests_logged(self, run.stderr, case)
                     # The relative SR_USER_DATA_ROOT the selftest sets is named once, however many opens follow.
                     named = refusal_lines(run.stderr, USER_ROOT_PREFIX)
                     self.assertEqual(len(named), 1, "expected one SR_USER_DATA_ROOT refusal, got: " + repr(named))
@@ -835,6 +894,10 @@ class Flash0FontDeviceTests(unittest.TestCase):
                 f"WINDOWS_ONLY: {SELFTEST_SOURCE.name} includes <windows.h> without a _WIN32 guard, so the "
                 f"selftest does not build on {sys.platform} yet "
                 "(docs/LINUX_DEVELOPMENT.md, 'What doesn't yet')"
+            )
+        if sdl3_headers_missing():
+            raise unittest.SkipTest(
+                "SDL3 headers are not installed: hle-thread-selftest links SDL3 (sched.c's host clock)"
             )
         make_tool = "mingw32-make" if sys.platform == "win32" else "make"
         make = shutil.which(make_tool)
@@ -869,6 +932,18 @@ class Flash0FontDeviceTests(unittest.TestCase):
             )
             self.assertIn("flash0-font-index:", run.stderr)
             self.assertEqual(run.returncode, 0, run.stderr[-6000:])
+            # #1300: one line per request, in resolution order. Index 3 is served by the nearest
+            # import in its size group, index 7 by the legacy single import, and index 16 by the
+            # project font: each says it is a substitute and which fallback chose its file.
+            project_latin = header_string("NK_FONT_SLOT_LATIN_FILE")
+            self.assertEqual(request_lines(run.stderr), [
+                latin_request_line(0, "ltn0.pgf", "user-imported"),
+                latin_request_line(8, "ltn8.pgf", "user-imported"),
+                latin_request_line(4, "ltn4.pgf", "user-imported"),
+                latin_request_line(2, "ltn0.pgf", "user-imported", "same-size"),
+                latin_request_line(6, project_latin, "user-imported", "legacy"),
+                latin_request_line(15, project_latin, "project", "project"),
+            ])
 
 
 if __name__ == "__main__":
