@@ -837,6 +837,18 @@ jobs:
       - name: Build and run HLE thread selftest (links SDL3)
         run: make CC=gcc -j4 hle-thread-selftest
 
+      - name: Run Linux scheduler selftest matrix
+        run: make CC=gcc -j4 sched-selftest
+
+      - name: Run Linux dispatch isolation selftest matrix
+        run: make CC=gcc -j4 dispatch-isolation-selftest
+
+      - name: Run Linux AOT/interpreter cosimulation
+        run: make CC=gcc -j4 cosim-selftest
+
+      - name: Run Linux GPU snapshot sync selftest
+        run: make CC=gcc -j4 gpu-snapsync-selftest
+
       - name: Run host present pacing selftest (links SDL3)
         run: make CC=gcc gui-present-selftest
 
