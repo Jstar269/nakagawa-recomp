@@ -6625,7 +6625,47 @@ extern uint32_t sr_callback_table_register(uint32_t name_addr, uint32_t entry,
                                            uint32_t arg, uint32_t *error_out);
 extern int sr_vblank_dispatch_registered(void);
 extern int sr_callback_find_in_table(uint32_t uid);
-static uint32_t h_GetModuleId(CpuState *s) { (void)s; return 0x112; }   /* main module's id (stable) */
+/* Module identity by address (#1385). A live module record owns its image
+ * [image_base, image_end); the program the host loader placed is the main module and
+ * owns [sr_loaded_base(), sr_loaded_end()). A program LoadExec booted is itself a module
+ * record. The main module's UID comes from the shared pool the first time a guest asks
+ * for it, so it never aliases another kernel object (it used to be the constant 0x112,
+ * the third UID the pool hands out, which a thread or semaphore also receives). */
+#define SCE_KERNEL_ERROR_UNKNOWN_MODULE 0x8002012eu
+static uint32_t s_main_module_uid;
+
+static uint32_t module_uid_at(uint32_t addr) {
+    for (int i = 0; i < s_nloaded_modules; i++) {
+        const LoadedModule *mod = &s_loaded_modules[i];
+        if (!mod->in_use || mod->state == MODULE_STATE_UNUSED ||
+            mod->state == MODULE_STATE_UNLOADED)
+            continue;
+        if (mod->image_base < mod->image_end && addr >= mod->image_base &&
+            addr < mod->image_end)
+            return mod->uid;
+    }
+    uint32_t base = sr_loaded_base(), end = sr_loaded_end();
+    if (base < end && addr >= base && addr < end) {
+        if (!s_main_module_uid) s_main_module_uid = sr_alloc_uid();
+        return s_main_module_uid;
+    }
+    return 0u;
+}
+
+/* An address no live module owns -- unmapped, or the range of a module since unloaded --
+ * is refused. The PSP's error for it is unmeasured; this is the kernel's unknown-module
+ * error, assumed until a hardware capture pins it. */
+static uint32_t h_GetModuleIdByAddress(CpuState *s) {
+    uint32_t uid = module_uid_at(A0);
+    return uid ? uid : SCE_KERNEL_ERROR_UNKNOWN_MODULE;
+}
+
+/* The calling module: the one whose code issued the call, found by the return address
+ * the caller left in $ra. */
+static uint32_t h_GetModuleId(CpuState *s) {
+    uint32_t uid = module_uid_at(s->r[31]);
+    return uid ? uid : SCE_KERNEL_ERROR_UNKNOWN_MODULE;
+}
 
 static uint32_t h_StopModule_Trace(CpuState *s) {
     uint32_t modid = A0;
@@ -13495,6 +13535,7 @@ int sr_hle_test_set_module_image(uint32_t uid, uint32_t base, uint32_t end, uint
 }
 
 void sr_hle_test_module_reset(void) {
+    s_main_module_uid = 0u;
     s_deferred_self_stop_uid = 0u;
     s_deferred_self_stop_thread_uid = 0u;
     s_nloaded_modules = 0;
@@ -26382,6 +26423,7 @@ static void hle_register_kernel_module_handlers(void) {
     sr_hle_register(0xb7f46618, "sceKernelLoadModuleByID", h_LoadModuleByID);
     sr_hle_register(0x50f0c1ec, "sceKernelStartModule", h_StartModule);
     sr_hle_register(0xf0a26395, "sceKernelGetModuleId", h_GetModuleId);
+    sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleIdByAddress);
     sr_hle_register(0xd1ff982a, "sceKernelStopModule", h_StopModule_Trace);
     sr_hle_register(0x2e0911aa, "sceKernelUnloadModule", h_UnloadModule_Trace);
     sr_hle_register(0x8f2df740, "sceKernelStopUnloadSelfModuleWithStatus", h_StopUnloadSelfModuleWithStatus);
@@ -26859,7 +26901,6 @@ void sr_hle_init(void) {
     sr_hle_register(0x94aa61ee, "sceKernelGetThreadCurrentPriority", h_GetThreadPriority);
     sr_hle_register(0xfccfad26, "sceKernelCancelWakeupThread", h_CancelWakeupThread);
     sr_hle_register(0xffc36a14, "sceKernelReferThreadRunStatus", h_ReferThreadRunStatus);
-    sr_hle_register(0xd8b73127, "sceKernelGetModuleIdByAddress", h_GetModuleId);
     /* sceImpose language/confirm-button mode: retained state shared with the system-param table
      * above (the getter had no registration at all before this). */
     hle_register_impose_handlers();
@@ -27222,6 +27263,7 @@ void sr_hle_loadexec_reset_guest_state(void) {
     s_volatile_locked = 0;
     g_sdk_version = 0u;
     s_loadexec_boot_uid = 0u;
+    s_main_module_uid = 0u;
     sr_hle_power_loadexec_reset();
 
     hle_fd_init();

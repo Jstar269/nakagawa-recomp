@@ -3307,7 +3307,7 @@
   },
   "0xd8b73127": {
     "classification": "dedicated",
-    "handler": "h_GetModuleId",
+    "handler": "h_GetModuleIdByAddress",
     "name": "sceKernelGetModuleIdByAddress",
     "status": "unreviewed"
   },
