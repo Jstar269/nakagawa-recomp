@@ -18,7 +18,8 @@
       Play     Doctor (inputs, build), incremental build, Doctor (products, run), then start the
                game (manager Run).
       Verify   Doctor (repo), then the manager's Verify action.
-      Clean    Run tools\nk_clean.py to remove build output; -Yes skips its confirmation.
+      Clean    Run tools\nk_clean.py: it lists the build output it would remove and deletes
+               nothing unless -Yes is given.
       Manager  Open the interactive expert/developer console (nk_manager.ps1).
 .PARAMETER Action
     Doctor, Build, Rebuild, Play, Verify, Clean or Manager. Defaults to Doctor.
