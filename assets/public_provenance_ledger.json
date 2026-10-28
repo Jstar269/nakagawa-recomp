@@ -2185,7 +2185,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3395983e6ee6e95c13a40a29d1dc30701a7d6f13e7b943def235d38f8cca1845"
+      "sha256": "e7c62138492f2c9dfd5a0222598c6c115c8c4ed25ac319beaf3b861c0da0f4e3"
     },
     {
       "path": "fixtures/fonts/README.md",
