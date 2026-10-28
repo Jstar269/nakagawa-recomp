@@ -19287,6 +19287,13 @@ static void test_ge_guest_sentinel(void) {
            "Region 3 textured texel (0,0) center matches source texture");
     expect(fb[(20 + 7 * 8 + 2) * fb_stride + (380 + 7 * 8 + 2)] == tex[7 * 8 + 7],
            "Region 3 textured texel (7,7) center matches source texture");
+    /* Each of the 8x8 texels covers exactly 8x8 pixels from (380,20): the pixel samples its
+     * centre and nearest takes floor(s) (PSP-GE-SAMPLE-001). */
+    int r3_texels_exact = 1;
+    for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++)
+            if (fb[(20 + y) * fb_stride + (380 + x)] != tex[(y / 8) * 8 + x / 8]) r3_texels_exact = 0;
+    expect(r3_texels_exact, "Region 3 shows each texel over exactly its own 8x8 pixels (PSP-GE-SAMPLE-001)");
     expect(fb[20 * fb_stride + 379] == bg_color, "Region 3 left edge is bounded (background)");
     expect(fb[20 * fb_stride + 444] == bg_color, "Region 3 right edge is bounded (background)");
 
@@ -19315,12 +19322,12 @@ static void test_ge_guest_sentinel(void) {
            "Region 1 matches canonical 64-bit FNV-1a hash (0x0eb6697557c1d045)");
     expect(r2_hash == 0xbf1aca308f0c0a25ULL,
            "Region 2 matches canonical 64-bit FNV-1a hash (0xbf1aca308f0c0a25)");
-    expect(r3_hash == 0x2158c050396fe725ULL,
-           "Region 3 matches canonical 64-bit FNV-1a hash (0x2158c050396fe725)");
+    expect(r3_hash == 0x9923d5b929b08725ULL,
+           "Region 3 matches canonical 64-bit FNV-1a hash (0x9923d5b929b08725)");
     expect(r4_hash == 0x04cfd0712d0f88e5ULL,
            "Region 4 triangle matches canonical 64-bit FNV-1a hash (0x04cfd0712d0f88e5)");
-    expect(fb_hash == 0x6b749d6fd93580c5ULL,
-           "Full 480x272 framebuffer matches canonical 64-bit FNV-1a hash (0x6b749d6fd93580c5)");
+    expect(fb_hash == 0xe515d6080beff4c5ULL,
+           "Full 480x272 framebuffer matches canonical 64-bit FNV-1a hash (0xe515d6080beff4c5)");
 
     /* 7. Callback registration lifecycle */
     const uint32_t cb_struct = 0x08920000u;
