@@ -458,7 +458,6 @@ class ProfileHstLegacyTests(unittest.TestCase):
             "ARRSHIFT_FASTPATH",
             "GUEST_ABORT",
             "_Exit(9)",
-            "_c = 1u;",
             "== 0u ? 0u : MEM_R32",
             "custom stub: __register_frame_info bypass",
         )
@@ -891,7 +890,7 @@ class GateInventoryTests(unittest.TestCase):
 
 #: Independent inventory of retired HST override addresses that must NEVER be
 #: reintroduced as custom stubs, manual callables, resume points, or gated emitters.
-RETIRED_HST_ADDRESSES: frozenset[int] = frozenset({0x00010950, 0x00046D14, 0x00048320})
+RETIRED_HST_ADDRESSES: frozenset[int] = frozenset({0x00010950, 0x00046D14, 0x00048320, 0x0004CDC8})
 
 
 def scan_ast_literals_for_addrs(tree: ast.AST, forbidden_addrs: frozenset[int]) -> list[str]:
@@ -1145,12 +1144,14 @@ class RetiredAddressGuardTests(unittest.TestCase):
 # 7. Bodies whose HST stubs were retired translate as written (#363)
 # ---------------------------------------------------------------------------
 
-#: Retired 2026-10-26 under #363. Under profile=hst each of these addresses used to
-#: emit a title stub (a static-success simple stub, the heap-statistics walk skip,
-#: or the backdrop chooser's postcondition wrapper) in place of, or around, its own
-#: body. Each now translates its own instructions under every profile.
+#: Retired under #363 (2026-10-26 and 2026-10-27). Under profile=hst each of these
+#: addresses used to emit a title stub (a static-success simple stub, the
+#: heap-statistics walk skip, or the backdrop chooser's postcondition wrapper) in place
+#: of, or around, its own body. Each now translates its own instructions under every
+#: profile.
 RETIRED_363_STUB_ADDRESSES: tuple[int, ...] = (
-    0x00015F98, 0x0001034C, 0x0001C810, 0x0001C818, 0x001D9EB0,
+    0x00015F98, 0x0001034C, 0x0001C010, 0x0001C0FC, 0x0001C104, 0x0001C560,
+    0x0001C604, 0x0001C810, 0x0001C818, 0x001D9EB0,
 )
 
 

@@ -1,6 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/*
+ * Draws launcher screens with SDL_Renderer: every screen the new UI in
+ * src/player/ui/ does not draw (player_ui_nk_view_active() decides), and all
+ * of them with --ui=legacy. It also owns the fonts and the cover-art loader
+ * those screens use. ui_render_frame() is the entry point; each render_*
+ * function draws one screen.
+ */
+
 #include "ui_renderer.h"
 #include "ui_clip.h"
 #include "iso_reader.h"
@@ -4601,7 +4609,9 @@ static void render_error(SDL_Renderer *ren, PlayerApp *app, const UiInput *in) {
             player_app_set_view(app, app->last_error.return_view);
             if (strcmp(app->last_error.error_code, "ISO_CORRUPT") == 0 ||
                 strcmp(app->last_error.error_code, "SOURCE_NOT_FOUND") == 0 ||
-                strncmp(app->last_error.error_code, "PBP_", 4) == 0) {
+                strncmp(app->last_error.error_code, "PBP_", 4) == 0 ||
+                strcmp(app->last_error.error_code, "DISC_IMAGE_COMPRESSED") == 0 ||
+                strcmp(app->last_error.error_code, "DISC_NOT_PSP") == 0) {
                 app->request_file_picker = true;
             }
         }

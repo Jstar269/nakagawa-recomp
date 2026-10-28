@@ -20,6 +20,15 @@
  * After each handler, the caller-saved temp registers are poisoned to 0xDEADBEEF exactly as
  * PPSSPP's SetDeadbeefRegs does, so traces stay aligned on the registers the game actually
  * keeps (it never relies on caller-saved registers surviving a call).
+ *
+ * Layout, top to bottom: the handler table and argument helpers; kernel object UIDs and the
+ * user-memory allocator; the handlers, grouped by PSP library (registry, fonts, memory,
+ * module loading, decoders, DMA, sceMpeg, sceMp3, the on-screen keyboard, timers, file I/O,
+ * audio/display/GE/SAS, message pipes, mailboxes, semaphores and event flags, thread lists),
+ * with the acceptance-route and frame-capture instrumentation between them; and last
+ * sr_syscall(), which finds a NID's handler (hle_find) and calls it. Most groups start with
+ * a "---- <name>" banner comment, so search for that, or for a function's name from
+ * nid_names.h.
  */
 
 #ifndef _CRT_SECURE_NO_WARNINGS

@@ -11,6 +11,9 @@ code that wasn't translated, a small interpreter runs it, but only inside code t
 anything it can't handle stops the run with a named message instead of guessing. The player in
 `src/player/` puts it all in front of the user.
 
+New to the code? [`CODE_TOUR.md`](CODE_TOUR.md) follows one game through these parts, file by file, from the
+disc image to the first frame on screen.
+
 ## Pipeline
 
 ```mermaid

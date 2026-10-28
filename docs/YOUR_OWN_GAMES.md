@@ -187,8 +187,11 @@ instead of pretending it worked or crashing without a word.
   The card says compatibility is unknown, the checklist shows what is missing,
   and **PLAY** stays unavailable until a matching runtime package exists.
   Support for more games, and for games in general, is in the works
-  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Images that
-  aren't PSP game discs are refused.
+  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). A disc image
+  with no `PSP_GAME` folder isn't a PSP game disc and is refused as `DISC_NOT_PSP`.
+- **Compressed disc image:** a `.cso` (or `.zso`) file is refused as
+  `DISC_IMAGE_COMPRESSED`. Nakagawa reads plain `.iso` images only, so turn it
+  back into an `.iso` with the tool that compressed it, or copy your disc again.
 - **PlayStation Store package:** a file that starts with the `PBP` package
   signature is a package, not a disc image, whatever it is called. The player
   turns a PSN release of a UMD game into its disc image (see
