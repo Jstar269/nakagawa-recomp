@@ -515,7 +515,7 @@ class GeneratedLleFatalFlowTests(unittest.TestCase):
         self.assertIn("$(CPU_LLE_AOT_FIXTURE_C)", recipe)
 
 
-# Test-only stand-in for the two SDL3 timer entry points src/rt/sched.c calls.
+# Test-only stand-in for the SDL3 timer entry points src/rt/sched.c calls.
 # It is used only when SDL3 development headers are absent, so the scheduler
 # proof still runs on a host that cannot build the player.
 SDL_TIMER_SHIM = """\
@@ -533,6 +533,34 @@ static inline void SDL_DelayPrecise(uint64_t ns) {
     ts.tv_sec = (time_t)(ns / 1000000000ull);
     ts.tv_nsec = (long)(ns % 1000000000ull);
     nanosleep(&ts, NULL);
+}
+static inline void SDL_DelayNS(uint64_t ns) { SDL_DelayPrecise(ns); }
+#endif
+"""
+
+# sched.c's preemption timer runs on an SDL thread. With no SDL there is no thread: creation
+# fails, and the scheduler reports the timer unavailable. These harnesses never start it.
+SDL_THREAD_SHIM = """\
+#ifndef NK_TEST_SDL_THREAD_SHIM_H
+#define NK_TEST_SDL_THREAD_SHIM_H
+#include <stdint.h>
+#define SDLCALL
+typedef struct SDL_Mutex SDL_Mutex;
+typedef struct SDL_Condition SDL_Condition;
+typedef struct SDL_Thread SDL_Thread;
+typedef int (SDLCALL *SDL_ThreadFunction)(void *data);
+static inline SDL_Mutex *SDL_CreateMutex(void) { return 0; }
+static inline SDL_Condition *SDL_CreateCondition(void) { return 0; }
+static inline SDL_Thread *SDL_CreateThread(SDL_ThreadFunction fn, const char *name, void *data) {
+    (void)fn; (void)name; (void)data; return 0;
+}
+static inline void SDL_DetachThread(SDL_Thread *thread) { (void)thread; }
+static inline void SDL_LockMutex(SDL_Mutex *mutex) { (void)mutex; }
+static inline void SDL_UnlockMutex(SDL_Mutex *mutex) { (void)mutex; }
+static inline void SDL_SignalCondition(SDL_Condition *cond) { (void)cond; }
+static inline void SDL_WaitCondition(SDL_Condition *cond, SDL_Mutex *mutex) { (void)cond; (void)mutex; }
+static inline int SDL_WaitConditionTimeout(SDL_Condition *cond, SDL_Mutex *mutex, int32_t ms) {
+    (void)cond; (void)mutex; (void)ms; return 0;
 }
 #endif
 """
@@ -559,6 +587,10 @@ _INTEGRATION_STUBS = r'''#include "recomp.h"
 uint64_t SDL_GetTicksNS(void) { return 0u; }
 void SDL_DelayPrecise(uint64_t ns) { (void)ns; }
 const char *SDL_GetCurrentVideoDriver(void) { return NULL; }
+/* Only the preemption timer's host thread mode locks; these fixtures never start the timer. */
+void SDL_LockMutex(void *mutex) { (void)mutex; abort(); }
+void SDL_UnlockMutex(void *mutex) { (void)mutex; abort(); }
+void SDL_SignalCondition(void *cond) { (void)cond; abort(); }
 /* The scheduler's pause path calls into hle.c, which these fixtures do not link; they never pause. */
 uint32_t sr_display_vcount(void) { return 0u; }
 int sr_pause_script_input_pending(uint32_t target_vcount) { (void)target_vcount; return 0; }
@@ -752,6 +784,9 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
                     SDL_TIMER_SHIM, encoding="ascii", newline="\n")
                 (shim_dir / "SDL3" / "SDL_video.h").write_text(
                     SDL_VIDEO_SHIM, encoding="ascii", newline="\n")
+                for header in ("SDL_thread.h", "SDL_mutex.h"):
+                    (shim_dir / "SDL3" / header).write_text(
+                        SDL_THREAD_SHIM, encoding="ascii", newline="\n")
                 include_flags.extend((f"-I{shim_dir}", "-D_POSIX_C_SOURCE=200809L"))
             common = [
                 "-std=c11", "-O0", "-g", "-fno-strict-aliasing",
