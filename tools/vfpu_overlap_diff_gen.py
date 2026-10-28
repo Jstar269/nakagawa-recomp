@@ -103,6 +103,22 @@ def build_cases() -> tuple[list[tuple[int, str, int]], int, tuple[int, int]]:
     cases.append((0xD0210000, "vrndi-s-issues", 1))
     cases.append((0xD021006E, "vrndi-s-s323", 1))
 
+    # PSP-VFPU-FORMS-001 (issue #326): the vfpu-forms probe words (probe_hle_issues.c).
+    # check_vfpu_forms_measured() finds them by name and pins both lanes to the measured
+    # words: vh2f.s C200, S000; vh2f.p C200, C000 and in place; vuc2i.s C200, S000;
+    # vsocp.s/.p into C200; vwbn.s S200, S000 at the eight measured exponents; and
+    # vrndf1.s / vrndf2.s S000.
+    cases.append((0xD0330008, "h2f-s-forms", 1))
+    cases.append((0xD0330088, "h2f-p-forms", 2))
+    cases.append((0xD0330080, "h2f-p-inplace", 2))
+    cases.append((0xD0380008, "uc2i-s-forms", 1))
+    cases.append((0xD0450008, "socp-s-forms", 1))
+    cases.append((0xD0450088, "socp-p-forms", 2))
+    for e in (0x00, 0x01, 0x7E, 0x7F, 0x80, 0x96, 0xFE, 0xFF):
+        cases.append((0xD3000008 | (e << 16), f"wbn-s-{e:02x}", 1))
+    cases.append((0xD0220000, "rndf1-s-forms", 1))
+    cases.append((0xD0230000, "rndf2-s-forms", 1))
+
     # vmscl.t (op 0x3C sub 4 size 3): scalar inside destination matrix
     cases.append((_bin_word(0x3C, 4, 3, 0x20, 0x20, 0x00), "vmscl-t-scalar-in-dest", 2))
 
