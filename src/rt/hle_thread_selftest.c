@@ -5679,6 +5679,16 @@ static void test_adhoc_named_refusals(void) {
 }
 
 extern void sr_hle_test_volatile_mem_reset(void);
+static TCB *fixture_thread(uint32_t uid, int state, int priority);
+
+/* Lock may block, so it is called from a current guest thread: with no thread current the
+ * runtime is in interrupt context, where Lock returns ILLEGAL_CONTEXT (#1383). */
+static TCB *volatile_mem_current_thread(uint32_t uid, int priority) {
+    TCB *t = fixture_thread(uid, TH_RUNNING, priority);
+    t->started = 1;
+    s_cur = (int)(t - s_tcb);
+    return t;
+}
 
 /* Enter the production Lock/TryLock NID mappings with an output span that crosses
  * the guest arena boundary. The regression protects the valid output from a partial
@@ -5688,7 +5698,9 @@ static void test_volatile_mem_output_preflight(void) {
     const uint32_t size_out = 0x08a10004u;
     const uint32_t sentinel = 0xa5c35a3cu;
     CpuState cpu;
+    reset_fixture();
     sr_hle_init();
+    (void)volatile_mem_current_thread(0x2b00u, 32);
 
     MEM_W32(paddr_out, sentinel);
     MEM_W32(size_out, sentinel);
@@ -5737,6 +5749,7 @@ static void test_volatile_mem_output_preflight(void) {
     expect(MEM_R32(paddr_out) == 0x08400000u && MEM_R32(size_out) == 0x00400000u,
            "volatile-memory TryLock writes both valid outputs");
 
+    sr_hle_test_volatile_mem_reset();   /* a Lock while held would block (#1383) */
     MEM_W32(size_out, sentinel);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
@@ -5757,7 +5770,8 @@ static void test_volatile_mem_output_preflight(void) {
            "volatile-memory TryLock retains NULL size-output tolerance");
     expect(MEM_R32(paddr_out) == 0x08400000u,
            "volatile-memory TryLock still writes the non-NULL address output");
-
+    sr_hle_test_volatile_mem_reset();
+    reset_fixture();
 }
 
 /* ---- sceUtilityOsk. A person answers the keyboard in the native Win32 box
@@ -7015,6 +7029,7 @@ static void reset_fixture(void) {
     audio_fixture_reset();
     extern void sr_hle_test_mutex_reset(void);
     sr_hle_test_mutex_reset();
+    sr_hle_test_volatile_mem_reset();
     sched_alarm_reset();
 }
 
@@ -27819,8 +27834,9 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
-        char msg[768];
+        extern int s_vm_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + 6 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks + s_vm_parks;
+        char msg[1024];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
                  "+ 1 delay body + 2 slice-C waiters + 2 nested-frame specimen threads "
@@ -27833,9 +27849,10 @@ static void check_coroutine_lifecycle(void) {
                  "+ 1 callback-wakeup delay body "
                  "+ 6 issue #1389 call bodies (4 cross-kind waits + 2 deleted waiters) "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
-                 "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
+                 "+ %d Message Pipe waiter/owner legs + %d volatile-memory Lock waiters "
+                 "= %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
-                 s_msgpipe_parks, expected_parks, s_parks);
+                 s_msgpipe_parks, s_vm_parks, expected_parks, s_parks);
         expect(s_parks == (unsigned long)expected_parks, msg);
     }
     expect(s_park_target_mismatch == NULL,
@@ -31469,7 +31486,9 @@ static uint32_t psmf_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1)
 
 static void test_volatile_mem_unlock_states(void) {
     CpuState cpu;
-    sr_hle_test_volatile_mem_reset();
+    reset_fixture();
+    sr_hle_init();
+    (void)volatile_mem_current_thread(0x2b01u, 32);
 
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0x800201aeu,
@@ -31501,7 +31520,7 @@ static void test_volatile_mem_unlock_states(void) {
     MEM_W32(VM_PTR_OUT, 0xdeadbeefu); MEM_W32(VM_SIZE_OUT, 0xcafebabeu);
     expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock while unlocked returns 0");
     MEM_W32(VM_PTR_OUT, 0x11111111u); MEM_W32(VM_SIZE_OUT, 0x22222222u);
-    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    cpu.r[4] = 0u; cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
     expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0x802b0200u, "VolatileMemTryLock while held returns 0x802b0200");
     expect(MEM_R32(VM_PTR_OUT) == 0x11111111u && MEM_R32(VM_SIZE_OUT) == 0x22222222u,
            "VolatileMemTryLock while held leaves outputs unchanged");
@@ -31510,6 +31529,194 @@ static void test_volatile_mem_unlock_states(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
     expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock succeeds again after Unlock");
+    sr_hle_test_volatile_mem_reset();
+    s_cur = -1;
+}
+
+/* ---- #1383: a held volatile-memory lock blocks Lock and Unlock hands it on in FIFO order ----
+ *
+ * Production NIDs under the real scheduler: each waiter is a guest-thread coroutine whose Lock
+ * parks in a scheduler wait; Unlock completes the oldest live waiter's wait and writes its
+ * outputs. A Lock that can block is only ever entered on a waiter coroutine here, never on the
+ * scheduler's own. */
+#define VM_A_OUT     0x00250e10u   /* address output; the size output follows at +4 */
+#define VM_PROBE_OUT 0x00250e18u
+#define VM_SENTINEL  0x5a5a5a5au
+
+static uint32_t s_vm_waiter_out[3];
+static uint32_t s_vm_waiter_ret[3];
+static int s_vm_waiter_returned[3];
+static int s_vm_waiter_next;
+int s_vm_parks = 0;   /* waiter bodies that returned and parked; check_coroutine_lifecycle */
+
+static void vm_lock_waiter(void *arg) {
+    (void)arg;
+    int i = s_vm_waiter_next++;
+    CpuState cpu = {0};
+    cpu.r[5] = s_vm_waiter_out[i];
+    cpu.r[6] = s_vm_waiter_out[i] + 4u;
+    s_vm_waiter_ret[i] = sr_syscall(&cpu, NID_VM_LOCK);
+    s_vm_waiter_returned[i] = 1;
+    s_vm_parks++;
+    selftest_park_on_scheduler();
+}
+
+static void vm_out_fill(uint32_t out) {
+    MEM_W32(out, VM_SENTINEL);
+    MEM_W32(out + 4u, VM_SENTINEL);
+}
+
+static int vm_out_holds_region(uint32_t out) {
+    return MEM_R32(out) == 0x08400000u && MEM_R32(out + 4u) == 0x00400000u;
+}
+
+static int vm_out_untouched(uint32_t out) {
+    return MEM_R32(out) == VM_SENTINEL && MEM_R32(out + 4u) == VM_SENTINEL;
+}
+
+static uint32_t vm_call(uint32_t nid, uint32_t a0, uint32_t out) {
+    CpuState cpu = {0};
+    cpu.r[4] = a0;
+    cpu.r[5] = out;
+    cpu.r[6] = out ? out + 4u : 0u;
+    return sr_syscall(&cpu, nid);
+}
+
+/* Queue n Lock callers (outputs at 0x00250e40 + 0x10 * i) behind the holder, oldest first, then
+ * make the holder current again. */
+static void vm_start_waiters(TCB **waiters, const int *priority, int n, uint32_t uid0,
+                             TCB *holder) {
+    s_vm_waiter_next = 0;
+    for (int i = 0; i < n; i++) {
+        s_vm_waiter_out[i] = 0x00250e40u + 0x10u * (uint32_t)i;
+        s_vm_waiter_ret[i] = 0xffffffffu;
+        s_vm_waiter_returned[i] = 0;
+        vm_out_fill(s_vm_waiter_out[i]);
+    }
+    for (int i = 0; i < n; i++)
+        waiters[i] = liveness_start_waiter(vm_lock_waiter, uid0 + (uint32_t)i, priority[i]);
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+}
+
+static void vm_run(TCB *t) {
+    s_cur = (int)(t - s_tcb);
+    t->state = TH_RUNNING;
+    sr_coro_switch(t->coro);
+}
+
+static void test_volatile_mem_lock_blocks_and_hands_off(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *holder = volatile_mem_current_thread(0x2b10u, 40);
+    vm_out_fill(VM_A_OUT);
+    expect(vm_call(NID_VM_LOCK, 0u, VM_A_OUT) == 0u && vm_out_holds_region(VM_A_OUT),
+           "VolatileMemLock on a free lock returns 0 and writes the region");
+
+    /* The second caller is stronger: FIFO order, not priority, picks the next holder. */
+    TCB *w[2];
+    const int prio[2] = { 30, 20 };
+    vm_start_waiters(w, prio, 2, 0x2b11u, holder);
+    expect(w[0]->coro && w[1]->coro && w[0]->state == TH_WAIT_OBJ && w[1]->state == TH_WAIT_OBJ &&
+           !s_vm_waiter_returned[0] && !s_vm_waiter_returned[1],
+           "VolatileMemLock while held blocks each later caller in a scheduler wait (#1383)");
+    expect(w[0]->wait_obj == w[1]->wait_obj && sched_count_waiters(w[0]->wait_obj) == 2,
+           "both blocked Lock callers wait on the one volatile-memory object");
+    expect(vm_out_untouched(s_vm_waiter_out[0]) && vm_out_untouched(s_vm_waiter_out[1]),
+           "a blocked VolatileMemLock writes neither output");
+
+    vm_out_fill(VM_PROBE_OUT);
+    expect(vm_call(NID_VM_TRYLOCK, 0u, VM_PROBE_OUT) == 0x802b0200u &&
+           vm_out_untouched(VM_PROBE_OUT),
+           "VolatileMemTryLock while held still returns 0x802b0200 and writes nothing");
+
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u, "VolatileMemUnlock by the holder returns 0");
+    expect(w[0]->state == TH_READY && w[1]->state == TH_WAIT_OBJ,
+           "VolatileMemUnlock readies the oldest waiter only (FIFO, not priority)");
+    expect(vm_out_holds_region(s_vm_waiter_out[0]) && vm_out_untouched(s_vm_waiter_out[1]),
+           "VolatileMemUnlock writes the new holder's address and size outputs");
+    expect(vm_call(NID_VM_TRYLOCK, 0u, VM_PROBE_OUT) == 0x802b0200u,
+           "the lock stays held across the handoff");
+    vm_run(w[0]);
+    expect(s_vm_waiter_returned[0] && s_vm_waiter_ret[0] == 0u,
+           "the woken waiter's VolatileMemLock returns 0 holding the region");
+
+    s_cur = (int)(w[0] - s_tcb);
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u && w[1]->state == TH_READY &&
+           vm_out_holds_region(s_vm_waiter_out[1]),
+           "the second holder's Unlock hands the lock to the next waiter");
+    vm_run(w[1]);
+    expect(s_vm_waiter_returned[1] && s_vm_waiter_ret[1] == 0u,
+           "the last waiter's VolatileMemLock returns 0");
+    s_cur = (int)(w[1] - s_tcb);
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u,
+           "VolatileMemUnlock with no waiter releases the lock");
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0x800201aeu,
+           "VolatileMemUnlock when free still returns 0x800201ae");
+
+    liveness_finish_waiter(w[0]);
+    liveness_finish_waiter(w[1]);
+    sr_hle_test_volatile_mem_reset();
+}
+
+/* Departures: a deleted waiter and a released waiter leave the queue and are never handed the
+ * lock; terminating the thread that holds the lock leaves it held (the lock has no owning
+ * thread); a type other than 0 is refused by name and takes nothing. */
+static void test_volatile_mem_lock_departures_and_type(void) {
+    reset_fixture();
+    sr_hle_init();
+    TCB *holder = volatile_mem_current_thread(0x2b20u, 40);
+    expect(vm_call(NID_VM_LOCK, 0u, VM_A_OUT) == 0u, "the first VolatileMemLock takes the lock");
+    TCB *w[3];
+    const int prio[3] = { 30, 30, 30 };
+    vm_start_waiters(w, prio, 3, 0x2b21u, holder);
+    expect(w[0]->state == TH_WAIT_OBJ && w[1]->state == TH_WAIT_OBJ &&
+           w[2]->state == TH_WAIT_OBJ, "three Lock callers queue behind the holder");
+
+    expect(vm_call(NID_SCE_KERNEL_TERMINATE_DELETE_THREAD, w[0]->uid, 0u) == 0u,
+           "the oldest waiter is terminated and deleted while blocked");
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+    expect(vm_call(NID_WCR_RELEASE_WAIT, w[1]->uid, 0u) == 0u && w[1]->state == TH_READY,
+           "sceKernelReleaseWaitThread releases the second waiter");
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u && w[2]->state == TH_READY,
+           "Unlock passes over the deleted and released waiters to the next live one");
+    expect(vm_out_untouched(s_vm_waiter_out[0]) && vm_out_untouched(s_vm_waiter_out[1]) &&
+           vm_out_holds_region(s_vm_waiter_out[2]),
+           "only the waiter handed the lock has its outputs written");
+    vm_run(w[1]);
+    expect(s_vm_waiter_returned[1] && s_vm_waiter_ret[1] == 0x800201aau,
+           "the released waiter's VolatileMemLock returns WAIT_RELEASE without the lock");
+    vm_run(w[2]);
+    expect(s_vm_waiter_returned[2] && s_vm_waiter_ret[2] == 0u,
+           "the next live waiter's VolatileMemLock returns 0");
+
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+    expect(vm_call(NID_SCE_KERNEL_TERMINATE_THREAD, w[2]->uid, 0u) == 0u,
+           "the thread holding the lock is terminated");
+    s_cur = (int)(holder - s_tcb);
+    holder->state = TH_RUNNING;
+    expect(vm_call(NID_VM_TRYLOCK, 0u, VM_PROBE_OUT) == 0x802b0200u,
+           "terminating the holder leaves the lock held (it has no owning thread)");
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0u,
+           "another thread's VolatileMemUnlock releases it");
+
+    vm_out_fill(VM_PROBE_OUT);
+    expect(vm_call(NID_VM_LOCK, 1u, VM_PROBE_OUT) == 0x80020002u &&
+           vm_out_untouched(VM_PROBE_OUT),
+           "VolatileMemLock type 1 is refused by name (unmeasured) and writes nothing");
+    expect(vm_call(NID_VM_TRYLOCK, 2u, VM_PROBE_OUT) == 0x80020002u &&
+           vm_out_untouched(VM_PROBE_OUT),
+           "VolatileMemTryLock type 2 is refused by name (unmeasured) and writes nothing");
+    expect(vm_call(NID_VM_UNLOCK, 0u, 0u) == 0x800201aeu,
+           "a refused type took no lock");
+
+    liveness_finish_waiter(w[0]);
+    liveness_finish_waiter(w[1]);
+    liveness_finish_waiter(w[2]);
     sr_hle_test_volatile_mem_reset();
 }
 
@@ -35508,6 +35715,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
     test_volatile_mem_unlock_states();
+    test_volatile_mem_lock_blocks_and_hands_off();
+    test_volatile_mem_lock_departures_and_type();
     test_late_prx_unload_keeps_module_owned_objects();
     test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();

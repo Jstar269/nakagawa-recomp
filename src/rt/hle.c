@@ -11971,37 +11971,179 @@ static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
     return 0;
 }
 
-/* The lock sceKernelVolatileMemLock and TryLock take. See h_VolatileMemUnlock. */
+/* The lock sceKernelVolatileMemLock and TryLock take and sceKernelVolatileMemUnlock releases:
+ * one lock over the 4 MiB volatile region at 0x08400000 (#1383).
+ *
+ * Measured on PSP-3000 6.6.1: Lock on a free lock returns 0 and writes the address 0x08400000 and
+ * the size 4 MiB; Unlock with nothing locked returns 0x800201ae (the raw value; the PSPSDK names
+ * it SCE_KERNEL_ERROR_SEMA_OVF); Unlock while the lock is held returns 0 and releases it
+ * (2026-10-21, probe CASE=fake-success, #1135). While the lock is held, TryLock returns
+ * 0x802b0200 and writes neither output (2026-10-22, PR #1153, #1190).
+ *
+ * PSPAutotests tests/intr/waits.expected (hardware-generated; src/rt/intr_conformance.h cites each
+ * line): Lock returns CAN_NOT_WAIT with interrupts or dispatch disabled, whether the lock is free
+ * or held (L290-L293), and ILLEGAL_CONTEXT from an interrupt handler while it is free (L412), so
+ * both contexts are checked before the lock state.
+ *
+ * Contract (#1383): Lock while the lock is held blocks through the scheduler's wait-invocation
+ * substrate and waiters queue in FIFO order. Unlock hands the lock to the first queued waiter
+ * whose wait is still live, writes that waiter's address and size outputs and completes its wait
+ * with 0.
+ *
+ * Project choices, UNMEASURED on hardware:
+ *  - Lock and TryLock accept only type 0. The PSP result for another type is unmeasured, so it is
+ *    refused by name with NOT_IMPLEMENTED (0x80020002), before anything else, rather than
+ *    answered with a guessed code. Unlock's argument is not checked: Unlock keeps its measured
+ *    route.
+ *  - The lock has no owning thread: Unlock from any thread releases it, as the semaphore overflow
+ *    code above suggests (an inference). Terminating or deleting the thread that took the lock
+ *    therefore leaves it held. A waiting thread that is terminated, deleted or released by
+ *    sceKernelReleaseWaitThread leaves the queue through its wait invocation's detach hook and is
+ *    never handed the lock.
+ *  - Output spans are validated before anything is written or queued (ILLEGAL_ADDR for an
+ *    unwritable non-NULL span); NULL outputs are tolerated. CAN_NOT_WAIT and ILLEGAL_CONTEXT write
+ *    no output. A blocked Lock latches no ReferThreadStatus wait type.
+ *  - No guest-memory reservation is recorded for the region while the lock is held. */
+#define VOLATILE_MEM_BASE      0x08400000u
+#define VOLATILE_MEM_SIZE      0x00400000u
+#define VOLATILE_MEM_WAIT_OBJ  0x564d454du   /* "VMEM": the scheduler object a blocked Lock waits on */
+#define VOLATILE_MEM_HELD      0x802b0200u   /* TryLock while held (measured) */
+#define VOLATILE_MEM_NOT_HELD  0x800201aeu   /* Unlock with nothing held (measured) */
+
+typedef struct {
+    SrWaitHandle invocation;
+    uint32_t addr_out, size_out;
+} VolatileMemWaiter;
+
 static int s_volatile_locked = 0;
-static uint32_t h_VolatileMemLock(CpuState *s) {
-    /* Keep the established 4 MiB success route and NULL-output tolerance. Check
-     * both complete non-NULL output spans before writing either one. */
-    if ((A1 && !sr_guest_span_writable(A1, 4u)) ||
-        (A2 && !sr_guest_span_writable(A2, 4u)))
-        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    if (A1) MEM_W32(A1, 0x08400000u);
-    if (A2) MEM_W32(A2, 0x00400000u);
-    s_volatile_locked = 1;
+static VolatileMemWaiter *s_volatile_waiters;    /* FIFO: index 0 is the oldest waiter */
+static size_t s_volatile_wait_count, s_volatile_wait_cap;
+
+static int volatile_mem_type_ok(const char *api, uint32_t type) {
+    if (type == 0u) return 1;
+    fprintf(stderr, "SEMANTIC_BOUNDARY: VOLATILE_MEM_TYPE: %s type %u: the PSP result for a type "
+                    "other than 0 is unmeasured; refusing (0x80020002)\n", api, type);
     return 0;
 }
-/* Measured on PSP-3000 6.6.1 (2026-10-22, PR #1153): while the volatile-memory
- * lock is already held, TryLock returns 0x802b0200 and writes neither output. */
-static uint32_t h_VolatileMemTryLock(CpuState *s) {
-    if (s_volatile_locked) return 0x802b0200u;
-    return h_VolatileMemLock(s);
+
+/* Both complete non-NULL output spans are checked before either one is written. */
+static int volatile_mem_outputs_writable(uint32_t addr_out, uint32_t size_out) {
+    return (!addr_out || sr_guest_span_writable(addr_out, 4u)) &&
+           (!size_out || sr_guest_span_writable(size_out, 4u));
 }
-/* The lock sceKernelVolatileMemLock and TryLock take and sceKernelVolatileMemUnlock releases.
- * Measured on PSP-3000 6.6.1 (2026-10-21, probe CASE=fake-success): Unlock with nothing locked
- * returns 0x800201ae (the raw value; the PSPSDK names it SCE_KERNEL_ERROR_SEMA_OVF); Unlock while
- * the lock is held returns 0 and releases it. */
+
+static void volatile_mem_take(uint32_t addr_out, uint32_t size_out) {
+    s_volatile_locked = 1;
+    if (addr_out) MEM_W32(addr_out, VOLATILE_MEM_BASE);
+    if (size_out) MEM_W32(size_out, VOLATILE_MEM_SIZE);
+}
+
+static void volatile_mem_remove_waiter(size_t i) {
+    memmove(&s_volatile_waiters[i], &s_volatile_waiters[i + 1u],
+            (s_volatile_wait_count - i - 1u) * sizeof(*s_volatile_waiters));
+    s_volatile_wait_count--;
+}
+
+static int volatile_mem_enqueue(SrWaitHandle invocation, uint32_t addr_out, uint32_t size_out) {
+    if (s_volatile_wait_count == s_volatile_wait_cap) {
+        size_t next = s_volatile_wait_cap ? s_volatile_wait_cap * 2u : 4u;
+        if (next > SIZE_MAX / sizeof(*s_volatile_waiters)) return 0;
+        VolatileMemWaiter *grown =
+            (VolatileMemWaiter *)realloc(s_volatile_waiters, next * sizeof(*grown));
+        if (!grown) return 0;
+        s_volatile_waiters = grown;
+        s_volatile_wait_cap = next;
+    }
+    VolatileMemWaiter *w = &s_volatile_waiters[s_volatile_wait_count++];
+    w->invocation = invocation;
+    w->addr_out = addr_out;
+    w->size_out = size_out;
+    return 1;
+}
+
+/* Wait-invocation detach hook: a waiter that finished, or whose thread was terminated, deleted
+ * or released, leaves the queue. The lock state does not change, so nobody is notified. */
+static int volatile_mem_detach(SrWaitHandle invocation, uint32_t object) {
+    (void)object;
+    for (size_t i = 0; i < s_volatile_wait_count; i++) {
+        if (s_volatile_waiters[i].invocation == invocation) {
+            volatile_mem_remove_waiter(i);
+            break;
+        }
+    }
+    return 0;
+}
+
+/* Hand the free lock to the oldest waiter whose wait is still live. Its output spans are
+ * validated again before the grant; a waiter whose spans fail gets the ILLEGAL_ADDR Lock gives at
+ * entry and the next waiter is tried. Returns 1 when a waiter now holds the lock. */
+static int volatile_mem_grant_next(void) {
+    while (s_volatile_wait_count > 0u) {
+        VolatileMemWaiter w = s_volatile_waiters[0];
+        volatile_mem_remove_waiter(0);
+        if (!volatile_mem_outputs_writable(w.addr_out, w.size_out)) {
+            (void)sched_wait_complete(w.invocation, SCE_KERNEL_ERROR_ILLEGAL_ADDR);
+            continue;
+        }
+        if (!sched_wait_complete(w.invocation, 0u)) continue;  /* released, terminated, deleted */
+        volatile_mem_take(w.addr_out, w.size_out);
+        return 1;
+    }
+    return 0;
+}
+
+static uint32_t h_VolatileMemLock(CpuState *s) {
+    if (!volatile_mem_type_ok("sceKernelVolatileMemLock", A0))
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    if (sched_is_intr_context()) return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;   /* L412 */
+    if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;      /* L290-L293 */
+    if (!volatile_mem_outputs_writable(A1, A2)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (!s_volatile_locked) {
+        volatile_mem_take(A1, A2);
+        return 0;
+    }
+
+    SrWaitHandle invocation = sched_wait_begin(VOLATILE_MEM_WAIT_OBJ, 0u, 0, volatile_mem_detach);
+    if (!invocation) return HLE_KERNEL_ERROR_NO_MEMORY;
+    if (!volatile_mem_enqueue(invocation, A1, A2)) {
+        (void)sched_wait_finish(invocation);
+        return HLE_KERNEL_ERROR_NO_MEMORY;
+    }
+    /* Only Unlock's grant (0), a span refusal or a release, termination or deletion completes
+     * this invocation; any other wake finds no result and waits again. */
+    uint32_t result;
+    while (!sched_wait_take_result(invocation, &result))
+        (void)sched_wait_block(invocation, 0u, 0);
+    if (sched_wait_finish(invocation)) sched_preempt();
+    return result;
+}
+
+static uint32_t h_VolatileMemTryLock(CpuState *s) {
+    if (!volatile_mem_type_ok("sceKernelVolatileMemTryLock", A0))
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    if (s_volatile_locked) return VOLATILE_MEM_HELD;
+    if (!volatile_mem_outputs_writable(A1, A2)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    volatile_mem_take(A1, A2);
+    return 0;
+}
+
 static uint32_t h_VolatileMemUnlock(CpuState *s) {
     (void)s;
-    if (!s_volatile_locked) return 0x800201aeu;
+    if (!s_volatile_locked) return VOLATILE_MEM_NOT_HELD;
     s_volatile_locked = 0;
+    if (volatile_mem_grant_next()) sched_preempt();   /* a stronger new holder runs now */
     return 0;
 }
-/* Test-only: forget the lock. */
-void sr_hle_test_volatile_mem_reset(void) { s_volatile_locked = 0; }
+
+/* Test-only: forget the lock and its queue. Waits still parked on it belong to fixture threads
+ * the caller is discarding. */
+void sr_hle_test_volatile_mem_reset(void) {
+    s_volatile_locked = 0;
+    free(s_volatile_waiters);
+    s_volatile_waiters = NULL;
+    s_volatile_wait_count = 0u;
+    s_volatile_wait_cap = 0u;
+}
 /* Registered entry for sceUmdRegisterUMDCallBack. When UMD becomes ready the kernel fires
  * this callback (a0=unknown, a1=drive_stat), which in this game calls sceKernelWakeupThread
  * on the launcher (0x111) to unstick it from sceKernelSleepThread. */
