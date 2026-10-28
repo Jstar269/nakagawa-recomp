@@ -357,6 +357,12 @@ static void put(Buf *b, const uint8_t *p, uint32_t n) {
 static void be32_at(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
 }
+/* A PSMF header timestamp: six big-endian bytes, the layout of the first (0x54) and last
+ * (0x5a) presentation times. */
+static void be48_at(uint8_t *p, int64_t v) {
+    for (int i = 0; i < 6; i++) p[i] = (uint8_t)((uint64_t)v >> (40 - 8 * i));
+}
+
 static void put_pts(uint8_t *p, int64_t v) {
     uint64_t x = (uint64_t)v;
     p[0] = (uint8_t)(0x21u | (((x >> 30) & 7u) << 1) | 1u);
@@ -2113,9 +2119,13 @@ int iso_sector_count(uint32_t *out_sectors) {
 #define AV_NID_GET_AUDIO   0xb9848a74u
 #define AV_NID_GET_STATUS  0xf8ef08a6u
 #define AV_NID_DELETE      0x9b71a274u
+#define AV_NID_GET_INFO    0xdf089680u
+#define AV_NID_RELEASE     0xe792cd94u
 #define AV_STATUS_PLAYING  0x00000004u
 #define AV_STATUS_FINISHED 0x00000200u
 #define AV_ERR_NO_DATA     0x8061600cu
+#define AV_ERR_STATUS      0x80616001u
+#define AV_ERR_ILLEGAL_ADDR 0x800200d3u
 
 /* Guest addresses for this test; well above the FC_/TD_ blocks and GUEST_BUF. */
 #define AV_PLAYER 0x08600000u   /* player uid, also the uid's out-pointer */
@@ -2124,6 +2134,7 @@ int iso_sector_count(uint32_t *out_sectors) {
 #define AV_CONFIG 0x08603000u   /* ScePsmfPlayerConfigData */
 #define AV_VIDEO  0x08604000u   /* ScePsmfPlayerVideoData: frameWidth, displaybuf, displaypts */
 #define AV_AUDIO  0x08605000u   /* one 8192-byte PCM sink */
+#define AV_INFO   0x08606000u   /* PsmfInfo (20 bytes), then the width and height words */
 
 /* The authored timelines.  Video spacing *is* PSMF_VIDEO_PTS_STEP: 90000 * 1001 / 30000 = 3003
  * ticks exactly at 29.97 fps (30000/1001), so video PTS drift is identically 0.
@@ -2195,7 +2206,8 @@ static uint8_t *build_psmf_av(uint32_t *size_out, int layout) {
     b.d[0x57] = (uint8_t)(FIX_BASE >> 16);
     b.d[0x58] = (uint8_t)(FIX_BASE >> 8);
     b.d[0x59] = (uint8_t)FIX_BASE;
-    be32_at(b.d + 0x5a, (uint32_t)av_audio_pts(AV_AUDIO_BLOCKS - 1));
+    /* The last timestamp closes the final picture: base + AV_PICTURES picture steps. */
+    be48_at(b.d + 0x5a, FIX_BASE + av_video_pts(AV_PICTURES));
     /* Stream table: one video entry (non-zero version fields keep playerVersion 0) and one
      * audio entry whose byte 14 declares the ATRAC3+ channel count. */
     b.d[0x80] = 0; b.d[0x81] = 2;
@@ -2364,6 +2376,100 @@ static void test_player_lifecycle_releases_what_it_acquired(void) {
         CHECK(dec >= 0, "psmf-lifecycle: deleted players leave the decoder instances free");
         if (dec >= 0) sr_h264_destroy(dec);
     }
+    s_player_image = NULL;
+    s_player_image_size = 0;
+    free(image);
+}
+
+/* ---- scePsmfPlayerGetPsmfInfo (issue #308) ------------------------------------------- */
+
+static int av_info_is(uint32_t last, uint32_t video, uint32_t audio, uint32_t pcm, uint32_t ver) {
+    return MEM_R32(AV_INFO + 0) == last && MEM_R32(AV_INFO + 4) == video &&
+           MEM_R32(AV_INFO + 8) == audio && MEM_R32(AV_INFO + 12) == pcm &&
+           MEM_R32(AV_INFO + 16) == ver;
+}
+
+/* The info is the opened PSMF's header as the player parsed it: the last picture's time
+ * (the header duration less one picture), the video and audio stream counts, no PCM streams,
+ * and the player version (0 when every video stream carries an EP map, 1 otherwise).  The
+ * refusals are ILLEGAL_ADDR for an unusable player or info address and INVALID_STATUS for an
+ * unknown player or one whose PSMF is not set; a refused call writes nothing.  The width and
+ * height words are never written (two-argument contract). */
+static void test_player_get_psmf_info(void) {
+    uint32_t size = 0;
+    uint8_t *image = build_psmf_av(&size, AV_LAYOUT_SPLIT);
+    if (!image) { CHECK(0, "psmf-info stream builds"); return; }
+    s_player_image = image;
+    s_player_image_size = size;
+    lc_prepare_guest();
+    memset(SR_HOST(AV_INFO), 0xcc, 28u);
+
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, AV_INFO + 20u, AV_INFO + 24u, 0) ==
+              AV_ERR_STATUS,
+          "psmf-info: a player that was never created is refused with INVALID_STATUS");
+    CHECK(guest_mpeg_import(AV_NID_CREATE, AV_PLAYER, AV_CREATE, 0, 0, 0) == 0,
+          "psmf-info: the player is created");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, AV_INFO + 20u, AV_INFO + 24u, 0) ==
+              AV_ERR_STATUS,
+          "psmf-info: a call before the PSMF is set is refused with INVALID_STATUS");
+    CHECK(guest_bytes_are(AV_INFO, 28u, 0xcc), "psmf-info: a call before SetPsmf writes nothing");
+
+    CHECK(guest_mpeg_import(AV_NID_SET_PSMF, AV_PLAYER, AV_PATH, 0, 0, 0) == 0,
+          "psmf-info: the PSMF is set");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, 0, AV_INFO, 0, 0, 0) == AV_ERR_ILLEGAL_ADDR,
+          "psmf-info: a null player address is refused with ILLEGAL_ADDR");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, 0x0c000000u, AV_INFO, 0, 0, 0) == AV_ERR_ILLEGAL_ADDR,
+          "psmf-info: an unmapped player address is refused with ILLEGAL_ADDR");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, 0, 0, 0, 0) == AV_ERR_ILLEGAL_ADDR,
+          "psmf-info: a null info pointer is refused with ILLEGAL_ADDR");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, 0x0bfffff0u, 0, 0, 0) == AV_ERR_ILLEGAL_ADDR,
+          "psmf-info: an info span that leaves guest memory is refused with ILLEGAL_ADDR");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER + 4u, AV_INFO, 0, 0, 0) == AV_ERR_STATUS,
+          "psmf-info: an address that holds no player is refused with INVALID_STATUS");
+    CHECK(guest_bytes_are(AV_INFO, 28u, 0xcc), "psmf-info: refused calls write nothing");
+
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, AV_INFO + 20u, AV_INFO + 24u, 0) == 0,
+          "psmf-info: an opened player reports its PSMF info");
+    CHECK(av_info_is((uint32_t)av_video_pts(AV_PICTURES - 1), 1u, 1u, 0u, 0u),
+          "psmf-info: last picture time, one video and one audio stream, no PCM, version 0");
+    CHECK(guest_bytes_are(AV_INFO + 20u, 8u, 0xcc),
+          "psmf-info: the width and height words are left untouched");
+    CHECK(guest_mpeg_import(AV_NID_START, AV_PLAYER, AV_CONFIG, 0, 0, 0) == 0,
+          "psmf-info: the player starts");
+    memset(SR_HOST(AV_INFO), 0xcc, 20u);
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, 0, 0, 0) == 0 &&
+              av_info_is((uint32_t)av_video_pts(AV_PICTURES - 1), 1u, 1u, 0u, 0u),
+          "psmf-info: a playing player reports the same info");
+    CHECK(guest_mpeg_import(AV_NID_RELEASE, AV_PLAYER, 0, 0, 0, 0) == 0,
+          "psmf-info: the PSMF is released");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, 0, 0, 0) == AV_ERR_STATUS,
+          "psmf-info: a released PSMF is refused with INVALID_STATUS");
+
+    /* Two video and two audio streams; the second video stream has no EP map, which makes the
+     * player a BASIC (version 1) player.  The header times are this test's own. */
+    uint32_t a0o[FIX_PICTURES], a0l[FIX_PICTURES], a1o[FIX_PICTURES], a1l[FIX_PICTURES];
+    uint32_t multi_size = 0;
+    uint8_t *multi = build_multistream_psmf(&multi_size, a0o, a0l, a1o, a1l);
+    if (!multi) {
+        CHECK(0, "psmf-info multistream stream builds");
+    } else {
+        be48_at(multi + 0x54, FIX_BASE);
+        be48_at(multi + 0x5a, FIX_BASE + 10 * PSMF_VIDEO_PTS_STEP);
+        be32_at(multi + 0x96, 0u);           /* video entry 1: no EP map offset */
+        s_player_image = multi;
+        s_player_image_size = multi_size;
+        CHECK(guest_mpeg_import(AV_NID_SET_PSMF, AV_PLAYER, AV_PATH, 0, 0, 0) == 0,
+              "psmf-info: the multistream PSMF is set");
+        memset(SR_HOST(AV_INFO), 0xcc, 20u);
+        CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, 0, 0, 0) == 0 &&
+                  av_info_is(9u * PSMF_VIDEO_PTS_STEP, 2u, 2u, 0u, 1u),
+              "psmf-info: two video and two audio streams, no PCM, BASIC version 1");
+        free(multi);
+    }
+    CHECK(guest_mpeg_import(AV_NID_DELETE, AV_PLAYER, 0, 0, 0, 0) == 0,
+          "psmf-info: the player is deleted");
+    CHECK(guest_mpeg_import(AV_NID_GET_INFO, AV_PLAYER, AV_INFO, 0, 0, 0) == AV_ERR_STATUS,
+          "psmf-info: a deleted player is refused with INVALID_STATUS");
     s_player_image = NULL;
     s_player_image_size = 0;
     free(image);
@@ -2760,6 +2866,7 @@ int main(int argc, char **argv) {
     test_mpeg_ycbcr_guest_contract();
     test_mpeg_ycbcr_host_rows_bounded();
     test_player_lifecycle_releases_what_it_acquired();
+    test_player_get_psmf_info();
     test_psmf_log_tick_instance_isolation();
     test_psmf_av_timing_first_principles();
     test_player_av_presentation_timing(AV_LAYOUT_SPLIT);

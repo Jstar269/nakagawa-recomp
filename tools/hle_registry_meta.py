@@ -372,6 +372,17 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)",
     },
+    # scePsmfPlayerGetPsmfInfo reports the opened PSMF's header as SetPsmfCB parsed it.
+    # Checks, their order and the one-picture duration offset follow PPSSPP
+    # Core/HLE/scePsmf.cpp (3f40ddc8); the 567567 lastFrameTs, version 1 and zero PCM
+    # streams agree with pspautotests video/psmfplayer/getpsmfinfo.expected (2321faa0).
+    "h_PsmfGetPsmfInfo": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/psmf_media_selftest.c:test_player_get_psmf_info",
+        ],
+        "limitation": "host HLE player; numPcmStreams is always 0 because the stream table has no LPCM class; the width/height outputs of the 0x03090510 libpsmfplayer build are never written because the loaded build is not recorded; lastFrameTs assumes the 3003-tick 29.97 fps picture step; the ILLEGAL_ADDR refusals follow PPSSPP (the PSP faults there); not measured on this project's PSP (#308)",
+    },
     # The licensee key is recorded for sceNpDrmEdataSetupKey, which stays refused: no key
     # material ships with the project and nothing decrypts.
     "h_NpDrmSetLicenseeKey": {

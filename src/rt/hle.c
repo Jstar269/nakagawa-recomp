@@ -6439,8 +6439,10 @@ static int psmf_parse_header(SrPsmfPlayer *p, const uint8_t *h, uint32_t n) {
         } }
     if (!p->videoStreams) return 0;
     psmf_select_streams(p, 0, 0);
-    p->durationPts = psmf_be32(h + 0x5a);
+    /* 0x54 and 0x5a are the header's first and last presentation timestamps, both six-byte
+     * fields read like the PES clock; the stream's total duration is their difference. */
     p->presentationBase = psmf_be_timestamp(h + 0x54);
+    p->durationPts = psmf_be_timestamp(h + 0x5a) - p->presentationBase;
     p->currentPts = 0;
     return 1;
 }
@@ -6464,6 +6466,29 @@ static uint32_t h_PsmfStop(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p-
 static uint32_t h_PsmfBreak(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;p->breakRequested=1;psmf_flush(p);return 0;}
 static uint32_t h_PsmfRelease(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_STANDBY)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_INIT;p->fileLba=p->fileSize=p->streamOffset=p->streamSize=0;psmf_flush(p);if(p->producer){sr_psmf_producer_close(p->producer);p->producer=NULL;}psmf_media_reset(p);return 0;}
 static uint32_t h_PsmfStatus(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);return p?p->status:PSMF_ERR_STATUS;}
+/* scePsmfPlayerGetPsmfInfo(player, PsmfInfo *info, u32 *width, u32 *height).  PsmfInfo is five
+ * words: lastFrameTs, numVideoStreams, numAudioStreams, numPcmStreams, playerVersion.  Checks and
+ * their order follow PPSSPP Core/HLE/scePsmf.cpp (3f40ddc8): an unusable player or info address is
+ * refused with ILLEGAL_ADDR before the player is resolved (the PSP itself faults there), then an
+ * unknown player or one whose PSMF is not set yet with INVALID_STATUS.  lastFrameTs is the header's
+ * total duration less one picture, because the first picture is at 0: pspautotests
+ * video/psmfplayer/getpsmfinfo.expected records 567567 for its 570570-tick test.pmf.  The stream
+ * table classification (psmf_parse_header) has no LPCM class, so numPcmStreams is 0, which is also
+ * what that hardware run reports for both of its files.  The width/height outputs exist only in the
+ * 0x03090510 libpsmfplayer build; the runtime does not record which build a title loaded, so they
+ * are never written and the call keeps the two-argument contract. */
+static uint32_t h_PsmfGetPsmfInfo(CpuState *s) {
+    if (!A0 || !sr_guest_span_readable(A0, 4u) || !A1 || !sr_guest_span_writable(A1, 20u))
+        return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    SrPsmfPlayer *p = psmf_find(A0, 0);
+    if (!p || p->status < PSMF_STATUS_STANDBY) return PSMF_ERR_STATUS;
+    MEM_W32(A1 + 0u, (uint32_t)(p->durationPts - PSMF_VIDEO_PTS_STEP));
+    MEM_W32(A1 + 4u, p->videoStreams);
+    MEM_W32(A1 + 8u, p->audioStreams);
+    MEM_W32(A1 + 12u, 0u);
+    MEM_W32(A1 + 16u, p->playerVersion);
+    return 0;
+}
 static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;psmf_produce(p);psmf_video_pump(p);if(p->status==PSMF_STATUS_PLAYING&&psmf_reached_end(p)){if(p->loopStatus==0u){psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);}else{p->status=PSMF_STATUS_FINISHED;psmf_log_summary(p);}}return 0;}
 /* scePsmfPlayerGetVideoData(player, ScePsmfPlayerVideoData *d): d->frameWidth is the
  * caller's stride in pixels (0 means 512, rounded down to even) and d->displaybuf is the
@@ -27057,6 +27082,7 @@ static void hle_register_psmf_player_handlers(void) {
     sr_hle_register(0x9b71a274, "scePsmfPlayerDelete", h_PsmfDelete);
     sr_hle_register(0xa0b8ca55, "scePsmfPlayerUpdate", h_PsmfUpdate);
     sr_hle_register(0xb9848a74, "scePsmfPlayerGetAudioData", h_PsmfGetAudio);
+    sr_hle_register(0xdf089680, "scePsmfPlayerGetPsmfInfo", h_PsmfGetPsmfInfo);
     sr_hle_register(0xe792cd94, "scePsmfPlayerReleasePsmf", h_PsmfRelease);
     sr_hle_register(0xf8ef08a6, "scePsmfPlayerGetCurrentStatus", h_PsmfStatus);
 }
