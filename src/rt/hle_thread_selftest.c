@@ -146,7 +146,6 @@ extern int sr_hle_test_started_image_count(void);
 extern uint32_t sr_hle_test_load_prx_image(const char *host_path, uint32_t base,
                                            uint32_t patch_nid, uint32_t patch_off);
 extern uint32_t sr_alloc_block_at(uint32_t addr, uint32_t size, const char *name);
-extern void ge_finish_latch_assist(void);
 static void reset_fixture(void);
 
 /* Test-build-only white-box view of the no-frame watchdog state exported by
@@ -869,28 +868,19 @@ static void msgpipe_wait_setup(CpuState *cpu, uint32_t uid, uint32_t buf,
                                uint32_t size, uint32_t wait_mode,
                                uint32_t resultp, uint32_t toptr);
 
-/* Narrow guest-body hook for the title-configured display replay. The handler
- * remains production hle.c; this only supplies the three analyzer-owned guest
- * entry bodies that a full title image would normally dispatch. */
+/* Counts every guest body the production sceDisplaySetMode handler tries to dispatch
+ * while the probe is armed. The handler replays no title display bring-up (#363), so the
+ * count must stay zero; a dispatch is swallowed rather than run, so a regression is
+ * counted instead of executed. */
 static int s_title_hle_probe;
 static unsigned s_title_hle_guest_calls;
 
 static int title_hle_dispatch_intercept(CpuState *cpu, uint32_t target) {
+    (void)target;
     if (!s_title_hle_probe || !cpu) return 0;
-    SrTitleDisplayBringup bringup;
-    if (!sr_title_config_display_bringup(&bringup)) return 0;
-    if (target == bringup.malloc_entry) {
-        s_title_hle_guest_calls++;
-        cpu->r[2] = 0x09000000u;
-        return 1;
-    }
-    if (target == bringup.vblank_device_init_entry ||
-        target == bringup.render_context_init_entry) {
-        s_title_hle_guest_calls++;
-        cpu->r[2] = 0;
-        return 1;
-    }
-    return 0;
+    s_title_hle_guest_calls++;
+    cpu->r[2] = 0;
+    return 1;
 }
 
 /* Defined in intr_conformance.h (included below, once the fixture helpers it
@@ -1011,24 +1001,13 @@ static void title_hle_write_cstr(uint32_t addr, const char *text) {
 
 static void test_guest_module_load_binding(void);
 
-/* The title-configured HLE probe enters the actual hle.c handlers and the
- * actual nested guest-call marshaller. Only the three analyzer-owned guest
- * bodies are intercepted; all address qualification and side effects remain
- * production code. Generic and public fixture profiles deliberately exercise
- * the negative direction because they do not configure migrated HLE groups. */
+/* #363: no title configuration arms an HLE display assist. For every profile the
+ * production sceDisplaySetMode keeps its PSP success result and dispatches no guest body,
+ * and LoadModule writes no readiness word. The display bring-up replay, runtime-sync
+ * seeding and frame-latch assist that a configured title used to receive are retired. */
 static void test_title_config_hle_bindings(void) {
     const SrTitleRuntimeConfig *cfg = sr_title_config();
     const char *expected_diagnostics = getenv("SR_EXPECT_HLE_DIAGNOSTICS");
-    SrTitleDisplayBringup bringup;
-    uint32_t sync_base = 0, sync_name = 0;
-    const SrTitleRuntimeSyncWrapper *wrappers = NULL;
-    unsigned wrapper_count = 0;
-    int has_bringup = sr_title_config_display_bringup(&bringup);
-    int has_sync = sr_title_config_runtime_sync(&sync_base, &sync_name,
-                                                &wrappers, &wrapper_count);
-    uint32_t frame_latch = 0;
-    uint32_t libfont_uid = 0;
-    int has_latch = sr_title_config_frame_latch_addr(&frame_latch);
     CpuState cpu;
 
     memset(g_mem_base, 0, 0x0c000000u);
@@ -1042,96 +1021,29 @@ static void test_title_config_hle_bindings(void) {
                "title diagnostic profile matches the explicit selftest expectation");
     }
 
-    expect((has_bringup && has_sync && has_latch) ||
-           (!has_bringup && !has_sync && !has_latch),
-           "migrated HLE groups are all configured together or all absent");
+    expect(strcmp(cfg->source_id, "none") == 0 || cfg->valid != 0u,
+           "the HLE probe has an explicit source identity");
 
     s_title_hle_guest_calls = 0;
     s_title_hle_probe = 1;
     cpu.r[4] = 0;
     cpu.r[5] = 480;
     cpu.r[6] = 272;
-
-    if (!has_bringup) {
-        expect(strcmp(cfg->source_id, "none") == 0 || cfg->valid != 0u,
-               "unconfigured HLE probe has an explicit source identity");
-        expect(sr_hle_test_display_set_mode(&cpu) == 0u,
-               "generic DisplaySetMode keeps its PSP success result");
-        expect(s_title_hle_guest_calls == 0u,
-               "generic DisplaySetMode dispatches no title guest body");
-        expect(!has_sync && !has_latch,
-               "generic HLE probe has no migrated address bindings");
-
-        title_hle_write_cstr(0x08906000u, "libfont.prx");
-        memset(&cpu, 0, sizeof(cpu));
-        cpu.r[4] = 0x08906000u;
-        expect(sr_hle_test_load_module(&cpu) != 0u,
-               "generic LoadModule still returns a module uid");
-        expect(s_title_hle_guest_calls == 0u,
-               "generic LoadModule dispatches no title guest body");
-        expect(MEM_R32(0x08906010u) == 0u,
-               "generic LoadModule does not write a migrated compat flag");
-        MEM_W32(0x08906014u, 0u);
-        ge_finish_latch_assist();
-        expect(MEM_R32(0x08906014u) == 0u,
-               "generic GE completion does not assist a title latch");
-    } else {
-        expect(has_sync && wrappers != NULL && wrapper_count >= 2u,
-               "configured display bringup has mode-keyed runtime sync wrappers");
-        expect(has_latch,
-               "configured display bringup has a frame-latch binding");
-
-        title_hle_write_cstr(sync_name, "synthetic-sync");
-        MEM_W32(sync_base + 0x30u, 99u);
-        MEM_W32(sync_base + 0x34u, 0u);
-        MEM_W32(sync_base + 0x38u, 0u);
-        MEM_W32(sync_base + 0x4c0u, 1u);
-        MEM_W32(sync_base + 0x0cu, 0u);
-        MEM_W32(bringup.render_context_magic_addr, 0u);
-        MEM_W8(bringup.render_table_ready_flag_addr, 0u);
-        MEM_W32(bringup.render_context_word_addr, 0u);
-        MEM_W32(frame_latch, 0u);
-
-        expect(sr_hle_test_display_set_mode(&cpu) == 0u,
-               "configured DisplaySetMode returns production success");
-        expect(s_title_hle_guest_calls == 3u,
-               "configured DisplaySetMode dispatches malloc and two init bodies");
-        expect(MEM_R32(bringup.render_context_magic_addr) == 0x308u,
-               "configured DisplaySetMode seeds render-context magic");
-        expect(MEM_R8(bringup.render_table_ready_flag_addr) == 1u &&
-               MEM_R32(bringup.render_context_word_addr) == 1u,
-               "configured DisplaySetMode seeds render readiness state");
-        expect(MEM_R32(frame_latch) == 1u,
-               "configured DisplaySetMode seeds the frame-ready latch");
-        expect(MEM_R32(sync_base + 0x30u) == 1u &&
-               MEM_R32(sync_base + 0x34u) != 0u &&
-               MEM_R32(sync_base + 0x38u) != 0u &&
-               MEM_R32(sync_base + 0x0cu) != 0u,
-               "configured DisplaySetMode installs mode-1 sync state");
-
-        title_hle_write_cstr(0x08906000u, "libfont.prx");
-        memset(&cpu, 0, sizeof(cpu));
-        cpu.r[4] = 0x08906000u;
-        MEM_W32(0x08906010u, 0u);
-        libfont_uid = sr_hle_test_load_module(&cpu);
-        expect(libfont_uid != 0u,
-               "configured LoadModule returns a module uid");
-        expect(MEM_R32(0x08906010u) == 0u,
-               "configured LoadModule leaves readiness to guest startup");
-        memset(&cpu, 0, sizeof(cpu));
-        cpu.r[4] = libfont_uid;
-        expect(sr_hle_test_start_module(&cpu) == SCE_KERNEL_ERROR_NOT_IMPLEMENTED,
-               "configured StartModule refuses unavailable libfont startup");
-        expect(MEM_R32(0x08906010u) == 0u,
-               "configured StartModule never synthesizes libfont readiness");
-
-        MEM_W32(frame_latch, 5u);
-        ge_finish_latch_assist();
-        expect(MEM_R32(frame_latch) == 4u,
-               "configured GE completion decrements the frame latch");
-    }
-    test_guest_module_load_binding();
+    expect(sr_hle_test_display_set_mode(&cpu) == 0u,
+           "DisplaySetMode keeps its PSP success result");
     s_title_hle_probe = 0;
+    expect(s_title_hle_guest_calls == 0u,
+           "DisplaySetMode dispatches no guest body for any title configuration");
+
+    title_hle_write_cstr(0x08906000u, "libfont.prx");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x08906000u;
+    MEM_W32(0x08906010u, 0u);
+    expect(sr_hle_test_load_module(&cpu) != 0u,
+           "LoadModule still returns a module uid");
+    expect(MEM_R32(0x08906010u) == 0u,
+           "LoadModule does not write a migrated compat flag");
+    test_guest_module_load_binding();
 }
 
 /* Test-only access to the real PRX parser.  The wrapper is compiled only for this executable;
@@ -1681,7 +1593,7 @@ static const SrModuleFunc s_rt_alpha_funcs[] = {
 static const SrModuleSpan s_rt_alpha_spans[] = {{RT_START, RT_TEXT_END}};
 static SrModuleCode s_rt_alpha_code = {
     "rt-alpha.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_alpha_base,
-    s_rt_alpha_funcs, 3u, s_rt_alpha_spans, 1u,
+    s_rt_alpha_funcs, 3u, s_rt_alpha_spans, 1u, 0u, 0u,
 };
 /* A library module with no start routine; its stop body is the alpha one. */
 static uint32_t s_rt_nostart_base;
@@ -1691,12 +1603,12 @@ static const SrModuleFunc s_rt_nostart_funcs[] = {
 };
 static SrModuleCode s_rt_nostart_code = {
     "rt-nostart.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_nostart_base,
-    s_rt_nostart_funcs, 2u, s_rt_alpha_spans, 1u,
+    s_rt_nostart_funcs, 2u, s_rt_alpha_spans, 1u, 0u, 0u,
 };
 static SrModuleCode s_rt_delta_code = {
     "rt-delta.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u,
     "relocation type 7 (GPREL16) at link 0x00000010 is not supported", &s_rt_delta_base,
-    NULL, 0u, NULL, 0u,
+    NULL, 0u, NULL, 0u, 0u, 0u,
 };
 
 /* A fixed-address module (ELF type 2) links at absolute addresses and carries no
@@ -1724,7 +1636,7 @@ static SrModuleFunc s_rt_fixed_funcs[3];
 static SrModuleSpan s_rt_fixed_spans[1];
 static SrModuleCode s_rt_fixed_code = {
     "rt-fixed.prx", 0u, 0u, 0u, 0u, 0x40u, 0u, NULL, &s_rt_fixed_base,
-    s_rt_fixed_funcs, 3u, s_rt_fixed_spans, 1u,
+    s_rt_fixed_funcs, 3u, s_rt_fixed_spans, 1u, 0u, 0u,
 };
 
 static int write_fixed_module_prx(const char *path, uint32_t link) {
@@ -21375,6 +21287,9 @@ static void td24c_build_track(uint32_t base, uint32_t fileSize, uint32_t avgByte
  * title/game bytes. `frames` such frames follow a 76-byte header; the 8-byte
  * fact chunk carries `factSamples` and the delay word `factDelay`. */
 enum { TD1096_HEADER = 76u, TD1096_FRAME = 304u };
+extern unsigned sr_hle_test_atrac_prime_decodes(int reset);
+extern uint32_t sr_hle_test_atrac_last_block_us(void);
+extern uint32_t sr_hle_test_atrac_block_us_for(uint32_t codec, int channels, uint32_t bytes_per_frame);
 static void td1096_build_at3_frames(uint32_t base, uint16_t formatTag,
                                     uint32_t frames, uint32_t factSamples,
                                     uint32_t factDelay) {
@@ -21573,20 +21488,38 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
         expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, sid, TRACK, prefix, 0u) == 0u,
                "AT3 SetData accepts a streamed prefix shorter than the file");
 
+        (void)sr_hle_test_atrac_prime_decodes(1);
         uint32_t ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
         expect(ret == 0u && MEM_R32(OUT_N) == 955u && MEM_R32(OUT_END) == 0u &&
                    MEM_R32(OUT_REMAIN) == 2u,
                "streamed AT3 first decode returns 955 samples with two frames remaining");
+        /* PSP-3000 (#1096): the first call decodes file frame 0 to prime the decoder, discards
+         * it, and returns frame 1 decoded with that history. Later calls decode one frame. */
+        expect(sr_hle_test_atrac_prime_decodes(1) == 1u,
+               "streamed AT3 first decode primes the decoder with file frame 0 once");
+        expect(sr_hle_test_atrac_last_block_us() == 1177u,
+               "AT3 stereo 304-byte decode keeps its caller waiting the measured 1,177 us");
+        /* The measured table (PSP-3000, #1296): only the two measured configurations wait. */
+        expect(sr_hle_test_atrac_block_us_for(ATRAC_CODEC_AT3PLUS, 2, 744u) == 3055u,
+               "ATRAC3+ stereo 744-byte decode waits the measured 3,055 us");
+        expect(sr_hle_test_atrac_block_us_for(ATRAC_CODEC_AT3, 1, 304u) == 0u &&
+                   sr_hle_test_atrac_block_us_for(ATRAC_CODEC_AT3PLUS, 2, 1536u) == 0u &&
+                   sr_hle_test_atrac_block_us_for(ATRAC_CODEC_AT3, 2, 384u) == 0u,
+               "unmeasured ATRAC configurations keep returning at once");
         for (uint32_t left = 1u; left <= 2u; left++) {
             ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
             expect(ret == 0u && MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
                        MEM_R32(OUT_END) == 0u && MEM_R32(OUT_REMAIN) == 2u - left,
                    "streamed AT3 later decodes return 1024 samples and count frames down");
         }
+        expect(sr_hle_test_atrac_prime_decodes(1) == 0u,
+               "streamed AT3 later decodes do not prime again");
         ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
         expect(ret == ATRAC_ERROR_BUFFER_IS_EMPTY && MEM_R32(OUT_N) == 0u &&
                    MEM_R32(OUT_END) == 0u,
                "streamed AT3 decode after the last buffered frame returns 0x80630023 with 0 samples and end 0");
+        expect(sr_hle_test_atrac_last_block_us() == 0u,
+               "the buffer-empty AT3 call returns without the decode wait");
 
         /* The exhaustion is not terminal: feeding the next frame resumes. */
         CpuState cpu2;
@@ -22780,9 +22713,14 @@ static void test_msgpipe_safety(void) {
     /* --- CreateMsgPipe: resource-model validation before any allocation --- */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = GUEST_NAME;
-    cpu.r[7] = 0u; /* bufferSize 0 -> illegal */
-    expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_SIZE,
-           "CreateMsgPipe rejects bufferSize 0");
+    cpu.r[7] = 0u;
+    uint32_t zero_uid = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
+    expect(zero_uid != 0u && zero_uid < 0x80000000u,
+           "CreateMsgPipe accepts bufferSize 0");
+    cpu.r[4] = zero_uid;
+    expect(sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE) == 0u,
+           "zero-buffer pipe deletes cleanly");
+    cpu.r[4] = GUEST_NAME;
 
     cpu.r[7] = max_cap + 1u; /* first size above the model ceiling */
     expect(sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE) == SCE_KERNEL_ERROR_ILLEGAL_SIZE,
@@ -23300,6 +23238,100 @@ static void selftest_msgpipe_waiter_finish(SelftestMsgPipeWaiterCtx *waiter,
     if (!waiter->returned) selftest_msgpipe_waiter_resume(waiter);
     if (!waiter->returned && sched_count_waiters(pipe_uid) == 0)
         selftest_msgpipe_waiter_resume(waiter);
+}
+
+/* Issue #1381: production-dispatch rendezvous, in both arrival orders, and
+ * direct delivery to a receiver even when the pipe has a buffer. */
+static void test_msgpipe_rendezvous(void) {
+    const uint32_t name = 0x08030000u, src = 0x08010000u, dst = 0x08020000u;
+    const uint32_t send_result = 0x08040000u, receive_result = 0x08040004u;
+    for (int buffered = 0; buffered < 2; buffered++) {
+        reset_fixture(); sr_hle_init();
+        title_hle_write_cstr(name, "rendezvous");
+        MEM_W8(src, 0xa1u); MEM_W8(src + 1u, 0xb2u);
+        TCB *main_t = fixture_thread(0x201u, TH_RUNNING, 32);
+        main_t->started = 1; int main_idx = (int)(main_t - s_tcb); s_cur = main_idx;
+        CpuState cpu = {0}; cpu.r[4] = name; cpu.r[7] = buffered ? 4u : 0u;
+        uint32_t pipe = sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_MSG_PIPE);
+        expect((int32_t)pipe > 0, buffered ? "buffered rendezvous pipe created" : "zero-buffer pipe created");
+        if ((int32_t)pipe <= 0) { s_cur = -1; continue; }
+        SelftestMsgPipeWaiterCtx receiver = {0};
+        selftest_msgpipe_waiter_start_sized(&receiver, 0x202u, 48, pipe, dst, 2u, receive_result, 0, 0);
+        expect(receiver.tcb->state == TH_WAIT_OBJ, "rendezvous receiver waits before sender");
+        s_cur = main_idx; MEM_W32(send_result, 0u);
+        msgpipe_setup(&cpu, pipe, src, 2u, 0u, send_result);
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u && MEM_R32(send_result) == 2u,
+               "try send hands bytes directly to waiting receiver");
+        SrMsgPipeState st;
+        expect(sr_hle_test_msgpipe_state(pipe, &st) && st.count == 0u &&
+               MEM_R8(dst) == 0xa1u && MEM_R8(dst + 1u) == 0xb2u && receiver.tcb->state == TH_READY,
+               "direct send writes the receiver and leaves no buffered bytes");
+        if (buffered) {
+            msgpipe_setup(&cpu, pipe, src, 3u, 0u, send_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0x800201b3u,
+                   "pending direct receiver reserves pipe capacity");
+        }
+        if (receiver.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&receiver);
+        expect(receiver.returned && receiver.ret == 0u && MEM_R32(receive_result) == 2u,
+               "direct receiver completes with byte count");
+        s_cur = main_idx;
+        if (!buffered) {
+            MEM_W32(send_result, 0x539u);
+            msgpipe_setup(&cpu, pipe, src, 2u, 0u, send_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0x800201b3u &&
+                   MEM_R32(send_result) == 0x539u,
+                   "zero-buffer FULL poll preserves result when no receiver waits");
+            SelftestMsgPipeWaiterCtx sender = {0};
+            selftest_msgpipe_waiter_start_sized(&sender, 0x203u, 48, pipe, src, 2u, send_result, 1, 0);
+            expect(sender.tcb->state == TH_WAIT_OBJ, "zero-buffer sender waits before receiver");
+            s_cur = main_idx; MEM_W8(dst, 0u); MEM_W8(dst + 1u, 0u);
+            msgpipe_setup(&cpu, pipe, dst, 2u, 0u, receive_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0u &&
+                   MEM_R32(receive_result) == 2u && MEM_R8(dst) == 0xa1u && MEM_R8(dst + 1u) == 0xb2u,
+                   "try receive takes bytes directly from waiting sender");
+            if (sender.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&sender);
+            expect(sender.returned && sender.ret == 0u && MEM_R32(send_result) == 2u,
+                   "direct sender completes with byte count");
+            s_cur = main_idx; sr_coro_destroy(sender.tcb->coro);
+            SelftestMsgPipeWaiterCtx partial = {0};
+            selftest_msgpipe_waiter_start_sized(&partial, 0x204u, 48, pipe, dst, 2u, receive_result, 0, 0);
+            s_cur = main_idx;
+            msgpipe_setup(&cpu, pipe, src, 1u, 0u, send_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u &&
+                   MEM_R32(receive_result) == 1u && partial.tcb->state == TH_WAIT_OBJ,
+                   "partial direct send retains a FULL receiver");
+            msgpipe_setup(&cpu, pipe, src + 1u, 1u, 0u, send_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_SEND_MSG_PIPE) == 0u &&
+                   partial.tcb->state == TH_READY && MEM_R8(dst + 1u) == 0xb2u,
+                   "second direct send completes the receiver");
+            if (partial.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&partial);
+            expect(partial.returned && partial.ret == 0u && MEM_R32(receive_result) == 2u,
+                   "partial receiver returns its complete count");
+            s_cur = main_idx; sr_coro_destroy(partial.tcb->coro);
+        }
+        if (buffered) {
+            SelftestMsgPipeWaiterCtx cancelled = {0};
+            selftest_msgpipe_waiter_start_sized(&cancelled, 0x205u, 48, pipe, dst, 2u, receive_result, 0, 0);
+            s_cur = main_idx;
+            msgpipe_setup(&cpu, pipe, src, 2u, 0u, send_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_SEND_MSG_PIPE) == 0u &&
+                   cancelled.tcb->state == TH_READY && MEM_R8(dst) == 0xa1u,
+                   "blocking send reserves the direct receiver before cancellation");
+            memset(&cpu, 0, sizeof cpu); cpu.r[4] = pipe;
+            expect(sr_syscall(&cpu, 0x349b864du) == 0u, "cancel clears a pending direct reservation");
+            if (cancelled.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&cancelled);
+            expect(cancelled.returned && cancelled.ret == 0x800201a9u,
+                   "cancelled reserved receiver reports WAIT_CANCEL");
+            s_cur = main_idx;
+            msgpipe_setup(&cpu, pipe, dst, 2u, 0u, receive_result);
+            expect(sr_syscall(&cpu, NID_SCE_KERNEL_TRY_RECEIVE_MSG_PIPE) == 0x800201b4u,
+                   "cancel discards reserved pipe bytes");
+            sr_coro_destroy(cancelled.tcb->coro);
+        }
+        memset(&cpu, 0, sizeof cpu); cpu.r[4] = pipe;
+        (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_MSG_PIPE);
+        sr_coro_destroy(receiver.tcb->coro); s_cur = -1;
+    }
 }
 
 #define NID_SCE_KERNEL_CANCEL_MSG_PIPE 0x349b864du
@@ -23980,7 +24012,7 @@ static void test_msgpipe_waiter_order(void) {
     }
 }
 
-static void test_msgpipe_repeated_transfer_skips_readied_waiter(void) {
+static void test_msgpipe_repeated_transfer_skips_readied_waiter(int reverse_resume) {
     const uint32_t GUEST_BUF = 0x08010000u;
     const uint32_t GUEST_OUT = 0x08020000u;
     const uint32_t GUEST_NAME = 0x08030000u;
@@ -24025,6 +24057,11 @@ static void test_msgpipe_repeated_transfer_skips_readied_waiter(void) {
            first.tcb->state == TH_READY && second.tcb->state == TH_READY,
            "second transfer skips the ready queue entry and readies the next receiver");
 
+    if (reverse_resume && second.tcb->state == TH_READY) {
+        selftest_msgpipe_waiter_resume(&second);
+        expect(!second.returned && second.tcb->state == TH_WAIT_OBJ,
+               "later receiver cannot consume bytes ahead of a pending reservation");
+    }
     if (first.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&first);
     if (second.tcb->state == TH_READY) selftest_msgpipe_waiter_resume(&second);
     int fifo_bytes_match = first.returned && second.returned &&
@@ -35579,6 +35616,13 @@ static int hle_selftest_main(int argc, char **argv) {
     expect(sr_coro_current() == s_sched_coro,
            "the adopted scheduler coroutine is the one currently running");
 
+    if (argc > 1 && strcmp(argv[1], "--msgpipe-rendezvous") == 0) {
+        test_msgpipe_rendezvous();
+        fprintf(stderr, "msgpipe-rendezvous: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     if (argc > 1 && strcmp(argv[1], "--title-config") == 0) {
         test_title_config_hle_bindings();
         fprintf(stderr, "hle_title_production_selftest: %d checks, %d failures\n",
@@ -35850,6 +35894,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_mix_saturates_without_wrapping();
     test_sas_state_contracts();
     test_sas_end_flags_refresh_per_cycle();
+    test_msgpipe_rendezvous();
     test_msgpipe_safety();
     test_msgpipe_blocking();
     test_msgpipe_cancel_and_refer();
@@ -35857,7 +35902,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_msgpipe_invocation_lifetime();
     test_msgpipe_waiter_order();
     test_msgpipe_priority_wake_skips_ineligible_waiter();
-    test_msgpipe_repeated_transfer_skips_readied_waiter();
+    test_msgpipe_repeated_transfer_skips_readied_waiter(0);
+    test_msgpipe_repeated_transfer_skips_readied_waiter(1);
     test_msgpipe_callback_wakeup_skips_stale_head_waiter();
     test_msgpipe_callback_wakeup_skips_stale_send_priority_waiter();
     test_msgpipe_termination_requeues_readied_waiters();

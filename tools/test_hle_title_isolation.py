@@ -4,9 +4,11 @@
 """Title-isolation for compat overrides retired from generic hle.c (issue #98).
 
 Generic PSP handlers must not call HST addresses, write HST latches or install
-HST callback addresses when running a neutral/second title. The live display,
-sync and frame-latch groups are typed title configuration; this module proves
-the generic/title separation and the retired libfont field migration.
+HST callback addresses when running a neutral/second title. The display bring-up,
+runtime-sync and frame-latch groups were typed title configuration until #363 retired
+them; this module proves the generic/title separation, that a manifest still naming one
+of those groups fails with the named HLE_TITLE_ASSIST_RETIRED error, and the retired
+libfont field migration.
 
 Evidence tiers used here are SOURCE_SHAPE (text/manifest/header shape) and
 PRODUCTION_DISPATCH-level via generated-header assertions. No private HST
@@ -31,43 +33,84 @@ from test_compat_manifest import extract_hle_guest_addresses, HLE_C
 FIXTURE_A = ROOT / "assets" / "titles" / "pspdev-phase5.json"
 FIXTURE_B = ROOT / "assets" / "titles" / "synthetic.json"
 
-# HST's 16 retired addresses (now title-configured, not generic)
+# HST's 16 retired addresses (inventoried as retired title configuration, not generic)
 HST_MIGRATED = {
     0x00000bcc, 0x0029a8bc, 0x0001dc00, 0x0031fcc0, 0x00311140, 0x002d0738,
     0x00333138, 0x002bdf38, 0x000823f0, 0x00082438, 0x00082474, 0x0008249c,
     0x000824c0, 0x000824e8, 0x002d132c, 0x00331b80,
 }
 
-# Synthetic positive-config addresses (disjoint from HST and from each other)
-SYNTH_DISPLAY = {
-    "malloc_entry": 0x08901000,
-    "vblank_device_init_entry": 0x08901010,
-    "render_context_init_entry": 0x08901020,
-    "render_context_magic_addr": 0x08902000,
-    "render_table_ready_flag_addr": 0x08902004,
-    "render_context_word_addr": 0x08902008,
+# HST's runtime-sync wrapper pairs (mode, enter, leave) and frame-ready latch
+HST_WRAPPERS = ((0, 0x000823f0, 0x00082438), (1, 0x00082474, 0x0008249c),
+                (2, 0x000824c0, 0x000824e8))
+HST_FRAME_LATCH = 0x00331b80
+
+# The assists retired under #363, with the shapes they had while live. The values are
+# synthetic: they show that a once-valid manifest is refused, not a malformed one.
+RETIRED_ASSISTS = {
+    "frame_ready_latch_addr": 0x08905004,
+    "display_bringup": {
+        "malloc_entry": 0x08901000,
+        "vblank_device_init_entry": 0x08901010,
+        "render_context_init_entry": 0x08901020,
+        "render_context_magic_addr": 0x08902000,
+        "render_table_ready_flag_addr": 0x08902004,
+        "render_context_word_addr": 0x08902008,
+    },
+    "runtime_sync": {
+        "config_base": 0x08903000,
+        "sema_name_ptr": 0x08903020,
+        "wrappers": [
+            {"mode": 0, "enter": 0x08904000, "leave": 0x08904004},
+            {"mode": 1, "enter": 0x08904010, "leave": 0x08904014},
+            {"mode": 2, "enter": 0x08904020, "leave": 0x08904024},
+        ],
+    },
 }
-SYNTH_RUNTIME_SYNC = {
-    "config_base": 0x08903000,
-    "sema_name_ptr": 0x08903020,
-    "wrappers": [
-        {"mode": 0, "enter": 0x08904000, "leave": 0x08904004},
-        {"mode": 1, "enter": 0x08904010, "leave": 0x08904014},
-        {"mode": 2, "enter": 0x08904020, "leave": 0x08904024},
-    ],
-}
-SYNTH_FRAME = 0x08905004
+
+# Macro and validity-bit fragments the retired assists used to put in the generated
+# header; neither the header nor the C that reads it may carry them any more.
+RETIRED_TOKENS = ("FRAME_READY_LATCH", "FRAME_LATCH", "DISPLAY_BRINGUP", "RUNTIME_SYNC")
 
 
-def synthetic_manifest_with_migrated() -> dict:
-    import copy
+def retired_tokens_in(text: str) -> list[str]:
+    return [token for token in RETIRED_TOKENS if token in text]
+
+
+def synthetic_bindings(shift: int = 0) -> dict:
+    """A positive configuration made of the bindings that remain (disjoint from HST).
+
+    ``shift`` moves every address, which gives a second, distinct synthetic title.
+    """
+    return {
+        "fallback_entry": 0x08910000 + shift,
+        "worker_thread_entry": 0x08910010 + shift,
+        "launcher_thread_entry": 0x08910020 + shift,
+        "dispatch_aliases": [{"from": 0x08911000 + shift, "to": 0x08911010 + shift}],
+        "callback_terminators": [
+            {"sentinel": 0, "pc": 0x08912000 + shift, "ra": 0x08912010 + shift},
+        ],
+    }
+
+
+def synthetic_addresses(bindings: dict) -> set[int]:
+    """Every guest address a binding set names (a terminator sentinel is a value)."""
+    found = {bindings[name] for name in title_manifest.RUNTIME_BINDING_FIELDS if name in bindings}
+    for alias in bindings.get("dispatch_aliases", []):
+        found |= {alias["from"], alias["to"]}
+    for entry in bindings.get("callback_terminators", []):
+        found |= {entry[field] for field in ("pc", "ra") if field in entry}
+    return found
+
+
+def synthetic_manifest_configured(shift: int = 0) -> dict:
     base = json.loads(FIXTURE_B.read_text(encoding="utf-8"))
-    base["runtime_bindings"].update({
-        "display_bringup": dict(SYNTH_DISPLAY),
-        "runtime_sync": copy.deepcopy(SYNTH_RUNTIME_SYNC),
-        "frame_ready_latch_addr": SYNTH_FRAME,
-    })
+    base["runtime_bindings"] = {"schema_version": 1, **synthetic_bindings(shift)}
     return base
+
+
+def header_for(manifest: dict | None) -> str:
+    return title_runtime_config.render_header(title_runtime_config.bindings_from_manifest(manifest))
 
 
 class GenericIsolationTests(unittest.TestCase):
@@ -80,14 +123,22 @@ class GenericIsolationTests(unittest.TestCase):
                          f"generic hle.c still contains HST compat address(es): "
                          f"{sorted(hex(a) for a in overlap)}")
 
+    def test_generic_runtime_sources_do_not_consume_retired_bindings(self):
+        for relative in ("src/rt/hle.c", "src/rt/title_config.c", "src/rt/title_config.h"):
+            with self.subTest(source=relative):
+                source = (ROOT / relative).read_text(encoding="utf-8")
+                self.assertEqual(retired_tokens_in(source), [],
+                                 f"{relative} still reads a retired title binding")
+
     def test_generic_title_config_has_no_migrated_bindings(self):
         cfg = title_runtime_config.bindings_from_manifest(None)
         self.assertEqual(cfg["bindings"], {})
         header = title_runtime_config.render_header(cfg)
         self.assertIn("#define SR_TITLE_CONFIG_VALID (0u)", header)
-        self.assertIn("#define SR_TITLE_CONFIG_DISPLAY_BRINGUP_MALLOC_ENTRY 0x00000000u", header)
-        self.assertIn("#define SR_TITLE_CONFIG_RUNTIME_SYNC_WRAPPER_COUNT 0", header)
-        self.assertIn("#define SR_TITLE_CONFIG_FRAME_READY_LATCH_ADDR 0x00000000u", header)
+        # Every binding that remains is emitted disabled; nothing retired is emitted.
+        for name in title_runtime_config.FIELD_BITS:
+            self.assertIn(f"#define SR_TITLE_CONFIG_{name.upper()} 0x00000000u", header)
+        self.assertEqual(retired_tokens_in(header), [])
 
     def test_public_fixtures_remain_generic_for_migrated_groups(self):
         # Existing public fixtures predate #98; they do not configure the migrated
@@ -97,7 +148,7 @@ class GenericIsolationTests(unittest.TestCase):
                 manifest = json.loads(path.read_text(encoding="utf-8"))
                 normalized = title_manifest.validate_manifest(manifest)
                 bindings = normalized.get("runtime_bindings", {})
-                for key in ("display_bringup", "runtime_sync", "frame_ready_latch_addr"):
+                for key in RETIRED_ASSISTS:
                     self.assertNotIn(key, bindings,
                                      f"{path.name} unexpectedly configures {key}")
 
@@ -114,80 +165,97 @@ class GenericIsolationTests(unittest.TestCase):
                                  f"{path.name} header contains HST address {hx}")
 
 
+class RetiredAssistTests(unittest.TestCase):
+    """The display bring-up, runtime-sync and frame-latch assists are retired (#363)."""
+
+    def test_retired_fields_are_refused_with_the_named_error(self):
+        self.assertEqual(set(RETIRED_ASSISTS), set(title_manifest.RETIRED_HLE_ASSIST_BINDINGS))
+        for field, value in RETIRED_ASSISTS.items():
+            with self.subTest(field=field):
+                configured = synthetic_manifest_configured()
+                configured["runtime_bindings"][field] = value
+                declared = synthetic_manifest_configured()
+                declared["required_runtime_bindings"] = [field]
+                for manifest, path in ((configured, f"runtime_bindings.{field}"),
+                                       (declared, "required_runtime_bindings[0]")):
+                    with self.assertRaises(title_manifest.TitleManifestError) as cm:
+                        title_manifest.validate_manifest(manifest)
+                    self.assertIn(path, str(cm.exception))
+                    self.assertIn(title_manifest.HLE_ASSIST_RETIRED_MESSAGE, str(cm.exception))
+
+    def test_no_generated_header_carries_a_retired_macro_or_bit(self):
+        for label, manifest in (
+                ("generic", None),
+                (FIXTURE_A.name, json.loads(FIXTURE_A.read_text(encoding="utf-8"))),
+                (FIXTURE_B.name, json.loads(FIXTURE_B.read_text(encoding="utf-8"))),
+                ("synthetic configured", synthetic_manifest_configured())):
+            with self.subTest(config=label):
+                self.assertEqual(retired_tokens_in(header_for(manifest)), [])
+
+
 class PositiveConfiguredTests(unittest.TestCase):
     """A synthetic title that explicitly configures the compat must validate and emit."""
 
     def test_positive_synthetic_validates_and_emits(self):
-        manifest = synthetic_manifest_with_migrated()
+        manifest = synthetic_manifest_configured()
         normalized = title_manifest.validate_manifest(manifest)
-        self.assertIn("display_bringup", normalized["runtime_bindings"])
-        self.assertIn("runtime_sync", normalized["runtime_bindings"])
-        cfg = title_runtime_config.bindings_from_manifest(manifest)
-        header = title_runtime_config.render_header(cfg)
+        for name in (*title_manifest.RUNTIME_BINDING_FIELDS,
+                     *title_manifest.RUNTIME_BINDING_COLLECTIONS):
+            self.assertIn(name, normalized["runtime_bindings"])
+        header = header_for(manifest).lower()
         # Every synthetic address must appear in the header
-        for addr in list(SYNTH_DISPLAY.values()) + [SYNTH_FRAME,
-                    SYNTH_RUNTIME_SYNC["config_base"], SYNTH_RUNTIME_SYNC["sema_name_ptr"]] + \
-                    [w["enter"] for w in SYNTH_RUNTIME_SYNC["wrappers"]] + \
-                    [w["leave"] for w in SYNTH_RUNTIME_SYNC["wrappers"]]:
-            self.assertIn(f"0x{addr:08x}", header.lower())
+        for addr in synthetic_addresses(synthetic_bindings()):
+            self.assertIn(f"0x{addr:08x}", header)
         # HST's addresses must NOT appear
         for addr in HST_MIGRATED:
-            self.assertNotIn(f"0x{addr:08x}", header.lower())
-        # Validity bits must be set
-        self.assertIn("SR_TITLE_CFG_DISPLAY_BRINGUP", header)
-        self.assertIn("SR_TITLE_CFG_RUNTIME_SYNC", header)
-        self.assertIn("SR_TITLE_CFG_FRAME_LATCH", header)
+            self.assertNotIn(f"0x{addr:08x}", header)
+        # Validity bits must be set for everything that was configured
+        for bit in (*title_runtime_config.FIELD_BITS.values(),
+                    *title_runtime_config.COLLECTION_BITS.values()):
+            self.assertIn(bit.lower(), header)
 
     def test_two_configured_titles_have_disjoint_compat_addresses(self):
-        # Synthetic vs HST must be disjoint; also synthetic vs itself with altered addrs
-        manifest2 = synthetic_manifest_with_migrated()
-        # Shift every synth address by +0x100 to get a second distinct title
-        shifted = json.loads(json.dumps(manifest2))
-        for key in SYNTH_DISPLAY:
-            shifted["runtime_bindings"]["display_bringup"][key] += 0x100
-        shifted["runtime_bindings"]["runtime_sync"]["config_base"] += 0x100
-        shifted["runtime_bindings"]["runtime_sync"]["sema_name_ptr"] += 0x100
-        for w in shifted["runtime_bindings"]["runtime_sync"]["wrappers"]:
-            w["enter"] += 0x100
-            w["leave"] += 0x100
-        shifted["runtime_bindings"]["frame_ready_latch_addr"] += 0x100
-        a = set(SYNTH_DISPLAY.values()) | {SYNTH_FRAME,
-               SYNTH_RUNTIME_SYNC["config_base"], SYNTH_RUNTIME_SYNC["sema_name_ptr"]} | \
-            {w["enter"] for w in SYNTH_RUNTIME_SYNC["wrappers"]} | \
-            {w["leave"] for w in SYNTH_RUNTIME_SYNC["wrappers"]}
-        b = set(shifted["runtime_bindings"]["display_bringup"].values()) | \
-            {shifted["runtime_bindings"]["frame_ready_latch_addr"],
-             shifted["runtime_bindings"]["runtime_sync"]["config_base"],
-             shifted["runtime_bindings"]["runtime_sync"]["sema_name_ptr"]} | \
-            {w["enter"] for w in shifted["runtime_bindings"]["runtime_sync"]["wrappers"]} | \
-            {w["leave"] for w in shifted["runtime_bindings"]["runtime_sync"]["wrappers"]}
+        # A second synthetic title, with every address shifted, must validate on its own
+        # and share no address with the first or with HST.
+        shifted = synthetic_manifest_configured(shift=0x100)
+        title_manifest.validate_manifest(shifted)
+        a = synthetic_addresses(synthetic_bindings())
+        b = synthetic_addresses(synthetic_bindings(shift=0x100))
         self.assertEqual(a & b, set(), "two synthetic titles must have disjoint compat addresses")
         self.assertEqual(a & HST_MIGRATED, set())
         self.assertEqual(b & HST_MIGRATED, set())
+        self.assertNotEqual(
+            title_runtime_config.config_digest(
+                title_runtime_config.bindings_from_manifest(synthetic_manifest_configured())),
+            title_runtime_config.config_digest(title_runtime_config.bindings_from_manifest(shifted)))
 
 
 class WrongTitleTests(unittest.TestCase):
     """Wrong-title safety: generic/synthetic must not inherit HST's mapping."""
 
+    def headers(self) -> dict[str, str]:
+        return {"generic": header_for(None), "synthetic": header_for(synthetic_manifest_configured())}
+
     def test_wrong_title_does_not_get_hst_wrappers(self):
-        # Generic config has no wrappers
-        generic = title_runtime_config.bindings_from_manifest(None)
-        self.assertNotIn("runtime_sync", generic["bindings"])
-        # Synthetic configured title has synthetic wrappers only
-        synth = synthetic_manifest_with_migrated()
-        cfg = title_runtime_config.bindings_from_manifest(synth)
-        wrappers = {(w["mode"], w["enter"], w["leave"]) for w in cfg["bindings"]["runtime_sync"]["wrappers"]}
-        hst_wrappers = {(0, 0x000823f0, 0x00082438), (1, 0x00082474, 0x0008249c), (2, 0x000824c0, 0x000824e8)}
-        self.assertEqual(wrappers & hst_wrappers, set(),
-                         "synthetic title must not contain HST's wrapper addresses")
+        # No runtime-sync mechanism remains to install wrappers; neither a generic nor a
+        # configured title's header may name HST's.
+        wrapper_addresses = {a for _mode, enter, leave in HST_WRAPPERS for a in (enter, leave)}
+        for label, header in self.headers().items():
+            with self.subTest(config=label):
+                for address in wrapper_addresses:
+                    self.assertNotIn(f"{address:08x}", header.lower())
+        found = set(extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8")))
+        self.assertEqual(found & wrapper_addresses, set())
 
     def test_wrong_title_does_not_write_hst_latches(self):
-        # The latch addresses are distinct per title
-        self.assertNotEqual(SYNTH_FRAME, 0x00331b80)
-        # And generic has no latch to write at all
-        hdr = title_runtime_config.render_header(title_runtime_config.bindings_from_manifest(None))
-        self.assertIn("FRAME_READY_LATCH_ADDR 0x00000000u", hdr)
-        self.assertNotIn("LIBFONT_READY_FLAG_ADDR", hdr)
+        # There is no latch binding to configure and no assist to write one
+        for label, header in self.headers().items():
+            with self.subTest(config=label):
+                self.assertNotIn(f"{HST_FRAME_LATCH:08x}", header.lower())
+                self.assertNotIn("FRAME_READY_LATCH_ADDR", header)
+                self.assertNotIn("LIBFONT_READY_FLAG_ADDR", header)
+        found = set(extract_hle_guest_addresses(HLE_C.read_text(encoding="utf-8")))
+        self.assertNotIn(HST_FRAME_LATCH, found)
 
 
 class InvalidAddressTests(unittest.TestCase):
@@ -196,13 +264,13 @@ class InvalidAddressTests(unittest.TestCase):
     def test_unaligned_and_zero_rejected(self):
         for bad in (0, 0x08901001, 0x08902002):
             with self.subTest(bad=hex(bad) if bad else bad):
-                m = synthetic_manifest_with_migrated()
-                m["runtime_bindings"]["frame_ready_latch_addr"] = bad
+                m = synthetic_manifest_configured()
+                m["runtime_bindings"]["fallback_entry"] = bad
                 with self.assertRaises(title_manifest.TitleManifestError):
                     title_manifest.validate_manifest(m)
 
     def test_legacy_libfont_ready_binding_is_rejected_by_name(self):
-        manifest = synthetic_manifest_with_migrated()
+        manifest = synthetic_manifest_configured()
         manifest["runtime_bindings"]["libfont_ready_flag_addr"] = 0x08905000
         with self.assertRaisesRegex(
             title_manifest.TitleManifestError,
@@ -212,56 +280,40 @@ class InvalidAddressTests(unittest.TestCase):
 
     def test_core_reserved_dispatch_targets_rejected(self):
         reserved = 0x40000000  # inside VFPU window
-        m = synthetic_manifest_with_migrated()
-        m["runtime_bindings"]["display_bringup"]["malloc_entry"] = reserved
+        m = synthetic_manifest_configured()
+        m["runtime_bindings"]["dispatch_aliases"][0]["from"] = reserved
         with self.assertRaises(title_manifest.TitleManifestError) as cm:
             title_manifest.validate_manifest(m)
         self.assertIn("core VFPU", str(cm.exception))
-        m = synthetic_manifest_with_migrated()
-        m["runtime_bindings"]["runtime_sync"]["wrappers"][0]["enter"] = reserved
-        with self.assertRaises(title_manifest.TitleManifestError):
-            title_manifest.validate_manifest(m)
-
-    def test_duplicate_mode_rejected(self):
-        m = synthetic_manifest_with_migrated()
-        # Replace wrappers with a duplicate-mode set within max (2 entries, both mode 0)
-        m["runtime_bindings"]["runtime_sync"]["wrappers"] = [
-            {"mode": 0, "enter": 0x08904000, "leave": 0x08904004},
-            {"mode": 0, "enter": 0x08904010, "leave": 0x08904014},
-        ]
+        m = synthetic_manifest_configured()
+        m["runtime_bindings"]["callback_terminators"][0]["sentinel"] = reserved
         with self.assertRaises(title_manifest.TitleManifestError) as cm:
             title_manifest.validate_manifest(m)
-        self.assertIn("duplicate mode", str(cm.exception).lower())
-
-    def test_empty_wrappers_rejected(self):
-        m = synthetic_manifest_with_migrated()
-        m["runtime_bindings"]["runtime_sync"]["wrappers"] = []
-        with self.assertRaises(title_manifest.TitleManifestError):
-            title_manifest.validate_manifest(m)
+        self.assertIn("core VFPU", str(cm.exception))
 
 
 class DisabledProfileTests(unittest.TestCase):
-    def test_disabled_display_does_no_guest_calls(self):
-        # Manifest without display_bringup => header has no bringup, accessor will be 0
-        m = json.loads(FIXTURE_B.read_text(encoding="utf-8"))
-        cfg = title_runtime_config.bindings_from_manifest(m)
-        self.assertNotIn("display_bringup", cfg["bindings"])
-        hdr = title_runtime_config.render_header(cfg)
-        self.assertIn("SR_TITLE_CONFIG_VALID (", hdr)
-        self.assertNotIn("SR_TITLE_CFG_DISPLAY_BRINGUP", hdr)
-
-    def test_disabled_runtime_sync_installs_nothing(self):
-        m = json.loads(FIXTURE_B.read_text(encoding="utf-8"))
-        cfg = title_runtime_config.bindings_from_manifest(m)
-        self.assertNotIn("runtime_sync", cfg["bindings"])
-
     def test_enabling_one_compat_does_not_enable_others(self):
-        m = synthetic_manifest_with_migrated()
-        # Remove frame latch, keep others
-        del m["runtime_bindings"]["frame_ready_latch_addr"]
-        normalized = title_manifest.validate_manifest(m)
-        self.assertIn("display_bringup", normalized["runtime_bindings"])
-        self.assertNotIn("frame_ready_latch_addr", normalized["runtime_bindings"])
+        for kept in title_manifest.RUNTIME_BINDING_FIELDS:
+            with self.subTest(kept=kept):
+                m = synthetic_manifest_configured()
+                bindings = m["runtime_bindings"]
+                for name in title_manifest.RUNTIME_BINDING_FIELDS:
+                    if name != kept:
+                        del bindings[name]
+                normalized = title_manifest.validate_manifest(m)
+                configured = set(normalized["runtime_bindings"]) & set(
+                    title_manifest.RUNTIME_BINDING_FIELDS)
+                self.assertEqual(configured, {kept})
+                header = header_for(m)
+                for name, bit in title_runtime_config.FIELD_BITS.items():
+                    macro = f"#define SR_TITLE_CONFIG_{name.upper()} 0x00000000u"
+                    if name == kept:
+                        self.assertIn(bit, header)
+                        self.assertNotIn(macro, header)
+                    else:
+                        self.assertNotIn(bit, header)
+                        self.assertIn(macro, header)
 
 
 class MutationTests(unittest.TestCase):

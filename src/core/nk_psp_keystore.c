@@ -106,11 +106,11 @@ static int hex_nibble(char c)
 static int decode_hex(const char *text, uint8_t *out, size_t out_len,
                       char *err, size_t err_len)
 {
-    size_t n = strlen(text);
-    if (n != out_len * 2) {
+    size_t text_len = strlen(text);
+    if (text_len != out_len * 2) {
         snprintf(err, err_len,
                  "value length must be %zu bytes (%zu hex characters), got %zu characters",
-                 out_len, out_len * 2, n);
+                 out_len, out_len * 2, text_len);
         return -1;
     }
     for (size_t i = 0; i < out_len; i++) {
@@ -152,11 +152,11 @@ static int flat_entry_length(const char *name)
     if (strncmp(name, "kirk.keyvault.", 14) == 0) {
         const char *p = name + 14;
         if (*p == '\0') return -1;
-        long v = 0;
+        long keyvault_index = 0;
         for (; *p; p++) {
             if (*p < '0' || *p > '9') return -1;
-            v = v * 10 + (*p - '0');
-            if (v > 127) return -1;
+            keyvault_index = keyvault_index * 10 + (*p - '0');
+            if (keyvault_index > 127) return -1;
         }
         return 16;
     }
@@ -169,13 +169,13 @@ static int parse_tag_name(const char *name, uint32_t *tag)
     if (strncmp(name, "prx.tag.0x", 10) != 0) return -1;
     const char *p = name + 10;
     if (strlen(p) != 8) return -1;
-    uint32_t v = 0;
+    uint32_t tag_value = 0;
     for (; *p; p++) {
         int nib = hex_nibble(*p);
         if (nib < 0) return -1;
-        v = (v << 4) | (uint32_t)nib;
+        tag_value = (tag_value << 4) | (uint32_t)nib;
     }
-    *tag = v;
+    *tag = tag_value;
     return 0;
 }
 
@@ -258,51 +258,48 @@ static int load_tag_entry(NkKeystore *ks, const char *name,
     memset(&entry, 0, sizeof(entry));
     entry.tag = tag;
 
-    NkJsonNode *code = nk_json_obj_get(value, "code");
-    if (code == NULL || !nk_json_is_number(code)) {
+    NkJsonNode *code_node = nk_json_obj_get(value, "code");
+    if (code_node == NULL || !nk_json_is_number(code_node)) {
         snprintf(err, err_len, "entry '%s': recipe needs integer field \"code\" (0..127)",
                  name);
         return -1;
     }
-    int64_t code_val = 0;
-    if (!nk_json_get_int64(code, &code_val) || code_val < 0 || code_val > 127) {
+    int64_t code_number = 0;
+    if (!nk_json_get_int64(code_node, &code_number) || code_number < 0 ||
+        code_number > 127) {
         snprintf(err, err_len, "entry '%s': \"code\" must be an integer in 0..127", name);
         return -1;
     }
     entry.have_code = 1;
-    entry.code = (int)code_val;
+    entry.code = (int)code_number;
 
-    static const struct { const char *field; uint8_t *dst; int *have; size_t len; }
-    fields[] = {
-        {"key", NULL, NULL, 16},
-        {"key144", NULL, NULL, 144},
-        {"seed", NULL, NULL, 16},
-        {"xor", NULL, NULL, 16},
-    };
-    const NkJsonNode *members[4];
-    for (size_t i = 0; i < 4; i++) members[i] = nk_json_obj_get(value, fields[i].field);
+    static const char *const recipe_fields[] = {"key", "key144", "seed", "xor"};
+    const NkJsonNode *field_values[4];
+    for (size_t i = 0; i < 4; i++) {
+        field_values[i] = nk_json_obj_get(value, recipe_fields[i]);
+    }
 
     /* Reject unknown fields (fail closed on schema drift). */
     for (size_t i = 0; i < value->u.obj.count; i++) {
         const char *key = value->u.obj.members[i].key;
         int known = strcmp(key, "code") == 0;
-        for (size_t j = 0; j < 4 && !known; j++) known = strcmp(key, fields[j].field) == 0;
+        for (size_t j = 0; j < 4 && !known; j++) known = strcmp(key, recipe_fields[j]) == 0;
         if (!known) {
             snprintf(err, err_len, "entry '%s': unknown recipe field '%s'", name, key);
             return -1;
         }
     }
-    if (members[0] != NULL &&
-        load_tag_field(name, "key", members[0], entry.key,
+    if (field_values[0] != NULL &&
+        load_tag_field(name, "key", field_values[0], entry.key,
                        &entry.have_key, 16, err, err_len) != 0) return -1;
-    if (members[1] != NULL &&
-        load_tag_field(name, "key144", members[1], entry.key144,
+    if (field_values[1] != NULL &&
+        load_tag_field(name, "key144", field_values[1], entry.key144,
                        &entry.have_key144, 144, err, err_len) != 0) return -1;
-    if (members[2] != NULL &&
-        load_tag_field(name, "seed", members[2], entry.seed,
+    if (field_values[2] != NULL &&
+        load_tag_field(name, "seed", field_values[2], entry.seed,
                        &entry.have_seed, 16, err, err_len) != 0) return -1;
-    if (members[3] != NULL &&
-        load_tag_field(name, "xor", members[3], entry.xorpad,
+    if (field_values[3] != NULL &&
+        load_tag_field(name, "xor", field_values[3], entry.xorpad,
                        &entry.have_xorpad, 16, err, err_len) != 0) return -1;
     if (!entry.have_key && !entry.have_key144) {
         snprintf(err, err_len,
@@ -526,15 +523,16 @@ int nk_keystore_get_prx_tag(const NkKeystore *ks, uint32_t tag,
 {
     if (ks == NULL || out == NULL) return -1;
     for (size_t i = 0; i < ks->tag_count; i++) {
-        const TagEntry *e = &ks->tags[i];
-        if (e->tag != tag) continue;
+        const TagEntry *stored = &ks->tags[i];
+        if (stored->tag != tag) continue;
         memset(out, 0, sizeof(*out));
-        out->have_code = e->have_code;
-        out->code = e->code;
-        if (e->have_key) { out->key = e->key; }
-        if (e->have_key144) { out->key144 = e->key144; }
-        if (e->have_seed) { out->seed = e->seed; }
-        if (e->have_xorpad) { out->xorpad = e->xorpad; }
+        out->have_code = stored->have_code;
+        out->code = stored->code;
+        /* The pointers borrow the store's own arrays; they die with the store. */
+        if (stored->have_key) { out->key = stored->key; }
+        if (stored->have_key144) { out->key144 = stored->key144; }
+        if (stored->have_seed) { out->seed = stored->seed; }
+        if (stored->have_xorpad) { out->xorpad = stored->xorpad; }
         return 0;
     }
     return -1;
