@@ -455,6 +455,42 @@ static void test_lazy_payload_failure_is_deferred(void) {
     printf("[XB_TEST] deferred payload validation fails closed on first read\n");
 }
 
+/* A stored entry (compressed size 0) of a compressed kind carries its expanded bytes
+ * verbatim, so its payload must hold all of them. A file-backed payload shorter than
+ * that is refused on read, for the LZS and Huffman kinds and for the tag-0 nested
+ * stream, instead of being copied past the end of the payload. */
+static void test_stored_entry_shorter_than_expanded_size(void) {
+    static const NkXbCompression kinds[] = {
+        NK_XB_COMPRESSION_LZS, NK_XB_COMPRESSION_HUFFMAN, NK_XB_COMPRESSION_DEFLATE
+    };
+    uint8_t data[64];
+    memset(data, 'A', sizeof(data));
+    for (size_t k = 0; k < sizeof(kinds) / sizeof(kinds[0]); k++) {
+        const FixtureEntry entry = { "data/stored.bin", data, sizeof(data), kinds[k] };
+        ByteBuffer bytes = make_archive(&entry, 1u, false);
+        /* The first FST record's second word packs the payload offset in words. */
+        size_t header_offset = (size_t)(read_le32_test(bytes.data + 12u) & 0x0FFFFFFFu) * 4u;
+        assert(header_offset + 12u <= bytes.size);
+        /* Mark the entry stored and keep only four body bytes of the 64 it expands to. */
+        memset(bytes.data + header_offset + 4u, 0, 4u);
+        bytes.size = header_offset + 12u;
+        const char *path = SR_SELFTEST_BUILD_ROOT "/test_xb_short_stored.xb";
+        write_file_bytes(path, bytes.data, bytes.size);
+        NkXbArchive archive;
+        char error[256];
+        assert(nk_xb_open_file_lazy(path, false, NULL, &archive, error, sizeof(error)) == NK_OK);
+        uint8_t output[256];
+        error[0] = '\0';
+        assert(nk_xb_read_entry(&archive, 0u, output, sizeof(output), NULL,
+                                error, sizeof(error)) != NK_OK);
+        assert(strstr(error, "shorter than its expanded size") != NULL);
+        nk_xb_close(&archive);
+        remove(path);
+        free(bytes.data);
+    }
+    printf("[XB_TEST] a stored entry shorter than its expanded size is refused\n");
+}
+
 static void test_huffman_final_buffered_bits(void) {
     uint8_t data[32];
     for (size_t i = 0; i < sizeof(data); i++) data[i] = (uint8_t)(i + 32);
@@ -1848,6 +1884,7 @@ int main(void) {
     test_file_backed_archive_is_lazy();
     test_file_backed_duplicate_validation();
     test_lazy_payload_failure_is_deferred();
+    test_stored_entry_shorter_than_expanded_size();
     test_huffman_final_buffered_bits();
     test_big_endian_fields();
     test_truncated_header();

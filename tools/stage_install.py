@@ -15,8 +15,9 @@ The install uses the release layout the player already searches
                                      which carries tools/nk_cli.py, the Makefile
                                      and assets/prereq_manifest.json, so BUILD
                                      PACKAGE works from the install
-    <dest>/nakagawa.ico              the project mark, drawn from
-                                     docs/images/brand (never a console icon)
+    <dest>/nakagawa.ico              the app icon, assets/brand/nakagawa.ico
+                                     (the one the executables carry; never a
+                                     console icon)
 
 Only a folder this tool created (it holds ``.nakagawa-install.json``) is ever
 replaced, so pointing ``--dest`` at an unrelated folder fails closed. The
@@ -40,16 +41,15 @@ import json
 import os
 from pathlib import Path
 import shutil
-import struct
 import subprocess
 import sys
 import tarfile
-import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "tools") not in sys.path:
     sys.path.insert(0, str(ROOT / "tools"))
 
+import make_app_icon  # noqa: E402
 import stage_runtime_dlls  # noqa: E402
 
 IS_WINDOWS = os.name == "nt"
@@ -59,24 +59,6 @@ SHORTCUT_NAME = "Nakagawa Recomp.lnk"
 DESKTOP_ENTRY_NAME = "nakagawa-recomp.desktop"
 DESKTOP_ICON_NAME = "nakagawa-recomp.png"
 DEFAULT_ARGUMENTS = "--ui=next"
-ICON_SIZES = (16, 24, 32, 48, 64, 256)
-
-# The project mark (docs/images/brand/nakagawa-mark-dark.svg): viewBox 34..206,
-# four lime blocks on the left, a light diagonal and right bar. Kept as geometry
-# here so the icon is drawn from the committed mark rather than shipped as bytes.
-_MARK_VIEW = (34.0, 34.0, 172.0)
-_MARK_RECTS = (
-    (34.0, 34.0, 46.0, 62.8, (0xD7, 0xF2, 0x4A)),
-    (34.0, 104.0, 46.0, 29.2, (0xD7, 0xF2, 0x4A)),
-    (34.0, 140.4, 46.0, 29.2, (0xD7, 0xF2, 0x4A)),
-    (34.0, 176.8, 46.0, 29.2, (0xD7, 0xF2, 0x4A)),
-    (160.0, 34.0, 46.0, 172.0, (0xF5, 0xF7, 0xFA)),
-)
-_MARK_POLYGON = (
-    ((34.0, 34.0), (88.0, 34.0), (206.0, 195.1), (206.0, 206.0), (160.0, 206.0)),
-    (0xF5, 0xF7, 0xFA),
-)
-_BACKGROUND = (0x10, 0x15, 0x1C)
 
 
 class InstallError(RuntimeError):
@@ -96,94 +78,9 @@ def _platform_name() -> str:
     return "windows" if IS_WINDOWS else sys.platform
 
 
-def _inside_polygon(x: float, y: float, points) -> bool:
-    inside = False
-    count = len(points)
-    for index in range(count):
-        x1, y1 = points[index]
-        x2, y2 = points[(index + 1) % count]
-        if (y1 > y) != (y2 > y):
-            cross = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
-            if x < cross:
-                inside = not inside
-    return inside
-
-
-def _mark_color(u: float, v: float):
-    """Colour of the mark at (u, v) in mark coordinates, or None outside it."""
-    for x, y, w, h, color in _MARK_RECTS:
-        if x <= u < x + w and y <= v < y + h:
-            return color
-    points, color = _MARK_POLYGON
-    if _inside_polygon(u, v, points):
-        return color
-    return None
-
-
-def render_icon_rgba(size: int, samples: int = 4) -> bytes:
-    """RGBA pixels of the app icon: the mark on a rounded dark tile."""
-    if size < 1:
-        raise ValueError("icon size must be positive")
-    origin, _, extent = _MARK_VIEW
-    inset = size * 0.16
-    scale = extent / (size - 2 * inset)
-    radius = size * 0.18
-    out = bytearray()
-    for py in range(size):
-        for px in range(size):
-            totals = [0.0, 0.0, 0.0, 0.0]
-            for sy in range(samples):
-                for sx in range(samples):
-                    fx = px + (sx + 0.5) / samples
-                    fy = py + (sy + 0.5) / samples
-                    # Rounded-square tile.
-                    cx = min(max(fx, radius), size - radius)
-                    cy = min(max(fy, radius), size - radius)
-                    if (fx - cx) ** 2 + (fy - cy) ** 2 > radius * radius:
-                        continue
-                    color = _mark_color(origin + (fx - inset) * scale,
-                                        origin + (fy - inset) * scale) or _BACKGROUND
-                    totals[0] += color[0]
-                    totals[1] += color[1]
-                    totals[2] += color[2]
-                    totals[3] += 255.0
-            count = samples * samples
-            alpha = totals[3] / count
-            if alpha <= 0.0:
-                out += b"\0\0\0\0"
-                continue
-            covered = totals[3] / 255.0
-            out += bytes((
-                round(totals[0] / covered), round(totals[1] / covered),
-                round(totals[2] / covered), round(alpha),
-            ))
-    return bytes(out)
-
-
-def _png(size: int, rgba: bytes) -> bytes:
-    def chunk(kind: bytes, payload: bytes) -> bytes:
-        return (struct.pack(">I", len(payload)) + kind + payload +
-                struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF))
-
-    rows = b"".join(b"\0" + rgba[row * size * 4:(row + 1) * size * 4] for row in range(size))
-    header = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) +
-            chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b""))
-
-
-def build_icon(sizes=ICON_SIZES) -> bytes:
-    """A Windows .ico holding one PNG image per size (Vista and later)."""
-    images = [(size, _png(size, render_icon_rgba(size))) for size in sizes]
-    header = struct.pack("<HHH", 0, 1, len(images))
-    offset = 6 + 16 * len(images)
-    directory = b""
-    payload = b""
-    for size, data in images:
-        dimension = 0 if size >= 256 else size
-        directory += struct.pack("<BBBBHHII", dimension, dimension, 0, 0, 1, 32,
-                                 len(data), offset + len(payload))
-        payload += data
-    return header + directory + payload
+def app_icon() -> bytes:
+    """The committed app icon, the one the player executable carries."""
+    return (ROOT / make_app_icon.OUTPUT).read_bytes()
 
 
 def _git(repo: Path, *arguments: str, binary: bool = False):
@@ -272,7 +169,7 @@ def stage_install(dest: Path, player: Path, *, repo: Path = ROOT,
             staged = []
             runtime_stage = "SKIPPED_NOT_PE"
         commit = export_source(repo, stage / "source", revision)
-        (stage / "nakagawa.ico").write_bytes(build_icon())
+        (stage / "nakagawa.ico").write_bytes(app_icon())
         _replace_owned(bin_dir, dest / "bin")
         _replace_owned(stage / "source", dest / "source")
         os.replace(stage / "nakagawa.ico", dest / "nakagawa.ico")
@@ -341,7 +238,7 @@ def write_desktop_entry(dest: Path, arguments: str = DEFAULT_ARGUMENTS) -> list[
         "",
     ]
     icon.parent.mkdir(parents=True, exist_ok=True)
-    icon.write_bytes(_png(256, render_icon_rgba(256)))
+    icon.write_bytes(make_app_icon.png_image(app_icon(), 256))
     entry.parent.mkdir(parents=True, exist_ok=True)
     entry.write_bytes("\n".join(lines).encode("utf-8"))
     return [entry, icon]

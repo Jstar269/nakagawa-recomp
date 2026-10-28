@@ -553,12 +553,6 @@ static TCB *tcb_by_uid(uint32_t uid) {
     return NULL;
 }
 
-static TCB *tcb_by_entry(uint32_t entry) {
-    for (int i = 0; i < s_ntcb; i++)
-        if (!s_tcb[i].deleted && s_tcb[i].entry == entry) return &s_tcb[i];
-    return NULL;
-}
-
 static uint32_t resolve_thread_uid(uint32_t uid) {
     return uid ? uid : (s_cur >= 0 ? s_tcb[s_cur].uid : 0);
 }
@@ -1653,6 +1647,25 @@ static int sched_dispatch_interrupt_guest(CpuState *cpu, uint32_t entry,
     return 0;
 }
 
+static int sched_env_switch(int *cached, const char *name);
+
+/* Diagnostic switches read on every delivered VBLANK, once per process like the per-call
+ * ones below (sched_env_switch, #1296). */
+static int sched_vblog_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_VBLOG");
+}
+
+static int sched_pcsample_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_PCSAMPLE");
+}
+
+static int sched_cbsnap_on(void) {
+    static int enabled = -1;
+    return sched_env_switch(&enabled, "SR_CBSNAP");
+}
+
 static void deliver_vblank(void) {
     sched_pause_assert_no_guest("deliver_vblank");
     /* Reset the host-clock quantum so the OOB source check in sr_yield won't double-fire. */
@@ -1674,7 +1687,7 @@ static void deliver_vblank(void) {
     uint32_t h = sr_vblank_handler();
     static unsigned long long vb = 0;
     extern uint32_t g_frame_prims;
-    if (getenv("SR_VBLOG") && (++vb % 1) == 0) {
+    if (sched_vblog_on() && (++vb % 1) == 0) {
         fprintf(stderr, "vblank #%llu (handler=0x%x) prims=%u\n", vb, h, g_frame_prims);
     }
     g_frame_prims = 0;
@@ -1693,7 +1706,7 @@ static void deliver_vblank(void) {
     }
     s_vblank_resume_anchor_pending = 0;
     sched_wake(VBLANK_WAIT_OBJ);
-    if (getenv("SR_PCSAMPLE")) {
+    if (sched_pcsample_on()) {
         static unsigned long n = 0;
         if ((n++ % 30) == 0) fprintf(stderr, "PCSAMPLE frame=%lu interrupted_pc=0x%08x ra=0x%08x\n",
                                      n, s_cpu->pc, s_cpu->r[31]);
@@ -1717,7 +1730,7 @@ static void deliver_vblank(void) {
     s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
     s_cpu->pc = h;
     int save_cur = s_cur; s_cur = -1;    /* interrupt context: SR_YIELD must not switch */
-    if (h && getenv("SR_CBSNAP")) {
+    if (h && sched_cbsnap_on()) {
         /* Legacy single-slot VBLANK pre-snapshot. The entry here is the InterruptManager
          * sub-interrupt handler (sub-int 30), not a s_callbacks[] slot. */
         fprintf(stderr, "CBSNAP: legacy-pre entry=0x%08x a0=0x%08x (cpu pc=0x%08x sp=0x%08x)\n",
@@ -1731,7 +1744,7 @@ static void deliver_vblank(void) {
         ? sched_dispatch_interrupt_guest(s_cpu, h, "VBLANK sub-interrupt",
                                          &interrupt_fatal_target)
         : 0;
-    if (h && getenv("SR_CBSNAP")) {
+    if (h && sched_cbsnap_on()) {
         fprintf(stderr, "CBSNAP: legacy-post entry=0x%08x v0=0x%08x a0=0x%08x sp=0x%08x ra=0x%08x\n",
                 h, s_cpu->r[2], s_cpu->r[4], s_cpu->r[29], s_cpu->r[31]);
         fflush(stderr);
@@ -1764,34 +1777,6 @@ static void deliver_vblank(void) {
     extern void sr_vblank_tick(void);
     sr_vblank_tick();
     sched_pause_script_maybe_request();
-
-    /* Worker relaunch trampoline: if the worker thread went DORMANT (e.g. after
-     * the game loop returned), restart it on the next vblank so it re-enters
-     * f_000468c8 and submits the next frame. This is the runtime surrogate for
-     * the real PSP's GE list-complete callback that re-arms the game loop. */
-    {
-        static int relaunch_disabled = -1;
-        if (relaunch_disabled < 0) relaunch_disabled = getenv("SR_NO_RELAUNCH") ? 1 : 0;
-        if (!relaunch_disabled) {
-            uint32_t wuid = g_worker_uid;
-            /* No captured worker role means there is nothing to re-arm. Looking the
-             * sentinel up would find no TCB anyway; the explicit guard says why. */
-            TCB *w = sched_role_uid_captured(wuid) ? tcb_by_uid(wuid) : NULL;
-            if (w && w->state == TH_DORMANT) {
-                /* A dormant worker means main_RunGameLoop returned for this frame; on real
-                 * PSP the GE list-complete callback re-arms it. The previous gate required
-                 * the 0x331b80 frame-ready counter to be exactly 0, but that counter's
-                 * polarity is owned by the guest's finish callback (ge.c GE_FINISH_CB ->
-                 * func 0x599c) and is not reliably reset here -- so a dormant worker could
-                 * be held forever, presenting only frame 0. Re-arm whenever the worker is
-                 * dormant; the relaunch is the surrogate for the GE callback. */
-                fprintf(stderr, "RELAUNCH: worker 0x%x dormant, restarting to entry 0x%08x\n", wuid, w->entry);
-                sr_compat_fired("SCHEDULER_HOOKS", sr_title_config()->worker_thread_entry,
-                                "worker relaunch trampoline");
-                sched_start_thread(wuid, 0, 0);
-            }
-        }
-    }
 }
 
 /* Service only sources whose delivery semantics are implemented. Unknown
@@ -2305,7 +2290,6 @@ static int register_libc_thread(uint32_t k0, uint32_t state_ptr, uint32_t uid) {
 }
 
 static TCB *tcb_by_uid(uint32_t uid);
-static TCB *tcb_by_entry(uint32_t entry);
 static uint32_t sched_create_thread_finish(TCB *t, uint32_t entry, int priority, uint32_t stack_size);
 
 static void unregister_libc_thread(uint32_t k0) {
@@ -2366,20 +2350,6 @@ static void sched_release_thread_stack(TCB *t) {
 
 uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_size,
                                 uint32_t attr, const char *name) {
-    if (sr_title_config_is_worker_entry(entry) && !getenv("SR_NO_THREAD_REUSE")) {
-        TCB *existing = tcb_by_entry(entry);
-        if (existing) {
-            static int n_reuse_log = 0;
-            if (n_reuse_log < 16 || getenv("SR_THLOG")) {
-                fprintf(stderr,
-                        "sched_create_thread: reusing uid=0x%x for entry=0x%08x state=%d started=%d\n",
-                        existing->uid, entry, existing->state, existing->started);
-                n_reuse_log++;
-            }
-            sr_compat_fired("SCHEDULER_HOOKS", entry, "worker thread reuse");
-            return existing->uid;
-        }
-    }
     if (s_ntcb >= MAXTHREADS) {
         /* TCB-slot reclaim: terminated (DORMANT) threads never released their slot,
          * so a long session that repeatedly starts/exits short-lived threads (callback

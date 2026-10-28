@@ -4,7 +4,7 @@
   "generated_evidence": "Generated from the canonical publication policy and exact source bytes. Evidence is not authorization to publish. PUBLIC_EXPORT.json is excluded from its own included-content digest to avoid a self-reference. The fields named in tree_derived_fields are recomputed at verification time; the committed control omits them so unrelated merges do not conflict.",
   "profile": "public-safe-v1",
   "policy_version": "2.0.0",
-  "policy_sha256": "8e82f10fcbae28ae3a6e7751c6299fe2ae8251294a44347a9f5f92a892042873",
+  "policy_sha256": "ed0ee906971cea124f4f7fe5a668fe10e2a2faa821562bd94d1af176711b4b33",
   "audit_tool_version": "0.5.0",
   "tree_derived_fields": [
     "excluded_file_count",
@@ -21,7 +21,6 @@
   ],
   "excluded_paths": [
     "THIRD_PARTY_LICENSES/PPSSPP_FONTS.txt",
-    "assets/titles/hst-ucus98701.json",
     "docs/AUDIO_OUTPUT_ACCEPTANCE_20260807.md",
     "docs/COVERAGE_LEDGER.md",
     "docs/DOCUMENTATION_AUDIT.md",

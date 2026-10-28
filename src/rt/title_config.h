@@ -146,9 +146,6 @@ int sr_title_config_runtime_sync(uint32_t *config_base, uint32_t *sema_name_ptr,
 /* Convenience: find the wrapper pair for a specific mode. Returns 1 on hit. */
 int sr_title_config_runtime_sync_wrapper_for_mode(uint32_t mode,
                                                   uint32_t *enter, uint32_t *leave);
-/* HST-only #363 compatibility debt: 1 when a returning dispatch CALL must restore
- * the callee-saved registers. Returns 0 for generic and fixture profiles. */
-int sr_title_config_preserve_callee_saved_at_calls(void);
 
 /* How a guest PRX module declared by the title manifest is placed in guest memory. */
 typedef enum SrGuestModulePlacement {

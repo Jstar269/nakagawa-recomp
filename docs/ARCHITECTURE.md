@@ -492,7 +492,7 @@ profile dump; a nonzero value means the hotspot ranking is incomplete and must n
 authoritative. `make profiler-selftest` covers the zero-PC and saturated-probe cases without game
 inputs.
 
-The private HST manifest adapter requests `RUNTIME_OPT=-O2` and `RECOMP_OPT=-O1`; direct Make
+The HST manifest adapter requests `RUNTIME_OPT=-O2` and `RECOMP_OPT=-O1`; direct Make
 and generic manifests remain conservative `-O0/-O0`. Explicit overrides remain fully supported.
 Generated `-O2` is not being adopted; `-O1`'s
 measured build cost is higher but acceptable for HST.

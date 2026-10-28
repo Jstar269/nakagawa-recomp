@@ -29,8 +29,11 @@ typedef struct {
     uint32_t guest_buffer;
     int frame_width;
     int pixel_mode;
+    /* A host target is host_height rows of host_stride bytes; a backend writes at most
+     * host_width pixels into each of at most host_height rows. */
     uint8_t *host_buffer;
     int host_width;
+    int host_height;
     int host_stride;
 } SrH264FrameTarget;
 
@@ -85,7 +88,7 @@ int sr_h264_frame_ex(int id, int eos, const SrH264FrameTarget *target,
 int sr_h264_drain(int id, const SrH264FrameTarget *target,
                   SrH264FrameInfo *info);
 int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMode);
-int sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int strideBytes);
+int sr_h264_frame_host(int id, int eos, uint8_t *dst, int maxW, int maxH, int strideBytes);
 int sr_h264_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts);
 int64_t sr_h264_first_audio_pts(int id);
 

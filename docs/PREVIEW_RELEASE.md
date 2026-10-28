@@ -85,9 +85,9 @@ mingw32-make --no-print-directory display-smoke
 
 The binary staging step passes `-ExcludeOptionalFonts` to `tools/copy_build_assets.ps1`, so the optional repository font directory is not copied into the attested bundle.
 
-The attestation workflow runs `python tools/stage_runtime_dlls.py --target dist/bin` under `set -euo pipefail`; a nonzero exit aborts the job before artifact upload. Packaging copies the verified runtime files byte-for-byte and does not run the stager again.
+The attestation workflow runs `"$PYTHON" tools/stage_runtime_dlls.py --target dist/bin --include-ui-fonts` (Windows CPython 3.15.1) under `set -euo pipefail`; a nonzero exit aborts the job before artifact upload. Packaging copies the verified runtime files byte-for-byte and does not run the stager again.
 
-Complete the exact candidate's local release gates and hosted CI before packaging. The binary bundle must come from the [Trusted provenance attestation workflow](../.github/workflows/provenance-attestation.yml), which runs on `main` only after a maintainer freezes the exact candidate SHA. It checks that the required `candidate_sha` equals the workflow's checked-out commit, builds `nakagawa_player.exe` and `production_smoke.exe`, stages their runtime files and `toolchain.json`, creates SLSA Build L2 attestations for every file under `dist/`, and uploads a workflow artifact. This workflow does not create a tag, release, or release asset.
+Complete the exact candidate's local release gates and hosted CI before packaging. The binary bundle must come from the [Trusted provenance attestation workflow](../.github/workflows/provenance-attestation.yml), which runs on `main` only after a maintainer freezes the exact candidate SHA. It checks that the required `candidate_sha` equals the workflow's checked-out commit, builds `nakagawa_player.exe` and `production_smoke.exe`, stages their runtime files and `toolchain.json`, builds the two showcase demos into `dist/bin/demos/` (where the player finds them and lists them under **Test this PC**), creates SLSA Build L2 attestations for every file under `dist/`, and uploads a workflow artifact. The demos' PSP programs need PSPDEV, so its `showcase_prx` job first builds them on Linux with the PSPDEV pinned in `assets/upstream/pspdev.lock.json` (`fixtures/showcase/showcase.py build-prx`); the Windows job then builds their packages from those PRXs with its own toolchain (`showcase.py build --prebuilt-prx-dir`). This workflow does not create a tag, release, or release asset.
 
 The public-safe export command filters the source with `assets/public_source_profile.json` and needs the maintainer-controlled publication inputs before the output can be called a release asset. The package retains the source tree under `source/` so the player can resolve its BUILD PACKAGE CLI from the installed layout.
 
@@ -200,7 +200,8 @@ New-Item -ItemType Directory -Path $Bin, $PackageDocs -Force | Out-Null
 Get-ChildItem -LiteralPath $AttestedBin -Force | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $Bin -Recurse -Force
 }
-foreach ($Required in @('nakagawa_player.exe', 'production_smoke.exe', 'SDL3.dll', 'SDL3_ttf.dll')) {
+foreach ($Required in @('nakagawa_player.exe', 'production_smoke.exe', 'SDL3.dll', 'SDL3_ttf.dll',
+                       'assets/fonts/ui/manifest.json')) {
     if (-not (Test-Path -LiteralPath (Join-Path $Bin $Required) -PathType Leaf)) {
         throw "The verified binary bundle is missing $Required."
     }
@@ -210,6 +211,22 @@ Copy-Item -LiteralPath $ToolchainIdentity -Destination (Join-Path $Stage 'toolch
 Copy-Item LICENSE, NOTICE.md (Join-Path $Stage '.')
 Copy-Item README.md (Join-Path $Stage '.')
 Copy-Item docs\PREVIEW_RELEASE.md, docs\SETUP.md, docs\SMOKE_TEST.md, docs\RELEASE_NOTES_v0.0.1.md $PackageDocs
+# The pictures the root README shows, at the same relative paths, so the packaged README displays them.
+$ReadmeImages = Select-String -LiteralPath README.md -Pattern 'docs/(?:images|media)/[A-Za-z0-9._/-]+' -AllMatches |
+    ForEach-Object { $_.Matches.Value } | Sort-Object -Unique
+foreach ($Image in $ReadmeImages) {
+    $Destination = Join-Path $Stage $Image
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Out-Null
+    Copy-Item -LiteralPath $Image -Destination $Destination
+}
+# One plain pointer at the top of the extracted folder.
+@(
+    "Nakagawa Recomp $Version",
+    '',
+    'To start: open the bin folder and run nakagawa_player.exe.',
+    'To check the download first, see docs\RELEASE_NOTES_v0.0.1.md, "Checking your download".',
+    'You need your own copy of a PSP game; nothing in this folder contains game data.'
+) | Set-Content -LiteralPath (Join-Path $Stage 'START HERE.txt') -Encoding utf8NoBOM
 Copy-Item (Join-Path $Bin 'THIRD_PARTY_NOTICES') $Stage -Recurse
 Copy-Item (Join-Path $Bin 'THIRD_PARTY_NOTICES.txt'), (Join-Path $Bin 'SOURCE.txt'), (Join-Path $Bin 'RELINK.md') $Stage
 
@@ -219,6 +236,12 @@ $PrereqCache = Join-Path $ArtifactRoot 'prereq-archives'
 python -m tools.nk_core.prereq_fetcher --manifest (Join-Path $Source 'assets/prereq_manifest.json') `
     --bundle-dest (Join-Path $Stage 'prereqs') --download-cache $PrereqCache
 if ($LASTEXITCODE -ne 0) { throw 'Staging the pinned build prerequisites failed.' }
+# Their corresponding source: one archive published next to the zip, never inside it, holding the
+# pinned source file of every bundled prerequisite, each checked against its manifest pin.
+$SourceZip = Join-Path $ArtifactRoot "nakagawa-recomp-$Version-prerequisite-sources.zip"
+python -m tools.nk_core.prereq_fetcher --manifest (Join-Path $Source 'assets/prereq_manifest.json') `
+    --source-archive $SourceZip --download-cache $PrereqCache
+if ($LASTEXITCODE -ne 0) { throw 'Writing the prerequisite source archive failed.' }
 
 python tools/generate_sbom.py --package-dir $Bin `
     --spdx-out (Join-Path $Stage 'SBOM.spdx.json') `
@@ -245,29 +268,47 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 [System.IO.Compression.ZipFile]::CreateFromDirectory(
     $Stage, $Zip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
 # The ZIP itself is a container, not an attested subject: publish its SHA-256 next to it so a
-# download can be checked before it is extracted.
-$ZipHash = (Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash.ToLowerInvariant()
-"$ZipHash  $(Split-Path -Leaf $Zip)" | Set-Content -LiteralPath "$Zip.sha256" -Encoding utf8NoBOM
-Write-Output $Zip, "$Zip.sha256"
+# download can be checked before it is extracted. The source archive gets the same.
+foreach ($Asset in @($Zip, $SourceZip)) {
+    $AssetHash = (Get-FileHash -LiteralPath $Asset -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$AssetHash  $(Split-Path -Leaf $Asset)" | Set-Content -LiteralPath "$Asset.sha256" -Encoding utf8NoBOM
+}
+Write-Output $Zip, "$Zip.sha256", $SourceZip, "$SourceZip.sha256"
 ```
 
-The package contains the native player and synthetic verification binary under `bin/`, the mechanically resolved SDL3/SDL3_ttf runtime DLL closures and their notices, the public-safe source export under `source/`, setup and smoke instructions, root README/license/notices, `SOURCE.txt`, LGPL relinking material, the third-party notice bundle, three SBOM formats, and `SHA256SUMS.txt`. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, Vulkan SDK files, local databases, or title outputs. `SHA256SUMS.txt` covers every staged file except itself. Attach `nakagawa-recomp-<version>-windows-x64.zip.sha256` to the release next to the ZIP: v0.0.1 binaries are not Authenticode-signed, so the published checksum and the per-file build attestations are how a user checks a download.
+The package contains the native player and synthetic verification binary under `bin/`, the showcase demos under `bin/demos/`, the mechanically resolved SDL3/SDL3_ttf runtime DLL closures and their notices, the public-safe source export under `source/`, setup and smoke instructions, root README/license/notices, `SOURCE.txt`, LGPL relinking material, the third-party notice bundle, three SBOM formats, and `SHA256SUMS.txt`. It does not copy the whole `build/` tree, generated translation units, fixture PRXs, Vulkan SDK files, local databases, or title outputs. `SHA256SUMS.txt` covers every staged file except itself. Attach `nakagawa-recomp-<version>-windows-x64.zip.sha256` to the release next to the ZIP: v0.0.1 binaries are not Authenticode-signed, so the published checksum and the per-file build attestations are how a user checks a download.
 
-`prereqs/` carries the pinned build prerequisites from `assets/prereq_manifest.json`, CPython and the MSYS2 UCRT64 packages, unpacked in the layout the per-user download installs, plus `installed.json` and `bundle-inventory.txt` ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). BUILD PACKAGE uses it without a consent card or a download ([`SETUP.md`](SETUP.md#player-build-package-prerequisites)). The staging step downloads each archive from its pinned host into the cache, or reuses a cached copy, checks its exact size and SHA-256, unpacks it with the per-user installer's path and link rules (a package link becomes a copy of its target, because a ZIP cannot carry links), and then verifies the whole tree, file contents included. It prints the bundle's `file_count` and `unpacked_bytes`: record them and the ZIP size in the release notes. The bundled third-party executables keep their upstream bytes and are not re-signed. From the source checkout, `python -m tools.nk_core.prereq_fetcher --manifest assets/prereq_manifest.json --verify-bundle <extracted folder>/prereqs` repeats the full check on an extracted copy. Until the corresponding source of the bundled GPL and LGPL packages ships with the same release and the notices name it ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)), do not publish a ZIP that contains `prereqs/`.
+`prereqs/` carries the pinned build prerequisites from `assets/prereq_manifest.json`, CPython and the MSYS2 UCRT64 packages, unpacked in the layout the per-user download installs, plus `installed.json` and `bundle-inventory.txt` ([#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285)). BUILD PACKAGE uses it without a consent card or a download ([`SETUP.md`](SETUP.md#player-build-package-prerequisites)). The staging step downloads each archive from its pinned host into the cache, or reuses a cached copy, checks its exact size and SHA-256, unpacks it with the per-user installer's path and link rules (a package link becomes a copy of its target, because a ZIP cannot carry links), removes the documentation folders `share/doc`, `share/info` and `share/man`, writes `notices/SOURCES.txt`, and then verifies the whole tree, file contents included. It prints the bundle's `file_count`, `unpacked_bytes` and `stripped_documentation`: record the first two and the ZIP size in the release notes. The bundled third-party executables keep their upstream bytes and are not re-signed. From the source checkout, `python -m tools.nk_core.prereq_fetcher --manifest assets/prereq_manifest.json --verify-bundle <extracted folder>/prereqs` repeats the full check on an extracted copy. A ZIP that contains `prereqs/` is published only together with its prerequisite source archive, in the same release ([policy below](#bundled-prerequisite-licensing-policy)).
+
+The source archive step writes `nakagawa-recomp-<version>-prerequisite-sources.zip` beside the ZIP, outside the stage. It downloads each pinned source file into the same cache, or reuses a cached copy, checks its exact size and SHA-256, stores it unchanged under one top-level folder with `SOURCES.txt`, and verifies the archive again, contents included. It prints `source_count`, `source_bytes`, `archive_bytes` and `archive_sha256`: record the archive size in the release notes next to the ZIP figures, and attach the archive and its `.sha256` to the same release as the ZIP. `python -m tools.nk_core.prereq_fetcher --manifest assets/prereq_manifest.json --verify-source-archive <archive>` repeats the check on a downloaded copy.
 
 Before a maintainer treats the zip as publishable, inspect it with:
 
 ```powershell
-$files = Get-ChildItem -LiteralPath $Stage -Recurse -File
+$files = Get-ChildItem -LiteralPath $Stage -Recurse -File -Force
 $forbidden = @($files | Where-Object {
-    $_.Extension -match '^\.(iso|prx|elf|eboot|sav|key|pgf|pgd)$'
+    $relative = [System.IO.Path]::GetRelativePath($Stage, $_.FullName).Replace('\', '/')
+    $_.Extension -match '^\.(iso|prx|elf|eboot|sav|key|pgf|pgd)$' -and
+        $relative -notmatch '^bin/font/nk[^/]*\.pgf$' -and
+        $relative -notlike 'bin/demos/*'
 })
 if ($forbidden.Count -ne 0) {
     $forbidden | ForEach-Object { Write-Error $_.FullName }
     throw 'forbidden package file found'
 }
+# Every top-level entry except source/: both publish-audit legs below check source/, and its
+# tests carry synthetic private-path strings on purpose. Fixed strings catch this machine's
+# own folders in backslash, slash and JSON-escaped spelling; add any other folder you build from.
+$roots = @($env:USERPROFILE, [IO.Path]::GetTempPath().TrimEnd('\')) |
+    Where-Object { $_ } |
+    ForEach-Object { $_; $_.Replace('\', '/'); $_.Replace('\', '\\') } |
+    Sort-Object -Unique
+$targets = @(Get-ChildItem -LiteralPath $Stage -Force |
+    Where-Object Name -ne 'source' | ForEach-Object FullName)
 $privateMatches = @(
-    rg -a -l -i '[A-Z]:[\\/][^\\r\\n]*[\\/](private|\\.codex)([\\/]|$)' $Stage 2>$null
+    @(foreach ($root in $roots) { rg -a -l -i -F -- $root @targets 2>$null }) +
+    @(rg -a -l -i '[A-Z]:([\\/][^\r\n]*)?[\\/](private|\.codex)([\\/]|$)' @targets 2>$null) |
+        Sort-Object -Unique
 )
 if ($privateMatches.Count -ne 0) {
     $privateMatches | ForEach-Object { Write-Error $_ }
@@ -275,7 +316,7 @@ if ($privateMatches.Count -ne 0) {
 }
 ```
 
-The expected result is no output from the extension filter and no private-path match. An empty scan is evidence about this package only; it does not clear the repository history or the publication provenance gate.
+The extension filter exempts two project-authored, attested trees and nothing else: the player's own project fonts, `bin/font/nk*.pgf`, and the showcase demos under `bin/demos/` (their disc images, packages and PSPSDK notice), which the candidate job builds from the `showcase_prx` job's PRXs and attests with the player. The expected result is no output from the extension filter and no private-path match. An empty scan is evidence about this package only; it does not clear the repository history or the publication provenance gate.
 
 Additionally, both publication-audit legs must pass against the exact exported bytes to ensure export immutability (#293):
 
@@ -283,6 +324,82 @@ Additionally, both publication-audit legs must pass against the exact exported b
 python tools/publish_audit.py --candidate-root $Source --candidate-tree --public-scope --provenance-ledger $TrustedLedger
 python tools/publish_audit.py --candidate-root $Source --candidate-tree --public-scope --provenance-self-consistency
 ```
+
+### Bundled prerequisite licensing policy
+
+Owner decisions of 2026-10-26 on [#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285), implemented by the package script above:
+
+- **Corresponding source ships with the release, not as a written offer.** The prerequisite source archive holds, for every bundled prerequisite, the source it was built from: the MSYS2 source package (`*.src.tar.zst`, with the PKGBUILD, the MSYS2 patches and the upstream source tarballs) of each MSYS2 package's pkgbase at the pinned version, the python.org source release of CPython, and the upstream source release of each third-party library built into the CPython runtime (below). It is published next to the ZIP in the same release.
+- **Every bundled package is covered**, not only the copyleft ones, so no licence classification decides what ships.
+- **Pins.** Each source is pinned by URL, size and SHA-256 in the `sources` list of `assets/prereq_manifest.json`, and each artifact names its entry in `source`. The MSYS2 source pins come from files whose detached package signatures (`.sig`) verified with `gpgv` against the official MSYS2 keyring; `signing_key_fingerprint` records the key. The CPython pin is python.org's release-file SHA-256, the method used for the embeddable runtime; each runtime library's `sha256_source` records how its pin was checked. Staging refuses an artifact without a pinned source (`SOURCE_UNPINNED`) and a source whose version differs from its artifact's (`SOURCE_VERSION_MISMATCH`), so a prerequisite update changes the artifact pin and its source pin together in one pull request.
+- **Documentation.** The GFDL-licensed manuals in `share/doc`, `share/info` and `share/man` are not needed to build, so the staged tree does not carry them; the source archive holds the full upstream documentation. Every package's licence and copying files stay in `prereqs/notices`, including the ones a package keeps only under `share/doc`, such as MPFR's `COPYING.LESSER`. Five MSYS2 packages carry no licence file in their binary package (`cc-libs`, `gmp`, `isl`, `mpc`, `windows-default-manifest`): staging copies the licence files named in their `source_notices`, each pinned by member path, size and SHA-256, out of their pinned source packages into `prereqs/notices/<artifact>/sources/`. `windows-default-manifest` has no licence file at all; its PKGBUILD, which declares `license=('custom:Public Domain')`, is copied instead. `prereqs/notices/SOURCES.txt`, the same text as the archive's `SOURCES.txt`, names each artifact's source file with its size and SHA-256.
+- **Network.** Only these maintainer staging commands download: the binaries and MSYS2 sources from the hosts of the per-user download (`www.python.org`, `repo.msys2.org`), and the runtime libraries' sources from their official hosts (`github.com`, `www.sqlite.org`, `sourceware.org`, `www.bytereef.org`). The player never passes them, and a release with `prereqs/` makes no connection ([`SETUP.md`](SETUP.md#network-use)).
+
+The CPython 3.15.1 embeddable runtime contains third-party libraries besides CPython itself. Their versions come from CPython's `PCbuild/get_externals.bat` and were checked against the shipped binaries' version resources and strings:
+
+| Library | Version | In the runtime | Source pinned from | Checked by |
+| --- | --- | --- | --- | --- |
+| OpenSSL | 3.5.9 | `libcrypto-3.dll`, `libssl-3.dll` | `github.com/openssl/openssl` release | upstream `.sha256` file and GitHub asset digest |
+| libffi | 3.4.4 | `libffi-8.dll` | `github.com/libffi/libffi` release | none published; SHA-256 at retrieval |
+| SQLite | 3.53.4 | `sqlite3.dll` | `www.sqlite.org` amalgamation | `sqlite3.c` SHA3-256 and source ID from the release log, source ID in the DLL |
+| bzip2 | 1.0.8 | `_bz2.pyd` | `sourceware.org` | identical to the tarball in the signature-verified MSYS2 `mingw-w64-bzip2` source package |
+| XZ Utils | 5.8.1 | `_lzma.pyd` | `github.com/tukaani-project/xz` release | maintainer's detached signature (`gpgv`) |
+| zlib-ng | 2.2.4 | `python315.dll` | `github.com/zlib-ng/zlib-ng` tag archive | none published (no release tarball); SHA-256 at retrieval |
+| Zstandard | 1.5.7 | `_zstd.pyd` | `github.com/facebook/zstd` release | upstream `.sha256` file; identical to the MSYS2 `mingw-w64-zstd` source package's tarball |
+| mpdecimal | 4.0.0 | `_decimal.pyd` | `www.bytereef.org` | SHA-256 on the upstream download page |
+| libtommath (Tcl 9.0.4) | 1.3.0 as carried in Tcl | `libtommath.dll` | `github.com/tcltk/tcl` release | GitHub asset digest; the DLL is Tcl's prebuilt `libtommath/win64/libtommath.dll`, byte-identical once the PSF signature is removed |
+
+Libraries that CPython's own source tree carries (Expat, HACL*, mimalloc) are in the CPython source release. Each library's licence file is copied into `prereqs/notices/cpython-embed-amd64/sources/`; SQLite's source carries a public-domain blessing instead of a licence file. Staging refuses a runtime library that no pinned source accounts for (`BUNDLE_SOURCE_UNACCOUNTED`), a pinned library the runtime no longer ships (`BUNDLE_SOURCE_DRIFT`), and a library pin not re-checked against the current CPython version (`SOURCE_VERSION_MISMATCH`).
+
+The Microsoft Visual C++ runtime (`vcruntime140.dll`, `vcruntime140_1.dll`) has no public source. It is redistributed under the terms python.org ships with the runtime, the section "Additional Conditions for this Windows binary build" of `prereqs/notices/cpython-embed-amd64/LICENSE.txt`; staging refuses a runtime whose notice lacks that section (`BUNDLE_NOTICE_MISSING`), and `SOURCES.txt` names both files under "No public source".
+
+## Clean-VM offline acceptance
+
+This is the acceptance run for [#1285](https://github.com/Jstar269/nakagawa-recomp/issues/1285) and a [#278](https://github.com/Jstar269/nakagawa-recomp/issues/278) release gate: an ordinary user, on a machine that has never seen a development tool and has no network, goes from the release ZIP to playing their own game with no download prompt. Run it on the exact ZIP that will be published, after the package script and the checks above.
+
+You need:
+
+- the candidate `nakagawa-recomp-<version>-windows-x64.zip` and its `.sha256`;
+- your own copy of a title listed in [`COMPATIBILITY.md`](COMPATIBILITY.md), with the files [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) asks you to supply for it;
+- a fresh Windows 11 x64 virtual machine with no MSYS2, Python, Git, compiler or Vulkan SDK installed. Its display adapter must provide Vulkan with a current driver, for example Hyper-V GPU partitioning (Hyper-V needs Windows 11 Pro or Enterprise on the host); a spare physical PC with a fresh Windows install and its network cable unplugged works the same way. Without a Vulkan driver the Play step cannot pass for a reason outside #1285: record that run as `BLOCKED`, not as a bundle failure.
+
+Steps:
+
+1. Install Windows 11 and the GPU driver, then take a snapshot so the run can be repeated from the same state.
+2. Turn networking off before copying anything: disconnect the VM's network adapter (in Hyper-V, set the adapter's virtual switch to "Not connected"). In the VM, confirm that no adapter is up, that the package hosts are unreachable, and that no toolchain is on `PATH`; a `python.exe` under `WindowsApps` is only Windows' Microsoft Store alias and does not count:
+
+   ```powershell
+   Get-NetAdapter | Where-Object Status -eq 'Up'
+   Test-NetConnection repo.msys2.org -Port 443 -InformationLevel Quiet
+   Get-Command python, gcc, mingw32-make -ErrorAction SilentlyContinue | Select-Object Source
+   ```
+
+   Expected: no adapter, `False`, and no toolchain.
+3. Copy the ZIP, its `.sha256` and your game image into the VM without the guest network, for example with Hyper-V Enhanced Session drive redirection or an attached data disk, into a short folder such as `%USERPROFILE%\Acceptance`.
+4. Check the download and extract it:
+
+   ```powershell
+   $Zip = Join-Path $env:USERPROFILE 'Acceptance\nakagawa-recomp-0.0.1-windows-x64.zip'
+   $Expected = (Get-Content -LiteralPath "$Zip.sha256" -Raw).Split(' ')[0]
+   if ((Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Expected) { throw 'ZIP hash mismatch' }
+   Expand-Archive -LiteralPath $Zip -DestinationPath (Join-Path $env:USERPROFILE 'Nakagawa')
+   ```
+
+5. Check the extracted prerequisites with their own bundled CPython, still offline. Expected: one JSON line with `"event": "bundle-verified"` and the `file_count` recorded in the release notes.
+
+   ```powershell
+   Set-Location (Join-Path $env:USERPROFILE 'Nakagawa')
+   .\prereqs\python\python.exe -c "import runpy, sys; sys.path.insert(0, 'source'); sys.argv = ['prereq_fetcher', '--manifest', 'source/assets/prereq_manifest.json', '--verify-bundle', 'prereqs']; runpy.run_module('tools.nk_core.prereq_fetcher', run_name='__main__')"
+   ```
+
+6. Start `%USERPROFILE%\Nakagawa\bin\nakagawa_player.exe` from Explorer. v0.0.1 is not Authenticode-signed, so a SmartScreen or antivirus prompt is possible: record its exact text for [#1283](https://github.com/Jstar269/nakagawa-recomp/issues/1283) and [#1284](https://github.com/Jstar269/nakagawa-recomp/issues/1284), allow it, and continue. It is not a download prompt.
+7. Click **START SETUP WIZARD** and add your game image. If its game card names an encrypted executable, place your own unencrypted files in the folder the card names, as [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md#what-the-player-does-automatically) describes.
+8. Select **BUILD PACKAGE**. Pass: no consent card and no download prompt appear, and the build completes. A `PREREQUISITE_BUNDLE_INVALID` card names the damaged file: record the name, it is a failure. Any build-tool consent card is a failure.
+9. Select **Play**. Pass: the title reaches its first interactive screen and accepts input.
+10. Open **Settings → About & Licenses**. Pass: it lists the bundled components, and **OPEN LICENSE TEXTS** opens `%USERPROFILE%\Nakagawa\prereqs\notices`, which contains `SOURCES.txt`.
+11. Repeat the commands of step 2. Expected: still no adapter up.
+
+Report the result in #1285 and #278: the ZIP SHA-256, the Windows build and VM type, the GPU, the time for extraction and for BUILD PACKAGE, and `PASS`, `FAIL` or `BLOCKED` for each step. Evidence about the title stays private (AGENTS.md section 5): report the title's catalog name and the step results only, with no captures, logs or paths from the run.
 
 ## Attribution boundary
 

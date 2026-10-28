@@ -38,7 +38,7 @@ Guest middleware and title acceptance remain partial or open.
 | **PSP System Fonts** | Dumped firmware PGFs (`jpn0.pgf`, `ltn0.pgf`) from `flash0:/font/` | Sony PGF format has proprietary metrics; fonts reside in firmware, not on UMD | Honest prerequisite: require user firmware dump for authentic rendering; optional synthetic font provider for developer convenience | **HONEST_PREREQUISITE_REQUIRED** |
 | **Video Middleware** | Host-HLE `scePsmfPlayer*` driving it over a bounded PSMF producer (see `docs/LLE_FIDELITY_ARCHITECTURE.md` §3.4) | The host-HLE player works, but the genuine `psmf.prx` / `libpsmfplayer.prx` middleware is not executing yet | Execute original guest `psmf.prx` & `libpsmfplayer.prx`; bridge only the lowest hardware codec boundary (`sceMpeg`) to host decoders | **PARTIAL — CODEC BRIDGE AND PRODUCER LANDED; GUEST MIDDLEWARE EXECUTION OPEN** |
 | **Game Assets** | Loose `xbdata_extracted/` (~56k files) or the `.xb` archives | Host filesystem previously expected flat directories | Transparent in-engine block VFS reading `.xb` archive sectors directly, preserving all PSP I/O semantics | **LANDED — READ-ONLY ARCHIVE-BACKED VFS (#298); LOOSE LAYOUT STILL ACCEPTED** |
-| **Title Manifest** | Private title-specific manifest | Excluded from public tree due to guest addresses | Generic title-catalog parameterization without hardcoded patches | **GENERIC SUPPORT EXISTS; TITLE ACCEPTANCE NOT RUN** |
+| **Title Manifest** | The title-specific manifest; HST's ships in `assets/titles/` | Other titles have none yet | Generic title-catalog parameterization without hardcoded patches | **GENERIC SUPPORT EXISTS; HST MANIFEST PUBLIC; OTHER TITLES NOT RUN** |
 
 ---
 
@@ -50,7 +50,7 @@ are not evidence that the paths have landed in the current player.
 ### 3.1 Retail EBOOT and PRX Cryptography
 
 * **Input boundary:** `tools/codegen.py` consumes supported MIPS ELF inputs and fails closed on encrypted headers. The player decrypts an encrypted executable or module from the user's disc, refuses one it can't decrypt by name, and accepts decrypted files from the user's own copy ([`docs/SETUP.md`](SETUP.md#encrypted-executables)).
-* **Status:** UMD disc images are decrypted locally with built-in tables; PSN `EBOOT.PBP` packages are not yet ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). PGD-protected game data, guest middleware startup, and any specific title's compatibility remain separate boundaries.
+* **Status:** UMD disc images, and PSN releases of UMD games (an `EBOOT.PBP` holding an NPUMDIMG disc image, converted once into its ISO), are decrypted locally with built-in tables; other PSN (NPDRM) packages are not yet ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). PGD-protected game data, guest middleware startup, and any specific title's compatibility remain separate boundaries.
 
 ---
 
@@ -60,7 +60,7 @@ are not evidence that the paths have landed in the current player.
   * In `af5c4f4`, `src/rt/hle.c` intercepted `libfont.prx` and `psmf.prx`, skipped their `module_start` entry points, and wrote `1u` into a title-configured guest word through `sr_title_config_libfont_ready_flag_addr`.
   * This was done because executing `module_start` hung on an unconditional `WaitSema`.
   * Replacing the modules with host HLE bypassed genuine guest state machines, introduced timing discrepancies, and required ongoing title-specific maintenance.
-* **Current boundary:** The `libfont.prx` skip is removed for translated entries: `sceKernelStartModule` runs guest startup and its exports become available after startup. When startup is unavailable (an untranslated entry, no recorded entry, or the `SR_REAL_MODULE_START=0` kill switch), the runtime reports `LIBFONT_STARTUP_UNAVAILABLE`, returns `SCE_KERNEL_ERROR_NOTIMP`, and leaves guest readiness unchanged. Legacy manifests using the retired ready-word field fail with `LIBFONT_READY_FLAG_RETIRED`. Real-title startup dependencies still need private-route validation under [#299](https://github.com/Jstar269/nakagawa-recomp/issues/299). PSMF startup remains a separate bypass.
+* **Current boundary:** The `libfont.prx` skip is removed for translated entries: `sceKernelStartModule` runs guest startup and its exports become available after startup. An experimental build translates the disc's own `libfont.prx` as a runtime-placed module. When startup is unavailable (an untranslated or refused image, no recorded entry, or the `SR_REAL_MODULE_START=0` kill switch), the runtime reports `LIBFONT_STARTUP_UNAVAILABLE`, leaves guest readiness unchanged and stops the run at the named boundary `libfont-startup-unavailable`. Legacy manifests using the retired ready-word field fail with `LIBFONT_READY_FLAG_RETIRED`. Real-title startup dependencies still need private-route validation under [#299](https://github.com/Jstar269/nakagawa-recomp/issues/299). PSMF startup remains a separate bypass.
 
 ---
 

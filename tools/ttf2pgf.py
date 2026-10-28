@@ -45,7 +45,13 @@ from pathlib import Path
 
 try:  # pragma: no cover - the tests import both styles
     from . import pgf_writer
-except ImportError:  # direct script execution: tools/ is the script directory
+except ImportError:  # direct script execution
+    # Python's embeddable distribution, which the release ZIP bundles for BUILD PACKAGE,
+    # never puts the script's own folder on sys.path (its ._pth file wins), so add tools/
+    # before importing the sibling module, as nk_cli.py does.
+    _TOOLS_DIR = str(Path(__file__).resolve().parent)
+    if _TOOLS_DIR not in sys.path:
+        sys.path.insert(0, _TOOLS_DIR)
     import pgf_writer  # type: ignore[no-redef]
 
 CONVERTER_NAME = "ttf2pgf"
