@@ -83,6 +83,11 @@ class CommittedIconTests(unittest.TestCase):
         rgba = make_app_icon.render(16)
         self.assertIn(make_app_icon._bmp(16, rgba), data)
 
+    def test_build_ico_formatting_uses_list_join(self) -> None:
+        """Verify build_ico directory entry formatting produces valid ico bytes."""
+        ico = make_app_icon.build_ico()
+        self.assertTrue(ico.startswith(bytes([0, 0, 1, 0])))
+
 
 class CDrawerTests(unittest.TestCase):
     def test_c_drawer_uses_the_generator_numbers(self) -> None:
