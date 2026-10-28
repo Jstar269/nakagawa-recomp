@@ -109,8 +109,8 @@ Roadmap items decided with the table:
   what the tool suite actually passes on, and only after the full suite runs green on that version.
 * **One app ID on every host:** `nakagawa-recomp`, with the OS's own casing only where the OS
   expects it. Today the data folders are `Nakagawa` (Windows), `nakagawa-recomp` (Linux) and
-  `NakagawaRecomp` (macOS); unify them before the first release, with a migration from the old
-  Windows folder.
+  `NakagawaRecomp` (macOS); unify them before a release ships on a second host, with a migration from
+  the old Windows folder.
 * **Code signing:** v0.0.1 ships unsigned (maintainer decision, 2026-10-25). SignPath Foundation's
   free open-source programme declined the project for now because it is not yet widely used; reapply
   once releases have users. Until a build is signed, each release publishes the ZIP's SHA-256 and

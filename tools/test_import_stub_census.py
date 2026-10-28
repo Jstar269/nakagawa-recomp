@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Import-stub census: every import-table stub of a synthetic image has an entry and a body,
 and its NID reaches an HLE handler or the named unknown-NID trap.

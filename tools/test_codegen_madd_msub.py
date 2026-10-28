@@ -527,5 +527,95 @@ class TestLoadLinkedStoreConditional(unittest.TestCase):
         self.assertEqual(regs[0], 0)
 
 
+
+def encode_shift(rs, rt, rd, sa, funct):
+    """SPECIAL shift encoding with the rs and sa fields explicit."""
+    return (rs & 0x1F) << 21 | (rt & 0x1F) << 16 | (rd & 0x1F) << 11 | (sa & 0x1F) << 6 | (funct & 0x3F)
+
+
+def rotr32(value, n):
+    """Independent oracle: 32-bit rotate right."""
+    n &= 31
+    return value if n == 0 else ((value >> n) | (value << (32 - n))) & 0xFFFFFFFF
+
+
+class TestAllegrexRotate(unittest.TestCase):
+    """#308: Allegrex rotr is srl with rs=1 and rotrv is srlv with sa=1 (PPSSPP
+    Core/MIPS/MIPSTables.cpp and MIPSInt.cpp decode them the same way). They were
+    emitted as plain logical right shifts, which corrupted a retail title's inflate
+    bit reader. Any other value in those fields is reserved and fails closed."""
+
+    VALUES = (0x12345678, 0x80000001, 0xFFFFFFFD, 0x00000000)
+
+    def _run(self, stmt, rt_value, rs_value, opt):
+        src = f"""
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+struct CpuState {{ uint32_t r[32]; uint32_t hi, lo; }};
+int main(void) {{
+    struct CpuState state;
+    memset(&state, 0, sizeof state);
+    struct CpuState *s = &state;
+    s->r[8] = 0x{rt_value:08x}u; s->r[9] = 0x{rs_value:08x}u;
+    {stmt}
+    printf("%08x\\n", s->r[10]);
+    return 0;
+}}
+"""
+        with scratch_dir.TemporaryDirectory() as td:
+            assert GCC is not None
+            c_path = Path(td) / "rot.c"
+            exe_path = Path(td) / ("rot.exe" if sys.platform == "win32" else "rot")
+            c_path.write_text(src)
+            subprocess.run([GCC, opt, "-std=c11", "-Wall", "-Werror", "-o", str(exe_path), str(c_path)],
+                           check=True, capture_output=True, text=True)
+            out = subprocess.run([str(exe_path)], check=True, capture_output=True, text=True)
+        return int(out.stdout.strip(), 16)
+
+    @unittest.skipUnless(GCC, "no host C compiler on PATH")
+    def test_rotr_matches_oracle(self):
+        for sa in (0, 1, 5, 16, 31):
+            stmt, _, _ = codegen.effect(0, encode_shift(1, 8, 10, sa, 0x02))
+            for value in self.VALUES:
+                for opt in ("-O0", "-O2"):
+                    with self.subTest(sa=sa, value=hex(value), opt=opt):
+                        self.assertEqual(self._run(stmt, value, 0, opt), rotr32(value, sa))
+
+    @unittest.skipUnless(GCC, "no host C compiler on PATH")
+    def test_rotrv_matches_oracle(self):
+        stmt, _, _ = codegen.effect(0, encode_shift(9, 8, 10, 1, 0x06))
+        for amount in (0, 1, 5, 16, 31, 32, 37):  # only the low five bits count
+            for value in self.VALUES:
+                for opt in ("-O0", "-O2"):
+                    with self.subTest(amount=amount, value=hex(value), opt=opt):
+                        self.assertEqual(self._run(stmt, value, amount, opt), rotr32(value, amount))
+
+    @unittest.skipUnless(GCC, "no host C compiler on PATH")
+    def test_plain_srl_and_srlv_are_unchanged(self):
+        srl, _, _ = codegen.effect(0, encode_shift(0, 8, 10, 5, 0x02))
+        srlv, _, _ = codegen.effect(0, encode_shift(9, 8, 10, 0, 0x06))
+        self.assertEqual(self._run(srl, 0x80000001, 0, "-O2"), 0x04000000)
+        self.assertEqual(self._run(srlv, 0x80000001, 5, "-O2"), 0x04000000)
+
+    def test_reserved_rotate_fields_fail_closed(self):
+        with self.assertRaises(codegen.Unsupported):
+            codegen.effect(0, encode_shift(2, 8, 10, 5, 0x02))   # srl rs=2
+        with self.assertRaises(codegen.Unsupported):
+            codegen.effect(0, encode_shift(9, 8, 10, 2, 0x06))   # srlv sa=2
+
+    def test_constant_propagation_rotates(self):
+        """The known-value lattice must agree with the emitted C for rotr and rotrv."""
+        regs = [0] * 32
+        regs[8], regs[9] = 0x12345678, 5
+        written = set()
+        codegen._sv_step(encode_shift(1, 8, 10, 5, 0x02), regs, written)
+        self.assertEqual(regs[10], rotr32(0x12345678, 5))
+        codegen._sv_step(encode_shift(9, 8, 11, 1, 0x06), regs, written)
+        self.assertEqual(regs[11], rotr32(0x12345678, 5))
+        codegen._sv_step(encode_shift(2, 8, 12, 5, 0x02), regs, written)
+        self.assertIsNone(regs[12])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
 // See NOTICE.md for upstream lineage and modification provenance.
@@ -75,6 +76,8 @@ int sched_liveness_owner_counts(uint32_t uid, uint64_t *decisions,
 void sched_liveness_set_starvation_limit(unsigned limit);
 #endif
 
+#include <SDL3/SDL_mutex.h>
+#include <SDL3/SDL_thread.h>
 #include <SDL3/SDL_timer.h>
 #include <SDL3/SDL_video.h>
 #include <stdio.h>
@@ -543,6 +546,7 @@ static void vtime_refresh(void);
 static uint32_t s_pending_vblanks;
 
 static void scheduler_service_pending(void);
+static void sched_preempt_timer_arm(void);
 static void sched_alarm_reset(void);
 static void scheduler_add_time(uint64_t delta);
 static uint64_t scheduler_deadline_after(uint64_t delta);
@@ -2010,6 +2014,42 @@ static void scheduler_ge_service(void) {
     sr_cpu_link_clear(s_cpu);
 }
 
+/* ---- VTimer handlers (hle.c, sceKernelSetVTimerHandler) ---------------------------------
+ *
+ * A VTimer handler is a timer interrupt like an alarm: hle.c owns the timers and reports the
+ * earliest guest-time deadline of a running timer with a handler; the scheduler delivers it
+ * from scheduler_service_pending(), in interrupt context, at the alarms' priority, and while
+ * somebody waits its deadline is an idle wake source. */
+static SrSchedVtimerNextDeadline s_vtimer_next;
+static SrSchedVtimerServiceOne s_vtimer_service;
+
+void sched_set_vtimer_hooks(SrSchedVtimerNextDeadline next_deadline,
+                            SrSchedVtimerServiceOne service_one) {
+    s_vtimer_next = next_deadline;
+    s_vtimer_service = service_one;
+}
+
+static uint64_t sched_vtimer_next_deadline(void) {
+    return s_vtimer_next ? s_vtimer_next() : SCHED_WAIT_FOREVER;
+}
+
+static uint64_t sched_vtimer_wake_deadline(void) {
+    return s_interrupts_enabled ? sched_vtimer_next_deadline() : SCHED_WAIT_FOREVER;
+}
+
+static int scheduler_vtimer_due(void) {
+    return s_vtimer_service && sched_vtimer_next_deadline() <= s_vtime_us;
+}
+
+/* One interrupt episode: the most overdue VTimer handler.  hle.c saves and restores the
+ * interrupted register file around the guest handler itself. */
+static void scheduler_vtimer_service(void) {
+    int save_cur = s_cur; s_cur = -1;     /* interrupt context: SR_YIELD must not switch */
+    s_vtimer_service();
+    s_cur = save_cur;
+    sr_cpu_link_clear(s_cpu);
+}
+
 /* The scheduler's idle classification, as a pure read of scheduler state.
  *
  * Factored out of sched_run so the policy is directly testable: the loop it used
@@ -2043,6 +2083,8 @@ static SchedIdleState sched_classify_idle(void) {
         if (alarm < st.soonest) st.soonest = alarm;
         uint64_t ge = sched_ge_wake_deadline();
         if (ge < st.soonest) st.soonest = ge;
+        uint64_t vtimer = sched_vtimer_wake_deadline();
+        if (vtimer < st.soonest) st.soonest = vtimer;
     }
     /* Object identity alone is not a licence to keep spinning: the source has to
      * still be able to fire and to be serviced. */
@@ -2070,11 +2112,16 @@ static void scheduler_service_pending(void) {
     s_servicing_interrupts = 1;
     while (s_interrupts_enabled &&
            ((s_pending_interrupts & SCHED_INTR_VBLANK) || s_pending_vblanks ||
-            scheduler_ge_due() || scheduler_alarm_due_slot() >= 0)) {
-        /* Alarms are the lowest-priority source here: only once no VBLANK episode is owed.
-         * A due GE completion (opt-in model) sits between the two. */
+            scheduler_ge_due() || scheduler_alarm_due_slot() >= 0 || scheduler_vtimer_due())) {
+        /* Timers are the lowest-priority source here: only once no VBLANK episode is owed.
+         * A due GE completion (opt-in model) sits between the two. Between a due alarm and
+         * a due VTimer handler the earlier deadline runs first (an unmeasured order). */
         if (!(s_pending_interrupts & SCHED_INTR_VBLANK) && !s_pending_vblanks) {
+            int alarm = scheduler_alarm_due_slot();
             if (scheduler_ge_due()) scheduler_ge_service();
+            else if (scheduler_vtimer_due() &&
+                     (alarm < 0 || sched_vtimer_next_deadline() < s_alarms[alarm].deadline))
+                scheduler_vtimer_service();
             else scheduler_alarm_service_one();
             continue;
         }
@@ -2785,6 +2832,47 @@ static void sched_promote_expired_waits(void) {
     }
 }
 
+/* No thread is ready: wait on the host for the next thing that can make one ready. If a timed
+ * wait expires before the next vblank is due, sleep precisely to it (sub-frame delays keep
+ * their real duration); otherwise advance the display source timeline and service its eligible
+ * pending interrupt. Vblank delivery can't starve: the source is latched whenever due.
+ *
+ * A thread's deadline can pass between the pick that found nobody ready and the clock sample
+ * here. That thread is owed the CPU now, so there is no host wait at all: the caller's next
+ * pick promotes it. Sending it to the vblank branch instead held it until the next vblank,
+ * up to a whole period late (#1296: the audio thread's release from a blocking output, its
+ * host queue running dry meanwhile). Only a non-suspended thread counts, since the pick
+ * then always runs it; a due alarm or GE deadline keeps the waits below. */
+static void sched_idle_wait(void) {
+    uint64_t soonest = (uint64_t)-1;
+    uint64_t soonest_runnable = (uint64_t)-1;
+    int any_waiting = 0;
+    for (int i = 0; i < s_ntcb; i++)
+        if (s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) {
+            any_waiting = 1;
+            if (s_tcb[i].wake < soonest) soonest = s_tcb[i].wake;
+            if (!s_tcb[i].suspended && s_tcb[i].wake < soonest_runnable)
+                soonest_runnable = s_tcb[i].wake;
+        }
+    /* An armed alarm is a timed wake like a delay, while someone is waiting for it. */
+    if (any_waiting && sched_alarm_wake_deadline() < soonest)
+        soonest = sched_alarm_wake_deadline();
+    if (any_waiting && sched_ge_wake_deadline() < soonest)
+        soonest = sched_ge_wake_deadline();
+    if (any_waiting && sched_vtimer_wake_deadline() < soonest)
+        soonest = sched_vtimer_wake_deadline();
+    scheduler_progress_time();
+    if (s_pace_on && soonest_runnable != SCHED_WAIT_FOREVER && soonest_runnable <= s_vtime_us)
+        return;
+    if (s_pace_on && soonest != (uint64_t)-1 && soonest > s_vtime_us &&
+        soonest - s_vtime_us < vblank_due_us())
+        { sleep_until_us(soonest); scheduler_progress_time(); }
+    else {
+        vblank_pace();
+        scheduler_latch_due_events();
+    }
+}
+
 /* Where the equal-priority scan at `priority` begins.  Normally one slot after the previous
  * winner; a thread that sceKernelRotateThreadReadyQueue moved to the back of this priority's
  * queue (rot_head) takes precedence, so the scan starts after it and it is reached last. */
@@ -2955,10 +3043,129 @@ void sr_t111_dump(void) {
     fflush(stderr);
 }
 
+/* ---- preemption timer (#1296) --------------------------------------------------------
+ * The PSP's thread scheduler is preemptive: when the delay or timed wait of a thread
+ * stronger than the running one runs out, the timer interrupt hands it the CPU at once,
+ * whatever the running thread is doing. Here a guest thread gives up the CPU only at its
+ * SR_YIELD points, and a yield point enters sr_yield only once every TIMESLICE of them,
+ * so a weaker thread busy in compiled code kept a stronger due thread waiting for that
+ * whole stretch: Hot Shots Tennis's priority-16 sound thread waited tens of milliseconds
+ * behind its priority-40 game thread, and the sound queue ran dry.
+ *
+ * The timer stands in for that interrupt. While a guest thread runs, the scheduler
+ * publishes the earliest deadline among the waiting threads stronger than it. A host
+ * thread sleeps until that moment and then ends the running slice, so the next SR_YIELD
+ * enters sr_yield, which promotes the expired wait and switches under the unchanged
+ * strict-priority rule. Equal and weaker waiters are left out: on the PSP their expiry
+ * does not take the CPU from the running thread either. Only paced runs have the timer
+ * (turbo time does not follow the host clock), and only the driver starts it, so the
+ * deterministic selftests see the same yields as before. */
+enum { SCHED_PREEMPT_TIMER_OFF = 0, SCHED_PREEMPT_TIMER_THREAD, SCHED_PREEMPT_TIMER_MANUAL };
+static int s_preempt_timer_mode;
+static SDL_Mutex *s_preempt_timer_mutex;
+static SDL_Condition *s_preempt_timer_cond;
+static uint64_t s_preempt_timer_at_ns = UINT64_MAX;   /* host ns; under the mutex in THREAD mode */
+static uint64_t s_preempt_timer_published = UINT64_MAX;   /* the guest thread's last published value */
+
+/* The earliest wake deadline (guest us) of a waiting thread stronger than the running one. */
+static uint64_t sched_preempt_timer_target_us(void) {
+    if (s_cur < 0 || s_cur >= s_ntcb) return SCHED_WAIT_FOREVER;
+    const int priority = s_tcb[s_cur].priority;
+    uint64_t at = SCHED_WAIT_FOREVER;
+    for (int i = 0; i < s_ntcb; i++) {
+        const TCB *t = &s_tcb[i];
+        if (i == s_cur || t->suspended || t->priority >= priority) continue;
+        if ((t->state == TH_WAIT_DELAY || t->state == TH_WAIT_OBJ) && t->wake < at) at = t->wake;
+    }
+    return at;
+}
+
+/* End the running slice when the published deadline has come: the interrupt edge. */
+static void sched_preempt_timer_check(uint64_t now_ns) {
+    if (s_preempt_timer_at_ns == UINT64_MAX || now_ns < s_preempt_timer_at_ns) return;
+    s_preempt_timer_at_ns = UINT64_MAX;
+    atomic_store_explicit(&sr_timeslice, 1, memory_order_relaxed);
+}
+
+/* Publish the deadline for the thread that is running now. Called on the guest's host
+ * thread wherever the running thread or its stronger waiters can have changed: a switch
+ * into a thread, a yield that kept it, a change of its priority. */
+static void sched_preempt_timer_arm(void) {
+    if (s_preempt_timer_mode == SCHED_PREEMPT_TIMER_OFF) return;
+    const uint64_t at_us = sched_preempt_timer_target_us();
+    uint64_t at_ns = UINT64_MAX;
+    if (at_us != SCHED_WAIT_FOREVER && at_us <= (UINT64_MAX - s_clock_epoch_ns) / 1000u)
+        at_ns = s_clock_epoch_ns + at_us * 1000u;
+    if (at_ns == s_preempt_timer_published) return;
+    const int earlier = at_ns < s_preempt_timer_published;
+    s_preempt_timer_published = at_ns;
+    if (s_preempt_timer_mode == SCHED_PREEMPT_TIMER_MANUAL) {
+        s_preempt_timer_at_ns = at_ns;
+        return;
+    }
+    SDL_LockMutex(s_preempt_timer_mutex);
+    s_preempt_timer_at_ns = at_ns;
+    /* A later deadline needs no wake: the timer thread finds it when its current
+     * wait ends, and goes back to sleep without ending a slice. */
+    if (earlier) SDL_SignalCondition(s_preempt_timer_cond);
+    SDL_UnlockMutex(s_preempt_timer_mutex);
+}
+
+static int SDLCALL sched_preempt_timer_main(void *unused) {
+    (void)unused;
+    SDL_LockMutex(s_preempt_timer_mutex);
+    for (;;) {
+        const uint64_t at = s_preempt_timer_at_ns;
+        if (at == UINT64_MAX) {
+            SDL_WaitCondition(s_preempt_timer_cond, s_preempt_timer_mutex);
+            continue;
+        }
+        const uint64_t now = SDL_GetTicksNS();
+        if (now >= at) {
+            sched_preempt_timer_check(now);
+            continue;
+        }
+        const uint64_t wait = at - now;
+        if (wait > 4000000u) {
+            /* A far deadline: a condition wait that an earlier one can cut short. Its
+             * millisecond timeout is coarse, so stop short and finish below. */
+            const uint64_t ms = (wait - 3000000u) / 1000000u;
+            SDL_WaitConditionTimeout(s_preempt_timer_cond, s_preempt_timer_mutex,
+                                     ms > INT32_MAX ? INT32_MAX : (int32_t)ms);
+        } else {
+            /* A near deadline: a precise host sleep, in steps short enough that a still
+             * earlier deadline published meanwhile is seen within one step. */
+            SDL_UnlockMutex(s_preempt_timer_mutex);
+            SDL_DelayNS(wait < 1000000u ? wait : 1000000u);
+            SDL_LockMutex(s_preempt_timer_mutex);
+        }
+    }
+    return 0;
+}
+
+void sched_preempt_timer_start(void) {
+    pace_setup();
+    if (!s_pace_on || s_preempt_timer_mode != SCHED_PREEMPT_TIMER_OFF) return;
+    s_preempt_timer_mutex = SDL_CreateMutex();
+    s_preempt_timer_cond = SDL_CreateCondition();
+    SDL_Thread *thread = s_preempt_timer_mutex && s_preempt_timer_cond
+        ? SDL_CreateThread(sched_preempt_timer_main, "nk-preempt-timer", NULL) : NULL;
+    if (!thread) {
+        fprintf(stderr, "sched: preemption timer unavailable (no host thread); a stronger due thread "
+                        "waits for the running thread's next scheduler boundary\n");
+        return;
+    }
+    SDL_DetachThread(thread);
+    s_preempt_timer_mode = SCHED_PREEMPT_TIMER_THREAD;
+}
+
 void sr_yield(CpuState *s) {
     /* A fiber switch with a recorded tail transfer would let another thread's drain run
      * it on the wrong guest state (#855). */
     sr_tail_assert_empty("tail-transfer-live-at-yield");
+    /* The slice ended, by its count or by the preemption timer: whatever the timer
+     * held is spent, so the next arm publishes afresh. */
+    s_preempt_timer_published = UINT64_MAX;
     if (s->r[28] != 0u) {
         s_gp = s->r[28];
     }
@@ -3120,6 +3327,11 @@ void sr_yield(CpuState *s) {
                 uint64_t delta = alarm_at - s_vtime_us;
                 if (adv == 0 || delta < adv) adv = delta;
             }
+            uint64_t vtimer_at = sched_vtimer_wake_deadline();
+            if (vtimer_at != SCHED_WAIT_FOREVER && vtimer_at > s_vtime_us) {
+                uint64_t delta = vtimer_at - s_vtime_us;
+                if (adv == 0 || delta < adv) adv = delta;
+            }
             scheduler_add_time(adv);
         }
         scheduler_latch_due_events();
@@ -3158,9 +3370,10 @@ void sr_yield(CpuState *s) {
             fflush(stderr);
             }
         }
+        sched_preempt_timer_arm();
         return;
     }
-    if (!s_dispatch_enabled) return;
+    if (!s_dispatch_enabled) { sched_preempt_timer_arm(); return; }
     memcpy(&t->saved, s, sizeof(CpuState));
     if (t->state == TH_RUNNING) t->state = TH_READY;
     s_pause_switch_from_yield = 1;
@@ -4143,9 +4356,11 @@ uint32_t sched_set_priority(uint32_t uid, int priority) {
         sched_promote_expired_waits();
         sched_rotation_mark(s_cur);
         sched_yield_current_behind_peers();
+        sched_preempt_timer_arm();   /* which waiters are stronger than it has changed */
     } else {
         t->rot_head = 0;
         sched_preempt();
+        sched_preempt_timer_arm();   /* a waiter may now be stronger than the running thread */
     }
     return 0;
 }
@@ -4770,30 +4985,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         if (idx < 0) {
             if (sr_perf_enabled) sr_perf_sched_state(SR_PERF_SCHED_IDLE, 0u);
             sr_rt_phase = SR_RT_PHASE_SCHED;
-            /* No thread is ready. If a timed wait expires before the next vblank is due,
-             * sleep precisely to it (sub-frame delays keep their real duration); otherwise
-             * advance the display source timeline and service its eligible pending interrupt.
-             * Vblank delivery can't starve: the source is latched whenever due. */
-            uint64_t soonest = (uint64_t)-1;
-            int any_waiting = 0;
-            for (int i = 0; i < s_ntcb; i++)
-                if (s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) {
-                    any_waiting = 1;
-                    if (s_tcb[i].wake < soonest) soonest = s_tcb[i].wake;
-                }
-            /* An armed alarm is a timed wake like a delay, while someone is waiting for it. */
-            if (any_waiting && sched_alarm_wake_deadline() < soonest)
-                soonest = sched_alarm_wake_deadline();
-            if (any_waiting && sched_ge_wake_deadline() < soonest)
-                soonest = sched_ge_wake_deadline();
-            scheduler_progress_time();
-            if (s_pace_on && soonest != (uint64_t)-1 && soonest > s_vtime_us &&
-                soonest - s_vtime_us < vblank_due_us())
-                { sleep_until_us(soonest); scheduler_progress_time(); }
-            else {
-                vblank_pace();
-                scheduler_latch_due_events();
-            }
+            sched_idle_wait();
             scheduler_service_pending();
             idx = pick_next();
         }
@@ -4877,6 +5069,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         t->state = TH_RUNNING;
         sched_load_thread_context(t);      /* load this thread's registers */
         atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);          /* a fresh slice for this run (the counter is global) */
+        sched_preempt_timer_arm();          /* this thread's stronger waiters, for the timer */
         if (!t->started) {
             t->started = 1;
             /* Guest calls become native C calls, so a deep guest call chain needs a deep host

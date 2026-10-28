@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 # Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 # Modified by Nakagawa Recomp contributors, 2026-08-10.
 # See NOTICE.md for upstream lineage and modification provenance.
@@ -1190,10 +1191,22 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
         fn = funct(w)
         a, b, d, sh = rs(w), rt(w), rd(w), sa(w)
         if fn == 0x00: return wr(d, f"({R(b)} << {sh})"), None, 0           # sll
-        if fn == 0x02: return wr(d, f"({R(b)} >> {sh})"), None, 0           # srl
+        if fn == 0x02:
+            # Allegrex: rs=1 makes SRL the rotate ROTR; any other rs value is reserved.
+            rs_field = rs(w)
+            if rs_field == 1:
+                if sh == 0: return wr(d, R(b)), None, 0                     # rotr by 0
+                return wr(d, f"(({R(b)} >> {sh}) | ({R(b)} << {32 - sh}))"), None, 0  # rotr
+            if rs_field != 0: raise Unsupported(f"SRL reserved rs field {rs_field} at 0x{addr:08x}")
+            return wr(d, f"({R(b)} >> {sh})"), None, 0                      # srl
         if fn == 0x03: return wr(d, f"((uint32_t)((int32_t){R(b)} >> {sh}))"), None, 0  # sra
         if fn == 0x04: return wr(d, f"({R(b)} << ({R(a)} & 31))"), None, 0  # sllv
-        if fn == 0x06: return wr(d, f"({R(b)} >> ({R(a)} & 31))"), None, 0  # srlv
+        if fn == 0x06:
+            # Allegrex: sa=1 makes SRLV the rotate ROTRV; any other sa value is reserved.
+            if sh == 1:
+                return wr(d, f"(({R(b)} >> ({R(a)} & 31)) | ({R(b)} << ((32u - ({R(a)} & 31)) & 31)))"), None, 0  # rotrv
+            if sh != 0: raise Unsupported(f"SRLV reserved sa field {sh} at 0x{addr:08x}")
+            return wr(d, f"({R(b)} >> ({R(a)} & 31))"), None, 0             # srlv
         if fn == 0x07: return wr(d, f"((uint32_t)((int32_t){R(b)} >> ({R(a)} & 31)))"), None, 0  # srav
         if fn == 0x0A: return f"if ({R(b)} == 0) {wr(d, R(a))}", None, 0    # movz
         if fn == 0x0B: return f"if ({R(b)} != 0) {wr(d, R(a))}", None, 0    # movn
@@ -1382,8 +1395,8 @@ def _flit(v):
 _VFPU4_NAMED_UNIMPLEMENTED = {
     (0x01, 0x00): "vrnds",
     (0x01, 0x01): "vrndi",  # .p/.t/.q only: vrndi.s is _vrndi_single_stmt
-    (0x01, 0x02): "vrndf1",
-    (0x01, 0x03): "vrndf2",
+    (0x01, 0x02): "vrndf1",  # .p/.t/.q only: vrndf1.s is _vfpu_forms_stmt
+    (0x01, 0x03): "vrndf2",  # .p/.t/.q only: vrndf2.s is _vfpu_forms_stmt
 }
 
 
@@ -1401,6 +1414,52 @@ def _vrndi_single_stmt(addr, w):
             f"sr_unimplemented({G(addr)}, \"VFPU vrndi.s under a prefix is unmeasured; issue #326\"); "
             "sr_end(s, 0u, 0); return; } "
             f"s->vi[{d0}]=sr_vfpu_rnd_step(&s->vfpuCtrl[8]); }}")
+
+def _vfpu_forms_stmt(addr, w, what, body):
+    """A PSP-VFPU-FORMS-001 form (issue #326) under identity prefixes.
+
+    vh2f.s/.p, vuc2i.s, vsocp.s/.p, vwbn.s and vrndf1.s/vrndf2.s were measured on a
+    PSP-3000 (2026-10-28) under identity S/T/D prefixes only; the rules are the recomp.h
+    helpers sr_vfpu_interp also calls. A pending prefix is unmeasured, so it stops the run
+    with no state change, as sr_vfpu_interp refuses it. None of these forms writes VFPU_CC.
+    """
+    return ("{ if (s->vfpuCtrl[0]!=0xe4u || s->vfpuCtrl[1]!=0xe4u || s->vfpuCtrl[2]!=0u) { "
+            f"s->pc={G(addr)}; "
+            f"fprintf(stderr, \"VFPU_UNSUPPORTED: pc=0x{addr:08x} word=0x{w:08x} issue=326\\n\"); "
+            f"sr_unimplemented({G(addr)}, \"VFPU {what} under a prefix is unmeasured; issue #326\"); "
+            "sr_end(s, 0u, 0); return; } " + body + " }")
+
+
+def _vfpu_forms_effect(addr, w, jump, sel, n):
+    """The PSP-VFPU-FORMS-001 forms at their measured widths, or None."""
+    vd, vs = w & 0x7F, (w >> 8) & 0x7F
+    if jump >= 24 and n == 1:  # vwbn.s, exponent imm8 in bits 16-23
+        d0, s0 = vreg_indices(vd, 1)[0], vreg_indices(vs, 1)[0]
+        return _vfpu_forms_stmt(addr, w, "vwbn.s",
+                                f"s->vi[{d0}]=sr_vfpu_wbn(s->vi[{s0}],{(w >> 16) & 0xFF}u);")
+    if jump == 1 and sel in (2, 3) and n == 1:  # vrndf1.s / vrndf2.s
+        d0 = vreg_indices(vd, 1)[0]
+        return _vfpu_forms_stmt(addr, w, f"vrndf{sel - 1}.s",
+                                f"s->vi[{d0}]=sr_vfpu_rndf_step(&s->vfpuCtrl[8],{sel - 2});")
+    if jump == 1 and sel == 19 and n <= 2:  # vh2f.s/.p: low then high half, double width
+        si, di = vreg_indices(vs, n), vreg_indices(vd, 2 * n)
+        reads = " ".join(f"uint32_t _s{i}=s->vi[{si[i]}];" for i in range(n))
+        writes = " ".join(f"s->vi[{di[2 * i]}]=sr_vfpu_h2f(_s{i}&0xFFFFu); "
+                          f"s->vi[{di[2 * i + 1]}]=sr_vfpu_h2f(_s{i}>>16);" for i in range(n))
+        return _vfpu_forms_stmt(addr, w, f"vh2f.{'sp'[n - 1]}", f"{reads} {writes}")
+    if jump == 1 and sel == 24 and n == 1:  # vuc2i.s: four bytes, low first, to a quad
+        s0, di = vreg_indices(vs, 1)[0], vreg_indices(vd, 4)
+        writes = " ".join(f"s->vi[{di[i]}]=sr_vfpu_uc2i(_s>>{8 * i});" for i in range(4))
+        return _vfpu_forms_stmt(addr, w, "vuc2i.s", f"uint32_t _s=s->vi[{s0}]; {writes}")
+    if jump == 2 and sel == 5 and n <= 2:  # vsocp.s/.p: x -> (sat0(1 - x), sat0(x))
+        si, di = vreg_indices(vs, n), vreg_indices(vd, 2 * n)
+        reads = " ".join(f"_x[{i}]=s->vi[{si[i]}];" for i in range(n))
+        calc = " ".join(f"sr_vfpu_socp(_x[{i}],&_d[{2 * i}]);" for i in range(n))
+        writes = " ".join(f"s->vi[{di[i]}]=_d[{i}];" for i in range(2 * n))
+        return _vfpu_forms_stmt(addr, w, f"vsocp.{'sp'[n - 1]}",
+                                f"uint32_t _x[2],_d[4]; {reads} {calc} {writes}")
+    return None
+
 
 # VFPU9 forms whose semantics follow the 2026-10-24 PSP-3000 measurement (issue
 # #326) and live only in sr_vfpu_interp: op9 -> (name, vector sizes it accepts).
@@ -1446,6 +1505,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         rt_selector = (w >> 16) & 0x1F
         if (jump, rt_selector) == (0x01, 0x01) and vec_size(w) == 1:
             return _vrndi_single_stmt(addr, w), None, 0
+        forms = _vfpu_forms_effect(addr, w, jump, rt_selector, vec_size(w))
+        if forms is not None:
+            return forms, None, 0
         public_name = _VFPU4_NAMED_UNIMPLEMENTED.get((jump, rt_selector))
         if public_name is not None:
             raise Unsupported(
@@ -2504,10 +2566,17 @@ def _sv_step(w, regs, written):
                 regs[i] = None
             return
         if fn == 0x00: W(d, regs[b] << sh if regs[b] is not None else None); return           # sll
-        if fn == 0x02: W(d, regs[b] >> sh if regs[b] is not None else None); return           # srl
+        if fn == 0x02:                                                                       # srl / rotr
+            if a > 1 or regs[b] is None: W(d, None); return
+            W(d, ((regs[b] >> sh) | (regs[b] << ((32 - sh) & 31))) & 0xFFFFFFFF if a == 1 else regs[b] >> sh); return
         if fn == 0x03: W(d, (_sv_s32(regs[b]) >> sh) if regs[b] is not None else None); return  # sra
         if fn == 0x04: bin2(d, regs[b], regs[a], lambda x, y: x << (y & 31)); return          # sllv
-        if fn == 0x06: bin2(d, regs[b], regs[a], lambda x, y: x >> (y & 31)); return          # srlv
+        if fn == 0x06:                                                                       # srlv / rotrv
+            if sh > 1: W(d, None); return
+            if sh == 1:
+                bin2(d, regs[b], regs[a],
+                     lambda x, y: ((x >> (y & 31)) | (x << ((32 - (y & 31)) & 31))) & 0xFFFFFFFF); return
+            bin2(d, regs[b], regs[a], lambda x, y: x >> (y & 31)); return
         if fn == 0x07: bin2(d, regs[b], regs[a], lambda x, y: _sv_s32(x) >> (y & 31)); return # srav
         if fn == 0x0A:  # movz
             if regs[b] == 0: W(d, regs[a])
@@ -3805,7 +3874,7 @@ def main(argv):
 
         if hst_profile and a == 0x0000f538:
             text = """void f_0000f538(CpuState *s) {  /* custom stub: _free_r(reent, ptr) -> sr_newlib_free bridge
-     * Reinstated 2026-07-16 alongside f_00010738 -- see that stub's comment and ISSUES.md P0. */
+     * Reinstated 2026-07-16 alongside f_00010738 -- see that stub's comment. */
     uint32_t owner_ra = s->r[31] == 0x00010500u
         ? MEM_R32(s->r[29] + 0x00000004u) : s->r[31];
     if (owner_ra == 0x00000a14u)
@@ -3896,7 +3965,7 @@ def main(argv):
             func_texts.append(text); emitted.append(a); continue
 
         # 0x0001a5f8 and 0x0001c008 had constant-return custom stubs here until
-        # 2026-07-18. Ghidra-assisted review (ISSUES.md) showed both shadow real,
+        # 2026-07-18. A Ghidra-assisted review showed both shadow real,
         # fully-translatable code: 0x1c008 is `jr ra; sw a1,0x4028(a0)` (the stub
         # dropped the delay-slot store) and 0x1a5f8 is a computed-goto resume
         # point reached via .data pointer tables. Both are discovered entries and

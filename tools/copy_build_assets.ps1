@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 #requires -Version 5.1
 #
 # tools/copy_build_assets.ps1 — post-link asset copy for the `compile` Makefile target.

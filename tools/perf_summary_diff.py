@@ -199,11 +199,11 @@ def _transition_map(entries: list[dict[str, Any]]) -> dict[tuple[str, str], int]
 
 def _compare_transitions(before: dict[str, Any], after: dict[str, Any], tolerance: float,
                          changes: list[dict[str, Any]]) -> None:
-    left = before["transitions"]["top_pcs"]
-    right = after["transitions"]["top_pcs"]
+    before_top_pcs = before["transitions"]["top_pcs"]
+    after_top_pcs = after["transitions"]["top_pcs"]
     for direction in ("aot_to_interpreter", "interpreter_to_aot"):
-        before_map = _transition_map(left[direction])
-        after_map = _transition_map(right[direction])
+        before_map = _transition_map(before_top_pcs[direction])
+        after_map = _transition_map(after_top_pcs[direction])
         for key in sorted(set(before_map) | set(after_map)):
             old = before_map.get(key)
             new = after_map.get(key)
@@ -228,7 +228,8 @@ def _compare_values(before: Any, after: Any, path: str, tolerance: float,
                 _compare_values(before[key], after[key], child, tolerance, changes)
         return
     if isinstance(before, list) and isinstance(after, list):
-        if path == "$.transitions.top_pcs.aot_to_interpreter" or path == "$.transitions.top_pcs.interpreter_to_aot":
+        # The top-PC lists are compared by (pc, reason) key in _compare_transitions, not by position.
+        if path in ("$.transitions.top_pcs.aot_to_interpreter", "$.transitions.top_pcs.interpreter_to_aot"):
             return
         if len(before) != len(after):
             changes.append(_change(f"{path}.length", len(before), len(after)))

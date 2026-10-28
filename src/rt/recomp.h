@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 // Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
 // See NOTICE.md for upstream lineage and modification provenance.
@@ -146,6 +147,68 @@ static inline uint32_t sr_vfpu_rnd_step(uint32_t rcx[8]) {
                      (((next_carry >> (4 * (k + 4))) & 0xfu) << 16) | (n[k] >> 16);
     }
     return n[0] + n[1] + n[3];
+}
+
+/* VFPU forms measured on a PSP-3000 by PSP-VFPU-FORMS-001 (2026-10-28, issue #326;
+ * docs/HARDWARE_ORACLE.md): the raw result words of vh2f, vuc2i, vsocp, vwbn and
+ * vrndf1/vrndf2 under identity S/T/D prefixes, which is all these helpers model. The
+ * generated code and sr_vfpu_interp both call them; a pending prefix and the widths no
+ * cell covered fail closed in both lanes. */
+
+/* vrndf1.s / vrndf2.s: one step of the random unit (sr_vfpu_rnd_step, the same state
+ * update as vrndi.s) whose low 23 bits become the mantissa of a float in [1, 2)
+ * (vrndf1) or [2, 4) (vrndf2). All 68 measured draws match. */
+static inline uint32_t sr_vfpu_rndf_step(uint32_t rcx[8], int two) {
+    return (two ? 0x40000000u : 0x3f800000u) | (sr_vfpu_rnd_step(rcx) & 0x7fffffu);
+}
+
+/* vh2f: one IEEE half to a float32 word. A half denormal becomes a zero of its sign;
+ * exponent 31 keeps the 10-bit payload in the LOW mantissa bits (0x7c01 -> 0x7f800001,
+ * 0x7e00 -> 0x7f800200), so infinities map to infinities; normals convert exactly. */
+static inline uint32_t sr_vfpu_h2f(uint32_t h) {
+    const uint32_t sign = (h & 0x8000u) << 16, e = (h >> 10) & 0x1fu, m = h & 0x3ffu;
+    if (e == 0u) return sign;
+    if (e == 31u) return sign | 0x7f800000u | m;
+    return sign | ((e + 112u) << 23) | (m << 13);
+}
+
+/* vuc2i: one byte b to the word (b * 0x01010101) >> 1. */
+static inline uint32_t sr_vfpu_uc2i(uint32_t b) {
+    return ((b & 0xffu) * 0x01010101u) >> 1;
+}
+
+/* vwbn.s with exponent imm8 e: a word whose exponent field is 0xff passes unchanged.
+ * Otherwise the significand (implicit bit included for a normal, the raw mantissa for a
+ * zero or denormal) shifts left by (x_exp - e) & 15 when x_exp > e, right by
+ * (e - x_exp) & 15 when 0 < x_exp < e, not at all otherwise, and the low 23 bits become
+ * the mantissa of a float with the operand's sign and exponent e. The 4-bit shift count
+ * is what the cells show: 1e10 at e = 0x7f shifts by 1, the largest normal by 15, the
+ * smallest normal right by 14. All 448 measured words (eight exponents) match. */
+static inline uint32_t sr_vfpu_wbn(uint32_t x, uint32_t e) {
+    const uint32_t xe = (x >> 23) & 0xffu;
+    if (xe == 0xffu) return x;
+    uint32_t sig = (x & 0x7fffffu) | (xe != 0u ? 0x800000u : 0u);
+    if (xe > e) sig <<= (xe - e) & 15u;
+    else if (xe != 0u && xe < e) sig >>= (e - xe) & 15u;
+    return (x & 0x80000000u) | ((e & 0xffu) << 23) | (sig & 0x7fffffu);
+}
+
+/* vsocp: one operand x to the pair (sat0(1 - x), sat0(x)), sat0 clamping to [0, 1]
+ * with +0 for anything at or below zero. A denormal operand counts as a zero of its
+ * sign; a NaN operand writes the canonical 0x7f800001 to both lanes. */
+static inline void sr_vfpu_socp(uint32_t x, uint32_t out[2]) {
+    if ((x & 0x7f800000u) == 0u) x &= 0x80000000u;
+    if ((x & 0x7fffffffu) > 0x7f800000u) {
+        out[0] = out[1] = 0x7f800001u;
+        return;
+    }
+    float f, a;
+    memcpy(&f, &x, 4);
+    a = 1.0f - f;
+    a = a <= 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+    f = f <= 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
+    memcpy(&out[0], &a, 4);
+    memcpy(&out[1], &f, 4);
 }
 
 /* LLE Phase 1 (PR 2): COP0/exception/eret helpers and flow metadata. Included
@@ -308,6 +371,20 @@ static inline int sr_guest_span_writable_at(uint32_t addr, uint32_t size,
         return 0;
     }
     return 1;
+}
+
+/* Range-checked destination test for writers that copy through sr_guest_copy_out()
+ * or sr_guest_fill() instead of forming one host pointer over the span (#1049).
+ * Unlike sr_guest_span_writable() it accepts a span through the swizzled VRAM
+ * mirrors: those helpers walk the span in sr_guest_host_run() pieces, each inside
+ * one block that stays contiguous in physical VRAM, and translate every piece
+ * through SR_HOST(). A span that starts in one VRAM view and ends in another is
+ * therefore exact as well: the bytes are guest-contiguous, and each lands where a
+ * scalar store to that guest address would. Only a span that leaves the arena is
+ * refused. Callers that still form a host pointer keep using
+ * sr_guest_span_writable() and its VRAM_MIRROR_BULK_UNSUPPORTED report. */
+static inline int sr_guest_span_writable_any_view(uint32_t addr, uint32_t size) {
+    return size == 0u || sr_inrange_n(addr, size);
 }
 
 /* Bulk readers call this immediately before forming their host pointer. */
@@ -1716,6 +1793,7 @@ int sr_host_data_prepare(void);
 size_t sr_host_data_entry_count(void);      /* valid after READY */
 
 void     sched_init(CpuState *cpu);                 /* CpuState the running thread reads/writes */
+void     sched_preempt_timer_start(void);          /* paced runs: a stronger due thread preempts at once (#1296) */
 int      sched_reset_for_loadexec(void);            /* retire the old guest threads after scheduler return */
 void     sched_set_guest_process_gp(uint32_t gp);    /* seed the replacement program's initial $gp */
 uint32_t sched_create_thread(uint32_t entry, int priority, uint32_t stack_size);
@@ -1733,6 +1811,13 @@ void     sched_set_thread_exit_hook(SrSchedThreadExitHook hook);
 typedef uint64_t (*SrSchedGeNextDeadline)(void);
 typedef void (*SrSchedGeServiceDue)(void);
 void     sched_set_ge_timing_hooks(SrSchedGeNextDeadline next_deadline, SrSchedGeServiceDue service_due);
+/* VTimer handlers (hle.c): the earliest guest-time deadline of a running VTimer with a
+ * handler (UINT64_MAX when none), and the interrupt-service step that runs the most overdue
+ * handler once.  With no hooks registered the scheduler behaves as before. */
+typedef uint64_t (*SrSchedVtimerNextDeadline)(void);
+typedef void (*SrSchedVtimerServiceOne)(void);
+void     sched_set_vtimer_hooks(SrSchedVtimerNextDeadline next_deadline,
+                                SrSchedVtimerServiceOne service_one);
 int      sched_guest_thread_running(void);
 void     sched_request_guest_reset(void);
 void     sched_exit_current(int32_t status);        /* non-delete exit; normalize signed-negative status */
