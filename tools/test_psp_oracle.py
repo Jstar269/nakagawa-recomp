@@ -3096,6 +3096,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-GE-TIMING-001",
                 # The 2026-10-27 acceptance-eligible cpu-timing run of 3a14a88e (#1296).
                 "PSP-CPU-TIMING-001",
+                # The 2026-10-28 acceptance-eligible vfpu-forms run of 781ccd34 (#326).
+                "PSP-VFPU-FORMS-001",
             },
         )
         self.assertEqual(
