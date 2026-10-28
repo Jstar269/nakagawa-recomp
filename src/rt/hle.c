@@ -21554,6 +21554,7 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             {
                 int capture_exit_status = sr_fbcap_exit_status(SR_FBCAP_FBDUMP, cres);
                 sr_flight_exit((uint32_t)capture_exit_status);
+                psmf_av_final("capture_exit");
                 sr_compat_report();
                 sr_perf_shutdown();
                 _Exit(capture_exit_status);
@@ -21918,7 +21919,9 @@ void sr_vblank_tick(void) {
             sr_flight_budget(s_vcount);
             /* _Exit skips the atexit hook that writes the SR_PERF_JSON summary and the
              * final CSV row, so the perf shutdown runs here, like the audio dump close
-             * above; it is idempotent and a no-op without SR_PERF. */
+             * above; it is idempotent and a no-op without SR_PERF. The PSMF A/V summary is an
+             * atexit report too, so it is printed here as well (a no-op unless enabled). */
+            psmf_av_final("exit_at_vblank");
             sr_compat_report();
             sr_perf_shutdown();
             _Exit(0);
