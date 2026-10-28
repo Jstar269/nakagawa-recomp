@@ -75,7 +75,7 @@ The native player uses the existing SDL3 and Vulkan runtime to render its in-win
 | **Runtime Dependencies** | **None** (Self-contained) | Extensive shared libraries | Rust runtime | OS Webview (WebKitGTK on Linux) |
 | **Couch / Controller Navigation** | **First-Class** (SDL3 Gamepad API) | Complex focus management | Moderate | Web Gamepad API limits |
 | **Unified Game Window** | **Target** (launcher and title currently run as separate processes) | No (Separate launcher & render window) | No | No |
-| **In-Game Overlay Capable** | **Target** (overlay parity is not built) | No | No | No |
+| **In-Game Overlay Capable** | **Yes** (the pause overlay draws with nk_ui inside the runtime; the HUD and toasts are not ported yet) | No | No | No |
 | **Linux / Steam Deck Parity** | **Target** (SDL3/Vulkan; platform acceptance not run) | Good | Good | WebKitGTK packaging fragmentation |
 | **macOS (Metal/MoltenVK)** | **Target** (framework path; project acceptance not run) | Framework capability; project acceptance not run | Framework capability; project acceptance not run | Framework capability; project acceptance not run |
 | **Build-System Burden** | **Target: native Makefile path** (developer toolchain still required today) | Heavy (CMake + MOC + UIC) | Heavy (Requires Cargo / Rustc) | Heavy (Node + Rust toolchains) |
@@ -86,7 +86,7 @@ The native player uses the existing SDL3 and Vulkan runtime to render its in-win
 **SDL3 with an in-engine retained/immediate UI layer** was decisively chosen because:
 
 1. **Unified Installation Experience (Target)**: The product goal is one install with a coherent launcher and game experience. The current source starts a prepared title as a separate child through `nk_launch_start`; it does not make the launcher and game a single executable.
-2. **Future Outside/Inside Presence**: A shared UI system is intended to drive the launcher outside the game and an in-game pause overlay (`Esc`, `F1` or the gamepad's `Guide`). The pause itself is implemented (a scheduler stall with the overlay holding all input, [Clocks](ARCHITECTURE.md#clocks)); its screens are not.
+2. **Future Outside/Inside Presence**: A shared UI system is intended to drive the launcher outside the game and an in-game pause overlay (`Esc`, `F1` or the gamepad's `Guide`). The pause is implemented (a scheduler stall with the overlay holding all input, [Clocks](ARCHITECTURE.md#clocks)), and so are its screens, drawn with nk_ui by the runtime ([In-game overlay](PLAYER_UI_DESIGN.md#in-game-overlay-c9c-built)).
 3. **No Web / Server Overhead**: Eliminates Node.js, localhost HTTP listeners, port collisions, browser sandbox restrictions, and security boundary headaches.
 
 ### Layout library and language decision (2026-10-21)
@@ -101,7 +101,7 @@ Not done yet:
 
 - **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** `src/ui/` (nk_ui) wraps it with the theme, text, focus, input and SDL_Renderer layers.
 - **The nk_ui launcher is the default.** It draws the Library, Title detail, About, the setup wizard, package build progress, the build-tool download, the error card, the card a disc gets when it is added, Settings with its online, notices and removal pages, the controller settings screen with its calibration steps, and the developer log, with the design system in section 8. It is the only launcher: the shipped player has no switch to the old renderer, and when the launcher cannot start (its fonts missing from an incomplete ZIP extraction) the player says why in a message box, tells the user to extract the ZIP again, and exits with code 4. The old `ui_renderer.c` stays only for regression tests that still pin it (`--ui=legacy`, in the `NK_PLAYER_UI_REGRESSION_TEST` build).
-- Settings, first run, error dialogs and the in-game overlay on nk_ui are targets, specified in section 8.
+- The in-game overlay is built on nk_ui inside the runtime (`src/rt/overlay/`); settings, first run and error dialogs on nk_ui are targets, specified in section 8.
 
 ---
 
@@ -264,7 +264,7 @@ The native player provides a dedicated Controller Settings screen (`VIEW_CONTROL
   3. *Review & Accept*: visual summary of captured resting and extreme values with Accept or Cancel actions.
   Values are stored in the unified `input_profile.json` (schema 3; schema 1 and 2 files still load) and applied during analog and trigger transform evaluations. Keyboard Escape or gamepad East button safely cancels at any point.
 - **In-game pause**: `Esc`, `F1` or the gamepad's `Guide` pauses a running game, and so does disconnecting its controller. The scheduler stops the guest ([issue #1171](https://github.com/Jstar269/nakagawa-recomp/issues/1171), the [Clocks section](ARCHITECTURE.md#clocks)); the window shows the last game frame under the scrim and holds all input, and a button held as the pause closes does not reach the game as a press. Focus loss and window minimization do not auto-pause in v0.0.1.
-- **In the Works**: the pause overlay's screens (resume, settings, controller configuration, quit to library) are tracked by [issue #1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159).
+- **Pause overlay** ([issue #1159](https://github.com/Jstar269/nakagawa-recomp/issues/1159)): the runtime draws the pause menu (resume, settings, controls, quit to library) and the controller-disconnected dialog with nk_ui over the frozen frame (`src/rt/overlay/`, hosted by `src/rt/gui.c`). Game scaling and the performance HUD change for the rest of the run; the library's Settings keep what a game starts with. The controls page shows the mapping in force. Quitting is refused while the game is saving. The launcher passes the game's name, its disc ID and the player's folder (`SR_GAME_TITLE`, `SR_DISC_ID`, `SR_UI_ROOT`), where the runtime finds the UI fonts and SDL3_ttf; without them the pause shows the frozen frame alone.
 
 ---
 
@@ -300,7 +300,7 @@ were the initial survey.
 ## 8. Player UI design system
 
 The visual spec the player UI lanes (C5-C10) build against, with its tokens, components and the screen specs for
-Settings, first run and error dialogs, is [`PLAYER_UI_DESIGN.md`](PLAYER_UI_DESIGN.md).
+Settings, first run, error dialogs and the in-game overlay, is [`PLAYER_UI_DESIGN.md`](PLAYER_UI_DESIGN.md).
 
 ## 9. System check (planned)
 

@@ -14,8 +14,10 @@ check is an engineering containment result, not legal clearance.
   qualified provenance and distribution review.
 - The sal063-derived ISO/VFS and SDL audio backends pending their separate
   public review. `iso_public.c` provides a project-authored public ISO VFS backend
-  satisfying the `iso.h` seam via `nk_iso`; `iso_unavailable.c` and `audio_unavailable.c`
-  provide explicit public-safe link boundaries.
+  satisfying the `iso.h` seam via `nk_iso`; `iso_unavailable.c` is an explicit fail-closed
+  link boundary. Despite its name, `audio_unavailable.c` is not a stub: it is the working
+  public-safe SDL3 audio backend that replaces the excluded one, and it fails closed only when
+  no audio device is available.
 
 The excluded files remain local development material. They are not reconstructed
 by the public candidate, and the public-safe Makefile cannot silently select them
