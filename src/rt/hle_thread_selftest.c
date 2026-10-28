@@ -6753,12 +6753,15 @@ static void test_utility_dialog_single_slot(void) {
            "the message dialog that gave up the slot answers WRONG_TYPE");
     expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 1u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+               utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0x80110001u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 4u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
            "the savedata dialog reports INIT, then winds down to NONE after ShutdownStart");
-    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0u &&
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_SHUTDOWN, 0u) == 0x80110001u,
+           "savedata ShutdownStart at NONE returns INVALID_STATUS");
+    expect(utility_call(&cpu, NID_SAVEDATA_DIALOG_UPDATE, 0u) == 0x80110001u &&
                utility_call(&cpu, NID_SAVEDATA_DIALOG_STATUS, 0u) == 0u,
-           "a ShutdownStart at NONE does not re-arm the savedata dialog");
+           "savedata Update at NONE returns INVALID_STATUS without re-arming");
 
     /* Each remaining type takes the free slot in turn and gives it back at NONE. */
     for (size_t i = 0; i < count; i++) {

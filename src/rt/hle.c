@@ -12116,7 +12116,7 @@ static uint32_t h_SavedataUpdate(CpuState *s) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
-    if (s_dlg_status == 1) {      /* still starting up: Update does not move INIT (#1386) */
+    if (s_dlg_status == 0 || s_dlg_status == 1) { /* NONE and INIT reject Update (#1386) */
         dialog_unlock();
         return SCE_ERROR_UTILITY_INVALID_STATUS;
     }
@@ -12159,10 +12159,16 @@ static uint32_t h_DlgShutdown(CpuState *s) {
         dialog_unlock();
         return SCE_ERROR_UTILITY_WRONG_TYPE;
     }
+    /* PSPAutotests tests/utility/dialog/status.expected: repeated shutdown and
+     * shutdown after NONE return INVALID_STATUS. */
+    if (s_dlg_status == 0 || s_dlg_status == 4) {
+        dialog_unlock();
+        return SCE_ERROR_UTILITY_INVALID_STATUS;
+    }
     if (s_dlg_status == 3 && caller_priority > UTILITY_SAVEDATA_SHUTDOWN_PRIORITY)
         s_dlg_status = 0;                /* the shutdown ran before the caller got the CPU back */
-    else if (s_dlg_status)
-        s_dlg_status = 4;                /* NONE stays NONE: a stray call cannot re-arm the slot */
+    else
+        s_dlg_status = 4;
     dialog_unlock();
     if (getenv("SR_DLGLOG")) fprintf(stderr, "DlgShutdownStart\n");
     return 0;
