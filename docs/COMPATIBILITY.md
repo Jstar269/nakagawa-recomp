@@ -35,7 +35,7 @@ set a status here.
 
 The table lists the project's own test programs, the two showcase demos, the game the project is built around, and
 one row for every other retail disc. Nakagawa Recomp doesn't claim that any retail game plays straight from an ISO
-with no other setup ([`ISSUES.md`](../ISSUES.md)). A disc that isn't listed here imports with a checklist of what is
+with no other setup ([`STATUS.md`](STATUS.md)). A disc that isn't listed here imports with a checklist of what is
 missing, and stays **Untested** unless someone has seen it start (see [Status words](#status-words)).
 
 | Title | State | What you see | Tracking issue |

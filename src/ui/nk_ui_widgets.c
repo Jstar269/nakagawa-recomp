@@ -631,14 +631,16 @@ void nk_ui_hero(NkUi *ui, NkUiId id, NkUiArtKind art, const char *art_key,
 
 /* ---- Bars -------------------------------------------------------------------------- */
 
+/* The input chip names the pad the way a player would: by the family its button
+   labels follow, never by the glyph set's internal name. */
 const char *nk_ui_input_label(NkUiPromptStyle style) {
     switch (style) {
     case NK_UI_PROMPT_KEYCAPS: return "KEYBOARD AND MOUSE";
-    case NK_UI_PROMPT_LETTERS_A_SOUTH: return "CONTROLLER \xC2\xB7 LETTERS, A SOUTH";
-    case NK_UI_PROMPT_LETTERS_A_EAST: return "CONTROLLER \xC2\xB7 LETTERS, A EAST";
-    case NK_UI_PROMPT_SHAPES: return "CONTROLLER \xC2\xB7 SHAPES";
+    case NK_UI_PROMPT_LETTERS_A_SOUTH: return "XBOX-STYLE CONTROLLER";
+    case NK_UI_PROMPT_LETTERS_A_EAST: return "NINTENDO-STYLE CONTROLLER";
+    case NK_UI_PROMPT_SHAPES: return "PLAYSTATION-STYLE CONTROLLER";
     case NK_UI_PROMPT_NEUTRAL:
-    default: return "CONTROLLER \xC2\xB7 NEUTRAL PROMPTS";
+    default: return "CONTROLLER";
     }
 }
 

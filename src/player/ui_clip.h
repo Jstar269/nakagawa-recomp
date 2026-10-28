@@ -55,17 +55,18 @@ static inline size_t ui_clip_utf8_floor(const char *str, size_t limit) {
  * so a 13- to 23-byte prefix scans back to the start of the string. */
 static inline size_t ui_clip_word_break(const char *str, size_t prefix_bytes) {
     if (!str || prefix_bytes <= 12) return prefix_bytes;
-    size_t lo = prefix_bytes > 24 ? prefix_bytes - 24 : 0;
+    size_t window_start = prefix_bytes > 24 ? prefix_bytes - 24 : 0;
     size_t back = prefix_bytes;
-    while (back > lo && str[back - 1] != ' ') back--;
+    while (back > window_start && str[back - 1] != ' ') back--;
     if (back > 0 && str[back - 1] == ' ') return back - 1;
     return prefix_bytes;
 }
 
 /* Writes str[0..k) followed by "..." and a NUL into out[0..out_size), where k is
  * prefix_bytes clamped to strlen(str) and to the room left by the marker
- * (out_size - 4), then floored to a character boundary. The caller has already decided that str is
- * being cut, so the marker is always appended. Returns k, the bytes of str kept.
+ * (out_size - 4), then floored to a character boundary. The caller has already
+ * decided that str is being cut, so the marker is always appended. Returns k, the
+ * bytes of str kept.
  * out_size 0 writes nothing. out_size 1..3 cannot hold the marker, so out becomes
  * "" and 0 is returned. */
 static inline size_t ui_clip_ellipsize_utf8(char *out, size_t out_size, const char *str, size_t prefix_bytes) {
@@ -85,7 +86,7 @@ static inline size_t ui_clip_ellipsize_utf8(char *out, size_t out_size, const ch
 /* Last line of a wrapped paragraph that runs past the line budget. Its final
  * three bytes give way to "...", cut back to a character boundary, so the
  * visible shape is unchanged for ASCII. A line of three bytes or fewer has no
- * room for a marker and is copied unchanged, as before. Writes out[0..out_size)
+ * room for a marker and is copied unchanged. Writes out[0..out_size)
  * and returns the bytes of line kept, not counting the marker or the NUL. */
 static inline size_t ui_clip_wrapped_last_line(char *out, size_t out_size, const char *line) {
     if (!out || out_size == 0) return 0;
@@ -93,11 +94,11 @@ static inline size_t ui_clip_wrapped_last_line(char *out, size_t out_size, const
     if (!line) return 0;
     size_t len = strlen(line);
     if (len <= 3) {
-        size_t n = len < out_size ? len : out_size - 1;
-        n = ui_clip_utf8_floor(line, n);
-        memcpy(out, line, n);
-        out[n] = '\0';
-        return n;
+        size_t kept = len < out_size ? len : out_size - 1;
+        kept = ui_clip_utf8_floor(line, kept);
+        memcpy(out, line, kept);
+        out[kept] = '\0';
+        return kept;
     }
     return ui_clip_ellipsize_utf8(out, out_size, line, len - 3);
 }

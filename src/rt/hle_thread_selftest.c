@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 
 /*
  * Executable production-HLE regression tests for ThreadMan behavior.
@@ -9151,6 +9151,53 @@ static void test_rtc_local_time_follows_the_system_profile(void) {
     sysreg_restart();
     rtc_expect_profile(-300, 1u, -240, "the seed after a restart without a flush");
     sysreg_scratch_clean();
+}
+
+/* #1382: on the first run, with no per-user overlay yet, the console's time zone and daylight
+ * saving start from the host's local zone (SR_HOST_TIME_ZONE, from the launcher) and are saved
+ * at once; from then on they are retained, whatever the host says. Without the variable, or with
+ * a malformed one, the measured seed stays and nothing is written. */
+static void test_first_run_time_zone_comes_from_the_host(void) {
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 0;
+
+    /* No variable: the measured seed, and no file. */
+    sysreg_scratch_clean();
+    hle_test_setenv("SR_HOST_TIME_ZONE", NULL);
+    sysreg_restart();
+    rtc_expect_profile(-300, 1u, -240, "no host time zone");
+    expect(!sysreg_file_exists(SYSREG_SCRATCH_FILE), "without a host time zone nothing is written");
+
+    /* Malformed values are ignored the same way. */
+    hle_test_setenv("SR_HOST_TIME_ZONE", "60");
+    sysreg_restart();
+    rtc_expect_profile(-300, 1u, -240, "a host time zone without its daylight flag");
+    hle_test_setenv("SR_HOST_TIME_ZONE", "61,0");
+    sysreg_restart();
+    rtc_expect_profile(-300, 1u, -240, "a host offset that is not a quarter hour");
+    hle_test_setenv("SR_HOST_TIME_ZONE", "900,0");
+    sysreg_restart();
+    rtc_expect_profile(-300, 1u, -240, "a host offset past UTC+14:00");
+    expect(!sysreg_file_exists(SYSREG_SCRATCH_FILE), "a malformed host time zone writes nothing");
+
+    /* First run: the host's zone, saved to the overlay at once. */
+    hle_test_setenv("SR_HOST_TIME_ZONE", "60,1");
+    sysreg_restart();
+    rtc_expect_profile(60, 1u, 120, "the host's zone on the first run");
+    expect(sysreg_file_exists(SYSREG_SCRATCH_FILE), "the first run saves the host's zone to the overlay");
+
+    /* Later runs keep the saved setting, whatever the host says now. */
+    hle_test_setenv("SR_HOST_TIME_ZONE", "-480,0");
+    sysreg_restart();
+    rtc_expect_profile(60, 1u, 120, "the saved zone after the host's zone changed");
+    hle_test_setenv("SR_HOST_TIME_ZONE", NULL);
+    sysreg_restart();
+    rtc_expect_profile(60, 1u, 120, "the saved zone with no host time zone");
+
+    sysreg_scratch_clean();
+    sysreg_restart();
 }
 
 static void test_unix_time_to_filetime_ticks(void) {
@@ -36585,6 +36632,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_rtc_conversion_errors_and_full_range();
     test_rtc_pointer_validation_and_measured_conversions();
     test_rtc_local_time_follows_the_system_profile();
+    test_first_run_time_zone_comes_from_the_host();
     test_unix_time_to_filetime_ticks();
     test_bulk_clock_reads_are_side_effect_free();
     test_display_queries_do_not_progress_display();

@@ -2687,8 +2687,9 @@ class NativePlayerUiTests(unittest.TestCase):
 
         Failing-before: the showcase demos read NEEDS SETUP for the first 4-9 s of
         every start, until their checks finished, and then flipped to READY."""
+        # 4.5 s spans two of the main loop's 2 s rescans, each re-checking the title for 1.5 s.
         run = self.run_player(
-            "ready", ("WAIT_MS=200",), wait_background=True, ui_mode="next",
+            "ready", ("WAIT_MS=4500",), wait_background=True, ui_mode="next",
             env_extra={"NK_UI_TEST_PACKAGE_STATUS_WORKER_DELAY_MS": "1500"},
         )
         if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
@@ -2703,6 +2704,10 @@ class NativePlayerUiTests(unittest.TestCase):
         # The check then decides: this synthetic title has no package to run.
         self.assertGreaterEqual(len(statuses), 2, statuses)
         self.assertNotEqual(statuses[-1], "Checking", statuses)
+        # A periodic re-check keeps the decided status: the card never blinks back to
+        # CHECKING (it did on every 2 s rescan, and made this test flaky on slow hosts).
+        decided = statuses.index(next(s for s in statuses if s != "Checking"))
+        self.assertNotIn("Checking", statuses[decided:], statuses)
 
     def test_failed_post_build_check_does_not_suppress_later_title_build(self) -> None:
         run = self.run_player(
@@ -3786,6 +3791,55 @@ class NativePlayerUiTests(unittest.TestCase):
         # Another game running leaves this title's package card alone.
         other = self.title_frame_with_a_game_running("TEST00001")
         self.assertEqual(other["next_package"], self.PACKAGE_READY)
+
+    STOP_ROUTE = "6"  # PLAYER_UI_ROUTE_STOP
+    STOP_KEEP = str(0x4411)  # PLAYER_UI_ID_STOP_KEEP
+
+    def test_stop_game_asks_first(self) -> None:
+        """The walkthrough: STOP GAME ended the game at once. It asks first.
+
+        Enter on STOP GAME opens the question with KEEP PLAYING focused; Esc,
+        and Enter on KEEP PLAYING, go back with the game still running; only
+        STOP GAME in the question stops it. Failing-before: the first Enter
+        stopped the game, and no frame showed the question's route."""
+        run = self.run_player(
+            "ready",
+            ("WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300",  # open the running game's title page
+             "KEY_RETURN", "WAIT_MS=300", "KEY_ESCAPE", "WAIT_MS=300",  # ask, then Esc
+             "KEY_RETURN", "WAIT_MS=300", "KEY_RETURN", "WAIT_MS=300",  # ask, then KEEP PLAYING
+             "KEY_RETURN", "WAIT_MS=300", "KEY_RIGHT", "KEY_RETURN", "WAIT_MS=300",  # STOP GAME
+             "CLOSE", "CLOSE"),
+            post_build_ready=True, wait_background=True, ui_mode="next",
+            env_extra={"NK_UI_TEST_GAME_RUNNING": "TEST00006",
+                       "NK_UI_TEST_MESSAGEBOX_FAIL": "1"},
+        )
+        if "[PLAYER_UI_TEST] UI_NEXT_ACTIVE" not in str(run["stdout"]):
+            self.skipTest("the next UI needs SDL3_ttf, which this host lacks")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        # Each change of route, focus or running state, in order.
+        steps: list[tuple[str, str, str]] = []
+        for frame in frames:
+            step = (frame["next_route"], frame["next_focus"], frame["game_running"])
+            if not steps or steps[-1] != step:
+                steps.append(step)
+        asked = [i for i, (route, _focus, _running) in enumerate(steps) if route == self.STOP_ROUTE]
+        self.assertTrue(asked, f"STOP GAME never asked: {steps}")
+        first = steps[asked[0]]
+        self.assertEqual(first[2], "1", "the game stopped before the question")
+        on_keep = [step for step in steps if step[0] == self.STOP_ROUTE and step[1] == self.STOP_KEEP]
+        self.assertTrue(on_keep, f"KEEP PLAYING never had the focus: {steps}")
+        stopped = [i for i, step in enumerate(steps) if step[2] == "0"]
+        self.assertTrue(stopped, f"STOP GAME in the question did not stop the game: {steps}")
+        before_stop = steps[:stopped[0]]
+        # Esc and KEEP PLAYING each went back to the title page with the game running.
+        returns = [i for i in range(1, len(before_stop))
+                   if before_stop[i][0] == "2" and before_stop[i - 1][0] == self.STOP_ROUTE]
+        self.assertEqual(len(returns), 2, f"Esc and KEEP PLAYING did not both return: {steps}")
+        self.assertTrue(all(step[2] == "1" for step in before_stop))
+        # The game stopped from the question, which then closed.
+        self.assertEqual(steps[stopped[0] - 1][0], self.STOP_ROUTE)
+        self.assertEqual(steps[stopped[0]][0], "2")
 
     def test_preflight_refusal_is_not_a_build_failure(self) -> None:
         """#1286: a build refused at preflight never started, so its card is not

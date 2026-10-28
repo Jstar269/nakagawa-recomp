@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 //
 // Centralized debug framework for the PSP recompiler runtime.
 // All debug output is controlled via environment variables, grouped into

@@ -5,7 +5,7 @@
       "--target-env=vulkan1.1"
     ],
     "target_environment": "vulkan1.1",
-    "version": "shaderc v2026.3 v2026.3\nspirv-tools v2026.3 v2022.4-1283-gb707790a\nglslang 11.1.0-1493-g168d452a\n\nTarget: SPIR-V 1.0"
+    "version": "shaderc v2026.4 v2026.4\nspirv-tools v2026.4 v2022.4-1347-gef96ed76\nglslang 11.1.0-1566-ge1b562a8\n\nTarget: SPIR-V 1.0"
   },
   "schema_version": 1,
   "shaders": [
@@ -13,7 +13,7 @@
       "embedded": "psp_vert.inc",
       "embedded_sha256": "0cb658a5ba2350ca607538700debaf6c728719dfd6ff1b36a3518e49d9fc679c",
       "source": "shaders/psp.vert",
-      "source_sha256": "98fdb5a8442ca81da0cf736e0054329ac6e6f74a57faf15e3358f6efa1594d04",
+      "source_sha256": "efe617f64a0049adffee672f0f392e46c6923073e994c1802069e707ee49cc02",
       "spirv_bytes": 1736,
       "spirv_sha256": "b5caa23ab254ee1438307c67c79d7ede45817640639f9d68f6abad10fa9b2616",
       "stage": "vert"
@@ -22,7 +22,7 @@
       "embedded": "psp_frag.inc",
       "embedded_sha256": "871e07a64939f53758d66642e5ae67c4f7d776c89f39b8cdc316f3ef26eac3c1",
       "source": "shaders/psp.frag",
-      "source_sha256": "9a7b867c8802b2739ac3a3f0f97c512d5034deacbdde50a73a319f5e2eaaea5a",
+      "source_sha256": "4b41da5a1863e771b903e1b5b91c06955e140779e3b89643d47d71fa4f5d0682",
       "spirv_bytes": 19484,
       "spirv_sha256": "57ca74cc397695ecfc9f25852cba6bf34c88c6f3d7000f1858afb3ee64203f06",
       "stage": "frag"

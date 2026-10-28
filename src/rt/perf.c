@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2025-2026 the psp-recomp authors
+// Copyright (C) 2026 the Nakagawa Recomp authors
 
 /* clock_gettime(CLOCK_MONOTONIC) is POSIX: strict -std=c99/c11 builds hide it unless
  * the feature macro is set, and the timer would silently fall back to clock(). */
