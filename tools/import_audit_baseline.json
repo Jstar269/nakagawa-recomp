@@ -3390,6 +3390,12 @@
     "refusal_error": "0x80010086",
     "status": "controlled_unsupported"
   },
+  "0xdf089680": {
+    "classification": "dedicated",
+    "handler": "h_PsmfGetPsmfInfo",
+    "name": "scePsmfPlayerGetPsmfInfo",
+    "status": "partial"
+  },
   "0xdf52098f": {
     "classification": "dedicated",
     "handler": "h_TryReceiveMsgPipe",
