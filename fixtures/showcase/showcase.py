@@ -9,6 +9,11 @@ a Windows host reaches it through WSL (`wsl -e bash -lc ...`) and a Linux host
 runs it directly; nothing else about the route changes. The package build and
 the headless smoke therefore exercise the same code on both, which is what makes
 the Linux result comparable with the Windows one.
+
+A host without PSPDEV can still build the packages: `build-prx --out-dir D` on a
+PSPDEV host writes each demo's PRX and the PSPSDK license notice to D, and
+`build --prebuilt-prx-dir D` uses those instead of running PSPDEV. The release
+job builds the PRXs on Linux this way and the packages on Windows.
 """
 
 from __future__ import annotations
@@ -523,18 +528,52 @@ def _package_fingerprint(demo: dict[str, object], prx: Path) -> str:
     return digest.hexdigest()[:16]
 
 
-def _build_one(demo: dict[str, object], license_notice: bytes) -> None:
-    title_id = str(demo["id"])
-    stage = BUILD_ROOT / title_id
-    prx = _build_prx(demo, stage / "psp-build")
+# The file `build-prx` writes beside the PRXs, and `build --prebuilt-prx-dir` reads:
+# the installed PSPSDK's license notice, which every image and package that links
+# PSPSDK code carries.
+PSPSDK_LICENSE_NAME = "PSPSDK-LICENSE.txt"
+
+
+def _check_prx_entry(demo: dict[str, object], prx: Path) -> None:
+    """Require the PSPDEV PRX the demo's manifest describes (base and entry)."""
     manifest_path = ROOT / str(demo["manifest"])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     loaded_entry = validate_psp_prx(prx, int(manifest["executable"]["base"]))
     if loaded_entry != int(manifest["executable"]["entry"]):
         raise ShowcaseError(
-            f"{title_id} manifest entry 0x{manifest['executable']['entry']:08x} "
+            f"{demo['id']} manifest entry 0x{manifest['executable']['entry']:08x} "
             f"does not match the PSPDEV PRX entry 0x{loaded_entry:08x}"
         )
+
+
+def _prebuilt_prx(demo: dict[str, object], prebuilt_dir: Path, out_dir: Path) -> Path:
+    """Copy the PRX `build-prx` wrote for `demo` to where `_build_prx` would put it."""
+    source = prebuilt_dir / f"{demo['target']}.prx"
+    if not source.is_file():
+        raise ShowcaseError(f"prebuilt PRX for {demo['id']} is missing: {source}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    prx = out_dir / source.name
+    shutil.copyfile(source, prx)
+    return prx
+
+
+def _prebuilt_license(prebuilt_dir: Path) -> bytes:
+    path = prebuilt_dir / PSPSDK_LICENSE_NAME
+    notice = path.read_bytes() if path.is_file() else b""
+    if not notice:
+        raise ShowcaseError(f"prebuilt PSPSDK license notice is missing or empty: {path}")
+    return notice
+
+
+def _build_one(demo: dict[str, object], license_notice: bytes,
+               prebuilt_prx_dir: Path | None = None) -> None:
+    title_id = str(demo["id"])
+    stage = BUILD_ROOT / title_id
+    if prebuilt_prx_dir is None:
+        prx = _build_prx(demo, stage / "psp-build")
+    else:
+        prx = _prebuilt_prx(demo, prebuilt_prx_dir, stage / "psp-build")
+    _check_prx_entry(demo, prx)
     icon = make_icon_png(demo["palette"])
     (stage / "ICON0.PNG").write_bytes(icon)
     iso_path = stage / f"{demo['disc_id']}.iso"
@@ -574,11 +613,34 @@ def _build_one(demo: dict[str, object], license_notice: bytes) -> None:
     print(f"SHOWCASE_PACKAGE: {demo['disc_id']} {release_dir}")
 
 
-def build_all() -> None:
+def build_all(prebuilt_prx_dir: Path | None = None) -> None:
+    """Build every demo's image and package into DEMO_ROOT.
+
+    With `prebuilt_prx_dir` (what `build-prx` wrote, on a host that has PSPDEV) the
+    PSPDEV step is skipped and those PRXs and that license notice are used, so a host
+    without PSPDEV, such as the Windows release job, builds the same packages.
+    """
+    if prebuilt_prx_dir is None:
+        _check_pspdev()
+        license_notice = _pspsdk_license()
+    else:
+        license_notice = _prebuilt_license(prebuilt_prx_dir)
+    for demo in DEMOS:
+        _build_one(demo, license_notice, prebuilt_prx_dir)
+
+
+def build_prx_all(out_dir: Path) -> None:
+    """Build each demo's PSPDEV PRX and write it, with PSPSDK's license, to `out_dir`."""
     _check_pspdev()
     license_notice = _pspsdk_license()
+    out_dir.mkdir(parents=True, exist_ok=True)
     for demo in DEMOS:
-        _build_one(demo, license_notice)
+        prx = _build_prx(demo, BUILD_ROOT / str(demo["id"]) / "psp-build")
+        _check_prx_entry(demo, prx)
+        target = out_dir / prx.name
+        shutil.copyfile(prx, target)
+        print(f"SHOWCASE_PRX: {demo['disc_id']} {target}")
+    (out_dir / PSPSDK_LICENSE_NAME).write_bytes(license_notice)
 
 
 def _runtime_command(demo: dict[str, object], padscript: Path,
@@ -1144,15 +1206,27 @@ def smoke_all() -> None:
               f"captures={len(captures)} first={captures[0]}")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("build", "smoke", "stage-iso", "loadexec-smoke"))
+    parser.add_argument("action",
+                        choices=("build", "build-prx", "smoke", "stage-iso", "loadexec-smoke"))
     parser.add_argument("--out-dir", type=Path,
-                        help="stage-iso: directory that receives TEST00007.iso")
-    args = parser.parse_args()
+                        help="stage-iso: directory that receives TEST00007.iso; "
+                             "build-prx: directory that receives each demo's PRX and "
+                             f"{PSPSDK_LICENSE_NAME}")
+    parser.add_argument("--prebuilt-prx-dir", type=Path,
+                        help="build: use the PRXs and license notice build-prx wrote there "
+                             "instead of running PSPDEV")
+    args = parser.parse_args(argv)
+    if args.prebuilt_prx_dir is not None and args.action != "build":
+        parser.error("--prebuilt-prx-dir applies only to build")
     try:
         if args.action == "build":
-            build_all()
+            build_all(args.prebuilt_prx_dir)
+        elif args.action == "build-prx":
+            if args.out_dir is None:
+                parser.error("build-prx requires --out-dir")
+            build_prx_all(args.out_dir)
         elif args.action == "smoke":
             smoke_all()
         elif args.action == "loadexec-smoke":

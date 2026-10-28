@@ -2,26 +2,23 @@
 
 ## Supported versions
 
-The unreleased `main` branch is currently the only supported development line. There are no supported
-release versions yet, and the project does not claim a release-grade security posture: treat arbitrary
+`main` and the latest release, v0.0.1, are supported. The project does not claim a release-grade security posture: treat arbitrary
 PSP and game inputs as untrusted until the parser and guest-span hardening work tracked in GitHub Issues
 is complete.
 
 | Version | Supported | Status / Support Policy |
 | :--- | :--- | :--- |
 | `main` | :white_check_mark: | Active development line. Fixes for all security reports land here. |
-| `< v0.0.1` | :x: | No earlier release has been published. |
-| `v0.0.1` | :hourglass: | Planned first experimental platform release ([#278](https://github.com/Jstar269/nakagawa-recomp/issues/278)); not yet published. |
+| `v0.0.1` | :white_check_mark: | First experimental release ([#278](https://github.com/Jstar269/nakagawa-recomp/issues/278)). Fixes land on `main` and ship in the next release; no backported point releases. |
 
-### Release policy transition (v0.0.1)
+### Release policy
 
-When the first formal experimental platform release (`v0.0.1`) ships:
+Since the first experimental release, `v0.0.1`:
 
 - The `main` branch remains the primary supported development line.
 - `v0.0.1` is an experimental prerelease milestone, not an LTS or patch-supported line: fixes for security issues identified in `v0.0.1` land on `main` and flow into subsequent releases rather than receiving backported security point releases.
 - A release stops receiving security updates as soon as the next release is published; move to the newest
   release or to `main` to keep receiving fixes.
-- Release qualification authority [issue #278](https://github.com/Jstar269/nakagawa-recomp/issues/278) owns updating this policy and marking `v0.0.1` active atomically at release publication time. No release has been published.
 
 ## Report a vulnerability
 
@@ -98,9 +95,54 @@ you are authorized to use.
 
 ## Encrypted PSP files
 
-Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed, so the project carries no PSP cryptography and never reads a key file. An encrypted executable or module
-is refused by name. Every file is treated as untrusted input by the bounds-checked, fuzzed parsers listed in
+The player decrypts the encrypted executable and modules of a disc the user owns, locally, with built-in game tables
+(`src/core/nk_psp_*`, [#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). It never reads a key file and
+never decrypts firmware: firmware containers are refused by name before any key is read. Every container is
+size-bounded, integrity-checked (CMAC, SHA-1 or ECDSA) before its payload is used, and each output is validated as
+ELF32/MIPS before it is kept; one it cannot decrypt is refused by name. Every file is treated as untrusted input by the bounds-checked, fuzzed parsers listed in
 [`docs/PARSER_SAFETY_INVENTORY.json`](docs/PARSER_SAFETY_INVENTORY.json).
+
+## Digest inventory
+
+Every digest the project's own code computes is classified here by what it is for, tracked in
+[issue #969](https://github.com/Jstar269/nakagawa-recomp/issues/969). PSP-defined algorithms, Git object
+identities and format checksums are never replaced. Project-controlled integrity checks use SHA-256, the
+project default: provenance, attestation, packages, prerequisites, toolchain, SBOM, fonts, shaders and the
+VFPU tables at load all rest on it, so SHA-256 is classified as a whole and has no rows below.
+
+Every other use is one row. `python -m unittest tools.test_lint_docs` scans the tracked production files
+under `tools/` and `src/` (test files are oracles and are skipped) for `hashlib` calls other than SHA-256,
+`zlib` CRC-32 and Adler-32, and hand-rolled FNV and CRC-32 helpers, found by their primes and polynomials.
+It fails when a file and algorithm pair is missing here or a row names a pair the scan no longer finds.
+
+| File | Algorithm | Purpose | Disposition |
+| --- | --- | --- | --- |
+| `tools/decompme_export.py` | SHA-1 | PSP NID derivation (`sha1(name)[0:4]`, little-endian) | Keep: the PSP defines it |
+| `tools/gen_nidnames.py` | SHA-1 | PSP NID derivation | Keep: the PSP defines it |
+| `tools/nid_name_proof.py` | SHA-1 | PSP NID derivation | Keep: the PSP defines it |
+| `tools/verify_vfpu_provenance.py` | SHA-1 | Git blob ID of a VFPU table against the pinned upstream tree | Keep: Git object identity |
+| `tools/validate_assets.py` | MD5 | Reads legacy, unversioned local asset references; new ones are versioned SHA-256 | Keep: legacy compatibility only, not a security check |
+| `tools/extract_xb.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
+| `tools/make_app_icon.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
+| `tools/nk_cli.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
+| `tools/ppm2png.py` | CRC-32 | PNG chunk checksum | Keep: the format requires it |
+| `src/core/nk_psp_inflate.c` | CRC-32 | gzip member trailer of a decrypted PSP payload (RFC 1952) | Keep: the format requires it |
+| `tools/codegen.py` | FNV-64 | Staged module identity (`fnv1a64`), mirrored by `src/rt/guest_interp.c` | Candidate: SHA-256 only with a codegen and package identity bump |
+| `src/rt/guest_interp.c` | FNV-64 | Staged module identity (`sr_module_code_fnv1a64`), checked against the staged file | Candidate: SHA-256 only with a codegen and package identity bump |
+| `tools/codegen.py` | FNV-32 | Self-modifying-code block record (`stale_fnv1a`), mirrored by `src/rt/stale_code.c` | Keep: change detector |
+| `src/rt/stale_code.c` | FNV-32 | Self-modifying-code detection (`sr_stale_fnv1a`), checked per block | Keep: performance-critical change detector |
+| `src/rt/mpeg.c` | FNV-64 | Change detector for a cached YCbCr conversion buffer | Keep: cache validity, not integrity |
+| `src/rt/ge.c` | FNV-32 | GE transition trace draw identity and watched-buffer hash | Keep: trace key, not integrity |
+| `src/rt/gpu_sdl3vk/ge_gpu.c` | FNV-64 | Texture cache key | Keep: cache key, not integrity |
+| `src/core/nk_xb.c` | FNV-32 | In-memory path table that finds duplicate paths while writing an XB archive | Keep: hash-table key |
+| `src/player/main.c` | FNV-64 | Rendered-frame hash printed by the player's UI test mode | Keep: test fingerprint |
+| `src/ui/backend/nk_ui_sdlr.c` | FNV-32 | Glyph atlas cache key | Keep: cache key, not integrity |
+| `src/ui/nk_ui_widgets.c` | FNV-32 | Picks a placeholder art tint from a key | Keep: not a digest check |
+
+Outside the scan: the vendored FFmpeg subset compiles its byte-identical `libavutil/sha.c`
+([`src/rt/h264_ffmpeg_sub/PROVENANCE.md`](src/rt/h264_ffmpeg_sub/PROVENANCE.md)), used only by its own
+`random_seed.c`; the NIDs of the PSP's own MD5 and SHA-1 functions and the `eap_md5` registry key are guest-visible API names, not
+host digests; and provenance tools use Git's own object and commit IDs.
 
 ## Assurance case
 

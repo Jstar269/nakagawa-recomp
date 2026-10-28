@@ -1,0 +1,317 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!--
+  Project website for Nakagawa Recomp, published to GitHub Pages by .github/workflows/pages.yml.
+  One self-contained page: inline CSS, two small inline scripts (the theme choice, applied before the first paint,
+  and the theme picker), system fonts, and no web fonts, external scripts or third-party requests. The page stores
+  one thing, the visitor's theme choice, in their own browser. The Nakagawa mark is drawn inline so it follows the
+  bar's colours, and the favicon is the mark.
+
+  Layout: one calm column under a deep-blue top bar; sections are separated by space and hairlines, with a
+  Dolphin-style download table. New releases go in as the first row of that table, with the "Latest" badge.
+
+  Theme: every colour is a custom property on :root. The light set is the default; the dark set applies under
+  prefers-color-scheme: dark unless the visitor picked Light, and whenever they picked Dark. Every section and the
+  footer take their background from those tokens. The top bar and the blue buttons are the deliberate exceptions:
+  they stay blue in both themes. tools/test_site_mobile.py renders the page headless at phone and desktop widths in
+  every theme and checks it.
+
+  Keep the status text in step with docs/COMPATIBILITY.md, README.md and docs/RELEASE_NOTES_v0.0.1.md.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <script>
+    /* Runs before the first paint, so a remembered theme never flashes the other one. */
+    (function () {
+      var root = document.documentElement, choice = null;
+      root.setAttribute("data-js", "");
+      try { choice = window.localStorage.getItem("nk-theme"); } catch (e) { choice = null; }
+      if (choice === "light" || choice === "dark") { root.setAttribute("data-theme", choice); }
+    })();
+  </script>
+  <title>Nakagawa Recomp: play your PSP games as native PC programs</title>
+  <meta name="description" content="Nakagawa Recomp translates a PSP game you own into a Windows program, once, before you play. It isn't an emulator. Version 0.0.1 is the first preview, for Windows 11, and most games don't run yet.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#1c3d6e" media="(prefers-color-scheme: light)" data-scheme="light">
+  <meta name="theme-color" content="#152c50" media="(prefers-color-scheme: dark)" data-scheme="dark">
+  <link rel="canonical" href="https://jstar269.github.io/nakagawa-recomp/">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='14 14 212 212'%3E%3Crect x='14' y='14' width='212' height='212' rx='40' fill='%23102F57'/%3E%3Cpath fill='%23D7F24A' d='M34 34h46v62.8H34zM34 104h46v29.2H34zM34 140.4h46v29.2H34zM34 176.8h46v29.2H34z'/%3E%3Cpath fill='%23F5F7FA' d='M34 34h54l118 161.1V206h-46zM160 34h46v172h-46z'/%3E%3C/svg%3E">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Nakagawa Recomp">
+  <meta property="og:description" content="Play your PSP games as native PC programs. Version 0.0.1, the first preview, is out for Windows 11. You supply your own game.">
+  <meta property="og:url" content="https://jstar269.github.io/nakagawa-recomp/">
+  <meta property="og:image" content="https://jstar269.github.io/nakagawa-recomp/images/brand/og-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Nakagawa Recomp: your PSP games, served as real PC programs. The N1 mark beside a tennis court on court blue.">
+  <meta name="twitter:card" content="summary_large_image">
+  <style>
+    /* ---- Tokens ---- */
+    :root {
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --tap: 44px; /* The smallest tap target on a phone. */
+
+      /* Light theme (the default). */
+      color-scheme: light;
+      --bar: #1c3d6e;
+      --bar-fg: #f2f6fb;
+      --mark: #8fb8f2;
+      --bg: #ffffff;
+      --soft: #f4f6f9;
+      --fg: #18222e;
+      --muted: #556273;
+      --line: #e2e7ee;
+      --accent: #2f6fd0;
+      --accent-fg: #ffffff;
+    }
+    /* Dark theme: the system asks for it and the visitor did not pick Light. */
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        color-scheme: dark;
+        --bar: #152c50;
+        --bar-fg: #eef3fa;
+        --mark: #8fb8f2;
+        --bg: #14181e;
+        --soft: #191e25;
+        --fg: #e6eaef;
+        --muted: #a0abb8;
+        --line: #29313c;
+        --accent: #6b9ff0;
+        --accent-fg: #0d1420;
+      }
+    }
+    /* Dark theme: the visitor picked Dark. The same values as above. */
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bar: #152c50;
+      --bar-fg: #eef3fa;
+      --mark: #8fb8f2;
+      --bg: #14181e;
+      --soft: #191e25;
+      --fg: #e6eaef;
+      --muted: #a0abb8;
+      --line: #29313c;
+      --accent: #6b9ff0;
+      --accent-fg: #0d1420;
+    }
+
+    /* ---- Base ---- */
+    *, *::before, *::after { box-sizing: border-box; }
+    html { background: var(--bg); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-padding-top: 5rem; }
+    @media (prefers-reduced-motion: no-preference) { html, .strip { scroll-behavior: smooth; } }
+    body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 16px; line-height: 1.55; overflow-wrap: break-word; }
+    a { color: var(--accent); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .bar :focus-visible { outline-color: var(--bar-fg); }
+    .in { box-sizing: content-box; max-width: 860px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px));
+      padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .skip { position: absolute; left: 16px; top: -6rem; z-index: 20; display: inline-flex; align-items: center; min-height: var(--tap);
+      padding: 0 16px; border-radius: 6px; background: var(--accent); color: var(--accent-fg); font-weight: 650; text-decoration: none; }
+    .skip:focus { top: calc(env(safe-area-inset-top, 0px) + 8px); }
+    .skip:focus-visible { outline-color: var(--bar-fg); }
+
+    /* ---- Top bar: the logo and a GitHub link. It stays deep blue in both themes. ---- */
+    body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bar); }
+    .bar { background: var(--bar); color: var(--bar-fg); position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; }
+    .bar .in { display: flex; align-items: center; gap: 10px; padding-block: 10px; }
+    .bar svg { width: 26px; height: 26px; flex: none; }
+    .bar .name { font-weight: 650; font-size: 16px; }
+    .bar a.gh { margin-left: auto; color: var(--bar-fg); text-decoration: none; font-size: 14px; font-weight: 550;
+      border: 1px solid color-mix(in srgb, var(--bar-fg) 55%, transparent); border-radius: 6px; padding: 6px 12px;
+      min-height: var(--tap); display: inline-flex; align-items: center; }
+
+    /* ---- Sections ---- */
+    section { padding-block: 36px; }
+    section + section { border-top: 1px solid var(--line); }
+    h1 { font-size: clamp(28px, 6vw, 40px); line-height: 1.15; margin: 0 0 14px; text-wrap: balance; letter-spacing: -0.01em; }
+    h2 { font-size: 22px; line-height: 1.25; margin: 0 0 14px; text-wrap: balance; }
+    p { margin: 0 0 12px; max-width: 64ch; }
+    .intro { font-size: 17px; color: var(--muted); }
+
+    /* Download: a table with the newest release on top. */
+    .dl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+    table.dl { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; min-width: 320px; }
+    .dl th { text-align: left; font-size: 13px; font-weight: 600; color: var(--muted); background: var(--soft);
+      padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .dl td { padding: 12px; vertical-align: middle; }
+    .dl td.ver { font-weight: 650; }
+    .dl .plat { display: block; font-size: 13px; color: var(--muted); font-weight: 400; }
+    .dl .latest { font-size: 12px; font-weight: 600; color: var(--accent); border: 1px solid currentColor; border-radius: 999px;
+      padding: 0 7px; margin-left: 4px; vertical-align: 1px; }
+    .dl tbody tr + tr td { border-top: 1px solid var(--line); }
+    .btn { display: inline-flex; align-items: center; min-height: var(--tap); padding: 0 16px; border-radius: 6px;
+      background: var(--accent); color: var(--accent-fg); font-weight: 650; text-decoration: none; white-space: nowrap; }
+    .small { font-size: 14px; color: var(--muted); margin: 12px 0 0; }
+    .small + .small { margin-top: 6px; }
+
+    /* How it works: three numbered steps. */
+    ol.steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 18px; counter-reset: s; }
+    ol.steps li { counter-increment: s; display: grid; grid-template-columns: 32px 1fr; gap: 12px; align-items: start; }
+    ol.steps li::before { content: counter(s); width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+      background: var(--soft); border: 1px solid var(--line); font-weight: 650; font-size: 14px; }
+    ol.steps h3 { margin: 2px 0 4px; font-size: 17px; }
+    ol.steps p { margin: 0; color: var(--muted); }
+
+    /* Screenshots: a strip that scrolls sideways. Its markup waits in a comment until the images are approved. */
+    .strip { display: grid; grid-auto-flow: column; grid-auto-columns: min(78%, 420px); gap: 12px; overflow-x: auto;
+      scroll-snap-type: x mandatory; padding-bottom: 8px; }
+    .strip figure { margin: 0; scroll-snap-align: start; min-width: 0; }
+    .strip img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 10; object-fit: contain; border-radius: 8px;
+      border: 1px solid var(--line); background: var(--soft); }
+    .strip figcaption { font-size: 14px; color: var(--muted); margin-top: 6px; }
+
+    /* ---- Footer ---- */
+    footer { background: var(--soft); border-top: 1px solid var(--line); }
+    footer .in { padding-top: 28px; padding-bottom: max(36px, calc(env(safe-area-inset-bottom, 0px) + 16px)); display: grid; gap: 18px; }
+    .links { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+    .links a { min-height: var(--tap); display: inline-flex; align-items: center; }
+    .legal { font-size: 14px; color: var(--muted); max-width: 70ch; margin: 0; }
+    /* The theme picker needs the script, so it shows only when the script ran. */
+    .theme { display: none; border: 1px solid var(--line); border-radius: 8px; width: fit-content; }
+    [data-js] .theme { display: inline-flex; }
+    .theme button { font: inherit; font-size: 14px; background: transparent; color: var(--fg); border: 0; padding: 0 14px;
+      min-height: var(--tap); cursor: pointer; }
+    .theme button:first-child { border-radius: 7px 0 0 7px; }
+    .theme button:last-child { border-radius: 0 7px 7px 0; }
+    .theme button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="bar">
+    <div class="in">
+      <svg viewBox="34 34 172 172" aria-hidden="true" focusable="false"><rect x="34" y="34" width="46" height="62.8" fill="var(--mark)"/><rect x="34" y="104" width="46" height="29.2" fill="var(--mark)"/><rect x="34" y="140.4" width="46" height="29.2" fill="var(--mark)"/><rect x="34" y="176.8" width="46" height="29.2" fill="var(--mark)"/><polygon points="34,34 88,34 206,195.1 206,206 160,206" fill="currentColor"/><rect x="160" y="34" width="46" height="172" fill="currentColor"/></svg>
+      <span class="name">Nakagawa Recomp</span>
+      <a class="gh" href="https://github.com/Jstar269/nakagawa-recomp">GitHub</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section aria-labelledby="intro-h">
+      <div class="in">
+        <h1 id="intro-h">Play your PSP games as native PC programs.</h1>
+        <p class="intro">Nakagawa Recomp takes a PSP game you own and translates its code into a Windows program, once,
+          before you play. It isn't an emulator. Version 0.0.1 is the first preview, and most games don't run yet.
+          <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/COMPATIBILITY.md">See what works</a>.</p>
+      </div>
+    </section>
+
+    <section id="download" aria-labelledby="dl-h">
+      <div class="in">
+        <h2 id="dl-h">Download</h2>
+        <div class="dl-wrap">
+          <table class="dl">
+            <thead><tr><th scope="col">Version</th><th scope="col">Released</th><th scope="col">Size</th><th scope="col"><span class="visually-hidden">Download</span></th></tr></thead>
+            <tbody><tr>
+              <td class="ver">v0.0.1 <span class="latest">Latest</span><span class="plat">Windows 11, 64-bit</span></td>
+              <td>Oct 2026</td>
+              <td>285 MB</td>
+              <td><a class="btn" href="https://github.com/Jstar269/nakagawa-recomp/releases/tag/v0.0.1">Download</a></td>
+            </tr></tbody>
+          </table>
+        </div>
+        <p class="small">You need Windows 11, a Vulkan graphics card, 8 GB of memory, 5 GB of free space, and a PSP game
+          you own.</p>
+        <p class="small">The download isn't code-signed, so Windows may warn you the first time.
+          <a href="https://github.com/Jstar269/nakagawa-recomp/blob/v0.0.1/docs/RELEASE_NOTES_v0.0.1.md#checking-your-download">How to check your download</a>.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="how-h">
+      <div class="in">
+        <h2 id="how-h">How it works</h2>
+        <ol class="steps">
+          <li><div><h3>Add your game</h3><p>Drag a game you own into the player. It checks the game and gets it ready,
+            all on your PC.</p></div></li>
+          <li><div><h3>Build it</h3><p>One button translates the game's code into C and compiles it into a Windows program.
+            It takes a few minutes and needs no internet: the build tools come with the download.</p></div></li>
+          <li><div><h3>Play</h3><p>Start the game from your library. If it needs something Nakagawa can't do yet, it stops
+            and tells you what's missing.</p></div></li>
+        </ol>
+      </div>
+    </section>
+
+    <section aria-labelledby="shots-h">
+      <div class="in">
+        <h2 id="shots-h">Screenshots</h2>
+        <div class="strip" tabindex="0" role="region" aria-label="Screenshots, scroll sideways">
+          <figure><img src="media/launcher-library.png" width="1440" height="900" loading="lazy" decoding="async"
+            alt="The Nakagawa launcher's library, showing the games you have added."><figcaption>Your library</figcaption></figure>
+          <figure><img src="media/launcher-building.png" width="1440" height="900" loading="lazy" decoding="async"
+            alt="The launcher building a game, with its progress through four stages."><figcaption>Building a game</figcaption></figure>
+        </div>
+        <p class="small">The library shows the disc art of Hot Shots Tennis: Get a Grip and LocoRoco. Those games belong to their publishers and are shown only to identify them; this site contains no game data, and you need your own copy of a game to play it.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="help-h">
+      <div class="in">
+        <h2 id="help-h">Help out</h2>
+        <p>Nakagawa is built in the open, and testing is the biggest help right now. Try a game you own and tell us how far
+          it gets, report a bug, or pick up an issue.</p>
+        <div class="links">
+          <a href="https://github.com/Jstar269/nakagawa-recomp/discussions/categories/compatibility-reports">Report how a game runs</a>
+          <a href="https://github.com/Jstar269/nakagawa-recomp/issues/new?template=smoke_test_report.yml">Report a bug</a>
+          <a href="https://github.com/Jstar269/nakagawa-recomp/labels/good%20first%20issue">Good first issues</a>
+          <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/CONTRIBUTING.md">How to contribute</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="in">
+      <nav class="links" aria-label="More">
+        <a href="https://github.com/Jstar269/nakagawa-recomp">Source code</a>
+        <a href="https://github.com/Jstar269/nakagawa-recomp/discussions">Discussions</a>
+        <a href="https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/README.md">Documentation</a>
+        <a href="https://github.com/Jstar269/nakagawa-recomp/releases">Releases</a>
+        <a href="https://github.com/Jstar269/nakagawa-recomp/security/policy">Security</a>
+      </nav>
+      <div class="theme" role="group" aria-label="Colour theme">
+        <button type="button" id="t-auto" data-t="auto" aria-pressed="true">Auto</button>
+        <button type="button" id="t-light" data-t="light" aria-pressed="false">Light</button>
+        <button type="button" id="t-dark" data-t="dark" aria-pressed="false">Dark</button>
+      </div>
+      <p class="legal">Nakagawa Recomp is a fan project. It isn't affiliated with or endorsed by Sony Interactive
+        Entertainment or any game publisher. It includes no games, game data, firmware or system fonts: you supply your
+        own game. Free software under the GPL, version 3 or later.</p>
+    </div>
+  </footer>
+
+  <script>
+    /* The theme picker. Auto follows the system; a picked theme is remembered in this browser only. */
+    (function () {
+      var root = document.documentElement;
+      var colours = { light: "#1c3d6e", dark: "#152c50" };
+      var metas = document.querySelectorAll('meta[name="theme-color"]');
+      var buttons = document.querySelectorAll(".theme button");
+      function apply(choice) {
+        if (choice === "light" || choice === "dark") { root.setAttribute("data-theme", choice); }
+        else { root.removeAttribute("data-theme"); choice = "auto"; }
+        for (var i = 0; i < metas.length; i++) {
+          metas[i].setAttribute("content", colours[choice === "auto" ? metas[i].getAttribute("data-scheme") : choice]);
+        }
+        for (var j = 0; j < buttons.length; j++) {
+          buttons[j].setAttribute("aria-pressed", buttons[j].getAttribute("data-t") === choice ? "true" : "false");
+        }
+        return choice;
+      }
+      apply(root.getAttribute("data-theme"));
+      for (var k = 0; k < buttons.length; k++) {
+        buttons[k].addEventListener("click", function (event) {
+          var choice = apply(event.currentTarget.getAttribute("data-t"));
+          try {
+            if (choice === "auto") { window.localStorage.removeItem("nk-theme"); }
+            else { window.localStorage.setItem("nk-theme", choice); }
+          } catch (e) { /* Storage blocked: the choice lasts for this visit only. */ }
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

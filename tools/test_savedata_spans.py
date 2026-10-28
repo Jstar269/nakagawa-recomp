@@ -174,11 +174,11 @@ class TestSavedataSpanPreflight(unittest.TestCase):
         self.assertIn("static SfoEnt sfo_str_entry", text)
         self.assertIn("slen >= (size_t)maxlen", text)
         self.assertIn("slen = (size_t)maxlen - 1u", text)
-        self.assertIn("if (e[i].len > e[i].maxlen) return;", text)
+        self.assertIn("if (e[i].len > e[i].maxlen) return 0;", text)
 
     def test_sfo_writer_copies_payload_and_terminates_inside_the_slot(self):
         text = SAVEDATA_C.read_text(encoding="utf-8")
-        sfo_idx = text.find("static void sfo_write")
+        sfo_idx = text.find("static int sfo_write")
         self.assertNotEqual(sfo_idx, -1)
         sfo_code = text[sfo_idx:text.find("/* ---- ScePspDateTime", sfo_idx)]
         self.assertIn("e[i].fmt == 0x0204", sfo_code)
@@ -484,7 +484,7 @@ _DROP_CLAMP = (
     "        slen = (size_t)maxlen - 1u;\n"
     "    }\n", "",
 )
-_DROP_PREFLIGHT = ("        if (e[i].len > e[i].maxlen) return;\n", "")
+_DROP_PREFLIGHT = ("        if (e[i].len > e[i].maxlen) return 0;\n", "")
 
 SFO_MUTANTS = {
     # The whole pre-fix writer: oversized locals, no clamp, no preflight.

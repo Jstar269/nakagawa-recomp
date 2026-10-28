@@ -247,6 +247,19 @@ The equality `firstGlyph + charMapLength − 1 = lastGlyph` is not required and
 remains open question O-9. A zero-length map therefore represents a font with
 no character-map entries rather than a structural failure.
 
+**Revision-3 subcharmap index (measured).** When a 412-byte header declares a
+nonzero count for its first extension table (§3.3), that table's (start, length)
+pairs, laid end to end in file order, index the character map instead: a code's
+index is the sum of the lengths of the pairs before the first pair whose range
+`start ≤ code < start + length` holds it, plus `code − start`. A code in no range
+is absent, and `firstGlyph` takes no part. The ordinary count bound and every
+rule below still apply to the index. Measured on the maintainer's own console font files (PSP-3000, firmware 6.61; read on 2026-10-27 for #1300; only structure counts were recorded, and no file, byte or value from them is in the repository or used as a fixture): the PSP's
+Korean font is revision 3 with a 412-byte header; its first table holds five
+sorted, disjoint ranges, the first starting at `firstGlyph`, whose lengths sum to
+exactly the character-map count, and this index maps the ranges onto every one of
+its 11,837 glyphs exactly once. Read directly, the same map resolves the font's
+kana probes and none of its Hangul probes.
+
 For an in-range index, the reader extracts exactly that entry's width without
 reading past the map section. An entry whose width is all ones is the absence
 sentinel [C3]. Any other value is a zero-based glyph-table index. A value not
@@ -294,7 +307,11 @@ unmeasured on PSP). A target beyond image end, or an
 in-image target with fewer than six prefix bytes, is refused. The shadow bitmap
 remains packed because the current seam has no shadow-image draw call. A nonzero
 shadow identifier that is out of range, resolves to an absent character, or
-names an invalid in-image shadow record causes open failure. The resulting
+names an invalid in-image shadow record causes open failure, with one measured
+exception: a shadow-map entry holding character 0, when the map does not hold
+code 0, names no shadow glyph. The record is accepted with shadow row order 0, and
+no shadow record is read or bounds-checked (five records of the console's
+Japanese font carry such an entry; measured on the files named in §3.2). The resulting
 shadow's row-order bits and the one-based raw identifier populate the shadow
 fields in §3.9; this public seam does not expose a separate shadow-draw
 operation.
@@ -302,18 +319,13 @@ operation.
 A 412-byte header's counts describe two consecutive arrays of 4-byte records,
 each record containing two little-endian 16-bit values; the public description
 calls the first array's pairs subcharmap start and length and marks the second
-array's meaning unknown [C3]. This reader skips both arrays after checking their
-byte sizes; it does not use their start/length pairs to reinterpret the
-ordinary character map. Their declared bits-per-entry
-values are retained as header facts but have no decoding effect. This keeps an
-otherwise structurally valid revision-3 font on the same direct-map path while
-making the uncompressed-map limitation explicit: a revision-3 font whose
-ordinary map is absent or incomplete reports unavailable characters rather than
-pretending the opaque tables were understood (project decision; open questions
-O-1 and O-2 keep real-font revision and alternate-map coverage visible). Because
-the public description states what each record *contains* but never how the
-ordinary character map refers to those records, interpreting them is refused by
-name rather than guessed; O-2 and O-20 track that evidence.
+array's meaning unknown [C3]. The first array's pairs index the ordinary
+character map as §3.2 describes (measured). The second array is skipped after
+its byte size is checked: in the measured Korean font it holds two ranges covering
+the 512 codes of the composite components, and every shadow-map code lies in
+the first array's ranges, so nothing in that font needs it; its meaning stays
+open (O-20). Both arrays' declared bits-per-entry values (16 in that font) are
+retained as header facts and have no decoding effect.
 
 ### 3.4 Character pointer table
 
@@ -354,17 +366,30 @@ high nibbles [C3]. The fixed prefix is:
 | 28–34 | 7 | Signed 7-bit horizontal bitmap adjustment, range −64 through 63. |
 | 35–41 | 7 | Signed 7-bit vertical bitmap adjustment, range −64 through 63. |
 | 42–43 | 2 | Bitmap row order: 1 horizontal rows, 2 vertical rows, 3 three-character composite payload, 0 unsupported/unknown. |
-| 44 | 1 | Role bit: 1 for a character record, 0 for a shadow record. This reader does not use it to select the primary record layout (open question O-4), but the console library does (see the measured note below); a writer sets it to 1. |
-| 45 | 1 | When 1, the dimension group is an 8-bit table index; when 0, it is an inline 64-bit pair. |
-| 46 | 1 | When 1, the X-adjustment group is an 8-bit table index; when 0, it is an inline 64-bit pair. |
-| 47 | 1 | When 1, the Y-adjustment group is an 8-bit table index; when 0, it is an inline 64-bit pair. |
+| 44 | 1 | When 1, the dimension group is an 8-bit table index; when 0, it is an inline 64-bit pair (measured; see below). |
+| 45 | 1 | When 1, the X-adjustment group is an 8-bit table index; when 0, it is an inline 64-bit pair. |
+| 46 | 1 | When 1, the Y-adjustment group is an 8-bit table index; when 0, it is an inline 64-bit pair. |
+| 47 | 1 | When 1, the advance group is an 8-bit table index. Every measured console record sets it; a record with it clear is refused (an inline advance is unmeasured). |
 | 48–54 | 7 | Unassigned bits; ignored. |
 | 55–63 | 9 | Shadow identifier interpreted by §3.3. |
 
 **Console library use of bits 0–13 and bit 44 (measured, #1055).** In a console font file every glyph record's bits 0–13 equal the record's own length (12 bytes for a glyph without a bitmap), i.e. the distance to the next record in pointer order, rounded to 4 bytes (340 of 340 consecutive records checked in a console-derived font file). The console library sizes a per-glyph allocation as this field minus 8 for revision 2 and later; a font whose field was 0 made `sceFontGetCharInfo` and `sceFontGetCharGlyphImage` request `0xfffffff8` bytes and fail with `0x80460001` on a PSP-3000 / 6.61, and the same font with the field set to `12 + bitmap bytes` (and header `0x100` = 4) returned char info and drew. A writer that emits no shadow record writes the primary record's own length here. Bit 44 is not layout-neutral for this library (sixth boot, PSP-3000 / 6.61): with bit 44 clear and bits 45–47 set the char info metrics came back as raw table bytes and the bitmaps were scrambled; the same file with bit 44 set returned the project's own metrics and clean glyph bitmaps. The record-left/top fields (bits 28–41) are not needed to decode or draw: zeroing them left the metrics and bitmaps byte-identical and changed only the char info `bitmapLeft`/`bitmapTop`, which the library passes through (the console uses the rows above the baseline for the top). Header size, resolution, version, vertical advance, shadow-map width and byte `0x174` changed nothing in the drawn result (the header vertical advance reaches only the font info). A writer should therefore set bit 44 and fill left/top from the raster.
 
+**Bits 44–47 are the four group flags (measured, #1300).** On the maintainer's own console font files (PSP-3000, firmware 6.61; read on 2026-10-27 for #1300; only structure counts were recorded, and no file, byte or value from them is in the repository or used as a fixture),
+every font has character records with bit 44 clear, and in each such raster record
+the inline pair at bit 64 equals the bitmap's width and height in 26.6 units (35 of
+35 in a Latin font, 3,415 of 3,415 in the Japanese font, 577 of 577 raster
+records in the Korean font, 90 of 90 in the ARIB font). With bits 44–47 as the
+flags, each of the Korean font's 11,172 composite records has its payload exactly
+where its bits 0–13 length places it; reading bit 44 as a role bit, as the public
+description does [C3] and this reader did before, put 3,762 of them seven bytes
+early and misread every record with an inline dimension, among them 13 of the 95
+printable ASCII characters of a Latin font. The #1055 measurement above agrees: a
+record with bit 44 clear had its dimension read as an inline pair.
+
 Bits 64 onward contain exactly three metric groups in dimension, X-adjustment,
-Y-adjustment order, followed by one 8-bit advance-table index. Each of the
+Y-adjustment order, followed by the advance group, an 8-bit advance-table index
+(bit 47). Each of the
 first three groups is either an 8-bit index into its corresponding two-column
 metric table or an inline pair of signed 26.6 32-bit values [C3]. In low-bit
 order, the first 32 bits are the horizontal/baseline value and the second 32
@@ -377,29 +402,26 @@ bits are the vertical/centre-or-top value:
 | Y adjustment | baseline and top-aligned vertical adjustment in 26.6 points | same |
 | advance | horizontal and vertical advance from the advance table in 26.6 points | no inline form |
 
-The advance group is always the 8-bit index; a value below the declared
-advance-table count selects that pair. The same rule applies to the first three
-groups. **Project decision, unmeasured on PSP:** when the index and its one-byte
-table count are both 255, the reader accepts the record and supplies a zero pair
-without forming or reading a table entry. The count declares no entry at index
-255, so this choice keeps the reader bounded; the PSP result has not been
-measured. Every other index at or above its table count causes open failure. The record is 96 bits
-when all three groups are indexed, then 56 bits larger for each inline group;
-all four possible lengths are whole bytes. The primary bitmap starts at the
+An index below the declared table count selects that pair, for all four groups.
+Index 255 means "no entry" whatever the count, since a one-byte count never
+declares an entry there: console fonts use it in tables of fewer than 255 entries
+(measured on the files named in §3.2: 15 records of the Japanese font in its
+106-entry advance table, and 173 records in each of two short tables of the
+Korean font). The reader supplies a zero pair without forming or reading a table
+entry; that value is a project decision, unmeasured on PSP. Every other index at or
+above its table count causes open failure. The record is 96 bits
+when all four groups are indexed, then 56 bits larger for each inline group of
+the first three; all four possible lengths are whole bytes. The primary bitmap starts at the
 immediately following byte. A referenced shadow record has the same 48-bit
 fixed prefix, is byte-aligned at the primary record's declared offset, and is
 followed directly by its shadow bitmap; no primary-only extension is read from
 that record.
 
-The three index flags and fixed advance index follow the public format
-description's bit-44/45–47 reading [C3]. Treating bit 44 as non-layout-bearing
-and bits 45–47 as those three flags is a project decision where it diverges
-from the excluded implementation; synthetic tests in §8 pin this reading and
-a source-owned PSP probe remains open under O-4. The public description gives
-bit 44 the role bit meaning “0: shadow, 1: character” [C3], which is consistent
-with this reader's reachability rule: a
-record reached through the main pointer table is primary and a record reached
-through a nonzero primary shadow offset is shadow. A shadow offset that is
+The four index flags follow the console font measurements above, not the public
+description's role-bit reading of bit 44 [C3]; synthetic tests in §8 pin them.
+Whether a record is primary or shadow follows from how it is reached: a record
+reached through the main pointer table is primary and a record reached through a
+nonzero primary shadow offset is shadow. A shadow offset that is
 zero, points before the end of the primary record, wraps, or points inside the
 image with fewer than six bytes for its prefix causes open failure when a
 nonzero shadow identifier names it. If a target is exactly at image end, the
@@ -461,11 +483,14 @@ at draw, and these checks are normative:
 
 1. Six bytes must remain in the image at the record's bitmap offset, because the
    payload is a fixed six bytes. Fewer cause open failure.
-2. Each of the three codes is resolved through the ordinary character map of
-   §3.2, with no alternate code and no revision-3 table. A code below the first
-   glyph, at or above the character-map count, carrying the absence sentinel, or
-   mapping to a glyph identifier at or above the glyph (character-pointer) count causes
-   open failure.
+2. Each of the three codes is resolved through the character map of §3.2
+   (with the revision-3 subcharmap index when the font has one), with no
+   alternate code. A code 0 that the map does not hold names no component
+   (measured: 539 composites of the console's Korean font have one, in the
+   second or third part); at least one part must name a component. Any other
+   code below the first glyph, outside the subcharmap ranges, at or above the
+   character-map count, carrying the absence sentinel, or mapping to a glyph
+   identifier at or above the glyph (character-pointer) count causes open failure.
 3. Each resolved component must be a *raster* component: row order 1 or 2 with
    nonzero width and height. A component that is itself row order 0 or 3, or a
    composite component, causes open failure. This rule also makes the reference
@@ -479,7 +504,8 @@ at draw, and these checks are normative:
 
 The resolved component identifiers are part of the validated handle, so a later
 draw performs no further character-map lookup and cannot observe a different
-resolution. The composite's own row order is not exposed because the ABI has no
+resolution. A draw skips an absent part; the first present component is written
+as the first component is, and the later ones combine with it. The composite's own row order is not exposed because the ABI has no
 field for it.
 
 ### 3.7 Open and validation
@@ -878,6 +904,14 @@ the input image, consults a title name, or chooses a different file after open.
 - No retail or generated font payload is an implementation input. Synthetic
   fixtures are constructed solely from §8 and remain source-owned test data.
   No upstream code or comments may be pasted, translated, or lightly renamed.
+- The rules marked *measured* in §§3.2, 3.3, 3.5 and 3.6 (2026-10-27, #1300) come
+  from structure counts taken locally on the maintainer's own console font files
+  with a throwaway script: which records use index 255, which shadow or composite
+  codes are 0, how the first revision-3 table's ranges add up, and where each
+  record's length field places its payload. These are project-owned
+  measurements. No byte, value, glyph or table from those files is reproduced
+  here or in any fixture, the files stay private, and no emulator's font
+  implementation was consulted.
 
 ## 6. Similarity admission procedure
 
@@ -953,8 +987,9 @@ evidence and what remains open:
    bytes holding two little-endian 16-bit values, the first array's pairs are a
    subcharmap start and length, and the header carries a bits-per-entry field for
    each array [C3]. How the ordinary character map refers to those records is
-   stated nowhere in that description, so the direct-map-only limit remains
-   visible and the subcharmap path is refused by name; see O-20.
+   stated nowhere in that description. **Answered for the first table by
+   measurement (2026-10-27, #1300):** its pairs index the character map (§3.2);
+   the second table stays open under O-20.
 3. **O-3 — character-map count.** Does `charMapLength` always mean the direct
    map's entry count as PSP SDK states, or can it equal glyph cardinality in a
    firmware variant? A source-owned PSP probe should compare both counts.
@@ -964,8 +999,10 @@ evidence and what remains open:
    **Format facts answered (#521):** the public description gives bit 44 a
    one-bit role meaning (“0: shadow, 1: character”), bits 45–47 the three
    group-storage flags this reader uses, and the advance group a fixed 8-bit
-   index [C3]. Reachability already supplies the role of bit 44, so §3.5 keeps
-   it non-layout-bearing; the hardware probe stays open.
+   index [C3]. **Answered by measurement (2026-10-27, #1300):** console fonts
+   use bits 44–47 as the dimension, X, Y and advance flags, not bit 44 as a role
+   bit (§3.5). Whether the console accepts an inline advance (bit 47 clear) stays
+   open; this reader refuses it.
 5. **O-5 — shadow-map width/padding.** Is 16 bits per shadow-map entry with
    exactly two bytes per entry universal, or do odd counts/non-16 widths use a
    different packed boundary? **Partly answered (#521):** the description states
@@ -1050,12 +1087,10 @@ evidence and what remains open:
     component's coverage. Until then §3.10's table is project behaviour pinned by
     synthetic vectors, tracked with #521.
 20. **O-20 — revision-3 subcharmap reference semantics.** A source-owned PSP
-    probe must establish how the ordinary character map refers to the two
-    revision-3 tables, what the second table's pairs mean, and what its
-    bits-per-entry fields select. Until then a revision-3 font is decoded from
-    its ordinary map only, and a character that only the subcharmaps describe
-    reports as unavailable rather than guessing an identifier; tracked with
-    #521.
+    probe must establish what the second revision-3 table's pairs mean and
+    what the bits-per-entry fields select. The first table's role is measured
+    (§3.2). The second table is skipped, which the measured Korean font does
+    not need; tracked with #521.
 
 Required future hardware evidence is homebrew-only under campaign §8: a
 resident-runner probe may open user-supplied fonts and record ABI records,
