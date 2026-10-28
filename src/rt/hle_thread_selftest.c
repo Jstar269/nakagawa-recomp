@@ -19892,6 +19892,44 @@ static void ge_tim_entry_fn(CpuState *cpu) {
  *   "still drawing 1 us before" and "completes at" checks fail; converting clocks at a fixed
  *   111 MHz instead of the emulated bus clock fails the 166 MHz checks; dropping the T0 list
  *   cost, the PRIM cost, a vertex term or the span-width fill term fails the matching cell. */
+/* A list enqueued with callback ID -1 (no callback) completes with no finish-callback
+ * diagnostic, and a list against an unregistered ID is reported once per ID, not once per list
+ * (a title enqueueing -1 lists printed one OUT OF RANGE line per list, about 85 MB an hour).
+ * MUTANT: dropping the negative-ID branch reports the -1 lists (1 line here, one per list
+ * before); dropping the once-per-ID mask reports the unregistered lists three times. */
+extern unsigned sr_hle_test_ge_finish_reports(int reset);
+static void test_ge_finish_callback_reports(void) {
+    CpuState cpu;
+    ge_tim_setup();
+    ge_tim_write_list(GE_TIM_DL, 0u);
+    (void)sr_hle_test_ge_finish_reports(1);
+    uint32_t registered = s_ge_tim_cbid;
+    s_ge_tim_cbid = 0xffffffffu;
+    for (int i = 0; i < 3; i++) {
+        memset(&cpu, 0, sizeof(cpu));
+        uint32_t qid = ge_tim_enqueue(&cpu, GE_TIM_DL);
+        expect((qid & 0xff000000u) == 0x35000000u &&
+               ge_tim_sync(&cpu, NID_SCE_GE_LIST_SYNC, qid, 1u) == 0u,
+               "GE finish: a list with callback ID -1 is queued and completes");
+    }
+    expect(s_ge_tim_calls == 0u, "GE finish: callback ID -1 runs no finish callback");
+    expect(sr_hle_test_ge_finish_reports(0) == 0u,
+           "GE finish: callback ID -1 prints no finish-callback diagnostic");
+    s_ge_tim_cbid = (registered + 1u) & 15u;       /* a valid ID, unset so nobody holds it */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = s_ge_tim_cbid;
+    (void)sr_syscall(&cpu, NID_SCE_GE_UNSET_CALLBACK);
+    for (int i = 0; i < 3; i++) {
+        memset(&cpu, 0, sizeof(cpu));
+        (void)ge_tim_enqueue(&cpu, GE_TIM_DL);
+    }
+    expect(s_ge_tim_calls == 0u, "GE finish: an unregistered callback ID runs nothing");
+    expect(sr_hle_test_ge_finish_reports(1) == 1u,
+           "GE finish: an unregistered callback ID is reported once, not once per list");
+    s_ge_tim_cbid = registered;
+    ge_tim_teardown();
+}
+
 static void test_ge_completion_timing(void) {
     CpuState cpu;
 
@@ -35818,6 +35856,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_blocking_sync_waits_for_stalled_list();
     test_ge_break_continue();
     test_ge_completion_timing();
+    test_ge_finish_callback_reports();
     test_volatile_mem_output_preflight();
     test_osk_update_and_shutdown_init_states();
     test_osk_scripted_answer();

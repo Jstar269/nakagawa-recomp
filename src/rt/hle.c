@@ -21824,22 +21824,54 @@ uint32_t sr_hle_test_display_set_mode(CpuState *s) { return h_DisplaySetMode(s);
  * specific counter (HST: MEM[0x331b80], decremented once per completed display
  * list). Title-qualified: the latch address is configuration. Generic titles
  * use the generic GE completion path without latch assist. */
+/* A list with no usable finish callback is reported once per callback ID, not once per list:
+ * a title that enqueues lists against an unregistered ID does so every frame, and one line per
+ * list grew a log by about 85 MB an hour. Bit i is ID i; bit 16 is any ID past the table. */
+static uint32_t s_ge_finish_reported;
+static unsigned s_ge_finish_report_lines;
+
+static int ge_finish_report_once(unsigned bit) {
+    if (s_ge_finish_reported & (1u << bit)) return 0;
+    s_ge_finish_reported |= 1u << bit;
+    s_ge_finish_report_lines++;
+    return 1;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only view of the finish-callback diagnostics: the lines printed so far. */
+unsigned sr_hle_test_ge_finish_reports(int reset) {
+    unsigned lines = s_ge_finish_report_lines;
+    if (reset) s_ge_finish_reported = 0u, s_ge_finish_report_lines = 0u;
+    return lines;
+}
+#endif
+
 static void ge_finish_callback(CpuState *s, uint32_t cbid, uint32_t list_id, uint32_t user_arg) {
     const size_t cb_max = sizeof(s_ge_cb) / sizeof(s_ge_cb[0]);
     uint32_t latch;
     int has_latch = sr_title_config_frame_latch_addr(&latch) &&
                     sr_guest_span_readable(latch, 4) && sr_guest_span_writable(latch, 4);
+    /* sceGeListEnQueue's callback ID is a signed int, and a negative one (the SDK's -1) is a
+     * list enqueued with no callback, so there is nothing to run and nothing to report. */
+    if ((int32_t)cbid < 0) {
+        if (has_latch) ge_finish_latch_assist();
+        return;
+    }
     if (cbid >= (uint32_t)cb_max) {
-        fprintf(stderr, "GE_FINISH_CB: cbid=%u OUT OF RANGE (max %zu) -- no guest cb%s\n",
-                cbid, cb_max, has_latch ? ", advancing latch" : " (generic: no latch)");
+        if (ge_finish_report_once(16u))
+            fprintf(stderr, "GE_FINISH_CB: cbid=%u OUT OF RANGE (max %zu) -- no guest cb%s "
+                    "(reported once)\n",
+                    cbid, cb_max, has_latch ? ", advancing latch" : " (generic: no latch)");
         if (has_latch) ge_finish_latch_assist();
         return;
     }
     GeCallback *cb = &s_ge_cb[cbid];
     if (!cb->used || !cb->finish_func) {
-        fprintf(stderr, "GE_FINISH_CB: cbid=%u used=%d fn=0x%08x (SKIPPED - %s)%s\n",
-                cbid, cb->used, cb->finish_func, !cb->used ? "not registered" : "no function",
-                has_latch ? " -- advancing latch" : " (generic: no latch)");
+        if (ge_finish_report_once((unsigned)cbid))
+            fprintf(stderr, "GE_FINISH_CB: cbid=%u used=%d fn=0x%08x (SKIPPED - %s)%s "
+                    "(reported once per cbid)\n",
+                    cbid, cb->used, cb->finish_func, !cb->used ? "not registered" : "no function",
+                    has_latch ? " -- advancing latch" : " (generic: no latch)");
         if (has_latch) ge_finish_latch_assist();
         return;
     }
