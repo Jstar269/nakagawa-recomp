@@ -9476,6 +9476,9 @@ typedef struct {
     uint32_t at3FactSize;         /* RIFF fact chunk size (8 or 12) */
     uint32_t at3FactDelay;        /* fact word after the sample count */
     int at3FirstFramePending;     /* no frame decoded since SetData */
+    /* Streamed AT3: file frame 0, held from SetData to prime the decoder (#1096). */
+    uint8_t at3PrimeFrame[1024];
+    int at3PrimeValid;
     int endSample, posSample, loopNum;
     int loopStartSample, loopEndSample;   /* 'smpl' loop points; -1 when absent */
     uint32_t bufferPos;           /* ring offset of the next frame to consume */
@@ -9893,12 +9896,26 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t bufSi
         return 1;
     }
     atrac_update_buffer_state(a);
+    a->at3PrimeValid = 0;
     if (atrac_streamed_state(a)) {
         a->bufferHeaderSize = a->dataByteOffset;
         a->bufferPos = a->dataByteOffset + a->bytesPerFrame;
         a->bufferValidBytes =
             a->size > a->bufferPos ? a->size - a->bufferPos : 0;
         (void)atrac_stream_window_init(a);
+        /* MEASURED on a PSP-3000 (6.61, #1096, probe at3-decode, full PCM of the first call):
+         * a streamed AT3 track's output starts at file frame 1, as bufferPos does here, but
+         * the decoder first decodes frame 0 and discards it. The first call's samples are
+         * frame 1 decoded with frame 0's overlap history (all 1,910 values within 8 steps of
+         * that; the same frame decoded with empty history matches none). Frame 0 is kept here
+         * because the ring may be refilled before the first decode. */
+        if (a->codecType == ATRAC_CODEC_AT3 && a->bytesPerFrame <= sizeof(a->at3PrimeFrame) &&
+            a->size >= a->dataByteOffset + a->bytesPerFrame &&
+            sr_guest_span_readable(a->buf + a->dataByteOffset, a->bytesPerFrame)) {
+            for (uint32_t i = 0u; i < a->bytesPerFrame; i++)
+                a->at3PrimeFrame[i] = (uint8_t)MEM_R8(a->buf + a->dataByteOffset + i);
+            a->at3PrimeValid = 1;
+        }
     }
     return 1;
 }
@@ -10211,6 +10228,27 @@ int sr_hle_test_atrac_second_buffer(uint32_t id, uint32_t *addr, uint32_t *size)
  *  -1  permanent failure (no decoder, or the frame failed to decode).
  * A -1 is a visible gap: the caller returns an error code instead of
  * fabricating PCM (no fake audio). */
+static unsigned s_atrac_prime_decodes;   /* frame-0 priming decodes (#1096) */
+/* How long sceAtracDecodeData keeps its caller waiting after a call that returned samples.
+ * MEASURED on a PSP-3000 (6.61, probe at3-decode, two boots, 48 calls): a plain AT3 track,
+ * 2 channels, 304-byte frames, 1024 samples a call, takes 1,152-1,203 us (median 1,177) and a
+ * lower-priority peer runs for about 1 ms of it, as during a 1 ms sceKernelDelayThread; the
+ * buffer-empty call (0x80630023) returns in 7 us. Every other codec and frame size is
+ * UNMEASURED and keeps returning at once, as before. */
+static uint32_t s_atrac_last_block_us;
+static uint32_t atrac_measured_decode_block_us(const Atrac *a) {
+    if (a->codecType == ATRAC_CODEC_AT3 && a->channels == 2 && a->bytesPerFrame == 304u)
+        return 1177u;
+    return 0u;
+}
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_atrac_last_block_us(void) { return s_atrac_last_block_us; }
+unsigned sr_hle_test_atrac_prime_decodes(int reset) {
+    unsigned n = s_atrac_prime_decodes;
+    if (reset) s_atrac_prime_decodes = 0u;
+    return n;
+}
+#endif
 static int atrac_decode_frame(Atrac *a, uint32_t out, int skip, int *samples_out) {
     uint32_t src;
     int streamed = atrac_streamed_state(a);
@@ -10240,8 +10278,17 @@ static int atrac_decode_frame(Atrac *a, uint32_t out, int skip, int *samples_out
             a->host_frame[i] = (uint8_t)MEM_R8(src + i);
     }
     int n = 0;
-    int ret;
-    if (a->codecType == ATRAC_CODEC_AT3)
+    int ret = 0;
+    if (a->codecType == ATRAC_CODEC_AT3 && a->at3FirstFramePending && a->at3PrimeValid) {
+        /* The measured first-frame priming above: frame 0 through the decoder, output discarded. */
+        a->at3PrimeValid = 0;
+        s_atrac_prime_decodes++;
+        ret = atrac3_bridge_decode(a->dec_at3, a->at3PrimeFrame,
+                                   (int)a->bytesPerFrame, a->host_pcm, &n);
+    }
+    if (ret < 0)
+        ;   /* the priming decode failed: reported below like any frame */
+    else if (a->codecType == ATRAC_CODEC_AT3)
         ret = atrac3_bridge_decode(a->dec_at3, a->host_frame,
                                    (int)a->bytesPerFrame, a->host_pcm, &n);
     else
@@ -10338,6 +10385,7 @@ static uint32_t atrac3_first_frame_rule(const Atrac *a, int *skip) {
 
 static uint32_t h_AtracDecodeData(CpuState *s) {
     /* a0=id, a1=outSamples, a2=*decodedSamples, a3=*finishFlag, t0=*remainFrames. */
+    s_atrac_last_block_us = 0u;
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     uint32_t out = A1, decAddr = A2, finAddr = A3, remAddr = stack_arg(s, 0);
     int n = 0, finished = 0;
@@ -10415,6 +10463,12 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
                     out ? MEM_R16(out + 0u) : 0, out ? MEM_R16(out + 2u) : 0,
                     out ? MEM_R16(out + 4u) : 0, out ? MEM_R16(out + 6u) : 0);
     }
+    /* The decode takes time on the PSP and its caller gives up the CPU meanwhile, so threads of
+     * the same priority run during it (#1296: HST's audio-output thread starved behind its
+     * ATRAC decode threads when this returned at once). */
+    const uint32_t block_us = st > 0 ? atrac_measured_decode_block_us(a) : 0u;
+    s_atrac_last_block_us = block_us;
+    if (block_us) sched_delay_current(block_us);
     return 0;
 }
 /* sceAtracGetNextSample(id, *outN): how many samples the NEXT DecodeData call

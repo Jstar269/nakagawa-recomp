@@ -21350,6 +21350,8 @@ static void td24c_build_track(uint32_t base, uint32_t fileSize, uint32_t avgByte
  * title/game bytes. `frames` such frames follow a 76-byte header; the 8-byte
  * fact chunk carries `factSamples` and the delay word `factDelay`. */
 enum { TD1096_HEADER = 76u, TD1096_FRAME = 304u };
+extern unsigned sr_hle_test_atrac_prime_decodes(int reset);
+extern uint32_t sr_hle_test_atrac_last_block_us(void);
 static void td1096_build_at3_frames(uint32_t base, uint16_t formatTag,
                                     uint32_t frames, uint32_t factSamples,
                                     uint32_t factDelay) {
@@ -21548,20 +21550,31 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
         expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, sid, TRACK, prefix, 0u) == 0u,
                "AT3 SetData accepts a streamed prefix shorter than the file");
 
+        (void)sr_hle_test_atrac_prime_decodes(1);
         uint32_t ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
         expect(ret == 0u && MEM_R32(OUT_N) == 955u && MEM_R32(OUT_END) == 0u &&
                    MEM_R32(OUT_REMAIN) == 2u,
                "streamed AT3 first decode returns 955 samples with two frames remaining");
+        /* PSP-3000 (#1096): the first call decodes file frame 0 to prime the decoder, discards
+         * it, and returns frame 1 decoded with that history. Later calls decode one frame. */
+        expect(sr_hle_test_atrac_prime_decodes(1) == 1u,
+               "streamed AT3 first decode primes the decoder with file frame 0 once");
+        expect(sr_hle_test_atrac_last_block_us() == 1177u,
+               "AT3 stereo 304-byte decode keeps its caller waiting the measured 1,177 us");
         for (uint32_t left = 1u; left <= 2u; left++) {
             ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
             expect(ret == 0u && MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
                        MEM_R32(OUT_END) == 0u && MEM_R32(OUT_REMAIN) == 2u - left,
                    "streamed AT3 later decodes return 1024 samples and count frames down");
         }
+        expect(sr_hle_test_atrac_prime_decodes(1) == 0u,
+               "streamed AT3 later decodes do not prime again");
         ret = td1096_decode(sid, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN);
         expect(ret == ATRAC_ERROR_BUFFER_IS_EMPTY && MEM_R32(OUT_N) == 0u &&
                    MEM_R32(OUT_END) == 0u,
                "streamed AT3 decode after the last buffered frame returns 0x80630023 with 0 samples and end 0");
+        expect(sr_hle_test_atrac_last_block_us() == 0u,
+               "the buffer-empty AT3 call returns without the decode wait");
 
         /* The exhaustion is not terminal: feeding the next frame resumes. */
         CpuState cpu2;
