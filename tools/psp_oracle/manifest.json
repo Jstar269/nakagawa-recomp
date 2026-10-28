@@ -1298,6 +1298,59 @@
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
+        "id": "PSP-VFPU-FORMS-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No acceptance-eligible capture is recorded here yet. It is built from fixtures/psp_oracle/probe_hle_issues.c as vfpu_forms.prx and runs as a single launch, not in the campaign queue. Its stream is fixed-shape and strictly parsed (950 records and the done record); every cell is an unconditional observation recorded PASS, and no returned value is compared with an expected PSP value.",
+        "group": "cpu",
+        "source": "fixtures/psp_oracle/probe_hle_issues.c",
+        "prx": "vfpu_forms.prx",
+        "apis": [
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelDeleteThread",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread",
+          "Allegrex VFPU vh2f.s",
+          "Allegrex VFPU vh2f.p",
+          "Allegrex VFPU vuc2i.s",
+          "Allegrex VFPU vsocp.s",
+          "Allegrex VFPU vsocp.p",
+          "Allegrex VFPU vwbn.s",
+          "Allegrex VFPU vrndf1.s",
+          "Allegrex VFPU vrndf2.s"
+        ],
+        "diagnostic_case_ids": [
+          "vfpu-forms"
+        ],
+        "case_ids": [
+          "h2f-p0-*",
+          "uc2i-p0-*",
+          "socp-p0-*",
+          "wbn-p0-*",
+          "rndf1-p0-*",
+          "rndf2-p0-*",
+          "h2f-p1-*",
+          "uc2i-p1-*",
+          "socp-p1-*",
+          "wbn-p1-*",
+          "rndf1-p1-*",
+          "rndf2-p1-*",
+          "vfpu-forms-done"
+        ],
+        "invariant": "#326, two passes, register-only: the raw C200 words (with a changed-word census of the rest of the register file, and VFPU_CC) after vh2f.s over 12 half pairs and vh2f.p over 6, each under no S prefix, negate-all and a wzyx swizzle with lanes 0 and 2 negated, plus the in-place vh2f.p C000, C000; vuc2i.s over 10 byte words and vsocp.s/vsocp.p over 22 operands and 11 pairs under the same three prefixes; vwbn.s over 28 operands at exponents 0x00, 0x01, 0x7e, 0x7f, 0x80, 0x96, 0xfe and 0xff and at 0x7f under negate-all; and one vrndf1.s and one vrndf2.s draw from each of 16 written RCX states and the thread-entry state, recording RCX0-7 after the write and after the draw.",
+        "issues": [
+          326
+        ],
+        "risk": "low; register-only VFPU cells on the main thread (VFPU attribute); no handler, timer, kernel call or device state is installed or changed",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
         "id": "PSP-HLE-INTR-001",
         "status": "implemented",
         "hardware_evidence": "NOT_RUN",
