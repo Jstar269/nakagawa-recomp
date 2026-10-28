@@ -85,6 +85,15 @@ We aim to respond promptly and will remove material where appropriate.
   upstream `LICENSE`, pinned source manifest, and SHA-256 values are under
   `third_party/dr_libs/`. Only selftests compile it; it is not in the player or
   the runtime.
+- **libchdr** — `BSD-3-Clause`, Copyright Romain Tisserand. The CHD reader, pinned at
+  `47d794151b2b64f6aba60304e6480f4f5a2bc24b`, with the codecs it carries: miniz 3.1.2
+  (`MIT`), the Zstandard 1.5.7 single-file decompressor (`BSD-3-Clause`, elected from
+  upstream's `BSD-3-Clause OR GPL-2.0-only`), the LZMA SDK decoder (public domain) and
+  dr_flac v0.13.4 (the Unlicense, elected from its Unlicense or `MIT-0` choice). Every file
+  is byte-identical to its upstream blob; the licence texts and the pinned manifest are
+  under `third_party/libchdr/`. It is compiled into the native player, which uses it only
+  to expand a CHD disc image into a plain `.iso` when the image is added; it is not in the
+  runtime.
 - **Monocypher 4.0.3 Ed25519 signature check** — upstream offers `BSD-2-Clause OR CC0-1.0`;
   the project uses it under CC0-1.0. Four byte-identical source files, the complete upstream
   `LICENCE.md` and the pinned manifest are under `third_party/monocypher/`. It is compiled into

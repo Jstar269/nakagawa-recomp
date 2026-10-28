@@ -2353,12 +2353,22 @@ void player_app_set_cli_not_found_error(PlayerApp *app,
 }
 
 const char *player_disc_refusal_title(const char *boundary_code) {
-    if (boundary_code && strcmp(boundary_code, "DISC_IMAGE_COMPRESSED") == 0) {
-        return "Compressed Disc Image";
+    if (!boundary_code) return "Not a Disc Image";
+    if (strcmp(boundary_code, "DISC_NOT_PSP") == 0) return "Not a PSP Disc Image";
+    /* Compressed disc images (nk_disc_expand.h): the kinds not read yet, then
+       the ones that could not be expanded or are damaged. */
+    if (strcmp(boundary_code, NK_DISC_CHD_CD_UNSUPPORTED) == 0) return "CD-Type CHD Image";
+    if (strcmp(boundary_code, NK_DISC_CHD_UNSUPPORTED) == 0 ||
+        strcmp(boundary_code, NK_DISC_CHD_UNAVAILABLE) == 0) {
+        return "CHD Image Not Supported";
     }
-    if (boundary_code && strcmp(boundary_code, "DISC_NOT_PSP") == 0) {
-        return "Not a PSP Disc Image";
+    if (strcmp(boundary_code, NK_DISC_VERSION_UNSUPPORTED) == 0) return "Disc Image Not Supported";
+    if (strcmp(boundary_code, NK_DISC_ID_MISSING) == 0) return "No Disc ID";
+    if (strcmp(boundary_code, NK_DISC_WRITE_FAILED) == 0 ||
+        strcmp(boundary_code, NK_DISC_READ_FAILED) == 0) {
+        return "Disc Image Not Expanded";
     }
+    if (strncmp(boundary_code, "DISC_IMAGE_", 11) == 0) return "Damaged Disc Image";
     return "Not a Disc Image";
 }
 
@@ -4935,6 +4945,14 @@ static int player_psn_bridge_cancelled(void *user) {
            bridge->callbacks->is_cancelled(bridge->callbacks->userdata);
 }
 
+static bool player_disc_bridge_cancelled(void *user) {
+    return player_psn_bridge_cancelled(user) != 0;
+}
+
+static void player_disc_bridge_progress(uint64_t done, uint64_t total, void *user) {
+    player_psn_bridge_progress(user, done, total);
+}
+
 bool player_psn_package_convert(const PlayerPsnPackage *package,
                                 const PlayerPsnConvertCallbacks *callbacks,
                                 char *code, size_t code_size,
@@ -5006,6 +5024,91 @@ bool player_psn_package_convert(const PlayerPsnPackage *package,
     return false;
 }
 
+bool player_disc_image_inspect(const char *image_path, PlayerPsnPackage *package,
+                               char *code, size_t code_size,
+                               char *message, size_t message_size) {
+    char data_root[NK_MAX_PATH];
+    NkDiscImport probe;
+    NkDiscExpandStatus status;
+    if (code != NULL && code_size > 0) code[0] = '\0';
+    if (message != NULL && message_size > 0) message[0] = '\0';
+    if (package == NULL || image_path == NULL) return false;
+    memset(package, 0, sizeof(*package));
+    if (strlen(image_path) >= sizeof(package->pbp_path)) {
+        player_psn_result(code, code_size, NK_DISC_READ_FAILED, message, message_size,
+                          "The path to the disc image is too long.");
+        return false;
+    }
+    if (!nk_platform_get_app_data_dir(data_root, sizeof(data_root))) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "Nakagawa's data folder could not be found.");
+        return false;
+    }
+    if (!nk_disc_import_probe(image_path, data_root, &probe, &status)) {
+        player_psn_result(code, code_size, status.code, message, message_size, "%s",
+                          status.message);
+        return false;
+    }
+    snprintf(package->pbp_path, sizeof(package->pbp_path), "%s", image_path);
+    package->disc_format = probe.format;
+    if (probe.reused) {
+        snprintf(package->iso_path, sizeof(package->iso_path), "%s", probe.iso_path);
+        snprintf(package->disc_id, sizeof(package->disc_id), "%s", probe.disc_id);
+        package->iso_ready = true;
+    }
+    return true;
+}
+
+bool player_disc_image_expand(PlayerPsnPackage *package,
+                              const PlayerPsnConvertCallbacks *callbacks,
+                              char *code, size_t code_size,
+                              char *message, size_t message_size) {
+    char data_root[NK_MAX_PATH];
+    NkDiscImport result;
+    NkDiscExpandStatus status;
+    PlayerPsnBridge bridge;
+    NkDiscExpandCallbacks hooks;
+    if (code != NULL && code_size > 0) code[0] = '\0';
+    if (message != NULL && message_size > 0) message[0] = '\0';
+    if (package == NULL || package->pbp_path[0] == '\0' ||
+        package->disc_format == NK_DISC_FORMAT_NONE) {
+        player_psn_result(code, code_size, "INTERNAL_ERROR", message, message_size,
+                          "The disc image was not checked first.");
+        return false;
+    }
+    if (!nk_platform_get_app_data_dir(data_root, sizeof(data_root))) {
+        player_psn_result(code, code_size, "IO_FAILURE", message, message_size,
+                          "Nakagawa's data folder could not be found.");
+        return false;
+    }
+    bridge.callbacks = callbacks;
+    hooks.on_progress = player_disc_bridge_progress;
+    hooks.is_cancelled = player_disc_bridge_cancelled;
+    hooks.user = &bridge;
+    if (!nk_disc_import(package->pbp_path, data_root, &hooks, &result, &status)) {
+        if (strcmp(status.code, NK_DISC_CANCELLED) != 0) {
+            fprintf(stderr, "[PLAYER] Disc image expansion stopped: %s: %s\n", status.code,
+                    status.message);
+        }
+        player_psn_result(code, code_size, status.code, message, message_size, "%s",
+                          status.message);
+        return false;
+    }
+    snprintf(package->iso_path, sizeof(package->iso_path), "%s", result.iso_path);
+    snprintf(package->disc_id, sizeof(package->disc_id), "%s", result.disc_id);
+    package->iso_ready = true;
+    return true;
+}
+
+/* The last component of a path, for the progress line. */
+static const char *player_path_file_name(const char *path) {
+    const char *name = path;
+    for (const char *p = path; p && *p; p++) {
+        if (*p == '/' || *p == '\\') name = p + 1;
+    }
+    return name;
+}
+
 void player_app_psn_conversion_begin(PlayerApp *app, const PlayerPsnPackage *package) {
     if (app == NULL || package == NULL) return;
     app->psn_package = *package;
@@ -5025,11 +5128,20 @@ void player_app_psn_conversion_begin(PlayerApp *app, const PlayerPsnPackage *pac
     app->wizard.iso_selected = false;
     app->wizard.is_extracting = true;
     app->wizard.total_files = 1;
-    snprintf(app->wizard.extraction_current_file, sizeof(app->wizard.extraction_current_file),
-             "%s.iso", package->disc_id);
-    snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-             "Converting %.120s (%s) from its PSN package into a disc image on this PC...",
-             package->title[0] ? package->title : "the game", package->disc_id);
+    if (package->disc_format != NK_DISC_FORMAT_NONE) {
+        const char *name = player_path_file_name(package->pbp_path);
+        snprintf(app->wizard.extraction_current_file,
+                 sizeof(app->wizard.extraction_current_file), "%.200s", name);
+        snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                 "Expanding %.100s into a plain disc image on this PC. This happens once, "
+                 "and needs as much free space as the game's .iso.", name);
+    } else {
+        snprintf(app->wizard.extraction_current_file,
+                 sizeof(app->wizard.extraction_current_file), "%s.iso", package->disc_id);
+        snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+                 "Converting %.120s (%s) from its PSN package into a disc image on this PC...",
+                 package->title[0] ? package->title : "the game", package->disc_id);
+    }
     app->focus_index = 0;
 }
 

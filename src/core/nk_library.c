@@ -164,6 +164,9 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         write_json_string_field(f, "title_name", g->title_name);
         write_json_string_field(f, "disc_version", g->disc_version);
         write_json_string_field(f, "iso_path", g->iso_path);
+        if (g->source_image_path[0]) {
+            write_json_string_field(f, "source_image_path", g->source_image_path);
+        }
         write_json_string_field(f, "prepared_root", g->prepared_root);
         write_json_string_field(f, "title_id", g->title_id);
         fprintf(f, "      \"iso_size_bytes\": %llu,\n", (unsigned long long)g->iso_size_bytes);
@@ -479,6 +482,11 @@ static NkResult nk_library_load_from_file(NkLibrary *lib, const char *target) {
                     p = next_p;
                 } else if (strcmp(key, "iso_path") == 0) {
                     next_p = parse_string_val(p, entry.iso_path, sizeof(entry.iso_path));
+                    if (!next_p) { entry_failed = true; break; }
+                    p = next_p;
+                } else if (strcmp(key, "source_image_path") == 0) {
+                    next_p = parse_string_val(p, entry.source_image_path,
+                                              sizeof(entry.source_image_path));
                     if (!next_p) { entry_failed = true; break; }
                     p = next_p;
                 } else if (strcmp(key, "prepared_root") == 0) {

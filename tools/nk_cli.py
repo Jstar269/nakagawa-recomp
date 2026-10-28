@@ -63,6 +63,7 @@ from nk_core import package_cache  # noqa: E402
 from nk_core.prep_engine import NativeTitleStager, SUPPORTED_ARCHIVE_FORMATS  # noqa: E402
 from nk_core.title_registry import get_default_registry  # noqa: E402
 from nk_core.launcher import psp_boot_path as _psp_boot_path  # noqa: E402
+from nk_core import disc_expand_tool  # noqa: E402
 from nk_core.library import (  # noqa: E402
     MAX_LIBRARY_GAMES,
     MAX_LIBRARY_JSON_BYTES,
@@ -3496,6 +3497,9 @@ def _bringup_human_summary(report: dict) -> str:
                   "says why and what to do next)")
     elif report["failure_class"] == "NO_FRAME_SUBMISSIONS":
         detail = " (no validated framebuffer was submitted to the GUI presenter)"
+    elif report["failure_class"] == "DISC_IMAGE_REFUSED":
+        detail = (" (the compressed disc image could not be expanded into a plain .iso; "
+                  "the message above names the reason)")
     elif report["failure_class"] == "PBP_PACKAGE_UNSUPPORTED":
         detail = (" (the file is a PlayStation Store package (PBP), not a disc image; "
                   "the player converts PSN releases of UMD games, the command line does not)")
@@ -3987,6 +3991,28 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         iso_path = Path(args.iso).expanduser().resolve(strict=True)
     except (PackageBuildError, OSError, ValueError):
         fail_stage(report, "inspect", "INVALID_ISO")
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+
+    # A compressed disc image (.cso, .zso, .chd) is expanded once into this
+    # bring-up's user-data root by the player's own C code, and every later
+    # stage reads the expanded .iso.
+    started = time.perf_counter()
+    try:
+        iso_path = disc_expand_tool.ensure_plain_iso(iso_path, user_root)
+    except disc_expand_tool.DiscImageRefused as exc:
+        print(f"The disc image was not expanded [{exc.code}]: {exc}")
+        fail_stage(report, "inspect",
+                   "INVALID_ISO" if exc.code == "DISC_NOT_PSP" else "DISC_IMAGE_REFUSED",
+                   duration_ms=int((time.perf_counter() - started) * 1000))
+        _write_bringup_report(report, report_path)
+        print(_bringup_human_summary(report))
+        return 1
+    except (RuntimeError, OSError) as exc:
+        print(f"The disc image could not be expanded: {exc}")
+        fail_stage(report, "inspect", "DISC_IMAGE_REFUSED",
+                   duration_ms=int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
