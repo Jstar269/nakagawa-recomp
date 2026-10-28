@@ -374,6 +374,81 @@ static void test_windows_imply_every_present(void) {
           "policy: SR_FBDUMP keeps priority over windows");
 }
 
+/* A picture probe is serviced like a capture but publishes no file: it reports the brightest
+ * colour byte, once, through either presenter route, and never blocks a later file capture. */
+static void test_picture_probe(void) {
+    static uint32_t dark[PSP_W * PSP_H];
+    uint32_t b = 99u;
+    char blocked[600], after[600];
+    out_path(blocked, sizeof blocked, "probe_blocked.ppm");
+    out_path(after, sizeof after, "after_probe.ppm");
+    remove(blocked);
+    remove(after);
+    for (uint32_t i = 0; i < PSP_W * PSP_H; i++)
+        dark[i] = (i % 3u == 0u) ? 0x00080000u : (i % 3u == 1u ? 0x00000800u : 0u);
+    dark[17] |= 0xff000000u;                     /* the ignored byte never counts */
+    CHECK(sr_capture_probe_take(&b) == 0, "probe: no result before any probe");
+    CHECK(sr_capture_arm_probe() == 1, "probe: arm accepted");
+    CHECK(sr_capture_arm(blocked) == 0, "probe: a pending probe refuses a file arm");
+    CHECK(sr_capture_serve_host(dark, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "probe: host service resolves the probe");
+    CHECK(!file_exists(blocked), "probe: no file is written");
+    CHECK(sr_capture_probe_take(&b) == 1 && b == 8u, "probe: brightest byte of a dark frame is 8");
+    CHECK(sr_capture_probe_take(&b) == 0, "probe: a result is taken once");
+
+    /* GPU readback route, RGBX order, with one bright pixel in the last row. */
+    static uint32_t gpu[PSP_W * PSP_H];
+    memset(gpu, 0, sizeof gpu);
+    gpu[PSP_W * (PSP_H - 1u) + 5u] = 0x00c80000u;  /* byte 2 (blue in RGBX) = 200 */
+    CHECK(sr_capture_arm_probe() == 1, "probe: gpu arm accepted");
+    sr_capture_mark_recorded(SR_CAP_SRC_GPU, PSP_W, PSP_H);
+    CHECK(sr_capture_publish_recorded(gpu, PSP_W * 4u, SR_CAP_ORDER_RGBX) == 1, "probe: gpu publish");
+    CHECK(sr_capture_probe_take(&b) == 1 && b == 200u, "probe: gpu brightest byte");
+
+    /* A cancelled probe reports nothing, and a file capture works after a probe. */
+    CHECK(sr_capture_arm_probe() == 1, "probe: arm before a skipped present");
+    sr_capture_cancel();
+    CHECK(sr_capture_probe_take(&b) == 0, "probe: a cancelled probe has no result");
+    CHECK(sr_capture_arm(after) == 1, "probe: file arm after a probe");
+    CHECK(sr_capture_serve_host(s_frame, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX) == 1,
+          "probe: file capture after a probe publishes");
+    CHECK(ppm_matches(after, PSP_W, PSP_H, s_frame_rgb),
+          "probe: file capture after a probe is exact");
+    CHECK(sr_capture_probe_take(&b) == 0, "probe: a file capture leaves no probe result");
+}
+
+/* The dark-picture watch: a stretch opens at the first dark probe, reports once per report
+ * period while probes keep arriving, stays quiet once probes stop, and a visible frame ends
+ * it with RESUMED only when it had been reported. */
+static void test_picture_watch(void) {
+    SrPictureWatch w;
+    uint32_t dark = 0u;
+    memset(&w, 0, sizeof w);
+    CHECK(sr_picture_watch_tick(&w, 5000u, &dark) == SR_PICTURE_WATCH_NONE, "watch: nothing open");
+    CHECK(sr_picture_watch_probe(&w, 1000u, 40u) == SR_PICTURE_WATCH_NONE, "watch: visible frame");
+    CHECK(sr_picture_watch_tick(&w, 1700u, &dark) == SR_PICTURE_WATCH_NONE, "watch: visible stays quiet");
+    CHECK(sr_picture_watch_probe(&w, 1300u, SR_PICTURE_DARK_MAX) == SR_PICTURE_WATCH_NONE,
+          "watch: the threshold value is dark");
+    CHECK(sr_picture_watch_probe(&w, 1600u, 0u) == SR_PICTURE_WATCH_NONE, "watch: still dark");
+    CHECK(sr_picture_watch_tick(&w, 1899u, &dark) == SR_PICTURE_WATCH_NONE, "watch: under one period");
+    CHECK(sr_picture_watch_tick(&w, 1900u, &dark) == SR_PICTURE_WATCH_REPORT && dark == 600u,
+          "watch: first report after one period from the first dark probe");
+    CHECK(sr_picture_watch_tick(&w, 1901u, &dark) == SR_PICTURE_WATCH_NONE, "watch: once per period");
+    CHECK(sr_picture_watch_probe(&w, 1902u, 1u) == SR_PICTURE_WATCH_NONE, "watch: dark probe");
+    /* A VBLANK jump across two periods reports once, with the true elapsed count. */
+    CHECK(sr_picture_watch_tick(&w, 2502u, &dark) == SR_PICTURE_WATCH_REPORT && dark == 1202u,
+          "watch: a jump across a period reports once");
+    /* Probes stop (the game stopped flipping): the no-frame watchdog's case, not this one's. */
+    CHECK(sr_picture_watch_tick(&w, 1902u + 2u * SR_PICTURE_PROBE_EVERY + 1u + 600u, &dark) ==
+          SR_PICTURE_WATCH_NONE, "watch: quiet once probes stop");
+    CHECK(sr_picture_watch_probe(&w, 4000u, SR_PICTURE_DARK_MAX + 1u) == SR_PICTURE_WATCH_RESUMED,
+          "watch: a visible frame ends a reported stretch");
+    CHECK(sr_picture_watch_tick(&w, 9000u, &dark) == SR_PICTURE_WATCH_NONE, "watch: closed");
+    CHECK(sr_picture_watch_probe(&w, 9100u, 0u) == SR_PICTURE_WATCH_NONE, "watch: new stretch");
+    CHECK(sr_picture_watch_probe(&w, 9200u, 90u) == SR_PICTURE_WATCH_NONE,
+          "watch: an unreported stretch ends without RESUMED");
+}
+
 int main(int argc, char **argv) {
     snprintf(s_dir, sizeof s_dir, "%s", argc > 1 ? argv[1] : SR_SELFTEST_BUILD_ROOT "/fbcap_selftest");
     make_dir(s_dir);
@@ -389,6 +464,8 @@ int main(int argc, char **argv) {
     test_parent_directory();
     test_absolute_path();
     test_windows_imply_every_present();
+    test_picture_probe();
+    test_picture_watch();
     if (s_failures) {
         fprintf(stderr, "fbcap_selftest: %d check(s) failed\n", s_failures);
         return 1;

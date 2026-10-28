@@ -472,6 +472,9 @@ typedef struct PlayerApp {
     bool stalled_game_notice_raise_requested;
     bool stalled_game_restore_game_front_requested;
     uint32_t stalled_game_no_frame_vblanks;
+    /* The notice is for a game that keeps flipping dark frames (the runtime's
+       dark_picture observation), not one that stopped flipping (no_new_flip). */
+    bool stalled_game_dark_picture;
     uint32_t stalled_game_seconds;
     uint32_t stalled_game_ready;
     uint32_t stalled_game_delay;

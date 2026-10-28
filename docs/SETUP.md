@@ -634,6 +634,9 @@ scheduling jitter, while a second submission inside the same slot is still dropp
 long-run present rate never exceeds the cap (`gui-present-selftest`).
 
 Runtime logs are written under `logs/`. Use `SR_DEBUG=0xFF` for all categories or consult [DEBUGGING.md](DEBUGGING.md) for targeted logging.
+On Windows, runtime output redirected to a file or pipe is buffered: a line reaches the log within 50 ms,
+and everything is written when the game exits, aborts or writes a crash report. A process killed from
+outside, such as by the player's Stop or Task Manager, can lose its last 50 ms of output.
 
 Keyboard controls mirror a PSP layout: `X` = Cross/confirm, `Z` = Circle/back, `A` = Square,
 `S` = Triangle, `Q`/`W` = L/R, Enter = Start, Shift = Select, and arrow keys = D-pad.
