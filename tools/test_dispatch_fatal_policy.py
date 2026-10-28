@@ -124,6 +124,16 @@ class TestDispatchFatalPolicySource(unittest.TestCase):
         self.assertIn("if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))) ch = '-';",
                       helper)
 
+    def test_unmodelled_argument_shape_stop_is_named_for_the_player(self):
+        """A handler's unmodelled-shape stop names the import for the player, then exits 7."""
+        hle_src = HLE_C.read_text(encoding="utf-8")
+        stop = function_body(
+            hle_src, "static uint32_t hle_unmodelled_stop(const char *import_name, const char *fmt, ...)")
+        production = stop.split("#else", 1)[1]
+        record = production.index("hle_record_unsupported_import_stop(sr_last_nid, import_name);")
+        self.assertLess(record, production.index("_Exit(7)"))
+        self.assertNotIn("return HLE_KERNEL_ERROR_NOT_IMPLEMENTED", production)
+
     def test_recomp_dispatch_miss_terminates(self):
         """dispatch() wrapper must terminate via exit(1) on dispatch rejection."""
         recomp_src = RECOMP_C.read_text(encoding="utf-8")

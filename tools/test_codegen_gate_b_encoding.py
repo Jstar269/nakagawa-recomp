@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
+# Copyright (C) 2026 the Nakagawa Recomp authors
 
 """Regression tests for Gate B ISA purity: every Allegrex instruction-under-test
 must be emitted as a raw PSP word, and the compiled ELF must contain no accidental

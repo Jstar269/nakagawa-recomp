@@ -87,6 +87,17 @@ static const char *safe_text(const char *text, const char *fallback) {
     return text != NULL && text[0] != '\0' ? text : fallback;
 }
 
+/* An outcome line's colour: only a warning is amber, and only a failure red. */
+static uint32_t note_rgba(const NkUiTheme *theme, PlayerUiNoteKind kind) {
+    switch (kind) {
+    case PLAYER_UI_NOTE_DONE: return theme->ready;
+    case PLAYER_UI_NOTE_WARNING: return theme->warning;
+    case PLAYER_UI_NOTE_ERROR: return theme->error;
+    case PLAYER_UI_NOTE_NEUTRAL:
+    default: return theme->muted;
+    }
+}
+
 /* docs/COMPATIBILITY.md category -> player tier, for a title with no player
    record of its own (#1297). The same table is in the "Status words" section
    of docs/COMPATIBILITY.md; test_player_screens.c pins both. A category
@@ -291,9 +302,12 @@ PlayerUiAction player_ui_screen_title(NkUi *ui,
             if (model->stalled_game_notice_visible &&
                 nk_ui_card_begin(ui, TITLE_ID_STALL_NOTICE, sizing_grow(), sizing_fit(),
                                  NK_UI_SPACE_2)) {
-                nk_ui_eyebrow(ui, TITLE_ID_STALL_EYEBROW, "No new frames");
+                nk_ui_eyebrow(ui, TITLE_ID_STALL_EYEBROW,
+                              model->stalled_game_dark_picture ? "Black screen" : "No new frames");
                 nk_ui_text_role(ui, TITLE_ID_STALL_TEXT,
-                                "The game hasn't drawn anything new for 30 seconds. It may be stuck.",
+                                model->stalled_game_dark_picture
+                                    ? "The game is running but has shown only a black screen for 30 seconds. It may be stuck."
+                                    : "The game hasn't drawn anything new for 30 seconds. It may be stuck.",
                                 NK_UI_TYPE_BODY_S, theme->paper);
                 row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(), NK_UI_SPACE_3);
                 row.align_y = NK_UI_ALIGN_CENTER;
@@ -746,6 +760,49 @@ PlayerUiAction player_ui_screen_remove(NkUi *ui, const PlayerUiRemoveModel *mode
     return result;
 }
 
+/* Stop game: the same question quitting with a game running asks, in a flow
+   card. KEEP PLAYING holds focus first; STOP GAME is the danger button. */
+PlayerUiAction player_ui_screen_stop(NkUi *ui, const PlayerUiStopModel *model) {
+    static const NkUiPromptItem prompts[] = {
+        {NK_UI_PROMPT_ACT_MOVE, "Move"}, {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
+        {NK_UI_PROMPT_ACT_BACK, "Keep playing"}
+    };
+    const NkUiTheme *theme;
+    PlayerUiAction result = action(PLAYER_UI_ACTION_NONE, 0u, PLAYER_UI_PRIMARY_NONE);
+    float inner;
+    char text[320];
+    if (ui == NULL || model == NULL) return result;
+    theme = nk_ui_theme(ui);
+    inner = flow_begin(ui, model->logical_width > 80.0f ? model->logical_width : 1280.0f,
+                       model->logical_height > 80.0f ? model->logical_height : 800.0f, 640.0f);
+    if (inner <= 0.0f) return result;
+    flow_eyebrow(ui, FLOW_MARK_TRIANGLE, "Stop game", theme->warning);
+    (void)snprintf(text, sizeof(text), "Stop %s?", safe_text(model->title, "the game"));
+    nk_ui_text_role(ui, FLOW_ID_TITLE, nk_ui_frame_text(ui, text), NK_UI_TYPE_TITLE,
+                    theme->paper);
+    nk_ui_text_role(ui, FLOW_ID_LEAD,
+                    "The game closes now, and anything since its last save is lost.",
+                    NK_UI_TYPE_BODY_S, theme->muted);
+    {
+        NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_fit(), sizing_fit(),
+                                     NK_UI_SPACE_3);
+        row.padding_top = NK_UI_SPACE_1;
+        if (nk_ui_begin_container(ui, FLOW_ID_ACTIONS, &row, NULL)) {
+            if (nk_ui_button(ui, PLAYER_UI_ID_STOP_KEEP, "Keep playing", 0u)) {
+                result = action(PLAYER_UI_ACTION_BACK, model->title_index,
+                                PLAYER_UI_PRIMARY_NONE);
+            }
+            if (nk_ui_button(ui, PLAYER_UI_ID_STOP_CONFIRM, "Stop game", NK_UI_BUTTON_DANGER)) {
+                result = action(PLAYER_UI_ACTION_PRIMARY, model->title_index,
+                                PLAYER_UI_PRIMARY_STOP_GAME);
+            }
+            nk_ui_end_container(ui);
+        }
+    }
+    flow_end(ui, "", prompts, 3u);
+    return result;
+}
+
 PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *model) {
     static const NkUiPromptItem prompts_consent[] = {
         {NK_UI_PROMPT_ACT_MOVE, "Move"}, {NK_UI_PROMPT_ACT_CONFIRM, "Select"},
@@ -1120,13 +1177,16 @@ static void wizard_text(NkUi *ui, uint32_t k, const char *text, NkUiTypeRole rol
     }
 }
 
+/* The chips name the steps a first run shows (PLAYER_UI_WIZARD_ROUTE_STEPS):
+   copying the files ends on the library card, so no Fonts or Ready chip
+   promises a step that never comes. */
 static void wizard_steps(NkUi *ui, int step) {
-    static const char *const names[6] = {"Welcome", "Options", "Game", "Verify", "Fonts",
-                                         "Ready"};
+    static const char *const names[PLAYER_UI_WIZARD_ROUTE_STEPS] = {"Welcome", "Options",
+                                                                    "Game", "Verify"};
     const NkUiTheme *theme = nk_ui_theme(ui);
     NkUiLayout row = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(), sizing_fit(), NK_UI_SPACE_2);
     if (!nk_ui_begin_container(ui, WIZ_ID_STEPS, &row, NULL)) return;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < PLAYER_UI_WIZARD_ROUTE_STEPS; ++i) {
         bool done = i < step;
         bool current = i == step;
         NkUiLayout chip = layout_make(NK_UI_LAYOUT_ROW, sizing_grow(),
@@ -1556,7 +1616,9 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
             wizard_text(ui, 4u,
                         safe_text(model->font_message,
                                   "Importing reads the .pgf files in a folder you choose."),
-                        NK_UI_TYPE_CAPTION, theme->warning);
+                        NK_UI_TYPE_CAPTION,
+                        model->font_message != NULL && model->font_message[0] != '\0'
+                            ? note_rgba(theme, model->font_message_kind) : theme->muted);
             wizard_buttons(ui, WIZ_ID_EXTRA, font_buttons, 2u, &result);
             nk_ui_end_container(ui);
         }
@@ -2264,7 +2326,8 @@ static void settings_dialog(NkUi *ui, const PlayerUiSettingsModel *model, float 
                 nk_ui_end_container(ui);
             }
             if (model->font_message != NULL && model->font_message[0] != '\0') {
-                NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION, theme->warning);
+                NkUiTextStyle text = nk_ui_type(NK_UI_TYPE_CAPTION,
+                                                note_rgba(theme, model->font_message_kind));
                 nk_ui_text(ui, SET_ID_TEXT + 0xDCu,
                            nk_ui_text_clamp(ui, model->font_message, &text, inner - 32.0f, 2),
                            &text);
