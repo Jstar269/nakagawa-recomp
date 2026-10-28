@@ -5587,7 +5587,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3124a7392a92f79268bd79c46017a24f59d38443687358bf179bcca1dd70448d"
+      "sha256": "3f9759b4eb1f4f9ced0fbd0364639640e7074e2e68c506f56991e1b8cddbf7d8"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -5818,7 +5818,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "86545ce82cf25224c00cfe633400171b0a03adc30cc2560230b2cb3dd5dcecc0"
+      "sha256": "df821b0e7d11a4fed6c00317035d904ec6db81d375e6d0aebfd53cd3542f802f"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -8929,7 +8929,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e81bac61d66879b308d64ec284fd688b6770299badd10fcab309c22800457d33"
+      "sha256": "32e70926f2830bca1fbc5bfc669a7e0166ac7a09db60f51692fcaaa3caa97b8c"
     },
     {
       "path": "src/rt/intr_conformance.h",
