@@ -11688,8 +11688,14 @@ static uint32_t utility_dialog_update(UtilityDialog *d) {
             result = sr_savedata_prepare_utility(SR_UTILITY_STORAGE_GAMEDATA);
         else if (kind == UTILITY_GAMESHARING)
             result = sr_savedata_prepare_utility(SR_UTILITY_STORAGE_GAMESHARING);
-        else if (kind == UTILITY_MSG && MEM_R32(param) >= 0x240u)
-            MEM_W32(param + 0x23c, 1u); /* default affirmative/OK button */
+        /* The message dialog answers with its default affirmative/OK button. The answer
+         * goes to buttonPressed at +0x240, which exists from the 580-byte (V2) parameter
+         * block on; +0x23c is the caller's options word (YES/NO, default NO, ...) and is
+         * input, never written (PPSSPP Core/Dialog/PSPMsgDialog.h pspMessageDialog: V1 ends
+         * at 572 bytes, V2 adds options and buttonPressed, V3 is 708 bytes). Writing the
+         * answer into options left buttonPressed 0, which a yes/no caller reads as "no". */
+        else if (kind == UTILITY_MSG && MEM_R32(param) >= 0x244u)
+            MEM_W32(param + 0x240, 1u);
         dialog_lock();
         if (generation == d->generation) {
             d->result = result;
