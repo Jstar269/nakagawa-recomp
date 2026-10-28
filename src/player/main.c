@@ -617,6 +617,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
                        app->active_view == VIEW_BUILD_CACHE ||
                        app->active_view == VIEW_PSP_FONTS ||
+                       app->active_view == VIEW_UPDATES ||
                        app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -779,6 +780,7 @@ static bool player_dispatch_ui_event(PlayerApp *app, UiInput *input,
             } else if (app->active_view == VIEW_PREREQ_ABOUT ||
                        app->active_view == VIEW_BUILD_CACHE ||
                        app->active_view == VIEW_PSP_FONTS ||
+                       app->active_view == VIEW_UPDATES ||
                        app->active_view == VIEW_ONLINE_SETTINGS) {
                 player_app_set_view(app, VIEW_SETTINGS);
             } else if (app->active_view == VIEW_DEVELOPER_LOG) {
@@ -1036,10 +1038,334 @@ static void player_ui_disc_apply(PlayerApp *app, PlayerUiDiscOp op) {
     }
 }
 
+/* ---- Check for updates (update_check.h) -------------------------------------------
+   One step at a time runs on a worker thread: the check, the download or the
+   install. Each starts from a click, or once at start when the user turned that
+   on; nothing retries or polls. The main loop picks up the result. */
+
+typedef enum {
+    PLAYER_UPDATE_JOB_CHECK,
+    PLAYER_UPDATE_JOB_DOWNLOAD,
+    PLAYER_UPDATE_JOB_INSTALL
+} PlayerUpdateJobKind;
+
+typedef struct {
+    PlayerUpdateJobKind kind;
+    SDL_Thread *thread;
+    SDL_AtomicInt done;
+    SDL_AtomicInt cancel;
+    SDL_AtomicInt received_kib;
+    PackageHttpOpen transport;   /* NULL: the native one */
+    void *transport_context;
+    NkUpdateRelease release;
+    char downloads_dir[NK_MAX_PATH];
+    char zip_path[NK_MAX_PATH];
+    char install_dir[NK_MAX_PATH];
+    char log_path[NK_MAX_PATH];
+    bool ok;
+    NkUpdateCheckResult check;
+    NkUpdateError error;
+} PlayerUpdateJob;
+
+static PlayerUpdateJob *s_update_job;
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+/* The regression build never reaches the network: its transport answers from
+   files in NK_UI_TEST_UPDATE_DIR (releases.json for the API, otherwise the
+   URL's last part), and a missing file is "offline". */
+typedef struct {
+    FILE *file;
+    char final_url[512];
+} PlayerUpdateTestResponse;
+
+static bool player_update_test_read(void *context, unsigned char *buffer, size_t capacity,
+                                    size_t *bytes_read) {
+    PlayerUpdateTestResponse *response = (PlayerUpdateTestResponse *)context;
+    *bytes_read = fread(buffer, 1, capacity, response->file);
+    /* A slow link, so the progress and Cancel can be seen. */
+    if (getenv("NK_UI_TEST_UPDATE_SLOW") != NULL) SDL_Delay(40);
+    return !ferror(response->file);
+}
+
+static void player_update_test_close(void *context) {
+    PlayerUpdateTestResponse *response = (PlayerUpdateTestResponse *)context;
+    fclose(response->file);
+    free(response);
+}
+
+static bool player_update_test_open(void *context, const char *url, const char *allowed_hosts,
+                                    PackageHttpResponse *out) {
+    const char *dir = getenv("NK_UI_TEST_UPDATE_DIR");
+    const char *name = strrchr(url, '/');
+    char path[NK_MAX_PATH];
+    PlayerUpdateTestResponse *response;
+    int64_t size;
+    (void)context;
+    (void)allowed_hosts;
+    if (!dir || !name) return false;
+    name = strcmp(url, NK_UPDATE_RELEASES_URL) == 0 ? "releases.json" : name + 1;
+    if (snprintf(path, sizeof(path), "%s%c%s", dir, nk_platform_path_separator(), name) >=
+        (int)sizeof(path)) {
+        return false;
+    }
+    printf("[PLAYER_UI_TEST] update_request=%s\n", url);
+    fflush(stdout);
+    size = nk_platform_get_file_size(path);
+    response = (PlayerUpdateTestResponse *)calloc(1, sizeof(*response));
+    if (!response || size < 0 || !(response->file = nk_fopen_utf8(path, "rb"))) {
+        free(response);
+        return false;
+    }
+    snprintf(response->final_url, sizeof(response->final_url), "%s", url);
+    memset(out, 0, sizeof(*out));
+    out->final_url = response->final_url;
+    out->has_content_length = true;
+    out->content_length = (uint64_t)size;
+    out->context = response;
+    out->read = player_update_test_read;
+    out->close = player_update_test_close;
+    return true;
+}
+#endif
+
+static bool player_update_progress(void *context, uint64_t received, uint64_t expected) {
+    PlayerUpdateJob *job = (PlayerUpdateJob *)context;
+    (void)expected;
+    SDL_SetAtomicInt(&job->received_kib, (int)(received / 1024u));
+    return SDL_GetAtomicInt(&job->cancel) == 0;
+}
+
+static int SDLCALL player_update_thread_main(void *userdata) {
+    PlayerUpdateJob *job = (PlayerUpdateJob *)userdata;
+    switch (job->kind) {
+        case PLAYER_UPDATE_JOB_CHECK:
+            job->ok = nk_update_check(job->transport, job->transport_context, NK_PLAYER_VERSION,
+                                      &job->check, &job->error);
+            break;
+        case PLAYER_UPDATE_JOB_DOWNLOAD:
+            job->ok = nk_update_download(job->transport, job->transport_context, &job->release,
+                                         job->downloads_dir, player_update_progress, job,
+                                         job->zip_path, sizeof(job->zip_path), &job->error);
+            break;
+        case PLAYER_UPDATE_JOB_INSTALL:
+            job->ok = nk_update_install(job->zip_path, job->install_dir,
+                                        job->log_path[0] ? job->log_path : NULL, &job->error);
+            break;
+    }
+    SDL_SetAtomicInt(&job->done, 1);
+    return 0;
+}
+
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+static const char *player_update_phase_name(PlayerUpdatePhase phase) {
+    switch (phase) {
+        case PLAYER_UPDATE_CHECKING: return "checking";
+        case PLAYER_UPDATE_CURRENT: return "current";
+        case PLAYER_UPDATE_AVAILABLE: return "available";
+        case PLAYER_UPDATE_DOWNLOADING: return "downloading";
+        case PLAYER_UPDATE_DOWNLOADED: return "downloaded";
+        case PLAYER_UPDATE_INSTALLING: return "installing";
+        case PLAYER_UPDATE_INSTALLED: return "installed";
+        case PLAYER_UPDATE_FAILED: return "failed";
+        case PLAYER_UPDATE_IDLE:
+        default: return "idle";
+    }
+}
+#endif
+
+static void player_update_fail(PlayerApp *app, PlayerUpdatePhase step, const char *code,
+                               const char *title, const char *message) {
+    snprintf(app->update.error.code, sizeof(app->update.error.code), "%s", code);
+    snprintf(app->update.error.title, sizeof(app->update.error.title), "%s", title);
+    snprintf(app->update.error.message, sizeof(app->update.error.message), "%s", message);
+    app->update.failed_step = step;
+    app->update.phase = PLAYER_UPDATE_FAILED;
+}
+
+static void player_update_start(PlayerApp *app, PlayerUpdateJobKind kind) {
+    PlayerUpdateJob *job;
+    PlayerUpdatePhase step = kind == PLAYER_UPDATE_JOB_CHECK ? PLAYER_UPDATE_CHECKING
+                           : kind == PLAYER_UPDATE_JOB_DOWNLOAD ? PLAYER_UPDATE_DOWNLOADING
+                                                                : PLAYER_UPDATE_INSTALLING;
+    char data_dir[NK_MAX_PATH];
+    char log_dir[NK_MAX_PATH];
+    if (s_update_job != NULL) return;   /* one step at a time */
+    job = (PlayerUpdateJob *)calloc(1, sizeof(*job));
+    if (!job) {
+        player_update_fail(app, step, "UPDATE_START_FAILED", "Couldn't Start",
+                           "Nakagawa couldn't start this step. Restart it and try again.");
+        return;
+    }
+    job->kind = kind;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    job->transport = player_update_test_open;
+#endif
+    job->release = app->update.check.newest;
+    snprintf(job->zip_path, sizeof(job->zip_path), "%s", app->update.zip_path);
+    if (!nk_platform_get_path(NK_PATH_DATA, data_dir, sizeof(data_dir)) ||
+        snprintf(job->downloads_dir, sizeof(job->downloads_dir), "%s%cdownloads", data_dir,
+                 nk_platform_path_separator()) >= (int)sizeof(job->downloads_dir)) {
+        free(job);
+        player_update_fail(app, step, "DATA_DIR_UNAVAILABLE", "Couldn't Start",
+                           "Nakagawa's data folder is not available, so there is nowhere to "
+                           "save the download.");
+        return;
+    }
+    if (!nk_platform_get_path(NK_PATH_LOGS, log_dir, sizeof(log_dir)) ||
+        snprintf(job->log_path, sizeof(job->log_path), "%s%cupdate-install.log", log_dir,
+                 nk_platform_path_separator()) >= (int)sizeof(job->log_path)) {
+        job->log_path[0] = '\0';   /* the unpacker's output then goes nowhere */
+    }
+    if (kind == PLAYER_UPDATE_JOB_INSTALL &&
+        !nk_update_install_folder(app->install_root, job->downloads_dir,
+                                  job->release.zip_name, job->install_dir,
+                                  sizeof(job->install_dir))) {
+        free(job);
+        player_update_fail(app, step, "UPDATE_INSTALL_PATH", "Couldn't Install",
+                           "The folder for the new version has too long a path. Unpack the "
+                           "ZIP yourself.");
+        return;
+    }
+    job->thread = SDL_CreateThread(player_update_thread_main, "nakagawa-update", job);
+    if (!job->thread) {
+        free(job);
+        player_update_fail(app, step, "UPDATE_START_FAILED", "Couldn't Start",
+                           "Nakagawa couldn't start this step. Restart it and try again.");
+        return;
+    }
+    s_update_job = job;
+    app->update.phase = step;
+    app->update.received_bytes = 0;
+    app->update.notice = false;
+    if (kind == PLAYER_UPDATE_JOB_CHECK) {
+        memset(&app->update.check, 0, sizeof(app->update.check));
+        app->update.zip_path[0] = '\0';
+        app->update.install_dir[0] = '\0';
+    }
+    player_dev_log_add(app, "update", "%s started",
+                       kind == PLAYER_UPDATE_JOB_CHECK ? "check for updates"
+                       : kind == PLAYER_UPDATE_JOB_DOWNLOAD ? "update download" : "update install");
+}
+
+/* The main loop's half: progress, then the finished step's result. */
+static void player_update_poll(PlayerApp *app) {
+    PlayerUpdateJob *job = s_update_job;
+    if (!job) return;
+    if (job->kind == PLAYER_UPDATE_JOB_DOWNLOAD) {
+        app->update.received_bytes = (uint64_t)SDL_GetAtomicInt(&job->received_kib) * 1024u;
+    }
+    if (!SDL_GetAtomicInt(&job->done)) return;
+    SDL_WaitThread(job->thread, NULL);
+    s_update_job = NULL;
+    if (!job->ok) {
+        player_dev_log_add(app, "update", "%s: %s", job->error.code, job->error.message);
+        if (job->kind == PLAYER_UPDATE_JOB_CHECK && app->update.from_start) {
+            /* The check at start never shows a failure; Check for updates does. */
+            app->update.phase = PLAYER_UPDATE_IDLE;
+        } else {
+            app->update.error = job->error;
+            app->update.failed_step = job->kind == PLAYER_UPDATE_JOB_CHECK
+                ? PLAYER_UPDATE_CHECKING
+                : job->kind == PLAYER_UPDATE_JOB_DOWNLOAD ? PLAYER_UPDATE_DOWNLOADING
+                                                          : PLAYER_UPDATE_INSTALLING;
+            app->update.phase = PLAYER_UPDATE_FAILED;
+        }
+    } else if (job->kind == PLAYER_UPDATE_JOB_CHECK) {
+        app->update.check = job->check;
+        app->update.phase = job->check.newer ? PLAYER_UPDATE_AVAILABLE : PLAYER_UPDATE_CURRENT;
+        app->update.notice = app->update.from_start && job->check.newer;
+        player_dev_log_add(app, "update", "newest release %s; this is %s",
+                           job->check.newest.tag, NK_PLAYER_VERSION);
+    } else if (job->kind == PLAYER_UPDATE_JOB_DOWNLOAD) {
+        snprintf(app->update.zip_path, sizeof(app->update.zip_path), "%s", job->zip_path);
+        app->update.received_bytes = job->release.zip_size;
+        app->update.phase = PLAYER_UPDATE_DOWNLOADED;
+    } else {
+        snprintf(app->update.install_dir, sizeof(app->update.install_dir), "%s",
+                 job->install_dir);
+        app->update.phase = PLAYER_UPDATE_INSTALLED;
+    }
+    app->update.from_start = false;
+    free(job);
+}
+
+/* Closing the player never waits on GitHub: a running step is told to stop and
+   left to end with the process. */
+static void player_update_shutdown(void) {
+    if (!s_update_job) return;
+    SDL_SetAtomicInt(&s_update_job->cancel, 1);
+    if (SDL_GetAtomicInt(&s_update_job->done)) {
+        SDL_WaitThread(s_update_job->thread, NULL);
+        free(s_update_job);
+    } else {
+        SDL_DetachThread(s_update_job->thread);
+    }
+    s_update_job = NULL;
+}
+
+static void player_update_open_release_page(const PlayerApp *app) {
+    const char *url = app->update.check.newest.page_url;
+    /* Only this repository's release pages, as the check verified. */
+    if (strncmp(url, NK_UPDATE_RELEASE_PAGE_PREFIX, strlen(NK_UPDATE_RELEASE_PAGE_PREFIX)) != 0) {
+        return;
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    printf("[PLAYER_UI_TEST] open_url=%s\n", url);
+    fflush(stdout);
+#else
+    if (!SDL_OpenURL(url)) {
+        fprintf(stderr, "[PLAYER] The release page could not be opened: %s\n", SDL_GetError());
+    }
+#endif
+}
+
 /* The Settings controls: the same handlers the existing renderer's Settings
    buttons call. Each change is saved as it is made. */
 static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
     switch (op) {
+        case PLAYER_UI_SETTINGS_CHECK_UPDATES:
+            player_app_set_view(app, VIEW_UPDATES);
+            app->update.from_start = false;
+            player_update_start(app, PLAYER_UPDATE_JOB_CHECK);
+            break;
+        case PLAYER_UI_SETTINGS_OPEN_UPDATES:
+            app->update.notice = false;
+            player_app_set_view(app, VIEW_UPDATES);
+            break;
+        case PLAYER_UI_SETTINGS_TOGGLE_UPDATE_AT_START:
+            player_app_toggle_update_check_at_start(app);
+            break;
+        case PLAYER_UI_SETTINGS_DOWNLOAD_UPDATE:
+            if (app->update.phase == PLAYER_UPDATE_AVAILABLE) {
+                player_update_start(app, PLAYER_UPDATE_JOB_DOWNLOAD);
+            }
+            break;
+        case PLAYER_UI_SETTINGS_CANCEL_UPDATE:
+            if (s_update_job && s_update_job->kind == PLAYER_UPDATE_JOB_DOWNLOAD) {
+                SDL_SetAtomicInt(&s_update_job->cancel, 1);
+            }
+            break;
+        case PLAYER_UI_SETTINGS_INSTALL_UPDATE:
+            if (app->update.phase == PLAYER_UPDATE_DOWNLOADED) {
+                player_update_start(app, PLAYER_UPDATE_JOB_INSTALL);
+            }
+            break;
+        case PLAYER_UI_SETTINGS_OPEN_UPDATE_FOLDER: {
+            char folder[NK_MAX_PATH];
+            size_t cut;
+            if (app->update.phase == PLAYER_UPDATE_INSTALLED) {
+                (void)player_app_request_open_folder(app, app->update.install_dir);
+                break;
+            }
+            snprintf(folder, sizeof(folder), "%s", app->update.zip_path);
+            cut = strlen(folder);
+            while (cut > 0u && folder[cut - 1u] != '/' && folder[cut - 1u] != '\\') --cut;
+            if (cut == 0u) break;
+            folder[cut - 1u] = '\0';
+            (void)player_app_request_open_folder(app, folder);
+            break;
+        }
+        case PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE: player_update_open_release_page(app); break;
         case PLAYER_UI_SETTINGS_CYCLE_RESOLUTION: player_app_cycle_resolution_scale(app, 1); break;
         case PLAYER_UI_SETTINGS_TOGGLE_PACING:
             player_app_set_fps_cap(app, app->settings.fps_cap < 0 ? 0 : -1);
@@ -1070,9 +1396,8 @@ static void player_ui_settings_apply(PlayerApp *app, PlayerUiSettingsOp op) {
         case PLAYER_UI_SETTINGS_TOGGLE_ONLINE:
             player_app_set_online_mode(app, !app->settings.online_mode);
             break;
-        case PLAYER_UI_SETTINGS_TOGGLE_UPDATES: player_app_toggle_online_feature(app, 0); break;
-        case PLAYER_UI_SETTINGS_TOGGLE_NEWS: player_app_toggle_online_feature(app, 1); break;
-        case PLAYER_UI_SETTINGS_TOGGLE_REPORTS: player_app_toggle_online_feature(app, 2); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_NEWS: player_app_toggle_online_feature(app, 0); break;
+        case PLAYER_UI_SETTINGS_TOGGLE_REPORTS: player_app_toggle_online_feature(app, 1); break;
         case PLAYER_UI_SETTINGS_TOGGLE_DEVELOPER:
             player_app_set_developer_mode(app, !app->settings.developer_mode);
             break;
@@ -1471,7 +1796,7 @@ static bool player_ui_test_parse_views(char *names, uint32_t *mask) {
         { "prereq_about", VIEW_PREREQ_ABOUT },
         { "confirm_remove_tools", VIEW_CONFIRM_REMOVE_TOOLS },
         { "build_cache", VIEW_BUILD_CACHE },
-        { "psp_fonts", VIEW_PSP_FONTS }
+        { "psp_fonts", VIEW_PSP_FONTS }, { "updates", VIEW_UPDATES }
     };
     if (!names || !names[0] || !mask) return false;
     uint32_t parsed_mask = 0;
@@ -1891,6 +2216,7 @@ static const char *player_ui_test_view_name(PlayerView view) {
     case VIEW_BUILD_CACHE: return "build_cache";
     case VIEW_PSP_FONTS: return "psp_fonts";
     case VIEW_ONLINE_SETTINGS: return "online_settings";
+    case VIEW_UPDATES: return "updates";
     case VIEW_DEVELOPER_LOG: return "developer_log";
     default: return "unknown";
     }
@@ -4378,6 +4704,8 @@ int main(int argc, char *argv[]) {
             player_app_set_view(&app, VIEW_ONLINE_SETTINGS);
         } else if (strcmp(test_view, "build-cache") == 0) {
             player_app_set_view(&app, VIEW_BUILD_CACHE);
+        } else if (strcmp(test_view, "updates") == 0) {
+            player_app_set_view(&app, VIEW_UPDATES);
         } else if (strcmp(test_view, "psp-fonts") == 0) {
             player_app_refresh_font_status(&app);
             player_app_set_view(&app, VIEW_PSP_FONTS);
@@ -4763,8 +5091,8 @@ int main(int argc, char *argv[]) {
         player_ui_nk_test_report_compatibility();
     }
     if (ui_test_mode && getenv("NK_UI_TEST_REPORT_VIEWS") != NULL) {
-        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_PSP_FONTS. */
-        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_PSP_FONTS; ++view) {
+        /* Every PlayerView, VIEW_LIBRARY through the last, VIEW_UPDATES. */
+        for (int view = (int)VIEW_LIBRARY; view <= (int)VIEW_UPDATES; ++view) {
             printf("[PLAYER_UI_TEST] view_coverage value=%d name=%s nk=%d\n", view,
                    player_ui_test_view_name((PlayerView)view),
                    player_ui_nk_draws_view(view) ? 1 : 0);
@@ -4907,6 +5235,14 @@ int main(int argc, char *argv[]) {
         &build_check_pending);
 
     app.enable_focus_handoff = interactive_window;
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (getenv("NK_UI_TEST_CHECK_AT_START") != NULL) app.settings.check_updates_at_start = true;
+#endif
+    /* The one check at start, only when the user turned it on (off by default). */
+    if (app.settings.check_updates_at_start) {
+        app.update.from_start = true;
+        player_update_start(&app, PLAYER_UPDATE_JOB_CHECK);
+    }
     bool running = true;
     uint64_t last_tick = SDL_GetTicks();
     /* The first frame is rendered before the event wait. A bounded wait keeps
@@ -4935,6 +5271,24 @@ int main(int argc, char *argv[]) {
     }
 #endif
     while (running && !app.should_quit) {
+        player_update_poll(&app);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+        {
+            static PlayerUpdatePhase reported = PLAYER_UPDATE_IDLE;
+            if (ui_test_mode && app.update.phase != reported) {
+                reported = app.update.phase;
+                printf("[PLAYER_UI_TEST] update=%s error=%s notice=%d newest=%s zip=%s "
+                       "install=%s\n",
+                       player_update_phase_name(app.update.phase),
+                       app.update.error.code[0] ? app.update.error.code : "none",
+                       app.update.notice ? 1 : 0,
+                       app.update.check.newest.tag[0] ? app.update.check.newest.tag : "none",
+                       app.update.zip_path[0] ? app.update.zip_path : "none",
+                       app.update.install_dir[0] ? app.update.install_dir : "none");
+                fflush(stdout);
+            }
+        }
+#endif
         /* A worker that could not queue its own completion has no other way
            to report it; apply its result before anything reads the pending
            state this frame. */
@@ -5708,6 +6062,7 @@ int main(int argc, char *argv[]) {
         app.prerequisite_fetcher_started = false;
     }
 
+    player_update_shutdown();
     destroy_staging_job(&staging_job);
     destroy_psn_job(&psn_job);
     if (package_status_job) {

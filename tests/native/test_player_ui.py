@@ -702,6 +702,71 @@ class LegacyRendererSourceTests(unittest.TestCase):
         self.assertGreater(main.index("#endif", legacy), legacy)
 
 
+UPDATE_RELEASES_URL = "https://api.github.com/repos/Jstar269/nakagawa-recomp/releases?per_page=10"
+UPDATE_DOWNLOAD_PREFIX = "https://github.com/Jstar269/nakagawa-recomp/releases/download/"
+
+
+def write_update_fixture(
+    folder: Path, version: str = "0.0.3", *, wrong_checksum: bool = False,
+    missing_file: bool = False,
+) -> None:
+    """Synthetic GitHub answers for Check for updates, as the regression build's
+    transport reads them from NK_UI_TEST_UPDATE_DIR: releases.json for
+    the Releases API, then each asset by its file name. The ZIP has the release
+    ZIP's layout (bin/nakagawa_player.exe and SHA256SUMS.txt)."""
+    import io
+    import zipfile
+
+    name = f"nakagawa-recomp-{version}-windows-x64.zip"
+    files = {"bin/nakagawa_player.exe": b"synthetic player\n", "START HERE.txt": b"synthetic\n"}
+    listed = dict(files)
+    if missing_file:
+        listed["bin/SDL3.dll"] = b"listed but left out of the ZIP\n"
+    sums = "".join(f"{hashlib.sha256(data).hexdigest()}  {path}\n" for path, data in listed.items())
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        for path, data in files.items():
+            package.writestr(path, data)
+        package.writestr("SHA256SUMS.txt", sums)
+    data = archive.getvalue()
+    (folder / name).write_bytes(data)
+    digest = "0" * 64 if wrong_checksum else hashlib.sha256(data).hexdigest()
+    (folder / f"{name}.sha256").write_bytes(f"{digest}  {name}".encode("ascii") + b"\r\n")
+    tag = f"v{version}"
+    release = {
+        "tag_name": tag,
+        "html_url": f"https://github.com/Jstar269/nakagawa-recomp/releases/tag/{tag}",
+        "draft": False,
+        "prerelease": True,
+        "published_at": "2026-11-04T12:00:00Z",
+        "body": "Second preview. Faster builds.",
+        "assets": [
+            {"name": name, "size": len(data), "state": "uploaded",
+             "browser_download_url": f"{UPDATE_DOWNLOAD_PREFIX}{tag}/{name}"},
+            {"name": f"{name}.sha256", "size": 105, "state": "uploaded",
+             "browser_download_url": f"{UPDATE_DOWNLOAD_PREFIX}{tag}/{name}.sha256"},
+        ],
+    }
+    (folder / "releases.json").write_text(json.dumps([release]), encoding="utf-8")
+
+
+def update_report(stdout: str) -> tuple[list[dict[str, str]], list[str]]:
+    """The update steps the player settled on, and the URLs it asked for. A step
+    in progress (checking, downloading, installing) and the quiet return to idle
+    after a failed check at start are seen only when a frame falls inside them,
+    so they are left out."""
+    steps = []
+    requests = []
+    for line in stdout.splitlines():
+        if line.startswith("[PLAYER_UI_TEST] update="):
+            step = dict(re.findall(r"([a-z_]+)=(\S+)", line))
+            if step["update"] not in ("checking", "downloading", "installing", "idle"):
+                steps.append(step)
+        elif line.startswith("[PLAYER_UI_TEST] update_request="):
+            requests.append(line.split("=", 1)[1])
+    return steps, requests
+
+
 class NativePlayerUiTests(unittest.TestCase):
     # The next UI is the only launcher. These tests pin behaviour of the old
     # renderer, which only the regression build keeps (--ui=legacy): its
@@ -1849,6 +1914,126 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertNotEqual(frames[0]["pixels"], frames[1]["pixels"])
         self.assertEqual(frames[3]["focus"], "1")
         self.assertEqual(frames[4]["picker"], "1")
+
+    def update_run(self, view: str, events: tuple[str, ...], fixture: dict[str, bool] | None,
+                   **kwargs: object) -> tuple[dict[str, object], list[dict[str, str]], list[str]]:
+        """A next-UI run whose update answers come from a synthetic fixture (None:
+        an empty folder, so every request is offline)."""
+        with tempfile.TemporaryDirectory(prefix=".update-fixture-", dir=ROOT) as tmp:
+            folder = Path(tmp)
+            if fixture is not None:
+                write_update_fixture(folder, **fixture)
+            env = dict(kwargs.pop("env_extra", None) or {})  # type: ignore[arg-type]
+            env["NK_UI_TEST_UPDATE_DIR"] = str(folder)
+            run = self.next_ui_run(view, events, env_extra=env, **kwargs)
+        stdout = run["stdout"]
+        assert isinstance(stdout, str)
+        steps, requests = update_report(stdout)
+        for url in requests:
+            self.assertTrue(
+                url == UPDATE_RELEASES_URL or url.startswith(UPDATE_DOWNLOAD_PREFIX),
+                f"an update request left this repository's releases: {url}")
+        return run, steps, requests
+
+    def test_update_check_finds_downloads_and_installs_a_newer_release(self) -> None:
+        """Owner request 2026-10-28: CHECK FOR UPDATES asks GitHub once; Download and
+        Install each need their own click; the ZIP is checked against the published
+        SHA-256 before Install is offered, and Install unpacks into a new folder."""
+        run, steps, requests = self.update_run(
+            "updates",
+            ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500",
+             "KEY_RETURN", "WAIT_MS=5000"),
+            {},
+        )
+        names = [step["update"] for step in steps]
+        self.assertEqual(steps[0]["newest"], "v0.0.3")
+        self.assertIn("available", names)
+        self.assertEqual(requests[0], UPDATE_RELEASES_URL)
+        if sys.platform != "win32":
+            # No native download or SHA-256 check off Windows: the release page only.
+            self.assertEqual(names, ["available"], steps)
+            self.assertEqual(len(requests), 1)
+            self.assertIn("open_url=https://github.com/Jstar269/nakagawa-recomp/releases/tag/v0.0.3",
+                          run["stdout"])
+            return
+        self.assertEqual(names, ["available", "downloaded", "installed"], steps)
+        self.assertEqual(
+            requests[1:],
+            [UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip.sha256",
+             UPDATE_DOWNLOAD_PREFIX + "v0.0.3/nakagawa-recomp-0.0.3-windows-x64.zip"],
+            "the checksum file first, then the ZIP, each once")
+        installed = steps[-1]
+        self.assertTrue(installed["zip"].endswith(
+            os.sep.join(("Nakagawa", "data", "downloads", "nakagawa-recomp-0.0.3-windows-x64.zip"))),
+            installed)
+        self.assertTrue(installed["install"].endswith("nakagawa-recomp-0.0.3-windows-x64"), installed)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["view"], "updates")
+
+    def test_update_check_offline_shows_one_plain_card_and_no_retries(self) -> None:
+        run, steps, requests = self.update_run(
+            "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=1500"), None)
+        self.assertEqual([step["update"] for step in steps], ["failed"], steps)
+        self.assertEqual(steps[0]["error"], "UPDATE_OFFLINE")
+        self.assertEqual(requests, [UPDATE_RELEASES_URL], "one request, no retry")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["view"], "updates")
+
+    def test_update_download_that_does_not_match_its_checksum_is_refused(self) -> None:
+        if sys.platform != "win32":
+            self.skipTest("the update download runs on Windows only")
+        _, steps, _ = self.update_run(
+            "updates", ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500"),
+            {"wrong_checksum": True})
+        self.assertEqual(steps[-1]["update"], "failed", steps)
+        self.assertEqual(steps[-1]["error"], "UPDATE_HASH_MISMATCH")
+        self.assertEqual(steps[-1]["zip"], "none", "nothing is kept or offered to install")
+
+    def test_update_install_that_loses_a_listed_file_is_refused(self) -> None:
+        if sys.platform != "win32":
+            self.skipTest("the update install runs on Windows only")
+        _, steps, _ = self.update_run(
+            "updates",
+            ("WAIT_MS=200", "KEY_RETURN", "WAIT_MS=800", "KEY_RETURN", "WAIT_MS=1500",
+             "KEY_RETURN", "WAIT_MS=5000"),
+            {"missing_file": True})
+        self.assertEqual(steps[-1]["update"], "failed", steps)
+        self.assertEqual(steps[-1]["error"], "UPDATE_INSTALL_INCOMPLETE")
+        self.assertEqual(steps[-1]["install"], "none")
+
+    def test_update_check_at_start_is_off_by_default_and_quiet_when_offline(self) -> None:
+        """No setting, no request: the player is offline by default (AGENTS.md section 5)."""
+        run, steps, requests = self.update_run("library", ("WAIT_MS=800",), {})
+        self.assertEqual((steps, requests), ([], []))
+        settings = run["settings"]
+        if isinstance(settings, dict):
+            self.assertIs(settings.get("check_updates_at_start"), False)
+        # Turned on: one request at start, and a newer version is one quiet button.
+        run, steps, requests = self.update_run(
+            "library", ("WAIT_MS=800",), {}, env_extra={"NK_UI_TEST_CHECK_AT_START": "1"})
+        self.assertEqual(requests, [UPDATE_RELEASES_URL])
+        self.assertEqual([(step["update"], step["notice"]) for step in steps],
+                         [("available", "1")], steps)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["view"], "library", "the check never takes the screen")
+        # Offline at start: one request, and nothing on screen.
+        run, steps, requests = self.update_run(
+            "library", ("WAIT_MS=1500",), None, env_extra={"NK_UI_TEST_CHECK_AT_START": "1"})
+        self.assertEqual(requests, [UPDATE_RELEASES_URL])
+        self.assertEqual(steps, [], "a failed check at start stays in the developer log")
+
+    def test_update_page_switch_saves_and_escape_returns_to_settings(self) -> None:
+        run, steps, requests = self.update_run(
+            "updates", ("WAIT_MS=200", "KEY_UP", "KEY_RETURN", "WAIT_MS=200", "KEY_ESCAPE",
+                        "WAIT_MS=200"), {})
+        self.assertEqual((steps, requests), ([], []), "the switch asks GitHub nothing")
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertIs(settings.get("check_updates_at_start"), True)
+        self.assertEqual([view for view, _ in self.screens(run)], ["updates", "settings"])
 
     def test_settings_screen_returns_to_library(self) -> None:
         run = self.run_player("settings", ("KEY_TAB", "KEY_ESCAPE"))

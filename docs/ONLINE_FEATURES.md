@@ -1,7 +1,9 @@
 # Online mode and developer mode (design)
 
-Status: step 1 of the implementation order is built (the switches, the wizard step and the developer log panel);
-no online feature is. The player is offline today ([`SETUP.md`](SETUP.md#network-use)). This page is the contract the implementation follows. Maintainer
+Status: step 1 of the implementation order is built (the switches, the wizard step and the developer log panel).
+The update check is built too, as its own opt-in feature outside online mode (owner decision, 2026-10-28; see
+[Update check](#update-check)); news and reports are not. The player is offline unless the user asks
+([`SETUP.md`](SETUP.md#network-use)). This page is the contract the implementation follows. Maintainer
 decisions of 2026-10-23: the launcher gets an update check, a reporting system and a news feed, all behind an
 **online mode** that the setup wizard asks about, and a **developer mode** that shows a developer log for
 diagnosing new issues.
@@ -11,13 +13,14 @@ diagnosing new issues.
 - **Asked once, changeable anytime.** The setup wizard asks about online mode and developer mode on one step.
   Both start switched off, and each is a switch in Settings afterwards.
 - **One host.** Online mode talks to `nakagawa.jaycast.net` over HTTPS and nothing else. The news site (The
-  FreshWire) cross-posts to it, so the player's allowlist stays one host.
+  FreshWire) cross-posts to it, so the player's allowlist stays one host. (The update check, outside online mode,
+  uses GitHub's hosts for the releases themselves.)
 - **Nothing is sent on its own.** No telemetry, analytics, crash upload or identifier. The only automatic traffic is
-  fetching the update notice and the news feed while online mode is on. Requests carry no cookie and no ID; the
+  fetching the news feed while online mode is on, and the one update check at start when the user turned it on. Requests carry no cookie and no ID; the
   user agent names the version and operating system only (`NakagawaRecomp/0.0.1 (Windows)`).
 - **Game data never leaves the PC.** No game code, game data, decrypted module, package, save, guest memory or
   capture is ever uploaded (`AGENTS.md`, section 5). A report sends only the fields the user sees in its preview.
-- **Offline stays complete.** Every feature works without online mode except these three. A network failure is
+- **Offline stays complete.** Every feature works without online mode except news and reports. A network failure is
   shown once, quietly, and never blocks the library or a game.
 - **Games stay offline.** Online mode is a launcher feature. The PSP network services a game calls stay fail-closed
   whatever this setting says.
@@ -29,21 +32,32 @@ with one plain sentence:
 
 | Switch | Default | Sentence |
 | --- | --- | --- |
-| Online mode | Off | "Check nakagawa.jaycast.net for updates and news, and let you send reports. Nothing is sent without you." |
+| Online mode | Off | "Check nakagawa.jaycast.net for news and let you send reports. Nothing is sent without you." |
 | Developer mode | Off | "Show a developer log on screen to help track down problems. Stays on this PC." |
 
-With online mode on, Settings shows its three parts (updates, news, reports), each on by default and each
+With online mode on, Settings shows its two parts (news, reports), each on by default and each
 switchable alone. The step is skippable; skipping keeps both off.
 
 ## Update check
 
-- At most once a day while online mode and updates are on, the player fetches
-  `https://nakagawa.jaycast.net/updates.json`: the latest version, its date, the release-notes URL and an Ed25519
-  signature over those fields. The public key is compiled into the player; the private key is the maintainer's.
-- A valid, newer version shows a notice in the library ("v0.0.2 is available") with **Release notes** (opens the
-  browser) and **Not now**. An invalid signature, a downgrade or a malformed file is ignored and logged.
-- First version: notify and link only. An in-app download-and-install step comes later, with its own signature
-  check over the downloaded file and a user confirmation; it never runs unsigned code.
+Built for v0.0.2 (owner decision, 2026-10-28: "a way for users to Check for Updates and have the newer version
+automatically downloaded optionally"). It replaces the signed `updates.json` design this section held before:
+the update check is its own opt-in feature, not a part of online mode, and it uses GitHub, where the releases
+already are.
+
+- **Settings > Updates.** CHECK FOR UPDATES asks GitHub's public Releases API for this repository once
+  (`src/player/update_check.c`), anonymously. The page shows this version, the newest one (pre-releases count,
+  since every v0.0.x release is one), its date, the release page link and the first lines of its notes.
+- **Check at start** is a switch on that page, off by default (`check_updates_at_start` in `settings.json`).
+  When on, the player asks once at start. A newer version shows one quiet "Version x is out" button on the
+  library; a failure is not shown, only logged in the developer log.
+- **DOWNLOAD** and **INSTALL** are separate clicks. The Windows ZIP is kept only if its SHA-256 matches the
+  release's `.sha256` file and GitHub's own digest of the asset; Install unpacks it into a new folder and tells
+  the user how to start it. Nothing is replaced and nothing runs on its own.
+- A release signature (the Ed25519 check below, `nk_ed25519_verify`) or a build-provenance attestation for the
+  ZIP would add a check that does not trust GitHub's hosting alone. Neither exists for the release ZIP yet.
+
+Hosts, the exact request and the failure cards are in [`SETUP.md`](SETUP.md#network-use).
 
 ## News
 
@@ -106,11 +120,13 @@ its own explicit choice with its own sentence in Settings.
 
 ## Policy and code changes this needs
 
-1. `AGENTS.md`, section 5: offline by default becomes "offline until the user turns on online mode; then only the
-   update check, news and user-sent reports, only to `nakagawa.jaycast.net`".
+1. `AGENTS.md`, section 5: offline by default becomes "offline until the user turns on online mode; then only
+   news and user-sent reports, only to `nakagawa.jaycast.net`". The update check already has its own entry there
+   (2026-10-28).
 2. Until the first network feature ships, `network_mode` in `settings.json` stays `"offline"` (the only value
    `AGENTS.md` section 5 accepts) and the user's choice lives in a separate `online_mode` key, with the per-feature
-   switches (`online_updates`, `online_news`, `online_reports`) and `developer_mode` beside it. `network_mode` gains
+   switches (`online_news`, `online_reports`) and `developer_mode` beside it. The update check has its own key,
+   `check_updates_at_start`, outside online mode. `network_mode` gains
    `"online"` when step 2 ships, together with the section 5 change in item 1; any unknown value still reads as
    offline.
 3. `docs/SETUP.md` "Network use" gains one row per feature when each ships; the egress allowlist test
@@ -127,7 +143,7 @@ its own explicit choice with its own sentence in Settings.
 1. Settings fields, the wizard step and the developer log panel (no network). **Built.**
    - The settings keys are as item 2 below describes.
    - The switches live on Settings > ONLINE & DEVELOPER and on the wizard step "Online and developer options"
-     (right after Welcome), both saying that this version has no online features yet. CONTINUE is the step's
+     (right after Welcome), both saying that news and reports aren't built yet. CONTINUE is the step's
      default focus, so Enter never flips a switch; SKIP turns both off.
    - The developer log (F12, or Select + R on a controller, with developer mode on) holds the player's errors,
      launches, setting changes, the game's exit code and the runtime's boot events (phases, the named stop boundary,
@@ -136,8 +152,11 @@ its own explicit choice with its own sentence in Settings.
      `tests/native/test_player_ui.py`.
 2. A small HTTPS client behind one host allowlist (WinHTTP on Windows, which the build-tool download already uses;
    a portable backend on Linux), with the stub-server tests.
-3. Update check with signature verification.
-   - The verify primitive is ready, with nothing calling it yet: `nk_ed25519_verify` in `src/core/nk_sig.h`,
+3. Update check. **Built** as its own opt-in feature on GitHub's Releases API, with a SHA-256 check of the
+   download ([Update check](#update-check)); tests: `tests/native/test_update_check.c` and
+   `tests/native/test_player_ui.py`, on recorded and synthetic answers, never the internet.
+   - A signed release manifest would add signature verification. The verify primitive is ready, with nothing
+     calling it yet: `nk_ed25519_verify` in `src/core/nk_sig.h`,
      on the vendored Monocypher 4.0.3 Ed25519 check (`third_party/monocypher/`), tested against the RFC 8032
      vectors by `ed25519-verify-selftest`. It holds no key and makes no connection.
 4. News strip.
