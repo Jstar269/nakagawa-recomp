@@ -1076,9 +1076,15 @@ static uint32_t do_erase(uint32_t param, const char *game, const char *save) {
     return st == SR_CD_OK ? 0 : ERR_RW_NO_DATA;
 }
 
+/* Fields added by later parameter versions are absent, even if adjacent guest
+ * memory is mapped. Treat absent optional pointers as null. */
+static uint32_t savedata_optional_pointer(uint32_t param, uint32_t size, uint32_t offset) {
+    return offset <= size && size - offset >= 4u ? MEM_R32(param + offset) : 0u;
+}
+
 /* LIST (11): fill idList with this game's save directories. */
-static uint32_t do_list(uint32_t param, const char *game) {
-    uint32_t idList = MEM_R32(param + SDP_idList);
+static uint32_t do_list(uint32_t param, uint32_t size, const char *game) {
+    uint32_t idList = savedata_optional_pointer(param, size, SDP_idList);
     if (!idList) return 0;
     uint32_t maxCount = MEM_R32(idList + 0);
     uint32_t entries = MEM_R32(idList + 8);
@@ -1130,8 +1136,8 @@ static int is_system_file(const char *n) {
 }
 
 /* FILES (12): list the files inside one save directory. */
-static uint32_t do_files(uint32_t param, const char *game, const char *save) {
-    uint32_t fl = MEM_R32(param + SDP_fileList);
+static uint32_t do_files(uint32_t param, uint32_t size, const char *game, const char *save) {
+    uint32_t fl = savedata_optional_pointer(param, size, SDP_fileList);
     if (!fl) return 0;
     uint32_t maxSec = MEM_R32(fl + 0), maxNorm = MEM_R32(fl + 4), maxSys = MEM_R32(fl + 8);
     uint32_t pSec = MEM_R32(fl + 24), pNorm = MEM_R32(fl + 28), pSys = MEM_R32(fl + 32);
@@ -1185,8 +1191,8 @@ static uint32_t do_files(uint32_t param, const char *game, const char *save) {
     return 0;
 }
 
-static uint32_t do_sizes(uint32_t param, const char *game) {
-    uint32_t msFree = MEM_R32(param + SDP_msFree);
+static uint32_t do_sizes(uint32_t param, uint32_t size, const char *game) {
+    uint32_t msFree = savedata_optional_pointer(param, size, SDP_msFree);
     if (msFree) {
         MEM_W32(msFree + 0, CLUSTER);
         MEM_W32(msFree + 4, FREE_CLUSTERS);
@@ -1194,7 +1200,7 @@ static uint32_t do_sizes(uint32_t param, const char *game) {
         wr_fixed(msFree + 12, "512 MB", 8);
     }
     int sizes_no_data = 0;
-    uint32_t msData = MEM_R32(param + SDP_msData);
+    uint32_t msData = savedata_optional_pointer(param, size, SDP_msData);
     if (msData) {
         /* info block at +36: used clusters/KB of the named save (0 if absent) */
         char game2[16], save2[24], dir[PATH_MAX], path[PATH_MAX];
@@ -1235,7 +1241,7 @@ static uint32_t do_sizes(uint32_t param, const char *game) {
             sizes_no_data = 1;
         }
     }
-    uint32_t ud = MEM_R32(param + SDP_usedData);
+    uint32_t ud = savedata_optional_pointer(param, size, SDP_usedData);
     if (ud) {
         uint32_t total = CLUSTER + CLUSTER;                 /* directory record + SFO */
         if (MEM_R8(param + SDP_fileName) != 0) {
@@ -1276,8 +1282,8 @@ static int getsize_add_entry(uint64_t *needed, uint32_t entries, uint32_t index)
 }
 
 /* GETSIZE (22): free/needed space for the sizeInfo block. */
-static uint32_t do_getsize(uint32_t param) {
-    uint32_t si = MEM_R32(param + SDP_sizeInfo);
+static uint32_t do_getsize(uint32_t param, uint32_t size) {
+    uint32_t si = savedata_optional_pointer(param, size, SDP_sizeInfo);
     if (!si) return 0;
     if (!sr_guest_span_readable(si, SAVEDATA_SIZE_INFO_BYTES) ||
         !sr_guest_span_writable(si, SAVEDATA_SIZE_INFO_BYTES)) return 0x80110381u;
@@ -1351,8 +1357,9 @@ static void resolve_save(uint32_t param, uint32_t mode, const char *game, char *
     }
 }
 
-uint32_t sr_savedata_execute(uint32_t param) {
-    if (!param || !sr_guest_span_readable(param, 0x600u) || !sr_guest_span_writable(param, 0x600u)) return 0x80110381u;
+uint32_t sr_savedata_execute_sized(uint32_t param, uint32_t size) {
+    if (!param || (size != 0x5c8u && size != 0x5dcu && size != 0x600u) ||
+        !sr_guest_span_readable(param, size) || !sr_guest_span_writable(param, size)) return 0x80110381u;
     uint32_t mode = MEM_R32(param + SDP_mode);
     char game[16], save[24];
     rd_cstr(param + SDP_gameName, game, 14);
@@ -1385,15 +1392,20 @@ uint32_t sr_savedata_execute(uint32_t param) {
         case SD_ERASE: case SD_ERASESECURE:
             return do_erase(param, game, save);
         case SD_LIST:
-            return do_list(param, game);
+            return do_list(param, size, game);
         case SD_FILES:
-            return do_files(param, game, save);
+            return do_files(param, size, game, save);
         case SD_SIZES:
-            return do_sizes(param, game);
+            return do_sizes(param, size, game);
         case SD_GETSIZE:
-            return do_getsize(param);
+            return do_getsize(param, size);
         default:
             if (sdlog()) fprintf(stderr, "savedata: UNHANDLED mode=%" PRIu32 "\n", mode);
             return 0;
     }
+}
+
+/* Existing internal callers provide a full-sized block. */
+uint32_t sr_savedata_execute(uint32_t param) {
+    return sr_savedata_execute_sized(param, 0x600u);
 }
