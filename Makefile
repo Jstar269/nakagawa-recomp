@@ -473,6 +473,16 @@ NAME_IMPORTS_ARG :=
 NAME_IMPORTS_PREREQ :=
 NAME_IMPORTS_PROFILE_LINE :=
 endif
+# Optional declarative enhancement package (e.g. 60 Hz frame-rate rescale).
+# Empty keeps authentic translation and profile stamps byte-identical.
+ENHANCEMENT_PACKAGE ?=
+ifeq ($(strip $(ENHANCEMENT_PACKAGE)),)
+ENHANCEMENT_PACKAGE_ARG :=
+ENHANCEMENT_PACKAGE_PROFILE_LINE :=
+else
+ENHANCEMENT_PACKAGE_ARG := --enhancement-package=$(ENHANCEMENT_PACKAGE)
+ENHANCEMENT_PACKAGE_PROFILE_LINE := $(NEWLINE)ENHANCEMENT_PACKAGE=$(ENHANCEMENT_PACKAGE)
+endif
 
 # ---------------------------------------------------------------------------
 # BUILD IDENTITY: the source revision every commit-stamped artifact records --
@@ -1834,7 +1844,7 @@ endif
 # every guest module, and a title with a hundred modules under a long private path
 # overruns the command line a shell will accept. The entries and their order are the
 # ones the --entry form used, so the hash is unchanged.
-export NK_CODEGEN_PROFILE_ENTRIES := GAME_NAME=$(GAME_NAME)$(NEWLINE)GAME_BASE=$(GAME_BASE)$(NEWLINE)CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)$(NEWLINE)EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)$(NEWLINE)EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)$(NEWLINE)FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)$(NEWLINE)CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)$(NEWLINE)CODEGEN_TOOL=$(CODEGEN_TOOL)$(CHUNK_TARGET_PROFILE_LINE)$(SYMBOL_MAP_PROFILE_LINE)$(NAME_IMPORTS_PROFILE_LINE)
+export NK_CODEGEN_PROFILE_ENTRIES := GAME_NAME=$(GAME_NAME)$(NEWLINE)GAME_BASE=$(GAME_BASE)$(NEWLINE)CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)$(NEWLINE)EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)$(NEWLINE)EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)$(NEWLINE)FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)$(NEWLINE)CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)$(NEWLINE)CODEGEN_TOOL=$(CODEGEN_TOOL)$(CHUNK_TARGET_PROFILE_LINE)$(SYMBOL_MAP_PROFILE_LINE)$(NAME_IMPORTS_PROFILE_LINE)$(ENHANCEMENT_PACKAGE_PROFILE_LINE)
 ifdef NK_BUILD_DIR_READY
 $(file >$(BUILD_DIR)/.codegen-profile-entries,$(NK_CODEGEN_PROFILE_ENTRIES))
 $(file >$(BUILD_DIR)/.runtime-profile-entries,$(NK_RUNTIME_PROFILE_ENTRIES))
@@ -1868,7 +1878,7 @@ $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h:
 	$(if $(wildcard $@),,$(error NK_AOT_PREGENERATED requires $@))
 else
 $(BUILD_DIR)/$(GAME_NAME)_recomp.c $(BUILD_DIR)/$(GAME_NAME)_recomp_funcs.h: $(GAME_INPUT_PREREQ) $(CODEGEN_TOOL) tools/codegen.py tools/analyze.py tools/entry_frame_balance.py tools/prxload.py tools/host_stubs.py tools/imports.py $(CODEGEN_PROFILE_STAMP) $(SYMBOL_MAP) $(NAME_IMPORTS_PREREQ)
-	"$(PYTHON)" $(CODEGEN_TOOL) --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG) $(SYMBOL_MAP_ARG) $(NAME_IMPORTS_ARG) $(CODEGEN_USER_ARGS)
+	"$(PYTHON)" $(CODEGEN_TOOL) --env-elf $(BUILD_DIR)/$(GAME_NAME)_recomp.c --base=$(GAME_BASE) $(CODEGEN_PROFILE_ARG) $(EXTRA_SPAN_ARG) $(EXTRA_ELF_ENV_ARG) --funcs-per-chunk=$(FUNCS_PER_CHUNK) $(CHUNK_BYTES_ARG) $(SYMBOL_MAP_ARG) $(NAME_IMPORTS_ARG) $(ENHANCEMENT_PACKAGE_ARG) $(CODEGEN_USER_ARGS)
 endif
 
 $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py tools/analyze.py tools/prxload.py
@@ -2617,7 +2627,7 @@ hle-thread-selftest-build: $(RT_GE_O) $(H264_SUB_OBJS) $(GENERIC_TITLE_CONFIG_HE
 		$(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
-		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
+		$(LDFLAGS) -Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/hle_thread_selftest.exe \
 		$(HLE_THREAD_SELFTEST_SOURCE) src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
@@ -2656,7 +2666,7 @@ hle-title-selftest-one: $(RT_GE_O) $(H264_SUB_OBJS) $(TITLE_CONFIG_TOOL) tools/t
 	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
-		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
+		$(LDFLAGS) -Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o $(HLE_TITLE_SELFTEST_EXE) \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
@@ -2696,7 +2706,7 @@ $(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(H264_SUB_OBJS) $(PSP_ORACLE
 		-Wno-unused-function -Wno-format-truncation -Wno-missing-field-initializers \
 		-Wno-infinite-recursion -Wno-sign-compare -Wno-unused-parameter -Wno-parentheses -Wno-pointer-sign \
 		-I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
-		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
+		-Wl,--gc-sections $(REPRODUCIBLE_LINK_FLAG) -o "$(PSP_ORACLE_SMOKE_EXE)" \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/mp3_bridge.c src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c $(H264_SUB_OBJS) \
