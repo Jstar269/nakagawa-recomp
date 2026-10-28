@@ -281,6 +281,17 @@ static void au_write_pts(uint32_t auAddr, int off, int64_t v) {
     MEM_W32(auAddr + (uint32_t)off + 4, lo);
 }
 
+/* The presentation time the guest holds for an access unit (the inverse of au_write_pts);
+ * -1 when the AU carries none. */
+static int64_t au_read_pts(uint32_t auAddr) {
+    uint64_t v = ((uint64_t)MEM_R32(auAddr) << 32) | MEM_R32(auAddr + 4u);
+    return (int64_t)v;
+}
+
+/* Presentation-boundary measurement (hle.c, SR_MPEGAV): a decoded picture now sits in guest
+ * memory at [first, first + bytes) with this 90 kHz presentation time. */
+void sr_psmf_av_note_video_delivery(uint32_t first, uint32_t bytes, int64_t pts, int pts_valid);
+
 static uint32_t h264_demux_error(Mpeg *ctx, uint32_t auAddr) {
     if (ctx && !ctx->h264DemuxErrorReported) {
         ctx->h264DemuxErrorReported = 1;
@@ -763,6 +774,10 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
             return mpeg_contract_error("sceMpegAvcDecode", "destination changed during validation", SCE_MPEG_ERROR_INVALID_VALUE);
     }
     MEM_W32(initAddr, gotFrame > 0 ? 1u : 0u);
+    if (gotFrame > 0) {
+        int64_t auPts = au_read_pts(auAddr);
+        sr_psmf_av_note_video_delivery(buffer, bytes, auPts, auPts >= 0);
+    }
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
@@ -784,6 +799,7 @@ typedef struct {
     uint64_t guest_tag;
     uint8_t *rgba;
     int initialized, valid;
+    int64_t pts;     /* presentation time of the retained picture, -1 when its AU carried none */
 } YcbcrBuf;
 static YcbcrBuf s_ycbcr[YCBCR_SLOT_COUNT];
 
@@ -973,6 +989,7 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
         return 0;
     }
     b->valid = 1;
+    b->pts = au_read_pts(auAddr);
     MEM_W32(initAddr, 1u);
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
@@ -1114,6 +1131,7 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
             fprintf(stderr, "MpegAvcCsc #%d ycbcr=0x%" PRIx32 " dest=0x%" PRIx32 " fw=%" PRIu32 " range=%u,%u %ux%u\n",
                     n, buf, dest, frameWidth, (unsigned)x, (unsigned)y, (unsigned)w, (unsigned)h);
     }
+    sr_psmf_av_note_video_delivery(span.first, span.total_bytes, b->pts, b->pts >= 0);
     return 0;
 }
 
