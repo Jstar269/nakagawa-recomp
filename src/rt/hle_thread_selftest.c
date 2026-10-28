@@ -21725,6 +21725,69 @@ static void test_td24c_atrac_info_batch(void) {
     }
 }
 
+extern void sr_hle_test_atrac_caps_reset(void);
+
+/* ---- issue #1096: the measured sceAtracSetData refusal of fact delay 2048 ----
+ *
+ * MEASURED on a PSP-3000 (2026-10-24; fixtures/psp_oracle/README.md
+ * `at3-decode`): an AT3 stream whose 8-byte fact chunk carries delay 2048 is
+ * refused by sceAtracSetData with 0x80630008, and the sceAtracDecodeData that
+ * follows returns 0x80630010. Only delay 2048 is measured; 1024 and below are
+ * accepted, and no threshold in between is known, so 2047 stays accepted. The
+ * synthetic fixture is the #1096 AT3 frame; no game data. */
+static void test_at3_set_data_delay_2048_1096(void) {
+    enum {
+        TRACK = 0x08002000u,
+        PCM_OUT = 0x08003000u,
+        OUT_N = 0x08004100u,
+        OUT_END = 0x08004104u,
+        OUT_REMAIN = 0x08004108u,
+        AT1096_BAD_CODEC_PARAMS = 0x80630008u,
+        AT1096_NO_DATA = 0x80630010u,
+    };
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_atrac_caps_reset();
+
+    uint32_t id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u);
+    expect(id < 8u, "#1096: AT3 context for the delay-2048 leg");
+    if (id >= 8u) return;
+    expect(td1096_decode(id, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN) == AT1096_NO_DATA,
+           "#1096: DecodeData on a context that holds no data returns 0x80630010");
+
+    td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES, 2048u);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) == AT1096_BAD_CODEC_PARAMS,
+           "#1096: sceAtracSetData refuses an 8-byte fact chunk with delay 2048 (0x80630008)");
+    expect(td1096_decode(id, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN) == AT1096_NO_DATA,
+           "#1096: the DecodeData after the refused SetData returns 0x80630010");
+
+    /* The same context takes a track the PSP accepts. */
+    td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES, 1024u);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) == 0u,
+           "#1096: the context accepts a delay-1024 track after the refusal");
+    expect(td1096_decode(id, PCM_OUT, OUT_N, OUT_END, OUT_REMAIN) == 0u &&
+               MEM_R32(OUT_N) == 955u,
+           "#1096: and decodes it (955-sample first call)");
+    (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+
+    /* Only the measured delay is refused. */
+    id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u);
+    td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES, 2047u);
+    expect(id < 8u && td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) == 0u,
+           "#1096: delay 2047 is not measured as refused and stays accepted");
+    if (id < 8u) (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+
+    /* The *AndGetID call shares the analysis (UNMEASURED beyond SetData) and
+     * hands out no ID for a refused track. */
+    td1096_build_at3_frames(TRACK, 0x0270u, 1u, ATRAC3_FRAME_SAMPLES, 2048u);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA_AND_GET_ID, TRACK, 380u, 0u, 0u) ==
+               AT1096_BAD_CODEC_PARAMS,
+           "#1096: sceAtracSetDataAndGetID refuses the delay-2048 track the same way");
+    id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3, 0u, 0u, 0u);
+    expect(id == 0u, "#1096: the refused sceAtracSetDataAndGetID left every ID free");
+    if (id < 8u) (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u);
+}
+
 /* ---- issue #1379: the halfway and MOut set calls get their own signatures ----
  *
  * Six sceAtrac NIDs were registered to h_AtracSetDataAndGetID(buf, bufSize).
@@ -21911,7 +21974,6 @@ static void test_atrac_set_entry_points_1379(void) {
  * container is not modelled). sceAtracReinit(at3Count, at3plusCount) ignored
  * its counts; it now reserves ID slots per codec. Error codes and the Reinit
  * budget come from the public PPSSPP reference and are not measured on a PSP. */
-extern void sr_hle_test_atrac_caps_reset(void);
 #define NID_SCE_ATRAC_SET_AA3_DATA_AND_GET_ID             0x5622b7c1u
 #define NID_SCE_ATRAC_SET_AA3_HALFWAY_BUFFER_AND_GET_ID   0x5dd66588u
 #define AT1379_NID_REINIT          0x132f1ecau
@@ -35954,6 +36016,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_mp3_loop_and_mono();
     test_mp3_error_paths();
     test_at3_synthetic_decode_bookkeeping();
+    test_at3_set_data_delay_2048_1096();
     test_atrac_set_entry_points_1379();
     test_atrac_aa3_and_reinit_1379();
     test_td24d_hle_batch();

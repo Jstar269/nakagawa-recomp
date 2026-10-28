@@ -9582,7 +9582,8 @@ static void atrac_stream_window_consume(Atrac *a, uint32_t bytes) {
     a->streamWindowRead %= a->streamWindowSize;
     a->streamWindowQueued -= bytes;
 }
-static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
+#define ATRAC_ERROR_BAD_CODEC_PARAMS 0x80630008u
+static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t *refusal) {
     /* Scan the RIFF for "fmt " (frame size / blockAlign), "fact" (total samples),
      * "data" (frame payload offset) and "smpl" (loop points). The input is
      * guest-controlled: validate the complete supplied span first, then do all
@@ -9692,6 +9693,18 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
     }
     if (endSample <= 0) return 0;
     if (a->codecType == ATRAC_CODEC_AT3 && !hasFmt) return 0;
+    /* MEASURED on a PSP-3000 (firmware 6.61, 2026-10-24; #1096,
+     * fixtures/psp_oracle/README.md `at3-decode`): an AT3 stream whose 8-byte
+     * fact chunk carries delay 2048 is refused by sceAtracSetData with
+     * 0x80630008, and the DecodeData that follows returns 0x80630010 because
+     * the context holds no data. Only the delay value 2048 with an 8-byte
+     * fact chunk is measured; no threshold between 1024 and 2048 is known, and
+     * only sceAtracSetData was measured. The other Set* calls share this
+     * track analysis here and are UNMEASURED. */
+    if (a->codecType == ATRAC_CODEC_AT3 && at3FactSize == 8u && at3FactDelay == 2048u) {
+        if (refusal) *refusal = ATRAC_ERROR_BAD_CODEC_PARAMS;
+        return 0;
+    }
     a->fileSize = fileSize;
     a->dataByteOffset = dataByteOffset;
     a->bytesPerFrame = bytesPerFrame;
@@ -9832,7 +9845,8 @@ static uint32_t atrac_remaining_frames(const Atrac *a) {
 /* Configure `a` from the first `size` bytes of a track held in a guest buffer
  * of `bufSize` bytes (the ring or the whole-file buffer). sceAtracSetData passes
  * size == bufSize; the halfway calls pass the filled prefix separately. */
-static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t bufSize) {
+static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t bufSize,
+                           uint32_t *refusal) {
     /* Transactional: a rejected buffer leaves the previously configured
      * context untouched. */
     uint32_t oldBuf = a->buf;
@@ -9854,7 +9868,7 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t bufSi
     a->bufferPos = 0;
     a->bufferValidBytes = 0;
     a->bufferHeaderSize = 0;
-    if (!atrac_parse_track(a, buf, size)) {
+    if (!atrac_parse_track(a, buf, size, refusal)) {
         a->buf = oldBuf;
         a->size = oldSize;
         a->posSample = oldPosSample;
@@ -10089,11 +10103,12 @@ static uint32_t atrac_riff_codec(uint32_t buf, uint32_t size) {
 }
 /* Channel count of the RIFF prefix as the codec `codec` parses it, without
  * touching any context; -1 when the prefix does not parse. */
-static int atrac_riff_channels(uint32_t codec, uint32_t buf, uint32_t size) {
+static int atrac_riff_channels(uint32_t codec, uint32_t buf, uint32_t size,
+                               uint32_t *refusal) {
     Atrac probe;
     memset(&probe, 0, sizeof(probe));
     probe.codecType = codec;
-    return atrac_parse_track(&probe, buf, size) ? probe.channels : -1;
+    return atrac_parse_track(&probe, buf, size, refusal) ? probe.channels : -1;
 }
 static void atrac_log_setdata(const Atrac *a, const char *call) {
     if (!atrac_log_on()) return;
@@ -10108,19 +10123,20 @@ static uint32_t atrac_set_new(uint32_t buf, uint32_t readSize, uint32_t bufSize,
     if (bufSize > readSize && !sr_guest_span_readable(buf, bufSize))
         return ATRAC_ERROR_SIZE_TOO_SMALL;
     uint32_t codec = atrac_riff_codec(buf, readSize);
-    int channels = codec ? atrac_riff_channels(codec, buf, readSize) : -1;
-    if (channels < 0) return ATRAC_ERROR_UNKNOWN_FORMAT;
+    uint32_t refusal = 0;
+    int channels = codec ? atrac_riff_channels(codec, buf, readSize, &refusal) : -1;
+    if (channels < 0) return refusal ? refusal : ATRAC_ERROR_UNKNOWN_FORMAT;
     if (mono && channels != 1) return ATRAC_ERROR_NOT_MONO;
     int id = atrac_alloc_slot(codec);
     if (id < 0) return ATRAC_ERROR_NO_ATRACID;
     Atrac *a = &s_atrac[id];
     memset(a, 0, sizeof(*a));
     a->used = 1; a->codecType = codec;
-    if (!atrac_set_track(a, buf, readSize, bufSize)) {
+    if (!atrac_set_track(a, buf, readSize, bufSize, &refusal)) {
         /* The ID was never handed out: do not leave a half-configured slot
          * behind that later calls could mistake for a valid context. */
         a->used = 0;
-        return ATRAC_ERROR_UNKNOWN_FORMAT;
+        return refusal ? refusal : ATRAC_ERROR_UNKNOWN_FORMAT;
     }
     atrac_ensure_decoder(a);
     if (a->codecType == ATRAC_CODEC_AT3 && !a->dec_at3) {
@@ -10144,10 +10160,17 @@ static uint32_t atrac_set_existing(uint32_t id, uint32_t buf, uint32_t readSize,
     if (readSize > bufSize) return ATRAC_ERROR_INCORRECT_READ_SIZE;
     if (!buf || readSize < 44u || !sr_guest_span_readable(buf, bufSize))
         return ATRAC_ERROR_SIZE_TOO_SMALL;
-    if (mono && atrac_riff_channels(a->codecType, buf, readSize) != 1)
-        return ATRAC_ERROR_NOT_MONO;
-    if (!atrac_set_track(a, buf, readSize, bufSize))
-        return ATRAC_ERROR_UNKNOWN_FORMAT;
+    uint32_t refusal = 0;
+    if (mono) {
+        int channels = atrac_riff_channels(a->codecType, buf, readSize, &refusal);
+        if (refusal) return refusal;
+        if (channels != 1) return ATRAC_ERROR_NOT_MONO;
+    }
+    /* A refusal leaves the context as it was (rollback in atrac_set_track); a
+     * context that held no data keeps holding none. What the PSP leaves in a
+     * context that already held data is UNMEASURED. */
+    if (!atrac_set_track(a, buf, readSize, bufSize, &refusal))
+        return refusal ? refusal : ATRAC_ERROR_UNKNOWN_FORMAT;
     atrac_ensure_decoder(a);
     if (a->codecType == ATRAC_CODEC_AT3 && !a->dec_at3)
         return ATRAC_ERROR_UNKNOWN_FORMAT;
@@ -10357,8 +10380,8 @@ static int atrac_decode_frame(Atrac *a, uint32_t out, int skip, int *samples_out
  *   1024 each; delay 500 -> the first decode returns 0x80630002, 0 samples.
  * Only these delays are modelled. Any other delay, or a 12-byte fact chunk,
  * keeps the complete decoder frame and reports ATRAC3_NOT_MEASURED once. The
- * PSP's sceAtracSetData refusal of delay 2048 (0x80630008) is measured but not
- * modelled here. The sample counts are measured; which samples of the frame
+ * PSP's sceAtracSetData refusal of delay 2048 (0x80630008) is modelled in
+ * atrac_parse_track. The sample counts are measured; which samples of the frame
  * the PSP drops is not public evidence, and the leading ones are dropped
  * (assumed). */
 static const struct {
@@ -10403,6 +10426,13 @@ static uint32_t atrac3_first_frame_rule(const Atrac *a, int *skip) {
 static uint32_t h_AtracDecodeData(CpuState *s) {
     /* a0=id, a1=outSamples, a2=*decodedSamples, a3=*finishFlag, t0=*remainFrames. */
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
+    /* MEASURED on a PSP-3000 (#1096, `at3-decode`): the DecodeData after a
+     * refused sceAtracSetData (fact delay 2048) returns 0x80630010. The
+     * context holds no data, so a context that never received a track reports
+     * the same. The output words were not recorded and are left untouched. The
+     * measurement is plain AT3; ATRAC3+ follows the same context state here,
+     * UNMEASURED. */
+    if (a->bufferState == 0) return ATRAC_ERROR_NO_DATA;
     uint32_t out = A1, decAddr = A2, finAddr = A3, remAddr = stack_arg(s, 0);
     int n = 0, finished = 0;
     if (a->codecType == ATRAC_CODEC_AT3 &&
