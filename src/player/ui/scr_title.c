@@ -1243,7 +1243,7 @@ PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *mode
                     NK_UI_TYPE_BODY_L, theme->muted);
         if (wizard_box_begin(ui, 0u)) {
             nk_ui_eyebrow(ui, WIZ_ID_TEXT + 2u, "What you need");
-            wizard_text(ui, 3u, "A decrypted .iso of a PSP game you own", NK_UI_TYPE_BODY_S,
+            wizard_text(ui, 3u, "A disc image (.iso) of a PSP game you own", NK_UI_TYPE_BODY_S,
                         theme->paper);
             wizard_text(ui, 4u, "A PC with a recent graphics driver", NK_UI_TYPE_BODY_S,
                         theme->paper);
