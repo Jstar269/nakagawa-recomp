@@ -246,6 +246,8 @@ def validate_bundle(bundle: Any, schema: dict[str, Any] | None = None) -> None:
             _fail("$.terminal", "a triggered bundle cannot have an exit terminal reason")
         if not fired and reason != "exit":
             _fail("$.terminal", "an untriggered bundle must terminate at exit")
+    if version >= 6:
+        _validate_threads(bundle["threads"])
 
 
 def _nan_origin_operands(event: dict[str, Any]) -> tuple[int, int, int]:
@@ -308,6 +310,15 @@ def _validate_refusals(refusals: dict[str, Any]) -> None:
         _fail("$.refusals", "refusal counts must account for every refusal (listed plus unlisted)")
     if len({entry["nid"] for entry in nids}) != len(nids):
         _fail("$.refusals", "each refused NID is listed once")
+
+
+def _validate_threads(threads: list[dict[str, Any]]) -> None:
+    """Schema 6 terminal thread snapshot: one entry per thread, at most one on the CPU."""
+    uids = [thread["uid"] for thread in threads]
+    if len(set(uids)) != len(uids):
+        _fail("$.threads", "each thread is listed once")
+    if sum(1 for thread in threads if thread["state"] == "running") > 1:
+        _fail("$.threads", "at most one thread is running")
 
 
 def load_bundle(path: Path) -> dict[str, Any]:
@@ -510,6 +521,10 @@ def diff_bundles(
        first_sequence and nids (nids_unlisted follows from count and nids).
        Any difference is DIVERGENCE (exit 1); only full agreement prints
        MATCH (exit 0).
+    5. A schema 6 ``threads`` block is the thread state at the cut. It is
+       validated but never compared; the CLI prints each side's waiting
+       threads after the verdict, so a stall comparison shows what each side
+       waits on.
     """
     validate_bundle(baseline)
     validate_bundle(candidate)
@@ -525,6 +540,32 @@ def diff_bundles(
     if divergence is None:
         divergence = _refusals_divergence(baseline, candidate)
     return divergence
+
+
+def _waiting_thread_lines(bundle: dict[str, Any], name: str) -> list[str]:
+    """What each waiting thread of a schema 6 bundle waits on; empty for older schemas.
+
+    The thread snapshot is the state at the cut, so it is reported and never compared: a
+    stall comparison needs to see what each side is blocked in, whatever the verdict.
+    """
+    if "threads" not in bundle:
+        return []
+    waiting = [thread for thread in bundle["threads"]
+               if thread["state"] in ("wait-delay", "wait-object")]
+    lines = [f"waiting threads ({name}): {len(waiting) if waiting else 'none'}"]
+    for thread in waiting:
+        nid = "none" if thread["block_nid"] is None else f"0x{thread['block_nid']:08x}"
+        waited = "unknown" if thread["waited_us"] is None else str(thread["waited_us"])
+        lines.append(
+            f"  uid=0x{thread['uid']:x} why={thread['why']} "
+            f"wait_object=0x{thread['wait_object']:x} block_nid={nid} waited_us={waited}"
+        )
+    return lines
+
+
+def _print_waiting_threads(baseline: dict[str, Any], candidate: dict[str, Any]) -> None:
+    for line in _waiting_thread_lines(candidate, "candidate") +             _waiting_thread_lines(baseline, "baseline"):
+        print(line)
 
 
 def _identity_fields(bundle: dict[str, Any]) -> str:
@@ -562,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{INCOMPARABLE}: {exc.reasons[0]}")
         for reason in exc.reasons[1:]:
             print(f"  {reason}")
+        _print_waiting_threads(baseline, candidate)
         return EXIT_INCOMPARABLE
     except FlightDiffError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -572,6 +614,7 @@ def main(argv: list[str] | None = None) -> int:
     if divergence is None:
         print(f"{MATCH}: {len(baseline['events'])} events aligned by {args.align}; "
               "agrees on these enabled classes and the terminal outcome")
+        _print_waiting_threads(baseline, candidate)
         return EXIT_MATCH
     label, first, second = divergence
     print(f"{DIVERGENCE}: {label}")
@@ -586,6 +629,7 @@ def main(argv: list[str] | None = None) -> int:
                       f"candidate={json.dumps(right, sort_keys=True)}")
     print(f"  baseline: {_format_event(first)}")
     print(f"  candidate: {_format_event(second)}")
+    _print_waiting_threads(baseline, candidate)
     return EXIT_DIVERGENCE
 
 

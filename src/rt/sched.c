@@ -204,9 +204,25 @@ typedef struct {
     uint32_t stack_base;          /* user-visible stack range, excluding synthetic TLS */
     uint32_t stack_size;          /* aligned user-visible stack bytes */
     uint32_t stack_reservation;   /* user stack plus synthetic TLS reservation */
+    /* Flight-recorder thread snapshot (schema 6). import_active/import_nid hold this
+     * thread's sr_import_active/sr_import_nid while it is switched out, so a block records
+     * the import the thread itself is inside, never another thread's. */
+    int      import_active;
+    uint32_t import_nid;
+    int      has_block_nid;       /* the last block happened inside an import */
+    uint32_t block_nid;           /* NID of that import */
+    int      block_start_valid;   /* block_start_us is the start of the current wait */
+    uint64_t block_start_us;      /* virtual time the current wait began */
 } TCB;
 
 static TCB      s_tcb[MAXTHREADS];
+
+/* The import the running guest thread is inside (recomp.h). sr_syscall sets the pair around
+ * its handler and restores the outer pair on return; sched_run swaps it per thread. */
+uint32_t sr_import_nid;
+int      sr_import_active;
+
+static int sched_flight_thread_source(uint32_t index, SrFlightThread *out);
 
 int (*sr_sched_stop_requested)(void) = NULL;
 const SrPauseHost *sr_sched_pause_host = NULL;
@@ -696,6 +712,7 @@ static void sched_transfer_reset(void);
 
 void sched_init(CpuState *cpu) {
     sr_flight_init();
+    sr_flight_set_thread_source(sched_flight_thread_source);
     sr_aot_return_boundaries_reset();
     for (int i = 0; i < MAXTHREADS; i++)
         sr_aot_return_boundary_stack_destroy(&s_tcb[i].aot_return_boundary_stack);
@@ -2694,6 +2711,12 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
     t->join_result = 0;
     t->suspended = 0;
     t->rot_head = 0;
+    t->import_active = 0;
+    t->import_nid = 0;
+    t->has_block_nid = 0;
+    t->block_nid = 0;
+    t->block_start_valid = 0;
+    t->block_start_us = 0;
     t->state = TH_READY;
     return 0;
 }
@@ -3232,6 +3255,16 @@ static int sched_blocklog_on(void) {
     return sched_env_switch(&enabled, "SR_BLOCKLOG");
 }
 
+/* Every path that parks a thread in TH_WAIT_DELAY or TH_WAIT_OBJ notes the block here, for
+ * the flight recorder's thread snapshot: the import the thread is inside (none when it
+ * blocks outside any import, never a stale NID) and the virtual time its wait began. */
+static void sched_note_block(TCB *t) {
+    t->has_block_nid = sr_import_active != 0;
+    t->block_nid = sr_import_active ? sr_import_nid : 0u;
+    t->block_start_us = s_vtime_us;
+    t->block_start_valid = 1;
+}
+
 void sched_delay_current(uint64_t usec) {
     if (s_cur < 0) return;
     TCB *t = &s_tcb[s_cur];
@@ -3248,6 +3281,7 @@ void sched_delay_current(uint64_t usec) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, 0u);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, 0u, 0u);
+    sched_note_block(t);
     t->state = TH_WAIT_DELAY;
     /* Real microseconds of virtual time; any positive delay yields at least once. */
     t->wake = wake;
@@ -3261,6 +3295,7 @@ void sched_block_on(uint32_t obj) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, obj);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, obj, 0u);
+    sched_note_block(t);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
     t->wait_kind = t->pending_wait_kind;
@@ -3280,6 +3315,7 @@ int sched_block_on_timeout(uint32_t obj, uint32_t usec) {
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
     SCHED_LIVENESS_NOTE(SR_SCHED_LIVENESS_BLOCK, s_cur, obj);
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_BLOCK, t->uid, t->uid, obj, 0u);
+    sched_note_block(t);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = obj;
     t->wait_kind = t->pending_wait_kind;
@@ -3797,6 +3833,7 @@ void sched_thread_sleep(void) {
     if (t->wakeups > 0) { t->wakeups--; return; }   /* pending wakeup: don't block */
     t->sleeping = 1;
     memcpy(&t->saved, s_cpu, sizeof(CpuState));
+    sched_note_block(t);
     t->state = TH_WAIT_OBJ;
     t->wait_obj = t->uid;       /* sleep marker: woken only by sched_thread_wakeup(uid) */
     t->wake = SCHED_WAIT_FOREVER;
@@ -3834,6 +3871,7 @@ void sched_thread_sleep_cb(void) {
             continue;
         }
         memcpy(&t->saved, s_cpu, sizeof(CpuState));
+        sched_note_block(t);
         t->state = TH_WAIT_OBJ;
         t->wait_obj = t->uid;
         t->wake = SCHED_WAIT_FOREVER;
@@ -3911,6 +3949,66 @@ static uint32_t psp_wait_type(const TCB *t) {
      * time because the waited UID alone does not identify its type. */
     if (t->state == TH_WAIT_OBJ) return t->wait_kind ? (uint32_t)t->wait_kind : PSP_WAIT_OBJECT;
     return PSP_WAIT_NONE;
+}
+
+/* Flight-recorder thread source (registered by sched_init). The index-th thread that exists
+ * (deleted slots skipped) as scalars only: state, the wait reason sched_dump_threads()
+ * prints, the waitType ReferThreadStatus reports, the import the thread last blocked in, and
+ * how long its current wait has run in virtual time. A running thread reports the live CPU
+ * pc and ra; every other thread its saved ones. */
+static int sched_flight_thread_source(uint32_t index, SrFlightThread *out) {
+    uint32_t seen = 0u;
+    for (int i = 0; i < s_ntcb; i++) {
+        const TCB *t = &s_tcb[i];
+        if (t->deleted) continue;
+        if (seen++ != index) continue;
+        const int waiting = t->state == TH_WAIT_DELAY || t->state == TH_WAIT_OBJ;
+        const uint64_t now = s_vtime_us;
+        memset(out, 0, sizeof(*out));
+        out->uid = t->uid;
+        out->priority = (int32_t)t->priority;
+        switch (t->state) {
+            case TH_READY:      out->state = SR_FLIGHT_THREAD_READY; break;
+            case TH_RUNNING:    out->state = SR_FLIGHT_THREAD_RUNNING; break;
+            case TH_WAIT_DELAY: out->state = SR_FLIGHT_THREAD_WAIT_DELAY; break;
+            case TH_WAIT_OBJ:   out->state = SR_FLIGHT_THREAD_WAIT_OBJECT; break;
+            case TH_DORMANT:
+            default:            out->state = SR_FLIGHT_THREAD_DORMANT; break;
+        }
+        out->suspended = t->suspended ? 1u : 0u;
+        if (t->state == TH_WAIT_OBJ) {
+            if (t->join_waiting)                     out->why = SR_FLIGHT_WHY_THREAD_END;
+            else if (t->sleeping)                    out->why = SR_FLIGHT_WHY_SLEEP;
+            else if (t->wait_obj == CTRL_WAIT_OBJ)   out->why = SR_FLIGHT_WHY_CTRL;
+            else if (t->wait_obj == VBLANK_WAIT_OBJ) out->why = SR_FLIGHT_WHY_VBLANK;
+            else                                     out->why = SR_FLIGHT_WHY_OBJECT;
+            out->wait_object = t->wait_obj;
+        } else if (t->state == TH_WAIT_DELAY) {
+            out->why = SR_FLIGHT_WHY_DELAY;
+        } else {
+            out->why = SR_FLIGHT_WHY_NONE;
+        }
+        out->wait_type = psp_wait_type(t);
+        out->has_block_nid = t->has_block_nid ? 1u : 0u;
+        out->block_nid = t->has_block_nid ? t->block_nid : 0u;
+        if (i == s_cur && t->state == TH_RUNNING && s_cpu) {
+            out->pc = s_cpu->pc;
+            out->ra = s_cpu->r[31];
+        } else {
+            out->pc = t->saved.pc;
+            out->ra = t->saved.r[31];
+        }
+        if (waiting && t->block_start_valid && now >= t->block_start_us) {
+            out->has_waited = 1u;
+            out->waited_us = now - t->block_start_us;
+        }
+        if (waiting && t->wake != SCHED_WAIT_FOREVER) {
+            out->has_deadline = 1u;
+            out->deadline_us = t->wake > now ? t->wake - now : 0u;
+        }
+        return 1;
+    }
+    return 0;
 }
 
 /* Latch the PSP waitType for the current thread's next object block; the
@@ -4901,6 +4999,8 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         extern int g_hle_depth;
         g_hle_depth = t->hle_depth;
         sr_rt_phase = t->rt_phase;
+        sr_import_active = t->import_active;
+        sr_import_nid = t->import_nid;
         if (sr_perf_enabled) {
             sr_perf_sched_state(SR_PERF_SCHED_RUNNING, t->uid);
             sr_perf_sched_switch(previous_uid, t->uid);
@@ -4912,6 +5012,10 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         if (sr_perf_enabled) sr_perf_guest_end();
         t->hle_depth = g_hle_depth;
         t->rt_phase = sr_rt_phase;
+        t->import_active = sr_import_active;
+        t->import_nid = sr_import_nid;
+        sr_import_active = 0;
+        sr_import_nid = 0;
         g_hle_depth = 0;
         /* A coroutine cannot destroy itself from inside sched_exit_current;
          * reap it as soon as control is back on the scheduler coroutine. This
