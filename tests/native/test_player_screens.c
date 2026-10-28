@@ -1228,7 +1228,7 @@ static bool build_title_golden(char *out, size_t cap, size_t *used) {
             nk_ui_destroy(ui);
             return false;
         }
-        CHECK(strstr(out, "\"v0.0.1 (10-23-2026)\"") != NULL,
+        CHECK(strstr(out, "\"v" NK_PLAYER_VERSION " (10-23-2026)\"") != NULL,
               "the About page draws the version line exactly");
         g_about_case = NULL;
     }
@@ -1241,17 +1241,17 @@ static bool build_title_golden(char *out, size_t cap, size_t *used) {
 static void test_version_line(void) {
     char out[64];
     player_ui_version_line(NK_PLAYER_VERSION, 1792713600LL, out, sizeof(out));
-    CHECK(strcmp(out, "v0.0.1 (10-23-2026)") == 0, "the owner's example line");
+    CHECK(strcmp(out, "v" NK_PLAYER_VERSION " (10-23-2026)") == 0, "the owner's example line");
     player_ui_version_line(NK_PLAYER_VERSION, 1792713600LL + 86399LL, out, sizeof(out));
-    CHECK(strcmp(out, "v0.0.1 (10-23-2026)") == 0, "the last second of the day is the same date");
+    CHECK(strcmp(out, "v" NK_PLAYER_VERSION " (10-23-2026)") == 0, "the last second of the day is the same date");
     player_ui_version_line(NK_PLAYER_VERSION, 1792713600LL + 86400LL, out, sizeof(out));
-    CHECK(strcmp(out, "v0.0.1 (10-24-2026)") == 0, "midnight UTC starts the next date");
+    CHECK(strcmp(out, "v" NK_PLAYER_VERSION " (10-24-2026)") == 0, "midnight UTC starts the next date");
     player_ui_version_line(NK_PLAYER_VERSION, 951782400LL, out, sizeof(out));
-    CHECK(strcmp(out, "v0.0.1 (02-29-2000)") == 0, "a leap day");
+    CHECK(strcmp(out, "v" NK_PLAYER_VERSION " (02-29-2000)") == 0, "a leap day");
     player_ui_version_line(NK_PLAYER_VERSION, 0LL, out, sizeof(out));
-    CHECK(strcmp(out, "v0.0.1 (01-01-1970)") == 0, "the epoch itself");
+    CHECK(strcmp(out, "v" NK_PLAYER_VERSION " (01-01-1970)") == 0, "the epoch itself");
     player_ui_version_line(NK_PLAYER_VERSION, -1LL, out, sizeof(out));
-    CHECK(strcmp(out, "v0.0.1 (dev build)") == 0, "no build epoch says dev build");
+    CHECK(strcmp(out, "v" NK_PLAYER_VERSION " (dev build)") == 0, "no build epoch says dev build");
     CHECK(!player_ui_build_date(1792713600LL, out, 8u), "a short buffer is refused");
 }
 
