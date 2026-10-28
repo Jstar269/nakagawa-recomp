@@ -13702,6 +13702,7 @@ typedef enum {
     IO_ASYNC_LSEEK64,
     IO_ASYNC_IOCTL,
     IO_ASYNC_CLOSE,
+    IO_ASYNC_OPEN,
 } IoAsyncOp;
 
 typedef struct {
@@ -17241,8 +17242,18 @@ static uint32_t h_IoOpenAsync(CpuState *s) {
     if (io_raw_device_path(path) != IO_RAW_DEVICE_NONE)
         return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_OPEN_ASYNC,
                                           "sceIoOpenAsync", path, UINT32_MAX);
+    /* The host lookup runs now so the call can return the PSP-visible fd, but the
+     * open itself stays a pending request on that fd, completed by the dispatch
+     * tick like every other asynchronous request. A game registers the completion
+     * callback with sceIoSetAsyncCallback on the returned fd, after this call;
+     * completing here left nothing to notify, so a loader that waits for that
+     * callback waited forever (#308). PPSSPP's sceIoOpenAsync likewise returns
+     * the fd and completes the open on its async I/O thread, notifying the
+     * callback then. */
     uint32_t fd = h_IoOpen(s);
-    if (fd < sizeof(s_fds) / sizeof(s_fds[0])) {
+    if (fd < sizeof(s_fds) / sizeof(s_fds[0]) && s_fds[fd].used &&
+        io_async_submit(fd, IO_ASYNC_OPEN, 0u, 0u, 0u, 0u, 0u) != 0u) {
+        /* A descriptor kind the request queue does not hold completes at once. */
         s_fds[fd].async.state = IO_ASYNC_COMPLETE;
         s_fds[fd].async.op = IO_ASYNC_NONE;
         s_fds[fd].async.result = (int64_t)(int32_t)fd;
@@ -17363,6 +17374,9 @@ static uint32_t io_async_complete_fd(uint32_t fd) {
             result = (int64_t)(int32_t)h_io_ioctl_args(fd, request.a1, request.a2,
                                                        request.a3, request.stack0,
                                                        request.stack1);
+        } else if (request.op == IO_ASYNC_OPEN) {
+            /* The host open ran at submission; its result is the descriptor. */
+            result = (int64_t)fd;
         }
         entry = &s_fds[fd];
         entry->async.state = IO_ASYNC_COMPLETE;
