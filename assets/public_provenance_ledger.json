@@ -1633,7 +1633,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d54e74574ff8ca7874e10c0090953a73ed9f408776ef524d6293279d932709fe"
+      "sha256": "344c67ba1aa5c656794ce995de1cd22ea371e90130f2b6ac2d8169d68dbe4107"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -1672,7 +1672,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3b4197fd38cd8bc893fa3a7a7407dbb72128a8d27edc113eee3719f36ffe31e3"
+      "sha256": "96929c1dd992e92dd397490f4b7560874aeffe69583c25786a082b6a46184eaf"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -11597,7 +11597,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b338000f45589d4d1e24265cda8281bf22b630bcbb587443fac8c92730a3eb64"
+      "sha256": "6d340964730f75b626b6ee9e1060148140c5f31a8a9c54912cd8cc85f05b20b0"
     },
     {
       "path": "tools/analyze.py",
@@ -12807,7 +12807,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "069723c9ca4a2a1d2e1ea99dff6b36bfe161e3c5b579b737cd8920b48f654f3a"
+      "sha256": "d720f85a76b092bfb5eb8da80b10b013e6ac168b44b222fae3c32f325aa8ca00"
     },
     {
       "path": "tools/provenance_record_gap.py",
@@ -13300,7 +13300,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9b71be2b5705877742f7a5205f333a8f64c1d5e156430539f217e52cff1dcea4"
+      "sha256": "16e59d4f1461fab6737d4884981fc667554222fffe61d41c38b058cfdd13ac33"
     },
     {
       "path": "tools/test_analyze_import_stub_entries.py",
@@ -14874,7 +14874,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b61126d500e1c16f1ba0f3bfcaf018eb2319cd8af005ce3942ab8e5d5dfc1bcf"
+      "sha256": "8137c7b1f2c659124ba743e82a8f7bdb302b2fd0a630ec3d6582a8f408efe9e4"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
@@ -14910,7 +14910,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1c72d2b10faf1b8660f1547f5ed67d5db9cadca0d4b7280a6deb7088c1a4076a"
+      "sha256": "a4fe81f1936178658ede2c6976e1143c32f666152584d7e907c1a41a01c1193b"
     },
     {
       "path": "tools/test_provenance_record_gap.py",
