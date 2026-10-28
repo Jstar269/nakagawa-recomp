@@ -22665,7 +22665,6 @@ static uint32_t h_GeSetCallback(CpuState *s) {
 #define SAS_ERROR_FX_DELAY      0x80420022u
 #define SAS_ERROR_FX_VOLUME_VAL 0x80420023u
 #define SAS_ERROR_NOTINIT       0x80420100u
-#define SAS_ERROR_ALRDYINIT     0x80420101u
 
 typedef enum {
     SAS_VOICE_OFF = 0,
@@ -23037,12 +23036,16 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
     if (perf_started) sr_perf_audio_mix(perf_started);
 }
 
+/* An init on a core that is already initialized is a fresh init (measured on PSP-3000, firmware 6.6.1,
+ * PSP-SAS-001, #1595): it returns 0, the new grain and output mode take effect, and every voice reads as
+ * ended again. sceSasCore exports no exit call, so a game that stops its mixer for a movie re-inits the same
+ * core this way. Initializing a second core leaves the first one's state alone on the PSP; this model keeps
+ * one core, so the newest init is the live one. */
 static uint32_t h_SasInit(CpuState *s) {
     uint32_t e = sas_core_address_ok(A0);
     int32_t grain = (int32_t)A1, max_voices = (int32_t)A2;
     int32_t output_mode = (int32_t)A3, sample_rate = (int32_t)stack_arg(s, 0);
     if (e) return e;
-    if (s_sas_core.initialized) return SAS_ERROR_ALRDYINIT;
     if (!sas_grain_valid(grain)) return SAS_ERROR_ADPCM_SIZE;
     if (max_voices < 1 || max_voices > SAS_VOICES) return SAS_ERROR_VOICE_INDEX;
     if (output_mode != 0 && output_mode != 1) return SAS_ERROR_INVALID_STATE;

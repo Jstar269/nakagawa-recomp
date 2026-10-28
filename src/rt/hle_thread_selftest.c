@@ -22734,6 +22734,49 @@ static void test_sas_end_flags_refresh_per_cycle(void) {
            "__sceSasCoreWithMix refreshes the end flags as a cycle does");
 }
 
+/* #1595: a second __sceSasInit on an initialized core, as the PSP answers it (PSP-SAS-001, PSP-3000 6.6.1):
+ * 0, the new grain and output mode take effect, and a playing voice reads as ended again. A misaligned core
+ * is still refused with the address error after an init. */
+#define NID_SAS_GET_GRAIN      0xbd11b7c2u
+#define NID_SAS_GET_OUTPUTMODE 0xe175ef66u
+static void test_sas_reinit_is_a_fresh_init(void) {
+    CpuState cpu;
+    const uint32_t CORE = 0x08030000u;
+    const uint32_t OUT = 0x08010000u;
+    const uint32_t VAG = 0x08020000u;
+
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
+    sas_test_vag(VAG, 64u, 1u);
+    cpu.r[4] = CORE; cpu.r[5] = 0; cpu.r[6] = VAG; cpu.r[7] = 64u * 16u; cpu.r[8] = 0;
+    (void)sr_syscall(&cpu, NID_SAS_SET_VOICE);
+    cpu.r[4] = CORE; cpu.r[5] = 0; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) == 0xfffffffeu, "before the re-init only voice 0 is playing");
+
+    cpu.r[4] = CORE; cpu.r[5] = SAS_TEST_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "__sceSasInit on an initialized core returns 0");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) == 0xffffffffu, "the re-init leaves every voice ended");
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT;
+    expect(sr_syscall(&cpu, NID_SAS_CORE) == 0, "the re-initialized core mixes");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_END) == 0xffffffffu, "the voice stays ended after the next cycle");
+
+    cpu.r[4] = CORE; cpu.r[5] = 512; cpu.r[6] = 16; cpu.r[7] = 1; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "a re-init with other parameters returns 0");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_GRAIN) == 512u, "the re-init's grain takes effect");
+    cpu.r[4] = CORE;
+    expect(sr_syscall(&cpu, NID_SAS_GET_OUTPUTMODE) == 1u, "the re-init's output mode takes effect");
+
+    cpu.r[4] = CORE + 4u; cpu.r[5] = SAS_TEST_GRAIN; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == SAS_ERROR_ADDRESS,
+           "a misaligned core is refused with the address error after an init");
+}
+
 static void test_msgpipe_safety(void) {
     reset_fixture();
     sr_hle_init();
@@ -35824,6 +35867,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_mix_saturates_without_wrapping();
     test_sas_state_contracts();
     test_sas_end_flags_refresh_per_cycle();
+    test_sas_reinit_is_a_fresh_init();
     test_msgpipe_safety();
     test_msgpipe_blocking();
     test_msgpipe_cancel_and_refer();
