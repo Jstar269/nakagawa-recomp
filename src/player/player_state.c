@@ -664,6 +664,28 @@ int player_app_ttf_library_candidates(const char *exe_dir,
     return count;
 }
 
+static const char *player_showcase_package_status_word(NkRuntimePackageStatus status) {
+    switch (status) {
+        case NK_RUNTIME_PACKAGE_OK: return "OK";
+        case NK_RUNTIME_PACKAGE_MISSING: return "MISSING";
+        case NK_RUNTIME_PACKAGE_INCOMPATIBLE: return "INCOMPATIBLE";
+        case NK_RUNTIME_PACKAGE_STALE: return "STALE";
+        case NK_RUNTIME_PACKAGE_UNKNOWN:
+        default: return "UNKNOWN";
+    }
+}
+
+/* A bundled demo the library leaves out says why, in the player log and the
+   developer log, so a hidden demo can be diagnosed from the user's logs. */
+static void player_showcase_skipped(PlayerApp *app, const NkTitleEntry *title,
+                                    const char *reason) {
+    const char *why = reason && reason[0] ? reason : "no reason was given";
+    fprintf(stderr, "[PLAYER] Showcase %s (%s) skipped: %s\n", title->primary_disc_id,
+            title->id, why);
+    player_dev_log_add(app, "showcase", "%s (%s) skipped: %s", title->primary_disc_id,
+                       title->id, why);
+}
+
 bool player_app_discover_showcase(PlayerApp *app, const char *executable_directory) {
     if (!app || !executable_directory || !executable_directory[0]) return false;
     int written = snprintf(app->showcase_root, sizeof(app->showcase_root),
@@ -688,23 +710,51 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
         snprintf(game.disc_version, sizeof(game.disc_version), "1.00");
         snprintf(game.selected_executable, sizeof(game.selected_executable), "EBOOT.BIN");
         if (!player_join_path(game.iso_path, sizeof(game.iso_path), app->showcase_root,
-                              "images")) continue;
+                              "images")) {
+            player_showcase_skipped(app, title, "the demos folder path is too long");
+            continue;
+        }
         size_t image_root_len = strlen(game.iso_path);
         int image_written = snprintf(game.iso_path + image_root_len,
             sizeof(game.iso_path) - image_root_len, "%c%s.iso",
             nk_platform_path_separator(), title->primary_disc_id);
         if (image_written <= 0 ||
-            (size_t)image_written >= sizeof(game.iso_path) - image_root_len ||
-            !nk_platform_file_exists(game.iso_path)) continue;
+            (size_t)image_written >= sizeof(game.iso_path) - image_root_len) {
+            player_showcase_skipped(app, title, "the demo's disc image path is too long");
+            continue;
+        }
+        if (!nk_platform_file_exists(game.iso_path)) {
+            player_showcase_skipped(app, title,
+                                    "its disc image is not in the demos images folder");
+            continue;
+        }
         snprintf(game.prepared_root, sizeof(game.prepared_root), "%s", app->showcase_root);
         game.iso_size_bytes = (uint64_t)nk_platform_get_file_size(game.iso_path);
+        char data_root_reason[512] = "";
         NkLaunchDataRootStatus data_root_status = player_app_game_data_root_status(
-            app, &game, NULL, 0, NULL, 0);
-        game.is_prepared = nk_launch_validate_runtime_package(
-            app->showcase_root, &game, NULL, NULL, 0) == NK_RUNTIME_PACKAGE_OK &&
-            (data_root_status == NK_LAUNCH_DATA_ROOT_READY ||
-             data_root_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED);
-        if (!game.is_prepared) continue;
+            app, &game, NULL, 0, data_root_reason, sizeof(data_root_reason));
+        char package_reason[1024] = "";
+        NkRuntimePackageStatus package_status = nk_launch_validate_runtime_package(
+            app->showcase_root, &game, NULL, package_reason, sizeof(package_reason));
+        bool data_root_ready = data_root_status == NK_LAUNCH_DATA_ROOT_READY ||
+                               data_root_status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED;
+        game.is_prepared = package_status == NK_RUNTIME_PACKAGE_OK && data_root_ready;
+        if (package_status != NK_RUNTIME_PACKAGE_OK) {
+            char why[1200];
+            snprintf(why, sizeof(why), "package %s: %s",
+                     player_showcase_package_status_word(package_status),
+                     package_reason[0] ? package_reason : "no reason was given");
+            player_showcase_skipped(app, title, why);
+            continue;
+        }
+        if (!data_root_ready) {
+            char why[600];
+            snprintf(why, sizeof(why), "data folder %s: %s",
+                     data_root_status == NK_LAUNCH_DATA_ROOT_MISSING ? "missing" : "invalid",
+                     data_root_reason[0] ? data_root_reason : "no reason was given");
+            player_showcase_skipped(app, title, why);
+            continue;
+        }
         game.status = NK_STATUS_PREPARED;
         snprintf(game.last_played, sizeof(game.last_played), "Never");
         app->showcase_games[app->showcase_count++] = game;
@@ -2302,6 +2352,16 @@ void player_app_set_cli_not_found_error(PlayerApp *app,
             app->last_error.details);
 }
 
+const char *player_disc_refusal_title(const char *boundary_code) {
+    if (boundary_code && strcmp(boundary_code, "DISC_IMAGE_COMPRESSED") == 0) {
+        return "Compressed Disc Image";
+    }
+    if (boundary_code && strcmp(boundary_code, "DISC_NOT_PSP") == 0) {
+        return "Not a PSP Disc Image";
+    }
+    return "Not a Disc Image";
+}
+
 const char *player_error_badge(const ErrorState *error) {
     static const struct { const char *code; const char *badge; } badges[] = {
         {"RUNTIME_SEMANTIC_BOUNDARY", "Game stopped"},
@@ -2316,6 +2376,9 @@ const char *player_error_badge(const ErrorState *error) {
         {"PACKAGE_BUILD_FAILED", "Build stopped"},
         {"PACKAGE_BUILD_REFUSED", "Build not started"},
         {"PACKAGE_DISK_FULL", "Disk full"},
+        {"WINDOWS_BLOCKED_START", "Blocked by Windows"},
+        {"WINDOWS_DEFENDER_THREAT", "Blocked by Windows"},
+        {"WINDOWS_POLICY_BLOCKED", "Blocked by Windows"},
     };
     if (!error) return "Problem";
     for (size_t i = 0; i < sizeof(badges) / sizeof(badges[0]); i++) {
@@ -2332,6 +2395,7 @@ bool player_error_leads_with_message(const ErrorState *error) {
         "TITLE_DATA_MISSING", "TITLE_PROFILE_INVALID", "RUNTIME_PACKAGE_NOT_READY",
         "PACKAGE_REVALIDATION_FAILED", "PACKAGE_BUILD_FAILED", "PACKAGE_BUILD_REFUSED",
         "PACKAGE_DISK_FULL", "RUNTIME_START_TIMEOUT",
+        "WINDOWS_BLOCKED_START", "WINDOWS_DEFENDER_THREAT", "WINDOWS_POLICY_BLOCKED",
     };
     if (!error) return false;
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
@@ -2897,6 +2961,18 @@ bool player_app_launch_finish(PlayerApp *app, PlayerLaunchWork *work) {
     }
     if (work->failed_step == PLAYER_LAUNCH_STEP_START) {
         if (app->boot_event_file_path[0]) remove(app->boot_event_file_path);
+        /* Windows Security or a policy refused the game's program: say so, and
+           name what Windows reported, instead of a generic launch failure. */
+        NkSpawnBlockReport block;
+        if (nk_launch_describe_spawn_block(app->launch_session.process.spawn_error,
+                                           "the game", "Game",
+                                           app->launch_session.executable_path, &block)) {
+            player_app_set_error(app, block.code, block.title, block.message,
+                                 "Return to Library", VIEW_LIBRARY);
+            player_set_boundary_text(app, block.details);
+            fprintf(stderr, "[PLAYER] %s: %s\n", block.code, block.details);
+            return false;
+        }
         player_app_set_error(
             app,
             "PROCESS_SPAWN_FAILED",
@@ -3554,6 +3630,16 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
                 app, "PACKAGE_BUILD_IN_PROGRESS", "Package Build Already Running",
                 "A package build is already running. Wait for it to finish before starting another.",
                 "Return to Build", VIEW_BUILDING_PACKAGE);
+            return false;
+        }
+        NkSpawnBlockReport block;
+        if (nk_launch_describe_spawn_block(app->build_session.process.spawn_error,
+                                           "the package builder", "Package Builder",
+                                           python_path, &block)) {
+            player_app_set_error(app, block.code, block.title, block.message,
+                                 "Return to Library", VIEW_LIBRARY);
+            player_set_boundary_text(app, block.details);
+            fprintf(stderr, "[PLAYER] %s: %s\n", block.code, block.details);
             return false;
         }
         player_app_set_error(app, "SPAWN_FAILED", "Failed to Start Package Builder",

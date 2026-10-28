@@ -18,6 +18,7 @@
 #include "nk_types.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -429,11 +430,15 @@ bool nk_platform_spawn_process(
     int output_fd = -1;
     if (output_log_path && output_log_path[0]) {
         output_fd = open(output_log_path, O_WRONLY | O_CREAT | O_APPEND, 0600);
-        if (output_fd < 0) return false;
+        if (output_fd < 0) {
+            out_process->spawn_error = errno;
+            return false;
+        }
     }
 
     pid_t pid = fork();
     if (pid < 0) {
+        out_process->spawn_error = errno;
         if (output_fd >= 0) close(output_fd);
         return false;
     }
@@ -490,6 +495,32 @@ bool nk_platform_spawn_process(
     out_process->job_handle = NULL;
     out_process->process_id = (int)pid;
     out_process->is_active = true;
+    return true;
+}
+
+bool nk_platform_path_exceeds_limit(const char *path, bool is_directory) {
+    (void)is_directory;
+    if (!path || !*path) return false;
+#ifdef PATH_MAX
+    return strlen(path) + 1u > (size_t)PATH_MAX;
+#else
+    return strlen(path) + 1u > 4096u;
+#endif
+}
+
+/* A POSIX spawn has no security-product refusal the player can tell apart. */
+NkSpawnBlock nk_platform_spawn_block(int os_error) {
+    (void)os_error;
+    return NK_SPAWN_BLOCK_NONE;
+}
+
+bool nk_platform_describe_os_error(int os_error, char *out, size_t out_size) {
+    if (!out || out_size == 0) return false;
+    out[0] = '\0';
+    if (os_error == 0) return false;
+    const char *text = strerror(os_error);
+    if (!text || !text[0]) return false;
+    snprintf(out, out_size, "%s", text);
     return true;
 }
 
