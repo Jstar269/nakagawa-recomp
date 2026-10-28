@@ -365,5 +365,21 @@ class TestPackageNotices(unittest.TestCase):
 
 
 
+
+class IsolatedInterpreterTests(unittest.TestCase):
+    """tools/copy_build_assets.ps1 runs this script with the release's bundled embeddable Python, whose ._pth
+    file keeps the script's folder off sys.path; `-I` gives a normal interpreter the same import path."""
+
+    def test_script_imports_nk_core_without_the_script_folder_on_sys_path(self) -> None:
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, "-I", str(ROOT / "tools" / "package_notices.py"), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("usage", result.stdout.lower())
+
 if __name__ == "__main__":
     unittest.main()

@@ -570,6 +570,12 @@ static NkResult decode_prefixed(const uint8_t *payload, size_t payload_size,
                            "compressed expanded size disagrees with FST");
         }
         if (compressed_size == 0) {
+            /* A stored entry carries its expanded bytes verbatim, so the body must
+             * hold every one of them; a shorter span would copy past the payload. */
+            if (expected_size > body_size) {
+                return xb_fail(error_message, error_message_size,
+                               "stored entry is shorter than its expanded size");
+            }
             memcpy(output, body, expected_size);
             return NK_OK;
         }
@@ -586,6 +592,10 @@ static NkResult decode_prefixed(const uint8_t *payload, size_t payload_size,
         /* In this archive family tag 0 is the source-owned nested
          * Huffman -> LZS stream documented by xb_probe.py. It is not a zlib
          * stream; using zlib here would accept a different format. */
+        if (compressed_size == 0 && expanded_size > body_size) {
+            return xb_fail(error_message, error_message_size,
+                           "stored entry is shorter than its expanded size");
+        }
         uint8_t *intermediate = (uint8_t *)malloc(expanded_size);
         if (!intermediate) {
             return NK_ERROR_OUT_OF_MEMORY;

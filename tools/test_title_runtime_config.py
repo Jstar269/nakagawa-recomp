@@ -538,25 +538,21 @@ class GeneratedConfiguration(unittest.TestCase):
         """The C source-shape half of the same split.
 
         sr_title_config_diagnostics_enabled() is a genuine diagnostic: the profile bit
-        plus SR_HLE_DIAGNOSTICS. The two gates that change live runtime behavior --
-        the guest Newlib reent addresses and the callee-saved restore -- must carry the
-        compatibility name, or a reader cannot tell live behavior from diagnostics."""
+        plus SR_HLE_DIAGNOSTICS. The live-behavior gates that used to sit beside it (the
+        HST reent bindings and the callee-saved restore) are retired (#363), so no
+        accessor is gated on the compatibility profile any more."""
         source = (ROOT / "src" / "rt" / "title_config.c").read_text(encoding="utf-8")
-        for accessor in ("sr_title_config_reent_bindings",
-                         "sr_title_config_preserve_callee_saved_at_calls"):
-            # Each body ends at its column-0 closing brace, so a neighbouring
-            # accessor can never satisfy an assertion about this one.
-            body = source.split(f"int {accessor}(", 1)[1].split("\n}", 1)[0]
-            self.assertIn("#if SR_TITLE_CONFIG_COMPAT_PROFILE", body,
-                          f"{accessor} changes live behavior and is not a diagnostic")
-            self.assertNotIn("SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE", body)
+        for retired in ("sr_title_config_reent_bindings",
+                        "sr_title_config_preserve_callee_saved_at_calls"):
+            self.assertNotIn(retired, source)
+        self.assertNotIn("#if SR_TITLE_CONFIG_COMPAT_PROFILE", source)
         predicate = source.split("int sr_title_config_diagnostics_enabled(void) {", 1)[1]
         predicate = predicate.split("\n}", 1)[0]
         self.assertIn("SR_TITLE_CONFIG_DIAGNOSTICS_PROFILE != 0", predicate)
 
     def test_the_hst_profile_header_compiles_its_compatibility_arms(self) -> None:
         """The split is only real if the hst artifact, with both profile bits set,
-        still builds title_config.c: the live reent and callee-saved arms compile."""
+        still builds title_config.c."""
         manifest = base_manifest()
         manifest["codegen_profile"] = "hst"
         header = title_runtime_config.render_header(

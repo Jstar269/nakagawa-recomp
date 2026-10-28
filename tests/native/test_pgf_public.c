@@ -67,6 +67,10 @@ typedef struct TestConfig {
     uint32_t shadow_bits;
     uint16_t shadow_codes[TEST_MAX_MAP];
     uint16_t revision3_counts[2];
+    /* When set, the first revision-3 table holds these (start, length) code ranges
+       instead of filler bytes. */
+    uint32_t subcharmap_set;
+    uint16_t subcharmap[4][2];
     TestGlyph glyphs[TEST_MAX_GLYPHS];
 } TestConfig;
 
@@ -326,6 +330,11 @@ static int test_build_font(TestFont *font, const TestConfig *config) {
         for (table = 0; table < bytes; ++table) {
             font->bytes[cursor + table] = (uint8_t)(0xa0u + table);
         }
+        for (table = 0; config->subcharmap_set && table < config->revision3_counts[0] &&
+                        table < 4u; ++table) {
+            test_put_u16(font->bytes + cursor + table * 4u, config->subcharmap[table][0]);
+            test_put_u16(font->bytes + cursor + table * 4u + 2u, config->subcharmap[table][1]);
+        }
     }
     length = test_packed_size(config->char_map_count, config->char_map_bits);
     if (!test_reserve(font, length, &font->char_map_offset)) return 0;
@@ -364,8 +373,10 @@ static int test_build_font(TestFont *font, const TestConfig *config) {
         test_set_field(font->bytes + record_offset, record_size, 35u, 7u,
                       (uint32_t)glyph->adjustment_y & 0x7fu);
         test_set_field(font->bytes + record_offset, record_size, 42u, 2u, glyph->row_order);
-        test_set_field(font->bytes + record_offset, record_size, 44u, 1u, 0u);
-        test_set_field(font->bytes + record_offset, record_size, 45u, 3u, glyph->flags);
+        /* Bits 44-46: dimension, X and Y groups indexed (1) or inline (0); bit 47: the
+           advance group is indexed, as in every console font (PGF_SPEC.md 3.5). */
+        test_set_field(font->bytes + record_offset, record_size, 44u, 3u, glyph->flags);
+        test_set_field(font->bytes + record_offset, record_size, 47u, 1u, 1u);
         test_set_field(font->bytes + record_offset, record_size, 55u, 9u, glyph->shadow_id);
         cursor_at = record_offset + 8u;
         for (group = 0; group < 3u; ++group) {
@@ -452,6 +463,37 @@ static void test_open_headers_and_sections(void) {
         pgf_close(pgf);
     }
 
+    /* Revision 3: the first extension table's code ranges, laid end to end in file
+       order, index the character map (PGF_SPEC.md 3.2). One range over the whole
+       span gives the direct reading. */
+    test_default_config(&config);
+    config.revision = 3u;
+    config.revision3_counts[0] = 1u;
+    config.revision3_counts[1] = 1u;
+    config.subcharmap_set = 1u;
+    config.subcharmap[0][0] = 65u;
+    config.subcharmap[0][1] = 3u;
+    CHECK(test_build_font(&font, &config));
+    pgf = test_open(&font);
+    CHECK(pgf != NULL);
+    CHECK(pgf_has_char(pgf, 65) && pgf_has_char(pgf, 66) && pgf_has_char(pgf, 67));
+    CHECK(!pgf_has_char(pgf, 64) && !pgf_has_char(pgf, 68));
+    pgf_close(pgf);
+    /* Ranges (70,1) then (65,2): 70 is map entry 0, 65 entry 1 and 66 entry 2, so 70
+       resolves though it lies past the direct map, and 67 is in no range. */
+    config.revision3_counts[0] = 2u;
+    config.subcharmap[0][0] = 70u;
+    config.subcharmap[0][1] = 1u;
+    config.subcharmap[1][0] = 65u;
+    config.subcharmap[1][1] = 2u;
+    config.code_span = 6u;
+    CHECK(test_build_font(&font, &config));
+    pgf = test_open(&font);
+    CHECK(pgf != NULL);
+    CHECK(pgf_has_char(pgf, 70) && pgf_has_char(pgf, 65) && pgf_has_char(pgf, 66));
+    CHECK(!pgf_has_char(pgf, 67) && !pgf_has_char(pgf, 68));
+    pgf_close(pgf);
+    /* Filler ranges that hold none of the font's codes leave every character absent. */
     test_default_config(&config);
     config.revision = 3u;
     config.revision3_counts[0] = 2u;
@@ -459,7 +501,7 @@ static void test_open_headers_and_sections(void) {
     CHECK(test_build_font(&font, &config));
     pgf = test_open(&font);
     CHECK(pgf != NULL);
-    CHECK(pgf_has_char(pgf, 65));
+    CHECK(!pgf_has_char(pgf, 65));
     pgf_close(pgf);
     font.size = TEST_REV3_HEADER_SIZE + 32u + 8u + 3u;
     CHECK(test_open(&font) == NULL);
@@ -840,12 +882,26 @@ static void test_maps_pointers_and_metrics(void) {
         pgf_close(pgf);
     }
 
+    /* Index 255 is "no entry" in a table of any count (console fonts use it in shorter
+       tables) and reads as a zero pair; any other index at or above the count is refused. */
     test_default_config(&config);
     config.glyphs[0].flags = 1u;
     config.glyphs[0].indexes[0] = UINT8_MAX;
     config.metric_counts[0] = UINT8_MAX - 1u;
     CHECK(test_build_font(&font, &config));
+    pgf = test_open(&font);
+    CHECK(pgf != NULL);
+    pgf_close(pgf);
+    config.glyphs[0].indexes[0] = UINT8_MAX - 1u;
+    CHECK(test_build_font(&font, &config));
     CHECK(test_open(&font) == NULL);
+    test_default_config(&config);
+    config.glyphs[0].indexes[3] = UINT8_MAX;
+    config.metric_counts[3] = 2u;
+    CHECK(test_build_font(&font, &config));
+    pgf = test_open(&font);
+    CHECK(pgf != NULL);
+    pgf_close(pgf);
 
     test_default_config(&config);
     CHECK(test_build_font(&font, &config));
@@ -946,6 +1002,24 @@ static void test_shadow_and_character_info(void) {
     config.glyphs[0].shadow_id = 1u;
     CHECK(test_build_font(&font, &config));
     CHECK(test_open(&font) == NULL);
+
+    /* A shadow entry naming character 0, which the map does not hold, names no shadow:
+       console fonts carry such entries. No shadow record is read, so even an offset that
+       would be refused for a real shadow is not followed, and the row order reads 0. */
+    test_default_config(&config);
+    config.shadow_count = 1u;
+    config.shadow_codes[0] = 0u;
+    config.glyphs[0].shadow_id = 1u;
+    CHECK(test_build_font(&font, &config));
+    test_set_field(font.bytes + font.glyph_record_offsets[0], 2u, 0u, 14u, 1u);
+    pgf = test_open(&font);
+    CHECK(pgf != NULL);
+    if (pgf) {
+        CHECK(pgf_get_char_info(pgf, 65, 0, TEST_INFO_ADDR));
+        CHECK(test_u16(test_guest(TEST_INFO_ADDR) + 0x38u) == 0u);
+        CHECK(test_u16(test_guest(TEST_INFO_ADDR) + 0x3au) == 1u);
+        pgf_close(pgf);
+    }
 
     test_default_config(&config);
     config.map_values[0] = 3u;
@@ -1805,8 +1879,46 @@ static void test_production_file_path_metrics_and_render(void) {
         CHECK(dirty_count == 6u);
         pgf_close(pgf);
     }
+    /* A part whose code is 0 (not in the map) names no component: the composite draws
+       the parts that are there, and the first of them is written as it is. */
     test_composite_config(&config);
     config.glyphs[0].composite[2] = 0u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_write_file(bad_composite_path, font.bytes, font.size));
+    pgf = pgf_open(bad_composite_path);
+    CHECK(pgf != NULL);
+    if (pgf) {
+        buffer = test_guest(TEST_BUFFER_ADDR);
+        memset(buffer, 0xee, 4u);
+        test_set_image(2u, 0, 0, 2u, 2u, 2u, TEST_BUFFER_ADDR);
+        CHECK(pgf_draw_glyph(pgf, 65, 0, TEST_IMAGE_ADDR));
+        CHECK(memcmp(buffer, (uint8_t[4]){4u, 6u, 0u, 3u}, 4u) == 0);
+        pgf_close(pgf);
+    }
+    test_composite_config(&config);
+    config.glyphs[0].composite[0] = 0u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_write_file(bad_composite_path, font.bytes, font.size));
+    pgf = pgf_open(bad_composite_path);
+    CHECK(pgf != NULL);
+    if (pgf) {
+        buffer = test_guest(TEST_BUFFER_ADDR);
+        memset(buffer, 0xee, 4u);
+        test_set_image(2u, 0, 0, 2u, 2u, 2u, TEST_BUFFER_ADDR);
+        CHECK(pgf_draw_glyph(pgf, 65, 0, TEST_IMAGE_ADDR));
+        CHECK(memcmp(buffer, (uint8_t[4]){7u, 6u, 0u, 3u}, 4u) == 0);
+        pgf_close(pgf);
+    }
+    /* All three parts absent, or a nonzero code the map does not hold, is refused. */
+    test_composite_config(&config);
+    config.glyphs[0].composite[0] = 0u;
+    config.glyphs[0].composite[1] = 0u;
+    config.glyphs[0].composite[2] = 0u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_write_file(bad_composite_path, font.bytes, font.size));
+    CHECK(pgf_open(bad_composite_path) == NULL);
+    test_composite_config(&config);
+    config.glyphs[0].composite[2] = 1u;
     CHECK(test_build_font(&font, &config));
     CHECK(test_write_file(bad_composite_path, font.bytes, font.size));
     CHECK(pgf_open(bad_composite_path) == NULL);

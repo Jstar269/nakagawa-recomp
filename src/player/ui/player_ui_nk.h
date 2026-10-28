@@ -35,7 +35,7 @@ typedef enum {
 /* The player's version: the one place it is written. The About page shows
    "v" NK_PLAYER_VERSION " (MM-DD-YYYY)"; nothing else (tags, releases, the
    tools' package version) reads it. */
-#define NK_PLAYER_VERSION "0.0.1"
+#define NK_PLAYER_VERSION "0.0.2-dev"
 
 typedef enum {
     PLAYER_UI_PRIMARY_NONE = 0,
@@ -155,6 +155,10 @@ typedef struct {
     /* REMOVE FROM LIBRARY is offered: not for a showcase demo, and not while a
        game starts or runs, a package builds or a disc is copied (#1304). */
     bool can_remove;
+    /* A demo that comes with Nakagawa (a showcase package beside the player),
+       not one of the user's games: the Library lists it under TEST THIS PC,
+       apart from the grid. */
+    bool is_demo;
 } PlayerUiTitle;
 
 typedef struct {
@@ -213,9 +217,12 @@ typedef struct {
     const char *status_message;
     /* Verify */
     bool extracting;
+    /* The progress is a PSN package turning back into its disc image (#295). */
+    bool converting_package;
     bool extraction_complete;
     bool extraction_failed;
     bool experimental;
+    bool recorded;   /* experimental, but on the compatibility list (Hot Shots Tennis) */
     bool supported;
     /* Experimental, but this version cannot use the disc (#1280): the reason
        and its next step, and no Add to library. NULL when it can be added. */
@@ -293,7 +300,8 @@ typedef enum {
     PLAYER_UI_SETTINGS_PAGE_ONLINE,
     PLAYER_UI_SETTINGS_PAGE_NOTICES,
     PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS,
-    PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE
+    PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE,
+    PLAYER_UI_SETTINGS_PAGE_FONTS
 } PlayerUiSettingsPage;
 
 /* What a Settings control asks for (PLAYER_UI_ACTION_SETTINGS). main.c runs the
@@ -327,7 +335,10 @@ typedef enum {
     PLAYER_UI_SETTINGS_OPEN_BUILD_CACHE,
     PLAYER_UI_SETTINGS_TOGGLE_SHARE_LIBRARIES,
     PLAYER_UI_SETTINGS_CLEAR_SHARED_LIBRARIES,
-    PLAYER_UI_SETTINGS_KEEP_TOOLS          /* the removal check, back to build tools and cache */
+    PLAYER_UI_SETTINGS_KEEP_TOOLS,         /* the removal check, back to build tools and cache */
+    PLAYER_UI_SETTINGS_OPEN_FONTS,         /* Settings > PSP fonts */
+    PLAYER_UI_SETTINGS_IMPORT_FONTS,       /* the folder picker, then the import */
+    PLAYER_UI_SETTINGS_REMOVE_FONTS        /* remove the imported fonts */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
@@ -358,12 +369,18 @@ typedef struct {
     /* Third-party notices: "name version · licence" per downloaded tool */
     const char *tools[PLAYER_UI_SETTINGS_TOOLS];
     size_t tool_count;
+    /* PSP fonts: one status line per slot (Japanese, the 16 Latin indices,
+       Korean) and the last import's result */
+    const char *font_lines[18];
+    size_t font_line_count;
+    const char *font_message;
     float logical_width;
     float logical_height;
 } PlayerUiSettingsModel;
 
-/* The controller settings page (VIEW_CONTROLLER_SETTINGS): the mapping, or a
-   step of the guided stick and trigger calibration while one runs. */
+/* The controller settings page (VIEW_CONTROLLER_SETTINGS): the controller or
+   keyboard mapping, or a step of the guided stick and trigger calibration while
+   one runs. */
 typedef enum {
     PLAYER_UI_CONTROLLER_PAGE_MAPPING = 0,
     PLAYER_UI_CONTROLLER_PAGE_CALIBRATE_REST,      /* step 1: leave the stick alone */
@@ -389,7 +406,9 @@ typedef enum {
     PLAYER_UI_CONTROLLER_TOGGLE_SCOPE,       /* this game's own mapping, or the global one */
     PLAYER_UI_CONTROLLER_CALIBRATION_FINISH, /* step 2 done: show the result */
     PLAYER_UI_CONTROLLER_CALIBRATION_ACCEPT,
-    PLAYER_UI_CONTROLLER_CALIBRATION_CANCEL
+    PLAYER_UI_CONTROLLER_CALIBRATION_CANCEL,
+    PLAYER_UI_CONTROLLER_SHOW_CONTROLLER,    /* show and edit the controller buttons */
+    PLAYER_UI_CONTROLLER_SHOW_KEYBOARD       /* show and edit the keyboard keys (#1299) */
 } PlayerUiControllerOp;
 
 #define PLAYER_UI_CONTROLLER_BUTTONS 14u   /* INPUT_CONTROL_DIGITAL_COUNT */
@@ -397,6 +416,7 @@ typedef enum {
 
 typedef struct {
     PlayerUiControllerPage page;
+    bool keyboard;                  /* the mapping shows the keyboard keys, not the controller */
     /* Mapping: each PSP control's name and what it is bound to, in words */
     const char *names[PLAYER_UI_CONTROLLER_BUTTONS];
     const char *bindings[PLAYER_UI_CONTROLLER_BUTTONS];
@@ -571,6 +591,9 @@ enum {
     PLAYER_UI_ID_SETTINGS_BUILD_CACHE = 0x451Au,
     PLAYER_UI_ID_SETTINGS_SHARE_LIBRARIES = 0x451Bu,
     PLAYER_UI_ID_SETTINGS_CLEAR_LIBRARIES = 0x451Cu,
+    PLAYER_UI_ID_SETTINGS_FONTS = 0x451Du,
+    PLAYER_UI_ID_SETTINGS_IMPORT_FONTS = 0x451Eu,
+    PLAYER_UI_ID_SETTINGS_REMOVE_FONTS = 0x451Fu,
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,
@@ -583,6 +606,8 @@ enum {
     PLAYER_UI_ID_CONTROLLER_SCOPE = 0x4629u,
     PLAYER_UI_ID_CONTROLLER_CALIBRATION_PRIMARY = 0x462Au,
     PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL = 0x462Bu,
+    PLAYER_UI_ID_CONTROLLER_SHOW_PAD = 0x462Cu,
+    PLAYER_UI_ID_CONTROLLER_SHOW_KEYBOARD = 0x462Du,
     PLAYER_UI_ID_DEVELOPER_LOG_COPY = 0x4701u,
     PLAYER_UI_ID_DEVELOPER_LOG_SAVE = 0x4702u,
     PLAYER_UI_ID_DEVELOPER_LOG_CLOSE = 0x4703u
@@ -610,6 +635,16 @@ NkUiId nk_ui_router_take_focus_restore(NkUiRouter *router);
    one page shows. */
 size_t player_ui_library_page_size(float logical_width, float logical_height,
                                    size_t *columns_out);
+/* The same with `demo_count` demos under TEST THIS PC, whose rows take their
+   height from the grid's. */
+size_t player_ui_library_page_size_with_demos(float logical_width, float logical_height,
+                                              size_t demo_count, size_t *columns_out);
+/* How many titles are demos (PlayerUiTitle.is_demo). */
+size_t player_ui_library_demo_count(const PlayerUiTitle *titles, size_t count);
+/* Where title `index` sits in the grid of the user's games (titles that are
+   not demos), from 0; `count` for a demo or an index out of range. */
+size_t player_ui_library_grid_position(const PlayerUiTitle *titles, size_t count,
+                                       size_t index);
 
 PlayerUiAction player_ui_screen_library(NkUi *ui,
                                         const PlayerUiLibraryModel *model);
@@ -667,6 +702,9 @@ PlayerUiNk *player_ui_nk_create(struct SDL_Renderer *renderer,
                                 char *error, size_t error_size);
 void player_ui_nk_destroy(PlayerUiNk *player);
 bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app);
+/* True when the launcher draws this view. Every PlayerView is drawn by it: the
+   shipped player has no other launcher. */
+bool player_ui_nk_draws_view(int view);
 /* True when the next UI shows the Library at the bottom of its stack (Esc
    there asks to quit, as in the existing UI). */
 bool player_ui_nk_at_library_root(const PlayerUiNk *player);

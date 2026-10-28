@@ -109,6 +109,10 @@ typedef struct {
     /* Set by the caller before package_builder_start: the build compiles every system
        library itself and leaves the shared library cache untouched (#1306). */
     bool no_shared_libraries;
+    /* Set by the caller before package_builder_start: the verified release bundle
+       (#1285) whose msys64/ucrt64/bin leads the build child's PATH. Empty selects
+       <user data root>/prerequisites, the per-user download. */
+    char prerequisites_root[NK_MAX_PATH];
     char log_file_path[NK_MAX_PATH];
     char progress_file_path[NK_MAX_PATH];
     char cancel_file_path[NK_MAX_PATH];
@@ -217,8 +221,52 @@ bool package_builder_find_tool_in_root(const char *name, const char *data_root,
 bool package_builder_load_prerequisites(const char *cli_path,
                                         PackagePrerequisiteList *out_list,
                                         char *error, size_t error_size);
+/* Mark list items recorded in <data_root>/prerequisites/installed.json (the
+ * per-user download) or, for the _at form, <prerequisites_root>/installed.json. */
 void package_builder_mark_prerequisites_installed(PackagePrerequisiteList *list,
                                                    const char *data_root);
+void package_builder_mark_prerequisites_installed_at(PackagePrerequisiteList *list,
+                                                      const char *prerequisites_root);
+
+/* Bundled build prerequisites (#1285). A release zip carries the pinned tree in
+ * prereqs/ beside bin/ and source/: the python/, msys64/ and notices/ layout of
+ * the per-user download, plus installed.json (the fetcher's schema 1 record with
+ * a "bundle" section) and bundle-inventory.txt, one
+ * "<sha256> <size> <relative path>" line per bundled file. */
+typedef enum {
+    PACKAGE_BUNDLE_ABSENT = 0,
+    PACKAGE_BUNDLE_VALID,
+    PACKAGE_BUNDLE_INVALID
+} PackageBundleStatus;
+
+typedef struct {
+    PackageBundleStatus status;
+    char root[NK_MAX_PATH];
+    char python_path[NK_MAX_PATH];
+    char gcc_path[NK_MAX_PATH];
+    char make_path[NK_MAX_PATH];
+    char error[512];
+} PackageBundledTools;
+
+/* Pure path rule: <install_root>/../prereqs, made absolute when possible. */
+bool package_builder_bundled_prerequisites_root(const char *install_root,
+                                                char *out_root, size_t out_size);
+
+/* ABSENT when bundle_root is not a directory. VALID only when installed.json is a
+ * schema 1 bundle record holding exactly the pinned artifacts with their pinned
+ * version, size and SHA-256, and every bundle-inventory.txt entry exists with its
+ * recorded size, the entry count and byte total matching the record. File
+ * contents are not hashed (packaging verifies them); no network is used. */
+PackageBundleStatus package_builder_check_bundled_prerequisites(
+    const char *bundle_root, const PackagePrerequisiteList *pinned,
+    char *error, size_t error_size);
+
+/* Check the bundle beside install_root against the manifest next to cli_path,
+ * then resolve its gcc, mingw32-make and CPython 3.15 (the bounded version
+ * probe). INVALID carries a PREREQUISITE_BUNDLE_INVALID message in out->error. */
+PackageBundleStatus package_builder_resolve_bundled_tools(const char *install_root,
+                                                          const char *cli_path,
+                                                          PackageBundledTools *out);
 
 typedef struct {
     const char *final_url;
