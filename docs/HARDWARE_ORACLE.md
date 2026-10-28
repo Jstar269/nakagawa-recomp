@@ -823,6 +823,47 @@ One console is one data point; see §11. Nothing here closes issue #70
   both lanes: a pending prefix (the T and D prefixes were never set), the other widths, `vf2h`, `vrnds`, and
   `vc2i`/`vus2i`.
 
+- **PSP-3000 single-case run of the `ge-sample` probe on commit `86e55611` (2026-10-28)**: firmware 6.6.1,
+  PSPLink 3.2.1, operator-declared model PSP-3000. `86e55611` is the commit that adds the probe (case 109 in
+  `fixtures/psp_oracle/probe_ge_sample.c`). The case was one runner invocation after the `transport-write`
+  preflight, which passed (PSP-TRANSPORT-001 is not re-cited). The case envelope is acceptance-eligible with 0
+  blockers: evidence class `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, a strict
+  golden sequence of 816 records and the done record (out0 816), all PASS; every one of the 48 draws reached GE
+  idle within 0.5 ms. The row cites only the cells named in it. The raw envelope and host0 log stay in the
+  private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-28, `86e55611`) |
+  | --- | --- | --- | --- |
+  | `PSP-GE-SAMPLE-001` | `tri-*`, `spr-*`, `ge-sample-done` | The framebuffer alpha byte (0 in every drawn pixel; the CPU clear was also 0, so keep and write-zero are not told apart), the wait timings, and any other texture format, swizzle, CLUT, wrap mode, mip level or non-through draw | MEASURED (`ge-sample`) |
+
+  What the cells establish, for these exact draws only (issue #282). Each draw is one through-mode display list
+  (vertex type bit 23) into a 64x32 8888 framebuffer, texture function REPLACE/RGBA, clamp in u and v, no
+  blending or per-fragment test, sampling a 32x32 8888 texture whose texel (u, v) is R = 8u, G = 8v and B = 0xff
+  on odd columns (texture `u`) or odd rows (texture `v`), so a pixel's R, G and B give its texel and blend weight.
+  A triangle pair (TL TR BL, BL TR BR) and a sprite (TL, BR) over the same rectangle gave the same pixels in every
+  mapping except the two triangle 20-to-12 cells noted below. Float and 16-bit vertex words gave the same pixels.
+  - *Coverage.* Every draw covered exactly the pixels x0 <= x < x1, y0 <= y < y1 of its integer rectangle.
+  - *Sample point.* Each pixel samples the texture coordinate interpolated at its centre (x + 0.5, y + 0.5);
+    with s that coordinate in texels, texel i covers [i, i + 1), so its centre is at i + 0.5. Nearest
+    (`TEXFILTER` 0x000) returns texel floor(s). Bilinear (0x101) takes taps floor(s - 0.5) and floor(s - 0.5) + 1
+    with the weight of the second tap equal to frac(s - 0.5) truncated to 1/16; each channel is the 16x16-weighted
+    sum divided by 256, truncated (weight 5/16 of 0 and 0xff gives 79, 15/16 gives 239).
+  - *1:1, integer origin* (`*-1to1-*`, `*-s16-*`: 8x8 pixels at x, y 4..12 to texels 8..16). Pixel x shows texel
+    8 + (x - 4) under both filters, with no blend: bilinear at an integer origin is exact, and the last row and
+    column take nothing from texel 16.
+  - *1:1, +0.5 origin* (`*-half-*`: texels 8.5..16.5). Nearest shows texel 9 + (x - 4); bilinear blends texels
+    8 + (x - 4) and 9 + (x - 4) at 8/16 each.
+  - *2x magnification* (`*-mag2-*`: 8 pixels to texels 8..12). Nearest shows texels 8 8 9 9 10 10 11 11. Bilinear
+    takes s - 0.5 = 7.75, 8.25, 8.75, 9.25 and so on: the first pixel blends texel 7 at 4/16 and texel 8 at 12/16,
+    the second texel 8 at 12/16 and texel 9 at 4/16.
+  - *20-to-12 horizontal, 14-to-14 vertical* (`*-min20-*`, `*-s16min-*`: x 4..16 to u 6..26, y 4..18 to v 8..22,
+    the glyph mapping). Nearest shows columns 6 8 10 11 13 15 16 18 20 21 23 25 and rows 8..21. Bilinear follows
+    the same rule, with one addition: where the exact s - 0.5 lands on a 1/16 step, the PSP's own interpolation
+    can land just below it, so the truncated weight is one step lower. In the sprite this happens in u and v
+    alike: each row takes 1/16 of the row above it (the first row 1/16 of texel row 7). In the triangle pair it
+    happens in u in both triangles and in v only in the first triangle (TL TR BL); the second triangle's rows are
+    exact. This rule reproduces every pixel of all 48 draws.
+
 - **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.
   - `PSP-HLE-AUDIO-SRC-001`, case `hle-audio-src`: the stream was complete, with 16 records PASS and 2 SKIP (`src-final-cleanup` and `out2-final-cleanup`). Both SKIP records were the probe's own gate for "nothing left to release", a pass-rule flaw that `7fc1641e` fixed, and a SKIP record makes the envelope ineligible. The 16 other records carry the same words as the eligible re-run above.
 
@@ -2581,6 +2622,7 @@ not expected PSP values.
 | `hle-issues-batch` | `PSP-HLE-ISSUES-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #356 model getters: `kuKernelGetModel` and the `SysMemUserForUser` `sceKernelGetModel` import (NID `0x6373995d`), each twice with `$v0` preset to `0xA5A5A5A5`, with the import stub's words after loading; the `SysMemForKernel` getter through `sctrlHENFindFunction` and `kuKernelCall` (only for a kernel-RAM address). #326, two passes: `vscmp.s/p/t/q` and the same-register form over six NaN/infinity/signed-zero/denormal operand sets (C200 lanes, VFPU_CC, changed-word census), and one `vrndi.s` step from each of 2 x 448 written RCX states (RCX0-7 after the write and after the step). 1858 result records; register-only VFPU cells and read-only getters. |
 | `hle-intr-cells` | `PSP-HLE-INTR-001` | `NOT_RUN` (observed 2026-10-24 from `da97b2c0` without a runner envelope, so not acceptance-eligible; single launch, not in the campaign queue) | #325: VTimer and alarm handlers returning a reschedule interval then 0 (20 ms series, 1 us series, mixed series): the sequence number, scheduled and actual VTimer time and system time of every call, and whether a call follows a return of 0; a VBLANK sub-interrupt handler in the first free slot of 0..15, counted while free, across 20 ms, 50 ms and 20 ms `sceKernelCpuSuspendIntr` windows, and while one entry holds for 25 ms. Every VTimer is stopped and deleted, every alarm cancelled, every suspension resumed, and the handler disabled and released whenever a slot was registered. Risk medium: interrupts suspended for at most 50 ms. |
 | `vfpu-forms` | `PSP-VFPU-FORMS-001` | `MEASURED` (2026-10-28, `781ccd34`; single launch, not in the campaign queue) | #326, two passes, register-only: raw result words of `vh2f.s`/`.p` (and in place), `vuc2i.s`, `vsocp.s`/`.p`, `vwbn.s` at eight exponents and one `vrndf1.s`/`vrndf2.s` draw from 17 written RCX states, under no S prefix (and two S prefixes for most forms), with VFPU_CC and a changed-word census. 950 result records. |
+| `ge-sample` | `PSP-GE-SAMPLE-001` | `MEASURED` (2026-10-28, `86e55611`; single launch, not in the campaign queue) | #282: the raw 8888 pixels of a 16x16 window after 48 through-mode draws (triangle pair and sprite, nearest and bilinear, two parity textures) over 1:1, +0.5-texel, 2x-magnified and 20-to-12 mappings with float and 16-bit vertex words. 816 result records. |
 
 ### PSP-CPU-TIMING-001 measured run 2026-10-27
 
