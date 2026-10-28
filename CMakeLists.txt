@@ -405,6 +405,25 @@ endif()
 add_test(NAME package_builder_test COMMAND test_package_builder)
 set_tests_properties(package_builder_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+# Check for updates on a fake transport and the recorded Releases API answer; it
+# reads its fixture from the repository root and never touches the internet.
+add_executable(test_update_check
+    tests/native/test_update_check.c
+    tests/native/native_test_isolation.c
+    src/player/package_builder.c
+    src/player/update_check.c
+)
+target_include_directories(test_update_check PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/player
+)
+target_link_libraries(test_update_check PRIVATE nakagawa_core)
+if(WIN32)
+    target_link_libraries(test_update_check PRIVATE winhttp bcrypt)
+endif()
+add_test(NAME update_check_test COMMAND test_update_check)
+set_tests_properties(update_check_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 add_executable(test_input_settings
     tests/native/test_input_settings.c
     tests/native/native_test_isolation.c
@@ -468,6 +487,7 @@ if(BUILD_PLAYER)
         src/player/ui_renderer.c
         src/player/package_builder.c
         src/core/nk_disc_chd.c
+        src/player/update_check.c
         ${NK_UI_CORE_SOURCES}
         ${NK_UI_EDGE_SOURCES}
         src/ui/backend/nk_ui_sdlr.c

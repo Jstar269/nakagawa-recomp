@@ -56,6 +56,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/test_player_state",
     "build/test_input_settings",
     "build/test_package_builder",
+    "build/test_update_check",
     "build/test_xb_parser",
     "build/test_disc_expand",
     "build/test_safe_math",

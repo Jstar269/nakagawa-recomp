@@ -173,6 +173,9 @@ typedef struct {
     float logical_width;
     const char *page_label;
     float logical_height;   /* 0 selects 800 */
+    /* "Version 0.0.2 is out" after the opt-in check at start, or NULL. Its button
+       opens Settings > Updates (PLAYER_UI_ACTION_SETTINGS). */
+    const char *update_notice;
 } PlayerUiLibraryModel;
 
 /* What a setup wizard control asks for (PLAYER_UI_ACTION_WIZARD; the op rides
@@ -311,15 +314,16 @@ typedef struct {
 /* The Settings pages: the main page (VIEW_SETTINGS), online and developer
    options (VIEW_ONLINE_SETTINGS), the third-party notices for downloaded build
    tools (VIEW_PREREQ_ABOUT), the build tool removal check
-   (VIEW_CONFIRM_REMOVE_TOOLS) and build tools and cache (VIEW_BUILD_CACHE, #1306),
-   the page that opens the removal check. */
+   (VIEW_CONFIRM_REMOVE_TOOLS), build tools and cache (VIEW_BUILD_CACHE, #1306),
+   the page that opens the removal check, and Updates (VIEW_UPDATES). */
 typedef enum {
     PLAYER_UI_SETTINGS_PAGE_MAIN = 0,
     PLAYER_UI_SETTINGS_PAGE_ONLINE,
     PLAYER_UI_SETTINGS_PAGE_NOTICES,
     PLAYER_UI_SETTINGS_PAGE_REMOVE_TOOLS,
     PLAYER_UI_SETTINGS_PAGE_BUILD_CACHE,
-    PLAYER_UI_SETTINGS_PAGE_FONTS
+    PLAYER_UI_SETTINGS_PAGE_FONTS,
+    PLAYER_UI_SETTINGS_PAGE_UPDATES       /* VIEW_UPDATES: check for updates */
 } PlayerUiSettingsPage;
 
 /* What a Settings control asks for (PLAYER_UI_ACTION_SETTINGS). main.c runs the
@@ -343,7 +347,6 @@ typedef enum {
     PLAYER_UI_SETTINGS_DONE,              /* save, back to the library */
     PLAYER_UI_SETTINGS_BACK,              /* a Settings page, back to the main page */
     PLAYER_UI_SETTINGS_TOGGLE_ONLINE,
-    PLAYER_UI_SETTINGS_TOGGLE_UPDATES,
     PLAYER_UI_SETTINGS_TOGGLE_NEWS,
     PLAYER_UI_SETTINGS_TOGGLE_REPORTS,
     PLAYER_UI_SETTINGS_TOGGLE_DEVELOPER,
@@ -356,10 +359,31 @@ typedef enum {
     PLAYER_UI_SETTINGS_KEEP_TOOLS,         /* the removal check, back to build tools and cache */
     PLAYER_UI_SETTINGS_OPEN_FONTS,         /* Settings > PSP fonts */
     PLAYER_UI_SETTINGS_IMPORT_FONTS,       /* the folder picker, then the import */
-    PLAYER_UI_SETTINGS_REMOVE_FONTS        /* remove the imported fonts */
+    PLAYER_UI_SETTINGS_REMOVE_FONTS,       /* remove the imported fonts */
+    PLAYER_UI_SETTINGS_CHECK_UPDATES,      /* open Updates and ask GitHub now */
+    PLAYER_UI_SETTINGS_OPEN_UPDATES,       /* open Updates as it is (the library notice) */
+    PLAYER_UI_SETTINGS_TOGGLE_UPDATE_AT_START,
+    PLAYER_UI_SETTINGS_DOWNLOAD_UPDATE,
+    PLAYER_UI_SETTINGS_CANCEL_UPDATE,      /* stop the download */
+    PLAYER_UI_SETTINGS_INSTALL_UPDATE,
+    PLAYER_UI_SETTINGS_OPEN_UPDATE_FOLDER, /* the downloads or the new version's folder */
+    PLAYER_UI_SETTINGS_OPEN_RELEASE_PAGE   /* the release page, in the browser */
 } PlayerUiSettingsOp;
 
 #define PLAYER_UI_SETTINGS_TOOLS 16u
+
+/* Where Check for updates is, in the order of player_state's PlayerUpdatePhase. */
+typedef enum {
+    PLAYER_UI_UPDATE_IDLE = 0,
+    PLAYER_UI_UPDATE_CHECKING,
+    PLAYER_UI_UPDATE_CURRENT,
+    PLAYER_UI_UPDATE_AVAILABLE,
+    PLAYER_UI_UPDATE_DOWNLOADING,
+    PLAYER_UI_UPDATE_DOWNLOADED,
+    PLAYER_UI_UPDATE_INSTALLING,
+    PLAYER_UI_UPDATE_INSTALLED,
+    PLAYER_UI_UPDATE_FAILED
+} PlayerUiUpdateStep;
 
 typedef struct {
     PlayerUiSettingsPage page;
@@ -378,9 +402,26 @@ typedef struct {
     const char *notice;             /* a settings notice (a failed save), or NULL */
     /* Build tools and cache: builds share compiled system libraries (#1306) */
     bool share_system_libraries;
+    /* Updates (VIEW_UPDATES): what the last step found, in words */
+    PlayerUiUpdateStep update_step;
+    PlayerUiUpdateStep update_failed_step;   /* CHECKING, DOWNLOADING or INSTALLING */
+    bool check_updates_at_start;
+    const char *current_version;    /* "0.0.2-dev" */
+    const char *update_version;     /* "0.0.2", once checked */
+    bool update_prerelease;
+    const char *update_published;   /* "2026-11-04", or "" */
+    const char *update_notes;
+    const char *update_page_url;
+    bool update_has_zip;
+    bool update_can_download;       /* a Windows ZIP and a Windows build */
+    const char *update_zip_name;
+    unsigned long long update_zip_bytes;
+    unsigned long long update_received_bytes;
+    const char *update_folder;      /* the downloads folder or the new version's folder */
+    const char *update_error_title;
+    const char *update_error_message;
     /* Online and developer options */
     bool online_mode;
-    bool online_updates;
     bool online_news;
     bool online_reports;
     bool developer_mode;
@@ -618,7 +659,6 @@ enum {
     PLAYER_UI_ID_SETTINGS_NOTICES = 0x450Eu,
     PLAYER_UI_ID_SETTINGS_REMOVE_TOOLS = 0x450Fu,
     PLAYER_UI_ID_SETTINGS_ONLINE_MODE = 0x4511u,
-    PLAYER_UI_ID_SETTINGS_UPDATES = 0x4512u,
     PLAYER_UI_ID_SETTINGS_NEWS = 0x4513u,
     PLAYER_UI_ID_SETTINGS_REPORTS = 0x4514u,
     PLAYER_UI_ID_SETTINGS_DEVELOPER = 0x4515u,
@@ -632,6 +672,15 @@ enum {
     PLAYER_UI_ID_SETTINGS_FONTS = 0x451Du,
     PLAYER_UI_ID_SETTINGS_IMPORT_FONTS = 0x451Eu,
     PLAYER_UI_ID_SETTINGS_REMOVE_FONTS = 0x451Fu,
+    PLAYER_UI_ID_SETTINGS_UPDATES = 0x4520u,          /* the Updates row's button */
+    PLAYER_UI_ID_UPDATE_CHECK = 0x4521u,
+    PLAYER_UI_ID_UPDATE_AT_START = 0x4522u,
+    PLAYER_UI_ID_UPDATE_DOWNLOAD = 0x4523u,
+    PLAYER_UI_ID_UPDATE_CANCEL = 0x4524u,
+    PLAYER_UI_ID_UPDATE_INSTALL = 0x4525u,
+    PLAYER_UI_ID_UPDATE_FOLDER = 0x4526u,
+    PLAYER_UI_ID_UPDATE_PAGE = 0x4527u,
+    PLAYER_UI_ID_LIBRARY_UPDATE_NOTICE = 0x4528u,     /* "Version 0.0.2 is out" on the library */
     PLAYER_UI_ID_CONTROLLER_BUTTON_BASE = 0x4600u,   /* + the PSP control, 0-13 */
     PLAYER_UI_ID_CONTROLLER_DEADZONE_DOWN = 0x4621u,
     PLAYER_UI_ID_CONTROLLER_DEADZONE_UP = 0x4622u,
