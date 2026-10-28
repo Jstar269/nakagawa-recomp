@@ -30,7 +30,8 @@ typedef enum {
     PLAYER_UI_ROUTE_REMOVE = 4,    /* confirm Remove from library (#1304) */
     /* Settings is a view over the routes, never pushed; the top bar takes it to
        show the SETTINGS tab as the active one. */
-    PLAYER_UI_ROUTE_SETTINGS = 5
+    PLAYER_UI_ROUTE_SETTINGS = 5,
+    PLAYER_UI_ROUTE_STOP = 6       /* confirm STOP GAME */
 } PlayerUiRoute;
 
 /* The player's version: the one place it is written. The About page shows
@@ -206,8 +207,23 @@ typedef struct {
 #define PLAYER_UI_WIZARD_FONT_LINES 24u
 #define PLAYER_UI_WIZARD_CHECKS 10u
 
+/* What a one-line outcome says, which picks its colour: muted, ready,
+   warning or error (PlayerNoteKind in player_state.h, in the same order). */
+typedef enum {
+    PLAYER_UI_NOTE_NEUTRAL = 0,
+    PLAYER_UI_NOTE_DONE,
+    PLAYER_UI_NOTE_WARNING,
+    PLAYER_UI_NOTE_ERROR
+} PlayerUiNoteKind;
+
+/* The setup wizard's steps that a first run shows: Welcome, Online and
+   developer options, Select game and Verify. Copying the files ends on the
+   library card, and the fonts are imported in Settings > PSP fonts. */
+#define PLAYER_UI_WIZARD_ROUTE_STEPS 4
+
 /* The setup wizard (VIEW_SETUP_WIZARD). step is 0-5: Welcome, Online and
-   developer options, Select game, Verify, Fonts and system, Ready. */
+   developer options, Select game, Verify, then Fonts and system and Ready,
+   which only the older state-only callers reach. */
 typedef struct {
     int step;
     /* Select game */
@@ -244,6 +260,7 @@ typedef struct {
     const char *font_lines[PLAYER_UI_WIZARD_FONT_LINES];
     size_t font_line_count;
     const char *font_message;
+    PlayerUiNoteKind font_message_kind;
     /* Ready */
     bool runtime_ready;
     const char *summary_line;
@@ -375,6 +392,7 @@ typedef struct {
     const char *font_lines[18];
     size_t font_line_count;
     const char *font_message;
+    PlayerUiNoteKind font_message_kind;
     float logical_width;
     float logical_height;
 } PlayerUiSettingsModel;
@@ -413,6 +431,9 @@ typedef enum {
 } PlayerUiControllerOp;
 
 #define PLAYER_UI_CONTROLLER_BUTTONS 14u   /* INPUT_CONTROL_DIGITAL_COUNT */
+/* The characters a binding's button shows whole at every launcher size: the
+   label is mono caps, so this is a width (INPUT_SETTINGS_BINDING_TEXT_MAX). */
+#define PLAYER_UI_CONTROLLER_BINDING_CHARS 20u
 #define PLAYER_UI_CONTROLLER_LIVE_LINES 4u
 
 /* A binding's prompt glyph (#1299): the shape `action` has in the model's glyph
@@ -571,6 +592,8 @@ enum {
     PLAYER_UI_ID_REMOVE_CANCEL = 0x4401u,
     PLAYER_UI_ID_REMOVE_CONFIRM = 0x4402u,
     PLAYER_UI_ID_REMOVE_SAVES = 0x4403u,
+    PLAYER_UI_ID_STOP_KEEP = 0x4411u,
+    PLAYER_UI_ID_STOP_CONFIRM = 0x4412u,
     PLAYER_UI_ID_TAB_LIBRARY = 0x0F01u,
     PLAYER_UI_ID_TAB_ABOUT = 0x0F02u,
     PLAYER_UI_ID_TAB_SETTINGS = 0x0F03u,
@@ -689,6 +712,18 @@ typedef struct {
 } PlayerUiRemoveModel;
 
 PlayerUiAction player_ui_screen_remove(NkUi *ui, const PlayerUiRemoveModel *model);
+
+/* Stop game: STOP GAME asks first, as quitting with a game running does. KEEP
+   PLAYING holds focus first and Back is KEEP PLAYING; STOP GAME returns
+   PLAYER_UI_ACTION_PRIMARY with PLAYER_UI_PRIMARY_STOP_GAME. */
+typedef struct {
+    const char *title;          /* the game that runs */
+    size_t title_index;
+    float logical_width;
+    float logical_height;
+} PlayerUiStopModel;
+
+PlayerUiAction player_ui_screen_stop(NkUi *ui, const PlayerUiStopModel *model);
 PlayerUiAction player_ui_screen_prereq(NkUi *ui, const PlayerUiPrereqModel *model);
 PlayerUiAction player_ui_screen_error(NkUi *ui, const PlayerUiErrorModel *model);
 PlayerUiAction player_ui_screen_wizard(NkUi *ui, const PlayerUiWizardModel *model);

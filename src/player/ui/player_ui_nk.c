@@ -134,6 +134,10 @@ struct PlayerUiNk {
     char remove_disc[NK_MAX_DISC_ID_LEN];
     bool remove_delete_saves;
     bool remove_focus_pending;
+    /* STOP GAME asks first: the title page the question was asked from. */
+    int stop_index;
+    char stop_disc[NK_MAX_DISC_ID_LEN];
+    bool stop_focus_pending;
     /* After a removal the library focuses the tile that took its place. */
     bool library_focus_pending;
     size_t library_focus_index;
@@ -402,6 +406,17 @@ static void player_ui_check_row(PlayerUiCheckRow *row, const NkUiTheme *theme,
     row->rgba = player_ui_check_rgba(theme, check);
 }
 
+/* The state's outcome kind as the screens' one; the two lists are in the same order. */
+static PlayerUiNoteKind player_ui_note_kind(PlayerNoteKind kind) {
+    switch (kind) {
+        case PLAYER_NOTE_DONE: return PLAYER_UI_NOTE_DONE;
+        case PLAYER_NOTE_WARNING: return PLAYER_UI_NOTE_WARNING;
+        case PLAYER_NOTE_ERROR: return PLAYER_UI_NOTE_ERROR;
+        case PLAYER_NOTE_NEUTRAL:
+        default: return PLAYER_UI_NOTE_NEUTRAL;
+    }
+}
+
 /* The setup wizard's model, from the same wizard state the existing renderer
    reads. */
 static bool player_ui_unrecorded_experimental(const GameRecord *game);
@@ -487,6 +502,7 @@ static PlayerUiAction player_ui_render_wizard(PlayerUiNk *player, PlayerApp *app
                         : app->wizard.font_latin_index_detail[item - 1];
             }
             model.font_message = app->wizard.font_message;
+            model.font_message_kind = player_ui_note_kind(app->wizard.font_message_kind);
             break;
         case WIZARD_STEP_READY_LAUNCH:
             model.runtime_ready = game->is_prepared;
@@ -600,6 +616,7 @@ static PlayerUiAction player_ui_render_settings(PlayerUiNk *player, PlayerApp *a
                         : app->wizard.font_latin_index_detail[item - 1];
             }
             model.font_message = app->wizard.font_message;
+            model.font_message_kind = player_ui_note_kind(app->wizard.font_message_kind);
             break;
         case VIEW_SETTINGS:
         default: model.page = PLAYER_UI_SETTINGS_PAGE_MAIN; break;
@@ -1756,9 +1773,50 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                     (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_REMOVE);
                 }
                 action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_PRIMARY &&
+                       action.primary == PLAYER_UI_PRIMARY_STOP_GAME) {
+                /* Stopping loses what was not saved, so it asks first, as
+                   quitting with a game running does. */
+                player->stop_index = index;
+                snprintf(player->stop_disc, sizeof(player->stop_disc), "%s",
+                         app->games[index].disc_id);
+                player->stop_focus_pending = true;
+                nk_ui_router_set_focus(player->router, nk_ui_focused(player->ui));
+                (void)nk_ui_router_push(player->router, PLAYER_UI_ROUTE_STOP);
+                action.kind = PLAYER_UI_ACTION_NONE;
             } else if (action.kind == PLAYER_UI_ACTION_PRIMARY ||
                        action.kind == PLAYER_UI_ACTION_OPEN_SAVE_FOLDER) {
                 if (out_action != NULL) *out_action = action;
+            }
+        }
+    } else if (route == PLAYER_UI_ROUTE_STOP) {
+        int index = player->stop_index;
+        /* The question goes when there is nothing left to stop: the game
+           ended by itself, or its title left the library. */
+        if (!app->is_game_running || index < 0 || index >= app->game_count ||
+            strcmp(app->games[index].disc_id, player->stop_disc) != 0) {
+            (void)nk_ui_router_pop(player->router);
+        } else {
+            PlayerUiStopModel model;
+            if (player->stop_focus_pending) {
+                nk_ui_focus(player->ui, PLAYER_UI_ID_STOP_KEEP);
+                player->stop_focus_pending = false;
+            }
+            memset(&model, 0, sizeof(model));
+            /* STOP GAME stops the game that runs, which may not be this page's. */
+            model.title = app->launch_session.game_title[0] != '\0'
+                ? app->launch_session.game_title : app->games[index].title_name;
+            model.title_index = (size_t)index;
+            model.logical_width = scale.logical_w;
+            model.logical_height = scale.logical_h;
+            action = player_ui_screen_stop(player->ui, &model);
+            if (action.kind == PLAYER_UI_ACTION_BACK) {
+                (void)nk_ui_router_pop(player->router);
+                action.kind = PLAYER_UI_ACTION_NONE;
+            } else if (action.kind == PLAYER_UI_ACTION_PRIMARY) {
+                if (out_action != NULL) *out_action = action;
+                (void)nk_ui_router_pop(player->router);
+                action.kind = PLAYER_UI_ACTION_NONE;
             }
         }
     } else if (route == PLAYER_UI_ROUTE_REMOVE) {
