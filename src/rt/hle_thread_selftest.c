@@ -1681,7 +1681,7 @@ static const SrModuleFunc s_rt_alpha_funcs[] = {
 static const SrModuleSpan s_rt_alpha_spans[] = {{RT_START, RT_TEXT_END}};
 static SrModuleCode s_rt_alpha_code = {
     "rt-alpha.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_alpha_base,
-    s_rt_alpha_funcs, 3u, s_rt_alpha_spans, 1u,
+    s_rt_alpha_funcs, 3u, s_rt_alpha_spans, 1u, 0u, 0u,
 };
 /* A library module with no start routine; its stop body is the alpha one. */
 static uint32_t s_rt_nostart_base;
@@ -1691,12 +1691,12 @@ static const SrModuleFunc s_rt_nostart_funcs[] = {
 };
 static SrModuleCode s_rt_nostart_code = {
     "rt-nostart.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_nostart_base,
-    s_rt_nostart_funcs, 2u, s_rt_alpha_spans, 1u,
+    s_rt_nostart_funcs, 2u, s_rt_alpha_spans, 1u, 0u, 0u,
 };
 static SrModuleCode s_rt_delta_code = {
     "rt-delta.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u,
     "relocation type 7 (GPREL16) at link 0x00000010 is not supported", &s_rt_delta_base,
-    NULL, 0u, NULL, 0u,
+    NULL, 0u, NULL, 0u, 0u, 0u,
 };
 
 /* A fixed-address module (ELF type 2) links at absolute addresses and carries no
@@ -1724,7 +1724,7 @@ static SrModuleFunc s_rt_fixed_funcs[3];
 static SrModuleSpan s_rt_fixed_spans[1];
 static SrModuleCode s_rt_fixed_code = {
     "rt-fixed.prx", 0u, 0u, 0u, 0u, 0x40u, 0u, NULL, &s_rt_fixed_base,
-    s_rt_fixed_funcs, 3u, s_rt_fixed_spans, 1u,
+    s_rt_fixed_funcs, 3u, s_rt_fixed_spans, 1u, 0u, 0u,
 };
 
 static int write_fixed_module_prx(const char *path, uint32_t link) {

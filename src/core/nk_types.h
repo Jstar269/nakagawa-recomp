@@ -32,7 +32,10 @@ typedef enum {
     NK_ERROR_CANCELLED = -9,
     NK_ERROR_ALREADY_EXISTS = -10,
     NK_ERROR_INVALID_XB = -11,
-    NK_ERROR_INVALID_EXECUTABLE = -12
+    NK_ERROR_INVALID_EXECUTABLE = -12,
+    /* A host path the work needs is longer than the OS file APIs accept
+       (nk_platform_path_exceeds_limit); the input itself is fine. */
+    NK_ERROR_PATH_TOO_LONG = -13
 } NkResult;
 
 typedef enum {

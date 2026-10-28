@@ -5,6 +5,7 @@
 #define PLAYER_UI_NK_H
 
 #include "nk_ui.h"
+#include "nk_ui_input.h"  /* NkUiPromptAction: the Controls page's binding glyphs */
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -414,12 +415,24 @@ typedef enum {
 #define PLAYER_UI_CONTROLLER_BUTTONS 14u   /* INPUT_CONTROL_DIGITAL_COUNT */
 #define PLAYER_UI_CONTROLLER_LIVE_LINES 4u
 
+/* A binding's prompt glyph (#1299): the shape `action` has in the model's glyph
+   style, with `label` in place of the action's own text when set. */
+typedef struct {
+    bool shown;                     /* false: unbound, no glyph */
+    NkUiPromptAction action;
+    const char *label;              /* a key's legend, a pad button's name; NULL: the action's */
+} PlayerUiBindingGlyph;
+
 typedef struct {
     PlayerUiControllerPage page;
     bool keyboard;                  /* the mapping shows the keyboard keys, not the controller */
     /* Mapping: each PSP control's name and what it is bound to, in words */
     const char *names[PLAYER_UI_CONTROLLER_BUTTONS];
     const char *bindings[PLAYER_UI_CONTROLLER_BUTTONS];
+    /* and as the glyph the device shown prints: keycaps for the keys, the pad's own set
+       for the controller */
+    NkUiPromptStyle glyph_style;
+    PlayerUiBindingGlyph glyphs[PLAYER_UI_CONTROLLER_BUTTONS];
     bool conflicted[PLAYER_UI_CONTROLLER_BUTTONS];
     int capturing;                  /* the control waiting for a press, or -1 */
     const char *scope;              /* "global mapping", "TEST00005 only" */
@@ -608,6 +621,7 @@ enum {
     PLAYER_UI_ID_CONTROLLER_CALIBRATION_CANCEL = 0x462Bu,
     PLAYER_UI_ID_CONTROLLER_SHOW_PAD = 0x462Cu,
     PLAYER_UI_ID_CONTROLLER_SHOW_KEYBOARD = 0x462Du,
+    PLAYER_UI_ID_CONTROLLER_GLYPH_BASE = 0x4640u,    /* + the PSP control, 0-13; not focusable */
     PLAYER_UI_ID_DEVELOPER_LOG_COPY = 0x4701u,
     PLAYER_UI_ID_DEVELOPER_LOG_SAVE = 0x4702u,
     PLAYER_UI_ID_DEVELOPER_LOG_CLOSE = 0x4703u
@@ -615,6 +629,8 @@ enum {
 
 #define PLAYER_UI_ID_CONTROLLER_BUTTON(control) \
     ((NkUiId)(PLAYER_UI_ID_CONTROLLER_BUTTON_BASE + (uint32_t)(control)))
+#define PLAYER_UI_ID_CONTROLLER_GLYPH(control) \
+    ((NkUiId)(PLAYER_UI_ID_CONTROLLER_GLYPH_BASE + (uint32_t)(control)))
 
 #define PLAYER_UI_ID_LIBRARY_ITEM(index) \
     ((NkUiId)(PLAYER_UI_ID_LIBRARY_ITEM_BASE + (uint32_t)(index)))

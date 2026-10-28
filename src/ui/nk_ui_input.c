@@ -444,6 +444,21 @@ bool nk_ui_input_pad_connected(const NkUiInput *input) {
     return input != NULL && input->pad_count > 0u;
 }
 
+NkUiPromptStyle nk_ui_input_pad_prompt_style(const NkUiInput *input) {
+    if (input == NULL) {
+        return NK_UI_PROMPT_NEUTRAL;
+    }
+    if (input->have_device && input->last_family != NK_UI_PAD_KEYBOARD) {
+        return nk_ui_prompt_style_for_family(input->last_family);
+    }
+    if (input->pad_count > 0u) {
+        NkUiPromptStyle style =
+            nk_ui_prompt_style_for_family(input->pad_families[input->pad_count - 1u]);
+        return style == NK_UI_PROMPT_KEYCAPS ? NK_UI_PROMPT_NEUTRAL : style;
+    }
+    return NK_UI_PROMPT_NEUTRAL;
+}
+
 NkUiPadFamily nk_ui_input_last_family(const NkUiInput *input) {
     return input != NULL && input->have_device ? input->last_family : NK_UI_PAD_NEUTRAL;
 }

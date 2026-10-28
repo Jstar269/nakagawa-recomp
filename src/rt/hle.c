@@ -20,6 +20,15 @@
  * After each handler, the caller-saved temp registers are poisoned to 0xDEADBEEF exactly as
  * PPSSPP's SetDeadbeefRegs does, so traces stay aligned on the registers the game actually
  * keeps (it never relies on caller-saved registers surviving a call).
+ *
+ * Layout, top to bottom: the handler table and argument helpers; kernel object UIDs and the
+ * user-memory allocator; the handlers, grouped by PSP library (registry, fonts, memory,
+ * module loading, decoders, DMA, sceMpeg, sceMp3, the on-screen keyboard, timers, file I/O,
+ * audio/display/GE/SAS, message pipes, mailboxes, semaphores and event flags, thread lists),
+ * with the acceptance-route and frame-capture instrumentation between them; and last
+ * sr_syscall(), which finds a NID's handler (hle_find) and calls it. Most groups start with
+ * a "---- <name>" banner comment, so search for that, or for a function's name from
+ * nid_names.h.
  */
 
 #ifndef _CRT_SECURE_NO_WARNINGS
@@ -5610,7 +5619,13 @@ static uint32_t h_DcacheWritebackInvalidateAll(CpuState *s) {
     return h_cache_invalidate_all_common(s);
 }
 
+/* Instruction-cache maintenance is where the guest announces code it wrote itself. A code
+ * overlay it read into memory is bound to its translation here, and one whose bytes are gone
+ * is unbound (sr_module_code_sync_overlays), so the native tier runs the code that is in
+ * memory, and a call into code no translation covers still misses and stops by name. Under
+ * SR_STALE_DETECT the translated images are checked as well, as at data-cache maintenance. */
 static uint32_t h_CacheInvalidateAllOther(CpuState *s) {
+    (void)sr_module_code_sync_overlays(0u, 0xffffffffu);
     return h_cache_invalidate_all_common(s);
 }
 
@@ -5639,7 +5654,16 @@ static uint32_t h_DcacheWritebackInvalidateRange(CpuState *s) {
 }
 
 static uint32_t h_CacheInvalidateRangeOther(CpuState *s) {
+    /* a0 = address, a1 = length; a range running past the top is clipped there. */
+    uint32_t hi = A1 > 0xffffffffu - A0 ? 0xffffffffu : A0 + A1;
+    (void)sr_module_code_sync_overlays(A0, hi);
     return h_cache_invalidate_range_common(s);
+}
+
+static void hle_register_icache_handlers(void) {
+    sr_hle_register(0x920f104au, "sceKernelIcacheInvalidateAll", h_CacheInvalidateAllOther);
+    sr_hle_register(0xd8779ac6u, "sceKernelIcacheClearAll", h_CacheInvalidateAllOther);
+    sr_hle_register(0xc2df770eu, "sceKernelIcacheInvalidateRange", h_CacheInvalidateRangeOther);
 }
 
 /* cache / misc UtilsForUser: no host cache work, but Dcache maintenance tells the
@@ -27007,6 +27031,7 @@ void sr_hle_init(void) {
     hle_register_osk_handlers();
     hle_register_utility_dialog_handlers();
     hle_register_dcache_handlers();
+    hle_register_icache_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
      * definition, called by both branches, so the selftest cannot drift from the
@@ -27114,18 +27139,11 @@ void sr_hle_init(void) {
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
     hle_register_devkit_version_handler();
 
-    /* Data-cache maintenance: one registration helper shared with the executable
-     * harness, ahead of the opt-in Icache gate below. */
+    /* Cache maintenance: registration helpers shared with the executable harness. The
+     * Icache NIDs bind and unbind code overlays; under SR_STALE_DETECT they also run the
+     * TD-27 check-and-abort contract the Dcache handlers run. */
     hle_register_dcache_handlers();
-    /* TD-27 stale-code detector: the Icache NIDs (a code-modification signal)
-     * stay UNREGISTERED (fail-closed, as before) unless SR_STALE_DETECT opts
-     * in, so default dispatch behavior is unchanged. When enabled they run
-     * the same check-and-abort contract as the Dcache handlers above. */
-    if (sr_stale_enabled()) {
-        sr_hle_register(0x920f104au, "sceKernelIcacheInvalidateAll", h_CacheInvalidateAllOther);
-        sr_hle_register(0xd8779ac6u, "sceKernelIcacheClearAll", h_CacheInvalidateAllOther);
-        sr_hle_register(0xc2df770eu, "sceKernelIcacheInvalidateRange", h_CacheInvalidateRangeOther);
-    }
+    hle_register_icache_handlers();
     /* GPO latch / GPI pins: shared with the executable harness through
      * hle_register_gpi_gpo_handlers(). */
     hle_register_gpi_gpo_handlers();

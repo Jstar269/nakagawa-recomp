@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **357** (declared in `recomp.h`: 299)
-- reach class: emitter-reached 64, production-runtime-only 263, selftest-only 15, address-only 7, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 24, upstream_derived 332
+- helpers: **358** (declared in `recomp.h`: 300)
+- reach class: emitter-reached 64, production-runtime-only 264, selftest-only 15, address-only 7, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 25, upstream_derived 332
 
 ## Helpers
 
@@ -316,6 +316,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_module_code_lookup` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_register` | `rt/guest_interp.c` | yes | emitter-reached (direct) | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_reset` | `rt/guest_interp.c` | yes | selftest-only | `rt/guest_interp.c`: project_authored_attested |
+| `sr_module_code_sync_overlays` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_unbind` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_nan_trap_dump_context` | `rt/recomp.c` | no | address-only | `rt/recomp.c`: upstream_derived |
 | `sr_nan_trap_note` | `rt/debug.c` | yes | emitter-reached (via `SR_NAN_TRAP_F`) | `rt/debug.c`: project_authored_attested |

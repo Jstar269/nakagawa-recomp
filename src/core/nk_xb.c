@@ -1456,6 +1456,21 @@ static bool make_parent_directory(const char *path) {
     return nk_platform_mkdir_p_private(parent);
 }
 
+/* Whether the folder make_parent_directory makes for `path` is past the host's
+   path limit. */
+static bool parent_path_exceeds_limit(const char *path) {
+    char parent[4096];
+    size_t length = strlen(path);
+    if (length >= sizeof(parent)) return true;
+    memcpy(parent, path, length + 1);
+    char *slash = strrchr(parent, '/');
+    char *backslash = strrchr(parent, '\\');
+    if (backslash && (!slash || backslash > slash)) slash = backslash;
+    if (!slash) return false;
+    *slash = '\0';
+    return nk_platform_path_exceeds_limit(parent, true);
+}
+
 NkResult nk_xb_unpack(const char *archive_path, const char *destination_root,
                       NkXbProgressCallback progress, void *userdata,
                       char *error_message, size_t error_message_size) {
@@ -1465,6 +1480,12 @@ NkResult nk_xb_unpack(const char *archive_path, const char *destination_root,
                        "invalid XB unpack destination");
     }
     if (!nk_platform_mkdir_p_private(destination_root)) {
+        if (nk_platform_path_exceeds_limit(destination_root, true)) {
+            xb_error(error_message, error_message_size,
+                     "the archive's unpack folder path is %zu characters, longer than this "
+                     "system allows", strlen(destination_root));
+            return NK_ERROR_PATH_TOO_LONG;
+        }
         return xb_fail(error_message, error_message_size,
                        "cannot create XB unpack destination");
     }
@@ -1496,14 +1517,32 @@ NkResult nk_xb_unpack(const char *archive_path, const char *destination_root,
             if (!xb_member_path_to_host_utf8(entry->path, host_member,
                                              sizeof(host_member)) ||
                 !make_member_path(destination_root, host_member,
-                                  output_path, sizeof(output_path)) ||
-                !make_parent_directory(output_path)) {
+                                  output_path, sizeof(output_path))) {
                 result = xb_fail(error_message, error_message_size,
                                  "XB member path is too long or cannot be contained");
+            } else if (!make_parent_directory(output_path)) {
+                /* The member's folder could not be made. When the path is past
+                   the host's limit, that is the folder's length, not the archive. */
+                if (parent_path_exceeds_limit(output_path)) {
+                    xb_error(error_message, error_message_size,
+                             "an unpacked archive member's path is %zu characters, longer "
+                             "than this system allows", strlen(output_path));
+                    result = NK_ERROR_PATH_TOO_LONG;
+                } else {
+                    result = xb_fail(error_message, error_message_size,
+                                     "XB member folder could not be created");
+                }
             } else {
                 FILE *file = nk_platform_fopen_private(output_path, "wb");
                 if (!file) {
-                    result = NK_ERROR_IO;
+                    if (nk_platform_path_exceeds_limit(output_path, false)) {
+                        xb_error(error_message, error_message_size,
+                                 "an unpacked archive member's path is %zu characters, "
+                                 "longer than this system allows", strlen(output_path));
+                        result = NK_ERROR_PATH_TOO_LONG;
+                    } else {
+                        result = NK_ERROR_IO;
+                    }
                 } else {
                     size_t written = fwrite(decoded, 1, decoded_size, file);
                     int close_failed = fclose(file) != 0;
