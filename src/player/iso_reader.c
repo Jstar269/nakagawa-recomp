@@ -20,6 +20,19 @@ bool iso_inspect_file(const char *iso_path, IsoInspectResult *out_result) {
         return false;
     }
 
+    /* A readable ISO9660 image with no PSP_GAME folder is a disc image of
+       something else (a PC or video disc): say that plainly here, before the
+       player calls it an unknown PSP title. */
+    if (!meta.has_psp_game_folder) {
+        snprintf(out_result->boundary_code, sizeof(out_result->boundary_code),
+                 "DISC_NOT_PSP");
+        snprintf(out_result->error_message, sizeof(out_result->error_message),
+                 "This disc image isn't a PSP game: it has no PSP_GAME folder. "
+                 "Choose the .iso of a PSP game disc.");
+        out_result->success = false;
+        return false;
+    }
+
     snprintf(out_result->disc_id, sizeof(out_result->disc_id), "%s", meta.disc_id);
     snprintf(out_result->title_name, sizeof(out_result->title_name), "%s", meta.title_name);
     snprintf(out_result->disc_version, sizeof(out_result->disc_version), "%s", meta.disc_version);

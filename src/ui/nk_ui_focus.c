@@ -86,6 +86,9 @@ static long nk_ui_focus_pick(const NkUiFocusEntry *entries, size_t count,
         dir != NK_UI_DIR_UP && dir != NK_UI_DIR_DOWN) {
         return -1;
     }
+    if (horizontal && (cur->flags & NK_UI_FOCUS_OWNS_HORIZONTAL) != 0u) {
+        return -1;
+    }
     for (i = 0; i < count; ++i) {
         const NkUiFocusEntry *c = &entries[i];
         float dx;
@@ -387,6 +390,16 @@ bool nk_ui_focus_set(NkUiFocusGraph *graph, NkUiId id) {
     }
     nk_ui_focus_commit(graph, id, top);
     return true;
+}
+
+bool nk_ui_focus_owns_horizontal(const NkUiFocusGraph *graph) {
+    long cur;
+    if (graph == NULL) {
+        return false;
+    }
+    cur = nk_ui_focus_find(graph->entries, graph->count, graph->focused);
+    return cur >= 0 && nk_ui_focus_enabled(&graph->entries[cur]) &&
+           (graph->entries[cur].flags & NK_UI_FOCUS_OWNS_HORIZONTAL) != 0u;
 }
 
 NkUiId nk_ui_focus_move(NkUiFocusGraph *graph, NkUiNavDir direction) {

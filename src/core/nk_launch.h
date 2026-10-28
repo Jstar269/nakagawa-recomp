@@ -105,8 +105,12 @@ typedef struct {
     char memstick_root[NK_MAX_PATH];
     char title_id[64];
     char disc_id[NK_MAX_DISC_ID_LEN];
-    /* PARAM.SFO TITLE of the selected disc; handed to the runtime as SR_GAME_TITLE for the caption. */
+    /* PARAM.SFO TITLE of the selected disc; handed to the runtime as SR_GAME_TITLE for the caption
+       and the pause overlay's title. */
     char game_title[NK_MAX_TITLE_LEN];
+    /* The player's own folder, which holds the UI fonts the pause overlay draws with
+       (SR_UI_ROOT). Set by the player after preparation; empty exports an empty value. */
+    char ui_root[NK_MAX_PATH];
     char boot_executable[NK_MAX_EXECUTABLE_PATH];
     char selected_executable[NK_MAX_SELECTED_EXECUTABLE_PATH];
     uint32_t base_address;
@@ -243,6 +247,25 @@ bool nk_launch_keep_run_log_in(const char *events_path, const char *log_dir,
  * log), capped at NK_LAUNCH_RUN_LOG_MAX_BYTES. */
 bool nk_launch_keep_run_log(const char *events_path, const char *disc_id,
                             char *out_path, size_t out_size);
+
+/* The card for a program the OS refused to start because a security product or
+ * policy blocked it, built from the OS error the spawn reported
+ * (NkProcessHandle.spawn_error). `program` names it in a sentence ("the game")
+ * and `program_title` in a title ("Game"). The details hold the OS's own text for
+ * the error and the program's path. Returns false, with `out` cleared, when the
+ * error is not such a block (nk_platform_spawn_block says NK_SPAWN_BLOCK_NONE). */
+typedef struct {
+    NkSpawnBlock block;
+    char code[32];
+    char title[128];
+    char message[512];
+    char details[512];
+} NkSpawnBlockReport;
+
+bool nk_launch_describe_spawn_block(int os_error, const char *program,
+                                    const char *program_title,
+                                    const char *program_path,
+                                    NkSpawnBlockReport *out);
 
 #ifdef __cplusplus
 }

@@ -148,6 +148,68 @@ static inline uint32_t sr_vfpu_rnd_step(uint32_t rcx[8]) {
     return n[0] + n[1] + n[3];
 }
 
+/* VFPU forms measured on a PSP-3000 by PSP-VFPU-FORMS-001 (2026-10-28, issue #326;
+ * docs/HARDWARE_ORACLE.md): the raw result words of vh2f, vuc2i, vsocp, vwbn and
+ * vrndf1/vrndf2 under identity S/T/D prefixes, which is all these helpers model. The
+ * generated code and sr_vfpu_interp both call them; a pending prefix and the widths no
+ * cell covered fail closed in both lanes. */
+
+/* vrndf1.s / vrndf2.s: one step of the random unit (sr_vfpu_rnd_step, the same state
+ * update as vrndi.s) whose low 23 bits become the mantissa of a float in [1, 2)
+ * (vrndf1) or [2, 4) (vrndf2). All 68 measured draws match. */
+static inline uint32_t sr_vfpu_rndf_step(uint32_t rcx[8], int two) {
+    return (two ? 0x40000000u : 0x3f800000u) | (sr_vfpu_rnd_step(rcx) & 0x7fffffu);
+}
+
+/* vh2f: one IEEE half to a float32 word. A half denormal becomes a zero of its sign;
+ * exponent 31 keeps the 10-bit payload in the LOW mantissa bits (0x7c01 -> 0x7f800001,
+ * 0x7e00 -> 0x7f800200), so infinities map to infinities; normals convert exactly. */
+static inline uint32_t sr_vfpu_h2f(uint32_t h) {
+    const uint32_t sign = (h & 0x8000u) << 16, e = (h >> 10) & 0x1fu, m = h & 0x3ffu;
+    if (e == 0u) return sign;
+    if (e == 31u) return sign | 0x7f800000u | m;
+    return sign | ((e + 112u) << 23) | (m << 13);
+}
+
+/* vuc2i: one byte b to the word (b * 0x01010101) >> 1. */
+static inline uint32_t sr_vfpu_uc2i(uint32_t b) {
+    return ((b & 0xffu) * 0x01010101u) >> 1;
+}
+
+/* vwbn.s with exponent imm8 e: a word whose exponent field is 0xff passes unchanged.
+ * Otherwise the significand (implicit bit included for a normal, the raw mantissa for a
+ * zero or denormal) shifts left by (x_exp - e) & 15 when x_exp > e, right by
+ * (e - x_exp) & 15 when 0 < x_exp < e, not at all otherwise, and the low 23 bits become
+ * the mantissa of a float with the operand's sign and exponent e. The 4-bit shift count
+ * is what the cells show: 1e10 at e = 0x7f shifts by 1, the largest normal by 15, the
+ * smallest normal right by 14. All 448 measured words (eight exponents) match. */
+static inline uint32_t sr_vfpu_wbn(uint32_t x, uint32_t e) {
+    const uint32_t xe = (x >> 23) & 0xffu;
+    if (xe == 0xffu) return x;
+    uint32_t sig = (x & 0x7fffffu) | (xe != 0u ? 0x800000u : 0u);
+    if (xe > e) sig <<= (xe - e) & 15u;
+    else if (xe != 0u && xe < e) sig >>= (e - xe) & 15u;
+    return (x & 0x80000000u) | ((e & 0xffu) << 23) | (sig & 0x7fffffu);
+}
+
+/* vsocp: one operand x to the pair (sat0(1 - x), sat0(x)), sat0 clamping to [0, 1]
+ * with +0 for anything at or below zero. A denormal operand counts as a zero of its
+ * sign; a NaN operand writes the canonical 0x7f800001 to both lanes. */
+static inline void sr_vfpu_socp(uint32_t x, uint32_t out[2]) {
+    if ((x & 0x7f800000u) == 0u) x &= 0x80000000u;
+    if ((x & 0x7fffffffu) > 0x7f800000u) {
+        out[0] = out[1] = 0x7f800001u;
+        return;
+    }
+    float f, a;
+    memcpy(&f, &x, 4);
+    a = 1.0f - f;
+    a = a <= 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+    f = f <= 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
+    memcpy(&out[0], &a, 4);
+    memcpy(&out[1], &f, 4);
+}
+
 /* LLE Phase 1 (PR 2): COP0/exception/eret helpers and flow metadata. Included
  * here so generated code and the interpreter share one declaration site. */
 #include "cpu_lle.h"
@@ -1147,6 +1209,12 @@ typedef struct SrModuleCode {
     uint32_t nfuncs;
     const SrModuleSpan *spans;
     uint32_t nspans;
+    /* Non-zero: a code overlay the game copies into memory itself (tools/analyze.py,
+     * MWo3). It is bound, at its link address, when the guest invalidates the instruction
+     * cache over it and these leading bytes of the file (header and text) are in memory,
+     * and unbound when they no longer are. sceKernelLoadModule never binds it. */
+    uint32_t overlay_check_len;
+    uint64_t overlay_check_fnv1a64;
 } SrModuleCode;
 
 typedef enum SrModuleBindResult {
@@ -1185,6 +1253,10 @@ RecompFn sr_module_code_lookup(uint32_t pc, int *in_bound_image);
  * owning image's executable spans covers pc's complete fetch slot. */
 int  sr_module_code_fetch_authority(uint32_t pc);
 void sr_module_code_reset(void);   /* drop every registration and binding (fixtures) */
+/* Instruction-cache maintenance over guest [lo, hi): unbind each code overlay there whose
+ * identifying bytes are no longer in memory, then bind each one whose bytes are. Returns
+ * the number of bindings changed. */
+uint32_t sr_module_code_sync_overlays(uint32_t lo, uint32_t hi);
 
 #if defined(SR_STACK_CENSUS_ENABLED)
 /* Opt-in dynamic check of guest stack preservation at generated callable
@@ -1577,6 +1649,9 @@ int      sr_exit_request_quit(void);
 int      sr_exit_request_expired(void);
 SrPauseVerdict sched_pause_request(SrPauseSource source);
 int      sched_pause_active(void);
+/* The source of the pause requested or open now (the presenter opens on the controller
+ * dialog for SR_PAUSE_SRC_PAD_LOST); meaningful while sched_pause_pending() is nonzero. */
+SrPauseSource sched_pause_source(void);
 int      sched_pause_pending(void);
 uint64_t sched_pause_total_ns(void);
 uint32_t sr_display_vcount(void);

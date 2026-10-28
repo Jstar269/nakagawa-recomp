@@ -31,6 +31,7 @@ import build_profile
 from analyze import (
     analyze, Elf, in_ranges, exec_ranges, resolve_extra_spans,
     canonical_cfg_gate, canonical_cfg_json, canonical_cfg_report,
+    code_overlay_elf, code_overlay_layout, data_section_words, is_code_overlay,
 )
 from host_stubs import HST_SIMPLE_STUBS
 import compat_overrides
@@ -1381,8 +1382,8 @@ def _flit(v):
 _VFPU4_NAMED_UNIMPLEMENTED = {
     (0x01, 0x00): "vrnds",
     (0x01, 0x01): "vrndi",  # .p/.t/.q only: vrndi.s is _vrndi_single_stmt
-    (0x01, 0x02): "vrndf1",
-    (0x01, 0x03): "vrndf2",
+    (0x01, 0x02): "vrndf1",  # .p/.t/.q only: vrndf1.s is _vfpu_forms_stmt
+    (0x01, 0x03): "vrndf2",  # .p/.t/.q only: vrndf2.s is _vfpu_forms_stmt
 }
 
 
@@ -1400,6 +1401,52 @@ def _vrndi_single_stmt(addr, w):
             f"sr_unimplemented({G(addr)}, \"VFPU vrndi.s under a prefix is unmeasured; issue #326\"); "
             "sr_end(s, 0u, 0); return; } "
             f"s->vi[{d0}]=sr_vfpu_rnd_step(&s->vfpuCtrl[8]); }}")
+
+def _vfpu_forms_stmt(addr, w, what, body):
+    """A PSP-VFPU-FORMS-001 form (issue #326) under identity prefixes.
+
+    vh2f.s/.p, vuc2i.s, vsocp.s/.p, vwbn.s and vrndf1.s/vrndf2.s were measured on a
+    PSP-3000 (2026-10-28) under identity S/T/D prefixes only; the rules are the recomp.h
+    helpers sr_vfpu_interp also calls. A pending prefix is unmeasured, so it stops the run
+    with no state change, as sr_vfpu_interp refuses it. None of these forms writes VFPU_CC.
+    """
+    return ("{ if (s->vfpuCtrl[0]!=0xe4u || s->vfpuCtrl[1]!=0xe4u || s->vfpuCtrl[2]!=0u) { "
+            f"s->pc={G(addr)}; "
+            f"fprintf(stderr, \"VFPU_UNSUPPORTED: pc=0x{addr:08x} word=0x{w:08x} issue=326\\n\"); "
+            f"sr_unimplemented({G(addr)}, \"VFPU {what} under a prefix is unmeasured; issue #326\"); "
+            "sr_end(s, 0u, 0); return; } " + body + " }")
+
+
+def _vfpu_forms_effect(addr, w, jump, sel, n):
+    """The PSP-VFPU-FORMS-001 forms at their measured widths, or None."""
+    vd, vs = w & 0x7F, (w >> 8) & 0x7F
+    if jump >= 24 and n == 1:  # vwbn.s, exponent imm8 in bits 16-23
+        d0, s0 = vreg_indices(vd, 1)[0], vreg_indices(vs, 1)[0]
+        return _vfpu_forms_stmt(addr, w, "vwbn.s",
+                                f"s->vi[{d0}]=sr_vfpu_wbn(s->vi[{s0}],{(w >> 16) & 0xFF}u);")
+    if jump == 1 and sel in (2, 3) and n == 1:  # vrndf1.s / vrndf2.s
+        d0 = vreg_indices(vd, 1)[0]
+        return _vfpu_forms_stmt(addr, w, f"vrndf{sel - 1}.s",
+                                f"s->vi[{d0}]=sr_vfpu_rndf_step(&s->vfpuCtrl[8],{sel - 2});")
+    if jump == 1 and sel == 19 and n <= 2:  # vh2f.s/.p: low then high half, double width
+        si, di = vreg_indices(vs, n), vreg_indices(vd, 2 * n)
+        reads = " ".join(f"uint32_t _s{i}=s->vi[{si[i]}];" for i in range(n))
+        writes = " ".join(f"s->vi[{di[2 * i]}]=sr_vfpu_h2f(_s{i}&0xFFFFu); "
+                          f"s->vi[{di[2 * i + 1]}]=sr_vfpu_h2f(_s{i}>>16);" for i in range(n))
+        return _vfpu_forms_stmt(addr, w, f"vh2f.{'sp'[n - 1]}", f"{reads} {writes}")
+    if jump == 1 and sel == 24 and n == 1:  # vuc2i.s: four bytes, low first, to a quad
+        s0, di = vreg_indices(vs, 1)[0], vreg_indices(vd, 4)
+        writes = " ".join(f"s->vi[{di[i]}]=sr_vfpu_uc2i(_s>>{8 * i});" for i in range(4))
+        return _vfpu_forms_stmt(addr, w, "vuc2i.s", f"uint32_t _s=s->vi[{s0}]; {writes}")
+    if jump == 2 and sel == 5 and n <= 2:  # vsocp.s/.p: x -> (sat0(1 - x), sat0(x))
+        si, di = vreg_indices(vs, n), vreg_indices(vd, 2 * n)
+        reads = " ".join(f"_x[{i}]=s->vi[{si[i]}];" for i in range(n))
+        calc = " ".join(f"sr_vfpu_socp(_x[{i}],&_d[{2 * i}]);" for i in range(n))
+        writes = " ".join(f"s->vi[{di[i]}]=_d[{i}];" for i in range(2 * n))
+        return _vfpu_forms_stmt(addr, w, f"vsocp.{'sp'[n - 1]}",
+                                f"uint32_t _x[2],_d[4]; {reads} {calc} {writes}")
+    return None
+
 
 # VFPU9 forms whose semantics follow the 2026-10-24 PSP-3000 measurement (issue
 # #326) and live only in sr_vfpu_interp: op9 -> (name, vector sizes it accepts).
@@ -1445,6 +1492,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
         rt_selector = (w >> 16) & 0x1F
         if (jump, rt_selector) == (0x01, 0x01) and vec_size(w) == 1:
             return _vrndi_single_stmt(addr, w), None, 0
+        forms = _vfpu_forms_effect(addr, w, jump, rt_selector, vec_size(w))
+        if forms is not None:
+            return forms, None, 0
         public_name = _VFPU4_NAMED_UNIMPLEMENTED.get((jump, rt_selector))
         if public_name is not None:
             raise Unsupported(
@@ -2444,11 +2494,10 @@ _SV_SPECIAL = {0x0006e9bc, 0x0006ea1c, 0x00108630, 0x0010433c}
 #   "inject" : unconditionally inject `stmt` into the branch block.
 #   "probe"  : emit a one-shot fprintf probe at function entry (no semantic
 #              change; diagnostic only).
-_GUEST_PATCH_KEYS = {0x0004cdc8}
+_GUEST_PATCH_KEYS: set[int] = set()
+# 0x0004cdc8 (forced host0 asset route) retired under #363 (2026-10-27): with the UMD block
+# device readable in sectors, the title's own archive reader serves every asset.
 GUEST_PATCHES = {
-    0x0004cdc8: {"kind": "cond", "value": "1u",
-                 "why": "route host0 asset reads through sceIoOpen so HLE can serve extracted XB files; the guest-only host filesystem is unavailable",
-                 "issue": "P0 table root 0x0034a84c"},
 }
 # Static-verify exclusions: the four stand-alone specials plus every patched addr.
 _SV_SPECIAL |= _GUEST_PATCH_KEYS
@@ -3175,6 +3224,10 @@ class RuntimeModuleTranslation:
     functions: list = None        # (link address, nwords)
     spans: list = None            # (start, end) link space
     stubbed: list = None          # (link address, reason)
+    # A code overlay (analyze.code_overlay_layout) is bound when guest memory holds these
+    # leading bytes of the file (its header and text), not when the game loads a module.
+    overlay_check_len: int = 0
+    overlay_check_fnv1a64: int = 0
     # A shared module is named by its bytes, not its place in the build, and goes in its
     # own translation unit, so every game carrying the same module compiles the same file.
     shared: bool = False
@@ -3213,7 +3266,8 @@ def c_string(text):
     return '"' + "".join(out) + '"'
 
 
-def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False):
+def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, shared=False,
+                             entry_hints=None):
     """Translate one runtime-placed module in its own link space.
 
     Returns a ``RuntimeModuleTranslation``; a module the build cannot translate
@@ -3231,6 +3285,17 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         texts=[], functions=[], spans=[], stubbed=[], shared=shared,
     )
     sys.stderr.write(f"Processing runtime-placed module: {name}\n")
+    if is_code_overlay(data):
+        # The analysis reads a code overlay through its fixed-address ELF image; the
+        # descriptor keeps the file's own identity and the bytes that identify it in memory.
+        try:
+            layout = code_overlay_layout(data)
+        except ValueError as exc:
+            module.unsupported_reason = f"code overlay cannot be translated: {exc}"
+            return module
+        module.overlay_check_len = layout.check_bytes
+        module.overlay_check_fnv1a64 = fnv1a64(data[:layout.check_bytes])
+        data = code_overlay_elf(data)
     try:
         relocations = prx_reloc_model.model_relocations(data, name)
     except prx_reloc_model.RelocationModelError as exc:
@@ -3252,7 +3317,9 @@ def translate_runtime_module(index, module_path, profile=None, cfg_gate=False, s
         return module
     ranges = exec_ranges(elf)
     try:
-        analyzed, _ = analyze(elf, cfg_gate=cfg_gate)
+        # A code overlay's entry points are held by the executable (entry_hints).
+        analyzed, _ = analyze(elf, cfg_gate=cfg_gate,
+                              entry_hints=entry_hints if module.overlay_check_len else None)
     except ImportTableError as exc:
         sys.stderr.write(f"codegen: {format_boundary(exc, module_path)}\n")
         return 1
@@ -3396,7 +3463,8 @@ def runtime_module_descriptor_lines(module):
         f"    0x{module.link_low:08x}u, 0x{module.link_high:08x}u, 0x{module.alignment:x}u, "
         f"{1 if module.relocatable else 0}u,",
         f"    {reason}, &{module.base_symbol},",
-        f"    {funcs}, {len(module.functions)}u, {spans}, {len(module.spans)}u",
+        f"    {funcs}, {len(module.functions)}u, {spans}, {len(module.spans)}u,",
+        f"    0x{module.overlay_check_len:08x}u, 0x{module.overlay_check_fnv1a64:016x}ull",
         "};",
         "",
     ]
@@ -4074,10 +4142,12 @@ def main(argv):
         with open(module_path, "rb") as source:
             module_hashes.append(fnv1a64(source.read()))
     module_translations = []
+    main_data_words = data_section_words(elf) if runtime_modules else set()
     for index, module_path in enumerate(runtime_modules):
         shared = not stack_census and module_hashes.count(module_hashes[index]) == 1
         translated = translate_runtime_module(index, module_path, profile=profile,
-                                              cfg_gate=cfg_gate, shared=shared)
+                                              cfg_gate=cfg_gate, shared=shared,
+                                              entry_hints=main_data_words)
         if isinstance(translated, int):
             return translated
         module_translations.append(translated)

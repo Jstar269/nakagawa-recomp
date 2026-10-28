@@ -1,6 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/*
+ * Starts a built game. For a library entry it finds the staged executable and
+ * the title's runtime package, checks both again just before starting,
+ * resolves the folders the game reads its data from, and starts the game as a
+ * child process (nk_platform_spawn_process) with the arguments and environment
+ * the runtime expects. nk_launch_is_running(), nk_launch_wait() and
+ * nk_launch_stop() let the player follow and end that process, and
+ * nk_launch_keep_run_log() keeps the run's output in the player's logs folder.
+ */
+
 #include "nk_launch.h"
 #include "nk_font_slots.h"
 #include "generated/nk_title_catalog.h"
@@ -1369,6 +1379,8 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_volume[32];
     char env_input_profile[NK_MAX_PATH + 32];
     char env_headless_accept_frames[64];
+    char env_disc_id[NK_MAX_DISC_ID_LEN + 16];
+    char env_ui_root[NK_MAX_PATH + 16];
     char sep = nk_platform_path_separator();
 
     if (session->config.fps_cap == -1) {
@@ -1456,9 +1468,16 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     snprintf(env_user_data_root, sizeof(env_user_data_root), "SR_USER_DATA_ROOT=%s",
              session->user_data_root);
     envp[env_count++] = env_user_data_root;
+    /* What the pause overlay shows and draws with, beside the game's name (SR_GAME_TITLE
+     * below): the disc ID and the player's folder for the UI fonts. Always exported, so an
+     * empty value masks an inherited one instead of naming another game. */
+    snprintf(env_disc_id, sizeof(env_disc_id), "SR_DISC_ID=%s", session->disc_id);
+    envp[env_count++] = env_disc_id;
+    snprintf(env_ui_root, sizeof(env_ui_root), "SR_UI_ROOT=%s", session->ui_root);
+    envp[env_count++] = env_ui_root;
 
-    /* The user's own disc title (PARAM.SFO TITLE) for the window caption; the runtime sanitises it
-     * (sr_window_title_format in src/rt/recomp.h). Always exported so an inherited value cannot
+    /* The user's own disc title (PARAM.SFO TITLE) for the window caption and the pause overlay; the
+     * runtime sanitises it (sr_window_title_sanitize in src/rt/recomp.h). Always exported so an inherited value cannot
      * name another game. */
     snprintf(env_game_title, sizeof(env_game_title), "SR_GAME_TITLE=%s", session->game_title);
     envp[env_count++] = env_game_title;
@@ -1565,7 +1584,10 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     );
 
     if (!ok) {
-        snprintf(session->last_error, sizeof(session->last_error), "Failed to spawn runtime process: %.*s", (int)(sizeof(session->last_error) - 40), session->executable_path);
+        snprintf(session->last_error, sizeof(session->last_error),
+                 "Failed to spawn runtime process (OS error %d): %.*s",
+                 session->process.spawn_error, (int)(sizeof(session->last_error) - 60),
+                 session->executable_path);
         session->is_running = false;
         return NK_ERROR_PROCESS_SPAWN;
     }
@@ -1725,4 +1747,57 @@ bool nk_launch_keep_run_log(const char *events_path, const char *disc_id,
     if (!nk_platform_get_path(NK_PATH_LOGS, log_dir, sizeof(log_dir))) return false;
     return nk_launch_keep_run_log_in(events_path, log_dir, disc_id,
                                      NK_LAUNCH_RUN_LOG_MAX_BYTES, out_path, out_size);
+}
+
+bool nk_launch_describe_spawn_block(int os_error, const char *program,
+                                    const char *program_title,
+                                    const char *program_path,
+                                    NkSpawnBlockReport *out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    NkSpawnBlock block = nk_platform_spawn_block(os_error);
+    if (block == NK_SPAWN_BLOCK_NONE) return false;
+    if (!program || !program[0]) program = "the program";
+    if (!program_title || !program_title[0]) program_title = "Program";
+    out->block = block;
+    switch (block) {
+        case NK_SPAWN_BLOCK_ACCESS_DENIED:
+            snprintf(out->code, sizeof(out->code), "WINDOWS_BLOCKED_START");
+            snprintf(out->title, sizeof(out->title), "Windows Blocked the %s", program_title);
+            snprintf(out->message, sizeof(out->message),
+                     "Windows refused to start %s (access denied). This is often a Microsoft "
+                     "Defender attack surface reduction rule. Those rules block programs that are "
+                     "new to Windows, and every game Nakagawa builds on this PC is new. Protection "
+                     "history in Windows Security names the rule. Whoever manages it can exclude "
+                     "Nakagawa's folders. Please don't turn Windows Security off.",
+                     program);
+            break;
+        case NK_SPAWN_BLOCK_THREAT:
+            snprintf(out->code, sizeof(out->code), "WINDOWS_DEFENDER_THREAT");
+            snprintf(out->title, sizeof(out->title), "Windows Security Blocked the %s",
+                     program_title);
+            snprintf(out->message, sizeof(out->message),
+                     "Windows Security says %s contains a threat, so Windows would not start it. "
+                     "Protection history in Windows Security names the detection. If you checked "
+                     "your download, you can allow it there and try again. Please don't turn "
+                     "Windows Security off.",
+                     program);
+            break;
+        case NK_SPAWN_BLOCK_POLICY:
+        default:
+            snprintf(out->code, sizeof(out->code), "WINDOWS_POLICY_BLOCKED");
+            snprintf(out->title, sizeof(out->title), "Windows Blocked the %s", program_title);
+            snprintf(out->message, sizeof(out->message),
+                     "A Windows policy on this PC does not allow %s to start. Whoever manages "
+                     "this PC sets that policy (AppLocker, App Control or a software restriction "
+                     "policy). Ask them to allow Nakagawa's folders.",
+                     program);
+            break;
+    }
+    char os_text[256];
+    if (!nk_platform_describe_os_error(os_error, os_text, sizeof(os_text))) os_text[0] = '\0';
+    snprintf(out->details, sizeof(out->details), "Windows error %d%s%.200s\nProgram: %.240s",
+             os_error, os_text[0] ? ": " : "", os_text,
+             program_path && program_path[0] ? program_path : "(unknown)");
+    return true;
 }

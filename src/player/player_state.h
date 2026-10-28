@@ -620,6 +620,10 @@ void player_app_set_cli_not_found_error(PlayerApp *app,
 /* The error card's words, shared by both launchers. The badge is a plain word
    for the kind of problem; an unknown code gets "Problem", never the code. */
 const char *player_error_badge(const ErrorState *error);
+/* The card title for a picked file refused at a named format boundary
+   (IsoInspectResult.boundary_code): a compressed disc image, a disc image that
+   is not of a PSP game, or a file that is no disc image at all. */
+const char *player_disc_refusal_title(const char *boundary_code);
 /* True when the card leads with its plain message and shows boundary_text as
    details; otherwise boundary_text is the message. */
 bool player_error_leads_with_message(const ErrorState *error);
@@ -909,6 +913,7 @@ typedef struct {
     uint32_t headless_accept_presented_frames;
     char boot_event_file_path[MAX_PATH_LEN];
     char input_profile_path[NK_MAX_PATH];
+    char ui_root[MAX_PATH_LEN];
     /* Results, written by player_launch_work_run. */
     PlayerLaunchStep failed_step;
     NkResult result;

@@ -111,7 +111,13 @@ static void nk_ui_update_focus_from_events(NkUi *ui) {
     while (ui != NULL && i < ui->event_count) {
         NkUiEvent *event = &ui->events[i];
         NkUiId focused = 0;
-        if (event->type == NK_UI_EV_NAV) {
+        if (event->type == NK_UI_EV_NAV &&
+            (event->dir == NK_UI_DIR_LEFT || event->dir == NK_UI_DIR_RIGHT) &&
+            nk_ui_focus_owns_horizontal(ui->focus_graph)) {
+            /* Left and right belong to the focused control; the screen takes them
+               with nk_ui_take_event(NK_UI_EV_NAV). */
+            ++i;
+        } else if (event->type == NK_UI_EV_NAV) {
             focused = nk_ui_focus_move(ui->focus_graph, event->dir);
             if (focused != 0u) {
                 ui->focused = focused;
@@ -678,11 +684,11 @@ void nk_ui_set_prompt_images(NkUi *ui, const NkUiPromptImages *images) {
     }
 }
 
-/* The glyph image for the current style, or NULL to draw the geometry. */
-static const NkUiImage *nk_ui_prompt_image_for(const NkUi *ui, NkUiPromptAction action) {
+/* The glyph image for a style, or NULL to draw the geometry. */
+static const NkUiImage *nk_ui_prompt_image_for(const NkUi *ui, NkUiPromptStyle style,
+                                               NkUiPromptAction action) {
     const NkUiImage *image;
-    unsigned style = (unsigned)ui->prefs.prompt_style;
-    if (ui->prompt_images == NULL || style >= (unsigned)NK_UI_PROMPT_STYLE_COUNT ||
+    if (ui->prompt_images == NULL || (unsigned)style >= (unsigned)NK_UI_PROMPT_STYLE_COUNT ||
         (unsigned)action >= (unsigned)NK_UI_PROMPT_ACT_COUNT) {
         return NULL;
     }
@@ -691,24 +697,37 @@ static const NkUiImage *nk_ui_prompt_image_for(const NkUi *ui, NkUiPromptAction 
 }
 
 bool nk_ui_prompt_glyph(NkUi *ui, NkUiId id, NkUiPromptAction action, float height) {
+    return ui != NULL &&
+           nk_ui_prompt_glyph_in(ui, id, ui->prefs.prompt_style, action, NULL, height);
+}
+
+bool nk_ui_prompt_glyph_in(NkUi *ui, NkUiId id, NkUiPromptStyle style, NkUiPromptAction action,
+                           const char *label, float height) {
     NkUiCustomSlot *slot;
     NkUiLayout layout;
-    const NkUiImage *image;
+    const NkUiImage *image = NULL;
     float width;
-    if (ui == NULL || !isfinite(height) || height <= 0.0f) {
+    if (ui == NULL || !isfinite(height) || height <= 0.0f ||
+        (unsigned)style >= (unsigned)NK_UI_PROMPT_STYLE_COUNT) {
         return false;
     }
-    image = nk_ui_prompt_image_for(ui, action);
+    if (label != NULL) {
+        /* The legend lives in frame storage until the glyph is painted. */
+        label = nk_ui_frame_text(ui, label);
+    } else {
+        image = nk_ui_prompt_image_for(ui, style, action);
+    }
     width = image != NULL
         ? (float)(int)(height * (float)image->width / (float)image->height + 0.5f)
-        : nk_ui_prompt_width(ui->prefs.prompt_style, action, height);
+        : nk_ui_prompt_label_width(style, action, label, height);
     slot = nk_ui_custom_slot(ui);
     if (slot == NULL) {
         return false;
     }
     slot->kind = NK_UI_CUSTOM_SLOT_PROMPT;
-    slot->prompt.style = ui->prefs.prompt_style;
+    slot->prompt.style = style;
     slot->prompt.action = action;
+    slot->prompt.label = label;
     slot->prompt.fg_rgba = ui->theme.paper;
     slot->prompt.dim_rgba = ui->theme.placeholder;
     slot->prompt.face_rgba = ui->theme.surface_high;
@@ -1062,6 +1081,9 @@ void nk_ui_register_button(NkUi *ui, NkUiId id, uint32_t flags) {
         ? NK_UI_FOCUS_DISABLED : 0u;
     if ((flags & NK_UI_BUTTON_ROW) != 0u) {
         entry.flags |= NK_UI_FOCUS_ROW_MEMBER;
+    }
+    if ((flags & NK_UI_BUTTON_OWNS_HORIZONTAL) != 0u) {
+        entry.flags |= NK_UI_FOCUS_OWNS_HORIZONTAL;
     }
     /* A destructive action is never the default focus (PLAYER_UI_DESIGN.md). */
     if ((flags & NK_UI_BUTTON_DANGER) != 0u) {

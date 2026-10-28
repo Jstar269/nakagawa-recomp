@@ -112,11 +112,13 @@ settle into a small stable set, extending this gate to cover them is the
 natural next step -- do not read their absence here as "safe to ignore."
 """
 
+import ast
 import contextlib
 import inspect
 import io
 from pathlib import Path
 import re
+import subprocess
 import sys
 import unittest
 
@@ -126,6 +128,38 @@ sys.path.insert(0, str(ROOT / "tools"))
 import codegen
 import compat_overrides
 from host_stubs import HST_SIMPLE_STUBS
+
+
+LIVE_CENSUS_DOC = ROOT / "docs" / "COMPATIBILITY.md"
+_CENSUS_SENTENCE = re.compile(r"runs with (\d+) title-specific compatibility patches")
+
+
+def _released_notes() -> list[tuple[Path, str]] | None:
+    """Each docs/RELEASE_NOTES_v<version>.md whose tag v<version> exists, or None without tags."""
+    try:
+        tags = subprocess.run(["git", "-C", str(ROOT), "tag", "-l", "v*"], capture_output=True,
+                              check=True, text=True).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    if not tags:
+        return None
+    notes = sorted((ROOT / "docs").glob("RELEASE_NOTES_v*.md"))
+    return [(path, path.stem.removeprefix("RELEASE_NOTES_")) for path in notes
+            if path.stem.removeprefix("RELEASE_NOTES_") in tags]
+
+
+def _functions_comparing_release_notes_with_census(source: str) -> list[str]:
+    """Names of functions that name a release-notes file and use the live census."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            inner = list(ast.walk(node))
+            names_notes = any(isinstance(n, ast.Constant) and isinstance(n.value, str)
+                              and "RELEASE_NOTES_v" in n.value for n in inner)
+            uses_census = any(isinstance(n, ast.Name) and n.id == "_active_census" for n in inner)
+            if names_notes and uses_census:
+                found.append(node.name)
+    return found
 
 
 def _strip_c_comments_and_literals(source: str) -> str:
@@ -999,10 +1033,9 @@ class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
         self.assertTrue(patches, "temporary compatibility debt census is empty")
         ids = [patch["id"] for patch in patches]
         self.assertEqual(len(ids), len(set(ids)), "census ids are not unique")
-        # The #363 subject: the remaining static-success HST_SIMPLE_STUBS must all
-        # be inventoried.
+        # The #363 subject: a remaining title scheduler hook must be inventoried.
         anchors = {patch["id"].split(":")[1] for patch in patches}
-        for address in ("0x0001c010", "0x0001c604"):
+        for address in ("0x0029a174",):
             self.assertIn(address, anchors, f"census lost {address}")
 
     def test_every_temporary_patch_has_owner_retirement_and_test(self):
@@ -1321,9 +1354,10 @@ class TemporaryCompatibilityDebtGateTests(unittest.TestCase):
             self.assertIn(record["id"], report)
 
 
-#: The eight ensure_runtime_sync_callbacks addresses, re-derived from src/rt/hle.c
-#: rather than copied from a report. They are pinned here so a silent edit to the
-#: handler shows up as a test failure and not as a quietly shrinking census.
+#: The eight addresses ensure_runtime_sync_callbacks carried, re-derived from src/rt/hle.c
+#: before the seeding was retired (#363) rather than copied from a report. They stay pinned
+#: so a literal that returns to the handler shows up as a test failure, and so the retired
+#: inventory entry is checked against the exact set it recorded.
 RUNTIME_SYNC_CALLBACK_SITES = {
     0x00333138: "configuration block base",
     0x002BDF38: "semaphore name pointer handed to the guest in $a0",
@@ -1342,9 +1376,9 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
 
     Historically the census reported complete at 38/38 while an entire title
     coupling (runtime_sync) was invisible to the direct regex. The grammar was
-    added to catch it. Those 8 addresses are now typed title configuration
-    (issue #98) and must NOT appear in hle.c at all; the grammar itself remains
-    load-bearing for future indirect sites.
+    added to catch it. Those 8 addresses were typed title configuration (issue #98)
+    until the seeding was retired (#363); they must NOT appear in hle.c at all, and
+    the grammar itself remains load-bearing for future indirect sites.
 
     Evidence tier: SOURCE_SHAPE / STATICALLY_SUPPORTED throughout. These tests
     read source, they do not run a guest.
@@ -1353,21 +1387,21 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
     def setUp(self) -> None:
         self.source = HLE_C.read_text(encoding="utf-8")
 
-    # ---- A: the migrated sites must be absent from hle.c -------------------
+    # ---- A: the retired sites must be absent from hle.c -------------------
     def test_the_real_runtime_sync_sites_are_detected(self) -> None:
-        """The 8 runtime_sync addresses were migrated to title_config and must
+        """The 8 runtime_sync addresses belonged to a retired mechanism and must
         NOT be found in hle.c any more (wrong-title safety). The indirect
         grammar is still exercised by the synthetic snippets below."""
         found = extract_hle_guest_sites(self.source)
         for address, role in RUNTIME_SYNC_CALLBACK_SITES.items():
             with self.subTest(address=hex(address), role=role):
                 self.assertNotIn(address, found,
-                                 f"0x{address:08x} ({role}) migrated to title_config; "
-                                 "it must not appear in hle.c any more")
+                                 f"0x{address:08x} ({role}) belonged to the retired "
+                                 "runtime-sync seeding; it must not appear in hle.c any more")
 
     def test_the_real_runtime_sync_sites_are_inventoried(self) -> None:
-        """Migrated sites are inventoried in HLE_TITLE_CONFIGURED_COMPAT, not in
-        the live HLE_GUEST_ADDRESS_GROUPS."""
+        """Retired sites stay inventoried as historical evidence in
+        HLE_TITLE_CONFIGURED_COMPAT, not in the live HLE_GUEST_ADDRESS_GROUPS."""
         live = hle_inventoried_addresses()
         configured = hle_title_configured_addresses()
         for address, role in RUNTIME_SYNC_CALLBACK_SITES.items():
@@ -1375,21 +1409,21 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
                 self.assertNotIn(address, live,
                                  f"0x{address:08x} must not be in live HLE census")
                 self.assertIn(address, configured,
-                              f"0x{address:08x} must be in title-configured inventory")
+                              f"0x{address:08x} must stay in the retired title inventory")
 
     def test_the_sites_are_attributed_to_their_real_enclosing_function(self) -> None:
-        """After migration this is a negative control: the addresses must not be
+        """After retirement this is a negative control: the addresses must not be
         attributed to any function in hle.c."""
         found = extract_hle_guest_sites(self.source)
         for address in RUNTIME_SYNC_CALLBACK_SITES:
             self.assertNotIn(address, found,
-                             f"0x{address:08x} should not be in any hle.c function after migration")
+                             f"0x{address:08x} should not be in any hle.c function after retirement")
 
     def test_the_direct_regex_alone_finds_none_of_them(self) -> None:
         """The 8 addresses must be absent from both direct and indirect scans."""
         found = extract_hle_guest_addresses(self.source)
         self.assertEqual(found.keys() & set(RUNTIME_SYNC_CALLBACK_SITES), set(),
-                         "migrated runtime_sync addresses must not appear in hle.c")
+                         "retired runtime_sync addresses must not appear in hle.c")
 
     # ---- B: const-local address propagation --------------------------------
     def test_a_const_local_used_as_an_address_base_is_detected(self) -> None:
@@ -1486,8 +1520,13 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
         spans = hle_function_spans(self.source.splitlines())
         self.assertGreater(len(spans), 100, "function-span detection collapsed")
         names = {name for name, _s, _e in spans}
-        self.assertIn("ensure_runtime_sync_callbacks", names)
+        # The retired seeding helper is gone, and the handler that used to call it is
+        # now a few lines: a collapsed span would swallow the functions around it.
+        self.assertNotIn("ensure_runtime_sync_callbacks", names)
         self.assertIn("h_DisplaySetMode", names)
+        for name, first, last in spans:
+            if name == "h_DisplaySetMode":
+                self.assertLess(last - first, 20, "h_DisplaySetMode span swallowed its neighbours")
 
     # ---- H: no false-positive explosion ------------------------------------
     def test_unrelated_constants_do_not_become_coupling(self) -> None:
@@ -1524,31 +1563,47 @@ class HleIndirectCouplingGrammar(unittest.TestCase):
         self.assertIn(0x08123400, extract_hle_guest_sites(aligned))
         self.assertEqual(extract_hle_guest_sites(unaligned), {})
 
-    # ---- I: a ninth hidden callback must fail the gate ---------------------
-    def test_a_ninth_hidden_callback_literal_fails_the_gate(self) -> None:
-        """MUTATION: add a new direct MEM_W32 at a fresh address; the gate must refuse it."""
+    # ---- I: a hidden callback literal returning to the handler must fail the gate ----
+    def test_a_new_hidden_callback_literal_fails_the_gate(self) -> None:
+        """MUTATION: the runtime-sync seeding is retired, so hle.c holds none of its
+        literals. Add a fresh direct MEM_W32 to the handler that used to carry them; the
+        gate must see exactly that one address."""
         contaminated = self.source.replace(
-            "DISPLAY_SET_MODE: display bringup not configured",
-            "DISPLAY_SET_MODE: display bringup not configured\n    MEM_W32(0x0009abc0u, 1u);",
+            "    return 0; /* SCE_DISPLAY_SET_MODE_SUCCESS */",
+            "    MEM_W32(0x0009abc0u, 1u);\n    return 0; /* SCE_DISPLAY_SET_MODE_SUCCESS */",
             1,
         )
         self.assertNotEqual(contaminated, self.source, "mutation anchor not found")
         found = extract_hle_guest_addresses(contaminated)
-        self.assertIn(0x0009ABC0, found)
         self.assertIn(0x0009ABC0, found,
                       "the address extractor stopped detecting a new guest-memory access")
+        self.assertEqual(set(found) - set(extract_hle_guest_addresses(self.source)),
+                         {0x0009ABC0})
 
     # ---- the inventory entry itself ----------------------------------------
     def test_the_inventory_entry_states_its_retirement_shape(self) -> None:
-        """The eight migrated groups are now PROFILE_OWNED_CONFIGURATION via
-        title_config; the entry must say so and that pairs are not flattened."""
+        """The runtime-sync seeding, display bring-up replay and frame-latch assist were
+        retired (#363). Each entry stays as historical evidence with its addresses, says it
+        is retired and names the migration error, is out of the active census, and has no
+        literal left in hle.c."""
+        retired_entries = ("frame_ready_latch_assist", "runtime_sync_callback_config",
+                           "display_setmode_guest_init")
+        active = {patch["name"] for patch in _active_census()}
+        for name in retired_entries:
+            with self.subTest(entry=name):
+                group = next(g for g in compat_overrides.HLE_TITLE_CONFIGURED_COMPAT
+                             if g["name"] == name)
+                self.assertEqual(group["title2_bucket"], "PROFILE_OWNED_CONFIGURATION")
+                self.assertTrue(group["retirement"].startswith("retired (2026-10-27)"))
+                self.assertIn("HLE_TITLE_ASSIST_RETIRED", group["retirement"])
+                self.assertNotIn(name, active, "a retired entry must leave the active census")
+                self.assertEqual(
+                    _runtime_title_diagnostic_literals(self.source, set(group["addresses"])),
+                    set(), "a retired entry's address is back in hle.c")
         group = next(g for g in compat_overrides.HLE_TITLE_CONFIGURED_COMPAT
                      if g["name"] == "runtime_sync_callback_config")
-        self.assertEqual(group["title2_bucket"], "PROFILE_OWNED_CONFIGURATION")
         self.assertEqual(set(group["addresses"]), set(RUNTIME_SYNC_CALLBACK_SITES))
-        self.assertIn("typed", group["retirement"].lower())
-        self.assertIn("not be flattened", group["retirement"].replace("NOT", "not"))
-        # The migrated entry's evidence is now title_config gated, not a direct hle.c shape
+        # The entry's evidence still records the title_config-gated shape it had
         self.assertEqual(group["evidence_tier"], "SOURCE_SHAPE")
         self.assertIn("title_config", group["evidence"].lower())
 
@@ -1725,9 +1780,37 @@ class FiredPatchReportCensusTests(unittest.TestCase):
         self.assertIsNone(re.search(r"master_reent_addr|guest_thread_table_addr", source))
         self.assertEqual(compat_overrides.TITLE_CONFIGURED_SCHEDULER_COMPAT, [])
 
-    def test_release_notes_state_the_active_census_count(self) -> None:
-        notes = (ROOT / "docs" / "RELEASE_NOTES_v0.0.1.md").read_text(encoding="utf-8")
-        self.assertIn(f"{len(_active_census())} title-specific compatibility patches", notes)
+    def test_live_census_doc_states_the_active_census_count(self) -> None:
+        text = LIVE_CENSUS_DOC.read_text(encoding="utf-8")
+        self.assertEqual([int(n) for n in _CENSUS_SENTENCE.findall(text)], [len(_active_census())])
+
+    def test_released_notes_keep_the_count_they_shipped_with(self) -> None:
+        # A release's notes describe that release, so a retirement never rewrites them.
+        released = _released_notes()
+        if released is None:
+            self.skipTest("no release tags in this checkout")
+        for notes, tag in released:
+            with self.subTest(tag=tag):
+                self.assertNotEqual(notes.resolve(), LIVE_CENSUS_DOC.resolve())
+                shipped = subprocess.run(["git", "-C", str(ROOT), "show", f"{tag}:docs/{notes.name}"],
+                                         capture_output=True, check=True).stdout.decode("utf-8")
+                self.assertEqual(_CENSUS_SENTENCE.findall(notes.read_text(encoding="utf-8")),
+                                 _CENSUS_SENTENCE.findall(shipped))
+
+    def test_no_test_compares_release_notes_with_the_live_census(self) -> None:
+        self.assertIsNone(re.match(r"RELEASE_NOTES_v", LIVE_CENSUS_DOC.name))
+        offenders = []
+        for path in sorted((ROOT / "tools").glob("test_*.py")):
+            offenders += [f"{path.name}:{name}"
+                          for name in _functions_comparing_release_notes_with_census(
+                              path.read_text(encoding="utf-8"))]
+        self.assertEqual(offenders, [])
+
+        # Mutation proof: the check this file used to make is seen by the same scanner.
+        contaminated = ('def test_x(self):\n'
+                        '    notes = (ROOT / "docs" / "RELEASE_NOTES_v0.0.1.md").read_text()\n'
+                        '    self.assertIn(str(len(_active_census())), notes)\n')
+        self.assertEqual(_functions_comparing_release_notes_with_census(contaminated), ["test_x"])
 
 
 if __name__ == "__main__":
