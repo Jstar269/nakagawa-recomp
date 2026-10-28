@@ -310,6 +310,8 @@ uint32_t  ge_state_serial(void);
 void      ge_state_note_external_write(void);
 uint16_t *ge_zbuf_ptr(void);        /* 272*512 entries, row stride = ge_zbuf_stride() */
 uint32_t  ge_zbuf_stride(void);
+/* Colour-target pixel accesses the GE made in place and through the guest accessors. */
+void ge_fb_access_counts(unsigned long long *direct, unsigned long long *accessor);
 /* Decode the CURRENT texture (ge.tex_addr, tex_w x tex_h) to RGBA8 through the exact
  * sampler path the software rasterizer uses (swizzle + CLUT + format). out must hold
  * tex_w*tex_h words; layout is row-major, r|g<<8|b<<16|a<<24. */
