@@ -1059,6 +1059,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->online_reports = true;
     settings->share_system_libraries = true;
     settings->developer_mode = false;
+    settings->experimental_60hz = false;
 }
 
 static bool resolution_scale_valid(int scale) {
@@ -1258,12 +1259,13 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
        and developer switches are the user's choices, read as booleans; a value
        of another type keeps the default (off, or on for the online parts). */
     {
-        static const char *const keys[5] = {"online_mode", "online_updates", "online_news",
-                                            "online_reports", "developer_mode"};
-        bool *fields[5] = {&app->settings.online_mode, &app->settings.online_updates,
+        static const char *const keys[6] = {"online_mode", "online_updates", "online_news",
+                                            "online_reports", "developer_mode",
+                                            "experimental_60hz"};
+        bool *fields[6] = {&app->settings.online_mode, &app->settings.online_updates,
                            &app->settings.online_news, &app->settings.online_reports,
-                           &app->settings.developer_mode};
-        for (int k = 0; k < 5; ++k) {
+                           &app->settings.developer_mode, &app->settings.experimental_60hz};
+        for (int k = 0; k < 6; ++k) {
             NkJsonNode *node = nk_json_obj_get(root, keys[k]);
             bool value = false;
             if (node && nk_json_get_bool(node, &value)) *fields[k] = value;
@@ -1370,6 +1372,8 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"online_news\": %s,\n", app->settings.online_news ? "true" : "false");
     fprintf(f, "  \"online_reports\": %s,\n", app->settings.online_reports ? "true" : "false");
     fprintf(f, "  \"developer_mode\": %s,\n", app->settings.developer_mode ? "true" : "false");
+    fprintf(f, "  \"experimental_60hz\": %s,\n",
+            app->settings.experimental_60hz ? "true" : "false");
     fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
     fprintf(f, "  \"ui_sounds\": %s,\n", app->settings.ui_sounds ? "true" : "false");
     fprintf(f, "  \"share_system_libraries\": %s,\n",
@@ -1804,6 +1808,32 @@ void player_app_toggle_ui_sounds(PlayerApp *app) {
     if (!app) return;
     app->settings.ui_sounds = !app->settings.ui_sounds;
     maybe_persist_settings(app);
+}
+
+void player_app_set_experimental_60hz(PlayerApp *app, bool on) {
+    if (!app) return;
+    app->settings.experimental_60hz = on;
+    player_dev_log_add(app, "settings",
+                       "experimental 60 Hz logic rescale %s (authentic 30 Hz when off)",
+                       on ? "on" : "off");
+    maybe_persist_settings(app);
+}
+
+void player_app_toggle_experimental_60hz(PlayerApp *app) {
+    if (!app) return;
+    player_app_set_experimental_60hz(app, !app->settings.experimental_60hz);
+}
+
+void player_app_set_experimental_60hz_session(PlayerApp *app, bool on) {
+    if (!app) return;
+    app->experimental_60hz_session = on;
+    player_dev_log_add(app, "settings",
+                       "experimental 60 Hz logic rescale %s for this session only",
+                       on ? "on" : "off");
+}
+
+bool player_app_experimental_60hz_active(const PlayerApp *app) {
+    return app && (app->settings.experimental_60hz || app->experimental_60hz_session);
 }
 
 void player_app_toggle_share_system_libraries(PlayerApp *app) {
@@ -2702,6 +2732,9 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
         work->has_package_root = true;
     }
     work->settings = app->settings;
+    /* The launch copy carries the session override; app->settings, which is saved,
+       does not. */
+    work->settings.experimental_60hz = player_app_experimental_60hz_active(app);
     work->launch_headless = app->launch_headless;
     work->headless_accept_presented_frames = app->headless_accept_presented_frames;
     /* The boot-event marker and the input mapping are written here, on the
@@ -3122,6 +3155,7 @@ void player_app_apply_settings_to_session(const PlayerSettings *settings,
     config->vsync = settings->vsync;
     config->fullscreen = settings->fullscreen;
     config->master_volume = settings->master_volume;
+    config->experimental_60hz = settings->experimental_60hz;
 }
 
 /* The NK_INPUT_PROFILE path `game` launches with, written to `out`; `out` is
