@@ -6549,6 +6549,37 @@ static void test_netconf_parameter_sizes(void) {
     sr_hle_test_osk_slot_reset();
 }
 
+static uint32_t utility_fixture_size(uint32_t init) {
+    if (init == NID_GAMEDATA_DIALOG_INIT) return 0x590u;
+    if (init == NID_SHARING_DIALOG_INIT) return 0x50u;
+    return 0x40u;
+}
+
+static void test_storage_dialog_parameter_sizes(void) {
+    static const struct { uint32_t nid; uint32_t valid[3]; unsigned count; } cases[] = {
+        {NID_GAMEDATA_DIALOG_INIT, {0x590u, 0x598u, 0u}, 2},
+        {NID_SHARING_DIALOG_INIT, {0x50u, 0x54u, 0x64u}, 3},
+    };
+    CpuState cpu;
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x600u);
+        MEM_W32(UTILITY_OTHER_PARAM_ADDR, 0x20u);
+        expect(utility_call(&cpu, cases[i].nid, UTILITY_OTHER_PARAM_ADDR) == 0x80110004u,
+               "storage dialog rejects an unsupported parameter size");
+        sr_hle_test_osk_slot_reset();
+        for (unsigned j = 0; j < cases[i].count; ++j) {
+            utility_param_block(UTILITY_OTHER_PARAM_ADDR, cases[i].valid[j]);
+            expect(utility_call(&cpu, cases[i].nid, UTILITY_OTHER_PARAM_ADDR) == 0u,
+                   "storage dialog accepts a versioned parameter size");
+            sr_hle_test_osk_slot_reset();
+        }
+        MEM_W32(0x0bffffc0u, cases[i].valid[0]);
+        expect(utility_call(&cpu, cases[i].nid, 0x0bffffc0u) == 0x80110004u,
+               "storage dialog rejects a truncated parameter block");
+        sr_hle_test_osk_slot_reset();
+    }
+}
+
 static void test_utility_dialog_single_slot(void) {
     static const UtilityDialogNids dialogs[] = {
         { "sceUtilitySavedata", NID_SAVEDATA_DIALOG_INIT, NID_SAVEDATA_DIALOG_UPDATE,
@@ -6605,7 +6636,7 @@ static void test_utility_dialog_single_slot(void) {
         if (dialogs[i].init == NID_MSG_DIALOG_INIT) continue;
         const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
         const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
-        utility_param_block(block, savedata ? 0x600u : 0x40u);
+        utility_param_block(block, savedata ? 0x600u : utility_fixture_size(dialogs[i].init));
         if (dialogs[i].init == NID_OSK_INIT) MEM_W32(block, 0x40u);
         snprintf(what, sizeof(what), "%sInitStart while the message dialog is active returns "
                  "INVALID_STATUS and leaves its parameter block alone", dialogs[i].name);
@@ -6660,7 +6691,7 @@ static void test_utility_dialog_single_slot(void) {
         const uint32_t init = dialogs[i].init;
         if (init == NID_SAVEDATA_DIALOG_INIT || init == NID_MSG_DIALOG_INIT || init == NID_OSK_INIT)
             continue;
-        utility_param_block(UTILITY_OTHER_PARAM_ADDR, 0x40u);
+        utility_param_block(UTILITY_OTHER_PARAM_ADDR, utility_fixture_size(init));
         snprintf(what, sizeof(what), "%sInitStart takes the free slot; the dialog reports INIT, "
                  "then winds down to NONE after ShutdownStart", dialogs[i].name);
         expect(utility_call(&cpu, init, UTILITY_OTHER_PARAM_ADDR) == 0u &&
@@ -6761,7 +6792,7 @@ static void test_utility_dialog_status_sequence(void) {
         const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
         const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
         if (savedata) utility_savedata_block();
-        else utility_param_block(block, 0x40u);
+        else utility_param_block(block, utility_fixture_size(dialogs[i].init));
         snprintf(what, sizeof(what), "%sUpdate during INIT returns INVALID_STATUS; GetStatus "
                  "still reports INIT, then RUNNING", dialogs[i].name);
         expect(utility_call(&cpu, dialogs[i].init, block) == 0u &&
@@ -6778,7 +6809,7 @@ static void test_utility_dialog_status_sequence(void) {
         const int savedata = dialogs[i].init == NID_SAVEDATA_DIALOG_INIT;
         const uint32_t block = savedata ? UTILITY_SAVEDATA_PARAM_ADDR : UTILITY_OTHER_PARAM_ADDR;
         if (savedata) utility_savedata_block();
-        else utility_param_block(block, 0x40u);
+        else utility_param_block(block, utility_fixture_size(dialogs[i].init));
         expect(utility_call(&cpu, dialogs[i].init, block) == 0u, "the dialog starts");
         utility_update_first_frames(&cpu, dialogs[i].update, dialogs[i].status, seen, &refused);
         snprintf(what, sizeof(what), "%s, Update then GetStatus each frame: INIT, RUNNING x2, "
@@ -35717,6 +35748,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_osk_overlay_through_hle_scripted_pad();
     test_osk_overlay_closing_press_stays_with_keyboard();
     test_osk_keyboard_keeps_guest_time_running();
+    test_storage_dialog_parameter_sizes();
     test_netconf_parameter_sizes();
     test_utility_dialog_single_slot();
     test_utility_dialog_status_sequence();

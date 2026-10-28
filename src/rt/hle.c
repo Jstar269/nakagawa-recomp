@@ -11596,8 +11596,24 @@ static uint32_t h_NetDialogInit(CpuState *s) {
 static uint32_t h_NetDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_net_dialog); }
 static uint32_t h_NetDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_net_dialog); }
 static uint32_t h_NetDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_net_dialog); }
-UTILITY_DIALOG_HANDLERS(h_GamedataDialog, s_gamedata_dialog)
-UTILITY_DIALOG_HANDLERS(h_SharingDialog, s_sharing_dialog)
+/* PSPAutotests utility/dialog/sizes lists the storage dialog versions. */
+static uint32_t utility_storage_init(UtilityDialog *d, uint32_t param) {
+    if (!param || !sr_guest_span_readable(param, 4u)) return 0x80110004u;
+    uint32_t size = MEM_R32(param);
+    int valid = d->kind == UTILITY_GAMEDATA ? (size == 0x590u || size == 0x598u) :
+        (size == 0x50u || size == 0x54u || size == 0x64u);
+    if (!valid || !sr_guest_span_readable(param, size) || !sr_guest_span_writable(param, size))
+        return 0x80110004u;
+    return utility_dialog_init(d, param);
+}
+static uint32_t h_GamedataDialogInit(CpuState *s) { return utility_storage_init(&s_gamedata_dialog, A0); }
+static uint32_t h_GamedataDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_gamedata_dialog); }
+static uint32_t h_GamedataDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_gamedata_dialog); }
+static uint32_t h_GamedataDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_gamedata_dialog); }
+static uint32_t h_SharingDialogInit(CpuState *s) { return utility_storage_init(&s_sharing_dialog, A0); }
+static uint32_t h_SharingDialogUpdate(CpuState *s) { (void)s; return utility_dialog_update(&s_sharing_dialog); }
+static uint32_t h_SharingDialogStatus(CpuState *s) { (void)s; return utility_dialog_status(&s_sharing_dialog); }
+static uint32_t h_SharingDialogShutdown(CpuState *s) { (void)s; return utility_dialog_shutdown(&s_sharing_dialog); }
 
 /* ---- sceUtilityOsk: the on-screen keyboard, answered by a person through a native input
  * box (osk_win.c) or, for automation, from a scripted answer.
