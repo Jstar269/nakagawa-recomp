@@ -9131,8 +9131,99 @@ uint32_t h_FontGetCharInfo(CpuState *s) {
     if (p) { pgf_get_char_info(p, (int)cc, 0x5f, ci); font_release(f); return 0; }
     font_release(f);
     return SR_FONT_ERROR_INVALID_ARG;
+#if 0 /* Retired synthetic metrics fallback. */
+    for (int i = 0; i < 0x3c; i++) MEM_W8(ci + (uint32_t)i, 0);
+    int draw = (cc > 32);                      /* space and controls: empty */
+    MEM_W32(ci + 0, draw ? 8 : 0);             /* bitmapWidth */
+    MEM_W32(ci + 4, draw ? 11 : 0);            /* bitmapHeight */
+    MEM_W32(ci + 8, 0);                        /* bitmapLeft */
+    MEM_W32(ci + 12, 0);                       /* bitmapTop */
+    MEM_W32(ci + 16, 8 << 6);                  /* sfp26Width */
+    MEM_W32(ci + 20, 11 << 6);                 /* sfp26Height */
+    MEM_W32(ci + 24, 0);                       /* ascender */
+    MEM_W32(ci + 28, (uint32_t)(-(11 << 6)));  /* descender */
+    MEM_W32(ci + 32, 0);                       /* bearingHX */
+    MEM_W32(ci + 36, 0);                       /* bearingHY */
+    MEM_W32(ci + 48, 8 << 6);                  /* sfp26AdvanceH */
+    MEM_W32(ci + 52, 12 << 6);                 /* sfp26AdvanceV */
+    return 0;
+#endif
 }
 
+#if 0 /* Retired synthetic bitmap font. */
+static const uint8_t *font5x7(uint32_t cc) {
+    if (cc >= 'a' && cc <= 'z') cc -= 32;
+    switch (cc) {
+        case 'A': { static const uint8_t r[7] = {14,17,17,31,17,17,17}; return r; }
+        case 'B': { static const uint8_t r[7] = {30,17,17,30,17,17,30}; return r; }
+        case 'C': { static const uint8_t r[7] = {14,17,16,16,16,17,14}; return r; }
+        case 'D': { static const uint8_t r[7] = {30,17,17,17,17,17,30}; return r; }
+        case 'E': { static const uint8_t r[7] = {31,16,16,30,16,16,31}; return r; }
+        case 'F': { static const uint8_t r[7] = {31,16,16,30,16,16,16}; return r; }
+        case 'G': { static const uint8_t r[7] = {14,17,16,23,17,17,15}; return r; }
+        case 'H': { static const uint8_t r[7] = {17,17,17,31,17,17,17}; return r; }
+        case 'I': { static const uint8_t r[7] = {14,4,4,4,4,4,14}; return r; }
+        case 'J': { static const uint8_t r[7] = {7,2,2,2,18,18,12}; return r; }
+        case 'K': { static const uint8_t r[7] = {17,18,20,24,20,18,17}; return r; }
+        case 'L': { static const uint8_t r[7] = {16,16,16,16,16,16,31}; return r; }
+        case 'M': { static const uint8_t r[7] = {17,27,21,21,17,17,17}; return r; }
+        case 'N': { static const uint8_t r[7] = {17,25,21,19,17,17,17}; return r; }
+        case 'O': { static const uint8_t r[7] = {14,17,17,17,17,17,14}; return r; }
+        case 'P': { static const uint8_t r[7] = {30,17,17,30,16,16,16}; return r; }
+        case 'Q': { static const uint8_t r[7] = {14,17,17,17,21,18,13}; return r; }
+        case 'R': { static const uint8_t r[7] = {30,17,17,30,20,18,17}; return r; }
+        case 'S': { static const uint8_t r[7] = {15,16,16,14,1,1,30}; return r; }
+        case 'T': { static const uint8_t r[7] = {31,4,4,4,4,4,4}; return r; }
+        case 'U': { static const uint8_t r[7] = {17,17,17,17,17,17,14}; return r; }
+        case 'V': { static const uint8_t r[7] = {17,17,17,17,17,10,4}; return r; }
+        case 'W': { static const uint8_t r[7] = {17,17,17,21,21,21,10}; return r; }
+        case 'X': { static const uint8_t r[7] = {17,17,10,4,10,17,17}; return r; }
+        case 'Y': { static const uint8_t r[7] = {17,17,10,4,4,4,4}; return r; }
+        case 'Z': { static const uint8_t r[7] = {31,1,2,4,8,16,31}; return r; }
+        case '0': { static const uint8_t r[7] = {14,17,19,21,25,17,14}; return r; }
+        case '1': { static const uint8_t r[7] = {4,12,4,4,4,4,14}; return r; }
+        case '2': { static const uint8_t r[7] = {14,17,1,2,4,8,31}; return r; }
+        case '3': { static const uint8_t r[7] = {30,1,1,14,1,1,30}; return r; }
+        case '4': { static const uint8_t r[7] = {2,6,10,18,31,2,2}; return r; }
+        case '5': { static const uint8_t r[7] = {31,16,16,30,1,1,30}; return r; }
+        case '6': { static const uint8_t r[7] = {6,8,16,30,17,17,14}; return r; }
+        case '7': { static const uint8_t r[7] = {31,1,2,4,8,8,8}; return r; }
+        case '8': { static const uint8_t r[7] = {14,17,17,14,17,17,14}; return r; }
+        case '9': { static const uint8_t r[7] = {14,17,17,15,1,2,12}; return r; }
+        case '.': { static const uint8_t r[7] = {0,0,0,0,0,12,12}; return r; }
+        case ',': { static const uint8_t r[7] = {0,0,0,0,0,12,8}; return r; }
+        case ':': { static const uint8_t r[7] = {0,12,12,0,12,12,0}; return r; }
+        case '/': { static const uint8_t r[7] = {1,1,2,4,8,16,16}; return r; }
+        case '-': { static const uint8_t r[7] = {0,0,0,31,0,0,0}; return r; }
+        case '+': { static const uint8_t r[7] = {0,4,4,31,4,4,0}; return r; }
+        case '!': { static const uint8_t r[7] = {4,4,4,4,4,0,4}; return r; }
+        case '?': { static const uint8_t r[7] = {14,17,1,2,4,0,4}; return r; }
+        case '(' : { static const uint8_t r[7] = {2,4,8,8,8,4,2}; return r; }
+        case ')' : { static const uint8_t r[7] = {8,4,2,2,2,4,8}; return r; }
+        case '\'' : { static const uint8_t r[7] = {4,4,8,0,0,0,0}; return r; }
+        default: return NULL;
+    }
+}
+
+static void font_write_pixel(uint32_t base, uint32_t fmt, int bpl, int bufW, int bufH, int px, int py, uint8_t val) {
+    static const int pxBytes[5] = { 0, 0, 1, 3, 4 };
+    if (fmt > 4 || px < 0 || px >= bufW || py < 0 || py >= bufH) return;
+    int pb = pxBytes[fmt];
+    uint32_t a = base + (uint32_t)(py * bpl) + (uint32_t)(pb == 0 ? px / 2 : px * pb);
+    switch (fmt) {
+        case 0: case 1: {
+            uint8_t old = MEM_R8(a);
+            uint8_t pix = val >> 4;
+            if ((px & 1) != (int)fmt) MEM_W8(a, (uint8_t)((pix << 4) | (old & 0x0F)));
+            else MEM_W8(a, (uint8_t)((old & 0xF0) | pix));
+            break;
+        }
+        case 2: MEM_W8(a, val); break;
+        case 3: MEM_W8(a, val); MEM_W8(a + 1, val); MEM_W8(a + 2, val); break;
+        case 4: MEM_W32(a, (uint32_t)val | ((uint32_t)val << 8) | ((uint32_t)val << 16) | ((uint32_t)val << 24)); break;
+    }
+}
+#endif
 
 uint32_t h_FontGetCharGlyphImage(CpuState *s) {
     uint32_t cc = A1 & 0xffff, gi = A2;
@@ -9144,6 +9235,24 @@ uint32_t h_FontGetCharGlyphImage(CpuState *s) {
     }
     font_release(f);
     return SR_FONT_ERROR_INVALID_ARG;
+#if 0 /* Retired synthetic glyph fallback. */
+    uint32_t fmt = MEM_R32(gi + 0);
+    int x = (int)MEM_R32(gi + 4) >> 6, y = (int)MEM_R32(gi + 8) >> 6;
+    int bufW = (int)(MEM_R16(gi + 12)), bufH = (int)(MEM_R16(gi + 14));
+    int bpl = (int)(MEM_R16(gi + 16));
+    uint32_t base = MEM_R32(gi + 20);
+    if (getenv("SR_FONTLOG")) { static int n = 0; if (n++ < 12)
+        fprintf(stderr, "glyph cc=0x%04x fmt=%u xy=(%d,%d) buf=0x%08x %dx%d bpl=%d\n", cc, fmt, x, y, base, bufW, bufH, bpl); }
+    const uint8_t *rows = font5x7(cc);
+    if (!rows && getenv("SR_FONTLOG")) { static unsigned char seen[65536]; if (!seen[cc]) { seen[cc] = 1;
+        fprintf(stderr, "MISSING glyph cc=0x%04x '%c'\n", cc, (cc >= 32 && cc < 127) ? (char)cc : '?'); } }
+    for (int yy = 0; yy < 11; yy++) for (int xx = 0; xx < 8; xx++) {
+        int gx = xx - 1, gy = yy - 2;
+        int on = rows && gx >= 0 && gx < 5 && gy >= 0 && gy < 7 && (rows[gy] & (1u << (4 - gx)));
+        font_write_pixel(base, fmt, bpl, bufW, bufH, x + xx, y + yy, on ? 0xFF : 0x00);
+    }
+    return 0;
+#endif
 }
 
 /* Some libfont revisions expose an internal glyph-table-id entry point even though the public

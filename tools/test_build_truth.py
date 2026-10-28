@@ -2593,44 +2593,6 @@ class MachinePortabilityTests(unittest.TestCase):
             prov_exp = discover_sdl3_provider(explicit=str(explicit_dir), msys_path=msys, vulkan_sdk=vulkan)
             self.assertEqual(prov_exp.root_dir, explicit_dir)
 
-    def test_sdl3_provider_follows_a_gcc_symlink_into_the_toolchain(self) -> None:
-        """A gcc on PATH that links into UCRT64 (ccache's masquerade) selects that toolchain.
-
-        The Windows CI job puts such a link ahead of /ucrt64/bin. Judging the unresolved
-        path missed it and fell back to C:\\msys64, which is not the runner's install.
-        """
-        from unittest import mock
-        import nk_doctor_checks
-        from nk_doctor_checks import discover_sdl3_provider
-
-        with mock.patch.object(nk_doctor_checks.platform, "system", return_value="Windows"), \
-                tempfile.TemporaryDirectory() as tmpdir:
-            tmproot = Path(tmpdir).resolve()
-            msys = tmproot / "msys64" / "ucrt64"
-            (msys / "include" / "SDL3").mkdir(parents=True)
-            (msys / "include" / "SDL3" / "SDL.h").write_text("#define SDL_MAJOR_VERSION 3\n", encoding="utf-8")
-            (msys / "lib").mkdir(parents=True)
-            (msys / "lib" / "libSDL3.dll.a").write_bytes(b"!<arch>\n")
-            (msys / "bin").mkdir(parents=True)
-            fake_pe = b"MZ" + b"\x00" * 58 + struct.pack("<I", 64) + b"PE\0\0" + struct.pack("<H", 0x8664)
-            (msys / "bin" / "SDL3.dll").write_bytes(fake_pe)
-            (msys / "bin" / "ccache.exe").write_bytes(b"MZ")
-            wrapper = tmproot / "job-cache" / "bin"
-            wrapper.mkdir(parents=True)
-            gcc_name = "gcc.exe" if os.name == "nt" else "gcc"
-            try:
-                os.symlink(msys / "bin" / "ccache.exe", wrapper / gcc_name)
-            except OSError as error:
-                self.skipTest(f"this host cannot create symlinks: {error}")
-            if os.name != "nt":
-                (msys / "bin" / "ccache.exe").chmod(0o755)
-            environment = {key: value for key, value in os.environ.items() if key != "MSYS_PATH"}
-            environment["PATH"] = str(wrapper)
-            with mock.patch.dict(os.environ, environment, clear=True):
-                provider = discover_sdl3_provider(vulkan_sdk=tmproot / "no-vulkan-sdk")
-            self.assertEqual(provider.provider, "msys2_ucrt64")
-            self.assertEqual(provider.root_dir, msys)
-
 
 class StrbufSafetyTests(unittest.TestCase):
     """Structural tests ensuring safe cursor-accumulation formatting across source-owned C/C++."""

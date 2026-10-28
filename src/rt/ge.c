@@ -31,8 +31,8 @@
  * the object when it cannot (ge_bounding_box_visible); the exact PSP visibility test is
  * unmeasured, so only a box wholly beyond one scissor edge is skipped.
  *
- * Not emulated: mip levels in the TEXLEVEL slope mode and per-level CLUTs (the TEXMODE
- * multi-CLUT bit), in this sampler and in the Vulkan backend alike (#1373).
+ * Not emulated: mip levels in the TEXLEVEL slope mode, per-level CLUTs (the TEXMODE multi-CLUT
+ * bit) and mip levels on the Vulkan backend, which samples level 0 (#1373).
  */
 
 /*
@@ -1977,13 +1977,17 @@ static float tex_footprint_rho2(float du_dx, float dv_dx, float du_dy, float dv_
  *   automatic: lod = log2(rho) + bias, rho being the footprint the rasterizer already uses
  *              for its minification test (the GL scale factor those filter names mirror).
  *   slope:     no public source gives its formula, so it stays on level 0.
- * ge_tex_mip_active() (ge_shared.h) is that on/off rule, shared with the Vulkan backend.
  * Unmeasured on a PSP: the automatic mode's derivative approximation and whether it is
  * evaluated per pixel, the slope formula, and the nearest-level rounding and between-level
  * weights sample_tex_f applies. */
 static float tex_lod(float rho2) {
     if (!(ge.tex_filter & 4u) || ge.tex_max_level == 0u) return 0.0f;
-    if (!ge_tex_mip_active(&ge)) {
+    float lod;
+    if (ge.tex_level_mode == 1u) {
+        lod = ge.tex_lod_bias;
+    } else if (ge.tex_level_mode == 0u) {
+        lod = 0.5f * log2f(rho2) + ge.tex_lod_bias;
+    } else {
         static int s_mode_noted;
         if (!s_mode_noted) {
             s_mode_noted = 1;
@@ -1992,25 +1996,19 @@ static float tex_lod(float rho2) {
         }
         return 0.0f;
     }
-    float lod = ge.tex_level_mode == 1u ? ge.tex_lod_bias
-                                        : 0.5f * log2f(rho2) + ge.tex_lod_bias;
     if (!(lod > 0.0f)) return 0.0f;            /* magnified, a negative bias, or NaN */
     return lod < (float)ge.tex_max_level ? lod : (float)ge.tex_max_level;
 }
 
-/* Filter one level at level-0 texel coordinates. Every level spans the same normalised
- * texture, and an integer texel coordinate names a texel's centre at every level (the
- * convention below), so the level-0 coordinate fu sits at normalised (fu + 0.5) / w0 and
- * at (fu + 0.5) * wL / w0 - 0.5 in level L. This is the GL/Vulkan normalised-coordinate
- * rule the Vulkan backend samples its mip chain with; plain scaling (fu * wL / w0) put
- * level 1 a quarter texel off. Unmeasured on a PSP, including for through-mode UV, which
- * the PSP gives in level-0 texels. */
+/* Filter one level at level-0 texel coordinates. A level's texel coordinate is the
+ * level-0 one scaled by the level's size, so every level spans the same normalised
+ * texture (unmeasured for through-mode UV, which the PSP gives in level-0 texels). */
 static void sample_level_f(uint32_t level, float fu, float fv_coord, int use_linear,
                            int *r, int *g, int *b, int *a) {
     TexLevel t = tex_level(level);
     if (level != 0u && ge.tex_w > 0 && ge.tex_h > 0) {
-        fu = (fu + 0.5f) * ((float)t.w / (float)ge.tex_w) - 0.5f;
-        fv_coord = (fv_coord + 0.5f) * ((float)t.h / (float)ge.tex_h) - 0.5f;
+        fu *= (float)t.w / (float)ge.tex_w;
+        fv_coord *= (float)t.h / (float)ge.tex_h;
     }
     if (!use_linear) {
         sample_tex_level(&t, (int)(fu + 0.5f), (int)(fv_coord + 0.5f), r, g, b, a);
@@ -2045,9 +2043,8 @@ static void sample_level_f(uint32_t level, float fu, float fv_coord, int use_lin
 }
 
 /* Sample at level-0 texel coordinates. `minifying` picks TEXFILTER's minification or
- * magnification field for filtering within a level (shade() decides it: the footprint test
- * with mip levels off, the level of detail with them on); `lod` (tex_lod) picks the level.
- * TEXFILTER bit 1 selects
+ * magnification field for filtering within a level, by the same footprint test as before
+ * mip levels were modelled; `lod` (tex_lod) picks the level. TEXFILTER bit 1 selects
  * between the nearest level (GL rounding: up only past one half) and a blend of the two
  * levels around `lod` by its fraction in 1/256 steps. */
 static void sample_tex_f(float fu, float fv_coord, int minifying, float lod,
@@ -2158,19 +2155,6 @@ void ge_decode_tex_rgba(uint32_t *out) {
             sample_tex(u, v, &r, &g, &b, &a);
             out[v * ge.tex_w + u] = (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8) |
                                     ((uint32_t)(b & 0xFF) << 16) | ((uint32_t)(a & 0xFF) << 24);
-        }
-}
-
-/* GPU backend mip decode (#1373): one level through the per-level sampler path the
- * software rasterizer uses (sample_level_f), so format, swizzle and CLUT match level 0. */
-void ge_decode_tex_level_rgba(uint32_t level, uint32_t *out) {
-    TexLevel t = tex_level(level);
-    for (int v = 0; v < t.h; v++)
-        for (int u = 0; u < t.w; u++) {
-            int r, g, b, a;
-            sample_tex_level(&t, u, v, &r, &g, &b, &a);
-            out[v * t.w + u] = (uint32_t)(r & 0xFF) | ((uint32_t)(g & 0xFF) << 8) |
-                               ((uint32_t)(b & 0xFF) << 16) | ((uint32_t)(a & 0xFF) << 24);
         }
 }
 
@@ -2506,14 +2490,7 @@ static int shade(float u, float fv, float rho2, int fog,
         int tr, tg, tb, ta;
         int rgba = (ge.tex_func & 0x100) != 0;
         int dbl  = (ge.tex_func & 0x10000) != 0;
-        /* With mip levels off the footprint picks the minification or magnification filter,
-         * as before they were modelled. With them on, the level of detail picks it, as in
-         * GL and Vulkan (above 0: minified), so a bias or a constant level moves the choice
-         * with the level and the Vulkan sampler makes the same one (#1373; unmeasured on a
-         * PSP). With a bias of 0 in automatic mode the two rules agree. */
-        float lod = tex_lod(rho2);
-        int minifying = ge_tex_mip_active(&ge) ? lod > 0.0f : rho2 > 1.0f;
-        sample_tex_f(u, fv, minifying, lod, &tr, &tg, &tb, &ta);
+        sample_tex_f(u, fv, rho2 > 1.0f, tex_lod(rho2), &tr, &tg, &tb, &ta);
         dbg_ta = ta;
         switch (ge.tex_func & 7) {
             case 1: /* decal */
