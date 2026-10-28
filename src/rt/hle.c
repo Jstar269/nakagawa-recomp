@@ -10468,11 +10468,11 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
         /* MEASURED on a PSP-3000 (#1096; fixtures/psp_oracle/README.md
          * `at3-decode`): once the buffered frames of a streamed AT3 track are
          * used up and file data remains to be added, DecodeData returns
-         * 0x80630023 with 0 samples and end flag 0. Nothing is consumed, so
-         * sceAtracAddStreamData resumes decoding. */
+         * 0x80630023 with 0 samples and end flag 0, and leaves the remaining-frames
+         * output as the caller set it (the probe pre-set -1 and read -1 back).
+         * Nothing is consumed, so sceAtracAddStreamData resumes decoding. */
         if (decAddr) MEM_W32(decAddr, 0u);
         if (finAddr) MEM_W32(finAddr, 0u);
-        if (remAddr) MEM_W32(remAddr, atrac_remaining_frames(a));
         return ATRAC_ERROR_BUFFER_IS_EMPTY;
     }
     if (st > 0) {

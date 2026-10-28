@@ -156,6 +156,8 @@ int atrac3_create(int channels, int block_align, const uint8_t *extradata,
 int atrac3_decode(Atrac3Handle *h, const uint8_t *frame, int frame_size,
                   int16_t *pcm_out, int *samples_out);
 int atrac3_reset(Atrac3Handle *h);
+/* One output sample from the AT3 core's float, in the PSP decoder's polarity. */
+int16_t atrac3_pcm_sample(float v);
 void atrac3_destroy(Atrac3Handle *h);
 
 #endif /* AT3P_API_H */

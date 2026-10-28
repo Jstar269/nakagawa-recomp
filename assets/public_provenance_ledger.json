@@ -4369,7 +4369,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "de5ceb47ce8d1382241046610fb0b6332a5ac8dfe4d0e9e5b9cbfe902a8a1036"
+      "sha256": "88aa65343a1d39ad2519a3fa7a6977feab169961e632d3fc19eab8f5e1e66d43"
     },
     {
       "path": "src/rt/atrac3p/atrac3p_api.h",
@@ -4382,7 +4382,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6c6db460b9cc8f65223b4bb9c8b5e511a7b0e7a863dd0f181d33496bd5ee5450"
+      "sha256": "ff656bfdfad7a06d4594725752d7d2432ed67447ebeed87be0c22ab0b7d735df"
     },
     {
       "path": "src/rt/atrac3p/libavcodec/atrac.c",
@@ -5198,7 +5198,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "4396573bc42b3bc151fb391ed09fec7b81b86e7e5e0e1221811fd3f1c31f1a99"
+      "sha256": "94c975709624b5a493ad025906cefa67584fbef6846818fc0a8ac03de62e81d5"
     },
     {
       "path": "src/rt/atrac3p_title_accept.c",
@@ -8891,7 +8891,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "25478f98aab0f414df62712d14a9c285464818a770e51e36d7f08e5f38574c2b"
+      "sha256": "82130f315a9e6a031783e4c3952e241c7a7ac637a5e8a8fb2b532d3fc294e57b"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8929,7 +8929,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "00b2dc09e211945636c44e7c03f55443cb789272a378da130d3a07f7b5470459"
+      "sha256": "973cefb59a0cc30309c1013e31028fdaf49319c93b92fceac7087a7672cb1598"
     },
     {
       "path": "src/rt/intr_conformance.h",

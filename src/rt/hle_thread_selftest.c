@@ -21562,6 +21562,8 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
         expect(ret == ATRAC_ERROR_BUFFER_IS_EMPTY && MEM_R32(OUT_N) == 0u &&
                    MEM_R32(OUT_END) == 0u,
                "streamed AT3 decode after the last buffered frame returns 0x80630023 with 0 samples and end 0");
+        expect(MEM_R32(OUT_REMAIN) == 0xdeadbeefu,   /* td1096_decode's pre-set */
+               "streamed AT3 0x80630023 leaves the remaining-frames output unwritten (PSP-3000)");
 
         /* The exhaustion is not terminal: feeding the next frame resumes. */
         CpuState cpu2;
