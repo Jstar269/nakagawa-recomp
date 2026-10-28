@@ -1233,8 +1233,8 @@ def flight_smoke(build_dir: Path) -> int:
         for label, bundle, run_dir in (
             ("first", first, first_dir), ("second", second, second_dir)
         ):
-            if bundle["schema_version"] != 5:
-                raise RuntimeError(f"{label} flight bundle is not schema v5")
+            if bundle["schema_version"] != 6:
+                raise RuntimeError(f"{label} flight bundle is not schema v6")
             if bundle["recorder"]["enabled_classes"] != ["ge", "present"]:
                 raise RuntimeError(f"{label} flight bundle has unexpected class coverage")
             if bundle["recorder"]["dropped"] != 0:
