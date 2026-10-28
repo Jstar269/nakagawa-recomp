@@ -20,6 +20,15 @@
  * After each handler, the caller-saved temp registers are poisoned to 0xDEADBEEF exactly as
  * PPSSPP's SetDeadbeefRegs does, so traces stay aligned on the registers the game actually
  * keeps (it never relies on caller-saved registers surviving a call).
+ *
+ * Layout, top to bottom: the handler table and argument helpers; kernel object UIDs and the
+ * user-memory allocator; the handlers, grouped by PSP library (registry, fonts, memory,
+ * module loading, decoders, DMA, sceMpeg, sceMp3, the on-screen keyboard, timers, file I/O,
+ * audio/display/GE/SAS, message pipes, mailboxes, semaphores and event flags, thread lists),
+ * with the acceptance-route and frame-capture instrumentation between them; and last
+ * sr_syscall(), which finds a NID's handler (hle_find) and calls it. Most groups start with
+ * a "---- <name>" banner comment, so search for that, or for a function's name from
+ * nid_names.h.
  */
 
 #ifndef _CRT_SECURE_NO_WARNINGS
@@ -5649,7 +5658,13 @@ static uint32_t h_DcacheWritebackInvalidateAll(CpuState *s) {
     return h_cache_invalidate_all_common(s);
 }
 
+/* Instruction-cache maintenance is where the guest announces code it wrote itself. A code
+ * overlay it read into memory is bound to its translation here, and one whose bytes are gone
+ * is unbound (sr_module_code_sync_overlays), so the native tier runs the code that is in
+ * memory, and a call into code no translation covers still misses and stops by name. Under
+ * SR_STALE_DETECT the translated images are checked as well, as at data-cache maintenance. */
 static uint32_t h_CacheInvalidateAllOther(CpuState *s) {
+    (void)sr_module_code_sync_overlays(0u, 0xffffffffu);
     return h_cache_invalidate_all_common(s);
 }
 
@@ -5678,7 +5693,16 @@ static uint32_t h_DcacheWritebackInvalidateRange(CpuState *s) {
 }
 
 static uint32_t h_CacheInvalidateRangeOther(CpuState *s) {
+    /* a0 = address, a1 = length; a range running past the top is clipped there. */
+    uint32_t hi = A1 > 0xffffffffu - A0 ? 0xffffffffu : A0 + A1;
+    (void)sr_module_code_sync_overlays(A0, hi);
     return h_cache_invalidate_range_common(s);
+}
+
+static void hle_register_icache_handlers(void) {
+    sr_hle_register(0x920f104au, "sceKernelIcacheInvalidateAll", h_CacheInvalidateAllOther);
+    sr_hle_register(0xd8779ac6u, "sceKernelIcacheClearAll", h_CacheInvalidateAllOther);
+    sr_hle_register(0xc2df770eu, "sceKernelIcacheInvalidateRange", h_CacheInvalidateRangeOther);
 }
 
 /* cache / misc UtilsForUser: no host cache work, but Dcache maintenance tells the
@@ -9912,6 +9936,9 @@ typedef struct {
     uint32_t at3FactSize;         /* RIFF fact chunk size (8 or 12) */
     uint32_t at3FactDelay;        /* fact word after the sample count */
     int at3FirstFramePending;     /* no frame decoded since SetData */
+    /* Streamed AT3: file frame 0, held from SetData to prime the decoder (#1096). */
+    uint8_t at3PrimeFrame[1024];
+    int at3PrimeValid;
     int endSample, posSample, loopNum;
     int loopStartSample, loopEndSample;   /* 'smpl' loop points; -1 when absent */
     uint32_t bufferPos;           /* ring offset of the next frame to consume */
@@ -10343,12 +10370,26 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size, uint32_t bufSi
         return 1;
     }
     atrac_update_buffer_state(a);
+    a->at3PrimeValid = 0;
     if (atrac_streamed_state(a)) {
         a->bufferHeaderSize = a->dataByteOffset;
         a->bufferPos = a->dataByteOffset + a->bytesPerFrame;
         a->bufferValidBytes =
             a->size > a->bufferPos ? a->size - a->bufferPos : 0;
         (void)atrac_stream_window_init(a);
+        /* MEASURED on a PSP-3000 (6.61, #1096, probe at3-decode, full PCM of the first call):
+         * a streamed AT3 track's output starts at file frame 1, as bufferPos does here, but
+         * the decoder first decodes frame 0 and discards it. The first call's samples are
+         * frame 1 decoded with frame 0's overlap history (all 1,910 values within 8 steps of
+         * that; the same frame decoded with empty history matches none). Frame 0 is kept here
+         * because the ring may be refilled before the first decode. */
+        if (a->codecType == ATRAC_CODEC_AT3 && a->bytesPerFrame <= sizeof(a->at3PrimeFrame) &&
+            a->size >= a->dataByteOffset + a->bytesPerFrame &&
+            sr_guest_span_readable(a->buf + a->dataByteOffset, a->bytesPerFrame)) {
+            for (uint32_t i = 0u; i < a->bytesPerFrame; i++)
+                a->at3PrimeFrame[i] = (uint8_t)MEM_R8(a->buf + a->dataByteOffset + i);
+            a->at3PrimeValid = 1;
+        }
     }
     return 1;
 }
@@ -10734,6 +10775,35 @@ int sr_hle_test_atrac_second_buffer(uint32_t id, uint32_t *addr, uint32_t *size)
  *  -1  permanent failure (no decoder, or the frame failed to decode).
  * A -1 is a visible gap: the caller returns an error code instead of
  * fabricating PCM (no fake audio). */
+static unsigned s_atrac_prime_decodes;   /* frame-0 priming decodes (#1096) */
+/* How long sceAtracDecodeData keeps its caller waiting after a call that returned samples.
+ * MEASURED on a PSP-3000 (6.61, probe at3-decode, two boots, 48 calls): a plain AT3 track,
+ * 2 channels, 304-byte frames, 1024 samples a call, takes 1,152-1,203 us (median 1,177) and a
+ * lower-priority peer runs for about 1 ms of it, as during a 1 ms sceKernelDelayThread; the
+ * buffer-empty call (0x80630023) returns in 7 us. An ATRAC3+ track, 2 channels, 744-byte frames,
+ * 2048 samples a call, takes 2,964-3,113 us (median 3,055 over 8 calls, one boot) with the peer
+ * running for about 3 ms of it; its buffer-empty call returns in 8 us. Every other codec and
+ * frame size is UNMEASURED and keeps returning at once, as before. */
+static uint32_t s_atrac_last_block_us;
+static uint32_t atrac_decode_block_us_for(uint32_t codec, int channels, uint32_t bytes_per_frame) {
+    if (codec == ATRAC_CODEC_AT3 && channels == 2 && bytes_per_frame == 304u) return 1177u;
+    if (codec == ATRAC_CODEC_AT3PLUS && channels == 2 && bytes_per_frame == 744u) return 3055u;
+    return 0u;
+}
+static uint32_t atrac_measured_decode_block_us(const Atrac *a) {
+    return atrac_decode_block_us_for(a->codecType, a->channels, a->bytesPerFrame);
+}
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_hle_test_atrac_last_block_us(void) { return s_atrac_last_block_us; }
+uint32_t sr_hle_test_atrac_block_us_for(uint32_t codec, int channels, uint32_t bytes_per_frame) {
+    return atrac_decode_block_us_for(codec, channels, bytes_per_frame);
+}
+unsigned sr_hle_test_atrac_prime_decodes(int reset) {
+    unsigned n = s_atrac_prime_decodes;
+    if (reset) s_atrac_prime_decodes = 0u;
+    return n;
+}
+#endif
 static int atrac_decode_frame(Atrac *a, uint32_t out, int skip, int *samples_out) {
     uint32_t src;
     int streamed = atrac_streamed_state(a);
@@ -10763,8 +10833,17 @@ static int atrac_decode_frame(Atrac *a, uint32_t out, int skip, int *samples_out
             a->host_frame[i] = (uint8_t)MEM_R8(src + i);
     }
     int n = 0;
-    int ret;
-    if (a->codecType == ATRAC_CODEC_AT3)
+    int ret = 0;
+    if (a->codecType == ATRAC_CODEC_AT3 && a->at3FirstFramePending && a->at3PrimeValid) {
+        /* The measured first-frame priming above: frame 0 through the decoder, output discarded. */
+        a->at3PrimeValid = 0;
+        s_atrac_prime_decodes++;
+        ret = atrac3_bridge_decode(a->dec_at3, a->at3PrimeFrame,
+                                   (int)a->bytesPerFrame, a->host_pcm, &n);
+    }
+    if (ret < 0)
+        ;   /* the priming decode failed: reported below like any frame */
+    else if (a->codecType == ATRAC_CODEC_AT3)
         ret = atrac3_bridge_decode(a->dec_at3, a->host_frame,
                                    (int)a->bytesPerFrame, a->host_pcm, &n);
     else
@@ -10861,6 +10940,7 @@ static uint32_t atrac3_first_frame_rule(const Atrac *a, int *skip) {
 
 static uint32_t h_AtracDecodeData(CpuState *s) {
     /* a0=id, a1=outSamples, a2=*decodedSamples, a3=*finishFlag, t0=*remainFrames. */
+    s_atrac_last_block_us = 0u;
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     /* MEASURED on a PSP-3000 (#1096, `at3-decode`): the DecodeData after a
      * refused sceAtracSetData (fact delay 2048) returns 0x80630010. The
@@ -10945,6 +11025,12 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
                     out ? MEM_R16(out + 0u) : 0, out ? MEM_R16(out + 2u) : 0,
                     out ? MEM_R16(out + 4u) : 0, out ? MEM_R16(out + 6u) : 0);
     }
+    /* The decode takes time on the PSP and its caller gives up the CPU meanwhile, so threads of
+     * the same priority run during it (#1296: HST's audio-output thread starved behind its
+     * ATRAC decode threads when this returned at once). */
+    const uint32_t block_us = st > 0 ? atrac_measured_decode_block_us(a) : 0u;
+    s_atrac_last_block_us = block_us;
+    if (block_us) sched_delay_current(block_us);
     return 0;
 }
 /* sceAtracGetNextSample(id, *outN): how many samples the NEXT DecodeData call
@@ -27847,6 +27933,7 @@ void sr_hle_init(void) {
     hle_register_osk_handlers();
     hle_register_utility_dialog_handlers();
     hle_register_dcache_handlers();
+    hle_register_icache_handlers();
 #else
     /* Wait/blocking APIs shared with the issue #88 conformance matrix. Single
      * definition, called by both branches, so the selftest cannot drift from the
@@ -27954,18 +28041,11 @@ void sr_hle_init(void) {
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
     hle_register_devkit_version_handler();
 
-    /* Data-cache maintenance: one registration helper shared with the executable
-     * harness, ahead of the opt-in Icache gate below. */
+    /* Cache maintenance: registration helpers shared with the executable harness. The
+     * Icache NIDs bind and unbind code overlays; under SR_STALE_DETECT they also run the
+     * TD-27 check-and-abort contract the Dcache handlers run. */
     hle_register_dcache_handlers();
-    /* TD-27 stale-code detector: the Icache NIDs (a code-modification signal)
-     * stay UNREGISTERED (fail-closed, as before) unless SR_STALE_DETECT opts
-     * in, so default dispatch behavior is unchanged. When enabled they run
-     * the same check-and-abort contract as the Dcache handlers above. */
-    if (sr_stale_enabled()) {
-        sr_hle_register(0x920f104au, "sceKernelIcacheInvalidateAll", h_CacheInvalidateAllOther);
-        sr_hle_register(0xd8779ac6u, "sceKernelIcacheClearAll", h_CacheInvalidateAllOther);
-        sr_hle_register(0xc2df770eu, "sceKernelIcacheInvalidateRange", h_CacheInvalidateRangeOther);
-    }
+    hle_register_icache_handlers();
     /* GPO latch / GPI pins: shared with the executable harness through
      * hle_register_gpi_gpo_handlers(). */
     hle_register_gpi_gpo_handlers();

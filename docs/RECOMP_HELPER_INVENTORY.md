@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **359** (declared in `recomp.h`: 301)
-- reach class: emitter-reached 64, production-runtime-only 265, selftest-only 15, address-only 7, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 24, upstream_derived 334
+- helpers: **365** (declared in `recomp.h`: 307)
+- reach class: emitter-reached 69, production-runtime-only 266, selftest-only 15, address-only 7, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 25, upstream_derived 339
 
 ## Helpers
 
@@ -318,6 +318,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_module_code_lookup` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_register` | `rt/guest_interp.c` | yes | emitter-reached (direct) | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_reset` | `rt/guest_interp.c` | yes | selftest-only | `rt/guest_interp.c`: project_authored_attested |
+| `sr_module_code_sync_overlays` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_module_code_unbind` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_nan_trap_dump_context` | `rt/recomp.c` | no | address-only | `rt/recomp.c`: upstream_derived |
 | `sr_nan_trap_note` | `rt/debug.c` | yes | emitter-reached (via `SR_NAN_TRAP_F`) | `rt/debug.c`: project_authored_attested |
@@ -380,14 +381,19 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_vfpu_asin` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_cos` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_exp2` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
+| `sr_vfpu_h2f` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
 | `sr_vfpu_interp` | `rt/vfpu_interp.c` | yes | emitter-reached (direct) | `rt/vfpu_interp.c`: upstream_derived |
 | `sr_vfpu_log2` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_rcp` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_rnd_step` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
+| `sr_vfpu_rndf_step` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
 | `sr_vfpu_rsqrt` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_sin` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
+| `sr_vfpu_socp` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
 | `sr_vfpu_sqrt` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_thread_ctrl_init` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
+| `sr_vfpu_uc2i` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
+| `sr_vfpu_wbn` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
 | `sr_vram_cpu_address` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_vram_cpu_aperture` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_vram_cpu_span_touches` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |

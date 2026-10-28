@@ -1,6 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/*
+ * Reads a user's PSP disc image (ISO 9660): opens it, finds files by path,
+ * reads PARAM.SFO for the disc ID and title (nk_iso_inspect), works out what
+ * kind of executable each candidate is (plain MIPS ELF, encrypted, PBP, or
+ * unusable), and extracts files. nk_iso_extract_game() copies EBOOT.BIN and
+ * the title's content folders under PSP_GAME/USRDIR into a staging folder,
+ * refusing names that would escape it or collide on the host's file system.
+ * The image is untrusted input: every size and offset read from it is checked
+ * before use.
+ */
+
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -947,6 +958,21 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
         fclose(f);
         return pbp_result;
     }
+    /* A compressed disc image (CISO, written as .cso, or its LZ4 form ZISO, .zso)
+       starts with its own magic instead of the ISO9660 layout. Name it, so the
+       user is not told the file is no disc image at all. */
+    if (pbp_header_len >= 4u &&
+        (memcmp(pbp_header, "CISO", 4) == 0 || memcmp(pbp_header, "ZISO", 4) == 0)) {
+        const char *extension = pbp_header[0] == 'C' ? ".cso" : ".zso";
+        snprintf(out_meta->boundary_code, sizeof(out_meta->boundary_code),
+                 "DISC_IMAGE_COMPRESSED");
+        snprintf(out_meta->error_message, sizeof(out_meta->error_message),
+                 "This is a compressed disc image (%s). Nakagawa reads plain .iso disc "
+                 "images only. Turn it back into an .iso with the tool that compressed it, "
+                 "or copy your disc again as an .iso.", extension);
+        fclose(f);
+        return NK_ERROR_INVALID_ISO;
+    }
 
     if (file_size < (uint64_t)(PVD_SECTOR + 1) * SECTOR_SIZE) {
         fclose(f);
@@ -1049,6 +1075,7 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
                 if (name_len == 8 && memcmp(&dir_buf[off + 33], "PSP_GAME", 8) == 0) {
                     psp_game_lba = extent_lba;
                     psp_game_size = extent_size;
+                    out_meta->has_psp_game_folder = true;
                     break;
                 }
             }
@@ -1695,6 +1722,9 @@ typedef struct {
     size_t total_files;
     uint32_t visited_lbas[NK_ISO_STAGE_MAX_VISITED_DIRS];
     size_t visited_count;
+    /* Why a member could not be written when that is not the disc's fault:
+       NK_ERROR_PATH_TOO_LONG when its host path is past the host's limit. */
+    NkResult write_failure;
 } NkIsoStageContext;
 
 typedef struct {
@@ -2217,10 +2247,20 @@ static bool nk_iso_stage_walk_callback(const NkIsoDirectoryEntry *entry,
     if (last_backslash && (!last_slash || last_backslash > last_slash)) last_slash = last_backslash;
     if (!last_slash) return false;
     *last_slash = '\0';
-    if (!nk_platform_mkdir_p_private(parent)) return false;
+    if (!nk_platform_mkdir_p_private(parent)) {
+        if (nk_platform_path_exceeds_limit(parent, true)) {
+            stage->write_failure = NK_ERROR_PATH_TOO_LONG;
+        }
+        return false;
+    }
 
     FILE *out = nk_platform_fopen_private(host_path, "wb");
-    if (!out) return false;
+    if (!out) {
+        if (nk_platform_path_exceeds_limit(host_path, false)) {
+            stage->write_failure = NK_ERROR_PATH_TOO_LONG;
+        }
+        return false;
+    }
     uint64_t source_offset = (uint64_t)entry->lba * SECTOR_SIZE;
     if (nk_fseek64(stage->iso, (int64_t)source_offset, SEEK_SET) != 0) {
         fclose(out);
@@ -2291,7 +2331,8 @@ static NkResult nk_iso_stage_walk_directory(NkIsoWalkContext *walk,
     walk->drop = NULL;
     walk->drop_count = 0;
     free(drops.drop);
-    return okay ? NK_OK : NK_ERROR_INVALID_ISO;
+    if (okay) return NK_OK;
+    return stage->write_failure != NK_OK ? stage->write_failure : NK_ERROR_INVALID_ISO;
 }
 
 NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
@@ -2422,16 +2463,21 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
 
     if (!nk_platform_mkdir_p_private(host_root)) {
         fclose(iso);
-        return NK_ERROR_IO;
+        return nk_platform_path_exceeds_limit(host_root, true) ? NK_ERROR_PATH_TOO_LONG
+                                                                : NK_ERROR_IO;
     }
     for (size_t i = 0; i < loose_content_root_count; i++) {
         if (strcmp(loose_content_roots[i], ".") == 0) continue;
         char content_root[NK_ISO_STAGE_MAX_PATH];
         if (!nk_iso_stage_host_root(host_root, loose_content_roots[i],
-                                    content_root, sizeof(content_root)) ||
-            !nk_platform_mkdir_p_private(content_root)) {
+                                    content_root, sizeof(content_root))) {
             fclose(iso);
             return NK_ERROR_IO;
+        }
+        if (!nk_platform_mkdir_p_private(content_root)) {
+            fclose(iso);
+            return nk_platform_path_exceeds_limit(content_root, true) ? NK_ERROR_PATH_TOO_LONG
+                                                                       : NK_ERROR_IO;
         }
     }
     char eboot_path[NK_ISO_STAGE_MAX_PATH];
@@ -2442,8 +2488,13 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
         return NK_ERROR_IO;
     }
     FILE *eboot_out = nk_platform_fopen_private(eboot_path, "wb");
-    if (!eboot_out || nk_fseek64(iso, (int64_t)eboot.lba * SECTOR_SIZE, SEEK_SET) != 0) {
-        if (eboot_out) fclose(eboot_out);
+    if (!eboot_out) {
+        fclose(iso);
+        return nk_platform_path_exceeds_limit(eboot_path, false) ? NK_ERROR_PATH_TOO_LONG
+                                                                  : NK_ERROR_IO;
+    }
+    if (nk_fseek64(iso, (int64_t)eboot.lba * SECTOR_SIZE, SEEK_SET) != 0) {
+        fclose(eboot_out);
         fclose(iso);
         return NK_ERROR_IO;
     }

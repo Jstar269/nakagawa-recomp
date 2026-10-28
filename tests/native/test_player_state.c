@@ -2312,6 +2312,119 @@ static void test_error_cards_are_plain(void) {
     printf("[PLAYER_STATE_TEST] error cards are plain, with their codes in the details PASS\n");
 }
 
+/* A game Windows refused to start gets a card that says Windows blocked it and
+   names what Windows reported, not the generic launch failure. The OS error is
+   the one CreateProcessW gave (test_win32_process checks that it is kept). */
+static void test_windows_block_cards_name_the_block(void) {
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    PlayerLaunchWork *work = (PlayerLaunchWork *)calloc(1, sizeof(PlayerLaunchWork));
+    assert(app != NULL && work != NULL);
+    nk_library_init(&app->library);
+    work->game_index = -1;
+    work->failed_step = PLAYER_LAUNCH_STEP_START;
+    work->result = NK_ERROR_PROCESS_SPAWN;
+    snprintf(work->session.executable_path, sizeof(work->session.executable_path),
+             "C:/synthetic/packages/TEST00042/test00042-v1.exe");
+#if defined(_WIN32) || defined(_WIN64)
+    static const struct {
+        int os_error;
+        const char *code;
+        const char *title;
+        const char *names;
+    } blocks[] = {
+        {5, "WINDOWS_BLOCKED_START", "Windows Blocked the Game",
+         "attack surface reduction rule"},
+        {225, "WINDOWS_DEFENDER_THREAT", "Windows Security Blocked the Game",
+         "contains a threat"},
+        {226, "WINDOWS_DEFENDER_THREAT", "Windows Security Blocked the Game",
+         "contains a threat"},
+        {1260, "WINDOWS_POLICY_BLOCKED", "Windows Blocked the Game", "A Windows policy"},
+        {4551, "WINDOWS_POLICY_BLOCKED", "Windows Blocked the Game", "A Windows policy"},
+    };
+    for (size_t i = 0; i < sizeof(blocks) / sizeof(blocks[0]); i++) {
+        work->session.process.spawn_error = blocks[i].os_error;
+        assert(!player_app_launch_finish(app, work));
+        assert(app->active_view == VIEW_ERROR);
+        assert(strcmp(app->last_error.error_code, blocks[i].code) == 0);
+        assert(strcmp(app->last_error.title, blocks[i].title) == 0);
+        assert(strstr(app->last_error.message, blocks[i].names) != NULL);
+        assert(strstr(app->last_error.message, "Protection history") != NULL ||
+               blocks[i].os_error >= 1260);
+        assert(strcmp(player_error_badge(&app->last_error), "Blocked by Windows") == 0);
+        assert(player_error_leads_with_message(&app->last_error));
+        /* The details carry what Windows reported and which program it was. */
+        char expected[32];
+        snprintf(expected, sizeof(expected), "Windows error %d", blocks[i].os_error);
+        assert(strstr(app->last_error.boundary_text, expected) != NULL);
+        assert(strstr(app->last_error.boundary_text, "test00042-v1.exe") != NULL);
+    }
+#endif
+    /* Any other refusal keeps the plain launch-failure card. */
+    work->session.process.spawn_error = 2;
+    assert(!player_app_launch_finish(app, work));
+    assert(strcmp(app->last_error.error_code, "PROCESS_SPAWN_FAILED") == 0);
+    NkSpawnBlockReport report;
+    assert(!nk_launch_describe_spawn_block(0, "the game", "Game", "x.exe", &report));
+    assert(report.code[0] == '\0');
+    free(work);
+    free(app);
+    printf("[PLAYER_STATE_TEST] a Windows block of the game names the block PASS\n");
+}
+
+/* A bundled demo the library leaves out says why in the developer log (and the
+   player log): a demo whose image is there but whose package is not, and one
+   whose image is missing too. */
+static void test_skipped_showcase_logs_its_reason(void) {
+    const NkTitleEntry *with_image = NULL;
+    const NkTitleEntry *without_image = NULL;
+    for (int i = 0; i < nk_title_catalog_count; i++) {
+        const NkTitleEntry *title = &nk_title_catalog_entries[i];
+        if (!title->id || strncmp(title->id, "showcase-", 9) != 0 ||
+            !title->primary_disc_id || !title->display_name) continue;
+        if (!with_image) with_image = title;
+        else if (!without_image) without_image = title;
+    }
+    assert(with_image != NULL && without_image != NULL);
+
+    char exe_dir[NK_MAX_PATH];
+    char images[NK_MAX_PATH + 32];
+    char iso[NK_MAX_PATH + 96];
+    char sep = nk_platform_path_separator();
+    snprintf(exe_dir, sizeof(exe_dir), "%s%cshowcase_skip_fixture%c", SR_SELFTEST_BUILD_ROOT,
+             sep, sep);
+    (void)nk_platform_remove_tree(exe_dir, NULL);
+    snprintf(images, sizeof(images), "%sdemos%cimages", exe_dir, sep);
+    assert(nk_platform_mkdir_p(images));
+    snprintf(iso, sizeof(iso), "%s%c%s.iso", images, sep, with_image->primary_disc_id);
+    write_file(iso);
+
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    nk_library_init(&app->library);
+    assert(!player_app_discover_showcase(app, exe_dir));
+    assert(app->showcase_count == 0);
+
+    bool package_reason = false;
+    bool image_reason = false;
+    for (size_t i = 0; i < player_dev_log_count(app); i++) {
+        const char *line = player_dev_log_line(app, i);
+        if (strncmp(line, "[showcase] ", 11) != 0) continue;
+        if (strstr(line, with_image->primary_disc_id) && strstr(line, "skipped: package ") &&
+            strlen(strstr(line, "skipped: package ")) > strlen("skipped: package MISSING: ")) {
+            package_reason = true;
+        }
+        if (strstr(line, without_image->primary_disc_id) &&
+            strstr(line, "skipped: its disc image is not in the demos images folder")) {
+            image_reason = true;
+        }
+    }
+    assert(package_reason);
+    assert(image_reason);
+    (void)nk_platform_remove_tree(exe_dir, NULL);
+    free(app);
+    printf("[PLAYER_STATE_TEST] a skipped showcase demo logs why PASS\n");
+}
+
 /* #1277: the main loop asks for the build outcome every frame. A failure card
    and a cancel's return to the Library are shown once per build session, so
    the card can be dismissed and the Library left. */
@@ -3546,6 +3659,8 @@ int main(int argc, char **argv) {
     test_package_build_lifecycle(self_executable);
     test_bundled_prerequisite_build(self_executable);
     test_error_cards_are_plain();
+    test_windows_block_cards_name_the_block();
+    test_skipped_showcase_logs_its_reason();
     test_build_outcome_is_shown_once_per_session();
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();

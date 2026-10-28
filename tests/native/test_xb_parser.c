@@ -1878,6 +1878,70 @@ static void test_title_staging_transaction(void) {
     printf("[XB_TEST] Title staging transaction: promote, reuse, resume, replace, busy, refuse PASSED\n");
 }
 
+/* An archive member whose unpacked path is past the host's path limit stops the
+ * copy because the data folder's path is too long, and the card says so instead
+ * of blaming the disc. Run after test_title_staging_transaction, in its root. */
+static void test_title_staging_names_a_long_data_folder(void) {
+    static const uint8_t deep_data[] = "deep synthetic member";
+    const char *deep_member =
+        "deep_folder_name_padding_padding_padding_padding_a/"
+        "deep_folder_name_padding_padding_padding_padding_b/"
+        "deep_folder_name_padding_padding_padding_padding_c/member.bin";
+    const FixtureEntry entries[] = {
+        { deep_member, deep_data, sizeof(deep_data) - 1, NK_XB_COMPRESSION_NONE }
+    };
+    ByteBuffer xb = make_archive(entries, 1, false);
+    char iso_path[NATIVE_TEST_PATH_MAX];
+    char user_data_root[NATIVE_TEST_PATH_MAX];
+    title_join(iso_path, sizeof(iso_path), native_test_get_root(), "deep-archive-title.iso");
+    title_join(user_data_root, sizeof(user_data_root), native_test_get_root(), "user-data-deep");
+    write_title_fixture_iso(iso_path, true, &xb);
+    free(xb.data);
+
+    static const char *const whole_usrdir[] = { "." };
+    PlayerStageTitleRequest request;
+    memset(&request, 0, sizeof(request));
+    request.iso_path = iso_path;
+    request.user_data_root = user_data_root;
+    request.disc_id = "TEST90009";
+    request.disc_version = "1.00";
+    request.loose_content_roots = whole_usrdir;
+    request.loose_content_root_count = 1;
+    request.data_root = "xbdata";
+    TitleStagePaths paths;
+    title_stage_paths(user_data_root, request.disc_id, &paths);
+
+    char unpacked[NATIVE_TEST_PATH_MAX];
+    title_join(unpacked, sizeof(unpacked), paths.staging_root, "xbdata/assets.xb.d");
+    title_join(unpacked, sizeof(unpacked), unpacked, deep_member);
+    bool past_limit = nk_platform_path_exceeds_limit(unpacked, false);
+
+    PlayerStageSummary summary;
+    PlayerStageTitleOutcome outcome;
+    char prepared_root[NK_MAX_PATH];
+    char message[1024];
+    NkResult result = run_title_stage(&request, NULL, &summary, &outcome, prepared_root,
+                                      sizeof(prepared_root), message, sizeof(message));
+#if defined(_WIN32) || defined(_WIN64)
+    /* The fixture is deep enough for Windows' 260-character limit from any
+       temporary folder; a process with long paths enabled has no such limit. */
+    assert(past_limit || result == NK_OK);
+#endif
+    if (past_limit) {
+        assert(result == NK_ERROR_PATH_TOO_LONG);
+        assert(strstr(message, "[STAGE_PATH_TOO_LONG]") != NULL);
+        assert(strstr(message, "data folder is too long") != NULL);
+        assert(strstr(message, "Nothing is wrong with the disc") != NULL);
+        assert(strstr(message, "damaged") == NULL);
+        assert(strstr(message, "longer than this system allows") != NULL);
+        assert(!nk_platform_dir_exists(paths.final_root));
+        assert(!nk_platform_dir_exists(paths.staging_root));
+    } else {
+        assert(result == NK_OK);
+    }
+    printf("[XB_TEST] A too-long data folder path is named, not blamed on the disc PASSED\n");
+}
+
 int main(void) {
     printf("[XB_TEST] Starting native clean-room XB parser tests...\n");
     test_roundtrip_all_compression_modes();
@@ -1905,6 +1969,7 @@ int main(void) {
     test_staging_discard_reparse_boundary();
     test_iso_to_native_staging_pipeline();
     test_title_staging_transaction();
+    test_title_staging_names_a_long_data_folder();
     printf("[XB_TEST] ALL NATIVE XB PARSER TESTS PASSED\n");
     return 0;
 }

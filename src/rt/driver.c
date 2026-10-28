@@ -5,13 +5,19 @@
 // See NOTICE.md for upstream lineage and modification provenance.
 
 /* *
- * Loads a statically-linked PSP ELF into guest memory, seeds the CpuState from the entry
- * register state the PPSSPP reference trace recorded ("# init" line in the trace), registers
- * every generated function, and runs the entry function with tracing on. Execution stops
- * cleanly at the first HLE call (sr_hle_call longjmps), exactly where the reference trace is
- * truncated for comparison.
+ * main() of every built game. It loads the PSP program into guest memory, registers every
+ * generated function (sr_register_all), resolves the entry point, and then runs in one of
+ * two ways:
+ *   - with --gui, as the player launches a game: it opens the window (gui.c) and hands the
+ *     entry point to the scheduler (sched_run in sched.c), which runs the game's threads
+ *     until it exits. --sched alone does the same without a window;
+ *   - without --sched, as a trace-comparison harness: it seeds the CpuState from the entry
+ *     register state the reference trace recorded ("# init" line), runs the entry function
+ *     with tracing on, and stops at the first HLE call (sr_hle_call longjmps), exactly where
+ *     the reference trace is truncated for comparison.
  *
- * Usage: driver <elf> <ref-trace> <out-trace>
+ * Usage: driver <elf> <ref-trace> <out-trace> [--sched] [--gui] [--expect-u32=ADDR:VALUE]
+ *        driver --image <image.bin> <base-hex> <entry-hex> <ref-trace> <out-trace> [...]
  */
 
 #define _CRT_SECURE_NO_WARNINGS

@@ -2403,7 +2403,29 @@ static const char *controller_button_label(NkUi *ui, const char *label, float wi
                             width - 2.0f * NK_UI_SPACE_3 - 2.0f, 1);
 }
 
-/* One PSP control: its name, then its binding on the button that rebinds it. */
+/* A binding's glyph, centred in a cell as wide as the widest one (CREATE, six letters
+   on a pill, is 43.6 px at 20 px tall), so the buttons after it line up. */
+#define PAD_GLYPH_HEIGHT 20.0f
+#define PAD_GLYPH_CELL 44.0f
+static void controller_glyph(NkUi *ui, const PlayerUiControllerModel *model, size_t control) {
+    const PlayerUiBindingGlyph *glyph = &model->glyphs[control];
+    NkUiLayout cell = layout_make(NK_UI_LAYOUT_ROW, sizing_fixed(PAD_GLYPH_CELL), sizing_fit(),
+                                  0.0f);
+    cell.align_x = NK_UI_ALIGN_CENTER;
+    cell.align_y = NK_UI_ALIGN_CENTER;
+    if (!nk_ui_begin_container(ui, (NkUiId)(PAD_ID_ROWS + 0x40u + (NkUiId)control), &cell,
+                               NULL)) {
+        return;
+    }
+    if (glyph->shown) {
+        (void)nk_ui_prompt_glyph_in(ui, PLAYER_UI_ID_CONTROLLER_GLYPH(control), model->glyph_style,
+                                    glyph->action, glyph->label, PAD_GLYPH_HEIGHT);
+    }
+    nk_ui_end_container(ui);
+}
+
+/* One PSP control: its name, the glyph of what it is bound to, then its binding in
+   words on the button that rebinds it. */
 static void controller_row(NkUi *ui, const PlayerUiControllerModel *model, size_t control,
                            float name_width, float button_width, PlayerUiAction *result) {
     const NkUiTheme *theme = nk_ui_theme(ui);
@@ -2424,6 +2446,7 @@ static void controller_row(NkUi *ui, const PlayerUiControllerModel *model, size_
             nk_ui_end_container(ui);
         }
     }
+    controller_glyph(ui, model, control);
     if (nk_ui_button(ui, PLAYER_UI_ID_CONTROLLER_BUTTON(control),
                      controller_button_label(ui, capturing ? (model->keyboard ? "Press a key..."
                                                                               : "Press a button...")
@@ -2534,8 +2557,10 @@ static void controller_mapping(NkUi *ui, const PlayerUiControllerModel *model, f
     /* Cards pad 20 px either side; the two columns of rows have 16 px between. */
     buttons_inner = column - NK_UI_SPACE_4 - stick_card - 2.0f * NK_UI_SPACE_5;
     half = (buttons_inner - NK_UI_SPACE_4) * 0.5f;
+    /* The longest name, "L Trigger (L1)", needs about 100 px; the rest of the row is
+       the binding's glyph and its words. */
     name_width = half * 0.36f;
-    if (name_width > 132.0f) name_width = 132.0f;
+    if (name_width > 104.0f) name_width = 104.0f;
     layout = layout_make(NK_UI_LAYOUT_COLUMN, sizing_fixed(column), sizing_fit(),
                          tall ? NK_UI_SPACE_4 : NK_UI_SPACE_2);
     if (!nk_ui_begin_container(ui, PAD_ID_COLUMN, &layout, NULL)) return;
@@ -2590,7 +2615,9 @@ static void controller_mapping(NkUi *ui, const PlayerUiControllerModel *model, f
                     }
                     for (size_t row = 0u; row < PLAYER_UI_CONTROLLER_BUTTONS / 2u; ++row) {
                         controller_row(ui, model, col * (PLAYER_UI_CONTROLLER_BUTTONS / 2u) + row,
-                                       name_width, half - name_width - NK_UI_SPACE_2, result);
+                                       name_width,
+                                       half - name_width - PAD_GLYPH_CELL - 2.0f * NK_UI_SPACE_2,
+                                       result);
                     }
                     nk_ui_end_container(ui);
                 }
