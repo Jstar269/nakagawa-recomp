@@ -1732,6 +1732,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                 player->titles[index].package_state == PLAYER_UI_PACKAGE_RUNNING &&
                 app->stalled_game_notice_visible;
             model.stalled_game_dark_picture = app->stalled_game_dark_picture;
+            model.now_s = app->settings.reduce_motion ? 0.0 : now_s;
             model.logical_width = scale.logical_w;
             model.logical_height = scale.logical_h;
             {

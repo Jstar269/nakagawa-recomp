@@ -2741,6 +2741,11 @@ static int capture_screens(const char *directory) {
         running_title.title_index = 0u;
         nk_ui_focus(ui, PLAYER_UI_ID_TITLE_PRIMARY);
         if (!capture_one(&rig, "title-game-running", NULL, &running_title)) goto done;
+        /* The same title before its window opens: the starting card. */
+        running.library_status = "Starting";
+        running.package_state = PLAYER_UI_PACKAGE_STARTING;
+        running_title.now_s = 0.4;
+        if (!capture_one(&rig, "title-game-starting", NULL, &running_title)) goto done;
     }
     {
         static const struct { FlowCase which; const char *name; NkUiId focus; } flows[] = {
@@ -3068,6 +3073,8 @@ static void test_title_with_a_running_game(void) {
           "the package card says the game runs now");
     CHECK(strstr(dump, "not ready yet") == NULL,
           "a running game's ready package is never called not ready");
+    CHECK(strstr(dump, "Starting Synthetic") == NULL,
+          "a game whose window is up has no starting card");
     CHECK(strstr(dump, "decrypts this game's program") == NULL,
           "the decryption note stays off a running game's built package");
     CHECK(strstr(dump, "Plays full matches and Story Mode.") != NULL &&
@@ -3116,6 +3123,11 @@ static void test_title_with_a_running_game(void) {
     CHECK(strstr(dump, "Starting the game. Its window opens when it is ready.") != NULL &&
               strstr(dump, "decrypts this game's program") == NULL,
           "a starting game gets the starting card and no decryption note");
+    /* The showcase walkthrough: the first start waited 7 to 9 s with only a
+       chip and that line. The main column names the game being started. */
+    CHECK(strstr(dump, "Starting Synthetic Showcase Scene\xE2\x80\xA6") != NULL &&
+              strstr(dump, "The first start can take several seconds.") != NULL,
+          "a starting game gets a card naming it");
     running.package_state = PLAYER_UI_PACKAGE_MISSING;
     running.library_status = "Needs setup";
     nk_ui_begin(ui, 0.0);
