@@ -310,6 +310,20 @@ static inline int sr_guest_span_writable_at(uint32_t addr, uint32_t size,
     return 1;
 }
 
+/* Range-checked destination test for writers that copy through sr_guest_copy_out()
+ * or sr_guest_fill() instead of forming one host pointer over the span (#1049).
+ * Unlike sr_guest_span_writable() it accepts a span through the swizzled VRAM
+ * mirrors: those helpers walk the span in sr_guest_host_run() pieces, each inside
+ * one block that stays contiguous in physical VRAM, and translate every piece
+ * through SR_HOST(). A span that starts in one VRAM view and ends in another is
+ * therefore exact as well: the bytes are guest-contiguous, and each lands where a
+ * scalar store to that guest address would. Only a span that leaves the arena is
+ * refused. Callers that still form a host pointer keep using
+ * sr_guest_span_writable() and its VRAM_MIRROR_BULK_UNSUPPORTED report. */
+static inline int sr_guest_span_writable_any_view(uint32_t addr, uint32_t size) {
+    return size == 0u || sr_inrange_n(addr, size);
+}
+
 /* Bulk readers call this immediately before forming their host pointer. */
 static inline int sr_guest_span_readable_current_at(uint32_t addr, uint32_t size,
                                                     const char *caller) {

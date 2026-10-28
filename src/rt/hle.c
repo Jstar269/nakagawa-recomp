@@ -6496,7 +6496,7 @@ static uint32_t h_PsmfUpdate(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||
  * 0 only when a decoder really produced a frame.  Field layout and error behaviour follow the
  * public PSP player contract. Its initial NO_DATA gate precedes decode, so no decoded picture
  * enters the warm-up-held disposition on this path. */
-static uint32_t h_PsmfGetVideo(CpuState *s){s_psmf_getvideo++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_INVALID_POINTER;int32_t bufw=(int32_t)MEM_R32(A1);uint32_t displaybuf=MEM_R32(A1+4);if(bufw<0)return PSMF_ERR_PRIV_REQUIRED;if(bufw!=0&&(uint32_t)bufw<p->videoWidth)return PSMF_ERR_INVALID_VALUE;if(p->warmup<PSMF_WARMUP_FRAMES){p->warmup++;return PSMF_ERR_NO_DATA;}p->warmup=PSMF_WARMUP_FRAMES;if(!displaybuf||!sr_guest_span_writable(displaybuf,4u))return PSMF_ERR_INVALID_POINTER;psmf_produce(p);psmf_video_pump(p);int64_t pts=0;int r=psmf_video_take(p,displaybuf,bufw==0?512:(int)((uint32_t)bufw&~1u),(int)p->pixelMode,&pts);if(r<=0)return PSMF_ERR_NO_DATA;sched_delay_current(3000);MEM_W32(A1+4,displaybuf);MEM_W32(A1+8,(uint32_t)pts);return 0;}
+static uint32_t h_PsmfGetVideo(CpuState *s){s_psmf_getvideo++;SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,12u))return PSMF_ERR_INVALID_POINTER;int32_t bufw=(int32_t)MEM_R32(A1);uint32_t displaybuf=MEM_R32(A1+4);if(bufw<0)return PSMF_ERR_PRIV_REQUIRED;if(bufw!=0&&(uint32_t)bufw<p->videoWidth)return PSMF_ERR_INVALID_VALUE;if(p->warmup<PSMF_WARMUP_FRAMES){p->warmup++;return PSMF_ERR_NO_DATA;}p->warmup=PSMF_WARMUP_FRAMES;if(!displaybuf||!sr_guest_span_writable_any_view(displaybuf,4u))return PSMF_ERR_INVALID_POINTER;psmf_produce(p);psmf_video_pump(p);int64_t pts=0;int r=psmf_video_take(p,displaybuf,bufw==0?512:(int)((uint32_t)bufw&~1u),(int)p->pixelMode,&pts);if(r<=0)return PSMF_ERR_NO_DATA;sched_delay_current(3000);MEM_W32(A1+4,displaybuf);MEM_W32(A1+8,(uint32_t)pts);return 0;}
 /* scePsmfPlayerGetAudioData(player, void *buf): buf receives one decoded ATRAC3+ frame as
  * 2048 stereo s16 samples (the size scePsmfPlayerGetAudioOutSize reports).  Returns 0 only
  * for a real decode; a frame that cannot be decoded yields NO_MORE_DATA, never silence. */
@@ -27034,6 +27034,12 @@ static void hle_register_mpeg_shared_handlers(void) {
 
 /* These YCbCr handlers are registered by the focused media fixture and by the full registry,
  * so the fixture reaches the same production argument marshalling through sr_syscall(). */
+/* One definition for both registry branches, so the media fixture reaches mpeg_avc_decode (the
+ * movie frame writer behind the VRAM mirrors, #1049) through the production handler. */
+static void hle_register_mpeg_avc_decode_handler(void) {
+    sr_hle_register(0x0e3c2e9d, "sceMpegAvcDecode", h_MpegAvcDecode);
+}
+
 static void hle_register_mpeg_ycbcr_handlers(void) {
     sr_hle_register(0x211a057c, "sceMpegAvcQueryYCbCrSize", h_MpegAvcQueryYCbCrSize);
     sr_hle_register(0x67179b1b, "sceMpegAvcInitYCbCr", h_MpegAvcInitYCbCr);
@@ -27356,6 +27362,7 @@ void sr_hle_init(void) {
     sched_set_thread_exit_hook(hle_module_thread_exit);
 #ifdef SR_MPEG_MEDIA_SELFTEST
     hle_register_mpeg_ycbcr_handlers();
+    hle_register_mpeg_avc_decode_handler();
     /* The media fixture drives the production scePsmfPlayer handlers through sr_syscall,
      * so the guest getter and the A/V presentation boundaries are reachable from a
      * production-path test (issue #279). */
@@ -27476,7 +27483,7 @@ void sr_hle_init(void) {
     sr_hle_register(0xb5f6dc87, "sceMpegRingbufferAvailableSize", h_MpegRingbufferAvailable);
     sr_hle_register(0xfe246728, "sceMpegGetAvcAu", h_MpegGetAvcAu);
     sr_hle_register(0xe1ce83a7, "sceMpegGetAtracAu", h_MpegGetAtracAu);
-    sr_hle_register(0x0e3c2e9d, "sceMpegAvcDecode", h_MpegAvcDecode);
+    hle_register_mpeg_avc_decode_handler();
     sr_hle_register(0x800c44df, "sceMpegAtracDecode", h_MpegAtracDecode);
     sr_hle_register(0x740fccd1, "sceMpegAvcDecodeStop", h_MpegAvcDecodeStop);
     sr_hle_register(0xa780cf7e, "sceMpegMallocAvcEsBuf", h_MpegMallocAvcEsBuf);

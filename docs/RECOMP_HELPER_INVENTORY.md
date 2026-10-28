@@ -245,6 +245,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_guest_span_readable_at` | `rt/recomp.h` | yes | emitter-reached (via `sr_guest_span_readable`) | `rt/recomp.h`: upstream_derived |
 | `sr_guest_span_readable_current_at` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_guest_span_report_vram_mirror_boundary` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
+| `sr_guest_span_writable_any_view` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_guest_span_writable_at` | `rt/recomp.h` | yes | emitter-reached (via `sr_guest_span_writable`) | `rt/recomp.h`: upstream_derived |
 | `sr_guest_sprintf` | `rt/guest_printf.c` | yes | emitter-reached (direct) | `rt/guest_printf.c`: project_authored_attested |
 | `sr_guest_symbol_at` | `rt/recomp.c` | yes | production-runtime-only | `rt/recomp.c`: upstream_derived |

@@ -20787,6 +20787,53 @@ static void test_ge_block_transfer_span_atomicity(void) {
     expect(decoded[0] != 0u && decoded[1] != 0u,
            "a texture rectangle ending exactly at the arena end still decodes");
 
+    /* #1049: a linear texture given through a swizzled VRAM mirror decodes the texels a
+     * scalar load through that view reads (HST's Cinema movie is drawn this way). Each
+     * texel is written with a scalar store through the same mirror address, so the two
+     * views must agree texel for texel; before, the rectangle was refused and decoded to
+     * zero. 64 texels per row cross several 32-byte blocks and the 64-byte XOR block. */
+    {
+        static uint32_t mirror_out[64u * 4u], mirror_ref[64u * 4u];
+        const uint32_t views[2] = { 0x04200000u + 0x1f00u, 0x04600000u + 0x3040u };
+        for (int view = 0; view < 2; view++) {
+            for (uint32_t fmt = 0u; fmt <= 3u; fmt += 3u) {
+                const uint32_t bpp = fmt == 3u ? 4u : 2u;
+                state->tex_addr = views[view];
+                state->tex_bufw = 64u;
+                state->tex_fmt = fmt;
+                state->tex_w = 64;
+                state->tex_h = 4;
+                state->tex_swizzle = 0;
+                for (uint32_t i = 0; i < 64u * 4u; i++) {
+                    const uint32_t texel = 0x80000000u | (i * 0x01010101u) | (view << 7) | fmt;
+                    if (bpp == 4u) MEM_W32(views[view] + i * 4u, texel);
+                    else MEM_W16(views[view] + i * 2u, (uint16_t)(texel ^ (i << 5)));
+                }
+                /* Reference: the same texels as the mirror view reads them, copied to a RAM
+                 * texture and decoded by the linear host-pointer path. */
+                for (uint32_t i = 0; i < 64u * 4u; i++) {
+                    if (bpp == 4u) MEM_W32(0x08300000u + i * 4u, MEM_R32(views[view] + i * 4u));
+                    else MEM_W16(0x08300000u + i * 2u, MEM_R16(views[view] + i * 2u));
+                }
+                state->tex_addr = 0x08300000u;
+                memset(mirror_ref, 0, sizeof(mirror_ref));
+                ge_decode_tex_rgba(mirror_ref);
+                state->tex_addr = views[view];
+                memset(mirror_out, 0, sizeof(mirror_out));
+                ge_decode_tex_rgba(mirror_out);
+                int same = 1, nonzero = 0;
+                for (uint32_t i = 0; i < 64u * 4u; i++) {
+                    if (mirror_out[i] != mirror_ref[i]) same = 0;
+                    if (mirror_ref[i]) nonzero = 1;
+                }
+                same = same && nonzero;
+                expect(same, view == 0
+                    ? "a linear texture through the 0x042 mirror decodes the texels the mirror view reads"
+                    : "a linear texture through the 0x046 mirror decodes the texels the mirror view reads");
+            }
+        }
+    }
+
     /* LOADCLUT previously updated its internal palette one scalar at a time.  A
      * rejected complete source span must leave both palette bytes and generation
      * unchanged. */
