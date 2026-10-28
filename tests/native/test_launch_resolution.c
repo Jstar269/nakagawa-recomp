@@ -154,6 +154,7 @@ static int write_launch_environment_probe(void) {
     const char *novbpace = getenv("SR_NOVBPACE");
     const char *font_dir = getenv("SR_FONTDIR");
     const char *user_data_root = getenv("SR_USER_DATA_ROOT");
+    const char *experimental_60hz = getenv("SR_EXPERIMENTAL_60HZ");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
                      "NK_LAUNCH_TEST_UNRELATED=%s\n"
@@ -166,7 +167,8 @@ static int write_launch_environment_probe(void) {
                      "NK_INPUT_PROFILE=%s\n"
                      "SR_NOVBPACE=%s\n"
                      "SR_FONTDIR=%s\n"
-                     "SR_USER_DATA_ROOT=%s\n",
+                     "SR_USER_DATA_ROOT=%s\n"
+                     "SR_EXPERIMENTAL_60HZ=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
                      fps ? fps : "<unset>",
@@ -178,7 +180,8 @@ static int write_launch_environment_probe(void) {
                      input_profile ? input_profile : "<unset>",
                      novbpace ? novbpace : "<unset>",
                      font_dir ? font_dir : "<unset>",
-                     user_data_root ? user_data_root : "<unset>") >= 0;
+                     user_data_root ? user_data_root : "<unset>",
+                     experimental_60hz ? experimental_60hz : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     /* Subtest 21 sets NK_LAUNCH_TEST_HOLD so the probe stays alive long
      * enough for nk_launch_stop to have a running child to stop. */
@@ -318,6 +321,10 @@ static void test_no_iso_child_environment(const char *test_executable,
     set_environment_value("NK_LAUNCH_TEST_UNRELATED", "preserve-me");
     /* An inherited SR_USER_DATA_ROOT must not reach the child: the session's root wins. */
     set_environment_value("SR_USER_DATA_ROOT", "poisoned-parent-root");
+    /* An inherited 60 Hz opt-in must not reach the child: only the session decides. */
+    bool had_60hz;
+    char *old_60hz = capture_environment_value("SR_EXPERIMENTAL_60HZ", &had_60hz);
+    set_environment_value("SR_EXPERIMENTAL_60HZ", "1");
 
     assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
     assert(session.iso_path[0] == '\0');
@@ -420,9 +427,11 @@ static void test_no_iso_child_environment(const char *test_executable,
     }
     /* A normal launch clears SR_NOVBPACE from the child environment even if set in parent */
     assert(strstr(observed, "SR_NOVBPACE=<unset>\n") != NULL);
+    assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=0\n") != NULL);
 
     /* Diagnostic benchmark mode preserves SR_NOVBPACE in child environment */
     session.config.benchmark_mode = true;
+    session.config.experimental_60hz = true;
     session.config.fps_cap = -1;
     assert(nk_launch_start(&session) == NK_OK);
     child_exit = nk_launch_wait(&session, -1);
@@ -436,7 +445,11 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(fclose(report) == 0);
     assert(strstr(observed, "SR_FPS_CAP=native\n") != NULL);
     assert(strstr(observed, "SR_NOVBPACE=1\n") != NULL);
+    assert(strstr(observed, "SR_EXPERIMENTAL_60HZ=1\n") != NULL);
+    session.config.experimental_60hz = false;
 
+    restore_environment_value("SR_EXPERIMENTAL_60HZ", old_60hz, had_60hz);
+    free(old_60hz);
     restore_environment_value("PSP_ISO", old_iso, had_iso);
     restore_environment_value("SR_NOVBPACE", old_novbpace, had_novbpace);
     restore_environment_value("NK_LAUNCH_TEST_REPORT_FILE", old_report,
