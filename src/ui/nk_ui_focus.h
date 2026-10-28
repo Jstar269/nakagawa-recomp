@@ -21,8 +21,10 @@ enum {
                                          never jumps to another row, it just fails at the end */
     NK_UI_FOCUS_DEFAULT = 1u << 2,    /* preferred first focus when its scope activates
                                          with no remembered id */
-    NK_UI_FOCUS_NO_DEFAULT = 1u << 3  /* never taken as a scope's first focus (a destructive
+    NK_UI_FOCUS_NO_DEFAULT = 1u << 3, /* never taken as a scope's first focus (a destructive
                                          action): reached only by moving to it */
+    NK_UI_FOCUS_OWNS_HORIZONTAL = 1u << 4 /* left and right change this control (a segmented
+                                             control, a slider): they never move focus off it */
 };
 
 /* Scopes stack from the bottom: root, overlay, drawer, dialog. The highest scope that
@@ -103,6 +105,9 @@ bool nk_ui_focus_take_scroll(NkUiFocusGraph *graph, NkUiFocusScrollRequest *requ
    (minimal movement). Returns false when id has no scroller or is already visible. */
 bool nk_ui_focus_scroll_into_view(const NkUiFocusGraph *graph, NkUiId id,
                                   NkUiFocusScrollRequest *request);
+
+/* True when the focused entry is enabled and has NK_UI_FOCUS_OWNS_HORIZONTAL. */
+bool nk_ui_focus_owns_horizontal(const NkUiFocusGraph *graph);
 
 /* Pointer queries against the active scope. Hover never changes focus. */
 NkUiId nk_ui_focus_hit_test(const NkUiFocusGraph *graph, float x, float y);

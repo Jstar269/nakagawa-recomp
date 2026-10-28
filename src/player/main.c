@@ -1,6 +1,26 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/*
+ * The native player: the launcher window a user sees first.
+ *
+ * main() reads the command line, loads the user's library and settings
+ * (player_state.c), opens the SDL3 window and runs the event loop. Each frame
+ * draws the active screen: the library and title screens come from the new UI
+ * in src/player/ui/, every other screen from ui_renderer.c (all of them with
+ * --ui=legacy). Slow work runs on its own thread so the window stays
+ * responsive:
+ *   - staging copies a disc's files into the user's per-title folder
+ *     (setup_staging.c, src/core/nk_iso.c);
+ *   - the package jobs check and build a title's runtime package
+ *     (package_builder.c, which runs `tools/nk_cli.py build-package`);
+ *   - the launch job starts the built game as its own process
+ *     (src/core/nk_launch.c).
+ *
+ * Code under NK_PLAYER_UI_REGRESSION_TEST drives these paths from scripted
+ * events for the UI regression tests; the shipped player does not include it.
+ */
+
 #include "player_state.h"
 #include "package_builder.h"
 #include "iso_reader.h"

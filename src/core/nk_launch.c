@@ -1,6 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/*
+ * Starts a built game. For a library entry it finds the staged executable and
+ * the title's runtime package, checks both again just before starting,
+ * resolves the folders the game reads its data from, and starts the game as a
+ * child process (nk_platform_spawn_process) with the arguments and environment
+ * the runtime expects. nk_launch_is_running(), nk_launch_wait() and
+ * nk_launch_stop() let the player follow and end that process, and
+ * nk_launch_keep_run_log() keeps the run's output in the player's logs folder.
+ */
+
 #include "nk_launch.h"
 #include "nk_font_slots.h"
 #include "generated/nk_title_catalog.h"
@@ -1369,6 +1379,8 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_volume[32];
     char env_input_profile[NK_MAX_PATH + 32];
     char env_headless_accept_frames[64];
+    char env_disc_id[NK_MAX_DISC_ID_LEN + 16];
+    char env_ui_root[NK_MAX_PATH + 16];
     char sep = nk_platform_path_separator();
 
     if (session->config.fps_cap == -1) {
@@ -1456,9 +1468,16 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     snprintf(env_user_data_root, sizeof(env_user_data_root), "SR_USER_DATA_ROOT=%s",
              session->user_data_root);
     envp[env_count++] = env_user_data_root;
+    /* What the pause overlay shows and draws with, beside the game's name (SR_GAME_TITLE
+     * below): the disc ID and the player's folder for the UI fonts. Always exported, so an
+     * empty value masks an inherited one instead of naming another game. */
+    snprintf(env_disc_id, sizeof(env_disc_id), "SR_DISC_ID=%s", session->disc_id);
+    envp[env_count++] = env_disc_id;
+    snprintf(env_ui_root, sizeof(env_ui_root), "SR_UI_ROOT=%s", session->ui_root);
+    envp[env_count++] = env_ui_root;
 
-    /* The user's own disc title (PARAM.SFO TITLE) for the window caption; the runtime sanitises it
-     * (sr_window_title_format in src/rt/recomp.h). Always exported so an inherited value cannot
+    /* The user's own disc title (PARAM.SFO TITLE) for the window caption and the pause overlay; the
+     * runtime sanitises it (sr_window_title_sanitize in src/rt/recomp.h). Always exported so an inherited value cannot
      * name another game. */
     snprintf(env_game_title, sizeof(env_game_title), "SR_GAME_TITLE=%s", session->game_title);
     envp[env_count++] = env_game_title;

@@ -108,6 +108,7 @@ struct PlayerUiNk {
     char settings_saves[NK_MAX_PATH];
     char settings_tools[PLAYER_UI_SETTINGS_TOOLS][192];
     char pad_bindings[PLAYER_UI_CONTROLLER_BUTTONS][128];
+    InputBindingGlyph pad_glyphs[PLAYER_UI_CONTROLLER_BUTTONS];
     char pad_scope[96];
     char pad_status[400];
     char pad_deadzone[48];
@@ -703,6 +704,47 @@ static int player_ui_axis_percent(int value) {
     return (value * 100) / 32767;
 }
 
+/* Whose names a controller's pills carry, from the glyph set it is shown in. */
+static InputPadNames player_ui_pad_names(NkUiPromptStyle style) {
+    switch (style) {
+    case NK_UI_PROMPT_LETTERS_A_SOUTH: return INPUT_PAD_NAMES_A_SOUTH;
+    case NK_UI_PROMPT_LETTERS_A_EAST: return INPUT_PAD_NAMES_A_EAST;
+    case NK_UI_PROMPT_SHAPES: return INPUT_PAD_NAMES_SHAPES;
+    default: return INPUT_PAD_NAMES_NEUTRAL;
+    }
+}
+
+/* A binding's glyph as the prompt glyph that draws it (#1299): face buttons, the
+   shoulders, Start and the D-pad as the prompt bar draws them, the arrow keys as the
+   arrow cluster, and every other key or pad input as a keycap or pill with its legend. */
+static PlayerUiBindingGlyph player_ui_binding_glyph(const InputBindingGlyph *glyph) {
+    PlayerUiBindingGlyph out;
+    memset(&out, 0, sizeof(out));
+    out.shown = true;
+    switch (glyph->kind) {
+    case INPUT_GLYPH_FACE_SOUTH: out.action = NK_UI_PROMPT_ACT_CONFIRM; break;
+    case INPUT_GLYPH_FACE_EAST: out.action = NK_UI_PROMPT_ACT_BACK; break;
+    case INPUT_GLYPH_FACE_WEST: out.action = NK_UI_PROMPT_ACT_OPTIONS; break;
+    case INPUT_GLYPH_FACE_NORTH: out.action = NK_UI_PROMPT_ACT_DETAILS; break;
+    case INPUT_GLYPH_SHOULDER_LEFT: out.action = NK_UI_PROMPT_ACT_TAB_PREV; break;
+    case INPUT_GLYPH_SHOULDER_RIGHT: out.action = NK_UI_PROMPT_ACT_TAB_NEXT; break;
+    case INPUT_GLYPH_PAD_START: out.action = NK_UI_PROMPT_ACT_MENU; break;
+    case INPUT_GLYPH_DPAD:
+    case INPUT_GLYPH_ARROW_KEY: out.action = NK_UI_PROMPT_ACT_MOVE; break;
+    case INPUT_GLYPH_PAD_LEGEND:
+        out.action = NK_UI_PROMPT_ACT_TAB_PREV;   /* the shoulder's pill */
+        out.label = glyph->legend;
+        break;
+    case INPUT_GLYPH_KEY:
+        out.action = NK_UI_PROMPT_ACT_CONFIRM;    /* a keycap */
+        out.label = glyph->legend;
+        break;
+    case INPUT_GLYPH_NONE:
+    default: out.shown = false; break;
+    }
+    return out;
+}
+
 /* The controller settings model, from the same input_settings state the
    existing renderer reads. */
 static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp *app,
@@ -713,18 +755,26 @@ static PlayerUiAction player_ui_render_controller(PlayerUiNk *player, PlayerApp 
     memset(&model, 0, sizeof(model));
     model.keyboard = input->device == INPUT_DEVICE_KEYBOARD;
     model.capturing = input->capturing ? input->capture_control : -1;
+    /* Keys as keycaps; the controller in the set of the pad the user would pick up,
+       even while the keyboard drives the page. */
+    model.glyph_style = model.keyboard ? NK_UI_PROMPT_KEYCAPS
+                                       : nk_ui_input_pad_prompt_style(&player->input.input);
     for (size_t i = 0u; i < PLAYER_UI_CONTROLLER_BUTTONS; ++i) {
         model.names[i] = input_settings_control_name((int)i);
         if (model.keyboard) {
             /* A key used twice is refused when it is pressed, so keys never conflict. */
             input_settings_format_key_binding(input, (int)i, player->pad_bindings[i],
                                               sizeof(player->pad_bindings[i]));
+            input_settings_key_glyph(input, (int)i, &player->pad_glyphs[i]);
         } else {
             input_settings_format_binding(input, (int)i, player->pad_bindings[i],
                                           sizeof(player->pad_bindings[i]));
             model.conflicted[i] = input_settings_is_control_conflicted(input, (int)i);
+            input_settings_pad_glyph(input, (int)i, player_ui_pad_names(model.glyph_style),
+                                     &player->pad_glyphs[i]);
         }
         model.bindings[i] = player->pad_bindings[i];
+        model.glyphs[i] = player_ui_binding_glyph(&player->pad_glyphs[i]);
     }
     model.scope_title = input_settings_is_title_scope(input);
     model.offer_scope = player_app_selected_disc_id(app) != NULL;

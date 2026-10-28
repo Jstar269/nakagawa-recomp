@@ -1,6 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
+/*
+ * The launcher's state, kept apart from drawing: the game library and which
+ * card is selected or focused, the user's settings and where they are saved,
+ * the user-data folders (runtime packages, fonts, saves), and a cache of each
+ * title's runtime-package status, so the library does not re-check every
+ * package on every frame. main.c and the screens read and change it through
+ * the player_app_* functions.
+ *
+ * It also holds the compatibility preflight that checks a title before it is
+ * built (player_build_compatibility_preflight_for_game), which decrypts an
+ * encrypted EBOOT.BIN from the user's own disc (player_decrypt_disc_eboot).
+ */
+
 /* fileno/fsync are POSIX: without this, -std=c99 on glibc leaves them undeclared. */
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
@@ -2726,6 +2739,8 @@ bool player_app_launch_begin(PlayerApp *app, int game_index, PlayerLaunchWork *w
     work->settings.experimental_60hz = player_app_experimental_60hz_active(app);
     work->launch_headless = app->launch_headless;
     work->headless_accept_presented_frames = app->headless_accept_presented_frames;
+    /* The runtime's pause overlay draws with the UI fonts in the player's folder. */
+    snprintf(work->ui_root, sizeof(work->ui_root), "%s", app->install_root);
     /* The boot-event marker and the input mapping are written here, on the
        thread that owns the app; the work only reads the resulting paths. */
     app->child_window_ready = false;
@@ -2794,6 +2809,7 @@ void player_launch_work_run(PlayerLaunchWork *work) {
     work->result = nk_launch_prepare_session(session, game, root);
     /* nk_launch defaults gui_mode to false for headless harnesses. */
     session->config.gui_mode = !work->launch_headless;
+    snprintf(session->ui_root, sizeof(session->ui_root), "%s", work->ui_root);
     if (work->result != NK_OK) {
         printf("[PLAYER] Launch preparation failed: %s\n", session->last_error);
         work->failed_step = PLAYER_LAUNCH_STEP_PREPARE;

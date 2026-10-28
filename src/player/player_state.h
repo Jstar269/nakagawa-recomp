@@ -964,6 +964,7 @@ typedef struct {
     uint32_t headless_accept_presented_frames;
     char boot_event_file_path[MAX_PATH_LEN];
     char input_profile_path[NK_MAX_PATH];
+    char ui_root[MAX_PATH_LEN];
     /* Results, written by player_launch_work_run. */
     PlayerLaunchStep failed_step;
     NkResult result;

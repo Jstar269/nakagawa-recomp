@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **356** (declared in `recomp.h`: 298)
-- reach class: emitter-reached 64, production-runtime-only 262, selftest-only 15, address-only 7, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 24, upstream_derived 331
+- helpers: **357** (declared in `recomp.h`: 299)
+- reach class: emitter-reached 64, production-runtime-only 263, selftest-only 15, address-only 7, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 24, upstream_derived 332
 
 ## Helpers
 
@@ -124,6 +124,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sched_pause_active` | `rt/sched.c` | yes | none | `rt/sched.c`: upstream_derived |
 | `sched_pause_pending` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_pause_request` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_pause_source` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_pause_total_ns` | `rt/sched.c` | yes | selftest-only | `rt/sched.c`: upstream_derived |
 | `sched_pending_interrupts` | `rt/sched.c` | yes | selftest-only | `rt/sched.c`: upstream_derived |
 | `sched_preempt` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
