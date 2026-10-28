@@ -1477,7 +1477,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0da9a712cb5622e1423898f790179fa76c152bd47bf9f45cf0638af58eaa6192"
+      "sha256": "54cc14c5326ed2d968b89fdd9748aeb56f9700a3c7924dc5b5075bf6dd688d02"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1702,7 +1702,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "0b8f319962e6667dbb8d0d3720c71c22727434e5d296807b3e4fec789b257cf6"
+      "sha256": "b49f386509d6870c852b3019e64961a3d0cc1d74242162e8e626b3427d98073f"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -2474,7 +2474,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "71d60a7b310843a657ace705ae3e36331729ebdd7add7eb2b846529c33f70d7e"
+      "sha256": "22544e625239f48c9ba964b8f3cc3ab34dbbfc3312906734c61a0c81b5a707aa"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -2693,7 +2693,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "977f30b0ef5896a8e63e0a62e2d524ac1a006145647899a5f360d5a14880b624"
+      "sha256": "812ed6ebaa91f49ca49f2be2ffeef8bf2c0412324bfa57d84eaa375321752ca3"
     },
     {
       "path": "fixtures/psp_oracle/probe_hle_measure.c",
@@ -9497,7 +9497,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "9b7f2cf9faefd5683d9aa7097cf08e2819cb467d06b298d1e9f8f68cf9d06684"
+      "sha256": "cf43f5be0f762fd33cd589ff17ece2558e28df3d4f3754cc1e056fc807ea50ab"
     },
     {
       "path": "src/rt/savedata.c",
@@ -9728,7 +9728,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6fee7fde14e7d2132990c1ffc7bc7ba2faac2fa5ebe17bca66b1e4dec02b7a84"
+      "sha256": "afb8bb463b5ce97db20cf5e2aca9408012d174711a52c7d10791b847d9b2b2c9"
     },
     {
       "path": "src/rt/vfpu_interp.c",
@@ -9741,7 +9741,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a1deffff3916d87b334fc11e5c15709423159244d90f1161913c4d6b6e94aeaf"
+      "sha256": "6f658eb0889dbefeddb3b3e487f5e9311ae02e686d7b26d06c8596ec23db4abb"
     },
     {
       "path": "src/rt/vfpu_interp_selftest.c",
@@ -9753,7 +9753,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9af2519ff030337a3108c8f9b20e498265a0c5fd438fe5ecd768beb129662679"
+      "sha256": "8dba127a5275750e4e8a4a1f05fd9ca774491c98de4e7f245b4b82391a26fde2"
     },
     {
       "path": "src/rt/vfpu_oracle_host.c",
@@ -11755,7 +11755,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "1d07bc5bc47f9f1a412dd62c8db10a679d25ec23e6fbaa7f94c6bcc5fd9151f8"
+      "sha256": "8ec9b4c673386f434713844b8c3ffa1adfd437272744b9a1872104622002c31d"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -12916,7 +12916,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "98e2f0aea5d899c251b2aebf0cd5279c5ba5b86493ee74e2d63641fc5ebccc39"
+      "sha256": "b9ee63883602bd65a66fa89580ff72a1f04497235620e7dd3e9707204c447670"
     },
     {
       "path": "tools/psp_oracle/parse_golden.py",
@@ -12928,7 +12928,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ba44d51d12445b37a4ca60482996cc1d342cf01b2ec775d0e6a0c0f873204a67"
+      "sha256": "f2983a9a464ecb5cb1a77341062207b27588693755a6eaebfcc393038a292592"
     },
     {
       "path": "tools/psp_oracle/protocol.py",
@@ -13637,7 +13637,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4b33020f628ab3c1c6d40ad1b3c0c059340ee0a3a71d3e5a00c980096064d462"
+      "sha256": "19924acb55108fd3a4a42d3d566d85be11e9fff6d79be6735b122af0667e7ab6"
     },
     {
       "path": "tools/test_compat_manifest.py",
@@ -14214,7 +14214,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "42506dff049c2c3a9387c8b3b10268b6c4ce7d49073a4df235b6a32de2e50fc8"
+      "sha256": "c6b05ec569c34d1a993e35985a0dd08c1426aeb779b22d8a955ebf44cae20ffd"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
@@ -15030,7 +15030,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2282016b5c566709353ed9892fe4171d914cb932bf73ac38762832bc2ae9f2e0"
+      "sha256": "73f504ca9646b7d47656ddb3ea543408b326f3c58eef5308153c2536fe152fe2"
     },
     {
       "path": "tools/test_psp_parsers.py",
@@ -15727,7 +15727,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "514808adceae5c542d5818f651c129e8d42fcbdd5d45039ded794a2c597aed26"
+      "sha256": "257c0e7d411b8edcd30d74f402899ac25584e4611bdfeca13ce08c09926ff399"
     },
     {
       "path": "tools/test_vfpu_domain_boundary.py",
@@ -16124,7 +16124,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d6d9bdb5b187c2347034fa4ffee2dde3df9f7ef03f64380246beaf0b817a0cd7"
+      "sha256": "499b580c487294caed2161a6d6288d2d8fb3568d77e8aea584597e41f9fa3321"
     },
     {
       "path": "tools/vfpu_fuzz_gen.py",
@@ -16149,7 +16149,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9573d4d0436054f741fca07aec36d6be343b759be64e40dcd3374b4fd2b23334"
+      "sha256": "32755372deb3c90879f2184233a68853dfeb8a2032046e89f7ddc974102636ce"
     },
     {
       "path": "tools/vfpu_synth_gen.py",
