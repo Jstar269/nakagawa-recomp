@@ -155,6 +155,9 @@ Why the project's security requirements are met, in brief:
   (2) Guest code → host memory, crossed only through HLE handlers that validate every guest pointer and size.
   (3) Contributions → `main`, crossed only through reviewed pull requests with required CI.
   (4) Private inputs → the public tree, crossed only through the publication and provenance gates.
+  (5) GitHub's answers to Check for updates → the player, crossed only when the user asks: a bounded parser that
+  accepts this repository's release pages and assets alone, HTTPS to three allowlisted GitHub hosts, and a
+  downloaded ZIP kept only if it matches the release's published SHA-256 (`docs/SETUP.md`, "Network use").
 - **Secure design principles applied.** Fail closed: unsupported behaviour stops with a named reason instead of
   guessing. Complete mediation: every guest-to-host access is checked against the guest span. Least privilege:
   workflows default to read-only tokens and pin every action by commit. Economy of mechanism: one runtime,

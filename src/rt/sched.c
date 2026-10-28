@@ -76,6 +76,8 @@ int sched_liveness_owner_counts(uint32_t uid, uint64_t *decisions,
 void sched_liveness_set_starvation_limit(unsigned limit);
 #endif
 
+#include <SDL3/SDL_mutex.h>
+#include <SDL3/SDL_thread.h>
 #include <SDL3/SDL_timer.h>
 #include <SDL3/SDL_video.h>
 #include <stdio.h>
@@ -545,6 +547,7 @@ static void vtime_refresh(void);
 static uint32_t s_pending_vblanks;
 
 static void scheduler_service_pending(void);
+static void sched_preempt_timer_arm(void);
 static void sched_alarm_reset(void);
 static void scheduler_add_time(uint64_t delta);
 static uint64_t scheduler_deadline_after(uint64_t delta);
@@ -3045,10 +3048,129 @@ void sr_t111_dump(void) {
     fflush(stderr);
 }
 
+/* ---- preemption timer (#1296) --------------------------------------------------------
+ * The PSP's thread scheduler is preemptive: when the delay or timed wait of a thread
+ * stronger than the running one runs out, the timer interrupt hands it the CPU at once,
+ * whatever the running thread is doing. Here a guest thread gives up the CPU only at its
+ * SR_YIELD points, and a yield point enters sr_yield only once every TIMESLICE of them,
+ * so a weaker thread busy in compiled code kept a stronger due thread waiting for that
+ * whole stretch: Hot Shots Tennis's priority-16 sound thread waited tens of milliseconds
+ * behind its priority-40 game thread, and the sound queue ran dry.
+ *
+ * The timer stands in for that interrupt. While a guest thread runs, the scheduler
+ * publishes the earliest deadline among the waiting threads stronger than it. A host
+ * thread sleeps until that moment and then ends the running slice, so the next SR_YIELD
+ * enters sr_yield, which promotes the expired wait and switches under the unchanged
+ * strict-priority rule. Equal and weaker waiters are left out: on the PSP their expiry
+ * does not take the CPU from the running thread either. Only paced runs have the timer
+ * (turbo time does not follow the host clock), and only the driver starts it, so the
+ * deterministic selftests see the same yields as before. */
+enum { SCHED_PREEMPT_TIMER_OFF = 0, SCHED_PREEMPT_TIMER_THREAD, SCHED_PREEMPT_TIMER_MANUAL };
+static int s_preempt_timer_mode;
+static SDL_Mutex *s_preempt_timer_mutex;
+static SDL_Condition *s_preempt_timer_cond;
+static uint64_t s_preempt_timer_at_ns = UINT64_MAX;   /* host ns; under the mutex in THREAD mode */
+static uint64_t s_preempt_timer_published = UINT64_MAX;   /* the guest thread's last published value */
+
+/* The earliest wake deadline (guest us) of a waiting thread stronger than the running one. */
+static uint64_t sched_preempt_timer_target_us(void) {
+    if (s_cur < 0 || s_cur >= s_ntcb) return SCHED_WAIT_FOREVER;
+    const int priority = s_tcb[s_cur].priority;
+    uint64_t at = SCHED_WAIT_FOREVER;
+    for (int i = 0; i < s_ntcb; i++) {
+        const TCB *t = &s_tcb[i];
+        if (i == s_cur || t->suspended || t->priority >= priority) continue;
+        if ((t->state == TH_WAIT_DELAY || t->state == TH_WAIT_OBJ) && t->wake < at) at = t->wake;
+    }
+    return at;
+}
+
+/* End the running slice when the published deadline has come: the interrupt edge. */
+static void sched_preempt_timer_check(uint64_t now_ns) {
+    if (s_preempt_timer_at_ns == UINT64_MAX || now_ns < s_preempt_timer_at_ns) return;
+    s_preempt_timer_at_ns = UINT64_MAX;
+    atomic_store_explicit(&sr_timeslice, 1, memory_order_relaxed);
+}
+
+/* Publish the deadline for the thread that is running now. Called on the guest's host
+ * thread wherever the running thread or its stronger waiters can have changed: a switch
+ * into a thread, a yield that kept it, a change of its priority. */
+static void sched_preempt_timer_arm(void) {
+    if (s_preempt_timer_mode == SCHED_PREEMPT_TIMER_OFF) return;
+    const uint64_t at_us = sched_preempt_timer_target_us();
+    uint64_t at_ns = UINT64_MAX;
+    if (at_us != SCHED_WAIT_FOREVER && at_us <= (UINT64_MAX - s_clock_epoch_ns) / 1000u)
+        at_ns = s_clock_epoch_ns + at_us * 1000u;
+    if (at_ns == s_preempt_timer_published) return;
+    const int earlier = at_ns < s_preempt_timer_published;
+    s_preempt_timer_published = at_ns;
+    if (s_preempt_timer_mode == SCHED_PREEMPT_TIMER_MANUAL) {
+        s_preempt_timer_at_ns = at_ns;
+        return;
+    }
+    SDL_LockMutex(s_preempt_timer_mutex);
+    s_preempt_timer_at_ns = at_ns;
+    /* A later deadline needs no wake: the timer thread finds it when its current
+     * wait ends, and goes back to sleep without ending a slice. */
+    if (earlier) SDL_SignalCondition(s_preempt_timer_cond);
+    SDL_UnlockMutex(s_preempt_timer_mutex);
+}
+
+static int SDLCALL sched_preempt_timer_main(void *unused) {
+    (void)unused;
+    SDL_LockMutex(s_preempt_timer_mutex);
+    for (;;) {
+        const uint64_t at = s_preempt_timer_at_ns;
+        if (at == UINT64_MAX) {
+            SDL_WaitCondition(s_preempt_timer_cond, s_preempt_timer_mutex);
+            continue;
+        }
+        const uint64_t now = SDL_GetTicksNS();
+        if (now >= at) {
+            sched_preempt_timer_check(now);
+            continue;
+        }
+        const uint64_t wait = at - now;
+        if (wait > 4000000u) {
+            /* A far deadline: a condition wait that an earlier one can cut short. Its
+             * millisecond timeout is coarse, so stop short and finish below. */
+            const uint64_t ms = (wait - 3000000u) / 1000000u;
+            SDL_WaitConditionTimeout(s_preempt_timer_cond, s_preempt_timer_mutex,
+                                     ms > INT32_MAX ? INT32_MAX : (int32_t)ms);
+        } else {
+            /* A near deadline: a precise host sleep, in steps short enough that a still
+             * earlier deadline published meanwhile is seen within one step. */
+            SDL_UnlockMutex(s_preempt_timer_mutex);
+            SDL_DelayNS(wait < 1000000u ? wait : 1000000u);
+            SDL_LockMutex(s_preempt_timer_mutex);
+        }
+    }
+    return 0;
+}
+
+void sched_preempt_timer_start(void) {
+    pace_setup();
+    if (!s_pace_on || s_preempt_timer_mode != SCHED_PREEMPT_TIMER_OFF) return;
+    s_preempt_timer_mutex = SDL_CreateMutex();
+    s_preempt_timer_cond = SDL_CreateCondition();
+    SDL_Thread *thread = s_preempt_timer_mutex && s_preempt_timer_cond
+        ? SDL_CreateThread(sched_preempt_timer_main, "nk-preempt-timer", NULL) : NULL;
+    if (!thread) {
+        fprintf(stderr, "sched: preemption timer unavailable (no host thread); a stronger due thread "
+                        "waits for the running thread's next scheduler boundary\n");
+        return;
+    }
+    SDL_DetachThread(thread);
+    s_preempt_timer_mode = SCHED_PREEMPT_TIMER_THREAD;
+}
+
 void sr_yield(CpuState *s) {
     /* A fiber switch with a recorded tail transfer would let another thread's drain run
      * it on the wrong guest state (#855). */
     sr_tail_assert_empty("tail-transfer-live-at-yield");
+    /* The slice ended, by its count or by the preemption timer: whatever the timer
+     * held is spent, so the next arm publishes afresh. */
+    s_preempt_timer_published = UINT64_MAX;
     if (s->r[28] != 0u) {
         s_gp = s->r[28];
     }
@@ -3253,9 +3375,10 @@ void sr_yield(CpuState *s) {
             fflush(stderr);
             }
         }
+        sched_preempt_timer_arm();
         return;
     }
-    if (!s_dispatch_enabled) return;
+    if (!s_dispatch_enabled) { sched_preempt_timer_arm(); return; }
     memcpy(&t->saved, s, sizeof(CpuState));
     if (t->state == TH_RUNNING) t->state = TH_READY;
     s_pause_switch_from_yield = 1;
@@ -4238,9 +4361,11 @@ uint32_t sched_set_priority(uint32_t uid, int priority) {
         sched_promote_expired_waits();
         sched_rotation_mark(s_cur);
         sched_yield_current_behind_peers();
+        sched_preempt_timer_arm();   /* which waiters are stronger than it has changed */
     } else {
         t->rot_head = 0;
         sched_preempt();
+        sched_preempt_timer_arm();   /* a waiter may now be stronger than the running thread */
     }
     return 0;
 }
@@ -4949,6 +5074,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         t->state = TH_RUNNING;
         sched_load_thread_context(t);      /* load this thread's registers */
         atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);          /* a fresh slice for this run (the counter is global) */
+        sched_preempt_timer_arm();          /* this thread's stronger waiters, for the timer */
         if (!t->started) {
             t->started = 1;
             /* Guest calls become native C calls, so a deep guest call chain needs a deep host

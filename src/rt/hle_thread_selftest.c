@@ -26810,6 +26810,63 @@ static void test_vpl_nonblocking_roundtrip(void) {
     (void)sr_syscall(&cpu, 0xb6d61d02u);
 }
 
+/* Only the pool's bytes bound how many blocks it holds. A fixed 128-entry table made the
+ * 129th live block of a pool with free space read as exhausted, so a blocking AllocateVpl
+ * never returned (DJMAX Fever's first loading screen), and a free list past 128 spans
+ * dropped the extra span, losing its bytes for good. */
+static void test_vpl_block_count_bounded_by_pool_size(void) {
+    extern void sr_hle_test_partition_reset(void);
+    reset_fixture();
+    sr_hle_test_partition_reset();
+    sr_hle_init();
+
+    enum { BLOCKS = 512u, BLOCK = 16u, POOL = BLOCKS * BLOCK };
+    static uint32_t addrs[BLOCKS];
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 2u; cpu.r[6] = 0u; cpu.r[7] = POOL;
+    uint32_t vpl = sr_syscall(&cpu, NID_VPL_CREATE);
+    expect(vpl >= 0x600u, "vpl create succeeds for the block-count pool");
+
+    int all = 1;
+    for (uint32_t i = 0; i < BLOCKS; i++) {
+        memset(&cpu, 0, sizeof cpu);
+        cpu.r[4] = vpl; cpu.r[5] = BLOCK; cpu.r[6] = VPL_OUTPTR;
+        if (sr_syscall(&cpu, NID_VPL_TRY_ALLOCATE) != 0u) { all = 0; break; }
+        addrs[i] = MEM_R32(VPL_OUTPTR);
+    }
+    expect(all, "vpl holds as many blocks as its bytes allow (512 of 16 bytes), not 128");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = vpl; cpu.r[5] = 1u; cpu.r[6] = VPL_OUTPTR;
+    expect(sr_syscall(&cpu, NID_VPL_TRY_ALLOCATE) == VPL_EXHAUSTED_ERR,
+           "vpl is exhausted only once its bytes are used");
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = vpl; cpu.r[5] = 0xfffffff8u; cpu.r[6] = VPL_OUTPTR;
+    expect(sr_syscall(&cpu, NID_VPL_TRY_ALLOCATE) == VPL_EXHAUSTED_ERR,
+           "vpl request near 4 GiB is refused, not rounded to zero bytes");
+
+    int freed = 1;
+    for (uint32_t i = 0; i < BLOCKS; i += 2u) {   /* 256 separate free spans */
+        memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl; cpu.r[5] = addrs[i];
+        if (sr_syscall(&cpu, NID_VPL_FREE) != 0u) freed = 0;
+    }
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl; cpu.r[5] = VPL_INFO;
+    expect(freed && sr_syscall(&cpu, NID_VPL_REFER) == 0u &&
+           MEM_R32(VPL_INFO + 44) == POOL / 2u,
+           "vpl keeps every one of 256 separate free spans");
+    for (uint32_t i = 1; i < BLOCKS; i += 2u) {
+        memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl; cpu.r[5] = addrs[i];
+        if (sr_syscall(&cpu, NID_VPL_FREE) != 0u) freed = 0;
+    }
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = vpl; cpu.r[5] = POOL; cpu.r[6] = VPL_OUTPTR;
+    expect(freed && sr_syscall(&cpu, NID_VPL_TRY_ALLOCATE) == 0u && MEM_R32(VPL_OUTPTR) == addrs[0],
+           "vpl frees coalesce back into the whole pool");
+
+    memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl;
+    expect(sr_syscall(&cpu, NID_VPL_DELETE) == 0u, "block-count vpl delete succeeds");
+}
+
 static uint32_t selftest_tlspl_create(uint32_t name, uint32_t partition,
                                       uint32_t attr, uint32_t block_size,
                                       uint32_t num_blocks, uint32_t options);
@@ -36747,6 +36804,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_fpl_delete_releases_partition();
     test_fpl_blocking_waits();
     test_vpl_nonblocking_roundtrip();
+    test_vpl_block_count_bounded_by_pool_size();
     test_tlspl_lifecycle_and_thread_isolation();
     test_vpl_blocking_waits();
     test_mbx_lifecycle_and_ordering();

@@ -93,6 +93,7 @@ int      sched_uid_is_launcher(uint32_t uid) { (void)uid; return 0; }
 int      sched_current_is_worker(void)   { return 0; }
 int      sched_current_is_launcher(void) { return 0; }
 void    sched_init(CpuState *cpu) { (void)cpu; }
+void    sched_preempt_timer_start(void) {}
 uint32_t sched_terminate_thread(uint32_t uid) { (void)uid; return 0; }
 void    sched_exit_current(int32_t status) { (void)status; }
 void    sched_exit_current_delete(int32_t status) { (void)status; }
