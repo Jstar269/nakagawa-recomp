@@ -10,9 +10,9 @@ Nakagawa Recomp is an independent project. It is not affiliated with or endorsed
 Sony Interactive Entertainment, Clap Hanz, or any game publisher. PlayStation and
 PSP are trademarks of Sony Interactive Entertainment Inc., and game titles are
 trademarks of their owners; they are named only to say what the project works
-with. The repository contains no game files, keys, firmware or system fonts, and
-Nakagawa does not decrypt games: users must supply any external inputs from their
-own copy.
+with. The repository contains no game files, firmware or system fonts. Users
+supply their own game; Nakagawa decrypts it locally with the public game key
+tables PPSSPP ships, never downloads games, and never decrypts firmware.
 
 Rights holders with a concern about anything in this repository can contact the
 maintainer privately through
@@ -34,6 +34,26 @@ We aim to respond promptly and will remove material where appropriate.
   its exact path, revision and notice. The per-file lineage, the pin status (the exact PPSSPP
   revision of the inherited files is unknown) and the 34 GPL-2.0-or-later files under `src/` are
   listed in [`src/rt/PROVENANCE.md`](src/rt/PROVENANCE.md).
+- **PSP game decryption (issue #295)** — `src/core/nk_psp_*`. The KIRK engine
+  (`nk_psp_kirk.*`, GPL-3.0-or-later per its own notice), the AES and SHA-1 cores
+  (`nk_psp_aes.*`, `nk_psp_sha1.*`, public-domain Rijndael and SHA-1 notices
+  retained), KL4E/KL3E decompression (`nk_psp_kle.*`) and the `~PSP` container
+  logic (`nk_psp_prx.*`, which also descends from PPSSPP's PrxDecrypter) are
+  ported from John-K/pspdecrypt at `c156627db7634d395c380c0a9589130f603307fc`,
+  whose licence is GPL version 3 with no later-version grant, so every file ported
+  through it except the KIRK engine is GPL-3.0-only. The built-in game key tables
+  (`nk_psp_builtin_keys.*`) come from PPSSPP at
+  `b4386554795949491a26e51b7d74082bb9b2470f` (GPL-2.0-or-later) and its bundled
+  KIRK-ENGINE (GPL-3.0-or-later), with every firmware entry left out; Nakagawa
+  decrypts a game the user owns, locally, and never decrypts firmware. The
+  PSN UMD image reader is adapted from the same PPSSPP revision:
+  `nk_psp_amctrl.*` from `ext/libkirk/amctrl.c` (written by tpu, shipped with
+  no notice of its own; conveyed as GPL-3.0-or-later), `nk_psp_lzrc.*` from
+  `Core/FileSystems/tlzrc.cpp` (Copyright (c) 2012- PPSSPP Project,
+  GPL-2.0-or-later, kept GPL-2.0-or-later) and `nk_psp_npumdimg.*` from
+  `Core/FileSystems/BlockDevices.cpp` (GPL-2.0-or-later, conveyed as
+  GPL-3.0-or-later). The keystore, inflate, elliptic-curve and
+  container-framing files are project-authored. Per-file lineage: [`src/core/PROVENANCE.md`](src/core/PROVENANCE.md).
 - **PSPSDK / PSPDEV** — permissive per-component declarations and BSD-family
   notices for public ABI definitions and source-owned fixtures. The applicable
   notices are in `THIRD_PARTY_LICENSES/PSPSDK.txt` and `assets/upstream/`.
@@ -173,7 +193,8 @@ License choices and combination notes:
 The FFmpeg ATRAC3 and ATRAC3+ subsets and, in builds with `H264_FFMPEG=1`, the FFmpeg H.264
 subset (LGPL-2.1-or-later) are statically linked. The whole
 program is distributed under the GNU GPL version 3 (the project's own files are
-GPL-3.0-or-later) with its complete corresponding source, and `SOURCE.txt` names the exact repository commit or tag of each
+GPL-3.0-or-later; the player and `nk_decrypt` also link the GPL-3.0-only decryption files
+listed above) with its complete corresponding source, and `SOURCE.txt` names the exact repository commit or tag of each
 package, which is what lets a user modify and relink it (issue #421).
 
 ## Public-safe exclusions
@@ -187,9 +208,9 @@ is complete. These exclusions are enforced by
 reject the capability and do not fabricate fonts, disc reads, playback, keys, or
 success.
 
-The HST-specific title manifest and private engineering/review documents are also
-outside the active public source tree. Synthetic title manifests and generic schemas are
-retained; no game executable, extracted asset, save, key, capture, oracle trace,
+Private engineering/review documents are also outside the active public source tree. The
+HST title manifest (addresses only, no game data), synthetic title manifests and generic
+schemas are retained; no game executable, extracted asset, save, key, capture, oracle trace,
 or generated retail translation unit is part of the public source boundary.
 
 ## Attribution contract
@@ -220,16 +241,26 @@ to issues, or included in a release.
 The PNG file docs/media/hst-title-screen.png is a presentation capture of Hot Shots Tennis: Get a Grip
 running in Nakagawa Recomp on Windows. The game, its logo, artwork and on-screen text belong to their
 owners and are not licensed under this repository's GPL-3.0-or-later declaration; the image is shown
-only to identify the game. The repository contains no game data files, and users need their own copy of
-the game. The file is listed with the SHA-256 of its exact bytes in assets/release_manifest.json.
+only to identify the game. docs/media/hst-title-screen-960.png is the same capture reduced to 960 by 540
+pixels for the project website, under the same terms. The repository contains no game data files, and
+users need their own copy of the game. Both files are listed with the SHA-256 of their exact bytes in
+assets/release_manifest.json.
+
+## Project website share card
+
+The PNG file docs/images/brand/og-card.png is the project-authored link-preview image of the project website:
+the N1 mark, the tennis court drawn for the site, and text set in Geist (SIL Open Font License 1.1,
+assets/fonts/ui/geist/OFL.txt). It shows no game imagery. It is distributed under GPL-3.0-or-later and
+listed with the SHA-256 of its exact bytes in assets/release_manifest.json.
 
 ## Project-authored Nakagawa brand artwork
 
 The files docs/images/brand/nakagawa-mark-light.svg and
 docs/images/brand/nakagawa-mark-dark.svg are the project-authored N1 Block & Branch
 mark, rendered in dark ink for light page themes and light ink for dark page themes.
-The artwork is distributed under GPL-3.0-or-later and listed with the SHA-256 of
-each file's exact bytes in assets/release_manifest.json.
+The file assets/brand/nakagawa.ico is the app icon drawn from that mark by
+tools/make_app_icon.py. The artwork is distributed under GPL-3.0-or-later and listed
+with the SHA-256 of each file's exact bytes in assets/release_manifest.json.
 
 ## Project UI fonts
 

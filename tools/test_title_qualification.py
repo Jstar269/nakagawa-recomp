@@ -175,11 +175,26 @@ class InputProfileVocabularyTests(unittest.TestCase):
 class ManifestContractTests(unittest.TestCase):
 
     def test_checked_in_public_manifests_pass_the_route(self):
-        paths = sorted(tq.TITLE_DIR.glob("*.json"))
+        paths = [path for path in sorted(tq.TITLE_DIR.glob("*.json")) if not tq._is_checked_in_retail(path)]
         self.assertTrue(paths)
         for path in paths:
             with self.subTest(manifest=path.name):
                 tq.load_public_manifest(path)
+
+    def test_the_checked_in_retail_manifest_is_named_as_skipped_and_refused_when_named(self):
+        hst = tq.TITLE_DIR / "hst-ucus98701.json"
+        self.assertTrue(tq._is_checked_in_retail(hst))
+        retail = [path.name for path in sorted(tq.TITLE_DIR.glob("*.json")) if tq._is_checked_in_retail(path)]
+        self.assertEqual(retail, ["hst-ucus98701.json"])
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            status = tq.main(["validate"])
+        self.assertEqual(status, 0, output.getvalue())
+        self.assertIn("SKIP manifest hst-ucus98701.json", output.getvalue())
+        self.assertIn("skipped=1", output.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            status = tq.main(["validate", "--manifest", str(hst)])
+        self.assertEqual(status, 2, output.getvalue())
+        self.assertIn("local-only", output.getvalue())
 
     def test_manifest_schema_agrees_with_the_normative_validator(self):
         self.assertEqual(tq.manifest_schema_problems(), [])

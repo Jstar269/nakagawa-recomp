@@ -52,6 +52,7 @@ typedef struct {
 
 typedef struct {
     NkFontSource source;
+    int served_index; /* as in NkFontLatinResolution */
     char detail[160];
 } NkFontLatinIndexState;
 
@@ -116,6 +117,10 @@ NkFontSlotCheck nk_font_check_cache_slot_file(const char *user_data_root, NkFont
  * those sixteen files. */
 const char *nk_font_latin_index_filename(int index);
 int nk_font_latin_index_from_filename(const char *name);
+/* The file name a PSP keeps the Japanese or Korean system font under in flash0:/font
+ * (jpn0.pgf, kr0.pgf), which the slot's served name stands for. NULL for the Latin slot, whose
+ * sixteen files nk_font_latin_index_filename names, and for any other value. */
+const char *nk_font_slot_psp_filename(NkFontSlot slot);
 NkFontSlotCheck nk_font_check_cache_latin_index_file(const char *user_data_root, int index,
                                                       FILE *cache_file, char *reason,
                                                       size_t reason_len);

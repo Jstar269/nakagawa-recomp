@@ -15,9 +15,8 @@ and `GAME_*` on a direct Make line, or `-TitleManifest` plus the manifest's
 declared input locations for the manager (see below) — and are never written
 back into a checked-in manifest file. The
 checked-in synthetic manifests prove the schema and validator without claiming
-that the current runtime is general-purpose. HST title configuration remains
-local-only unless a later, separately reviewed publication decision changes the
-profile.
+that the current runtime is general-purpose. The HST title configuration is the
+one retail manifest here, published by owner decision (2026-10-27); see below.
 
 The JSON Schema is a portable editor/review contract. `tools/title_manifest.py` is the normative validator and additionally enforces semantic invariants such as portable Windows names, non-overlapping executable spans, and case-insensitive uniqueness.
 
@@ -57,8 +56,8 @@ names the key to add.
   and points its source/build binding at `fixtures/profile_zero`. All seven
   acceptance cases are implemented with the proving gate named as
   `profile-zero-e2e`; the manifest is runnable after the route passed for both
-  source-owned fixtures. Broader title intake remains tracked by
-  [#309](https://github.com/Jstar269/nakagawa-recomp/issues/309).
+  source-owned fixtures. Broader title intake is tracked by
+  [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308).
 - `pspdev-phase5.json` is a second wholly source-owned fixture whose sources live
   in `fixtures/pspdev_phase5` (a standard PSPDEV/PSPSDK `BUILD_PRX=1` module). It
   is deliberately configured *differently* from `synthetic.json` — the canonical
@@ -117,8 +116,9 @@ Titles that omit the key are unaffected.
 - `showcase-scene.json` (TEST00007) and `showcase-breakout.json` (TEST00008) are
   the source-owned showcase demos: a lit, textured 3D scene and Breakout, built
   from `fixtures/showcase/` with PSPDEV and packaged by `fixtures/showcase/showcase.py`
-  (see [`docs/SHOWCASE.md`](../../docs/SHOWCASE.md)). Their acceptance profiles are
-  scaffold until #309 evidence exists. Publication-safe and deterministic.
+  (see [`docs/SHOWCASE.md`](../../docs/SHOWCASE.md)). Their acceptance profiles stay
+  `scaffold` until their public evidence matrix is complete; no open issue tracks
+  that yet. Publication-safe and deterministic.
 
 The analyzer applies **no** title-specific executable span by default: a raw
 base-zero image never silently inherits another title's span. An extra executable
@@ -126,13 +126,15 @@ span is manifest data, and it reaches `analyze`/`codegen` only through an explic
 `--extra-span` argument or the `TITLE_EXTRA_SPANS` seam that the manager fills from
 the validated plan (the host-portable generic contract). See [`docs/TITLE_CODEGEN_PLAN.md`](../../docs/TITLE_CODEGEN_PLAN.md).
 
-`hst-ucus98701.json` is intentionally not checked in: it contains title-specific
-identity, module addresses, and private-route filesystem configuration. It is
-publication-excluded via `assets/public_source_profile.json`, with an explicit
-`.gitignore` accident guard. The opt-in `nk_manager.ps1 -TitleManifest` path may
-consume a local copy of that manifest;
-that does not make the runtime generic or prove portability/correctness for
-another title.
+`hst-ucus98701.json` is the Hot Shots Tennis manifest, public since 2026-10-27
+(owner decision). It holds the disc identity, the module names and load
+addresses, the profiles and the runtime bindings, all as addresses: no game
+bytes, no disc image name and no host path. The player uses it to recognize
+UCUS98701 as the built-in `hst` title. Its `executable`, `module_dir` and
+`psp_header` entries name the standard `place_game_here/` layout that
+`nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst`
+reads. Shipping it does not make the runtime generic or prove portability or
+correctness for another title.
 
 ## Qualification
 

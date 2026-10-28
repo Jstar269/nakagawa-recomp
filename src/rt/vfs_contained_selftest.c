@@ -115,6 +115,18 @@ static int write_file(const char *path, const char *text) {
     return 1;
 }
 
+#if defined(SR_CD_BACKEND_POSIX_AT)
+/* Whether the file holds exactly TEXT. */
+static int read_file_equals(const char *path, const char *text) {
+    char buf[64];
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    size_t got = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    return got == strlen(text) && memcmp(buf, text, got) == 0;
+}
+#endif
+
 /* Build a temporary sandbox root unique to this process. */
 static int make_sandbox(void) {
 #ifdef _WIN32
@@ -921,6 +933,55 @@ static void case_posix_guest_file_operations(void) {
               "contained file reads the written bytes");
         fclose(stream);
     }
+
+    /* sceIoOpen without PSP_O_CREAT, and with PSP_O_CREAT | PSP_O_EXCL (#1380): the
+     * existing-only modes never create a file and the new-file modes never open one. */
+    static const sr_cd_file_mode existing_only[] = {
+        SR_CD_FILE_READ_WRITE, SR_CD_FILE_READ_WRITE_EXISTING_TRUNCATE,
+        SR_CD_FILE_READ_WRITE_EXISTING_APPEND
+    };
+    static const sr_cd_file_mode new_only[] = {
+        SR_CD_FILE_READ_WRITE_NEW, SR_CD_FILE_READ_WRITE_NEW_APPEND
+    };
+    fp(file_path, sizeof(file_path), "%s/PSP/SAVEDATA/NEW-DIR/FLAGS.BIN", root);
+    for (size_t i = 0; i < sizeof(existing_only) / sizeof(existing_only[0]); i++) {
+        stream = NULL;
+        CHECK_ST(sr_cd_open_file(&r, "PSP/SAVEDATA/NEW-DIR", "FLAGS.BIN", existing_only[i],
+                                 &stream), SR_CD_NOT_FOUND);
+        CHECK(stream == NULL && !exists(file_path),
+              "existing-only mode %d creates nothing for a missing file", (int)existing_only[i]);
+    }
+    for (size_t i = 0; i < sizeof(new_only) / sizeof(new_only[0]); i++) {
+        stream = NULL;
+        CHECK_ST(sr_cd_open_file(&r, "PSP/SAVEDATA/NEW-DIR", "FLAGS.BIN", new_only[i], &stream),
+                 SR_CD_OK);
+        if (stream) {
+            CHECK(fwrite("abc", 1, 3, stream) == 3, "a new-file stream takes bytes");
+            fclose(stream);
+        }
+        stream = NULL;
+        CHECK_ST(sr_cd_open_file(&r, "PSP/SAVEDATA/NEW-DIR", "FLAGS.BIN", new_only[i], &stream),
+                 SR_CD_ALREADY_EXISTS);
+        CHECK(stream == NULL && read_file_equals(file_path, "abc"),
+              "new-file mode %d refuses an existing file and leaves it intact", (int)new_only[i]);
+        if (i + 1u < sizeof(new_only) / sizeof(new_only[0]))
+            CHECK_ST(sr_cd_delete_file(&r, "PSP/SAVEDATA/NEW-DIR/FLAGS.BIN"), SR_CD_OK);
+    }
+    stream = NULL;
+    CHECK_ST(sr_cd_open_file(&r, "PSP/SAVEDATA/NEW-DIR", "FLAGS.BIN",
+                             SR_CD_FILE_READ_WRITE_EXISTING_APPEND, &stream), SR_CD_OK);
+    if (stream) {
+        CHECK(fseek(stream, 0, SEEK_SET) == 0 && fwrite("de", 1, 2, stream) == 2,
+              "an existing-append stream takes bytes after a rewind");
+        fclose(stream);
+    }
+    CHECK(read_file_equals(file_path, "abcde"), "the existing-append mode appends");
+    stream = NULL;
+    CHECK_ST(sr_cd_open_file(&r, "PSP/SAVEDATA/NEW-DIR", "FLAGS.BIN",
+                             SR_CD_FILE_READ_WRITE_EXISTING_TRUNCATE, &stream), SR_CD_OK);
+    if (stream) fclose(stream);
+    CHECK(read_file_equals(file_path, ""), "the existing-truncate mode truncates");
+    CHECK_ST(sr_cd_delete_file(&r, "PSP/SAVEDATA/NEW-DIR/FLAGS.BIN"), SR_CD_OK);
     CHECK_ST(sr_cd_set_mode(&r, "PSP/SAVEDATA/NEW-DIR/DATA.BIN",
                             0x2000u | 0600u), SR_CD_OK);
     CHECK_ST(sr_cd_set_mode(&r, "PSP/SAVEDATA/NEW-DIR/DATA.BIN",
